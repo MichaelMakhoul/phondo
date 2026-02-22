@@ -65,18 +65,38 @@ const DEFAULT_OPTIONS: ScrapeOptions = {
 };
 
 /**
+ * Decode common HTML entities and normalize whitespace.
+ */
+function decodeHtmlEntities(text: string): string {
+  let result = text;
+  result = result.replace(/&nbsp;/g, ' ');
+  result = result.replace(/&amp;/g, '&');
+  result = result.replace(/&lt;/g, '<');
+  result = result.replace(/&gt;/g, '>');
+  result = result.replace(/&quot;/g, '"');
+  result = result.replace(/&#39;/g, "'");
+  result = result.replace(/\s+/g, ' ').trim();
+  return result;
+}
+
+/**
+ * Strip script, style, and HTML comment elements from raw HTML.
+ */
+function stripNonContentElements(html: string): string {
+  let cleaned = html.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
+  cleaned = cleaned.replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '');
+  cleaned = cleaned.replace(/<!--[\s\S]*?-->/g, '');
+  return cleaned;
+}
+
+/**
  * Extract clean text content from HTML.
  * NOTE: Strips <nav>, <header>, <footer> to reduce noise for KB content.
  * Phone/email may appear in those elements — extractBusinessInfo runs on
  * the full HTML separately to avoid missing them.
  */
 function extractTextContent(html: string): string {
-  // Remove script and style elements
-  let cleaned = html.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
-  cleaned = cleaned.replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '');
-
-  // Remove HTML comments
-  cleaned = cleaned.replace(/<!--[\s\S]*?-->/g, '');
+  let cleaned = stripNonContentElements(html);
 
   // Remove navigation, header, footer elements (common noise for KB content)
   cleaned = cleaned.replace(/<nav\b[^<]*(?:(?!<\/nav>)<[^<]*)*<\/nav>/gi, '');
@@ -86,18 +106,7 @@ function extractTextContent(html: string): string {
   // Extract text from remaining HTML
   cleaned = cleaned.replace(/<[^>]+>/g, ' ');
 
-  // Decode HTML entities
-  cleaned = cleaned.replace(/&nbsp;/g, ' ');
-  cleaned = cleaned.replace(/&amp;/g, '&');
-  cleaned = cleaned.replace(/&lt;/g, '<');
-  cleaned = cleaned.replace(/&gt;/g, '>');
-  cleaned = cleaned.replace(/&quot;/g, '"');
-  cleaned = cleaned.replace(/&#39;/g, "'");
-
-  // Normalize whitespace
-  cleaned = cleaned.replace(/\s+/g, ' ').trim();
-
-  return cleaned;
+  return decodeHtmlEntities(cleaned);
 }
 
 /**
@@ -105,18 +114,8 @@ function extractTextContent(html: string): string {
  * Less aggressive than extractTextContent — keeps header/footer where contact info lives.
  */
 function extractFullText(html: string): string {
-  let cleaned = html.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
-  cleaned = cleaned.replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '');
-  cleaned = cleaned.replace(/<!--[\s\S]*?-->/g, '');
-  cleaned = cleaned.replace(/<[^>]+>/g, ' ');
-  cleaned = cleaned.replace(/&nbsp;/g, ' ');
-  cleaned = cleaned.replace(/&amp;/g, '&');
-  cleaned = cleaned.replace(/&lt;/g, '<');
-  cleaned = cleaned.replace(/&gt;/g, '>');
-  cleaned = cleaned.replace(/&quot;/g, '"');
-  cleaned = cleaned.replace(/&#39;/g, "'");
-  cleaned = cleaned.replace(/\s+/g, ' ').trim();
-  return cleaned;
+  const cleaned = stripNonContentElements(html).replace(/<[^>]+>/g, ' ');
+  return decodeHtmlEntities(cleaned);
 }
 
 /**
@@ -160,7 +159,7 @@ function extractMetaDescription(html: string): string | undefined {
  * or artifact). Does NOT validate that the number is actually dialable —
  * this is a scraping heuristic only.
  */
-function isValidPhone(phone: string): boolean {
+export function isValidPhone(phone: string): boolean {
   const digits = phone.replace(/\D/g, '');
   if (digits.length < 8) return false;
   if (/^(\d)\1+$/.test(digits)) return false;
@@ -178,7 +177,7 @@ function isValidPhone(phone: string): boolean {
 /**
  * Filter out non-business email addresses (noreply, image filenames, retina patterns)
  */
-function isBusinessEmail(email: string): boolean {
+export function isBusinessEmail(email: string): boolean {
   if (email.includes('noreply') || email.includes('no-reply')) return false;
   if (email.includes('example.com')) return false;
   // Image filenames (e.g. logo@2x-001-250x98.png)
@@ -344,7 +343,7 @@ async function fetchPage(url: string, timeout: number, maxRedirects = 5): Promis
   return null;
 }
 
-// ── LLM extraction helpers ──────────────────────────────────────────────
+// ── LLM extraction helpers (exported for testing) ───────────────────────
 
 export function stringField(val: unknown): string | undefined {
   return typeof val === 'string' ? val : undefined;
@@ -357,7 +356,7 @@ export function stringArrayField(val: unknown): string[] | undefined {
 /**
  * Check if a value is a placeholder string the LLM returns instead of omitting
  */
-function isPlaceholder(value: unknown): boolean {
+export function isPlaceholder(value: unknown): boolean {
   return typeof value === 'string' &&
     /^(not provided|not available|n\/a|none|unknown|null)$/i.test(value.trim());
 }
@@ -366,7 +365,7 @@ function isPlaceholder(value: unknown): boolean {
  * Extract a meaningful string from an LLM field, returning undefined for
  * placeholders, empty strings, and non-strings.
  */
-function cleanLLMField(value: unknown): string | undefined {
+export function cleanLLMField(value: unknown): string | undefined {
   const s = stringField(value);
   return s && s.trim() !== '' && !isPlaceholder(s) ? s : undefined;
 }
@@ -375,7 +374,7 @@ function cleanLLMField(value: unknown): string | undefined {
  * Filter placeholder strings from an LLM array field, returning undefined
  * if the array is empty after filtering.
  */
-function cleanLLMArrayField(value: unknown): string[] | undefined {
+export function cleanLLMArrayField(value: unknown): string[] | undefined {
   const arr = stringArrayField(value)?.filter(item => !isPlaceholder(item));
   return arr && arr.length > 0 ? arr : undefined;
 }
@@ -384,7 +383,7 @@ function cleanLLMArrayField(value: unknown): string[] | undefined {
  * Strip markdown code fences (```json ... ```) that the LLM sometimes
  * adds despite being told not to.
  */
-function stripMarkdownFences(text: string): string {
+export function stripMarkdownFences(text: string): string {
   const trimmed = text.trim();
   if (!trimmed.startsWith('```')) return trimmed;
   return trimmed.replace(/^```\w*\s*\n?/, '').replace(/\n?```\s*$/, '');
