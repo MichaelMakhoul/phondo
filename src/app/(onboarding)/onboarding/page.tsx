@@ -346,8 +346,14 @@ export default function OnboardingPage() {
       });
 
       if (!subRes.ok) {
-        const subErr = await subRes.json().catch(() => ({}));
-        throw new Error(subErr.error || "Failed to create subscription");
+        const rawText = await subRes.text();
+        let subErr: { error?: string } = {};
+        try {
+          subErr = JSON.parse(rawText);
+        } catch {
+          // Non-JSON response (e.g. reverse proxy error page)
+        }
+        throw new Error(subErr.error || `Failed to create subscription (status ${subRes.status})`);
       }
 
       // Step 5: Create notification preferences with defaults

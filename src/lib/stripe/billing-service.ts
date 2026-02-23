@@ -2,7 +2,7 @@
  * Billing Service
  *
  * Handles subscription management, usage tracking, and billing operations.
- * Implements the new call-based (not minute-based) pricing model.
+ * Implements the call-based pricing model with soft caps (never block calls).
  */
 
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -15,6 +15,23 @@ import {
   CALL_THRESHOLD_OVER,
 } from "./client";
 import type Stripe from "stripe";
+
+// Legacy plan name aliases — maps old enum values to current ones.
+// Existing Stripe subscriptions may have "growth" or "free" in metadata.
+const PLAN_ALIASES: Record<string, PlanType> = {
+  growth: "business",
+  free: "starter",
+};
+
+/** Resolve a plan string to a valid PlanType, handling legacy aliases. */
+function resolvePlanType(raw: string): PlanType {
+  const resolved = (PLAN_ALIASES[raw] || raw) as PlanType;
+  if (!(resolved in PLANS)) {
+    console.error("Unknown plan type, falling back to starter:", { raw, resolved });
+    return "starter";
+  }
+  return resolved;
+}
 
 export interface SubscriptionInfo {
   id: string;
@@ -53,18 +70,31 @@ export async function getSubscriptionInfo(
     .eq("organization_id", organizationId)
     .single();
 
-  if (error || !subscription) {
+  if (error) {
+    if (error.code !== "PGRST116") {
+      // PGRST116 = no rows found (genuinely no subscription)
+      // Anything else is a real database error
+      console.error("Failed to fetch subscription:", {
+        organizationId,
+        errorCode: error.code,
+        errorMessage: error.message,
+      });
+    }
     return null;
   }
 
-  const plan = (subscription.plan_type || "starter") as PlanType;
+  if (!subscription) {
+    return null;
+  }
+
+  const plan = resolvePlanType(subscription.plan_type || "starter");
   const planConfig = PLANS[plan];
 
   return {
     id: subscription.id,
     plan,
     status: subscription.status,
-    callsLimit: planConfig?.callsLimit ?? 100,
+    callsLimit: planConfig?.callsLimit ?? 150,
     callsUsed: subscription.calls_used ?? 0,
     currentPeriodStart: new Date(subscription.current_period_start),
     currentPeriodEnd: new Date(subscription.current_period_end),
@@ -92,6 +122,8 @@ export async function getUsageInfo(organizationId: string): Promise<UsageInfo> {
 
   const { callsUsed, callsLimit } = subscription;
 
+  // Legacy: -1 meant "unlimited" in the old Growth plan. No current plan uses it,
+  // but retained for backwards compatibility with existing DB rows.
   if (callsLimit === -1) {
     return {
       callsUsed,
@@ -159,7 +191,7 @@ export async function incrementCallUsage(
     }
 
     const newUsage = (subscription.calls_used || 0) + 1;
-    const callsLimit = subscription.calls_limit || 100;
+    const callsLimit = subscription.calls_limit || 150;
 
     const { error: updateError } = await (supabase as any)
       .from("subscriptions")
@@ -185,14 +217,14 @@ export async function incrementCallUsage(
 
   return {
     success: true,
-    shouldUpgrade: checkShouldUpgrade(result.calls_used || 0, result.calls_limit || 100),
+    shouldUpgrade: checkShouldUpgrade(result.calls_used || 0, result.calls_limit || 150),
   };
 }
 
 /**
  * Check if organization can make more calls.
- * Soft cap: always returns true — we never block calls.
- * The voice server uses this; blocking calls loses revenue.
+ * Soft cap policy: always returns true — we never block calls.
+ * Not currently called; retained as a policy contract for future integrations.
  */
 export async function canMakeCall(_organizationId: string): Promise<boolean> {
   return true;
@@ -204,10 +236,15 @@ export async function canMakeCall(_organizationId: string): Promise<boolean> {
 export async function resetMonthlyUsage(organizationId: string): Promise<void> {
   const supabase = createAdminClient();
 
-  await (supabase as any)
+  const { error } = await (supabase as any)
     .from("subscriptions")
     .update({ calls_used: 0 })
     .eq("organization_id", organizationId);
+
+  if (error) {
+    console.error("Failed to reset monthly usage:", { organizationId, error });
+    throw new Error(`Failed to reset monthly usage for org ${organizationId}: ${error.message}`);
+  }
 }
 
 /**
@@ -311,18 +348,18 @@ export async function handleSubscriptionCreated(
   const supabase = createAdminClient();
 
   const organizationId = subscription.metadata?.organizationId;
-  const plan = (subscription.metadata?.plan || "starter") as PlanType;
 
   if (!organizationId) {
     console.error("No organizationId in subscription metadata");
     return;
   }
 
+  const plan = resolvePlanType(subscription.metadata?.plan || "starter");
   const planConfig = PLANS[plan];
 
   // Upsert subscription record
-  // Note: stripe_customer_id lives on organizations, not subscriptions
-  await (supabase as any)
+  // Note: stripe_customer_id lives on the organizations table, not subscriptions
+  const { error: upsertError } = await (supabase as any)
     .from("subscriptions")
     .upsert({
       organization_id: organizationId,
@@ -342,6 +379,16 @@ export async function handleSubscriptionCreated(
     }, {
       onConflict: "organization_id",
     });
+
+  if (upsertError) {
+    console.error("Failed to upsert subscription from Stripe webhook:", {
+      stripeSubscriptionId: subscription.id,
+      organizationId,
+      plan,
+      error: upsertError,
+    });
+    throw new Error(`Subscription upsert failed: ${upsertError.message}`);
+  }
 }
 
 /**
@@ -389,13 +436,21 @@ export async function handleSubscriptionCanceled(
 ): Promise<void> {
   const supabase = createAdminClient();
 
-  await (supabase as any)
+  const { error } = await (supabase as any)
     .from("subscriptions")
     .update({
       status: "canceled",
       cancel_at_period_end: true,
     })
     .eq("stripe_subscription_id", subscription.id);
+
+  if (error) {
+    console.error("Failed to cancel subscription:", {
+      stripeSubscriptionId: subscription.id,
+      error,
+    });
+    throw new Error(`Subscription cancellation failed: ${error.message}`);
+  }
 }
 
 /**

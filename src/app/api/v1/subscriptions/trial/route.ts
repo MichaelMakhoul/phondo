@@ -3,8 +3,9 @@ import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { PLANS, getDisplayPlans } from "@/lib/stripe/client";
 import type { PlanType } from "@/lib/stripe/client";
+import { isValidUUID } from "@/lib/security/validation";
 
-// Allowed plan types for self-service trial creation
+// Restrict to SMB plans only — prevents self-service creation of agency-tier trials
 const ALLOWED_TRIAL_PLANS = new Set(getDisplayPlans().map((p) => p.id));
 
 // POST /api/v1/subscriptions/trial — Create a trial subscription (server-side)
@@ -20,11 +21,17 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const body = await request.json();
-    const { organizationId, planType } = body as {
-      organizationId: string;
-      planType: string;
-    };
+    let body: { organizationId?: string; planType?: string };
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json(
+        { error: "Invalid request body" },
+        { status: 400 }
+      );
+    }
+
+    const { organizationId, planType } = body;
 
     if (!organizationId || !planType) {
       return NextResponse.json(
@@ -33,7 +40,14 @@ export async function POST(request: Request) {
       );
     }
 
-    // Validate plan is one of the allowed SMB plans (not agency tiers)
+    if (!isValidUUID(organizationId)) {
+      return NextResponse.json(
+        { error: "Invalid organizationId" },
+        { status: 400 }
+      );
+    }
+
+    // Only SMB plans allowed (no agency tiers)
     if (!ALLOWED_TRIAL_PLANS.has(planType as PlanType)) {
       return NextResponse.json(
         { error: "Invalid plan type" },
@@ -56,14 +70,25 @@ export async function POST(request: Request) {
       );
     }
 
+    // Use admin client (service_role) to bypass RLS — only server can write subscriptions
+    const admin = createAdminClient();
+
+    // Check for existing subscription (idempotent — double-clicks return success)
+    const { data: existing } = await (admin as any)
+      .from("subscriptions")
+      .select("id, plan_type, status")
+      .eq("organization_id", organizationId)
+      .single();
+
+    if (existing) {
+      return NextResponse.json({ success: true });
+    }
+
     // Look up plan config from server-side constants (not client input)
     const planConfig = PLANS[planType as PlanType];
 
     const trialEnd = new Date();
     trialEnd.setDate(trialEnd.getDate() + 14);
-
-    // Use admin client (service_role) to bypass RLS — only server can write subscriptions
-    const admin = createAdminClient();
 
     const { error: subError } = await (admin as any)
       .from("subscriptions")
@@ -78,8 +103,9 @@ export async function POST(request: Request) {
         calls_used: 0,
         assistants_limit: planConfig.assistants,
         phone_numbers_limit: planConfig.phoneNumbers,
+        // Placeholder IDs for trial — replaced by real Stripe IDs when user converts to paid
         stripe_price_id: `price_trial_${planType}`,
-        stripe_subscription_id: `sub_trial_${Date.now()}`,
+        stripe_subscription_id: `trial_${organizationId}`,
       });
 
     if (subError) {
