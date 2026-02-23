@@ -32,7 +32,7 @@ import {
 import { formatCurrency } from "@/lib/utils";
 import { getDisplayPlans } from "@/lib/stripe/client";
 
-// Feature → icon mapping (React components can't live in client.ts)
+// Feature → icon mapping (kept here because src/lib/stripe/client.ts is framework-agnostic)
 const FEATURE_ICONS: Record<string, React.ComponentType<any>> = {
   calls: Phone,
   assistant: Users,

@@ -148,7 +148,7 @@ CREATE TABLE subscriptions (
   stripe_price_id TEXT NOT NULL,
   plan_type plan_type NOT NULL DEFAULT 'starter',
   status subscription_status NOT NULL DEFAULT 'active',
-  included_minutes INTEGER NOT NULL DEFAULT 50,
+  included_minutes INTEGER NOT NULL DEFAULT 50, -- DEPRECATED: legacy minute-based column; new billing uses calls_limit
   current_period_start TIMESTAMPTZ NOT NULL,
   current_period_end TIMESTAMPTZ NOT NULL,
   cancel_at_period_end BOOLEAN NOT NULL DEFAULT false,

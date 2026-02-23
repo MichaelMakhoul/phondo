@@ -11,7 +11,7 @@ export function getStripeClient(): Stripe {
   return stripeClient;
 }
 
-// AUD call-based pricing model (SMB-first)
+// AUD call-based pricing model (SMB-first). Stripe price IDs set via env vars (see .env.example).
 export const PLANS = {
   starter: {
     name: "Starter",
@@ -81,7 +81,7 @@ export const PLANS = {
       "Custom voice selection",
     ],
   },
-  // Agency tiers (Phase 2 — not active)
+  // Agency tiers (Phase 2 — not shown in UI, no Stripe products created yet)
   agency_starter: {
     name: "Agency Starter",
     description: "For small agencies",
@@ -145,7 +145,7 @@ export const CALL_THRESHOLD_WARNING = 0.8; // Warn at 80% usage
 export const CALL_THRESHOLD_LIMIT = 1.0; // At 100% — send upgrade nudge
 export const CALL_THRESHOLD_OVER = 1.2; // At 120% — strong upgrade nudge
 
-/** Returns the 3 SMB plans for display in UI (excludes agency tiers). */
+/** Returns SMB plans for display in UI (excludes agency tiers). */
 export function getDisplayPlans() {
   return [
     { id: "starter" as PlanType, ...PLANS.starter },
