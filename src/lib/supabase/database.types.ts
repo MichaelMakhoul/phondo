@@ -7,6 +7,11 @@ export type Json =
   | Json[]
 
 export type Database = {
+  // Allows to automatically instantiate createClient with right options
+  // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
+  __InternalSupabase: {
+    PostgrestVersion: "14.1"
+  }
   public: {
     Tables: {
       api_keys: {
@@ -49,6 +54,88 @@ export type Database = {
         Relationships: [
           {
             foreignKeyName: "api_keys_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      appointments: {
+        Row: {
+          assistant_id: string | null
+          attendee_email: string | null
+          attendee_name: string
+          attendee_phone: string | null
+          call_id: string | null
+          created_at: string | null
+          duration_minutes: number | null
+          end_time: string | null
+          external_id: string | null
+          id: string
+          metadata: Json | null
+          notes: string | null
+          organization_id: string
+          provider: string
+          start_time: string
+          status: string
+          updated_at: string | null
+        }
+        Insert: {
+          assistant_id?: string | null
+          attendee_email?: string | null
+          attendee_name: string
+          attendee_phone?: string | null
+          call_id?: string | null
+          created_at?: string | null
+          duration_minutes?: number | null
+          end_time?: string | null
+          external_id?: string | null
+          id?: string
+          metadata?: Json | null
+          notes?: string | null
+          organization_id: string
+          provider?: string
+          start_time: string
+          status?: string
+          updated_at?: string | null
+        }
+        Update: {
+          assistant_id?: string | null
+          attendee_email?: string | null
+          attendee_name?: string
+          attendee_phone?: string | null
+          call_id?: string | null
+          created_at?: string | null
+          duration_minutes?: number | null
+          end_time?: string | null
+          external_id?: string | null
+          id?: string
+          metadata?: Json | null
+          notes?: string | null
+          organization_id?: string
+          provider?: string
+          start_time?: string
+          status?: string
+          updated_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "appointments_assistant_id_fkey"
+            columns: ["assistant_id"]
+            isOneToOne: false
+            referencedRelation: "assistants"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "appointments_call_id_fkey"
+            columns: ["call_id"]
+            isOneToOne: false
+            referencedRelation: "calls"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "appointments_organization_id_fkey"
             columns: ["organization_id"]
             isOneToOne: false
             referencedRelation: "organizations"
@@ -109,6 +196,8 @@ export type Database = {
           model_provider: string
           name: string
           organization_id: string
+          prompt_config: Json | null
+          settings: Json | null
           system_prompt: string
           tools: Json | null
           updated_at: string
@@ -126,6 +215,8 @@ export type Database = {
           model_provider?: string
           name: string
           organization_id: string
+          prompt_config?: Json | null
+          settings?: Json | null
           system_prompt: string
           tools?: Json | null
           updated_at?: string
@@ -143,6 +234,8 @@ export type Database = {
           model_provider?: string
           name?: string
           organization_id?: string
+          prompt_config?: Json | null
+          settings?: Json | null
           system_prompt?: string
           tools?: Json | null
           updated_at?: string
@@ -223,12 +316,92 @@ export type Database = {
           },
         ]
       }
+      caller_sms_log: {
+        Row: {
+          caller_phone: string
+          created_at: string | null
+          error_message: string | null
+          from_number: string
+          id: string
+          message_body: string
+          message_type: string
+          organization_id: string
+          status: string
+          twilio_message_sid: string | null
+        }
+        Insert: {
+          caller_phone: string
+          created_at?: string | null
+          error_message?: string | null
+          from_number: string
+          id?: string
+          message_body: string
+          message_type: string
+          organization_id: string
+          status?: string
+          twilio_message_sid?: string | null
+        }
+        Update: {
+          caller_phone?: string
+          created_at?: string | null
+          error_message?: string | null
+          from_number?: string
+          id?: string
+          message_body?: string
+          message_type?: string
+          organization_id?: string
+          status?: string
+          twilio_message_sid?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "caller_sms_log_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      caller_sms_optouts: {
+        Row: {
+          id: string
+          opted_out_at: string
+          organization_id: string
+          phone_number: string
+          source: string
+        }
+        Insert: {
+          id?: string
+          opted_out_at?: string
+          organization_id: string
+          phone_number: string
+          source?: string
+        }
+        Update: {
+          id?: string
+          opted_out_at?: string
+          organization_id?: string
+          phone_number?: string
+          source?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "caller_sms_optouts_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       calls: {
         Row: {
           action_taken: string | null
           assistant_id: string | null
           caller_name: string | null
           caller_phone: string | null
+          collected_data: Json | null
           cost_cents: number | null
           created_at: string
           direction: Database["public"]["Enums"]["call_direction"]
@@ -243,6 +416,7 @@ export type Database = {
           phone_number_id: string | null
           recording_url: string | null
           sentiment: string | null
+          spam_score: number | null
           started_at: string | null
           status: Database["public"]["Enums"]["call_status"]
           summary: string | null
@@ -254,6 +428,7 @@ export type Database = {
           assistant_id?: string | null
           caller_name?: string | null
           caller_phone?: string | null
+          collected_data?: Json | null
           cost_cents?: number | null
           created_at?: string
           direction?: Database["public"]["Enums"]["call_direction"]
@@ -268,6 +443,7 @@ export type Database = {
           phone_number_id?: string | null
           recording_url?: string | null
           sentiment?: string | null
+          spam_score?: number | null
           started_at?: string | null
           status?: Database["public"]["Enums"]["call_status"]
           summary?: string | null
@@ -279,6 +455,7 @@ export type Database = {
           assistant_id?: string | null
           caller_name?: string | null
           caller_phone?: string | null
+          collected_data?: Json | null
           cost_cents?: number | null
           created_at?: string
           direction?: Database["public"]["Enums"]["call_direction"]
@@ -293,6 +470,7 @@ export type Database = {
           phone_number_id?: string | null
           recording_url?: string | null
           sentiment?: string | null
+          spam_score?: number | null
           started_at?: string | null
           status?: Database["public"]["Enums"]["call_status"]
           summary?: string | null
@@ -323,9 +501,103 @@ export type Database = {
           },
         ]
       }
+      integration_logs: {
+        Row: {
+          attempted_at: string | null
+          event_type: string
+          id: string
+          integration_id: string
+          payload: Json
+          response_body: string | null
+          response_status: number | null
+          retry_count: number | null
+          success: boolean
+        }
+        Insert: {
+          attempted_at?: string | null
+          event_type: string
+          id?: string
+          integration_id: string
+          payload: Json
+          response_body?: string | null
+          response_status?: number | null
+          retry_count?: number | null
+          success?: boolean
+        }
+        Update: {
+          attempted_at?: string | null
+          event_type?: string
+          id?: string
+          integration_id?: string
+          payload?: Json
+          response_body?: string | null
+          response_status?: number | null
+          retry_count?: number | null
+          success?: boolean
+        }
+        Relationships: [
+          {
+            foreignKeyName: "integration_logs_integration_id_fkey"
+            columns: ["integration_id"]
+            isOneToOne: false
+            referencedRelation: "integrations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      integrations: {
+        Row: {
+          created_at: string | null
+          events: string[]
+          id: string
+          is_active: boolean
+          metadata: Json | null
+          name: string
+          organization_id: string
+          platform: string
+          signing_secret: string
+          updated_at: string | null
+          webhook_url: string
+        }
+        Insert: {
+          created_at?: string | null
+          events?: string[]
+          id?: string
+          is_active?: boolean
+          metadata?: Json | null
+          name: string
+          organization_id: string
+          platform?: string
+          signing_secret: string
+          updated_at?: string | null
+          webhook_url: string
+        }
+        Update: {
+          created_at?: string | null
+          events?: string[]
+          id?: string
+          is_active?: boolean
+          metadata?: Json | null
+          name?: string
+          organization_id?: string
+          platform?: string
+          signing_secret?: string
+          updated_at?: string | null
+          webhook_url?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "integrations_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       knowledge_bases: {
         Row: {
-          assistant_id: string
+          assistant_id: string | null
           content: string
           created_at: string | null
           id: string
@@ -334,10 +606,11 @@ export type Database = {
           organization_id: string
           source_type: string
           source_url: string | null
+          title: string | null
           updated_at: string | null
         }
         Insert: {
-          assistant_id: string
+          assistant_id?: string | null
           content: string
           created_at?: string | null
           id?: string
@@ -346,10 +619,11 @@ export type Database = {
           organization_id: string
           source_type: string
           source_url?: string | null
+          title?: string | null
           updated_at?: string | null
         }
         Update: {
-          assistant_id?: string
+          assistant_id?: string | null
           content?: string
           created_at?: string | null
           id?: string
@@ -358,6 +632,7 @@ export type Database = {
           organization_id?: string
           source_type?: string
           source_url?: string | null
+          title?: string | null
           updated_at?: string | null
         }
         Relationships: [
@@ -382,13 +657,17 @@ export type Database = {
           created_at: string | null
           email_daily_summary: boolean | null
           email_on_appointment_booked: boolean | null
+          email_on_failed_call: boolean
           email_on_missed_call: boolean | null
           email_on_voicemail: boolean | null
           id: string
           organization_id: string
+          sms_appointment_confirmation: boolean | null
+          sms_on_failed_call: boolean
           sms_on_missed_call: boolean | null
           sms_on_voicemail: boolean | null
           sms_phone_number: string | null
+          sms_textback_on_missed_call: boolean | null
           updated_at: string | null
           user_id: string | null
           webhook_url: string | null
@@ -397,13 +676,17 @@ export type Database = {
           created_at?: string | null
           email_daily_summary?: boolean | null
           email_on_appointment_booked?: boolean | null
+          email_on_failed_call?: boolean
           email_on_missed_call?: boolean | null
           email_on_voicemail?: boolean | null
           id?: string
           organization_id: string
+          sms_appointment_confirmation?: boolean | null
+          sms_on_failed_call?: boolean
           sms_on_missed_call?: boolean | null
           sms_on_voicemail?: boolean | null
           sms_phone_number?: string | null
+          sms_textback_on_missed_call?: boolean | null
           updated_at?: string | null
           user_id?: string | null
           webhook_url?: string | null
@@ -412,13 +695,17 @@ export type Database = {
           created_at?: string | null
           email_daily_summary?: boolean | null
           email_on_appointment_booked?: boolean | null
+          email_on_failed_call?: boolean
           email_on_missed_call?: boolean | null
           email_on_voicemail?: boolean | null
           id?: string
           organization_id?: string
+          sms_appointment_confirmation?: boolean | null
+          sms_on_failed_call?: boolean
           sms_on_missed_call?: boolean | null
           sms_on_voicemail?: boolean | null
           sms_phone_number?: string | null
+          sms_textback_on_missed_call?: boolean | null
           updated_at?: string | null
           user_id?: string | null
           webhook_url?: string | null
@@ -475,7 +762,9 @@ export type Database = {
           business_name: string | null
           business_phone: string | null
           business_website: string | null
+          country: string
           created_at: string
+          default_appointment_duration: number
           id: string
           industry: string | null
           logo_url: string | null
@@ -494,7 +783,9 @@ export type Database = {
           business_name?: string | null
           business_phone?: string | null
           business_website?: string | null
+          country?: string
           created_at?: string
+          default_appointment_duration?: number
           id?: string
           industry?: string | null
           logo_url?: string | null
@@ -513,7 +804,9 @@ export type Database = {
           business_name?: string | null
           business_phone?: string | null
           business_website?: string | null
+          country?: string
           created_at?: string
+          default_appointment_duration?: number
           id?: string
           industry?: string | null
           logo_url?: string | null
@@ -539,39 +832,54 @@ export type Database = {
       phone_numbers: {
         Row: {
           assistant_id: string | null
+          carrier: string | null
           created_at: string
+          forwarding_status: string | null
           friendly_name: string | null
           id: string
           is_active: boolean
           organization_id: string
           phone_number: string
+          source_type: string
           twilio_sid: string | null
           updated_at: string
+          user_phone_number: string | null
           vapi_phone_number_id: string | null
+          voice_provider: string
         }
         Insert: {
           assistant_id?: string | null
+          carrier?: string | null
           created_at?: string
+          forwarding_status?: string | null
           friendly_name?: string | null
           id?: string
           is_active?: boolean
           organization_id: string
           phone_number: string
+          source_type?: string
           twilio_sid?: string | null
           updated_at?: string
+          user_phone_number?: string | null
           vapi_phone_number_id?: string | null
+          voice_provider?: string
         }
         Update: {
           assistant_id?: string | null
+          carrier?: string | null
           created_at?: string
+          forwarding_status?: string | null
           friendly_name?: string | null
           id?: string
           is_active?: boolean
           organization_id?: string
           phone_number?: string
+          source_type?: string
           twilio_sid?: string | null
           updated_at?: string
+          user_phone_number?: string | null
           vapi_phone_number_id?: string | null
+          voice_provider?: string
         }
         Relationships: [
           {
@@ -818,6 +1126,13 @@ export type Database = {
         }[]
       }
       get_user_organizations: { Args: { user_uuid: string }; Returns: string[] }
+      increment_call_usage: {
+        Args: { org_id: string }
+        Returns: {
+          calls_limit: number
+          calls_used: number
+        }[]
+      }
       is_org_admin: {
         Args: { org_id: string; user_uuid: string }
         Returns: boolean
@@ -869,18 +1184,122 @@ export type Database = {
   }
 }
 
-// Simplified type helpers
-export type Tables<T extends keyof Database["public"]["Tables"]> =
-  Database["public"]["Tables"][T]["Row"]
+type DatabaseWithoutInternals = Omit<Database, "__InternalSupabase">
 
-export type TablesInsert<T extends keyof Database["public"]["Tables"]> =
-  Database["public"]["Tables"][T]["Insert"]
+type DefaultSchema = DatabaseWithoutInternals[Extract<keyof Database, "public">]
 
-export type TablesUpdate<T extends keyof Database["public"]["Tables"]> =
-  Database["public"]["Tables"][T]["Update"]
+export type Tables<
+  DefaultSchemaTableNameOrOptions extends
+    | keyof (DefaultSchema["Tables"] & DefaultSchema["Views"])
+    | { schema: keyof DatabaseWithoutInternals },
+  TableName extends DefaultSchemaTableNameOrOptions extends {
+    schema: keyof DatabaseWithoutInternals
+  }
+    ? keyof (DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"] &
+        DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Views"])
+    : never = never,
+> = DefaultSchemaTableNameOrOptions extends {
+  schema: keyof DatabaseWithoutInternals
+}
+  ? (DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"] &
+      DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Views"])[TableName] extends {
+      Row: infer R
+    }
+    ? R
+    : never
+  : DefaultSchemaTableNameOrOptions extends keyof (DefaultSchema["Tables"] &
+        DefaultSchema["Views"])
+    ? (DefaultSchema["Tables"] &
+        DefaultSchema["Views"])[DefaultSchemaTableNameOrOptions] extends {
+        Row: infer R
+      }
+      ? R
+      : never
+    : never
 
-export type Enums<T extends keyof Database["public"]["Enums"]> =
-  Database["public"]["Enums"][T]
+export type TablesInsert<
+  DefaultSchemaTableNameOrOptions extends
+    | keyof DefaultSchema["Tables"]
+    | { schema: keyof DatabaseWithoutInternals },
+  TableName extends DefaultSchemaTableNameOrOptions extends {
+    schema: keyof DatabaseWithoutInternals
+  }
+    ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
+    : never = never,
+> = DefaultSchemaTableNameOrOptions extends {
+  schema: keyof DatabaseWithoutInternals
+}
+  ? DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"][TableName] extends {
+      Insert: infer I
+    }
+    ? I
+    : never
+  : DefaultSchemaTableNameOrOptions extends keyof DefaultSchema["Tables"]
+    ? DefaultSchema["Tables"][DefaultSchemaTableNameOrOptions] extends {
+        Insert: infer I
+      }
+      ? I
+      : never
+    : never
+
+export type TablesUpdate<
+  DefaultSchemaTableNameOrOptions extends
+    | keyof DefaultSchema["Tables"]
+    | { schema: keyof DatabaseWithoutInternals },
+  TableName extends DefaultSchemaTableNameOrOptions extends {
+    schema: keyof DatabaseWithoutInternals
+  }
+    ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
+    : never = never,
+> = DefaultSchemaTableNameOrOptions extends {
+  schema: keyof DatabaseWithoutInternals
+}
+  ? DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"][TableName] extends {
+      Update: infer U
+    }
+    ? U
+    : never
+  : DefaultSchemaTableNameOrOptions extends keyof DefaultSchema["Tables"]
+    ? DefaultSchema["Tables"][DefaultSchemaTableNameOrOptions] extends {
+        Update: infer U
+      }
+      ? U
+      : never
+    : never
+
+export type Enums<
+  DefaultSchemaEnumNameOrOptions extends
+    | keyof DefaultSchema["Enums"]
+    | { schema: keyof DatabaseWithoutInternals },
+  EnumName extends DefaultSchemaEnumNameOrOptions extends {
+    schema: keyof DatabaseWithoutInternals
+  }
+    ? keyof DatabaseWithoutInternals[DefaultSchemaEnumNameOrOptions["schema"]]["Enums"]
+    : never = never,
+> = DefaultSchemaEnumNameOrOptions extends {
+  schema: keyof DatabaseWithoutInternals
+}
+  ? DatabaseWithoutInternals[DefaultSchemaEnumNameOrOptions["schema"]]["Enums"][EnumName]
+  : DefaultSchemaEnumNameOrOptions extends keyof DefaultSchema["Enums"]
+    ? DefaultSchema["Enums"][DefaultSchemaEnumNameOrOptions]
+    : never
+
+export type CompositeTypes<
+  PublicCompositeTypeNameOrOptions extends
+    | keyof DefaultSchema["CompositeTypes"]
+    | { schema: keyof DatabaseWithoutInternals },
+  CompositeTypeName extends PublicCompositeTypeNameOrOptions extends {
+    schema: keyof DatabaseWithoutInternals
+  }
+    ? keyof DatabaseWithoutInternals[PublicCompositeTypeNameOrOptions["schema"]]["CompositeTypes"]
+    : never = never,
+> = PublicCompositeTypeNameOrOptions extends {
+  schema: keyof DatabaseWithoutInternals
+}
+  ? DatabaseWithoutInternals[PublicCompositeTypeNameOrOptions["schema"]]["CompositeTypes"][CompositeTypeName]
+  : PublicCompositeTypeNameOrOptions extends keyof DefaultSchema["CompositeTypes"]
+    ? DefaultSchema["CompositeTypes"][PublicCompositeTypeNameOrOptions]
+    : never
 
 export const Constants = {
   public: {
