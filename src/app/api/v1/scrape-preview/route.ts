@@ -69,10 +69,12 @@ export async function POST(request: NextRequest) {
     try {
       llmInfo = await extractBusinessInfoWithLLM(scrapedData.pages);
     } catch (err) {
-      console.warn('[scrape-preview] LLM extraction failed, continuing with regex only:', err);
+      // Should never happen — extractBusinessInfoWithLLM catches internally.
+      console.error('[scrape-preview] BUG: extractBusinessInfoWithLLM threw unexpectedly:', err);
     }
 
-    // Prefer regex-extracted values where available (currently phone/email only), fall back to LLM
+    // Regex extracts phone/email only; all other fields come from LLM.
+    // Regex takes priority where both exist.
     const regexInfo = scrapedData.businessInfo;
     const mergedInfo = {
       name: regexInfo.name || llmInfo.name,
