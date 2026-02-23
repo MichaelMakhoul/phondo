@@ -17,7 +17,7 @@ CREATE TYPE organization_type AS ENUM ('business', 'agency');
 CREATE TYPE member_role AS ENUM ('owner', 'admin', 'member');
 CREATE TYPE call_direction AS ENUM ('inbound', 'outbound');
 CREATE TYPE call_status AS ENUM ('queued', 'ringing', 'in-progress', 'completed', 'failed', 'no-answer', 'busy');
-CREATE TYPE plan_type AS ENUM ('free', 'starter', 'professional', 'business', 'agency_starter', 'agency_growth', 'agency_scale');
+CREATE TYPE plan_type AS ENUM ('starter', 'professional', 'business', 'agency_starter', 'agency_growth', 'agency_scale');
 CREATE TYPE subscription_status AS ENUM ('active', 'canceled', 'incomplete', 'incomplete_expired', 'past_due', 'trialing', 'unpaid');
 CREATE TYPE industry_type AS ENUM ('dental', 'legal', 'home_services', 'medical', 'real_estate', 'other');
 
@@ -146,7 +146,7 @@ CREATE TABLE subscriptions (
   organization_id UUID NOT NULL UNIQUE REFERENCES organizations(id) ON DELETE CASCADE,
   stripe_subscription_id TEXT NOT NULL UNIQUE,
   stripe_price_id TEXT NOT NULL,
-  plan_type plan_type NOT NULL DEFAULT 'free',
+  plan_type plan_type NOT NULL DEFAULT 'starter',
   status subscription_status NOT NULL DEFAULT 'active',
   included_minutes INTEGER NOT NULL DEFAULT 50,
   current_period_start TIMESTAMPTZ NOT NULL,
@@ -154,10 +154,11 @@ CREATE TABLE subscriptions (
   cancel_at_period_end BOOLEAN NOT NULL DEFAULT false,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  calls_limit INTEGER,
+  calls_limit INTEGER CHECK (calls_limit IS NULL OR calls_limit BETWEEN 0 AND 100000),
   calls_used INTEGER DEFAULT 0,
-  assistants_limit INTEGER,
-  phone_numbers_limit INTEGER
+  assistants_limit INTEGER CHECK (assistants_limit IS NULL OR assistants_limit BETWEEN -1 AND 100),
+  phone_numbers_limit INTEGER CHECK (phone_numbers_limit IS NULL OR phone_numbers_limit BETWEEN -1 AND 100),
+  trial_end TIMESTAMPTZ
 );
 
 -- Usage records

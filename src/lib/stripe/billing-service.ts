@@ -11,6 +11,8 @@ import {
   PLANS,
   PlanType,
   CALL_THRESHOLD_WARNING,
+  CALL_THRESHOLD_LIMIT,
+  CALL_THRESHOLD_OVER,
 } from "./client";
 import type Stripe from "stripe";
 
@@ -26,12 +28,15 @@ export interface SubscriptionInfo {
   trialEnd: Date | null;
 }
 
+export type WarningLevel = "none" | "approaching" | "at_limit" | "over_limit";
+
 export interface UsageInfo {
   callsUsed: number;
   callsLimit: number;
   usagePercentage: number;
   isOverLimit: boolean;
   shouldWarn: boolean;
+  warningLevel: WarningLevel;
 }
 
 /**
@@ -52,7 +57,7 @@ export async function getSubscriptionInfo(
     return null;
   }
 
-  const plan = (subscription.plan || "starter") as PlanType;
+  const plan = (subscription.plan_type || "starter") as PlanType;
   const planConfig = PLANS[plan];
 
   return {
@@ -75,19 +80,18 @@ export async function getUsageInfo(organizationId: string): Promise<UsageInfo> {
   const subscription = await getSubscriptionInfo(organizationId);
 
   if (!subscription) {
-    // No subscription - free tier / trial
     return {
       callsUsed: 0,
       callsLimit: 0,
       usagePercentage: 0,
       isOverLimit: false,
       shouldWarn: false,
+      warningLevel: "none" as WarningLevel,
     };
   }
 
   const { callsUsed, callsLimit } = subscription;
 
-  // Unlimited calls (-1)
   if (callsLimit === -1) {
     return {
       callsUsed,
@@ -95,12 +99,23 @@ export async function getUsageInfo(organizationId: string): Promise<UsageInfo> {
       usagePercentage: 0,
       isOverLimit: false,
       shouldWarn: false,
+      warningLevel: "none" as WarningLevel,
     };
   }
 
   const usagePercentage = callsLimit > 0 ? (callsUsed / callsLimit) * 100 : 0;
-  const isOverLimit = callsUsed >= callsLimit;
-  const shouldWarn = usagePercentage >= CALL_THRESHOLD_WARNING * 100;
+  const ratio = callsLimit > 0 ? callsUsed / callsLimit : 0;
+  const isOverLimit = ratio >= CALL_THRESHOLD_LIMIT;
+  const shouldWarn = ratio >= CALL_THRESHOLD_WARNING;
+
+  let warningLevel: WarningLevel = "none";
+  if (ratio >= CALL_THRESHOLD_OVER) {
+    warningLevel = "over_limit";
+  } else if (ratio >= CALL_THRESHOLD_LIMIT) {
+    warningLevel = "at_limit";
+  } else if (ratio >= CALL_THRESHOLD_WARNING) {
+    warningLevel = "approaching";
+  }
 
   return {
     callsUsed,
@@ -108,6 +123,7 @@ export async function getUsageInfo(organizationId: string): Promise<UsageInfo> {
     usagePercentage: Math.round(usagePercentage),
     isOverLimit,
     shouldWarn,
+    warningLevel,
   };
 }
 
@@ -134,7 +150,7 @@ export async function incrementCallUsage(
   if (error && (error.code === "42883" || error.code === "PGRST202")) {
     const { data: subscription } = await (supabase as any)
       .from("subscriptions")
-      .select("id, plan, calls_used, calls_limit")
+      .select("id, plan_type, calls_used, calls_limit")
       .eq("organization_id", organizationId)
       .single();
 
@@ -174,19 +190,12 @@ export async function incrementCallUsage(
 }
 
 /**
- * Check if organization can make more calls
+ * Check if organization can make more calls.
+ * Soft cap: always returns true — we never block calls.
+ * The voice server uses this; blocking calls loses revenue.
  */
-export async function canMakeCall(organizationId: string): Promise<boolean> {
-  const usage = await getUsageInfo(organizationId);
-
-  // Unlimited plan
-  if (usage.callsLimit === -1) {
-    return true;
-  }
-
-  // Allow some buffer (10%) over limit during grace period
-  // In production, you'd want to handle this more gracefully
-  return usage.callsUsed < usage.callsLimit * 1.1;
+export async function canMakeCall(_organizationId: string): Promise<boolean> {
+  return true;
 }
 
 /**
@@ -312,15 +321,15 @@ export async function handleSubscriptionCreated(
   const planConfig = PLANS[plan];
 
   // Upsert subscription record
+  // Note: stripe_customer_id lives on organizations, not subscriptions
   await (supabase as any)
     .from("subscriptions")
     .upsert({
       organization_id: organizationId,
       stripe_subscription_id: subscription.id,
-      stripe_customer_id: subscription.customer as string,
-      plan,
+      plan_type: plan,
       status: subscription.status,
-      calls_limit: planConfig?.callsLimit ?? 100,
+      calls_limit: planConfig?.callsLimit ?? 150,
       calls_used: 0,
       assistants_limit: planConfig?.assistants ?? 1,
       phone_numbers_limit: planConfig?.phoneNumbers ?? 1,
@@ -431,8 +440,8 @@ export function getAvailablePlans() {
       ...PLANS.professional,
     },
     {
-      id: "growth" as PlanType,
-      ...PLANS.growth,
+      id: "business" as PlanType,
+      ...PLANS.business,
     },
   ];
 }

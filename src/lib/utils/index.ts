@@ -13,9 +13,9 @@ export function formatDuration(seconds: number): string {
 }
 
 export function formatCurrency(cents: number): string {
-  return new Intl.NumberFormat("en-US", {
+  return new Intl.NumberFormat("en-AU", {
     style: "currency",
-    currency: "USD",
+    currency: "AUD",
   }).format(cents / 100);
 }
 

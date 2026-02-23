@@ -335,36 +335,19 @@ export default function OnboardingPage() {
         throw new Error("Organization not found. Please go back and try again.");
       }
 
-      // Create subscription record (free trial)
-      const trialEnd = new Date();
-      trialEnd.setDate(trialEnd.getDate() + 14); // 14-day trial
-
-      const planLimits: Record<string, { calls: number; assistants: number; phoneNumbers: number }> = {
-        starter: { calls: 100, assistants: 1, phoneNumbers: 1 },
-        professional: { calls: 250, assistants: 3, phoneNumbers: 2 },
-        growth: { calls: 999999, assistants: 10, phoneNumbers: 5 }, // "unlimited" represented as high number
-      };
-
-      const limits = planLimits[data.selectedPlan] || planLimits.starter;
-
-      const { error: subError } = await (supabase as any).from("subscriptions").insert({
-        organization_id: orgId,
-        plan_type: data.selectedPlan,
-        status: "trialing",
-        current_period_start: new Date().toISOString(),
-        current_period_end: trialEnd.toISOString(),
-        calls_limit: limits.calls,
-        calls_used: 0,
-        assistants_limit: limits.assistants,
-        phone_numbers_limit: limits.phoneNumbers,
-        // Placeholder values for trial - will be updated when Stripe is connected
-        stripe_price_id: `price_trial_${data.selectedPlan}`,
-        stripe_subscription_id: `sub_trial_${Date.now()}`,
+      // Create subscription record via server-side API (validates plan + sets limits server-side)
+      const subRes = await fetch("/api/v1/subscriptions/trial", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          organizationId: orgId,
+          planType: data.selectedPlan || "starter",
+        }),
       });
 
-      if (subError) {
-        console.error("Failed to create subscription:", subError);
-        // Non-fatal, continue
+      if (!subRes.ok) {
+        const subErr = await subRes.json().catch(() => ({}));
+        throw new Error(subErr.error || "Failed to create subscription");
       }
 
       // Step 5: Create notification preferences with defaults

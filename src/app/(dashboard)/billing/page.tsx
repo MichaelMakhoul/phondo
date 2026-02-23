@@ -30,62 +30,40 @@ import {
   Mic,
 } from "lucide-react";
 import { formatCurrency } from "@/lib/utils";
+import { getDisplayPlans } from "@/lib/stripe/client";
 
-// SMB-first call-based pricing plans
-const PLANS = [
-  {
-    id: "starter",
-    name: "Starter",
-    price: 4900,
-    description: "Perfect for getting started",
-    callsLimit: 100,
-    features: [
-      { text: "100 calls/month", icon: Phone },
-      { text: "1 AI assistant", icon: Users },
-      { text: "1 phone number", icon: Smartphone },
-      { text: "Call transcripts", icon: null },
-      { text: "Email notifications", icon: null },
-    ],
-    highlighted: false,
-  },
-  {
-    id: "professional",
-    name: "Professional",
-    price: 9900,
-    description: "For growing businesses",
-    callsLimit: 250,
-    features: [
-      { text: "250 calls/month", icon: Phone },
-      { text: "3 AI assistants", icon: Users },
-      { text: "2 phone numbers", icon: Smartphone },
-      { text: "Calendar integration", icon: Calendar },
-      { text: "Call transfers", icon: ArrowRight },
-      { text: "Priority support", icon: Headphones },
-    ],
-    highlighted: true,
-  },
-  {
-    id: "growth",
-    name: "Growth",
-    price: 19900,
-    description: "For high-volume businesses",
-    callsLimit: -1, // unlimited
-    features: [
-      { text: "Unlimited calls", icon: Phone },
-      { text: "10 AI assistants", icon: Users },
-      { text: "5 phone numbers", icon: Smartphone },
-      { text: "Human escalation", icon: Headphones },
-      { text: "Advanced analytics", icon: BarChart3 },
-      { text: "Custom voice selection", icon: Mic },
-      { text: "White-glove onboarding", icon: null },
-    ],
-    highlighted: false,
-  },
-];
+// Feature → icon mapping (React components can't live in client.ts)
+const FEATURE_ICONS: Record<string, React.ComponentType<any>> = {
+  calls: Phone,
+  assistant: Users,
+  phone: Smartphone,
+  calendar: Calendar,
+  transfer: ArrowRight,
+  support: Headphones,
+  escalation: Headphones,
+  analytics: BarChart3,
+  voice: Mic,
+};
+
+function getIconForFeature(feature: string) {
+  const lower = feature.toLowerCase();
+  for (const [keyword, Icon] of Object.entries(FEATURE_ICONS)) {
+    if (lower.includes(keyword)) return Icon;
+  }
+  return null;
+}
+
+const PLANS = getDisplayPlans().map((plan) => ({
+  ...plan,
+  features: plan.features.map((text) => ({
+    text,
+    icon: getIconForFeature(text),
+  })),
+}));
 
 interface Subscription {
   id: string;
-  plan: string;
+  plan_type: string;
   status: string;
   calls_used: number;
   calls_limit: number;
@@ -147,7 +125,7 @@ function BillingContent() {
 
     if (sub) {
       setSubscription(sub as Subscription);
-      setCurrentPlan((sub as Subscription).plan);
+      setCurrentPlan((sub as Subscription).plan_type);
     } else {
       setCurrentPlan(null);
     }
@@ -283,12 +261,12 @@ function BillingContent() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-2xl font-bold capitalize">
-                  {subscription.plan?.replace("_", " ") ?? "Free"}
+                  {subscription.plan_type?.replace("_", " ") ?? "Starter"}
                 </p>
                 <p className="text-sm text-muted-foreground">
                   Renews{" "}
                   {new Date(subscription.current_period_end).toLocaleDateString(
-                    "en-US",
+                    "en-AU",
                     {
                       month: "long",
                       day: "numeric",
@@ -331,8 +309,9 @@ function BillingContent() {
                 <div className="flex items-center gap-2 rounded-md bg-red-50 dark:bg-red-950 p-3 text-sm text-red-700 dark:text-red-300">
                   <AlertTriangle className="h-4 w-4" />
                   <span>
-                    You've reached your call limit. Upgrade to continue
-                    receiving calls.
+                    You've exceeded your call limit. Your AI receptionist
+                    will continue answering calls, but please upgrade to
+                    avoid service interruptions.
                   </span>
                 </div>
               )}
@@ -375,7 +354,7 @@ function BillingContent() {
             const isCurrentPlan = currentPlan === plan.id;
             const isDowngrade =
               subscription &&
-              PLANS.findIndex((p) => p.id === subscription.plan) >
+              PLANS.findIndex((p) => p.id === subscription.plan_type) >
                 PLANS.findIndex((p) => p.id === plan.id);
 
             return (
@@ -462,9 +441,9 @@ function BillingContent() {
           <div>
             <p className="font-medium">What happens if I hit my limit?</p>
             <p className="text-muted-foreground">
-              You'll receive a warning at 80% usage. When you reach your limit,
-              new calls will still be answered but you'll be prompted to
-              upgrade. We provide a small buffer to ensure no calls are missed.
+              Your AI receptionist will continue answering calls even if you
+              exceed your limit — we never let a call go unanswered. You'll
+              receive warnings at 80% and 100% usage prompting you to upgrade.
             </p>
           </div>
           <div>

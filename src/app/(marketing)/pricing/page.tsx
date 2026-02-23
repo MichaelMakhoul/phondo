@@ -1,59 +1,15 @@
 import { Metadata } from "next";
 import Link from "next/link";
 import { Check } from "lucide-react";
+import { getDisplayPlans } from "@/lib/stripe/client";
+import { formatCurrency } from "@/lib/utils";
 
 export const metadata: Metadata = {
   title: "Pricing | Hola Recep",
   description: "Simple, transparent pricing for AI-powered phone receptionists",
 };
 
-const PLANS = [
-  {
-    id: "starter",
-    name: "Starter",
-    price: 49,
-    description: "Perfect for getting started",
-    features: [
-      "100 calls/month",
-      "1 AI assistant",
-      "1 phone number",
-      "Call transcripts",
-      "Email notifications",
-    ],
-    highlighted: false,
-  },
-  {
-    id: "professional",
-    name: "Professional",
-    price: 99,
-    description: "For growing businesses",
-    features: [
-      "250 calls/month",
-      "3 AI assistants",
-      "2 phone numbers",
-      "Calendar integration",
-      "Call transfers",
-      "Priority support",
-    ],
-    highlighted: true,
-  },
-  {
-    id: "growth",
-    name: "Growth",
-    price: 199,
-    description: "For high-volume businesses",
-    features: [
-      "Unlimited calls",
-      "10 AI assistants",
-      "5 phone numbers",
-      "Human escalation",
-      "Advanced analytics",
-      "Custom voice selection",
-      "White-glove onboarding",
-    ],
-    highlighted: false,
-  },
-];
+const PLANS = getDisplayPlans();
 
 export default function PricingPage() {
   return (
@@ -96,7 +52,7 @@ export default function PricingPage() {
                 </div>
 
                 <div className="flex items-baseline gap-1">
-                  <span className="text-4xl font-bold">${plan.price}</span>
+                  <span className="text-4xl font-bold">{formatCurrency(plan.price)}</span>
                   <span className="text-muted-foreground">/month</span>
                 </div>
 
@@ -147,8 +103,9 @@ export default function PricingPage() {
             <div>
               <h3 className="font-semibold">What happens when I hit my call limit?</h3>
               <p className="text-sm text-muted-foreground mt-1">
-                We provide a 10% grace buffer. After that, you&apos;ll be prompted to
-                upgrade. Your assistant will continue handling calls during the buffer period.
+                Your AI receptionist will continue answering calls even if you
+                exceed your limit — we never let a call go unanswered. You&apos;ll
+                receive warnings prompting you to upgrade.
               </p>
             </div>
             <div>
