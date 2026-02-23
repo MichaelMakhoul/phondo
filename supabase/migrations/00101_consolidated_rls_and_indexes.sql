@@ -1,5 +1,7 @@
--- Consolidated RLS policies and indexes for AU project
--- Matches the LIVE production DB exactly (as of 2026-02-23)
+-- Consolidated RLS policies and indexes for the AU Supabase project
+-- Derived from the live production DB state as of 2026-02-24.
+-- Some policies differ from the incremental migration files (00001-00023)
+-- because policies were also modified directly in production.
 
 -- ============================================
 -- ENABLE ROW LEVEL SECURITY
@@ -124,8 +126,8 @@ CREATE POLICY "Org members can create subscription" ON subscriptions
   FOR INSERT WITH CHECK (is_org_member(organization_id, auth.uid()));
 CREATE POLICY "Org admins can update subscription" ON subscriptions
   FOR UPDATE
-  USING (is_org_member(organization_id, auth.uid()))
-  WITH CHECK (is_org_member(organization_id, auth.uid()));
+  USING (is_org_admin(organization_id, auth.uid()))
+  WITH CHECK (is_org_admin(organization_id, auth.uid()));
 
 -- ============================================
 -- USAGE RECORDS POLICIES

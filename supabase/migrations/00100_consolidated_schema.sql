@@ -1,6 +1,8 @@
--- Consolidated schema migration for AU project
--- This matches the LIVE production DB exactly (as of 2026-02-23)
--- It replaces the previous 17 individual migration files which had drift
+-- Consolidated schema for the AU Supabase project (ap-southeast-2 / Sydney)
+-- Derived from the live production DB state as of 2026-02-24.
+-- Supersedes the incremental migration files (00001-00023) which had drifted
+-- from production. Those files are retained for git history but should NOT be
+-- run alongside this migration. For a fresh project, run only 00100 + 00101.
 
 -- ============================================
 -- EXTENSIONS
@@ -15,8 +17,9 @@ CREATE TYPE organization_type AS ENUM ('business', 'agency');
 CREATE TYPE member_role AS ENUM ('owner', 'admin', 'member');
 CREATE TYPE call_direction AS ENUM ('inbound', 'outbound');
 CREATE TYPE call_status AS ENUM ('queued', 'ringing', 'in-progress', 'completed', 'failed', 'no-answer', 'busy');
-CREATE TYPE plan_type AS ENUM ('free', 'starter', 'professional', 'business', 'agency_starter', 'agency_growth', 'agency_scale', 'growth');
+CREATE TYPE plan_type AS ENUM ('free', 'starter', 'professional', 'business', 'agency_starter', 'agency_growth', 'agency_scale');
 CREATE TYPE subscription_status AS ENUM ('active', 'canceled', 'incomplete', 'incomplete_expired', 'past_due', 'trialing', 'unpaid');
+CREATE TYPE industry_type AS ENUM ('dental', 'legal', 'home_services', 'medical', 'real_estate', 'other');
 
 -- ============================================
 -- TABLES
@@ -49,7 +52,7 @@ CREATE TABLE organizations (
   business_phone TEXT,
   business_address TEXT,
   business_website TEXT,
-  timezone TEXT DEFAULT 'America/New_York',
+  timezone TEXT DEFAULT 'Australia/Sydney',
   business_hours JSONB DEFAULT '{"friday": {"open": "09:00", "close": "17:00"}, "monday": {"open": "09:00", "close": "17:00"}, "sunday": null, "tuesday": {"open": "09:00", "close": "17:00"}, "saturday": null, "thursday": {"open": "09:00", "close": "17:00"}, "wednesday": {"open": "09:00", "close": "17:00"}}'::jsonb,
   country TEXT NOT NULL DEFAULT 'AU',
   default_appointment_duration INTEGER NOT NULL DEFAULT 30,
@@ -426,6 +429,8 @@ END;
 $$;
 
 -- Only service_role may call this (voice server). No authenticated grant (IDOR risk).
+REVOKE ALL ON FUNCTION increment_call_usage(UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION increment_call_usage(UUID) FROM authenticated;
 GRANT EXECUTE ON FUNCTION increment_call_usage(UUID) TO service_role;
 
 -- Create organization with owner (atomic)
@@ -474,3 +479,15 @@ CREATE TRIGGER update_phone_numbers_updated_at
   BEFORE UPDATE ON phone_numbers FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 CREATE TRIGGER update_subscriptions_updated_at
   BEFORE UPDATE ON subscriptions FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+CREATE TRIGGER update_knowledge_bases_updated_at
+  BEFORE UPDATE ON knowledge_bases FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+CREATE TRIGGER update_calendar_integrations_updated_at
+  BEFORE UPDATE ON calendar_integrations FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+CREATE TRIGGER update_transfer_rules_updated_at
+  BEFORE UPDATE ON transfer_rules FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+CREATE TRIGGER update_notification_preferences_updated_at
+  BEFORE UPDATE ON notification_preferences FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+CREATE TRIGGER update_appointments_updated_at
+  BEFORE UPDATE ON appointments FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+CREATE TRIGGER update_integrations_updated_at
+  BEFORE UPDATE ON integrations FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
