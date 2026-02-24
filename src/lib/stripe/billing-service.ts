@@ -182,7 +182,7 @@ export async function incrementCallUsage(
   if (error && (error.code === "42883" || error.code === "PGRST202")) {
     const { data: subscription } = await (supabase as any)
       .from("subscriptions")
-      .select("id, plan_type, calls_used, calls_limit")
+      .select("id, calls_used, calls_limit")
       .eq("organization_id", organizationId)
       .single();
 
@@ -411,20 +411,39 @@ export async function handleSubscriptionUpdated(
     return;
   }
 
-  // Update subscription record
-  // Note: We don't reset calls_used here - that's handled by invoice.payment_succeeded
+  // Resolve plan from Stripe metadata (handles upgrades/downgrades via Stripe portal)
+  const plan = subscription.metadata?.plan
+    ? resolvePlanType(subscription.metadata.plan)
+    : undefined;
+  const planConfig = plan ? PLANS[plan] : undefined;
+
+  // Build update payload — always sync status & period, optionally sync plan
+  const updatePayload: Record<string, any> = {
+    status: subscription.status,
+    current_period_start: new Date(subscription.current_period_start * 1000).toISOString(),
+    current_period_end: new Date(subscription.current_period_end * 1000).toISOString(),
+    cancel_at_period_end: subscription.cancel_at_period_end,
+  };
+
+  if (plan && planConfig) {
+    updatePayload.plan_type = plan;
+    updatePayload.calls_limit = planConfig.callsLimit;
+    updatePayload.assistants_limit = planConfig.assistants;
+    updatePayload.phone_numbers_limit = planConfig.phoneNumbers;
+  }
+
+  // Note: We don't reset calls_used here — that's handled by invoice.payment_succeeded
   const { error } = await (supabase as any)
     .from("subscriptions")
-    .update({
-      status: subscription.status,
-      current_period_start: new Date(subscription.current_period_start * 1000).toISOString(),
-      current_period_end: new Date(subscription.current_period_end * 1000).toISOString(),
-      cancel_at_period_end: subscription.cancel_at_period_end,
-    })
+    .update(updatePayload)
     .eq("stripe_subscription_id", subscription.id);
 
   if (error) {
-    console.error("Failed to update subscription:", error);
+    console.error("Failed to update subscription:", {
+      stripeSubscriptionId: subscription.id,
+      error,
+    });
+    throw new Error(`Subscription update failed: ${error.message}`);
   }
 }
 
@@ -479,26 +498,6 @@ export async function getBillingPortalUrl(
   });
 
   return session.url;
-}
-
-/**
- * Get available plans for display
- */
-export function getAvailablePlans() {
-  return [
-    {
-      id: "starter" as PlanType,
-      ...PLANS.starter,
-    },
-    {
-      id: "professional" as PlanType,
-      ...PLANS.professional,
-    },
-    {
-      id: "business" as PlanType,
-      ...PLANS.business,
-    },
-  ];
 }
 
 /**
