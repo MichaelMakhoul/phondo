@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/components/ui/use-toast";
-import { Loader2, Mail, MessageSquare, Webhook, Phone } from "lucide-react";
+import { Loader2, Mail, MessageSquare, Webhook, Phone, ArrowUpRight } from "lucide-react";
 
 interface NotificationPreferences {
   email_on_missed_call: boolean;
@@ -27,12 +27,14 @@ interface NotificationSettingsProps {
   organizationId: string;
   initialPreferences: NotificationPreferences | null;
   userEmail?: string;
+  smsCallerEnabled: boolean;
 }
 
 export function NotificationSettings({
   organizationId,
   initialPreferences,
   userEmail,
+  smsCallerEnabled,
 }: NotificationSettingsProps) {
   const [preferences, setPreferences] = useState<NotificationPreferences>({
     email_on_missed_call: initialPreferences?.email_on_missed_call ?? true,
@@ -295,9 +297,22 @@ export function NotificationSettings({
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
+          {!smsCallerEnabled && (
+            <div className="rounded-md border border-blue-200 bg-blue-50 p-3 dark:border-blue-800 dark:bg-blue-950">
+              <p className="text-sm text-blue-800 dark:text-blue-200">
+                Caller SMS notifications are available on Professional and Business plans.{" "}
+                <a href="/billing" className="inline-flex items-center font-medium underline underline-offset-2">
+                  Upgrade <ArrowUpRight className="ml-0.5 h-3 w-3" />
+                </a>
+              </p>
+            </div>
+          )}
+
           <div className="flex items-center justify-between">
             <div className="space-y-0.5">
-              <Label>Missed Call Text-Back</Label>
+              <Label className={!smsCallerEnabled ? "text-muted-foreground" : ""}>
+                Missed Call Text-Back
+              </Label>
               <p className="text-sm text-muted-foreground">
                 Send an SMS to callers when their call is missed, with your booking link and callback number
               </p>
@@ -305,12 +320,15 @@ export function NotificationSettings({
             <Switch
               checked={preferences.sms_textback_on_missed_call}
               onCheckedChange={() => handleToggle("sms_textback_on_missed_call")}
+              disabled={!smsCallerEnabled}
             />
           </div>
 
           <div className="flex items-center justify-between">
             <div className="space-y-0.5">
-              <Label>Appointment Confirmation</Label>
+              <Label className={!smsCallerEnabled ? "text-muted-foreground" : ""}>
+                Appointment Confirmation
+              </Label>
               <p className="text-sm text-muted-foreground">
                 Send callers an SMS confirming their appointment after the AI books it
               </p>
@@ -318,6 +336,7 @@ export function NotificationSettings({
             <Switch
               checked={preferences.sms_appointment_confirmation}
               onCheckedChange={() => handleToggle("sms_appointment_confirmation")}
+              disabled={!smsCallerEnabled}
             />
           </div>
         </CardContent>

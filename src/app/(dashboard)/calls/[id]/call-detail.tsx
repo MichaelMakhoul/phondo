@@ -211,7 +211,7 @@ export function CallDetail({ call }: { call: Call }) {
           <CardContent>
             <p className="text-2xl font-bold">
               {call.cost_cents != null
-                ? formatCurrency(call.cost_cents)
+                ? formatCurrency(call.cost_cents, "USD")
                 : "-"}
             </p>
           </CardContent>

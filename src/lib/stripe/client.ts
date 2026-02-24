@@ -11,80 +11,97 @@ export function getStripeClient(): Stripe {
   return stripeClient;
 }
 
-// New call-based pricing model (SMB-first)
+// AUD call-based pricing model (SMB-first). Stripe price IDs set via env vars (see .env.example).
 export const PLANS = {
   starter: {
     name: "Starter",
-    price: 4900, // $49/month
-    callsLimit: 100, // calls per month, not minutes
+    description: "Perfect for getting started",
+    price: 14900, // $149 AUD/month
+    callsLimit: 150,
     assistants: 1,
     phoneNumbers: 1,
-    calendarIntegration: false,
-    callTransfer: false,
+    calendarIntegration: true,
+    callTransfer: true,
     prioritySupport: false,
+    smsNotifications: false,
+    webhookIntegrations: false,
+    nativeCrmLimit: 0,
+    advancedAnalytics: false,
+    highlighted: false,
     trialDays: 14,
     stripePriceId: process.env.STRIPE_STARTER_PRICE_ID,
     features: [
-      "100 calls/month",
+      "150 calls/month",
       "1 AI assistant",
       "1 phone number",
+      "Calendar booking",
+      "Call transfers",
       "Call transcripts",
-      "Email notifications",
     ],
   },
   professional: {
     name: "Professional",
-    price: 9900, // $99/month
-    callsLimit: 250,
+    description: "For growing businesses",
+    price: 24900, // $249 AUD/month
+    callsLimit: 400,
     assistants: 3,
     phoneNumbers: 2,
     calendarIntegration: true,
     callTransfer: true,
-    prioritySupport: true,
+    prioritySupport: false,
+    smsNotifications: true,
+    webhookIntegrations: true,
+    nativeCrmLimit: 1,
+    advancedAnalytics: true,
+    highlighted: true,
     trialDays: 14,
     stripePriceId: process.env.STRIPE_PROFESSIONAL_PRICE_ID,
     features: [
-      "250 calls/month",
+      "400 calls/month",
       "3 AI assistants",
       "2 phone numbers",
-      "Calendar integration",
-      "Call transfers",
-      "Priority support",
+      "SMS notifications",
+      "Webhook integrations (Zapier/Make)",
+      "Analytics dashboard",
     ],
   },
-  growth: {
-    name: "Growth",
-    price: 19900, // $199/month
-    callsLimit: -1, // unlimited
+  business: {
+    name: "Business",
+    description: "For high-volume businesses",
+    price: 39900, // $399 AUD/month
+    callsLimit: 1000,
     assistants: 10,
     phoneNumbers: 5,
     calendarIntegration: true,
     callTransfer: true,
     prioritySupport: true,
-    humanEscalation: true,
+    smsNotifications: true,
+    webhookIntegrations: true,
+    nativeCrmLimit: 3,
     advancedAnalytics: true,
-    customVoice: true,
+    highlighted: false,
     trialDays: 14,
-    stripePriceId: process.env.STRIPE_GROWTH_PRICE_ID,
+    stripePriceId: process.env.STRIPE_BUSINESS_PRICE_ID,
     features: [
-      "Unlimited calls",
+      "1,000 calls/month",
       "10 AI assistants",
       "5 phone numbers",
-      "Human escalation option",
-      "Advanced analytics",
-      "Custom voice selection",
-      "White-glove onboarding",
+      "Up to 3 CRM integrations",
+      "Everything in Professional",
+      "Priority support",
     ],
   },
-  // Keep agency tiers for Phase 2
+  // Agency tiers (Phase 2 — not shown in UI, no Stripe products created yet)
   agency_starter: {
     name: "Agency Starter",
+    description: "For small agencies",
     price: 19900,
-    callsLimit: 0, // pay per call
+    callsLimit: 0,
     assistants: -1,
     phoneNumbers: -1,
     subaccounts: 10,
-    ratePerCall: 50, // cents per call
+    ratePerCall: 50,
+    highlighted: false,
     stripePriceId: process.env.STRIPE_AGENCY_STARTER_PRICE_ID,
     features: [
       "Up to 10 client accounts",
@@ -95,12 +112,14 @@ export const PLANS = {
   },
   agency_growth: {
     name: "Agency Growth",
+    description: "For growing agencies",
     price: 49900,
     callsLimit: 0,
     assistants: -1,
     phoneNumbers: -1,
     subaccounts: 50,
     ratePerCall: 35,
+    highlighted: false,
     stripePriceId: process.env.STRIPE_AGENCY_GROWTH_PRICE_ID,
     features: [
       "Up to 50 client accounts",
@@ -111,12 +130,14 @@ export const PLANS = {
   },
   agency_scale: {
     name: "Agency Scale",
+    description: "For enterprise agencies",
     price: 99900,
     callsLimit: 0,
     assistants: -1,
     phoneNumbers: -1,
-    subaccounts: -1, // unlimited
+    subaccounts: -1,
     ratePerCall: 25,
+    highlighted: false,
     stripePriceId: process.env.STRIPE_AGENCY_SCALE_PRICE_ID,
     features: [
       "Unlimited client accounts",
@@ -129,8 +150,19 @@ export const PLANS = {
 
 export type PlanType = keyof typeof PLANS;
 
-// No more per-minute overage - upgrade prompts instead
+// Soft cap thresholds — never block calls
 export const CALL_THRESHOLD_WARNING = 0.8; // Warn at 80% usage
+export const CALL_THRESHOLD_LIMIT = 1.0; // At 100% — send upgrade nudge
+export const CALL_THRESHOLD_OVER = 1.2; // At 120% — strong upgrade nudge
+
+/** Returns SMB plans for display in UI (excludes agency tiers). */
+export function getDisplayPlans() {
+  return [
+    { id: "starter" as PlanType, ...PLANS.starter },
+    { id: "professional" as PlanType, ...PLANS.professional },
+    { id: "business" as PlanType, ...PLANS.business },
+  ];
+}
 
 export async function createCustomer(
   email: string,

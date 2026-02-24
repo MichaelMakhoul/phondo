@@ -12,10 +12,11 @@ export function formatDuration(seconds: number): string {
   return `${mins}:${secs.toString().padStart(2, "0")}`;
 }
 
-export function formatCurrency(cents: number): string {
-  return new Intl.NumberFormat("en-US", {
+export function formatCurrency(cents: number, currency: string = "AUD"): string {
+  const locale = currency === "AUD" ? "en-AU" : "en-US";
+  return new Intl.NumberFormat(locale, {
     style: "currency",
-    currency: "USD",
+    currency,
   }).format(cents / 100);
 }
 

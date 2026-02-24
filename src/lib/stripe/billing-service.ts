@@ -2,7 +2,8 @@
  * Billing Service
  *
  * Handles subscription management, usage tracking, and billing operations.
- * Implements the new call-based (not minute-based) pricing model.
+ * Implements the call-based pricing model: soft caps for paid subscriptions
+ * (never block revenue), hard caps for expired trials (enforce conversion).
  */
 
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -11,13 +12,58 @@ import {
   PLANS,
   PlanType,
   CALL_THRESHOLD_WARNING,
+  CALL_THRESHOLD_LIMIT,
+  CALL_THRESHOLD_OVER,
 } from "./client";
 import type Stripe from "stripe";
+import type { Database } from "@/lib/supabase/types";
+
+// Compile-time assertion: PlanType and DB enum must stay in sync.
+// If these fail, a plan was added/removed in one place but not the other.
+type _DBPlanType = Database["public"]["Enums"]["plan_type"];
+type _PlanTypesMatch = [PlanType] extends [_DBPlanType]
+  ? [_DBPlanType] extends [PlanType] ? true : false
+  : false;
+const _planTypesSynced: _PlanTypesMatch = true; // eslint-disable-line @typescript-eslint/no-unused-vars
+
+// Legacy plan name aliases — maps old enum values to current ones.
+// Existing Stripe subscriptions may have "growth" or "free" in metadata.
+const PLAN_ALIASES: Record<string, PlanType> = {
+  growth: "business",
+  free: "starter",
+};
+
+/**
+ * Resolve a plan string to a valid PlanType, handling legacy aliases.
+ * When throwOnUnknown is true (webhook handlers), unknown plans throw to
+ * trigger Stripe retry rather than silently downgrading a paying customer.
+ */
+function resolvePlanType(raw: string, throwOnUnknown = false): PlanType {
+  const resolved = (PLAN_ALIASES[raw] || raw) as PlanType;
+  if (!(resolved in PLANS)) {
+    const msg = `Unknown plan type "${raw}" (resolved: "${resolved}")`;
+    console.error(msg);
+    if (throwOnUnknown) {
+      throw new Error(msg);
+    }
+    return "starter";
+  }
+  return resolved;
+}
+
+export type SubscriptionStatus =
+  | "active"
+  | "canceled"
+  | "incomplete"
+  | "incomplete_expired"
+  | "past_due"
+  | "trialing"
+  | "unpaid";
 
 export interface SubscriptionInfo {
   id: string;
   plan: PlanType;
-  status: string;
+  status: SubscriptionStatus;
   callsLimit: number;
   callsUsed: number;
   currentPeriodStart: Date;
@@ -26,12 +72,17 @@ export interface SubscriptionInfo {
   trialEnd: Date | null;
 }
 
+export type WarningLevel = "none" | "approaching" | "at_limit" | "over_limit";
+
+export type GatedFeature = "smsNotifications" | "webhookIntegrations" | "advancedAnalytics" | "prioritySupport";
+
 export interface UsageInfo {
   callsUsed: number;
   callsLimit: number;
   usagePercentage: number;
   isOverLimit: boolean;
   shouldWarn: boolean;
+  warningLevel: WarningLevel;
 }
 
 /**
@@ -48,18 +99,33 @@ export async function getSubscriptionInfo(
     .eq("organization_id", organizationId)
     .single();
 
-  if (error || !subscription) {
+  if (error) {
+    if (error.code === "PGRST116") {
+      // No rows found — genuinely no subscription
+      return null;
+    }
+    // Real database error — throw so callers can distinguish from "no subscription"
+    console.error("Failed to fetch subscription:", {
+      organizationId,
+      errorCode: error.code,
+      errorMessage: error.message,
+    });
+    throw new Error(`Failed to fetch subscription for org ${organizationId}: ${error.message}`);
+  }
+
+  if (!subscription) {
     return null;
   }
 
-  const plan = (subscription.plan || "starter") as PlanType;
+  const plan = resolvePlanType(subscription.plan_type || "starter");
   const planConfig = PLANS[plan];
 
   return {
     id: subscription.id,
     plan,
     status: subscription.status,
-    callsLimit: planConfig?.callsLimit ?? 100,
+    // Source of truth is plan config (not DB column) so limits stay in sync with plan definitions
+    callsLimit: planConfig?.callsLimit ?? 150,
     callsUsed: subscription.calls_used ?? 0,
     currentPeriodStart: new Date(subscription.current_period_start),
     currentPeriodEnd: new Date(subscription.current_period_end),
@@ -72,22 +138,36 @@ export async function getSubscriptionInfo(
  * Get usage info for an organization
  */
 export async function getUsageInfo(organizationId: string): Promise<UsageInfo> {
-  const subscription = await getSubscriptionInfo(organizationId);
-
-  if (!subscription) {
-    // No subscription - free tier / trial
+  let subscription: SubscriptionInfo | null;
+  try {
+    subscription = await getSubscriptionInfo(organizationId);
+  } catch (err) {
+    console.error("getUsageInfo: DB error, returning empty usage:", { organizationId, err });
     return {
       callsUsed: 0,
       callsLimit: 0,
       usagePercentage: 0,
       isOverLimit: false,
       shouldWarn: false,
+      warningLevel: "none",
+    };
+  }
+
+  if (!subscription) {
+    return {
+      callsUsed: 0,
+      callsLimit: 0,
+      usagePercentage: 0,
+      isOverLimit: false,
+      shouldWarn: false,
+      warningLevel: "none",
     };
   }
 
   const { callsUsed, callsLimit } = subscription;
 
-  // Unlimited calls (-1)
+  // Guard: if callsLimit is -1, treat as unlimited. No current plan uses this
+  // value (CHECK constraint prevents it in new DBs), but defensive for legacy rows.
   if (callsLimit === -1) {
     return {
       callsUsed,
@@ -95,12 +175,23 @@ export async function getUsageInfo(organizationId: string): Promise<UsageInfo> {
       usagePercentage: 0,
       isOverLimit: false,
       shouldWarn: false,
+      warningLevel: "none",
     };
   }
 
   const usagePercentage = callsLimit > 0 ? (callsUsed / callsLimit) * 100 : 0;
-  const isOverLimit = callsUsed >= callsLimit;
-  const shouldWarn = usagePercentage >= CALL_THRESHOLD_WARNING * 100;
+  const ratio = callsLimit > 0 ? callsUsed / callsLimit : 0;
+  const isOverLimit = ratio >= CALL_THRESHOLD_LIMIT;
+  const shouldWarn = ratio >= CALL_THRESHOLD_WARNING;
+
+  let warningLevel: WarningLevel = "none";
+  if (ratio >= CALL_THRESHOLD_OVER) {
+    warningLevel = "over_limit";
+  } else if (ratio >= CALL_THRESHOLD_LIMIT) {
+    warningLevel = "at_limit";
+  } else if (ratio >= CALL_THRESHOLD_WARNING) {
+    warningLevel = "approaching";
+  }
 
   return {
     callsUsed,
@@ -108,6 +199,7 @@ export async function getUsageInfo(organizationId: string): Promise<UsageInfo> {
     usagePercentage: Math.round(usagePercentage),
     isOverLimit,
     shouldWarn,
+    warningLevel,
   };
 }
 
@@ -134,7 +226,7 @@ export async function incrementCallUsage(
   if (error && (error.code === "42883" || error.code === "PGRST202")) {
     const { data: subscription } = await (supabase as any)
       .from("subscriptions")
-      .select("id, plan, calls_used, calls_limit")
+      .select("id, calls_used, calls_limit")
       .eq("organization_id", organizationId)
       .single();
 
@@ -143,7 +235,7 @@ export async function incrementCallUsage(
     }
 
     const newUsage = (subscription.calls_used || 0) + 1;
-    const callsLimit = subscription.calls_limit || 100;
+    const callsLimit = subscription.calls_limit || 150;
 
     const { error: updateError } = await (supabase as any)
       .from("subscriptions")
@@ -169,24 +261,39 @@ export async function incrementCallUsage(
 
   return {
     success: true,
-    shouldUpgrade: checkShouldUpgrade(result.calls_used || 0, result.calls_limit || 100),
+    shouldUpgrade: checkShouldUpgrade(result.calls_used || 0, result.calls_limit || 150),
   };
 }
 
 /**
- * Check if organization can make more calls
+ * Check if organization can make more calls.
+ * Soft cap for active paid subscriptions: always allows calls (never block revenue).
+ * Hard cap for expired trials and terminal statuses: blocks calls.
+ * Fails open on DB errors: never block calls due to infrastructure issues.
  */
 export async function canMakeCall(organizationId: string): Promise<boolean> {
-  const usage = await getUsageInfo(organizationId);
-
-  // Unlimited plan
-  if (usage.callsLimit === -1) {
+  let sub: SubscriptionInfo | null;
+  try {
+    sub = await getSubscriptionInfo(organizationId);
+  } catch (err) {
+    console.error("canMakeCall: DB error, allowing call (fail-open):", { organizationId, err });
     return true;
   }
 
-  // Allow some buffer (10%) over limit during grace period
-  // In production, you'd want to handle this more gracefully
-  return usage.callsUsed < usage.callsLimit * 1.1;
+  if (!sub) return false;
+
+  // Only allow calls for active or valid trialing subscriptions
+  if (!["active", "trialing"].includes(sub.status)) {
+    return false;
+  }
+
+  // Expired trial — block calls to enforce conversion to paid
+  if (sub.status === "trialing" && sub.trialEnd && new Date() > sub.trialEnd) {
+    return false;
+  }
+
+  // Active paid subscriptions: soft cap — never block calls
+  return true;
 }
 
 /**
@@ -195,10 +302,15 @@ export async function canMakeCall(organizationId: string): Promise<boolean> {
 export async function resetMonthlyUsage(organizationId: string): Promise<void> {
   const supabase = createAdminClient();
 
-  await (supabase as any)
+  const { error } = await (supabase as any)
     .from("subscriptions")
     .update({ calls_used: 0 })
     .eq("organization_id", organizationId);
+
+  if (error) {
+    console.error("Failed to reset monthly usage:", { organizationId, error });
+    throw new Error(`Failed to reset monthly usage for org ${organizationId}: ${error.message}`);
+  }
 }
 
 /**
@@ -302,26 +414,27 @@ export async function handleSubscriptionCreated(
   const supabase = createAdminClient();
 
   const organizationId = subscription.metadata?.organizationId;
-  const plan = (subscription.metadata?.plan || "starter") as PlanType;
 
   if (!organizationId) {
     console.error("No organizationId in subscription metadata");
     return;
   }
 
+  const plan = resolvePlanType(subscription.metadata?.plan || "starter", true);
   const planConfig = PLANS[plan];
 
   // Upsert subscription record
-  await (supabase as any)
+  // Note: stripe_customer_id lives on the organizations table, not subscriptions
+  const { error: upsertError } = await (supabase as any)
     .from("subscriptions")
     .upsert({
       organization_id: organizationId,
       stripe_subscription_id: subscription.id,
-      stripe_customer_id: subscription.customer as string,
-      plan,
+      stripe_price_id: subscription.items.data[0]?.price.id ?? planConfig?.stripePriceId ?? "unknown",
+      plan_type: plan,
       status: subscription.status,
-      calls_limit: planConfig?.callsLimit ?? 100,
-      calls_used: 0,
+      calls_limit: planConfig?.callsLimit ?? 150,
+      calls_used: 0, // Reset — safe because this only fires on initial creation or trial-to-paid
       assistants_limit: planConfig?.assistants ?? 1,
       phone_numbers_limit: planConfig?.phoneNumbers ?? 1,
       current_period_start: new Date(subscription.current_period_start * 1000).toISOString(),
@@ -333,6 +446,16 @@ export async function handleSubscriptionCreated(
     }, {
       onConflict: "organization_id",
     });
+
+  if (upsertError) {
+    console.error("Failed to upsert subscription from Stripe webhook:", {
+      stripeSubscriptionId: subscription.id,
+      organizationId,
+      plan,
+      error: upsertError,
+    });
+    throw new Error(`Subscription upsert failed: ${upsertError.message}`);
+  }
 }
 
 /**
@@ -344,31 +467,59 @@ export async function handleSubscriptionUpdated(
   const supabase = createAdminClient();
 
   // Verify subscription exists
-  const { data: existingSub } = await (supabase as any)
+  const { data: existingSub, error: lookupError } = await (supabase as any)
     .from("subscriptions")
     .select("organization_id")
     .eq("stripe_subscription_id", subscription.id)
     .single();
+
+  if (lookupError && lookupError.code !== "PGRST116") {
+    console.error("DB error looking up subscription:", {
+      stripeSubscriptionId: subscription.id,
+      error: lookupError,
+    });
+    throw new Error(`Failed to look up subscription ${subscription.id}: ${lookupError.message}`);
+  }
 
   if (!existingSub) {
     console.error("Could not find subscription for Stripe ID:", subscription.id);
     return;
   }
 
-  // Update subscription record
-  // Note: We don't reset calls_used here - that's handled by invoice.payment_succeeded
+  // Resolve plan from Stripe metadata (handles upgrades/downgrades via Stripe portal)
+  const plan = subscription.metadata?.plan
+    ? resolvePlanType(subscription.metadata.plan, true)
+    : undefined;
+  const planConfig = plan ? PLANS[plan] : undefined;
+
+  // Build update payload — always sync status & period, optionally sync plan
+  const updatePayload: Record<string, any> = {
+    status: subscription.status,
+    current_period_start: new Date(subscription.current_period_start * 1000).toISOString(),
+    current_period_end: new Date(subscription.current_period_end * 1000).toISOString(),
+    cancel_at_period_end: subscription.cancel_at_period_end,
+    stripe_price_id: subscription.items.data[0]?.price.id,
+  };
+
+  if (plan && planConfig) {
+    updatePayload.plan_type = plan;
+    updatePayload.calls_limit = planConfig.callsLimit;
+    updatePayload.assistants_limit = planConfig.assistants;
+    updatePayload.phone_numbers_limit = planConfig.phoneNumbers;
+  }
+
+  // Note: We don't reset calls_used here — that's handled by invoice.payment_succeeded
   const { error } = await (supabase as any)
     .from("subscriptions")
-    .update({
-      status: subscription.status,
-      current_period_start: new Date(subscription.current_period_start * 1000).toISOString(),
-      current_period_end: new Date(subscription.current_period_end * 1000).toISOString(),
-      cancel_at_period_end: subscription.cancel_at_period_end,
-    })
+    .update(updatePayload)
     .eq("stripe_subscription_id", subscription.id);
 
   if (error) {
-    console.error("Failed to update subscription:", error);
+    console.error("Failed to update subscription:", {
+      stripeSubscriptionId: subscription.id,
+      error,
+    });
+    throw new Error(`Subscription update failed: ${error.message}`);
   }
 }
 
@@ -380,13 +531,21 @@ export async function handleSubscriptionCanceled(
 ): Promise<void> {
   const supabase = createAdminClient();
 
-  await (supabase as any)
+  const { error } = await (supabase as any)
     .from("subscriptions")
     .update({
       status: "canceled",
       cancel_at_period_end: true,
     })
     .eq("stripe_subscription_id", subscription.id);
+
+  if (error) {
+    console.error("Failed to cancel subscription:", {
+      stripeSubscriptionId: subscription.id,
+      error,
+    });
+    throw new Error(`Subscription cancellation failed: ${error.message}`);
+  }
 }
 
 /**
@@ -418,35 +577,33 @@ export async function getBillingPortalUrl(
 }
 
 /**
- * Get available plans for display
- */
-export function getAvailablePlans() {
-  return [
-    {
-      id: "starter" as PlanType,
-      ...PLANS.starter,
-    },
-    {
-      id: "professional" as PlanType,
-      ...PLANS.professional,
-    },
-    {
-      id: "growth" as PlanType,
-      ...PLANS.growth,
-    },
-  ];
-}
-
-/**
- * Check feature access based on plan
+ * Check feature access based on plan.
+ * Fails open on DB errors — a transient outage should not revoke paid features.
+ * Returns false only when we're confident the plan lacks the feature.
  */
 export async function hasFeatureAccess(
   organizationId: string,
-  feature: "calendarIntegration" | "callTransfer" | "advancedAnalytics" | "customVoice" | "humanEscalation"
+  feature: GatedFeature
 ): Promise<boolean> {
-  const subscription = await getSubscriptionInfo(organizationId);
+  let subscription: SubscriptionInfo | null;
+  try {
+    subscription = await getSubscriptionInfo(organizationId);
+  } catch (err) {
+    console.error("hasFeatureAccess: DB error, failing open:", { organizationId, feature, err });
+    return true;
+  }
 
   if (!subscription) {
+    return false;
+  }
+
+  // Only grant feature access for active or trialing subscriptions
+  if (!["active", "trialing"].includes(subscription.status)) {
+    return false;
+  }
+
+  // Block expired trials
+  if (subscription.status === "trialing" && subscription.trialEnd && new Date() > subscription.trialEnd) {
     return false;
   }
 

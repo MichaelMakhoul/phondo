@@ -915,6 +915,7 @@ export type Database = {
           status: Database["public"]["Enums"]["subscription_status"]
           stripe_price_id: string
           stripe_subscription_id: string
+          trial_end: string | null
           updated_at: string
         }
         Insert: {
@@ -933,6 +934,7 @@ export type Database = {
           status?: Database["public"]["Enums"]["subscription_status"]
           stripe_price_id: string
           stripe_subscription_id: string
+          trial_end?: string | null
           updated_at?: string
         }
         Update: {
@@ -951,6 +953,7 @@ export type Database = {
           status?: Database["public"]["Enums"]["subscription_status"]
           stripe_price_id?: string
           stripe_subscription_id?: string
+          trial_end?: string | null
           updated_at?: string
         }
         Relationships: [
@@ -1162,7 +1165,6 @@ export type Database = {
       member_role: "owner" | "admin" | "member"
       organization_type: "business" | "agency"
       plan_type:
-        | "free"
         | "starter"
         | "professional"
         | "business"
@@ -1325,7 +1327,6 @@ export const Constants = {
       member_role: ["owner", "admin", "member"],
       organization_type: ["business", "agency"],
       plan_type: [
-        "free",
         "starter",
         "professional",
         "business",

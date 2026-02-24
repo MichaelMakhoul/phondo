@@ -5,6 +5,7 @@ import crypto from "crypto";
 import { withRateLimit } from "@/lib/security/rate-limiter";
 import { safeEncrypt, safeDecrypt } from "@/lib/security/encryption";
 import { isUrlAllowed } from "@/lib/security/validation";
+import { hasFeatureAccess } from "@/lib/stripe/billing-service";
 import type { OrgMembership } from "@/lib/integrations/types";
 
 const createIntegrationSchema = z.object({
@@ -73,7 +74,12 @@ export async function GET(request: Request) {
       return { ...safe, webhook_url_display: displayUrl };
     });
 
-    return NextResponse.json(masked);
+    const canCreate = await hasFeatureAccess(
+      membership.organization_id,
+      "webhookIntegrations"
+    );
+
+    return NextResponse.json({ integrations: masked, canCreate });
   } catch (error) {
     console.error("Error listing integrations:", error);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
@@ -109,6 +115,13 @@ export async function POST(request: Request) {
 
     if (!["owner", "admin"].includes(membership.role || "")) {
       return NextResponse.json({ error: "Insufficient permissions" }, { status: 403 });
+    }
+
+    if (!(await hasFeatureAccess(membership.organization_id, "webhookIntegrations"))) {
+      return NextResponse.json(
+        { error: "Webhook integrations require a Professional or Business plan." },
+        { status: 403 }
+      );
     }
 
     const body = await request.json();

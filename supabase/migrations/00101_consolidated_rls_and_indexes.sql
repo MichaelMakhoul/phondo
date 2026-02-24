@@ -122,12 +122,11 @@ CREATE POLICY "Org members can update calls" ON calls
 -- ============================================
 CREATE POLICY "Users can view org subscription" ON subscriptions
   FOR SELECT USING (is_org_member(organization_id, auth.uid()));
-CREATE POLICY "Org members can create subscription" ON subscriptions
-  FOR INSERT WITH CHECK (is_org_member(organization_id, auth.uid()));
-CREATE POLICY "Org admins can update subscription" ON subscriptions
-  FOR UPDATE
-  USING (is_org_admin(organization_id, auth.uid()))
-  WITH CHECK (is_org_admin(organization_id, auth.uid()));
+-- No INSERT policy for authenticated users — subscription creation is handled
+-- server-side via service_role (API routes + Stripe webhooks).
+-- No UPDATE policy for authenticated users — all subscription mutations
+-- (plan changes, status updates, usage tracking) happen server-side via
+-- service_role. Allowing client-side updates would enable privilege escalation.
 
 -- ============================================
 -- USAGE RECORDS POLICIES

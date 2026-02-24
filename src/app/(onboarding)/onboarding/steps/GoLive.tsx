@@ -7,6 +7,8 @@ import { Badge } from "@/components/ui/badge";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Check, Phone, Rocket } from "lucide-react";
 import { getCountryConfig } from "@/lib/country-config";
+import { getDisplayPlans } from "@/lib/stripe/client";
+import { formatCurrency } from "@/lib/utils";
 
 interface GoLiveProps {
   data: {
@@ -17,52 +19,10 @@ interface GoLiveProps {
   onChange: (data: Partial<GoLiveProps["data"]>) => void;
 }
 
-const plans = [
-  {
-    id: "starter",
-    name: "Starter",
-    price: 49,
-    description: "Perfect for getting started",
-    features: [
-      "100 calls/month",
-      "1 AI assistant",
-      "1 phone number",
-      "Call transcripts",
-      "Email support",
-    ],
-    highlight: false,
-  },
-  {
-    id: "professional",
-    name: "Professional",
-    price: 99,
-    description: "For growing businesses",
-    features: [
-      "250 calls/month",
-      "3 AI assistants",
-      "2 phone numbers",
-      "Calendar integration",
-      "Call transfer",
-      "Priority support",
-    ],
-    highlight: true,
-  },
-  {
-    id: "growth",
-    name: "Growth",
-    price: 199,
-    description: "For high-volume needs",
-    features: [
-      "Unlimited calls",
-      "10 AI assistants",
-      "5 phone numbers",
-      "Human escalation",
-      "Advanced analytics",
-      "White-glove onboarding",
-    ],
-    highlight: false,
-  },
-];
+const plans = getDisplayPlans().map((plan) => ({
+  ...plan,
+  highlight: plan.highlighted,
+}));
 
 export function GoLive({ data, countryCode, onChange }: GoLiveProps) {
   const config = getCountryConfig(countryCode);
@@ -193,7 +153,7 @@ export function GoLive({ data, countryCode, onChange }: GoLiveProps) {
                   )}
                 </div>
                 <div className="text-2xl font-bold">
-                  ${plan.price}
+                  {formatCurrency(plan.price)}
                   <span className="text-sm font-normal text-muted-foreground">
                     /month
                   </span>
