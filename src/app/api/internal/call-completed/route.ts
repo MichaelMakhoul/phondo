@@ -40,6 +40,7 @@ interface CallCompletedPayload {
   callerName?: string;
   collectedData?: Record<string, unknown>;
   successEvaluation?: string;
+  unansweredQuestions?: string[];
 }
 
 /**
@@ -77,6 +78,7 @@ export async function POST(request: Request) {
     callerName,
     collectedData,
     successEvaluation,
+    unansweredQuestions,
   } = payload;
 
   if (!organizationId || typeof organizationId !== "string") {
@@ -151,6 +153,7 @@ export async function POST(request: Request) {
         ...existingMetadata,
         ended_reason: endedReason,
         ...(successEvaluation && { successEvaluation }),
+        ...(unansweredQuestions && unansweredQuestions.length > 0 && { unansweredQuestions }),
         spam_analysis: {
           reasons: spamAnalysis.reasons,
           confidence: spamAnalysis.confidence,
