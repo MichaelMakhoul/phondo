@@ -68,40 +68,23 @@ async function completeCallRecord(callId, {
   if (callerName) updatePayload.caller_name = callerName;
   if (collectedData) updatePayload.collected_data = collectedData;
 
-  const { error } = await supabase
-    .from("calls")
-    .update(updatePayload)
-    .eq("id", callId);
-
-  // Merge extra metadata into the call record (read-then-write, best effort)
+  // Merge metadata extras into a single atomic update.
+  // Initial metadata (set at insert time) is { voice_provider: "self_hosted" }.
+  // We include it here to avoid a read-then-write race with the call-completed
+  // webhook which also writes to metadata concurrently.
   const metadataExtras = {};
   if (successEvaluation) metadataExtras.successEvaluation = successEvaluation;
   if (recordingDisclosurePlayed) metadataExtras.recordingDisclosurePlayed = true;
   if (recordingDisclosureFailed) metadataExtras.recordingDisclosureFailed = true;
 
-  if (Object.keys(metadataExtras).length > 0 && !error) {
-    try {
-      const { data: existing, error: readErr } = await supabase
-        .from("calls")
-        .select("metadata")
-        .eq("id", callId)
-        .single();
-
-      if (readErr) {
-        console.error("[CallLogger] Failed to read metadata for merge:", { callId, error: readErr });
-      } else {
-        const { error: writeErr } = await supabase
-          .from("calls")
-          .update({ metadata: { ...(existing?.metadata || {}), ...metadataExtras } })
-          .eq("id", callId);
-        if (writeErr) {
-          console.error("[CallLogger] Failed to write merged metadata:", { callId, error: writeErr });
-        }
-      }
-    } catch (metaErr) {
-      console.error("[CallLogger] Unexpected error merging metadata:", { callId, error: metaErr });
-    }
+  if (Object.keys(metadataExtras).length > 0) {
+    updatePayload.metadata = { voice_provider: "self_hosted", ...metadataExtras };
   }
+
+  const { error } = await supabase
+    .from("calls")
+    .update(updatePayload)
+    .eq("id", callId);
 
   if (error) {
     throw new Error(`Failed to complete call record ${callId}: ${error.message}`);

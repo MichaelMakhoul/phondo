@@ -295,6 +295,12 @@ export function BusinessSettingsForm({
                 ))}
               </SelectContent>
             </Select>
+            {!businessState && (
+              <p className="text-xs text-amber-600 dark:text-amber-400">
+                Select your state to ensure correct recording disclosure settings.
+                Some states require all-party consent for call recording.
+              </p>
+            )}
             {businessState && TWO_PARTY_CONSENT_STATES.has(businessState) && (
               <p className="text-xs text-amber-600 dark:text-amber-400">
                 {US_STATES.find((s) => s.code === businessState)?.name} requires

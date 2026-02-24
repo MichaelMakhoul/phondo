@@ -23,10 +23,7 @@ export async function POST(request: Request) {
     const twilioAuthToken = process.env.TWILIO_AUTH_TOKEN;
     if (!twilioAuthToken) {
       console.error("[TwilioSMS] TWILIO_AUTH_TOKEN not configured — cannot validate inbound SMS");
-      return new Response("<Response></Response>", {
-        status: 500,
-        headers: { "Content-Type": "text/xml" },
-      });
+      return emptyTwiml(500);
     }
 
     const signature = request.headers.get("X-Twilio-Signature") || "";
@@ -68,10 +65,7 @@ export async function POST(request: Request) {
 
     if (phoneLookupErr) {
       console.error("[TwilioSMS] Phone number lookup failed:", { to, error: phoneLookupErr });
-      return new Response("<Response></Response>", {
-        status: 500,
-        headers: { "Content-Type": "text/xml" },
-      });
+      return emptyTwiml(500);
     }
 
     if (!phoneRecord) {
@@ -162,10 +156,7 @@ export async function POST(request: Request) {
     }
 
     // 6. Unrecognized message — ignore
-    return new Response("<Response></Response>", {
-      status: 200,
-      headers: { "Content-Type": "text/xml" },
-    });
+    return emptyTwiml();
   } catch (err) {
     console.error("[TwilioSMS] Unhandled error in SMS webhook:", err);
     return new Response("<Response></Response>", {
@@ -173,6 +164,14 @@ export async function POST(request: Request) {
       headers: { "Content-Type": "text/xml" },
     });
   }
+}
+
+/** Empty TwiML response (no message). */
+function emptyTwiml(status = 200): Response {
+  return new Response("<Response></Response>", {
+    status,
+    headers: { "Content-Type": "text/xml" },
+  });
 }
 
 /** Build a TwiML response with a message. */

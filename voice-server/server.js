@@ -403,6 +403,7 @@ wss.on("connection", (twilioWs) => {
           });
 
           // Play recording disclosure if required by jurisdiction
+          let disclosurePrefix = "";
           const needsDisclosure = requiresRecordingDisclosure(
             context.organization.country,
             context.organization.businessState,
@@ -417,15 +418,22 @@ wss.on("connection", (twilioWs) => {
               session.addMessage("assistant", disclosureText);
               console.log(`[Recording] Disclosure played (country=${context.organization.country}, state=${context.organization.businessState})`);
             } catch (err) {
+              // Fallback: prepend disclosure to greeting so it's always delivered.
+              // In two-party consent jurisdictions, proceeding without disclosure is illegal.
+              console.error("[Recording] Disclosure TTS failed — prepending to greeting as fallback:", err);
+              disclosurePrefix = disclosureText + " ";
               session.recordingDisclosureFailed = true;
-              console.error("[Recording] Failed to play disclosure — caller may not have been informed of recording. Continuing with greeting.", err);
             }
           }
 
-          // Send greeting
-          const greeting = getGreeting(context.assistant, context.organization.name);
+          // Send greeting (with disclosure prepended if standalone TTS failed)
+          const greeting = disclosurePrefix + getGreeting(context.assistant, context.organization.name);
           try {
             await sendTTS(session, twilioWs, greeting);
+            // Mark disclosure as played only after TTS succeeds (when greeting carries it)
+            if (disclosurePrefix) {
+              session.recordingDisclosurePlayed = true;
+            }
           } catch (err) {
             console.error("[TTS] Failed to send greeting — caller will hear silence until they speak:", err);
           }
@@ -917,6 +925,7 @@ testWss.on("connection", (ws, req) => {
       });
 
       // Play recording disclosure if required by jurisdiction (test calls too)
+      let disclosurePrefix = "";
       const needsDisclosure = requiresRecordingDisclosure(
         context.organization.country,
         context.organization.businessState,
@@ -938,13 +947,15 @@ testWss.on("connection", (ws, req) => {
           // Add to conversation history so LLM knows disclosure was played
           session.addMessage("assistant", disclosureText);
         } catch (err) {
+          // Fallback: prepend disclosure to greeting so it's always delivered
+          console.error("[TestRecording] Disclosure TTS failed — prepending to greeting as fallback:", err);
+          disclosurePrefix = disclosureText + " ";
           session.recordingDisclosureFailed = true;
-          console.error("[TestRecording] Failed to play disclosure — caller may not have been informed of recording. Continuing with greeting.", err);
         }
       }
 
-      // Send greeting
-      const greeting = getGreeting(context.assistant, context.organization.name);
+      // Send greeting (with disclosure prepended if standalone TTS failed)
+      const greeting = disclosurePrefix + getGreeting(context.assistant, context.organization.name);
       try {
         const audioBuffer = await synthesizeSpeech(DEEPGRAM_API_KEY, greeting, {
           voice: session.deepgramVoice,
@@ -961,6 +972,10 @@ testWss.on("connection", (ws, req) => {
           // Send audio as binary
           ws.send(audioBuffer);
           ws.send(JSON.stringify({ type: "speaking", speaking: false }));
+        }
+        // Mark disclosure as played only after TTS succeeds (when greeting carries it)
+        if (disclosurePrefix) {
+          session.recordingDisclosurePlayed = true;
         }
       } catch (err) {
         console.error("[TestTTS] Failed to send greeting:", err);
