@@ -1,22 +1,21 @@
 import { NextResponse } from "next/server";
 import crypto from "crypto";
+import { Ratelimit } from "@upstash/ratelimit";
+import { Redis } from "@upstash/redis";
 import { DEMO_ORG_ID, DEMO_INDUSTRIES, DEMO_RATE_LIMIT_ERROR, isDemoIndustry } from "@/lib/demo/config";
 
-// In-memory rate limit — best-effort only, not shared across serverless instances.
-// Acceptable for MVP; migrate to Redis/Upstash for production multi-instance.
-const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
-const RATE_LIMIT = 10;
-const RATE_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+// Upstash Redis rate limiter — shared across all serverless instances.
+// Falls back to in-memory if UPSTASH env vars are not set (local dev).
+const ratelimit = process.env.UPSTASH_REDIS_REST_URL
+  ? new Ratelimit({
+      redis: Redis.fromEnv(),
+      limiter: Ratelimit.slidingWindow(10, "1 h"),
+      prefix: "demo-call",
+    })
+  : null;
 
-// Cleanup stale entries every 10 minutes
-setInterval(() => {
-  const now = Date.now();
-  for (const [ip, entry] of rateLimitMap) {
-    if (now > entry.resetAt) {
-      rateLimitMap.delete(ip);
-    }
-  }
-}, 10 * 60 * 1000).unref?.();
+// In-memory fallback for local development (no Upstash configured)
+const localRateLimitMap = new Map<string, { count: number; resetAt: number }>();
 
 function getClientIp(request: Request): string {
   const forwarded = request.headers.get("x-forwarded-for");
@@ -30,19 +29,22 @@ function getClientIp(request: Request): string {
   return "unknown";
 }
 
-function checkRateLimit(ip: string): boolean {
-  const now = Date.now();
-  const entry = rateLimitMap.get(ip);
+async function checkRateLimit(ip: string): Promise<boolean> {
+  if (ratelimit) {
+    const { success } = await ratelimit.limit(ip);
+    return success;
+  }
 
+  // Fallback: in-memory for local dev
+  const now = Date.now();
+  const entry = localRateLimitMap.get(ip);
   if (!entry || now > entry.resetAt) {
-    rateLimitMap.set(ip, { count: 1, resetAt: now + RATE_WINDOW_MS });
+    localRateLimitMap.set(ip, { count: 1, resetAt: now + 3_600_000 });
     return true;
   }
-
-  if (entry.count >= RATE_LIMIT) {
+  if (entry.count >= 10) {
     return false;
   }
-
   entry.count++;
   return true;
 }
@@ -68,7 +70,7 @@ export async function POST(request: Request) {
 
     // Rate limit by IP
     const ip = getClientIp(request);
-    if (!checkRateLimit(ip)) {
+    if (!(await checkRateLimit(ip))) {
       return NextResponse.json(
         { error: `${DEMO_RATE_LIMIT_ERROR}. Please try again later.` },
         { status: 429 }
