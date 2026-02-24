@@ -13,9 +13,11 @@ export type VoiceTestStatus = "idle" | "connecting" | "active" | "ended" | "erro
 
 interface UseVoiceTestOptions {
   assistantId: string;
+  tokenUrl?: string;
+  tokenBody?: Record<string, unknown>;
 }
 
-export function useVoiceTest({ assistantId }: UseVoiceTestOptions) {
+export function useVoiceTest({ assistantId, tokenUrl, tokenBody }: UseVoiceTestOptions) {
   const [status, setStatus] = useState<VoiceTestStatus>("idle");
   const [isMuted, setIsMuted] = useState(false);
   const [transcript, setTranscript] = useState<TranscriptMessage[]>([]);
@@ -38,9 +40,6 @@ export function useVoiceTest({ assistantId }: UseVoiceTestOptions) {
   const isPlayingRef = useRef(false);
   const currentSourceRef = useRef<AudioBufferSourceNode | null>(null);
 
-  /**
-   * Play queued audio buffers sequentially.
-   */
   const playNextInQueue = useCallback(() => {
     const ctx = audioContextRef.current;
     if (!ctx || audioQueueRef.current.length === 0) {
@@ -63,9 +62,6 @@ export function useVoiceTest({ assistantId }: UseVoiceTestOptions) {
     source.start();
   }, []);
 
-  /**
-   * Enqueue an audio buffer for playback.
-   */
   const enqueueAudio = useCallback(
     (buffer: AudioBuffer) => {
       audioQueueRef.current.push(buffer);
@@ -76,9 +72,6 @@ export function useVoiceTest({ assistantId }: UseVoiceTestOptions) {
     [playNextInQueue]
   );
 
-  /**
-   * Start a test call.
-   */
   const start = useCallback(async () => {
     updateStatus("connecting");
     setError(null);
@@ -88,10 +81,10 @@ export function useVoiceTest({ assistantId }: UseVoiceTestOptions) {
 
     try {
       // 1. Get token from API
-      const tokenRes = await fetch("/api/v1/test-call/token", {
+      const tokenRes = await fetch(tokenUrl || "/api/v1/test-call/token", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ assistantId }),
+        body: JSON.stringify({ assistantId, ...tokenBody }),
       });
 
       if (!tokenRes.ok) {
@@ -100,6 +93,10 @@ export function useVoiceTest({ assistantId }: UseVoiceTestOptions) {
       }
 
       const { token, wsUrl } = await tokenRes.json();
+
+      if (!token || !wsUrl) {
+        throw new Error("Failed to initialize call — please try again");
+      }
 
       // 2. Get microphone access
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -133,10 +130,6 @@ export function useVoiceTest({ assistantId }: UseVoiceTestOptions) {
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(event.data as Uint8Array);
         }
-      };
-
-      ws.onopen = () => {
-        // Wait for "ready" message before setting active
       };
 
       ws.onmessage = (event: MessageEvent) => {
@@ -214,11 +207,8 @@ export function useVoiceTest({ assistantId }: UseVoiceTestOptions) {
       updateStatus("error");
       cleanup();
     }
-  }, [assistantId, enqueueAudio, updateStatus]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [assistantId, tokenUrl, tokenBody, enqueueAudio, updateStatus]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  /**
-   * Stop the test call.
-   */
   const stop = useCallback(() => {
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
@@ -228,9 +218,6 @@ export function useVoiceTest({ assistantId }: UseVoiceTestOptions) {
     cleanup();
   }, []);
 
-  /**
-   * Toggle microphone mute.
-   */
   const toggleMute = useCallback(() => {
     const stream = mediaStreamRef.current;
     if (stream) {
@@ -242,9 +229,6 @@ export function useVoiceTest({ assistantId }: UseVoiceTestOptions) {
     }
   }, []);
 
-  /**
-   * Reset to idle state for another test call.
-   */
   const reset = useCallback(() => {
     cleanup();
     setStatus("idle");

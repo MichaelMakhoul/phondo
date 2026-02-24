@@ -1,106 +1,191 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Phone, PhoneOff, Mic, MicOff, Volume2 } from "lucide-react";
+import {
+  Phone,
+  PhoneOff,
+  Mic,
+  MicOff,
+  Stethoscope,
+  Scale,
+  Wrench,
+  Loader2,
+  AlertCircle,
+} from "lucide-react";
+import { useVoiceTest, type TranscriptMessage } from "@/lib/voice-test/use-voice-test";
+import { DEMO_INDUSTRIES, type DemoIndustry } from "@/lib/demo/config";
 
-// Demo industries with sample configurations
-const DEMO_INDUSTRIES = [
+const INDUSTRY_CARDS: {
+  id: DemoIndustry;
+  label: string;
+  icon: typeof Stethoscope;
+  description: string;
+  suggestions: string[];
+}[] = [
   {
     id: "dental",
-    name: "Dental Practice",
-    description: "Experience how our AI handles dental appointment scheduling",
-    greeting: "Thank you for calling Smile Dental Care! This is your AI receptionist. How can I help you today?",
-    color: "bg-blue-500",
+    label: "Dental Practice",
+    icon: Stethoscope,
+    description: DEMO_INDUSTRIES.dental.description,
+    suggestions: [
+      "I'd like to schedule a cleaning",
+      "Do you accept my insurance?",
+      "My tooth has been hurting",
+    ],
   },
   {
     id: "legal",
-    name: "Law Firm",
-    description: "See how we handle legal intake calls professionally",
-    greeting: "Thank you for calling Johnson & Associates Law Firm. This is your virtual assistant. How may I direct your call?",
-    color: "bg-purple-500",
+    label: "Law Firm",
+    icon: Scale,
+    description: DEMO_INDUSTRIES.legal.description,
+    suggestions: [
+      "I need help with a personal injury case",
+      "How much does a consultation cost?",
+      "Can I speak with an attorney?",
+    ],
   },
   {
-    id: "home-services",
-    name: "Home Services",
-    description: "Watch our AI schedule plumbing and HVAC appointments",
-    greeting: "Thanks for calling Reliable Home Services! I'm the AI assistant. Are you calling about plumbing, HVAC, or electrical service?",
-    color: "bg-orange-500",
+    id: "home_services",
+    label: "Home Services",
+    icon: Wrench,
+    description: DEMO_INDUSTRIES.home_services.description,
+    suggestions: [
+      "My hot water system isn't working",
+      "Can someone come out today?",
+      "How much do you charge for a service call?",
+    ],
   },
 ];
 
-// Simulated conversation for demo (when Vapi isn't configured)
-const DEMO_CONVERSATIONS: Record<string, { role: "ai" | "user"; text: string }[]> = {
-  dental: [
-    { role: "ai", text: "Thank you for calling Smile Dental Care! This is your AI receptionist. How can I help you today?" },
-    { role: "user", text: "Hi, I'd like to schedule a cleaning appointment." },
-    { role: "ai", text: "I'd be happy to help you schedule a cleaning! Let me check our availability. Are you a new patient or have you visited us before?" },
-    { role: "user", text: "I'm a new patient." },
-    { role: "ai", text: "Welcome! For new patients, we have openings this Thursday at 10 AM, Friday at 2 PM, or next Monday at 9 AM. Which works best for you?" },
-    { role: "user", text: "Thursday at 10 works great." },
-    { role: "ai", text: "I've scheduled your new patient cleaning for Thursday at 10 AM. Can I get your name and phone number for our records?" },
-  ],
-  legal: [
-    { role: "ai", text: "Thank you for calling Johnson & Associates Law Firm. This is your virtual assistant. How may I direct your call?" },
-    { role: "user", text: "I need to speak with someone about a personal injury case." },
-    { role: "ai", text: "I understand you have a personal injury matter. I can help schedule a free consultation with one of our attorneys. Can you briefly tell me what happened?" },
-    { role: "user", text: "I was in a car accident last week." },
-    { role: "ai", text: "I'm sorry to hear about your accident. Our personal injury team handles car accident cases. I have availability for a consultation tomorrow at 11 AM or Thursday at 3 PM. Would either of those work?" },
-  ],
-  "home-services": [
-    { role: "ai", text: "Thanks for calling Reliable Home Services! I'm the AI assistant. Are you calling about plumbing, HVAC, or electrical service?" },
-    { role: "user", text: "My AC isn't working and it's really hot." },
-    { role: "ai", text: "I'm sorry to hear your AC is down! That's definitely uncomfortable. Let me get a technician out to you as soon as possible. Is this an emergency, or can it wait until tomorrow?" },
-    { role: "user", text: "It's pretty urgent, we have a baby at home." },
-    { role: "ai", text: "I completely understand - with a baby, you need that fixed right away. I'm checking our emergency schedule now. We can have a technician there within 2 hours. Can I get your address?" },
-  ],
-};
+function formatDuration(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+function supportsAudioWorklet(): boolean {
+  if (typeof window === "undefined") return false;
+  return !!(window.AudioContext && typeof AudioWorkletNode !== "undefined");
+}
+
+type DemoState = "select" | "calling" | "ended";
+
+function getHeroSubtitle(demoState: DemoState, selectedIndustry: DemoIndustry | null): string {
+  switch (demoState) {
+    case "select":
+      return "Pick an industry and have a real conversation with our AI. No signup needed \u2014 just your microphone.";
+    case "calling":
+      return `Speaking with ${selectedIndustry ? DEMO_INDUSTRIES[selectedIndustry].name : "AI"}`;
+    case "ended":
+      return "Call complete";
+  }
+}
 
 export default function DemoPage() {
-  const [selectedIndustry, setSelectedIndustry] = useState<string | null>(null);
-  const [isCallActive, setIsCallActive] = useState(false);
-  const [isMuted, setIsMuted] = useState(false);
-  const [conversationIndex, setConversationIndex] = useState(0);
-  const [displayedMessages, setDisplayedMessages] = useState<{ role: "ai" | "user"; text: string }[]>([]);
-  const [isTyping, setIsTyping] = useState(false);
+  const [demoState, setDemoState] = useState<DemoState>("select");
+  const [selectedIndustry, setSelectedIndustry] = useState<DemoIndustry | null>(null);
+  const [duration, setDuration] = useState(0);
+  const [audioSupported] = useState(() => supportsAudioWorklet());
+  const [rateLimited, setRateLimited] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const transcriptEndRef = useRef<HTMLDivElement>(null);
 
-  // Simulate conversation progression
+  const assistantId = selectedIndustry
+    ? DEMO_INDUSTRIES[selectedIndustry].assistantId
+    : "";
+
+  const tokenBody = useMemo(
+    () => (selectedIndustry ? { industry: selectedIndustry } : undefined),
+    [selectedIndustry]
+  );
+
+  const {
+    status,
+    isMuted,
+    transcript,
+    error,
+    isAssistantSpeaking,
+    start,
+    stop,
+    toggleMute,
+    reset,
+  } = useVoiceTest({
+    assistantId,
+    tokenUrl: "/api/v1/demo-call/token",
+    tokenBody,
+  });
+
+  // Duration timer
   useEffect(() => {
-    if (!isCallActive || !selectedIndustry) return;
+    if (status === "active") {
+      setDuration(0);
+      timerRef.current = setInterval(() => setDuration((d) => d + 1), 1000);
+    }
+    return () => {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+    };
+  }, [status]);
 
-    const conversation = DEMO_CONVERSATIONS[selectedIndustry];
-    if (!conversation || conversationIndex >= conversation.length) return;
+  // Transition to ended state when hook signals ended/error
+  useEffect(() => {
+    if (demoState === "calling" && (status === "ended" || status === "error")) {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+      setDemoState("ended");
+    }
+  }, [status, demoState]);
 
-    const message = conversation[conversationIndex];
-    const delay = message.role === "ai" ? 1500 : 2500; // AI responds faster
+  // Check for rate limit error
+  useEffect(() => {
+    if (error?.includes("Too many demo calls")) {
+      setRateLimited(true);
+    }
+  }, [error]);
 
-    setIsTyping(true);
-    const timer = setTimeout(() => {
-      setDisplayedMessages((prev) => [...prev, message]);
-      setConversationIndex((prev) => prev + 1);
-      setIsTyping(false);
-    }, delay);
+  // Auto-scroll transcript
+  useEffect(() => {
+    transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [transcript]);
 
-    return () => clearTimeout(timer);
-  }, [isCallActive, selectedIndustry, conversationIndex]);
+  const handleStartDemo = useCallback(
+    (industry: DemoIndustry) => {
+      setSelectedIndustry(industry);
+      setDemoState("calling");
+      setDuration(0);
+      setRateLimited(false);
+      // start() is called after state updates in an effect below
+    },
+    []
+  );
 
-  const startDemo = useCallback((industryId: string) => {
-    setSelectedIndustry(industryId);
-    setIsCallActive(true);
-    setConversationIndex(0);
-    setDisplayedMessages([]);
-    setIsMuted(false);
-  }, []);
+  // Trigger start when entering calling state with a selected industry
+  const hasStartedRef = useRef(false);
+  useEffect(() => {
+    if (demoState === "calling" && selectedIndustry && !hasStartedRef.current) {
+      hasStartedRef.current = true;
+      start().catch((err) => {
+        console.error("[DemoPage] Unexpected error starting demo call:", err);
+      });
+    }
+  }, [demoState, selectedIndustry, start]);
 
-  const endDemo = useCallback(() => {
-    setIsCallActive(false);
+  const handleTryAnother = useCallback(() => {
+    reset();
+    hasStartedRef.current = false;
     setSelectedIndustry(null);
-    setConversationIndex(0);
-    setDisplayedMessages([]);
-  }, []);
+    setDemoState("select");
+    setDuration(0);
+    setRateLimited(false);
+  }, [reset]);
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-gray-50 to-white">
@@ -125,81 +210,138 @@ export default function DemoPage() {
         {/* Hero Section */}
         <div className="text-center mb-12">
           <Badge className="mb-4" variant="secondary">
-            Interactive Demo
+            Live Demo
           </Badge>
           <h1 className="text-4xl md:text-5xl font-bold text-gray-900 mb-4">
-            Experience AI Reception
+            Talk to Our AI Receptionist
           </h1>
           <p className="text-xl text-gray-600 max-w-2xl mx-auto">
-            See how our AI receptionist handles calls for different industries.
-            Select a demo below to watch a simulated conversation.
+            {getHeroSubtitle(demoState, selectedIndustry)}
           </p>
         </div>
 
-        {/* Demo Selection or Active Call */}
-        {!isCallActive ? (
-          <div className="grid md:grid-cols-3 gap-6 max-w-5xl mx-auto">
-            {DEMO_INDUSTRIES.map((industry) => (
-              <Card
-                key={industry.id}
-                className="cursor-pointer hover:shadow-lg transition-shadow"
-                onClick={() => startDemo(industry.id)}
-              >
-                <CardHeader>
-                  <div className={`w-12 h-12 rounded-full ${industry.color} flex items-center justify-center mb-4`}>
-                    <Phone className="w-6 h-6 text-white" />
-                  </div>
-                  <CardTitle>{industry.name}</CardTitle>
-                  <CardDescription>{industry.description}</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <Button className="w-full">
-                    <Phone className="w-4 h-4 mr-2" />
-                    Try Demo Call
-                  </Button>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-        ) : (
+        {/* State: Select Industry */}
+        {demoState === "select" && (
+          <>
+            {!audioSupported && (
+              <div className="max-w-2xl mx-auto mb-8 p-4 bg-amber-50 border border-amber-200 rounded-lg flex items-start gap-3">
+                <AlertCircle className="w-5 h-5 text-amber-600 mt-0.5 shrink-0" />
+                <div>
+                  <p className="font-medium text-amber-800">Browser not supported</p>
+                  <p className="text-sm text-amber-700">
+                    Live demo calls require a modern browser with AudioWorklet support.
+                    Please use the latest version of Chrome, Edge, or Firefox.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            <div className="grid md:grid-cols-3 gap-6 max-w-5xl mx-auto">
+              {INDUSTRY_CARDS.map((industry) => {
+                const Icon = industry.icon;
+                return (
+                  <Card
+                    key={industry.id}
+                    className="hover:shadow-lg transition-shadow"
+                  >
+                    <CardHeader>
+                      <div className="w-12 h-12 rounded-full bg-gray-900 flex items-center justify-center mb-4">
+                        <Icon className="w-6 h-6 text-white" />
+                      </div>
+                      <CardTitle>{industry.label}</CardTitle>
+                      <CardDescription>{industry.description}</CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      <Button
+                        className="w-full"
+                        onClick={() => handleStartDemo(industry.id)}
+                        disabled={!audioSupported}
+                      >
+                        <Phone className="w-4 h-4 mr-2" />
+                        Try It Now
+                      </Button>
+                      <p className="text-xs text-gray-400 text-center mt-2">
+                        Uses your browser microphone
+                      </p>
+                    </CardContent>
+                  </Card>
+                );
+              })}
+            </div>
+
+            <p className="text-center text-sm text-gray-500 mt-6">
+              Our AI receptionist can be customized for any industry and business.
+            </p>
+          </>
+        )}
+
+        {/* State: Calling */}
+        {demoState === "calling" && (
           <div className="max-w-2xl mx-auto">
-            {/* Active Call UI */}
             <Card className="mb-6">
               <CardHeader className="text-center border-b">
                 <div className="flex items-center justify-center gap-2 mb-2">
-                  <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse" />
-                  <span className="text-green-600 font-medium">Call in Progress</span>
+                  {status === "connecting" ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin text-blue-500" />
+                      <span className="text-blue-600 font-medium">Connecting...</span>
+                    </>
+                  ) : (
+                    <>
+                      <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse" />
+                      <span className="text-green-600 font-medium">
+                        Call Active &mdash; {formatDuration(duration)}
+                      </span>
+                    </>
+                  )}
                 </div>
                 <CardTitle>
-                  {DEMO_INDUSTRIES.find((i) => i.id === selectedIndustry)?.name} Demo
+                  {selectedIndustry ? DEMO_INDUSTRIES[selectedIndustry].name : "Demo"}
                 </CardTitle>
                 <CardDescription>
-                  Watch how our AI handles this call
+                  Speak naturally — the AI will respond in real time
                 </CardDescription>
               </CardHeader>
               <CardContent className="p-6">
-                {/* Conversation Display */}
-                <div className="space-y-4 min-h-[300px] max-h-[400px] overflow-y-auto mb-6">
-                  {displayedMessages.map((message, index) => (
+                {/* Transcript */}
+                <div className="space-y-3 min-h-[280px] max-h-[380px] overflow-y-auto mb-6 p-2">
+                  {transcript.length === 0 && status === "active" && (
+                    <div className="text-center mt-12">
+                      <p className="text-gray-400 mb-4">
+                        Listening... try saying something like:
+                      </p>
+                      <div className="flex flex-wrap justify-center gap-2">
+                        {INDUSTRY_CARDS.find((c) => c.id === selectedIndustry)?.suggestions.map((s) => (
+                          <span
+                            key={s}
+                            className="text-xs bg-gray-100 text-gray-600 rounded-full px-3 py-1"
+                          >
+                            &ldquo;{s}&rdquo;
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {transcript.map((msg: TranscriptMessage, i: number) => (
                     <div
-                      key={index}
-                      className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}
+                      key={i}
+                      className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
                     >
                       <div
                         className={`max-w-[80%] rounded-lg px-4 py-2 ${
-                          message.role === "user"
+                          msg.role === "user"
                             ? "bg-blue-500 text-white"
                             : "bg-gray-100 text-gray-900"
                         }`}
                       >
                         <div className="text-xs mb-1 opacity-70">
-                          {message.role === "user" ? "Caller" : "AI Receptionist"}
+                          {msg.role === "user" ? "You" : "AI Receptionist"}
                         </div>
-                        <p>{message.text}</p>
+                        <p className="text-sm">{msg.content}</p>
                       </div>
                     </div>
                   ))}
-                  {isTyping && (
+                  {isAssistantSpeaking && (
                     <div className="flex justify-start">
                       <div className="bg-gray-100 rounded-lg px-4 py-2">
                         <div className="flex space-x-1">
@@ -210,6 +352,7 @@ export default function DemoPage() {
                       </div>
                     </div>
                   )}
+                  <div ref={transcriptEndRef} />
                 </div>
 
                 {/* Call Controls */}
@@ -218,7 +361,8 @@ export default function DemoPage() {
                     variant="outline"
                     size="icon"
                     className="rounded-full w-12 h-12"
-                    onClick={() => setIsMuted(!isMuted)}
+                    onClick={toggleMute}
+                    disabled={status !== "active"}
                   >
                     {isMuted ? (
                       <MicOff className="w-5 h-5 text-red-500" />
@@ -230,37 +374,98 @@ export default function DemoPage() {
                     variant="destructive"
                     size="icon"
                     className="rounded-full w-16 h-16"
-                    onClick={endDemo}
+                    onClick={stop}
+                    disabled={status === "connecting"}
                   >
                     <PhoneOff className="w-6 h-6" />
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    className="rounded-full w-12 h-12"
-                  >
-                    <Volume2 className="w-5 h-5" />
                   </Button>
                 </div>
               </CardContent>
             </Card>
+          </div>
+        )}
 
-            {/* Call Info */}
-            <div className="text-center">
-              <p className="text-gray-500 mb-4">
-                This is a simulated demo. Sign up for a free trial to test with your own business.
-              </p>
-              <div className="flex justify-center gap-4">
-                <Button variant="outline" onClick={endDemo}>
-                  Try Another Demo
-                </Button>
-                <Link href="/signup">
-                  <Button>
-                    Start Free Trial
+        {/* State: Ended */}
+        {demoState === "ended" && (
+          <div className="max-w-2xl mx-auto text-center">
+            {rateLimited && (
+              <Card className="mb-8">
+                <CardContent className="p-8">
+                  <AlertCircle className="w-12 h-12 text-amber-500 mx-auto mb-4" />
+                  <h2 className="text-xl font-semibold mb-2">
+                    Rate limit reached
+                  </h2>
+                  <p className="text-gray-600 mb-6">
+                    You&apos;ve used all your demo calls for this hour. Sign up for a free trial to make unlimited test calls.
+                  </p>
+                  <Link href="/signup">
+                    <Button>Start Free Trial</Button>
+                  </Link>
+                </CardContent>
+              </Card>
+            )}
+
+            {error && !rateLimited && (
+              <Card className="mb-8">
+                <CardContent className="p-8">
+                  <AlertCircle className="w-12 h-12 text-amber-500 mx-auto mb-4" />
+                  <h2 className="text-xl font-semibold mb-2">
+                    Demo temporarily unavailable
+                  </h2>
+                  <p className="text-gray-600 mb-6">
+                    {error}
+                  </p>
+                  <Button variant="outline" onClick={handleTryAnother}>
+                    Try Again
                   </Button>
-                </Link>
-              </div>
-            </div>
+                </CardContent>
+              </Card>
+            )}
+
+            {!error && !rateLimited && (
+              <Card className="mb-8">
+                <CardContent className="p-8">
+                  <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                    <Phone className="w-8 h-8 text-green-600" />
+                  </div>
+                  <h2 className="text-2xl font-bold mb-2">Call Complete</h2>
+                  <p className="text-gray-500 text-sm mb-4">
+                    Duration: {formatDuration(duration)}
+                  </p>
+                  <p className="text-lg text-gray-700 mb-8 max-w-md mx-auto">
+                    Imagine that running 24/7 for your business — never missing a call, always professional.
+                  </p>
+                  <div className="flex flex-col sm:flex-row justify-center gap-3">
+                    <Button variant="outline" onClick={handleTryAnother}>
+                      Try Another Industry
+                    </Button>
+                    <Link href="/signup">
+                      <Button className="w-full sm:w-auto">Start Free Trial</Button>
+                    </Link>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
+            {transcript.length > 0 && !error && (
+              <Card className="text-left mb-8">
+                <CardHeader>
+                  <CardTitle className="text-base">Conversation Transcript</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="space-y-2 max-h-[300px] overflow-y-auto">
+                    {transcript.map((msg: TranscriptMessage, i: number) => (
+                      <div key={i} className="text-sm">
+                        <span className={`font-medium ${msg.role === "user" ? "text-blue-600" : "text-gray-700"}`}>
+                          {msg.role === "user" ? "You" : "AI"}:
+                        </span>{" "}
+                        <span className="text-gray-600">{msg.content}</span>
+                      </div>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+            )}
           </div>
         )}
 
@@ -276,9 +481,9 @@ export default function DemoPage() {
               <p className="text-gray-600">Never miss a call, even after hours or during busy periods</p>
             </div>
             <div>
-              <div className="text-4xl mb-4">60%</div>
-              <h3 className="font-semibold mb-2">Calls Saved</h3>
-              <p className="text-gray-600">Small businesses miss 60% of calls - we catch them all</p>
+              <div className="text-4xl mb-4">62%</div>
+              <h3 className="font-semibold mb-2">Calls Recovered</h3>
+              <p className="text-gray-600">Small businesses miss 62% of calls — each one costs ~$450 in lost revenue</p>
             </div>
             <div>
               <div className="text-4xl mb-4">5 min</div>
