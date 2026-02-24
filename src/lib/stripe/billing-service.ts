@@ -608,17 +608,22 @@ export async function checkResourceLimit(
   const supabase = createAdminClient();
   const table = resource === "assistants" ? "assistants" : "phone_numbers";
 
-  const { count, error: countError } = await (supabase as any)
-    .from(table)
-    .select("id", { count: "exact", head: true })
-    .eq("organization_id", organizationId);
+  let currentCount: number;
+  try {
+    const { count, error: countError } = await (supabase as any)
+      .from(table)
+      .select("id", { count: "exact", head: true })
+      .eq("organization_id", organizationId);
 
-  if (countError) {
-    console.error("checkResourceLimit: count query failed, failing open:", { organizationId, resource, countError });
+    if (countError) {
+      console.error("checkResourceLimit: count query failed, failing open:", { organizationId, resource, countError });
+      return failOpen;
+    }
+    currentCount = count ?? 0;
+  } catch (err) {
+    console.error("checkResourceLimit: count query threw, failing open:", { organizationId, resource, err });
     return failOpen;
   }
-
-  const currentCount = count ?? 0;
 
   // No subscription — bootstrapping during onboarding. Allow first resource only.
   if (!subscription) {
@@ -641,6 +646,10 @@ export async function checkResourceLimit(
   }
 
   const planConfig = PLANS[subscription.plan];
+  if (!planConfig) {
+    console.error("checkResourceLimit: unknown plan, failing open:", { plan: subscription.plan, organizationId });
+    return failOpen;
+  }
   const limit = resource === "assistants"
     ? planConfig.assistants
     : planConfig.phoneNumbers;
