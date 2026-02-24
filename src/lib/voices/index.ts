@@ -33,6 +33,7 @@ export interface CatalogVoice {
   description: string;
   previewText: string;
   deepgramVoice: string; // Deepgram Aura voice model name for self-hosted TTS
+  recommended?: boolean; // Show "Recommended" badge in voice picker
 }
 
 // ---------------------------------------------------------------------------
@@ -50,6 +51,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     description: "Warm, friendly Australian female",
     previewText: "Hi there! Thanks for getting in touch. What can I do for you?",
     deepgramVoice: "aura-asteria-en",
+    recommended: true,
   },
   {
     id: "ZQe5CZNOzWyzPSCn5a3c",
@@ -60,6 +62,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     description: "Professional Australian male",
     previewText: "G'day! Thanks for calling. How can I help you today?",
     deepgramVoice: "aura-arcas-en",
+    recommended: true,
   },
   {
     id: "IKne3meq5aSn9XLyUdCD",
@@ -70,6 +73,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     description: "Friendly, laid-back Australian male",
     previewText: "Hey! Good to hear from you. How can I help?",
     deepgramVoice: "aura-orion-en",
+    recommended: true,
   },
 
   // --- American voices ---

@@ -66,7 +66,7 @@ export function VoiceCard({ voice, selected, onSelect }: VoiceCardProps) {
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <span className="text-sm font-medium">{voice.name}</span>
-          {voice.accent === "australian" && (
+          {voice.recommended && (
             <Badge variant="default" className="text-[10px] px-1.5 py-0">
               Recommended
             </Badge>
