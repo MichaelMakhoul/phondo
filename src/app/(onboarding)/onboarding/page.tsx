@@ -12,7 +12,7 @@ import { AssistantSetup } from "./steps/AssistantSetup";
 import { TestCall } from "./steps/TestCall";
 import { GoLive } from "./steps/GoLive";
 import { Success } from "./steps/Success";
-import { ArrowLeft, ArrowRight, Loader2, CheckCircle2 } from "lucide-react";
+import { ArrowLeft, ArrowRight, Loader2, CheckCircle2, Clock } from "lucide-react";
 import { getCountryConfig } from "@/lib/country-config";
 import { buildCustomInstructionsFromBusinessInfo } from "@/lib/scraper/build-custom-instructions";
 
@@ -67,10 +67,10 @@ const initialData: OnboardingData = {
 };
 
 const steps = [
-  { id: 1, name: "Business Info", description: "Tell us about your business" },
-  { id: 2, name: "AI Setup", description: "Configure your AI receptionist" },
-  { id: 3, name: "Test Call", description: "Try out your AI" },
-  { id: 4, name: "Go Live", description: "Choose your plan and phone number" },
+  { id: 1, name: "Business Info", description: "Tell us about your business", minutes: 2 },
+  { id: 2, name: "AI Setup", description: "Configure your AI receptionist", minutes: 2 },
+  { id: 3, name: "Test Call", description: "Try out your AI", minutes: 1 },
+  { id: 4, name: "Go Live", description: "Choose your plan and phone number", minutes: 1 },
 ];
 
 export default function OnboardingPage() {
@@ -391,6 +391,9 @@ export default function OnboardingPage() {
   };
 
   const progress = (currentStep / 4) * 100;
+  const minutesRemaining = steps
+    .filter((s) => s.id >= currentStep)
+    .reduce((sum, s) => sum + s.minutes, 0);
 
   // Step 5: Celebration screen (after successful completion)
   if (currentStep === 5) {
@@ -420,9 +423,15 @@ export default function OnboardingPage() {
         <div className="mx-auto max-w-3xl">
           <div className="mb-4 flex items-center justify-between">
             <h1 className="text-xl font-semibold">Set Up Your AI Receptionist</h1>
-            <span className="text-sm text-muted-foreground">
-              Step {currentStep} of 4
-            </span>
+            <div className="flex items-center gap-3">
+              <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                <Clock className="h-3 w-3" />
+                ~{minutesRemaining} min left
+              </span>
+              <span className="text-sm text-muted-foreground">
+                Step {currentStep} of 4
+              </span>
+            </div>
           </div>
           <Progress value={progress} className="h-2" />
           <div className="mt-3 flex justify-between">
@@ -465,6 +474,8 @@ export default function OnboardingPage() {
               <CardTitle>{steps[currentStep - 1].name}</CardTitle>
               <CardDescription>
                 {steps[currentStep - 1].description}
+                {" — "}
+                <span className="text-primary">~{steps[currentStep - 1].minutes} min</span>
               </CardDescription>
             </CardHeader>
             <CardContent>
