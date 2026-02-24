@@ -209,7 +209,7 @@ async function loadTestCallContext(assistantId, organizationId) {
   }
 
   // 3. Load knowledge base
-  const { data: kbEntries } = await supabase
+  const { data: kbEntries, error: kbError } = await supabase
     .from("knowledge_bases")
     .select("id, title, source_type, content, is_active")
     .eq("organization_id", organizationId)
@@ -217,14 +217,22 @@ async function loadTestCallContext(assistantId, organizationId) {
     .eq("is_active", true)
     .order("created_at", { ascending: true });
 
+  if (kbError) {
+    console.error("[TestCallContext] Knowledge base lookup error:", { organizationId, error: kbError });
+  }
+
   // 4. Check calendar integration
   let calendarEnabled = false;
-  const { data: calIntegration } = await supabase
+  const { data: calIntegration, error: calError } = await supabase
     .from("calendar_integrations")
     .select("id")
     .eq("organization_id", organizationId)
     .eq("is_active", true)
     .limit(1);
+
+  if (calError) {
+    console.error("[TestCallContext] Calendar integration lookup error:", { organizationId, error: calError });
+  }
 
   const hasCalendarIntegration = (calIntegration && calIntegration.length > 0);
   const hasBusinessHours = !!(org.business_hours && Object.keys(org.business_hours).length > 0);
@@ -232,13 +240,17 @@ async function loadTestCallContext(assistantId, organizationId) {
 
   // 5. Load transfer rules
   let transferRules = [];
-  const { data: rules } = await supabase
+  const { data: rules, error: rulesError } = await supabase
     .from("transfer_rules")
     .select("id, name, trigger_keywords, trigger_intent, transfer_to_phone, transfer_to_name, announcement_message, priority")
     .eq("organization_id", organizationId)
     .eq("assistant_id", assistantId)
     .eq("is_active", true)
     .order("priority", { ascending: false });
+
+  if (rulesError) {
+    console.error("[TestCallContext] Transfer rules lookup error:", { organizationId, error: rulesError });
+  }
 
   if (rules && rules.length > 0) {
     transferRules = rules.map((r) => ({
@@ -266,7 +278,11 @@ async function loadTestCallContext(assistantId, organizationId) {
             .map((p) => `Q: ${p.question}\nA: ${p.answer}`)
             .join("\n\n");
           sections.push(`## ${heading}\n${qaParts}`);
-        } catch {
+        } catch (parseErr) {
+          console.warn("[TestCallContext] FAQ entry has malformed JSON — using raw content:", {
+            entryId: entry.id,
+            error: parseErr.message,
+          });
           sections.push(`## ${heading}\n${entry.content}`);
         }
       } else {

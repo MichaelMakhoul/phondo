@@ -283,6 +283,13 @@ export function CallDetail({ call }: { call: Call }) {
                     </li>
                   ))}
                 </ul>
+                <Link
+                  href="/settings/knowledge"
+                  className="mt-4 inline-flex items-center gap-1 text-sm font-medium text-amber-700 hover:text-amber-900 dark:text-amber-300 dark:hover:text-amber-100"
+                >
+                  Go to Knowledge Base
+                  <ArrowLeft className="h-3 w-3 rotate-180" />
+                </Link>
               </CardContent>
             </Card>
           )}

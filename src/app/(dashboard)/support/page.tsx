@@ -2,7 +2,8 @@ import { Metadata } from "next";
 import { redirect } from "next/navigation";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
-import { hasFeatureAccess } from "@/lib/stripe/billing-service";
+import { getSubscriptionInfo } from "@/lib/stripe/billing-service";
+import { PLANS } from "@/lib/stripe/client";
 import {
   Card,
   CardContent,
@@ -65,7 +66,18 @@ export default async function SupportPage() {
   if (!membership) redirect("/onboarding");
 
   const organizationId = membership.organization_id as string;
-  const hasPriority = await hasFeatureAccess(organizationId, "prioritySupport");
+  // Check priority support directly via plan config (fail closed — null sub = no priority).
+  // Using getSubscriptionInfo instead of hasFeatureAccess which fails open on DB errors.
+  let hasPriority = false;
+  try {
+    const sub = await getSubscriptionInfo(organizationId);
+    if (sub && ["active", "trialing"].includes(sub.status)) {
+      const planConfig = PLANS[sub.plan] as Record<string, unknown>;
+      hasPriority = !!planConfig?.prioritySupport;
+    }
+  } catch (err) {
+    console.error("[Support] Failed to check priority support — showing standard:", { organizationId, error: err });
+  }
 
   const supportEmail = "support@holarecep.com";
   const prioritySubject = encodeURIComponent("[PRIORITY] Support Request");

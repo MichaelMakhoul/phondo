@@ -140,12 +140,12 @@ export default function LandingPage() {
                 <ArrowRight className="h-4 w-4" />
               </Button>
             </Link>
-            <Link href="/demo">
+            <a href="#calculator">
               <Button variant="outline" size="lg" className="gap-2">
                 <Phone className="h-4 w-4" />
-                Try a Live Demo
+                Calculate Your ROI
               </Button>
-            </Link>
+            </a>
           </div>
           <p className="mt-4 text-sm text-muted-foreground">
             No credit card required. Cancel anytime.
@@ -450,16 +450,16 @@ export default function LandingPage() {
                     <ArrowRight className="h-4 w-4" />
                   </Button>
                 </Link>
-                <Link href="/demo">
+                <a href="#calculator">
                   <Button
                     size="lg"
                     variant="outline"
                     className="gap-2 border-primary-foreground/20 text-primary-foreground hover:bg-primary-foreground/10"
                   >
                     <Phone className="h-4 w-4" />
-                    Try Live Demo
+                    Calculate Your ROI
                   </Button>
-                </Link>
+                </a>
               </div>
             </div>
           </div>
@@ -488,9 +488,9 @@ export default function LandingPage() {
                   </Link>
                 </li>
                 <li>
-                  <Link href="/demo" className="hover:text-foreground">
-                    Demo
-                  </Link>
+                  <a href="#calculator" className="hover:text-foreground">
+                    ROI Calculator
+                  </a>
                 </li>
               </ul>
             </div>
