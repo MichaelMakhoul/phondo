@@ -34,6 +34,8 @@ export function Success({ businessName, planName }: SuccessProps) {
   const router = useRouter();
 
   useEffect(() => {
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+
     // Fire confetti from both sides
     const end = Date.now() + 1500;
     const frame = () => {
