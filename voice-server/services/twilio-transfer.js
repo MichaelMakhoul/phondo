@@ -7,6 +7,31 @@ const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
 const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
 
 /**
+ * POST to a Twilio REST API endpoint with Basic auth and form-encoded body.
+ * Returns the Response object, or null if credentials are missing.
+ *
+ * @param {string} path - Twilio API path after /2010-04-01/Accounts/{SID}/
+ * @param {Record<string, string>} params - Form parameters
+ * @returns {Promise<Response|null>}
+ */
+async function twilioPost(path, params) {
+  if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN) return null;
+
+  const url = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/${path}`;
+  const auth = Buffer.from(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`).toString("base64");
+
+  return fetch(url, {
+    method: "POST",
+    signal: AbortSignal.timeout(10_000),
+    headers: {
+      Authorization: `Basic ${auth}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: new URLSearchParams(params).toString(),
+  });
+}
+
+/**
  * Transfer an active Twilio call to another phone number.
  * Updates the call with TwiML that announces the transfer and dials the target.
  *
@@ -31,35 +56,17 @@ async function transferCall(callSid, transferTo, announcement) {
     };
   }
 
-  // Build TwiML to announce and dial
-  const safeAnnouncement = (announcement || "Please hold while I transfer your call.")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");
-
+  // Announcement is already played via Deepgram TTS before this call —
+  // only Dial here to avoid a duplicate robotic Twilio voice.
   const safeNumber = transferTo.replace(/[^+\d]/g, "");
 
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say>${safeAnnouncement}</Say>
   <Dial>${safeNumber}</Dial>
 </Response>`;
 
   try {
-    const url = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Calls/${callSid}.json`;
-    const auth = Buffer.from(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`).toString("base64");
-
-    const res = await fetch(url, {
-      method: "POST",
-      signal: AbortSignal.timeout(10_000),
-      headers: {
-        Authorization: `Basic ${auth}`,
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: new URLSearchParams({ Twiml: twiml }).toString(),
-    });
+    const res = await twilioPost(`Calls/${callSid}.json`, { Twiml: twiml });
 
     if (!res.ok) {
       const text = (await res.text()).slice(0, 500);
@@ -73,7 +80,7 @@ async function transferCall(callSid, transferTo, announcement) {
     console.log(`[Transfer] Call ${callSid} transferred to ${safeNumber}`);
     return {
       success: true,
-      message: safeAnnouncement,
+      message: announcement || "Transferring your call now.",
     };
   } catch (err) {
     console.error("[Transfer] Failed to transfer call:", err.message);
@@ -84,4 +91,38 @@ async function transferCall(callSid, transferTo, announcement) {
   }
 }
 
-module.exports = { transferCall };
+/**
+ * Send an SMS to the transfer target with caller context.
+ * Fire-and-forget — callers should catch errors.
+ *
+ * @param {string} toPhone - E.164 phone number of the transfer recipient
+ * @param {string} fromPhone - E.164 phone number of the org (Twilio number)
+ * @param {string} body - SMS message body
+ * @returns {Promise<{ success: boolean }>}
+ */
+async function sendTransferSMS(toPhone, fromPhone, body) {
+  const safeTo = toPhone.replace(/[^+\d]/g, "");
+  const safeFrom = fromPhone.replace(/[^+\d]/g, "");
+
+  const res = await twilioPost("Messages.json", {
+    To: safeTo,
+    From: safeFrom,
+    Body: body.slice(0, 1600), // Twilio SMS limit
+  });
+
+  if (!res) {
+    console.warn("[TransferSMS] Missing Twilio credentials — skipping SMS");
+    return { success: false };
+  }
+
+  if (!res.ok) {
+    const text = (await res.text()).slice(0, 500);
+    console.warn(`[TransferSMS] Twilio API error ${res.status}:`, text);
+    return { success: false };
+  }
+
+  console.log(`[TransferSMS] Sent context SMS to ${toPhone}`);
+  return { success: true };
+}
+
+module.exports = { transferCall, sendTransferSMS };

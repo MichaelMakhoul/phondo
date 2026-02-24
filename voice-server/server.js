@@ -238,6 +238,7 @@ wss.on("connection", (twilioWs) => {
           successEvaluation: analysis?.successEvaluation || null,
           recordingDisclosurePlayed: s.recordingDisclosurePlayed || false,
           recordingDisclosureFailed: s.recordingDisclosureFailed || false,
+          transferAttempt: s.transferAttempt || null,
         });
       } catch (err) {
         console.error("[Cleanup] Failed to complete call record:", err);
@@ -339,6 +340,11 @@ wss.on("connection", (twilioWs) => {
           session.transferRules = context.transferRules || [];
           session.deepgramVoice = getDeepgramVoice(context.assistant.voiceId);
           session.holdPreset = getHoldPreset(context.organization.industry);
+          session.organization = {
+            timezone: context.organization.timezone,
+            businessHours: context.organization.businessHours,
+          };
+          session.orgPhoneNumber = calledNumber;
 
           // Build system prompt (guided or legacy)
           const systemPrompt = buildSystemPrompt(
@@ -498,6 +504,38 @@ wss.on("connection", (twilioWs) => {
 });
 
 /**
+ * Build LLM options with tools based on session capabilities.
+ * @param {CallSession} session
+ * @param {{ includeTransfer?: boolean }} options
+ * @returns {object}
+ */
+function buildLLMOptions(session, { includeTransfer = false } = {}) {
+  const tools = [];
+  if (session.calendarEnabled) tools.push(...calendarToolDefinitions);
+  if (includeTransfer && session.transferRules?.length > 0) tools.push(transferToolDefinition);
+  return tools.length > 0 ? { tools } : {};
+}
+
+/**
+ * Parse tool call arguments safely — returns empty object on parse failure.
+ * @param {object} toolCall - OpenAI tool call object
+ * @param {string} label - Log prefix for error messages
+ * @returns {object}
+ */
+function parseToolArgs(toolCall, label) {
+  const raw = toolCall.function.arguments;
+  if (typeof raw !== "string") return raw;
+  try {
+    return JSON.parse(raw);
+  } catch (err) {
+    console.error(`[${label}] Failed to parse arguments for ${toolCall.function.name}:`, err);
+    return {};
+  }
+}
+
+const MAX_TOOL_ITERATIONS = 3;
+
+/**
  * Handle final user transcript: stream LLM response sentence-by-sentence,
  * synthesizing and sending TTS for each sentence as it arrives.
  */
@@ -517,14 +555,7 @@ async function handleUserSpeech(session, twilioWs, transcript) {
   try {
     session.addMessage("user", transcript);
 
-    // Build LLM options — include tools based on capabilities
-    const llmOptions = {};
-    const tools = [];
-    if (session.calendarEnabled) tools.push(...calendarToolDefinitions);
-    if (session.transferRules && session.transferRules.length > 0) tools.push(transferToolDefinition);
-    if (tools.length > 0) llmOptions.tools = tools;
-
-    const MAX_TOOL_ITERATIONS = 3;
+    const llmOptions = buildLLMOptions(session, { includeTransfer: true });
     let reply = null;
 
     for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
@@ -571,25 +602,25 @@ async function handleUserSpeech(session, twilioWs, transcript) {
         // Execute each tool call and add results
         for (const toolCall of toolCalls) {
           const fnName = toolCall.function.name;
-          let fnArgs;
-          try {
-            fnArgs = typeof toolCall.function.arguments === "string"
-              ? JSON.parse(toolCall.function.arguments)
-              : toolCall.function.arguments;
-          } catch (parseErr) {
-            console.error(`[ToolCall] Failed to parse arguments for ${fnName}:`, parseErr);
-            fnArgs = {};
-          }
+          const fnArgs = parseToolArgs(toolCall, "ToolCall");
 
           const toolResult = await executeToolCall(fnName, fnArgs, {
             organizationId: session.organizationId,
             assistantId: session.assistantId,
             callSid: session.callSid,
             transferRules: session.transferRules,
+            organization: session.organization,
+            callerPhone: session.callerPhone,
+            orgPhoneNumber: session.orgPhoneNumber,
           });
 
           const resultMessage = typeof toolResult === "string" ? toolResult : toolResult.message;
           console.log(`[ToolCall] ${fnName} result: "${resultMessage.slice(0, 100)}..."`);
+
+          // Track transfer attempt on session for call metadata
+          if (toolResult.transferAttempt) {
+            session.transferAttempt = toolResult.transferAttempt;
+          }
 
           // Handle transfer action — send announcement and close
           if (toolResult.action === "transfer" && toolResult.transferTo) {
@@ -876,6 +907,11 @@ testWss.on("connection", (ws, req) => {
       session.transferRules = context.transferRules || [];
       session.deepgramVoice = getDeepgramVoice(context.assistant.voiceId);
       session.holdPreset = getHoldPreset(context.organization.industry);
+      session.organization = {
+        timezone: context.organization.timezone,
+        businessHours: context.organization.businessHours,
+      };
+      session.orgPhoneNumber = null; // no real phone number in test mode
 
       // Build system prompt
       const systemPrompt = buildSystemPrompt(
@@ -1051,12 +1087,7 @@ async function handleTestUserSpeech(session, ws, transcript) {
   try {
     session.addMessage("user", transcript);
 
-    const llmOptions = {};
-    const tools = [];
-    if (session.calendarEnabled) tools.push(...calendarToolDefinitions);
-    if (tools.length > 0) llmOptions.tools = tools;
-
-    const MAX_TOOL_ITERATIONS = 3;
+    const llmOptions = buildLLMOptions(session);
     let reply = null;
 
     for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
@@ -1111,15 +1142,7 @@ async function handleTestUserSpeech(session, ws, transcript) {
 
         for (const toolCall of result.toolCalls) {
           const fnName = toolCall.function.name;
-          let fnArgs;
-          try {
-            fnArgs = typeof toolCall.function.arguments === "string"
-              ? JSON.parse(toolCall.function.arguments)
-              : toolCall.function.arguments;
-          } catch (parseErr) {
-            console.error(`[TestToolCall] Failed to parse arguments for ${fnName}:`, parseErr);
-            fnArgs = {};
-          }
+          const fnArgs = parseToolArgs(toolCall, "TestToolCall");
 
           const toolResult = await executeToolCall(fnName, fnArgs, {
             organizationId: session.organizationId,

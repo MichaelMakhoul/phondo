@@ -53,6 +53,7 @@ async function completeCallRecord(callId, {
   successEvaluation,
   recordingDisclosurePlayed,
   recordingDisclosureFailed,
+  transferAttempt,
 }) {
   const supabase = getSupabase();
 
@@ -63,7 +64,6 @@ async function completeCallRecord(callId, {
     transcript: transcript || null,
   };
 
-  // Add analysis fields if available
   if (summary) updatePayload.summary = summary;
   if (callerName) updatePayload.caller_name = callerName;
   if (collectedData) updatePayload.collected_data = collectedData;
@@ -72,10 +72,12 @@ async function completeCallRecord(callId, {
   // Initial metadata (set at insert time) is { voice_provider: "self_hosted" }.
   // We include it here to avoid a read-then-write race with the call-completed
   // webhook which also writes to metadata concurrently.
-  const metadataExtras = {};
-  if (successEvaluation) metadataExtras.successEvaluation = successEvaluation;
-  if (recordingDisclosurePlayed) metadataExtras.recordingDisclosurePlayed = true;
-  if (recordingDisclosureFailed) metadataExtras.recordingDisclosureFailed = true;
+  const metadataExtras = {
+    ...(successEvaluation && { successEvaluation }),
+    ...(recordingDisclosurePlayed && { recordingDisclosurePlayed: true }),
+    ...(recordingDisclosureFailed && { recordingDisclosureFailed: true }),
+    ...(transferAttempt && { transferAttempt }),
+  };
 
   if (Object.keys(metadataExtras).length > 0) {
     updatePayload.metadata = { voice_provider: "self_hosted", ...metadataExtras };
