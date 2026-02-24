@@ -50,7 +50,7 @@ async function loadCallContext(calledNumber) {
   // 3. Load organization
   const { data: org, error: orgError } = await supabase
     .from("organizations")
-    .select("id, name, industry, timezone, business_hours, default_appointment_duration")
+    .select("id, name, industry, timezone, business_hours, default_appointment_duration, country, business_state, recording_consent_mode")
     .eq("id", phone.organization_id)
     .single();
 
@@ -167,6 +167,9 @@ async function loadCallContext(calledNumber) {
       timezone: org.timezone || undefined,
       businessHours: org.business_hours || undefined,
       defaultAppointmentDuration: org.default_appointment_duration ?? undefined,
+      country: org.country || "US",
+      businessState: org.business_state || null,
+      recordingConsentMode: org.recording_consent_mode || "auto",
     },
     knowledgeBase,
     calendarEnabled,
@@ -196,7 +199,7 @@ async function loadTestCallContext(assistantId, organizationId) {
   // 2. Load organization
   const { data: org, error: orgError } = await supabase
     .from("organizations")
-    .select("id, name, industry, timezone, business_hours, default_appointment_duration")
+    .select("id, name, industry, timezone, business_hours, default_appointment_duration, country, business_state, recording_consent_mode")
     .eq("id", organizationId)
     .single();
 
@@ -290,6 +293,9 @@ async function loadTestCallContext(assistantId, organizationId) {
       timezone: org.timezone || undefined,
       businessHours: org.business_hours || undefined,
       defaultAppointmentDuration: org.default_appointment_duration ?? undefined,
+      country: org.country || "US",
+      businessState: org.business_state || null,
+      recordingConsentMode: org.recording_consent_mode || "auto",
     },
     knowledgeBase,
     calendarEnabled,
