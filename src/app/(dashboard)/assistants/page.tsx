@@ -3,13 +3,14 @@ import { createClient } from "@/lib/supabase/server";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Plus, Bot, MoreVertical, Phone } from "lucide-react";
+import { Plus, Bot, MoreVertical, Phone, ArrowUpRight } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { checkResourceLimit } from "@/lib/stripe/billing-service";
 
 interface Assistant {
   id: string;
@@ -42,22 +43,50 @@ export default async function AssistantsPage() {
     .eq("organization_id", orgId)
     .order("created_at", { ascending: false }) as { data: Assistant[] | null } : { data: null };
 
+  // Check resource limit for assistants
+  const limitInfo = orgId ? await checkResourceLimit(orgId, "assistants") : null;
+  const atLimit = limitInfo ? !limitInfo.allowed : false;
+  const showLimitBadge = limitInfo && limitInfo.limit > 0;
+
   return (
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">AI Assistants</h1>
-          <p className="text-muted-foreground">
-            Create and manage your AI receptionists
-          </p>
+        <div className="flex items-center gap-3">
+          <div>
+            <h1 className="text-2xl font-bold">AI Assistants</h1>
+            <p className="text-muted-foreground">
+              Create and manage your AI receptionists
+            </p>
+          </div>
+          {showLimitBadge && (
+            <Badge variant={atLimit ? "destructive" : "secondary"} className="ml-2">
+              {limitInfo.currentCount} of {limitInfo.limit}
+            </Badge>
+          )}
         </div>
-        <Link href="/assistants/new">
-          <Button>
-            <Plus className="mr-2 h-4 w-4" />
-            New Assistant
-          </Button>
-        </Link>
+        <div className="flex items-center gap-2">
+          {atLimit && (
+            <Link href="/billing">
+              <Button variant="outline" size="sm">
+                Upgrade <ArrowUpRight className="ml-1 h-3 w-3" />
+              </Button>
+            </Link>
+          )}
+          {atLimit ? (
+            <Button disabled>
+              <Plus className="mr-2 h-4 w-4" />
+              New Assistant
+            </Button>
+          ) : (
+            <Link href="/assistants/new">
+              <Button>
+                <Plus className="mr-2 h-4 w-4" />
+                New Assistant
+              </Button>
+            </Link>
+          )}
+        </div>
       </div>
 
       {/* Assistants Grid */}

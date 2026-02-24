@@ -124,6 +124,13 @@ export function BuyPhoneNumberDialog({ assistants, countryCode = "US", open: con
         const error = await response.json();
         const errorMessage = error.error || "Failed to purchase phone number";
 
+        // Plan limit reached — show specific upgrade message
+        if (error.code === "RESOURCE_LIMIT_REACHED") {
+          setBuyError(errorMessage);
+          setStep("search");
+          return;
+        }
+
         // Check if it's an area code availability error
         if (errorMessage.includes("area code") || errorMessage.includes("not available")) {
           setBuyError(errorMessage);

@@ -20,9 +20,10 @@ interface Assistant {
 interface PhoneNumberActionsProps {
   assistants: Assistant[];
   countryCode?: string;
+  disabled?: boolean;
 }
 
-export function PhoneNumberActions({ assistants, countryCode = "US" }: PhoneNumberActionsProps) {
+export function PhoneNumberActions({ assistants, countryCode = "US", disabled = false }: PhoneNumberActionsProps) {
   const [buyOpen, setBuyOpen] = useState(false);
   const [forwardOpen, setForwardOpen] = useState(false);
 
@@ -30,7 +31,7 @@ export function PhoneNumberActions({ assistants, countryCode = "US" }: PhoneNumb
     <>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button>
+          <Button disabled={disabled}>
             <Plus className="mr-2 h-4 w-4" />
             Add Number
             <ChevronDown className="ml-2 h-4 w-4" />

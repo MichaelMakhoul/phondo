@@ -9,6 +9,8 @@ import { getOrgScheduleContext } from "@/lib/supabase/get-org-schedule-context";
 import { getAggregatedKnowledgeBase } from "@/lib/knowledge-base";
 import { z } from "zod";
 import { resolveVoiceId, DEFAULT_VOICE_ID } from "@/lib/voices";
+import { checkResourceLimit } from "@/lib/stripe/billing-service";
+import { PLANS } from "@/lib/stripe/client";
 
 interface Membership {
   organization_id: string;
@@ -103,6 +105,18 @@ export async function POST(request: Request) {
 
     if (!membership) {
       return NextResponse.json({ error: "No organization found" }, { status: 404 });
+    }
+
+    // Enforce plan assistant limit
+    const limitCheck = await checkResourceLimit(membership.organization_id, "assistants");
+    if (!limitCheck.allowed) {
+      const planName = limitCheck.plan ? PLANS[limitCheck.plan].name : "current";
+      return NextResponse.json({
+        error: `Your ${planName} plan allows up to ${limitCheck.limit} assistant${limitCheck.limit === 1 ? "" : "s"}. Upgrade your plan to add more.`,
+        code: "RESOURCE_LIMIT_REACHED",
+        limit: limitCheck.limit,
+        current: limitCheck.currentCount,
+      }, { status: 403 });
     }
 
     const body = await request.json();

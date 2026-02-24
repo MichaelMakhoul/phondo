@@ -76,6 +76,15 @@ export type WarningLevel = "none" | "approaching" | "at_limit" | "over_limit";
 
 export type GatedFeature = "smsNotifications" | "webhookIntegrations" | "advancedAnalytics" | "prioritySupport";
 
+export type LimitedResource = "assistants" | "phoneNumbers";
+
+export interface ResourceLimitResult {
+  allowed: boolean;
+  currentCount: number;
+  limit: number; // -1 = unlimited
+  plan: PlanType | null;
+}
+
 export interface UsageInfo {
   callsUsed: number;
   callsLimit: number;
@@ -574,6 +583,79 @@ export async function getBillingPortalUrl(
   });
 
   return session.url;
+}
+
+/**
+ * Check if an organization can create more of a limited resource (assistants or phone numbers).
+ * Fails open on DB errors — a transient outage should not block resource creation.
+ * During onboarding (no subscription yet), allows exactly 1 resource.
+ */
+export async function checkResourceLimit(
+  organizationId: string,
+  resource: LimitedResource
+): Promise<ResourceLimitResult> {
+  const failOpen: ResourceLimitResult = { allowed: true, currentCount: 0, limit: -1, plan: null };
+
+  let subscription: SubscriptionInfo | null;
+  try {
+    subscription = await getSubscriptionInfo(organizationId);
+  } catch (err) {
+    console.error("checkResourceLimit: DB error, failing open:", { organizationId, resource, err });
+    return failOpen;
+  }
+
+  // Count existing resources
+  const supabase = createAdminClient();
+  const table = resource === "assistants" ? "assistants" : "phone_numbers";
+
+  const { count, error: countError } = await (supabase as any)
+    .from(table)
+    .select("id", { count: "exact", head: true })
+    .eq("organization_id", organizationId);
+
+  if (countError) {
+    console.error("checkResourceLimit: count query failed, failing open:", { organizationId, resource, countError });
+    return failOpen;
+  }
+
+  const currentCount = count ?? 0;
+
+  // No subscription — bootstrapping during onboarding. Allow first resource only.
+  if (!subscription) {
+    return {
+      allowed: currentCount === 0,
+      currentCount,
+      limit: 1,
+      plan: null,
+    };
+  }
+
+  // Only enforce for active or trialing subscriptions
+  if (!["active", "trialing"].includes(subscription.status)) {
+    return { allowed: false, currentCount, limit: 0, plan: subscription.plan };
+  }
+
+  // Block expired trials
+  if (subscription.status === "trialing" && subscription.trialEnd && new Date() > subscription.trialEnd) {
+    return { allowed: false, currentCount, limit: 0, plan: subscription.plan };
+  }
+
+  const planConfig = PLANS[subscription.plan];
+  const limit = resource === "assistants"
+    ? planConfig.assistants
+    : planConfig.phoneNumbers;
+
+  // -1 = unlimited (agency plans)
+  if (limit === -1) {
+    return { allowed: true, currentCount, limit: -1, plan: subscription.plan };
+  }
+
+  return {
+    allowed: currentCount < limit,
+    currentCount,
+    limit,
+    plan: subscription.plan,
+  };
 }
 
 /**

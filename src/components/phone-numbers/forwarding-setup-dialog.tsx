@@ -224,6 +224,11 @@ export function ForwardingSetupDialog({
 
       if (!response.ok) {
         const error = await response.json().catch(() => ({}));
+        if (error.code === "RESOURCE_LIMIT_REACHED") {
+          setProvisionError(`${error.error} Visit your billing page to upgrade.`);
+          setStep("assign_assistant");
+          return;
+        }
         throw new Error(error.error || `Failed to provision forwarding number (HTTP ${response.status})`);
       }
 
