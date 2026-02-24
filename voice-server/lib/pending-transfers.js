@@ -12,7 +12,7 @@ const INTERNAL_API_URL = process.env.INTERNAL_API_URL;
 const INTERNAL_API_SECRET = process.env.INTERNAL_API_SECRET;
 
 const pendingTransfers = new Map();
-const TRANSFER_TTL_MS = 90_000; // 25s ring timeout + generous buffer
+const TRANSFER_TTL_MS = 180_000; // 25s ring per destination × up to 5 destinations + buffer
 
 /**
  * Save session state while the transfer dial is in progress.

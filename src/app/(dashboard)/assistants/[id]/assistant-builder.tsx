@@ -78,6 +78,8 @@ interface TransferRule {
   announcement_message: string | null;
   priority: number;
   is_active: boolean;
+  destinations: { phone: string; name: string }[];
+  require_confirmation: boolean;
 }
 
 interface AssistantBuilderProps {
@@ -124,6 +126,7 @@ export function AssistantBuilder({
   const [newTriggerIntent, setNewTriggerIntent] = useState("");
   const [newAnnouncement, setNewAnnouncement] = useState("");
   const [newPriority, setNewPriority] = useState(0);
+  const [newRequireConfirmation, setNewRequireConfirmation] = useState(false);
 
   // Inline edit state
   const [editingRuleId, setEditingRuleId] = useState<string | null>(null);
@@ -135,7 +138,19 @@ export function AssistantBuilder({
     trigger_intent: string;
     announcement_message: string;
     priority: number;
-  }>({ name: "", transfer_to_phone: "", transfer_to_name: "", trigger_keywords: "", trigger_intent: "", announcement_message: "", priority: 0 });
+    destinations: { phone: string; name: string }[];
+    require_confirmation: boolean;
+  }>({
+    name: "",
+    transfer_to_phone: "",
+    transfer_to_name: "",
+    trigger_keywords: "",
+    trigger_intent: "",
+    announcement_message: "",
+    priority: 0,
+    destinations: [],
+    require_confirmation: false,
+  });
   const [isEditSaving, setIsEditSaving] = useState(false);
 
   // Prompt builder state
@@ -239,6 +254,7 @@ export function AssistantBuilder({
           triggerIntent: newTriggerIntent || undefined,
           announcementMessage: newAnnouncement || undefined,
           priority: newPriority || undefined,
+          requireConfirmation: newRequireConfirmation,
         }),
       });
 
@@ -254,6 +270,7 @@ export function AssistantBuilder({
       setNewTriggerIntent("");
       setNewAnnouncement("");
       setNewPriority(0);
+      setNewRequireConfirmation(false);
 
       toast({
         title: "Transfer Rule Added",
@@ -304,6 +321,8 @@ export function AssistantBuilder({
       trigger_intent: rule.trigger_intent || "",
       announcement_message: rule.announcement_message || "",
       priority: rule.priority,
+      destinations: rule.destinations || [],
+      require_confirmation: rule.require_confirmation ?? false,
     });
   };
 
@@ -327,6 +346,8 @@ export function AssistantBuilder({
           triggerIntent: editForm.trigger_intent || null,
           announcementMessage: editForm.announcement_message || null,
           priority: editForm.priority,
+          destinations: editForm.destinations.filter(d => d.phone.trim()),
+          requireConfirmation: editForm.require_confirmation,
         }),
       });
 
@@ -346,6 +367,8 @@ export function AssistantBuilder({
                 trigger_intent: editForm.trigger_intent || null,
                 announcement_message: editForm.announcement_message || null,
                 priority: editForm.priority,
+                destinations: editForm.destinations.filter(d => d.phone.trim()),
+                require_confirmation: editForm.require_confirmation,
               }
             : r
         )
@@ -666,6 +689,13 @@ export function AssistantBuilder({
                         </p>
                       </div>
                     </div>
+                    <div className="flex items-center gap-2">
+                      <Switch
+                        checked={newRequireConfirmation}
+                        onCheckedChange={setNewRequireConfirmation}
+                      />
+                      <Label className="text-sm">Ask caller to confirm before transferring</Label>
+                    </div>
                   </div>
 
                   {transferRules.length > 0 && (
@@ -727,6 +757,71 @@ export function AssistantBuilder({
                                 className="w-24"
                               />
                             </div>
+                            <div className="space-y-1">
+                              <div className="flex items-center gap-2">
+                                <Switch
+                                  checked={editForm.require_confirmation}
+                                  onCheckedChange={(v) => setEditForm({ ...editForm, require_confirmation: v })}
+                                />
+                                <Label className="text-sm">Ask caller to confirm before transferring</Label>
+                              </div>
+                              <p className="text-xs text-muted-foreground ml-11">
+                                The AI asks once before dialing. Fallback numbers are tried automatically without re-asking.
+                              </p>
+                            </div>
+                            <div className="space-y-2">
+                              <Label className="text-sm">Fallback Destinations</Label>
+                              <p className="text-xs text-muted-foreground">
+                                If the primary number doesn&apos;t answer, these numbers are tried in order.
+                                After all numbers are tried, the caller returns to the AI, which will offer to take a message or schedule a callback.
+                              </p>
+                              {editForm.destinations.map((dest, i) => (
+                                <div key={i} className="flex gap-2">
+                                  <Input
+                                    placeholder="Phone"
+                                    value={dest.phone}
+                                    onChange={(e) => {
+                                      const updated = [...editForm.destinations];
+                                      updated[i] = { ...updated[i], phone: e.target.value };
+                                      setEditForm({ ...editForm, destinations: updated });
+                                    }}
+                                    className="flex-1"
+                                  />
+                                  <Input
+                                    placeholder="Name"
+                                    value={dest.name}
+                                    onChange={(e) => {
+                                      const updated = [...editForm.destinations];
+                                      updated[i] = { ...updated[i], name: e.target.value };
+                                      setEditForm({ ...editForm, destinations: updated });
+                                    }}
+                                    className="flex-1"
+                                  />
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    onClick={() => {
+                                      const updated = editForm.destinations.filter((_, idx) => idx !== i);
+                                      setEditForm({ ...editForm, destinations: updated });
+                                    }}
+                                  >
+                                    <Trash2 className="h-4 w-4" />
+                                  </Button>
+                                </div>
+                              ))}
+                              {editForm.destinations.length < 5 && (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => setEditForm({
+                                    ...editForm,
+                                    destinations: [...editForm.destinations, { phone: "", name: "" }],
+                                  })}
+                                >
+                                  <Plus className="h-4 w-4 mr-1" /> Add Fallback
+                                </Button>
+                              )}
+                            </div>
                             <div className="flex justify-end gap-2">
                               <Button
                                 variant="ghost"
@@ -769,6 +864,20 @@ export function AssistantBuilder({
                                       {kw}
                                     </Badge>
                                   ))}
+                                </div>
+                              )}
+                              {(rule.require_confirmation || (rule.destinations && rule.destinations.length > 0)) && (
+                                <div className="flex flex-wrap gap-1 mt-1">
+                                  {rule.destinations && rule.destinations.length > 0 && (
+                                    <Badge variant="outline" className="text-xs">
+                                      +{rule.destinations.length} fallback{rule.destinations.length > 1 ? "s" : ""}
+                                    </Badge>
+                                  )}
+                                  {rule.require_confirmation && (
+                                    <Badge variant="outline" className="text-xs">
+                                      Confirmation required
+                                    </Badge>
+                                  )}
                                 </div>
                               )}
                             </div>

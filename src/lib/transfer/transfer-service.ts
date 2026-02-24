@@ -22,6 +22,8 @@ export interface TransferRule {
   announcementMessage: string | null;
   priority: number;
   isActive: boolean;
+  destinations: { phone: string; name: string }[];
+  requireConfirmation: boolean;
 }
 
 export interface TransferRequest {
@@ -118,6 +120,8 @@ export async function getTransferRules(
     announcementMessage: rule.announcement_message,
     priority: rule.priority,
     isActive: rule.is_active,
+    destinations: rule.destinations || [],
+    requireConfirmation: rule.require_confirmation ?? false,
   }));
 }
 
@@ -290,6 +294,8 @@ export async function createTransferRule(
     transferToName?: string;
     announcementMessage?: string;
     priority?: number;
+    destinations?: { phone: string; name: string }[];
+    requireConfirmation?: boolean;
   }
 ): Promise<TransferRule | null> {
   const supabase = createAdminClient();
@@ -307,6 +313,8 @@ export async function createTransferRule(
       announcement_message: data.announcementMessage || null,
       priority: data.priority || 0,
       is_active: true,
+      destinations: data.destinations || [],
+      require_confirmation: data.requireConfirmation ?? false,
     })
     .select()
     .single();
@@ -332,6 +340,8 @@ export async function createTransferRule(
     announcementMessage: rule.announcement_message,
     priority: rule.priority,
     isActive: rule.is_active,
+    destinations: rule.destinations || [],
+    requireConfirmation: rule.require_confirmation ?? false,
   };
 }
 
@@ -350,6 +360,8 @@ export async function updateTransferRule(
     announcementMessage: string | null;
     priority: number;
     isActive: boolean;
+    destinations: { phone: string; name: string }[];
+    requireConfirmation: boolean;
   }>
 ): Promise<boolean> {
   const supabase = createAdminClient();
@@ -368,6 +380,10 @@ export async function updateTransferRule(
     updateData.announcement_message = data.announcementMessage;
   if (data.priority !== undefined) updateData.priority = data.priority;
   if (data.isActive !== undefined) updateData.is_active = data.isActive;
+  if (data.destinations !== undefined)
+    updateData.destinations = data.destinations;
+  if (data.requireConfirmation !== undefined)
+    updateData.require_confirmation = data.requireConfirmation;
 
   const { error } = await (supabase as any)
     .from("transfer_rules")

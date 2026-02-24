@@ -150,6 +150,8 @@ export async function POST(request: NextRequest) {
       transferToName,
       announcementMessage,
       priority,
+      destinations,
+      requireConfirmation,
     } = body;
 
     // Validate required fields
@@ -182,6 +184,30 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Validate destinations array if provided
+    if (destinations !== undefined) {
+      if (!Array.isArray(destinations)) {
+        return NextResponse.json(
+          { error: "Destinations must be an array" },
+          { status: 400 }
+        );
+      }
+      if (destinations.length > 5) {
+        return NextResponse.json(
+          { error: "Maximum 5 fallback destinations allowed" },
+          { status: 400 }
+        );
+      }
+      for (const dest of destinations) {
+        if (!dest || typeof dest !== "object" || typeof dest.phone !== "string" || !dest.phone.trim()) {
+          return NextResponse.json(
+            { error: "Each destination must have a valid phone number" },
+            { status: 400 }
+          );
+        }
+      }
+    }
+
     // Verify assistant belongs to organization
     const { data: assistant } = await (supabase as any)
       .from("assistants")
@@ -206,6 +232,8 @@ export async function POST(request: NextRequest) {
       transferToName,
       announcementMessage,
       priority,
+      destinations,
+      requireConfirmation,
     });
 
     return NextResponse.json({

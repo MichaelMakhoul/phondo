@@ -96,7 +96,7 @@ async function loadCallContext(calledNumber) {
   let transferRules = [];
   const { data: rules, error: rulesError } = await supabase
     .from("transfer_rules")
-    .select("id, name, trigger_keywords, trigger_intent, transfer_to_phone, transfer_to_name, announcement_message, priority")
+    .select("id, name, trigger_keywords, trigger_intent, transfer_to_phone, transfer_to_name, announcement_message, priority, destinations, require_confirmation")
     .eq("organization_id", phone.organization_id)
     .eq("assistant_id", phone.assistant_id)
     .eq("is_active", true)
@@ -115,6 +115,8 @@ async function loadCallContext(calledNumber) {
       transferToName: r.transfer_to_name,
       announcementMessage: r.announcement_message,
       priority: r.priority,
+      destinations: r.destinations || [],
+      requireConfirmation: r.require_confirmation ?? false,
     }));
   }
 
@@ -242,7 +244,7 @@ async function loadTestCallContext(assistantId, organizationId) {
   let transferRules = [];
   const { data: rules, error: rulesError } = await supabase
     .from("transfer_rules")
-    .select("id, name, trigger_keywords, trigger_intent, transfer_to_phone, transfer_to_name, announcement_message, priority")
+    .select("id, name, trigger_keywords, trigger_intent, transfer_to_phone, transfer_to_name, announcement_message, priority, destinations, require_confirmation")
     .eq("organization_id", organizationId)
     .eq("assistant_id", assistantId)
     .eq("is_active", true)
@@ -262,6 +264,8 @@ async function loadTestCallContext(assistantId, organizationId) {
       transferToName: r.transfer_to_name,
       announcementMessage: r.announcement_message,
       priority: r.priority,
+      destinations: r.destinations || [],
+      requireConfirmation: r.require_confirmation ?? false,
     }));
   }
 
