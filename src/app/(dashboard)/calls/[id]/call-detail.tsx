@@ -16,6 +16,7 @@ import {
   Mic,
   BarChart3,
   Info,
+  HelpCircle,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -81,6 +82,9 @@ function getSentimentVariant(
 
 export function CallDetail({ call }: { call: Call }) {
   const successEval = call.metadata?.successEvaluation as string | undefined;
+  const unansweredQuestions = Array.isArray(call.metadata?.unansweredQuestions)
+    ? (call.metadata.unansweredQuestions as string[])
+    : [];
   const collectedEntries = Object.entries(call.collected_data || {});
 
   return (
@@ -252,6 +256,36 @@ export function CallDetail({ call }: { call: Call }) {
               )}
             </CardContent>
           </Card>
+
+          {/* Knowledge Gaps */}
+          {unansweredQuestions.length > 0 && (
+            <Card className="border-amber-200 bg-amber-50/50 dark:border-amber-900 dark:bg-amber-950/20">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-amber-800 dark:text-amber-200">
+                  <HelpCircle className="h-5 w-5" />
+                  Knowledge Gaps
+                  <Badge variant="secondary" className="ml-auto">
+                    {unansweredQuestions.length} question
+                    {unansweredQuestions.length !== 1 ? "s" : ""}
+                  </Badge>
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <p className="text-sm text-amber-700 dark:text-amber-300 mb-3">
+                  The caller asked questions your AI couldn&apos;t answer. Add this
+                  information to your knowledge base to improve future calls.
+                </p>
+                <ul className="space-y-2">
+                  {unansweredQuestions.map((q, i) => (
+                    <li key={i} className="flex items-start gap-2 text-sm">
+                      <span className="mt-0.5 shrink-0 text-amber-600 dark:text-amber-400">?</span>
+                      <span>{q}</span>
+                    </li>
+                  ))}
+                </ul>
+              </CardContent>
+            </Card>
+          )}
 
           {/* Collected Data */}
           <Card>

@@ -266,6 +266,7 @@ wss.on("connection", (twilioWs) => {
         callerName: analysis?.callerName || undefined,
         collectedData: analysis?.collectedData || undefined,
         successEvaluation: analysis?.successEvaluation || undefined,
+        unansweredQuestions: analysis?.unansweredQuestions || undefined,
       }).catch((err) =>
         console.error("[Cleanup] Failed to notify call completed:", err)
       );
