@@ -15,7 +15,6 @@ import {
   Check,
   PhoneForwarded,
   Globe,
-  Star,
 } from "lucide-react";
 import { getDisplayPlans } from "@/lib/stripe/client";
 import { formatCurrency } from "@/lib/utils";
@@ -119,7 +118,7 @@ export default function LandingPage() {
 
       <main className="flex-1">
         {/* Hero */}
-        <section className="container mx-auto px-4 py-20 text-center lg:py-28">
+        <section className="container mx-auto px-4 py-12 text-center sm:py-20 lg:py-28">
           <Badge variant="secondary" className="mb-6">
             Built for Australian businesses
           </Badge>
@@ -155,18 +154,18 @@ export default function LandingPage() {
 
         {/* Stats Bar */}
         <section className="border-y bg-muted/50">
-          <div className="container mx-auto grid grid-cols-2 gap-6 px-4 py-10 md:grid-cols-4">
+          <div className="container mx-auto grid grid-cols-2 gap-4 px-4 py-8 sm:gap-6 sm:py-10 md:grid-cols-4">
             {STATS.map((stat) => (
               <div key={stat.label} className="text-center">
-                <p className="text-3xl font-bold text-primary">{stat.value}</p>
-                <p className="mt-1 text-sm text-muted-foreground">{stat.label}</p>
+                <p className="text-2xl font-bold text-primary sm:text-3xl">{stat.value}</p>
+                <p className="mt-1 text-xs text-muted-foreground sm:text-sm">{stat.label}</p>
               </div>
             ))}
           </div>
         </section>
 
         {/* How It Works */}
-        <section className="container mx-auto px-4 py-20">
+        <section className="container mx-auto px-4 py-12 sm:py-20">
           <div className="text-center">
             <h2 className="text-3xl font-bold">Up and running in 3 steps</h2>
             <p className="mt-3 text-muted-foreground">
@@ -208,7 +207,7 @@ export default function LandingPage() {
         </section>
 
         {/* Features */}
-        <section id="features" className="border-t bg-muted/50 py-20">
+        <section id="features" className="border-t bg-muted/50 py-12 sm:py-20">
           <div className="container mx-auto px-4">
             <div className="text-center">
               <h2 className="text-3xl font-bold">Everything your receptionist does, but better</h2>
@@ -280,7 +279,7 @@ export default function LandingPage() {
         </section>
 
         {/* ROI Calculator */}
-        <section id="calculator" className="py-20">
+        <section id="calculator" className="py-12 sm:py-20">
           <div className="container mx-auto px-4">
             <div className="mx-auto max-w-2xl">
               <div className="text-center">
@@ -300,7 +299,7 @@ export default function LandingPage() {
         </section>
 
         {/* Industries */}
-        <section id="industries" className="border-t bg-muted/50 py-20">
+        <section id="industries" className="border-t bg-muted/50 py-12 sm:py-20">
           <div className="container mx-auto px-4">
             <div className="text-center">
               <h2 className="text-3xl font-bold">Built for your industry</h2>
@@ -331,7 +330,7 @@ export default function LandingPage() {
         </section>
 
         {/* Social Proof */}
-        <section className="py-20">
+        <section className="py-12 sm:py-20">
           <div className="container mx-auto px-4">
             <div className="text-center">
               <h2 className="text-3xl font-bold">The numbers speak for themselves</h2>
@@ -360,7 +359,7 @@ export default function LandingPage() {
         </section>
 
         {/* Pricing Preview */}
-        <section className="border-t bg-muted/50 py-20">
+        <section className="border-t bg-muted/50 py-12 sm:py-20">
           <div className="container mx-auto px-4">
             <div className="text-center">
               <h2 className="text-3xl font-bold">Simple, transparent pricing</h2>
@@ -408,6 +407,11 @@ export default function LandingPage() {
                           {feature}
                         </li>
                       ))}
+                      {plan.features.length > 4 && (
+                        <li className="text-xs text-muted-foreground">
+                          ...and {plan.features.length - 4} more
+                        </li>
+                      )}
                     </ul>
                   </div>
                 </div>
@@ -425,9 +429,9 @@ export default function LandingPage() {
         </section>
 
         {/* Final CTA */}
-        <section className="py-20">
+        <section className="py-12 sm:py-20">
           <div className="container mx-auto px-4">
-            <div className="mx-auto max-w-2xl rounded-2xl bg-primary p-12 text-center text-primary-foreground">
+            <div className="mx-auto max-w-2xl rounded-2xl bg-primary p-8 text-center text-primary-foreground sm:p-12">
               <h2 className="text-3xl font-bold">
                 Stop missing calls. Start recovering revenue.
               </h2>

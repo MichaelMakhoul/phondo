@@ -46,6 +46,7 @@ export function ROICalculator() {
               min={1}
               max={50}
               step={1}
+              aria-label="Number of calls missed per week"
               className="flex-1"
             />
             <span className="min-w-[4rem] text-right text-3xl font-bold text-primary">
