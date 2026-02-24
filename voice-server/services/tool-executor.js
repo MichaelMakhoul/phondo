@@ -6,10 +6,51 @@
  * Transfer tool (transfer_call) is handled locally via Twilio REST API.
  */
 
-const { transferCall } = require("./twilio-transfer");
+const { transferCall, sendTransferSMS } = require("./twilio-transfer");
 
 const INTERNAL_API_URL = process.env.INTERNAL_API_URL;
 const INTERNAL_API_SECRET = process.env.INTERNAL_API_SECRET;
+
+/**
+ * Check if the current time is within configured business hours.
+ * Fails open (returns true) if no timezone or hours are configured.
+ *
+ * @param {string|undefined} timezone - IANA timezone (e.g. "Australia/Sydney")
+ * @param {object|undefined} businessHours - Map of day name → { open, close } or null
+ * @returns {boolean}
+ */
+function isWithinBusinessHours(timezone, businessHours) {
+  if (!timezone || !businessHours || Object.keys(businessHours).length === 0) {
+    return true; // fail open
+  }
+
+  try {
+    const now = new Date();
+    // Get current day and time in the business timezone
+    const dayFormatter = new Intl.DateTimeFormat("en-US", { weekday: "long", timeZone: timezone });
+    const hourFormatter = new Intl.DateTimeFormat("en-US", { hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: timezone });
+
+    const dayName = dayFormatter.format(now).toLowerCase();
+    const timeStr = hourFormatter.format(now); // "HH:MM" in 24h format
+    const [hours, minutes] = timeStr.split(":").map(Number);
+    const currentMinutes = hours * 60 + minutes;
+
+    const dayHours = businessHours[dayName];
+    if (!dayHours || dayHours.closed) {
+      return false; // closed today
+    }
+
+    const openParts = (dayHours.open || "09:00").split(":").map(Number);
+    const closeParts = (dayHours.close || "17:00").split(":").map(Number);
+    const openMinutes = openParts[0] * 60 + (openParts[1] || 0);
+    const closeMinutes = closeParts[0] * 60 + (closeParts[1] || 0);
+
+    return currentMinutes >= openMinutes && currentMinutes < closeMinutes;
+  } catch (err) {
+    console.error("[BusinessHours] Failed to check business hours:", err.message);
+    return true; // fail open on error
+  }
+}
 
 const CALENDAR_FUNCTIONS = [
   "get_current_datetime",
@@ -155,8 +196,8 @@ const transferToolDefinition = {
  *
  * @param {string} functionName
  * @param {object} args - parsed arguments from the LLM
- * @param {{ organizationId: string, assistantId: string, callSid?: string, transferRules?: object[], testMode?: boolean }} context
- * @returns {Promise<{ message: string, action?: string, transferTo?: string }>}
+ * @param {{ organizationId: string, assistantId: string, callSid?: string, transferRules?: object[], testMode?: boolean, organization?: { timezone?: string, businessHours?: object }, callerPhone?: string, orgPhoneNumber?: string }} context
+ * @returns {Promise<{ message: string, action?: string, transferTo?: string, transferAttempt?: object }>}
  */
 async function executeToolCall(functionName, args, context) {
   // ── Transfer call (handled locally via Twilio) ──
@@ -224,6 +265,7 @@ async function executeCalendarCall(functionName, args, context) {
 /**
  * Execute a call transfer using Twilio REST API.
  * Matches transfer rules by reason/keywords to find the right destination.
+ * Checks business hours before attempting transfer.
  */
 async function executeTransferCall(args, context) {
   const { reason, urgency, summary } = args;
@@ -236,31 +278,18 @@ async function executeTransferCall(args, context) {
     };
   }
 
-  // Find matching rule by keywords in reason
+  // Find matching rule by keywords or intent, defaulting to highest priority
   const lowerReason = (reason || "").toLowerCase();
-  let matchedRule = null;
 
-  for (const rule of transferRules) {
-    if (rule.triggerKeywords && rule.triggerKeywords.length > 0) {
-      for (const keyword of rule.triggerKeywords) {
-        if (lowerReason.includes(keyword.toLowerCase())) {
-          matchedRule = rule;
-          break;
-        }
-      }
-      if (matchedRule) break;
+  const matchedRule = transferRules.find((rule) => {
+    if (rule.triggerKeywords?.length > 0) {
+      return rule.triggerKeywords.some((kw) => lowerReason.includes(kw.toLowerCase()));
     }
-    if (!matchedRule && rule.triggerIntent) {
-      if (lowerReason.includes(rule.triggerIntent.toLowerCase())) {
-        matchedRule = rule;
-      }
+    if (rule.triggerIntent) {
+      return lowerReason.includes(rule.triggerIntent.toLowerCase());
     }
-  }
-
-  // Default to highest priority rule if no specific match
-  if (!matchedRule) {
-    matchedRule = transferRules[0];
-  }
+    return false;
+  }) || transferRules[0];
 
   const targetName = matchedRule.transferToName || "a team member";
   const announcement =
@@ -269,12 +298,45 @@ async function executeTransferCall(args, context) {
       ? `I understand this is urgent. Let me connect you with ${targetName} right away. Please hold.`
       : `Let me connect you with ${targetName} who can better assist you. Please hold for just a moment.`);
 
+  // Build transfer attempt tracking object
+  const transferAttempt = {
+    ruleId: matchedRule.id || null,
+    ruleName: matchedRule.name || null,
+    targetPhone: matchedRule.transferToPhone || null,
+    targetName,
+    reason: reason || null,
+    urgency: urgency || "low",
+    outcome: "initiated",
+    outsideBusinessHours: false,
+    timestamp: new Date().toISOString(),
+  };
+
   if (!matchedRule.transferToPhone) {
     console.error(`[ToolExecutor] Transfer rule "${matchedRule.transferToName || "unnamed"}" has no transferToPhone configured`);
+    transferAttempt.outcome = "failed";
     return {
       message: "I'm sorry, I'm unable to transfer your call right now. Let me take your information and have someone call you back.",
       action: "callback",
+      transferAttempt,
     };
+  }
+
+  // Check business hours — skip transfer if outside hours (unless high urgency)
+  const org = context.organization || {};
+  const withinHours = isWithinBusinessHours(org.timezone, org.businessHours);
+  if (!withinHours && urgency !== "high") {
+    console.log(`[Transfer] Outside business hours — skipping transfer to ${targetName}`);
+    transferAttempt.outcome = "outside_hours";
+    transferAttempt.outsideBusinessHours = true;
+    return {
+      message: `${targetName} is not available right now. Can I take a message or schedule a callback for you?`,
+      action: "callback",
+      transferAttempt,
+    };
+  }
+  if (!withinHours && urgency === "high") {
+    console.log(`[Transfer] Outside business hours but urgency=high — proceeding with transfer to ${targetName}`);
+    transferAttempt.outsideBusinessHours = true;
   }
 
   if (!context.callSid) {
@@ -282,6 +344,7 @@ async function executeTransferCall(args, context) {
       message: announcement,
       action: "transfer",
       transferTo: matchedRule.transferToPhone,
+      transferAttempt,
     };
   }
 
@@ -291,10 +354,25 @@ async function executeTransferCall(args, context) {
     announcement
   );
 
+  transferAttempt.outcome = result.success ? "initiated" : "failed";
+
+  // Send SMS context to transfer target (fire-and-forget)
+  if (result.success && context.orgPhoneNumber) {
+    const smsBody = [
+      `Incoming transfer from ${context.callerPhone || "unknown caller"}`,
+      reason ? `Reason: ${reason}` : null,
+      summary ? `Summary: ${summary}` : null,
+    ].filter(Boolean).join(". ") + ".";
+
+    sendTransferSMS(matchedRule.transferToPhone, context.orgPhoneNumber, smsBody)
+      .catch((err) => console.warn("[Transfer] SMS to transfer target failed (non-fatal):", err.message));
+  }
+
   return {
     message: result.message,
     action: result.success ? "transfer" : "callback",
     transferTo: matchedRule.transferToPhone,
+    transferAttempt,
   };
 }
 

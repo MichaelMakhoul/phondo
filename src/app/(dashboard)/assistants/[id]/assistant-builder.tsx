@@ -34,8 +34,11 @@ import {
   BookOpen,
   Settings,
   Loader2,
+  Pencil,
   Plus,
+  Save,
   Trash2,
+  X,
 } from "lucide-react";
 import { getIndustryTemplates, DEFAULT_RECORDING_DISCLOSURE } from "@/lib/templates";
 import { PromptBuilder } from "@/components/prompt-builder";
@@ -45,6 +48,11 @@ import { resolveVoiceId } from "@/lib/voices";
 
 // Industry templates
 const INDUSTRY_TEMPLATES = getIndustryTemplates();
+
+/** Parse a comma-separated keyword string into a trimmed, non-empty array. */
+function parseKeywords(input: string): string[] {
+  return input.split(",").map((k) => k.trim()).filter(Boolean);
+}
 
 interface Assistant {
   id: string;
@@ -112,6 +120,23 @@ export function AssistantBuilder({
   const [transferEnabled, setTransferEnabled] = useState(transferRules.length > 0);
   const [newTransferPhone, setNewTransferPhone] = useState("");
   const [newTransferName, setNewTransferName] = useState("");
+  const [newTriggerKeywords, setNewTriggerKeywords] = useState("");
+  const [newTriggerIntent, setNewTriggerIntent] = useState("");
+  const [newAnnouncement, setNewAnnouncement] = useState("");
+  const [newPriority, setNewPriority] = useState(0);
+
+  // Inline edit state
+  const [editingRuleId, setEditingRuleId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState<{
+    name: string;
+    transfer_to_phone: string;
+    transfer_to_name: string;
+    trigger_keywords: string;
+    trigger_intent: string;
+    announcement_message: string;
+    priority: number;
+  }>({ name: "", transfer_to_phone: "", transfer_to_name: "", trigger_keywords: "", trigger_intent: "", announcement_message: "", priority: 0 });
+  const [isEditSaving, setIsEditSaving] = useState(false);
 
   // Prompt builder state
   const [promptConfig, setPromptConfig] = useState<PromptConfig | null>(
@@ -198,6 +223,10 @@ export function AssistantBuilder({
     }
 
     try {
+      const keywords = newTriggerKeywords
+        ? parseKeywords(newTriggerKeywords)
+        : ["speak to a human", "talk to someone", "representative"];
+
       const response = await fetch("/api/v1/transfer/rules", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -206,7 +235,10 @@ export function AssistantBuilder({
           name: newTransferName || "Default Transfer",
           transferToPhone: newTransferPhone,
           transferToName: newTransferName || null,
-          triggerKeywords: ["speak to a human", "talk to someone", "representative"],
+          triggerKeywords: keywords,
+          triggerIntent: newTriggerIntent || undefined,
+          announcementMessage: newAnnouncement || undefined,
+          priority: newPriority || undefined,
         }),
       });
 
@@ -218,6 +250,10 @@ export function AssistantBuilder({
       setTransferRules([...transferRules, rule]);
       setNewTransferPhone("");
       setNewTransferName("");
+      setNewTriggerKeywords("");
+      setNewTriggerIntent("");
+      setNewAnnouncement("");
+      setNewPriority(0);
 
       toast({
         title: "Transfer Rule Added",
@@ -254,6 +290,79 @@ export function AssistantBuilder({
         title: "Error",
         description: "Failed to delete transfer rule.",
       });
+    }
+  };
+
+  // Start editing a transfer rule
+  const startEditRule = (rule: TransferRule) => {
+    setEditingRuleId(rule.id);
+    setEditForm({
+      name: rule.name,
+      transfer_to_phone: rule.transfer_to_phone,
+      transfer_to_name: rule.transfer_to_name || "",
+      trigger_keywords: (rule.trigger_keywords || []).join(", "),
+      trigger_intent: rule.trigger_intent || "",
+      announcement_message: rule.announcement_message || "",
+      priority: rule.priority,
+    });
+  };
+
+  // Save edited transfer rule
+  const saveEditRule = async () => {
+    if (!editingRuleId) return;
+    setIsEditSaving(true);
+    try {
+      const keywords = editForm.trigger_keywords
+        ? parseKeywords(editForm.trigger_keywords)
+        : [];
+
+      const response = await fetch(`/api/v1/transfer/rules/${editingRuleId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: editForm.name,
+          transferToPhone: editForm.transfer_to_phone,
+          transferToName: editForm.transfer_to_name || null,
+          triggerKeywords: keywords,
+          triggerIntent: editForm.trigger_intent || null,
+          announcementMessage: editForm.announcement_message || null,
+          priority: editForm.priority,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to update transfer rule");
+      }
+
+      setTransferRules(
+        transferRules.map((r) =>
+          r.id === editingRuleId
+            ? {
+                ...r,
+                name: editForm.name,
+                transfer_to_phone: editForm.transfer_to_phone,
+                transfer_to_name: editForm.transfer_to_name || null,
+                trigger_keywords: keywords,
+                trigger_intent: editForm.trigger_intent || null,
+                announcement_message: editForm.announcement_message || null,
+                priority: editForm.priority,
+              }
+            : r
+        )
+      );
+      setEditingRuleId(null);
+
+      toast({
+        title: "Transfer Rule Updated",
+      });
+    } catch {
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: "Failed to update transfer rule.",
+      });
+    } finally {
+      setIsEditSaving(false);
     }
   };
 
@@ -493,7 +602,7 @@ export function AssistantBuilder({
 
               {transferEnabled && (
                 <>
-                  <div className="border-t pt-4">
+                  <div className="border-t pt-4 space-y-3">
                     <Label className="mb-2 block">Add Transfer Destination</Label>
                     <div className="flex gap-2">
                       <Input
@@ -512,32 +621,176 @@ export function AssistantBuilder({
                         <Plus className="h-4 w-4" />
                       </Button>
                     </div>
+                    <div className="flex gap-2">
+                      <div className="flex-1 space-y-1">
+                        <Input
+                          placeholder="Trigger keywords (comma-separated)"
+                          value={newTriggerKeywords}
+                          onChange={(e) => setNewTriggerKeywords(e.target.value)}
+                        />
+                        <p className="text-xs text-muted-foreground">
+                          When the AI determines the caller needs help with these topics, it will transfer. Defaults to general phrases if empty.
+                        </p>
+                      </div>
+                      <div className="flex-1 space-y-1">
+                        <Input
+                          placeholder="Category (optional)"
+                          value={newTriggerIntent}
+                          onChange={(e) => setNewTriggerIntent(e.target.value)}
+                        />
+                        <p className="text-xs text-muted-foreground">
+                          e.g. billing_inquiry, emergency
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <div className="flex-1 space-y-1">
+                        <Input
+                          placeholder="Announcement message (optional)"
+                          value={newAnnouncement}
+                          onChange={(e) => setNewAnnouncement(e.target.value)}
+                        />
+                        <p className="text-xs text-muted-foreground">
+                          What the AI says before transferring. Uses a default if empty.
+                        </p>
+                      </div>
+                      <div className="w-32 space-y-1">
+                        <Input
+                          type="number"
+                          placeholder="Priority"
+                          value={newPriority || ""}
+                          onChange={(e) => setNewPriority(parseInt(e.target.value) || 0)}
+                        />
+                        <p className="text-xs text-muted-foreground">
+                          Higher = checked first
+                        </p>
+                      </div>
+                    </div>
                   </div>
 
                   {transferRules.length > 0 && (
                     <div className="space-y-2">
-                      {transferRules.map((rule) => (
-                        <div
-                          key={rule.id}
-                          className="flex items-center justify-between p-3 border rounded-lg"
-                        >
-                          <div>
-                            <p className="font-medium">
-                              {rule.transfer_to_name || rule.transfer_to_phone}
-                            </p>
-                            <p className="text-sm text-muted-foreground">
-                              {rule.transfer_to_phone}
-                            </p>
-                          </div>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => deleteTransferRule(rule.id)}
+                      {transferRules.map((rule) =>
+                        editingRuleId === rule.id ? (
+                          <div
+                            key={rule.id}
+                            className="p-3 border rounded-lg space-y-3 bg-muted/30"
                           >
-                            <Trash2 className="h-4 w-4 text-destructive" />
-                          </Button>
-                        </div>
-                      ))}
+                            <div className="flex gap-2">
+                              <Input
+                                placeholder="Rule name"
+                                value={editForm.name}
+                                onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
+                                className="flex-1"
+                              />
+                              <Input
+                                placeholder="Phone number"
+                                value={editForm.transfer_to_phone}
+                                onChange={(e) => setEditForm({ ...editForm, transfer_to_phone: e.target.value })}
+                                className="flex-1"
+                              />
+                              <Input
+                                placeholder="Name (optional)"
+                                value={editForm.transfer_to_name}
+                                onChange={(e) => setEditForm({ ...editForm, transfer_to_name: e.target.value })}
+                                className="flex-1"
+                              />
+                            </div>
+                            <div className="flex gap-2">
+                              <div className="flex-1">
+                                <Input
+                                  placeholder="Trigger keywords (comma-separated)"
+                                  value={editForm.trigger_keywords}
+                                  onChange={(e) => setEditForm({ ...editForm, trigger_keywords: e.target.value })}
+                                />
+                              </div>
+                              <div className="flex-1">
+                                <Input
+                                  placeholder="Category (optional)"
+                                  value={editForm.trigger_intent}
+                                  onChange={(e) => setEditForm({ ...editForm, trigger_intent: e.target.value })}
+                                />
+                              </div>
+                            </div>
+                            <div className="flex gap-2">
+                              <Input
+                                placeholder="Announcement message (optional)"
+                                value={editForm.announcement_message}
+                                onChange={(e) => setEditForm({ ...editForm, announcement_message: e.target.value })}
+                                className="flex-1"
+                              />
+                              <Input
+                                type="number"
+                                placeholder="Priority"
+                                value={editForm.priority}
+                                onChange={(e) => setEditForm({ ...editForm, priority: parseInt(e.target.value) || 0 })}
+                                className="w-24"
+                              />
+                            </div>
+                            <div className="flex justify-end gap-2">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => setEditingRuleId(null)}
+                              >
+                                <X className="h-4 w-4 mr-1" />
+                                Cancel
+                              </Button>
+                              <Button
+                                size="sm"
+                                onClick={saveEditRule}
+                                disabled={isEditSaving}
+                              >
+                                {isEditSaving ? (
+                                  <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                                ) : (
+                                  <Save className="h-4 w-4 mr-1" />
+                                )}
+                                Save
+                              </Button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div
+                            key={rule.id}
+                            className="flex items-center justify-between p-3 border rounded-lg"
+                          >
+                            <div className="min-w-0 flex-1">
+                              <p className="font-medium">
+                                {rule.transfer_to_name || rule.transfer_to_phone}
+                              </p>
+                              <p className="text-sm text-muted-foreground">
+                                {rule.transfer_to_phone}
+                              </p>
+                              {rule.trigger_keywords && rule.trigger_keywords.length > 0 && (
+                                <div className="flex flex-wrap gap-1 mt-1">
+                                  {rule.trigger_keywords.map((kw, i) => (
+                                    <Badge key={i} variant="secondary" className="text-xs">
+                                      {kw}
+                                    </Badge>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-1 ml-2">
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => startEditRule(rule)}
+                              >
+                                <Pencil className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => deleteTransferRule(rule.id)}
+                              >
+                                <Trash2 className="h-4 w-4 text-destructive" />
+                              </Button>
+                            </div>
+                          </div>
+                        )
+                      )}
                     </div>
                   )}
                 </>
