@@ -514,7 +514,7 @@ export async function getBillingPortalUrl(
  */
 export async function hasFeatureAccess(
   organizationId: string,
-  feature: "calendarIntegration" | "callTransfer" | "advancedAnalytics" | "customVoice" | "humanEscalation"
+  feature: "smsNotifications" | "webhookIntegrations" | "advancedAnalytics" | "prioritySupport"
 ): Promise<boolean> {
   const subscription = await getSubscriptionInfo(organizationId);
 

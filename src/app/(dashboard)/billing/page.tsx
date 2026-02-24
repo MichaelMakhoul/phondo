@@ -27,7 +27,10 @@ import {
   ArrowRight,
   Headphones,
   BarChart3,
-  Mic,
+  MessageSquare,
+  Plug,
+  Database,
+  FileText,
 } from "lucide-react";
 import { formatCurrency } from "@/lib/utils";
 import { getDisplayPlans } from "@/lib/stripe/client";
@@ -40,9 +43,12 @@ const FEATURE_ICONS: Record<string, React.ComponentType<any>> = {
   calendar: Calendar,
   transfer: ArrowRight,
   support: Headphones,
-  escalation: Headphones,
   analytics: BarChart3,
-  voice: Mic,
+  sms: MessageSquare,
+  webhook: Plug,
+  crm: Database,
+  everything: Check,
+  transcript: FileText,
 };
 
 function getIconForFeature(feature: string) {
