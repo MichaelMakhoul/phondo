@@ -17,7 +17,7 @@ import {
   AlertCircle,
 } from "lucide-react";
 import { useVoiceTest, type TranscriptMessage } from "@/lib/voice-test/use-voice-test";
-import { DEMO_INDUSTRIES, type DemoIndustry } from "@/lib/demo/config";
+import { DEMO_INDUSTRIES, DEMO_RATE_LIMIT_ERROR, type DemoIndustry } from "@/lib/demo/config";
 
 const INDUSTRY_CARDS: {
   id: DemoIndustry;
@@ -146,7 +146,7 @@ export default function DemoPage() {
 
   // Check for rate limit error
   useEffect(() => {
-    if (error?.includes("Too many demo calls")) {
+    if (error?.includes(DEMO_RATE_LIMIT_ERROR)) {
       setRateLimited(true);
     }
   }, [error]);
