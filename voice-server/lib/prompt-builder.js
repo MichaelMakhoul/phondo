@@ -270,7 +270,7 @@ function buildBehaviorsSection(behaviors, options) {
   if (behaviors.transferToHuman) {
     if (options && options.hasTransferRules) {
       lines.push(
-        "- TRANSFERS: You can transfer calls using the transfer_call function. Use it when a caller requests to speak with a person, has a complex issue you cannot resolve, or when there is an emergency."
+        "- TRANSFERS: You can transfer calls using the transfer_call function. Use it when a caller requests to speak with a person, has a complex issue you cannot resolve, or when there is an emergency. Some transfers require confirmation — if the tool tells you to confirm with the caller first, ask them and call the function again with confirmed set to true."
       );
     } else {
       lines.push(

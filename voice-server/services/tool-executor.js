@@ -194,6 +194,11 @@ const transferToolDefinition = {
           description:
             "A brief summary of the conversation and what the caller needs",
         },
+        confirmed: {
+          type: "boolean",
+          description:
+            "Set to true after the caller has verbally confirmed the transfer. Only use this after explicitly asking the caller and receiving a positive response.",
+        },
       },
       required: ["reason"],
     },
@@ -277,7 +282,7 @@ async function executeCalendarCall(functionName, args, context) {
  * Checks business hours before attempting transfer.
  */
 async function executeTransferCall(args, context) {
-  const { reason, urgency, summary } = args;
+  const { reason, urgency, summary, confirmed } = args;
   const transferRules = context.transferRules || [];
 
   if (transferRules.length === 0) {
@@ -326,6 +331,17 @@ async function executeTransferCall(args, context) {
     timestamp: new Date().toISOString(),
   };
 
+  // Confirmation gate — if rule requires confirmation and caller hasn't confirmed yet
+  if (matchedRule.requireConfirmation && confirmed !== true) {
+    return {
+      message: `Please ask the caller to confirm: "I'd like to connect you with ${targetName}. Would that be okay?" If they agree, call transfer_call again with confirmed set to true and the same reason. If they decline, continue helping them.`,
+      transferAttempt: {
+        ...transferAttempt,
+        outcome: "awaiting_confirmation",
+      },
+    };
+  }
+
   if (!matchedRule.transferToPhone) {
     console.error(`[ToolExecutor] Transfer rule "${matchedRule.transferToName || "unnamed"}" has no transferToPhone configured`);
     transferAttempt.outcome = "failed";
@@ -354,11 +370,20 @@ async function executeTransferCall(args, context) {
     transferAttempt.outsideBusinessHours = true;
   }
 
+  // Build full destination chain: primary + fallbacks (used by both test and production paths)
+  const allDestinations = [
+    { phone: matchedRule.transferToPhone, name: targetName },
+    ...(matchedRule.destinations || []).filter((d) => d.phone),
+  ];
+
   if (!context.callSid) {
     return {
       message: announcement,
       action: "transfer",
       transferTo: matchedRule.transferToPhone,
+      transferTargetName: targetName,
+      allDestinations,
+      destinationIndex: 0,
       transferAttempt,
     };
   }
@@ -398,6 +423,8 @@ async function executeTransferCall(args, context) {
     action: result.success ? "transfer" : "callback",
     transferTo: matchedRule.transferToPhone,
     transferTargetName: targetName,
+    allDestinations,
+    destinationIndex: 0,
     transferAttempt,
   };
 }

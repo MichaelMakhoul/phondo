@@ -18,7 +18,7 @@ const { generateHoldAudio, getHoldPreset } = require("./lib/hold-audio");
 const { detectExpectedInput } = require("./lib/input-type-detector");
 const { requiresRecordingDisclosure, getRecordingDisclosureText } = require("./lib/recording-consent");
 const { getSupabase } = require("./lib/supabase");
-const { saveForTransfer, consumeTransfer, finishTransferredCall } = require("./lib/pending-transfers");
+const { saveForTransfer, getTransfer, consumeTransfer, finishTransferredCall } = require("./lib/pending-transfers");
 
 // Validate required env vars before deriving any constants
 const REQUIRED_ENV = [
@@ -213,8 +213,10 @@ app.post("/twiml/transfer-status", async (req, res) => {
 </Response>`);
   }
 
-  // Transfer failed — reconnect caller to AI via a new media stream
-  const savedState = consumeTransfer(callSid);
+  // Transfer failed — try next destination or reconnect caller to AI
+  // Use getTransfer (peek) instead of consumeTransfer to avoid a state-loss window.
+  // Both saveForTransfer (for chaining/reconnect) and the catch block handle cleanup.
+  const savedState = getTransfer(callSid);
   if (!savedState) {
     console.warn(`[TransferStatus] No pending transfer for callSid=${callSid} — hanging up`);
     return res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
@@ -229,6 +231,44 @@ app.post("/twiml/transfer-status", async (req, res) => {
       savedState.transferAttempt.outcome = dialStatus || "failed";
     }
 
+    // Check if there are more destinations to try in the fallback chain
+    const nextIndex = (savedState.destinationIndex || 0) + 1;
+    const allDests = savedState.allDestinations || [];
+    const MAX_DESTINATIONS = 6; // primary + 5 fallbacks
+
+    if (nextIndex < allDests.length && nextIndex < MAX_DESTINATIONS) {
+      if (!PUBLIC_URL) {
+        console.error(`[TransferStatus] PUBLIC_URL is empty — cannot chain to destination ${nextIndex + 1}/${allDests.length}, falling back to AI reconnection`);
+      } else {
+        const nextDest = allDests[nextIndex];
+        const safePhone = nextDest.phone.replace(/[^+\d]/g, "");
+
+        // Skip invalid phone numbers
+        if (!safePhone || safePhone.length < 7) {
+          console.warn(`[TransferStatus] Skipping invalid destination phone at index ${nextIndex}: "${nextDest.phone}"`);
+        } else {
+          console.log(`[TransferStatus] Trying next destination ${nextIndex + 1}/${allDests.length}: ${nextDest.name || nextDest.phone}`);
+
+          // Update state for the next attempt
+          savedState.destinationIndex = nextIndex;
+          if (savedState.transferAttempt) {
+            savedState.transferAttempt.targetPhone = nextDest.phone;
+            savedState.transferAttempt.targetName = nextDest.name || "a team member";
+          }
+          savedState.transferTargetName = nextDest.name || "a team member";
+
+          // Re-save state for the next callback (overwrites the peeked entry)
+          saveForTransfer(callSid, savedState);
+
+          return res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Dial timeout="25" action="${escapeXml(PUBLIC_URL + '/twiml/transfer-status')}">${safePhone}</Dial>
+</Response>`);
+        }
+      }
+    }
+
+    // No more destinations — reconnect caller to AI
     // Issue a new stream token that carries the reconnectCallSid
     const token = issueStreamToken(
       savedState.orgPhoneNumber || "",
@@ -828,6 +868,8 @@ async function handleUserSpeech(session, twilioWs, transcript) {
               orgPhoneNumber: session.orgPhoneNumber,
               transferAttempt: toolResult.transferAttempt,
               transferTargetName: toolResult.transferTargetName || "the team member",
+              allDestinations: toolResult.allDestinations || [],
+              destinationIndex: toolResult.destinationIndex || 0,
               startedAt: session.startedAt,
             });
 

@@ -32,6 +32,8 @@ interface TransferRule {
   announcement_message: string | null;
   priority: number;
   is_active: boolean;
+  destinations: { phone: string; name: string }[];
+  require_confirmation: boolean;
 }
 
 export default async function AssistantDetailPage({
