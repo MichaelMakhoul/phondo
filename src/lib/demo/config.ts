@@ -20,6 +20,8 @@ export const DEMO_INDUSTRIES = {
   },
 } as const;
 
+export const DEMO_RATE_LIMIT_ERROR = "Too many demo calls";
+
 export type DemoIndustry = keyof typeof DEMO_INDUSTRIES;
 
 export function isDemoIndustry(value: unknown): value is DemoIndustry {

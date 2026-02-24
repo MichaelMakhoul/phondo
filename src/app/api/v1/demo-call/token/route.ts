@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import crypto from "crypto";
-import { DEMO_ORG_ID, DEMO_INDUSTRIES, isDemoIndustry } from "@/lib/demo/config";
+import { DEMO_ORG_ID, DEMO_INDUSTRIES, DEMO_RATE_LIMIT_ERROR, isDemoIndustry } from "@/lib/demo/config";
 
 // In-memory rate limit — best-effort only, not shared across serverless instances.
 // Acceptable for MVP; migrate to Redis/Upstash for production multi-instance.
@@ -70,7 +70,7 @@ export async function POST(request: Request) {
     const ip = getClientIp(request);
     if (!checkRateLimit(ip)) {
       return NextResponse.json(
-        { error: "Too many demo calls. Please try again later." },
+        { error: `${DEMO_RATE_LIMIT_ERROR}. Please try again later.` },
         { status: 429 }
       );
     }
