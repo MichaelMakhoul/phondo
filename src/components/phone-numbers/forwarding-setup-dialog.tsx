@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -26,10 +26,12 @@ import { useToast } from "@/components/ui/use-toast";
 import {
   Loader2,
   Phone,
+  PhoneCall,
   Copy,
   Check,
   ArrowRight,
   AlertCircle,
+  CheckCircle2,
 } from "lucide-react";
 import { formatPhoneNumber } from "@/lib/utils";
 import {
@@ -57,7 +59,7 @@ type Step =
   | "assign_assistant"
   | "provisioning"
   | "instructions"
-  | "confirm";
+  | "verifying";
 
 interface ProvisionedResult {
   id: string;
@@ -113,11 +115,58 @@ export function ForwardingSetupDialog({
       title: "Forwarding Instructions",
       description: "Follow these instructions to set up call forwarding on your phone",
     },
-    confirm: {
-      title: "Confirm Setup",
-      description: "Have you completed the forwarding setup on your phone?",
+    verifying: {
+      title: "Verify Forwarding",
+      description: "Call your business number from another phone to verify",
     },
   };
+
+  // Verification polling state
+  const [verifyStatus, setVerifyStatus] = useState<"waiting" | "verified" | "timeout">("waiting");
+  const [verifySeconds, setVerifySeconds] = useState(120);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const stopPolling = useCallback(() => {
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+    if (countdownRef.current) { clearInterval(countdownRef.current); countdownRef.current = null; }
+  }, []);
+
+  const startVerification = useCallback(() => {
+    if (!provisioned) return;
+    setVerifyStatus("waiting");
+    setVerifySeconds(120);
+    stopPolling();
+
+    pollRef.current = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/v1/phone-numbers/${provisioned.id}/verify-status`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.verified) {
+            stopPolling();
+            setVerifyStatus("verified");
+          }
+        }
+      } catch {
+        // Ignore transient fetch errors — keep polling
+      }
+    }, 3000);
+
+    countdownRef.current = setInterval(() => {
+      setVerifySeconds((prev) => {
+        if (prev <= 1) {
+          stopPolling();
+          setVerifyStatus("timeout");
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+  }, [provisioned, stopPolling]);
+
+  // Clean up polling on unmount
+  useEffect(() => stopPolling, [stopPolling]);
 
   const resetForm = () => {
     setStep("enter_number");
@@ -130,6 +179,9 @@ export function ForwardingSetupDialog({
     setProvisioned(null);
     setCopiedText(null);
     setIsConfirming(false);
+    setVerifyStatus("waiting");
+    setVerifySeconds(120);
+    stopPolling();
   };
 
   const handleProvision = async () => {
@@ -178,40 +230,19 @@ export function ForwardingSetupDialog({
     }
   };
 
-  const handleConfirm = async (confirmed: boolean) => {
-    if (!provisioned) return;
-
-    if (confirmed) {
-      setIsConfirming(true);
-      try {
-        const resp = await fetch(`/api/v1/phone-numbers/${provisioned.id}`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ forwardingStatus: "active" }),
-        });
-        if (!resp.ok) {
-          throw new Error("Failed to update forwarding status");
-        }
-        toast({
-          title: "Forwarding set up!",
-          description: `Calls to ${formatPhoneNumber(userPhone, countryCode)} will be forwarded to your AI assistant.`,
-        });
-      } catch (err) {
-        toast({
-          variant: "destructive",
-          title: "Error",
-          description: err instanceof Error ? err.message : "Failed to update forwarding status",
-        });
-      } finally {
-        setIsConfirming(false);
-      }
+  const handleVerifyDone = (verified: boolean) => {
+    stopPolling();
+    if (verified) {
+      toast({
+        title: "Forwarding verified!",
+        description: `Calls to ${formatPhoneNumber(userPhone, countryCode)} are being forwarded to your AI assistant.`,
+      });
     } else {
       toast({
         title: "Number provisioned",
-        description: "You can set up forwarding later from the phone numbers page.",
+        description: "You can verify forwarding later from the phone numbers page.",
       });
     }
-
     onOpenChange(false);
     resetForm();
     router.refresh();
@@ -458,19 +489,55 @@ export function ForwardingSetupDialog({
           </div>
         )}
 
-        {/* Step: Confirm */}
-        {step === "confirm" && (
+        {/* Step: Verifying */}
+        {step === "verifying" && (
           <div className="space-y-4 py-4">
-            <div className="rounded-lg border p-4 text-center">
-              <Check className="mx-auto h-10 w-10 text-green-500" />
-              <p className="mt-2 text-sm font-medium">
-                Did you dial the forwarding code on your phone?
-              </p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                If you haven&apos;t set it up yet, you can do it later from the
-                phone numbers page.
-              </p>
-            </div>
+            {verifyStatus === "waiting" && (
+              <div className="rounded-lg border p-6 text-center">
+                <PhoneCall className="mx-auto h-10 w-10 text-primary animate-pulse" />
+                <p className="mt-3 text-sm font-medium">
+                  Call your business number from another phone
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Dial {formatPhoneNumber(userPhone, countryCode)} and wait for your AI to answer.
+                </p>
+                <p className="mt-3 text-2xl font-bold tabular-nums text-primary">
+                  {Math.floor(verifySeconds / 60)}:{String(verifySeconds % 60).padStart(2, "0")}
+                </p>
+                <p className="text-xs text-muted-foreground">Listening for incoming calls...</p>
+              </div>
+            )}
+
+            {verifyStatus === "verified" && (
+              <div className="rounded-lg border border-green-200 bg-green-50 dark:border-green-900 dark:bg-green-950/20 p-6 text-center">
+                <CheckCircle2 className="mx-auto h-10 w-10 text-green-600" />
+                <p className="mt-3 text-sm font-medium text-green-800 dark:text-green-200">
+                  Forwarding verified!
+                </p>
+                <p className="mt-1 text-xs text-green-700 dark:text-green-300">
+                  Your AI assistant is answering forwarded calls.
+                </p>
+              </div>
+            )}
+
+            {verifyStatus === "timeout" && (
+              <div className="space-y-3">
+                <div className="rounded-lg border border-amber-200 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/20 p-4 text-center">
+                  <AlertCircle className="mx-auto h-8 w-8 text-amber-600" />
+                  <p className="mt-2 text-sm font-medium text-amber-800 dark:text-amber-200">
+                    No call detected
+                  </p>
+                </div>
+                <div className="text-xs text-muted-foreground space-y-1">
+                  <p className="font-medium">Troubleshooting tips:</p>
+                  <ul className="list-disc pl-4 space-y-0.5">
+                    <li>Make sure you dialed the forwarding code from step above</li>
+                    <li>Call from a different phone (not the one being forwarded)</li>
+                    <li>Some carriers take a few minutes to activate forwarding</li>
+                  </ul>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -513,27 +580,33 @@ export function ForwardingSetupDialog({
             </>
           )}
           {step === "instructions" && (
-            <Button onClick={() => setStep("confirm")}>
-              I&apos;ve Dialed the Code
+            <Button onClick={() => { setStep("verifying"); startVerification(); }}>
+              I&apos;ve Dialed the Code — Verify Now
             </Button>
           )}
-          {step === "confirm" && (
+          {step === "verifying" && verifyStatus === "waiting" && (
+            <Button
+              variant="outline"
+              onClick={() => handleVerifyDone(false)}
+            >
+              Skip Verification
+            </Button>
+          )}
+          {step === "verifying" && verifyStatus === "verified" && (
+            <Button onClick={() => handleVerifyDone(true)}>
+              Done
+            </Button>
+          )}
+          {step === "verifying" && verifyStatus === "timeout" && (
             <>
               <Button
                 variant="outline"
-                onClick={() => handleConfirm(false)}
-                disabled={isConfirming}
+                onClick={() => handleVerifyDone(false)}
               >
-                I&apos;ll Do This Later
+                I&apos;ll Verify Later
               </Button>
-              <Button
-                onClick={() => handleConfirm(true)}
-                disabled={isConfirming}
-              >
-                {isConfirming && (
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                )}
-                Yes, Forwarding Is Active
+              <Button onClick={startVerification}>
+                Try Again
               </Button>
             </>
           )}
