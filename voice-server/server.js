@@ -237,6 +237,7 @@ wss.on("connection", (twilioWs) => {
           collectedData: analysis?.collectedData || null,
           successEvaluation: analysis?.successEvaluation || null,
           recordingDisclosurePlayed: s.recordingDisclosurePlayed || false,
+          recordingDisclosureFailed: s.recordingDisclosureFailed || false,
         });
       } catch (err) {
         console.error("[Cleanup] Failed to complete call record:", err);
@@ -415,6 +416,7 @@ wss.on("connection", (twilioWs) => {
               session.addMessage("assistant", disclosureText);
               console.log(`[Recording] Disclosure played (country=${context.organization.country}, state=${context.organization.businessState})`);
             } catch (err) {
+              session.recordingDisclosureFailed = true;
               console.error("[Recording] Failed to play disclosure — caller may not have been informed of recording. Continuing with greeting.", err);
             }
           }
@@ -926,6 +928,7 @@ testWss.on("connection", (ws, req) => {
             voice: session.deepgramVoice,
           });
           if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: "transcript", role: "assistant", content: disclosureText, isFinal: true }));
             ws.send(JSON.stringify({ type: "speaking", speaking: true }));
             ws.send(disclosureAudio);
             ws.send(JSON.stringify({ type: "speaking", speaking: false }));
@@ -934,6 +937,7 @@ testWss.on("connection", (ws, req) => {
           // Add to conversation history so LLM knows disclosure was played
           session.addMessage("assistant", disclosureText);
         } catch (err) {
+          session.recordingDisclosureFailed = true;
           console.error("[TestRecording] Failed to play disclosure — caller may not have been informed of recording. Continuing with greeting.", err);
         }
       }

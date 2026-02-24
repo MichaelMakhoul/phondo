@@ -52,6 +52,7 @@ async function completeCallRecord(callId, {
   collectedData,
   successEvaluation,
   recordingDisclosurePlayed,
+  recordingDisclosureFailed,
 }) {
   const supabase = getSupabase();
 
@@ -75,7 +76,8 @@ async function completeCallRecord(callId, {
   // Merge extra metadata into the call record (read-then-write, best effort)
   const metadataExtras = {};
   if (successEvaluation) metadataExtras.successEvaluation = successEvaluation;
-  if (recordingDisclosurePlayed) metadataExtras.recording_disclosure_played = true;
+  if (recordingDisclosurePlayed) metadataExtras.recordingDisclosurePlayed = true;
+  if (recordingDisclosureFailed) metadataExtras.recordingDisclosureFailed = true;
 
   if (Object.keys(metadataExtras).length > 0 && !error) {
     try {

@@ -106,9 +106,12 @@ export async function POST(request: Request) {
         });
       }
 
-      // Log for TCPA audit trail — failure here is logged but non-fatal
-      // since the opt-out itself was already recorded above.
-      await logConsentAction(supabase, from, orgId, "opt_out", "sms_keyword", body);
+      // Log for TCPA audit trail — non-fatal since primary opt-out was already saved.
+      try {
+        await logConsentAction(supabase, from, orgId, "opt_out", "sms_keyword", body);
+      } catch (auditErr) {
+        console.error("[TwilioSMS] Consent audit log threw — primary opt-out was already saved:", { orgId, error: auditErr });
+      }
 
       console.log("[TwilioSMS] Recorded opt-out for orgId:", orgId);
       return twimlResponse("You've been unsubscribed from messages. Reply START to re-subscribe.");
@@ -130,8 +133,12 @@ export async function POST(request: Request) {
         });
       }
 
-      // Log for TCPA audit trail
-      await logConsentAction(supabase, from, orgId, "opt_in", "sms_keyword", body);
+      // Log for TCPA audit trail — non-fatal since primary opt-in was already saved.
+      try {
+        await logConsentAction(supabase, from, orgId, "opt_in", "sms_keyword", body);
+      } catch (auditErr) {
+        console.error("[TwilioSMS] Consent audit log threw — primary opt-in was already saved:", { orgId, error: auditErr });
+      }
 
       // Look up business name for confirmation message
       const { data: org, error: orgError } = await (supabase as any)
@@ -208,7 +215,7 @@ async function logConsentAction(
 
   if (error) {
     console.error("[TwilioSMS] Failed to log consent action — audit trail incomplete:", {
-      phone, orgId, action, error,
+      orgId, action, error,
     });
   }
 }

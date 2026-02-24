@@ -27,6 +27,7 @@ class CallSession {
     this.callFailed = false;
     this.endedReason = null;
     this.recordingDisclosurePlayed = false;
+    this.recordingDisclosureFailed = false;
 
     // Utterance buffering — accumulate STT finals before sending to LLM
     this._utteranceBuffer = [];
