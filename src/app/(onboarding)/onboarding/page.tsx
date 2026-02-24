@@ -11,6 +11,7 @@ import { BusinessInfo } from "./steps/BusinessInfo";
 import { AssistantSetup } from "./steps/AssistantSetup";
 import { TestCall } from "./steps/TestCall";
 import { GoLive } from "./steps/GoLive";
+import { Success } from "./steps/Success";
 import { ArrowLeft, ArrowRight, Loader2, CheckCircle2 } from "lucide-react";
 import { getCountryConfig } from "@/lib/country-config";
 import { buildCustomInstructionsFromBusinessInfo } from "@/lib/scraper/build-custom-instructions";
@@ -376,14 +377,9 @@ export default function OnboardingPage() {
       // Clear onboarding progress
       localStorage.removeItem("onboarding_progress");
 
-      toast({
-        title: "Welcome to Hola Recep!",
-        description: "Your AI receptionist is ready. Let's get you a phone number.",
-      });
-
-      // Redirect to phone numbers page
-      router.push("/phone-numbers?setup=true");
-      router.refresh();
+      // Show celebration screen (step 5)
+      setCurrentStep(5);
+      setIsCompleting(false);
     } catch (error: any) {
       toast({
         variant: "destructive",
@@ -395,6 +391,27 @@ export default function OnboardingPage() {
   };
 
   const progress = (currentStep / 4) * 100;
+
+  // Step 5: Celebration screen (after successful completion)
+  if (currentStep === 5) {
+    const planLabel =
+      data.selectedPlan === "business" ? "Business" :
+      data.selectedPlan === "professional" ? "Professional" : "Starter";
+
+    return (
+      <div className="flex min-h-screen flex-col bg-muted/50">
+        <main className="flex flex-1 items-center justify-center px-4 py-12">
+          <div className="w-full max-w-lg">
+            <Card>
+              <CardContent className="pt-8 pb-6">
+                <Success businessName={data.businessName} planName={planLabel} />
+              </CardContent>
+            </Card>
+          </div>
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div className="flex min-h-screen flex-col bg-muted/50">
