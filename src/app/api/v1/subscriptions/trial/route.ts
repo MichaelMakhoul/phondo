@@ -74,27 +74,42 @@ export async function POST(request: Request) {
     const admin = createAdminClient();
 
     // Check for existing subscription (idempotent — double-clicks return success)
-    const { data: existing } = await (admin as any)
+    const { data: existing, error: existingError } = await (admin as any)
       .from("subscriptions")
       .select("id, plan_type, status")
       .eq("organization_id", organizationId)
       .single();
+
+    if (existingError && existingError.code !== "PGRST116") {
+      console.error("Failed to check existing subscription:", {
+        organizationId,
+        error: existingError,
+      });
+      return NextResponse.json(
+        { error: "Failed to verify subscription status" },
+        { status: 500 }
+      );
+    }
 
     if (existing) {
       return NextResponse.json({ success: true });
     }
 
     // Look up plan config from server-side constants (not client input)
-    const planConfig = PLANS[planType as PlanType];
+    const plan: PlanType = planType as PlanType;
+    const planConfig = PLANS[plan];
 
+    const trialDays = "trialDays" in planConfig ? planConfig.trialDays : 14;
     const trialEnd = new Date();
-    trialEnd.setDate(trialEnd.getDate() + 14);
+    trialEnd.setDate(trialEnd.getDate() + trialDays);
 
+    // Upsert with onConflict for true idempotency (handles rare race between
+    // the existence check above and this insert from concurrent requests)
     const { error: subError } = await (admin as any)
       .from("subscriptions")
-      .insert({
+      .upsert({
         organization_id: organizationId,
-        plan_type: planType,
+        plan_type: plan,
         status: "trialing",
         current_period_start: new Date().toISOString(),
         current_period_end: trialEnd.toISOString(),
@@ -104,12 +119,19 @@ export async function POST(request: Request) {
         assistants_limit: planConfig.assistants,
         phone_numbers_limit: planConfig.phoneNumbers,
         // Placeholder IDs for trial — replaced by real Stripe IDs when user converts to paid
-        stripe_price_id: `price_trial_${planType}`,
+        stripe_price_id: `price_trial_${plan}`,
         stripe_subscription_id: `trial_${organizationId}`,
+      }, {
+        onConflict: "organization_id",
+        ignoreDuplicates: true,
       });
 
     if (subError) {
-      console.error("Failed to create trial subscription:", subError);
+      console.error("Failed to create trial subscription:", {
+        organizationId,
+        plan,
+        error: subError,
+      });
       return NextResponse.json(
         { error: "Failed to create subscription" },
         { status: 500 }

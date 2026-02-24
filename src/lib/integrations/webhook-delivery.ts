@@ -53,7 +53,9 @@ export async function deliverWebhooks(
   callData: Parameters<typeof buildCallPayload>[1]
 ): Promise<void> {
   // Skip delivery if plan doesn't include webhook integrations
-  if (!(await hasFeatureAccess(orgId, "webhookIntegrations"))) {
+  const canDeliver = await hasFeatureAccess(orgId, "webhookIntegrations");
+  if (!canDeliver) {
+    console.log("[Webhooks] Skipping delivery: plan does not include webhook integrations", { orgId, event });
     return;
   }
 

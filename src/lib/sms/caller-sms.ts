@@ -5,7 +5,7 @@
  * - Missed-call text-back with booking link + callback number
  * - Appointment confirmation after AI books
  *
- * Guards: feature toggle, opt-out check, rate limiting.
+ * Guards: feature toggle, plan eligibility, opt-out check, rate limiting.
  * Spam protection applies to missed-call text-back only (caller provides isSpam).
  * Sends from the org's Twilio number (caller recognizes it).
  */
