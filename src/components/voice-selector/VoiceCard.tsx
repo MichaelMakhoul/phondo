@@ -20,6 +20,12 @@ const accentLabel: Record<string, string> = {
   australian: "AU",
 };
 
+const accentFlag: Record<string, string> = {
+  american: "\uD83C\uDDFA\uD83C\uDDF8",
+  british: "\uD83C\uDDEC\uD83C\uDDE7",
+  australian: "\uD83C\uDDE6\uD83C\uDDFA",
+};
+
 export function VoiceCard({ voice, selected, onSelect }: VoiceCardProps) {
   const [playState, setPlayState] = useState<PlayState>("idle");
 
@@ -56,9 +62,16 @@ export function VoiceCard({ voice, selected, onSelect }: VoiceCardProps) {
           : "border-transparent bg-muted/50 hover:border-muted-foreground/25"
       }`}
     >
-      {/* Top row: name + play */}
+      {/* Top row: name + badge + play */}
       <div className="flex items-center justify-between gap-2">
-        <span className="text-sm font-medium">{voice.name}</span>
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-medium">{voice.name}</span>
+          {voice.recommended && (
+            <Badge variant="default" className="text-[10px] px-1.5 py-0">
+              Recommended
+            </Badge>
+          )}
+        </div>
         <button
           type="button"
           onClick={handlePlay}
@@ -76,7 +89,7 @@ export function VoiceCard({ voice, selected, onSelect }: VoiceCardProps) {
         <span className="text-xs capitalize text-muted-foreground">{voice.gender}</span>
         <span className="text-muted-foreground/40">·</span>
         <span className="text-xs text-muted-foreground">
-          {accentLabel[voice.accent] ?? voice.accent}
+          {accentFlag[voice.accent]} {accentLabel[voice.accent] ?? voice.accent}
         </span>
       </div>
 

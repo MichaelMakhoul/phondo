@@ -39,7 +39,7 @@ export function VoiceSelector({ value, onChange }: VoiceSelectorProps) {
           No voices match this filter.
         </p>
       ) : (
-        <div className="grid gap-3 sm:grid-cols-2">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {voices.map((voice) => (
             <VoiceCard
               key={voice.id}
