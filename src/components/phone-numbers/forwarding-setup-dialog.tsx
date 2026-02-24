@@ -124,8 +124,10 @@ export function ForwardingSetupDialog({
   // Verification polling state
   const [verifyStatus, setVerifyStatus] = useState<"waiting" | "verified" | "timeout">("waiting");
   const [verifySeconds, setVerifySeconds] = useState(120);
+  const [pollError, setPollError] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const failCountRef = useRef(0);
 
   const stopPolling = useCallback(() => {
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
@@ -136,28 +138,50 @@ export function ForwardingSetupDialog({
     if (!provisioned) return;
     setVerifyStatus("waiting");
     setVerifySeconds(120);
+    setPollError(null);
+    failCountRef.current = 0;
     stopPolling();
 
     pollRef.current = setInterval(async () => {
       try {
         const res = await fetch(`/api/v1/phone-numbers/${provisioned.id}/verify-status`);
         if (res.ok) {
+          failCountRef.current = 0;
+          setPollError(null);
           const data = await res.json();
           if (data.verified) {
+            setVerifyStatus((prev) => {
+              if (prev !== "waiting") return prev;
+              stopPolling();
+              return "verified";
+            });
+          }
+        } else {
+          failCountRef.current++;
+          if (failCountRef.current >= 5) {
             stopPolling();
-            setVerifyStatus("verified");
+            setPollError("Unable to reach verification service. Please try again.");
+            setVerifyStatus("timeout");
           }
         }
       } catch {
-        // Ignore transient fetch errors — keep polling
+        failCountRef.current++;
+        if (failCountRef.current >= 5) {
+          stopPolling();
+          setPollError("Connection lost. Please check your internet and try again.");
+          setVerifyStatus("timeout");
+        }
       }
     }, 3000);
 
     countdownRef.current = setInterval(() => {
       setVerifySeconds((prev) => {
         if (prev <= 1) {
-          stopPolling();
-          setVerifyStatus("timeout");
+          setVerifyStatus((current) => {
+            if (current !== "waiting") return current;
+            stopPolling();
+            return "timeout";
+          });
           return 0;
         }
         return prev - 1;
@@ -181,6 +205,8 @@ export function ForwardingSetupDialog({
     setIsConfirming(false);
     setVerifyStatus("waiting");
     setVerifySeconds(120);
+    setPollError(null);
+    failCountRef.current = 0;
     stopPolling();
   };
 
@@ -505,6 +531,9 @@ export function ForwardingSetupDialog({
                   {Math.floor(verifySeconds / 60)}:{String(verifySeconds % 60).padStart(2, "0")}
                 </p>
                 <p className="text-xs text-muted-foreground">Listening for incoming calls...</p>
+                <p className="mt-3 text-xs text-muted-foreground">
+                  Tip: Use a mobile phone, ask a colleague, or call from a landline — any phone other than {formatPhoneNumber(userPhone, countryCode)}.
+                </p>
               </div>
             )}
 
@@ -525,15 +554,16 @@ export function ForwardingSetupDialog({
                 <div className="rounded-lg border border-amber-200 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/20 p-4 text-center">
                   <AlertCircle className="mx-auto h-8 w-8 text-amber-600" />
                   <p className="mt-2 text-sm font-medium text-amber-800 dark:text-amber-200">
-                    No call detected
+                    {pollError || "No call detected"}
                   </p>
                 </div>
                 <div className="text-xs text-muted-foreground space-y-1">
                   <p className="font-medium">Troubleshooting tips:</p>
                   <ul className="list-disc pl-4 space-y-0.5">
-                    <li>Make sure you dialed the forwarding code from step above</li>
+                    <li>Make sure you dialed the forwarding code from the instructions step</li>
                     <li>Call from a different phone (not the one being forwarded)</li>
                     <li>Some carriers take a few minutes to activate forwarding</li>
+                    <li>If you set up conditional forwarding, let it ring until it goes unanswered</li>
                   </ul>
                 </div>
               </div>
@@ -599,6 +629,12 @@ export function ForwardingSetupDialog({
           )}
           {step === "verifying" && verifyStatus === "timeout" && (
             <>
+              <Button
+                variant="ghost"
+                onClick={() => { stopPolling(); setStep("instructions"); }}
+              >
+                Back to Instructions
+              </Button>
               <Button
                 variant="outline"
                 onClick={() => handleVerifyDone(false)}

@@ -20,11 +20,16 @@ export async function GET(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { data: membership } = await (supabase as any)
+    const { data: membership, error: membershipError } = await (supabase as any)
       .from("org_members")
       .select("organization_id")
       .eq("user_id", user.id)
       .single();
+
+    if (membershipError && membershipError.code !== "PGRST116") {
+      console.error("[VerifyStatus] Membership lookup error:", { userId: user.id, error: membershipError });
+      return NextResponse.json({ error: "Failed to check organization" }, { status: 500 });
+    }
 
     if (!membership) {
       return NextResponse.json({ error: "No organization found" }, { status: 404 });
@@ -46,7 +51,7 @@ export async function GET(
     const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString();
     const { data: recentCall, error: callError } = await (supabase as any)
       .from("calls")
-      .select("id, caller_phone, created_at, duration_seconds")
+      .select("id, caller_phone, created_at")
       .eq("phone_number_id", id)
       .gte("created_at", twoMinutesAgo)
       .order("created_at", { ascending: false })
@@ -60,10 +65,15 @@ export async function GET(
 
     if (recentCall) {
       // A call was received — mark forwarding as active
-      await (supabase as any)
+      const { error: updateError } = await (supabase as any)
         .from("phone_numbers")
         .update({ forwarding_status: "active" })
         .eq("id", id);
+
+      if (updateError) {
+        console.error("[VerifyStatus] Failed to update forwarding_status:", { phoneNumberId: id, error: updateError });
+        return NextResponse.json({ error: "Failed to update forwarding status" }, { status: 500 });
+      }
 
       return NextResponse.json({
         verified: true,
