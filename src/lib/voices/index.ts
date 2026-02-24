@@ -33,6 +33,7 @@ export interface CatalogVoice {
   description: string;
   previewText: string;
   deepgramVoice: string; // Deepgram Aura voice model name for self-hosted TTS
+  recommended?: boolean; // Show "Recommended" badge in voice picker
 }
 
 // ---------------------------------------------------------------------------
@@ -40,7 +41,42 @@ export interface CatalogVoice {
 // ---------------------------------------------------------------------------
 
 export const VOICE_CATALOG: CatalogVoice[] = [
-  // --- Existing voices (confirmed IDs) ---
+  // --- Australian voices (front-and-center for AU market) ---
+  {
+    id: "XB0fDUnXU5powFXDhCwa",
+    name: "Charlotte",
+    gender: "female",
+    accent: "australian",
+    tags: ["warm", "friendly"],
+    description: "Warm, friendly Australian female",
+    previewText: "Hi there! Thanks for getting in touch. What can I do for you?",
+    deepgramVoice: "aura-asteria-en",
+    recommended: true,
+  },
+  {
+    id: "ZQe5CZNOzWyzPSCn5a3c",
+    name: "James",
+    gender: "male",
+    accent: "australian",
+    tags: ["professional", "calm"],
+    description: "Professional Australian male",
+    previewText: "G'day! Thanks for calling. How can I help you today?",
+    deepgramVoice: "aura-arcas-en",
+    recommended: true,
+  },
+  {
+    id: "IKne3meq5aSn9XLyUdCD",
+    name: "Liam",
+    gender: "male",
+    accent: "australian",
+    tags: ["friendly", "conversational"],
+    description: "Friendly, laid-back Australian male",
+    previewText: "Hey! Good to hear from you. How can I help?",
+    deepgramVoice: "aura-orion-en",
+    recommended: true,
+  },
+
+  // --- American voices ---
   {
     id: "EXAVITQu4vr4xnSDxMaL",
     name: "Sarah",
@@ -91,8 +127,6 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     previewText: "Thank you for your call. I'm here to help you today.",
     deepgramVoice: "aura-arcas-en",
   },
-
-  // --- New American voices ---
   {
     id: "ErXwobaYiN019PkySvjV",
     name: "Antoni",
@@ -134,26 +168,6 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     deepgramVoice: "aura-angus-en",
   },
   {
-    id: "onwK4e9ZLuTAKqWW03F9",
-    name: "Daniel",
-    gender: "male",
-    accent: "british",
-    tags: ["professional", "calm"],
-    description: "Polished British male",
-    previewText: "Good day. How may I assist you this afternoon?",
-    deepgramVoice: "aura-arcas-en",
-  },
-  {
-    id: "ThT5KcBeYPX3keUQqHPh",
-    name: "Dorothy",
-    gender: "female",
-    accent: "british",
-    tags: ["warm", "professional"],
-    description: "Warm, eloquent British female",
-    previewText: "Hello, thank you for reaching out. How can I help?",
-    deepgramVoice: "aura-asteria-en",
-  },
-  {
     id: "AZnzlk1XvdvUeBnXmlld",
     name: "Domi",
     gender: "female",
@@ -174,39 +188,27 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     deepgramVoice: "aura-perseus-en",
   },
 
-  // --- Australian voices ---
+  // --- British voices ---
   {
-    id: "ZQe5CZNOzWyzPSCn5a3c",
-    name: "James",
+    id: "onwK4e9ZLuTAKqWW03F9",
+    name: "Daniel",
     gender: "male",
-    accent: "australian",
+    accent: "british",
     tags: ["professional", "calm"],
-    description: "Professional Australian male",
-    previewText: "G'day! Thanks for calling. How can I help you today?",
+    description: "Polished British male",
+    previewText: "Good day. How may I assist you this afternoon?",
     deepgramVoice: "aura-arcas-en",
   },
   {
-    id: "XB0fDUnXU5powFXDhCwa",
-    name: "Charlotte",
+    id: "ThT5KcBeYPX3keUQqHPh",
+    name: "Dorothy",
     gender: "female",
-    accent: "australian",
-    tags: ["warm", "friendly"],
-    description: "Warm, friendly Australian female",
-    previewText: "Hi there! Thanks for getting in touch. What can I do for you?",
+    accent: "british",
+    tags: ["warm", "professional"],
+    description: "Warm, eloquent British female",
+    previewText: "Hello, thank you for reaching out. How can I help?",
     deepgramVoice: "aura-asteria-en",
   },
-  {
-    id: "IKne3meq5aSn9XLyUdCD",
-    name: "Liam",
-    gender: "male",
-    accent: "australian",
-    tags: ["friendly", "conversational"],
-    description: "Friendly, laid-back Australian male",
-    previewText: "Hey! Good to hear from you. How can I help?",
-    deepgramVoice: "aura-orion-en",
-  },
-
-  // --- Additional British voice ---
   {
     id: "SOYHLrjzK2X1ezoPC6cr",
     name: "Harry",

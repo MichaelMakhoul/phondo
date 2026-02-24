@@ -6,6 +6,7 @@ import {
   ArrowLeft,
   PhoneIncoming,
   PhoneOutgoing,
+  PhoneForwarded,
   Clock,
   CheckCircle2,
   XCircle,
@@ -16,6 +17,7 @@ import {
   Mic,
   BarChart3,
   Info,
+  HelpCircle,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -79,9 +81,68 @@ function getSentimentVariant(
   return "secondary";
 }
 
+function getStatusVariant(
+  status: string
+): "success" | "destructive" | "default" | "secondary" {
+  switch (status) {
+    case "completed": return "success";
+    case "failed": return "destructive";
+    case "in-progress": return "default";
+    default: return "secondary";
+  }
+}
+
+function getTransferOutcomeVariant(
+  outcome: string | undefined
+): "success" | "destructive" | "secondary" {
+  switch (outcome) {
+    case "initiated": return "success";
+    case "outside_hours": return "secondary";
+    default: return "destructive";
+  }
+}
+
+function getTransferOutcomeLabel(outcome: string | undefined): string {
+  switch (outcome) {
+    case "initiated": return "Transferred";
+    case "outside_hours": return "Outside Hours";
+    default: return "Failed";
+  }
+}
+
+function getUrgencyVariant(
+  urgency: string | undefined
+): "destructive" | "default" | "secondary" {
+  switch (urgency) {
+    case "high": return "destructive";
+    case "medium": return "default";
+    default: return "secondary";
+  }
+}
+
+function getSpamScoreColor(score: number): string {
+  if (score >= 70) return "bg-red-500";
+  if (score >= 40) return "bg-orange-500";
+  return "bg-yellow-500";
+}
+
 export function CallDetail({ call }: { call: Call }) {
   const successEval = call.metadata?.successEvaluation as string | undefined;
+  const unansweredQuestions = Array.isArray(call.metadata?.unansweredQuestions)
+    ? (call.metadata.unansweredQuestions as string[])
+    : [];
   const collectedEntries = Object.entries(call.collected_data || {});
+  const transferAttempt = call.metadata?.transferAttempt as {
+    ruleId?: string;
+    ruleName?: string;
+    targetPhone?: string;
+    targetName?: string;
+    reason?: string;
+    urgency?: string;
+    outcome?: string;
+    outsideBusinessHours?: boolean;
+    timestamp?: string;
+  } | undefined;
 
   return (
     <div className="space-y-6">
@@ -97,17 +158,7 @@ export function CallDetail({ call }: { call: Call }) {
 
         <div className="flex items-center gap-3 flex-wrap">
           <h1 className="text-2xl font-bold">Call Details</h1>
-          <Badge
-            variant={
-              call.status === "completed"
-                ? "success"
-                : call.status === "failed"
-                ? "destructive"
-                : call.status === "in-progress"
-                ? "default"
-                : "secondary"
-            }
-          >
+          <Badge variant={getStatusVariant(call.status)}>
             {call.status}
           </Badge>
           {call.is_spam && (
@@ -230,6 +281,66 @@ export function CallDetail({ call }: { call: Call }) {
         </Alert>
       )}
 
+      {/* Transfer Info */}
+      {transferAttempt && (
+        <Card className="border-blue-200 bg-blue-50/50 dark:border-blue-900 dark:bg-blue-950/20">
+          <CardHeader className="pb-2">
+            <CardTitle className="flex items-center gap-2 text-blue-800 dark:text-blue-200">
+              <PhoneForwarded className="h-5 w-5" />
+              Transfer
+              <Badge
+                variant={getTransferOutcomeVariant(transferAttempt.outcome)}
+                className="ml-auto"
+              >
+                {getTransferOutcomeLabel(transferAttempt.outcome)}
+              </Badge>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <div>
+                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                  Target
+                </p>
+                <p className="mt-1 text-sm font-medium">
+                  {transferAttempt.targetName || "-"}
+                </p>
+                {transferAttempt.targetPhone && (
+                  <p className="text-xs text-muted-foreground">
+                    {formatPhoneNumber(transferAttempt.targetPhone)}
+                  </p>
+                )}
+              </div>
+              <div>
+                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                  Reason
+                </p>
+                <p className="mt-1 text-sm">{transferAttempt.reason || "-"}</p>
+              </div>
+              <div>
+                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                  Urgency
+                </p>
+                <Badge
+                  variant={getUrgencyVariant(transferAttempt.urgency)}
+                  className="mt-1"
+                >
+                  {transferAttempt.urgency || "low"}
+                </Badge>
+              </div>
+              {transferAttempt.ruleName && (
+                <div>
+                  <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                    Rule
+                  </p>
+                  <p className="mt-1 text-sm">{transferAttempt.ruleName}</p>
+                </div>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Main Content Grid */}
       <div className="grid gap-6 lg:grid-cols-3">
         {/* Left Column */}
@@ -252,6 +363,43 @@ export function CallDetail({ call }: { call: Call }) {
               )}
             </CardContent>
           </Card>
+
+          {/* Knowledge Gaps */}
+          {unansweredQuestions.length > 0 && (
+            <Card className="border-amber-200 bg-amber-50/50 dark:border-amber-900 dark:bg-amber-950/20">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-amber-800 dark:text-amber-200">
+                  <HelpCircle className="h-5 w-5" />
+                  Knowledge Gaps
+                  <Badge variant="secondary" className="ml-auto">
+                    {unansweredQuestions.length} question
+                    {unansweredQuestions.length !== 1 ? "s" : ""}
+                  </Badge>
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <p className="text-sm text-amber-700 dark:text-amber-300 mb-3">
+                  The caller asked questions your AI couldn&apos;t answer. Add this
+                  information to your knowledge base to improve future calls.
+                </p>
+                <ul className="space-y-2">
+                  {unansweredQuestions.map((q, i) => (
+                    <li key={i} className="flex items-start gap-2 text-sm">
+                      <span className="mt-0.5 shrink-0 text-amber-600 dark:text-amber-400">?</span>
+                      <span>{q}</span>
+                    </li>
+                  ))}
+                </ul>
+                <Link
+                  href="/settings/knowledge"
+                  className="mt-4 inline-flex items-center gap-1 text-sm font-medium text-amber-700 hover:text-amber-900 dark:text-amber-300 dark:hover:text-amber-100"
+                >
+                  Go to Knowledge Base
+                  <ArrowLeft className="h-3 w-3 rotate-180" />
+                </Link>
+              </CardContent>
+            </Card>
+          )}
 
           {/* Collected Data */}
           <Card>
@@ -374,13 +522,7 @@ export function CallDetail({ call }: { call: Call }) {
                     <div className="flex items-center gap-2">
                       <div className="flex-1 h-2 bg-gray-200 rounded-full overflow-hidden">
                         <div
-                          className={`h-full ${
-                            call.spam_score >= 70
-                              ? "bg-red-500"
-                              : call.spam_score >= 40
-                              ? "bg-orange-500"
-                              : "bg-yellow-500"
-                          }`}
+                          className={`h-full ${getSpamScoreColor(call.spam_score)}`}
                           style={{ width: `${call.spam_score}%` }}
                         />
                       </div>

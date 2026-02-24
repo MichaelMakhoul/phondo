@@ -21,8 +21,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { useToast } from "@/components/ui/use-toast";
-import { Loader2, Building, Clock, Globe, Calendar } from "lucide-react";
+import { Loader2, Building, Clock, Globe, Calendar, Shield } from "lucide-react";
 import {
   SUPPORTED_COUNTRIES,
   getCountryConfig,
@@ -50,6 +51,32 @@ const APPOINTMENT_DURATIONS = [
   { value: "120", label: "2 hours" },
 ];
 
+const US_STATES = [
+  { code: "AL", name: "Alabama" }, { code: "AK", name: "Alaska" }, { code: "AZ", name: "Arizona" },
+  { code: "AR", name: "Arkansas" }, { code: "CA", name: "California" }, { code: "CO", name: "Colorado" },
+  { code: "CT", name: "Connecticut" }, { code: "DE", name: "Delaware" }, { code: "FL", name: "Florida" },
+  { code: "GA", name: "Georgia" }, { code: "HI", name: "Hawaii" }, { code: "ID", name: "Idaho" },
+  { code: "IL", name: "Illinois" }, { code: "IN", name: "Indiana" }, { code: "IA", name: "Iowa" },
+  { code: "KS", name: "Kansas" }, { code: "KY", name: "Kentucky" }, { code: "LA", name: "Louisiana" },
+  { code: "ME", name: "Maine" }, { code: "MD", name: "Maryland" }, { code: "MA", name: "Massachusetts" },
+  { code: "MI", name: "Michigan" }, { code: "MN", name: "Minnesota" }, { code: "MS", name: "Mississippi" },
+  { code: "MO", name: "Missouri" }, { code: "MT", name: "Montana" }, { code: "NE", name: "Nebraska" },
+  { code: "NV", name: "Nevada" }, { code: "NH", name: "New Hampshire" }, { code: "NJ", name: "New Jersey" },
+  { code: "NM", name: "New Mexico" }, { code: "NY", name: "New York" }, { code: "NC", name: "North Carolina" },
+  { code: "ND", name: "North Dakota" }, { code: "OH", name: "Ohio" }, { code: "OK", name: "Oklahoma" },
+  { code: "OR", name: "Oregon" }, { code: "PA", name: "Pennsylvania" }, { code: "RI", name: "Rhode Island" },
+  { code: "SC", name: "South Carolina" }, { code: "SD", name: "South Dakota" }, { code: "TN", name: "Tennessee" },
+  { code: "TX", name: "Texas" }, { code: "UT", name: "Utah" }, { code: "VT", name: "Vermont" },
+  { code: "VA", name: "Virginia" }, { code: "WA", name: "Washington" }, { code: "WV", name: "West Virginia" },
+  { code: "WI", name: "Wisconsin" }, { code: "WY", name: "Wyoming" }, { code: "DC", name: "District of Columbia" },
+];
+
+// UI-only copy for showing consent warnings. Authoritative list is in
+// voice-server/lib/recording-consent.js (runtime enforcement).
+const TWO_PARTY_CONSENT_STATES = new Set([
+  "CA", "CT", "FL", "IL", "MD", "MA", "MT", "NV", "NH", "PA", "WA",
+]);
+
 interface BusinessHours {
   [key: string]: { open: string; close: string } | null;
 }
@@ -66,6 +93,8 @@ interface BusinessSettingsFormProps {
     timezone: string;
     businessHours: BusinessHours | null;
     defaultAppointmentDuration: number;
+    businessState: string;
+    recordingConsentMode: string;
   };
 }
 
@@ -84,6 +113,8 @@ export function BusinessSettingsForm({
   const [appointmentDuration, setAppointmentDuration] = useState(
     initialData.defaultAppointmentDuration
   );
+  const [businessState, setBusinessState] = useState(initialData.businessState);
+  const [recordingConsentMode, setRecordingConsentMode] = useState(initialData.recordingConsentMode);
   const [businessHours, setBusinessHours] = useState<BusinessHours>(
     initialData.businessHours || {
       monday: { open: "09:00", close: "17:00" },
@@ -148,6 +179,10 @@ export function BusinessSettingsForm({
     if (!tzValues.includes(timezone)) {
       setTimezone(newConfig.defaultTimezone);
     }
+    // Clear US state when switching away from US
+    if (newCountry !== "US") {
+      setBusinessState("");
+    }
   };
 
   const handleSave = async () => {
@@ -167,6 +202,8 @@ export function BusinessSettingsForm({
           timezone,
           business_hours: businessHours,
           default_appointment_duration: appointmentDuration,
+          business_state: businessState || null,
+          recording_consent_mode: recordingConsentMode,
         })
         .eq("id", organizationId);
 
@@ -241,6 +278,38 @@ export function BusinessSettingsForm({
             provisioning. Existing phone numbers will continue to work.
           </p>
         </div>
+
+        {/* State (US only) */}
+        {country === "US" && (
+          <div className="space-y-2">
+            <Label>State</Label>
+            <Select value={businessState} onValueChange={setBusinessState}>
+              <SelectTrigger className="w-full md:w-[300px]">
+                <SelectValue placeholder="Select state" />
+              </SelectTrigger>
+              <SelectContent>
+                {US_STATES.map((s) => (
+                  <SelectItem key={s.code} value={s.code}>
+                    {s.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {!businessState && (
+              <p className="text-xs text-amber-600 dark:text-amber-400">
+                Select your state to ensure correct recording disclosure settings.
+                Some states require all-party consent for call recording.
+              </p>
+            )}
+            {businessState && TWO_PARTY_CONSENT_STATES.has(businessState) && (
+              <p className="text-xs text-amber-600 dark:text-amber-400">
+                {US_STATES.find((s) => s.code === businessState)?.name} requires
+                all-party consent for call recording. A recording disclosure will
+                be played at the start of each call.
+              </p>
+            )}
+          </div>
+        )}
 
         {/* Basic Info */}
         <div className="grid gap-4 md:grid-cols-2">
@@ -428,6 +497,64 @@ export function BusinessSettingsForm({
             How long each appointment slot should be when using built-in
             booking. Cal.com users: duration comes from your event type instead.
           </p>
+        </div>
+
+        <Separator />
+
+        {/* Compliance & Privacy */}
+        <div className="space-y-4">
+          <Label className="flex items-center gap-2 text-base font-semibold">
+            <Shield className="h-4 w-4" />
+            Call Recording Disclosure
+          </Label>
+          <p className="text-sm text-muted-foreground">
+            When enabled, a brief recording disclosure is played to the caller
+            before your AI receptionist greets them. Required by law in some
+            jurisdictions.
+          </p>
+          <RadioGroup
+            value={recordingConsentMode}
+            onValueChange={setRecordingConsentMode}
+            className="space-y-2"
+          >
+            <div className="flex items-start gap-2">
+              <RadioGroupItem value="auto" id="consent-auto" className="mt-1" />
+              <div>
+                <Label htmlFor="consent-auto" className="font-medium">
+                  Automatic (recommended)
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  Disclosure is played when required by your business location
+                  {country === "AU" && " — always required in Australia"}
+                  {country === "US" && businessState && TWO_PARTY_CONSENT_STATES.has(businessState) && ` — required in ${US_STATES.find((s) => s.code === businessState)?.name}`}
+                  {country === "US" && businessState && !TWO_PARTY_CONSENT_STATES.has(businessState) && " — not required in your state (one-party consent)"}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-start gap-2">
+              <RadioGroupItem value="always" id="consent-always" className="mt-1" />
+              <div>
+                <Label htmlFor="consent-always" className="font-medium">
+                  Always disclose
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  Play the recording disclosure on every call regardless of location
+                </p>
+              </div>
+            </div>
+            <div className="flex items-start gap-2">
+              <RadioGroupItem value="never" id="consent-never" className="mt-1" />
+              <div>
+                <Label htmlFor="consent-never" className="font-medium">
+                  Never disclose
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  Do not play a recording disclosure. Only use this if you do not
+                  record calls or handle consent separately.
+                </p>
+              </div>
+            </div>
+          </RadioGroup>
         </div>
 
         <Separator />

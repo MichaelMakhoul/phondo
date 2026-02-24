@@ -51,6 +51,9 @@ async function completeCallRecord(callId, {
   callerName,
   collectedData,
   successEvaluation,
+  recordingDisclosurePlayed,
+  recordingDisclosureFailed,
+  transferAttempt,
 }) {
   const supabase = getSupabase();
 
@@ -61,35 +64,29 @@ async function completeCallRecord(callId, {
     transcript: transcript || null,
   };
 
-  // Add analysis fields if available
   if (summary) updatePayload.summary = summary;
   if (callerName) updatePayload.caller_name = callerName;
   if (collectedData) updatePayload.collected_data = collectedData;
+
+  // Merge metadata extras into a single atomic update.
+  // Initial metadata (set at insert time) is { voice_provider: "self_hosted" }.
+  // We include it here to avoid a read-then-write race with the call-completed
+  // webhook which also writes to metadata concurrently.
+  const metadataExtras = {
+    ...(successEvaluation && { successEvaluation }),
+    ...(recordingDisclosurePlayed && { recordingDisclosurePlayed: true }),
+    ...(recordingDisclosureFailed && { recordingDisclosureFailed: true }),
+    ...(transferAttempt && { transferAttempt }),
+  };
+
+  if (Object.keys(metadataExtras).length > 0) {
+    updatePayload.metadata = { voice_provider: "self_hosted", ...metadataExtras };
+  }
 
   const { error } = await supabase
     .from("calls")
     .update(updatePayload)
     .eq("id", callId);
-
-  // Atomically merge successEvaluation into metadata to avoid race with call-completed webhook
-  if (successEvaluation && !error) {
-    const { error: metaErr } = await supabase.rpc("exec_sql", {
-      query: `UPDATE calls SET metadata = COALESCE(metadata, '{}'::jsonb) || $1::jsonb WHERE id = $2`,
-      params: [JSON.stringify({ successEvaluation }), callId],
-    }).maybeSingle();
-    // Fallback: if RPC not available, use regular update (non-atomic but best effort)
-    if (metaErr) {
-      const { data: existing } = await supabase
-        .from("calls")
-        .select("metadata")
-        .eq("id", callId)
-        .single();
-      await supabase
-        .from("calls")
-        .update({ metadata: { ...(existing?.metadata || {}), successEvaluation } })
-        .eq("id", callId);
-    }
-  }
 
   if (error) {
     throw new Error(`Failed to complete call record ${callId}: ${error.message}`);

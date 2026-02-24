@@ -3,6 +3,8 @@ import { createClient } from "@/lib/supabase/server";
 import { getVapiClient } from "@/lib/vapi";
 import { getCountryConfig, formatPhoneForCountry } from "@/lib/country-config";
 import { z } from "zod";
+import { checkResourceLimit } from "@/lib/stripe/billing-service";
+import { PLANS } from "@/lib/stripe/client";
 
 // Type for org_members query result
 interface Membership {
@@ -87,6 +89,18 @@ export async function POST(request: Request) {
 
     if (!membership.role || !["owner", "admin"].includes(membership.role)) {
       return NextResponse.json({ error: "Insufficient permissions" }, { status: 403 });
+    }
+
+    // Enforce plan phone number limit
+    const limitCheck = await checkResourceLimit(membership.organization_id, "phoneNumbers");
+    if (!limitCheck.allowed) {
+      const planName = limitCheck.plan ? PLANS[limitCheck.plan].name : "current";
+      return NextResponse.json({
+        error: `Your ${planName} plan allows up to ${limitCheck.limit} phone number${limitCheck.limit === 1 ? "" : "s"}. Upgrade your plan to add more.`,
+        code: "RESOURCE_LIMIT_REACHED",
+        limit: limitCheck.limit,
+        current: limitCheck.currentCount,
+      }, { status: 403 });
     }
 
     // Look up org's country

@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -51,7 +50,6 @@ export function NotificationSettings({
   const [isSaving, setIsSaving] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const { toast } = useToast();
-  const supabase = createClient();
 
   const validate = (): boolean => {
     const newErrors: Record<string, string> = {};
@@ -110,39 +108,37 @@ export function NotificationSettings({
     setIsSaving(true);
 
     try {
-      // Check if preferences record exists
-      const { data: existing } = await (supabase as any)
-        .from("notification_preferences")
-        .select("id")
-        .eq("organization_id", organizationId)
-        .single();
+      const response = await fetch("/api/v1/notification-preferences", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(preferences),
+      });
 
-      if (existing) {
-        // Update existing
-        const { error } = await (supabase as any)
-          .from("notification_preferences")
-          .update({
-            ...preferences,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("organization_id", organizationId);
-
-        if (error) throw error;
-      } else {
-        // Insert new
-        const { error } = await (supabase as any)
-          .from("notification_preferences")
-          .insert({
-            organization_id: organizationId,
-            ...preferences,
-          });
-
-        if (error) throw error;
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || "Failed to save notification settings.");
       }
 
+      const result = await response.json();
+
+      // If fields were downgraded due to plan, update local state to reflect reality
+      if (result.smsFieldsDowngraded) {
+        setPreferences((prev) => ({
+          ...prev,
+          sms_textback_on_missed_call: false,
+          sms_appointment_confirmation: false,
+        }));
+      }
+      if (result.webhookDowngraded) {
+        setPreferences((prev) => ({ ...prev, webhook_url: null }));
+      }
+
+      const downgraded = result.smsFieldsDowngraded || result.webhookDowngraded;
       toast({
         title: "Settings saved",
-        description: "Your notification preferences have been updated.",
+        description: downgraded
+          ? "Saved. Some features require a Professional or Business plan."
+          : "Your notification preferences have been updated.",
       });
     } catch (error: any) {
       toast({

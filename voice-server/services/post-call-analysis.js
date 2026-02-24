@@ -18,6 +18,7 @@ Return a JSON object with these fields:
 - summary: A 1-2 sentence summary of the call (string)
 - success_evaluation: Rate the call outcome as "successful", "partial", or "unsuccessful" (string)
 - collected_data: Any structured data collected during the call like phone numbers, emails, dates mentioned (object or null)
+- unanswered_questions: Questions the caller asked that the AI could not answer, said "I don't have that information", or deflected. Only include genuine knowledge gaps, not rhetorical questions. (array of strings, or null if all questions were answered)
 
 Return ONLY valid JSON, no other text.`;
 
@@ -92,6 +93,7 @@ async function analyzeCallTranscript(transcript) {
       summary: analysis.summary || null,
       successEvaluation: analysis.success_evaluation || null,
       collectedData: analysis.collected_data || null,
+      unansweredQuestions: Array.isArray(analysis.unanswered_questions) ? analysis.unanswered_questions : null,
     };
   } catch (err) {
     console.error("[PostCallAnalysis] Failed to analyze transcript:", err.message);

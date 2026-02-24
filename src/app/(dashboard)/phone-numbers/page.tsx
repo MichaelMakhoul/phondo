@@ -1,8 +1,9 @@
+import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Phone, MoreVertical, Bot, PhoneForwarded, AlertCircle } from "lucide-react";
+import { Phone, MoreVertical, Bot, PhoneForwarded, AlertCircle, ArrowUpRight } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -11,6 +12,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { formatPhoneNumber } from "@/lib/utils";
 import { PhoneNumberActions } from "@/components/phone-numbers/phone-number-actions";
+import { checkResourceLimit } from "@/lib/stripe/billing-service";
 
 interface PhoneNumber {
   id: string;
@@ -71,17 +73,38 @@ export default async function PhoneNumbersPage() {
     .eq("organization_id", orgId)
     .eq("is_active", true) as { data: Assistant[] | null } : { data: null };
 
+  // Check resource limit for phone numbers
+  const limitInfo = orgId ? await checkResourceLimit(orgId, "phoneNumbers") : null;
+  const atLimit = limitInfo ? !limitInfo.allowed : false;
+  const showLimitBadge = limitInfo && limitInfo.limit > 0;
+
   return (
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">Phone Numbers</h1>
-          <p className="text-muted-foreground">
-            Manage phone numbers for your assistants
-          </p>
+        <div className="flex items-center gap-3">
+          <div>
+            <h1 className="text-2xl font-bold">Phone Numbers</h1>
+            <p className="text-muted-foreground">
+              Manage phone numbers for your assistants
+            </p>
+          </div>
+          {showLimitBadge && (
+            <Badge variant={atLimit ? "destructive" : "secondary"} className="ml-2">
+              {limitInfo.currentCount} of {limitInfo.limit}
+            </Badge>
+          )}
         </div>
-        <PhoneNumberActions assistants={assistants || []} countryCode={countryCode} />
+        <div className="flex items-center gap-2">
+          {atLimit && (
+            <Link href="/billing">
+              <Button variant="outline" size="sm">
+                Upgrade <ArrowUpRight className="ml-1 h-3 w-3" />
+              </Button>
+            </Link>
+          )}
+          <PhoneNumberActions assistants={assistants || []} countryCode={countryCode} disabled={atLimit} />
+        </div>
       </div>
 
       {/* Phone Numbers List */}
@@ -199,7 +222,7 @@ export default async function PhoneNumbersPage() {
             Use your existing business number with call forwarding, or buy a new number
           </p>
           <div className="mt-6">
-            <PhoneNumberActions assistants={assistants || []} countryCode={countryCode} />
+            <PhoneNumberActions assistants={assistants || []} countryCode={countryCode} disabled={atLimit} />
           </div>
         </Card>
       )}

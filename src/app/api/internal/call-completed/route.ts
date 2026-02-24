@@ -40,6 +40,7 @@ interface CallCompletedPayload {
   callerName?: string;
   collectedData?: Record<string, unknown>;
   successEvaluation?: string;
+  unansweredQuestions?: string[];
 }
 
 /**
@@ -77,6 +78,7 @@ export async function POST(request: Request) {
     callerName,
     collectedData,
     successEvaluation,
+    unansweredQuestions,
   } = payload;
 
   if (!organizationId || typeof organizationId !== "string") {
@@ -121,8 +123,10 @@ export async function POST(request: Request) {
   }
 
   // 2. Update call record with spam results (merge metadata, don't overwrite).
-  // Safe as a read-then-write because completeCallRecord no longer touches metadata
-  // (voice_provider is set at insert time), making this the only post-insert metadata writer.
+  // completeCallRecord writes voice_provider + disclosure flags + successEvaluation
+  // in a single update. notifyCallCompleted (which triggers this route) is called
+  // after await completeCallRecord() in server.js cleanupSession(), so metadata
+  // is already written by the time this route runs. Do NOT parallelize those calls.
   if (callId && spamAnalysis) {
     const { data: existingCall, error: fetchError } = await (supabase as any)
       .from("calls")
@@ -151,6 +155,7 @@ export async function POST(request: Request) {
         ...existingMetadata,
         ended_reason: endedReason,
         ...(successEvaluation && { successEvaluation }),
+        ...(unansweredQuestions && unansweredQuestions.length > 0 && { unansweredQuestions }),
         spam_analysis: {
           reasons: spamAnalysis.reasons,
           confidence: spamAnalysis.confidence,
