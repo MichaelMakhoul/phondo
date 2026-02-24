@@ -363,10 +363,20 @@ async function executeTransferCall(args, context) {
     };
   }
 
+  // Pass action URL so Twilio POSTs dial outcome for no-answer fallback
+  const PUBLIC_URL = process.env.PUBLIC_URL;
+  const transferOptions = {};
+  if (PUBLIC_URL) {
+    transferOptions.actionUrl = `${PUBLIC_URL}/twiml/transfer-status`;
+  } else {
+    console.error("[Transfer] PUBLIC_URL not set — no-answer fallback DISABLED");
+  }
+
   const result = await transferCall(
     context.callSid,
     matchedRule.transferToPhone,
-    announcement
+    announcement,
+    transferOptions
   );
 
   transferAttempt.outcome = result.success ? "initiated" : "failed";
@@ -387,6 +397,7 @@ async function executeTransferCall(args, context) {
     message: result.message,
     action: result.success ? "transfer" : "callback",
     transferTo: matchedRule.transferToPhone,
+    transferTargetName: targetName,
     transferAttempt,
   };
 }

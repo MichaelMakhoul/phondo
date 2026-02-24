@@ -31,6 +31,16 @@ async function twilioPost(path, params) {
   });
 }
 
+// Escape XML attribute values to prevent TwiML injection
+function escapeXml(s) {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
 /**
  * Transfer an active Twilio call to another phone number.
  * Updates the call with TwiML that announces the transfer and dials the target.
@@ -38,9 +48,10 @@ async function twilioPost(path, params) {
  * @param {string} callSid - The active Twilio CallSid
  * @param {string} transferTo - E.164 phone number to transfer to
  * @param {string} [announcement] - Message to say before connecting
+ * @param {{ actionUrl?: string, timeout?: number }} [options]
  * @returns {Promise<{ success: boolean, message: string }>}
  */
-async function transferCall(callSid, transferTo, announcement) {
+async function transferCall(callSid, transferTo, announcement, { actionUrl, timeout = 25 } = {}) {
   if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN) {
     console.error("[Transfer] Missing TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN");
     return {
@@ -60,13 +71,28 @@ async function transferCall(callSid, transferTo, announcement) {
   // only Dial here to avoid a duplicate robotic Twilio voice.
   const safeNumber = transferTo.replace(/[^+\d]/g, "");
 
+  // Build <Dial> with optional action URL for no-answer fallback
+  const safeTimeout = Math.min(Math.max(Math.round(Number(timeout) || 25), 5), 60);
+  const dialAttrs = [`timeout="${safeTimeout}"`];
+  if (actionUrl) {
+    dialAttrs.push(`action="${escapeXml(actionUrl)}"`);
+  }
+
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Dial>${safeNumber}</Dial>
+  <Dial ${dialAttrs.join(" ")}>${safeNumber}</Dial>
 </Response>`;
 
   try {
     const res = await twilioPost(`Calls/${callSid}.json`, { Twiml: twiml });
+
+    if (!res) {
+      console.error("[Transfer] twilioPost returned null — credentials may be invalid");
+      return {
+        success: false,
+        message: "I'm sorry, I'm unable to transfer the call right now. Let me take your information instead.",
+      };
+    }
 
     if (!res.ok) {
       const text = (await res.text()).slice(0, 500);

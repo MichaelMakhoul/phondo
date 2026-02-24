@@ -18,6 +18,7 @@ const { generateHoldAudio, getHoldPreset } = require("./lib/hold-audio");
 const { detectExpectedInput } = require("./lib/input-type-detector");
 const { requiresRecordingDisclosure, getRecordingDisclosureText } = require("./lib/recording-consent");
 const { getSupabase } = require("./lib/supabase");
+const { saveForTransfer, consumeTransfer, finishTransferredCall } = require("./lib/pending-transfers");
 
 // Validate required env vars before deriving any constants
 const REQUIRED_ENV = [
@@ -109,11 +110,11 @@ function validateTwilioSignature(req) {
 const pendingTokens = new Map();
 const TOKEN_TTL_MS = 30_000;
 
-function issueStreamToken(calledNumber, callerPhone) {
+function issueStreamToken(calledNumber, callerPhone, reconnectCallSid) {
   const ts = Date.now().toString();
   const hmac = crypto.createHmac("sha256", WS_SECRET).update(ts).digest("hex");
   const token = `${ts}.${hmac}`;
-  pendingTokens.set(token, { issuedAt: Date.now(), calledNumber, callerPhone });
+  pendingTokens.set(token, { issuedAt: Date.now(), calledNumber, callerPhone, reconnectCallSid });
   return token;
 }
 
@@ -134,7 +135,7 @@ function consumeStreamToken(token) {
     const expectedBuf = Buffer.from(expected);
     if (hmacBuf.length !== expectedBuf.length) return null;
     if (!crypto.timingSafeEqual(hmacBuf, expectedBuf)) return null;
-    return { calledNumber: entry.calledNumber, callerPhone: entry.callerPhone };
+    return { calledNumber: entry.calledNumber, callerPhone: entry.callerPhone, reconnectCallSid: entry.reconnectCallSid };
   } catch (err) {
     console.error("[Auth] Token verification threw unexpectedly — if this repeats, all calls will be rejected:", err);
     return null;
@@ -178,6 +179,89 @@ app.post("/twiml", (req, res) => {
 </Response>`);
 });
 
+/**
+ * Transfer status callback — Twilio POSTs here after <Dial> completes.
+ * If the target answered, we finish the call record.
+ * If no-answer/busy/failed, we reconnect the caller to the AI.
+ */
+app.post("/twiml/transfer-status", async (req, res) => {
+  if (!validateTwilioSignature(req)) {
+    console.warn("[TransferStatus] Rejected request — invalid Twilio signature");
+    return res.status(403).send("Forbidden");
+  }
+
+  const callSid = req.body.CallSid;
+  const dialStatus = req.body.DialCallStatus; // completed, no-answer, busy, failed, canceled
+  console.log(`[TransferStatus] callSid=${callSid} dialStatus=${dialStatus}`);
+
+  if (!callSid) {
+    return res.status(400).send("Missing CallSid");
+  }
+
+  if (dialStatus === "completed") {
+    // Target answered — call was successfully transferred
+    const savedState = consumeTransfer(callSid);
+    if (savedState) {
+      finishTransferredCall(savedState, "answered").catch((err) => {
+        console.error("[TransferStatus] finishTransferredCall failed:", err);
+      });
+    }
+    // Nothing more to do — Twilio will end the call after both parties hang up
+    return res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Hangup/>
+</Response>`);
+  }
+
+  // Transfer failed — reconnect caller to AI via a new media stream
+  const savedState = consumeTransfer(callSid);
+  if (!savedState) {
+    console.warn(`[TransferStatus] No pending transfer for callSid=${callSid} — hanging up`);
+    return res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Hangup/>
+</Response>`);
+  }
+
+  try {
+    // Update the transfer attempt outcome
+    if (savedState.transferAttempt) {
+      savedState.transferAttempt.outcome = dialStatus || "failed";
+    }
+
+    // Issue a new stream token that carries the reconnectCallSid
+    const token = issueStreamToken(
+      savedState.orgPhoneNumber || "",
+      savedState.callerPhone || "",
+      callSid
+    );
+
+    // Re-save the state so the WebSocket reconnection handler can pick it up
+    saveForTransfer(callSid, savedState);
+
+    console.log(`[TransferStatus] Reconnecting callSid=${callSid} to AI (dialStatus=${dialStatus})`);
+
+    res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Connect>
+    <Stream url="${escapeXml(WS_URL)}">
+      <Parameter name="auth_token" value="${escapeXml(token)}" />
+    </Stream>
+  </Connect>
+</Response>`);
+  } catch (err) {
+    console.error(`[TransferStatus] Failed to set up reconnection for callSid=${callSid}:`, err);
+    // Safety net: complete the call record since reconnection failed
+    finishTransferredCall(savedState, dialStatus || "failed").catch((finishErr) => {
+      console.error("[TransferStatus] Safety net finishTransferredCall also failed:", finishErr);
+    });
+    res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Hangup/>
+</Response>`);
+  }
+});
+
 // Health check with Supabase connectivity test
 app.get("/health", async (req, res) => {
   try {
@@ -206,6 +290,14 @@ wss.on("connection", (twilioWs) => {
     const s = session;
     session = null;
     sessions.delete(s.streamSid);
+
+    // If a transfer is pending, don't run post-call processing yet —
+    // the /twiml/transfer-status callback or TTL cleanup will handle it.
+    if (s.pendingTransfer) {
+      console.log(`[Cleanup] Transfer pending for callSid=${s.callSid} — deferring post-call processing`);
+      s.destroy();
+      return;
+    }
 
     const transcript = s.getTranscript();
     const durationSeconds = s.getDurationSeconds();
@@ -303,7 +395,98 @@ wss.on("connection", (twilioWs) => {
             return;
           }
 
-          const { calledNumber, callerPhone } = tokenData;
+          const { calledNumber, callerPhone, reconnectCallSid } = tokenData;
+
+          // Reconnection after failed transfer — restore session from saved state
+          if (reconnectCallSid) {
+            const savedState = consumeTransfer(reconnectCallSid);
+            if (savedState) {
+              console.log(`[Reconnect] Restoring session for callSid=${reconnectCallSid} (dialStatus=${savedState.transferAttempt?.outcome || "unknown"})`);
+
+              session = new CallSession(reconnectCallSid);
+              session.streamSid = streamSid;
+              session.messages = savedState.messages;
+              session.organizationId = savedState.organizationId;
+              session.assistantId = savedState.assistantId;
+              session.phoneNumberId = savedState.phoneNumberId;
+              session.callerPhone = savedState.callerPhone;
+              session.callRecordId = savedState.callRecordId;
+              session.calendarEnabled = savedState.calendarEnabled;
+              session.transferRules = savedState.transferRules;
+              session.deepgramVoice = savedState.deepgramVoice;
+              session.holdPreset = savedState.holdPreset;
+              session.organization = savedState.organization;
+              session.orgPhoneNumber = savedState.orgPhoneNumber;
+              session.transferAttempt = savedState.transferAttempt;
+              session.startedAt = savedState.startedAt;
+              sessions.set(streamSid, session);
+
+              // Re-open Deepgram STT
+              session.deepgramWs = openDeepgramStream(DEEPGRAM_API_KEY, {
+                onTranscript: ({ transcript, isFinal }) => {
+                  if (!isFinal) return;
+                  console.log(`[STT] Final: "${transcript}"`);
+                  session.bufferTranscript(transcript, (combined) => {
+                    console.log(`[STT] Buffered: "${combined}"`);
+                    session.queueOrProcess(combined, (text) => handleUserSpeech(session, twilioWs, text));
+                  });
+                },
+                onUtteranceEnd: () => {
+                  session.flushBuffer();
+                },
+                onError: (err) => {
+                  console.error("[STT] Error:", err);
+                  if (session) {
+                    session.callFailed = true;
+                    session.endedReason = "stt-error";
+                  }
+                  sendTTS(session, twilioWs, "I'm sorry, I'm experiencing technical difficulties. Please try calling again.")
+                    .catch((ttsErr) => console.error("[STT] Failed to send error message to caller:", ttsErr))
+                    .finally(() => setTimeout(() => twilioWs.close(), 2000));
+                },
+                onClose: (code) => {
+                  if (code !== 1000 && code !== 1005 && session) {
+                    console.error(`[STT] Connection lost during active call (callSid=${session.callSid})`);
+                  }
+                },
+              });
+
+              // Inject system context about the failed transfer
+              const transferTargetName = savedState.transferTargetName || "the team member";
+              const failReason = savedState.transferAttempt?.outcome || "unavailable";
+              session.addMessage("system",
+                `Transfer to ${transferTargetName} was unsuccessful (${failReason}). Resume the conversation naturally. Offer to take a message or schedule a callback.`
+              );
+
+              // Send fallback message via TTS
+              const fallbackMsg = `I'm sorry, ${transferTargetName} wasn't available right now. Would you like me to take a message, or is there something else I can help you with?`;
+              try {
+                await sendTTS(session, twilioWs, fallbackMsg);
+                session.addMessage("assistant", fallbackMsg);
+              } catch (ttsErr) {
+                console.error("[Reconnect] Failed to send fallback TTS — caller will hear silence:", ttsErr);
+                // Don't add to history since the caller never heard it
+                session.addMessage("system",
+                  "The fallback message after the failed transfer could not be delivered via TTS. The caller has heard nothing since being reconnected. Start by telling them you're still here."
+                );
+              }
+              break;
+            }
+            // If savedState not found (expired), fall through to normal start
+            console.warn(`[Reconnect] No saved state for callSid=${reconnectCallSid} — falling through to normal start`);
+            if (!calledNumber) {
+              console.error(`[Reconnect] Fallthrough with empty calledNumber for callSid=${reconnectCallSid} — cannot recover`);
+              session = new CallSession(callSid);
+              session.streamSid = streamSid;
+              try {
+                await sendTTS(session, twilioWs, "I'm sorry, we experienced a technical issue. Please try calling again.");
+              } catch (ttsErr) {
+                console.error("[Reconnect] Failed to send error TTS:", ttsErr);
+              }
+              twilioWs.close();
+              break;
+            }
+          }
 
           session = new CallSession(callSid);
           session.streamSid = streamSid;
@@ -622,16 +805,39 @@ async function handleUserSpeech(session, twilioWs, transcript) {
             session.transferAttempt = toolResult.transferAttempt;
           }
 
-          // Handle transfer action — send announcement and close
+          // Handle transfer action — announce, save state for fallback, close STT
           if (toolResult.action === "transfer" && toolResult.transferTo) {
             hold.stop();
             await sendTTS(session, twilioWs, resultMessage);
             session.addMessage("assistant", resultMessage);
-            session.endedReason = "transferred";
+
+            // Save session for potential reconnection on no-answer
+            session.pendingTransfer = true;
+            saveForTransfer(session.callSid, {
+              messages: [...session.messages],
+              organizationId: session.organizationId,
+              assistantId: session.assistantId,
+              phoneNumberId: session.phoneNumberId,
+              callerPhone: session.callerPhone,
+              callRecordId: session.callRecordId,
+              calendarEnabled: session.calendarEnabled,
+              transferRules: session.transferRules,
+              deepgramVoice: session.deepgramVoice,
+              holdPreset: session.holdPreset,
+              organization: session.organization,
+              orgPhoneNumber: session.orgPhoneNumber,
+              transferAttempt: toolResult.transferAttempt,
+              transferTargetName: toolResult.transferTargetName || "the team member",
+              startedAt: session.startedAt,
+            });
+
+            // Close Deepgram — stream will close when Twilio starts <Dial>
             if (session.deepgramWs) {
               session.deepgramWs.close();
               session.deepgramWs = null;
             }
+            // Clear any queued speech so drainPending (in finally) is a no-op
+            session._pendingTranscript = null;
             return;
           }
 
