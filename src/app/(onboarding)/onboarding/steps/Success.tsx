@@ -11,6 +11,7 @@ import {
   Sparkles,
   Calendar,
   Shield,
+  Lightbulb,
 } from "lucide-react";
 
 interface SuccessProps {
@@ -99,6 +100,21 @@ export function Success({ businessName, planName }: SuccessProps) {
               </div>
             </div>
           ))}
+        </div>
+      </div>
+
+      {/* Phased rollout tip */}
+      <div className="rounded-lg border border-primary/20 bg-primary/5 p-4 text-left">
+        <div className="flex gap-3">
+          <Lightbulb className="h-5 w-5 shrink-0 text-primary" />
+          <div>
+            <p className="text-sm font-medium">Pro tip: start with after-hours calls</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Forward calls to your AI only outside business hours first. Once you&apos;re
+              confident it handles your common questions, expand to all calls. Most
+              businesses go fully live within a week.
+            </p>
+          </div>
         </div>
       </div>
 
