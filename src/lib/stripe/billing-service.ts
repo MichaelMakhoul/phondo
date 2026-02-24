@@ -522,6 +522,16 @@ export async function hasFeatureAccess(
     return false;
   }
 
+  // Only grant feature access for active or trialing subscriptions
+  if (!["active", "trialing"].includes(subscription.status)) {
+    return false;
+  }
+
+  // Block expired trials
+  if (subscription.status === "trialing" && subscription.trialEnd && new Date() > subscription.trialEnd) {
+    return false;
+  }
+
   const planConfig = PLANS[subscription.plan];
 
   // Type guard for feature access

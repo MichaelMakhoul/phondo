@@ -2,6 +2,7 @@ import crypto from "crypto";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { safeDecrypt } from "@/lib/security/encryption";
 import { isUrlAllowed } from "@/lib/security/validation";
+import { hasFeatureAccess } from "@/lib/stripe/billing-service";
 import type { IntegrationEvent, WebhookPayload } from "./types";
 
 const DELIVERY_TIMEOUT_MS = 5000;
@@ -51,6 +52,11 @@ export async function deliverWebhooks(
   event: IntegrationEvent,
   callData: Parameters<typeof buildCallPayload>[1]
 ): Promise<void> {
+  // Skip delivery if plan doesn't include webhook integrations
+  if (!(await hasFeatureAccess(orgId, "webhookIntegrations"))) {
+    return;
+  }
+
   const supabase = createAdminClient();
 
   // Fetch active integrations for this org that subscribe to this event

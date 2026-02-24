@@ -1,6 +1,8 @@
 import { Metadata } from "next";
 import { redirect } from "next/navigation";
+import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
+import { hasFeatureAccess } from "@/lib/stripe/billing-service";
 import { subDays, startOfDay, format } from "date-fns";
 import {
   Card,
@@ -10,6 +12,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   PhoneCall,
   PhoneIncoming,
@@ -20,6 +23,7 @@ import {
   TrendingUp,
   ShieldAlert,
   Users,
+  Lock,
 } from "lucide-react";
 import { AnalyticsCharts } from "./analytics-charts";
 import { RecentCallsList } from "./recent-calls-list";
@@ -75,6 +79,8 @@ export default async function AnalyticsPage() {
   }
 
   const organizationId = membership.organization_id as string;
+
+  const showAdvanced = await hasFeatureAccess(organizationId, "advancedAnalytics");
 
   // Get organization details for industry-specific ROI
   const { data: organization } = await (supabase as any)
@@ -253,177 +259,196 @@ export default async function AnalyticsPage() {
         </Card>
       </div>
 
-      {/* ROI Estimate */}
-      <Card className="bg-gradient-to-br from-green-50 to-emerald-50 dark:from-green-950 dark:to-emerald-950 border-green-200 dark:border-green-800">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <DollarSign className="h-5 w-5 text-green-600" />
-            Estimated Value
-          </CardTitle>
-          <CardDescription>
-            Revenue protected by your AI receptionist
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="grid gap-4 md:grid-cols-3">
-            <div>
-              <p className="text-sm text-muted-foreground">Calls Answered</p>
-              <p className="text-2xl font-bold">{stats.answered}</p>
-              <p className="text-xs text-muted-foreground">
-                That might have been missed
-              </p>
-            </div>
-            <div>
-              <p className="text-sm text-muted-foreground">
-                Avg. {industry.replace("_", " ")} Call Value
-              </p>
-              <p className="text-2xl font-bold">${avgCallValue}</p>
-              <p className="text-xs text-muted-foreground">
-                Industry average
-              </p>
-            </div>
-            <div>
-              <p className="text-sm text-muted-foreground">Est. Revenue Protected</p>
-              <p className="text-3xl font-bold text-green-600">
-                ${estimatedRevenueSaved.toLocaleString()}
-              </p>
-              <p className="text-xs text-muted-foreground">
-                Based on ~60% missed call prevention
-              </p>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
+      {/* Advanced Analytics — gated by plan */}
+      {showAdvanced ? (
+        <>
+          {/* ROI Estimate */}
+          <Card className="bg-gradient-to-br from-green-50 to-emerald-50 dark:from-green-950 dark:to-emerald-950 border-green-200 dark:border-green-800">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <DollarSign className="h-5 w-5 text-green-600" />
+                Estimated Value
+              </CardTitle>
+              <CardDescription>
+                Revenue protected by your AI receptionist
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="grid gap-4 md:grid-cols-3">
+                <div>
+                  <p className="text-sm text-muted-foreground">Calls Answered</p>
+                  <p className="text-2xl font-bold">{stats.answered}</p>
+                  <p className="text-xs text-muted-foreground">
+                    That might have been missed
+                  </p>
+                </div>
+                <div>
+                  <p className="text-sm text-muted-foreground">
+                    Avg. {industry.replace("_", " ")} Call Value
+                  </p>
+                  <p className="text-2xl font-bold">${avgCallValue}</p>
+                  <p className="text-xs text-muted-foreground">
+                    Industry average
+                  </p>
+                </div>
+                <div>
+                  <p className="text-sm text-muted-foreground">Est. Revenue Protected</p>
+                  <p className="text-3xl font-bold text-green-600">
+                    ${estimatedRevenueSaved.toLocaleString()}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    Based on ~60% missed call prevention
+                  </p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
 
-      {/* Charts */}
-      <div className="grid gap-6 lg:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle>Call Volume (30 Days)</CardTitle>
-            <CardDescription>
-              Daily call trends
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <AnalyticsCharts dailyStats={dailyStats} hourlyStats={hourlyStats} />
+          {/* Charts */}
+          <div className="grid gap-6 lg:grid-cols-2">
+            <Card>
+              <CardHeader>
+                <CardTitle>Call Volume (30 Days)</CardTitle>
+                <CardDescription>
+                  Daily call trends
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <AnalyticsCharts dailyStats={dailyStats} hourlyStats={hourlyStats} />
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Call Outcomes</CardTitle>
+                <CardDescription>
+                  How calls were handled
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <div className="h-3 w-3 rounded-full bg-green-500" />
+                      <span>Answered</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium">{stats.answered}</span>
+                      <span className="text-muted-foreground">
+                        ({stats.total > 0 ? Math.round((stats.answered / stats.total) * 100) : 0}%)
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <div className="h-3 w-3 rounded-full bg-red-500" />
+                      <span>Missed</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium">{stats.missed}</span>
+                      <span className="text-muted-foreground">
+                        ({stats.total > 0 ? Math.round((stats.missed / stats.total) * 100) : 0}%)
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <div className="h-3 w-3 rounded-full bg-yellow-500" />
+                      <span>Voicemail</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium">{stats.voicemail}</span>
+                      <span className="text-muted-foreground">
+                        ({stats.total > 0 ? Math.round((stats.voicemail / stats.total) * 100) : 0}%)
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <div className="h-3 w-3 rounded-full bg-blue-500" />
+                      <span>Transferred</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium">{stats.transferred}</span>
+                      <span className="text-muted-foreground">
+                        ({stats.total > 0 ? Math.round((stats.transferred / stats.total) * 100) : 0}%)
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <div className="h-3 w-3 rounded-full bg-orange-500" />
+                      <span>Spam Filtered</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium">{stats.spam}</span>
+                      <span className="text-muted-foreground">
+                        ({stats.total > 0 ? Math.round((stats.spam / stats.total) * 100) : 0}%)
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Hourly Heatmap */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Peak Call Hours</CardTitle>
+              <CardDescription>
+                When do you receive the most calls?
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="flex flex-wrap gap-1">
+                {hourlyStats.map((stat) => {
+                  const maxCalls = Math.max(...hourlyStats.map((s) => s.calls));
+                  const intensity = maxCalls > 0 ? stat.calls / maxCalls : 0;
+                  return (
+                    <div
+                      key={stat.hour}
+                      className="flex flex-col items-center"
+                      title={`${stat.calls} calls at ${stat.hour}:00`}
+                    >
+                      <div
+                        className="w-6 h-6 rounded"
+                        style={{
+                          backgroundColor: `rgba(34, 197, 94, ${0.1 + intensity * 0.9})`,
+                        }}
+                      />
+                      <span className="text-xs text-muted-foreground mt-1">
+                        {stat.hour}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+              <p className="text-xs text-muted-foreground mt-4">
+                Darker = more calls. Times shown in 24-hour format.
+              </p>
+            </CardContent>
+          </Card>
+        </>
+      ) : (
+        <Card className="border-dashed">
+          <CardContent className="flex flex-col items-center justify-center py-12">
+            <Lock className="h-10 w-10 text-muted-foreground mb-4" />
+            <h3 className="text-lg font-semibold mb-1">Advanced Analytics</h3>
+            <p className="text-sm text-muted-foreground text-center max-w-md mb-4">
+              Unlock ROI estimates, call volume trends, outcome breakdowns, and peak hours
+              heatmap with a Professional or Business plan.
+            </p>
+            <Button asChild>
+              <Link href="/billing">View Plans</Link>
+            </Button>
           </CardContent>
         </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Call Outcomes</CardTitle>
-            <CardDescription>
-              How calls were handled
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <div className="h-3 w-3 rounded-full bg-green-500" />
-                  <span>Answered</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="font-medium">{stats.answered}</span>
-                  <span className="text-muted-foreground">
-                    ({stats.total > 0 ? Math.round((stats.answered / stats.total) * 100) : 0}%)
-                  </span>
-                </div>
-              </div>
-
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <div className="h-3 w-3 rounded-full bg-red-500" />
-                  <span>Missed</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="font-medium">{stats.missed}</span>
-                  <span className="text-muted-foreground">
-                    ({stats.total > 0 ? Math.round((stats.missed / stats.total) * 100) : 0}%)
-                  </span>
-                </div>
-              </div>
-
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <div className="h-3 w-3 rounded-full bg-yellow-500" />
-                  <span>Voicemail</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="font-medium">{stats.voicemail}</span>
-                  <span className="text-muted-foreground">
-                    ({stats.total > 0 ? Math.round((stats.voicemail / stats.total) * 100) : 0}%)
-                  </span>
-                </div>
-              </div>
-
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <div className="h-3 w-3 rounded-full bg-blue-500" />
-                  <span>Transferred</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="font-medium">{stats.transferred}</span>
-                  <span className="text-muted-foreground">
-                    ({stats.total > 0 ? Math.round((stats.transferred / stats.total) * 100) : 0}%)
-                  </span>
-                </div>
-              </div>
-
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <div className="h-3 w-3 rounded-full bg-orange-500" />
-                  <span>Spam Filtered</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="font-medium">{stats.spam}</span>
-                  <span className="text-muted-foreground">
-                    ({stats.total > 0 ? Math.round((stats.spam / stats.total) * 100) : 0}%)
-                  </span>
-                </div>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Hourly Heatmap */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Peak Call Hours</CardTitle>
-          <CardDescription>
-            When do you receive the most calls?
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="flex flex-wrap gap-1">
-            {hourlyStats.map((stat) => {
-              const maxCalls = Math.max(...hourlyStats.map((s) => s.calls));
-              const intensity = maxCalls > 0 ? stat.calls / maxCalls : 0;
-              return (
-                <div
-                  key={stat.hour}
-                  className="flex flex-col items-center"
-                  title={`${stat.calls} calls at ${stat.hour}:00`}
-                >
-                  <div
-                    className="w-6 h-6 rounded"
-                    style={{
-                      backgroundColor: `rgba(34, 197, 94, ${0.1 + intensity * 0.9})`,
-                    }}
-                  />
-                  <span className="text-xs text-muted-foreground mt-1">
-                    {stat.hour}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-          <p className="text-xs text-muted-foreground mt-4">
-            Darker = more calls. Times shown in 24-hour format.
-          </p>
-        </CardContent>
-      </Card>
+      )}
 
       {/* Recent Calls */}
       <Card>

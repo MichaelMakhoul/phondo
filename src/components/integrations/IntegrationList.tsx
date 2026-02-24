@@ -16,6 +16,7 @@ import {
   CheckCircle2,
   XCircle,
   Webhook,
+  ArrowUpRight,
 } from "lucide-react";
 import {
   Dialog,
@@ -50,6 +51,7 @@ interface LogEntry {
 
 export function IntegrationList() {
   const [integrations, setIntegrations] = useState<Integration[]>([]);
+  const [canCreate, setCanCreate] = useState(true);
   const [isLoading, setIsLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [expandedLogs, setExpandedLogs] = useState<string | null>(null);
@@ -66,7 +68,8 @@ export function IntegrationList() {
         throw new Error(body.error || "Failed to load");
       }
       const data = await response.json();
-      setIntegrations(data);
+      setIntegrations(data.integrations);
+      setCanCreate(data.canCreate);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to load integrations";
       toast({ variant: "destructive", title: "Error", description: message });
@@ -161,12 +164,23 @@ export function IntegrationList() {
 
   return (
     <div className="space-y-4">
-      <div className="flex justify-end">
-        <Button onClick={() => setShowForm(true)}>
-          <Plus className="mr-2 h-4 w-4" />
-          Add Integration
-        </Button>
-      </div>
+      {canCreate ? (
+        <div className="flex justify-end">
+          <Button onClick={() => setShowForm(true)}>
+            <Plus className="mr-2 h-4 w-4" />
+            Add Integration
+          </Button>
+        </div>
+      ) : (
+        <div className="rounded-md border border-blue-200 bg-blue-50 p-3 dark:border-blue-800 dark:bg-blue-950">
+          <p className="text-sm text-blue-800 dark:text-blue-200">
+            Webhook integrations are available on Professional and Business plans.{" "}
+            <a href="/billing" className="inline-flex items-center font-medium underline underline-offset-2">
+              Upgrade <ArrowUpRight className="ml-0.5 h-3 w-3" />
+            </a>
+          </p>
+        </div>
+      )}
 
       {integrations.length === 0 ? (
         <div className="py-12 text-center">

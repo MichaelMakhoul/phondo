@@ -13,10 +13,11 @@
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getNotificationPreferences } from "@/lib/notifications/notification-service";
 import { getTwilioClient } from "@/lib/twilio/client";
+import { hasFeatureAccess } from "@/lib/stripe/billing-service";
 
 type MessageType = "missed_call_textback" | "appointment_confirmation";
 
-type SMSStatus = "sent" | "skipped" | "blocked_spam" | "blocked_optout" | "blocked_ratelimit" | "failed";
+type SMSStatus = "sent" | "skipped" | "blocked_plan" | "blocked_spam" | "blocked_optout" | "blocked_ratelimit" | "failed";
 
 interface SMSSendResult {
   sent: boolean;
@@ -148,18 +149,23 @@ async function sendCallerSMS(params: {
     return { sent: false, status: "skipped", reason: "feature_disabled" };
   }
 
-  // 2. Spam protection
+  // 2. Plan eligibility check
+  if (!(await hasFeatureAccess(orgId, "smsNotifications"))) {
+    return { sent: false, status: "blocked_plan", reason: "plan_not_eligible" };
+  }
+
+  // 3. Spam protection
   if (isSpam) {
     return { sent: false, status: "blocked_spam", reason: "caller_is_spam" };
   }
 
-  // 3. Resolve org's Twilio number (once, reused for logging + sending)
+  // 4. Resolve org's Twilio number (once, reused for logging + sending)
   const fromNumber = await resolveOrgTwilioNumber(orgId);
   if (!fromNumber) {
     return { sent: false, status: "failed", reason: "no_org_phone_number" };
   }
 
-  // 4. Opt-out check
+  // 5. Opt-out check
   if (await isCallerOptedOut(callerPhone, orgId)) {
     await logSMSSend({
       orgId,
@@ -172,7 +178,7 @@ async function sendCallerSMS(params: {
     return { sent: false, status: "blocked_optout", reason: "caller_opted_out" };
   }
 
-  // 5. Rate limit check
+  // 6. Rate limit check
   if (await isRateLimited(callerPhone, messageType, orgId)) {
     await logSMSSend({
       orgId,
@@ -185,7 +191,7 @@ async function sendCallerSMS(params: {
     return { sent: false, status: "blocked_ratelimit", reason: "rate_limited" };
   }
 
-  // 6. Send via Twilio
+  // 7. Send via Twilio
   try {
     const sid = await sendViaTwilio(callerPhone, fromNumber, messageBody);
     await logSMSSend({

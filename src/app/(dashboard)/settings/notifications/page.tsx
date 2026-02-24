@@ -1,6 +1,7 @@
 import { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
+import { hasFeatureAccess } from "@/lib/stripe/billing-service";
 import { NotificationSettings } from "./notification-settings";
 
 export const metadata: Metadata = {
@@ -44,6 +45,12 @@ export default async function NotificationsPage() {
     .eq("id", user.id)
     .single();
 
+  // Check plan access for caller SMS features
+  const smsCallerEnabled = await hasFeatureAccess(
+    membership.organization_id,
+    "smsNotifications"
+  );
+
   return (
     <div className="space-y-6">
       <div>
@@ -58,6 +65,7 @@ export default async function NotificationsPage() {
         organizationId={membership.organization_id}
         initialPreferences={preferences}
         userEmail={profile?.email}
+        smsCallerEnabled={smsCallerEnabled}
       />
     </div>
   );
