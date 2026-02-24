@@ -16,6 +16,7 @@ const { analyzeCallTranscript } = require("./services/post-call-analysis");
 const { getDeepgramVoice } = require("./lib/voice-mapping");
 const { generateHoldAudio, getHoldPreset } = require("./lib/hold-audio");
 const { detectExpectedInput } = require("./lib/input-type-detector");
+const { requiresRecordingDisclosure, getRecordingDisclosureText } = require("./lib/recording-consent");
 const { getSupabase } = require("./lib/supabase");
 
 // Validate required env vars before deriving any constants
@@ -235,6 +236,7 @@ wss.on("connection", (twilioWs) => {
           callerName: analysis?.callerName || null,
           collectedData: analysis?.collectedData || null,
           successEvaluation: analysis?.successEvaluation || null,
+          recordingDisclosurePlayed: s.recordingDisclosurePlayed || false,
         });
       } catch (err) {
         console.error("[Cleanup] Failed to complete call record:", err);
@@ -397,6 +399,25 @@ wss.on("connection", (twilioWs) => {
               }
             },
           });
+
+          // Play recording disclosure if required by jurisdiction
+          const needsDisclosure = requiresRecordingDisclosure(
+            context.organization.country,
+            context.organization.businessState,
+            context.organization.recordingConsentMode
+          );
+          if (needsDisclosure) {
+            const disclosureText = getRecordingDisclosureText(context.organization.country);
+            try {
+              await sendTTS(session, twilioWs, disclosureText);
+              session.recordingDisclosurePlayed = true;
+              // Add to conversation history so LLM knows disclosure was played
+              session.addMessage("assistant", disclosureText);
+              console.log(`[Recording] Disclosure played (country=${context.organization.country}, state=${context.organization.businessState})`);
+            } catch (err) {
+              console.error("[Recording] Failed to play disclosure — caller may not have been informed of recording. Continuing with greeting.", err);
+            }
+          }
 
           // Send greeting
           const greeting = getGreeting(context.assistant, context.organization.name);
@@ -891,6 +912,31 @@ testWss.on("connection", (ws, req) => {
           }
         },
       });
+
+      // Play recording disclosure if required by jurisdiction (test calls too)
+      const needsDisclosure = requiresRecordingDisclosure(
+        context.organization.country,
+        context.organization.businessState,
+        context.organization.recordingConsentMode
+      );
+      if (needsDisclosure) {
+        const disclosureText = getRecordingDisclosureText(context.organization.country);
+        try {
+          const disclosureAudio = await synthesizeSpeech(DEEPGRAM_API_KEY, disclosureText, {
+            voice: session.deepgramVoice,
+          });
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: "speaking", speaking: true }));
+            ws.send(disclosureAudio);
+            ws.send(JSON.stringify({ type: "speaking", speaking: false }));
+          }
+          session.recordingDisclosurePlayed = true;
+          // Add to conversation history so LLM knows disclosure was played
+          session.addMessage("assistant", disclosureText);
+        } catch (err) {
+          console.error("[TestRecording] Failed to play disclosure — caller may not have been informed of recording. Continuing with greeting.", err);
+        }
+      }
 
       // Send greeting
       const greeting = getGreeting(context.assistant, context.organization.name);

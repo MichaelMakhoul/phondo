@@ -26,6 +26,8 @@ interface Organization {
   country: string | null;
   business_hours: Record<string, { open: string; close: string } | null> | null;
   default_appointment_duration: number | null;
+  business_state: string | null;
+  recording_consent_mode: string | null;
 }
 
 interface Membership {
@@ -51,7 +53,8 @@ export default async function SettingsPage() {
       organizations (
         id, name, slug, type, logo_url, primary_color,
         business_name, industry, business_website, business_phone, business_address,
-        timezone, country, business_hours, default_appointment_duration
+        timezone, country, business_hours, default_appointment_duration,
+        business_state, recording_consent_mode
       )
     `
     )
@@ -78,6 +81,8 @@ export default async function SettingsPage() {
           timezone: organization.timezone || "America/New_York",
           businessHours: organization.business_hours || null,
           defaultAppointmentDuration: organization.default_appointment_duration ?? 30,
+          businessState: organization.business_state || "",
+          recordingConsentMode: organization.recording_consent_mode || "auto",
         }}
       />
 

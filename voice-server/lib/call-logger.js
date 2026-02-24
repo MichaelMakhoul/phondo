@@ -51,6 +51,7 @@ async function completeCallRecord(callId, {
   callerName,
   collectedData,
   successEvaluation,
+  recordingDisclosurePlayed,
 }) {
   const supabase = getSupabase();
 
@@ -71,23 +72,32 @@ async function completeCallRecord(callId, {
     .update(updatePayload)
     .eq("id", callId);
 
-  // Atomically merge successEvaluation into metadata to avoid race with call-completed webhook
-  if (successEvaluation && !error) {
-    const { error: metaErr } = await supabase.rpc("exec_sql", {
-      query: `UPDATE calls SET metadata = COALESCE(metadata, '{}'::jsonb) || $1::jsonb WHERE id = $2`,
-      params: [JSON.stringify({ successEvaluation }), callId],
-    }).maybeSingle();
-    // Fallback: if RPC not available, use regular update (non-atomic but best effort)
-    if (metaErr) {
-      const { data: existing } = await supabase
+  // Merge extra metadata into the call record (read-then-write, best effort)
+  const metadataExtras = {};
+  if (successEvaluation) metadataExtras.successEvaluation = successEvaluation;
+  if (recordingDisclosurePlayed) metadataExtras.recording_disclosure_played = true;
+
+  if (Object.keys(metadataExtras).length > 0 && !error) {
+    try {
+      const { data: existing, error: readErr } = await supabase
         .from("calls")
         .select("metadata")
         .eq("id", callId)
         .single();
-      await supabase
-        .from("calls")
-        .update({ metadata: { ...(existing?.metadata || {}), successEvaluation } })
-        .eq("id", callId);
+
+      if (readErr) {
+        console.error("[CallLogger] Failed to read metadata for merge:", { callId, error: readErr });
+      } else {
+        const { error: writeErr } = await supabase
+          .from("calls")
+          .update({ metadata: { ...(existing?.metadata || {}), ...metadataExtras } })
+          .eq("id", callId);
+        if (writeErr) {
+          console.error("[CallLogger] Failed to write merged metadata:", { callId, error: writeErr });
+        }
+      }
+    } catch (metaErr) {
+      console.error("[CallLogger] Unexpected error merging metadata:", { callId, error: metaErr });
     }
   }
 
