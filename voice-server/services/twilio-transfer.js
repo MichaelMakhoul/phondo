@@ -101,28 +101,38 @@ async function transferCall(callSid, transferTo, announcement) {
  * @returns {Promise<{ success: boolean }>}
  */
 async function sendTransferSMS(toPhone, fromPhone, body) {
-  const safeTo = toPhone.replace(/[^+\d]/g, "");
-  const safeFrom = fromPhone.replace(/[^+\d]/g, "");
-
-  const res = await twilioPost("Messages.json", {
-    To: safeTo,
-    From: safeFrom,
-    Body: body.slice(0, 1600), // Twilio SMS limit
-  });
-
-  if (!res) {
-    console.warn("[TransferSMS] Missing Twilio credentials — skipping SMS");
+  if (!toPhone || !fromPhone) {
+    console.warn("[TransferSMS] Missing toPhone or fromPhone — skipping SMS");
     return { success: false };
   }
 
-  if (!res.ok) {
-    const text = (await res.text()).slice(0, 500);
-    console.warn(`[TransferSMS] Twilio API error ${res.status}:`, text);
+  try {
+    const safeTo = toPhone.replace(/[^+\d]/g, "");
+    const safeFrom = fromPhone.replace(/[^+\d]/g, "");
+
+    const res = await twilioPost("Messages.json", {
+      To: safeTo,
+      From: safeFrom,
+      Body: (body || "").slice(0, 1600), // Twilio SMS limit
+    });
+
+    if (!res) {
+      console.warn("[TransferSMS] Missing Twilio credentials — skipping SMS");
+      return { success: false };
+    }
+
+    if (!res.ok) {
+      const text = (await res.text()).slice(0, 500);
+      console.warn(`[TransferSMS] Twilio API error ${res.status}:`, text);
+      return { success: false };
+    }
+
+    console.log(`[TransferSMS] Sent context SMS to ${safeTo}`);
+    return { success: true };
+  } catch (err) {
+    console.warn("[TransferSMS] Failed to send SMS:", err.message);
     return { success: false };
   }
-
-  console.log(`[TransferSMS] Sent context SMS to ${toPhone}`);
-  return { success: true };
 }
 
 module.exports = { transferCall, sendTransferSMS };

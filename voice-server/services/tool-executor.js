@@ -45,9 +45,18 @@ function isWithinBusinessHours(timezone, businessHours) {
     const openMinutes = openParts[0] * 60 + (openParts[1] || 0);
     const closeMinutes = closeParts[0] * 60 + (closeParts[1] || 0);
 
+    if (Number.isNaN(openMinutes) || Number.isNaN(closeMinutes)) {
+      console.error("[BusinessHours] Malformed open/close time — failing open:", {
+        dayName, open: dayHours.open, close: dayHours.close,
+      });
+      return true;
+    }
+
     return currentMinutes >= openMinutes && currentMinutes < closeMinutes;
   } catch (err) {
-    console.error("[BusinessHours] Failed to check business hours:", err.message);
+    console.error("[BusinessHours] Failed to check business hours — failing open:", {
+      error: err.message, timezone, businessHours,
+    });
     return true; // fail open on error
   }
 }
@@ -275,6 +284,12 @@ async function executeTransferCall(args, context) {
     return {
       message:
         "I apologize, but I'm not able to transfer your call right now. Let me take your information and have someone call you back. Can you confirm your name and phone number?",
+      transferAttempt: {
+        ruleId: null, ruleName: null, targetPhone: null, targetName: null,
+        reason: reason || null, urgency: urgency || "low",
+        outcome: "no_rules_configured", outsideBusinessHours: false,
+        timestamp: new Date().toISOString(),
+      },
     };
   }
 
