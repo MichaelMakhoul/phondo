@@ -55,17 +55,17 @@ export async function POST(request: Request) {
       );
     }
 
-    // Verify user is a member of the organization
+    // Verify user is an owner or admin of the organization (matches checkout route)
     const { data: membership } = await supabase
       .from("org_members")
       .select("role")
       .eq("organization_id", organizationId)
       .eq("user_id", user.id)
-      .single();
+      .single() as { data: { role: string } | null };
 
-    if (!membership) {
+    if (!membership || !["owner", "admin"].includes(membership.role)) {
       return NextResponse.json(
-        { error: "Not a member of this organization" },
+        { error: "Insufficient permissions" },
         { status: 403 }
       );
     }

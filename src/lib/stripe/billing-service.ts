@@ -223,10 +223,19 @@ export async function incrementCallUsage(
 
 /**
  * Check if organization can make more calls.
- * Soft cap policy: always returns true — we never block calls.
- * Not currently called; retained as a policy contract for future integrations.
+ * Soft cap for paid subscriptions: always allows calls (never block revenue).
+ * Hard cap for expired trials: blocks calls to enforce conversion.
  */
-export async function canMakeCall(_organizationId: string): Promise<boolean> {
+export async function canMakeCall(organizationId: string): Promise<boolean> {
+  const sub = await getSubscriptionInfo(organizationId);
+  if (!sub) return false;
+
+  // Expired trial — block calls to enforce conversion to paid
+  if (sub.status === "trialing" && sub.trialEnd && new Date() > sub.trialEnd) {
+    return false;
+  }
+
+  // Paid subscriptions: soft cap — never block calls
   return true;
 }
 
