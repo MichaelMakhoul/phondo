@@ -14,6 +14,7 @@ import {
   BookOpen,
   Users,
   Webhook,
+  HelpCircle,
 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 
@@ -163,12 +164,15 @@ export function SidebarContent({ currentOrg }: { currentOrg?: { name: string; ty
 
       {/* Footer */}
       <div className="border-t p-4">
-        <div className="rounded-lg bg-muted p-3">
-          <p className="text-xs font-medium">Need help?</p>
+        <Link href="/support" className="block rounded-lg bg-muted p-3 transition-colors hover:bg-muted/80">
+          <div className="flex items-center gap-2">
+            <HelpCircle className="h-4 w-4 text-muted-foreground" />
+            <p className="text-xs font-medium">Need help?</p>
+          </div>
           <p className="mt-1 text-xs text-muted-foreground">
-            Check our docs or contact support
+            Get support or browse our guides
           </p>
-        </div>
+        </Link>
       </div>
     </>
   );
