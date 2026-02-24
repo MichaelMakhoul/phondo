@@ -150,11 +150,8 @@ export function ForwardingSetupDialog({
           setPollError(null);
           const data = await res.json();
           if (data.verified) {
-            setVerifyStatus((prev) => {
-              if (prev !== "waiting") return prev;
-              stopPolling();
-              return "verified";
-            });
+            stopPolling();
+            setVerifyStatus((prev) => prev === "waiting" ? "verified" : prev);
           }
         } else {
           failCountRef.current++;
@@ -177,11 +174,8 @@ export function ForwardingSetupDialog({
     countdownRef.current = setInterval(() => {
       setVerifySeconds((prev) => {
         if (prev <= 1) {
-          setVerifyStatus((current) => {
-            if (current !== "waiting") return current;
-            stopPolling();
-            return "timeout";
-          });
+          stopPolling();
+          setVerifyStatus((current) => current === "waiting" ? "timeout" : current);
           return 0;
         }
         return prev - 1;
