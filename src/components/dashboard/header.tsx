@@ -16,6 +16,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { LogOut, Menu, User, CreditCard } from "lucide-react";
 import { NotificationBell } from "@/components/dashboard/notification-bell";
+import { ThemeToggle } from "@/components/theme-toggle";
 import { SidebarContent } from "@/components/dashboard/sidebar";
 
 interface DashboardHeaderProps {
@@ -69,6 +70,9 @@ export function DashboardHeader({ user, organization }: DashboardHeaderProps) {
       </div>
 
       <div className="flex items-center gap-4">
+        {/* Theme toggle */}
+        <ThemeToggle />
+
         {/* Notifications */}
         {organization && <NotificationBell organizationId={organization.id} />}
 

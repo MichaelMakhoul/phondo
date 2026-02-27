@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Phone, Play } from "lucide-react";
+import { ThemeToggle } from "@/components/theme-toggle";
 
 interface MarketingHeaderProps {
   /** Show landing page anchor links (#features, #calculator, #industries) */
@@ -43,6 +44,7 @@ export function MarketingHeader({ showAnchorLinks = false }: MarketingHeaderProp
           </Link>
         </nav>
         <div className="flex items-center gap-3">
+          <ThemeToggle className="h-9 w-9 text-slate-300 hover:text-white hover:bg-white/10" />
           <Link href="/demo" className="md:hidden">
             <Button variant="ghost" size="sm" className="gap-1.5 text-slate-300 hover:text-white hover:bg-white/10">
               <Play className="h-3.5 w-3.5" />
