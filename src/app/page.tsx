@@ -6,6 +6,8 @@ import { ROICalculator } from "@/components/marketing/roi-calculator";
 import { AnimateOnScroll } from "@/components/marketing/animate-on-scroll";
 import { AnimatedStat } from "@/components/marketing/animated-stat";
 import { FloatingDemoCta } from "@/components/marketing/floating-demo-cta";
+import { MarketingHeader } from "@/components/marketing/marketing-header";
+import { MarketingFooter } from "@/components/marketing/marketing-footer";
 import {
   Phone,
   Calendar,
@@ -187,49 +189,7 @@ function staggeredFadeIn(index: number, groupSize: number = 3): string {
 export default function LandingPage() {
   return (
     <div className="flex min-h-screen flex-col">
-      {/* Header */}
-      <header className="sticky top-0 z-50 border-b border-white/10 bg-[#0F172A]/80 backdrop-blur supports-[backdrop-filter]:bg-[#0F172A]/60">
-        <div className="container mx-auto flex h-16 items-center justify-between px-4">
-          <div className="flex items-center gap-2">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-orange-500">
-              <Phone className="h-4 w-4 text-white" />
-            </div>
-            <span className="text-xl font-bold text-white">Hola Recep</span>
-          </div>
-          <nav className="hidden items-center gap-6 md:flex">
-            <a href="#features" className="text-sm text-slate-300 hover:text-white transition-colors">
-              Features
-            </a>
-            <a href="#calculator" className="text-sm text-slate-300 hover:text-white transition-colors">
-              ROI Calculator
-            </a>
-            <a href="#industries" className="text-sm text-slate-300 hover:text-white transition-colors">
-              Industries
-            </a>
-            <Link href="/pricing" className="text-sm text-slate-300 hover:text-white transition-colors">
-              Pricing
-            </Link>
-          </nav>
-          <div className="flex items-center gap-3">
-            <Link href="/demo">
-              <Button variant="ghost" size="sm" className="gap-1.5 text-slate-300 hover:text-white hover:bg-white/10">
-                <Play className="h-3.5 w-3.5" />
-                Live Demo
-              </Button>
-            </Link>
-            <Link href="/login">
-              <Button variant="ghost" size="sm" className="text-slate-300 hover:text-white hover:bg-white/10">
-                Log in
-              </Button>
-            </Link>
-            <Link href="/signup">
-              <Button size="sm" className="bg-orange-500 text-white hover:bg-orange-600">
-                Start Free Trial
-              </Button>
-            </Link>
-          </div>
-        </div>
-      </header>
+      <MarketingHeader showAnchorLinks />
 
       <main className="flex-1">
         {/* Hero — dark gradient with radial glow */}
@@ -561,69 +521,7 @@ export default function LandingPage() {
         </section>
       </main>
 
-      {/* Footer */}
-      <footer className="border-t py-12">
-        <div className="container mx-auto px-4">
-          <div className="grid gap-8 sm:grid-cols-2 md:grid-cols-4">
-            <div>
-              <div className="flex items-center gap-2">
-                <div className="flex h-7 w-7 items-center justify-center rounded-md bg-orange-500">
-                  <Phone className="h-3.5 w-3.5 text-white" />
-                </div>
-                <span className="font-semibold">Hola Recep</span>
-              </div>
-              <p className="mt-2 text-sm text-muted-foreground">
-                AI phone receptionist for Australian businesses.
-              </p>
-            </div>
-            <div>
-              <h4 className="text-sm font-semibold">Product</h4>
-              <ul className="mt-2 space-y-1 text-sm text-muted-foreground">
-                <li>
-                  <Link href="/pricing" className="hover:text-foreground">
-                    Pricing
-                  </Link>
-                </li>
-                <li>
-                  <a href="#calculator" className="hover:text-foreground">
-                    ROI Calculator
-                  </a>
-                </li>
-                <li>
-                  <Link href="/demo" className="hover:text-foreground">
-                    Live Demo
-                  </Link>
-                </li>
-              </ul>
-            </div>
-            <div>
-              <h4 className="text-sm font-semibold">Legal</h4>
-              <ul className="mt-2 space-y-1 text-sm text-muted-foreground">
-                <li>
-                  <Link href="/privacy" className="hover:text-foreground">
-                    Privacy Policy
-                  </Link>
-                </li>
-                <li>
-                  <Link href="/terms" className="hover:text-foreground">
-                    Terms of Service
-                  </Link>
-                </li>
-              </ul>
-            </div>
-            <div>
-              <h4 className="text-sm font-semibold">Contact</h4>
-              <ul className="mt-2 space-y-1 text-sm text-muted-foreground">
-                <li>support@holarecep.com</li>
-                <li>Sydney, Australia</li>
-              </ul>
-            </div>
-          </div>
-          <div className="mt-8 border-t pt-8 text-center text-sm text-muted-foreground">
-            &copy; {new Date().getFullYear()} Hola Recep. All rights reserved.
-          </div>
-        </div>
-      </footer>
+      <MarketingFooter />
 
       {/* Floating demo CTA */}
       <FloatingDemoCta />

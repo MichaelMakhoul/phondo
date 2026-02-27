@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/components/ui/use-toast";
-import { Loader2 } from "lucide-react";
+import { Loader2, Phone } from "lucide-react";
 
 function LoginForm() {
   const [email, setEmail] = useState("");
@@ -132,7 +132,7 @@ function LoginForm() {
               disabled={isLoading}
             />
           </div>
-          <Button type="submit" className="w-full" disabled={isLoading}>
+          <Button type="submit" className="w-full bg-orange-500 text-white hover:bg-orange-600" disabled={isLoading}>
             {isLoading ? "Signing in..." : "Sign in"}
           </Button>
         </form>
@@ -143,7 +143,7 @@ function LoginForm() {
         </Link>
         <div>
           Don&apos;t have an account?{" "}
-          <Link href="/signup" className="text-primary hover:underline">
+          <Link href="/signup" className="text-orange-500 hover:underline">
             Sign up
           </Link>
         </div>
@@ -164,10 +164,19 @@ function LoginLoading() {
 
 export default function LoginPage() {
   return (
-    <div className="flex min-h-screen items-center justify-center bg-muted/50 px-4">
-      <Suspense fallback={<LoginLoading />}>
-        <LoginForm />
-      </Suspense>
+    <div className="relative flex min-h-screen flex-col items-center justify-center bg-hero-gradient px-4">
+      <div className="absolute inset-0 bg-grid-pattern" />
+      <div className="relative">
+        <Link href="/" className="mb-8 flex items-center justify-center gap-2">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-orange-500">
+            <Phone className="h-5 w-5 text-white" />
+          </div>
+          <span className="text-2xl font-bold text-white">Hola Recep</span>
+        </Link>
+        <Suspense fallback={<LoginLoading />}>
+          <LoginForm />
+        </Suspense>
+      </div>
     </div>
   );
 }
