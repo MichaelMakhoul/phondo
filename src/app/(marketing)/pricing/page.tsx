@@ -96,7 +96,7 @@ export default function PricingPage() {
         </section>
 
         {/* FAQ */}
-        <section className="border-t bg-slate-50 py-16 sm:py-24">
+        <section className="border-t bg-slate-50 dark:bg-slate-900 py-16 sm:py-24">
           <div className="container mx-auto px-4">
             <AnimateOnScroll className="text-center mb-12">
               <h2 className="text-2xl font-bold">

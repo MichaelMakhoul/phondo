@@ -214,11 +214,11 @@ export default function DemoPage() {
           {demoState === "select" && (
             <>
               {!audioSupported && (
-                <div className="max-w-2xl mx-auto mb-8 p-4 bg-amber-50 border border-amber-200 rounded-lg flex items-start gap-3">
-                  <AlertCircle className="w-5 h-5 text-amber-600 mt-0.5 shrink-0" />
+                <div className="max-w-2xl mx-auto mb-8 p-4 bg-amber-50 dark:bg-amber-950/50 border border-amber-200 dark:border-amber-900 rounded-lg flex items-start gap-3">
+                  <AlertCircle className="w-5 h-5 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
                   <div>
-                    <p className="font-medium text-amber-800">Browser not supported</p>
-                    <p className="text-sm text-amber-700">
+                    <p className="font-medium text-amber-800 dark:text-amber-200">Browser not supported</p>
+                    <p className="text-sm text-amber-700 dark:text-amber-300">
                       Live demo calls require a modern browser with AudioWorklet support.
                       Please use the latest version of Chrome, Edge, or Firefox.
                     </p>
@@ -415,8 +415,8 @@ export default function DemoPage() {
               {!error && !rateLimited && (
                 <Card className="mb-8">
                   <CardContent className="p-8">
-                    <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                      <Phone className="w-8 h-8 text-green-600" />
+                    <div className="w-16 h-16 bg-green-100 dark:bg-green-900/30 rounded-full flex items-center justify-center mx-auto mb-4">
+                      <Phone className="w-8 h-8 text-green-600 dark:text-green-400" />
                     </div>
                     <h2 className="text-2xl font-bold mb-2">Call Complete</h2>
                     <p className="text-muted-foreground text-sm mb-4">
@@ -463,7 +463,7 @@ export default function DemoPage() {
         </div>
 
         {/* Features Section */}
-        <section className="border-t bg-slate-50 py-16">
+        <section className="border-t bg-slate-50 dark:bg-slate-900 py-16">
           <div className="container mx-auto px-4 text-center">
             <h2 className="text-3xl font-bold mb-10">
               Why Businesses Choose Hola Recep

@@ -122,7 +122,7 @@ export function SidebarContent({ currentOrg }: { currentOrg?: { name: string; ty
       <div className="flex h-16 items-center border-b px-6">
         <Link href="/dashboard" className="flex items-center gap-2">
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-            <Bot className="h-5 w-5" />
+            <Phone className="h-5 w-5" />
           </div>
           <span className="text-lg font-semibold">Hola Recep</span>
         </Link>
