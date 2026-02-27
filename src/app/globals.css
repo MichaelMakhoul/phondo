@@ -57,3 +57,61 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* Landing page tokens */
+:root {
+  --hero-bg-from: #0F172A;
+  --hero-bg-to: #1E293B;
+  --cta: #F97316;
+  --cta-hover: #EA580C;
+}
+
+/* Landing page utilities */
+@layer utilities {
+  .bg-hero-gradient {
+    background: linear-gradient(to bottom, var(--hero-bg-from), var(--hero-bg-to));
+  }
+
+  .bg-grid-pattern {
+    background-image: linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px),
+                      linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px);
+    background-size: 64px 64px;
+  }
+
+  .bg-dot-pattern {
+    background-image: radial-gradient(circle, rgba(0,0,0,0.06) 1px, transparent 1px);
+    background-size: 24px 24px;
+  }
+
+  .text-gradient-hero {
+    background: linear-gradient(135deg, var(--cta), #FBBF24);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .border-glow-hover {
+    transition: box-shadow 0.3s ease, border-color 0.3s ease;
+  }
+  .border-glow-hover:hover {
+    border-color: var(--cta);
+    box-shadow: 0 0 20px rgba(249,115,22,0.15);
+  }
+
+  .btn-glow {
+    box-shadow: 0 0 20px rgba(249,115,22,0.3);
+  }
+  .btn-glow:hover {
+    box-shadow: 0 0 30px rgba(249,115,22,0.5);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
