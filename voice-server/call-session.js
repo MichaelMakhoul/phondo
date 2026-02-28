@@ -1,5 +1,5 @@
 const { WebSocket } = require("ws");
-const { validateInput, getBufferConfig } = require("./lib/input-validators");
+const { validateInput, getBufferConfig, extractSpokenDigits } = require("./lib/input-validators");
 
 const MAX_MESSAGES = 21; // system prompt + up to 20 messages (user/assistant turns + tool call/result messages)
 
@@ -102,9 +102,9 @@ class CallSession {
     // Start max-wait timer on first buffer entry
     if (!this._bufferStartedAt) {
       this._bufferStartedAt = Date.now();
+      this._hasExtendedMaxWait = false;
       this._maxWaitTimer = setTimeout(() => {
-        console.log(`[Buffer] Max wait (${config.maxWaitMs}ms) reached for type="${this._expectedInputType}" — force flushing`);
-        this._flushAndReset();
+        this._handleMaxWait(config);
       }, config.maxWaitMs);
     }
 
@@ -141,6 +141,31 @@ class CallSession {
       console.log(`[Buffer] Ignoring UtteranceEnd for type="${this._expectedInputType}"`);
       return;
     }
+    this._flushAndReset();
+  }
+
+  /**
+   * Handle max-wait timer expiry. For phone input, if the digit count is
+   * between 4-7 (partial number), extend the timer once by 4s to allow the
+   * caller to finish dictating. Prevents 10-digit AU numbers from splitting.
+   */
+  _handleMaxWait(config) {
+    if (this._expectedInputType === "phone" && !this._hasExtendedMaxWait) {
+      const combined = this._utteranceBuffer.join(" ").trim();
+      if (combined) {
+        const digits = extractSpokenDigits(combined);
+        if (digits.length >= 4 && digits.length < 8) {
+          this._hasExtendedMaxWait = true;
+          console.log(`[Buffer] Phone incomplete (${digits.length} digits) at max-wait — extending 4s`);
+          this._maxWaitTimer = setTimeout(() => {
+            console.log(`[Buffer] Extended max-wait expired — force flushing`);
+            this._flushAndReset();
+          }, 4000);
+          return;
+        }
+      }
+    }
+    console.log(`[Buffer] Max wait (${config.maxWaitMs}ms) reached for type="${this._expectedInputType}" — force flushing`);
     this._flushAndReset();
   }
 

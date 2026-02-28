@@ -14,7 +14,7 @@
  * - ignoreUtteranceEnd: if true, Deepgram UtteranceEnd won't trigger early flush
  */
 const BUFFER_CONFIGS = {
-  phone:     { debounceMs: 2000, maxWaitMs: 8000,  ignoreUtteranceEnd: true  },
+  phone:     { debounceMs: 2000, maxWaitMs: 12000, ignoreUtteranceEnd: true  },
   email:     { debounceMs: 2000, maxWaitMs: 6000,  ignoreUtteranceEnd: true  },
   name:      { debounceMs: 1200, maxWaitMs: 4000,  ignoreUtteranceEnd: false },
   address:   { debounceMs: 2500, maxWaitMs: 10000, ignoreUtteranceEnd: true  },
