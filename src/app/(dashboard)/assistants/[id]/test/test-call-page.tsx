@@ -287,7 +287,7 @@ export function TestCallPage({ assistantId, assistantData }: TestCallPageProps) 
                 <p className="text-center text-muted-foreground">
                   Click the button below to start a test call
                 </p>
-                <Button size="lg" onClick={handleStartCall}>
+                <Button size="lg" onClick={handleStartCall} className="btn-primary-glow">
                   <Phone className="mr-2 h-5 w-5" />
                   Start Test Call
                 </Button>
@@ -296,8 +296,12 @@ export function TestCallPage({ assistantId, assistantData }: TestCallPageProps) 
 
             {displayStatus === "connecting" && (
               <>
-                <div className="flex h-20 w-20 items-center justify-center rounded-full bg-yellow-500/10">
-                  <Loader2 className="h-10 w-10 animate-spin text-yellow-500" />
+                <div className="relative flex h-20 w-20 items-center justify-center">
+                  <div className="absolute inset-0 rounded-full border-2 border-yellow-500/30 animate-ring-expand" />
+                  <div className="absolute inset-0 rounded-full border-2 border-yellow-500/20 animate-ring-expand-delay" />
+                  <div className="flex h-20 w-20 items-center justify-center rounded-full bg-yellow-500/10">
+                    <Loader2 className="h-10 w-10 animate-spin text-yellow-500" />
+                  </div>
                 </div>
                 <p className="text-center text-muted-foreground">
                   Connecting to your AI receptionist...
@@ -384,7 +388,7 @@ export function TestCallPage({ assistantId, assistantData }: TestCallPageProps) 
               {transcript.map((message, index) => (
                 <div
                   key={index}
-                  className={`rounded-lg p-2 text-sm ${
+                  className={`rounded-lg p-2 text-sm animate-fade-in-up ${
                     message.role === "assistant"
                       ? "bg-primary/10 text-primary"
                       : "bg-muted"
