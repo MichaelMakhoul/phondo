@@ -17,6 +17,7 @@ import { PhoneCall, PhoneIncoming, PhoneOutgoing, Play, ShieldAlert, ShieldCheck
 import { formatPhoneNumber, formatDuration } from "@/lib/utils";
 import { format } from "date-fns";
 import { SpamActions } from "./spam-actions";
+import { EmptyState } from "@/components/ui/empty-state";
 
 interface Call {
   id: string;
@@ -195,14 +196,15 @@ function CallsTable({
 }) {
   if (!calls || calls.length === 0) {
     return (
-      <div className="py-12 text-center">
-        <PhoneCall className="mx-auto h-8 w-8 text-muted-foreground" />
-        <p className="mt-2 text-sm text-muted-foreground">
-          {isSpamView
-            ? "No spam calls detected. Your spam filter is working!"
-            : "No calls yet. Set up an assistant and phone number to start receiving calls."}
-        </p>
-      </div>
+      <EmptyState
+        icon={isSpamView ? ShieldCheck : PhoneCall}
+        title={isSpamView ? "No spam calls detected" : "No calls yet"}
+        description={
+          isSpamView
+            ? "Your spam filter is working! Spam calls will appear here when detected."
+            : "Set up an assistant and phone number to start receiving calls."
+        }
+      />
     );
   }
 

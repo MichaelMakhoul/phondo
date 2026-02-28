@@ -29,6 +29,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { formatPhoneNumber } from "@/lib/utils";
+import { EmptyState } from "@/components/ui/empty-state";
 import {
   format,
   startOfMonth,
@@ -548,19 +549,19 @@ export function CalendarDashboard({
           <CardContent>
             <ScrollArea className="h-[400px] pr-2">
               {!selectedDate ? (
-                <div className="flex flex-col items-center justify-center py-12 text-center">
-                  <CalendarIcon className="h-8 w-8 text-muted-foreground mb-2" />
-                  <p className="text-sm text-muted-foreground">
-                    Select a day to view appointments
-                  </p>
-                </div>
+                <EmptyState
+                  icon={CalendarIcon}
+                  title="Select a day"
+                  description="Choose a date to view appointments"
+                  compact
+                />
               ) : selectedDayAppointments.length === 0 ? (
-                <div className="flex flex-col items-center justify-center py-12 text-center">
-                  <CalendarDays className="h-8 w-8 text-muted-foreground mb-2" />
-                  <p className="text-sm text-muted-foreground">
-                    No appointments scheduled
-                  </p>
-                </div>
+                <EmptyState
+                  icon={CalendarDays}
+                  title="No appointments"
+                  description="No appointments scheduled for this day"
+                  compact
+                />
               ) : (
                 <div className="space-y-3">
                   {selectedDayAppointments.map((appt) => (
@@ -625,12 +626,12 @@ export function CalendarDashboard({
         </CardHeader>
         <CardContent>
           {upcomingAppointments.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-8 text-center">
-              <CalendarCheck2 className="h-8 w-8 text-muted-foreground mb-2" />
-              <p className="text-sm text-muted-foreground">
-                No upcoming appointments
-              </p>
-            </div>
+            <EmptyState
+              icon={CalendarCheck2}
+              title="No upcoming appointments"
+              description="Appointments for the next 7 days will appear here"
+              compact
+            />
           ) : (
             <div className="space-y-2">
               {upcomingAppointments.map((appt) => (

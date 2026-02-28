@@ -12,6 +12,7 @@ import {
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Users } from "lucide-react";
 import { TeamActions } from "./team-actions";
+import { EmptyState } from "@/components/ui/empty-state";
 
 interface Membership {
   organization_id: string;
@@ -167,12 +168,12 @@ export default async function TeamPage() {
               </TableBody>
             </Table>
           ) : (
-            <div className="py-12 text-center">
-              <Users className="mx-auto h-8 w-8 text-muted-foreground" />
-              <p className="mt-2 text-sm text-muted-foreground">
-                No team members yet
-              </p>
-            </div>
+            <EmptyState
+              icon={Users}
+              title="No team members yet"
+              description="Invite team members to help manage your AI receptionist"
+              compact
+            />
           )}
         </CardContent>
       </Card>

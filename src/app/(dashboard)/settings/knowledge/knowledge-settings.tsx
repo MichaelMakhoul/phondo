@@ -37,6 +37,7 @@ import {
   ArrowLeft,
   BookOpen,
 } from "lucide-react";
+import { EmptyState } from "@/components/ui/empty-state";
 
 interface KBEntry {
   id: string;
@@ -681,20 +682,18 @@ export function KnowledgeSettings({
       {/* Entry List */}
       {entries.length === 0 ? (
         <Card>
-          <CardContent className="flex flex-col items-center justify-center py-12">
-            <BookOpen className="h-12 w-12 text-muted-foreground/50 mb-4" />
-            <h3 className="text-lg font-medium">No knowledge sources yet</h3>
-            <p className="text-sm text-muted-foreground mt-1 text-center max-w-sm">
-              Add business information so your AI assistants can answer caller
-              questions accurately.
-            </p>
-            <Button
-              className="mt-4"
-              onClick={() => setAddDialogOpen(true)}
-            >
-              <Plus className="h-4 w-4 mr-2" />
-              Add Your First Source
-            </Button>
+          <CardContent className="py-4">
+            <EmptyState
+              icon={BookOpen}
+              title="No knowledge sources yet"
+              description="Add business information so your AI assistants can answer caller questions accurately."
+              action={
+                <Button onClick={() => setAddDialogOpen(true)}>
+                  <Plus className="h-4 w-4 mr-2" />
+                  Add Your First Source
+                </Button>
+              }
+            />
           </CardContent>
         </Card>
       ) : (
