@@ -31,6 +31,7 @@ interface ToolCallPayload {
   assistantId: string;
   functionName: string;
   arguments: Record<string, unknown>;
+  callId?: string;
 }
 
 /**
@@ -120,7 +121,8 @@ export async function POST(request: Request) {
             reason: parsedArgs.reason,
             preferred_time: parsedArgs.preferred_time,
             urgency: parsedArgs.urgency,
-          }
+          },
+          payload.callId
         );
         break;
 

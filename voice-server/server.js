@@ -893,6 +893,7 @@ async function handleUserSpeech(session, twilioWs, transcript) {
             organizationId: session.organizationId,
             assistantId: session.assistantId,
             callSid: session.callSid,
+            callId: session.callRecordId,
             transferRules: session.transferRules,
             organization: session.organization,
             callerPhone: session.callerPhone,
