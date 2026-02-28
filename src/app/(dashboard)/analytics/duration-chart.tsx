@@ -2,38 +2,40 @@
 
 import { format, parseISO } from "date-fns";
 import {
-  BarChart,
-  Bar,
+  LineChart,
+  Line,
   XAxis,
   YAxis,
   CartesianGrid,
   Tooltip,
   ResponsiveContainer,
-  Legend,
 } from "recharts";
 
-interface DailyStats {
+interface DurationData {
   date: string;
-  calls: number;
-  answered: number;
-  appointments: number;
+  avgSeconds: number;
 }
 
-interface AnalyticsChartsProps {
-  dailyStats: DailyStats[];
+interface DurationChartProps {
+  data: DurationData[];
 }
 
-export function AnalyticsCharts({ dailyStats }: AnalyticsChartsProps) {
-  const recentDays = dailyStats.slice(-14).map((d) => ({
+function formatDuration(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = Math.round(seconds % 60);
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+export function DurationChart({ data }: DurationChartProps) {
+  const chartData = data.map((d) => ({
     ...d,
     label: format(parseISO(d.date), "MMM d"),
-    missed: d.calls - d.answered,
   }));
 
   return (
     <div className="h-[280px] w-full">
       <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={recentDays} margin={{ top: 5, right: 5, left: -20, bottom: 5 }}>
+        <LineChart data={chartData} margin={{ top: 5, right: 5, left: -20, bottom: 5 }}>
           <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
           <XAxis
             dataKey="label"
@@ -41,7 +43,7 @@ export function AnalyticsCharts({ dailyStats }: AnalyticsChartsProps) {
             className="fill-muted-foreground"
           />
           <YAxis
-            allowDecimals={false}
+            tickFormatter={(v) => formatDuration(v)}
             tick={{ fontSize: 12 }}
             className="fill-muted-foreground"
           />
@@ -52,20 +54,18 @@ export function AnalyticsCharts({ dailyStats }: AnalyticsChartsProps) {
               backgroundColor: "hsl(var(--popover))",
               color: "hsl(var(--popover-foreground))",
             }}
-            formatter={(value: any, name: any) => [
-              value,
-              name === "answered" ? "Answered" : "Missed",
-            ]}
+            formatter={(value: any) => [formatDuration(value), "Avg Duration"]}
             labelFormatter={(label: any) => String(label)}
           />
-          <Legend
-            formatter={(value: string) =>
-              value === "answered" ? "Answered" : "Missed"
-            }
+          <Line
+            type="monotone"
+            dataKey="avgSeconds"
+            stroke="hsl(221, 83%, 53%)"
+            strokeWidth={2}
+            dot={{ r: 3 }}
+            activeDot={{ r: 5 }}
           />
-          <Bar dataKey="answered" stackId="calls" fill="hsl(142, 71%, 45%)" radius={[0, 0, 0, 0]} />
-          <Bar dataKey="missed" stackId="calls" fill="hsl(var(--muted))" radius={[4, 4, 0, 0]} />
-        </BarChart>
+        </LineChart>
       </ResponsiveContainer>
     </div>
   );
