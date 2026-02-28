@@ -63,6 +63,18 @@ function extractSpokenDigits(text) {
 }
 
 /**
+ * Check if the user's speech is a question rather than structured data input.
+ * When the AI expects a date/time but the user asks "When is the first
+ * available appointment?", we should flush immediately instead of waiting
+ * for a date/time value that will never come.
+ */
+const QUESTION_STARTERS = /^(when|what|where|which|who|how|is\s+there|are\s+there|do\s+you|does|can\s+you|could\s+you|will|would)\b/i;
+
+function isUserQuestion(text) {
+  return QUESTION_STARTERS.test(text.trim());
+}
+
+/**
  * Validate whether the accumulated buffer text is a complete input
  * for the given type.
  *
@@ -71,11 +83,22 @@ function extractSpokenDigits(text) {
  * @returns {{ complete: boolean, reason?: string }}
  */
 function validateInput(type, text) {
+  // If the user is asking a question instead of providing data, flush
+  // immediately. E.g., AI expects date_time but user says "When is the
+  // first available appointment?"
+  if (type !== "general" && isUserQuestion(text)) {
+    return { complete: true, reason: "user question detected — not data input" };
+  }
+
   switch (type) {
     case "phone": {
       const digits = extractSpokenDigits(text);
       if (digits.length >= 8) {
         return { complete: true, reason: `${digits.length} digits found` };
+      }
+      // If no digits at all, the user is speaking conversationally
+      if (digits.length === 0) {
+        return { complete: true, reason: "no digits — conversational response" };
       }
       return { complete: false, reason: `only ${digits.length} digits so far` };
     }
