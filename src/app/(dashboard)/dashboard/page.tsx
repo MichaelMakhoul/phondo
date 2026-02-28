@@ -7,6 +7,7 @@ import Link from "next/link";
 import { formatDuration } from "@/lib/utils";
 import { AnimatedStat } from "@/components/marketing/animated-stat";
 import { EmptyState } from "@/components/ui/empty-state";
+import { DashboardGreeting } from "@/components/dashboard/greeting";
 
 interface RecentCall {
   id: string;
@@ -17,33 +18,25 @@ interface RecentCall {
   phone_numbers: { phone_number: string } | null;
 }
 
-function getGreeting(): string {
-  const hour = new Date().getHours();
-  if (hour < 12) return "Good morning";
-  if (hour < 17) return "Good afternoon";
-  return "Good evening";
-}
-
 export default async function DashboardPage() {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
 
-  // Get user profile for greeting
-  const { data: profile } = await supabase
-    .from("user_profiles")
-    .select("full_name")
-    .eq("id", user!.id)
-    .single() as { data: { full_name: string | null } | null };
+  // Fetch profile and org membership in parallel
+  const [{ data: profile }, { data: membership }] = await Promise.all([
+    supabase
+      .from("user_profiles")
+      .select("full_name")
+      .eq("id", user!.id)
+      .single() as unknown as Promise<{ data: { full_name: string | null } | null }>,
+    supabase
+      .from("org_members")
+      .select("organization_id")
+      .eq("user_id", user!.id)
+      .single() as unknown as Promise<{ data: { organization_id: string } | null }>,
+  ]);
 
   const firstName = profile?.full_name?.split(" ")[0] || null;
-  const greeting = getGreeting();
-
-  // Get user's current organization
-  const { data: membership } = await supabase
-    .from("org_members")
-    .select("organization_id")
-    .eq("user_id", user!.id)
-    .single() as { data: { organization_id: string } | null };
 
   const orgId = membership?.organization_id || "";
 
@@ -138,9 +131,7 @@ export default async function DashboardPage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">
-            {greeting}{firstName ? `, ${firstName}` : ""}
-          </h1>
+          <DashboardGreeting firstName={firstName} />
           <p className="text-muted-foreground">
             Here&apos;s how your AI receptionist is performing
           </p>
