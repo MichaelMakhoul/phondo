@@ -20,6 +20,49 @@ const CALENDAR_FUNCTIONS = [
 ];
 
 /**
+ * OpenAI-compatible tool definition for scheduling a callback.
+ * Always available — callbacks are a universal fallback.
+ */
+const callbackToolDefinition = {
+  type: "function",
+  function: {
+    name: "schedule_callback",
+    description:
+      "Schedule a callback request when a caller wants the business to call them back. Use this when the caller requests a callback, when you cannot resolve their issue, or when the person they need is unavailable.",
+    parameters: {
+      type: "object",
+      properties: {
+        caller_name: {
+          type: "string",
+          description: "The caller's full name",
+        },
+        caller_phone: {
+          type: "string",
+          description: "The caller's phone number for the callback",
+        },
+        reason: {
+          type: "string",
+          description:
+            "Why the caller wants a callback (e.g., 'needs to discuss billing', 'wants a quote for plumbing repair')",
+        },
+        preferred_time: {
+          type: "string",
+          description:
+            "When the caller would like to be called back (e.g., 'tomorrow morning', '2026-03-15T14:00:00', 'anytime after 3pm'). Optional.",
+        },
+        urgency: {
+          type: "string",
+          enum: ["low", "medium", "high"],
+          description:
+            "The urgency level: low (general inquiry), medium (needs attention soon), high (urgent/time-sensitive)",
+        },
+      },
+      required: ["caller_name", "caller_phone", "reason"],
+    },
+  },
+};
+
+/**
  * OpenAI-compatible tool definitions for calendar functions.
  * Passed to the LLM when the org has calendar capabilities.
  */
@@ -168,6 +211,14 @@ async function executeToolCall(functionName, args, context) {
   // ── Transfer call (handled locally via Twilio) ──
   if (functionName === "transfer_call") {
     return executeTransferCall(args, context);
+  }
+
+  // ── Schedule callback ──
+  if (functionName === "schedule_callback") {
+    if (context.testMode) {
+      return simulateCallbackWrite(args);
+    }
+    return executeCalendarCall(functionName, args, context);
   }
 
   if (CALENDAR_FUNCTIONS.includes(functionName)) {
@@ -399,8 +450,21 @@ function simulateCalendarWrite(functionName, args) {
   return { message: "Done." };
 }
 
+/**
+ * Return a simulated response for callback scheduling during test calls.
+ */
+function simulateCallbackWrite(args) {
+  const timeNote = args.preferred_time
+    ? ` They'd like to be called back ${args.preferred_time}.`
+    : "";
+  return {
+    message: `Got it! I've scheduled a callback request for ${args.caller_name} at ${args.caller_phone}. Reason: ${args.reason}.${timeNote} Someone from the team will reach out soon.`,
+  };
+}
+
 module.exports = {
   calendarToolDefinitions,
   transferToolDefinition,
+  callbackToolDefinition,
   executeToolCall,
 };

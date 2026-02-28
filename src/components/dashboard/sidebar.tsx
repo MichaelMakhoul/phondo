@@ -8,6 +8,7 @@ import {
   Bot,
   Phone,
   PhoneCall,
+  PhoneForwarded,
   CalendarDays,
   Settings,
   CreditCard,
@@ -52,6 +53,11 @@ export const navigation = [
     name: "Calls",
     href: "/calls",
     icon: PhoneCall,
+  },
+  {
+    name: "Callbacks",
+    href: "/callbacks",
+    icon: PhoneForwarded,
   },
   {
     name: "Calendar",
