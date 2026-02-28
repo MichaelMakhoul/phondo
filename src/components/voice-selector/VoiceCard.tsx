@@ -18,12 +18,14 @@ const accentLabel: Record<string, string> = {
   american: "US",
   british: "UK",
   australian: "AU",
+  latin_american: "ES",
 };
 
 const accentFlag: Record<string, string> = {
   american: "\uD83C\uDDFA\uD83C\uDDF8",
   british: "\uD83C\uDDEC\uD83C\uDDE7",
   australian: "\uD83C\uDDE6\uD83C\uDDFA",
+  latin_american: "\uD83C\uDDEA\uD83C\uDDF8",
 };
 
 export function VoiceCard({ voice, selected, onSelect }: VoiceCardProps) {

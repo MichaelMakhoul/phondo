@@ -22,7 +22,7 @@ export type VoiceTag =
   | "energetic"
   | "soothing";
 
-export type VoiceAccent = "american" | "british" | "australian";
+export type VoiceAccent = "american" | "british" | "australian" | "latin_american";
 
 export type VoiceLanguage = "en" | "es";
 
@@ -256,7 +256,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     id: "es-diana",
     name: "Diana",
     gender: "female",
-    accent: "american",
+    accent: "latin_american",
     tags: ["warm", "professional"],
     description: "Warm, professional Spanish female",
     previewText: "¡Hola! Gracias por llamar. ¿En qué puedo ayudarle hoy?",
@@ -268,7 +268,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     id: "es-javier",
     name: "Javier",
     gender: "male",
-    accent: "american",
+    accent: "latin_american",
     tags: ["friendly", "conversational"],
     description: "Friendly, conversational Spanish male",
     previewText: "¡Hola! Bienvenido. ¿Cómo puedo ayudarle?",
@@ -280,7 +280,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     id: "es-carina",
     name: "Carina",
     gender: "female",
-    accent: "american",
+    accent: "latin_american",
     tags: ["professional", "authoritative"],
     description: "Professional, authoritative Spanish female",
     previewText: "Buenos días. Estoy aquí para asistirle. ¿En qué puedo servirle?",
@@ -291,7 +291,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     id: "es-alvaro",
     name: "Álvaro",
     gender: "male",
-    accent: "american",
+    accent: "latin_american",
     tags: ["calm", "professional"],
     description: "Calm, professional Spanish male",
     previewText: "Gracias por su llamada. Estoy aquí para ayudarle.",
@@ -302,7 +302,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     id: "es-selena",
     name: "Selena",
     gender: "female",
-    accent: "american",
+    accent: "latin_american",
     tags: ["upbeat", "friendly"],
     description: "Upbeat, friendly Spanish female",
     previewText: "¡Hola! ¡Qué gusto escucharle! ¿En qué puedo ayudarle?",
@@ -313,7 +313,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     id: "es-nestor",
     name: "Néstor",
     gender: "male",
-    accent: "american",
+    accent: "latin_american",
     tags: ["warm", "professional"],
     description: "Warm, deep Spanish male",
     previewText: "Buenas. ¿En qué puedo asistirle el día de hoy?",
