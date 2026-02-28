@@ -24,6 +24,7 @@ const createAssistantSchema = z.object({
   voiceProvider: z.string().default("11labs"),
   model: z.string().default("gpt-4.1-nano"),
   modelProvider: z.string().default("openai"),
+  language: z.enum(["en", "es"]).default("en"),
   knowledgeBase: z.any().optional(),
   tools: z.any().optional(),
   promptConfig: promptConfigSchema.optional(),
@@ -143,6 +144,7 @@ export async function POST(request: Request) {
         is_active: true,
         prompt_config: validatedData.promptConfig || null,
         settings: validatedData.settings || {},
+        language: validatedData.language,
       })
       .select()
       .single();
@@ -222,8 +224,8 @@ export async function POST(request: Request) {
         firstMessage: vapiFirstMessage,
         transcriber: {
           provider: "deepgram",
-          model: "nova-2",
-          language: "en",
+          model: validatedData.language === "es" ? "nova-3" : "nova-2",
+          language: validatedData.language,
         },
         server: serverConfig,
         recordingEnabled,

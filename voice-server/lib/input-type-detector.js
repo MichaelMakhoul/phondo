@@ -19,10 +19,19 @@ const INPUT_PATTERNS = {
     /best\s*number/i,
     /callback\s*number/i,
     /number\s*(to|I|we)\s*(can|could|should)/i,
+    // Spanish
+    /n[uú]mero\s*de\s*tel[eé]fono/i,
+    /n[uú]mero\s*de\s*contacto/i,
+    /n[uú]mero\s*de\s*celular/i,
+    /su\s*n[uú]mero/i,
+    /llamar(le|lo)?\s*al/i,
   ],
   email: [
     /e[\s-]?mail/i,
     /email\s*address/i,
+    // Spanish
+    /correo\s*electr[oó]nico/i,
+    /direcci[oó]n\s*de\s*correo/i,
   ],
   name: [
     /your\s*(full\s*)?name/i,
@@ -32,6 +41,12 @@ const INPUT_PATTERNS = {
     /may\s*I\s*(have|get)\s*your\s*name/i,
     /name\s*(please|for)/i,
     /spell\s*your\s*name/i,
+    // Spanish
+    /su\s*nombre/i,
+    /nombre\s*completo/i,
+    /c[oó]mo\s*se\s*llama/i,
+    /con\s*qui[eé]n\s*hablo/i,
+    /apellido/i,
   ],
   address: [
     /address/i,
@@ -42,6 +57,11 @@ const INPUT_PATTERNS = {
     /city\s*and\s*state/i,
     /mailing\s*address/i,
     /where\s*(are\s*you|do\s*you)\s*located/i,
+    // Spanish
+    /direcci[oó]n/i,
+    /calle/i,
+    /c[oó]digo\s*postal/i,
+    /d[oó]nde\s*(se\s*encuentra|est[aá])/i,
   ],
   date_time: [
     /what\s*(date|time|day)/i,
@@ -51,6 +71,13 @@ const INPUT_PATTERNS = {
     /what\s*time\s*(works|suits|is)/i,
     /when\s*(are|is)\s*(you|the)/i,
     /schedule\s*(for|on)/i,
+    // Spanish
+    /qu[eé]\s*(fecha|hora|d[ií]a)/i,
+    /cu[aá]ndo\s*(le|prefiere|podr[ií]a)/i,
+    /qu[eé]\s*d[ií]a/i,
+    /qu[eé]\s*hora\s*(le|prefiere)/i,
+    /agendar\s*(para|el)/i,
+    /programar\s*(para|una)/i,
   ],
 };
 
