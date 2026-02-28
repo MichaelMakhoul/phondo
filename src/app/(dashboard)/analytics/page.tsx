@@ -27,6 +27,7 @@ import {
 } from "lucide-react";
 import { AnalyticsCharts } from "./analytics-charts";
 import { RecentCallsList } from "./recent-calls-list";
+import { AnimatedStat } from "@/components/marketing/animated-stat";
 
 export const metadata: Metadata = {
   title: "Analytics | Hola Recep",
@@ -210,7 +211,7 @@ export default async function AnalyticsPage() {
             <PhoneCall className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{stats.total}</div>
+            <AnimatedStat value={String(stats.total)} className="text-2xl font-bold" />
             <p className="text-xs text-muted-foreground">
               {stats.spam} spam filtered
             </p>
@@ -223,7 +224,7 @@ export default async function AnalyticsPage() {
             <PhoneIncoming className="h-4 w-4 text-green-600" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{stats.answered}</div>
+            <AnimatedStat value={String(stats.answered)} className="text-2xl font-bold" />
             <p className="text-xs text-muted-foreground">
               {answerRate}% answer rate
             </p>
@@ -236,7 +237,7 @@ export default async function AnalyticsPage() {
             <Calendar className="h-4 w-4 text-blue-600" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{stats.appointments}</div>
+            <AnimatedStat value={String(stats.appointments)} className="text-2xl font-bold" />
             <p className="text-xs text-muted-foreground">
               Booked by AI
             </p>
@@ -249,9 +250,10 @@ export default async function AnalyticsPage() {
             <Clock className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">
-              {Math.floor(avgDuration / 60)}:{String(avgDuration % 60).padStart(2, "0")}
-            </div>
+            <AnimatedStat
+              value={`${Math.floor(avgDuration / 60)}:${String(avgDuration % 60).padStart(2, "0")}`}
+              className="text-2xl font-bold"
+            />
             <p className="text-xs text-muted-foreground">
               Per call
             </p>

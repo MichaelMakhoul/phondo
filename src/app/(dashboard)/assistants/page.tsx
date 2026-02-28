@@ -136,7 +136,10 @@ export default async function AssistantsPage() {
                 </p>
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
-                    <Badge variant={assistant.is_active ? "success" : "secondary"}>
+                    <Badge variant={assistant.is_active ? "success" : "secondary"} className="gap-1.5">
+                      {assistant.is_active && (
+                        <span className="h-1.5 w-1.5 rounded-full bg-green-500 animate-pulse-dot" />
+                      )}
                       {assistant.is_active ? "Active" : "Inactive"}
                     </Badge>
                     {assistant.phone_numbers && assistant.phone_numbers[0]?.count > 0 && (

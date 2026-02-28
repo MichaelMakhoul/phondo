@@ -29,6 +29,7 @@ import {
   ArrowLeft,
 } from "lucide-react";
 import { useVoiceTest } from "@/lib/voice-test";
+import { VoiceWaveform } from "@/components/ui/voice-waveform";
 import {
   playVoicePreview,
   stopVoicePreview,
@@ -279,14 +280,20 @@ export function TestCallPage({ assistantId, assistantData }: TestCallPageProps) 
 
             {displayStatus === "active" && (
               <>
-                <div
-                  className={`flex h-20 w-20 items-center justify-center rounded-full transition-all ${
-                    isAssistantSpeaking
-                      ? "bg-green-500/20 scale-105"
-                      : "bg-green-500/10"
-                  }`}
-                >
-                  <Phone className="h-10 w-10 text-green-500" />
+                <div className="flex flex-col items-center gap-3">
+                  <div
+                    className={`flex h-20 w-20 items-center justify-center rounded-full transition-all ${
+                      isAssistantSpeaking
+                        ? "bg-green-500/20 scale-105"
+                        : "bg-green-500/10"
+                    }`}
+                  >
+                    <Phone className="h-10 w-10 text-green-500" />
+                  </div>
+                  <VoiceWaveform
+                    isActive={isAssistantSpeaking}
+                    className="text-green-500 h-6"
+                  />
                 </div>
                 <div className="flex items-center gap-2">
                   <Badge variant="default" className="bg-green-500">
