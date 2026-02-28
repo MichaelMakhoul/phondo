@@ -13,7 +13,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { PhoneCall, PhoneIncoming, PhoneOutgoing, Play, ShieldAlert, ShieldCheck, AlertTriangle } from "lucide-react";
+import { PhoneCall, PhoneIncoming, PhoneOutgoing, Play, ShieldAlert, ShieldCheck, AlertTriangle, ChevronRight } from "lucide-react";
 import { formatPhoneNumber, formatDuration } from "@/lib/utils";
 import { format } from "date-fns";
 import { SpamActions } from "./spam-actions";
@@ -212,146 +212,196 @@ function CallsTable({
   }
 
   return (
-    <Table>
-      <TableHeader>
-        <TableRow>
-          <TableHead>Direction</TableHead>
-          <TableHead>Caller</TableHead>
-          <TableHead>Assistant</TableHead>
-          <TableHead>Status</TableHead>
-          <TableHead>Result</TableHead>
-          {isSpamView && <TableHead>Spam Score</TableHead>}
-          <TableHead>Duration</TableHead>
-          <TableHead>Date</TableHead>
-          <TableHead className="text-right">Actions</TableHead>
-        </TableRow>
-      </TableHeader>
-      <TableBody>
+    <>
+      {/* Mobile card list */}
+      <div className="space-y-2 md:hidden">
         {calls.map((call) => (
-          <TableRow key={call.id} className={call.is_spam ? "bg-orange-50 dark:bg-orange-950/20" : ""}>
-            <TableCell>
+          <Link
+            key={call.id}
+            href={`/calls/${call.id}`}
+            className="flex items-center justify-between rounded-lg border p-3 hover:bg-muted/50 transition-colors"
+          >
+            <div className="flex items-center gap-3 min-w-0">
               {call.direction === "inbound" ? (
-                <PhoneIncoming className="h-4 w-4 text-green-600" />
+                <PhoneIncoming className="h-4 w-4 shrink-0 text-green-600" />
               ) : (
-                <PhoneOutgoing className="h-4 w-4 text-blue-600" />
+                <PhoneOutgoing className="h-4 w-4 shrink-0 text-blue-600" />
               )}
-            </TableCell>
-            <TableCell>
-              <div className="flex items-center gap-2">
-                <div>
-                  <p className="font-medium">
-                    {call.caller_name || (call.caller_phone
-                      ? formatPhoneNumber(call.caller_phone)
-                      : "Unknown")}
-                  </p>
-                  {call.caller_name && call.caller_phone && (
-                    <p className="text-xs text-muted-foreground">
-                      {formatPhoneNumber(call.caller_phone)}
-                    </p>
-                  )}
-                  {!call.caller_name && call.phone_numbers && (
-                    <p className="text-xs text-muted-foreground">
-                      to {formatPhoneNumber(call.phone_numbers.phone_number)}
-                    </p>
-                  )}
-                </div>
-                {call.is_spam && !isSpamView && (
-                  <Badge variant="destructive" className="text-xs">
-                    <ShieldAlert className="h-3 w-3 mr-1" />
-                    Spam
-                  </Badge>
-                )}
+              <div className="min-w-0">
+                <p className="text-sm font-medium truncate">
+                  {call.caller_name || (call.caller_phone
+                    ? formatPhoneNumber(call.caller_phone)
+                    : "Unknown")}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {format(new Date(call.created_at), "MMM d, h:mm a")}
+                  {call.duration_seconds ? ` · ${formatDuration(call.duration_seconds)}` : ""}
+                </p>
               </div>
-            </TableCell>
-            <TableCell>{call.assistants?.name || "-"}</TableCell>
-            <TableCell>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
               <Badge
                 variant={
                   call.status === "completed"
                     ? "success"
                     : call.status === "failed"
                     ? "destructive"
-                    : call.status === "in-progress"
-                    ? "default"
                     : "secondary"
                 }
+                className="text-xs"
               >
                 {call.status}
               </Badge>
-            </TableCell>
-            <TableCell>
-              {call.metadata?.successEvaluation ? (
-                <Badge
-                  variant={
-                    call.metadata.successEvaluation.toLowerCase() === "pass" ||
-                    call.metadata.successEvaluation.toLowerCase() === "passed" ||
-                    call.metadata.successEvaluation.toLowerCase() === "success"
-                      ? "success"
-                      : call.metadata.successEvaluation.toLowerCase() === "fail" ||
-                        call.metadata.successEvaluation.toLowerCase() === "failed"
-                      ? "destructive"
-                      : "secondary"
-                  }
-                >
-                  {call.metadata.successEvaluation}
-                </Badge>
-              ) : (
-                "-"
-              )}
-            </TableCell>
-            {isSpamView && (
-              <TableCell>
-                <div className="flex items-center gap-2">
-                  <div className="w-16 h-2 bg-gray-200 rounded-full overflow-hidden">
-                    <div
-                      className={`h-full ${
-                        (call.spam_score ?? 0) >= 70 ? 'bg-red-500' :
-                        (call.spam_score ?? 0) >= 40 ? 'bg-orange-500' : 'bg-yellow-500'
-                      }`}
-                      style={{ width: `${call.spam_score ?? 0}%` }}
-                    />
-                  </div>
-                  <span className="text-sm text-muted-foreground">{call.spam_score ?? 0}%</span>
-                </div>
-              </TableCell>
-            )}
-            <TableCell>
-              {call.duration_seconds
-                ? formatDuration(call.duration_seconds)
-                : "-"}
-            </TableCell>
-            <TableCell>
-              {format(new Date(call.created_at), "MMM d, h:mm a")}
-            </TableCell>
-            <TableCell className="text-right">
-              <div className="flex justify-end gap-2">
-                {call.recording_url && (
-                  <Button variant="ghost" size="icon" asChild>
-                    <a
-                      href={call.recording_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    >
-                      <Play className="h-4 w-4" />
-                    </a>
-                  </Button>
-                )}
-                {showSpamActions && (
-                  <SpamActions
-                    callId={call.id}
-                    isSpam={call.is_spam ?? false}
-                  />
-                )}
-                <Link href={`/calls/${call.id}`}>
-                  <Button variant="ghost" size="sm">
-                    View
-                  </Button>
-                </Link>
-              </div>
-            </TableCell>
-          </TableRow>
+              <ChevronRight className="h-4 w-4 text-muted-foreground" />
+            </div>
+          </Link>
         ))}
-      </TableBody>
-    </Table>
+      </div>
+
+      {/* Desktop table */}
+      <div className="hidden md:block">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Direction</TableHead>
+              <TableHead>Caller</TableHead>
+              <TableHead>Assistant</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead>Result</TableHead>
+              {isSpamView && <TableHead>Spam Score</TableHead>}
+              <TableHead>Duration</TableHead>
+              <TableHead>Date</TableHead>
+              <TableHead className="text-right">Actions</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {calls.map((call) => (
+              <TableRow key={call.id} className={call.is_spam ? "bg-orange-50 dark:bg-orange-950/20" : ""}>
+                <TableCell>
+                  {call.direction === "inbound" ? (
+                    <PhoneIncoming className="h-4 w-4 text-green-600" />
+                  ) : (
+                    <PhoneOutgoing className="h-4 w-4 text-blue-600" />
+                  )}
+                </TableCell>
+                <TableCell>
+                  <div className="flex items-center gap-2">
+                    <div>
+                      <p className="font-medium">
+                        {call.caller_name || (call.caller_phone
+                          ? formatPhoneNumber(call.caller_phone)
+                          : "Unknown")}
+                      </p>
+                      {call.caller_name && call.caller_phone && (
+                        <p className="text-xs text-muted-foreground">
+                          {formatPhoneNumber(call.caller_phone)}
+                        </p>
+                      )}
+                      {!call.caller_name && call.phone_numbers && (
+                        <p className="text-xs text-muted-foreground">
+                          to {formatPhoneNumber(call.phone_numbers.phone_number)}
+                        </p>
+                      )}
+                    </div>
+                    {call.is_spam && !isSpamView && (
+                      <Badge variant="destructive" className="text-xs">
+                        <ShieldAlert className="h-3 w-3 mr-1" />
+                        Spam
+                      </Badge>
+                    )}
+                  </div>
+                </TableCell>
+                <TableCell>{call.assistants?.name || "-"}</TableCell>
+                <TableCell>
+                  <Badge
+                    variant={
+                      call.status === "completed"
+                        ? "success"
+                        : call.status === "failed"
+                        ? "destructive"
+                        : call.status === "in-progress"
+                        ? "default"
+                        : "secondary"
+                    }
+                  >
+                    {call.status}
+                  </Badge>
+                </TableCell>
+                <TableCell>
+                  {call.metadata?.successEvaluation ? (
+                    <Badge
+                      variant={
+                        call.metadata.successEvaluation.toLowerCase() === "pass" ||
+                        call.metadata.successEvaluation.toLowerCase() === "passed" ||
+                        call.metadata.successEvaluation.toLowerCase() === "success"
+                          ? "success"
+                          : call.metadata.successEvaluation.toLowerCase() === "fail" ||
+                            call.metadata.successEvaluation.toLowerCase() === "failed"
+                          ? "destructive"
+                          : "secondary"
+                      }
+                    >
+                      {call.metadata.successEvaluation}
+                    </Badge>
+                  ) : (
+                    "-"
+                  )}
+                </TableCell>
+                {isSpamView && (
+                  <TableCell>
+                    <div className="flex items-center gap-2">
+                      <div className="w-16 h-2 bg-gray-200 rounded-full overflow-hidden">
+                        <div
+                          className={`h-full ${
+                            (call.spam_score ?? 0) >= 70 ? 'bg-red-500' :
+                            (call.spam_score ?? 0) >= 40 ? 'bg-orange-500' : 'bg-yellow-500'
+                          }`}
+                          style={{ width: `${call.spam_score ?? 0}%` }}
+                        />
+                      </div>
+                      <span className="text-sm text-muted-foreground">{call.spam_score ?? 0}%</span>
+                    </div>
+                  </TableCell>
+                )}
+                <TableCell>
+                  {call.duration_seconds
+                    ? formatDuration(call.duration_seconds)
+                    : "-"}
+                </TableCell>
+                <TableCell>
+                  {format(new Date(call.created_at), "MMM d, h:mm a")}
+                </TableCell>
+                <TableCell className="text-right">
+                  <div className="flex justify-end gap-2">
+                    {call.recording_url && (
+                      <Button variant="ghost" size="icon" asChild>
+                        <a
+                          href={call.recording_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          <Play className="h-4 w-4" />
+                        </a>
+                      </Button>
+                    )}
+                    {showSpamActions && (
+                      <SpamActions
+                        callId={call.id}
+                        isSpam={call.is_spam ?? false}
+                      />
+                    )}
+                    <Link href={`/calls/${call.id}`}>
+                      <Button variant="ghost" size="sm">
+                        View
+                      </Button>
+                    </Link>
+                  </div>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+    </>
   );
 }

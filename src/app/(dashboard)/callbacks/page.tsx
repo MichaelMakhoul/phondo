@@ -26,6 +26,7 @@ function safeFormatDate(dateStr: string | null, formatStr: string): string {
   }
 }
 import { CallbackActions } from "./callback-list";
+import { ExpandableText } from "./expandable-text";
 import { AnimatedStat } from "@/components/marketing/animated-stat";
 import { EmptyState } from "@/components/ui/empty-state";
 import { CallbacksScene } from "@/components/ui/empty-state-scenes";
@@ -125,7 +126,7 @@ export default async function CallbacksPage() {
       </div>
 
       {/* Stats */}
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">
@@ -275,63 +276,111 @@ function CallbacksTable({
   }
 
   return (
-    <Table>
-      <TableHeader>
-        <TableRow>
-          <TableHead>Caller</TableHead>
-          <TableHead>Reason</TableHead>
-          <TableHead>Preferred Time</TableHead>
-          <TableHead>Urgency</TableHead>
-          <TableHead>Status</TableHead>
-          <TableHead>Requested At</TableHead>
-          <TableHead className="text-right">Actions</TableHead>
-        </TableRow>
-      </TableHeader>
-      <TableBody>
+    <>
+      {/* Mobile card list */}
+      <div className="space-y-2 md:hidden">
         {callbacks.map((cb) => (
-          <TableRow key={cb.id}>
-            <TableCell>
-              <div>
-                <p className="font-medium">{cb.caller_name}</p>
+          <div
+            key={cb.id}
+            className="rounded-lg border p-3 space-y-2"
+          >
+            <div className="flex items-center justify-between">
+              <div className="min-w-0">
+                <p className="text-sm font-medium truncate">{cb.caller_name}</p>
                 <a href={`tel:${cb.caller_phone}`} className="text-xs text-muted-foreground hover:text-primary">
                   {formatPhoneNumber(cb.caller_phone)}
                 </a>
               </div>
-            </TableCell>
-            <TableCell className="max-w-[200px]" title={cb.reason}>
-              <span className="block truncate">{cb.reason}</span>
-              {showCompletionNotes && cb.completion_notes && cb.status === "completed" && (
-                <span className="block text-xs text-muted-foreground mt-1 truncate" title={cb.completion_notes}>
-                  Note: {cb.completion_notes}
-                </span>
-              )}
-            </TableCell>
-            <TableCell>
-              {cb.requested_time
-                ? safeFormatDate(cb.requested_time, "MMM d, h:mm a")
-                : cb.notes || "No preference"}
-            </TableCell>
-            <TableCell>
-              <Badge variant={urgencyVariant(cb.urgency)}>
-                {cb.urgency}
-              </Badge>
-            </TableCell>
-            <TableCell>
-              <Badge variant={statusVariant(cb.status)}>
-                {cb.status}
-              </Badge>
-            </TableCell>
-            <TableCell>
-              {safeFormatDate(cb.created_at, "MMM d, h:mm a")}
-            </TableCell>
-            <TableCell className="text-right">
+              <div className="flex items-center gap-1.5 shrink-0">
+                <Badge variant={urgencyVariant(cb.urgency)} className="text-xs">
+                  {cb.urgency}
+                </Badge>
+                <Badge variant={statusVariant(cb.status)} className="text-xs">
+                  {cb.status}
+                </Badge>
+              </div>
+            </div>
+            <ExpandableText text={cb.reason} className="text-xs text-muted-foreground" />
+            {(cb.requested_time || cb.notes) && (
+              <p className="text-xs text-muted-foreground">
+                Preferred: {cb.requested_time
+                  ? safeFormatDate(cb.requested_time, "MMM d, h:mm a")
+                  : cb.notes}
+              </p>
+            )}
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-muted-foreground">
+                {safeFormatDate(cb.created_at, "MMM d, h:mm a")}
+              </span>
               {cb.status === "pending" && (
                 <CallbackActions callbackId={cb.id} />
               )}
-            </TableCell>
-          </TableRow>
+            </div>
+          </div>
         ))}
-      </TableBody>
-    </Table>
+      </div>
+
+      {/* Desktop table */}
+      <div className="hidden md:block">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Caller</TableHead>
+              <TableHead>Reason</TableHead>
+              <TableHead>Preferred Time</TableHead>
+              <TableHead>Urgency</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead>Requested At</TableHead>
+              <TableHead className="text-right">Actions</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {callbacks.map((cb) => (
+              <TableRow key={cb.id}>
+                <TableCell>
+                  <div>
+                    <p className="font-medium">{cb.caller_name}</p>
+                    <a href={`tel:${cb.caller_phone}`} className="text-xs text-muted-foreground hover:text-primary">
+                      {formatPhoneNumber(cb.caller_phone)}
+                    </a>
+                  </div>
+                </TableCell>
+                <TableCell className="max-w-[200px]" title={cb.reason}>
+                  <span className="block truncate">{cb.reason}</span>
+                  {showCompletionNotes && cb.completion_notes && cb.status === "completed" && (
+                    <span className="block text-xs text-muted-foreground mt-1 truncate" title={cb.completion_notes}>
+                      Note: {cb.completion_notes}
+                    </span>
+                  )}
+                </TableCell>
+                <TableCell>
+                  {cb.requested_time
+                    ? safeFormatDate(cb.requested_time, "MMM d, h:mm a")
+                    : cb.notes || "No preference"}
+                </TableCell>
+                <TableCell>
+                  <Badge variant={urgencyVariant(cb.urgency)}>
+                    {cb.urgency}
+                  </Badge>
+                </TableCell>
+                <TableCell>
+                  <Badge variant={statusVariant(cb.status)}>
+                    {cb.status}
+                  </Badge>
+                </TableCell>
+                <TableCell>
+                  {safeFormatDate(cb.created_at, "MMM d, h:mm a")}
+                </TableCell>
+                <TableCell className="text-right">
+                  {cb.status === "pending" && (
+                    <CallbackActions callbackId={cb.id} />
+                  )}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+    </>
   );
 }
