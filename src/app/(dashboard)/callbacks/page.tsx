@@ -292,6 +292,13 @@ function CallbacksTable({
               </div>
             </div>
             <p className="text-xs text-muted-foreground line-clamp-2">{cb.reason}</p>
+            {(cb.requested_time || cb.notes) && (
+              <p className="text-xs text-muted-foreground">
+                Preferred: {cb.requested_time
+                  ? safeFormatDate(cb.requested_time, "MMM d, h:mm a")
+                  : cb.notes}
+              </p>
+            )}
             <div className="flex items-center justify-between">
               <span className="text-xs text-muted-foreground">
                 {safeFormatDate(cb.created_at, "MMM d, h:mm a")}
