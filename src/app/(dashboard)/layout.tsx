@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { DashboardSidebar } from "@/components/dashboard/sidebar";
 import { DashboardHeader } from "@/components/dashboard/header";
+import { MobileBottomNav } from "@/components/dashboard/mobile-nav";
 
 interface Organization {
   id: string;
@@ -85,9 +86,10 @@ export default async function DashboardLayout({
           }}
           organization={currentOrg}
         />
-        <main id="main-content" className="flex-1 overflow-y-auto bg-muted/30 p-6">
+        <main id="main-content" className="flex-1 overflow-y-auto bg-muted/30 p-4 pb-20 md:p-6 md:pb-6">
           {children}
         </main>
+        <MobileBottomNav />
       </div>
     </div>
   );

@@ -67,6 +67,12 @@ export function DashboardHeader({ user, organization }: DashboardHeaderProps) {
           <Menu className="h-5 w-5" />
           <span className="sr-only">Open menu</span>
         </Button>
+        {/* Mobile org name */}
+        {organization && (
+          <span className="text-sm font-medium truncate max-w-[150px] md:hidden">
+            {organization.name}
+          </span>
+        )}
       </div>
 
       <div className="flex items-center gap-4">
