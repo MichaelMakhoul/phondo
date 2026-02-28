@@ -1307,12 +1307,16 @@ testWss.on("connection", (ws, req) => {
 
       // Play recording disclosure if required by jurisdiction (test calls too)
       let disclosurePrefix = "";
-      const needsDisclosure = requiresRecordingDisclosure(
+      const testConsentResult = requiresRecordingDisclosureHybrid(
         context.organization.country,
         context.organization.businessState,
-        context.organization.recordingConsentMode
+        context.organization.recordingConsentMode,
+        null // test calls have no real caller phone
       );
-      if (needsDisclosure) {
+      session.callerState = testConsentResult.callerState;
+      session.consentReason = testConsentResult.reason;
+      console.log(`[TestRecording] Consent: required=${testConsentResult.required}, callerState=${testConsentResult.callerState}, reason=${testConsentResult.reason}`);
+      if (testConsentResult.required) {
         const disclosureText = getRecordingDisclosureText(context.organization.country);
         try {
           const disclosureAudio = await synthesizeSpeech(DEEPGRAM_API_KEY, disclosureText, {

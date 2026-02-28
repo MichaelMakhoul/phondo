@@ -60,6 +60,10 @@ function requiresRecordingDisclosureHybrid(country, orgState, consentMode, calle
     return { required: false, callerState, reason: "consent_mode_never" };
   }
 
+  if (consentMode !== "auto") {
+    console.warn(`[RecordingConsent] Unknown consentMode "${consentMode}" — treating as "auto"`);
+  }
+
   // Auto mode: determine based on jurisdiction
   if (country === "AU") {
     return { required: true, callerState, reason: "au_required" };
@@ -82,7 +86,7 @@ function requiresRecordingDisclosureHybrid(country, orgState, consentMode, calle
     return { required: false, callerState, reason: "both_one_party" };
   }
 
-  return { required: false, callerState, reason: "both_one_party" };
+  return { required: false, callerState, reason: "country_not_required" };
 }
 
 /**

@@ -120,6 +120,30 @@ describe("requiresRecordingDisclosureHybrid", () => {
       assert.equal(result.callerState, "CA");
       assert.equal(result.reason, "caller_two_party");
     });
+
+    it("non-US/non-AU country returns country_not_required", () => {
+      const result = requiresRecordingDisclosureHybrid("GB", null, "auto", "+442071234567");
+      assert.equal(result.required, false);
+      assert.equal(result.reason, "country_not_required");
+    });
+
+    it("treats undefined consentMode as auto", () => {
+      const result = requiresRecordingDisclosureHybrid("US", "CA", undefined, "+14155551234");
+      assert.equal(result.required, true);
+      assert.equal(result.reason, "both_two_party");
+    });
+
+    it("treats null consentMode as auto", () => {
+      const result = requiresRecordingDisclosureHybrid("US", "TX", null, "+12145551234");
+      assert.equal(result.required, false);
+      assert.equal(result.reason, "both_one_party");
+    });
+
+    it("treats null country as not requiring disclosure", () => {
+      const result = requiresRecordingDisclosureHybrid(null, "CA", "auto", "+14155551234");
+      assert.equal(result.required, false);
+      assert.equal(result.reason, "country_not_required");
+    });
   });
 
   // All two-party consent states
