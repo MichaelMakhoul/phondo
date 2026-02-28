@@ -59,6 +59,18 @@ export interface PromptConfig {
   isManuallyEdited: boolean;
 }
 
+export interface AfterHoursConfig {
+  greeting?: string;
+  customInstructions?: string;
+  disableScheduling?: boolean;
+}
+
+export const afterHoursConfigSchema = z.object({
+  greeting: z.string().max(500).optional(),
+  customInstructions: z.string().max(1000).optional(),
+  disableScheduling: z.boolean().optional(),
+});
+
 export const promptConfigSchema = z.object({
   version: z.literal(1),
   fields: z.array(

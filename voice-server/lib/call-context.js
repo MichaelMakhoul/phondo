@@ -1,4 +1,26 @@
 const { getSupabase } = require("./supabase");
+const { isWithinBusinessHours } = require("./business-hours");
+
+/**
+ * Validate and sanitize after_hours_config from DB.
+ * Ensures each field has the expected type to prevent runtime crashes
+ * (e.g., calling .includes() on a non-string greeting).
+ */
+function sanitizeAfterHoursConfig(raw, assistantId) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    if (raw) {
+      console.error("[CallContext] after_hours_config has unexpected shape — ignoring:", {
+        assistantId, type: typeof raw,
+      });
+    }
+    return null;
+  }
+  return {
+    greeting: typeof raw.greeting === "string" ? raw.greeting : undefined,
+    customInstructions: typeof raw.customInstructions === "string" ? raw.customInstructions : undefined,
+    disableScheduling: typeof raw.disableScheduling === "boolean" ? raw.disableScheduling : undefined,
+  };
+}
 
 /**
  * Load all context needed to handle a call on a self-hosted phone number.
@@ -33,7 +55,7 @@ async function loadCallContext(calledNumber) {
   // 2. Load assistant
   const { data: assistant, error: assistantError } = await supabase
     .from("assistants")
-    .select("id, name, system_prompt, prompt_config, settings, first_message, is_active, voice_id, language")
+    .select("id, name, system_prompt, prompt_config, settings, first_message, is_active, voice_id, language, after_hours_config")
     .eq("id", phone.assistant_id)
     .single();
 
@@ -151,6 +173,18 @@ async function loadCallContext(calledNumber) {
   // (built-in scheduling works with just business hours configured)
   const calendarEnabled = hasCalendarIntegration || hasBusinessHours;
 
+  // Determine if the call is arriving outside business hours
+  const afterHoursConfig = sanitizeAfterHoursConfig(assistant.after_hours_config, assistant.id);
+  const isAfterHours = !isWithinBusinessHours(org.timezone, org.business_hours);
+
+  // Warn if after-hours handling is enabled but timezone/hours not configured
+  if (assistant.prompt_config?.behaviors?.afterHoursHandling && (!org.timezone || !org.business_hours)) {
+    console.warn("[CallContext] After-hours handling enabled but timezone/business_hours not configured — after-hours detection will not work", {
+      assistantId: assistant.id, organizationId: phone.organization_id,
+      hasTimezone: !!org.timezone, hasBusinessHours: !!(org.business_hours && Object.keys(org.business_hours).length > 0),
+    });
+  }
+
   return {
     phoneNumberId: phone.id,
     organizationId: phone.organization_id,
@@ -177,6 +211,8 @@ async function loadCallContext(calledNumber) {
     knowledgeBase,
     calendarEnabled,
     transferRules,
+    isAfterHours,
+    afterHoursConfig,
   };
 }
 
@@ -189,7 +225,7 @@ async function loadTestCallContext(assistantId, organizationId) {
   // 1. Load assistant
   const { data: assistant, error: assistantError } = await supabase
     .from("assistants")
-    .select("id, name, system_prompt, prompt_config, settings, first_message, is_active, voice_id, language")
+    .select("id, name, system_prompt, prompt_config, settings, first_message, is_active, voice_id, language, after_hours_config")
     .eq("id", assistantId)
     .eq("organization_id", organizationId)
     .single();
@@ -297,6 +333,18 @@ async function loadTestCallContext(assistantId, organizationId) {
     knowledgeBase = sections.join("\n\n");
   }
 
+  // Determine if the call is arriving outside business hours
+  const afterHoursConfig = sanitizeAfterHoursConfig(assistant.after_hours_config, assistant.id);
+  const isAfterHours = !isWithinBusinessHours(org.timezone, org.business_hours);
+
+  // Warn if after-hours handling is enabled but timezone/hours not configured
+  if (assistant.prompt_config?.behaviors?.afterHoursHandling && (!org.timezone || !org.business_hours)) {
+    console.warn("[TestCallContext] After-hours handling enabled but timezone/business_hours not configured — after-hours detection will not work", {
+      assistantId: assistant.id, organizationId,
+      hasTimezone: !!org.timezone, hasBusinessHours: !!(org.business_hours && Object.keys(org.business_hours).length > 0),
+    });
+  }
+
   return {
     organizationId,
     assistantId: assistant.id,
@@ -322,6 +370,8 @@ async function loadTestCallContext(assistantId, organizationId) {
     knowledgeBase,
     calendarEnabled,
     transferRules,
+    isAfterHours,
+    afterHoursConfig,
   };
 }
 

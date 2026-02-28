@@ -29,6 +29,7 @@ import {
   AlertTriangle,
   ArrowLeft,
   Bot,
+  Clock,
   Mic,
   Phone,
   ShieldAlert,
@@ -43,7 +44,7 @@ import {
 } from "lucide-react";
 import { getIndustryTemplates, DEFAULT_RECORDING_DISCLOSURE } from "@/lib/templates";
 import { PromptBuilder } from "@/components/prompt-builder";
-import type { PromptConfig } from "@/lib/prompt-builder/types";
+import type { PromptConfig, AfterHoursConfig } from "@/lib/prompt-builder/types";
 import { VoiceSelector } from "@/components/voice-selector";
 import { resolveVoiceId, type VoiceLanguage } from "@/lib/voices";
 
@@ -66,6 +67,7 @@ interface Assistant {
   is_active: boolean;
   settings: Record<string, any>;
   prompt_config: Record<string, any> | null;
+  after_hours_config: AfterHoursConfig | null;
   phone_numbers?: { id: string; phone_number: string }[];
   organization_id?: string;
 }
@@ -180,6 +182,17 @@ export function AssistantBuilder({
     assistant.prompt_config !== null
   );
 
+  // After-hours config state
+  const [afterHoursGreeting, setAfterHoursGreeting] = useState(
+    assistant.after_hours_config?.greeting || ""
+  );
+  const [afterHoursInstructions, setAfterHoursInstructions] = useState(
+    assistant.after_hours_config?.customInstructions || ""
+  );
+  const [afterHoursDisableScheduling, setAfterHoursDisableScheduling] = useState(
+    assistant.after_hours_config?.disableScheduling ?? true
+  );
+
   // Saving state
   const [isSaving, setIsSaving] = useState(false);
 
@@ -221,6 +234,13 @@ export function AssistantBuilder({
             recordingDisclosure,
           },
           promptConfig: useGuidedBuilder ? promptConfig : null,
+          afterHoursConfig: promptConfig?.behaviors?.afterHoursHandling
+            ? {
+                greeting: afterHoursGreeting || undefined,
+                customInstructions: afterHoursInstructions || undefined,
+                disableScheduling: afterHoursDisableScheduling,
+              }
+            : null,
         }),
       });
 
@@ -1043,6 +1063,68 @@ export function AssistantBuilder({
               </div>
             </CardContent>
           </Card>
+
+          {promptConfig?.behaviors?.afterHoursHandling && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Clock className="h-5 w-5" />
+                  After-Hours Settings
+                </CardTitle>
+                <CardDescription>
+                  Customize how your AI handles calls outside business hours
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="afterHoursGreeting">After-Hours Greeting</Label>
+                  <Textarea
+                    id="afterHoursGreeting"
+                    value={afterHoursGreeting}
+                    onChange={(e) => setAfterHoursGreeting(e.target.value)}
+                    rows={3}
+                    maxLength={500}
+                    placeholder="Leave empty to auto-generate based on your tone setting..."
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Custom greeting for after-hours calls. Use{" "}
+                    <code className="bg-muted px-1 rounded">{"{business_name}"}</code>{" "}
+                    to insert your business name. Leave empty for an auto-generated greeting.
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="afterHoursInstructions">
+                    Additional After-Hours Instructions
+                  </Label>
+                  <Textarea
+                    id="afterHoursInstructions"
+                    value={afterHoursInstructions}
+                    onChange={(e) => setAfterHoursInstructions(e.target.value)}
+                    rows={3}
+                    maxLength={1000}
+                    placeholder="e.g., For dental emergencies, provide the after-hours emergency number: 0400 123 456"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Extra instructions the AI should follow during after-hours calls
+                  </p>
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <div>
+                    <Label>Disable Scheduling After Hours</Label>
+                    <p className="text-xs text-muted-foreground">
+                      Prevent the AI from offering to book appointments outside business hours
+                    </p>
+                  </div>
+                  <Switch
+                    checked={afterHoursDisableScheduling}
+                    onCheckedChange={setAfterHoursDisableScheduling}
+                  />
+                </div>
+              </CardContent>
+            </Card>
+          )}
 
           <Card>
             <CardHeader>

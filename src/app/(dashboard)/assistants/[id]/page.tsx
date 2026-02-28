@@ -2,6 +2,7 @@ import { Metadata } from "next";
 import { notFound, redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { AssistantBuilder } from "./assistant-builder";
+import type { AfterHoursConfig } from "@/lib/prompt-builder/types";
 
 export const metadata: Metadata = {
   title: "Edit Assistant | Hola Recep",
@@ -18,6 +19,7 @@ interface Assistant {
   is_active: boolean;
   settings: Record<string, any>;
   prompt_config: Record<string, any> | null;
+  after_hours_config: AfterHoursConfig | null;
   created_at: string;
   phone_numbers?: { id: string; phone_number: string }[];
 }
