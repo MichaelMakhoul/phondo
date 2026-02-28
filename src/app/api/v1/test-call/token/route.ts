@@ -26,13 +26,17 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "No organization found" }, { status: 404 });
     }
 
-    let body: { assistantId?: string };
+    let body: { assistantId?: string; simulateAfterHours?: boolean };
     try {
-      body = await request.json();
+      const rawBody = await request.json();
+      body = {
+        assistantId: typeof rawBody.assistantId === "string" ? rawBody.assistantId : undefined,
+        simulateAfterHours: rawBody.simulateAfterHours === true ? true : undefined,
+      };
     } catch {
       return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
     }
-    const { assistantId } = body;
+    const { assistantId, simulateAfterHours } = body;
 
     if (!assistantId) {
       return NextResponse.json({ error: "assistantId is required" }, { status: 400 });
@@ -65,6 +69,7 @@ export async function POST(request: Request) {
       assistantId,
       organizationId: membership.organization_id,
       exp: Date.now() + 30_000, // 30 second expiry
+      ...(simulateAfterHours ? { simulateAfterHours: true } : {}),
     };
 
     const payloadB64 = Buffer.from(JSON.stringify(payload)).toString("base64url");

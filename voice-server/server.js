@@ -1171,7 +1171,7 @@ testWss.on("connection", (ws, req) => {
     return;
   }
 
-  const { assistantId, organizationId } = tokenData;
+  const { assistantId, organizationId, simulateAfterHours } = tokenData;
   let session = null;
   let cleaningUp = false;
   let autoEndTimer = null;
@@ -1223,11 +1223,27 @@ testWss.on("connection", (ws, req) => {
       session.orgPhoneNumber = null; // no real phone number in test mode
 
       // After-hours detection
-      const { isAfterHours, afterHoursConfig, effectiveCalendarEnabled } = resolveAfterHoursState(context);
+      let { isAfterHours, afterHoursConfig, effectiveCalendarEnabled } = resolveAfterHoursState(context);
+
+      // Override: simulate after-hours if requested via token
+      if (simulateAfterHours === true && !isAfterHours) {
+        const afterHoursEnabled = !!(context.assistant.promptConfig?.behaviors?.afterHoursHandling);
+        if (afterHoursEnabled) {
+          isAfterHours = true;
+          afterHoursConfig = context.afterHoursConfig || null;
+          effectiveCalendarEnabled = (afterHoursConfig?.disableScheduling ?? true)
+            ? false
+            : (context.calendarEnabled || false);
+        } else {
+          console.warn(`[TestAfterHours] simulateAfterHours requested but afterHoursHandling is disabled — ignoring`);
+        }
+      }
+
       session.calendarEnabled = effectiveCalendarEnabled;
 
       if (isAfterHours) {
-        console.log(`[TestAfterHours] Test call arriving outside business hours (calendar=${effectiveCalendarEnabled})`);
+        const reason = simulateAfterHours ? "SIMULATED" : "DETECTED";
+        console.log(`[TestAfterHours] After-hours mode ${reason} (calendar=${effectiveCalendarEnabled})`);
       }
 
       // Build system prompt
