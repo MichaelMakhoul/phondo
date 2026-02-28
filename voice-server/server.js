@@ -80,6 +80,25 @@ function getErrorMsg(lang, key, ...args) {
   return typeof msg === "function" ? msg(...args) : msg;
 }
 
+/**
+ * Resolve after-hours state from call context.
+ * Returns { isAfterHours, afterHoursConfig, effectiveCalendarEnabled } used
+ * to gate calendar tools and customize prompts/greetings.
+ */
+function resolveAfterHoursState(context) {
+  const isAfterHours = context.isAfterHours || false;
+  const afterHoursConfig = context.afterHoursConfig || null;
+  const afterHoursEnabled = !!(context.assistant.promptConfig?.behaviors?.afterHoursHandling);
+  const isActive = isAfterHours && afterHoursEnabled;
+
+  // Disable scheduling after hours unless disableScheduling is explicitly false
+  const effectiveCalendarEnabled = (isActive && (afterHoursConfig?.disableScheduling ?? true))
+    ? false
+    : (context.calendarEnabled || false);
+
+  return { isAfterHours: isActive, afterHoursConfig, effectiveCalendarEnabled };
+}
+
 // Global error handlers to prevent silent crashes
 process.on("unhandledRejection", (reason) => {
   console.error("[FATAL] Unhandled promise rejection:", reason);
@@ -585,7 +604,6 @@ wss.on("connection", (twilioWs) => {
           session.organizationId = context.organizationId;
           session.assistantId = context.assistantId;
           session.phoneNumberId = context.phoneNumberId;
-          session.calendarEnabled = context.calendarEnabled || false;
           session.transferRules = context.transferRules || [];
           session.language = context.assistant.language || "en";
           session.deepgramVoice = getDeepgramVoice(context.assistant.voiceId, session.language);
@@ -597,14 +615,24 @@ wss.on("connection", (twilioWs) => {
           };
           session.orgPhoneNumber = calledNumber;
 
+          // After-hours detection
+          const { isAfterHours, afterHoursConfig, effectiveCalendarEnabled } = resolveAfterHoursState(context);
+          session.calendarEnabled = effectiveCalendarEnabled;
+
+          if (isAfterHours) {
+            console.log(`[AfterHours] Call arriving outside business hours (org=${context.organizationId}, calendar=${effectiveCalendarEnabled})`);
+          }
+
           // Build system prompt (guided or legacy)
           const systemPrompt = buildSystemPrompt(
             context.assistant,
             context.organization,
             context.knowledgeBase,
             {
-              calendarEnabled: session.calendarEnabled,
+              calendarEnabled: effectiveCalendarEnabled,
               transferRules: session.transferRules,
+              isAfterHours,
+              afterHoursConfig,
             }
           );
           session.setSystemPrompt(systemPrompt);
@@ -685,7 +713,10 @@ wss.on("connection", (twilioWs) => {
           }
 
           // Send greeting (with disclosure prepended if standalone TTS failed)
-          const greeting = disclosurePrefix + getGreeting(context.assistant, context.organization.name);
+          const greeting = disclosurePrefix + getGreeting(context.assistant, context.organization.name, {
+            isAfterHours,
+            afterHoursConfig,
+          });
           try {
             await sendTTS(session, twilioWs, greeting);
             // Mark disclosure as played only after TTS succeeds (when greeting carries it)
@@ -1181,7 +1212,6 @@ testWss.on("connection", (ws, req) => {
       session = new CallSession(`test_${Date.now()}`);
       session.organizationId = organizationId;
       session.assistantId = assistantId;
-      session.calendarEnabled = context.calendarEnabled || false;
       session.transferRules = context.transferRules || [];
       session.language = context.assistant.language || "en";
       session.deepgramVoice = getDeepgramVoice(context.assistant.voiceId, session.language);
@@ -1192,14 +1222,24 @@ testWss.on("connection", (ws, req) => {
       };
       session.orgPhoneNumber = null; // no real phone number in test mode
 
+      // After-hours detection
+      const { isAfterHours, afterHoursConfig, effectiveCalendarEnabled } = resolveAfterHoursState(context);
+      session.calendarEnabled = effectiveCalendarEnabled;
+
+      if (isAfterHours) {
+        console.log(`[TestAfterHours] Test call arriving outside business hours (calendar=${effectiveCalendarEnabled})`);
+      }
+
       // Build system prompt
       const systemPrompt = buildSystemPrompt(
         context.assistant,
         context.organization,
         context.knowledgeBase,
         {
-          calendarEnabled: session.calendarEnabled,
+          calendarEnabled: effectiveCalendarEnabled,
           transferRules: session.transferRules,
+          isAfterHours,
+          afterHoursConfig,
         }
       );
       session.setSystemPrompt(systemPrompt);
@@ -1271,7 +1311,10 @@ testWss.on("connection", (ws, req) => {
       }
 
       // Send greeting (with disclosure prepended if standalone TTS failed)
-      const greeting = disclosurePrefix + getGreeting(context.assistant, context.organization.name);
+      const greeting = disclosurePrefix + getGreeting(context.assistant, context.organization.name, {
+        isAfterHours,
+        afterHoursConfig,
+      });
       try {
         const audioBuffer = await synthesizeSpeech(DEEPGRAM_API_KEY, greeting, {
           voice: session.deepgramVoice,

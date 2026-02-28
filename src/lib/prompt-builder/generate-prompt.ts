@@ -1,4 +1,4 @@
-import type { PromptConfig, CollectionField, TonePreset, VerificationMethod, FieldType } from "./types";
+import type { PromptConfig, CollectionField, TonePreset, VerificationMethod, FieldType, AfterHoursConfig } from "./types";
 
 export interface PromptContext {
   businessName: string;
@@ -7,6 +7,8 @@ export interface PromptContext {
   timezone?: string;
   businessHours?: Record<string, { open: string; close: string } | null>;
   defaultAppointmentDuration?: number;
+  isAfterHours?: boolean;
+  afterHoursConfig?: AfterHoursConfig | null;
 }
 
 const toneDescriptions: Record<TonePreset, string> = {
@@ -218,7 +220,10 @@ function buildFieldCollectionSection(fields: CollectionField[]): string {
   return section;
 }
 
-function buildBehaviorsSection(behaviors: PromptConfig["behaviors"]): string {
+function buildBehaviorsSection(
+  behaviors: PromptConfig["behaviors"],
+  options?: { isAfterHours?: boolean; afterHoursConfig?: AfterHoursConfig | null }
+): string {
   const lines: string[] = [];
 
   lines.push("CAPABILITIES:");
@@ -254,9 +259,20 @@ function buildBehaviorsSection(behaviors: PromptConfig["behaviors"]): string {
   }
 
   if (behaviors.afterHoursHandling) {
-    lines.push(
-      "- AFTER HOURS: If calling outside business hours, let the caller know, take a message, and assure them someone will return their call during business hours."
-    );
+    if (options?.isAfterHours) {
+      lines.push(
+        "- AFTER HOURS (ACTIVE): The office is currently CLOSED. You MUST inform the caller that the office is closed. " +
+        "Take a detailed message including their name, callback number, and reason for calling. " +
+        "Assure them someone will return their call during business hours."
+      );
+      if (options.afterHoursConfig?.customInstructions) {
+        lines.push(`- AFTER-HOURS INSTRUCTIONS: ${options.afterHoursConfig.customInstructions}`);
+      }
+    } else {
+      lines.push(
+        "- AFTER HOURS: If calling outside business hours, let the caller know, take a message, and assure them someone will return their call during business hours."
+      );
+    }
   }
 
   return lines.join("\n");
@@ -281,8 +297,11 @@ export function buildPromptFromConfig(config: PromptConfig, context: PromptConte
     sections.push(fieldSection);
   }
 
-  // 4. Behaviors
-  sections.push(buildBehaviorsSection(config.behaviors));
+  // 4. Behaviors (with after-hours awareness)
+  sections.push(buildBehaviorsSection(config.behaviors, {
+    isAfterHours: context.isAfterHours,
+    afterHoursConfig: context.afterHoursConfig,
+  }));
 
   // 5. Timezone, business hours & scheduling instructions (always included)
   sections.push(buildSchedulingSection(context.timezone, context.businessHours, context.defaultAppointmentDuration));

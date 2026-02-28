@@ -280,9 +280,20 @@ function buildBehaviorsSection(behaviors, options) {
   }
 
   if (behaviors.afterHoursHandling) {
-    lines.push(
-      "- AFTER HOURS: If calling outside business hours, let the caller know, take a message, and assure them someone will return their call during business hours."
-    );
+    if (options && options.isAfterHours) {
+      lines.push(
+        "- AFTER HOURS (ACTIVE): The office is currently CLOSED. You MUST inform the caller that the office is closed. " +
+        "Take a detailed message including their name, callback number, and reason for calling. " +
+        "Assure them someone will return their call during business hours."
+      );
+      if (options.afterHoursConfig?.customInstructions) {
+        lines.push(`- AFTER-HOURS INSTRUCTIONS: ${options.afterHoursConfig.customInstructions}`);
+      }
+    } else {
+      lines.push(
+        "- AFTER HOURS: If calling outside business hours, let the caller know, take a message, and assure them someone will return their call during business hours."
+      );
+    }
   }
 
   return lines.join("\n");
@@ -292,7 +303,7 @@ function buildBehaviorsSection(behaviors, options) {
  * Build a full system prompt from a guided PromptConfig + context.
  *
  * @param {object} config
- * @param {{ businessName?: string, industry?: string, knowledgeBase?: string, timezone?: string, businessHours?: object, defaultAppointmentDuration?: number, calendarEnabled?: boolean }} context
+ * @param {{ businessName?: string, industry?: string, knowledgeBase?: string, timezone?: string, businessHours?: object, defaultAppointmentDuration?: number, calendarEnabled?: boolean, isAfterHours?: boolean, afterHoursConfig?: object }} context
  */
 function buildPromptFromConfig(config, context) {
   const sections = [];
@@ -314,12 +325,16 @@ function buildPromptFromConfig(config, context) {
     sections.push(fieldSection);
   }
 
-  // 4. Behaviors
+  // 4. Behaviors (with after-hours awareness)
   sections.push(buildBehaviorsSection(config.behaviors, {
     hasTransferRules: context.transferRules && context.transferRules.length > 0,
+    isAfterHours: context.isAfterHours,
+    afterHoursConfig: context.afterHoursConfig,
   }));
 
   // 5. Timezone, business hours & scheduling
+  // calendarEnabled is already adjusted by the caller (server.js resolveAfterHoursState)
+  // when after-hours + disableScheduling apply
   sections.push(buildSchedulingSection(context.timezone, context.businessHours, context.defaultAppointmentDuration, context.calendarEnabled));
 
   // 6. Industry guidelines
@@ -387,11 +402,13 @@ Use formal Spanish ("usted") by default unless the caller uses informal ("tú") 
  * @param {object} assistant
  * @param {object} organization
  * @param {string} knowledgeBase
- * @param {{ calendarEnabled?: boolean, transferRules?: object[] }} [options]
+ * @param {{ calendarEnabled?: boolean, transferRules?: object[], isAfterHours?: boolean, afterHoursConfig?: object }} [options]
  */
 function buildSystemPrompt(assistant, organization, knowledgeBase, options) {
   const calendarEnabled = options?.calendarEnabled ?? false;
   const transferRules = options?.transferRules ?? [];
+  const isAfterHours = options?.isAfterHours ?? false;
+  const afterHoursConfig = options?.afterHoursConfig ?? null;
 
   // Cap knowledge base to a reasonable size for cost efficiency
   const MAX_KB_CHARS = 12_000;
@@ -414,6 +431,8 @@ function buildSystemPrompt(assistant, organization, knowledgeBase, options) {
       calendarEnabled,
       transferRules,
       language,
+      isAfterHours,
+      afterHoursConfig,
     };
     return buildPromptFromConfig(assistant.promptConfig, context);
   }
@@ -446,11 +465,63 @@ function buildSystemPrompt(assistant, organization, knowledgeBase, options) {
 }
 
 /**
- * Get the greeting for a call — uses first_message if set, otherwise generates from tone + language.
+ * Generate an after-hours greeting based on tone, business name, and language.
  */
-function getGreeting(assistant, organizationName) {
-  const language = assistant.language || "en";
+function generateAfterHoursGreeting(tone, businessName, language) {
+  const name = businessName || "{business_name}";
 
+  if (language === "es") {
+    switch (tone) {
+      case "professional":
+        return `Gracias por llamar a ${name}. Nuestras oficinas están actualmente cerradas. Por favor, deje un mensaje y nos pondremos en contacto con usted durante el horario de atención.`;
+      case "casual":
+        return `¡Hola! Ha llamado a ${name}. Estamos cerrados en este momento, pero deje un mensaje y le llamaremos pronto.`;
+      case "friendly":
+      default:
+        return `¡Hola! Gracias por llamar a ${name}. Nuestras oficinas están cerradas en este momento. Deje un mensaje y le responderemos lo antes posible.`;
+    }
+  }
+
+  switch (tone) {
+    case "professional":
+      return `Thank you for calling ${name}. Our office is currently closed. Please leave a message and we'll return your call during business hours.`;
+    case "casual":
+      return `Hey! You've reached ${name}. We're closed right now, but leave a message and we'll get back to you soon.`;
+    case "friendly":
+    default:
+      return `Hi there! Thanks for calling ${name}. We're currently closed, but I'd be happy to take a message and make sure someone gets back to you.`;
+  }
+}
+
+/**
+ * Get the greeting for a call — uses first_message if set, otherwise generates from tone + language.
+ * When isAfterHours is true, uses after-hours greeting (custom or auto-generated).
+ *
+ * @param {object} assistant
+ * @param {string} organizationName
+ * @param {{ isAfterHours?: boolean, afterHoursConfig?: object }} [options]
+ */
+function getGreeting(assistant, organizationName, options) {
+  const language = assistant.language || "en";
+  const isAfterHours = options?.isAfterHours ?? false;
+  const afterHoursConfig = options?.afterHoursConfig ?? null;
+  const tone = assistant.promptConfig?.tone || "friendly";
+
+  // After-hours greeting takes priority when active + afterHoursHandling is enabled
+  if (isAfterHours && assistant.promptConfig?.behaviors?.afterHoursHandling) {
+    // Custom after-hours greeting
+    if (afterHoursConfig?.greeting) {
+      let greeting = afterHoursConfig.greeting;
+      if (greeting.includes("{business_name}")) {
+        greeting = greeting.replace(/{business_name}/g, organizationName);
+      }
+      return greeting;
+    }
+    // Auto-generated after-hours greeting
+    return generateAfterHoursGreeting(tone, organizationName, language);
+  }
+
+  // Normal greeting: explicit first_message or auto-generated
   if (assistant.firstMessage) {
     let greeting = assistant.firstMessage;
     if (greeting.includes("{business_name}")) {
@@ -459,7 +530,6 @@ function getGreeting(assistant, organizationName) {
     return greeting;
   }
 
-  const tone = assistant.promptConfig?.tone || "friendly";
   return generateGreeting(tone, organizationName, language);
 }
 
@@ -468,5 +538,6 @@ module.exports = {
   buildSchedulingSection,
   buildSystemPrompt,
   generateGreeting,
+  generateAfterHoursGreeting,
   getGreeting,
 };

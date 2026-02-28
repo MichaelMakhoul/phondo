@@ -42,7 +42,7 @@ const behaviorDefinitions: {
   {
     key: "afterHoursHandling",
     label: "After Hours Handling",
-    description: "Handle calls outside business hours gracefully",
+    description: "Different greeting and behavior when calls arrive outside business hours",
   },
 ];
 

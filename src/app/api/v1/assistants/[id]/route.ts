@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getVapiClient, ensureCalendarTools, buildVapiServerConfig } from "@/lib/vapi";
-import { buildAnalysisPlan, buildPromptFromConfig, buildSchedulingSection, promptConfigSchema } from "@/lib/prompt-builder";
+import { buildAnalysisPlan, buildPromptFromConfig, buildSchedulingSection, promptConfigSchema, afterHoursConfigSchema } from "@/lib/prompt-builder";
 import type { PromptContext } from "@/lib/prompt-builder";
 import { RECORDING_DECLINE_SYSTEM_INSTRUCTION, buildFirstMessageWithDisclosure, resolveRecordingSettings } from "@/lib/templates";
 import type { PromptConfig } from "@/lib/prompt-builder/types";
@@ -42,6 +42,7 @@ const updateAssistantSchema = z.object({
   tools: z.any().optional(),
   isActive: z.boolean().optional(),
   promptConfig: promptConfigSchema.nullable().optional(),
+  afterHoursConfig: afterHoursConfigSchema.nullable().optional(),
   settings: z.object({
     recordingEnabled: z.boolean().optional(),
     recordingDisclosure: z.string().optional(),
@@ -200,6 +201,9 @@ export async function PATCH(
         if (promptConfig) {
           const config = promptConfig as PromptConfig;
           const industry = mergedSettings.industry || "other";
+          // isAfterHours/afterHoursConfig intentionally omitted — Vapi backup
+          // uses a static prompt and cannot be time-aware at build time.
+          // The self-hosted voice server determines after-hours state per call.
           const promptContext: PromptContext = {
             businessName: validatedData.name || currentAssistant.name,
             industry,
@@ -304,6 +308,7 @@ export async function PATCH(
     if (validatedData.tools !== undefined) updateData.tools = validatedData.tools;
     if (validatedData.isActive !== undefined) updateData.is_active = validatedData.isActive;
     if (validatedData.promptConfig !== undefined) updateData.prompt_config = validatedData.promptConfig;
+    if (validatedData.afterHoursConfig !== undefined) updateData.after_hours_config = validatedData.afterHoursConfig;
     if (validatedData.settings !== undefined) updateData.settings = mergedSettings;
     if (validatedData.language !== undefined) updateData.language = validatedData.language;
 
