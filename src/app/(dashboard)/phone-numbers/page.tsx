@@ -14,6 +14,7 @@ import { formatPhoneNumber } from "@/lib/utils";
 import { PhoneNumberActions } from "@/components/phone-numbers/phone-number-actions";
 import { checkResourceLimit } from "@/lib/stripe/billing-service";
 import { EmptyState } from "@/components/ui/empty-state";
+import { PhoneScene } from "@/components/ui/empty-state-scenes";
 
 interface PhoneNumber {
   id: string;
@@ -219,6 +220,7 @@ export default async function PhoneNumbersPage() {
             icon={Phone}
             title="No phone numbers yet"
             description="Use your existing business number with call forwarding, or buy a new number"
+            illustration={<PhoneScene />}
             action={
               <PhoneNumberActions assistants={assistants || []} countryCode={countryCode} disabled={atLimit} />
             }

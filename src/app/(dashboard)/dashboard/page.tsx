@@ -7,6 +7,7 @@ import Link from "next/link";
 import { formatDuration } from "@/lib/utils";
 import { AnimatedStat } from "@/components/marketing/animated-stat";
 import { EmptyState } from "@/components/ui/empty-state";
+import { CallsScene } from "@/components/ui/empty-state-scenes";
 
 interface RecentCall {
   id: string;
@@ -263,8 +264,9 @@ export default async function DashboardPage() {
             ) : (
               <EmptyState
                 icon={PhoneCall}
-                title="No calls yet"
+                title="Your AI is ready and waiting"
                 description="Set up an assistant to get started"
+                illustration={<CallsScene />}
                 compact
               />
             )}

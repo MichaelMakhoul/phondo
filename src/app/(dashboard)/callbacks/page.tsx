@@ -28,6 +28,7 @@ function safeFormatDate(dateStr: string | null, formatStr: string): string {
 import { CallbackActions } from "./callback-list";
 import { AnimatedStat } from "@/components/marketing/animated-stat";
 import { EmptyState } from "@/components/ui/empty-state";
+import { CallbacksScene } from "@/components/ui/empty-state-scenes";
 
 interface CallbackRequest {
   id: string;
@@ -262,6 +263,7 @@ function CallbacksTable({
         icon={PhoneForwarded}
         title="No callback requests yet"
         description="When callers request a callback through your AI receptionist, they'll appear here."
+        illustration={<CallbacksScene />}
       />
     );
   }
