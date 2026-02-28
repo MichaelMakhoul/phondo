@@ -13,6 +13,7 @@ import {
   ChevronRight,
 } from "lucide-react";
 import { EmptyState } from "@/components/ui/empty-state";
+import { CallsScene } from "@/components/ui/empty-state-scenes";
 
 interface Call {
   id: string;
@@ -35,6 +36,7 @@ export function RecentCallsList({ calls }: RecentCallsListProps) {
         icon={PhoneCall}
         title="No calls yet"
         description="Set up an assistant and phone number to start receiving calls"
+        illustration={<CallsScene />}
         compact
       />
     );

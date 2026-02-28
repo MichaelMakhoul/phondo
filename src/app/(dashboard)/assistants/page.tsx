@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { checkResourceLimit } from "@/lib/stripe/billing-service";
 import { EmptyState } from "@/components/ui/empty-state";
+import { AssistantsScene } from "@/components/ui/empty-state-scenes";
 
 interface Assistant {
   id: string;
@@ -163,8 +164,9 @@ export default async function AssistantsPage() {
         <Card className="p-12">
           <EmptyState
             icon={Bot}
-            title="No assistants yet"
+            title="Build your first AI receptionist"
             description="Create your first AI receptionist to start answering calls"
+            illustration={<AssistantsScene />}
             action={
               <Link href="/assistants/new">
                 <Button>

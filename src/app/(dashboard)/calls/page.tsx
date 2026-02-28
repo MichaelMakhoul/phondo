@@ -19,6 +19,7 @@ import { format } from "date-fns";
 import { SpamActions } from "./spam-actions";
 import { AnimatedStat } from "@/components/marketing/animated-stat";
 import { EmptyState } from "@/components/ui/empty-state";
+import { CallsScene } from "@/components/ui/empty-state-scenes";
 
 interface Call {
   id: string;
@@ -205,6 +206,7 @@ function CallsTable({
             ? "Your spam filter is working! Spam calls will appear here when detected."
             : "Set up an assistant and phone number to start receiving calls."
         }
+        illustration={!isSpamView ? <CallsScene /> : undefined}
       />
     );
   }
