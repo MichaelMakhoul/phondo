@@ -3,8 +3,14 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { sendCallbackReminderNotification } from "@/lib/notifications/notification-service";
 
 export async function GET(req: NextRequest) {
+  const cronSecret = process.env.CRON_SECRET;
+  if (!cronSecret) {
+    console.error("[Cron] CRON_SECRET not configured — cron route cannot authenticate");
+    return NextResponse.json({ error: "Server misconfiguration" }, { status: 500 });
+  }
+
   const authHeader = req.headers.get("authorization");
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+  if (authHeader !== `Bearer ${cronSecret}`) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -29,6 +35,10 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ reminders_sent: 0 });
   }
 
+  if (dueCallbacks.length === 50) {
+    console.warn("[Cron] Hit 50-callback limit — more may be due and will be processed next run");
+  }
+
   let sent = 0;
 
   for (const cb of dueCallbacks) {
@@ -41,16 +51,22 @@ export async function GET(req: NextRequest) {
         preferredTime: cb.requested_time,
         urgency: cb.urgency,
       });
-
-      await (supabase as any)
-        .from("callback_requests")
-        .update({ reminder_sent_at: new Date().toISOString() })
-        .eq("id", cb.id);
-
-      sent++;
-    } catch (err) {
-      console.error(`[Cron] Failed to send reminder for callback ${cb.id}:`, err);
+    } catch (notifyErr) {
+      console.error(`[Cron] Failed to send reminder for callback ${cb.id}:`, notifyErr);
+      continue;
     }
+
+    // Mark reminder as sent — check for DB errors to prevent duplicate sends
+    const { error: updateError } = await (supabase as any)
+      .from("callback_requests")
+      .update({ reminder_sent_at: new Date().toISOString() })
+      .eq("id", cb.id);
+
+    if (updateError) {
+      console.error(`[Cron] Reminder sent but failed to mark callback ${cb.id} — may re-send next run:`, updateError);
+    }
+
+    sent++;
   }
 
   console.log(`[Cron] Sent ${sent}/${dueCallbacks.length} callback reminders`);

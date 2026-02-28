@@ -484,6 +484,13 @@ export async function sendCallbackReminderNotification(
     }));
   }
 
+  if (channels.length === 0) {
+    console.warn("[Callback Reminder] No notification channels available — business will not receive this reminder:", {
+      organizationId: data.organizationId,
+      callerPhone: data.callerPhone,
+    });
+  }
+
   const results = await Promise.allSettled(channels);
   const failures = results.filter((r) => r.status === "rejected");
   if (failures.length > 0) {
