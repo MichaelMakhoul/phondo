@@ -12,7 +12,7 @@ function openDeepgramStream(apiKey, { onTranscript, onUtteranceEnd, onError, onC
   const url =
     "wss://api.deepgram.com/v1/listen?" +
     "encoding=mulaw&sample_rate=8000&channels=1" +
-    "&model=nova-2" +
+    "&model=nova-3" +
     "&punctuate=true" +
     "&interim_results=true" +
     "&endpointing=300" +
