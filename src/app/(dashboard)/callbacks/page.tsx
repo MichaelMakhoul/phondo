@@ -10,6 +10,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { PhoneForwarded, Clock, CheckCircle2, AlertTriangle } from "lucide-react";
 import { formatPhoneNumber } from "@/lib/utils";
 import { format } from "date-fns";
@@ -37,8 +38,27 @@ interface CallbackRequest {
   urgency: string;
   status: string;
   notes: string | null;
+  completion_notes: string | null;
   created_at: string;
   completed_at: string | null;
+}
+
+const URGENCY_ORDER: Record<string, number> = { high: 0, medium: 1, low: 2 };
+
+function sortCallbacks(callbacks: CallbackRequest[]): CallbackRequest[] {
+  const pending = callbacks
+    .filter((c) => c.status === "pending")
+    .sort((a, b) => {
+      const urgencyDiff = (URGENCY_ORDER[a.urgency] ?? 3) - (URGENCY_ORDER[b.urgency] ?? 3);
+      if (urgencyDiff !== 0) return urgencyDiff;
+      return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+    });
+
+  const rest = callbacks
+    .filter((c) => c.status !== "pending")
+    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+
+  return [...pending, ...rest];
 }
 
 export default async function CallbacksPage() {
@@ -83,9 +103,15 @@ export default async function CallbacksPage() {
   }
 
   const allCallbacks = callbacks || [];
-  const pending = allCallbacks.filter((c) => c.status === "pending").length;
-  const completed = allCallbacks.filter((c) => c.status === "completed").length;
-  const highUrgency = allCallbacks.filter((c) => c.urgency === "high" && c.status === "pending").length;
+  const pendingCallbacks = sortCallbacks(allCallbacks.filter((c) => c.status === "pending"));
+  const completedCallbacks = allCallbacks
+    .filter((c) => c.status === "completed")
+    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+  const allSorted = sortCallbacks(allCallbacks);
+
+  const pendingCount = pendingCallbacks.length;
+  const completedCount = completedCallbacks.length;
+  const highUrgency = pendingCallbacks.filter((c) => c.urgency === "high").length;
 
   return (
     <div className="space-y-6">
@@ -107,7 +133,7 @@ export default async function CallbacksPage() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <AnimatedStat value={String(pending)} className="text-2xl font-bold" />
+            <AnimatedStat value={String(pendingCount)} className="text-2xl font-bold" />
           </CardContent>
         </Card>
         <Card>
@@ -118,7 +144,7 @@ export default async function CallbacksPage() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <AnimatedStat value={String(completed)} className="text-2xl font-bold" />
+            <AnimatedStat value={String(completedCount)} className="text-2xl font-bold" />
           </CardContent>
         </Card>
         <Card>
@@ -137,18 +163,64 @@ export default async function CallbacksPage() {
         </Card>
       </div>
 
-      {/* Callbacks Table */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Callback Requests</CardTitle>
-          <CardDescription>
-            {allCallbacks.length} total callback requests
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <CallbacksTable callbacks={allCallbacks} />
-        </CardContent>
-      </Card>
+      {/* Callbacks Table with Tabs */}
+      <Tabs defaultValue="pending" className="space-y-4">
+        <TabsList>
+          <TabsTrigger value="pending" className="flex items-center gap-2">
+            <Clock className="h-4 w-4" />
+            Pending ({pendingCount})
+          </TabsTrigger>
+          <TabsTrigger value="completed" className="flex items-center gap-2">
+            <CheckCircle2 className="h-4 w-4" />
+            Completed ({completedCount})
+          </TabsTrigger>
+          <TabsTrigger value="all" className="flex items-center gap-2">
+            All ({allCallbacks.length})
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="pending">
+          <Card>
+            <CardHeader>
+              <CardTitle>Pending Callbacks</CardTitle>
+              <CardDescription>
+                {pendingCount} callbacks awaiting completion — high urgency shown first
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <CallbacksTable callbacks={pendingCallbacks} />
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="completed">
+          <Card>
+            <CardHeader>
+              <CardTitle>Completed Callbacks</CardTitle>
+              <CardDescription>
+                {completedCount} completed callbacks
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <CallbacksTable callbacks={completedCallbacks} showCompletionNotes />
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="all">
+          <Card>
+            <CardHeader>
+              <CardTitle>All Callback Requests</CardTitle>
+              <CardDescription>
+                {allCallbacks.length} total callback requests
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <CallbacksTable callbacks={allSorted} showCompletionNotes />
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }
@@ -177,7 +249,13 @@ function statusVariant(status: string) {
   }
 }
 
-function CallbacksTable({ callbacks }: { callbacks: CallbackRequest[] }) {
+function CallbacksTable({
+  callbacks,
+  showCompletionNotes = false,
+}: {
+  callbacks: CallbackRequest[];
+  showCompletionNotes?: boolean;
+}) {
   if (callbacks.length === 0) {
     return (
       <EmptyState
@@ -214,6 +292,11 @@ function CallbacksTable({ callbacks }: { callbacks: CallbackRequest[] }) {
             </TableCell>
             <TableCell className="max-w-[200px]" title={cb.reason}>
               <span className="block truncate">{cb.reason}</span>
+              {showCompletionNotes && cb.completion_notes && cb.status === "completed" && (
+                <span className="block text-xs text-muted-foreground mt-1 truncate" title={cb.completion_notes}>
+                  Note: {cb.completion_notes}
+                </span>
+              )}
             </TableCell>
             <TableCell>
               {cb.requested_time

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { isValidUUID } from "@/lib/security/validation";
+import { isValidUUID, sanitizeString } from "@/lib/security/validation";
 
 // PATCH /api/v1/callbacks/[id] — update callback status
 export async function PATCH(
@@ -32,13 +32,13 @@ export async function PATCH(
       return NextResponse.json({ error: "No organization found" }, { status: 404 });
     }
 
-    let body: { status?: string };
+    let body: { status?: string; notes?: string };
     try {
       body = await request.json();
     } catch {
       return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
     }
-    const { status } = body;
+    const { status, notes } = body;
 
     if (!status || !["completed", "cancelled"].includes(status)) {
       return NextResponse.json(
@@ -80,6 +80,9 @@ export async function PATCH(
     if (status === "completed") {
       updateData.completed_at = now;
       updateData.completed_by = user.id;
+      if (notes && typeof notes === "string") {
+        updateData.completion_notes = sanitizeString(notes.trim(), 2000);
+      }
     }
 
     const { error: updateError } = await (admin as any)

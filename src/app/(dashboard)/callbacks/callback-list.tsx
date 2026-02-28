@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/use-toast";
 import { CheckCircle2, XCircle, Loader2 } from "lucide-react";
 
@@ -12,16 +13,23 @@ interface CallbackActionsProps {
 
 export function CallbackActions({ callbackId }: CallbackActionsProps) {
   const [loading, setLoading] = useState<string | null>(null);
+  const [showNotes, setShowNotes] = useState(false);
+  const [notes, setNotes] = useState("");
   const router = useRouter();
   const { toast } = useToast();
 
-  const updateStatus = async (status: "completed" | "cancelled") => {
+  const updateStatus = async (status: "completed" | "cancelled", completionNotes?: string) => {
     setLoading(status);
     try {
+      const body: Record<string, string> = { status };
+      if (status === "completed" && completionNotes?.trim()) {
+        body.notes = completionNotes.trim();
+      }
+
       const res = await fetch(`/api/v1/callbacks/${callbackId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status }),
+        body: JSON.stringify(body),
       });
 
       if (!res.ok) {
@@ -36,6 +44,8 @@ export function CallbackActions({ callbackId }: CallbackActionsProps) {
           : "The callback has been cancelled.",
       });
 
+      setShowNotes(false);
+      setNotes("");
       router.refresh();
     } catch (error: any) {
       toast({
@@ -48,12 +58,55 @@ export function CallbackActions({ callbackId }: CallbackActionsProps) {
     }
   };
 
+  if (showNotes) {
+    return (
+      <div className="flex flex-col gap-2 min-w-[200px]">
+        <Textarea
+          placeholder="Add notes (optional)..."
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          rows={2}
+          className="text-sm resize-none"
+          disabled={loading !== null}
+        />
+        <div className="flex justify-end gap-1">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setShowNotes(false);
+              setNotes("");
+            }}
+            disabled={loading !== null}
+            className="text-muted-foreground"
+          >
+            Back
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => updateStatus("completed", notes)}
+            disabled={loading !== null}
+            className="text-green-600 hover:text-green-700 hover:bg-green-50"
+          >
+            {loading === "completed" ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <CheckCircle2 className="h-4 w-4" />
+            )}
+            <span className="ml-1">Confirm</span>
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex justify-end gap-1">
       <Button
         variant="ghost"
         size="sm"
-        onClick={() => updateStatus("completed")}
+        onClick={() => setShowNotes(true)}
         disabled={loading !== null}
         className="text-green-600 hover:text-green-700 hover:bg-green-50"
       >
