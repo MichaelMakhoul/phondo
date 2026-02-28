@@ -136,8 +136,15 @@ export default async function DashboardPage() {
 
       {/* Stats Grid */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        {stats.map((stat, i) => (
-          <Card key={stat.name} className={`card-hover animate-fade-in-up-delay-${i + 1}`}>
+        {stats.map((stat, i) => {
+          const delayClass = [
+            "animate-fade-in-up-delay-1",
+            "animate-fade-in-up-delay-2",
+            "animate-fade-in-up-delay-3",
+            "animate-fade-in-up-delay-4",
+          ][i];
+          return (
+          <Card key={stat.name} className={`card-hover ${delayClass}`}>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-sm font-medium text-muted-foreground">
                 {stat.name}
@@ -164,7 +171,8 @@ export default async function DashboardPage() {
               )}
             </CardContent>
           </Card>
-        ))}
+          );
+        })}
       </div>
 
       {/* Quick Actions & Recent Calls */}
