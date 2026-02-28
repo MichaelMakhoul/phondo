@@ -9,16 +9,18 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const ANALYSIS_MODEL = "gpt-4.1-nano";
 
 const ANALYSIS_PROMPT = `You are analyzing a phone call transcript between an AI receptionist and a caller.
+The transcript may be in English, Spanish, or a mix of both. Always produce the output in English regardless of the transcript language.
+
 Extract the following information from the transcript. If information is not available, use null.
 
 Return a JSON object with these fields:
 - caller_name: The caller's name if mentioned (string or null)
 - caller_phone_reason: The primary reason for the call (string or null)
 - appointment_requested: Whether the caller wanted to schedule an appointment (boolean)
-- summary: A 1-2 sentence summary of the call (string)
+- summary: A 1-2 sentence summary of the call IN ENGLISH (string)
 - success_evaluation: Rate the call outcome as "successful", "partial", or "unsuccessful" (string)
 - collected_data: Any structured data collected during the call like phone numbers, emails, dates mentioned (object or null)
-- unanswered_questions: Questions the caller asked that the AI could not answer, said "I don't have that information", or deflected. Only include genuine knowledge gaps, not rhetorical questions. (array of strings, or null if all questions were answered)
+- unanswered_questions: Questions the caller asked that the AI could not answer, said "I don't have that information", or deflected. Only include genuine knowledge gaps, not rhetorical questions. Translate to English if originally in another language. (array of strings, or null if all questions were answered)
 
 Return ONLY valid JSON, no other text.`;
 

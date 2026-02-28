@@ -22,15 +22,21 @@ const BUFFER_CONFIGS = {
   general:   { debounceMs: 400,  maxWaitMs: 2000,  ignoreUtteranceEnd: false },
 };
 
-// Spoken digit words mapped to digit strings
+// Spoken digit words mapped to digit strings (English + Spanish)
 const SPOKEN_DIGITS = {
+  // English
   zero: "0", oh: "0", o: "0",
   one: "1", two: "2", three: "3", four: "4", five: "5",
   six: "6", seven: "7", eight: "8", nine: "9",
+  // Spanish
+  cero: "0",
+  uno: "1", una: "1", dos: "2", tres: "3", cuatro: "4", cinco: "5",
+  seis: "6", siete: "7", ocho: "8", nueve: "9",
 };
 
 // "double five" → "55", "triple zero" → "000"
-const MULTIPLIERS = { double: 2, triple: 3 };
+// "doble cinco" → "55", "triple cero" → "000"
+const MULTIPLIERS = { double: 2, triple: 3, doble: 2 };
 
 /**
  * Extract digits from spoken text.
@@ -101,20 +107,23 @@ function validateInput(type, text) {
 
     case "address": {
       const lower = text.toLowerCase();
-      // Look for postcode/zip (4-5 digits) or street number + name
+      // Look for postcode/zip (4-5 digits) or street number + name (English + Spanish)
       const hasPostcode = /\b\d{4,5}\b/.test(lower);
       const hasStreetNumber = /\b\d+\s+\w+\s*(street|st|road|rd|avenue|ave|drive|dr|lane|ln|place|pl|court|ct|way|boulevard|blvd|crescent|cres|terrace|tce)/i.test(lower);
-      if (hasPostcode || hasStreetNumber) {
-        return { complete: true, reason: hasPostcode ? "postcode found" : "street address found" };
+      const hasSpanishAddress = /\b(calle|avenida|carrera|diagonal|transversal|paseo|camino|colonia|municipio|delegaci[oó]n)\s+[\w\d]/i.test(lower);
+      if (hasPostcode || hasStreetNumber || hasSpanishAddress) {
+        return { complete: true, reason: hasPostcode ? "postcode found" : "address found" };
       }
       return { complete: false, reason: "no structural address elements yet" };
     }
 
     case "date_time": {
       const lower = text.toLowerCase();
-      // Look for day/date references
-      const hasDate = /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|today|next\s+\w+|this\s+\w+|\d{1,2}(st|nd|rd|th)?(\s+of)?(\s+\w+)?)\b/i.test(lower);
-      const hasTime = /\b(\d{1,2}(:\d{2})?\s*(am|pm|a\.m|p\.m)|morning|afternoon|evening)\b/i.test(lower);
+      // Look for day/date references (English + Spanish)
+      const hasDate = /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|today|next\s+\w+|this\s+\w+|\d{1,2}(st|nd|rd|th)?(\s+of)?(\s+\w+)?)\b/i.test(lower)
+        || /\b(lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo|ma[nñ]ana|hoy|pr[oó]ximo|esta\s+semana|el\s+\d{1,2})\b/i.test(lower);
+      const hasTime = /\b(\d{1,2}(:\d{2})?\s*(am|pm|a\.m|p\.m)|morning|afternoon|evening)\b/i.test(lower)
+        || /\b(por la ma[nñ]ana|tarde|noche|mediod[ií]a)\b/i.test(lower);
       if (hasDate || hasTime) {
         return { complete: true, reason: hasDate ? "date reference found" : "time reference found" };
       }

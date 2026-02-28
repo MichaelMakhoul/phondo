@@ -24,6 +24,7 @@ class CallSession {
     this.transferRules = [];
     this.deepgramVoice = null;
     this.holdPreset = "neutral";
+    this.language = "en";
     this.callFailed = false;
     this.endedReason = null;
     this.recordingDisclosurePlayed = false;
