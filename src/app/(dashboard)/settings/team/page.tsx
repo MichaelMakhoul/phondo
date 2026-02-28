@@ -13,6 +13,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Users } from "lucide-react";
 import { TeamActions } from "./team-actions";
 import { EmptyState } from "@/components/ui/empty-state";
+import { TeamScene } from "@/components/ui/empty-state-scenes";
 
 interface Membership {
   organization_id: string;
@@ -172,6 +173,7 @@ export default async function TeamPage() {
               icon={Users}
               title="No team members yet"
               description="Invite team members to help manage your AI receptionist"
+              illustration={<TeamScene />}
               compact
             />
           )}
