@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Phone, PhoneCall, Clock, TrendingUp, Plus, Bot } from "lucide-react";
 import Link from "next/link";
 import { formatDuration } from "@/lib/utils";
+import { AnimatedStat } from "@/components/marketing/animated-stat";
 
 interface RecentCall {
   id: string;
@@ -143,7 +144,7 @@ export default async function DashboardPage() {
               <stat.icon className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold">{stat.value}</div>
+              <AnimatedStat value={String(stat.value)} className="text-2xl font-bold" />
               {stat.change && (
                 <p className="text-xs text-muted-foreground">
                   <span

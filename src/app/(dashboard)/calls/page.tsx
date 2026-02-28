@@ -17,6 +17,7 @@ import { PhoneCall, PhoneIncoming, PhoneOutgoing, Play, ShieldAlert, ShieldCheck
 import { formatPhoneNumber, formatDuration } from "@/lib/utils";
 import { format } from "date-fns";
 import { SpamActions } from "./spam-actions";
+import { AnimatedStat } from "@/components/marketing/animated-stat";
 
 interface Call {
   id: string;
@@ -100,7 +101,7 @@ export default async function CallsPage() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{totalCalls}</div>
+            <AnimatedStat value={String(totalCalls)} className="text-2xl font-bold" />
           </CardContent>
         </Card>
         <Card>
@@ -110,7 +111,7 @@ export default async function CallsPage() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{completedCalls}</div>
+            <AnimatedStat value={String(completedCalls)} className="text-2xl font-bold" />
           </CardContent>
         </Card>
         <Card>
@@ -120,7 +121,7 @@ export default async function CallsPage() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{totalMinutes}</div>
+            <AnimatedStat value={String(totalMinutes)} className="text-2xl font-bold" />
           </CardContent>
         </Card>
         <Card>
@@ -131,7 +132,7 @@ export default async function CallsPage() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-orange-600">{spamCalls}</div>
+            <AnimatedStat value={String(spamCalls)} className="text-2xl font-bold text-orange-600" />
           </CardContent>
         </Card>
       </div>
