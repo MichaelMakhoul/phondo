@@ -82,6 +82,23 @@ const INPUT_PATTERNS = {
 };
 
 /**
+ * Patterns that indicate the AI is asking the user to CONFIRM data it already
+ * has, not requesting NEW structured input. When the AI says "Is your phone
+ * number 0414 123 456?", the user's "Yes" should flush immediately — not wait
+ * 8 seconds for phone-number-length input.
+ */
+const CONFIRMATION_PATTERNS = [
+  /is\s+(that|this|it)\s+(correct|right|the\s*right)/i,
+  /can\s+you\s+confirm/i,
+  /did\s+I\s+get\s+that\s+right/i,
+  /does\s+that\s+sound\s+right/i,
+  /let\s+me\s+(repeat|read\s+that|confirm|verify)/i,
+  /just\s+to\s+(confirm|verify|make\s+sure|double[\s-]?check)/i,
+  /so\s+(that('s|s)|it('s|s)|your\s+\w+\s+is)/i,
+  /I('ve|'ll| have| will)\s+(got|read|note)/i,
+];
+
+/**
  * Detect what type of input the AI is expecting based on its last message.
  *
  * @param {string} lastAssistantMessage
@@ -89,6 +106,11 @@ const INPUT_PATTERNS = {
  */
 function detectExpectedInput(lastAssistantMessage) {
   if (!lastAssistantMessage) return "general";
+
+  // If the AI is confirming data back to the user (e.g., "Is your phone
+  // number 0414...?"), expect a simple yes/no — not structured input.
+  const isConfirmation = CONFIRMATION_PATTERNS.some((p) => p.test(lastAssistantMessage));
+  if (isConfirmation) return "general";
 
   for (const [type, patterns] of Object.entries(INPUT_PATTERNS)) {
     for (const pattern of patterns) {
