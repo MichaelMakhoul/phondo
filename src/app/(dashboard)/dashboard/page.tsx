@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Phone, PhoneCall, Clock, TrendingUp, Plus, Bot } from "lucide-react";
 import Link from "next/link";
 import { formatDuration } from "@/lib/utils";
+import { EmptyState } from "@/components/ui/empty-state";
 
 interface RecentCall {
   id: string;
@@ -259,12 +260,12 @@ export default async function DashboardPage() {
                 ))}
               </div>
             ) : (
-              <div className="py-8 text-center">
-                <PhoneCall className="mx-auto h-8 w-8 text-muted-foreground" />
-                <p className="mt-2 text-sm text-muted-foreground">
-                  No calls yet. Set up an assistant to get started.
-                </p>
-              </div>
+              <EmptyState
+                icon={PhoneCall}
+                title="No calls yet"
+                description="Set up an assistant to get started"
+                compact
+              />
             )}
           </CardContent>
         </Card>
