@@ -19,6 +19,7 @@ import {
   ArrowUpRight,
 } from "lucide-react";
 import { EmptyState } from "@/components/ui/empty-state";
+import { IntegrationsScene } from "@/components/ui/empty-state-scenes";
 import {
   Dialog,
   DialogContent,
@@ -188,6 +189,7 @@ export function IntegrationList() {
           icon={Webhook}
           title="No integrations yet"
           description="Add one to start sending call data to your tools."
+          illustration={<IntegrationsScene />}
         />
       ) : (
         <div className="space-y-3">

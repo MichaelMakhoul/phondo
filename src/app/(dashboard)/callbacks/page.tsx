@@ -29,6 +29,7 @@ import { CallbackActions } from "./callback-list";
 import { ExpandableText } from "./expandable-text";
 import { AnimatedStat } from "@/components/marketing/animated-stat";
 import { EmptyState } from "@/components/ui/empty-state";
+import { CallbacksScene } from "@/components/ui/empty-state-scenes";
 
 interface CallbackRequest {
   id: string;
@@ -127,33 +128,39 @@ export default async function CallbacksPage() {
       {/* Stats */}
       <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
         <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-1">
-              <Clock className="h-4 w-4" />
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">
               Pending
             </CardTitle>
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
+              <Clock className="h-4 w-4 text-primary" />
+            </div>
           </CardHeader>
           <CardContent>
             <AnimatedStat value={String(pendingCount)} className="text-2xl font-bold" />
           </CardContent>
         </Card>
         <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-1">
-              <CheckCircle2 className="h-4 w-4" />
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">
               Completed
             </CardTitle>
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-green-500/10">
+              <CheckCircle2 className="h-4 w-4 text-green-500" />
+            </div>
           </CardHeader>
           <CardContent>
             <AnimatedStat value={String(completedCount)} className="text-2xl font-bold" />
           </CardContent>
         </Card>
         <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-1">
-              <PhoneForwarded className="h-4 w-4 text-red-500" />
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">
               Urgent Pending
             </CardTitle>
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-red-500/10">
+              <PhoneForwarded className="h-4 w-4 text-red-500" />
+            </div>
           </CardHeader>
           <CardContent>
             <AnimatedStat
@@ -263,6 +270,7 @@ function CallbacksTable({
         icon={PhoneForwarded}
         title="No callback requests yet"
         description="When callers request a callback through your AI receptionist, they'll appear here."
+        illustration={<CallbacksScene />}
       />
     );
   }

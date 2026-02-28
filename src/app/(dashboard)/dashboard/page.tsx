@@ -7,6 +7,8 @@ import Link from "next/link";
 import { formatDuration } from "@/lib/utils";
 import { AnimatedStat } from "@/components/marketing/animated-stat";
 import { EmptyState } from "@/components/ui/empty-state";
+import { DashboardGreeting } from "@/components/dashboard/greeting";
+import { CallsScene } from "@/components/ui/empty-state-scenes";
 
 interface RecentCall {
   id: string;
@@ -21,12 +23,21 @@ export default async function DashboardPage() {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
 
-  // Get user's current organization
-  const { data: membership } = await supabase
-    .from("org_members")
-    .select("organization_id")
-    .eq("user_id", user!.id)
-    .single() as { data: { organization_id: string } | null };
+  // Fetch profile and org membership in parallel
+  const [{ data: profile }, { data: membership }] = await Promise.all([
+    supabase
+      .from("user_profiles")
+      .select("full_name")
+      .eq("id", user!.id)
+      .single() as unknown as Promise<{ data: { full_name: string | null } | null }>,
+    supabase
+      .from("org_members")
+      .select("organization_id")
+      .eq("user_id", user!.id)
+      .single() as unknown as Promise<{ data: { organization_id: string } | null }>,
+  ]);
+
+  const firstName = profile?.full_name?.split(" ")[0] || null;
 
   const orgId = membership?.organization_id || "";
 
@@ -121,13 +132,13 @@ export default async function DashboardPage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">Dashboard</h1>
+          <DashboardGreeting firstName={firstName} />
           <p className="text-muted-foreground">
-            Overview of your AI receptionist performance
+            Here&apos;s how your AI receptionist is performing
           </p>
         </div>
         <Link href="/assistants/new">
-          <Button>
+          <Button className="btn-primary-glow">
             <Plus className="mr-2 h-4 w-4" />
             New Assistant
           </Button>
@@ -136,13 +147,22 @@ export default async function DashboardPage() {
 
       {/* Stats Grid */}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        {stats.map((stat) => (
-          <Card key={stat.name}>
+        {stats.map((stat, i) => {
+          const delayClass = [
+            "animate-fade-in-up-delay-1",
+            "animate-fade-in-up-delay-2",
+            "animate-fade-in-up-delay-3",
+            "animate-fade-in-up-delay-4",
+          ][i];
+          return (
+          <Card key={stat.name} className={`card-hover ${delayClass}`}>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-sm font-medium text-muted-foreground">
                 {stat.name}
               </CardTitle>
-              <stat.icon className="h-4 w-4 text-muted-foreground" />
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
+                <stat.icon className="h-4 w-4 text-primary" />
+              </div>
             </CardHeader>
             <CardContent>
               <AnimatedStat value={String(stat.value)} className="text-2xl font-bold" />
@@ -164,11 +184,12 @@ export default async function DashboardPage() {
               )}
             </CardContent>
           </Card>
-        ))}
+          );
+        })}
       </div>
 
       {/* Quick Actions & Recent Calls */}
-      <div className="grid gap-6 lg:grid-cols-2">
+      <div className="grid gap-6 lg:grid-cols-2 animate-fade-in-up-delay-2">
         {/* Quick Actions */}
         <Card>
           <CardHeader>
@@ -177,7 +198,7 @@ export default async function DashboardPage() {
           </CardHeader>
           <CardContent className="space-y-3">
             <Link href="/assistants/new" className="block">
-              <div className="flex items-center gap-4 rounded-lg border p-4 transition-colors hover:bg-muted">
+              <div className="flex items-center gap-4 rounded-lg border p-4 card-hover">
                 <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10">
                   <Bot className="h-5 w-5 text-primary" />
                 </div>
@@ -190,7 +211,7 @@ export default async function DashboardPage() {
               </div>
             </Link>
             <Link href="/phone-numbers" className="block">
-              <div className="flex items-center gap-4 rounded-lg border p-4 transition-colors hover:bg-muted">
+              <div className="flex items-center gap-4 rounded-lg border p-4 card-hover">
                 <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10">
                   <Phone className="h-5 w-5 text-primary" />
                 </div>
@@ -263,8 +284,9 @@ export default async function DashboardPage() {
             ) : (
               <EmptyState
                 icon={PhoneCall}
-                title="No calls yet"
+                title="Your AI is ready and waiting"
                 description="Set up an assistant to get started"
+                illustration={<CallsScene />}
                 compact
               />
             )}

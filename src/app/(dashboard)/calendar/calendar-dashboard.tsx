@@ -30,6 +30,7 @@ import {
 import { cn } from "@/lib/utils";
 import { formatPhoneNumber } from "@/lib/utils";
 import { EmptyState } from "@/components/ui/empty-state";
+import { CalendarScene } from "@/components/ui/empty-state-scenes";
 import {
   format,
   startOfMonth,
@@ -553,6 +554,7 @@ export function CalendarDashboard({
                   icon={CalendarIcon}
                   title="Select a day"
                   description="Choose a date to view appointments"
+                  illustration={<CalendarScene />}
                   compact
                 />
               ) : selectedDayAppointments.length === 0 ? (
@@ -560,6 +562,7 @@ export function CalendarDashboard({
                   icon={CalendarDays}
                   title="No appointments"
                   description="No appointments scheduled for this day"
+                  illustration={<CalendarScene />}
                   compact
                 />
               ) : (
@@ -630,6 +633,7 @@ export function CalendarDashboard({
               icon={CalendarCheck2}
               title="No upcoming appointments"
               description="Appointments for the next 7 days will appear here"
+              illustration={<CalendarScene />}
               compact
             />
           ) : (

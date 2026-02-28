@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { checkResourceLimit } from "@/lib/stripe/billing-service";
 import { EmptyState } from "@/components/ui/empty-state";
+import { AssistantsScene } from "@/components/ui/empty-state-scenes";
 
 interface Assistant {
   id: string;
@@ -94,7 +95,7 @@ export default async function AssistantsPage() {
       {assistants && assistants.length > 0 ? (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
           {assistants.map((assistant) => (
-            <Card key={assistant.id} className="relative">
+            <Card key={assistant.id} className="relative card-hover">
               <CardHeader className="pb-3">
                 <div className="flex items-start justify-between">
                   <div className="flex items-center gap-3">
@@ -163,8 +164,9 @@ export default async function AssistantsPage() {
         <Card className="p-12">
           <EmptyState
             icon={Bot}
-            title="No assistants yet"
+            title="Build your first AI receptionist"
             description="Create your first AI receptionist to start answering calls"
+            illustration={<AssistantsScene />}
             action={
               <Link href="/assistants/new">
                 <Button>

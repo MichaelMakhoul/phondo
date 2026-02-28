@@ -38,6 +38,7 @@ import {
   BookOpen,
 } from "lucide-react";
 import { EmptyState } from "@/components/ui/empty-state";
+import { KnowledgeScene } from "@/components/ui/empty-state-scenes";
 
 interface KBEntry {
   id: string;
@@ -685,8 +686,9 @@ export function KnowledgeSettings({
           <CardContent className="py-4">
             <EmptyState
               icon={BookOpen}
-              title="No knowledge sources yet"
+              title="Teach your AI about your business"
               description="Add business information so your AI assistants can answer caller questions accurately."
+              illustration={<KnowledgeScene />}
               action={
                 <Button onClick={() => setAddDialogOpen(true)}>
                   <Plus className="h-4 w-4 mr-2" />
