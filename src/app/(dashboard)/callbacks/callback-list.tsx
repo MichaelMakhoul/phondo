@@ -5,13 +5,14 @@ import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/use-toast";
-import { CheckCircle2, XCircle, Loader2 } from "lucide-react";
+import { CheckCircle2, XCircle, Loader2, Phone } from "lucide-react";
 
 interface CallbackActionsProps {
   callbackId: string;
+  callerPhone?: string;
 }
 
-export function CallbackActions({ callbackId }: CallbackActionsProps) {
+export function CallbackActions({ callbackId, callerPhone }: CallbackActionsProps) {
   const [loading, setLoading] = useState<string | null>(null);
   const [showNotes, setShowNotes] = useState(false);
   const [notes, setNotes] = useState("");
@@ -103,6 +104,19 @@ export function CallbackActions({ callbackId }: CallbackActionsProps) {
 
   return (
     <div className="flex justify-end gap-1">
+      {callerPhone && (
+        <Button
+          variant="ghost"
+          size="sm"
+          asChild
+          className="text-primary hover:text-primary hover:bg-primary/10"
+        >
+          <a href={`tel:${callerPhone}`}>
+            <Phone className="h-4 w-4" />
+            <span className="ml-1">Call</span>
+          </a>
+        </Button>
+      )}
       <Button
         variant="ghost"
         size="sm"

@@ -2,5 +2,15 @@
   "framework": "nextjs",
   "buildCommand": "next build",
   "outputDirectory": ".next",
-  "regions": ["syd1"]
+  "regions": ["syd1"],
+  "crons": [
+    {
+      "path": "/api/cron/expire-callbacks",
+      "schedule": "0 */6 * * *"
+    },
+    {
+      "path": "/api/cron/callback-reminders",
+      "schedule": "*/15 * * * *"
+    }
+  ]
 }

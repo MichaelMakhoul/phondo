@@ -440,6 +440,65 @@ export async function sendCallbackNotification(
 }
 
 /**
+ * Send callback reminder notification — alerts when a scheduled callback is due
+ */
+export async function sendCallbackReminderNotification(
+  data: CallbackNotificationData
+): Promise<void> {
+  const prefs = await getNotificationPreferences(data.organizationId);
+  const shouldEmail = prefs ? prefs.email_on_callback_scheduled : true;
+  const shouldSms = prefs ? prefs.sms_on_callback_scheduled && prefs.sms_phone_number : false;
+
+  const email = await getOrganizationOwnerEmail(data.organizationId);
+
+  const channels: Promise<void>[] = [];
+
+  if (shouldEmail && email) {
+    channels.push(sendEmail({
+      to: email,
+      subject: `Callback Due — ${data.callerName || data.callerPhone}`,
+      template: "callback-reminder",
+      data: {
+        callerName: data.callerName,
+        callerPhone: data.callerPhone,
+        reason: data.reason,
+        preferredTime: data.preferredTime || "Now",
+        urgency: data.urgency,
+        timestamp: new Date().toLocaleString(),
+      },
+    }));
+  }
+
+  if (shouldSms && prefs?.sms_phone_number) {
+    const caller = data.callerName || data.callerPhone;
+    channels.push(sendSMS({
+      to: prefs.sms_phone_number,
+      message: `[Hola Recep] Reminder: callback to ${caller} (${data.callerPhone}) is now due. Reason: ${data.reason}.`,
+    }));
+  }
+
+  if (prefs?.webhook_url) {
+    channels.push(sendWebhook(prefs.webhook_url, {
+      event: "callback_reminder",
+      data,
+    }));
+  }
+
+  if (channels.length === 0) {
+    console.warn("[Callback Reminder] No notification channels available — business will not receive this reminder:", {
+      organizationId: data.organizationId,
+      callerPhone: data.callerPhone,
+    });
+  }
+
+  const results = await Promise.allSettled(channels);
+  const failures = results.filter((r) => r.status === "rejected");
+  if (failures.length > 0) {
+    throw new Error(`${failures.length}/${results.length} notification channels failed: ${(failures[0] as PromiseRejectedResult).reason}`);
+  }
+}
+
+/**
  * Send daily summary notification
  */
 export async function sendDailySummaryNotification(
@@ -680,6 +739,30 @@ function generateEmailHtml(template: string, data: Record<string, any>): string 
         </tr>
       </table>
       <p><strong>Please call them back as soon as possible.</strong></p>
+      <p><a href="${process.env.NEXT_PUBLIC_APP_URL || "https://holarecep.com"}/callbacks">View all callbacks</a></p>
+    `,
+    "callback-reminder": (d) => `
+      <h2 style="color: #f59e0b;">Callback Due</h2>
+      <p>A scheduled callback is now due.</p>
+      <table style="width: 100%; border-collapse: collapse; margin: 16px 0;">
+        <tr>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd; font-weight: bold;">Caller</td>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd;">${d.callerName} (${d.callerPhone})</td>
+        </tr>
+        <tr>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd; font-weight: bold;">Reason</td>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd;">${d.reason}</td>
+        </tr>
+        <tr>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd; font-weight: bold;">Scheduled For</td>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd;">${d.preferredTime}</td>
+        </tr>
+        <tr>
+          <td style="padding: 8px; font-weight: bold;">Urgency</td>
+          <td style="padding: 8px;">${d.urgency}</td>
+        </tr>
+      </table>
+      <p><strong>Please call them back now.</strong></p>
       <p><a href="${process.env.NEXT_PUBLIC_APP_URL || "https://holarecep.com"}/callbacks">View all callbacks</a></p>
     `,
     "daily-summary": (d) => `
