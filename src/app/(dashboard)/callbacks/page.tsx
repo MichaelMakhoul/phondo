@@ -26,6 +26,7 @@ function safeFormatDate(dateStr: string | null, formatStr: string): string {
   }
 }
 import { CallbackActions } from "./callback-list";
+import { ExpandableText } from "./expandable-text";
 import { AnimatedStat } from "@/components/marketing/animated-stat";
 import { EmptyState } from "@/components/ui/empty-state";
 
@@ -291,7 +292,7 @@ function CallbacksTable({
                 </Badge>
               </div>
             </div>
-            <p className="text-xs text-muted-foreground line-clamp-2">{cb.reason}</p>
+            <ExpandableText text={cb.reason} className="text-xs text-muted-foreground" />
             {(cb.requested_time || cb.notes) && (
               <p className="text-xs text-muted-foreground">
                 Preferred: {cb.requested_time
