@@ -14,6 +14,7 @@ interface Assistant {
   system_prompt: string;
   first_message: string;
   voice_id: string;
+  prompt_config: Record<string, any> | null;
 }
 
 export default async function AssistantTestPage({
@@ -48,7 +49,7 @@ export default async function AssistantTestPage({
   // Get the assistant
   const { data: assistant, error } = await (supabase as any)
     .from("assistants")
-    .select("id, name, system_prompt, first_message, voice_id")
+    .select("id, name, system_prompt, first_message, voice_id, prompt_config")
     .eq("id", id)
     .eq("organization_id", organizationId)
     .single() as { data: Assistant | null; error: any };
@@ -65,6 +66,7 @@ export default async function AssistantTestPage({
         systemPrompt: assistant.system_prompt,
         firstMessage: assistant.first_message,
         voiceId: assistant.voice_id,
+        hasAfterHoursHandling: !!assistant.prompt_config?.behaviors?.afterHoursHandling,
       }}
     />
   );

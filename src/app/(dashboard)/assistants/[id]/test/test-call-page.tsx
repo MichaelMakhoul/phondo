@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
+import { Switch } from "@/components/ui/switch";
 import {
   Collapsible,
   CollapsibleContent,
@@ -27,6 +28,7 @@ import {
   Play,
   Square,
   ArrowLeft,
+  Moon,
 } from "lucide-react";
 import { useVoiceTest } from "@/lib/voice-test";
 import { VoiceWaveform } from "@/components/ui/voice-waveform";
@@ -45,6 +47,7 @@ interface TestCallPageProps {
     systemPrompt: string;
     firstMessage: string;
     voiceId: string;
+    hasAfterHoursHandling: boolean;
   };
 }
 
@@ -55,10 +58,16 @@ export function TestCallPage({ assistantId, assistantData }: TestCallPageProps) 
   // Settings state
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [maxDuration, setMaxDuration] = useState(3); // minutes
+  const [simulateAfterHours, setSimulateAfterHours] = useState(false);
 
   // Voice preview state
   const [isPreviewPlaying, setIsPreviewPlaying] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
+
+  const tokenBody = useMemo(
+    () => (simulateAfterHours ? { simulateAfterHours: true } : undefined),
+    [simulateAfterHours]
+  );
 
   const durationIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -72,7 +81,7 @@ export function TestCallPage({ assistantId, assistantData }: TestCallPageProps) 
     stop,
     toggleMute,
     reset,
-  } = useVoiceTest({ assistantId });
+  } = useVoiceTest({ assistantId, tokenBody });
 
   // Handle duration tracking and auto-end
   useEffect(() => {
@@ -243,6 +252,25 @@ export function TestCallPage({ assistantId, assistantData }: TestCallPageProps) 
                     Call will auto-end when limit is reached
                   </p>
                 </div>
+                {assistantData.hasAfterHoursHandling && (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <Label htmlFor="after-hours-toggle" className="flex items-center gap-2">
+                        <Moon className="h-4 w-4" />
+                        Simulate After Hours
+                      </Label>
+                      <Switch
+                        id="after-hours-toggle"
+                        checked={simulateAfterHours}
+                        onCheckedChange={setSimulateAfterHours}
+                        disabled={status !== "idle"}
+                      />
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Test your after-hours greeting and behavior as if calling outside business hours
+                    </p>
+                  </div>
+                )}
               </Card>
             </CollapsibleContent>
           </Collapsible>
