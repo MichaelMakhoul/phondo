@@ -44,7 +44,7 @@ import { getIndustryTemplates, DEFAULT_RECORDING_DISCLOSURE } from "@/lib/templa
 import { PromptBuilder } from "@/components/prompt-builder";
 import type { PromptConfig } from "@/lib/prompt-builder/types";
 import { VoiceSelector } from "@/components/voice-selector";
-import { resolveVoiceId } from "@/lib/voices";
+import { resolveVoiceId, type VoiceLanguage } from "@/lib/voices";
 
 // Industry templates
 const INDUSTRY_TEMPLATES = getIndustryTemplates();
@@ -61,6 +61,7 @@ interface Assistant {
   first_message: string;
   voice_id: string;
   voice_provider: string;
+  language?: string;
   is_active: boolean;
   settings: Record<string, any>;
   prompt_config: Record<string, any> | null;
@@ -101,6 +102,7 @@ export function AssistantBuilder({
   const [systemPrompt, setSystemPrompt] = useState(assistant.system_prompt);
   const [firstMessage, setFirstMessage] = useState(assistant.first_message);
   const [voiceId, setVoiceId] = useState(resolveVoiceId(assistant.voice_id));
+  const [language, setLanguage] = useState<VoiceLanguage>((assistant.language as VoiceLanguage) || "en");
   const [isActive, setIsActive] = useState(assistant.is_active);
 
   // Settings state
@@ -192,6 +194,7 @@ export function AssistantBuilder({
           systemPrompt,
           firstMessage,
           voiceId,
+          language,
           isActive,
           settings: {
             ...assistant.settings,
@@ -583,15 +586,30 @@ export function AssistantBuilder({
         <TabsContent value="voice" className="space-y-6">
           <Card>
             <CardHeader>
-              <CardTitle>Voice Settings</CardTitle>
+              <CardTitle>Voice & Language</CardTitle>
               <CardDescription>
-                Choose the voice for your assistant
+                Choose the language and voice for your assistant
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="space-y-2">
+                <Label>Language</Label>
+                <Select value={language} onValueChange={(v) => setLanguage(v as VoiceLanguage)}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="en">English</SelectItem>
+                    <SelectItem value="es">Español (Spanish)</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  The assistant will conduct calls entirely in this language.
+                </p>
+              </div>
+              <div className="space-y-2">
                 <Label>Voice</Label>
-                <VoiceSelector value={voiceId} onChange={setVoiceId} />
+                <VoiceSelector value={voiceId} onChange={setVoiceId} language={language} />
               </div>
             </CardContent>
           </Card>

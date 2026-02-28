@@ -56,6 +56,30 @@ if (!TEST_CALL_SECRET) {
   console.warn("[Startup] TEST_CALL_SECRET not set — browser test calls will be disabled");
 }
 
+// Localized error/fallback messages spoken to callers via TTS
+const ERROR_MESSAGES = {
+  en: {
+    notConfigured: "Sorry, this number is not currently configured. Please try again later.",
+    technicalDifficulty: "I'm sorry, I'm experiencing technical difficulties. Please try calling again.",
+    repeatRequest: "I apologize, I'm having trouble processing that. Could you repeat what you said?",
+    troubleRepeat: "I'm sorry, I'm having a little trouble right now. Could you repeat that?",
+    transferFailed: (name) => `I'm sorry, ${name} wasn't available right now. Would you like me to take a message, or is there something else I can help you with?`,
+  },
+  es: {
+    notConfigured: "Lo sentimos, este número no está configurado actualmente. Por favor intente más tarde.",
+    technicalDifficulty: "Lo siento, estoy experimentando dificultades técnicas. Por favor llame de nuevo.",
+    repeatRequest: "Disculpe, tuve problemas procesando eso. ¿Podría repetirlo?",
+    troubleRepeat: "Lo siento, estoy teniendo un pequeño problema. ¿Podría repetir eso?",
+    transferFailed: (name) => `Lo siento, ${name} no está disponible en este momento. ¿Le gustaría dejar un mensaje, o hay algo más en lo que pueda ayudarle?`,
+  },
+};
+
+function getErrorMsg(lang, key, ...args) {
+  const msgs = ERROR_MESSAGES[lang] || ERROR_MESSAGES.en;
+  const msg = msgs[key] || ERROR_MESSAGES.en[key];
+  return typeof msg === "function" ? msg(...args) : msg;
+}
+
 // Global error handlers to prevent silent crashes
 process.on("unhandledRejection", (reason) => {
   console.error("[FATAL] Unhandled promise rejection:", reason);
@@ -459,10 +483,12 @@ wss.on("connection", (twilioWs) => {
               session.orgPhoneNumber = savedState.orgPhoneNumber;
               session.transferAttempt = savedState.transferAttempt;
               session.startedAt = savedState.startedAt;
+              session.language = savedState.language || "en";
               sessions.set(streamSid, session);
 
               // Re-open Deepgram STT
               session.deepgramWs = openDeepgramStream(DEEPGRAM_API_KEY, {
+                language: session.language,
                 onTranscript: ({ transcript, isFinal }) => {
                   if (!isFinal) return;
                   console.log(`[STT] Final: "${transcript}"`);
@@ -480,7 +506,7 @@ wss.on("connection", (twilioWs) => {
                     session.callFailed = true;
                     session.endedReason = "stt-error";
                   }
-                  sendTTS(session, twilioWs, "I'm sorry, I'm experiencing technical difficulties. Please try calling again.")
+                  sendTTS(session, twilioWs, getErrorMsg(session.language, "technicalDifficulty"))
                     .catch((ttsErr) => console.error("[STT] Failed to send error message to caller:", ttsErr))
                     .finally(() => setTimeout(() => twilioWs.close(), 2000));
                 },
@@ -489,7 +515,7 @@ wss.on("connection", (twilioWs) => {
                     console.error(`[STT] Connection lost during active call (callSid=${session.callSid})`);
                   }
                 },
-              });
+              }, { industry: session.organization?.industry });
 
               // Inject system context about the failed transfer
               const transferTargetName = savedState.transferTargetName || "the team member";
@@ -499,7 +525,7 @@ wss.on("connection", (twilioWs) => {
               );
 
               // Send fallback message via TTS
-              const fallbackMsg = `I'm sorry, ${transferTargetName} wasn't available right now. Would you like me to take a message, or is there something else I can help you with?`;
+              const fallbackMsg = getErrorMsg(session.language, "transferFailed", transferTargetName);
               try {
                 await sendTTS(session, twilioWs, fallbackMsg);
                 session.addMessage("assistant", fallbackMsg);
@@ -519,7 +545,7 @@ wss.on("connection", (twilioWs) => {
               session = new CallSession(callSid);
               session.streamSid = streamSid;
               try {
-                await sendTTS(session, twilioWs, "I'm sorry, we experienced a technical issue. Please try calling again.");
+                await sendTTS(session, twilioWs, getErrorMsg(session.language, "technicalDifficulty"));
               } catch (ttsErr) {
                 console.error("[Reconnect] Failed to send error TTS:", ttsErr);
               }
@@ -547,7 +573,7 @@ wss.on("connection", (twilioWs) => {
           if (!context) {
             console.warn(`[Context] No context found for ${calledNumber} — sending fallback and closing`);
             try {
-              await sendTTS(session, twilioWs, "Sorry, this number is not currently configured. Please try again later.");
+              await sendTTS(session, twilioWs, getErrorMsg(session.language, "notConfigured"));
             } catch (ttsErr) {
               console.error("[Context] Failed to send fallback message — caller heard silence before disconnect:", ttsErr);
             }
@@ -561,11 +587,13 @@ wss.on("connection", (twilioWs) => {
           session.phoneNumberId = context.phoneNumberId;
           session.calendarEnabled = context.calendarEnabled || false;
           session.transferRules = context.transferRules || [];
-          session.deepgramVoice = getDeepgramVoice(context.assistant.voiceId);
+          session.language = context.assistant.language || "en";
+          session.deepgramVoice = getDeepgramVoice(context.assistant.voiceId, session.language);
           session.holdPreset = getHoldPreset(context.organization.industry);
           session.organization = {
             timezone: context.organization.timezone,
             businessHours: context.organization.businessHours,
+            industry: context.organization.industry,
           };
           session.orgPhoneNumber = calledNumber;
 
@@ -598,6 +626,7 @@ wss.on("connection", (twilioWs) => {
 
           // Open Deepgram STT WebSocket
           session.deepgramWs = openDeepgramStream(DEEPGRAM_API_KEY, {
+            language: session.language,
             onTranscript: ({ transcript, isFinal }) => {
               if (!isFinal) return;
               console.log(`[STT] Final: "${transcript}"`);
@@ -615,7 +644,7 @@ wss.on("connection", (twilioWs) => {
                 session.callFailed = true;
                 session.endedReason = "stt-error";
               }
-              sendTTS(session, twilioWs, "I'm sorry, I'm experiencing technical difficulties. Please try calling again.")
+              sendTTS(session, twilioWs, getErrorMsg(session.language, "technicalDifficulty"))
                 .catch((ttsErr) => {
                   console.error("[STT] Failed to send error message to caller:", ttsErr);
                 })
@@ -629,7 +658,7 @@ wss.on("connection", (twilioWs) => {
                 console.error(`[STT] Connection lost during active call (callSid=${session.callSid})`);
               }
             },
-          });
+          }, { industry: session.organization?.industry });
 
           // Play recording disclosure if required by jurisdiction
           let disclosurePrefix = "";
@@ -871,6 +900,7 @@ async function handleUserSpeech(session, twilioWs, transcript) {
               allDestinations: toolResult.allDestinations || [],
               destinationIndex: toolResult.destinationIndex || 0,
               startedAt: session.startedAt,
+              language: session.language || "en",
             });
 
             // Close Deepgram — stream will close when Twilio starts <Dial>
@@ -897,7 +927,7 @@ async function handleUserSpeech(session, twilioWs, transcript) {
 
     if (!reply) {
       hold.stop();
-      reply = "I apologize, I'm having trouble processing that. Could you repeat what you said?";
+      reply = getErrorMsg(session.language, "repeatRequest");
       console.warn(`[Pipeline] Tool call loop exhausted after ${MAX_TOOL_ITERATIONS} iterations (callSid=${session.callSid})`);
       await sendTTS(session, twilioWs, reply);
     }
@@ -921,7 +951,7 @@ async function handleUserSpeech(session, twilioWs, transcript) {
       session.messages.pop();
     }
     try {
-      await sendTTS(session, twilioWs, "I'm sorry, I'm having a little trouble right now. Could you repeat that?");
+      await sendTTS(session, twilioWs, getErrorMsg(session.language, "troubleRepeat"));
     } catch (ttsErr) {
       console.error("[Pipeline] Failed to send error message to caller:", ttsErr);
     }
@@ -1153,7 +1183,8 @@ testWss.on("connection", (ws, req) => {
       session.assistantId = assistantId;
       session.calendarEnabled = context.calendarEnabled || false;
       session.transferRules = context.transferRules || [];
-      session.deepgramVoice = getDeepgramVoice(context.assistant.voiceId);
+      session.language = context.assistant.language || "en";
+      session.deepgramVoice = getDeepgramVoice(context.assistant.voiceId, session.language);
       session.holdPreset = getHoldPreset(context.organization.industry);
       session.organization = {
         timezone: context.organization.timezone,
@@ -1175,6 +1206,7 @@ testWss.on("connection", (ws, req) => {
 
       // Open Deepgram STT
       session.deepgramWs = openDeepgramStream(DEEPGRAM_API_KEY, {
+        language: session.language,
         onTranscript: ({ transcript, isFinal }) => {
           // Send partial transcripts to browser
           if (ws.readyState === WebSocket.OPEN) {
@@ -1206,7 +1238,7 @@ testWss.on("connection", (ws, req) => {
             console.error(`[TestSTT] Deepgram connection closed unexpectedly (code=${code})`);
           }
         },
-      });
+      }, { industry: session.organization?.industry });
 
       // Play recording disclosure if required by jurisdiction (test calls too)
       let disclosurePrefix = "";
@@ -1413,7 +1445,7 @@ async function handleTestUserSpeech(session, ws, transcript) {
 
     if (!reply) {
       hold.stop();
-      reply = "I apologize, I'm having trouble processing that. Could you repeat what you said?";
+      reply = getErrorMsg(session.language, "repeatRequest");
       console.warn(`[TestPipeline] Tool call loop exhausted after ${MAX_TOOL_ITERATIONS} iterations (assistantId=${session.assistantId})`);
       const audioBuffer = await synthesizeSpeech(DEEPGRAM_API_KEY, reply, { voice: session?.deepgramVoice });
       if (ws.readyState === WebSocket.OPEN) {
@@ -1437,7 +1469,7 @@ async function handleTestUserSpeech(session, ws, transcript) {
     console.error("[TestPipeline] Error:", err);
     try {
       if (ws.readyState === WebSocket.OPEN) {
-        const fallback = "I'm sorry, I'm having a little trouble right now. Could you repeat that?";
+        const fallback = getErrorMsg(session?.language, "troubleRepeat");
         const audioBuffer = await synthesizeSpeech(DEEPGRAM_API_KEY, fallback, {
           voice: session?.deepgramVoice,
         });

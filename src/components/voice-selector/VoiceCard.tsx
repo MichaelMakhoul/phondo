@@ -28,10 +28,13 @@ const accentFlag: Record<string, string> = {
 
 export function VoiceCard({ voice, selected, onSelect }: VoiceCardProps) {
   const [playState, setPlayState] = useState<PlayState>("idle");
+  const previewAvailable = voice.language === "en";
 
   const handlePlay = useCallback(
     (e: React.MouseEvent) => {
       e.stopPropagation();
+
+      if (!previewAvailable) return;
 
       if (playState === "playing" || playState === "loading") {
         stopVoicePreview();
@@ -47,7 +50,7 @@ export function VoiceCard({ voice, selected, onSelect }: VoiceCardProps) {
         onError: () => setPlayState("idle"),
       });
     },
-    [playState, voice.id, voice.previewText]
+    [playState, voice.id, voice.previewText, previewAvailable]
   );
 
   return (
@@ -75,8 +78,14 @@ export function VoiceCard({ voice, selected, onSelect }: VoiceCardProps) {
         <button
           type="button"
           onClick={handlePlay}
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
-          aria-label={playState === "idle" ? `Preview ${voice.name}` : "Stop preview"}
+          disabled={!previewAvailable}
+          className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-colors ${
+            previewAvailable
+              ? "bg-primary/10 text-primary hover:bg-primary/20"
+              : "bg-muted text-muted-foreground/40 cursor-not-allowed"
+          }`}
+          aria-label={!previewAvailable ? "Preview not available" : playState === "idle" ? `Preview ${voice.name}` : "Stop preview"}
+          title={!previewAvailable ? "Voice preview not available for this language" : undefined}
         >
           {playState === "loading" && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
           {playState === "playing" && <Square className="h-3 w-3 fill-current" />}

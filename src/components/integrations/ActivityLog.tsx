@@ -19,8 +19,10 @@ import {
   XCircle,
   RefreshCw,
   RotateCcw,
+  Webhook,
 } from "lucide-react";
 import { format } from "date-fns";
+import { EmptyState } from "@/components/ui/empty-state";
 
 interface LogEntry {
   id: string;
@@ -103,9 +105,12 @@ export function ActivityLog() {
             <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
           </div>
         ) : logs.length === 0 ? (
-          <p className="py-8 text-center text-sm text-muted-foreground">
-            No webhook deliveries yet. Create an integration and make a test call to see activity here.
-          </p>
+          <EmptyState
+            icon={Webhook}
+            title="No webhook deliveries yet"
+            description="Create an integration and make a test call to see activity here."
+            compact
+          />
         ) : (
           <>
             <Table>
