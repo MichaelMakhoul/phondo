@@ -7,6 +7,7 @@ import Link from "next/link";
 import { formatDuration } from "@/lib/utils";
 import { AnimatedStat } from "@/components/marketing/animated-stat";
 import { EmptyState } from "@/components/ui/empty-state";
+import { DashboardGreeting } from "@/components/dashboard/greeting";
 import { CallsScene } from "@/components/ui/empty-state-scenes";
 
 interface RecentCall {
@@ -22,12 +23,21 @@ export default async function DashboardPage() {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
 
-  // Get user's current organization
-  const { data: membership } = await supabase
-    .from("org_members")
-    .select("organization_id")
-    .eq("user_id", user!.id)
-    .single() as { data: { organization_id: string } | null };
+  // Fetch profile and org membership in parallel
+  const [{ data: profile }, { data: membership }] = await Promise.all([
+    supabase
+      .from("user_profiles")
+      .select("full_name")
+      .eq("id", user!.id)
+      .single() as unknown as Promise<{ data: { full_name: string | null } | null }>,
+    supabase
+      .from("org_members")
+      .select("organization_id")
+      .eq("user_id", user!.id)
+      .single() as unknown as Promise<{ data: { organization_id: string } | null }>,
+  ]);
+
+  const firstName = profile?.full_name?.split(" ")[0] || null;
 
   const orgId = membership?.organization_id || "";
 
@@ -122,9 +132,9 @@ export default async function DashboardPage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">Dashboard</h1>
+          <DashboardGreeting firstName={firstName} />
           <p className="text-muted-foreground">
-            Overview of your AI receptionist performance
+            Here&apos;s how your AI receptionist is performing
           </p>
         </div>
         <Link href="/assistants/new">
@@ -150,7 +160,9 @@ export default async function DashboardPage() {
               <CardTitle className="text-sm font-medium text-muted-foreground">
                 {stat.name}
               </CardTitle>
-              <stat.icon className="h-4 w-4 text-muted-foreground" />
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
+                <stat.icon className="h-4 w-4 text-primary" />
+              </div>
             </CardHeader>
             <CardContent>
               <AnimatedStat value={String(stat.value)} className="text-2xl font-bold" />
