@@ -204,7 +204,7 @@ const transferToolDefinition = {
  *
  * @param {string} functionName
  * @param {object} args - parsed arguments from the LLM
- * @param {{ organizationId: string, assistantId: string, callSid?: string, transferRules?: object[], testMode?: boolean, organization?: { timezone?: string, businessHours?: object }, callerPhone?: string, orgPhoneNumber?: string }} context
+ * @param {{ organizationId: string, assistantId: string, callSid?: string, callId?: string, transferRules?: object[], testMode?: boolean, organization?: { timezone?: string, businessHours?: object }, callerPhone?: string, orgPhoneNumber?: string }} context
  * @returns {Promise<{ message: string, action?: string, transferTo?: string, transferAttempt?: object }>}
  */
 async function executeToolCall(functionName, args, context) {
@@ -258,6 +258,7 @@ async function executeCalendarCall(functionName, args, context) {
         assistantId: context.assistantId,
         functionName,
         arguments: args,
+        ...(context.callId && { callId: context.callId }),
       }),
     });
 

@@ -26,7 +26,8 @@ interface ScheduleCallbackArgs {
 export async function handleScheduleCallback(
   organizationId: string,
   assistantId: string,
-  args: ScheduleCallbackArgs
+  args: ScheduleCallbackArgs,
+  callId?: string
 ): Promise<ToolResult> {
   const { caller_name, caller_phone, reason, preferred_time, urgency } = args;
 
@@ -88,6 +89,7 @@ export async function handleScheduleCallback(
     .insert({
       organization_id: organizationId,
       assistant_id: assistantId,
+      call_id: callId || null,
       caller_name: sanitizedName,
       caller_phone: sanitizedPhone,
       reason: sanitizedReason,
