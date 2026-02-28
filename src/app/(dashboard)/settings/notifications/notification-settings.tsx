@@ -17,6 +17,7 @@ interface NotificationPreferences {
   email_daily_summary: boolean;
   sms_on_missed_call: boolean;
   sms_on_voicemail: boolean;
+  sms_on_callback_scheduled: boolean;
   sms_phone_number: string | null;
   webhook_url: string | null;
   sms_textback_on_missed_call: boolean;
@@ -44,6 +45,7 @@ export function NotificationSettings({
     email_daily_summary: initialPreferences?.email_daily_summary ?? true,
     sms_on_missed_call: initialPreferences?.sms_on_missed_call ?? false,
     sms_on_voicemail: initialPreferences?.sms_on_voicemail ?? false,
+    sms_on_callback_scheduled: initialPreferences?.sms_on_callback_scheduled ?? false,
     sms_phone_number: initialPreferences?.sms_phone_number ?? "",
     webhook_url: initialPreferences?.webhook_url ?? "",
     sms_textback_on_missed_call: initialPreferences?.sms_textback_on_missed_call ?? false,
@@ -64,7 +66,7 @@ export function NotificationSettings({
     }
 
     // Require SMS phone when SMS toggles are on
-    if ((preferences.sms_on_missed_call || preferences.sms_on_voicemail) && !preferences.sms_phone_number) {
+    if ((preferences.sms_on_missed_call || preferences.sms_on_voicemail || preferences.sms_on_callback_scheduled) && !preferences.sms_phone_number) {
       newErrors.sms_phone_number = "Phone number is required when SMS notifications are enabled";
     }
 
@@ -289,6 +291,20 @@ export function NotificationSettings({
             <Switch
               checked={preferences.sms_on_voicemail}
               onCheckedChange={() => handleToggle("sms_on_voicemail")}
+              disabled={!preferences.sms_phone_number}
+            />
+          </div>
+
+          <div className="flex items-center justify-between">
+            <div className="space-y-0.5">
+              <Label>Callback Requests</Label>
+              <p className="text-sm text-muted-foreground">
+                Get a text when a caller requests a callback
+              </p>
+            </div>
+            <Switch
+              checked={preferences.sms_on_callback_scheduled}
+              onCheckedChange={() => handleToggle("sms_on_callback_scheduled")}
               disabled={!preferences.sms_phone_number}
             />
           </div>

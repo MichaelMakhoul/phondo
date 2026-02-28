@@ -15,6 +15,7 @@ const ALLOWED_FIELDS = [
   "email_daily_summary",
   "sms_on_missed_call",
   "sms_on_voicemail",
+  "sms_on_callback_scheduled",
   "sms_phone_number",
   "webhook_url",
   "sms_textback_on_missed_call",

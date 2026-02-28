@@ -26,6 +26,7 @@ export interface NotificationPreferences {
   sms_on_missed_call: boolean;
   sms_on_voicemail: boolean;
   sms_on_failed_call: boolean;
+  sms_on_callback_scheduled: boolean;
   sms_phone_number: string | null;
   webhook_url: string | null;
   sms_textback_on_missed_call: boolean;
@@ -118,6 +119,7 @@ export async function getNotificationPreferences(
     sms_on_missed_call: data.sms_on_missed_call ?? false,
     sms_on_voicemail: data.sms_on_voicemail ?? false,
     sms_on_failed_call: data.sms_on_failed_call ?? false,
+    sms_on_callback_scheduled: data.sms_on_callback_scheduled ?? false,
     sms_phone_number: data.sms_phone_number,
     webhook_url: data.webhook_url,
     sms_textback_on_missed_call: data.sms_textback_on_missed_call ?? false,
@@ -386,6 +388,7 @@ export async function sendCallbackNotification(
 ): Promise<void> {
   const prefs = await getNotificationPreferences(data.organizationId);
   const shouldEmail = prefs ? prefs.email_on_callback_scheduled : true;
+  const shouldSms = prefs ? prefs.sms_on_callback_scheduled && prefs.sms_phone_number : false;
 
   const email = await getOrganizationOwnerEmail(data.organizationId);
 
@@ -404,6 +407,14 @@ export async function sendCallbackNotification(
         urgency: data.urgency,
         timestamp: new Date().toLocaleString(),
       },
+    }));
+  }
+
+  if (shouldSms && prefs?.sms_phone_number) {
+    const caller = data.callerName || data.callerPhone;
+    channels.push(sendSMS({
+      to: prefs.sms_phone_number,
+      message: `[Hola Recep] Callback requested by ${caller} (${data.callerPhone}). Reason: ${data.reason}. ${data.urgency} urgency.`,
     }));
   }
 
