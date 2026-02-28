@@ -50,6 +50,11 @@ export function MarketingFooter() {
                   Terms of Service
                 </Link>
               </li>
+              <li>
+                <Link href="/data-sovereignty" className="hover:text-foreground">
+                  Data Sovereignty
+                </Link>
+              </li>
             </ul>
           </div>
           <div>
