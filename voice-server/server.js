@@ -489,7 +489,7 @@ wss.on("connection", (twilioWs) => {
                     console.error(`[STT] Connection lost during active call (callSid=${session.callSid})`);
                   }
                 },
-              });
+              }, { industry: session.organization?.industry });
 
               // Inject system context about the failed transfer
               const transferTargetName = savedState.transferTargetName || "the team member";
@@ -566,6 +566,7 @@ wss.on("connection", (twilioWs) => {
           session.organization = {
             timezone: context.organization.timezone,
             businessHours: context.organization.businessHours,
+            industry: context.organization.industry,
           };
           session.orgPhoneNumber = calledNumber;
 
@@ -629,7 +630,7 @@ wss.on("connection", (twilioWs) => {
                 console.error(`[STT] Connection lost during active call (callSid=${session.callSid})`);
               }
             },
-          });
+          }, { industry: session.organization?.industry });
 
           // Play recording disclosure if required by jurisdiction
           let disclosurePrefix = "";
@@ -1206,7 +1207,7 @@ testWss.on("connection", (ws, req) => {
             console.error(`[TestSTT] Deepgram connection closed unexpectedly (code=${code})`);
           }
         },
-      });
+      }, { industry: session.organization?.industry });
 
       // Play recording disclosure if required by jurisdiction (test calls too)
       let disclosurePrefix = "";
