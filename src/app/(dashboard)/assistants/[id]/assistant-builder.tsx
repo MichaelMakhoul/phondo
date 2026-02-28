@@ -90,12 +90,16 @@ interface AssistantBuilderProps {
   assistant: Assistant;
   organizationId: string;
   transferRules: TransferRule[];
+  hasBusinessHours: boolean;
+  hasTimezone: boolean;
 }
 
 export function AssistantBuilder({
   assistant,
   organizationId,
   transferRules: initialTransferRules,
+  hasBusinessHours,
+  hasTimezone,
 }: AssistantBuilderProps) {
   const router = useRouter();
   const { toast } = useToast();
@@ -1076,6 +1080,26 @@ export function AssistantBuilder({
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
+                {(!hasTimezone || !hasBusinessHours) && (
+                  <div className="flex items-start gap-2 rounded-md border border-yellow-500/30 bg-yellow-500/10 p-3">
+                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-yellow-600 dark:text-yellow-400" />
+                    <div className="text-sm text-yellow-800 dark:text-yellow-200">
+                      <p className="font-medium">
+                        {!hasTimezone && !hasBusinessHours
+                          ? "Timezone and business hours are not configured."
+                          : !hasTimezone
+                            ? "Timezone is not configured."
+                            : "Business hours are not configured."}
+                      </p>
+                      <p className="mt-1 text-yellow-700 dark:text-yellow-400">
+                        After-hours detection requires both to work correctly. Without them, all calls will be treated as during business hours.{" "}
+                        <Link href="/settings" className="font-medium underline hover:no-underline">
+                          Go to Business Settings
+                        </Link>
+                      </p>
+                    </div>
+                  </div>
+                )}
                 <div className="space-y-2">
                   <Label htmlFor="afterHoursGreeting">After-Hours Greeting</Label>
                   <Textarea
