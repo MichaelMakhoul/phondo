@@ -17,9 +17,26 @@ interface RecentCall {
   phone_numbers: { phone_number: string } | null;
 }
 
+function getGreeting(): string {
+  const hour = new Date().getHours();
+  if (hour < 12) return "Good morning";
+  if (hour < 17) return "Good afternoon";
+  return "Good evening";
+}
+
 export default async function DashboardPage() {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
+
+  // Get user profile for greeting
+  const { data: profile } = await supabase
+    .from("user_profiles")
+    .select("full_name")
+    .eq("id", user!.id)
+    .single() as { data: { full_name: string | null } | null };
+
+  const firstName = profile?.full_name?.split(" ")[0] || null;
+  const greeting = getGreeting();
 
   // Get user's current organization
   const { data: membership } = await supabase
@@ -121,9 +138,11 @@ export default async function DashboardPage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">Dashboard</h1>
+          <h1 className="text-2xl font-bold">
+            {greeting}{firstName ? `, ${firstName}` : ""}
+          </h1>
           <p className="text-muted-foreground">
-            Overview of your AI receptionist performance
+            Here&apos;s how your AI receptionist is performing
           </p>
         </div>
         <Link href="/assistants/new">
@@ -142,7 +161,9 @@ export default async function DashboardPage() {
               <CardTitle className="text-sm font-medium text-muted-foreground">
                 {stat.name}
               </CardTitle>
-              <stat.icon className="h-4 w-4 text-muted-foreground" />
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
+                <stat.icon className="h-4 w-4 text-primary" />
+              </div>
             </CardHeader>
             <CardContent>
               <AnimatedStat value={String(stat.value)} className="text-2xl font-bold" />

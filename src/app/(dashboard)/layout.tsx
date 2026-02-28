@@ -86,6 +86,7 @@ export default async function DashboardLayout({
           }}
           organization={currentOrg}
         />
+        <div className="h-[2px] bg-gradient-to-r from-primary/60 via-primary/20 to-transparent" />
         <main id="main-content" className="flex-1 overflow-y-auto bg-muted/30 p-4 pb-20 md:p-6 md:pb-6">
           {children}
         </main>
