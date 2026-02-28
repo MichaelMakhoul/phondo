@@ -54,6 +54,8 @@ async function completeCallRecord(callId, {
   recordingDisclosurePlayed,
   recordingDisclosureFailed,
   transferAttempt,
+  callerState,
+  consentReason,
 }) {
   const supabase = getSupabase();
 
@@ -77,6 +79,9 @@ async function completeCallRecord(callId, {
     ...(recordingDisclosurePlayed && { recordingDisclosurePlayed: true }),
     ...(recordingDisclosureFailed && { recordingDisclosureFailed: true }),
     ...(transferAttempt && { transferAttempt }),
+    // Always include both callerState and consentReason together when consent was checked,
+    // even if callerState is null (distinguishes "checked but unknown" from "never checked").
+    ...(consentReason != null && { consentReason, callerState: callerState ?? null }),
   };
 
   if (Object.keys(metadataExtras).length > 0) {
