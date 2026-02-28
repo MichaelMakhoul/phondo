@@ -55,7 +55,7 @@ export function DashboardHeader({ user, organization }: DashboardHeaderProps) {
     : user.email[0].toUpperCase();
 
   return (
-    <header className="flex h-16 items-center justify-between border-b bg-card px-4 md:px-6">
+    <header className="flex h-16 items-center justify-between border-b bg-card px-4 shadow-sm md:px-6">
       <div className="flex items-center gap-2">
         {/* Mobile hamburger */}
         <Button

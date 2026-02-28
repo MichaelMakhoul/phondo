@@ -101,10 +101,10 @@ function NavLink({ item, pathname }: { item: typeof navigation[number]; pathname
     <Link
       href={item.href}
       className={cn(
-        "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+        "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-all",
         isActive
-          ? "bg-primary text-primary-foreground"
-          : "text-muted-foreground hover:bg-muted hover:text-foreground"
+          ? "bg-primary/10 text-primary border-l-2 border-l-primary shadow-sm shadow-primary/10"
+          : "text-muted-foreground hover:bg-primary/5 hover:text-foreground"
       )}
     >
       <item.icon className="h-5 w-5" />
@@ -121,7 +121,7 @@ export function SidebarContent({ currentOrg }: { currentOrg?: { name: string; ty
       {/* Logo */}
       <div className="flex h-16 items-center border-b px-6">
         <Link href="/dashboard" className="flex items-center gap-2">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground shadow-md shadow-primary/30">
             <Phone className="h-5 w-5" />
           </div>
           <span className="text-lg font-semibold">Hola Recep</span>
@@ -130,8 +130,8 @@ export function SidebarContent({ currentOrg }: { currentOrg?: { name: string; ty
 
       {/* Organization Selector */}
       <div className="border-b p-4">
-        <div className="flex items-center gap-3 rounded-lg bg-muted p-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
+        <div className="flex items-center gap-3 rounded-lg border border-primary/10 bg-muted p-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary font-semibold">
             {currentOrg?.name.charAt(0).toUpperCase() || "O"}
           </div>
           <div className="flex-1 truncate">
@@ -164,9 +164,9 @@ export function SidebarContent({ currentOrg }: { currentOrg?: { name: string; ty
 
       {/* Footer */}
       <div className="border-t p-4">
-        <Link href="/support" className="block rounded-lg bg-muted p-3 transition-colors hover:bg-muted/80">
+        <Link href="/support" className="group block rounded-lg bg-muted p-3 transition-all hover:bg-primary/10 hover:shadow-sm hover:shadow-primary/10">
           <div className="flex items-center gap-2">
-            <HelpCircle className="h-4 w-4 text-muted-foreground" />
+            <HelpCircle className="h-4 w-4 text-muted-foreground group-hover:text-primary transition-colors" />
             <p className="text-xs font-medium">Need help?</p>
           </div>
           <p className="mt-1 text-xs text-muted-foreground">

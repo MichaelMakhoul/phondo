@@ -45,14 +45,14 @@ export function Success({ businessName, planName }: SuccessProps) {
         angle: 60,
         spread: 55,
         origin: { x: 0, y: 0.6 },
-        colors: ["#6366f1", "#8b5cf6", "#a78bfa"],
+        colors: ["#F97316", "#FB923C", "#FDBA74"],
       });
       confetti({
         particleCount: 3,
         angle: 120,
         spread: 55,
         origin: { x: 1, y: 0.6 },
-        colors: ["#6366f1", "#8b5cf6", "#a78bfa"],
+        colors: ["#F97316", "#FB923C", "#FDBA74"],
       });
       if (Date.now() < end) requestAnimationFrame(frame);
     };
