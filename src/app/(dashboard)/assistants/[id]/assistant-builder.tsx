@@ -26,6 +26,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/components/ui/use-toast";
 import {
+  AlertTriangle,
   ArrowLeft,
   Bot,
   Mic,
@@ -103,7 +104,23 @@ export function AssistantBuilder({
   const [firstMessage, setFirstMessage] = useState(assistant.first_message);
   const [voiceId, setVoiceId] = useState(resolveVoiceId(assistant.voice_id));
   const [language, setLanguage] = useState<VoiceLanguage>((assistant.language as VoiceLanguage) || "en");
+  const [initialLanguage] = useState<VoiceLanguage>((assistant.language as VoiceLanguage) || "en");
   const [isActive, setIsActive] = useState(assistant.is_active);
+
+  // Detect greeting/language mismatch after language change
+  const greetingLanguageMismatch = (() => {
+    if (language === initialLanguage || !firstMessage.trim()) return false;
+    const hasSpanish = /[áéíóúñ¡¿]/.test(firstMessage) || /\b(hola|gracias|llamar|ayudar)\b/i.test(firstMessage);
+    const hasEnglish = /\b(hello|hi|thanks|thank|calling|help|welcome)\b/i.test(firstMessage);
+    if (language === "es" && hasEnglish && !hasSpanish) return true;
+    if (language === "en" && hasSpanish && !hasEnglish) return true;
+    return false;
+  })();
+
+  const defaultGreetings: Record<VoiceLanguage, string> = {
+    en: `Hi there! Thanks for calling ${name}. How can I help you today?`,
+    es: `¡Hola! Gracias por llamar a ${name}. ¿En qué puedo ayudarle hoy?`,
+  };
 
   // Settings state
   const [maxCallDuration, setMaxCallDuration] = useState(
@@ -489,6 +506,23 @@ export function AssistantBuilder({
                 <p className="text-xs text-muted-foreground">
                   This is the first thing callers will hear
                 </p>
+                {greetingLanguageMismatch && (
+                  <div className="flex items-start gap-2 rounded-md border border-yellow-500/30 bg-yellow-500/10 p-3">
+                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-yellow-600 dark:text-yellow-400" />
+                    <div className="space-y-1">
+                      <p className="text-xs font-medium text-yellow-700 dark:text-yellow-300">
+                        Your greeting appears to be in {language === "es" ? "English" : "Spanish"}, but the assistant language is set to {language === "es" ? "Spanish" : "English"}.
+                      </p>
+                      <button
+                        type="button"
+                        className="text-xs font-medium text-primary underline-offset-2 hover:underline"
+                        onClick={() => setFirstMessage(defaultGreetings[language])}
+                      >
+                        Use default {language === "es" ? "Spanish" : "English"} greeting
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div className="flex items-center justify-between">

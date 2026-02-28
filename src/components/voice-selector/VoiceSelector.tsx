@@ -43,7 +43,7 @@ export function VoiceSelector({ value, onChange, language = "en" }: VoiceSelecto
 
   return (
     <div className="space-y-3">
-      <VoiceFilterBar activeFilter={filter} onChange={setFilter} />
+      <VoiceFilterBar activeFilter={filter} onChange={setFilter} language={language} />
 
       {voices.length === 0 ? (
         <p className="py-6 text-center text-sm text-muted-foreground">
