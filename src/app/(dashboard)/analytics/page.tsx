@@ -206,12 +206,12 @@ export default async function AnalyticsPage() {
     : 0;
 
   const answerRate = stats.total > 0
-    ? Math.round((stats.answered / Math.max(stats.total - stats.spam, 1)) * 100)
+    ? Math.min(100, Math.round((stats.answered / Math.max(stats.total - stats.spam, 1)) * 100))
     : 0;
 
-  // Conversion rate: appointments / answered calls
+  // Conversion rate: appointments / answered calls (capped at 100%)
   const conversionRate = stats.answered > 0
-    ? Math.round((stats.appointments / stats.answered) * 100)
+    ? Math.min(100, Math.round((stats.appointments / stats.answered) * 100))
     : 0;
 
   const recentCalls = callsList.slice(0, 10);
