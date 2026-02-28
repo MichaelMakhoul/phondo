@@ -1,5 +1,6 @@
 import { type ReactNode } from "react";
 import { type LucideIcon } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 interface EmptyStateProps {
   icon: LucideIcon;
@@ -8,6 +9,7 @@ interface EmptyStateProps {
   action?: ReactNode;
   /** Compact variant for smaller containers like sidebars */
   compact?: boolean;
+  className?: string;
 }
 
 export function EmptyState({
@@ -16,10 +18,11 @@ export function EmptyState({
   description,
   action,
   compact = false,
+  className,
 }: EmptyStateProps) {
   if (compact) {
     return (
-      <div className="flex flex-col items-center justify-center py-8 text-center">
+      <div className={cn("flex flex-col items-center justify-center py-8 text-center", className)}>
         <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-muted">
           <Icon className="h-5 w-5 text-muted-foreground" />
         </div>
@@ -33,13 +36,13 @@ export function EmptyState({
   }
 
   return (
-    <div className="flex flex-col items-center justify-center py-12 text-center">
-      <div className="relative mb-6">
+    <div className={cn("flex flex-col items-center justify-center py-12 text-center", className)}>
+      <div className="relative mb-6 h-14 w-14">
         {/* Decorative rings */}
-        <div className="absolute inset-0 -m-3 rounded-full bg-orange-500/5" />
-        <div className="absolute inset-0 -m-1.5 rounded-full bg-orange-500/10" />
-        <div className="relative flex h-14 w-14 items-center justify-center rounded-full bg-orange-500/15">
-          <Icon className="h-7 w-7 text-orange-500" />
+        <div className="absolute inset-0 -m-3 rounded-full bg-primary/5" />
+        <div className="absolute inset-0 -m-1.5 rounded-full bg-primary/10" />
+        <div className="relative flex h-14 w-14 items-center justify-center rounded-full bg-primary/15">
+          <Icon className="h-7 w-7 text-primary" />
         </div>
       </div>
       <h3 className="text-lg font-semibold">{title}</h3>
