@@ -44,7 +44,7 @@ const INFRASTRUCTURE = [
     icon: MapPin,
     title: "Australian Voice Processing",
     description:
-      "Voice calls processed through our Sydney-based voice server on Fly.io. Audio streams stay within the Australian network wherever possible.",
+      "Voice calls routed through our Sydney-based voice server on Fly.io. Call metadata and transcripts stored exclusively in Australia.",
   },
 ];
 
@@ -54,8 +54,8 @@ const COMPLIANCE_POINTS = [
   "Row-Level Security on all database tables",
   "No data shared with offshore third parties without consent",
   "Call recording consent handled per state requirements",
-  "Regular security audits and penetration testing",
-  "SOC 2 Type II compliant infrastructure (Supabase)",
+  "Enterprise-grade infrastructure with built-in security monitoring",
+  "Hosted on SOC 2 Type II certified infrastructure (Supabase)",
   "GDPR-ready for international clients",
 ];
 
