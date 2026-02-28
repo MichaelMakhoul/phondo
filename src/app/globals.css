@@ -126,6 +126,35 @@
   animation: pulse-dot 2s ease-in-out infinite;
 }
 
+/* Card hover lift */
+.card-hover {
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.card-hover:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+.dark .card-hover:hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+/* Test call connecting rings */
+@keyframes ring-expand {
+  from { transform: scale(0.8); opacity: 0.6; }
+  to { transform: scale(1.6); opacity: 0; }
+}
+.animate-ring-expand {
+  animation: ring-expand 1.5s ease-out infinite;
+}
+.animate-ring-expand-delay {
+  animation: ring-expand 1.5s ease-out 0.5s infinite;
+}
+
+/* Primary button glow */
+.btn-primary-glow:hover {
+  box-shadow: 0 0 16px rgba(249, 115, 22, 0.25);
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

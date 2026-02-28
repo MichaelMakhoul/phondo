@@ -94,7 +94,7 @@ export default async function AssistantsPage() {
       {assistants && assistants.length > 0 ? (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
           {assistants.map((assistant) => (
-            <Card key={assistant.id} className="relative">
+            <Card key={assistant.id} className="relative card-hover">
               <CardHeader className="pb-3">
                 <div className="flex items-start justify-between">
                   <div className="flex items-center gap-3">

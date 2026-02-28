@@ -127,7 +127,7 @@ export default async function DashboardPage() {
           </p>
         </div>
         <Link href="/assistants/new">
-          <Button>
+          <Button className="btn-primary-glow">
             <Plus className="mr-2 h-4 w-4" />
             New Assistant
           </Button>
@@ -136,8 +136,8 @@ export default async function DashboardPage() {
 
       {/* Stats Grid */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        {stats.map((stat) => (
-          <Card key={stat.name}>
+        {stats.map((stat, i) => (
+          <Card key={stat.name} className={`card-hover animate-fade-in-up-delay-${i + 1}`}>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-sm font-medium text-muted-foreground">
                 {stat.name}
@@ -168,7 +168,7 @@ export default async function DashboardPage() {
       </div>
 
       {/* Quick Actions & Recent Calls */}
-      <div className="grid gap-6 lg:grid-cols-2">
+      <div className="grid gap-6 lg:grid-cols-2 animate-fade-in-up-delay-2">
         {/* Quick Actions */}
         <Card>
           <CardHeader>
@@ -177,7 +177,7 @@ export default async function DashboardPage() {
           </CardHeader>
           <CardContent className="space-y-3">
             <Link href="/assistants/new" className="block">
-              <div className="flex items-center gap-4 rounded-lg border p-4 transition-colors hover:bg-muted">
+              <div className="flex items-center gap-4 rounded-lg border p-4 card-hover">
                 <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10">
                   <Bot className="h-5 w-5 text-primary" />
                 </div>
@@ -190,7 +190,7 @@ export default async function DashboardPage() {
               </div>
             </Link>
             <Link href="/phone-numbers" className="block">
-              <div className="flex items-center gap-4 rounded-lg border p-4 transition-colors hover:bg-muted">
+              <div className="flex items-center gap-4 rounded-lg border p-4 card-hover">
                 <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10">
                   <Phone className="h-5 w-5 text-primary" />
                 </div>
