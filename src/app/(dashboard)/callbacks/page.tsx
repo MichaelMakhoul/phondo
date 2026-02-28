@@ -11,7 +11,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { PhoneForwarded, Clock, CheckCircle2, AlertTriangle } from "lucide-react";
+import { PhoneForwarded, Clock, CheckCircle2, AlertTriangle, TimerOff } from "lucide-react";
 import { formatPhoneNumber } from "@/lib/utils";
 import { format } from "date-fns";
 
@@ -109,10 +109,14 @@ export default async function CallbacksPage() {
   const completedCallbacks = allCallbacks
     .filter((c) => c.status === "completed")
     .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+  const expiredCallbacks = allCallbacks
+    .filter((c) => c.status === "expired")
+    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
   const allSorted = sortCallbacks(allCallbacks);
 
   const pendingCount = pendingCallbacks.length;
   const completedCount = completedCallbacks.length;
+  const expiredCount = expiredCallbacks.length;
   const highUrgency = pendingCallbacks.filter((c) => c.urgency === "high").length;
 
   return (
@@ -182,6 +186,10 @@ export default async function CallbacksPage() {
             <CheckCircle2 className="h-4 w-4" />
             Completed ({completedCount})
           </TabsTrigger>
+          <TabsTrigger value="expired" className="flex items-center gap-2">
+            <TimerOff className="h-4 w-4" />
+            Expired ({expiredCount})
+          </TabsTrigger>
           <TabsTrigger value="all" className="flex items-center gap-2">
             All ({allCallbacks.length})
           </TabsTrigger>
@@ -211,6 +219,20 @@ export default async function CallbacksPage() {
             </CardHeader>
             <CardContent>
               <CallbacksTable callbacks={completedCallbacks} showCompletionNotes />
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="expired">
+          <Card>
+            <CardHeader>
+              <CardTitle>Expired Callbacks</CardTitle>
+              <CardDescription>
+                {expiredCount} callbacks expired after 48 hours without response
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <CallbacksTable callbacks={expiredCallbacks} />
             </CardContent>
           </Card>
         </TabsContent>
@@ -252,6 +274,8 @@ function statusVariant(status: string) {
       return "default" as const;
     case "completed":
       return "success" as const;
+    case "expired":
+      return "outline" as const;
     default:
       return "secondary" as const;
   }
@@ -313,7 +337,7 @@ function CallbacksTable({
                 {safeFormatDate(cb.created_at, "MMM d, h:mm a")}
               </span>
               {cb.status === "pending" && (
-                <CallbackActions callbackId={cb.id} />
+                <CallbackActions callbackId={cb.id} callerPhone={cb.caller_phone} />
               )}
             </div>
           </div>
@@ -373,7 +397,7 @@ function CallbacksTable({
                 </TableCell>
                 <TableCell className="text-right">
                   {cb.status === "pending" && (
-                    <CallbackActions callbackId={cb.id} />
+                    <CallbackActions callbackId={cb.id} callerPhone={cb.caller_phone} />
                   )}
                 </TableCell>
               </TableRow>
