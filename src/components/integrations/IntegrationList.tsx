@@ -18,6 +18,7 @@ import {
   Webhook,
   ArrowUpRight,
 } from "lucide-react";
+import { EmptyState } from "@/components/ui/empty-state";
 import {
   Dialog,
   DialogContent,
@@ -183,12 +184,11 @@ export function IntegrationList() {
       )}
 
       {integrations.length === 0 ? (
-        <div className="py-12 text-center">
-          <Webhook className="mx-auto h-8 w-8 text-muted-foreground" />
-          <p className="mt-2 text-sm text-muted-foreground">
-            No integrations yet. Add one to start sending call data to your tools.
-          </p>
-        </div>
+        <EmptyState
+          icon={Webhook}
+          title="No integrations yet"
+          description="Add one to start sending call data to your tools."
+        />
       ) : (
         <div className="space-y-3">
           {integrations.map((integration) => (

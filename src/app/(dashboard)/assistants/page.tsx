@@ -11,6 +11,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { checkResourceLimit } from "@/lib/stripe/billing-service";
+import { EmptyState } from "@/components/ui/empty-state";
 
 interface Assistant {
   id: string;
@@ -156,20 +157,20 @@ export default async function AssistantsPage() {
           ))}
         </div>
       ) : (
-        <Card className="p-12 text-center">
-          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-muted">
-            <Bot className="h-6 w-6 text-muted-foreground" />
-          </div>
-          <h3 className="mt-4 text-lg font-semibold">No assistants yet</h3>
-          <p className="mt-2 text-sm text-muted-foreground">
-            Create your first AI receptionist to start answering calls
-          </p>
-          <Link href="/assistants/new" className="mt-6 inline-block">
-            <Button>
-              <Plus className="mr-2 h-4 w-4" />
-              Create Assistant
-            </Button>
-          </Link>
+        <Card className="p-12">
+          <EmptyState
+            icon={Bot}
+            title="No assistants yet"
+            description="Create your first AI receptionist to start answering calls"
+            action={
+              <Link href="/assistants/new">
+                <Button>
+                  <Plus className="mr-2 h-4 w-4" />
+                  Create Assistant
+                </Button>
+              </Link>
+            }
+          />
         </Card>
       )}
     </div>

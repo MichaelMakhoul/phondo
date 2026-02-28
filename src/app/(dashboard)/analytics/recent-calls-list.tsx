@@ -8,9 +8,11 @@ import {
   PhoneIncoming,
   PhoneOutgoing,
   PhoneMissed,
+  PhoneCall,
   ShieldAlert,
   ChevronRight,
 } from "lucide-react";
+import { EmptyState } from "@/components/ui/empty-state";
 
 interface Call {
   id: string;
@@ -29,9 +31,12 @@ interface RecentCallsListProps {
 export function RecentCallsList({ calls }: RecentCallsListProps) {
   if (calls.length === 0) {
     return (
-      <div className="text-center py-8 text-muted-foreground">
-        No calls yet. Set up an assistant and phone number to start receiving calls.
-      </div>
+      <EmptyState
+        icon={PhoneCall}
+        title="No calls yet"
+        description="Set up an assistant and phone number to start receiving calls"
+        compact
+      />
     );
   }
 

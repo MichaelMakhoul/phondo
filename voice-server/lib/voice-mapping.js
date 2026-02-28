@@ -6,6 +6,7 @@
  */
 
 const DEFAULT_DEEPGRAM_VOICE = "aura-asteria-en";
+const DEFAULT_DEEPGRAM_VOICE_ES = "aura-2-diana-es";
 
 /**
  * ElevenLabs voice ID → Deepgram Aura voice name.
@@ -45,32 +46,66 @@ const VOICE_MAP = {
 };
 
 /**
- * Resolve an ElevenLabs voice ID (or legacy short name) to a Deepgram Aura voice.
+ * Spanish ElevenLabs voice ID → Deepgram Aura-2 Spanish voice.
+ * When the assistant language is 'es', these override the English mappings.
+ * Falls back by gender: female → diana-es, male → javier-es.
+ */
+const VOICE_MAP_ES = {
+  // Female voices → Spanish female equivalents (only voices in VOICE_CATALOG)
+  "EXAVITQu4vr4xnSDxMaL": "aura-2-diana-es",    // Sarah → Diana (warm)
+  "21m00Tcm4TlvDq8ikWAM": "aura-2-carina-es",    // Rachel → Carina (professional)
+  "jBpfuIE2acCO8z3wKNLl": "aura-2-selena-es",     // Emily → Selena (upbeat)
+  "MF3mGyEYCl7XYWbV9V6O": "aura-2-diana-es",      // Elli → Diana (warm)
+  "AZnzlk1XvdvUeBnXmlld": "aura-2-selena-es",     // Domi → Selena (closest upbeat female)
+  "ThT5KcBeYPX3keUQqHPh": "aura-2-diana-es",      // Dorothy → Diana
+  "oWAxZDx7w5VEj9dCyTzz": "aura-2-carina-es",     // Grace → Carina (closest soothing female)
+  "XB0fDUnXU5powFXDhCwa": "aura-2-diana-es",      // Charlotte → Diana
+
+  // Male voices → Spanish male equivalents (only voices in VOICE_CATALOG)
+  "pNInz6obpgDQGcFmaJgB": "aura-2-javier-es",     // Adam → Javier (friendly)
+  "yoZ06aMxZJJ28mfd3POQ": "aura-2-alvaro-es",     // Sam → Alvaro (calm)
+  "ErXwobaYiN019PkySvjV": "aura-2-javier-es",     // Antoni → Javier (friendly)
+  "TxGEqnHWrfWFTfGW9XjX": "aura-2-nestor-es",     // Josh → Nestor (warm)
+  "VR6AewLTigWG4xSOukaG": "aura-2-alvaro-es",     // Arnold → Alvaro (closest authoritative)
+  "CYw3kZ02Hs0563khs1Fj": "aura-2-javier-es",     // Dave → Javier (closest casual)
+  "onwK4e9ZLuTAKqWW03F9": "aura-2-alvaro-es",     // Daniel → Alvaro
+  "SOYHLrjzK2X1ezoPC6cr": "aura-2-alvaro-es",     // Harry → Alvaro
+  "ZQe5CZNOzWyzPSCn5a3c": "aura-2-alvaro-es",     // James → Alvaro
+  "IKne3meq5aSn9XLyUdCD": "aura-2-javier-es",     // Liam → Javier
+};
+
+// Legacy short name support (module-level to avoid recreating on every call)
+const SHORT_NAME_TO_ID = {
+  rachel: "21m00Tcm4TlvDq8ikWAM",
+  sarah: "EXAVITQu4vr4xnSDxMaL",
+  adam: "pNInz6obpgDQGcFmaJgB",
+  emily: "jBpfuIE2acCO8z3wKNLl",
+  sam: "yoZ06aMxZJJ28mfd3POQ",
+  domi: "AZnzlk1XvdvUeBnXmlld",
+  dave: "CYw3kZ02Hs0563khs1Fj",
+};
+
+/**
+ * Resolve an ElevenLabs voice ID (or legacy short name) to a Deepgram voice.
  *
  * @param {string} [voiceId] - ElevenLabs voice ID or legacy short name
- * @returns {string} Deepgram Aura voice model name
+ * @param {string} [language] - Language code ('en', 'es'). Defaults to 'en'.
+ * @returns {string} Deepgram voice model name
  */
-function getDeepgramVoice(voiceId) {
-  if (!voiceId) return DEFAULT_DEEPGRAM_VOICE;
+function getDeepgramVoice(voiceId, language) {
+  const lang = language || "en";
 
-  // Direct ElevenLabs ID lookup
-  if (VOICE_MAP[voiceId]) return VOICE_MAP[voiceId];
+  if (!voiceId) {
+    return lang === "es" ? DEFAULT_DEEPGRAM_VOICE_ES : DEFAULT_DEEPGRAM_VOICE;
+  }
 
-  // Legacy short name support
-  const SHORT_NAME_TO_ID = {
-    rachel: "21m00Tcm4TlvDq8ikWAM",
-    sarah: "EXAVITQu4vr4xnSDxMaL",
-    adam: "pNInz6obpgDQGcFmaJgB",
-    emily: "jBpfuIE2acCO8z3wKNLl",
-    sam: "yoZ06aMxZJJ28mfd3POQ",
-    domi: "AZnzlk1XvdvUeBnXmlld",
-    dave: "CYw3kZ02Hs0563khs1Fj",
-  };
+  const resolvedId = SHORT_NAME_TO_ID[voiceId.toLowerCase()] || voiceId;
 
-  const resolvedId = SHORT_NAME_TO_ID[voiceId.toLowerCase()];
-  if (resolvedId && VOICE_MAP[resolvedId]) return VOICE_MAP[resolvedId];
+  if (lang === "es") {
+    return VOICE_MAP_ES[resolvedId] || DEFAULT_DEEPGRAM_VOICE_ES;
+  }
 
-  return DEFAULT_DEEPGRAM_VOICE;
+  return VOICE_MAP[resolvedId] || DEFAULT_DEEPGRAM_VOICE;
 }
 
-module.exports = { getDeepgramVoice, VOICE_MAP, DEFAULT_DEEPGRAM_VOICE };
+module.exports = { getDeepgramVoice, VOICE_MAP, VOICE_MAP_ES, DEFAULT_DEEPGRAM_VOICE, DEFAULT_DEEPGRAM_VOICE_ES };

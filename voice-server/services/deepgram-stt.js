@@ -58,17 +58,29 @@ function buildKeywordsParam(industry) {
  * Accepts raw mulaw 8kHz audio — no conversion needed from Twilio.
  *
  * @param {string} apiKey
- * @param {{ onTranscript, onUtteranceEnd, onError, onClose }} callbacks
+ * @param {{ onTranscript, onUtteranceEnd, onError, onClose, language?: string }} callbacks
  * @param {{ industry?: string }} [options] - Optional config for keyword boosting
  * @returns {WebSocket}
  */
-function openDeepgramStream(apiKey, { onTranscript, onUtteranceEnd, onError, onClose }, options = {}) {
+const SUPPORTED_STT_LANGUAGES = new Set(["en", "es"]);
+
+function openDeepgramStream(apiKey, { onTranscript, onUtteranceEnd, onError, onClose, language }, options = {}) {
+  // Validate language — fall back to English for unsupported codes
+  const lang = language && SUPPORTED_STT_LANGUAGES.has(language) ? language : "en";
+  if (language && !SUPPORTED_STT_LANGUAGES.has(language)) {
+    console.warn(`[STT] Unsupported language "${language}" — falling back to English`);
+  }
+
+  // Nova-2 for English, nova-3 for multilingual (better language support)
+  const isMultilingual = lang !== "en";
+  const model = isMultilingual ? "nova-3" : "nova-2";
   const keywordsParam = buildKeywordsParam(options.industry);
 
   const url =
     "wss://api.deepgram.com/v1/listen?" +
     "encoding=mulaw&sample_rate=8000&channels=1" +
-    "&model=nova-2" +
+    `&model=${model}` +
+    (isMultilingual ? `&language=${lang}` : "") +
     "&punctuate=true" +
     "&interim_results=true" +
     "&endpointing=300" +

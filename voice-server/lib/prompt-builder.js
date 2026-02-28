@@ -333,25 +333,52 @@ function buildPromptFromConfig(config, context) {
     sections.push(`ADDITIONAL INSTRUCTIONS:\n${config.customInstructions.trim()}`);
   }
 
+  // 8. Language instruction (must be last to override any English defaults above)
+  if (context.language && context.language !== "en" && LANGUAGE_INSTRUCTIONS[context.language]) {
+    sections.push(LANGUAGE_INSTRUCTIONS[context.language]);
+  }
+
   return sections.filter(Boolean).join("\n\n");
 }
 
 /**
- * Generate a greeting based on tone and business name.
+ * Generate a greeting based on tone, business name, and language.
  */
-function generateGreeting(tone, businessName) {
+function generateGreeting(tone, businessName, language) {
   const name = businessName || "{business_name}";
+
+  if (language === "es") {
+    switch (tone) {
+      case "professional":
+        return `Gracias por llamar a ${name}. ¿En qué puedo asistirle hoy?`;
+      case "casual":
+        return `¡Hola! Ha llamado a ${name}. ¿En qué puedo ayudarle?`;
+      case "friendly":
+      default:
+        return `¡Hola! Gracias por llamar a ${name}. ¿En qué puedo ayudarle hoy?`;
+    }
+  }
+
   switch (tone) {
     case "professional":
       return `Thank you for calling ${name}. How may I assist you today?`;
-    case "friendly":
-      return `Hi there! Thanks for calling ${name}. How can I help you today?`;
     case "casual":
       return `Hey! You've reached ${name}. What can I do for you?`;
+    case "friendly":
     default:
       return `Hi there! Thanks for calling ${name}. How can I help you today?`;
   }
 }
+
+/**
+ * Language instruction appended to prompts for non-English assistants.
+ */
+const LANGUAGE_INSTRUCTIONS = {
+  es: `LANGUAGE:
+You MUST conduct the entire conversation in Spanish. All responses, greetings, questions, confirmations, and error messages must be in Spanish.
+If the caller speaks English, still respond in Spanish but accommodate code-switching naturally (e.g., if they say an English name or address, accept it without translation).
+Use formal Spanish ("usted") by default unless the caller uses informal ("tú") first.`,
+};
 
 /**
  * Build system prompt for an assistant — handles both guided (prompt_config) and legacy prompts.
@@ -373,6 +400,8 @@ function buildSystemPrompt(assistant, organization, knowledgeBase, options) {
     trimmedKB = trimmedKB.slice(0, MAX_KB_CHARS) + "\n\n[Knowledge base truncated for brevity]";
   }
 
+  const language = assistant.language || "en";
+
   if (assistant.promptConfig) {
     // Guided prompt builder
     const context = {
@@ -384,6 +413,7 @@ function buildSystemPrompt(assistant, organization, knowledgeBase, options) {
       defaultAppointmentDuration: organization.defaultAppointmentDuration,
       calendarEnabled,
       transferRules,
+      language,
     };
     return buildPromptFromConfig(assistant.promptConfig, context);
   }
@@ -407,13 +437,20 @@ function buildSystemPrompt(assistant, organization, knowledgeBase, options) {
   // Append scheduling section
   systemPrompt += `\n\n${buildSchedulingSection(organization.timezone, organization.businessHours, organization.defaultAppointmentDuration, calendarEnabled)}`;
 
+  // Append language instruction for non-English assistants
+  if (language !== "en" && LANGUAGE_INSTRUCTIONS[language]) {
+    systemPrompt += `\n\n${LANGUAGE_INSTRUCTIONS[language]}`;
+  }
+
   return systemPrompt;
 }
 
 /**
- * Get the greeting for a call — uses first_message if set, otherwise generates from tone.
+ * Get the greeting for a call — uses first_message if set, otherwise generates from tone + language.
  */
 function getGreeting(assistant, organizationName) {
+  const language = assistant.language || "en";
+
   if (assistant.firstMessage) {
     let greeting = assistant.firstMessage;
     if (greeting.includes("{business_name}")) {
@@ -422,11 +459,8 @@ function getGreeting(assistant, organizationName) {
     return greeting;
   }
 
-  if (assistant.promptConfig) {
-    return generateGreeting(assistant.promptConfig.tone, organizationName);
-  }
-
-  return `Hi there! Thanks for calling ${organizationName}. How can I help you today?`;
+  const tone = assistant.promptConfig?.tone || "friendly";
+  return generateGreeting(tone, organizationName, language);
 }
 
 module.exports = {

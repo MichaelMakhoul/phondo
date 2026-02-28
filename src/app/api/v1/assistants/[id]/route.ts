@@ -37,6 +37,7 @@ const updateAssistantSchema = z.object({
   voiceProvider: z.string().optional(),
   model: z.string().optional(),
   modelProvider: z.string().optional(),
+  language: z.enum(["en", "es"]).optional(),
   knowledgeBase: z.any().optional(),
   tools: z.any().optional(),
   isActive: z.boolean().optional(),
@@ -157,12 +158,13 @@ export async function PATCH(
         vapiUpdate.name = validatedData.name;
       }
 
-      // Only rebuild model when prompt, model, or recording settings change
+      // Only rebuild model when prompt, model, language, or recording settings change
       const needsModelUpdate =
         validatedData.systemPrompt ||
         validatedData.promptConfig !== undefined ||
         validatedData.model ||
         validatedData.modelProvider ||
+        validatedData.language ||
         validatedData.settings?.recordingEnabled !== undefined;
 
       if (needsModelUpdate) {
@@ -255,6 +257,16 @@ export async function PATCH(
         vapiUpdate.recordingEnabled = recordingEnabled;
       }
 
+      // Sync transcriber language to Vapi when language changes
+      if (validatedData.language) {
+        const effectiveLang = validatedData.language;
+        (vapiUpdate as Record<string, unknown>).transcriber = {
+          provider: "deepgram",
+          model: effectiveLang === "es" ? "nova-3" : "nova-2",
+          language: effectiveLang,
+        };
+      }
+
       // Attach webhook server config if APP_URL is configured
       const serverConfig = buildVapiServerConfig();
       if (serverConfig) {
@@ -293,6 +305,7 @@ export async function PATCH(
     if (validatedData.isActive !== undefined) updateData.is_active = validatedData.isActive;
     if (validatedData.promptConfig !== undefined) updateData.prompt_config = validatedData.promptConfig;
     if (validatedData.settings !== undefined) updateData.settings = mergedSettings;
+    if (validatedData.language !== undefined) updateData.language = validatedData.language;
 
     const { data: assistant, error } = await (supabase
       .from("assistants") as any)

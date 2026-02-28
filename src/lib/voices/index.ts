@@ -24,8 +24,10 @@ export type VoiceTag =
 
 export type VoiceAccent = "american" | "british" | "australian";
 
+export type VoiceLanguage = "en" | "es";
+
 export interface CatalogVoice {
-  id: string; // ElevenLabs voice ID
+  id: string; // ElevenLabs voice ID (for English) or internal ID (for Spanish)
   name: string;
   gender: VoiceGender;
   accent: VoiceAccent;
@@ -33,6 +35,7 @@ export interface CatalogVoice {
   description: string;
   previewText: string;
   deepgramVoice: string; // Deepgram Aura voice model name for self-hosted TTS
+  language: VoiceLanguage; // Language this voice speaks
   recommended?: boolean; // Show "Recommended" badge in voice picker
 }
 
@@ -51,6 +54,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     description: "Warm, friendly Australian female",
     previewText: "Hi there! Thanks for getting in touch. What can I do for you?",
     deepgramVoice: "aura-asteria-en",
+    language: "en",
     recommended: true,
   },
   {
@@ -62,6 +66,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     description: "Professional Australian male",
     previewText: "G'day! Thanks for calling. How can I help you today?",
     deepgramVoice: "aura-arcas-en",
+    language: "en",
     recommended: true,
   },
   {
@@ -73,6 +78,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     description: "Friendly, laid-back Australian male",
     previewText: "Hey! Good to hear from you. How can I help?",
     deepgramVoice: "aura-orion-en",
+    language: "en",
     recommended: true,
   },
 
@@ -86,6 +92,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     description: "Warm, professional female",
     previewText: "Hello! Thank you for calling. How may I assist you today?",
     deepgramVoice: "aura-asteria-en",
+    language: "en",
   },
   {
     id: "21m00Tcm4TlvDq8ikWAM",
@@ -96,6 +103,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     description: "Professional, authoritative female",
     previewText: "Good morning! I'd be happy to help you with your inquiry.",
     deepgramVoice: "aura-luna-en",
+    language: "en",
   },
   {
     id: "pNInz6obpgDQGcFmaJgB",
@@ -106,6 +114,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     description: "Friendly, trustworthy male",
     previewText: "Hi there! Thanks for reaching out. What can I do for you?",
     deepgramVoice: "aura-orion-en",
+    language: "en",
   },
   {
     id: "jBpfuIE2acCO8z3wKNLl",
@@ -116,6 +125,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     description: "Upbeat, enthusiastic female",
     previewText: "Hey! Great to hear from you! How can I help?",
     deepgramVoice: "aura-stella-en",
+    language: "en",
   },
   {
     id: "yoZ06aMxZJJ28mfd3POQ",
@@ -126,6 +136,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     description: "Calm, professional male",
     previewText: "Thank you for your call. I'm here to help you today.",
     deepgramVoice: "aura-arcas-en",
+    language: "en",
   },
   {
     id: "ErXwobaYiN019PkySvjV",
@@ -136,6 +147,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     description: "Friendly, conversational male",
     previewText: "Hey, thanks for calling! What can I help you with today?",
     deepgramVoice: "aura-orion-en",
+    language: "en",
   },
   {
     id: "MF3mGyEYCl7XYWbV9V6O",
@@ -146,6 +158,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     description: "Warm, approachable female",
     previewText: "Hi there! I'm happy to help. What do you need?",
     deepgramVoice: "aura-asteria-en",
+    language: "en",
   },
   {
     id: "TxGEqnHWrfWFTfGW9XjX",
@@ -156,6 +169,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     description: "Deep, warm professional male",
     previewText: "Good to hear from you. How may I be of assistance?",
     deepgramVoice: "aura-orpheus-en",
+    language: "en",
   },
   {
     id: "VR6AewLTigWG4xSOukaG",
@@ -166,6 +180,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     description: "Authoritative, confident male",
     previewText: "Welcome. I'm here to assist you with whatever you need.",
     deepgramVoice: "aura-angus-en",
+    language: "en",
   },
   {
     id: "AZnzlk1XvdvUeBnXmlld",
@@ -176,6 +191,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     description: "Energetic, vibrant female",
     previewText: "Hi! Welcome! What can I do for you today?",
     deepgramVoice: "aura-stella-en",
+    language: "en",
   },
   {
     id: "CYw3kZ02Hs0563khs1Fj",
@@ -186,6 +202,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     description: "Casual, conversational male",
     previewText: "Hey there! How's it going? What can I help with?",
     deepgramVoice: "aura-perseus-en",
+    language: "en",
   },
 
   // --- British voices ---
@@ -198,6 +215,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     description: "Polished British male",
     previewText: "Good day. How may I assist you this afternoon?",
     deepgramVoice: "aura-arcas-en",
+    language: "en",
   },
   {
     id: "ThT5KcBeYPX3keUQqHPh",
@@ -208,6 +226,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     description: "Warm, eloquent British female",
     previewText: "Hello, thank you for reaching out. How can I help?",
     deepgramVoice: "aura-asteria-en",
+    language: "en",
   },
   {
     id: "SOYHLrjzK2X1ezoPC6cr",
@@ -218,6 +237,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     description: "Authoritative British male",
     previewText: "Good morning. I'm here to assist you. How may I help?",
     deepgramVoice: "aura-angus-en",
+    language: "en",
   },
   {
     id: "oWAxZDx7w5VEj9dCyTzz",
@@ -228,6 +248,77 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     description: "Soothing, refined British female",
     previewText: "Hello, lovely to hear from you. How can I assist?",
     deepgramVoice: "aura-hera-en",
+    language: "en",
+  },
+
+  // --- Spanish voices ---
+  {
+    id: "es-diana",
+    name: "Diana",
+    gender: "female",
+    accent: "american",
+    tags: ["warm", "professional"],
+    description: "Warm, professional Spanish female",
+    previewText: "¡Hola! Gracias por llamar. ¿En qué puedo ayudarle hoy?",
+    deepgramVoice: "aura-2-diana-es",
+    language: "es",
+    recommended: true,
+  },
+  {
+    id: "es-javier",
+    name: "Javier",
+    gender: "male",
+    accent: "american",
+    tags: ["friendly", "conversational"],
+    description: "Friendly, conversational Spanish male",
+    previewText: "¡Hola! Bienvenido. ¿Cómo puedo ayudarle?",
+    deepgramVoice: "aura-2-javier-es",
+    language: "es",
+    recommended: true,
+  },
+  {
+    id: "es-carina",
+    name: "Carina",
+    gender: "female",
+    accent: "american",
+    tags: ["professional", "authoritative"],
+    description: "Professional, authoritative Spanish female",
+    previewText: "Buenos días. Estoy aquí para asistirle. ¿En qué puedo servirle?",
+    deepgramVoice: "aura-2-carina-es",
+    language: "es",
+  },
+  {
+    id: "es-alvaro",
+    name: "Álvaro",
+    gender: "male",
+    accent: "american",
+    tags: ["calm", "professional"],
+    description: "Calm, professional Spanish male",
+    previewText: "Gracias por su llamada. Estoy aquí para ayudarle.",
+    deepgramVoice: "aura-2-alvaro-es",
+    language: "es",
+  },
+  {
+    id: "es-selena",
+    name: "Selena",
+    gender: "female",
+    accent: "american",
+    tags: ["upbeat", "friendly"],
+    description: "Upbeat, friendly Spanish female",
+    previewText: "¡Hola! ¡Qué gusto escucharle! ¿En qué puedo ayudarle?",
+    deepgramVoice: "aura-2-selena-es",
+    language: "es",
+  },
+  {
+    id: "es-nestor",
+    name: "Néstor",
+    gender: "male",
+    accent: "american",
+    tags: ["warm", "professional"],
+    description: "Warm, deep Spanish male",
+    previewText: "Buenas. ¿En qué puedo asistirle el día de hoy?",
+    deepgramVoice: "aura-2-nestor-es",
+    language: "es",
   },
 ];
 
@@ -237,6 +328,9 @@ export const VOICE_CATALOG: CatalogVoice[] = [
 
 /** Sarah — warm, professional female (American). Safe default for any new assistant. */
 export const DEFAULT_VOICE_ID = "EXAVITQu4vr4xnSDxMaL";
+
+/** Diana — warm, professional Spanish female. Default for Spanish assistants. */
+export const DEFAULT_VOICE_ID_ES = "es-diana";
 
 // ---------------------------------------------------------------------------
 // Legacy short-name mapping
@@ -297,9 +391,15 @@ export const VOICE_FILTERS: VoiceFilter[] = [
   { key: "australian", label: "Australian", predicate: (v) => v.accent === "australian" },
 ];
 
-/** Return catalog voices matching a filter key (defaults to "all"). */
-export function filterVoices(filterKey: string): CatalogVoice[] {
+/** Return catalog voices matching a filter key (defaults to "all"), scoped to a language. */
+export function filterVoices(filterKey: string, language: VoiceLanguage = "en"): CatalogVoice[] {
+  const languageFiltered = VOICE_CATALOG.filter((v) => v.language === language);
   const f = VOICE_FILTERS.find((vf) => vf.key === filterKey);
-  if (!f) return VOICE_CATALOG;
-  return VOICE_CATALOG.filter(f.predicate);
+  if (!f) return languageFiltered;
+  return languageFiltered.filter(f.predicate);
+}
+
+/** Get the default voice ID for a given language. */
+export function getDefaultVoiceId(language: VoiceLanguage = "en"): string {
+  return language === "es" ? DEFAULT_VOICE_ID_ES : DEFAULT_VOICE_ID;
 }

@@ -13,6 +13,7 @@ import {
 import { formatPhoneNumber } from "@/lib/utils";
 import { PhoneNumberActions } from "@/components/phone-numbers/phone-number-actions";
 import { checkResourceLimit } from "@/lib/stripe/billing-service";
+import { EmptyState } from "@/components/ui/empty-state";
 
 interface PhoneNumber {
   id: string;
@@ -213,17 +214,15 @@ export default async function PhoneNumbersPage() {
           ))}
         </div>
       ) : (
-        <Card className="p-12 text-center">
-          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-muted">
-            <Phone className="h-6 w-6 text-muted-foreground" />
-          </div>
-          <h3 className="mt-4 text-lg font-semibold">No phone numbers yet</h3>
-          <p className="mt-2 text-sm text-muted-foreground">
-            Use your existing business number with call forwarding, or buy a new number
-          </p>
-          <div className="mt-6">
-            <PhoneNumberActions assistants={assistants || []} countryCode={countryCode} disabled={atLimit} />
-          </div>
+        <Card className="p-12">
+          <EmptyState
+            icon={Phone}
+            title="No phone numbers yet"
+            description="Use your existing business number with call forwarding, or buy a new number"
+            action={
+              <PhoneNumberActions assistants={assistants || []} countryCode={countryCode} disabled={atLimit} />
+            }
+          />
         </Card>
       )}
     </div>
