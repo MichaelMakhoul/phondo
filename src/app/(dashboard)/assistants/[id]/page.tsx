@@ -67,6 +67,17 @@ export default async function AssistantDetailPage({
 
   const organizationId = membership.organization_id as string;
 
+  // Get org timezone and business hours (needed for after-hours warning)
+  const { data: organization, error: orgError } = await (supabase as any)
+    .from("organizations")
+    .select("timezone, business_hours")
+    .eq("id", organizationId)
+    .single() as { data: { timezone: string | null; business_hours: Record<string, any> | null } | null; error: any };
+
+  if (orgError) {
+    console.error("[assistant-detail] organization fetch error:", orgError.message || orgError.code);
+  }
+
   // Get the assistant with related data
   const { data: assistant, error } = await (supabase as any)
     .from("assistants")
@@ -95,6 +106,8 @@ export default async function AssistantDetailPage({
       assistant={assistant}
       organizationId={organizationId}
       transferRules={transferRules || []}
+      hasBusinessHours={!!(organization?.business_hours && Object.keys(organization.business_hours).length > 0)}
+      hasTimezone={!!(organization?.timezone)}
     />
   );
 }
