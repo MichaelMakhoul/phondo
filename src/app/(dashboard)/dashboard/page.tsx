@@ -8,6 +8,7 @@ import { formatDuration } from "@/lib/utils";
 import { AnimatedStat } from "@/components/marketing/animated-stat";
 import { EmptyState } from "@/components/ui/empty-state";
 import { DashboardGreeting } from "@/components/dashboard/greeting";
+import { CallsScene } from "@/components/ui/empty-state-scenes";
 
 interface RecentCall {
   id: string;
@@ -137,7 +138,7 @@ export default async function DashboardPage() {
           </p>
         </div>
         <Link href="/assistants/new">
-          <Button>
+          <Button className="btn-primary-glow">
             <Plus className="mr-2 h-4 w-4" />
             New Assistant
           </Button>
@@ -146,8 +147,15 @@ export default async function DashboardPage() {
 
       {/* Stats Grid */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        {stats.map((stat) => (
-          <Card key={stat.name}>
+        {stats.map((stat, i) => {
+          const delayClass = [
+            "animate-fade-in-up-delay-1",
+            "animate-fade-in-up-delay-2",
+            "animate-fade-in-up-delay-3",
+            "animate-fade-in-up-delay-4",
+          ][i];
+          return (
+          <Card key={stat.name} className={`card-hover ${delayClass}`}>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-sm font-medium text-muted-foreground">
                 {stat.name}
@@ -176,11 +184,12 @@ export default async function DashboardPage() {
               )}
             </CardContent>
           </Card>
-        ))}
+          );
+        })}
       </div>
 
       {/* Quick Actions & Recent Calls */}
-      <div className="grid gap-6 lg:grid-cols-2">
+      <div className="grid gap-6 lg:grid-cols-2 animate-fade-in-up-delay-2">
         {/* Quick Actions */}
         <Card>
           <CardHeader>
@@ -189,7 +198,7 @@ export default async function DashboardPage() {
           </CardHeader>
           <CardContent className="space-y-3">
             <Link href="/assistants/new" className="block">
-              <div className="flex items-center gap-4 rounded-lg border p-4 transition-colors hover:bg-muted">
+              <div className="flex items-center gap-4 rounded-lg border p-4 card-hover">
                 <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10">
                   <Bot className="h-5 w-5 text-primary" />
                 </div>
@@ -202,7 +211,7 @@ export default async function DashboardPage() {
               </div>
             </Link>
             <Link href="/phone-numbers" className="block">
-              <div className="flex items-center gap-4 rounded-lg border p-4 transition-colors hover:bg-muted">
+              <div className="flex items-center gap-4 rounded-lg border p-4 card-hover">
                 <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10">
                   <Phone className="h-5 w-5 text-primary" />
                 </div>
@@ -275,8 +284,9 @@ export default async function DashboardPage() {
             ) : (
               <EmptyState
                 icon={PhoneCall}
-                title="No calls yet"
+                title="Your AI is ready and waiting"
                 description="Set up an assistant to get started"
+                illustration={<CallsScene />}
                 compact
               />
             )}
