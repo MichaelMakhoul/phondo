@@ -16,7 +16,7 @@ const { analyzeCallTranscript } = require("./services/post-call-analysis");
 const { getDeepgramVoice } = require("./lib/voice-mapping");
 const { generateHoldAudio, getHoldPreset } = require("./lib/hold-audio");
 const { detectExpectedInput } = require("./lib/input-type-detector");
-const { requiresRecordingDisclosure, getRecordingDisclosureText } = require("./lib/recording-consent");
+const { requiresRecordingDisclosureHybrid, getRecordingDisclosureText } = require("./lib/recording-consent");
 const { getSupabase } = require("./lib/supabase");
 const { saveForTransfer, getTransfer, consumeTransfer, finishTransferredCall } = require("./lib/pending-transfers");
 
@@ -414,6 +414,8 @@ wss.on("connection", (twilioWs) => {
           recordingDisclosurePlayed: s.recordingDisclosurePlayed || false,
           recordingDisclosureFailed: s.recordingDisclosureFailed || false,
           transferAttempt: s.transferAttempt || null,
+          callerState: s.callerState || null,
+          consentReason: s.consentReason || null,
         });
       } catch (err) {
         console.error("[Cleanup] Failed to complete call record:", err);
@@ -688,21 +690,25 @@ wss.on("connection", (twilioWs) => {
             },
           }, { industry: session.organization?.industry });
 
-          // Play recording disclosure if required by jurisdiction
+          // Play recording disclosure if required by jurisdiction (hybrid: checks both org + caller state)
           let disclosurePrefix = "";
-          const needsDisclosure = requiresRecordingDisclosure(
+          const consentResult = requiresRecordingDisclosureHybrid(
             context.organization.country,
             context.organization.businessState,
-            context.organization.recordingConsentMode
+            context.organization.recordingConsentMode,
+            session.callerPhone
           );
-          if (needsDisclosure) {
+          session.callerState = consentResult.callerState;
+          session.consentReason = consentResult.reason;
+          console.log(`[Recording] Consent: required=${consentResult.required}, callerState=${consentResult.callerState}, reason=${consentResult.reason}`);
+
+          if (consentResult.required) {
             const disclosureText = getRecordingDisclosureText(context.organization.country);
             try {
               await sendTTS(session, twilioWs, disclosureText);
               session.recordingDisclosurePlayed = true;
               // Add to conversation history so LLM knows disclosure was played
               session.addMessage("assistant", disclosureText);
-              console.log(`[Recording] Disclosure played (country=${context.organization.country}, state=${context.organization.businessState})`);
             } catch (err) {
               // Fallback: prepend disclosure to greeting so it's always delivered.
               // In two-party consent jurisdictions, proceeding without disclosure is illegal.

@@ -54,6 +54,8 @@ async function completeCallRecord(callId, {
   recordingDisclosurePlayed,
   recordingDisclosureFailed,
   transferAttempt,
+  callerState,
+  consentReason,
 }) {
   const supabase = getSupabase();
 
@@ -77,6 +79,8 @@ async function completeCallRecord(callId, {
     ...(recordingDisclosurePlayed && { recordingDisclosurePlayed: true }),
     ...(recordingDisclosureFailed && { recordingDisclosureFailed: true }),
     ...(transferAttempt && { transferAttempt }),
+    ...(callerState && { callerState }),
+    ...(consentReason && { consentReason }),
   };
 
   if (Object.keys(metadataExtras).length > 0) {
