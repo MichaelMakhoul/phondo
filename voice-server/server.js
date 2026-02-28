@@ -11,7 +11,7 @@ const { synthesizeSpeech, chunkAudioForTwilio } = require("./services/deepgram-t
 const { loadCallContext, loadTestCallContext } = require("./lib/call-context");
 const { buildSystemPrompt, getGreeting } = require("./lib/prompt-builder");
 const { createCallRecord, completeCallRecord, notifyCallCompleted } = require("./lib/call-logger");
-const { calendarToolDefinitions, transferToolDefinition, executeToolCall } = require("./services/tool-executor");
+const { calendarToolDefinitions, transferToolDefinition, callbackToolDefinition, executeToolCall } = require("./services/tool-executor");
 const { analyzeCallTranscript } = require("./services/post-call-analysis");
 const { getDeepgramVoice } = require("./lib/voice-mapping");
 const { generateHoldAudio, getHoldPreset } = require("./lib/hold-audio");
@@ -796,6 +796,8 @@ function buildLLMOptions(session, { includeTransfer = false } = {}) {
   const tools = [];
   if (session.calendarEnabled) tools.push(...calendarToolDefinitions);
   if (includeTransfer && session.transferRules?.length > 0) tools.push(transferToolDefinition);
+  // Callback tool is always available — universal fallback
+  tools.push(callbackToolDefinition);
   return tools.length > 0 ? { tools } : {};
 }
 

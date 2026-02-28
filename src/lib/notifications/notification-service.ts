@@ -21,6 +21,7 @@ export interface NotificationPreferences {
   email_on_voicemail: boolean;
   email_on_appointment_booked: boolean;
   email_on_failed_call: boolean;
+  email_on_callback_scheduled: boolean;
   email_daily_summary: boolean;
   sms_on_missed_call: boolean;
   sms_on_voicemail: boolean;
@@ -63,6 +64,15 @@ export interface AppointmentNotificationData {
   serviceName?: string;
 }
 
+export interface CallbackNotificationData {
+  organizationId: string;
+  callerName: string;
+  callerPhone: string;
+  reason: string;
+  preferredTime?: string;
+  urgency: string;
+}
+
 export interface DailySummaryData {
   organizationId: string;
   date: Date;
@@ -103,6 +113,7 @@ export async function getNotificationPreferences(
     email_on_voicemail: data.email_on_voicemail ?? true,
     email_on_appointment_booked: data.email_on_appointment_booked ?? true,
     email_on_failed_call: data.email_on_failed_call ?? true,
+    email_on_callback_scheduled: data.email_on_callback_scheduled ?? true,
     email_daily_summary: data.email_daily_summary ?? true,
     sms_on_missed_call: data.sms_on_missed_call ?? false,
     sms_on_voicemail: data.sms_on_voicemail ?? false,
@@ -368,6 +379,56 @@ export async function sendAppointmentNotification(
 }
 
 /**
+ * Send callback scheduled notification
+ */
+export async function sendCallbackNotification(
+  data: CallbackNotificationData
+): Promise<void> {
+  const prefs = await getNotificationPreferences(data.organizationId);
+  const shouldEmail = prefs ? prefs.email_on_callback_scheduled : true;
+
+  const email = await getOrganizationOwnerEmail(data.organizationId);
+
+  const channels: Promise<void>[] = [];
+
+  if (shouldEmail && email) {
+    channels.push(sendEmail({
+      to: email,
+      subject: `Callback Requested — ${data.callerName || data.callerPhone}`,
+      template: "callback-scheduled",
+      data: {
+        callerName: data.callerName,
+        callerPhone: data.callerPhone,
+        reason: data.reason,
+        preferredTime: data.preferredTime || "No preference",
+        urgency: data.urgency,
+        timestamp: new Date().toLocaleString(),
+      },
+    }));
+  }
+
+  if (prefs?.webhook_url) {
+    channels.push(sendWebhook(prefs.webhook_url, {
+      event: "callback_scheduled",
+      data,
+    }));
+  }
+
+  if (channels.length === 0) {
+    console.warn("[Callback] No notification channels available — business may not see this callback:", {
+      organizationId: data.organizationId,
+      callerPhone: data.callerPhone,
+    });
+  }
+
+  const results = await Promise.allSettled(channels);
+  const failures = results.filter((r) => r.status === "rejected");
+  if (failures.length > 0) {
+    throw new Error(`${failures.length}/${results.length} notification channels failed: ${(failures[0] as PromiseRejectedResult).reason}`);
+  }
+}
+
+/**
  * Send daily summary notification
  */
 export async function sendDailySummaryNotification(
@@ -581,6 +642,34 @@ function generateEmailHtml(template: string, data: Record<string, any>): string 
       <p><strong>Date:</strong> ${d.appointmentDate}</p>
       <p><strong>Time:</strong> ${d.appointmentTime}</p>
       ${d.serviceName ? `<p><strong>Service:</strong> ${d.serviceName}</p>` : ""}
+    `,
+    "callback-scheduled": (d) => `
+      <h2>Callback Requested</h2>
+      <p>A caller has requested a callback from your business.</p>
+      <table style="width: 100%; border-collapse: collapse; margin: 16px 0;">
+        <tr>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd; font-weight: bold;">Caller</td>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd;">${d.callerName} (${d.callerPhone})</td>
+        </tr>
+        <tr>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd; font-weight: bold;">Reason</td>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd;">${d.reason}</td>
+        </tr>
+        <tr>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd; font-weight: bold;">Preferred Time</td>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd;">${d.preferredTime}</td>
+        </tr>
+        <tr>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd; font-weight: bold;">Urgency</td>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd;">${d.urgency}</td>
+        </tr>
+        <tr>
+          <td style="padding: 8px; font-weight: bold;">Requested At</td>
+          <td style="padding: 8px;">${d.timestamp}</td>
+        </tr>
+      </table>
+      <p><strong>Please call them back as soon as possible.</strong></p>
+      <p><a href="${process.env.NEXT_PUBLIC_APP_URL || "https://holarecep.com"}/callbacks">View all callbacks</a></p>
     `,
     "daily-summary": (d) => `
       <h2>Daily Call Summary - ${d.date}</h2>

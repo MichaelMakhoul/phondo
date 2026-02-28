@@ -13,6 +13,7 @@ interface NotificationPreferences {
   email_on_missed_call: boolean;
   email_on_voicemail: boolean;
   email_on_appointment_booked: boolean;
+  email_on_callback_scheduled: boolean;
   email_daily_summary: boolean;
   sms_on_missed_call: boolean;
   sms_on_voicemail: boolean;
@@ -39,6 +40,7 @@ export function NotificationSettings({
     email_on_missed_call: initialPreferences?.email_on_missed_call ?? true,
     email_on_voicemail: initialPreferences?.email_on_voicemail ?? true,
     email_on_appointment_booked: initialPreferences?.email_on_appointment_booked ?? true,
+    email_on_callback_scheduled: initialPreferences?.email_on_callback_scheduled ?? true,
     email_daily_summary: initialPreferences?.email_daily_summary ?? true,
     sms_on_missed_call: initialPreferences?.sms_on_missed_call ?? false,
     sms_on_voicemail: initialPreferences?.sms_on_voicemail ?? false,
@@ -201,6 +203,19 @@ export function NotificationSettings({
             <Switch
               checked={preferences.email_on_appointment_booked}
               onCheckedChange={() => handleToggle("email_on_appointment_booked")}
+            />
+          </div>
+
+          <div className="flex items-center justify-between">
+            <div className="space-y-0.5">
+              <Label>Callback Requests</Label>
+              <p className="text-sm text-muted-foreground">
+                Get notified when a caller requests a callback
+              </p>
+            </div>
+            <Switch
+              checked={preferences.email_on_callback_scheduled}
+              onCheckedChange={() => handleToggle("email_on_callback_scheduled")}
             />
           </div>
 

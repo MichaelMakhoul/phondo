@@ -258,6 +258,10 @@ function buildBehaviorsSection(
     );
   }
 
+  lines.push(
+    "- CALLBACKS: You can schedule callback requests using the schedule_callback function. Use this when a caller wants someone to call them back, when the person they need is unavailable, or when you cannot resolve their issue directly."
+  );
+
   if (behaviors.afterHoursHandling) {
     if (options?.isAfterHours) {
       lines.push(

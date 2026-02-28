@@ -6,6 +6,7 @@ import {
   handleBookAppointment,
   handleCancelAppointment,
 } from "@/lib/calendar/tool-handlers";
+import { handleScheduleCallback } from "@/lib/callbacks/tool-handler";
 import { withRateLimit } from "@/lib/security/rate-limiter";
 
 function verifyInternalSecret(request: Request): boolean {
@@ -107,6 +108,20 @@ export async function POST(request: Request) {
           phone: parsedArgs.phone,
           reason: parsedArgs.reason,
         });
+        break;
+
+      case "schedule_callback":
+        result = await handleScheduleCallback(
+          organizationId,
+          payload.assistantId,
+          {
+            caller_name: parsedArgs.caller_name,
+            caller_phone: parsedArgs.caller_phone,
+            reason: parsedArgs.reason,
+            preferred_time: parsedArgs.preferred_time,
+            urgency: parsedArgs.urgency,
+          }
+        );
         break;
 
       default:
