@@ -30,6 +30,7 @@ class CallSession {
     this.recordingDisclosurePlayed = false;
     this.recordingDisclosureFailed = false;
     this.pendingTransfer = false;
+    this.piiRedactionEnabled = false;
 
     // Utterance buffering — accumulate STT finals before sending to LLM
     this._utteranceBuffer = [];

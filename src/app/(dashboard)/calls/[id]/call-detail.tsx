@@ -167,6 +167,12 @@ export function CallDetail({ call }: { call: Call }) {
               Spam
             </Badge>
           )}
+          {(call.metadata?.piiRedacted as boolean) && (
+            <Badge variant="secondary">
+              <ShieldAlert className="h-3 w-3 mr-1" />
+              PII Redacted
+            </Badge>
+          )}
         </div>
 
         <p className="text-muted-foreground mt-1 flex items-center gap-2 flex-wrap">
