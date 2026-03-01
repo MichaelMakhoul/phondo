@@ -486,6 +486,244 @@ const restaurantFields: CollectionField[] = [
   },
 ];
 
+// Accounting / Bookkeeping fields
+const accountingFields: CollectionField[] = [
+  {
+    id: "company_name",
+    label: "Company Name",
+    type: "text",
+    required: true,
+    verification: "repeat-confirm",
+    category: "accounting",
+  },
+  {
+    id: "service_type_accounting",
+    label: "Service Needed",
+    type: "select",
+    required: true,
+    verification: "none",
+    category: "accounting",
+    description: "Tax return, BAS, bookkeeping, audit, advisory, payroll",
+  },
+  {
+    id: "abn",
+    label: "ABN / ACN",
+    type: "text",
+    required: false,
+    verification: "read-back-characters",
+    category: "accounting",
+  },
+  {
+    id: "financial_year",
+    label: "Financial Year",
+    type: "text",
+    required: false,
+    verification: "repeat-confirm",
+    category: "accounting",
+  },
+  {
+    id: "urgency_deadline",
+    label: "Deadline / Urgency",
+    type: "text",
+    required: false,
+    verification: "repeat-confirm",
+    category: "accounting",
+    description: "Tax deadline, BAS due date, etc.",
+  },
+];
+
+// Insurance fields
+const insuranceFields: CollectionField[] = [
+  {
+    id: "policy_number",
+    label: "Policy Number",
+    type: "text",
+    required: false,
+    verification: "read-back-characters",
+    category: "insurance",
+  },
+  {
+    id: "inquiry_type_insurance",
+    label: "Inquiry Type",
+    type: "select",
+    required: true,
+    verification: "none",
+    category: "insurance",
+    description: "New quote, existing claim, policy change, renewal, billing",
+  },
+  {
+    id: "insurance_type",
+    label: "Insurance Type",
+    type: "select",
+    required: true,
+    verification: "none",
+    category: "insurance",
+    description: "Home, auto, health, life, business, travel",
+  },
+  {
+    id: "claim_number",
+    label: "Claim Number",
+    type: "text",
+    required: false,
+    verification: "read-back-characters",
+    category: "insurance",
+  },
+  {
+    id: "incident_date",
+    label: "Incident Date",
+    type: "date",
+    required: false,
+    verification: "repeat-confirm",
+    category: "insurance",
+  },
+];
+
+// Fitness / Gym / Studio fields
+const fitnessFields: CollectionField[] = [
+  {
+    id: "membership_type",
+    label: "Membership Interest",
+    type: "select",
+    required: false,
+    verification: "none",
+    category: "fitness",
+    description: "Trial, casual, monthly, annual, class pack",
+  },
+  {
+    id: "class_interest",
+    label: "Class / Program Interest",
+    type: "text",
+    required: false,
+    verification: "repeat-confirm",
+    category: "fitness",
+  },
+  {
+    id: "fitness_goals",
+    label: "Fitness Goals",
+    type: "text",
+    required: false,
+    verification: "none",
+    category: "fitness",
+  },
+  {
+    id: "health_conditions",
+    label: "Health Conditions / Injuries",
+    type: "text",
+    required: false,
+    verification: "repeat-confirm",
+    category: "fitness",
+  },
+  {
+    id: "preferred_time",
+    label: "Preferred Visit Time",
+    type: "text",
+    required: false,
+    verification: "none",
+    category: "fitness",
+    description: "Morning, afternoon, evening, specific class time",
+  },
+];
+
+// Childcare / Daycare fields
+const childcareFields: CollectionField[] = [
+  {
+    id: "child_name",
+    label: "Child's Name",
+    type: "text",
+    required: true,
+    verification: "repeat-confirm",
+    category: "childcare",
+  },
+  {
+    id: "child_age",
+    label: "Child's Age",
+    type: "text",
+    required: true,
+    verification: "repeat-confirm",
+    category: "childcare",
+  },
+  {
+    id: "days_needed",
+    label: "Days Needed",
+    type: "text",
+    required: true,
+    verification: "repeat-confirm",
+    category: "childcare",
+    description: "Which days of the week care is needed",
+  },
+  {
+    id: "start_date",
+    label: "Desired Start Date",
+    type: "date",
+    required: false,
+    verification: "repeat-confirm",
+    category: "childcare",
+  },
+  {
+    id: "allergies_dietary",
+    label: "Allergies / Dietary Requirements",
+    type: "text",
+    required: false,
+    verification: "repeat-confirm",
+    category: "childcare",
+  },
+  {
+    id: "ccs_eligible",
+    label: "CCS Eligibility",
+    type: "select",
+    required: false,
+    verification: "none",
+    category: "childcare",
+    description: "Child Care Subsidy — Yes, No, Unsure",
+  },
+];
+
+// Funeral Services fields
+const funeralServicesFields: CollectionField[] = [
+  {
+    id: "deceased_name",
+    label: "Name of Deceased",
+    type: "text",
+    required: true,
+    verification: "repeat-confirm",
+    category: "funeral_services",
+  },
+  {
+    id: "caller_relationship",
+    label: "Relationship to Deceased",
+    type: "text",
+    required: true,
+    verification: "none",
+    category: "funeral_services",
+  },
+  {
+    id: "service_type_funeral",
+    label: "Service Type",
+    type: "select",
+    required: false,
+    verification: "none",
+    category: "funeral_services",
+    description: "Burial, cremation, memorial, pre-planning",
+  },
+  {
+    id: "date_of_passing",
+    label: "Date of Passing",
+    type: "date",
+    required: false,
+    verification: "repeat-confirm",
+    category: "funeral_services",
+  },
+  {
+    id: "location_of_deceased",
+    label: "Current Location of Deceased",
+    type: "text",
+    required: false,
+    verification: "repeat-confirm",
+    category: "funeral_services",
+    description: "Hospital, home, aged care facility, etc.",
+  },
+];
+
 // Other / General fields
 const otherFields: CollectionField[] = [
   {
@@ -525,6 +763,11 @@ export const fieldPresetsByIndustry: Record<FieldCategory, CollectionField[]> = 
   automotive: automotiveFields,
   veterinary: veterinaryFields,
   restaurant: restaurantFields,
+  accounting: accountingFields,
+  insurance: insuranceFields,
+  fitness: fitnessFields,
+  childcare: childcareFields,
+  funeral_services: funeralServicesFields,
   other: otherFields,
 };
 

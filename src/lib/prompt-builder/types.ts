@@ -27,6 +27,11 @@ export type FieldCategory =
   | "automotive"
   | "veterinary"
   | "restaurant"
+  | "accounting"
+  | "insurance"
+  | "fitness"
+  | "childcare"
+  | "funeral_services"
   | "other";
 
 export type TonePreset = "professional" | "friendly" | "casual";
@@ -80,7 +85,7 @@ export const promptConfigSchema = z.object({
       type: z.enum(["text", "phone", "email", "date", "number", "select", "address"]),
       required: z.boolean(),
       verification: z.enum(["read-back-digits", "spell-out", "repeat-confirm", "read-back-characters", "none"]),
-      category: z.enum(["universal", "medical", "dental", "legal", "home_services", "real_estate", "salon", "automotive", "veterinary", "restaurant", "other"]),
+      category: z.enum(["universal", "medical", "dental", "legal", "home_services", "real_estate", "salon", "automotive", "veterinary", "restaurant", "accounting", "insurance", "fitness", "childcare", "funeral_services", "other"]),
       description: z.string().optional(),
     })
   ),

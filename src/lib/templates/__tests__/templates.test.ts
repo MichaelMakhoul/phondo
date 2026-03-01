@@ -8,8 +8,8 @@ import {
 
 describe("templates", () => {
   describe("templates map", () => {
-    it("should have 10 industry templates", () => {
-      expect(Object.keys(templates)).toHaveLength(10);
+    it("should have 15 industry templates", () => {
+      expect(Object.keys(templates)).toHaveLength(15);
     });
 
     it("should contain all expected industries", () => {
@@ -23,6 +23,11 @@ describe("templates", () => {
         "automotive",
         "veterinary",
         "restaurant",
+        "accounting",
+        "insurance",
+        "fitness",
+        "childcare",
+        "funeral_services",
         "other",
       ];
       expectedIndustries.forEach((industry) => {
@@ -85,6 +90,31 @@ describe("templates", () => {
       expect(templates.restaurant.systemPrompt).toContain("reservation");
       expect(templates.restaurant.systemPrompt).toContain("menu");
     });
+
+    it("accounting template should reference tax and consultation", () => {
+      expect(templates.accounting.systemPrompt).toContain("tax");
+      expect(templates.accounting.systemPrompt).toContain("consultation");
+    });
+
+    it("insurance template should reference claim and policy", () => {
+      expect(templates.insurance.systemPrompt).toContain("claim");
+      expect(templates.insurance.systemPrompt).toContain("policy");
+    });
+
+    it("fitness template should reference membership and class", () => {
+      expect(templates.fitness.systemPrompt).toContain("membership");
+      expect(templates.fitness.systemPrompt).toContain("class");
+    });
+
+    it("childcare template should reference enrolment and child", () => {
+      expect(templates.childcare.systemPrompt).toContain("enrolment");
+      expect(templates.childcare.systemPrompt).toContain("child");
+    });
+
+    it("funeral_services template should reference compassion and deceased", () => {
+      expect(templates.funeral_services.systemPrompt).toContain("compassion");
+      expect(templates.funeral_services.systemPrompt).toContain("deceased");
+    });
   });
 
   describe("getTemplateByIndustry", () => {
@@ -107,8 +137,8 @@ describe("templates", () => {
   });
 
   describe("industryOptions", () => {
-    it("should have 10 options", () => {
-      expect(industryOptions).toHaveLength(10);
+    it("should have 15 options", () => {
+      expect(industryOptions).toHaveLength(15);
     });
 
     it("should have 'other' as the last option", () => {
@@ -135,6 +165,11 @@ describe("templates", () => {
       expect(values).toContain("automotive");
       expect(values).toContain("veterinary");
       expect(values).toContain("restaurant");
+      expect(values).toContain("accounting");
+      expect(values).toContain("insurance");
+      expect(values).toContain("fitness");
+      expect(values).toContain("childcare");
+      expect(values).toContain("funeral_services");
     });
   });
 
@@ -206,6 +241,46 @@ describe("templates", () => {
       });
       expect(result.systemPrompt).toContain("Bella Italia");
       expect(result.firstMessage).toContain("Bella Italia");
+    });
+
+    it("should work with accounting template", () => {
+      const result = populateTemplate(templates.accounting, {
+        business_name: "Smith & Co Accounting",
+      });
+      expect(result.systemPrompt).toContain("Smith & Co Accounting");
+      expect(result.firstMessage).toContain("Smith & Co Accounting");
+    });
+
+    it("should work with insurance template", () => {
+      const result = populateTemplate(templates.insurance, {
+        business_name: "Secure Cover Insurance",
+      });
+      expect(result.systemPrompt).toContain("Secure Cover Insurance");
+      expect(result.firstMessage).toContain("Secure Cover Insurance");
+    });
+
+    it("should work with fitness template", () => {
+      const result = populateTemplate(templates.fitness, {
+        business_name: "Peak Fitness",
+      });
+      expect(result.systemPrompt).toContain("Peak Fitness");
+      expect(result.firstMessage).toContain("Peak Fitness");
+    });
+
+    it("should work with childcare template", () => {
+      const result = populateTemplate(templates.childcare, {
+        business_name: "Little Stars Childcare",
+      });
+      expect(result.systemPrompt).toContain("Little Stars Childcare");
+      expect(result.firstMessage).toContain("Little Stars Childcare");
+    });
+
+    it("should work with funeral_services template", () => {
+      const result = populateTemplate(templates.funeral_services, {
+        business_name: "Peaceful Rest Funerals",
+      });
+      expect(result.systemPrompt).toContain("Peaceful Rest Funerals");
+      expect(result.firstMessage).toContain("Peaceful Rest Funerals");
     });
   });
 });

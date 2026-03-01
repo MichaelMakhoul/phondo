@@ -13,6 +13,11 @@ describe("defaults", () => {
       "automotive",
       "veterinary",
       "restaurant",
+      "accounting",
+      "insurance",
+      "fitness",
+      "childcare",
+      "funeral_services",
       "other",
     ];
 
@@ -98,6 +103,36 @@ describe("defaults", () => {
       expect(config.behaviors.scheduleAppointments).toBe(true);
     });
 
+    it("accounting should enable scheduleAppointments and takeMessages", () => {
+      const config = getDefaultConfig("accounting");
+      expect(config.behaviors.scheduleAppointments).toBe(true);
+      expect(config.behaviors.takeMessages).toBe(true);
+    });
+
+    it("insurance should enable takeMessages and transferToHuman", () => {
+      const config = getDefaultConfig("insurance");
+      expect(config.behaviors.takeMessages).toBe(true);
+      expect(config.behaviors.transferToHuman).toBe(true);
+    });
+
+    it("fitness should enable scheduleAppointments and pricing", () => {
+      const config = getDefaultConfig("fitness");
+      expect(config.behaviors.scheduleAppointments).toBe(true);
+      expect(config.behaviors.providePricingInfo).toBe(true);
+    });
+
+    it("childcare should enable scheduleAppointments", () => {
+      const config = getDefaultConfig("childcare");
+      expect(config.behaviors.scheduleAppointments).toBe(true);
+    });
+
+    it("funeral_services should enable takeMessages, transferToHuman, and afterHoursHandling", () => {
+      const config = getDefaultConfig("funeral_services");
+      expect(config.behaviors.takeMessages).toBe(true);
+      expect(config.behaviors.transferToHuman).toBe(true);
+      expect(config.behaviors.afterHoursHandling).toBe(true);
+    });
+
     it("other should default to takeMessages only", () => {
       const config = getDefaultConfig("other");
       expect(config.behaviors.takeMessages).toBe(true);
@@ -123,6 +158,26 @@ describe("defaults", () => {
 
     it("medical should default to friendly tone", () => {
       expect(getDefaultConfig("medical").tone).toBe("friendly");
+    });
+
+    it("accounting should default to professional tone", () => {
+      expect(getDefaultConfig("accounting").tone).toBe("professional");
+    });
+
+    it("insurance should default to professional tone", () => {
+      expect(getDefaultConfig("insurance").tone).toBe("professional");
+    });
+
+    it("fitness should default to friendly tone", () => {
+      expect(getDefaultConfig("fitness").tone).toBe("friendly");
+    });
+
+    it("childcare should default to friendly tone", () => {
+      expect(getDefaultConfig("childcare").tone).toBe("friendly");
+    });
+
+    it("funeral_services should default to professional tone", () => {
+      expect(getDefaultConfig("funeral_services").tone).toBe("professional");
     });
 
     // --- Unknown industry fallback ---

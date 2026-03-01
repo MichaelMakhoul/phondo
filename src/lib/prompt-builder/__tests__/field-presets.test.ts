@@ -58,10 +58,15 @@ describe("field-presets", () => {
       "automotive",
       "veterinary",
       "restaurant",
+      "accounting",
+      "insurance",
+      "fitness",
+      "childcare",
+      "funeral_services",
       "other",
     ];
 
-    it("should have presets for all 11 categories", () => {
+    it("should have presets for all 16 categories", () => {
       allIndustries.forEach((industry) => {
         expect(fieldPresetsByIndustry[industry]).toBeDefined();
         expect(Array.isArray(fieldPresetsByIndustry[industry])).toBe(true);
@@ -126,6 +131,39 @@ describe("field-presets", () => {
       expect(ids).toContain("party_size");
       expect(ids).toContain("reservation_date_time");
       expect(ids).toContain("dietary_restrictions");
+    });
+
+    it("accounting should include company_name, service_type, abn", () => {
+      const ids = fieldPresetsByIndustry.accounting.map((f) => f.id);
+      expect(ids).toContain("company_name");
+      expect(ids).toContain("service_type_accounting");
+      expect(ids).toContain("abn");
+    });
+
+    it("insurance should include policy_number, inquiry_type, claim_number", () => {
+      const ids = fieldPresetsByIndustry.insurance.map((f) => f.id);
+      expect(ids).toContain("policy_number");
+      expect(ids).toContain("inquiry_type_insurance");
+      expect(ids).toContain("claim_number");
+    });
+
+    it("fitness should include membership_type, class_interest", () => {
+      const ids = fieldPresetsByIndustry.fitness.map((f) => f.id);
+      expect(ids).toContain("membership_type");
+      expect(ids).toContain("class_interest");
+    });
+
+    it("childcare should include child_name, child_age, days_needed", () => {
+      const ids = fieldPresetsByIndustry.childcare.map((f) => f.id);
+      expect(ids).toContain("child_name");
+      expect(ids).toContain("child_age");
+      expect(ids).toContain("days_needed");
+    });
+
+    it("funeral_services should include deceased_name, caller_relationship", () => {
+      const ids = fieldPresetsByIndustry.funeral_services.map((f) => f.id);
+      expect(ids).toContain("deceased_name");
+      expect(ids).toContain("caller_relationship");
     });
 
     it("should have IDs with read-back-characters verification for ID-type fields", () => {
