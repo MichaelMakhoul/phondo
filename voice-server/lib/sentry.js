@@ -6,12 +6,16 @@ function initSentry() {
     console.log("[Sentry] No DSN configured, error tracking disabled");
     return;
   }
-  Sentry.init({
-    dsn,
-    tracesSampleRate: 0.1,
-    environment: process.env.NODE_ENV || "production",
-  });
-  console.log("[Sentry] Initialized");
+  try {
+    Sentry.init({
+      dsn,
+      tracesSampleRate: 0.1,
+      environment: process.env.NODE_ENV || "production",
+    });
+    console.log("[Sentry] Initialized");
+  } catch (err) {
+    console.error("[Sentry] Failed to initialize:", err);
+  }
 }
 
 module.exports = { initSentry, Sentry };

@@ -110,9 +110,10 @@ process.on("unhandledRejection", (reason) => {
   Sentry.captureException(reason);
 });
 
-process.on("uncaughtException", (err) => {
+process.on("uncaughtException", async (err) => {
   console.error("[FATAL] Uncaught exception:", err);
   Sentry.captureException(err);
+  await Sentry.flush(2000).catch(() => {});
   process.exit(1);
 });
 
@@ -453,9 +454,12 @@ app.get("/health", async (req, res) => {
 });
 
 // Sentry Express error handler — captures unhandled route errors
-app.use((err, req, res, next) => {
+app.use((err, req, res, _next) => {
   Sentry.captureException(err);
-  next(err);
+  console.error("[Express] Unhandled route error:", err);
+  if (!res.headersSent) {
+    res.status(500).json({ error: "Internal server error" });
+  }
 });
 
 const server = http.createServer(app);
