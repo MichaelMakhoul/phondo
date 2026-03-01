@@ -22,7 +22,7 @@ const { detectExpectedInput } = require("./lib/input-type-detector");
 const { requiresRecordingDisclosureHybrid, getRecordingDisclosureText } = require("./lib/recording-consent");
 const { getSupabase } = require("./lib/supabase");
 const { saveForTransfer, getTransfer, consumeTransfer, finishTransferredCall } = require("./lib/pending-transfers");
-const { getAnswerMode, getPhoneNumberContext } = require("./lib/answer-mode");
+const { isAiEnabled, getAnswerMode, getPhoneNumberContext } = require("./lib/answer-mode");
 const { detectAndRedact, redactObject } = require("./lib/pii-detector");
 
 // Validate required env vars before deriving any constants
@@ -216,6 +216,48 @@ app.post("/twiml", async (req, res) => {
 
   const called = req.body.Called || "";
   const from = req.body.From || "";
+
+  // Check if AI answering is disabled for this number (emergency shutoff)
+  try {
+    const aiEnabled = await isAiEnabled(called);
+    if (!aiEnabled) {
+      const callSid = req.body.CallSid || `ai_disabled_${Date.now()}`;
+      console.log(`[TwiML] AI disabled for ${called} — returning voicemail TwiML (callSid=${callSid})`);
+
+      // Log call so owner sees it in dashboard (uses createCallRecord for correct schema)
+      try {
+        const ctx = await getPhoneNumberContext(called);
+        if (ctx) {
+          const callId = await createCallRecord({
+            orgId: ctx.organizationId,
+            assistantId: ctx.assistantId,
+            phoneNumberId: ctx.phoneNumberId,
+            callerPhone: from,
+            callSid,
+          });
+          if (callId) {
+            await completeCallRecord(callId, {
+              status: "completed",
+              durationSeconds: 0,
+              outcome: "voicemail",
+            });
+          }
+        }
+      } catch (logErr) {
+        console.warn("[TwiML] Failed to log AI-disabled call (non-fatal):", logErr.message);
+      }
+
+      return res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="Polly.Joanna">Thank you for calling. We are unable to take your call right now. Please leave a message after the beep and we will get back to you as soon as possible.</Say>
+  <Record maxLength="120" playBeep="true" action="${escapeXml(PUBLIC_URL + '/twiml/ai-disabled-recording-done')}" />
+  <Say voice="Polly.Joanna">Thank you for your message. Goodbye.</Say>
+</Response>`);
+    }
+  } catch (err) {
+    // Fail-open: if the check itself throws, let AI answer
+    console.error("[TwiML] isAiEnabled check threw (fail-open):", err.message);
+  }
 
   // Check if this assistant uses ring-first mode
   try {
@@ -438,6 +480,40 @@ app.post("/twiml/ring-first-fallback", async (req, res) => {
       <Parameter name="auth_token" value="${escapeXml(token)}" />
     </Stream>
   </Connect>
+</Response>`);
+});
+
+// Recording callback for AI-disabled voicemail — Twilio POSTs here after recording ends.
+app.post("/twiml/ai-disabled-recording-done", async (req, res) => {
+  if (!validateTwilioSignature(req)) {
+    console.warn("[RecordingDone] Rejected request — invalid Twilio signature");
+    return res.status(403).send("Forbidden");
+  }
+
+  // Best-effort: store recording URL in the call record
+  const recordingUrl = req.body.RecordingUrl;
+  const callSid = req.body.CallSid;
+  if (recordingUrl && callSid) {
+    try {
+      const supabase = getSupabase();
+      const { error } = await supabase
+        .from("calls")
+        .update({ recording_url: recordingUrl })
+        .eq("vapi_call_id", `sh_${callSid}`);
+      if (error) {
+        console.warn("[RecordingDone] Failed to save recording URL:", {
+          callSid, code: error.code, message: error.message,
+        });
+      }
+    } catch (err) {
+      console.warn("[RecordingDone] Error saving recording (non-fatal):", err.message);
+    }
+  }
+
+  res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="Polly.Joanna">Thank you for your message. Goodbye.</Say>
+  <Hangup/>
 </Response>`);
 });
 

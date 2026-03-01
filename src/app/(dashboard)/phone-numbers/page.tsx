@@ -1,17 +1,11 @@
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Phone, MoreVertical, Bot, PhoneForwarded, AlertCircle, ArrowUpRight } from "lucide-react";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import { formatPhoneNumber } from "@/lib/utils";
+import { Phone, ArrowUpRight } from "lucide-react";
 import { PhoneNumberActions } from "@/components/phone-numbers/phone-number-actions";
+import { PhoneNumberCard } from "@/components/phone-numbers/phone-number-card";
 import { checkResourceLimit } from "@/lib/stripe/billing-service";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PhoneScene } from "@/components/ui/empty-state-scenes";
@@ -21,6 +15,7 @@ interface PhoneNumber {
   phone_number: string;
   friendly_name: string | null;
   is_active: boolean;
+  ai_enabled: boolean;
   source_type: "purchased" | "forwarded";
   user_phone_number: string | null;
   forwarding_status: "pending_setup" | "active" | "paused" | null;
@@ -113,105 +108,11 @@ export default async function PhoneNumbersPage() {
       {phoneNumbers && phoneNumbers.length > 0 ? (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
           {phoneNumbers.map((phoneNumber) => (
-            <Card key={phoneNumber.id} className="card-hover">
-              <CardHeader className="pb-3">
-                <div className="flex items-start justify-between">
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10">
-                      {phoneNumber.source_type === "forwarded" ? (
-                        <PhoneForwarded className="h-5 w-5 text-primary" />
-                      ) : (
-                        <Phone className="h-5 w-5 text-primary" />
-                      )}
-                    </div>
-                    <div>
-                      <CardTitle className="text-lg">
-                        {formatPhoneNumber(phoneNumber.phone_number, countryCode)}
-                      </CardTitle>
-                      <CardDescription className="text-xs">
-                        {phoneNumber.friendly_name || "Phone Number"}
-                      </CardDescription>
-                    </div>
-                  </div>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Phone number options">
-                        <MoreVertical className="h-4 w-4" />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      <DropdownMenuItem>Assign Assistant</DropdownMenuItem>
-                      {phoneNumber.source_type === "forwarded" && (
-                        <DropdownMenuItem>
-                          View Forwarding Instructions
-                        </DropdownMenuItem>
-                      )}
-                      <DropdownMenuItem className="text-destructive">
-                        {phoneNumber.source_type === "forwarded"
-                          ? "Remove Forwarding"
-                          : "Release Number"}
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </div>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="flex items-center gap-2">
-                  <Badge variant={phoneNumber.is_active ? "success" : "secondary"}>
-                    {phoneNumber.is_active ? "Active" : "Inactive"}
-                  </Badge>
-                  {phoneNumber.source_type === "forwarded" && (
-                    <Badge variant="outline">Forwarded</Badge>
-                  )}
-                </div>
-
-                {/* Forwarding info */}
-                {phoneNumber.source_type === "forwarded" && phoneNumber.user_phone_number && (
-                  <div className="flex items-center gap-2 rounded-lg bg-muted/50 p-2.5">
-                    <PhoneForwarded className="h-3.5 w-3.5 text-muted-foreground" />
-                    <p className="text-xs text-muted-foreground">
-                      Forwards from{" "}
-                      <span className="font-medium text-foreground">
-                        {formatPhoneNumber(phoneNumber.user_phone_number, countryCode)}
-                      </span>
-                    </p>
-                  </div>
-                )}
-
-                {/* Pending setup banner */}
-                {phoneNumber.forwarding_status === "pending_setup" && (
-                  <div className="flex items-center gap-2 rounded-lg bg-yellow-500/10 border border-yellow-500/20 p-2.5">
-                    <AlertCircle className="h-3.5 w-3.5 text-yellow-600" />
-                    <p className="text-xs text-yellow-600">
-                      Forwarding not yet confirmed
-                    </p>
-                  </div>
-                )}
-
-                {phoneNumber.assistants ? (
-                  <div className="flex items-center gap-2 rounded-lg bg-muted p-3">
-                    <Bot className="h-4 w-4 text-muted-foreground" />
-                    <div>
-                      <p className="text-sm font-medium">
-                        {phoneNumber.assistants.name}
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        Assigned Assistant
-                      </p>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="rounded-lg border border-dashed p-3 text-center">
-                    <p className="text-sm text-muted-foreground">
-                      No assistant assigned
-                    </p>
-                    <Button variant="link" size="sm" className="mt-1 h-auto p-0">
-                      Assign now
-                    </Button>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
+            <PhoneNumberCard
+              key={phoneNumber.id}
+              phoneNumber={phoneNumber}
+              countryCode={countryCode}
+            />
           ))}
         </div>
       ) : (

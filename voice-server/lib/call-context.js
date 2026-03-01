@@ -38,6 +38,7 @@ async function loadCallContext(calledNumber) {
     .select("id, organization_id, assistant_id")
     .eq("phone_number", calledNumber)
     .eq("is_active", true)
+    .eq("ai_enabled", true)
     .single();
 
   if (phoneError || !phone) {
