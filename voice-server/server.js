@@ -416,6 +416,7 @@ wss.on("connection", (twilioWs) => {
           transferAttempt: s.transferAttempt || null,
           callerState: s.callerState || null,
           consentReason: s.consentReason || null,
+          sentiment: analysis?.sentiment || null,
         });
       } catch (err) {
         console.error("[Cleanup] Failed to complete call record:", err);

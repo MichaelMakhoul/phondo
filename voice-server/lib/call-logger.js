@@ -56,6 +56,7 @@ async function completeCallRecord(callId, {
   transferAttempt,
   callerState,
   consentReason,
+  sentiment,
 }) {
   const supabase = getSupabase();
 
@@ -69,6 +70,7 @@ async function completeCallRecord(callId, {
   if (summary) updatePayload.summary = summary;
   if (callerName) updatePayload.caller_name = callerName;
   if (collectedData) updatePayload.collected_data = collectedData;
+  if (sentiment) updatePayload.sentiment = sentiment;
 
   // Merge metadata extras into a single atomic update.
   // Initial metadata (set at insert time) is { voice_provider: "self_hosted" }.

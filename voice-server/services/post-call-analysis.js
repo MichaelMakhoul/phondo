@@ -21,6 +21,7 @@ Return a JSON object with these fields:
 - success_evaluation: Rate the call outcome as "successful", "partial", or "unsuccessful" (string)
 - collected_data: Any structured data collected during the call like phone numbers, emails, dates mentioned (object or null)
 - unanswered_questions: Questions the caller asked that the AI could not answer, said "I don't have that information", or deflected. Only include genuine knowledge gaps, not rhetorical questions. Translate to English if originally in another language. (array of strings, or null if all questions were answered)
+- sentiment: The overall sentiment of the caller during the call. Use "positive" if the caller was satisfied, friendly, or got what they needed. Use "negative" if the caller was frustrated, angry, or had a bad experience. Use "neutral" for everything else. (string: "positive" | "neutral" | "negative")
 
 Return ONLY valid JSON, no other text.`;
 
@@ -96,6 +97,8 @@ async function analyzeCallTranscript(transcript) {
       successEvaluation: analysis.success_evaluation || null,
       collectedData: analysis.collected_data || null,
       unansweredQuestions: Array.isArray(analysis.unanswered_questions) ? analysis.unanswered_questions : null,
+      sentiment: ["positive", "neutral", "negative"].includes(analysis.sentiment)
+        ? analysis.sentiment : null,
     };
   } catch (err) {
     console.error("[PostCallAnalysis] Failed to analyze transcript:", err.message);
