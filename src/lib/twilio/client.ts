@@ -72,16 +72,23 @@ export async function releaseNumber(twilioSid: string): Promise<void> {
 /**
  * Configure the voice webhook URL on a Twilio phone number.
  * Used to point incoming calls at the self-hosted voice server.
+ * Optionally sets a fallback URL that Twilio calls when the primary webhook fails.
  */
 export async function configureVoiceWebhook(
   twilioSid: string,
-  webhookUrl: string
+  webhookUrl: string,
+  fallbackUrl?: string
 ): Promise<void> {
   const client = getTwilioClient();
-  await client.incomingPhoneNumbers(twilioSid).update({
+  const updateParams: Record<string, string> = {
     voiceUrl: webhookUrl,
     voiceMethod: "POST",
-  });
+  };
+  if (fallbackUrl) {
+    updateParams.voiceFallbackUrl = fallbackUrl;
+    updateParams.voiceFallbackMethod = "POST";
+  }
+  await client.incomingPhoneNumbers(twilioSid).update(updateParams);
 }
 
 /**
