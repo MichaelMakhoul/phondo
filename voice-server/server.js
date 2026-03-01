@@ -19,6 +19,7 @@ const { detectExpectedInput } = require("./lib/input-type-detector");
 const { requiresRecordingDisclosureHybrid, getRecordingDisclosureText } = require("./lib/recording-consent");
 const { getSupabase } = require("./lib/supabase");
 const { saveForTransfer, getTransfer, consumeTransfer, finishTransferredCall } = require("./lib/pending-transfers");
+const { getAnswerMode } = require("./lib/answer-mode");
 
 // Validate required env vars before deriving any constants
 const REQUIRED_ENV = [
@@ -200,7 +201,7 @@ app.use(express.json());
 // TwiML endpoint — tells Twilio to connect a bidirectional media stream.
 // Validates the Twilio request signature, then stores call metadata server-side
 // with the token (never sent back in the XML response to prevent spoofing).
-app.post("/twiml", (req, res) => {
+app.post("/twiml", async (req, res) => {
   if (!validateTwilioSignature(req)) {
     console.warn("[TwiML] Rejected request — invalid Twilio signature");
     return res.status(403).send("Forbidden");
@@ -208,7 +209,26 @@ app.post("/twiml", (req, res) => {
 
   const called = req.body.Called || "";
   const from = req.body.From || "";
-  // Store call metadata server-side with the token — NOT in the TwiML response
+
+  // Check if this assistant uses ring-first mode
+  try {
+    const answerMode = await getAnswerMode(called);
+    if (answerMode && answerMode.answerMode === "ring_first") {
+      console.log(`[TwiML] Ring-first mode: from=${from} to=${called}, ringing ${answerMode.ringFirstNumber} for ${answerMode.ringFirstTimeout}s`);
+
+      return res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Dial timeout="${answerMode.ringFirstTimeout}" action="${escapeXml(PUBLIC_URL + '/twiml/ring-first-fallback')}" callerId="${escapeXml(from)}">
+    ${escapeXml(answerMode.ringFirstNumber)}
+  </Dial>
+</Response>`);
+    }
+  } catch (err) {
+    // Non-fatal — fall through to default AI-first behavior
+    console.error("[TwiML] getAnswerMode failed (falling back to AI):", err.message);
+  }
+
+  // Default: AI answers immediately
   const token = issueStreamToken(called, from);
   console.log(`[TwiML] Incoming call from=${from} to=${called}, streaming to ${WS_URL}`);
 
@@ -343,6 +363,45 @@ app.post("/twiml/transfer-status", async (req, res) => {
   <Hangup/>
 </Response>`);
   }
+});
+
+/**
+ * Ring-first fallback — Twilio POSTs here after <Dial> completes.
+ * If owner answered (completed), just hang up. Otherwise, AI picks up.
+ */
+app.post("/twiml/ring-first-fallback", (req, res) => {
+  if (!validateTwilioSignature(req)) {
+    console.warn("[RingFirst] Rejected request — invalid Twilio signature");
+    return res.status(403).send("Forbidden");
+  }
+
+  const callSid = req.body.CallSid;
+  const dialStatus = req.body.DialCallStatus; // completed, no-answer, busy, failed, canceled
+  const called = req.body.Called || "";
+  const from = req.body.From || "";
+
+  console.log(`[RingFirst] callSid=${callSid} dialStatus=${dialStatus}`);
+
+  if (dialStatus === "completed") {
+    // Owner answered the call — nothing more to do
+    return res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Hangup/>
+</Response>`);
+  }
+
+  // Owner didn't answer — AI picks up
+  const token = issueStreamToken(called, from);
+  console.log(`[RingFirst] Owner missed → AI fallback for from=${from} to=${called}`);
+
+  res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Connect>
+    <Stream url="${escapeXml(WS_URL)}">
+      <Parameter name="auth_token" value="${escapeXml(token)}" />
+    </Stream>
+  </Connect>
+</Response>`);
 });
 
 // Health check with Supabase connectivity test

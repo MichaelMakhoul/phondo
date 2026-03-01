@@ -2,6 +2,7 @@ import { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { BusinessSettingsForm } from "./business-settings-form";
+import { AnswerModeCard } from "./answer-mode-card";
 import { BrandingForm } from "./branding-form";
 import { DeleteAccountCard } from "./delete-account-card";
 
@@ -67,6 +68,15 @@ export default async function SettingsPage() {
 
   const organization = membership.organizations;
 
+  // Load the first active assistant to get answer mode settings
+  const { data: assistant } = await (supabase
+    .from("assistants") as any)
+    .select("id, settings")
+    .eq("organization_id", organization.id)
+    .eq("is_active", true)
+    .limit(1)
+    .single();
+
   return (
     <>
       <BusinessSettingsForm
@@ -85,6 +95,17 @@ export default async function SettingsPage() {
           recordingConsentMode: organization.recording_consent_mode || "auto",
         }}
       />
+
+      {assistant && (
+        <AnswerModeCard
+          assistantId={assistant.id}
+          initialSettings={{
+            answerMode: assistant.settings?.answerMode || "ai_first",
+            ringFirstNumber: assistant.settings?.ringFirstNumber || "",
+            ringFirstTimeout: assistant.settings?.ringFirstTimeout || 20,
+          }}
+        />
+      )}
 
       <BrandingForm
         organizationId={organization.id}

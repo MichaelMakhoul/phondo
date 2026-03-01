@@ -49,6 +49,9 @@ const updateAssistantSchema = z.object({
     maxCallDuration: z.number().optional(),
     spamFilterEnabled: z.boolean().optional(),
     industry: z.string().optional(),
+    answerMode: z.enum(["ai_first", "ring_first"]).optional(),
+    ringFirstNumber: z.string().regex(/^\+\d{7,15}$/).optional(),
+    ringFirstTimeout: z.number().min(5).max(60).optional(),
   }).passthrough().optional(),
 });
 
