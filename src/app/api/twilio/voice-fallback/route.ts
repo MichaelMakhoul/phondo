@@ -1,4 +1,3 @@
-import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 /**
@@ -10,7 +9,22 @@ import { createAdminClient } from "@/lib/supabase/admin";
  */
 export async function POST(request: Request) {
   try {
+    const url = new URL(request.url);
     const formData = await request.formData();
+
+    // Twilio POSTs back to the action URL after recording completes.
+    // Just return a goodbye — don't re-log the call.
+    if (url.searchParams.get("recording") === "done") {
+      const goodbye = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="Polly.Joanna">Thank you for your message. Goodbye.</Say>
+</Response>`;
+      return new Response(goodbye, {
+        status: 200,
+        headers: { "Content-Type": "text/xml" },
+      });
+    }
+
     const from = formData.get("From")?.toString() || "Unknown";
     const called = formData.get("Called")?.toString() || "Unknown";
     const errorCode = formData.get("ErrorCode")?.toString() || "";
