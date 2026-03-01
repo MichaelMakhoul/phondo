@@ -33,6 +33,7 @@ async function loadCallContext(calledNumber, prefetchedPhone) {
   const supabase = getSupabase();
 
   let phone = prefetchedPhone;
+  if (phone && phone.ai_enabled === false) return null;
   if (!phone) {
     // Standalone query (backwards compat)
     // 1. Look up the phone number — must be active (accepts any voice_provider
