@@ -64,6 +64,7 @@
   --hero-bg-to: #1E293B;
   --cta: #F97316;
   --cta-hover: #EA580C;
+  --cta-rgb: 249, 115, 22;
 }
 
 /* Landing page utilities */
@@ -95,14 +96,14 @@
   }
   .border-glow-hover:hover {
     border-color: var(--cta);
-    box-shadow: 0 0 20px rgba(249,115,22,0.15);
+    box-shadow: 0 0 20px rgba(var(--cta-rgb),0.15);
   }
 
   .btn-glow {
-    box-shadow: 0 0 20px rgba(249,115,22,0.3);
+    box-shadow: 0 0 20px rgba(var(--cta-rgb),0.3);
   }
   .btn-glow:hover {
-    box-shadow: 0 0 30px rgba(249,115,22,0.5);
+    box-shadow: 0 0 30px rgba(var(--cta-rgb),0.5);
   }
 }
 
@@ -152,7 +153,7 @@
 
 /* Primary button glow */
 .btn-primary-glow:hover {
-  box-shadow: 0 0 16px rgba(249, 115, 22, 0.25);
+  box-shadow: 0 0 16px rgba(var(--cta-rgb), 0.25);
 }
 
 @media (prefers-reduced-motion: reduce) {
