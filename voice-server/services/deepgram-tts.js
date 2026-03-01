@@ -3,8 +3,6 @@
  * container=none prevents WAV header artifacts.
  */
 
-const { Sentry } = require("../lib/sentry");
-
 const DEFAULT_VOICE = "aura-asteria-en";
 
 /**

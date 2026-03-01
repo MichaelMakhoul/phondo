@@ -1,5 +1,3 @@
-const { Sentry } = require("../lib/sentry");
-
 const DEFAULT_MODEL = "gpt-4.1-nano";
 const MAX_RETRIES = 2;
 
