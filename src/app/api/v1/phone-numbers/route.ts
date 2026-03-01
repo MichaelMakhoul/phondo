@@ -188,7 +188,9 @@ export async function POST(request: Request) {
       const voiceServerUrl = process.env.VOICE_SERVER_PUBLIC_URL;
       if (voiceServerUrl) {
         try {
-          await configureVoiceWebhook(twilioSid, `${voiceServerUrl}/twiml`);
+          const appUrl = process.env.NEXT_PUBLIC_APP_URL;
+          const fallbackUrl = appUrl ? `${appUrl}/api/twilio/voice-fallback` : undefined;
+          await configureVoiceWebhook(twilioSid, `${voiceServerUrl}/twiml`, fallbackUrl);
         } catch (webhookErr) {
           console.error(`[PhoneNumbers] Failed to configure voice webhook for ${phoneNumber}:`, webhookErr);
           // Non-fatal — the number still works, just needs manual webhook config
