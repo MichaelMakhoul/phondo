@@ -190,6 +190,9 @@ export async function POST(request: Request) {
         try {
           const appUrl = process.env.NEXT_PUBLIC_APP_URL;
           const fallbackUrl = appUrl ? `${appUrl}/api/twilio/voice-fallback` : undefined;
+          if (!fallbackUrl) {
+            console.warn(`[PhoneNumbers] NEXT_PUBLIC_APP_URL not set — fallback URL not configured for ${phoneNumber}`);
+          }
           await configureVoiceWebhook(twilioSid, `${voiceServerUrl}/twiml`, fallbackUrl);
         } catch (webhookErr) {
           console.error(`[PhoneNumbers] Failed to configure voice webhook for ${phoneNumber}:`, webhookErr);
