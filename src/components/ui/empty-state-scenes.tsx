@@ -1,3 +1,4 @@
+import { type LucideIcon } from "lucide-react";
 import {
   Phone,
   PhoneIncoming,
@@ -34,143 +35,122 @@ function PulsingRing({ delay = false, size = "lg" }: { delay?: boolean; size?: "
   );
 }
 
-export function CallsScene() {
+interface AccentConfig {
+  icon: LucideIcon;
+  bgColor: string;
+  iconColor: string;
+  animation: "orbit" | "float";
+  position?: string;
+}
+
+interface AnimatedSceneProps {
+  icon: LucideIcon;
+  accent: AccentConfig;
+  singleRing?: boolean;
+  extra?: React.ReactNode;
+}
+
+function AnimatedScene({ icon: Icon, accent, singleRing, extra }: AnimatedSceneProps) {
+  const AccentIcon = accent.icon;
+  const isOrbit = accent.animation === "orbit";
+  const position = accent.position ?? (isOrbit ? "-top-1 -right-1" : "top-0 right-0");
+  const containerSize = isOrbit ? "h-7 w-7" : "h-6 w-6";
+  const iconSize = isOrbit ? "h-3.5 w-3.5" : "h-3 w-3";
+  const animClass = isOrbit ? "animate-orbit" : "animate-float";
+
   return (
     <SceneContainer>
       <PulsingRing />
-      <PulsingRing delay size="md" />
+      {!singleRing && <PulsingRing delay size="md" />}
       <div className="relative flex h-14 w-14 items-center justify-center rounded-full bg-primary/15 animate-scale-in">
-        <Phone className="h-7 w-7 text-primary" />
+        <Icon className="h-7 w-7 text-primary" />
       </div>
-      <div className="absolute -top-1 -right-1 animate-orbit">
-        <div className="flex h-7 w-7 items-center justify-center rounded-full bg-green-500/10">
-          <PhoneIncoming className="h-3.5 w-3.5 text-green-500" />
+      {extra}
+      <div className={`absolute ${position} ${animClass}`}>
+        <div className={`flex ${containerSize} items-center justify-center rounded-full ${accent.bgColor}`}>
+          <AccentIcon className={`${iconSize} ${accent.iconColor}`} />
         </div>
       </div>
     </SceneContainer>
+  );
+}
+
+export function CallsScene() {
+  return (
+    <AnimatedScene
+      icon={Phone}
+      accent={{ icon: PhoneIncoming, bgColor: "bg-green-500/10", iconColor: "text-green-500", animation: "orbit" }}
+    />
   );
 }
 
 export function AssistantsScene() {
   return (
-    <SceneContainer>
-      <PulsingRing />
-      <PulsingRing delay size="md" />
-      <div className="relative flex h-14 w-14 items-center justify-center rounded-full bg-primary/15 animate-scale-in">
-        <Bot className="h-7 w-7 text-primary" />
-      </div>
-      <div className="absolute -top-1 -right-1 animate-orbit">
-        <div className="flex h-7 w-7 items-center justify-center rounded-full bg-yellow-500/10">
-          <Sparkles className="h-3.5 w-3.5 text-yellow-500" />
-        </div>
-      </div>
-    </SceneContainer>
+    <AnimatedScene
+      icon={Bot}
+      accent={{ icon: Sparkles, bgColor: "bg-yellow-500/10", iconColor: "text-yellow-500", animation: "orbit" }}
+    />
   );
 }
 
 export function PhoneScene() {
   return (
-    <SceneContainer>
-      <PulsingRing />
-      <PulsingRing delay size="md" />
-      <div className="relative flex h-14 w-14 items-center justify-center rounded-full bg-primary/15 animate-scale-in">
-        <Phone className="h-7 w-7 text-primary" />
-      </div>
-      <div className="absolute top-0 right-0 animate-float">
-        <div className="flex h-6 w-6 items-center justify-center rounded-full bg-primary/10">
-          <Sparkles className="h-3 w-3 text-primary" />
-        </div>
-      </div>
-    </SceneContainer>
+    <AnimatedScene
+      icon={Phone}
+      accent={{ icon: Sparkles, bgColor: "bg-primary/10", iconColor: "text-primary", animation: "float" }}
+    />
   );
 }
 
 export function CallbacksScene() {
   return (
-    <SceneContainer>
-      <PulsingRing />
-      <PulsingRing delay size="md" />
-      <div className="relative flex h-14 w-14 items-center justify-center rounded-full bg-primary/15 animate-scale-in">
-        <PhoneForwarded className="h-7 w-7 text-primary" />
-      </div>
-      <div className="absolute -top-1 -right-1 animate-orbit">
-        <div className="flex h-7 w-7 items-center justify-center rounded-full bg-blue-500/10">
-          <Clock className="h-3.5 w-3.5 text-blue-500" />
-        </div>
-      </div>
-    </SceneContainer>
+    <AnimatedScene
+      icon={PhoneForwarded}
+      accent={{ icon: Clock, bgColor: "bg-blue-500/10", iconColor: "text-blue-500", animation: "orbit" }}
+    />
   );
 }
 
 export function CalendarScene() {
   return (
-    <SceneContainer>
-      <PulsingRing />
-      <PulsingRing delay size="md" />
-      <div className="relative flex h-14 w-14 items-center justify-center rounded-full bg-primary/15 animate-scale-in">
-        <CalendarDays className="h-7 w-7 text-primary" />
-      </div>
-      <div className="absolute top-0 right-0 animate-float">
-        <div className="flex h-6 w-6 items-center justify-center rounded-full bg-green-500/10">
-          <CalendarCheck2 className="h-3 w-3 text-green-500" />
-        </div>
-      </div>
-    </SceneContainer>
+    <AnimatedScene
+      icon={CalendarDays}
+      accent={{ icon: CalendarCheck2, bgColor: "bg-green-500/10", iconColor: "text-green-500", animation: "float" }}
+    />
   );
 }
 
 export function KnowledgeScene() {
   return (
-    <SceneContainer>
-      <PulsingRing />
-      <div className="relative flex h-14 w-14 items-center justify-center rounded-full bg-primary/15 animate-scale-in">
-        <BookOpen className="h-7 w-7 text-primary" />
-      </div>
-      {/* Typing dots */}
-      <div className="absolute bottom-1 flex items-center gap-1">
-        <div className="h-1.5 w-1.5 rounded-full bg-primary/60 animate-typing-dot" />
-        <div className="h-1.5 w-1.5 rounded-full bg-primary/60 animate-typing-dot-delay-1" />
-        <div className="h-1.5 w-1.5 rounded-full bg-primary/60 animate-typing-dot-delay-2" />
-      </div>
-      <div className="absolute top-0 -right-1 animate-float">
-        <div className="flex h-6 w-6 items-center justify-center rounded-full bg-blue-500/10">
-          <FileText className="h-3 w-3 text-blue-500" />
+    <AnimatedScene
+      icon={BookOpen}
+      accent={{ icon: FileText, bgColor: "bg-blue-500/10", iconColor: "text-blue-500", animation: "float", position: "top-0 -right-1" }}
+      singleRing
+      extra={
+        <div className="absolute bottom-1 flex items-center gap-1">
+          <div className="h-1.5 w-1.5 rounded-full bg-primary/60 animate-typing-dot" />
+          <div className="h-1.5 w-1.5 rounded-full bg-primary/60 animate-typing-dot-delay-1" />
+          <div className="h-1.5 w-1.5 rounded-full bg-primary/60 animate-typing-dot-delay-2" />
         </div>
-      </div>
-    </SceneContainer>
+      }
+    />
   );
 }
 
 export function TeamScene() {
   return (
-    <SceneContainer>
-      <PulsingRing />
-      <PulsingRing delay size="md" />
-      <div className="relative flex h-14 w-14 items-center justify-center rounded-full bg-primary/15 animate-scale-in">
-        <Users className="h-7 w-7 text-primary" />
-      </div>
-      <div className="absolute -top-1 -right-1 animate-orbit">
-        <div className="flex h-7 w-7 items-center justify-center rounded-full bg-green-500/10">
-          <UserPlus className="h-3.5 w-3.5 text-green-500" />
-        </div>
-      </div>
-    </SceneContainer>
+    <AnimatedScene
+      icon={Users}
+      accent={{ icon: UserPlus, bgColor: "bg-green-500/10", iconColor: "text-green-500", animation: "orbit" }}
+    />
   );
 }
 
 export function IntegrationsScene() {
   return (
-    <SceneContainer>
-      <PulsingRing />
-      <PulsingRing delay size="md" />
-      <div className="relative flex h-14 w-14 items-center justify-center rounded-full bg-primary/15 animate-scale-in">
-        <Webhook className="h-7 w-7 text-primary" />
-      </div>
-      <div className="absolute top-0 right-0 animate-float">
-        <div className="flex h-6 w-6 items-center justify-center rounded-full bg-yellow-500/10">
-          <Zap className="h-3 w-3 text-yellow-500" />
-        </div>
-      </div>
-    </SceneContainer>
+    <AnimatedScene
+      icon={Webhook}
+      accent={{ icon: Zap, bgColor: "bg-yellow-500/10", iconColor: "text-yellow-500", animation: "float" }}
+    />
   );
 }
