@@ -18,7 +18,7 @@ export async function sendAdminAlert(
   const phone = process.env.ADMIN_ALERT_PHONE;
 
   if (!email && !phone) {
-    console.warn("[AdminAlert] No ADMIN_ALERT_EMAIL or ADMIN_ALERT_PHONE configured — skipping alert");
+    console.error("[AdminAlert] CRITICAL: No ADMIN_ALERT_EMAIL or ADMIN_ALERT_PHONE configured — alert NOT delivered:", { type, service, message });
     return;
   }
 

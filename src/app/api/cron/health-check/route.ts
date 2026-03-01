@@ -47,12 +47,19 @@ export async function GET(req: NextRequest) {
 
   // 2. Read current state from system_health
   const supabase = createAdminClient();
-  const { data: current } = await (supabase as any)
+  const { data: current, error: readError } = await (supabase as any)
     .from("system_health")
     .select("is_healthy, consecutive_failures")
     .eq("service", SERVICE_NAME)
     .maybeSingle();
 
+  if (readError) {
+    console.error("[HealthCheck] Failed to read health state from DB:", readError);
+  }
+
+  // If DB read failed, we can't determine previous state — skip alerting to avoid
+  // false positives (spam on every check) or missed recovery alerts
+  const dbReadOk = !readError;
   const wasHealthy = current?.is_healthy ?? true;
   const prevFailures = current?.consecutive_failures ?? 0;
   const newFailures = isHealthy ? 0 : prevFailures + 1;
@@ -73,8 +80,10 @@ export async function GET(req: NextRequest) {
     console.error("[HealthCheck] Failed to upsert health state:", upsertError);
   }
 
-  // 4. Alert on state transitions only
-  if (wasHealthy && !isHealthy) {
+  // 4. Alert on state transitions only (skip if we couldn't read previous state)
+  if (!dbReadOk) {
+    console.warn("[HealthCheck] Skipping alerts — could not read previous state from DB");
+  } else if (wasHealthy && !isHealthy) {
     console.error(`[HealthCheck] ${SERVICE_NAME} is DOWN:`, errorMessage);
     await sendAdminAlert(
       "down",
