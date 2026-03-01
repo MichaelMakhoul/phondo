@@ -1,5 +1,8 @@
 require("dotenv").config();
 
+const { initSentry, Sentry } = require("./lib/sentry");
+initSentry();
+
 const crypto = require("crypto");
 const express = require("express");
 const http = require("http");
@@ -104,10 +107,13 @@ function resolveAfterHoursState(context) {
 // Global error handlers to prevent silent crashes
 process.on("unhandledRejection", (reason) => {
   console.error("[FATAL] Unhandled promise rejection:", reason);
+  Sentry.captureException(reason);
 });
 
-process.on("uncaughtException", (err) => {
+process.on("uncaughtException", async (err) => {
   console.error("[FATAL] Uncaught exception:", err);
+  Sentry.captureException(err);
+  await Sentry.flush(2000).catch(() => {});
   process.exit(1);
 });
 
@@ -444,6 +450,15 @@ app.get("/health", async (req, res) => {
     res.json({ status: "ok", db: "connected" });
   } catch (err) {
     res.status(503).json({ status: "degraded", db: "error", message: err.message });
+  }
+});
+
+// Sentry Express error handler — captures unhandled route errors
+app.use((err, req, res, _next) => {
+  Sentry.captureException(err);
+  console.error("[Express] Unhandled route error:", err);
+  if (!res.headersSent) {
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 
