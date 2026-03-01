@@ -30,6 +30,16 @@ function getDefaultBehaviors(industry: string): BehaviorToggles {
       return { ...base, scheduleAppointments: true, handleEmergencies: true };
     case "restaurant":
       return { ...base, scheduleAppointments: true };
+    case "accounting":
+      return { ...base, scheduleAppointments: true, takeMessages: true };
+    case "insurance":
+      return { ...base, takeMessages: true, transferToHuman: true };
+    case "fitness":
+      return { ...base, scheduleAppointments: true, providePricingInfo: true };
+    case "childcare":
+      return { ...base, scheduleAppointments: true };
+    case "funeral_services":
+      return { ...base, takeMessages: true, transferToHuman: true, afterHoursHandling: true };
     default:
       return base;
   }
@@ -38,9 +48,13 @@ function getDefaultBehaviors(industry: string): BehaviorToggles {
 function getDefaultTone(industry: string): TonePreset {
   switch (industry) {
     case "legal":
+    case "accounting":
+    case "insurance":
+    case "funeral_services":
       return "professional";
     case "salon":
     case "restaurant":
+    case "fitness":
       return "friendly";
     default:
       return "friendly";

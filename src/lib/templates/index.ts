@@ -8,6 +8,11 @@ import { salonTemplate } from './salon';
 import { automotiveTemplate } from './automotive';
 import { veterinaryTemplate } from './veterinary';
 import { restaurantTemplate } from './restaurant';
+import { accountingTemplate } from './accounting';
+import { insuranceTemplate } from './insurance';
+import { fitnessTemplate } from './fitness';
+import { childcareTemplate } from './childcare';
+import { funeralServicesTemplate } from './funeral-services';
 
 export interface AssistantTemplate {
   industry: string;
@@ -34,6 +39,11 @@ export const templates: Record<string, AssistantTemplate> = {
   automotive: automotiveTemplate,
   veterinary: veterinaryTemplate,
   restaurant: restaurantTemplate,
+  accounting: accountingTemplate,
+  insurance: insuranceTemplate,
+  fitness: fitnessTemplate,
+  childcare: childcareTemplate,
+  funeral_services: funeralServicesTemplate,
   other: otherTemplate,
 };
 
@@ -59,6 +69,11 @@ export const industryOptions = [
   { value: 'automotive', label: 'Automotive / Mechanic', description: 'Auto repair, mechanics, body shops' },
   { value: 'veterinary', label: 'Veterinary / Pet Care', description: 'Vet clinics, animal hospitals, pet care' },
   { value: 'restaurant', label: 'Restaurant / Hospitality', description: 'Restaurants, cafes, catering, hotels' },
+  { value: 'accounting', label: 'Accounting / Bookkeeping', description: 'Accountants, tax agents, bookkeepers' },
+  { value: 'insurance', label: 'Insurance', description: 'Insurance brokers, agencies, claims' },
+  { value: 'fitness', label: 'Fitness / Gym', description: 'Gyms, studios, personal training, wellness centres' },
+  { value: 'childcare', label: 'Childcare / Daycare', description: 'Childcare centres, daycare, early learning' },
+  { value: 'funeral_services', label: 'Funeral Services', description: 'Funeral homes, memorial services, cremation' },
   { value: 'other', label: 'Other Business', description: 'General business receptionist' },
 ];
 
@@ -121,4 +136,9 @@ export {
   automotiveTemplate,
   veterinaryTemplate,
   restaurantTemplate,
+  accountingTemplate,
+  insuranceTemplate,
+  fitnessTemplate,
+  childcareTemplate,
+  funeralServicesTemplate,
 };
