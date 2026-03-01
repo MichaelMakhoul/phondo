@@ -124,6 +124,7 @@ const config: Config = {
         "fade-in-up-delay-2": "fade-in-up 0.6s ease-out 0.2s both",
         "fade-in-up-delay-3": "fade-in-up 0.6s ease-out 0.3s both",
         "fade-in-up-delay-4": "fade-in-up 0.6s ease-out 0.4s both",
+        "fade-in-up-delay-5": "fade-in-up 0.6s ease-out 0.5s both",
         "fade-in": "fade-in 0.5s ease-out both",
         "slide-in-left": "slide-in-left 0.6s ease-out both",
         "slide-in-right": "slide-in-right 0.6s ease-out both",

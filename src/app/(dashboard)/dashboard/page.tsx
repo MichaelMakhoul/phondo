@@ -2,7 +2,7 @@ import { createClient } from "@/lib/supabase/server";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Phone, PhoneCall, Clock, TrendingUp, Plus, Bot } from "lucide-react";
+import { Phone, PhoneCall, Clock, TrendingUp, Plus, Bot, User } from "lucide-react";
 import Link from "next/link";
 import { formatDuration } from "@/lib/utils";
 import { AnimatedStat } from "@/components/marketing/animated-stat";
@@ -45,10 +45,11 @@ export default async function DashboardPage() {
   let totalCalls: number | null = 0;
   let totalAssistants: number | null = 0;
   let totalPhoneNumbers: number | null = 0;
+  let ownerAnsweredCalls: number | null = 0;
   let recentCalls: RecentCall[] | null = null;
 
   if (orgId) {
-    const [callsResult, assistantsResult, phoneResult, recentResult] = await Promise.all([
+    const [callsResult, assistantsResult, phoneResult, ownerResult, recentResult] = await Promise.all([
       supabase
         .from("calls")
         .select("*", { count: "exact", head: true })
@@ -63,6 +64,11 @@ export default async function DashboardPage() {
         .eq("organization_id", orgId),
       supabase
         .from("calls")
+        .select("*", { count: "exact", head: true })
+        .eq("organization_id", orgId)
+        .eq("metadata->>answeredBy", "owner"),
+      supabase
+        .from("calls")
         .select(`
           *,
           assistants (name),
@@ -75,6 +81,7 @@ export default async function DashboardPage() {
     totalCalls = callsResult.count;
     totalAssistants = assistantsResult.count;
     totalPhoneNumbers = phoneResult.count;
+    ownerAnsweredCalls = ownerResult.count;
     recentCalls = recentResult.data;
   }
 
@@ -103,6 +110,13 @@ export default async function DashboardPage() {
       icon: PhoneCall,
       change: "+12%",
       changeType: "positive",
+    },
+    {
+      name: "You Answered",
+      value: ownerAnsweredCalls || 0,
+      icon: User,
+      change: "",
+      changeType: "neutral",
     },
     {
       name: "Active Assistants",
@@ -146,13 +160,14 @@ export default async function DashboardPage() {
       </div>
 
       {/* Stats Grid */}
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-5">
         {stats.map((stat, i) => {
           const delayClass = [
             "animate-fade-in-up-delay-1",
             "animate-fade-in-up-delay-2",
             "animate-fade-in-up-delay-3",
             "animate-fade-in-up-delay-4",
+            "animate-fade-in-up-delay-5",
           ][i];
           return (
           <Card key={stat.name} className={`card-hover ${delayClass}`}>
