@@ -37,4 +37,28 @@ async function getAnswerMode(calledNumber) {
   return { answerMode: "ring_first", ringFirstNumber, ringFirstTimeout };
 }
 
-module.exports = { getAnswerMode };
+/**
+ * Look up organization, assistant, and phone number IDs for a called number.
+ * Used to create call records for owner-answered ring-first calls.
+ * Returns { organizationId, assistantId, phoneNumberId } or null.
+ */
+async function getPhoneNumberContext(calledNumber) {
+  const supabase = getSupabase();
+
+  const { data: phone, error } = await supabase
+    .from("phone_numbers")
+    .select("id, organization_id, assistant_id")
+    .eq("phone_number", calledNumber)
+    .eq("is_active", true)
+    .single();
+
+  if (error || !phone || !phone.assistant_id) return null;
+
+  return {
+    organizationId: phone.organization_id,
+    assistantId: phone.assistant_id,
+    phoneNumberId: phone.id,
+  };
+}
+
+module.exports = { getAnswerMode, getPhoneNumberContext };

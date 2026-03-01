@@ -19,7 +19,7 @@ const { detectExpectedInput } = require("./lib/input-type-detector");
 const { requiresRecordingDisclosureHybrid, getRecordingDisclosureText } = require("./lib/recording-consent");
 const { getSupabase } = require("./lib/supabase");
 const { saveForTransfer, getTransfer, consumeTransfer, finishTransferredCall } = require("./lib/pending-transfers");
-const { getAnswerMode } = require("./lib/answer-mode");
+const { getAnswerMode, getPhoneNumberContext } = require("./lib/answer-mode");
 
 // Validate required env vars before deriving any constants
 const REQUIRED_ENV = [
@@ -369,7 +369,7 @@ app.post("/twiml/transfer-status", async (req, res) => {
  * Ring-first fallback — Twilio POSTs here after <Dial> completes.
  * If owner answered (completed), just hang up. Otherwise, AI picks up.
  */
-app.post("/twiml/ring-first-fallback", (req, res) => {
+app.post("/twiml/ring-first-fallback", async (req, res) => {
   if (!validateTwilioSignature(req)) {
     console.warn("[RingFirst] Rejected request — invalid Twilio signature");
     return res.status(403).send("Forbidden");
@@ -383,7 +383,37 @@ app.post("/twiml/ring-first-fallback", (req, res) => {
   console.log(`[RingFirst] callSid=${callSid} dialStatus=${dialStatus}`);
 
   if (dialStatus === "completed") {
-    // Owner answered the call — nothing more to do
+    // Owner answered the call — log it so it appears in the dashboard
+    try {
+      const ctx = await getPhoneNumberContext(called);
+      if (ctx) {
+        const callId = await createCallRecord({
+          orgId: ctx.organizationId,
+          assistantId: ctx.assistantId,
+          phoneNumberId: ctx.phoneNumberId,
+          callerPhone: from,
+          callSid,
+        });
+        if (callId) {
+          const durationSeconds = parseInt(req.body.DialCallDuration, 10) || 0;
+          await completeCallRecord(callId, {
+            status: "completed",
+            durationSeconds,
+            answeredBy: "owner",
+          });
+          await notifyCallCompleted(INTERNAL_API_URL, INTERNAL_API_SECRET, {
+            callId,
+            organizationId: ctx.organizationId,
+            assistantId: ctx.assistantId,
+            endedReason: "owner-answered",
+          });
+          console.log(`[RingFirst] Logged owner-answered call ${callId} (${durationSeconds}s)`);
+        }
+      }
+    } catch (err) {
+      console.warn("[RingFirst] Failed to log owner-answered call (non-fatal):", err.message);
+    }
+
     return res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Hangup/>

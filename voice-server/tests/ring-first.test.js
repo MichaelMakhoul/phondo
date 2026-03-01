@@ -34,7 +34,7 @@ require.cache[supabasePath] = {
   exports: { getSupabase: () => mockSupabase },
 };
 
-const { getAnswerMode } = require("../lib/answer-mode");
+const { getAnswerMode, getPhoneNumberContext } = require("../lib/answer-mode");
 
 describe("getAnswerMode", () => {
   beforeEach(() => {
@@ -168,5 +168,37 @@ describe("getAnswerMode", () => {
     mockAssistantResult = { data: { settings: null }, error: null };
     const result = await getAnswerMode("+61299999999");
     assert.equal(result, null);
+  });
+});
+
+describe("getPhoneNumberContext", () => {
+  beforeEach(() => {
+    mockPhoneResult = { data: null, error: null };
+    mockAssistantResult = { data: null, error: null };
+  });
+
+  it("returns null when phone number not found", async () => {
+    mockPhoneResult = { data: null, error: { message: "Not found" } };
+    const result = await getPhoneNumberContext("+61299999999");
+    assert.equal(result, null);
+  });
+
+  it("returns null when phone number has no assistant_id", async () => {
+    mockPhoneResult = { data: { id: "ph-1", organization_id: "org-1", assistant_id: null }, error: null };
+    const result = await getPhoneNumberContext("+61299999999");
+    assert.equal(result, null);
+  });
+
+  it("returns correct IDs when phone number is found", async () => {
+    mockPhoneResult = {
+      data: { id: "ph-1", organization_id: "org-1", assistant_id: "ast-1" },
+      error: null,
+    };
+    const result = await getPhoneNumberContext("+61299999999");
+    assert.deepEqual(result, {
+      organizationId: "org-1",
+      assistantId: "ast-1",
+      phoneNumberId: "ph-1",
+    });
   });
 });
