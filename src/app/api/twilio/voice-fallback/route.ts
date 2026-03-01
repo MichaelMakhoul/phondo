@@ -22,6 +22,9 @@ function validateTwilioSignature(
   }
 
   const signature = request.headers.get("X-Twilio-Signature") || "";
+  if (!process.env.NEXT_PUBLIC_APP_URL) {
+    console.warn("[VoiceFallback] NEXT_PUBLIC_APP_URL not set — signature validation may fail behind a proxy");
+  }
   const url = process.env.NEXT_PUBLIC_APP_URL
     ? `${process.env.NEXT_PUBLIC_APP_URL}${path}`
     : request.url;
