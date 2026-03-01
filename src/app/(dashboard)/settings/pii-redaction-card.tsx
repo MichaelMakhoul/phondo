@@ -56,7 +56,7 @@ export function PiiRedactionCard({ assistantId, initialEnabled }: PiiRedactionCa
           PII Redaction
         </CardTitle>
         <CardDescription>
-          Automatically detect and redact personally identifiable information (Medicare numbers, tax file numbers, bank details, etc.) from call transcripts and summaries before they are stored. Recommended for medical and legal practices.
+          Automatically detect and redact personally identifiable information (Medicare numbers, tax file numbers, bank details, etc.) from call transcripts and summaries before they are stored. Names and free-form conversational text are not redacted. Applies to future calls only &mdash; existing transcripts are not affected. Recommended for medical and legal practices.
         </CardDescription>
       </CardHeader>
       <CardContent>

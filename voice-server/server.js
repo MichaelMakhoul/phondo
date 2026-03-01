@@ -20,6 +20,7 @@ const { requiresRecordingDisclosureHybrid, getRecordingDisclosureText } = requir
 const { getSupabase } = require("./lib/supabase");
 const { saveForTransfer, getTransfer, consumeTransfer, finishTransferredCall } = require("./lib/pending-transfers");
 const { getAnswerMode, getPhoneNumberContext } = require("./lib/answer-mode");
+const { detectAndRedact, redactObject } = require("./lib/pii-detector");
 
 // Validate required env vars before deriving any constants
 const REQUIRED_ENV = [
@@ -492,7 +493,6 @@ wss.on("connection", (twilioWs) => {
     // PII redaction — runs after analysis, before anything is persisted
     let piiRedacted = false;
     if (s.piiRedactionEnabled) {
-      const { detectAndRedact, redactObject } = require("./lib/pii-detector");
       const transcriptResult = detectAndRedact(transcript);
       if (transcriptResult.piiFound) {
         transcript = transcriptResult.redacted;

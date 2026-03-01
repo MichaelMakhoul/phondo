@@ -13,7 +13,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { PhoneCall, PhoneIncoming, PhoneOutgoing, Play, ShieldAlert, ShieldCheck, AlertTriangle, ChevronRight } from "lucide-react";
+import { PhoneCall, PhoneIncoming, PhoneOutgoing, Play, ShieldAlert, ShieldCheck, AlertTriangle, ChevronRight, User } from "lucide-react";
 import { formatPhoneNumber, formatDuration } from "@/lib/utils";
 import { format } from "date-fns";
 import { SpamActions } from "./spam-actions";
@@ -29,7 +29,7 @@ interface Call {
   caller_name: string | null;
   outcome: string | null;
   collected_data: Record<string, unknown> | null;
-  metadata: { successEvaluation?: string } | null;
+  metadata: { successEvaluation?: string; answeredBy?: string } | null;
   duration_seconds: number | null;
   recording_url: string | null;
   created_at: string;
@@ -240,6 +240,11 @@ function CallsTable({
               </div>
             </div>
             <div className="flex items-center gap-2 shrink-0">
+              {call.metadata?.answeredBy === "owner" && (
+                <Badge variant="secondary" className="text-xs">
+                  <User className="h-3 w-3" />
+                </Badge>
+              )}
               <Badge
                 variant={
                   call.status === "completed"
@@ -303,6 +308,12 @@ function CallsTable({
                         </p>
                       )}
                     </div>
+                    {call.metadata?.answeredBy === "owner" && (
+                      <Badge variant="secondary" className="text-xs">
+                        <User className="h-3 w-3 mr-1" />
+                        You Answered
+                      </Badge>
+                    )}
                     {call.is_spam && !isSpamView && (
                       <Badge variant="destructive" className="text-xs">
                         <ShieldAlert className="h-3 w-3 mr-1" />

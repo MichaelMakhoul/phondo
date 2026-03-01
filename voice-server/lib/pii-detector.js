@@ -85,7 +85,7 @@ const BSB_REGEX = keywordAnchored(BSB_KEYWORDS, BSB_PATTERN);
 const BANK_ACCOUNT_REGEX = keywordAnchored(BSB_KEYWORDS, BANK_ACCOUNT_PATTERN);
 const PHONE_REGEX = keywordAnchored(PHONE_KEYWORDS, PHONE_PATTERN);
 const DOB_REGEX = keywordAnchored(DOB_KEYWORDS, DOB_PATTERN);
-const ADDRESS_REGEX = keywordAnchored(ADDRESS_KEYWORDS, ADDRESS_PATTERN, "gi");
+const ADDRESS_REGEX = keywordAnchored(ADDRESS_KEYWORDS, ADDRESS_PATTERN);
 
 /**
  * Detect and redact PII in a text string.
@@ -157,30 +157,23 @@ function redactObject(obj) {
   }
 
   const allTypes = new Set();
-  let anyPiiFound = false;
 
   if (Array.isArray(obj)) {
     const redactedArr = obj.map((item) => {
       const r = redactObject(item);
-      if (r.piiFound) {
-        anyPiiFound = true;
-        r.types.forEach((t) => allTypes.add(t));
-      }
+      r.types.forEach((t) => allTypes.add(t));
       return r.redacted;
     });
-    return { redacted: redactedArr, piiFound: anyPiiFound, types: [...allTypes] };
+    return { redacted: redactedArr, piiFound: allTypes.size > 0, types: [...allTypes] };
   }
 
   const redactedObj = {};
   for (const [key, value] of Object.entries(obj)) {
     const r = redactObject(value);
-    if (r.piiFound) {
-      anyPiiFound = true;
-      r.types.forEach((t) => allTypes.add(t));
-    }
+    r.types.forEach((t) => allTypes.add(t));
     redactedObj[key] = r.redacted;
   }
-  return { redacted: redactedObj, piiFound: anyPiiFound, types: [...allTypes] };
+  return { redacted: redactedObj, piiFound: allTypes.size > 0, types: [...allTypes] };
 }
 
 module.exports = { detectAndRedact, redactObject, luhnCheck };
