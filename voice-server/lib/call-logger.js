@@ -57,6 +57,7 @@ async function completeCallRecord(callId, {
   callerState,
   consentReason,
   sentiment,
+  answeredBy,
 }) {
   const supabase = getSupabase();
 
@@ -84,6 +85,7 @@ async function completeCallRecord(callId, {
     // Always include both callerState and consentReason together when consent was checked,
     // even if callerState is null (distinguishes "checked but unknown" from "never checked").
     ...(consentReason != null && { consentReason, callerState: callerState ?? null }),
+    ...(answeredBy && { answeredBy }),
   };
 
   if (Object.keys(metadataExtras).length > 0) {
