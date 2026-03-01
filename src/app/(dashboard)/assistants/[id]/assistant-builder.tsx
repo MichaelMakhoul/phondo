@@ -47,6 +47,8 @@ import { PromptBuilder } from "@/components/prompt-builder";
 import type { PromptConfig, AfterHoursConfig } from "@/lib/prompt-builder/types";
 import { VoiceSelector } from "@/components/voice-selector";
 import { resolveVoiceId, type VoiceLanguage } from "@/lib/voices";
+import { AnswerModeCard } from "@/app/(dashboard)/settings/answer-mode-card";
+import { PiiRedactionCard } from "@/app/(dashboard)/settings/pii-redaction-card";
 
 // Industry templates
 const INDUSTRY_TEMPLATES = getIndustryTemplates();
@@ -1067,6 +1069,20 @@ export function AssistantBuilder({
               </div>
             </CardContent>
           </Card>
+
+          <AnswerModeCard
+            assistantId={assistant.id}
+            initialSettings={{
+              answerMode: assistant.settings?.answerMode || "ai_first",
+              ringFirstNumber: assistant.settings?.ringFirstNumber || "",
+              ringFirstTimeout: assistant.settings?.ringFirstTimeout || 20,
+            }}
+          />
+
+          <PiiRedactionCard
+            assistantId={assistant.id}
+            initialEnabled={assistant.settings?.piiRedactionEnabled || false}
+          />
 
           {promptConfig?.behaviors?.afterHoursHandling && (
             <Card>
