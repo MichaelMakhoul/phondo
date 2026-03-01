@@ -25,6 +25,12 @@ import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Separator } from "@/components/ui/separator";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { formatPhoneNumber, formatDuration, formatCurrency } from "@/lib/utils";
 
 interface Call {
@@ -176,10 +182,22 @@ export function CallDetail({ call }: { call: Call }) {
             </Badge>
           )}
           {(call.metadata?.piiRedacted as boolean) && (
-            <Badge variant="secondary">
-              <ShieldAlert className="h-3 w-3 mr-1" />
-              PII Redacted
-            </Badge>
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Badge variant="secondary" className="cursor-default">
+                    <ShieldAlert className="h-3 w-3 mr-1" />
+                    PII Redacted
+                  </Badge>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p className="max-w-xs">
+                    Sensitive data (Medicare, TFN, bank details, etc.) was
+                    automatically redacted from this transcript.
+                  </p>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
           )}
         </div>
 
