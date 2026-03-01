@@ -3,6 +3,8 @@
  * Uses raw fetch to keep dependencies light (no Twilio SDK).
  */
 
+const { Sentry } = require("../lib/sentry");
+
 const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
 const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
 
@@ -54,6 +56,11 @@ function escapeXml(s) {
 async function transferCall(callSid, transferTo, announcement, { actionUrl, timeout = 25 } = {}) {
   if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN) {
     console.error("[Transfer] Missing TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN");
+    Sentry.withScope((scope) => {
+      scope.setTag("service", "twilio-transfer");
+      scope.setExtra("callSid", callSid);
+      Sentry.captureException(new Error("Transfer: missing TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN"));
+    });
     return {
       success: false,
       message: "I'm sorry, I'm unable to transfer the call right now. Let me take your information instead.",
@@ -88,6 +95,12 @@ async function transferCall(callSid, transferTo, announcement, { actionUrl, time
 
     if (!res) {
       console.error("[Transfer] twilioPost returned null — credentials may be invalid");
+      Sentry.withScope((scope) => {
+        scope.setTag("service", "twilio-transfer");
+        scope.setExtra("callSid", callSid);
+        scope.setExtra("transferTo", transferTo);
+        Sentry.captureException(new Error("Transfer: twilioPost returned null — credentials may be invalid"));
+      });
       return {
         success: false,
         message: "I'm sorry, I'm unable to transfer the call right now. Let me take your information instead.",
@@ -97,6 +110,14 @@ async function transferCall(callSid, transferTo, announcement, { actionUrl, time
     if (!res.ok) {
       const text = (await res.text()).slice(0, 500);
       console.error(`[Transfer] Twilio API error ${res.status}:`, text);
+      Sentry.withScope((scope) => {
+        scope.setTag("service", "twilio-transfer");
+        scope.setExtra("callSid", callSid);
+        scope.setExtra("transferTo", transferTo);
+        scope.setExtra("httpStatus", res.status);
+        scope.setExtra("responseBody", text);
+        Sentry.captureException(new Error(`Transfer: Twilio API error ${res.status}`));
+      });
       return {
         success: false,
         message: "I'm sorry, I wasn't able to complete the transfer. Let me take your information and have someone call you back.",
@@ -110,6 +131,12 @@ async function transferCall(callSid, transferTo, announcement, { actionUrl, time
     };
   } catch (err) {
     console.error("[Transfer] Failed to transfer call:", err.message);
+    Sentry.withScope((scope) => {
+      scope.setTag("service", "twilio-transfer");
+      scope.setExtra("callSid", callSid);
+      scope.setExtra("transferTo", transferTo);
+      Sentry.captureException(err);
+    });
     return {
       success: false,
       message: "I'm sorry, I'm having trouble transferring the call. Let me take your information instead.",

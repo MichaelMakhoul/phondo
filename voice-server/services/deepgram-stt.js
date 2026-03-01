@@ -1,4 +1,5 @@
 const WebSocket = require("ws");
+const { Sentry } = require("../lib/sentry");
 
 /**
  * Industry-specific keywords that Deepgram should boost for better
@@ -129,6 +130,12 @@ function openDeepgramStream(apiKey, { onTranscript, onUtteranceEnd, onError, onC
     const reasonStr = reason ? reason.toString() : "";
     if (code !== 1000 && code !== 1005) {
       console.error(`[STT] Deepgram WebSocket closed unexpectedly: ${code} ${reasonStr}`);
+      Sentry.withScope((scope) => {
+        scope.setTag("service", "deepgram-stt");
+        scope.setExtra("closeCode", code);
+        scope.setExtra("closeReason", reasonStr);
+        Sentry.captureException(new Error(`Deepgram WebSocket closed unexpectedly: ${code} ${reasonStr}`));
+      });
     } else {
       console.log(`[STT] Deepgram WebSocket closed: ${code} ${reasonStr}`);
     }

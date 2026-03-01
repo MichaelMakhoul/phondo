@@ -8,6 +8,7 @@
 
 const { transferCall, sendTransferSMS } = require("./twilio-transfer");
 const { isWithinBusinessHours } = require("../lib/business-hours");
+const { Sentry } = require("../lib/sentry");
 
 const INTERNAL_API_URL = process.env.INTERNAL_API_URL;
 const INTERNAL_API_SECRET = process.env.INTERNAL_API_SECRET;
@@ -239,6 +240,14 @@ async function executeToolCall(functionName, args, context) {
 async function executeCalendarCall(functionName, args, context) {
   if (!INTERNAL_API_URL || !INTERNAL_API_SECRET) {
     console.error(`[ToolExecutor] Cannot execute ${functionName} — INTERNAL_API_URL or INTERNAL_API_SECRET not configured`);
+    Sentry.withScope((scope) => {
+      scope.setTag("service", "tool-executor");
+      scope.setTag("tool_function", functionName);
+      scope.setExtra("organizationId", context.organizationId);
+      scope.setExtra("assistantId", context.assistantId);
+      scope.setExtra("callId", context.callId);
+      Sentry.captureException(new Error(`ToolExecutor: missing INTERNAL_API_URL or INTERNAL_API_SECRET for ${functionName}`));
+    });
     return {
       message:
         "I'm sorry, I'm unable to access the calendar system right now. Would you like me to take your information instead?",
@@ -265,6 +274,16 @@ async function executeCalendarCall(functionName, args, context) {
     if (!res.ok) {
       const text = (await res.text()).slice(0, 500);
       console.error(`[ToolExecutor] Internal API error ${res.status}:`, text);
+      Sentry.withScope((scope) => {
+        scope.setTag("service", "tool-executor");
+        scope.setTag("tool_function", functionName);
+        scope.setExtra("organizationId", context.organizationId);
+        scope.setExtra("assistantId", context.assistantId);
+        scope.setExtra("callId", context.callId);
+        scope.setExtra("httpStatus", res.status);
+        scope.setExtra("responseBody", text);
+        Sentry.captureException(new Error(`ToolExecutor: internal API error ${res.status} for ${functionName}`));
+      });
       return {
         message:
           "I'm having trouble with that right now. Would you like me to take your information instead?",
@@ -275,6 +294,14 @@ async function executeCalendarCall(functionName, args, context) {
     return { message: data.message || "The operation completed but returned no message." };
   } catch (err) {
     console.error(`[ToolExecutor] Failed to execute ${functionName}:`, err.message);
+    Sentry.withScope((scope) => {
+      scope.setTag("service", "tool-executor");
+      scope.setTag("tool_function", functionName);
+      scope.setExtra("organizationId", context.organizationId);
+      scope.setExtra("assistantId", context.assistantId);
+      scope.setExtra("callId", context.callId);
+      Sentry.captureException(err);
+    });
     return { message: "I'm having a little trouble right now. Could you give me a moment?" };
   }
 }
@@ -347,6 +374,15 @@ async function executeTransferCall(args, context) {
 
   if (!matchedRule.transferToPhone) {
     console.error(`[ToolExecutor] Transfer rule "${matchedRule.transferToName || "unnamed"}" has no transferToPhone configured`);
+    Sentry.withScope((scope) => {
+      scope.setTag("service", "tool-executor");
+      scope.setTag("tool_function", "transfer_call");
+      scope.setExtra("organizationId", context.organizationId);
+      scope.setExtra("assistantId", context.assistantId);
+      scope.setExtra("callId", context.callId);
+      scope.setExtra("ruleName", matchedRule.transferToName || "unnamed");
+      Sentry.captureException(new Error(`Transfer rule "${matchedRule.transferToName || "unnamed"}" has no transferToPhone configured`));
+    });
     transferAttempt.outcome = "failed";
     return {
       message: "I'm sorry, I'm unable to transfer your call right now. Let me take your information and have someone call you back.",
@@ -398,6 +434,13 @@ async function executeTransferCall(args, context) {
     transferOptions.actionUrl = `${PUBLIC_URL}/twiml/transfer-status`;
   } else {
     console.error("[Transfer] PUBLIC_URL not set — no-answer fallback DISABLED");
+    Sentry.withScope((scope) => {
+      scope.setTag("service", "tool-executor");
+      scope.setTag("tool_function", "transfer_call");
+      scope.setExtra("organizationId", context.organizationId);
+      scope.setExtra("callId", context.callId);
+      Sentry.captureException(new Error("PUBLIC_URL not set — no-answer fallback DISABLED"));
+    });
   }
 
   const result = await transferCall(
