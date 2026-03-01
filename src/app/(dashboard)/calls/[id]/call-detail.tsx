@@ -18,6 +18,7 @@ import {
   BarChart3,
   Info,
   HelpCircle,
+  User,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -127,6 +128,7 @@ function getSpamScoreColor(score: number): string {
 }
 
 export function CallDetail({ call }: { call: Call }) {
+  const ownerAnswered = (call.metadata?.answeredBy as string) === "owner";
   const successEval = call.metadata?.successEvaluation as string | undefined;
   const unansweredQuestions = Array.isArray(call.metadata?.unansweredQuestions)
     ? (call.metadata.unansweredQuestions as string[])
@@ -165,6 +167,12 @@ export function CallDetail({ call }: { call: Call }) {
             <Badge variant="destructive">
               <ShieldAlert className="h-3 w-3 mr-1" />
               Spam
+            </Badge>
+          )}
+          {ownerAnswered && (
+            <Badge variant="secondary">
+              <User className="h-3 w-3 mr-1" />
+              You Answered
             </Badge>
           )}
           {(call.metadata?.piiRedacted as boolean) && (
@@ -364,7 +372,9 @@ export function CallDetail({ call }: { call: Call }) {
                 <p className="text-sm leading-relaxed">{call.summary}</p>
               ) : (
                 <p className="text-sm text-muted-foreground">
-                  No summary available for this call.
+                  {ownerAnswered
+                    ? "You answered this call directly \u2014 no AI summary available."
+                    : "No summary available for this call."}
                 </p>
               )}
             </CardContent>
@@ -466,9 +476,15 @@ export function CallDetail({ call }: { call: Call }) {
                 </ScrollArea>
               ) : (
                 <div className="py-8 text-center">
-                  <FileText className="mx-auto h-8 w-8 text-muted-foreground" />
+                  {ownerAnswered ? (
+                    <User className="mx-auto h-8 w-8 text-muted-foreground" />
+                  ) : (
+                    <FileText className="mx-auto h-8 w-8 text-muted-foreground" />
+                  )}
                   <p className="mt-2 text-sm text-muted-foreground">
-                    No transcript available for this call.
+                    {ownerAnswered
+                      ? "You answered this call directly \u2014 no AI transcript available."
+                      : "No transcript available for this call."}
                   </p>
                 </div>
               )}
