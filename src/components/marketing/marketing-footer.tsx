@@ -5,7 +5,7 @@ export function MarketingFooter() {
   return (
     <footer className="border-t py-12">
       <div className="container mx-auto px-4">
-        <div className="grid gap-8 sm:grid-cols-2 md:grid-cols-4">
+        <div className="grid gap-8 sm:grid-cols-2 md:grid-cols-5">
           <div>
             <Link href="/" className="flex items-center gap-2">
               <div className="flex h-7 w-7 items-center justify-center rounded-md bg-orange-500">
@@ -33,6 +33,31 @@ export function MarketingFooter() {
               <li>
                 <Link href="/demo" className="hover:text-foreground">
                   Live Demo
+                </Link>
+              </li>
+            </ul>
+          </div>
+          <div>
+            <h4 className="text-sm font-semibold">Industries</h4>
+            <ul className="mt-2 space-y-1 text-sm text-muted-foreground">
+              <li>
+                <Link href="/industries/dental" className="hover:text-foreground">
+                  Dental & Medical
+                </Link>
+              </li>
+              <li>
+                <Link href="/industries/legal" className="hover:text-foreground">
+                  Legal
+                </Link>
+              </li>
+              <li>
+                <Link href="/industries/home-services" className="hover:text-foreground">
+                  Home Services
+                </Link>
+              </li>
+              <li>
+                <Link href="/industries/real-estate" className="hover:text-foreground">
+                  Real Estate
                 </Link>
               </li>
             </ul>
