@@ -218,7 +218,7 @@ app.post("/twiml", async (req, res) => {
 
       return res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Dial timeout="${answerMode.ringFirstTimeout}" action="${escapeXml(PUBLIC_URL + '/twiml/ring-first-fallback')}" callerId="${escapeXml(from)}">
+  <Dial timeout="${escapeXml(String(answerMode.ringFirstTimeout))}" action="${escapeXml(PUBLIC_URL + '/twiml/ring-first-fallback')}" callerId="${escapeXml(from)}">
     ${escapeXml(answerMode.ringFirstNumber)}
   </Dial>
 </Response>`);
