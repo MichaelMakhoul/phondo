@@ -225,8 +225,9 @@ app.post("/twiml", async (req, res) => {
       console.log(`[TwiML] AI disabled for ${called} — returning voicemail TwiML (callSid=${callSid})`);
 
       // Log call so owner sees it in dashboard (uses createCallRecord for correct schema)
+      let ctx = null;
       try {
-        const ctx = await getPhoneNumberContext(called);
+        ctx = await getPhoneNumberContext(called);
         if (ctx) {
           const callId = await createCallRecord({
             orgId: ctx.organizationId,
@@ -247,9 +248,14 @@ app.post("/twiml", async (req, res) => {
         console.warn("[TwiML] Failed to log AI-disabled call (non-fatal):", logErr.message);
       }
 
+      const businessName = typeof ctx?.organizationName === "string" ? ctx.organizationName : null;
+      const greeting = businessName
+        ? `Thank you for calling ${escapeXml(businessName)}. We are unable to take your call right now. Please leave a message after the beep and we will get back to you as soon as possible.`
+        : `Thank you for calling. We are unable to take your call right now. Please leave a message after the beep and we will get back to you as soon as possible.`;
+
       return res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say voice="Polly.Joanna">Thank you for calling. We are unable to take your call right now. Please leave a message after the beep and we will get back to you as soon as possible.</Say>
+  <Say voice="Polly.Joanna">${greeting}</Say>
   <Record maxLength="120" playBeep="true" action="${escapeXml(PUBLIC_URL + '/twiml/ai-disabled-recording-done')}" />
   <Say voice="Polly.Joanna">Thank you for your message. Goodbye.</Say>
 </Response>`);

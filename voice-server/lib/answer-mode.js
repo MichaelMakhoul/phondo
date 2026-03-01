@@ -71,14 +71,14 @@ async function getAnswerMode(calledNumber) {
 /**
  * Look up organization, assistant, and phone number IDs for a called number.
  * Used to create call records for owner-answered ring-first calls.
- * Returns { organizationId, assistantId, phoneNumberId } or null.
+ * Returns { organizationId, assistantId, phoneNumberId, organizationName } or null.
  */
 async function getPhoneNumberContext(calledNumber) {
   const supabase = getSupabase();
 
   const { data: phone, error } = await supabase
     .from("phone_numbers")
-    .select("id, organization_id, assistant_id")
+    .select("id, organization_id, assistant_id, organizations(name)")
     .eq("phone_number", calledNumber)
     .eq("is_active", true)
     .single();
@@ -89,6 +89,7 @@ async function getPhoneNumberContext(calledNumber) {
     organizationId: phone.organization_id,
     assistantId: phone.assistant_id,
     phoneNumberId: phone.id,
+    organizationName: phone.organizations?.name || null,
   };
 }
 
