@@ -1,11 +1,12 @@
 import Link from "next/link";
 import { Phone } from "lucide-react";
+import { INDUSTRY_PAGES } from "@/lib/industry-pages";
 
 export function MarketingFooter() {
   return (
     <footer className="border-t py-12">
       <div className="container mx-auto px-4">
-        <div className="grid gap-8 sm:grid-cols-2 md:grid-cols-4">
+        <div className="grid gap-8 sm:grid-cols-2 md:grid-cols-5">
           <div>
             <Link href="/" className="flex items-center gap-2">
               <div className="flex h-7 w-7 items-center justify-center rounded-md bg-orange-500">
@@ -35,6 +36,18 @@ export function MarketingFooter() {
                   Live Demo
                 </Link>
               </li>
+            </ul>
+          </div>
+          <div>
+            <h4 className="text-sm font-semibold">Industries</h4>
+            <ul className="mt-2 space-y-1 text-sm text-muted-foreground">
+              {INDUSTRY_PAGES.map((industry) => (
+                <li key={industry.slug}>
+                  <Link href={`/industries/${industry.slug}`} className="hover:text-foreground">
+                    {industry.name}
+                  </Link>
+                </li>
+              ))}
             </ul>
           </div>
           <div>
