@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { BusinessSettingsForm } from "./business-settings-form";
 import { AnswerModeCard } from "./answer-mode-card";
+import { PiiRedactionCard } from "./pii-redaction-card";
 import { BrandingForm } from "./branding-form";
 import { DeleteAccountCard } from "./delete-account-card";
 
@@ -97,14 +98,20 @@ export default async function SettingsPage() {
       />
 
       {assistant && (
-        <AnswerModeCard
-          assistantId={assistant.id}
-          initialSettings={{
-            answerMode: assistant.settings?.answerMode || "ai_first",
-            ringFirstNumber: assistant.settings?.ringFirstNumber || "",
-            ringFirstTimeout: assistant.settings?.ringFirstTimeout || 20,
-          }}
-        />
+        <>
+          <AnswerModeCard
+            assistantId={assistant.id}
+            initialSettings={{
+              answerMode: assistant.settings?.answerMode || "ai_first",
+              ringFirstNumber: assistant.settings?.ringFirstNumber || "",
+              ringFirstTimeout: assistant.settings?.ringFirstTimeout || 20,
+            }}
+          />
+          <PiiRedactionCard
+            assistantId={assistant.id}
+            initialEnabled={assistant.settings?.piiRedactionEnabled || false}
+          />
+        </>
       )}
 
       <BrandingForm

@@ -441,7 +441,7 @@ wss.on("connection", (twilioWs) => {
       return;
     }
 
-    const transcript = s.getTranscript();
+    let transcript = s.getTranscript();
     const durationSeconds = s.getDurationSeconds();
     const callStatus = s.callFailed ? "failed" : "completed";
     const endedReason = s.endedReason || "caller-hangup";
@@ -456,6 +456,32 @@ wss.on("connection", (twilioWs) => {
         }
       } catch (err) {
         console.error("[PostCall] Analysis failed:", err);
+      }
+    }
+
+    // PII redaction — runs after analysis, before anything is persisted
+    let piiRedacted = false;
+    if (s.piiRedactionEnabled) {
+      const { detectAndRedact, redactObject } = require("./lib/pii-detector");
+      const transcriptResult = detectAndRedact(transcript);
+      if (transcriptResult.piiFound) {
+        transcript = transcriptResult.redacted;
+        piiRedacted = true;
+      }
+      if (analysis?.summary) {
+        const summaryResult = detectAndRedact(analysis.summary);
+        if (summaryResult.piiFound) {
+          analysis.summary = summaryResult.redacted;
+          piiRedacted = true;
+        }
+      }
+      if (analysis?.collectedData) {
+        const redactedData = redactObject(analysis.collectedData);
+        analysis.collectedData = redactedData.redacted;
+        if (redactedData.piiFound) piiRedacted = true;
+      }
+      if (piiRedacted) {
+        console.log(`[PII] Redacted PII from call ${s.callSid}`);
       }
     }
 
@@ -476,6 +502,7 @@ wss.on("connection", (twilioWs) => {
           callerState: s.callerState || null,
           consentReason: s.consentReason || null,
           sentiment: analysis?.sentiment || null,
+          piiRedacted,
         });
       } catch (err) {
         console.error("[Cleanup] Failed to complete call record:", err);
@@ -676,6 +703,7 @@ wss.on("connection", (twilioWs) => {
             industry: context.organization.industry,
           };
           session.orgPhoneNumber = calledNumber;
+          session.piiRedactionEnabled = !!(context.assistant.settings?.piiRedactionEnabled);
 
           // After-hours detection
           const { isAfterHours, afterHoursConfig, effectiveCalendarEnabled } = resolveAfterHoursState(context);
