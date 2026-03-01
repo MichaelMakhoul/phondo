@@ -59,6 +59,7 @@ async function completeCallRecord(callId, {
   sentiment,
   piiRedacted,
   answeredBy,
+  outcome,
 }) {
   const supabase = getSupabase();
 
@@ -69,6 +70,7 @@ async function completeCallRecord(callId, {
     transcript: transcript || null,
   };
 
+  if (outcome) updatePayload.outcome = outcome;
   if (summary) updatePayload.summary = summary;
   if (callerName) updatePayload.caller_name = callerName;
   if (collectedData) updatePayload.collected_data = collectedData;

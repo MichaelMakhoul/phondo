@@ -14,6 +14,7 @@ const updatePhoneNumberSchema = z.object({
   friendlyName: z.string().optional(),
   forwardingStatus: z.enum(["pending_setup", "active", "paused"]).optional(),
   carrier: z.string().optional(),
+  aiEnabled: z.boolean().optional(),
 });
 
 // GET /api/v1/phone-numbers/[id] - Get a single phone number
@@ -144,6 +145,9 @@ export async function PATCH(
     }
     if (validatedData.carrier !== undefined) {
       updateData.carrier = validatedData.carrier;
+    }
+    if (validatedData.aiEnabled !== undefined) {
+      updateData.ai_enabled = validatedData.aiEnabled;
     }
 
     const { data: phoneNumber, error } = await (supabase

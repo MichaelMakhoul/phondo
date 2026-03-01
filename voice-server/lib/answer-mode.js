@@ -1,6 +1,36 @@
 const { getSupabase } = require("./supabase");
 
 /**
+ * Check if AI answering is enabled for a phone number.
+ * Fail-open: returns true if DB is unreachable (false negative > dropping calls).
+ */
+async function isAiEnabled(calledNumber) {
+  try {
+    const supabase = getSupabase();
+    const { data, error } = await supabase
+      .from("phone_numbers")
+      .select("ai_enabled")
+      .eq("phone_number", calledNumber)
+      .eq("is_active", true)
+      .single();
+    if (error) {
+      // PGRST116 = "no rows" — expected for unknown numbers
+      if (error.code !== "PGRST116") {
+        console.error("[AnswerMode] isAiEnabled DB error (fail-open):", {
+          calledNumber, code: error.code, message: error.message,
+        });
+      }
+      return true; // fail-open
+    }
+    if (!data) return true; // fail-open
+    return data.ai_enabled !== false;
+  } catch (err) {
+    console.error("[AnswerMode] isAiEnabled check failed (fail-open):", err.message);
+    return true; // fail-open
+  }
+}
+
+/**
  * Look up the answer mode for a phone number.
  * Returns { answerMode, ringFirstNumber, ringFirstTimeout } or null.
  */
@@ -13,6 +43,7 @@ async function getAnswerMode(calledNumber) {
     .select("assistant_id")
     .eq("phone_number", calledNumber)
     .eq("is_active", true)
+    .eq("ai_enabled", true)
     .single();
 
   if (phoneError || !phone || !phone.assistant_id) return null;
@@ -61,4 +92,4 @@ async function getPhoneNumberContext(calledNumber) {
   };
 }
 
-module.exports = { getAnswerMode, getPhoneNumberContext };
+module.exports = { isAiEnabled, getAnswerMode, getPhoneNumberContext };
