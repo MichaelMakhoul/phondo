@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { Phone } from "lucide-react";
+import { INDUSTRY_PAGES } from "@/lib/industry-pages";
 
 export function MarketingFooter() {
   return (
@@ -40,26 +41,13 @@ export function MarketingFooter() {
           <div>
             <h4 className="text-sm font-semibold">Industries</h4>
             <ul className="mt-2 space-y-1 text-sm text-muted-foreground">
-              <li>
-                <Link href="/industries/dental" className="hover:text-foreground">
-                  Dental & Medical
-                </Link>
-              </li>
-              <li>
-                <Link href="/industries/legal" className="hover:text-foreground">
-                  Legal
-                </Link>
-              </li>
-              <li>
-                <Link href="/industries/home-services" className="hover:text-foreground">
-                  Home Services
-                </Link>
-              </li>
-              <li>
-                <Link href="/industries/real-estate" className="hover:text-foreground">
-                  Real Estate
-                </Link>
-              </li>
+              {INDUSTRY_PAGES.map((industry) => (
+                <li key={industry.slug}>
+                  <Link href={`/industries/${industry.slug}`} className="hover:text-foreground">
+                    {industry.name}
+                  </Link>
+                </li>
+              ))}
             </ul>
           </div>
           <div>

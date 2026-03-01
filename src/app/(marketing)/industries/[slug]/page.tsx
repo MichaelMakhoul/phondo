@@ -53,22 +53,22 @@ const ICON_MAP: Record<string, LucideIcon> = {
 
 const COLOR_MAP: Record<string, { badge: string; icon: string; glow: string }> = {
   rose: {
-    badge: "border-rose-500/30 bg-rose-500/10 text-rose-300",
+    badge: "border-rose-500/30 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20",
     icon: "bg-rose-500/10 text-rose-500",
     glow: "bg-rose-500/10",
   },
   blue: {
-    badge: "border-blue-500/30 bg-blue-500/10 text-blue-300",
+    badge: "border-blue-500/30 bg-blue-500/10 text-blue-300 hover:bg-blue-500/20",
     icon: "bg-blue-500/10 text-blue-500",
     glow: "bg-blue-500/10",
   },
   amber: {
-    badge: "border-amber-500/30 bg-amber-500/10 text-amber-300",
+    badge: "border-amber-500/30 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20",
     icon: "bg-amber-500/10 text-amber-500",
     glow: "bg-amber-500/10",
   },
   emerald: {
-    badge: "border-emerald-500/30 bg-emerald-500/10 text-emerald-300",
+    badge: "border-emerald-500/30 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20",
     icon: "bg-emerald-500/10 text-emerald-500",
     glow: "bg-emerald-500/10",
   },
@@ -133,7 +133,7 @@ export default async function IndustryPage({
               <HeroIcon className="h-8 w-8" />
             </div>
             <Badge
-              className={`mb-6 ${colors.badge} hover:${colors.badge}`}
+              className={`mb-6 ${colors.badge}`}
             >
               Built for {industry.name}
             </Badge>
@@ -263,7 +263,7 @@ export default async function IndustryPage({
                     className="gap-2 bg-orange-500 text-white hover:bg-orange-600"
                   >
                     Start Free Trial
-                    <ArrowRight className="ml-2 h-4 w-4" />
+                    <ArrowRight className="h-4 w-4" />
                   </Button>
                 </Link>
                 <Link href="/demo">
