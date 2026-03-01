@@ -20,6 +20,8 @@ import {
   Check,
   PhoneForwarded,
   Globe,
+  Lock,
+  Server,
   Play,
   Headphones,
   Stethoscope,
@@ -385,6 +387,63 @@ export default function LandingPage() {
                   </div>
                 </AnimateOnScroll>
               ))}
+            </div>
+          </div>
+        </section>
+
+        {/* Trust & Compliance */}
+        <section className="border-t py-16 sm:py-24">
+          <div className="container mx-auto px-4">
+            <AnimateOnScroll className="text-center">
+              <h2 className="text-3xl font-bold">Built on trust and security</h2>
+              <p className="mt-3 text-muted-foreground">
+                Australian data sovereignty. Enterprise-grade security. Privacy by design.
+              </p>
+            </AnimateOnScroll>
+            <div className="mx-auto mt-14 grid max-w-5xl gap-6 sm:grid-cols-2 lg:grid-cols-4">
+              {[
+                {
+                  icon: Server,
+                  title: "Australian Data Hosting",
+                  description: "Your data stays in Australia. Hosted on Australian infrastructure with local data sovereignty.",
+                },
+                {
+                  icon: Shield,
+                  title: "Enterprise Security",
+                  description: "Bank-grade encryption for all calls, transcripts, and personal data.",
+                },
+                {
+                  icon: Lock,
+                  title: "Privacy Compliant",
+                  description: "Compliant with Australian Privacy Act and state-aware recording consent laws.",
+                },
+                {
+                  icon: Zap,
+                  title: "99.9% Uptime",
+                  description: "Enterprise-grade reliability so you never miss a call.",
+                },
+              ].map((item, i) => (
+                <AnimateOnScroll
+                  key={item.title}
+                  animation={staggeredFadeIn(i, 4)}
+                >
+                  <div className="rounded-lg border bg-card p-6 text-center transition-all border-glow-hover">
+                    <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-orange-500/10">
+                      <item.icon className="h-6 w-6 text-orange-500" />
+                    </div>
+                    <h3 className="mt-4 font-semibold">{item.title}</h3>
+                    <p className="mt-2 text-sm text-muted-foreground">
+                      {item.description}
+                    </p>
+                  </div>
+                </AnimateOnScroll>
+              ))}
+            </div>
+            <div className="mt-10 text-center">
+              <Link href="/data-sovereignty" className="inline-flex items-center gap-1.5 text-sm font-medium text-orange-500 hover:text-orange-600 transition-colors">
+                Learn more about our security
+                <ArrowRight className="h-4 w-4" />
+              </Link>
             </div>
           </div>
         </section>
