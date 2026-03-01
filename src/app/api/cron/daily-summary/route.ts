@@ -6,53 +6,47 @@ const DEFAULT_TIMEZONE = "Australia/Sydney";
 
 function getYesterdayRange(timezone: string): { start: string; end: string } {
   const now = new Date();
-  // Format current date in the org's timezone to find "today"
-  const formatter = new Intl.DateTimeFormat("en-CA", {
+  const todayStr = new Intl.DateTimeFormat("en-CA", {
     timeZone: timezone,
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
-  });
-  const todayStr = formatter.format(now); // e.g. "2026-03-02"
+  }).format(now); // e.g. "2026-03-02"
 
-  // Start of today in the org's timezone
-  const todayLocal = new Date(`${todayStr}T00:00:00`);
-  // Yesterday = today - 1 day
-  const yesterdayLocal = new Date(todayLocal);
-  yesterdayLocal.setDate(yesterdayLocal.getDate() - 1);
-  const yesterdayStr = formatter.format(yesterdayLocal);
+  // Get yesterday's date string by subtracting 1 day at noon UTC (avoids boundary issues)
+  const todayNoon = new Date(`${todayStr}T12:00:00Z`);
+  const yesterdayNoon = new Date(todayNoon.getTime() - 86_400_000);
+  const yesterdayStr = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "UTC",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(yesterdayNoon);
 
-  // Convert local midnight boundaries to UTC using timezone offset calculation
-  const startUtc = localMidnightToUtc(yesterdayStr, timezone);
-  const endUtc = localMidnightToUtc(todayStr, timezone);
-
-  return { start: startUtc, end: endUtc };
+  return {
+    start: toUtcMidnight(yesterdayStr, timezone),
+    end: toUtcMidnight(todayStr, timezone),
+  };
 }
 
-function localMidnightToUtc(dateStr: string, timezone: string): string {
-  // Create a date at midnight UTC, then adjust for timezone offset
-  const utcDate = new Date(`${dateStr}T00:00:00Z`);
-  // Get the offset by comparing how the timezone formats vs UTC
-  const testDate = new Date(`${dateStr}T12:00:00Z`);
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: timezone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).formatToParts(testDate);
+/**
+ * Find the UTC instant when it's midnight on `dateStr` in `timezone`.
+ * Uses two-step offset correction to handle DST transitions correctly.
+ */
+function toUtcMidnight(dateStr: string, timezone: string): string {
+  const midnightUtc = new Date(`${dateStr}T00:00:00Z`);
+  // Step 1: approximate offset from midnight UTC
+  const offset1 = tzOffsetMs(midnightUtc, timezone);
+  const approx = new Date(midnightUtc.getTime() - offset1);
+  // Step 2: refine using offset at the approximate local midnight
+  const offset2 = tzOffsetMs(approx, timezone);
+  return new Date(midnightUtc.getTime() - offset2).toISOString();
+}
 
-  const tzHour = parseInt(parts.find((p) => p.type === "hour")!.value);
-  const tzMinute = parseInt(parts.find((p) => p.type === "minute")!.value);
-  const utcHour = testDate.getUTCHours();
-  const utcMinute = testDate.getUTCMinutes();
-
-  const offsetMinutes = (tzHour * 60 + tzMinute) - (utcHour * 60 + utcMinute);
-  // Subtract offset to go from local midnight to UTC
-  const result = new Date(utcDate.getTime() - offsetMinutes * 60 * 1000);
-  return result.toISOString();
+function tzOffsetMs(date: Date, timezone: string): number {
+  const utcStr = date.toLocaleString("en-US", { timeZone: "UTC" });
+  const localStr = date.toLocaleString("en-US", { timeZone: timezone });
+  return new Date(localStr).getTime() - new Date(utcStr).getTime();
 }
 
 export async function GET(req: NextRequest) {
@@ -85,7 +79,13 @@ export async function GET(req: NextRequest) {
 
   for (const org of orgs ?? []) {
     try {
-      const timezone = org.timezone || DEFAULT_TIMEZONE;
+      let timezone = org.timezone || DEFAULT_TIMEZONE;
+      try {
+        Intl.DateTimeFormat(undefined, { timeZone: timezone });
+      } catch {
+        console.error(`[DailySummary] Invalid timezone "${timezone}" for org ${org.id} — falling back to ${DEFAULT_TIMEZONE}`);
+        timezone = DEFAULT_TIMEZONE;
+      }
       const { start, end } = getYesterdayRange(timezone);
 
       // Query calls for yesterday in the org's timezone
