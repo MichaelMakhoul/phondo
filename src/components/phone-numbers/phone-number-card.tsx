@@ -117,14 +117,14 @@ export function PhoneNumberCard({ phoneNumber, countryCode }: PhoneNumberCardPro
     dialogTitle = "Pause AI for this number?";
     dialCode = carrierInfo?.instructions.conditional.disable ?? null;
     dialogDescription = dialCode
-      ? "To stop forwarding calls to our AI, dial the code below from your phone. Calls will ring your phone directly until you re-enable."
+      ? "Step 1: Open your phone\u2019s dialer and dial the code below. Step 2: Click \u201CPause AI\u201D. Calls will ring your phone directly until you re-enable."
       : "To stop AI from answering, disable call forwarding on your phone through your carrier settings.";
   } else if (isForwarded && pendingValue) {
     dialogTitle = "Re-enable AI for this number?";
     const rawCode = carrierInfo?.instructions.conditional.enable ?? null;
     dialCode = rawCode ? formatInstructions(rawCode, phoneNumber.phone_number) : null;
     dialogDescription = dialCode
-      ? "To resume forwarding calls to our AI, dial the code below from your phone."
+      ? "Step 1: Open your phone\u2019s dialer and dial the code below. Step 2: Click \u201CEnable AI\u201D."
       : "To resume AI answering, re-enable call forwarding on your phone through your carrier settings.";
   } else {
     dialogTitle = "Pause AI for this number?";
@@ -136,9 +136,7 @@ export function PhoneNumberCard({ phoneNumber, countryCode }: PhoneNumberCardPro
     ? `${carrierInfo.name} ${pendingValue ? "enable" : "disable"} code`
     : pendingValue ? "Enable forwarding code" : "Disable forwarding code";
 
-  const dialCodeHint = pendingValue
-    ? "Dial this from your phone to resume forwarding"
-    : "Dial this from your phone to stop forwarding";
+  const dialCodeHint = "Tap the code to open your dialer";
 
   return (
     <>
@@ -163,12 +161,15 @@ export function PhoneNumberCard({ phoneNumber, countryCode }: PhoneNumberCardPro
               </div>
             </div>
             <div className="flex items-center gap-2">
-              <Switch
-                checked={aiEnabled}
-                onCheckedChange={handleToggle}
-                disabled={toggling}
-                aria-label={aiEnabled ? "Pause AI" : "Enable AI"}
-              />
+              <label className="flex items-center gap-1.5 cursor-pointer">
+                <span className="text-xs text-muted-foreground">AI</span>
+                <Switch
+                  checked={aiEnabled}
+                  onCheckedChange={handleToggle}
+                  disabled={toggling}
+                  aria-label={aiEnabled ? "Pause AI" : "Enable AI"}
+                />
+              </label>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Phone number options">
@@ -251,7 +252,12 @@ export function PhoneNumberCard({ phoneNumber, countryCode }: PhoneNumberCardPro
           {dialCode && (
             <div className="rounded-lg bg-muted p-4 text-center">
               <p className="text-xs text-muted-foreground mb-1">{dialCodeLabel}</p>
-              <p className="text-2xl font-mono font-bold tracking-wider">{dialCode}</p>
+              <a
+                href={`tel:${encodeURIComponent(dialCode)}`}
+                className="block text-2xl font-mono font-bold tracking-wider text-primary hover:underline"
+              >
+                {dialCode}
+              </a>
               <p className="text-xs text-muted-foreground mt-2">{dialCodeHint}</p>
             </div>
           )}
