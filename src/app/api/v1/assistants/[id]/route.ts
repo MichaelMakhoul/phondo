@@ -50,8 +50,9 @@ const updateAssistantSchema = z.object({
     spamFilterEnabled: z.boolean().optional(),
     industry: z.string().optional(),
     answerMode: z.enum(["ai_first", "ring_first"]).optional(),
-    ringFirstNumber: z.string().regex(/^\+\d{7,15}$/).optional(),
-    ringFirstTimeout: z.number().min(5).max(60).optional(),
+    ringFirstNumber: z.string().regex(/^\+\d{7,15}$/).nullable().optional(),
+    ringFirstTimeout: z.number().min(5).max(60).nullable().optional(),
+    piiRedactionEnabled: z.boolean().optional(),
   }).passthrough().optional(),
 });
 
@@ -147,10 +148,14 @@ export async function PATCH(
     }
 
     // Merge incoming settings with existing to preserve fields like industry
-    const mergedSettings = {
+    const mergedSettings: Record<string, any> = {
       ...(currentAssistant.settings || {}),
       ...(validatedData.settings || {}),
     };
+    // Strip null values so stale ring-first fields are removed when switching to ai_first
+    for (const key of Object.keys(mergedSettings)) {
+      if (mergedSettings[key] === null) delete mergedSettings[key];
+    }
     const { recordingEnabled, recordingDisclosure } = resolveRecordingSettings(mergedSettings);
 
     // Sync relevant changes to Vapi

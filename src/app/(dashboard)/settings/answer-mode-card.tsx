@@ -62,8 +62,8 @@ export function AnswerModeCard({ assistantId, initialSettings }: AnswerModeCardP
         body: JSON.stringify({
           settings: {
             answerMode,
-            ringFirstNumber: answerMode === "ring_first" ? ringFirstNumber.trim() : undefined,
-            ringFirstTimeout: answerMode === "ring_first" ? ringFirstTimeout : undefined,
+            ringFirstNumber: answerMode === "ring_first" ? ringFirstNumber.trim() : null,
+            ringFirstTimeout: answerMode === "ring_first" ? ringFirstTimeout : null,
           },
         }),
       });
