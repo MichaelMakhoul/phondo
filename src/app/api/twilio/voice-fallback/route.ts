@@ -1,4 +1,36 @@
 import { createAdminClient } from "@/lib/supabase/admin";
+import Twilio from "twilio";
+
+const REJECTED_TWIML = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="Polly.Joanna">Sorry, this request could not be processed.</Say>
+</Response>`;
+
+/**
+ * Validate that the incoming request was actually sent by Twilio.
+ * Returns the parsed form params if valid, or null if invalid.
+ */
+function validateTwilioSignature(
+  request: Request,
+  params: Record<string, string>,
+  path: string
+): boolean {
+  const twilioAuthToken = process.env.TWILIO_AUTH_TOKEN;
+  if (!twilioAuthToken) {
+    console.error("[VoiceFallback] TWILIO_AUTH_TOKEN not configured — cannot validate request");
+    return false;
+  }
+
+  const signature = request.headers.get("X-Twilio-Signature") || "";
+  if (!process.env.NEXT_PUBLIC_APP_URL) {
+    console.warn("[VoiceFallback] NEXT_PUBLIC_APP_URL not set — signature validation may fail behind a proxy");
+  }
+  const url = process.env.NEXT_PUBLIC_APP_URL
+    ? `${process.env.NEXT_PUBLIC_APP_URL}${path}`
+    : request.url;
+
+  return Twilio.validateRequest(twilioAuthToken, signature, url, params);
+}
 
 /**
  * POST /api/twilio/voice-fallback
@@ -9,12 +41,38 @@ import { createAdminClient } from "@/lib/supabase/admin";
  */
 export async function POST(request: Request) {
   try {
-    const url = new URL(request.url);
+    const requestUrl = new URL(request.url);
+    const isRecordingDone = requestUrl.searchParams.get("recording") === "done";
+
+    // Parse form data once — used for both validation and business logic
     const formData = await request.formData();
+    const params: Record<string, string> = {};
+    formData.forEach((value, key) => {
+      params[key] = value.toString();
+    });
+
+    // Determine the correct path for signature validation
+    // (Twilio signs against the full URL including query params)
+    const validationPath = isRecordingDone
+      ? "/api/twilio/voice-fallback?recording=done"
+      : "/api/twilio/voice-fallback";
+
+    // Validate Twilio signature
+    const isValid = validateTwilioSignature(request, params, validationPath);
+    if (!isValid) {
+      console.warn("[VoiceFallback] Invalid Twilio signature — rejecting request", {
+        path: validationPath,
+        from: params.From || "unknown",
+      });
+      return new Response(REJECTED_TWIML, {
+        status: 403,
+        headers: { "Content-Type": "text/xml" },
+      });
+    }
 
     // Twilio POSTs back to the action URL after recording completes.
     // Just return a goodbye — don't re-log the call.
-    if (url.searchParams.get("recording") === "done") {
+    if (isRecordingDone) {
       const goodbye = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say voice="Polly.Joanna">Thank you for your message. Goodbye.</Say>
@@ -25,9 +83,9 @@ export async function POST(request: Request) {
       });
     }
 
-    const from = formData.get("From")?.toString() || "Unknown";
-    const called = formData.get("Called")?.toString() || "Unknown";
-    const errorCode = formData.get("ErrorCode")?.toString() || "";
+    const from = params.From || "Unknown";
+    const called = params.Called || "Unknown";
+    const errorCode = params.ErrorCode || "";
 
     console.error("[VoiceFallback] Primary voice webhook failed — serving fallback TwiML", {
       From: from,
