@@ -26,26 +26,33 @@ function sanitizeAfterHoursConfig(raw, assistantId) {
  * Load all context needed to handle a call on a self-hosted phone number.
  *
  * @param {string} calledNumber - E.164 phone number (e.g. "+61299999999")
+ * @param {object} [prefetchedPhone] - Optional pre-fetched phone record from lookupPhoneNumber()
  * @returns {Promise<object|null>} Combined context or null if not found/not active
  */
-async function loadCallContext(calledNumber) {
+async function loadCallContext(calledNumber, prefetchedPhone) {
   const supabase = getSupabase();
 
-  // 1. Look up the phone number — must be active (accepts any voice_provider
-  //    since all Twilio-routed numbers now point at the voice server)
-  const { data: phone, error: phoneError } = await supabase
-    .from("phone_numbers")
-    .select("id, organization_id, assistant_id")
-    .eq("phone_number", calledNumber)
-    .eq("is_active", true)
-    .eq("ai_enabled", true)
-    .single();
+  let phone = prefetchedPhone;
+  if (phone && phone.ai_enabled === false) return null;
+  if (!phone) {
+    // Standalone query (backwards compat)
+    // 1. Look up the phone number — must be active (accepts any voice_provider
+    //    since all Twilio-routed numbers now point at the voice server)
+    const { data, error: phoneError } = await supabase
+      .from("phone_numbers")
+      .select("id, organization_id, assistant_id")
+      .eq("phone_number", calledNumber)
+      .eq("is_active", true)
+      .eq("ai_enabled", true)
+      .single();
 
-  if (phoneError || !phone) {
-    if (phoneError && phoneError.code !== "PGRST116") {
-      console.error("[CallContext] Phone lookup error:", phoneError);
+    if (phoneError || !data) {
+      if (phoneError && phoneError.code !== "PGRST116") {
+        console.error("[CallContext] Phone lookup error:", phoneError);
+      }
+      return null;
     }
-    return null;
+    phone = data;
   }
 
   if (!phone.assistant_id) {

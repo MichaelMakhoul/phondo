@@ -22,7 +22,7 @@ const { detectExpectedInput } = require("./lib/input-type-detector");
 const { requiresRecordingDisclosureHybrid, getRecordingDisclosureText } = require("./lib/recording-consent");
 const { getSupabase } = require("./lib/supabase");
 const { saveForTransfer, getTransfer, consumeTransfer, finishTransferredCall } = require("./lib/pending-transfers");
-const { isAiEnabled, getAnswerMode, getPhoneNumberContext } = require("./lib/answer-mode");
+const { lookupPhoneNumber, isAiEnabled, getAnswerMode, getPhoneNumberContext } = require("./lib/answer-mode");
 const { detectAndRedact, redactObject } = require("./lib/pii-detector");
 
 // Validate required env vars before deriving any constants
@@ -161,11 +161,11 @@ function validateTwilioSignature(req) {
 const pendingTokens = new Map();
 const TOKEN_TTL_MS = 30_000;
 
-function issueStreamToken(calledNumber, callerPhone, reconnectCallSid) {
+function issueStreamToken(calledNumber, callerPhone, reconnectCallSid, phoneRecord) {
   const ts = Date.now().toString();
   const hmac = crypto.createHmac("sha256", WS_SECRET).update(ts).digest("hex");
   const token = `${ts}.${hmac}`;
-  pendingTokens.set(token, { issuedAt: Date.now(), calledNumber, callerPhone, reconnectCallSid });
+  pendingTokens.set(token, { issuedAt: Date.now(), calledNumber, callerPhone, reconnectCallSid, phoneRecord });
   return token;
 }
 
@@ -186,7 +186,7 @@ function consumeStreamToken(token) {
     const expectedBuf = Buffer.from(expected);
     if (hmacBuf.length !== expectedBuf.length) return null;
     if (!crypto.timingSafeEqual(hmacBuf, expectedBuf)) return null;
-    return { calledNumber: entry.calledNumber, callerPhone: entry.callerPhone, reconnectCallSid: entry.reconnectCallSid };
+    return { calledNumber: entry.calledNumber, callerPhone: entry.callerPhone, reconnectCallSid: entry.reconnectCallSid, phoneRecord: entry.phoneRecord };
   } catch (err) {
     console.error("[Auth] Token verification threw unexpectedly — if this repeats, all calls will be rejected:", err);
     return null;
@@ -217,9 +217,12 @@ app.post("/twiml", async (req, res) => {
   const called = req.body.Called || "";
   const from = req.body.From || "";
 
+  // Single phone number lookup — shared across isAiEnabled, getAnswerMode, and loadCallContext
+  const phoneRecord = await lookupPhoneNumber(called);
+
   // Check if AI answering is disabled for this number (emergency shutoff)
   try {
-    const aiEnabled = await isAiEnabled(called);
+    const aiEnabled = await isAiEnabled(called, phoneRecord);
     if (!aiEnabled) {
       const callSid = req.body.CallSid || `ai_disabled_${Date.now()}`;
       console.log(`[TwiML] AI disabled for ${called} — returning voicemail TwiML (callSid=${callSid})`);
@@ -227,7 +230,7 @@ app.post("/twiml", async (req, res) => {
       // Log call so owner sees it in dashboard (uses createCallRecord for correct schema)
       let ctx = null;
       try {
-        ctx = await getPhoneNumberContext(called);
+        ctx = await getPhoneNumberContext(called, phoneRecord);
         if (ctx) {
           const callId = await createCallRecord({
             orgId: ctx.organizationId,
@@ -267,7 +270,7 @@ app.post("/twiml", async (req, res) => {
 
   // Check if this assistant uses ring-first mode
   try {
-    const answerMode = await getAnswerMode(called);
+    const answerMode = await getAnswerMode(called, phoneRecord);
     if (answerMode && answerMode.answerMode === "ring_first") {
       console.log(`[TwiML] Ring-first mode: from=${from} to=${called}, ringing ${answerMode.ringFirstNumber} for ${answerMode.ringFirstTimeout}s`);
 
@@ -283,8 +286,8 @@ app.post("/twiml", async (req, res) => {
     console.error("[TwiML] getAnswerMode failed (falling back to AI):", err.message);
   }
 
-  // Default: AI answers immediately
-  const token = issueStreamToken(called, from);
+  // Default: AI answers immediately — pass phoneRecord to avoid re-querying in loadCallContext
+  const token = issueStreamToken(called, from, undefined, phoneRecord);
   console.log(`[TwiML] Incoming call from=${from} to=${called}, streaming to ${WS_URL}`);
 
   res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
@@ -694,7 +697,7 @@ wss.on("connection", (twilioWs) => {
             return;
           }
 
-          const { calledNumber, callerPhone, reconnectCallSid } = tokenData;
+          const { calledNumber, callerPhone, reconnectCallSid, phoneRecord } = tokenData;
 
           // Reconnection after failed transfer — restore session from saved state
           if (reconnectCallSid) {
@@ -795,11 +798,11 @@ wss.on("connection", (twilioWs) => {
           sessions.set(streamSid, session);
           console.log(`[Twilio] Stream started — callSid=${callSid} streamSid=${streamSid} called=${calledNumber} from=${callerPhone}`);
 
-          // Load call context from database
+          // Load call context from database — pass phoneRecord to skip redundant phone_numbers query
           let context = null;
           if (calledNumber) {
             try {
-              context = await loadCallContext(calledNumber);
+              context = await loadCallContext(calledNumber, phoneRecord);
             } catch (err) {
               console.error("[Context] Failed to load call context:", err);
             }
