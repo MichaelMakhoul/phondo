@@ -199,6 +199,7 @@ describe("getPhoneNumberContext", () => {
       organizationId: "org-1",
       assistantId: "ast-1",
       phoneNumberId: "ph-1",
+      organizationName: null,
     });
   });
 });

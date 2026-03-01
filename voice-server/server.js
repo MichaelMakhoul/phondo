@@ -248,7 +248,7 @@ app.post("/twiml", async (req, res) => {
         console.warn("[TwiML] Failed to log AI-disabled call (non-fatal):", logErr.message);
       }
 
-      const businessName = ctx?.organizationName;
+      const businessName = typeof ctx?.organizationName === "string" ? ctx.organizationName : null;
       const greeting = businessName
         ? `Thank you for calling ${escapeXml(businessName)}. We are unable to take your call right now. Please leave a message after the beep and we will get back to you as soon as possible.`
         : `Thank you for calling. We are unable to take your call right now. Please leave a message after the beep and we will get back to you as soon as possible.`;
