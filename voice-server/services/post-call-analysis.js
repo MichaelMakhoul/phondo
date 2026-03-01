@@ -5,6 +5,8 @@
  * - summary, success_evaluation, collected_data
  */
 
+const { Sentry } = require("../lib/sentry");
+
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const ANALYSIS_MODEL = "gpt-4.1-nano";
 
@@ -38,6 +40,10 @@ async function analyzeCallTranscript(transcript) {
 
   if (!OPENAI_API_KEY) {
     console.error("[PostCallAnalysis] OPENAI_API_KEY not set");
+    Sentry.withScope((scope) => {
+      scope.setTag("service", "post-call-analysis");
+      Sentry.captureException(new Error("PostCallAnalysis: OPENAI_API_KEY not set"));
+    });
     return null;
   }
 
@@ -70,6 +76,12 @@ async function analyzeCallTranscript(transcript) {
     if (!res.ok) {
       const text = (await res.text()).slice(0, 500);
       console.error(`[PostCallAnalysis] OpenAI API error ${res.status}:`, text);
+      Sentry.withScope((scope) => {
+        scope.setTag("service", "post-call-analysis");
+        scope.setExtra("httpStatus", res.status);
+        scope.setExtra("responseBody", text);
+        Sentry.captureException(new Error(`PostCallAnalysis: OpenAI API error ${res.status}`));
+      });
       return null;
     }
 
@@ -78,6 +90,10 @@ async function analyzeCallTranscript(transcript) {
 
     if (!content) {
       console.error("[PostCallAnalysis] OpenAI returned empty content");
+      Sentry.withScope((scope) => {
+        scope.setTag("service", "post-call-analysis");
+        Sentry.captureException(new Error("PostCallAnalysis: OpenAI returned empty content"));
+      });
       return null;
     }
 
@@ -86,6 +102,11 @@ async function analyzeCallTranscript(transcript) {
       analysis = JSON.parse(content);
     } catch (parseErr) {
       console.error("[PostCallAnalysis] Failed to parse OpenAI response as JSON:", content.slice(0, 200));
+      Sentry.withScope((scope) => {
+        scope.setTag("service", "post-call-analysis");
+        scope.setExtra("responseContent", content.slice(0, 200));
+        Sentry.captureException(parseErr);
+      });
       return null;
     }
 
@@ -102,6 +123,10 @@ async function analyzeCallTranscript(transcript) {
     };
   } catch (err) {
     console.error("[PostCallAnalysis] Failed to analyze transcript:", err.message);
+    Sentry.withScope((scope) => {
+      scope.setTag("service", "post-call-analysis");
+      Sentry.captureException(err);
+    });
     return null;
   }
 }
