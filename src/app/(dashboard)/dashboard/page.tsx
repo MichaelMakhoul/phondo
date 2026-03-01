@@ -112,6 +112,13 @@ export default async function DashboardPage() {
       changeType: "positive",
     },
     {
+      name: "You Answered",
+      value: ownerAnsweredCalls || 0,
+      icon: User,
+      change: "",
+      changeType: "neutral",
+    },
+    {
       name: "Active Assistants",
       value: totalAssistants || 0,
       icon: Bot,
@@ -122,13 +129,6 @@ export default async function DashboardPage() {
       name: "Phone Numbers",
       value: totalPhoneNumbers || 0,
       icon: Phone,
-      change: "",
-      changeType: "neutral",
-    },
-    {
-      name: "You Answered",
-      value: ownerAnsweredCalls || 0,
-      icon: User,
       change: "",
       changeType: "neutral",
     },
@@ -167,7 +167,7 @@ export default async function DashboardPage() {
             "animate-fade-in-up-delay-2",
             "animate-fade-in-up-delay-3",
             "animate-fade-in-up-delay-4",
-            "animate-fade-in-up-delay-4",
+            "animate-fade-in-up-delay-5",
           ][i];
           return (
           <Card key={stat.name} className={`card-hover ${delayClass}`}>
