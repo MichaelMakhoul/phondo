@@ -37,6 +37,7 @@ export interface CatalogVoice {
   deepgramVoice: string; // Deepgram Aura voice model name for self-hosted TTS
   language: VoiceLanguage; // Language this voice speaks
   recommended?: boolean; // Show "Recommended" badge in voice picker
+  personaTagline?: string; // Short persona branding (e.g. "The Sydney Office Manager")
 }
 
 // ---------------------------------------------------------------------------
@@ -56,6 +57,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     deepgramVoice: "aura-asteria-en",
     language: "en",
     recommended: true,
+    personaTagline: "The Sydney Office Manager",
   },
   {
     id: "ZQe5CZNOzWyzPSCn5a3c",
@@ -68,6 +70,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     deepgramVoice: "aura-arcas-en",
     language: "en",
     recommended: true,
+    personaTagline: "The Melbourne Professional",
   },
   {
     id: "IKne3meq5aSn9XLyUdCD",
@@ -80,6 +83,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     deepgramVoice: "aura-orion-en",
     language: "en",
     recommended: true,
+    personaTagline: "The Brisbane All-Rounder",
   },
 
   // --- American voices ---

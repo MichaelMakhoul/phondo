@@ -95,6 +95,11 @@ export function VoiceCard({ voice, selected, onSelect }: VoiceCardProps) {
         </button>
       </div>
 
+      {/* Persona tagline */}
+      {voice.personaTagline && (
+        <p className="mt-0.5 text-xs text-muted-foreground/70 italic">{voice.personaTagline}</p>
+      )}
+
       {/* Gender + accent */}
       <div className="mt-1.5 flex items-center gap-1.5">
         <span className="text-xs capitalize text-muted-foreground">{voice.gender}</span>
