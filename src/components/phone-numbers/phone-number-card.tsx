@@ -28,6 +28,7 @@ import {
   formatInstructions,
   type CarrierInfo,
 } from "@/lib/country-config";
+import { trackAiToggleChanged } from "@/lib/analytics";
 
 interface PhoneNumber {
   id: string;
@@ -75,6 +76,7 @@ export function PhoneNumberCard({ phoneNumber, countryCode }: PhoneNumberCardPro
         const data = await res.json().catch(() => ({}));
         throw new Error(data.error || "Failed to update");
       }
+      trackAiToggleChanged(newValue);
       toast({
         title: newValue ? "AI enabled" : "AI paused",
         description: newValue

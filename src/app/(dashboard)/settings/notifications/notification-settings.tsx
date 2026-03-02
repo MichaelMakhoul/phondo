@@ -8,6 +8,7 @@ import { Switch } from "@/components/ui/switch";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/components/ui/use-toast";
 import { Loader2, Mail, MessageSquare, Webhook, Phone, ArrowUpRight } from "lucide-react";
+import { trackNotificationPrefsUpdated } from "@/lib/analytics";
 
 interface NotificationPreferences {
   email_on_missed_call: boolean;
@@ -138,6 +139,7 @@ export function NotificationSettings({
       }
 
       const downgraded = result.smsFieldsDowngraded || result.webhookDowngraded;
+      trackNotificationPrefsUpdated();
       toast({
         title: "Settings saved",
         description: downgraded

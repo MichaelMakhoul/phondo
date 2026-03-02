@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/components/ui/use-toast";
 import { Phone } from "lucide-react";
+import { trackSignUp } from "@/lib/analytics";
 
 export default function SignupPage() {
   const [fullName, setFullName] = useState("");
@@ -45,6 +46,7 @@ export default function SignupPage() {
       return;
     }
 
+    trackSignUp("email");
     toast({
       title: "Check your email",
       description: "We sent you a confirmation link to complete your signup.",
@@ -54,6 +56,7 @@ export default function SignupPage() {
 
   const handleGoogleSignup = async () => {
     setIsLoading(true);
+    trackSignUp("google"); // Tracks intent — OAuth redirect means we can't track completion here
     const { error } = await supabase.auth.signInWithOAuth({
       provider: "google",
       options: {

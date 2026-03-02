@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/dialog";
 import { useToast } from "@/components/ui/use-toast";
 import { Loader2, Plus } from "lucide-react";
+import { trackTeamMemberInvited, trackTeamMemberRemoved } from "@/lib/analytics";
 
 interface TeamActionsProps {
   organizationId: string;
@@ -113,6 +114,7 @@ export function TeamActions({
           throw error;
         }
       } else {
+        trackTeamMemberInvited();
         toast({ title: "Member added", description: `${email} has been added to your team.` });
         setEmail("");
         setRole("member");
@@ -147,6 +149,7 @@ export function TeamActions({
       if (!data || data.length === 0) {
         toast({ title: "Already removed", description: "This member was already removed from your team." });
       } else {
+        trackTeamMemberRemoved();
         toast({ title: "Member removed", description: `${memberName} has been removed from your team.` });
       }
       router.refresh();

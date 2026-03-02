@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/components/ui/use-toast";
 import { Loader2, Phone } from "lucide-react";
+import { trackLogin } from "@/lib/analytics";
 
 function LoginForm() {
   const [email, setEmail] = useState("");
@@ -41,12 +42,14 @@ function LoginForm() {
       return;
     }
 
+    trackLogin("email");
     router.push(redirectTo);
     router.refresh();
   };
 
   const handleGoogleLogin = async () => {
     setIsLoading(true);
+    trackLogin("google"); // Tracks intent — OAuth redirect means we can't track completion here
     const { error } = await supabase.auth.signInWithOAuth({
       provider: "google",
       options: {

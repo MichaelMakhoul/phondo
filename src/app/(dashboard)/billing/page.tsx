@@ -34,6 +34,7 @@ import {
 } from "lucide-react";
 import { formatCurrency } from "@/lib/utils";
 import { getDisplayPlans } from "@/lib/stripe/client";
+import { trackBeginCheckout, trackPlanUpgradeClicked, trackPlanDowngradeClicked } from "@/lib/analytics";
 
 // Feature → icon mapping (kept here because src/lib/stripe/client.ts is framework-agnostic)
 const FEATURE_ICONS: Record<string, React.ComponentType<any>> = {
@@ -141,6 +142,16 @@ function BillingContent() {
 
   const handleSubscribe = async (planId: string) => {
     setLoadingPlan(planId);
+
+    // Track checkout — handleSubscribe is only called for upgrades/new subscriptions;
+    // downgrades use handleManageBilling via the Downgrade button
+    const plan = PLANS.find((p) => p.id === planId);
+    if (plan) {
+      if (currentPlan) {
+        trackPlanUpgradeClicked(currentPlan, planId);
+      }
+      trackBeginCheckout(planId, plan.price);
+    }
 
     try {
       const response = await fetch("/api/billing/checkout", {
@@ -406,7 +417,10 @@ function BillingContent() {
                     <Button
                       className="w-full"
                       variant="outline"
-                      onClick={handleManageBilling}
+                      onClick={() => {
+                        if (currentPlan) trackPlanDowngradeClicked(currentPlan, plan.id);
+                        handleManageBilling();
+                      }}
                     >
                       Downgrade
                     </Button>

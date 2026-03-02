@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Download, Loader2 } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
+import { trackAnalyticsExport } from "@/lib/analytics";
 
 export function ExportButton() {
   const [loading, setLoading] = useState(false);
@@ -28,6 +29,7 @@ export function ExportButton() {
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
 
+      trackAnalyticsExport();
       toast({ title: "Export complete", description: "CSV file downloaded." });
     } catch (err: any) {
       toast({

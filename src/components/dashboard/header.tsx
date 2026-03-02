@@ -16,6 +16,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { LogOut, Menu, User, CreditCard } from "lucide-react";
 import { NotificationBell } from "@/components/dashboard/notification-bell";
+import { trackLogout } from "@/lib/analytics";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { SidebarContent } from "@/components/dashboard/sidebar";
 
@@ -40,6 +41,7 @@ export function DashboardHeader({ user, organization }: DashboardHeaderProps) {
   const [mobileOpen, setMobileOpen] = useState(false);
 
   const handleSignOut = async () => {
+    trackLogout();
     await supabase.auth.signOut();
     router.push("/login");
     router.refresh();

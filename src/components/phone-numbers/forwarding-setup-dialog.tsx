@@ -40,6 +40,7 @@ import {
   formatInstructions,
   type CarrierInfo,
 } from "@/lib/country-config";
+import { trackPhoneNumberAdded } from "@/lib/analytics";
 
 interface Assistant {
   id: string;
@@ -268,6 +269,7 @@ export function ForwardingSetupDialog({
         description: "You can verify forwarding later from the phone numbers page.",
       });
     }
+    trackPhoneNumberAdded("forwarded", countryCode);
     onOpenChange(false);
     resetForm();
     router.refresh();
