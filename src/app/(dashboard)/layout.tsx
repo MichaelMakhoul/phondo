@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import { DashboardSidebar } from "@/components/dashboard/sidebar";
 import { DashboardHeader } from "@/components/dashboard/header";
 import { MobileBottomNav } from "@/components/dashboard/mobile-nav";
+import { AnalyticsIdentifier } from "@/components/analytics/analytics-identifier";
 
 interface Organization {
   id: string;
@@ -10,6 +11,8 @@ interface Organization {
   slug: string;
   type: string;
   logo_url: string | null;
+  industry: string | null;
+  country: string | null;
 }
 
 interface Membership {
@@ -47,7 +50,9 @@ export default async function DashboardLayout({
         name,
         slug,
         type,
-        logo_url
+        logo_url,
+        industry,
+        country
       )
     `)
     .eq("user_id", user.id) as { data: Membership[] | null };
@@ -66,6 +71,20 @@ export default async function DashboardLayout({
 
   // Use first organization as current (later we can add org switching)
   const currentOrg = memberships[0].organizations;
+
+  // Get subscription for analytics user properties
+  const { data: subscription, error: subError } = currentOrg
+    ? await supabase
+        .from("subscriptions")
+        .select("plan_type")
+        .eq("organization_id", currentOrg.id)
+        .single()
+    : { data: null, error: null };
+
+  // PGRST116 = no rows found, expected for orgs without subscriptions
+  if (subError && subError.code !== "PGRST116") {
+    console.error("[Dashboard Layout] Failed to fetch subscription for analytics:", subError);
+  }
 
   return (
     <div className="flex h-screen">
@@ -92,6 +111,15 @@ export default async function DashboardLayout({
         </main>
         <MobileBottomNav />
       </div>
+      {currentOrg && (
+        <AnalyticsIdentifier
+          userId={user.id}
+          organizationId={currentOrg.id}
+          planType={(subscription as any)?.plan_type ?? undefined}
+          industry={currentOrg.industry ?? undefined}
+          country={currentOrg.country ?? undefined}
+        />
+      )}
     </div>
   );
 }

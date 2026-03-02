@@ -2,6 +2,7 @@
 
 import { useState, useRef, useCallback, useEffect } from "react";
 import { mulawToAudioBuffer } from "./mulaw";
+import { trackTestCallStarted, trackTestCallCompleted } from "@/lib/analytics";
 
 export interface TranscriptMessage {
   role: "assistant" | "user";
@@ -15,9 +16,10 @@ interface UseVoiceTestOptions {
   assistantId: string;
   tokenUrl?: string;
   tokenBody?: Record<string, unknown>;
+  trackingSource?: "dashboard" | "onboarding";
 }
 
-export function useVoiceTest({ assistantId, tokenUrl, tokenBody }: UseVoiceTestOptions) {
+export function useVoiceTest({ assistantId, tokenUrl, tokenBody, trackingSource = "dashboard" }: UseVoiceTestOptions) {
   const [status, setStatus] = useState<VoiceTestStatus>("idle");
   const [isMuted, setIsMuted] = useState(false);
   const [transcript, setTranscript] = useState<TranscriptMessage[]>([]);
@@ -39,6 +41,7 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody }: UseVoiceTestO
   const audioQueueRef = useRef<AudioBuffer[]>([]);
   const isPlayingRef = useRef(false);
   const currentSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  const callStartTimeRef = useRef<number | null>(null);
 
   const playNextInQueue = useCallback(() => {
     const ctx = audioContextRef.current;
@@ -78,6 +81,7 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody }: UseVoiceTestO
     setTranscript([]);
     setIsAssistantSpeaking(false);
     audioQueueRef.current = [];
+    trackTestCallStarted(trackingSource);
 
     try {
       // 1. Get token from API
@@ -158,6 +162,7 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody }: UseVoiceTestO
         switch (msg.type) {
           case "ready":
             updateStatus("active");
+            callStartTimeRef.current = Date.now();
             break;
 
           case "transcript":
@@ -179,9 +184,16 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody }: UseVoiceTestO
             setIsAssistantSpeaking(msg.speaking);
             break;
 
-          case "ended":
+          case "ended": {
+            const startTime = callStartTimeRef.current;
+            callStartTimeRef.current = null; // Null first to prevent duplicate tracking from stop()
+            const duration = startTime
+              ? Math.round((Date.now() - startTime) / 1000)
+              : 0;
+            if (duration > 0) trackTestCallCompleted(duration, trackingSource);
             updateStatus("ended");
             break;
+          }
 
           case "error":
             setError(msg.message || "An error occurred");
@@ -207,16 +219,22 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody }: UseVoiceTestO
       updateStatus("error");
       cleanup();
     }
-  }, [assistantId, tokenUrl, tokenBody, enqueueAudio, updateStatus]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [assistantId, tokenUrl, tokenBody, trackingSource, enqueueAudio, updateStatus]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const stop = useCallback(() => {
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: "stop" }));
     }
+    const startTime = callStartTimeRef.current;
+    callStartTimeRef.current = null; // Null first to prevent duplicate tracking from "ended" message
+    const duration = startTime
+      ? Math.round((Date.now() - startTime) / 1000)
+      : 0;
+    if (duration > 0) trackTestCallCompleted(duration, trackingSource);
     setStatus("ended");
     cleanup();
-  }, []);
+  }, [trackingSource]);
 
   const toggleMute = useCallback(() => {
     const stream = mediaStreamRef.current;

@@ -25,6 +25,7 @@ import { useToast } from "@/components/ui/use-toast";
 import { Plus, Phone, Loader2 } from "lucide-react";
 import { formatPhoneNumber } from "@/lib/utils";
 import { getCountryConfig } from "@/lib/country-config";
+import { trackPhoneNumberAdded } from "@/lib/analytics";
 
 interface Assistant {
   id: string;
@@ -141,6 +142,7 @@ export function BuyPhoneNumberDialog({ assistants, countryCode = "US", open: con
         throw new Error(errorMessage);
       }
 
+      trackPhoneNumberAdded("purchased", countryCode);
       toast({
         title: "Phone number purchased!",
         description: `${formatPhoneNumber(selectedNumber.number, countryCode)} is now active.`,

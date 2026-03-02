@@ -18,6 +18,7 @@ import {
   Webhook,
   ArrowUpRight,
 } from "lucide-react";
+import { trackWebhookTested } from "@/lib/analytics";
 import { EmptyState } from "@/components/ui/empty-state";
 import { IntegrationsScene } from "@/components/ui/empty-state-scenes";
 import {
@@ -124,6 +125,7 @@ export function IntegrationList() {
     try {
       const response = await fetch(`/api/v1/integrations/${id}/test`, { method: "POST" });
       const result = await response.json();
+      if (result.success) trackWebhookTested();
       toast({
         variant: result.success ? "default" : "destructive",
         title: result.success ? "Test Successful" : "Test Failed",

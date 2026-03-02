@@ -39,6 +39,7 @@ import {
 } from "lucide-react";
 import { EmptyState } from "@/components/ui/empty-state";
 import { KnowledgeScene } from "@/components/ui/empty-state-scenes";
+import { trackKnowledgeEntryAdded, trackKnowledgeEntryDeleted } from "@/lib/analytics";
 
 interface KBEntry {
   id: string;
@@ -198,6 +199,7 @@ export function KnowledgeSettings({
         throw new Error(data.error || "Failed to save");
       }
 
+      trackKnowledgeEntryAdded("text");
       toast({ title: "Saved", description: "Manual text source added." });
       setAddDialogOpen(false);
       resetAddForm();
@@ -244,6 +246,7 @@ export function KnowledgeSettings({
         throw new Error(data.error || "Failed to save");
       }
 
+      trackKnowledgeEntryAdded("faq");
       toast({ title: "Saved", description: "FAQ source added." });
       setAddDialogOpen(false);
       resetAddForm();
@@ -337,6 +340,7 @@ export function KnowledgeSettings({
       if (!response.ok) throw new Error("Failed to delete");
 
       setEntries(entries.filter((e) => e.id !== entry.id));
+      trackKnowledgeEntryDeleted();
       toast({ title: "Deleted", description: "Source removed." });
     } catch {
       toast({

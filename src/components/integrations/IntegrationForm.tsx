@@ -22,6 +22,7 @@ import {
 import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/components/ui/use-toast";
 import { Loader2, Copy, AlertTriangle } from "lucide-react";
+import { trackWebhookCreated } from "@/lib/analytics";
 import { SUPPORTED_PLATFORMS, INTEGRATION_EVENTS } from "@/lib/integrations/types";
 
 interface IntegrationFormProps {
@@ -63,6 +64,7 @@ export function IntegrationForm({ open, onOpenChange, onCreated }: IntegrationFo
 
       const data = await response.json();
       setSigningSecret(data.signing_secret);
+      trackWebhookCreated();
       onCreated();
     } catch (error) {
       toast({

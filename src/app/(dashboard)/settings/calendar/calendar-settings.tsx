@@ -29,6 +29,7 @@ import {
   Trash2,
   RefreshCw,
 } from "lucide-react";
+import { trackCalendarConnected, trackCalendarDisconnected } from "@/lib/analytics";
 
 interface CalendarIntegration {
   id: string;
@@ -168,6 +169,7 @@ export function CalendarSettings({
 
       if (data.success) {
         setIsConnected(true);
+        trackCalendarConnected();
         toast({
           title: "Calendar Connected",
           description: "Your Cal.com integration is now active.",
@@ -213,6 +215,7 @@ export function CalendarSettings({
         setSelectedEventType("");
         setAccountInfo(null);
         setEventTypes([]);
+        trackCalendarDisconnected();
         toast({
           title: "Calendar Disconnected",
           description: "Cal.com integration has been removed.",

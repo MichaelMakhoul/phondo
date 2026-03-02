@@ -15,6 +15,13 @@ import { Success } from "./steps/Success";
 import { ArrowLeft, ArrowRight, Loader2, CheckCircle2, Clock } from "lucide-react";
 import { getCountryConfig } from "@/lib/country-config";
 import { buildCustomInstructionsFromBusinessInfo } from "@/lib/scraper/build-custom-instructions";
+import {
+  trackOnboardingStart,
+  trackOnboardingStepComplete,
+  trackOnboardingWebsiteScan,
+  trackOnboardingPlanSelected,
+  trackOnboardingComplete,
+} from "@/lib/analytics";
 
 interface OnboardingData {
   // Step 1: Business Info
@@ -97,7 +104,10 @@ export default function OnboardingPage() {
         setCurrentStep(parsed.step || 1);
       } catch {
         // Invalid saved data, start fresh
+        trackOnboardingStart();
       }
+    } else {
+      trackOnboardingStart();
     }
   }, []);
 
@@ -163,7 +173,9 @@ export default function OnboardingPage() {
         businessInfo: result.businessInfo || {},
         totalPages: result.totalPages || 0,
       });
+      trackOnboardingWebsiteScan(true);
     } catch (error: any) {
+      trackOnboardingWebsiteScan(false);
       toast({
         variant: "destructive",
         title: "Import failed",
@@ -303,6 +315,8 @@ export default function OnboardingPage() {
       }
     }
 
+    const stepNames = ["", "Business Info", "Assistant Setup", "Test Call", "Go Live"];
+    trackOnboardingStepComplete(currentStep, stepNames[currentStep] || `Step ${currentStep}`);
     setCurrentStep((prev) => prev + 1);
   };
 
@@ -378,6 +392,9 @@ export default function OnboardingPage() {
       localStorage.removeItem("onboarding_progress");
 
       // Show celebration screen (step 5)
+      trackOnboardingStepComplete(4, "Go Live");
+      trackOnboardingPlanSelected(data.selectedPlan || "starter");
+      trackOnboardingComplete(data.selectedPlan || "starter", data.industry || "unknown");
       setCurrentStep(5);
       setIsCompleting(false);
     } catch (error: any) {

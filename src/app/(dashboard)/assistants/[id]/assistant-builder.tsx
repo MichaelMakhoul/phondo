@@ -49,6 +49,12 @@ import { VoiceSelector } from "@/components/voice-selector";
 import { resolveVoiceId, type VoiceLanguage } from "@/lib/voices";
 import { AnswerModeCard } from "@/app/(dashboard)/settings/answer-mode-card";
 import { PiiRedactionCard } from "@/app/(dashboard)/settings/pii-redaction-card";
+import {
+  trackAssistantUpdated,
+  trackTemplateApplied,
+  trackTransferRuleCreated,
+  trackTransferRuleDeleted,
+} from "@/lib/analytics";
 
 // Industry templates
 const INDUSTRY_TEMPLATES = getIndustryTemplates();
@@ -211,6 +217,7 @@ export function AssistantBuilder({
       if (template.voiceId) {
         setVoiceId(template.voiceId);
       }
+      trackTemplateApplied(industryKey);
       toast({
         title: "Template Applied",
         description: `Applied ${template.name} template. You can customize it further.`,
@@ -259,6 +266,7 @@ export function AssistantBuilder({
         title: "Saved",
         description: "Assistant settings have been updated.",
       });
+      trackAssistantUpdated("general");
 
       router.refresh();
     } catch (error) {
@@ -318,6 +326,7 @@ export function AssistantBuilder({
       setNewPriority(0);
       setNewRequireConfirmation(false);
 
+      trackTransferRuleCreated();
       toast({
         title: "Transfer Rule Added",
         description: "Callers can now be transferred to this number.",
@@ -343,6 +352,7 @@ export function AssistantBuilder({
       }
 
       setTransferRules(transferRules.filter((r) => r.id !== ruleId));
+      trackTransferRuleDeleted();
 
       toast({
         title: "Transfer Rule Deleted",
