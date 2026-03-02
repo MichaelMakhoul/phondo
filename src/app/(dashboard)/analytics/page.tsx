@@ -1,7 +1,6 @@
 import { Metadata } from "next";
 import { redirect } from "next/navigation";
 import Link from "next/link";
-import dynamic from "next/dynamic";
 import { createClient } from "@/lib/supabase/server";
 import { hasFeatureAccess } from "@/lib/stripe/billing-service";
 import { subDays, startOfDay, format, getDay } from "date-fns";
@@ -24,12 +23,11 @@ import {
 } from "lucide-react";
 import { RecentCallsList } from "./recent-calls-list";
 import { AnimatedStat } from "@/components/marketing/animated-stat";
-
-const AnalyticsCharts = dynamic(() => import("./analytics-charts").then((m) => ({ default: m.AnalyticsCharts })), { ssr: false });
-const OutcomeChart = dynamic(() => import("./outcome-chart").then((m) => ({ default: m.OutcomeChart })), { ssr: false });
-const DurationChart = dynamic(() => import("./duration-chart").then((m) => ({ default: m.DurationChart })), { ssr: false });
-const CallHeatmap = dynamic(() => import("./call-heatmap").then((m) => ({ default: m.CallHeatmap })), { ssr: false });
-const ExportButton = dynamic(() => import("./export-button").then((m) => ({ default: m.ExportButton })), { ssr: false });
+import { AnalyticsCharts } from "./analytics-charts";
+import { OutcomeChart } from "./outcome-chart";
+import { DurationChart } from "./duration-chart";
+import { CallHeatmap } from "./call-heatmap";
+import { ExportButton } from "./export-button";
 
 export const metadata: Metadata = {
   title: "Analytics | Hola Recep",
