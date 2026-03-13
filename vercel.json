@@ -19,6 +19,10 @@
     {
       "path": "/api/cron/health-check",
       "schedule": "0 12 * * *"
+    },
+    {
+      "path": "/api/cron/keep-alive",
+      "schedule": "0 0 * * *"
     }
   ]
 }
