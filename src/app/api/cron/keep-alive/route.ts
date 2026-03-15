@@ -1,27 +1,33 @@
 import { NextRequest, NextResponse } from "next/server";
-import { Redis } from "@upstash/redis";
+import { createAdminClient } from "@/lib/supabase/admin";
 
 export async function GET(req: NextRequest) {
   const cronSecret = process.env.CRON_SECRET;
-  if (!cronSecret) {
-    return NextResponse.json({ error: "Server misconfiguration" }, { status: 500 });
-  }
-
-  const authHeader = req.headers.get("authorization");
-  if (authHeader !== `Bearer ${cronSecret}`) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
-  if (!process.env.UPSTASH_REDIS_REST_URL || !process.env.UPSTASH_REDIS_REST_TOKEN) {
-    return NextResponse.json({ error: "Upstash not configured" }, { status: 503 });
+  if (cronSecret) {
+    const authHeader = req.headers.get("authorization");
+    if (authHeader !== `Bearer ${cronSecret}`) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
   }
 
   try {
-    const redis = Redis.fromEnv();
-    const pong = await redis.ping();
-    return NextResponse.json({ upstash: pong });
+    const supabase = createAdminClient();
+
+    // Simple query to keep the Supabase project active
+    const { error } = await (supabase as any)
+      .from("organizations")
+      .select("id")
+      .limit(1);
+
+    if (error) {
+      console.error("[KeepAlive] DB ping failed:", error);
+      return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
+    }
+
+    console.log("[KeepAlive] DB ping successful");
+    return NextResponse.json({ ok: true, timestamp: new Date().toISOString() });
   } catch (err) {
-    console.error("[KeepAlive] Redis ping failed:", err);
-    return NextResponse.json({ error: "Redis ping failed" }, { status: 503 });
+    console.error("[KeepAlive] Unexpected error:", err);
+    return NextResponse.json({ error: "Keep-alive check failed" }, { status: 503 });
   }
 }
