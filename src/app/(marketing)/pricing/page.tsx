@@ -10,7 +10,7 @@ import { getDisplayPlans } from "@/lib/stripe/client";
 import { formatCurrency } from "@/lib/utils";
 
 export const metadata: Metadata = {
-  title: "Pricing | Hola Recep",
+  title: "Pricing | Phondo",
   description: "Simple, transparent pricing for AI-powered phone receptionists",
 };
 

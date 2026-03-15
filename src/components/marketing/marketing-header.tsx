@@ -23,7 +23,7 @@ export function MarketingHeader({ showAnchorLinks = false }: MarketingHeaderProp
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-orange-500">
             <Phone className="h-4 w-4 text-white" />
           </div>
-          <span className="text-xl font-bold text-white">Hola Recep</span>
+          <span className="text-xl font-bold text-white">Phondo</span>
         </Link>
         <nav className="hidden items-center gap-6 md:flex">
           {showAnchorLinks ? (

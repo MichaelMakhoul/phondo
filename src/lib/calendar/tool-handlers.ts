@@ -697,7 +697,7 @@ async function bookViaCal(
     const tzAwareDatetime = ensureTimezoneOffset(datetime, timezone);
 
     const bookingEmail =
-      email || `booking-${crypto.randomUUID()}@noreply.holarecep.com`;
+      email || `booking-${crypto.randomUUID()}@noreply.phondo.ai`;
 
     const booking = await calClient.createBooking({
       eventTypeId,
@@ -921,7 +921,7 @@ async function bookInternal(
   // 2. Insert appointment — the DB exclusion constraint (no_overlapping_appointments)
   //    prevents double-bookings atomically, so we rely on INSERT failure for conflicts.
   const bookingEmail =
-    email || `booking-${crypto.randomUUID()}@noreply.holarecep.com`;
+    email || `booking-${crypto.randomUUID()}@noreply.phondo.ai`;
 
   const { data: appointment, error: dbError } = await (supabase as any)
     .from("appointments")

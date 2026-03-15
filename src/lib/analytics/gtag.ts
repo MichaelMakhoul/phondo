@@ -33,7 +33,10 @@ function gtag(..._args: any[]) {
 
 export function initGtag(): void {
   if (!isAvailable()) return;
-  if (!GA_ID_PATTERN.test(GA_MEASUREMENT_ID!)) return;
+  if (!GA_ID_PATTERN.test(GA_MEASUREMENT_ID!)) {
+    console.warn(`[Analytics] NEXT_PUBLIC_GA_MEASUREMENT_ID "${GA_MEASUREMENT_ID}" does not match expected format (G-XXXXXXXXXX). Analytics will not initialize.`);
+    return;
+  }
   window.dataLayer = window.dataLayer || [];
   gtag("js", new Date());
   gtag("config", GA_MEASUREMENT_ID, {
@@ -74,4 +77,3 @@ export function updateConsent(granted: boolean): void {
     ad_storage: "denied",
   });
 }
-

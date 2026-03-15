@@ -10,19 +10,24 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  const supabase = createAdminClient();
+  try {
+    const supabase = createAdminClient();
 
-  // Simple query to keep the Supabase project active
-  const { error } = await (supabase as any)
-    .from("organizations")
-    .select("id")
-    .limit(1);
+    // Simple query to keep the Supabase project active
+    const { error } = await (supabase as any)
+      .from("organizations")
+      .select("id")
+      .limit(1);
 
-  if (error) {
-    console.error("[KeepAlive] DB ping failed:", error);
-    return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
+    if (error) {
+      console.error("[KeepAlive] DB ping failed:", error);
+      return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
+    }
+
+    console.log("[KeepAlive] DB ping successful");
+    return NextResponse.json({ ok: true, timestamp: new Date().toISOString() });
+  } catch (err) {
+    console.error("[KeepAlive] Unexpected error:", err);
+    return NextResponse.json({ error: "Keep-alive check failed" }, { status: 503 });
   }
-
-  console.log("[KeepAlive] DB ping successful");
-  return NextResponse.json({ ok: true, timestamp: new Date().toISOString() });
 }

@@ -35,7 +35,7 @@ import { getDisplayPlans } from "@/lib/stripe/client";
 import { formatCurrency } from "@/lib/utils";
 
 export const metadata: Metadata = {
-  title: "Hola Recep | AI Receptionist for Australian Businesses",
+  title: "Phondo | AI Receptionist for Australian Businesses",
   description:
     "Never miss a call again. AI-powered phone receptionist that answers calls, books appointments, and recovers missed revenue 24/7. Built for Australian SMBs. 14-day free trial.",
   keywords: [
@@ -51,9 +51,9 @@ export const metadata: Metadata = {
     "SMB phone answering service",
   ],
   openGraph: {
-    title: "Hola Recep | AI Receptionist for Australian Businesses",
+    title: "Phondo | AI Receptionist for Australian Businesses",
     description:
-      "62% of SMB calls go unanswered. Each one costs $450 in lost revenue. Hola Recep answers every call, 24/7.",
+      "62% of SMB calls go unanswered. Each one costs $450 in lost revenue. Phondo answers every call, 24/7.",
     type: "website",
   },
 };
@@ -219,7 +219,7 @@ export default function LandingPage() {
             </h1>
 
             <p className="mx-auto mt-6 max-w-2xl text-lg text-slate-400 animate-fade-in-up-delay-2">
-              Hola Recep is an AI receptionist that answers every call, books
+              Phondo is an AI receptionist that answers every call, books
               appointments, and texts back missed callers — 24 hours a day, 7 days
               a week. Set up in under 5 minutes.
             </p>
@@ -350,7 +350,7 @@ export default function LandingPage() {
                 </h2>
                 <p className="mt-3 text-muted-foreground">
                   Slide to see how much revenue you&apos;re leaving on the table
-                  — and how fast Hola Recep pays for itself.
+                  — and how fast Phondo pays for itself.
                 </p>
               </AnimateOnScroll>
               <AnimateOnScroll className="mt-10">

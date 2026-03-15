@@ -88,7 +88,7 @@ export async function generateMetadata({
   if (!industry) return {};
 
   return {
-    title: `AI Receptionist for ${industry.name} | Hola Recep`,
+    title: `AI Receptionist for ${industry.name} | Phondo`,
     description: industry.heroSubtitle,
     keywords: [
       `AI receptionist ${industry.name.toLowerCase()}`,
@@ -99,7 +99,7 @@ export async function generateMetadata({
       "appointment booking AI",
     ],
     openGraph: {
-      title: `AI Receptionist for ${industry.name} | Hola Recep`,
+      title: `AI Receptionist for ${industry.name} | Phondo`,
       description: industry.heroSubtitle,
       type: "website",
     },

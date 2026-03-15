@@ -10,8 +10,8 @@ export function AnalyticsIdentifier(props: UserIdentityParams) {
   useEffect(() => {
     if (identified.current) return;
     identified.current = true;
-    identifyUser(props).catch(() => {
-      // Swallowed — identifyUser already logs internally
+    identifyUser(props).catch((err) => {
+      console.warn("[AnalyticsIdentifier] Unexpected rejection:", err);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

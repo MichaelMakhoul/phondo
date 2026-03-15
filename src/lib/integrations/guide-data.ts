@@ -18,7 +18,7 @@ export const INTEGRATION_GUIDES: PlatformGuide[] = [
     platformId: "zapier",
     name: "Zapier",
     description:
-      "Zapier connects Hola Recep to 5,000+ apps like Google Sheets, HubSpot, Slack, and more — no coding required.",
+      "Zapier connects Phondo to 5,000+ apps like Google Sheets, HubSpot, Slack, and more — no coding required.",
     steps: [
       'Go to zapier.com and create a new Zap.',
       'For the Trigger, choose "Webhooks by Zapier".',
@@ -72,7 +72,7 @@ export const INTEGRATION_GUIDES: PlatformGuide[] = [
     steps: [
       'Click "Add Integration" and enter your server\'s endpoint URL.',
       "A signing secret will be auto-generated — use it to verify payloads.",
-      'Each delivery includes an "X-HolaRecep-Signature" header (HMAC-SHA256 of the body).',
+      'Each delivery includes an "X-Phondo-Signature" header (HMAC-SHA256 of the body).',
       "Verify the signature server-side to ensure the payload is authentic.",
       'Click "Test" to send a sample payload and verify your endpoint responds with 2xx.',
     ],
@@ -96,7 +96,7 @@ export const INTEGRATION_GUIDES: PlatformGuide[] = [
 
 Signature verification (Node.js):
 const crypto = require('crypto');
-const signature = req.headers['x-holarecep-signature'];
+const signature = req.headers['x-phondo-signature'];
 const expected = crypto.createHmac('sha256', SIGNING_SECRET).update(rawBody).digest('hex');
 if (signature !== expected) throw new Error('Invalid signature');`,
   },

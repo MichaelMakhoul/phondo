@@ -9,8 +9,8 @@ export interface AudioDevice {
   kind: "audioinput" | "audiooutput";
 }
 
-const STORAGE_KEY_MIC = "hola-recep-selected-microphone";
-const STORAGE_KEY_SPEAKER = "hola-recep-selected-speaker";
+const STORAGE_KEY_MIC = "phondo-selected-microphone";
+const STORAGE_KEY_SPEAKER = "phondo-selected-speaker";
 
 /**
  * Request microphone permission to enable device enumeration

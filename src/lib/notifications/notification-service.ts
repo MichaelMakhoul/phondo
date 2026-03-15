@@ -269,7 +269,7 @@ export async function sendFailedCallNotification(
     const caller = data.callerName || data.callerPhone;
     channels.push(sendSMS({
       to: prefs.sms_phone_number,
-      message: `[Hola Recep] Failed call from ${caller} at ${data.timestamp.toLocaleTimeString()}. Please call them back. Reason: ${data.failureReason}`,
+      message: `[Phondo] Failed call from ${caller} at ${data.timestamp.toLocaleTimeString()}. Please call them back. Reason: ${data.failureReason}`,
     }));
   }
 
@@ -414,7 +414,7 @@ export async function sendCallbackNotification(
     const caller = data.callerName || data.callerPhone;
     channels.push(sendSMS({
       to: prefs.sms_phone_number,
-      message: `[Hola Recep] Callback requested by ${caller} (${data.callerPhone}). Reason: ${data.reason}. ${data.urgency} urgency.`,
+      message: `[Phondo] Callback requested by ${caller} (${data.callerPhone}). Reason: ${data.reason}. ${data.urgency} urgency.`,
     }));
   }
 
@@ -473,7 +473,7 @@ export async function sendCallbackReminderNotification(
     const caller = data.callerName || data.callerPhone;
     channels.push(sendSMS({
       to: prefs.sms_phone_number,
-      message: `[Hola Recep] Reminder: callback to ${caller} (${data.callerPhone}) is now due. Reason: ${data.reason}.`,
+      message: `[Phondo] Reminder: callback to ${caller} (${data.callerPhone}) is now due. Reason: ${data.reason}.`,
     }));
   }
 
@@ -573,7 +573,7 @@ async function sendEmail(params: EmailParams): Promise<void> {
   const { to, subject, template, data } = params;
 
   const apiKey = process.env.EMAIL_API_KEY;
-  const fromEmail = process.env.EMAIL_FROM || "notifications@holarecep.com";
+  const fromEmail = process.env.EMAIL_FROM || "notifications@phondo.ai";
 
   if (!apiKey) {
     throw new Error(
@@ -641,7 +641,7 @@ async function sendWebhook(url: string, payload: WebhookPayload): Promise<void> 
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-Webhook-Source": "hola-recep",
+      "X-Webhook-Source": "phondo",
     },
     body: JSON.stringify({
       ...payload,
@@ -739,7 +739,7 @@ function generateEmailHtml(template: string, data: Record<string, any>): string 
         </tr>
       </table>
       <p><strong>Please call them back as soon as possible.</strong></p>
-      <p><a href="${process.env.NEXT_PUBLIC_APP_URL || "https://holarecep.com"}/callbacks">View all callbacks</a></p>
+      <p><a href="${process.env.NEXT_PUBLIC_APP_URL || "https://phondo.ai"}/callbacks">View all callbacks</a></p>
     `,
     "callback-reminder": (d) => `
       <h2 style="color: #f59e0b;">Callback Due</h2>
@@ -763,7 +763,7 @@ function generateEmailHtml(template: string, data: Record<string, any>): string 
         </tr>
       </table>
       <p><strong>Please call them back now.</strong></p>
-      <p><a href="${process.env.NEXT_PUBLIC_APP_URL || "https://holarecep.com"}/callbacks">View all callbacks</a></p>
+      <p><a href="${process.env.NEXT_PUBLIC_APP_URL || "https://phondo.ai"}/callbacks">View all callbacks</a></p>
     `,
     "daily-summary": (d) => `
       <h2>Daily Call Summary - ${d.date}</h2>
@@ -799,7 +799,7 @@ function generateEmailHtml(template: string, data: Record<string, any>): string 
   const templateFn = templates[template];
   if (!templateFn) {
     // Don't expose raw data, return generic message
-    return `<p>Notification from Hola Recep</p>`;
+    return `<p>Notification from Phondo</p>`;
   }
 
   return `
@@ -816,8 +816,8 @@ function generateEmailHtml(template: string, data: Record<string, any>): string 
       ${templateFn(safeData)}
       <hr style="margin-top: 30px; border: none; border-top: 1px solid #ddd;" />
       <p style="font-size: 12px; color: #666;">
-        This email was sent by Hola Recep AI Receptionist.
-        <a href="${process.env.NEXT_PUBLIC_APP_URL || "https://holarecep.com"}/settings/notifications">Manage notification preferences</a>
+        This email was sent by Phondo AI Receptionist.
+        <a href="${process.env.NEXT_PUBLIC_APP_URL || "https://phondo.ai"}/settings/notifications">Manage notification preferences</a>
       </p>
     </body>
     </html>

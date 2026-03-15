@@ -8,8 +8,8 @@ export function getStoredConsent(): boolean | null {
     const stored = localStorage.getItem(CONSENT_KEY);
     if (stored === null) return null;
     return stored === "granted";
-  } catch {
-    // localStorage unavailable (private browsing, storage disabled, etc.)
+  } catch (err) {
+    console.debug("[Analytics] localStorage read failed:", err);
     return null;
   }
 }
@@ -18,8 +18,8 @@ export function setConsent(granted: boolean): void {
   if (typeof window === "undefined") return;
   try {
     localStorage.setItem(CONSENT_KEY, granted ? "granted" : "denied");
-  } catch {
-    // localStorage unavailable — consent still applied to GA4 for this session
+  } catch (err) {
+    console.debug("[Analytics] localStorage write failed:", err);
   }
   updateConsent(granted);
 }

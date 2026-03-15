@@ -10,8 +10,8 @@
 import { createAdminClient } from "@/lib/supabase/admin";
 import { safeEncrypt, safeDecrypt } from "@/lib/security/encryption";
 
-// Cal.com API base URL
-const CAL_COM_API_BASE = "https://api.cal.com/v2";
+// Cal.com v1 API — uses ?apiKey= query param auth, works with personal API keys
+const CAL_COM_API_V1 = "https://api.cal.com/v1";
 
 export interface CalComEventType {
   id: number;
@@ -47,7 +47,7 @@ export interface BookingRequest {
   eventTypeId: number;
   start: string; // ISO datetime
   name: string;
-  email: string;
+  email?: string;
   phone?: string;
   notes?: string;
   metadata?: Record<string, any>;
@@ -156,6 +156,9 @@ export async function deleteCalendarIntegration(organizationId: string) {
 
 /**
  * Cal.com API client class
+ *
+ * Uses v1 API with ?apiKey= query param auth. Cal.com's v2 API requires
+ * OAuth/Platform keys which aren't available for personal API keys.
  */
 export class CalComClient {
   private apiKey: string;
@@ -164,18 +167,17 @@ export class CalComClient {
     this.apiKey = apiKey;
   }
 
-  private async request<T>(
+  private async requestV1<T>(
     endpoint: string,
     options: RequestInit = {}
   ): Promise<T> {
-    const url = `${CAL_COM_API_BASE}${endpoint}`;
+    const separator = endpoint.includes("?") ? "&" : "?";
+    const url = `${CAL_COM_API_V1}${endpoint}${separator}apiKey=${this.apiKey}`;
 
     const response = await fetch(url, {
       ...options,
       headers: {
         "Content-Type": "application/json",
-        "cal-api-version": "2024-08-13",
-        Authorization: `Bearer ${this.apiKey}`,
         ...options.headers,
       },
     });
@@ -192,15 +194,15 @@ export class CalComClient {
    * Get the current user (to verify API key works)
    */
   async getMe() {
-    return this.request<{ status: string; data: { id: number; username: string; email: string } }>("/me");
+    return this.requestV1<{ user: { id: number; username: string; email: string } }>("/me");
   }
 
   /**
    * Get event types (appointment types)
    */
   async getEventTypes(): Promise<CalComEventType[]> {
-    const response = await this.request<{ status: string; data: CalComEventType[] }>("/event-types");
-    return response.data || [];
+    const response = await this.requestV1<{ event_types: CalComEventType[] }>("/event-types");
+    return response.event_types || [];
   }
 
   /**
@@ -217,12 +219,11 @@ export class CalComClient {
       endTime: params.endTime,
     });
 
-    const response = await this.request<{ status: string; data: { slots: Record<string, { time: string }[]> } }>(
+    const response = await this.requestV1<{ slots: Record<string, { time: string }[]> }>(
       `/slots?${query.toString()}`
     );
 
-    // Transform the response into our format
-    const slots = response.data?.slots || {};
+    const slots = response.slots || {};
     return Object.entries(slots).map(([date, times]) => ({
       date,
       slots: times.map((t) => ({ time: t.time })),
@@ -233,29 +234,31 @@ export class CalComClient {
    * Create a booking
    */
   async createBooking(booking: BookingRequest): Promise<CalComBooking> {
-    const response = await this.request<{ status: string; data: CalComBooking }>("/bookings", {
+    const response = await this.requestV1<CalComBooking>("/bookings", {
       method: "POST",
       body: JSON.stringify({
         eventTypeId: booking.eventTypeId,
         start: booking.start,
-        attendee: {
+        responses: {
           name: booking.name,
-          email: booking.email,
-          phoneNumber: booking.phone,
+          email: booking.email || "noreply@phondo.com",
+          phone: booking.phone,
+          notes: booking.notes,
         },
-        notes: booking.notes,
         metadata: booking.metadata,
+        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        language: "en",
       }),
     });
 
-    return response.data;
+    return response;
   }
 
   /**
    * Cancel a booking
    */
   async cancelBooking(bookingId: number, reason?: string): Promise<boolean> {
-    await this.request(`/bookings/${bookingId}/cancel`, {
+    await this.requestV1(`/bookings/${bookingId}/cancel`, {
       method: "DELETE",
       body: JSON.stringify({
         cancellationReason: reason || "Cancelled by user",
@@ -272,7 +275,7 @@ export class CalComClient {
     bookingUid: string,
     newStart: string
   ): Promise<CalComBooking> {
-    const response = await this.request<{ status: string; data: CalComBooking }>(
+    const response = await this.requestV1<CalComBooking>(
       `/bookings/${bookingUid}/reschedule`,
       {
         method: "PATCH",
@@ -282,7 +285,7 @@ export class CalComClient {
       }
     );
 
-    return response.data;
+    return response;
   }
 }
 

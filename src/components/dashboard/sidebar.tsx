@@ -130,7 +130,7 @@ export function SidebarContent({ currentOrg }: { currentOrg?: { name: string; ty
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground shadow-md shadow-primary/30 transition-shadow hover:shadow-lg hover:shadow-primary/40">
             <Phone className="h-5 w-5" />
           </div>
-          <span className="text-lg font-semibold">Hola Recep</span>
+          <span className="text-lg font-semibold">Phondo</span>
         </Link>
       </div>
 

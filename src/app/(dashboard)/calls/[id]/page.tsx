@@ -4,7 +4,7 @@ import { createClient } from "@/lib/supabase/server";
 import { CallDetail } from "./call-detail";
 
 export const metadata: Metadata = {
-  title: "Call Details | Hola Recep",
+  title: "Call Details | Phondo",
   description: "View call details and analytics",
 };
 

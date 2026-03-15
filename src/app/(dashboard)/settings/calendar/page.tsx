@@ -4,7 +4,7 @@ import { createClient } from "@/lib/supabase/server";
 import { CalendarSettings } from "./calendar-settings";
 
 export const metadata: Metadata = {
-  title: "Calendar Integration | Hola Recep",
+  title: "Calendar Integration | Phondo",
   description: "Connect your calendar for automatic appointment booking",
 };
 

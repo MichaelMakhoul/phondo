@@ -9,15 +9,15 @@ INSERT INTO organizations (
   business_hours, industry, business_name
 ) VALUES (
   'd0000000-0000-4000-a000-000000000001',
-  'Hola Recep Demo',
-  'hola-recep-demo',
+  'Phondo Demo',
+  'phondo-demo',
   'business',
   'AU',
   'Australia/Sydney',
   'never',
   '{"monday":{"open":"09:00","close":"17:00"},"tuesday":{"open":"09:00","close":"17:00"},"wednesday":{"open":"09:00","close":"17:00"},"thursday":{"open":"09:00","close":"17:00"},"friday":{"open":"09:00","close":"17:00"},"saturday":null,"sunday":null}'::jsonb,
   'other',
-  'Hola Recep Demo'
+  'Phondo Demo'
 ) ON CONFLICT (id) DO NOTHING;
 
 -- Dental assistant

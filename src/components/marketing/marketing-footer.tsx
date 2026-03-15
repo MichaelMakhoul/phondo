@@ -12,7 +12,7 @@ export function MarketingFooter() {
               <div className="flex h-7 w-7 items-center justify-center rounded-md bg-orange-500">
                 <Phone className="h-3.5 w-3.5 text-white" />
               </div>
-              <span className="font-semibold">Hola Recep</span>
+              <span className="font-semibold">Phondo</span>
             </Link>
             <p className="mt-2 text-sm text-muted-foreground">
               AI phone receptionist for Australian businesses.
@@ -73,13 +73,13 @@ export function MarketingFooter() {
           <div>
             <h4 className="text-sm font-semibold">Contact</h4>
             <ul className="mt-2 space-y-1 text-sm text-muted-foreground">
-              <li>support@holarecep.com</li>
+              <li>support@phondo.ai</li>
               <li>Sydney, Australia</li>
             </ul>
           </div>
         </div>
         <div className="mt-8 border-t pt-8 text-center text-sm text-muted-foreground">
-          &copy; {new Date().getFullYear()} Hola Recep. All rights reserved.
+          &copy; {new Date().getFullYear()} Phondo. All rights reserved.
         </div>
       </div>
     </footer>

@@ -6,7 +6,7 @@ import { BrandingForm } from "./branding-form";
 import { DeleteAccountCard } from "./delete-account-card";
 
 export const metadata: Metadata = {
-  title: "Settings | Hola Recep",
+  title: "Settings | Phondo",
   description: "Manage your business settings",
 };
 
