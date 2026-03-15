@@ -46,7 +46,7 @@ export async function POST(request: NextRequest) {
 
     // Get account info
     const meResponse = await calClient.getMe();
-    const account = meResponse.data;
+    const account = meResponse.user;
 
     // Get event types
     const eventTypes = await calClient.getEventTypes();

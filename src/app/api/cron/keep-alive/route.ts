@@ -16,8 +16,12 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Upstash not configured" }, { status: 503 });
   }
 
-  const redis = Redis.fromEnv();
-  const pong = await redis.ping();
-
-  return NextResponse.json({ upstash: pong });
+  try {
+    const redis = Redis.fromEnv();
+    const pong = await redis.ping();
+    return NextResponse.json({ upstash: pong });
+  } catch (err) {
+    console.error("[KeepAlive] Redis ping failed:", err);
+    return NextResponse.json({ error: "Redis ping failed" }, { status: 503 });
+  }
 }

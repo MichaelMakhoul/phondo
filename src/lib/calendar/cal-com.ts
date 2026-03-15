@@ -10,11 +10,8 @@
 import { createAdminClient } from "@/lib/supabase/admin";
 import { safeEncrypt, safeDecrypt } from "@/lib/security/encryption";
 
-// Cal.com API base URLs
-// v1 uses ?apiKey= query param auth — works with personal API keys
-// v2 uses Bearer token auth — requires OAuth/Platform keys (not available for personal use)
+// Cal.com v1 API — uses ?apiKey= query param auth, works with personal API keys
 const CAL_COM_API_V1 = "https://api.cal.com/v1";
-const CAL_COM_API_V2 = "https://api.cal.com/v2";
 
 export interface CalComEventType {
   id: number;
@@ -50,7 +47,7 @@ export interface BookingRequest {
   eventTypeId: number;
   start: string; // ISO datetime
   name: string;
-  email: string;
+  email?: string;
   phone?: string;
   notes?: string;
   metadata?: Record<string, any>;
@@ -193,35 +190,11 @@ export class CalComClient {
     return response.json();
   }
 
-  private async requestV2<T>(
-    endpoint: string,
-    options: RequestInit = {}
-  ): Promise<T> {
-    const url = `${CAL_COM_API_V2}${endpoint}`;
-
-    const response = await fetch(url, {
-      ...options,
-      headers: {
-        "Content-Type": "application/json",
-        "cal-api-version": "2024-08-13",
-        Authorization: `Bearer ${this.apiKey}`,
-        ...options.headers,
-      },
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Cal.com API error: ${response.status} - ${errorText}`);
-    }
-
-    return response.json();
-  }
-
   /**
    * Get the current user (to verify API key works)
    */
   async getMe() {
-    return this.requestV2<{ status: string; data: { id: number; username: string; email: string } }>("/me");
+    return this.requestV1<{ user: { id: number; username: string; email: string } }>("/me");
   }
 
   /**
