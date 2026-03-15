@@ -187,11 +187,13 @@ export type Database = {
       }
       assistants: {
         Row: {
+          after_hours_config: Json | null
           created_at: string
           first_message: string
           id: string
           is_active: boolean
           knowledge_base: Json | null
+          language: string
           model: string
           model_provider: string
           name: string
@@ -206,11 +208,13 @@ export type Database = {
           voice_provider: string
         }
         Insert: {
+          after_hours_config?: Json | null
           created_at?: string
           first_message?: string
           id?: string
           is_active?: boolean
           knowledge_base?: Json | null
+          language?: string
           model?: string
           model_provider?: string
           name: string
@@ -225,11 +229,13 @@ export type Database = {
           voice_provider?: string
         }
         Update: {
+          after_hours_config?: Json | null
           created_at?: string
           first_message?: string
           id?: string
           is_active?: boolean
           knowledge_base?: Json | null
+          language?: string
           model?: string
           model_provider?: string
           name?: string
@@ -309,6 +315,129 @@ export type Database = {
           },
           {
             foreignKeyName: "calendar_integrations_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      callback_requests: {
+        Row: {
+          assistant_id: string | null
+          call_id: string | null
+          caller_name: string
+          caller_phone: string
+          completed_at: string | null
+          completed_by: string | null
+          completion_notes: string | null
+          created_at: string
+          expired_at: string | null
+          id: string
+          notes: string | null
+          organization_id: string
+          reason: string
+          reminder_sent_at: string | null
+          requested_time: string | null
+          status: string
+          updated_at: string
+          urgency: string
+        }
+        Insert: {
+          assistant_id?: string | null
+          call_id?: string | null
+          caller_name: string
+          caller_phone: string
+          completed_at?: string | null
+          completed_by?: string | null
+          completion_notes?: string | null
+          created_at?: string
+          expired_at?: string | null
+          id?: string
+          notes?: string | null
+          organization_id: string
+          reason: string
+          reminder_sent_at?: string | null
+          requested_time?: string | null
+          status?: string
+          updated_at?: string
+          urgency?: string
+        }
+        Update: {
+          assistant_id?: string | null
+          call_id?: string | null
+          caller_name?: string
+          caller_phone?: string
+          completed_at?: string | null
+          completed_by?: string | null
+          completion_notes?: string | null
+          created_at?: string
+          expired_at?: string | null
+          id?: string
+          notes?: string | null
+          organization_id?: string
+          reason?: string
+          reminder_sent_at?: string | null
+          requested_time?: string | null
+          status?: string
+          updated_at?: string
+          urgency?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "callback_requests_assistant_id_fkey"
+            columns: ["assistant_id"]
+            isOneToOne: false
+            referencedRelation: "assistants"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "callback_requests_call_id_fkey"
+            columns: ["call_id"]
+            isOneToOne: false
+            referencedRelation: "calls"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "callback_requests_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      caller_sms_consent_log: {
+        Row: {
+          action: string
+          created_at: string
+          id: string
+          keyword: string | null
+          organization_id: string
+          phone_number: string
+          source: string
+        }
+        Insert: {
+          action: string
+          created_at?: string
+          id?: string
+          keyword?: string | null
+          organization_id: string
+          phone_number: string
+          source: string
+        }
+        Update: {
+          action?: string
+          created_at?: string
+          id?: string
+          keyword?: string | null
+          organization_id?: string
+          phone_number?: string
+          source?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "caller_sms_consent_log_organization_id_fkey"
             columns: ["organization_id"]
             isOneToOne: false
             referencedRelation: "organizations"
@@ -657,12 +786,14 @@ export type Database = {
           created_at: string | null
           email_daily_summary: boolean | null
           email_on_appointment_booked: boolean | null
+          email_on_callback_scheduled: boolean | null
           email_on_failed_call: boolean
           email_on_missed_call: boolean | null
           email_on_voicemail: boolean | null
           id: string
           organization_id: string
           sms_appointment_confirmation: boolean | null
+          sms_on_callback_scheduled: boolean | null
           sms_on_failed_call: boolean
           sms_on_missed_call: boolean | null
           sms_on_voicemail: boolean | null
@@ -676,12 +807,14 @@ export type Database = {
           created_at?: string | null
           email_daily_summary?: boolean | null
           email_on_appointment_booked?: boolean | null
+          email_on_callback_scheduled?: boolean | null
           email_on_failed_call?: boolean
           email_on_missed_call?: boolean | null
           email_on_voicemail?: boolean | null
           id?: string
           organization_id: string
           sms_appointment_confirmation?: boolean | null
+          sms_on_callback_scheduled?: boolean | null
           sms_on_failed_call?: boolean
           sms_on_missed_call?: boolean | null
           sms_on_voicemail?: boolean | null
@@ -695,12 +828,14 @@ export type Database = {
           created_at?: string | null
           email_daily_summary?: boolean | null
           email_on_appointment_booked?: boolean | null
+          email_on_callback_scheduled?: boolean | null
           email_on_failed_call?: boolean
           email_on_missed_call?: boolean | null
           email_on_voicemail?: boolean | null
           id?: string
           organization_id?: string
           sms_appointment_confirmation?: boolean | null
+          sms_on_callback_scheduled?: boolean | null
           sms_on_failed_call?: boolean
           sms_on_missed_call?: boolean | null
           sms_on_voicemail?: boolean | null
@@ -761,6 +896,7 @@ export type Database = {
           business_hours: Json | null
           business_name: string | null
           business_phone: string | null
+          business_state: string | null
           business_website: string | null
           country: string
           created_at: string
@@ -771,6 +907,7 @@ export type Database = {
           name: string
           parent_org_id: string | null
           primary_color: string | null
+          recording_consent_mode: string
           slug: string
           stripe_customer_id: string | null
           timezone: string | null
@@ -782,6 +919,7 @@ export type Database = {
           business_hours?: Json | null
           business_name?: string | null
           business_phone?: string | null
+          business_state?: string | null
           business_website?: string | null
           country?: string
           created_at?: string
@@ -792,6 +930,7 @@ export type Database = {
           name: string
           parent_org_id?: string | null
           primary_color?: string | null
+          recording_consent_mode?: string
           slug: string
           stripe_customer_id?: string | null
           timezone?: string | null
@@ -803,6 +942,7 @@ export type Database = {
           business_hours?: Json | null
           business_name?: string | null
           business_phone?: string | null
+          business_state?: string | null
           business_website?: string | null
           country?: string
           created_at?: string
@@ -813,6 +953,7 @@ export type Database = {
           name?: string
           parent_org_id?: string | null
           primary_color?: string | null
+          recording_consent_mode?: string
           slug?: string
           stripe_customer_id?: string | null
           timezone?: string | null
@@ -831,6 +972,7 @@ export type Database = {
       }
       phone_numbers: {
         Row: {
+          ai_enabled: boolean
           assistant_id: string | null
           carrier: string | null
           created_at: string
@@ -848,6 +990,7 @@ export type Database = {
           voice_provider: string
         }
         Insert: {
+          ai_enabled?: boolean
           assistant_id?: string | null
           carrier?: string | null
           created_at?: string
@@ -865,6 +1008,7 @@ export type Database = {
           voice_provider?: string
         }
         Update: {
+          ai_enabled?: boolean
           assistant_id?: string | null
           carrier?: string | null
           created_at?: string
@@ -971,11 +1115,13 @@ export type Database = {
           announcement_message: string | null
           assistant_id: string
           created_at: string | null
+          destinations: Json | null
           id: string
           is_active: boolean | null
           name: string
           organization_id: string
           priority: number | null
+          require_confirmation: boolean | null
           transfer_to_name: string | null
           transfer_to_phone: string
           trigger_intent: string | null
@@ -985,11 +1131,13 @@ export type Database = {
           announcement_message?: string | null
           assistant_id: string
           created_at?: string | null
+          destinations?: Json | null
           id?: string
           is_active?: boolean | null
           name: string
           organization_id: string
           priority?: number | null
+          require_confirmation?: boolean | null
           transfer_to_name?: string | null
           transfer_to_phone: string
           trigger_intent?: string | null
@@ -999,11 +1147,13 @@ export type Database = {
           announcement_message?: string | null
           assistant_id?: string
           created_at?: string | null
+          destinations?: Json | null
           id?: string
           is_active?: boolean | null
           name?: string
           organization_id?: string
           priority?: number | null
+          require_confirmation?: boolean | null
           transfer_to_name?: string | null
           transfer_to_phone?: string
           trigger_intent?: string | null
