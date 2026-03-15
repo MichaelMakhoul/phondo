@@ -17,7 +17,7 @@ export interface Notification {
   createdAt: string;
 }
 
-const STORAGE_KEY_PREFIX = "hola-recep-notifications-last-seen-";
+const STORAGE_KEY_PREFIX = "phondo-notifications-last-seen-";
 
 function getLastSeenKey(organizationId: string) {
   return `${STORAGE_KEY_PREFIX}${organizationId}`;

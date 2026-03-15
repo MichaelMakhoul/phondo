@@ -5,7 +5,7 @@ import { AssistantBuilder } from "./assistant-builder";
 import type { AfterHoursConfig } from "@/lib/prompt-builder/types";
 
 export const metadata: Metadata = {
-  title: "Edit Assistant | Hola Recep",
+  title: "Edit Assistant | Phondo",
   description: "Configure your AI receptionist",
 };
 

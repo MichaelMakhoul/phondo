@@ -4,7 +4,7 @@ import { createClient } from "@/lib/supabase/server";
 import { TestCallPage } from "./test-call-page";
 
 export const metadata: Metadata = {
-  title: "Test Assistant | Hola Recep",
+  title: "Test Assistant | Phondo",
   description: "Test your AI receptionist with a live call",
 };
 

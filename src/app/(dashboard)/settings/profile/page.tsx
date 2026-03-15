@@ -4,7 +4,7 @@ import { createClient } from "@/lib/supabase/server";
 import { ProfileForm } from "./profile-form";
 
 export const metadata: Metadata = {
-  title: "Profile Settings | Hola Recep",
+  title: "Profile Settings | Phondo",
   description: "Manage your personal account settings",
 };
 

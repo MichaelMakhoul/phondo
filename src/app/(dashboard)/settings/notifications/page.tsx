@@ -5,7 +5,7 @@ import { hasFeatureAccess } from "@/lib/stripe/billing-service";
 import { NotificationSettings } from "./notification-settings";
 
 export const metadata: Metadata = {
-  title: "Notification Settings | Hola Recep",
+  title: "Notification Settings | Phondo",
   description: "Manage your email and SMS notification preferences",
 };
 

@@ -13,7 +13,7 @@ let warnedMissing = false;
 function isAvailable(): boolean {
   if (typeof window === "undefined") return false;
   if (!GA_MEASUREMENT_ID) {
-    if (!warnedMissing && process.env.NODE_ENV === "development") {
+    if (!warnedMissing && process.env.NODE_ENV === "production") {
       console.warn("[Analytics] NEXT_PUBLIC_GA_MEASUREMENT_ID is not set. Analytics tracking is disabled.");
       warnedMissing = true;
     }

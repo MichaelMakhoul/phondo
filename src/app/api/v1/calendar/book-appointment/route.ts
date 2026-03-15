@@ -148,7 +148,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Generate secure email if not provided (using UUID instead of phone-based)
-    const bookingEmail = email || `booking-${crypto.randomUUID()}@noreply.holarecep.com`;
+    const bookingEmail = email || `booking-${crypto.randomUUID()}@noreply.phondo.ai`;
 
     // Create the booking
     const booking = await calClient.createBooking({

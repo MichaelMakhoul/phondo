@@ -4,8 +4,8 @@ import { MarketingHeader } from "@/components/marketing/marketing-header";
 import { MarketingFooter } from "@/components/marketing/marketing-footer";
 
 export const metadata: Metadata = {
-  title: "Terms of Service | Hola Recep",
-  description: "Terms of Service for Hola Recep AI Receptionist",
+  title: "Terms of Service | Phondo",
+  description: "Terms of Service for Phondo AI Receptionist",
 };
 
 export default function TermsPage() {
@@ -24,14 +24,14 @@ export default function TermsPage() {
 
             <h2>1. Acceptance of Terms</h2>
             <p>
-              By accessing or using Hola Recep (&quot;the Service&quot;), you agree to be bound
+              By accessing or using Phondo (&quot;the Service&quot;), you agree to be bound
               by these Terms of Service. If you do not agree to these terms, please
               do not use the Service.
             </p>
 
             <h2>2. Description of Service</h2>
             <p>
-              Hola Recep provides AI-powered virtual receptionist services that can
+              Phondo provides AI-powered virtual receptionist services that can
               answer phone calls, schedule appointments, and handle customer inquiries
               on behalf of your business.
             </p>
@@ -63,7 +63,7 @@ export default function TermsPage() {
             <h2>6. Intellectual Property</h2>
             <p>
               The Service and its original content, features, and functionality are
-              owned by Hola Recep and are protected by international copyright,
+              owned by Phondo and are protected by international copyright,
               trademark, and other intellectual property laws.
             </p>
 
@@ -101,8 +101,8 @@ export default function TermsPage() {
             <h2>11. Contact Us</h2>
             <p>
               If you have any questions about these Terms, please contact us at{" "}
-              <a href="mailto:support@holarecep.com" className="text-orange-500 hover:underline">
-                support@holarecep.com
+              <a href="mailto:support@phondo.ai" className="text-orange-500 hover:underline">
+                support@phondo.ai
               </a>
               .
             </p>

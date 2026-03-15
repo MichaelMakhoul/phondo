@@ -1,5 +1,5 @@
 {
-  "name": "hola-recep-voice-server",
+  "name": "phondo-voice-server",
   "version": "0.1.0",
   "private": true,
   "description": "Self-hosted voice AI PoC — Twilio + Deepgram + Groq",

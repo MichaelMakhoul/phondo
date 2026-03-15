@@ -23,7 +23,7 @@ import {
 } from "lucide-react";
 
 export const metadata: Metadata = {
-  title: "Support | Hola Recep",
+  title: "Support | Phondo",
 };
 
 const GUIDES = [
@@ -79,7 +79,7 @@ export default async function SupportPage() {
     console.error("[Support] Failed to check priority support — showing standard:", { organizationId, error: err });
   }
 
-  const supportEmail = "support@holarecep.com";
+  const supportEmail = "support@phondo.ai";
   const prioritySubject = encodeURIComponent("[PRIORITY] Support Request");
 
   return (
@@ -87,7 +87,7 @@ export default async function SupportPage() {
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Support</h1>
         <p className="text-muted-foreground">
-          Get help with your Hola Recep account.
+          Get help with your Phondo account.
         </p>
       </div>
 

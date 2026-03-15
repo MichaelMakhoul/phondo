@@ -302,7 +302,7 @@ async function fetchPage(url: string, timeout: number, maxRedirects = 5): Promis
         signal: controller.signal,
         redirect: "manual",
         headers: {
-          'User-Agent': 'HolaRecep-KnowledgeBase-Bot/1.0 (AI Receptionist Setup)',
+          'User-Agent': 'Phondo-KnowledgeBase-Bot/1.0 (AI Receptionist Setup)',
           'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         },
       });

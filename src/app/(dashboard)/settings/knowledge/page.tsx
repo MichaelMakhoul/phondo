@@ -4,7 +4,7 @@ import { createClient } from "@/lib/supabase/server";
 import { KnowledgeSettings } from "./knowledge-settings";
 
 export const metadata: Metadata = {
-  title: "Knowledge Base | Hola Recep",
+  title: "Knowledge Base | Phondo",
   description: "Manage your AI's knowledge sources",
 };
 

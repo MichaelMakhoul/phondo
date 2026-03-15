@@ -1,4 +1,4 @@
-app = "hola-recep-voice"
+app = "phondo-voice"
 primary_region = "syd"
 
 [env]

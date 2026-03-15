@@ -67,9 +67,9 @@ export async function retryFailedWebhook(logId: string, integrationId: string): 
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-HolaRecep-Signature": signature,
-        "X-HolaRecep-Event": log.event_type,
-        "User-Agent": "HolaRecep-Webhooks/1.0",
+        "X-Phondo-Signature": signature,
+        "X-Phondo-Event": log.event_type,
+        "User-Agent": "Phondo-Webhooks/1.0",
       },
       body: payloadStr,
       signal: controller.signal,

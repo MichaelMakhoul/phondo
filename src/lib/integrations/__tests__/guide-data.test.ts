@@ -52,7 +52,7 @@ describe("INTEGRATION_GUIDES", () => {
   it("webhook guide includes payload example", () => {
     const webhookGuide = INTEGRATION_GUIDES.find((g) => g.platformId === "webhook");
     expect(webhookGuide?.payloadNote).toBeTruthy();
-    expect(webhookGuide?.payloadNote).toContain("x-holarecep-signature");
+    expect(webhookGuide?.payloadNote).toContain("x-phondo-signature");
   });
 });
 

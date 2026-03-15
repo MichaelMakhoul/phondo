@@ -16,9 +16,9 @@ import { MarketingFooter } from "@/components/marketing/marketing-footer";
 import { AnimateOnScroll } from "@/components/marketing/animate-on-scroll";
 
 export const metadata: Metadata = {
-  title: "Australian Data Sovereignty | Hola Recep",
+  title: "Australian Data Sovereignty | Phondo",
   description:
-    "Your business data stays in Australia. Hola Recep hosts all data on Australian servers with enterprise-grade security, encryption, and compliance.",
+    "Your business data stays in Australia. Phondo hosts all data on Australian servers with enterprise-grade security, encryption, and compliance.",
 };
 
 const INFRASTRUCTURE = [

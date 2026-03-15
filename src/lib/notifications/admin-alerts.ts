@@ -52,9 +52,9 @@ async function sendAlertEmail(
     return;
   }
 
-  const fromEmail = process.env.EMAIL_FROM || "notifications@holarecep.com";
+  const fromEmail = process.env.EMAIL_FROM || "notifications@phondo.ai";
   const emoji = type === "down" ? "[DOWN]" : "[RECOVERED]";
-  const subject = `${emoji} Hola Recep — ${service}`;
+  const subject = `${emoji} Phondo — ${service}`;
 
   const resend = new Resend(apiKey);
   const { error } = await resend.emails.send({
@@ -94,7 +94,7 @@ async function sendAlertSMS(
   }
 
   const prefix = type === "down" ? "[DOWN]" : "[OK]";
-  const body = `${prefix} Hola Recep: ${service} — ${message}`;
+  const body = `${prefix} Phondo: ${service} — ${message}`;
 
   const client = Twilio(accountSid, authToken);
   await client.messages.create({ body, to, from });

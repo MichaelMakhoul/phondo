@@ -30,7 +30,7 @@ import { CallHeatmap } from "./call-heatmap";
 import { ExportButton } from "./export-button";
 
 export const metadata: Metadata = {
-  title: "Analytics | Hola Recep",
+  title: "Analytics | Phondo",
   description: "View call metrics and ROI insights",
 };
 

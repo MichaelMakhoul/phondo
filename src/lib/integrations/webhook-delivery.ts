@@ -113,9 +113,9 @@ export async function deliverWebhooks(
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "X-HolaRecep-Signature": signature,
-            "X-HolaRecep-Event": event,
-            "User-Agent": "HolaRecep-Webhooks/1.0",
+            "X-Phondo-Signature": signature,
+            "X-Phondo-Event": event,
+            "User-Agent": "Phondo-Webhooks/1.0",
           },
           body: payloadStr,
           signal: controller.signal,

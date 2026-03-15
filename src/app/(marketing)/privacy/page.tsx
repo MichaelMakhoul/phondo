@@ -3,8 +3,8 @@ import { MarketingHeader } from "@/components/marketing/marketing-header";
 import { MarketingFooter } from "@/components/marketing/marketing-footer";
 
 export const metadata: Metadata = {
-  title: "Privacy Policy | Hola Recep",
-  description: "Privacy Policy for Hola Recep AI Receptionist",
+  title: "Privacy Policy | Phondo",
+  description: "Privacy Policy for Phondo AI Receptionist",
 };
 
 export default function PrivacyPage() {
@@ -23,7 +23,7 @@ export default function PrivacyPage() {
 
             <h2>1. Introduction</h2>
             <p>
-              Hola Recep (&quot;we,&quot; &quot;our,&quot; or &quot;us&quot;) is committed to protecting your
+              Phondo (&quot;we,&quot; &quot;our,&quot; or &quot;us&quot;) is committed to protecting your
               privacy. This Privacy Policy explains how we collect, use, disclose,
               and safeguard your information when you use our AI receptionist service.
             </p>
@@ -128,8 +128,8 @@ export default function PrivacyPage() {
             <h2>11. Contact Us</h2>
             <p>
               If you have questions about this Privacy Policy, please contact us at{" "}
-              <a href="mailto:privacy@holarecep.com" className="text-orange-500 hover:underline">
-                privacy@holarecep.com
+              <a href="mailto:privacy@phondo.ai" className="text-orange-500 hover:underline">
+                privacy@phondo.ai
               </a>
               .
             </p>

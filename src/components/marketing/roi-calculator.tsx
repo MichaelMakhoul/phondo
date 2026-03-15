@@ -80,7 +80,7 @@ export function ROICalculator() {
         </div>
 
         <div className="rounded-lg border-2 border-orange-500/20 bg-orange-500/5 p-4 text-center">
-          <p className="text-sm text-muted-foreground">Hola Recep pays for itself in</p>
+          <p className="text-sm text-muted-foreground">Phondo pays for itself in</p>
           <p className="mt-1 text-4xl font-bold text-orange-500">
             {stats.paybackDays} {stats.paybackDays === 1 ? "day" : "days"}
           </p>

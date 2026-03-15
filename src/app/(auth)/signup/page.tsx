@@ -82,7 +82,7 @@ export default function SignupPage() {
           <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-orange-500">
             <Phone className="h-5 w-5 text-white" />
           </div>
-          <span className="text-2xl font-bold text-white">Hola Recep</span>
+          <span className="text-2xl font-bold text-white">Phondo</span>
         </Link>
         <Card className="w-full">
           <CardHeader className="text-center">

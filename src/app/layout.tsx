@@ -10,7 +10,7 @@ import { CookieConsent } from "@/components/analytics/cookie-consent";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "Hola Recep - AI Receptionist Platform",
+  title: "Phondo - AI Receptionist Platform",
   description: "Create and deploy AI-powered phone receptionists for your business",
 };
 

@@ -12,7 +12,7 @@ import {
 } from "date-fns";
 
 export const metadata: Metadata = {
-  title: "Calendar | Hola Recep",
+  title: "Calendar | Phondo",
   description: "View your appointment schedule",
 };
 
