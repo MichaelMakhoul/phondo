@@ -18,31 +18,32 @@ export async function GET(req: NextRequest) {
   }
 
   const voiceServerUrl = process.env.VOICE_SERVER_PUBLIC_URL;
-  if (!voiceServerUrl) {
-    console.error("[HealthCheck] VOICE_SERVER_PUBLIC_URL not configured");
-    return NextResponse.json({ error: "VOICE_SERVER_PUBLIC_URL not set" }, { status: 500 });
-  }
 
   // 1. Ping the voice server health endpoint
   let isHealthy = false;
   let errorMessage = "";
 
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), HEALTH_TIMEOUT_MS);
+  if (!voiceServerUrl) {
+    console.error("[HealthCheck] VOICE_SERVER_PUBLIC_URL not configured");
+    errorMessage = "VOICE_SERVER_PUBLIC_URL not set";
+  } else {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), HEALTH_TIMEOUT_MS);
 
-    const res = await fetch(`${voiceServerUrl}/health`, {
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
+      const res = await fetch(`${voiceServerUrl}/health`, {
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
 
-    isHealthy = res.ok;
-    if (!isHealthy) {
-      errorMessage = `HTTP ${res.status}`;
+      isHealthy = res.ok;
+      if (!isHealthy) {
+        errorMessage = `HTTP ${res.status}`;
+      }
+    } catch (err) {
+      isHealthy = false;
+      errorMessage = err instanceof Error ? err.message : String(err);
     }
-  } catch (err) {
-    isHealthy = false;
-    errorMessage = err instanceof Error ? err.message : String(err);
   }
 
   // 2. Read current state from system_health
