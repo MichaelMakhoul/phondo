@@ -10,24 +10,43 @@ export async function GET(req: NextRequest) {
     }
   }
 
+  const results: Record<string, string> = {};
+
+  // 1. Ping Supabase to keep the project active
   try {
     const supabase = createAdminClient();
-
-    // Simple query to keep the Supabase project active
     const { error } = await (supabase as any)
       .from("organizations")
       .select("id")
       .limit(1);
 
-    if (error) {
-      console.error("[KeepAlive] DB ping failed:", error);
-      return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
-    }
-
-    console.log("[KeepAlive] DB ping successful");
-    return NextResponse.json({ ok: true, timestamp: new Date().toISOString() });
+    results.supabase = error ? `error: ${error.message}` : "ok";
+    if (error) console.error("[KeepAlive] Supabase ping failed:", error);
   } catch (err) {
-    console.error("[KeepAlive] Unexpected error:", err);
-    return NextResponse.json({ error: "Keep-alive check failed" }, { status: 503 });
+    results.supabase = "error";
+    console.error("[KeepAlive] Supabase ping threw:", err);
   }
+
+  // 2. Ping Upstash Redis to prevent inactivity expiration
+  if (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
+    try {
+      const { Redis } = await import("@upstash/redis");
+      const redis = Redis.fromEnv();
+      const pong = await redis.ping();
+      results.upstash = pong === "PONG" ? "ok" : `unexpected: ${pong}`;
+    } catch (err) {
+      results.upstash = "error";
+      console.error("[KeepAlive] Upstash Redis ping failed:", err);
+    }
+  } else {
+    results.upstash = "skipped (not configured)";
+  }
+
+  const allOk = Object.values(results).every((v) => v === "ok" || v.startsWith("skipped"));
+
+  console.log("[KeepAlive] Results:", results);
+  return NextResponse.json(
+    { ok: allOk, timestamp: new Date().toISOString(), ...results },
+    { status: allOk ? 200 : 503 }
+  );
 }
