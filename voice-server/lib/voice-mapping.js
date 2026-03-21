@@ -5,7 +5,7 @@
  * Mapping is by gender, tone, and accent similarity.
  */
 
-const DEFAULT_DEEPGRAM_VOICE = "aura-asteria-en";
+const DEFAULT_DEEPGRAM_VOICE = "aura-2-asteria-en";
 const DEFAULT_DEEPGRAM_VOICE_ES = "aura-2-diana-es";
 
 /**
@@ -18,31 +18,31 @@ const DEFAULT_DEEPGRAM_VOICE_ES = "aura-2-diana-es";
  * Australian: map to closest general voice
  */
 const VOICE_MAP = {
-  // --- American Female ---
-  "EXAVITQu4vr4xnSDxMaL": "aura-asteria-en",    // Sarah — warm, professional → Asteria (warm female)
-  "21m00Tcm4TlvDq8ikWAM": "aura-luna-en",        // Rachel — professional, authoritative → Luna (professional female)
-  "jBpfuIE2acCO8z3wKNLl": "aura-stella-en",      // Emily — upbeat, friendly → Stella (upbeat female)
-  "MF3mGyEYCl7XYWbV9V6O": "aura-asteria-en",     // Elli — warm, friendly → Asteria (warm female)
-  "AZnzlk1XvdvUeBnXmlld": "aura-stella-en",      // Domi — energetic, friendly → Stella (upbeat female)
+  // --- American Female (Aura-2 for natural sound) ---
+  "EXAVITQu4vr4xnSDxMaL": "aura-2-asteria-en",  // Sarah — warm, professional → Asteria
+  "21m00Tcm4TlvDq8ikWAM": "aura-2-luna-en",      // Rachel — professional, authoritative → Luna
+  "jBpfuIE2acCO8z3wKNLl": "aura-2-asteria-en",   // Emily — upbeat, friendly → Asteria (stella not in aura-2)
+  "MF3mGyEYCl7XYWbV9V6O": "aura-2-asteria-en",   // Elli — warm, friendly → Asteria
+  "AZnzlk1XvdvUeBnXmlld": "aura-2-asteria-en",   // Domi — energetic, friendly → Asteria (stella not in aura-2)
 
-  // --- American Male ---
-  "pNInz6obpgDQGcFmaJgB": "aura-orion-en",       // Adam — friendly → Orion (friendly male)
-  "yoZ06aMxZJJ28mfd3POQ": "aura-arcas-en",       // Sam — calm, professional → Arcas (calm male)
-  "ErXwobaYiN019PkySvjV": "aura-orion-en",       // Antoni — friendly, conversational → Orion (friendly male)
-  "TxGEqnHWrfWFTfGW9XjX": "aura-orpheus-en",     // Josh — deep, warm → Orpheus (warm male)
-  "VR6AewLTigWG4xSOukaG": "aura-angus-en",       // Arnold — authoritative → Angus (authoritative male)
-  "CYw3kZ02Hs0563khs1Fj": "aura-perseus-en",     // Dave — casual, conversational → Perseus (casual male)
+  // --- American Male (Aura-2 for natural sound) ---
+  "pNInz6obpgDQGcFmaJgB": "aura-2-orion-en",     // Adam — friendly → Orion
+  "yoZ06aMxZJJ28mfd3POQ": "aura-2-arcas-en",     // Sam — calm, professional → Arcas
+  "ErXwobaYiN019PkySvjV": "aura-2-orion-en",     // Antoni — friendly, conversational → Orion
+  "TxGEqnHWrfWFTfGW9XjX": "aura-2-orpheus-en",   // Josh — deep, warm → Orpheus
+  "VR6AewLTigWG4xSOukaG": "aura-2-arcas-en",     // Arnold — authoritative → Arcas (angus not in aura-2)
+  "CYw3kZ02Hs0563khs1Fj": "aura-2-orion-en",     // Dave — casual, conversational → Orion (perseus not in aura-2)
 
-  // --- British ---
-  "onwK4e9ZLuTAKqWW03F9": "aura-arcas-en",       // Daniel — polished British male → Arcas (calm pro)
-  "ThT5KcBeYPX3keUQqHPh": "aura-asteria-en",     // Dorothy — warm British female → Asteria (warm)
-  "SOYHLrjzK2X1ezoPC6cr": "aura-angus-en",       // Harry — authoritative British → Angus (authoritative)
-  "oWAxZDx7w5VEj9dCyTzz": "aura-hera-en",        // Grace — soothing British female → Hera (soothing)
+  // --- British (Aura-2 for natural sound) ---
+  "onwK4e9ZLuTAKqWW03F9": "aura-2-arcas-en",     // Daniel — polished British male → Arcas
+  "ThT5KcBeYPX3keUQqHPh": "aura-2-asteria-en",   // Dorothy — warm British female → Asteria
+  "SOYHLrjzK2X1ezoPC6cr": "aura-2-arcas-en",     // Harry — authoritative British → Arcas (angus not in aura-2)
+  "oWAxZDx7w5VEj9dCyTzz": "aura-2-hera-en",      // Grace — soothing British female → Hera
 
-  // --- Australian ---
-  "ZQe5CZNOzWyzPSCn5a3c": "aura-arcas-en",       // James — professional AU male → Arcas
-  "XB0fDUnXU5powFXDhCwa": "aura-asteria-en",     // Charlotte — warm AU female → Asteria
-  "IKne3meq5aSn9XLyUdCD": "aura-orion-en",       // Liam — friendly AU male → Orion
+  // --- Australian (Aura-2 for natural sound) ---
+  "ZQe5CZNOzWyzPSCn5a3c": "aura-2-arcas-en",     // James — professional AU male → Arcas
+  "XB0fDUnXU5powFXDhCwa": "aura-2-asteria-en",   // Charlotte — warm AU female → Asteria
+  "IKne3meq5aSn9XLyUdCD": "aura-2-orion-en",     // Liam — friendly AU male → Orion
 };
 
 /**
