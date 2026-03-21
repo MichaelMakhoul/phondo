@@ -332,6 +332,16 @@ function buildBehaviorsSection(behaviors, options) {
     "- CALLBACKS: You can schedule callback requests using the schedule_callback function. Use this when a caller wants someone to call them back, when the person they need is unavailable, or when you cannot resolve their issue directly."
   );
 
+  // Caller ID awareness — prevents AI from repeatedly asking for the phone number
+  lines.push(
+    '- CALLER ID: You already have the caller\'s phone number from caller ID. If the caller says "it\'s the number I\'m calling from" or similar, accept that and do NOT ask again. Only ask for a phone number if you need a different contact number.'
+  );
+
+  // Language boundaries
+  lines.push(
+    "- LANGUAGE: You must only speak in the language you were configured for. If the caller speaks a different language, politely let them know you can only assist in your configured language and offer to have someone who speaks their language call them back. Do NOT attempt to respond in languages you are not configured for."
+  );
+
   if (behaviors.afterHoursHandling) {
     if (options && options.isAfterHours) {
       lines.push(
@@ -508,6 +518,11 @@ function buildSystemPrompt(assistant, organization, knowledgeBase, options) {
 
   // Append scheduling section
   systemPrompt += `\n\n${buildSchedulingSection(organization.timezone, organization.businessHours, organization.defaultAppointmentDuration, calendarEnabled)}`;
+
+  // Append caller ID and language rules
+  systemPrompt += `\n\nIMPORTANT RULES:`;
+  systemPrompt += `\n- CALLER ID: You already have the caller's phone number from caller ID. If the caller says "it's the number I'm calling from" or similar, accept that and do NOT ask again.`;
+  systemPrompt += `\n- LANGUAGE: Only respond in the language you are configured for. If a caller speaks a different language, politely tell them you can only assist in your configured language and offer to have someone call them back.`;
 
   // Append language instruction for non-English assistants
   if (language !== "en" && LANGUAGE_INSTRUCTIONS[language]) {
