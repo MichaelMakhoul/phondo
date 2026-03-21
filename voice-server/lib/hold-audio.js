@@ -39,10 +39,10 @@ function linearToMulaw(sample) {
  * - warmthVol: amplitude of warmth tone
  */
 const PRESETS = {
-  calm:         { noiseType: "brown", volume: 0.025, warmthHz: 70,  warmthVol: 0.008 },
-  professional: { noiseType: "brown", volume: 0.02,  warmthHz: 0,   warmthVol: 0 },
-  warm:         { noiseType: "pink",  volume: 0.025, warmthHz: 100, warmthVol: 0.01 },
-  neutral:      { noiseType: "brown", volume: 0.02,  warmthHz: 0,   warmthVol: 0 },
+  calm:         { noiseType: "brown", volume: 0.04, warmthHz: 70,  warmthVol: 0.012 },
+  professional: { noiseType: "brown", volume: 0.035, warmthHz: 0,   warmthVol: 0 },
+  warm:         { noiseType: "pink",  volume: 0.04, warmthHz: 100, warmthVol: 0.015 },
+  neutral:      { noiseType: "brown", volume: 0.035, warmthHz: 0,   warmthVol: 0 },
   silent:       null,
 };
 
@@ -61,7 +61,9 @@ const INDUSTRY_DEFAULTS = {
   hospitality: "warm",
   "food-beverage": "warm",
   "real-estate": "professional",
+  real_estate: "professional",
   trades: "neutral",
+  home_services: "neutral",
   "home-services": "neutral",
   plumbing: "neutral",
   electrical: "neutral",
