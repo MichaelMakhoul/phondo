@@ -40,18 +40,19 @@ const INDUSTRY_KEYWORDS = {
 };
 
 /**
- * Build the keywords query parameter for Deepgram.
+ * Build the keyterm query parameter for Deepgram Nova-3.
+ * Nova-3 uses `keyterm` instead of `keywords` (Nova-2).
  * @param {string} [industry] - Industry key from org settings
- * @returns {string} URL-encoded keywords param, or empty string
+ * @returns {string} URL-encoded keyterm param, or empty string
  */
-function buildKeywordsParam(industry) {
+function buildKeytermsParam(industry) {
   const keywords = [...(INDUSTRY_KEYWORDS._common || [])];
   if (industry && INDUSTRY_KEYWORDS[industry]) {
     keywords.push(...INDUSTRY_KEYWORDS[industry]);
   }
   if (keywords.length === 0) return "";
-  // Deepgram format: &keywords=word:boost&keywords=word2:boost2
-  return keywords.map((kw) => `&keywords=${encodeURIComponent(kw)}`).join("");
+  // Nova-3 format: &keyterm=word:boost&keyterm=word2:boost2
+  return keywords.map((kw) => `&keyterm=${encodeURIComponent(kw)}`).join("");
 }
 
 /**
@@ -74,7 +75,7 @@ function openDeepgramStream(apiKey, { onTranscript, onUtteranceEnd, onError, onC
 
   // Nova-3 for all languages — 54% better streaming accuracy than Nova-2 at same latency
   const model = "nova-3";
-  const keywordsParam = buildKeywordsParam(options.industry);
+  const keytermsParam = buildKeytermsParam(options.industry);
 
   const url =
     "wss://api.deepgram.com/v1/listen?" +
@@ -85,7 +86,7 @@ function openDeepgramStream(apiKey, { onTranscript, onUtteranceEnd, onError, onC
     "&interim_results=true" +
     "&endpointing=300" +
     "&utterance_end_ms=1000" +
-    keywordsParam;
+    keytermsParam;
 
   const ws = new WebSocket(url, {
     headers: { Authorization: `Token ${apiKey}` },
