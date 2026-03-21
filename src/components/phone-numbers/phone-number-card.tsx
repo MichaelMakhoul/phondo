@@ -7,6 +7,13 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -21,7 +28,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/components/ui/use-toast";
-import { Phone, MoreVertical, Bot, PhoneForwarded, AlertCircle } from "lucide-react";
+import { Phone, MoreVertical, Bot, PhoneForwarded, AlertCircle, Loader2 } from "lucide-react";
 import { formatPhoneNumber } from "@/lib/utils";
 import {
   getCountryConfig,
@@ -43,9 +50,15 @@ interface PhoneNumber {
   assistants: { id: string; name: string } | null;
 }
 
+interface Assistant {
+  id: string;
+  name: string;
+}
+
 interface PhoneNumberCardProps {
   phoneNumber: PhoneNumber;
   countryCode: string;
+  assistants?: Assistant[];
 }
 
 function findCarrierInfo(carrier: string | null, countryCode: string): CarrierInfo | null {
@@ -54,12 +67,68 @@ function findCarrierInfo(carrier: string | null, countryCode: string): CarrierIn
   return config.carriers.find((c: CarrierInfo) => c.id === carrier) || null;
 }
 
-export function PhoneNumberCard({ phoneNumber, countryCode }: PhoneNumberCardProps) {
+export function PhoneNumberCard({ phoneNumber, countryCode, assistants = [] }: PhoneNumberCardProps) {
   const router = useRouter();
   const { toast } = useToast();
   const [toggling, setToggling] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [pendingValue, setPendingValue] = useState<boolean>(true);
+  const [assignOpen, setAssignOpen] = useState(false);
+  const [releaseOpen, setReleaseOpen] = useState(false);
+  const [selectedAssistant, setSelectedAssistant] = useState<string>(phoneNumber.assistants?.id || "");
+  const [assigning, setAssigning] = useState(false);
+  const [releasing, setReleasing] = useState(false);
+
+  async function handleAssign() {
+    if (!selectedAssistant) return;
+    setAssigning(true);
+    try {
+      const res = await fetch(`/api/v1/phone-numbers/${phoneNumber.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ assistantId: selectedAssistant }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Failed to assign assistant");
+      }
+      toast({ title: "Assistant assigned", description: "Phone number updated successfully." });
+      setAssignOpen(false);
+      router.refresh();
+    } catch (err) {
+      toast({
+        title: "Error",
+        description: err instanceof Error ? err.message : "Failed to assign assistant",
+        variant: "destructive",
+      });
+    } finally {
+      setAssigning(false);
+    }
+  }
+
+  async function handleRelease() {
+    setReleasing(true);
+    try {
+      const res = await fetch(`/api/v1/phone-numbers/${phoneNumber.id}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Failed to release number");
+      }
+      toast({ title: "Number released", description: "The phone number has been released." });
+      setReleaseOpen(false);
+      router.refresh();
+    } catch (err) {
+      toast({
+        title: "Error",
+        description: err instanceof Error ? err.message : "Failed to release number",
+        variant: "destructive",
+      });
+    } finally {
+      setReleasing(false);
+    }
+  }
 
   const isForwarded = phoneNumber.source_type === "forwarded";
   const aiEnabled = phoneNumber.ai_enabled;
@@ -179,11 +248,13 @@ export function PhoneNumberCard({ phoneNumber, countryCode }: PhoneNumberCardPro
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
-                  <DropdownMenuItem>Assign Assistant</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => setAssignOpen(true)}>
+                    Assign Assistant
+                  </DropdownMenuItem>
                   {isForwarded && (
                     <DropdownMenuItem>View Forwarding Instructions</DropdownMenuItem>
                   )}
-                  <DropdownMenuItem className="text-destructive">
+                  <DropdownMenuItem className="text-destructive" onClick={() => setReleaseOpen(true)}>
                     {isForwarded ? "Remove Forwarding" : "Release Number"}
                   </DropdownMenuItem>
                 </DropdownMenuContent>
@@ -244,7 +315,59 @@ export function PhoneNumberCard({ phoneNumber, countryCode }: PhoneNumberCardPro
         </CardContent>
       </Card>
 
-      {/* Confirmation Dialog */}
+      {/* Assign Assistant Dialog */}
+      <Dialog open={assignOpen} onOpenChange={setAssignOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Assign Assistant</DialogTitle>
+            <DialogDescription>
+              Choose which AI assistant should answer calls on {formatPhoneNumber(phoneNumber.phone_number, countryCode)}.
+            </DialogDescription>
+          </DialogHeader>
+          <Select value={selectedAssistant} onValueChange={setSelectedAssistant}>
+            <SelectTrigger>
+              <SelectValue placeholder="Select an assistant" />
+            </SelectTrigger>
+            <SelectContent>
+              {assistants.map((a) => (
+                <SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAssignOpen(false)} disabled={assigning}>
+              Cancel
+            </Button>
+            <Button onClick={handleAssign} disabled={assigning || !selectedAssistant}>
+              {assigning ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Assigning...</> : "Assign"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Release Number Dialog */}
+      <Dialog open={releaseOpen} onOpenChange={setReleaseOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{isForwarded ? "Remove Forwarding?" : "Release Number?"}</DialogTitle>
+            <DialogDescription>
+              {isForwarded
+                ? "This will remove the forwarding setup. You'll need to disable call forwarding on your phone manually."
+                : "This will permanently release the phone number. You won't be able to get this exact number back."}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setReleaseOpen(false)} disabled={releasing}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={handleRelease} disabled={releasing}>
+              {releasing ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Releasing...</> : isForwarded ? "Remove" : "Release Number"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* AI Toggle Confirmation Dialog */}
       <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <DialogContent>
           <DialogHeader>
