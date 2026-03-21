@@ -16,6 +16,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { PhoneCall, PhoneIncoming, PhoneOutgoing, Play, ShieldAlert, ShieldCheck, AlertTriangle, ChevronRight, User } from "lucide-react";
 import { formatPhoneNumber, formatDuration } from "@/lib/utils";
 import { format } from "date-fns";
+import { LocalTime } from "@/components/ui/local-time";
 import { SpamActions } from "./spam-actions";
 import { AnimatedStat } from "@/components/marketing/animated-stat";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -234,7 +235,7 @@ function CallsTable({
                     : "Unknown")}
                 </p>
                 <p className="text-xs text-muted-foreground">
-                  {format(new Date(call.created_at), "MMM d, h:mm a")}
+                  <LocalTime date={call.created_at} />
                   {call.duration_seconds ? ` · ${formatDuration(call.duration_seconds)}` : ""}
                 </p>
               </div>
@@ -394,7 +395,7 @@ function CallsTable({
                     : "-"}
                 </TableCell>
                 <TableCell>
-                  {format(new Date(call.created_at), "MMM d, h:mm a")}
+                  <LocalTime date={call.created_at} />
                 </TableCell>
                 <TableCell className="text-right">
                   <div className="flex justify-end gap-2">
