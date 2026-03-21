@@ -243,6 +243,7 @@ class CallSession {
     }
     this.deepgramWs = null;
     this.messages = [];
+    this.fullTranscriptMessages = [];
   }
 }
 

@@ -3,7 +3,7 @@
  * container=none prevents WAV header artifacts.
  */
 
-const DEFAULT_VOICE = "aura-asteria-en";
+const DEFAULT_VOICE = "aura-2-asteria-en";
 
 /**
  * @param {string} apiKey

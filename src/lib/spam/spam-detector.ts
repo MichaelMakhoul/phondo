@@ -148,6 +148,11 @@ async function analyzeCallFrequency(
     .gte("created_at", windowStart.toISOString());
 
   if (error || count === null) {
+    console.error("[SpamDetector] analyzeCallFrequency failed:", {
+      phone,
+      organizationId,
+      error: error?.message || error?.code || "count was null",
+    });
     return { score: 0, reasons: [] };
   }
 
@@ -278,6 +283,14 @@ async function checkBlocklist(
     .eq("is_spam", true)
     .limit(1);
 
+  if (error) {
+    console.error("[SpamDetector] checkBlocklist query failed:", {
+      phone,
+      organizationId,
+      error: error.message || error.code,
+    });
+  }
+
   return !error && data && data.length > 0;
 }
 
@@ -379,6 +392,14 @@ export async function markCallAsSpam(
     .eq("id", callId)
     .eq("organization_id", organizationId);
 
+  if (error) {
+    console.error("[SpamDetector] markCallAsSpam failed:", {
+      callId,
+      organizationId,
+      error: error.message || error.code,
+    });
+  }
+
   return !error;
 }
 
@@ -396,6 +417,14 @@ export async function markCallAsNotSpam(
     .update({ is_spam: false })
     .eq("id", callId)
     .eq("organization_id", organizationId);
+
+  if (error) {
+    console.error("[SpamDetector] markCallAsNotSpam failed:", {
+      callId,
+      organizationId,
+      error: error.message || error.code,
+    });
+  }
 
   return !error;
 }

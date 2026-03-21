@@ -8,6 +8,7 @@
 
 import { Resend } from "resend";
 import Twilio from "twilio";
+import { escapeHtml } from "@/lib/security/validation";
 
 export async function sendAdminAlert(
   type: "down" | "recovered",
@@ -65,8 +66,8 @@ async function sendAlertEmail(
       <h2 style="color: ${type === "down" ? "#dc2626" : "#16a34a"};">
         ${type === "down" ? "Service Down" : "Service Recovered"}
       </h2>
-      <p><strong>Service:</strong> ${service}</p>
-      <p><strong>Details:</strong> ${message}</p>
+      <p><strong>Service:</strong> ${escapeHtml(service)}</p>
+      <p><strong>Details:</strong> ${escapeHtml(message)}</p>
       <p><strong>Time:</strong> ${new Date().toISOString()}</p>
     `,
   });
