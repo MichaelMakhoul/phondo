@@ -95,6 +95,12 @@ export function buildSchedulingSection(
     `NEVER guess or assume what today's date is. Always call the tool. Use the YYYY-MM-DD date returned by the tool when calling check_availability or book_appointment.`
   );
 
+  lines.push(
+    "",
+    "IMPORTANT — ALTERNATIVE TIMES:",
+    "If the requested appointment time is not available, you MUST present the alternative available times to the caller and get their explicit confirmation before booking. Never silently substitute a different date or time. Always say something like 'That time isn't available, but I have [alternatives]. Which would you prefer?' and wait for the caller to choose."
+  );
+
   return lines.join("\n");
 }
 
