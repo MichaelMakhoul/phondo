@@ -213,9 +213,17 @@ async function streamChatResponse(apiKey, messages, options) {
         textBuffer += delta.content;
 
         // Check for sentence boundaries and fire callback
+        // Only split if the first sentence is long enough to be worth sending as a
+        // separate TTS chunk. Very short fragments (e.g., "Sure!" or "M-A-K.") create
+        // audible gaps when they need their own TTS call.
         if (onSentence) {
           while (SENTENCE_BREAK.test(textBuffer)) {
             const parts = textBuffer.split(SENTENCE_BREAK);
+            const candidate = parts[0];
+            // Don't split if the first chunk is very short — accumulate more text
+            if (candidate.length < 40 && parts.length > 1) {
+              break; // Wait for more text to accumulate
+            }
             const sentence = parts.shift();
             textBuffer = parts.join(" ");
             if (sentence.trim()) {

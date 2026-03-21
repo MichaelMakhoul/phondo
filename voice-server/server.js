@@ -299,17 +299,12 @@ app.post("/twiml", async (req, res) => {
   const token = issueStreamToken(called, from, undefined, phoneRecord);
   console.log(`[TwiML] Incoming call from=${maskPhone(from)} to=${called}, streaming to ${WS_URL}`);
 
-  // Determine if we should record this call (record unless explicitly 'never')
-  const recordingConsentMode = phoneRecord?.organizations?.recording_consent_mode || "auto";
-  const shouldRecord = recordingConsentMode !== "never";
-
-  const connectAttrs = shouldRecord
-    ? ` record="record-from-answer" recordingStatusCallback="${escapeXml(PUBLIC_URL + '/twiml/recording-status')}" recordingStatusCallbackMethod="POST"`
-    : "";
+  // Recording is started via Twilio REST API in the WebSocket handler (not TwiML)
+  // because <Connect record="record-from-answer"> doesn't work with <Stream>.
 
   res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Connect${connectAttrs}>
+  <Connect>
     <Stream url="${escapeXml(WS_URL)}">
       <Parameter name="auth_token" value="${escapeXml(token)}" />
     </Stream>
@@ -900,6 +895,24 @@ wss.on("connection", (twilioWs) => {
           };
           session.orgPhoneNumber = calledNumber;
           session.piiRedactionEnabled = !!(context.assistant.settings?.piiRedactionEnabled);
+
+          // Start call recording via Twilio REST API if consent mode allows
+          // (Connect record= doesn't work with Stream — must use REST API)
+          const recordingConsentMode = context.organization.recordingConsentMode || "auto";
+          if (recordingConsentMode !== "never" && callSid) {
+            try {
+              const twilio = require("twilio")(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+              const recording = await twilio.calls(callSid).recordings.create({
+                recordingStatusCallback: `${PUBLIC_URL}/twiml/recording-status`,
+                recordingStatusCallbackMethod: "POST",
+                recordingChannels: "dual",
+              });
+              console.log(`[Recording] Started recording for callSid=${callSid} recordingSid=${recording.sid}`);
+            } catch (recErr) {
+              // Non-fatal — call continues without recording
+              console.warn("[Recording] Failed to start recording (non-fatal):", recErr.message);
+            }
+          }
 
           // After-hours detection
           const { isAfterHours, afterHoursConfig, effectiveCalendarEnabled } = resolveAfterHoursState(context);
