@@ -282,6 +282,11 @@ export default function OnboardingPage() {
         }
 
         // Create assistant
+        const piiIndustries = ["medical", "dental", "legal"];
+        const assistantSettings: Record<string, any> = {};
+        if (piiIndustries.includes(data.industry)) {
+          assistantSettings.piiRedactionEnabled = true;
+        }
         const assistantResponse = await fetch("/api/v1/assistants", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -292,6 +297,7 @@ export default function OnboardingPage() {
             voiceId: data.voiceId || "EXAVITQu4vr4xnSDxMaL",
             voiceProvider: "11labs",
             promptConfig: data.promptConfig || undefined,
+            settings: Object.keys(assistantSettings).length > 0 ? assistantSettings : undefined,
           }),
         });
 
