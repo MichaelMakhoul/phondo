@@ -72,16 +72,15 @@ function openDeepgramStream(apiKey, { onTranscript, onUtteranceEnd, onError, onC
     console.warn(`[STT] Unsupported language "${language}" — falling back to English`);
   }
 
-  // Nova-2 for English, nova-3 for multilingual (better language support)
-  const isMultilingual = lang !== "en";
-  const model = isMultilingual ? "nova-3" : "nova-2";
+  // Nova-3 for all languages — 54% better streaming accuracy than Nova-2 at same latency
+  const model = "nova-3";
   const keywordsParam = buildKeywordsParam(options.industry);
 
   const url =
     "wss://api.deepgram.com/v1/listen?" +
     "encoding=mulaw&sample_rate=8000&channels=1" +
     `&model=${model}` +
-    (isMultilingual ? `&language=${lang}` : "") +
+    `&language=${lang}` +
     "&punctuate=true" +
     "&interim_results=true" +
     "&endpointing=300" +
