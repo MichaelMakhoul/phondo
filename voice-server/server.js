@@ -299,9 +299,17 @@ app.post("/twiml", async (req, res) => {
   const token = issueStreamToken(called, from, undefined, phoneRecord);
   console.log(`[TwiML] Incoming call from=${maskPhone(from)} to=${called}, streaming to ${WS_URL}`);
 
+  // Determine if we should record this call (record unless explicitly 'never')
+  const recordingConsentMode = phoneRecord?.organizations?.recording_consent_mode || "auto";
+  const shouldRecord = recordingConsentMode !== "never";
+
+  const connectAttrs = shouldRecord
+    ? ` record="record-from-answer" recordingStatusCallback="${escapeXml(PUBLIC_URL + '/twiml/recording-status')}" recordingStatusCallbackMethod="POST"`
+    : "";
+
   res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Connect>
+  <Connect${connectAttrs}>
     <Stream url="${escapeXml(WS_URL)}">
       <Parameter name="auth_token" value="${escapeXml(token)}" />
     </Stream>
@@ -488,17 +496,66 @@ app.post("/twiml/ring-first-fallback", async (req, res) => {
   }
 
   // Owner didn't answer — AI picks up
-  const token = issueStreamToken(called, from);
+  // Look up phone record to check recording consent mode
+  const ringFirstPhoneRecord = await lookupPhoneNumber(called);
+  const token = issueStreamToken(called, from, undefined, ringFirstPhoneRecord);
   console.log(`[RingFirst] Owner missed → AI fallback for from=${maskPhone(from)} to=${called}`);
+
+  const ringFirstRecordingMode = ringFirstPhoneRecord?.organizations?.recording_consent_mode || "auto";
+  const ringFirstShouldRecord = ringFirstRecordingMode !== "never";
+  const ringFirstConnectAttrs = ringFirstShouldRecord
+    ? ` record="record-from-answer" recordingStatusCallback="${escapeXml(PUBLIC_URL + '/twiml/recording-status')}" recordingStatusCallbackMethod="POST"`
+    : "";
 
   res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Connect>
+  <Connect${ringFirstConnectAttrs}>
     <Stream url="${escapeXml(WS_URL)}">
       <Parameter name="auth_token" value="${escapeXml(token)}" />
     </Stream>
   </Connect>
 </Response>`);
+});
+
+// Recording status callback — Twilio POSTs here after <Connect record="record-from-answer"> finishes.
+// Saves the recording URL to the call record for dashboard playback.
+app.post("/twiml/recording-status", async (req, res) => {
+  try {
+    const { CallSid, RecordingUrl, RecordingSid, RecordingDuration } = req.body;
+
+    if (!CallSid || !RecordingUrl) {
+      console.warn("[Recording] Missing required fields in status callback:", {
+        hasCallSid: !!CallSid, hasRecordingUrl: !!RecordingUrl,
+      });
+      return res.status(400).send("Missing required fields");
+    }
+
+    // Twilio recording URLs need .mp3 appended for direct playback
+    const playbackUrl = `${RecordingUrl}.mp3`;
+
+    const supabase = getSupabase();
+
+    // Call records use "sh_<CallSid>" as vapi_call_id (legacy naming from Vapi migration)
+    const { error } = await supabase
+      .from("calls")
+      .update({ recording_url: playbackUrl })
+      .eq("vapi_call_id", `sh_${CallSid}`);
+
+    if (error) {
+      console.error("[Recording] Failed to save recording URL:", {
+        CallSid, RecordingSid, error: error.message,
+      });
+    } else {
+      console.log("[Recording] Saved recording URL:", {
+        CallSid, RecordingSid, duration: RecordingDuration,
+      });
+    }
+
+    res.status(200).send("OK");
+  } catch (err) {
+    console.error("[Recording] Status callback error:", err);
+    res.status(500).send("Error");
+  }
 });
 
 // Recording callback for AI-disabled voicemail — Twilio POSTs here after recording ends.

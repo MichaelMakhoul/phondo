@@ -98,7 +98,53 @@ export default function TermsPage() {
               the &quot;Last updated&quot; date.
             </p>
 
-            <h2>11. Contact Us</h2>
+            <h2>11. Call Recording</h2>
+            <p>
+              Phondo provides call recording functionality as an optional feature.
+              By enabling call recording, you acknowledge and agree that:
+            </p>
+            <ol>
+              <li>
+                <strong>You are solely responsible</strong> for complying with all
+                applicable laws and regulations regarding call recording in your
+                jurisdiction, including but not limited to obtaining any required
+                consent from callers.
+              </li>
+              <li>
+                <strong>Phondo provides a recording disclosure</strong> message at
+                the beginning of each call (&quot;This call may be recorded for
+                quality and training purposes&quot;). However, it is your
+                responsibility to ensure this disclosure meets the legal
+                requirements in your jurisdiction.
+              </li>
+              <li>
+                <strong>One-party vs two-party consent</strong>: Recording laws
+                vary by jurisdiction. Some require all parties to consent to
+                recording (two-party/all-party consent), while others only require
+                one party&apos;s consent. You must determine and comply with the
+                applicable consent requirements.
+              </li>
+              <li>
+                <strong>Data retention</strong>: Call recordings are stored securely
+                by our telephony provider (Twilio). You are responsible for managing
+                recording retention in accordance with your industry regulations and
+                privacy obligations.
+              </li>
+              <li>
+                <strong>Phondo disclaims all liability</strong> for any legal
+                consequences arising from your use of the call recording feature,
+                including but not limited to violations of wiretapping laws, privacy
+                regulations, or industry-specific compliance requirements (e.g.,
+                HIPAA, AHPRA).
+              </li>
+              <li>
+                <strong>To disable recording</strong>: You can disable call
+                recording at any time through your organization settings by setting
+                the recording mode to &quot;Never&quot;.
+              </li>
+            </ol>
+
+            <h2>12. Contact Us</h2>
             <p>
               If you have any questions about these Terms, please contact us at{" "}
               <a href="mailto:support@phondo.ai" className="text-orange-500 hover:underline">
