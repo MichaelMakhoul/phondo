@@ -112,6 +112,7 @@ export default async function PhoneNumbersPage() {
               key={phoneNumber.id}
               phoneNumber={phoneNumber}
               countryCode={countryCode}
+              assistants={assistants || []}
             />
           ))}
         </div>
