@@ -921,7 +921,11 @@ wss.on("connection", (twilioWs) => {
               afterHoursConfig,
             }
           );
-          session.setSystemPrompt(systemPrompt);
+          // Append caller context so the AI knows the caller's phone number
+          const callerContext = callerPhone
+            ? `\n\nCALLER CONTEXT:\nThe caller's phone number is ${callerPhone}. If they say "use the number I'm calling from" or "it's the same number", use this number: ${callerPhone}. Do NOT ask them to repeat it.`
+            : "";
+          session.setSystemPrompt(systemPrompt + callerContext);
 
           // Create call record in database
           try {
