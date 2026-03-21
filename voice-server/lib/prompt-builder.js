@@ -348,6 +348,11 @@ function buildBehaviorsSection(behaviors, options) {
     "- LANGUAGE: You must only speak in the language you were configured for. If the caller speaks a different language, politely let them know you can only assist in your configured language and offer to have someone who speaks their language call them back. Do NOT attempt to respond in languages you are not configured for."
   );
 
+  // Honesty — never guess or make up information
+  lines.push(
+    "- HONESTY: If you do not know the answer to a question, say so clearly. NEVER guess, estimate, or make up information — especially for pricing, availability, medical/legal advice, or anything that could mislead the caller. Instead say something like 'I don't have that information, but I can take a message and have someone get back to you' or offer to transfer the call if that option is available. Only provide information that is explicitly in your knowledge base or that you can verify through your tools."
+  );
+
   if (behaviors.afterHoursHandling) {
     if (options && options.isAfterHours) {
       lines.push(
@@ -529,6 +534,7 @@ function buildSystemPrompt(assistant, organization, knowledgeBase, options) {
   systemPrompt += `\n\nIMPORTANT RULES:`;
   systemPrompt += `\n- CALLER ID: You already have the caller's phone number from caller ID. If the caller says "it's the number I'm calling from" or similar, accept that and do NOT ask again.`;
   systemPrompt += `\n- LANGUAGE: Only respond in the language you are configured for. If a caller speaks a different language, politely tell them you can only assist in your configured language and offer to have someone call them back.`;
+  systemPrompt += `\n- HONESTY: If you do not know the answer, say so clearly. NEVER guess or make up information — especially pricing, availability, or professional advice. Instead offer to take a message or transfer the call.`;
 
   // Append language instruction for non-English assistants
   if (language !== "en" && LANGUAGE_INSTRUCTIONS[language]) {
