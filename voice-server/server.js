@@ -25,6 +25,15 @@ const { saveForTransfer, getTransfer, consumeTransfer, finishTransferredCall } =
 const { lookupPhoneNumber, isAiEnabled, getAnswerMode, getPhoneNumberContext } = require("./lib/answer-mode");
 const { detectAndRedact, redactObject } = require("./lib/pii-detector");
 
+/**
+ * Mask a phone number for safe logging — keeps first 3 and last 3 chars.
+ * e.g. "+61412345678" → "+61***678"
+ */
+function maskPhone(phone) {
+  if (!phone || phone.length < 6) return phone || "unknown";
+  return phone.slice(0, 3) + "***" + phone.slice(-3);
+}
+
 // Validate required env vars before deriving any constants
 const REQUIRED_ENV = [
   "DEEPGRAM_API_KEY",
@@ -54,11 +63,11 @@ const INTERNAL_API_SECRET = process.env.INTERNAL_API_SECRET;
 const TEST_CALL_SECRET = process.env.TEST_CALL_SECRET;
 
 if (!INTERNAL_API_URL || !INTERNAL_API_SECRET) {
-  console.warn("[Startup] INTERNAL_API_URL or INTERNAL_API_SECRET not set — post-call notifications will be skipped");
+  console.warn("[Startup] INTERNAL_API_URL or INTERNAL_API_SECRET not set — post-call notifications will not work (spam analysis, billing, webhooks skipped)");
 }
 
 if (!TEST_CALL_SECRET) {
-  console.warn("[Startup] TEST_CALL_SECRET not set — browser test calls will be disabled");
+  console.warn("[Startup] TEST_CALL_SECRET not set — browser test calls will be disabled (token validation will reject all requests)");
 }
 
 // Localized error/fallback messages spoken to callers via TTS
@@ -272,7 +281,7 @@ app.post("/twiml", async (req, res) => {
   try {
     const answerMode = await getAnswerMode(called, phoneRecord);
     if (answerMode && answerMode.answerMode === "ring_first") {
-      console.log(`[TwiML] Ring-first mode: from=${from} to=${called}, ringing ${answerMode.ringFirstNumber} for ${answerMode.ringFirstTimeout}s`);
+      console.log(`[TwiML] Ring-first mode: from=${maskPhone(from)} to=${called}, ringing ${maskPhone(answerMode.ringFirstNumber)} for ${answerMode.ringFirstTimeout}s`);
 
       return res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -288,7 +297,7 @@ app.post("/twiml", async (req, res) => {
 
   // Default: AI answers immediately — pass phoneRecord to avoid re-querying in loadCallContext
   const token = issueStreamToken(called, from, undefined, phoneRecord);
-  console.log(`[TwiML] Incoming call from=${from} to=${called}, streaming to ${WS_URL}`);
+  console.log(`[TwiML] Incoming call from=${maskPhone(from)} to=${called}, streaming to ${WS_URL}`);
 
   res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -480,7 +489,7 @@ app.post("/twiml/ring-first-fallback", async (req, res) => {
 
   // Owner didn't answer — AI picks up
   const token = issueStreamToken(called, from);
-  console.log(`[RingFirst] Owner missed → AI fallback for from=${from} to=${called}`);
+  console.log(`[RingFirst] Owner missed → AI fallback for from=${maskPhone(from)} to=${called}`);
 
   res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -641,7 +650,7 @@ wss.on("connection", (twilioWs) => {
       console.error("[Cleanup] Call completed with no database record — call data is lost:", {
         callSid: s.callSid,
         organizationId: s.organizationId,
-        callerPhone: s.callerPhone,
+        callerPhone: maskPhone(s.callerPhone),
         durationSeconds,
       });
     }
@@ -796,7 +805,7 @@ wss.on("connection", (twilioWs) => {
           session.streamSid = streamSid;
           session.callerPhone = callerPhone;
           sessions.set(streamSid, session);
-          console.log(`[Twilio] Stream started — callSid=${callSid} streamSid=${streamSid} called=${calledNumber} from=${callerPhone}`);
+          console.log(`[Twilio] Stream started — callSid=${callSid} streamSid=${streamSid} called=${calledNumber} from=${maskPhone(callerPhone)}`);
 
           // Load call context from database — pass phoneRecord to skip redundant phone_numbers query
           let context = null;

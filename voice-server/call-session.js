@@ -58,7 +58,7 @@ class CallSession {
   addMessage(role, content) {
     this.messages.push({ role, content });
     // Keep a complete copy for transcript (never windowed)
-    if (role === "user" || (role === "assistant" && typeof content === "string")) {
+    if ((role === "user" || role === "assistant") && typeof content === "string") {
       this.fullTranscriptMessages.push({ role, content });
     }
     // Sliding window: keep system prompt + last N messages

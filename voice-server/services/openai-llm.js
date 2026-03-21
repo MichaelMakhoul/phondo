@@ -179,7 +179,9 @@ async function streamChatResponse(apiKey, messages, options) {
       try {
         parsed = JSON.parse(data);
       } catch (parseErr) {
-        console.warn("[OpenAI] Failed to parse SSE chunk:", data.slice(0, 100));
+        // Context is intentionally minimal here — this function receives only the messages array,
+        // not the session/call context. The truncated chunk below is usually sufficient to diagnose.
+        console.warn("[OpenAI] Failed to parse SSE chunk (possible incomplete JSON in stream):", data.slice(0, 200));
         continue;
       }
 

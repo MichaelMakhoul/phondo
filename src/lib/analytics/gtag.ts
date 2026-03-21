@@ -1,3 +1,5 @@
+import type { EventName } from "./events";
+
 export const GA_MEASUREMENT_ID = process.env.NEXT_PUBLIC_GA_MEASUREMENT_ID;
 
 const GA_ID_PATTERN = /^G-[A-Z0-9]+$/;
@@ -56,7 +58,7 @@ export function trackPageView(url: string): void {
 // analytics_storage is 'denied' are sent as cookieless pings, so client-side
 // consent gating is not required here.
 export function pushEvent(
-  eventName: string,
+  eventName: EventName,
   params?: Record<string, unknown>
 ): void {
   if (!isAvailable()) return;

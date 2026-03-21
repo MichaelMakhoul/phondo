@@ -14,12 +14,17 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { getCountryConfig } from "@/lib/country-config";
 
 export interface SpamAnalysisResult {
-  isSpam: boolean;
-  spamScore: number; // 0-100, higher = more likely spam
-  reasons: string[];
-  confidence: "high" | "medium" | "low";
-  recommendation: "block" | "flag" | "allow";
+  readonly isSpam: boolean;
+  readonly spamScore: number; // 0-100, higher = more likely spam
+  readonly reasons: readonly string[];
+  readonly confidence: "high" | "medium" | "low";
+  readonly recommendation: "block" | "flag" | "allow";
 }
+
+const SPAM_THRESHOLD = 70;
+const FLAG_THRESHOLD = 50;
+const HIGH_CONFIDENCE_SCORE = 60;
+const HIGH_CONFIDENCE_REASONS = 4;
 
 export interface CallMetadata {
   callerPhone: string;
@@ -350,7 +355,7 @@ export async function analyzeCall(metadata: CallMetadata): Promise<SpamAnalysisR
 
   // Determine confidence level
   let confidence: SpamAnalysisResult["confidence"];
-  if (allReasons.length >= 4 && spamScore >= 60) {
+  if (allReasons.length >= HIGH_CONFIDENCE_REASONS && spamScore >= HIGH_CONFIDENCE_SCORE) {
     confidence = "high";
   } else if (allReasons.length >= 2 && spamScore >= 40) {
     confidence = "medium";
@@ -360,16 +365,16 @@ export async function analyzeCall(metadata: CallMetadata): Promise<SpamAnalysisR
 
   // Determine recommendation
   let recommendation: SpamAnalysisResult["recommendation"];
-  if (spamScore >= 70) {
+  if (spamScore >= SPAM_THRESHOLD) {
     recommendation = "block";
-  } else if (spamScore >= 50) {
+  } else if (spamScore >= FLAG_THRESHOLD) {
     recommendation = "flag";
   } else {
     recommendation = "allow";
   }
 
   return {
-    isSpam: spamScore >= 70,
+    isSpam: spamScore >= SPAM_THRESHOLD,
     spamScore,
     reasons: allReasons,
     confidence,

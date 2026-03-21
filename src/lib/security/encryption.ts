@@ -114,8 +114,8 @@ export function safeEncrypt(plaintext: string): string {
  * Safely decrypt - returns original if decryption fails
  * Handles both encrypted and unencrypted values (for migration)
  */
-export function safeDecrypt(value: string): string {
-  if (!value) return value;
+export function safeDecrypt(value: string): string | null {
+  if (!value) return value || null;
 
   // If not encrypted (legacy), return as-is
   if (!isEncrypted(value)) {
@@ -126,8 +126,7 @@ export function safeDecrypt(value: string): string {
     return decrypt(value);
   } catch (error) {
     console.error("Decryption failed:", error);
-    // Return empty to prevent using corrupted data
-    return "";
+    return null;
   }
 }
 

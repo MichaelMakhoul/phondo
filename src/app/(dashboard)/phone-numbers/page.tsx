@@ -9,24 +9,7 @@ import { PhoneNumberCard } from "@/components/phone-numbers/phone-number-card";
 import { checkResourceLimit } from "@/lib/stripe/billing-service";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PhoneScene } from "@/components/ui/empty-state-scenes";
-
-interface PhoneNumber {
-  id: string;
-  phone_number: string;
-  friendly_name: string | null;
-  is_active: boolean;
-  ai_enabled: boolean;
-  source_type: "purchased" | "forwarded";
-  user_phone_number: string | null;
-  forwarding_status: "pending_setup" | "active" | "paused" | null;
-  carrier: string | null;
-  assistants: { id: string; name: string } | null;
-}
-
-interface Assistant {
-  id: string;
-  name: string;
-}
+import type { PhoneNumber, Assistant } from "@/types/phone-number";
 
 export default async function PhoneNumbersPage() {
   const supabase = await createClient();
