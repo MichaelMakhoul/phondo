@@ -1,4 +1,4 @@
-const DEFAULT_MODEL = "gpt-4.1-nano";
+const DEFAULT_MODEL = "gpt-4.1-mini";
 const MAX_RETRIES = 2;
 
 /**
