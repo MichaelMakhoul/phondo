@@ -11,12 +11,21 @@ const settingsTabs = [
   { name: "Profile", href: "/settings/profile" },
 ];
 
+// Pages that have their own header — don't show the settings tabs for these
+const standalonePages = ["/settings/team", "/settings/knowledge", "/settings/integrations"];
+
 export default function SettingsLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
   const pathname = usePathname();
+
+  const isStandalonePage = standalonePages.some((p) => pathname.startsWith(p));
+
+  if (isStandalonePage) {
+    return <>{children}</>;
+  }
 
   return (
     <div className="space-y-6">
