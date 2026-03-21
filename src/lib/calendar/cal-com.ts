@@ -50,7 +50,7 @@ export interface BookingRequest {
   email?: string;
   phone?: string;
   notes?: string;
-  metadata?: Record<string, any>;
+  metadata?: Record<string, unknown>;
 }
 
 /**
@@ -196,13 +196,19 @@ export class CalComClient {
     const separator = endpoint.includes("?") ? "&" : "?";
     const url = `${CAL_COM_API_V1}${endpoint}${separator}apiKey=${this.apiKey}`;
 
-    const response = await fetch(url, {
-      ...options,
-      headers: {
-        "Content-Type": "application/json",
-        ...options.headers,
-      },
-    });
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        ...options,
+        headers: {
+          "Content-Type": "application/json",
+          ...options.headers,
+        },
+      });
+    } catch (err) {
+      // Strip URL (contains API key) from network-level errors
+      throw new Error(`Cal.com API network error: ${err instanceof Error ? err.message : "fetch failed"}`);
+    }
 
     if (!response.ok) {
       const errorText = await response.text();

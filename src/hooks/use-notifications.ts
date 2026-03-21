@@ -156,8 +156,9 @@ export function useNotifications(organizationId: string) {
         localStorage.setItem(key, now);
         setLastSeen(now);
       }
-    } catch {
-      // Fallback for private browsing or restricted environments
+    } catch (err) {
+      // localStorage unavailable (private browsing, restricted environments)
+      console.debug("[Notifications] localStorage unavailable:", err);
       setLastSeen(null);
     }
   }, [organizationId]);

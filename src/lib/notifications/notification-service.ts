@@ -15,6 +15,7 @@ import { Resend } from "resend";
 import Twilio from "twilio";
 
 let resendClient: Resend | null = null;
+let twilioClient: ReturnType<typeof Twilio> | null = null;
 
 export interface NotificationPreferences {
   email_on_missed_call: boolean;
@@ -617,8 +618,10 @@ async function sendSMS(params: SMSParams): Promise<void> {
     );
   }
 
-  const client = Twilio(twilioAccountSid, twilioAuthToken);
-  await client.messages.create({
+  if (!twilioClient) {
+    twilioClient = Twilio(twilioAccountSid, twilioAuthToken);
+  }
+  await twilioClient.messages.create({
     body: message,
     to,
     from: twilioFromNumber,

@@ -36,7 +36,6 @@ export interface ScrapedWebsite {
 export interface ScrapeOptions {
   maxPages?: number;
   maxDepth?: number;
-  includePatterns?: string[];
   excludePatterns?: string[];
   timeout?: number;
 }
