@@ -8,6 +8,7 @@ class CallSession {
     this.callSid = callSid;
     this.streamSid = null;
     this.messages = [];
+    this.fullTranscriptMessages = []; // Never windowed — used for final transcript
     this.isSpeaking = false;
     this.isProcessing = false;
     this.deepgramWs = null;
@@ -56,18 +57,28 @@ class CallSession {
 
   addMessage(role, content) {
     this.messages.push({ role, content });
+    // Keep a complete copy for transcript (never windowed)
+    if (role === "user" || (role === "assistant" && typeof content === "string")) {
+      this.fullTranscriptMessages.push({ role, content });
+    }
     // Sliding window: keep system prompt + last N messages
     if (this.messages.length > MAX_MESSAGES) {
-      this.messages = [this.messages[0], ...this.messages.slice(-MAX_MESSAGES + 1)];
+      const keep = this.messages.slice(-MAX_MESSAGES + 1);
+      // Don't start with an orphaned tool response — find a safe cut point
+      let startIdx = 0;
+      while (startIdx < keep.length && keep[startIdx].role === "tool") {
+        startIdx++;
+      }
+      this.messages = [this.messages[0], ...keep.slice(startIdx)];
     }
   }
 
   /**
-   * Build a transcript string from the conversation messages.
+   * Build a transcript string from the FULL conversation (not windowed).
    * Excludes tool call internals — only user and assistant content messages.
    */
   getTranscript() {
-    return this.messages
+    return this.fullTranscriptMessages
       .filter((m) => (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
       .map((m) => `${m.role === "user" ? "User" : "AI"}: ${m.content}`)
       .join("\n");
