@@ -14,7 +14,7 @@ import {
   CreditCard,
   BookOpen,
   Users,
-  Webhook,
+  // Webhook, // Phase 2 — CRM integrations coming soon
   HelpCircle,
 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -77,11 +77,12 @@ export const secondaryNavigation = [
     href: "/settings/team",
     icon: Users,
   },
-  {
-    name: "Integrations",
-    href: "/settings/integrations",
-    icon: Webhook,
-  },
+  // Phase 2 — CRM integrations coming soon
+  // {
+  //   name: "Integrations",
+  //   href: "/settings/integrations",
+  //   icon: Webhook,
+  // },
   {
     name: "Billing",
     href: "/billing",

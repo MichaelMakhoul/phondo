@@ -2,10 +2,12 @@
 
 import { useState, useEffect } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
 import { IntegrationList } from "@/components/integrations/IntegrationList";
 import { IntegrationGuide } from "@/components/integrations/IntegrationGuide";
 import { ActivityLog } from "@/components/integrations/ActivityLog";
 import { createClient } from "@/lib/supabase/client";
+import { Info } from "lucide-react";
 
 export default function IntegrationsPage() {
   const [industry, setIndustry] = useState<string | null>(null);
@@ -29,6 +31,16 @@ export default function IntegrationsPage() {
 
   return (
     <div className="space-y-6">
+      {/* Phase 2 — CRM integrations coming soon */}
+      <Alert>
+        <Info className="h-4 w-4" />
+        <AlertTitle>CRM integrations coming soon</AlertTitle>
+        <AlertDescription>
+          Direct CRM integrations (Cliniko, ServiceM8, Clio) are on our roadmap and coming soon.
+          Webhook integrations are available now — send call data to any tool.
+        </AlertDescription>
+      </Alert>
+
       <div>
         <h2 className="text-lg font-semibold">Integrations</h2>
         <p className="text-sm text-muted-foreground">
