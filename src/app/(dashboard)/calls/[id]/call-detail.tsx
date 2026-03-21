@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
 import { format } from "date-fns";
 import {
@@ -19,6 +20,10 @@ import {
   Info,
   HelpCircle,
   User,
+  Pencil,
+  Save,
+  X,
+  Loader2,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -31,6 +36,10 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { useToast } from "@/components/ui/use-toast";
 import { formatPhoneNumber, formatDuration, formatCurrency } from "@/lib/utils";
 
 interface Call {
@@ -133,7 +142,83 @@ function getSpamScoreColor(score: number): string {
   return "bg-yellow-500";
 }
 
-export function CallDetail({ call }: { call: Call }) {
+export function CallDetail({ call: initialCall }: { call: Call }) {
+  const [call, setCall] = useState<Call>(initialCall);
+  const [isEditing, setIsEditing] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [editCallerName, setEditCallerName] = useState(call.caller_name || "");
+  const [editSummary, setEditSummary] = useState(call.summary || "");
+  const [editCollectedData, setEditCollectedData] = useState<Record<string, string>>(
+    Object.fromEntries(
+      Object.entries(call.collected_data || {}).map(([k, v]) => [k, String(v ?? "")])
+    )
+  );
+  const { toast } = useToast();
+
+  function startEditing() {
+    setEditCallerName(call.caller_name || "");
+    setEditSummary(call.summary || "");
+    setEditCollectedData(
+      Object.fromEntries(
+        Object.entries(call.collected_data || {}).map(([k, v]) => [k, String(v ?? "")])
+      )
+    );
+    setIsEditing(true);
+  }
+
+  function cancelEditing() {
+    setIsEditing(false);
+  }
+
+  async function saveEdits() {
+    setIsSaving(true);
+    try {
+      const body: Record<string, unknown> = {};
+      if (editCallerName !== (call.caller_name || "")) {
+        body.callerName = editCallerName;
+      }
+      if (editSummary !== (call.summary || "")) {
+        body.summary = editSummary;
+      }
+      const currentCollected = Object.fromEntries(
+        Object.entries(call.collected_data || {}).map(([k, v]) => [k, String(v ?? "")])
+      );
+      if (JSON.stringify(editCollectedData) !== JSON.stringify(currentCollected)) {
+        body.collectedData = editCollectedData;
+      }
+
+      if (Object.keys(body).length === 0) {
+        setIsEditing(false);
+        return;
+      }
+
+      const res = await fetch(`/api/v1/calls/${call.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: "Failed to save" }));
+        throw new Error(err.error || "Failed to save");
+      }
+
+      const updated = await res.json();
+      setCall(updated);
+      setIsEditing(false);
+      toast({ title: "Saved", description: "Call details updated successfully." });
+    } catch (err) {
+      console.error("Error saving call edits:", err);
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: err instanceof Error ? err.message : "Failed to save changes.",
+      });
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
   const ownerAnswered = (call.metadata?.answeredBy as string) === "owner";
   const successEval = call.metadata?.successEvaluation as string | undefined;
   const unansweredQuestions = Array.isArray(call.metadata?.unansweredQuestions)
@@ -166,6 +251,27 @@ export function CallDetail({ call }: { call: Call }) {
 
         <div className="flex items-center gap-3 flex-wrap">
           <h1 className="text-2xl font-bold">Call Details</h1>
+          {!isEditing ? (
+            <Button variant="ghost" size="sm" onClick={startEditing}>
+              <Pencil className="h-4 w-4 mr-1" />
+              Edit
+            </Button>
+          ) : (
+            <div className="flex items-center gap-2">
+              <Button size="sm" onClick={saveEdits} disabled={isSaving}>
+                {isSaving ? (
+                  <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                ) : (
+                  <Save className="h-4 w-4 mr-1" />
+                )}
+                Save
+              </Button>
+              <Button variant="ghost" size="sm" onClick={cancelEditing} disabled={isSaving}>
+                <X className="h-4 w-4 mr-1" />
+                Cancel
+              </Button>
+            </div>
+          )}
           <Badge variant={getStatusVariant(call.status)}>
             {call.status}
           </Badge>
@@ -208,12 +314,23 @@ export function CallDetail({ call }: { call: Call }) {
             <PhoneOutgoing className="h-4 w-4" />
           )}
           <span className="capitalize">{call.direction}</span>
-          {call.caller_name && (
+          {isEditing ? (
+            <>
+              <span>&middot;</span>
+              <Input
+                value={editCallerName}
+                onChange={(e) => setEditCallerName(e.target.value)}
+                placeholder="Caller name"
+                className="h-7 w-48 text-sm"
+                maxLength={200}
+              />
+            </>
+          ) : call.caller_name ? (
             <>
               <span>&middot;</span>
               <span>{call.caller_name}</span>
             </>
-          )}
+          ) : null}
           {call.caller_phone && (
             <>
               <span>&middot;</span>
@@ -386,7 +503,15 @@ export function CallDetail({ call }: { call: Call }) {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              {call.summary ? (
+              {isEditing ? (
+                <Textarea
+                  value={editSummary}
+                  onChange={(e) => setEditSummary(e.target.value)}
+                  placeholder="Call summary"
+                  className="text-sm min-h-[100px]"
+                  maxLength={2000}
+                />
+              ) : call.summary ? (
                 <p className="text-sm leading-relaxed">{call.summary}</p>
               ) : (
                 <p className="text-sm text-muted-foreground">
@@ -450,7 +575,34 @@ export function CallDetail({ call }: { call: Call }) {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              {collectedEntries.length > 0 ? (
+              {isEditing ? (
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {Object.entries(editCollectedData).map(([key, value]) => (
+                    <div key={key} className="rounded-md border p-3">
+                      <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                        {formatFieldLabel(key)}
+                      </label>
+                      <Input
+                        value={value}
+                        onChange={(e) =>
+                          setEditCollectedData((prev) => ({
+                            ...prev,
+                            [key]: e.target.value,
+                          }))
+                        }
+                        className="mt-1 h-8 text-sm"
+                      />
+                    </div>
+                  ))}
+                  {Object.keys(editCollectedData).length === 0 && (
+                    <div className="col-span-2 py-4 text-center">
+                      <p className="text-sm text-muted-foreground">
+                        No collected data fields to edit.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              ) : collectedEntries.length > 0 ? (
                 <div className="grid gap-3 sm:grid-cols-2">
                   {collectedEntries.map(([key, value]) => (
                     <div
