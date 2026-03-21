@@ -3,7 +3,8 @@ import { createClient } from "@/lib/supabase/server";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Plus, Bot, MoreVertical, Phone, ArrowUpRight } from "lucide-react";
+import { Plus, Bot, Phone, ArrowUpRight } from "lucide-react";
+import { AssistantCardActions } from "./assistant-card-actions";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -109,26 +110,7 @@ export default async function AssistantsPage() {
                       </CardDescription>
                     </div>
                   </div>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Assistant options">
-                        <MoreVertical className="h-4 w-4" />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      <DropdownMenuItem asChild>
-                        <Link href={`/assistants/${assistant.id}`}>Edit</Link>
-                      </DropdownMenuItem>
-                      <DropdownMenuItem asChild>
-                        <Link href={`/assistants/${assistant.id}/test`}>
-                          Test Call
-                        </Link>
-                      </DropdownMenuItem>
-                      <DropdownMenuItem className="text-destructive">
-                        Delete
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
+                  <AssistantCardActions assistantId={assistant.id} assistantName={assistant.name} />
                 </div>
               </CardHeader>
               <CardContent className="space-y-4">
