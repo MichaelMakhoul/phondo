@@ -68,6 +68,9 @@ const INDUSTRY_DEFAULTS = {
   plumbing: "neutral",
   electrical: "neutral",
   automotive: "neutral",
+  veterinary: "calm",
+  salon: "warm",
+  fitness: "neutral",
   other: "neutral",
 };
 
