@@ -307,7 +307,7 @@ export function PhoneNumberCard({ phoneNumber, countryCode, assistants = [] }: P
           ) : (
             <div className="rounded-lg border border-dashed p-3 text-center">
               <p className="text-sm text-muted-foreground">No assistant assigned</p>
-              <Button variant="link" size="sm" className="mt-1 h-auto p-0">
+              <Button variant="link" size="sm" className="mt-1 h-auto p-0" onClick={() => setAssignOpen(true)}>
                 Assign now
               </Button>
             </div>

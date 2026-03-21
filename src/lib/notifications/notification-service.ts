@@ -637,20 +637,29 @@ async function sendWebhook(url: string, payload: WebhookPayload): Promise<void> 
     throw new Error(`Webhook URL blocked - internal or private address: ${url}`);
   }
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Webhook-Source": "phondo",
-    },
-    body: JSON.stringify({
-      ...payload,
-      timestamp: new Date().toISOString(),
-    }),
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 5000);
 
-  if (!response.ok) {
-    throw new Error(`Webhook returned ${response.status}`);
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Webhook-Source": "phondo",
+      },
+      body: JSON.stringify({
+        ...payload,
+        timestamp: new Date().toISOString(),
+      }),
+      signal: controller.signal,
+      redirect: "manual",
+    });
+
+    if (!response.ok) {
+      throw new Error(`Webhook returned ${response.status}`);
+    }
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 

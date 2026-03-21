@@ -119,6 +119,14 @@ export async function saveCalendarIntegration(
       })
       .eq("id", existing.id);
 
+    if (error) {
+      console.error("[CalCom] saveCalendarIntegration update failed:", {
+        organizationId,
+        integrationId: existing.id,
+        error: error.message || error.code,
+      });
+    }
+
     return !error;
   } else {
     // Insert new
@@ -135,6 +143,13 @@ export async function saveCalendarIntegration(
         is_active: true,
       });
 
+    if (error) {
+      console.error("[CalCom] saveCalendarIntegration insert failed:", {
+        organizationId,
+        error: error.message || error.code,
+      });
+    }
+
     return !error;
   }
 }
@@ -150,6 +165,13 @@ export async function deleteCalendarIntegration(organizationId: string) {
     .delete()
     .eq("organization_id", organizationId)
     .eq("provider", "cal_com");
+
+  if (error) {
+    console.error("[CalCom] deleteCalendarIntegration failed:", {
+      organizationId,
+      error: error.message || error.code,
+    });
+  }
 
   return !error;
 }

@@ -13,5 +13,5 @@ interface LocalTimeProps {
  * Must be a client component because server components run in UTC.
  */
 export function LocalTime({ date, formatStr = "MMM d, h:mm a", className }: LocalTimeProps) {
-  return <span className={className}>{format(new Date(date), formatStr)}</span>;
+  return <span className={className} suppressHydrationWarning>{format(new Date(date), formatStr)}</span>;
 }

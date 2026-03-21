@@ -251,7 +251,7 @@ function CallsTable({
                   <span
                     className={`inline-block h-2 w-2 rounded-full ${
                       call.spam_score >= 70 ? "bg-red-500" :
-                      call.spam_score >= 40 ? "bg-orange-500" : "bg-yellow-500"
+                      call.spam_score >= 50 ? "bg-orange-500" : "bg-yellow-500"
                     }`}
                   />
                   {call.spam_score}%
