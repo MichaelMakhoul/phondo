@@ -349,11 +349,20 @@ export function PhoneNumberCard({ phoneNumber, countryCode, assistants = [] }: P
       <Dialog open={releaseOpen} onOpenChange={setReleaseOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>{isForwarded ? "Remove Forwarding?" : "Release Number?"}</DialogTitle>
-            <DialogDescription>
-              {isForwarded
-                ? "This will remove the forwarding setup. You'll need to disable call forwarding on your phone manually."
-                : "This will permanently release the phone number. You won't be able to get this exact number back."}
+            <DialogTitle>{isForwarded ? "Remove Forwarding?" : "Release Phone Number?"}</DialogTitle>
+            <DialogDescription className="space-y-2">
+              {isForwarded ? (
+                <>
+                  <span className="block">This will remove <span className="font-semibold text-foreground">{formatPhoneNumber(phoneNumber.phone_number, countryCode)}</span> from your account.</span>
+                  <span className="block">You will need to disable call forwarding on your phone manually through your carrier settings.</span>
+                </>
+              ) : (
+                <>
+                  <span className="block">This will permanently release <span className="font-semibold text-foreground">{formatPhoneNumber(phoneNumber.phone_number, countryCode)}</span>.</span>
+                  <span className="block font-semibold text-destructive">This action cannot be undone. You will not be able to get this exact number back.</span>
+                  <span className="block">The number will stop receiving calls immediately and any active call forwarding will be disconnected.</span>
+                </>
+              )}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -361,7 +370,7 @@ export function PhoneNumberCard({ phoneNumber, countryCode, assistants = [] }: P
               Cancel
             </Button>
             <Button variant="destructive" onClick={handleRelease} disabled={releasing}>
-              {releasing ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Releasing...</> : isForwarded ? "Remove" : "Release Number"}
+              {releasing ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Releasing...</> : isForwarded ? "Remove Forwarding" : "Yes, Release Number"}
             </Button>
           </DialogFooter>
         </DialogContent>
