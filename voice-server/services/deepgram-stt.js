@@ -93,7 +93,7 @@ function openDeepgramStream(apiKey, { onTranscript, onUtteranceEnd, onError, onC
   });
 
   ws.on("open", () => {
-    console.log(`[STT] Deepgram WebSocket connected (industry=${options.industry || "general"}, keywords=${keywordsParam ? "yes" : "none"})`);
+    console.log(`[STT] Deepgram WebSocket connected (industry=${options.industry || "general"}, keyterms=${keytermsParam ? "yes" : "none"})`);
   });
 
   ws.on("message", (data) => {
