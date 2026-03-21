@@ -64,16 +64,26 @@ export const industryOptions = [
   { value: 'legal', label: 'Law Firm', description: 'Attorneys, legal services' },
   { value: 'home_services', label: 'Home Services', description: 'Plumbers, electricians, HVAC, contractors' },
   { value: 'medical', label: 'Medical Practice', description: 'Doctors, clinics, healthcare providers' },
-  { value: 'real_estate', label: 'Real Estate', description: 'Agents, brokers, property management' },
-  { value: 'salon', label: 'Salon / Spa / Beauty', description: 'Hair salons, spas, nail salons, barbershops' },
-  { value: 'automotive', label: 'Automotive / Mechanic', description: 'Auto repair, mechanics, body shops' },
-  { value: 'veterinary', label: 'Veterinary / Pet Care', description: 'Vet clinics, animal hospitals, pet care' },
-  { value: 'restaurant', label: 'Restaurant / Hospitality', description: 'Restaurants, cafes, catering, hotels' },
-  { value: 'accounting', label: 'Accounting / Bookkeeping', description: 'Accountants, tax agents, bookkeepers' },
-  { value: 'insurance', label: 'Insurance', description: 'Insurance brokers, agencies, claims' },
-  { value: 'fitness', label: 'Fitness / Gym', description: 'Gyms, studios, personal training, wellness centres' },
-  { value: 'childcare', label: 'Childcare / Daycare', description: 'Childcare centres, daycare, early learning' },
-  { value: 'funeral_services', label: 'Funeral Services', description: 'Funeral homes, memorial services, cremation' },
+  // Phase 2 — coming soon (requires CRM/listing integration)
+  // { value: 'real_estate', label: 'Real Estate', description: 'Agents, brokers, property management' },
+  // Phase 2 — coming soon
+  // { value: 'salon', label: 'Salon / Spa / Beauty', description: 'Hair salons, spas, nail salons, barbershops' },
+  // Phase 2 — coming soon
+  // { value: 'automotive', label: 'Automotive / Mechanic', description: 'Auto repair, mechanics, body shops' },
+  // Phase 2 — coming soon
+  // { value: 'veterinary', label: 'Veterinary / Pet Care', description: 'Vet clinics, animal hospitals, pet care' },
+  // Phase 2 — coming soon
+  // { value: 'restaurant', label: 'Restaurant / Hospitality', description: 'Restaurants, cafes, catering, hotels' },
+  // Phase 2 — coming soon
+  // { value: 'accounting', label: 'Accounting / Bookkeeping', description: 'Accountants, tax agents, bookkeepers' },
+  // Phase 2 — coming soon
+  // { value: 'insurance', label: 'Insurance', description: 'Insurance brokers, agencies, claims' },
+  // Phase 2 — coming soon
+  // { value: 'fitness', label: 'Fitness / Gym', description: 'Gyms, studios, personal training, wellness centres' },
+  // Phase 2 — coming soon
+  // { value: 'childcare', label: 'Childcare / Daycare', description: 'Childcare centres, daycare, early learning' },
+  // Phase 2 — coming soon
+  // { value: 'funeral_services', label: 'Funeral Services', description: 'Funeral homes, memorial services, cremation' },
   { value: 'other', label: 'Other Business', description: 'General business receptionist' },
 ];
 

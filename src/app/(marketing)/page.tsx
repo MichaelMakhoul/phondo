@@ -27,7 +27,6 @@ import {
   Stethoscope,
   Scale,
   Wrench,
-  Home,
   Building,
   Briefcase,
 } from "lucide-react";
@@ -86,12 +85,12 @@ const INDUSTRIES = [
     stat: "47% more bookings",
   },
   {
-    name: "Real Estate",
-    slug: "real-estate",
-    icon: Home,
+    name: "And More...",
+    slug: "", // Phase 2 — additional industries coming soon
+    icon: Building,
     color: "bg-emerald-500/10 text-emerald-500",
-    description: "Property enquiries, inspection scheduling, lead qualification",
-    stat: "Never miss a lead",
+    description: "Veterinary, salon, automotive, real estate, and more industries coming soon",
+    stat: "10+ industries",
   },
 ];
 
@@ -375,8 +374,28 @@ export default function LandingPage() {
                   key={industry.name}
                   animation={i % 2 === 0 ? "animate-slide-in-left" : "animate-slide-in-right"}
                 >
-                  <Link href={`/industries/${industry.slug}`}>
-                    <div className="flex gap-4 rounded-lg border bg-card p-6 transition-all hover:-translate-y-1 hover:border-primary/50 cursor-pointer">
+                  {industry.slug ? (
+                    <Link href={`/industries/${industry.slug}`}>
+                      <div className="flex gap-4 rounded-lg border bg-card p-6 transition-all hover:-translate-y-1 hover:border-primary/50 cursor-pointer">
+                        <div className={`flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-xl ${industry.color}`}>
+                          <industry.icon className="h-6 w-6" />
+                        </div>
+                        <div>
+                          <h3 className="font-semibold">{industry.name}</h3>
+                          <p className="mt-1 text-sm text-muted-foreground">
+                            {industry.description}
+                          </p>
+                          <Badge variant="secondary" className="mt-2">
+                            {industry.stat}
+                          </Badge>
+                          <p className="mt-3 text-sm font-medium text-orange-500">
+                            Learn more <span aria-hidden="true">&rarr;</span>
+                          </p>
+                        </div>
+                      </div>
+                    </Link>
+                  ) : (
+                    <div className="flex gap-4 rounded-lg border border-dashed bg-card p-6">
                       <div className={`flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-xl ${industry.color}`}>
                         <industry.icon className="h-6 w-6" />
                       </div>
@@ -388,12 +407,9 @@ export default function LandingPage() {
                         <Badge variant="secondary" className="mt-2">
                           {industry.stat}
                         </Badge>
-                        <p className="mt-3 text-sm font-medium text-orange-500">
-                          Learn more <span aria-hidden="true">&rarr;</span>
-                        </p>
                       </div>
                     </div>
-                  </Link>
+                  )}
                 </AnimateOnScroll>
               ))}
             </div>

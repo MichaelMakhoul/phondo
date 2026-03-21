@@ -278,89 +278,90 @@ export const INDUSTRY_PAGES: IndustryPage[] = [
     ctaDescription:
       "73% of homeowners hire the first tradie who answers the phone. Start your 14-day free trial and never miss a job again.",
   },
-  {
-    slug: "real-estate",
-    name: "Real Estate",
-    icon: "Home",
-    color: "emerald",
-    heroTitle: "An AI receptionist that never misses a property enquiry",
-    heroSubtitle:
-      "Capture every lead, schedule inspections, and qualify buyers — around the clock. Built for Australian real estate agents and property managers.",
-    features: [
-      {
-        icon: "Users",
-        title: "Lead Qualification",
-        description:
-          "Asks the right questions — budget, timeline, pre-approval status, property preferences. Qualified leads land in your dashboard ready to follow up.",
-      },
-      {
-        icon: "Calendar",
-        title: "Inspection Scheduling",
-        description:
-          "Books property inspections directly into your calendar. Sends the buyer an SMS confirmation with the property address and time.",
-      },
-      {
-        icon: "Home",
-        title: "Property Enquiry Handling",
-        description:
-          "Answers questions about listed properties — price guide, features, inspection times — based on the details you provide during setup.",
-      },
-      {
-        icon: "Phone",
-        title: "24/7 Lead Capture",
-        description:
-          "Property seekers browse at night and on weekends. Capture enquiries from portal listings (Domain, REA) whenever they call.",
-      },
-      {
-        icon: "PhoneForwarded",
-        title: "Hot Lead Transfers",
-        description:
-          "Detects high-intent buyers — pre-approved, ready to offer, asking about contracts — and transfers them to your mobile immediately.",
-      },
-      {
-        icon: "BarChart3",
-        title: "Enquiry Analytics",
-        description:
-          "Track which properties generate the most calls, peak enquiry times, and buyer demographics. Data-driven listing strategy.",
-      },
-    ],
-    stats: [
-      { value: "78%", label: "of property enquiries happen outside business hours" },
-      { value: "$2,800+", label: "average commission per residential sale in AU" },
-      { value: "24/7", label: "lead capture from Domain, REA, and direct calls" },
-      { value: "3x", label: "more inspections booked with instant response" },
-    ],
-    faqs: [
-      {
-        question: "Can it answer questions about specific properties I have listed?",
-        answer:
-          "Yes. During setup, you provide details for your current listings — price guide, key features, inspection times, and any other information you want shared. The AI uses this to answer caller questions accurately. You can update listing details anytime from your dashboard.",
-      },
-      {
-        question: "How does it handle rental vs sales enquiries?",
-        answer:
-          "The AI distinguishes between rental and sales calls based on the caller's questions. It captures the relevant details for each — rental applications vs buyer qualification — and routes them to the right person on your team if needed.",
-      },
-      {
-        question: "Will it schedule property inspections automatically?",
-        answer:
-          "Yes. The AI books inspections into your calendar, checks for conflicts, and sends the buyer an SMS confirmation with the property address, time, and any access instructions. You can set available inspection windows per property.",
-      },
-      {
-        question: "What happens when a buyer wants to make an offer?",
-        answer:
-          "The AI never negotiates or accepts offers. It captures the buyer's details and intent, flags the call as high-priority, and either transfers to your mobile immediately or sends you a priority notification to call back. You handle all negotiations directly.",
-      },
-      {
-        question: "Does it work for property management as well?",
-        answer:
-          "Yes. For property managers, the AI handles tenant maintenance requests (captures the issue, urgency, and access details), rental enquiries, and inspection bookings. It can distinguish between emergency maintenance (flooding, no power) and routine requests.",
-      },
-    ],
-    ctaTitle: "Capture every property lead, day and night",
-    ctaDescription:
-      "78% of property enquiries happen outside business hours. Start your 14-day free trial and never miss a buyer again.",
-  },
+  // Phase 2 — requires CRM/listing integration
+  // {
+  //   slug: "real-estate",
+  //   name: "Real Estate",
+  //   icon: "Home",
+  //   color: "emerald",
+  //   heroTitle: "An AI receptionist that never misses a property enquiry",
+  //   heroSubtitle:
+  //     "Capture every lead, schedule inspections, and qualify buyers — around the clock. Built for Australian real estate agents and property managers.",
+  //   features: [
+  //     {
+  //       icon: "Users",
+  //       title: "Lead Qualification",
+  //       description:
+  //         "Asks the right questions — budget, timeline, pre-approval status, property preferences. Qualified leads land in your dashboard ready to follow up.",
+  //     },
+  //     {
+  //       icon: "Calendar",
+  //       title: "Inspection Scheduling",
+  //       description:
+  //         "Books property inspections directly into your calendar. Sends the buyer an SMS confirmation with the property address and time.",
+  //     },
+  //     {
+  //       icon: "Home",
+  //       title: "Property Enquiry Handling",
+  //       description:
+  //         "Answers questions about listed properties — price guide, features, inspection times — based on the details you provide during setup.",
+  //     },
+  //     {
+  //       icon: "Phone",
+  //       title: "24/7 Lead Capture",
+  //       description:
+  //         "Property seekers browse at night and on weekends. Capture enquiries from portal listings (Domain, REA) whenever they call.",
+  //     },
+  //     {
+  //       icon: "PhoneForwarded",
+  //       title: "Hot Lead Transfers",
+  //       description:
+  //         "Detects high-intent buyers — pre-approved, ready to offer, asking about contracts — and transfers them to your mobile immediately.",
+  //     },
+  //     {
+  //       icon: "BarChart3",
+  //       title: "Enquiry Analytics",
+  //       description:
+  //         "Track which properties generate the most calls, peak enquiry times, and buyer demographics. Data-driven listing strategy.",
+  //     },
+  //   ],
+  //   stats: [
+  //     { value: "78%", label: "of property enquiries happen outside business hours" },
+  //     { value: "$2,800+", label: "average commission per residential sale in AU" },
+  //     { value: "24/7", label: "lead capture from Domain, REA, and direct calls" },
+  //     { value: "3x", label: "more inspections booked with instant response" },
+  //   ],
+  //   faqs: [
+  //     {
+  //       question: "Can it answer questions about specific properties I have listed?",
+  //       answer:
+  //         "Yes. During setup, you provide details for your current listings — price guide, key features, inspection times, and any other information you want shared. The AI uses this to answer caller questions accurately. You can update listing details anytime from your dashboard.",
+  //     },
+  //     {
+  //       question: "How does it handle rental vs sales enquiries?",
+  //       answer:
+  //         "The AI distinguishes between rental and sales calls based on the caller's questions. It captures the relevant details for each — rental applications vs buyer qualification — and routes them to the right person on your team if needed.",
+  //     },
+  //     {
+  //       question: "Will it schedule property inspections automatically?",
+  //       answer:
+  //         "Yes. The AI books inspections into your calendar, checks for conflicts, and sends the buyer an SMS confirmation with the property address, time, and any access instructions. You can set available inspection windows per property.",
+  //     },
+  //     {
+  //       question: "What happens when a buyer wants to make an offer?",
+  //       answer:
+  //         "The AI never negotiates or accepts offers. It captures the buyer's details and intent, flags the call as high-priority, and either transfers to your mobile immediately or sends you a priority notification to call back. You handle all negotiations directly.",
+  //     },
+  //     {
+  //       question: "Does it work for property management as well?",
+  //       answer:
+  //         "Yes. For property managers, the AI handles tenant maintenance requests (captures the issue, urgency, and access details), rental enquiries, and inspection bookings. It can distinguish between emergency maintenance (flooding, no power) and routine requests.",
+  //     },
+  //   ],
+  //   ctaTitle: "Capture every property lead, day and night",
+  //   ctaDescription:
+  //     "78% of property enquiries happen outside business hours. Start your 14-day free trial and never miss a buyer again.",
+  // },
 ];
 
 export function getIndustryBySlug(slug: string): IndustryPage | undefined {
