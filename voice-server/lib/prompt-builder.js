@@ -104,7 +104,13 @@ function buildSchedulingSection(timezone, businessHours, defaultAppointmentDurat
       "2. Ask what date they prefer, then call check_availability for that date.",
       "3. Present the available times and let the caller choose.",
       "4. Collect their name and phone number, then call book_appointment.",
-      "5. Confirm the booking details with the caller."
+      "5. Confirm the booking details with the caller.",
+      "",
+      "IMPORTANT — ALTERNATIVE TIMES:",
+      "If the requested appointment time is not available, you MUST present the alternative available times to the caller and get their explicit confirmation before booking. Never silently substitute a different date or time. Always say something like 'That time isn't available, but I have [alternatives]. Which would you prefer?' and wait for the caller to choose.",
+      "",
+      "APPOINTMENT PRIVACY:",
+      "Never reveal details of other people's bookings. When a caller wants to cancel or check their appointment, verify their identity first (ask for their name and confirm with the phone number on file). Only share appointment details with the person who booked it. If you cannot verify the caller's identity, ask them to call back during business hours."
     );
   } else {
     lines.push(

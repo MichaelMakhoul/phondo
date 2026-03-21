@@ -60,6 +60,24 @@ const DEFAULT_OPTIONS: ScrapeOptions = {
     '/login',
     '/cart',
     '/checkout',
+    // Property/product listing pages — too volatile for KB, should come from live data
+    '/listing',
+    '/listings',
+    '/properties',
+    '/property/',
+    '/for-sale',
+    '/for-rent',
+    '/rent/',
+    '/buy/',
+    '/sold/',
+    '/auction/',
+    '/product/',
+    '/products/',
+    '/catalog/',
+    '/menu/',
+    '/inventory/',
+    '/search-results',
+    '/search?',
   ],
   timeout: 30000,
 };
@@ -459,6 +477,8 @@ export async function extractBusinessInfoWithLLM(
 - "hours": string[] — business hours, e.g. ["Monday: 9am-5pm", "Tuesday: 9am-5pm"]
 - "services": string[] — list of services offered (keep each concise, max 8 words)
 - "about": string — 1-2 sentence summary of what the business does
+
+IMPORTANT: Only extract general business information. Do NOT extract individual product listings, property listings, menu items, inventory details, or other catalog data. These change frequently and should not be in the knowledge base.
 
 Only include fields you are confident about. Return {} if no useful info is found. Output raw JSON only, no markdown fences.`,
         messages: [

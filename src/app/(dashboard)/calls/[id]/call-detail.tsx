@@ -413,7 +413,7 @@ export function CallDetail({ call }: { call: Call }) {
               </CardHeader>
               <CardContent>
                 <p className="text-sm text-amber-700 dark:text-amber-300 mb-3">
-                  The caller asked questions your AI couldn&apos;t answer. Add this
+                  Topics your AI couldn&apos;t fully address during this call. Add this
                   information to your knowledge base to improve future calls.
                 </p>
                 <ul className="space-y-2">

@@ -131,6 +131,65 @@ function formatTime(h: number, m: number): string {
   return `${hour12}${mins} ${period}`;
 }
 
+// ─── Phone normalization helpers ─────────────────────────────────────────────
+
+/**
+ * Generate all plausible phone number format variants for a given input,
+ * so we can match regardless of how the number was stored.
+ *
+ * For example, +61414141883 yields:
+ *   ["+61414141883", "61414141883", "0414141883"]
+ * And 0414141883 yields:
+ *   ["0414141883", "414141883"]
+ * (We can't infer the country code from a local number alone, so we don't
+ *  synthesize +61 from 04... — but the reverse direction works.)
+ */
+function phoneVariants(phone: string): string[] {
+  const variants = new Set<string>();
+
+  // Original input (trimmed)
+  const trimmed = phone.trim();
+  variants.add(trimmed);
+
+  // Digits-only version
+  const digits = trimmed.replace(/\D/g, "");
+  if (digits) variants.add(digits);
+
+  // With leading "+" if it had one
+  if (trimmed.startsWith("+")) {
+    variants.add(`+${digits}`);
+  }
+
+  // If E.164-ish (+CC...), also produce the local variant
+  // Australia: +61 4xx → 04xx  (replace country code 61 with leading 0)
+  if (digits.startsWith("61") && digits.length === 11) {
+    variants.add(`0${digits.slice(2)}`);       // 0414141883
+    variants.add(digits.slice(2));             // 414141883
+    variants.add(`+61${digits.slice(2)}`);     // +61414141883
+  }
+  // US/CA: +1 xxx → xxx  (10-digit national)
+  if (digits.startsWith("1") && digits.length === 11) {
+    variants.add(digits.slice(1));             // 4145551234
+    variants.add(`+1${digits.slice(1)}`);      // +14145551234
+  }
+
+  // If local AU format (starts with 0, 10 digits), produce E.164
+  if (digits.startsWith("0") && digits.length === 10) {
+    const national = digits.slice(1);
+    variants.add(national);                    // 414141883
+    variants.add(`61${national}`);             // 61414141883
+    variants.add(`+61${national}`);            // +61414141883
+  }
+
+  // If local US format (10 digits, no leading 0 or 1)
+  if (digits.length === 10 && !digits.startsWith("0") && !digits.startsWith("1")) {
+    variants.add(`1${digits}`);                // 14145551234
+    variants.add(`+1${digits}`);               // +14145551234
+  }
+
+  return Array.from(variants);
+}
+
 // ─── Pure slot helpers (exported for testing) ────────────────────────────────
 
 /**
@@ -556,11 +615,15 @@ export async function handleCancelAppointment(
 
   const supabase = createAdminClient();
 
+  // Generate all plausible phone format variants so we match regardless of
+  // how the number was stored (e.g., +61414141883 vs 0414141883).
+  const variants = phoneVariants(phone);
+
   const { data: appointments, error: queryError } = await (supabase as any)
     .from("appointments")
     .select("*")
     .eq("organization_id", organizationId)
-    .eq("attendee_phone", phone)
+    .in("attendee_phone", variants)
     .in("status", ["confirmed", "pending"])
     .order("start_time", { ascending: true })
     .limit(1);

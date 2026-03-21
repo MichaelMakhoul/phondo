@@ -97,7 +97,7 @@ function analyzePhoneNumber(phone: string, countryCode: string = "US"): {
   const config = getCountryConfig(countryCode);
 
   if (!config.phone.validateNational(normalized)) {
-    score += 10;
+    score += 5;
     reasons.push("Invalid phone number format");
   }
 
@@ -156,13 +156,13 @@ async function analyzeCallFrequency(
 
   // High call frequency is suspicious
   if (count > 10) {
-    score += 40;
-    reasons.push(`${count} calls in the last ${timeWindowHours} hours`);
-  } else if (count > 5) {
     score += 20;
     reasons.push(`${count} calls in the last ${timeWindowHours} hours`);
-  } else if (count > 3) {
+  } else if (count > 5) {
     score += 10;
+    reasons.push(`${count} calls in the last ${timeWindowHours} hours`);
+  } else if (count > 3) {
+    score += 5;
     reasons.push(`${count} calls in the last ${timeWindowHours} hours`);
   }
 
@@ -229,11 +229,10 @@ function analyzeCallTiming(timestamp: Date): {
     reasons.push("Call during late evening hours");
   }
 
-  // Weekend calls to businesses might be suspicious
-  if (dayOfWeek === 0 || dayOfWeek === 6) {
-    score += 5;
-    reasons.push("Call during weekend");
-  }
+  // Weekend calls — not penalized, many businesses operate on weekends
+  // if (dayOfWeek === 0 || dayOfWeek === 6) {
+  //   score += 0;
+  // }
 
   return { score, reasons };
 }
@@ -350,14 +349,14 @@ export async function analyzeCall(metadata: CallMetadata): Promise<SpamAnalysisR
   let recommendation: SpamAnalysisResult["recommendation"];
   if (spamScore >= 70) {
     recommendation = "block";
-  } else if (spamScore >= 40) {
+  } else if (spamScore >= 50) {
     recommendation = "flag";
   } else {
     recommendation = "allow";
   }
 
   return {
-    isSpam: spamScore >= 50,
+    isSpam: spamScore >= 70,
     spamScore,
     reasons: allReasons,
     confidence,
