@@ -437,43 +437,99 @@ export const calendarTools = {
 };
 
 /**
- * Format availability slots for voice response
+ * Produce a reliable YYYY-MM-DD local date key using Intl.DateTimeFormat parts.
+ * Does not rely on locale-specific toLocaleDateString output format.
+ */
+function toLocalDateKey(date: Date, tz?: string): string {
+  const opts: Intl.DateTimeFormatOptions = {
+    year: "numeric", month: "2-digit", day: "2-digit",
+    ...(tz ? { timeZone: tz } : {}),
+  };
+  const parts = new Intl.DateTimeFormat("en-US", opts).formatToParts(date);
+  const y = parts.find(p => p.type === "year")?.value ?? "0000";
+  const m = parts.find(p => p.type === "month")?.value ?? "01";
+  const d = parts.find(p => p.type === "day")?.value ?? "01";
+  return `${y}-${m}-${d}`;
+}
+
+/**
+ * Format availability slots for voice response.
+ * Regroups slots by LOCAL date (in the business timezone) rather than UTC date,
+ * which prevents confusing output like "Saturday March 22" when the caller
+ * asked about Monday March 23 (AEDT morning = previous day in UTC).
  */
 export function formatAvailabilityForVoice(availability: CalComAvailability[], timezone?: string): string {
   if (availability.length === 0 || availability.every((a) => a.slots.length === 0)) {
     return "I'm sorry, there are no available appointments on that date. Would you like to check a different day?";
   }
 
-  const parts: string[] = [];
-  const tzOption = timezone ? { timeZone: timezone } : {};
+  // Validate timezone early — fall back to UTC if invalid
+  let validTz = timezone;
+  if (timezone) {
+    try {
+      Intl.DateTimeFormat(undefined, { timeZone: timezone });
+    } catch {
+      console.error(`[cal-com] Invalid timezone "${timezone}", falling back to UTC`);
+      validTz = undefined;
+    }
+  }
+  const tzOption = validTz ? { timeZone: validTz } : {};
 
+  // Flatten all slots and regroup by local date in the business timezone
+  const allSlots: Date[] = [];
   for (const day of availability) {
-    if (day.slots.length === 0) continue;
+    for (const slot of day.slots) {
+      const parsed = new Date(slot.time);
+      if (isNaN(parsed.getTime())) {
+        console.warn(`[cal-com] Skipping invalid slot time: "${slot.time}"`);
+        continue;
+      }
+      allSlots.push(parsed);
+    }
+  }
 
-    // Format date nicely
-    const date = new Date(day.date);
-    const dateStr = date.toLocaleDateString("en-US", {
+  // Group by local date key (explicit YYYY-MM-DD, not locale-dependent)
+  const slotsByLocalDate = new Map<string, Date[]>();
+  for (const slot of allSlots) {
+    const key = toLocalDateKey(slot, validTz);
+    if (!slotsByLocalDate.has(key)) {
+      slotsByLocalDate.set(key, []);
+    }
+    slotsByLocalDate.get(key)!.push(slot);
+  }
+
+  // Sort by date key for chronological output
+  const sortedEntries = [...slotsByLocalDate.entries()].sort(([a], [b]) => a.localeCompare(b));
+
+  const parts: string[] = [];
+  for (const [, slots] of sortedEntries) {
+    if (slots.length === 0) continue;
+
+    slots.sort((a, b) => a.getTime() - b.getTime());
+
+    const dateStr = slots[0].toLocaleDateString("en-US", {
       weekday: "long",
       month: "long",
       day: "numeric",
       ...tzOption,
     });
 
-    // Get first few slots
-    const slotsToShow = day.slots.slice(0, 5);
-    const timeStrings = slotsToShow.map((slot) => {
-      const time = new Date(slot.time);
-      return time.toLocaleTimeString("en-US", {
+    const slotsToShow = slots.slice(0, 5);
+    const timeStrings = slotsToShow.map((slot) =>
+      slot.toLocaleTimeString("en-US", {
         hour: "numeric",
         minute: "2-digit",
         hour12: true,
         ...tzOption,
-      });
-    });
+      })
+    );
 
-    const moreSlots = day.slots.length > 5 ? ` and ${day.slots.length - 5} more` : "";
-
+    const moreSlots = slots.length > 5 ? ` and ${slots.length - 5} more` : "";
     parts.push(`On ${dateStr}, I have openings at ${timeStrings.join(", ")}${moreSlots}`);
+  }
+
+  if (parts.length === 0) {
+    return "I'm sorry, I had trouble reading the available time slots. Would you like to try again or check a different day?";
   }
 
   return parts.join(". ") + ". Which time works best for you?";
