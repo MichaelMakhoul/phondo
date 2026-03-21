@@ -19,6 +19,7 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
@@ -76,6 +77,8 @@ export function KnowledgeSettings({
 }: KnowledgeSettingsProps) {
   const { toast } = useToast();
   const [entries, setEntries] = useState(initialEntries);
+  const [deleteTarget, setDeleteTarget] = useState<KBEntry | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [addDialogOpen, setAddDialogOpen] = useState(false);
   const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [editingEntry, setEditingEntry] = useState<KBEntry | null>(null);
@@ -327,20 +330,24 @@ export function KnowledgeSettings({
   };
 
   // ---- Delete ----
-  const handleDelete = async (entry: KBEntry) => {
-    if (!confirm(`Delete "${entry.title || "this source"}"? This cannot be undone.`)) {
-      return;
-    }
+  const confirmDelete = (entry: KBEntry) => {
+    setDeleteTarget(entry);
+  };
+
+  const handleDelete = async () => {
+    if (!deleteTarget) return;
+    setIsDeleting(true);
 
     try {
-      const response = await fetch(`/api/v1/knowledge-base/${entry.id}`, {
+      const response = await fetch(`/api/v1/knowledge-base/${deleteTarget.id}`, {
         method: "DELETE",
       });
 
       if (!response.ok) throw new Error("Failed to delete");
 
-      setEntries(entries.filter((e) => e.id !== entry.id));
+      setEntries(entries.filter((e) => e.id !== deleteTarget.id));
       trackKnowledgeEntryDeleted();
+      setDeleteTarget(null);
       toast({ title: "Deleted", description: "Source removed." });
     } catch {
       toast({
@@ -348,6 +355,8 @@ export function KnowledgeSettings({
         title: "Error",
         description: "Failed to delete source.",
       });
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -751,7 +760,7 @@ export function KnowledgeSettings({
                       variant="ghost"
                       size="sm"
                       aria-label="Delete source"
-                      onClick={() => handleDelete(entry)}
+                      onClick={() => confirmDelete(entry)}
                     >
                       <Trash2 className="h-4 w-4 text-destructive" />
                     </Button>
@@ -871,6 +880,27 @@ export function KnowledgeSettings({
               </Button>
             </div>
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete confirmation dialog */}
+      <Dialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete Knowledge Source?</DialogTitle>
+            <DialogDescription className="space-y-2">
+              <span className="block">
+                This will permanently delete <span className="font-semibold text-foreground">{deleteTarget?.title || "this source"}</span>.
+              </span>
+              <span className="block font-semibold text-destructive">This action cannot be undone.</span>
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteTarget(null)} disabled={isDeleting}>Cancel</Button>
+            <Button variant="destructive" onClick={handleDelete} disabled={isDeleting}>
+              {isDeleting ? "Deleting..." : "Yes, Delete"}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>

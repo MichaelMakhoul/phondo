@@ -6,6 +6,14 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   Card,
   CardContent,
   CardDescription,
@@ -79,6 +87,7 @@ export function CalendarSettings({
   const [isLoading, setIsLoading] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [disconnectOpen, setDisconnectOpen] = useState(false);
   const [accountInfo, setAccountInfo] = useState<{ username: string; email: string } | null>(null);
 
   const router = useRouter();
@@ -195,10 +204,7 @@ export function CalendarSettings({
 
   // Delete the integration
   const deleteIntegration = async () => {
-    if (!confirm("Are you sure you want to disconnect Cal.com? Your AI will no longer be able to book appointments.")) {
-      return;
-    }
-
+    setDisconnectOpen(false);
     setIsDeleting(true);
     try {
       const response = await fetch("/api/v1/calendar/integration", {
@@ -405,7 +411,7 @@ export function CalendarSettings({
             {isConnected && (
               <Button
                 variant="destructive"
-                onClick={deleteIntegration}
+                onClick={() => setDisconnectOpen(true)}
                 disabled={isDeleting}
               >
                 {isDeleting ? (
@@ -447,6 +453,23 @@ export function CalendarSettings({
           </ol>
         </CardContent>
       </Card>
+
+      {/* Disconnect confirmation dialog */}
+      <Dialog open={disconnectOpen} onOpenChange={setDisconnectOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Disconnect Cal.com?</DialogTitle>
+            <DialogDescription className="space-y-2">
+              <span className="block">Your AI will no longer be able to book, cancel, or check appointment availability.</span>
+              <span className="block">Existing bookings in Cal.com will not be affected.</span>
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDisconnectOpen(false)}>Cancel</Button>
+            <Button variant="destructive" onClick={deleteIntegration}>Yes, Disconnect</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
