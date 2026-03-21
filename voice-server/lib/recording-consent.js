@@ -91,10 +91,17 @@ function requiresRecordingDisclosureHybrid(country, orgState, consentMode, calle
 
 /**
  * Get the recording disclosure text appropriate for the jurisdiction.
+ * Uses the custom disclosure from assistant settings if provided, otherwise
+ * falls back to a jurisdiction-appropriate default.
+ *
  * @param {string} country - Organization's country code
+ * @param {string|null|undefined} customDisclosure - Custom disclosure text from assistant settings
  * @returns {string}
  */
-function getRecordingDisclosureText(country) {
+function getRecordingDisclosureText(country, customDisclosure) {
+  if (customDisclosure && typeof customDisclosure === "string" && customDisclosure.trim()) {
+    return customDisclosure.trim();
+  }
   if (country === "AU") {
     return "Please note, this call may be recorded for quality and training purposes.";
   }

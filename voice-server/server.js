@@ -97,7 +97,8 @@ function getErrorMsg(lang, key, ...args) {
 /**
  * Resolve after-hours state from call context.
  * Returns { isAfterHours, afterHoursConfig, effectiveCalendarEnabled } used
- * to gate calendar tools and customize prompts/greetings.
+ * to customize prompts/greetings. Calendar tools remain available during
+ * after-hours so callers can still book appointments for business hours.
  */
 function resolveAfterHoursState(context) {
   const isAfterHours = context.isAfterHours || false;
@@ -105,10 +106,10 @@ function resolveAfterHoursState(context) {
   const afterHoursEnabled = !!(context.assistant.promptConfig?.behaviors?.afterHoursHandling);
   const isActive = isAfterHours && afterHoursEnabled;
 
-  // Disable scheduling after hours unless disableScheduling is explicitly false
-  const effectiveCalendarEnabled = (isActive && (afterHoursConfig?.disableScheduling ?? true))
-    ? false
-    : (context.calendarEnabled || false);
+  // Keep calendar tools available during after-hours so callers can still
+  // book appointments for business hours. The prompt instructs the AI to
+  // let the caller know the office is closed while offering to schedule.
+  const effectiveCalendarEnabled = context.calendarEnabled || false;
 
   return { isAfterHours: isActive, afterHoursConfig, effectiveCalendarEnabled };
 }
@@ -1004,7 +1005,10 @@ wss.on("connection", (twilioWs) => {
           console.log(`[Recording] Consent: required=${consentResult.required}, callerState=${consentResult.callerState}, reason=${consentResult.reason}`);
 
           if (consentResult.required) {
-            const disclosureText = getRecordingDisclosureText(context.organization.country);
+            const disclosureText = getRecordingDisclosureText(
+              context.organization.country,
+              context.assistant.settings?.recordingDisclosure
+            );
             try {
               await sendTTS(session, twilioWs, disclosureText);
               session.recordingDisclosurePlayed = true;
@@ -1541,9 +1545,8 @@ testWss.on("connection", (ws, req) => {
         if (afterHoursEnabled) {
           isAfterHours = true;
           afterHoursConfig = context.afterHoursConfig || null;
-          effectiveCalendarEnabled = (afterHoursConfig?.disableScheduling ?? true)
-            ? false
-            : (context.calendarEnabled || false);
+          // Calendar tools stay available so callers can book for business hours
+          effectiveCalendarEnabled = context.calendarEnabled || false;
         } else {
           console.warn(`[TestAfterHours] simulateAfterHours requested but afterHoursHandling is disabled — ignoring`);
         }
@@ -1618,7 +1621,10 @@ testWss.on("connection", (ws, req) => {
       session.consentReason = testConsentResult.reason;
       console.log(`[TestRecording] Consent: required=${testConsentResult.required}, callerState=${testConsentResult.callerState}, reason=${testConsentResult.reason}`);
       if (testConsentResult.required) {
-        const disclosureText = getRecordingDisclosureText(context.organization.country);
+        const disclosureText = getRecordingDisclosureText(
+          context.organization.country,
+          context.assistant.settings?.recordingDisclosure
+        );
         try {
           const disclosureAudio = await synthesizeSpeech(DEEPGRAM_API_KEY, disclosureText, {
             voice: session.deepgramVoice,

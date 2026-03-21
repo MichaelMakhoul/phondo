@@ -109,6 +109,7 @@ interface AssistantBuilderProps {
   transferRules: TransferRule[];
   hasBusinessHours: boolean;
   hasTimezone: boolean;
+  industry?: string;
 }
 
 export function AssistantBuilder({
@@ -117,6 +118,7 @@ export function AssistantBuilder({
   transferRules: initialTransferRules,
   hasBusinessHours,
   hasTimezone,
+  industry,
 }: AssistantBuilderProps) {
   const router = useRouter();
   const { toast } = useToast();
@@ -210,9 +212,8 @@ export function AssistantBuilder({
   const [afterHoursInstructions, setAfterHoursInstructions] = useState(
     assistant.after_hours_config?.customInstructions || ""
   );
-  const [afterHoursDisableScheduling, setAfterHoursDisableScheduling] = useState(
-    assistant.after_hours_config?.disableScheduling ?? true
-  );
+  // Scheduling is always available during after-hours (callers can book for business hours)
+  const afterHoursDisableScheduling = false;
 
   // Saving state
   const [isSaving, setIsSaving] = useState(false);
@@ -1136,6 +1137,7 @@ export function AssistantBuilder({
           <PiiRedactionCard
             assistantId={assistant.id}
             initialEnabled={assistant.settings?.piiRedactionEnabled || false}
+            industry={industry}
           />
 
           {promptConfig?.behaviors?.afterHoursHandling && (
@@ -1146,7 +1148,9 @@ export function AssistantBuilder({
                   After-Hours Settings
                 </CardTitle>
                 <CardDescription>
-                  Customize how your AI handles calls outside business hours
+                  Customize how your AI handles calls outside business hours.
+                  When enabled, callers outside business hours will be informed the office is closed.
+                  The AI will still offer to book appointments during business hours and take messages.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
@@ -1204,17 +1208,10 @@ export function AssistantBuilder({
                   </p>
                 </div>
 
-                <div className="flex items-center justify-between">
-                  <div>
-                    <Label>Disable Scheduling After Hours</Label>
-                    <p className="text-xs text-muted-foreground">
-                      Prevent the AI from offering to book appointments outside business hours
-                    </p>
-                  </div>
-                  <Switch
-                    checked={afterHoursDisableScheduling}
-                    onCheckedChange={setAfterHoursDisableScheduling}
-                  />
+                <div className="rounded-md border border-blue-500/30 bg-blue-500/10 p-3">
+                  <p className="text-sm text-blue-800 dark:text-blue-200">
+                    The AI will still offer to book appointments during business hours when callers reach out after hours. This ensures you never miss a potential booking.
+                  </p>
                 </div>
               </CardContent>
             </Card>
@@ -1248,60 +1245,59 @@ export function AssistantBuilder({
               </div>
             </CardContent>
           </Card>
+          {/* Delete Assistant */}
+          <Card className="border-destructive/50">
+            <CardHeader>
+              <CardTitle className="text-destructive">Danger Zone</CardTitle>
+              <CardDescription>
+                Permanently delete this assistant and all its settings.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+                <DialogTrigger asChild>
+                  <Button variant="destructive">
+                    <Trash2 className="h-4 w-4 mr-2" />
+                    Delete Assistant
+                  </Button>
+                </DialogTrigger>
+                <DialogContent>
+                  <DialogHeader>
+                    <DialogTitle>Delete Assistant</DialogTitle>
+                    <DialogDescription>
+                      This will permanently delete this assistant and all its settings.
+                      This action cannot be undone.
+                    </DialogDescription>
+                  </DialogHeader>
+                  <DialogFooter>
+                    <Button
+                      variant="outline"
+                      onClick={() => setDeleteDialogOpen(false)}
+                      disabled={isDeleting}
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      variant="destructive"
+                      onClick={handleDelete}
+                      disabled={isDeleting}
+                    >
+                      {isDeleting ? (
+                        <>
+                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                          Deleting...
+                        </>
+                      ) : (
+                        "Delete Permanently"
+                      )}
+                    </Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
+            </CardContent>
+          </Card>
         </TabsContent>
       </Tabs>
-
-      {/* Delete Assistant */}
-      <Card className="border-destructive/50">
-        <CardHeader>
-          <CardTitle className="text-destructive">Danger Zone</CardTitle>
-          <CardDescription>
-            Permanently delete this assistant and all its settings.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
-            <DialogTrigger asChild>
-              <Button variant="destructive">
-                <Trash2 className="h-4 w-4 mr-2" />
-                Delete Assistant
-              </Button>
-            </DialogTrigger>
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>Delete Assistant</DialogTitle>
-                <DialogDescription>
-                  This will permanently delete this assistant and all its settings.
-                  This action cannot be undone.
-                </DialogDescription>
-              </DialogHeader>
-              <DialogFooter>
-                <Button
-                  variant="outline"
-                  onClick={() => setDeleteDialogOpen(false)}
-                  disabled={isDeleting}
-                >
-                  Cancel
-                </Button>
-                <Button
-                  variant="destructive"
-                  onClick={handleDelete}
-                  disabled={isDeleting}
-                >
-                  {isDeleting ? (
-                    <>
-                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                      Deleting...
-                    </>
-                  ) : (
-                    "Delete Permanently"
-                  )}
-                </Button>
-              </DialogFooter>
-            </DialogContent>
-          </Dialog>
-        </CardContent>
-      </Card>
     </div>
   );
 }

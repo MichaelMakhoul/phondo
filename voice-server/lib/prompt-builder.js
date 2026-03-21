@@ -357,7 +357,8 @@ function buildBehaviorsSection(behaviors, options) {
     if (options && options.isAfterHours) {
       lines.push(
         "- AFTER HOURS (ACTIVE): The office is currently CLOSED. You MUST inform the caller that the office is closed. " +
-        "Take a detailed message including their name, callback number, and reason for calling. " +
+        "You can still book appointments for business hours — let the caller know they are calling outside business hours, but offer to schedule an appointment during operating hours. " +
+        "Also take a detailed message including their name, callback number, and reason for calling. " +
         "Assure them someone will return their call during business hours."
       );
       if (options.afterHoursConfig?.customInstructions) {
@@ -365,7 +366,7 @@ function buildBehaviorsSection(behaviors, options) {
       }
     } else {
       lines.push(
-        "- AFTER HOURS: If calling outside business hours, let the caller know, take a message, and assure them someone will return their call during business hours."
+        "- AFTER HOURS: If calling outside business hours, let the caller know, take a message, and assure them someone will return their call during business hours. You can still offer to book appointments during operating hours."
       );
     }
   }

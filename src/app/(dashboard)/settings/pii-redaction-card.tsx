@@ -7,14 +7,17 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/components/ui/use-toast";
-import { Loader2, ShieldAlert } from "lucide-react";
+import { AlertTriangle, Loader2, ShieldAlert } from "lucide-react";
 
 interface PiiRedactionCardProps {
   assistantId: string;
   initialEnabled: boolean;
+  industry?: string;
 }
 
-export function PiiRedactionCard({ assistantId, initialEnabled }: PiiRedactionCardProps) {
+const PII_RECOMMENDED_INDUSTRIES = ["medical", "dental", "legal"];
+
+export function PiiRedactionCard({ assistantId, initialEnabled, industry }: PiiRedactionCardProps) {
   const [enabled, setEnabled] = useState(initialEnabled);
   const [isLoading, setIsLoading] = useState(false);
   const { toast } = useToast();
@@ -72,6 +75,14 @@ export function PiiRedactionCard({ assistantId, initialEnabled }: PiiRedactionCa
             disabled={isLoading}
           />
         </div>
+        {!enabled && industry && PII_RECOMMENDED_INDUSTRIES.includes(industry) && (
+          <div className="mt-3 flex items-start gap-2 rounded-md border border-yellow-500/30 bg-yellow-500/10 p-3">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-yellow-600 dark:text-yellow-400" />
+            <p className="text-sm text-yellow-800 dark:text-yellow-200">
+              <span className="font-medium">Recommended:</span> Enable PII redaction for {industry === "legal" ? "legal" : "medical"} practices to protect {industry === "legal" ? "client" : "patient"} confidentiality.
+            </p>
+          </div>
+        )}
       </CardContent>
     </Card>
   );
