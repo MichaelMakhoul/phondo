@@ -99,8 +99,10 @@ function requiresRecordingDisclosureHybrid(country, orgState, consentMode, calle
  * @returns {string}
  */
 function getRecordingDisclosureText(country, customDisclosure) {
+  // Validate custom disclosure: max 500 chars, must be a string
   if (customDisclosure && typeof customDisclosure === "string" && customDisclosure.trim()) {
-    return customDisclosure.trim();
+    const trimmed = customDisclosure.trim().slice(0, 500);
+    return trimmed;
   }
   if (country === "AU") {
     return "Please note, this call may be recorded for quality and training purposes.";
