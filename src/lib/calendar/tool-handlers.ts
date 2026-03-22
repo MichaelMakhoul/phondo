@@ -261,17 +261,21 @@ async function getBuiltInAvailability(
 
   if (slots.length === 0) return [];
 
-  // Get existing appointments for this date
+  // Get existing appointments for this date.
+  // Appointments are stored in UTC — convert date boundaries to UTC using org timezone.
   const supabase = createAdminClient();
-  const dayStart = `${date}T00:00:00`;
-  const dayEnd = `${date}T23:59:59`;
+  const { timezone } = resolvedSchedule;
+  const dayStartLocal = `${date}T00:00:00`;
+  const dayEndLocal = `${date}T23:59:59`;
+  const dayStartUtc = ensureTimezoneOffset(dayStartLocal, timezone);
+  const dayEndUtc = ensureTimezoneOffset(dayEndLocal, timezone);
 
   const { data: existing, error: apptError } = await (supabase as any)
     .from("appointments")
     .select("start_time, duration_minutes, end_time")
     .eq("organization_id", organizationId)
-    .gte("start_time", dayStart)
-    .lte("start_time", dayEnd)
+    .gte("start_time", dayStartUtc)
+    .lte("start_time", dayEndUtc)
     .in("status", ["confirmed", "pending"]);
 
   if (apptError) {
@@ -287,8 +291,6 @@ async function getBuiltInAvailability(
 
   // Filter out slots that overlap with existing appointments.
   // Compare in org-local minutes-since-midnight to avoid server-TZ vs org-TZ mismatch.
-  const { timezone } = resolvedSchedule;
-
   return slots.filter((slotIso) => {
     const [, timeStr] = slotIso.split("T");
     const [slotH, slotM] = timeStr.split(":").map(Number);
