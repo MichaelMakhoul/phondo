@@ -44,7 +44,7 @@ export function AssistantCardActions({ assistantId, assistantName }: AssistantCa
       }
       toast({ title: "Assistant deleted", description: `${assistantName} has been deleted.` });
       setDeleteOpen(false);
-      router.refresh();
+      router.refresh();  // setDeleteOpen(false) already called above, before refresh
     } catch (err) {
       toast({
         title: "Error",

@@ -241,7 +241,8 @@ export function CalendarSettings({
           description: data.error || "Failed to disconnect calendar.",
         });
       }
-    } catch {
+    } catch (err) {
+      console.error("[CalendarSettings] Disconnect failed:", err);
       toast({
         variant: "destructive",
         title: "Error",
