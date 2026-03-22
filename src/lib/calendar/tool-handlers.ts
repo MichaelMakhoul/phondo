@@ -275,16 +275,45 @@ async function getPractitionersForService(
  */
 async function pickPractitionerRoundRobin(
   organizationId: string,
-  practitionerIds: string[]
-): Promise<string> {
-  if (practitionerIds.length === 1) return practitionerIds[0];
+  practitionerIds: string[],
+  slotStart?: Date,
+  slotEnd?: Date
+): Promise<string | null> {
+  if (practitionerIds.length === 0) return null;
 
   const supabase = createAdminClient();
   const now = new Date().toISOString();
 
-  // Count upcoming appointments per practitioner
+  // ── Step 1: Filter out practitioners already booked at the requested time ──
+  let availableIds = [...practitionerIds];
+
+  if (slotStart && slotEnd) {
+    const { data: conflicting, error: conflictErr } = await (supabase as any)
+      .from("appointments")
+      .select("practitioner_id, start_time, end_time, duration_minutes")
+      .eq("organization_id", organizationId)
+      .in("practitioner_id", practitionerIds)
+      .in("status", ["confirmed", "pending"])
+      .lt("start_time", slotEnd.toISOString())
+      .gt("end_time", slotStart.toISOString());
+
+    if (conflictErr) {
+      console.error("Failed to check practitioner slot conflicts:", { organizationId, practitionerIds, error: conflictErr });
+      // Fall through — better to attempt the booking and let the DB constraint catch it
+    } else if (conflicting) {
+      const busyIds = new Set(
+        (conflicting as { practitioner_id: string }[]).map((a) => a.practitioner_id)
+      );
+      availableIds = practitionerIds.filter((id) => !busyIds.has(id));
+    }
+  }
+
+  if (availableIds.length === 0) return null;
+  if (availableIds.length === 1) return availableIds[0];
+
+  // ── Step 2: Round-robin among available practitioners (fewest upcoming) ──
   const counts: Record<string, number> = {};
-  for (const pId of practitionerIds) {
+  for (const pId of availableIds) {
     counts[pId] = 0;
   }
 
@@ -292,12 +321,12 @@ async function pickPractitionerRoundRobin(
     .from("appointments")
     .select("practitioner_id")
     .eq("organization_id", organizationId)
-    .in("practitioner_id", practitionerIds)
+    .in("practitioner_id", availableIds)
     .gte("start_time", now)
     .in("status", ["confirmed", "pending"]);
 
   if (error) {
-    console.error("Failed to count upcoming appointments for round-robin:", { organizationId, practitionerIds, error });
+    console.error("Failed to count upcoming appointments for round-robin:", { organizationId, practitionerIds: availableIds, error });
   }
 
   if (!error && upcoming) {
@@ -309,9 +338,9 @@ async function pickPractitionerRoundRobin(
   }
 
   // Return the practitioner with fewest upcoming appointments
-  let bestId = practitionerIds[0];
+  let bestId = availableIds[0];
   let bestCount = counts[bestId] ?? 0;
-  for (const pId of practitionerIds) {
+  for (const pId of availableIds) {
     if ((counts[pId] ?? 0) < bestCount) {
       bestId = pId;
       bestCount = counts[pId] ?? 0;
@@ -1240,7 +1269,15 @@ async function bookInternal(
     const practitioners = await getPractitionersForService(organizationId, serviceTypeId);
     if (practitioners.length > 0) {
       const practitionerIds = practitioners.map((p) => p.id);
-      assignedPractitionerId = await pickPractitionerRoundRobin(organizationId, practitionerIds);
+      const picked = await pickPractitionerRoundRobin(organizationId, practitionerIds, startDate, endDate);
+      if (!picked) {
+        return {
+          success: false,
+          message:
+            "I'm sorry, all practitioners for that service are booked at that time. Would you like me to check for other available times?",
+        };
+      }
+      assignedPractitionerId = picked;
       assignedPractitionerName = practitioners.find((p) => p.id === assignedPractitionerId)?.name;
     }
   }
