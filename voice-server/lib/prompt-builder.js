@@ -60,8 +60,23 @@ function formatHourForPrompt(time) {
  * @param {object} [businessHours]
  * @param {number} [defaultAppointmentDuration]
  * @param {boolean} [calendarEnabled=false]
+ * @param {Array<{id: string, name: string, duration_minutes: number, description?: string}>} [serviceTypes]
  */
-function buildSchedulingSection(timezone, businessHours, defaultAppointmentDuration, calendarEnabled) {
+/**
+ * Sanitize a string for safe injection into prompts.
+ * Strips control characters, newlines, and excessive whitespace.
+ */
+function sanitizeForPrompt(str) {
+  if (!str || typeof str !== "string") return "";
+  return str
+    .replace(/[\x00-\x1f\x7f]/g, "") // strip control chars
+    .replace(/\n/g, " ")              // collapse newlines
+    .replace(/\s{2,}/g, " ")          // collapse whitespace
+    .trim()
+    .slice(0, 200);                   // cap length
+}
+
+function buildSchedulingSection(timezone, businessHours, defaultAppointmentDuration, calendarEnabled, serviceTypes) {
   const lines = [];
   lines.push("TIMEZONE & SCHEDULING:");
 
@@ -98,13 +113,43 @@ function buildSchedulingSection(timezone, businessHours, defaultAppointmentDurat
       "- check_availability: Check available appointment slots for a specific date (YYYY-MM-DD format).",
       "- book_appointment: Book an appointment. Requires datetime (ISO format), caller name, and phone number.",
       "- cancel_appointment: Cancel an existing appointment by the caller's phone number.",
-      "",
-      "SCHEDULING WORKFLOW:",
-      "1. When a caller wants to book, first call get_current_datetime to know today's date.",
-      "2. Ask what date they prefer, then call check_availability for that date.",
-      "3. Present the available times and let the caller choose.",
-      "4. Collect their name and phone number, then call book_appointment.",
-      "5. Confirm the booking details with the caller.",
+      "- list_service_types: List the available appointment/service types offered by the business."
+    );
+
+    if (serviceTypes && serviceTypes.length > 0) {
+      lines.push(
+        "",
+        "APPOINTMENT TYPES:",
+        "This business offers the following appointment types:"
+      );
+      for (const st of serviceTypes) {
+        const safeName = sanitizeForPrompt(st.name);
+        const safeDesc = st.description ? ': ' + sanitizeForPrompt(st.description) : '';
+        lines.push(`- ${safeName} (${st.duration_minutes} min)${safeDesc} [ID: ${st.id}]`);
+      }
+      lines.push(
+        "",
+        "When a caller wants to book, ask which type of appointment they need.",
+        "Use the service type ID when checking availability and booking:",
+        "1. Ask what type of appointment they need",
+        "2. Call get_current_datetime to know today's date",
+        "3. Call check_availability with the service_type_id and preferred date",
+        "4. Present available times",
+        "5. Collect their name and phone number, then book with the selected time and service_type_id"
+      );
+    } else {
+      lines.push(
+        "",
+        "SCHEDULING WORKFLOW:",
+        "1. When a caller wants to book, first call get_current_datetime to know today's date.",
+        "2. Ask what date they prefer, then call check_availability for that date.",
+        "3. Present the available times and let the caller choose.",
+        "4. Collect their name and phone number, then call book_appointment.",
+        "5. Confirm the booking details with the caller."
+      );
+    }
+
+    lines.push(
       "",
       "IMPORTANT — ALTERNATIVE TIMES:",
       "If the requested appointment time is not available, you MUST present the alternative available times to the caller and get their explicit confirmation before booking. Never silently substitute a different date or time. Always say something like 'That time isn't available, but I have [alternatives]. Which would you prefer?' and wait for the caller to choose.",
@@ -411,7 +456,7 @@ function buildPromptFromConfig(config, context) {
   // 5. Timezone, business hours & scheduling
   // calendarEnabled is already adjusted by the caller (server.js resolveAfterHoursState)
   // when after-hours + disableScheduling apply
-  sections.push(buildSchedulingSection(context.timezone, context.businessHours, context.defaultAppointmentDuration, context.calendarEnabled));
+  sections.push(buildSchedulingSection(context.timezone, context.businessHours, context.defaultAppointmentDuration, context.calendarEnabled, context.serviceTypes));
 
   // 6. Industry guidelines
   const guidelines = getIndustryGuidelines(context.industry);
@@ -479,13 +524,14 @@ Use formal Spanish ("usted") by default unless the caller uses informal ("tú") 
  * @param {object} assistant
  * @param {object} organization
  * @param {string} knowledgeBase
- * @param {{ calendarEnabled?: boolean, transferRules?: object[], isAfterHours?: boolean, afterHoursConfig?: object }} [options]
+ * @param {{ calendarEnabled?: boolean, transferRules?: object[], isAfterHours?: boolean, afterHoursConfig?: object, serviceTypes?: object[] }} [options]
  */
 function buildSystemPrompt(assistant, organization, knowledgeBase, options) {
   const calendarEnabled = options?.calendarEnabled ?? false;
   const transferRules = options?.transferRules ?? [];
   const isAfterHours = options?.isAfterHours ?? false;
   const afterHoursConfig = options?.afterHoursConfig ?? null;
+  const serviceTypes = options?.serviceTypes ?? [];
 
   // Cap knowledge base to a reasonable size for cost efficiency
   const MAX_KB_CHARS = 12_000;
@@ -510,6 +556,7 @@ function buildSystemPrompt(assistant, organization, knowledgeBase, options) {
       language,
       isAfterHours,
       afterHoursConfig,
+      serviceTypes,
     };
     return buildPromptFromConfig(assistant.promptConfig, context);
   }
@@ -533,7 +580,7 @@ function buildSystemPrompt(assistant, organization, knowledgeBase, options) {
   }
 
   // Append scheduling section
-  systemPrompt += `\n\n${buildSchedulingSection(organization.timezone, organization.businessHours, organization.defaultAppointmentDuration, calendarEnabled)}`;
+  systemPrompt += `\n\n${buildSchedulingSection(organization.timezone, organization.businessHours, organization.defaultAppointmentDuration, calendarEnabled, serviceTypes)}`;
 
   // Append caller ID and language rules
   systemPrompt += `\n\nIMPORTANT RULES:`;

@@ -150,6 +150,21 @@ async function loadCallContext(calledNumber, prefetchedPhone) {
     }));
   }
 
+  // 8. Load active service types for this organization
+  let serviceTypes = [];
+  const { data: stData, error: stError } = await supabase
+    .from("service_types")
+    .select("id, name, duration_minutes, description")
+    .eq("organization_id", phone.organization_id)
+    .eq("is_active", true)
+    .order("sort_order", { ascending: true });
+
+  if (stError) {
+    console.error("[CallContext] Service types lookup error:", stError);
+  } else if (stData && stData.length > 0) {
+    serviceTypes = stData;
+  }
+
   // Aggregate KB content (mirrors src/lib/knowledge-base/aggregate.ts)
   let knowledgeBase = "";
   if (kbEntries && kbEntries.length > 0) {
@@ -221,6 +236,7 @@ async function loadCallContext(calledNumber, prefetchedPhone) {
     transferRules,
     isAfterHours,
     afterHoursConfig,
+    serviceTypes,
   };
 }
 
@@ -314,6 +330,21 @@ async function loadTestCallContext(assistantId, organizationId) {
     }));
   }
 
+  // 6. Load active service types for this organization
+  let serviceTypes = [];
+  const { data: stData, error: stError } = await supabase
+    .from("service_types")
+    .select("id, name, duration_minutes, description")
+    .eq("organization_id", organizationId)
+    .eq("is_active", true)
+    .order("sort_order", { ascending: true });
+
+  if (stError) {
+    console.error("[TestCallContext] Service types lookup error:", stError);
+  } else if (stData && stData.length > 0) {
+    serviceTypes = stData;
+  }
+
   // Aggregate KB
   let knowledgeBase = "";
   if (kbEntries && kbEntries.length > 0) {
@@ -380,6 +411,7 @@ async function loadTestCallContext(assistantId, organizationId) {
     transferRules,
     isAfterHours,
     afterHoursConfig,
+    serviceTypes,
   };
 }
 

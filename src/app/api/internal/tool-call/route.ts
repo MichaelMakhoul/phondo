@@ -7,6 +7,7 @@ import {
   handleCancelAppointment,
 } from "@/lib/calendar/tool-handlers";
 import { handleScheduleCallback } from "@/lib/callbacks/tool-handler";
+import { getActiveServiceTypes } from "@/lib/service-types";
 import { withRateLimit } from "@/lib/security/rate-limiter";
 
 function verifyInternalSecret(request: Request): boolean {
@@ -91,6 +92,7 @@ export async function POST(request: Request) {
       case "check_availability":
         result = await handleCheckAvailability(organizationId, {
           date: parsedArgs.date,
+          service_type_id: parsedArgs.service_type_id,
         });
         break;
 
@@ -101,8 +103,23 @@ export async function POST(request: Request) {
           phone: parsedArgs.phone,
           email: parsedArgs.email,
           notes: parsedArgs.notes,
+          service_type_id: parsedArgs.service_type_id,
         });
         break;
+
+      case "list_service_types": {
+        const serviceTypes = await getActiveServiceTypes(organizationId);
+        if (serviceTypes.length === 0) {
+          result = { success: true, message: "This business accepts general appointments. No specific service types are configured." };
+        } else {
+          const list = serviceTypes.map(st => {
+            const safeName = st.name.replace(/[\n\r]/g, " ").trim();
+            return `- ${safeName} (${st.duration_minutes} min)`;
+          }).join("\n");
+          result = { success: true, message: `Available appointment types:\n${list}\n\nPlease ask the caller which type they'd like to book.` };
+        }
+        break;
+      }
 
       case "cancel_appointment":
         result = await handleCancelAppointment(organizationId, {
