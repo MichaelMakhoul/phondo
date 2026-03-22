@@ -72,11 +72,12 @@ export const secondaryNavigation = [
     href: "/settings/knowledge",
     icon: BookOpen,
   },
-  {
-    name: "Team",
-    href: "/settings/team",
-    icon: Users,
-  },
+  // Phase 2 — Team invites require Resend email integration
+  // {
+  //   name: "Team",
+  //   href: "/settings/team",
+  //   icon: Users,
+  // },
   // Phase 2 — CRM integrations coming soon
   // {
   //   name: "Integrations",

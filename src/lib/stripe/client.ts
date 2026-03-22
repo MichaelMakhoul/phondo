@@ -91,11 +91,11 @@ export const PLANS = {
     trialDays: 14,
     stripePriceId: process.env.STRIPE_BUSINESS_PRICE_ID,
     features: [
+      "Everything in Professional",
       "1,000 calls/month",
       "10 AI assistants",
       "5 phone numbers",
       "Up to 15 staff members",
-      "Everything in Professional",
       "Dedicated onboarding support",
     ],
   },
