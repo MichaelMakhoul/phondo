@@ -112,7 +112,10 @@ export async function POST(request: Request) {
         if (serviceTypes.length === 0) {
           result = { success: true, message: "This business accepts general appointments. No specific service types are configured." };
         } else {
-          const list = serviceTypes.map(st => `- ${st.name} (${st.duration_minutes} min)`).join("\n");
+          const list = serviceTypes.map(st => {
+            const safeName = st.name.replace(/[\n\r]/g, " ").trim();
+            return `- ${safeName} (${st.duration_minutes} min)`;
+          }).join("\n");
           result = { success: true, message: `Available appointment types:\n${list}\n\nPlease ask the caller which type they'd like to book.` };
         }
         break;

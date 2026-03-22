@@ -62,6 +62,20 @@ function formatHourForPrompt(time) {
  * @param {boolean} [calendarEnabled=false]
  * @param {Array<{id: string, name: string, duration_minutes: number, description?: string}>} [serviceTypes]
  */
+/**
+ * Sanitize a string for safe injection into prompts.
+ * Strips control characters, newlines, and excessive whitespace.
+ */
+function sanitizeForPrompt(str) {
+  if (!str || typeof str !== "string") return "";
+  return str
+    .replace(/[\x00-\x1f\x7f]/g, "") // strip control chars
+    .replace(/\n/g, " ")              // collapse newlines
+    .replace(/\s{2,}/g, " ")          // collapse whitespace
+    .trim()
+    .slice(0, 200);                   // cap length
+}
+
 function buildSchedulingSection(timezone, businessHours, defaultAppointmentDuration, calendarEnabled, serviceTypes) {
   const lines = [];
   lines.push("TIMEZONE & SCHEDULING:");
@@ -109,7 +123,9 @@ function buildSchedulingSection(timezone, businessHours, defaultAppointmentDurat
         "This business offers the following appointment types:"
       );
       for (const st of serviceTypes) {
-        lines.push(`- ${st.name} (${st.duration_minutes} min)${st.description ? ': ' + st.description : ''} [ID: ${st.id}]`);
+        const safeName = sanitizeForPrompt(st.name);
+        const safeDesc = st.description ? ': ' + sanitizeForPrompt(st.description) : '';
+        lines.push(`- ${safeName} (${st.duration_minutes} min)${safeDesc} [ID: ${st.id}]`);
       }
       lines.push(
         "",

@@ -24,10 +24,15 @@ export async function POST(request: NextRequest) {
     const admin = createAdminClient();
 
     // Check if service types already exist (idempotent)
-    const { count } = await (admin as any)
+    const { count, error: countError } = await (admin as any)
       .from("service_types")
       .select("id", { count: "exact", head: true })
       .eq("organization_id", organizationId);
+
+    if (countError) {
+      console.error("[ServiceTypes] Count query failed:", countError);
+      return NextResponse.json({ error: "Failed to check existing service types" }, { status: 500 });
+    }
 
     if (count && count > 0) {
       return NextResponse.json({ seeded: false, message: "Service types already exist" });

@@ -52,6 +52,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     if (!data) return NextResponse.json({ error: "Not found" }, { status: 404 });
     return NextResponse.json(data);
   } catch (err) {
+    console.error("[ServiceTypes] PATCH error:", err);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
@@ -70,15 +71,19 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
       .single() as { data: Membership | null };
     if (!membership) return NextResponse.json({ error: "No organization" }, { status: 404 });
 
-    const { error } = await (supabase as any)
+    const { data: deleted, error } = await (supabase as any)
       .from("service_types")
       .delete()
       .eq("id", id)
-      .eq("organization_id", membership.organization_id);
+      .eq("organization_id", membership.organization_id)
+      .select("id")
+      .single();
 
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    if (!deleted) return NextResponse.json({ error: "Not found" }, { status: 404 });
     return NextResponse.json({ deleted: true });
   } catch (err) {
+    console.error("[ServiceTypes] DELETE error:", err);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }

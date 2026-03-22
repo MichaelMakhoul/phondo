@@ -34,4 +34,5 @@ ALTER TABLE appointments ADD COLUMN IF NOT EXISTS service_type_id UUID REFERENCE
 
 -- Service role full access for voice server operations
 CREATE POLICY "service_types_service_role" ON service_types FOR ALL
-  USING (true) WITH CHECK (true);
+  USING (auth.role() = 'service_role')
+  WITH CHECK (auth.role() = 'service_role');

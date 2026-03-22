@@ -17,20 +17,24 @@ export async function getActiveServiceTypes(organizationId: string): Promise<Ser
     .order("sort_order", { ascending: true });
 
   if (error) {
-    console.error("[ServiceTypes] Failed to fetch:", error);
+    console.error("[ServiceTypes] CRITICAL: Failed to fetch service types — booking may use wrong routing:", { organizationId, error });
     return [];
   }
   return data || [];
 }
 
-export async function getServiceType(serviceTypeId: string): Promise<ServiceType | null> {
+export async function getServiceType(serviceTypeId: string, organizationId: string): Promise<ServiceType | null> {
   const supabase = createAdminClient();
   const { data, error } = await (supabase as any)
     .from("service_types")
     .select("id, name, duration_minutes, description")
     .eq("id", serviceTypeId)
+    .eq("organization_id", organizationId)
     .single();
 
-  if (error) return null;
+  if (error) {
+    console.error("[ServiceTypes] Failed to fetch service type:", { serviceTypeId, organizationId, error });
+    return null;
+  }
   return data;
 }

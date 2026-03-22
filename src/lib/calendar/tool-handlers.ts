@@ -37,6 +37,9 @@ interface OrgSchedule {
 // Fallback slot duration when no org-level default is configured
 const DEFAULT_SLOT_DURATION_MINUTES = 30;
 
+// UUID format validator for service_type_id inputs
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 // ─── Shared helpers ─────────────────────────────────────────────────────────
 
 /**
@@ -529,17 +532,25 @@ export async function handleBookAppointment(
   const sanitizedName = sanitizeString(name, 100);
   const sanitizedNotes = notes ? sanitizeString(notes, 500) : undefined;
 
+  // ── Validate service_type_id format before DB query ────────────────────
+  if (service_type_id && !UUID_RE.test(service_type_id)) {
+    return {
+      success: false,
+      message: "That appointment type doesn't seem right. Could you tell me which type of appointment you'd like?",
+    };
+  }
+
   // ── Resolve service type duration if provided ─────────────────────────
   let serviceTypeDuration: number | undefined;
+  const serviceTypes = await getActiveServiceTypes(organizationId);
+
   if (service_type_id) {
-    const st = await getServiceType(service_type_id);
+    const st = await getServiceType(service_type_id, organizationId);
     if (st) {
       serviceTypeDuration = st.duration_minutes;
     }
   }
 
-  // ── Check if org has service types — if so, use built-in first ────────
-  const serviceTypes = service_type_id ? [] : await getActiveServiceTypes(organizationId);
   const useBuiltIn = service_type_id || serviceTypes.length > 0;
 
   if (useBuiltIn) {
@@ -589,23 +600,31 @@ export async function handleCheckAvailability(
 ): Promise<ToolResult> {
   const { date, service_type_id } = args;
 
+  // ── Validate service_type_id format before DB query ────────────────────
+  if (service_type_id && !UUID_RE.test(service_type_id)) {
+    return {
+      success: false,
+      message: "That appointment type doesn't seem right. Could you tell me which type of appointment you'd like?",
+    };
+  }
+
   // ── Resolve service type duration if provided ─────────────────────────
   let serviceTypeDuration: number | undefined;
+  // Fetch service types once and reuse throughout this handler
+  const cachedServiceTypes = service_type_id ? [] : await getActiveServiceTypes(organizationId);
+
   if (service_type_id) {
-    const st = await getServiceType(service_type_id);
+    const st = await getServiceType(service_type_id, organizationId);
     if (st) {
       serviceTypeDuration = st.duration_minutes;
     }
-  } else {
-    // No service_type_id — check if org has service types configured
-    const serviceTypes = await getActiveServiceTypes(organizationId);
-    if (serviceTypes.length > 0) {
-      const list = serviceTypes.map(st => `- ${st.name} (${st.duration_minutes} min)`).join("\n");
-      return {
-        success: true,
-        message: `Before I check availability, what type of appointment would you like to book?\n\nAvailable appointment types:\n${list}\n\nPlease ask the caller which type they'd like to book.`,
-      };
-    }
+  } else if (cachedServiceTypes.length > 0) {
+    // No service_type_id — org has service types configured, prompt caller to pick
+    const list = cachedServiceTypes.map(st => `- ${st.name} (${st.duration_minutes} min)`).join("\n");
+    return {
+      success: true,
+      message: `Before I check availability, what type of appointment would you like to book?\n\nAvailable appointment types:\n${list}\n\nPlease ask the caller which type they'd like to book.`,
+    };
   }
 
   if (!date) {
@@ -623,8 +642,7 @@ export async function handleCheckAvailability(
   }
 
   // ── Check if org has service types — if so, use built-in first ────────
-  const serviceTypes = service_type_id ? [] : await getActiveServiceTypes(organizationId);
-  const useBuiltIn = service_type_id || serviceTypes.length > 0;
+  const useBuiltIn = service_type_id || cachedServiceTypes.length > 0;
 
   if (useBuiltIn) {
     console.log("Using built-in availability (service types configured):", { organizationId, service_type_id });

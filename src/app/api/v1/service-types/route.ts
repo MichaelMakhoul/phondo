@@ -32,9 +32,11 @@ export async function GET() {
       .eq("is_active", true)
       .order("sort_order", { ascending: true });
 
+    // TODO: Surface error state in UI — currently the frontend doesn't show an error banner on query failure
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
     return NextResponse.json(data);
   } catch (err) {
+    console.error("[ServiceTypes] GET error:", err);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
@@ -58,6 +60,21 @@ export async function POST(request: NextRequest) {
 
     const { name, durationMinutes, description } = parsed.data;
 
+    // Enforce max service types limit (50)
+    const { count: existingCount, error: countError } = await (supabase as any)
+      .from("service_types")
+      .select("id", { count: "exact", head: true })
+      .eq("organization_id", membership.organization_id);
+
+    if (countError) {
+      console.error("[ServiceTypes] Count query failed:", countError);
+      return NextResponse.json({ error: "Failed to check service type count" }, { status: 500 });
+    }
+
+    if (existingCount !== null && existingCount >= 50) {
+      return NextResponse.json({ error: "Maximum of 50 service types allowed" }, { status: 400 });
+    }
+
     const { data, error } = await (supabase as any)
       .from("service_types")
       .insert({
@@ -72,6 +89,7 @@ export async function POST(request: NextRequest) {
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
     return NextResponse.json(data, { status: 201 });
   } catch (err) {
+    console.error("[ServiceTypes] POST error:", err);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
