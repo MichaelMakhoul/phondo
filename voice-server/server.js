@@ -14,7 +14,7 @@ const { synthesizeSpeech, chunkAudioForTwilio } = require("./services/deepgram-t
 const { loadCallContext, loadTestCallContext } = require("./lib/call-context");
 const { buildSystemPrompt, getGreeting } = require("./lib/prompt-builder");
 const { createCallRecord, completeCallRecord, notifyCallCompleted } = require("./lib/call-logger");
-const { calendarToolDefinitions, transferToolDefinition, callbackToolDefinition, executeToolCall } = require("./services/tool-executor");
+const { calendarToolDefinitions, listServiceTypesToolDefinition, transferToolDefinition, callbackToolDefinition, executeToolCall } = require("./services/tool-executor");
 const { analyzeCallTranscript } = require("./services/post-call-analysis");
 const { getDeepgramVoice } = require("./lib/voice-mapping");
 const { generateHoldAudio, getHoldPreset } = require("./lib/hold-audio");
@@ -797,6 +797,7 @@ wss.on("connection", (twilioWs) => {
               session.callerPhone = savedState.callerPhone;
               session.callRecordId = savedState.callRecordId;
               session.calendarEnabled = savedState.calendarEnabled;
+              session.serviceTypes = savedState.serviceTypes || [];
               session.transferRules = savedState.transferRules;
               session.deepgramVoice = savedState.deepgramVoice;
               session.holdPreset = savedState.holdPreset;
@@ -938,6 +939,7 @@ wss.on("connection", (twilioWs) => {
           // After-hours detection
           const { isAfterHours, afterHoursConfig, effectiveCalendarEnabled } = resolveAfterHoursState(context);
           session.calendarEnabled = effectiveCalendarEnabled;
+          session.serviceTypes = context.serviceTypes || [];
 
           if (isAfterHours) {
             console.log(`[AfterHours] Call arriving outside business hours (org=${context.organizationId}, calendar=${effectiveCalendarEnabled})`);
@@ -953,6 +955,7 @@ wss.on("connection", (twilioWs) => {
               transferRules: session.transferRules,
               isAfterHours,
               afterHoursConfig,
+              serviceTypes: context.serviceTypes,
             }
           );
           // Append caller context so the AI knows the caller's phone number
@@ -1128,6 +1131,7 @@ wss.on("connection", (twilioWs) => {
 function buildLLMOptions(session, { includeTransfer = false } = {}) {
   const tools = [];
   if (session.calendarEnabled) tools.push(...calendarToolDefinitions);
+  if (session.serviceTypes?.length > 0) tools.push(listServiceTypesToolDefinition);
   if (includeTransfer && session.transferRules?.length > 0) tools.push(transferToolDefinition);
   // Callback tool is always available — universal fallback
   tools.push(callbackToolDefinition);
@@ -1257,6 +1261,7 @@ async function handleUserSpeech(session, twilioWs, transcript) {
               callerPhone: session.callerPhone,
               callRecordId: session.callRecordId,
               calendarEnabled: session.calendarEnabled,
+              serviceTypes: session.serviceTypes || [],
               transferRules: session.transferRules,
               deepgramVoice: session.deepgramVoice,
               holdPreset: session.holdPreset,
@@ -1575,6 +1580,7 @@ testWss.on("connection", (ws, req) => {
       }
 
       session.calendarEnabled = effectiveCalendarEnabled;
+      session.serviceTypes = context.serviceTypes || [];
 
       if (isAfterHours) {
         const reason = simulateAfterHours ? "SIMULATED" : "DETECTED";
@@ -1591,6 +1597,7 @@ testWss.on("connection", (ws, req) => {
           transferRules: session.transferRules,
           isAfterHours,
           afterHoursConfig,
+          serviceTypes: context.serviceTypes,
         }
       );
       session.setSystemPrompt(systemPrompt);

@@ -18,6 +18,7 @@ const CALENDAR_FUNCTIONS = [
   "check_availability",
   "book_appointment",
   "cancel_appointment",
+  "list_service_types",
 ];
 
 /**
@@ -86,13 +87,18 @@ const calendarToolDefinitions = [
     function: {
       name: "check_availability",
       description:
-        "Check available appointment slots for a specific date. Returns a list of available times.",
+        "Check available appointment slots for a specific date. Returns a list of available times. If the business has service types configured, pass the service_type_id to get slots with the correct duration.",
       parameters: {
         type: "object",
         properties: {
           date: {
             type: "string",
             description: "The date to check in YYYY-MM-DD format",
+          },
+          service_type_id: {
+            type: "string",
+            description:
+              "The ID of the service/appointment type. Use this to get availability with the correct duration for that service.",
           },
         },
         required: ["date"],
@@ -104,7 +110,7 @@ const calendarToolDefinitions = [
     function: {
       name: "book_appointment",
       description:
-        "Book an appointment at a specific date and time. Requires the caller's name and phone number.",
+        "Book an appointment at a specific date and time. Requires the caller's name and phone number. If the business has service types, include the service_type_id.",
       parameters: {
         type: "object",
         properties: {
@@ -129,6 +135,11 @@ const calendarToolDefinitions = [
             type: "string",
             description:
               "Any additional notes about the appointment (optional)",
+          },
+          service_type_id: {
+            type: "string",
+            description:
+              "The ID of the service/appointment type being booked. Include this when the business has service types configured.",
           },
         },
         required: ["datetime", "name", "phone"],
@@ -159,6 +170,24 @@ const calendarToolDefinitions = [
     },
   },
 ];
+
+/**
+ * OpenAI-compatible tool definition for listing service/appointment types.
+ * Passed to the LLM when the org has service types configured.
+ */
+const listServiceTypesToolDefinition = {
+  type: "function",
+  function: {
+    name: "list_service_types",
+    description:
+      "List the available appointment/service types offered by the business. Use this when the caller asks what types of appointments are available.",
+    parameters: {
+      type: "object",
+      properties: {},
+      required: [],
+    },
+  },
+};
 
 /**
  * OpenAI-compatible tool definition for call transfer.
@@ -227,6 +256,7 @@ async function executeToolCall(functionName, args, context) {
     if (context.testMode && (functionName === "book_appointment" || functionName === "cancel_appointment")) {
       return simulateCalendarWrite(functionName, args);
     }
+    // list_service_types is always a read — no simulation needed
     return executeCalendarCall(functionName, args, context);
   }
 
@@ -508,6 +538,7 @@ function simulateCallbackWrite(args) {
 
 module.exports = {
   calendarToolDefinitions,
+  listServiceTypesToolDefinition,
   transferToolDefinition,
   callbackToolDefinition,
   executeToolCall,

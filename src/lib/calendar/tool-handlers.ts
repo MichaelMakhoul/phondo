@@ -12,6 +12,10 @@ import {
   isValidPhoneNumber,
   isValidEmail,
 } from "@/lib/security/validation";
+import {
+  getActiveServiceTypes,
+  getServiceType,
+} from "@/lib/service-types";
 
 interface ToolResult {
   success: boolean;
@@ -477,9 +481,10 @@ export async function handleBookAppointment(
     phone?: string;
     email?: string;
     notes?: string;
+    service_type_id?: string;
   }
 ): Promise<ToolResult> {
-  const { datetime, name, phone, email, notes } = args;
+  const { datetime, name, phone, email, notes, service_type_id } = args;
 
   if (!datetime) {
     return {
@@ -524,7 +529,34 @@ export async function handleBookAppointment(
   const sanitizedName = sanitizeString(name, 100);
   const sanitizedNotes = notes ? sanitizeString(notes, 500) : undefined;
 
-  // ── Try Cal.com first ─────────────────────────────────────────────────
+  // ── Resolve service type duration if provided ─────────────────────────
+  let serviceTypeDuration: number | undefined;
+  if (service_type_id) {
+    const st = await getServiceType(service_type_id);
+    if (st) {
+      serviceTypeDuration = st.duration_minutes;
+    }
+  }
+
+  // ── Check if org has service types — if so, use built-in first ────────
+  const serviceTypes = service_type_id ? [] : await getActiveServiceTypes(organizationId);
+  const useBuiltIn = service_type_id || serviceTypes.length > 0;
+
+  if (useBuiltIn) {
+    console.log("Using built-in booking (service types configured):", { organizationId, service_type_id });
+    return bookInternal(
+      organizationId,
+      datetime,
+      sanitizedName,
+      phone,
+      email,
+      sanitizedNotes,
+      serviceTypeDuration,
+      service_type_id
+    );
+  }
+
+  // ── No service types — try Cal.com ────────────────────────────────────
   const calClient = await getCalComClient(organizationId);
 
   if (calClient) {
@@ -539,7 +571,7 @@ export async function handleBookAppointment(
     );
   }
 
-  // ── Built-in booking (no Cal.com configured) ──────────────────────────
+  // ── Fallback: built-in booking (no Cal.com, no service types) ─────────
   console.log("Using built-in booking (no Cal.com client):", { organizationId });
   return bookInternal(
     organizationId,
@@ -553,9 +585,28 @@ export async function handleBookAppointment(
 
 export async function handleCheckAvailability(
   organizationId: string,
-  args: { date?: string }
+  args: { date?: string; service_type_id?: string }
 ): Promise<ToolResult> {
-  const { date } = args;
+  const { date, service_type_id } = args;
+
+  // ── Resolve service type duration if provided ─────────────────────────
+  let serviceTypeDuration: number | undefined;
+  if (service_type_id) {
+    const st = await getServiceType(service_type_id);
+    if (st) {
+      serviceTypeDuration = st.duration_minutes;
+    }
+  } else {
+    // No service_type_id — check if org has service types configured
+    const serviceTypes = await getActiveServiceTypes(organizationId);
+    if (serviceTypes.length > 0) {
+      const list = serviceTypes.map(st => `- ${st.name} (${st.duration_minutes} min)`).join("\n");
+      return {
+        success: true,
+        message: `Before I check availability, what type of appointment would you like to book?\n\nAvailable appointment types:\n${list}\n\nPlease ask the caller which type they'd like to book.`,
+      };
+    }
+  }
 
   if (!date) {
     return {
@@ -571,14 +622,39 @@ export async function handleCheckAvailability(
     };
   }
 
-  // ── Try Cal.com first ─────────────────────────────────────────────────
+  // ── Check if org has service types — if so, use built-in first ────────
+  const serviceTypes = service_type_id ? [] : await getActiveServiceTypes(organizationId);
+  const useBuiltIn = service_type_id || serviceTypes.length > 0;
+
+  if (useBuiltIn) {
+    console.log("Using built-in availability (service types configured):", { organizationId, service_type_id });
+    try {
+      const schedule = await getOrgSchedule(organizationId);
+      const timezone = schedule?.timezone || "America/New_York";
+      const durationMinutes = serviceTypeDuration ?? schedule?.defaultAppointmentDuration ?? DEFAULT_SLOT_DURATION_MINUTES;
+      const slots = await getBuiltInAvailability(organizationId, date, schedule, durationMinutes);
+      return {
+        success: true,
+        message: formatBuiltInAvailabilityForVoice(date, slots, timezone),
+      };
+    } catch (error: any) {
+      console.error("Built-in availability error:", { organizationId, date, message: error.message, stack: error.stack });
+      return {
+        success: false,
+        message:
+          "I'm having trouble checking the calendar right now. Would you like me to take your information instead?",
+      };
+    }
+  }
+
+  // ── No service types — try Cal.com ────────────────────────────────────
   const calClient = await getCalComClient(organizationId);
 
   if (calClient) {
     return checkAvailabilityViaCal(calClient, organizationId, date);
   }
 
-  // ── Built-in availability (no Cal.com configured) ─────────────────────
+  // ── Fallback: built-in availability (no Cal.com, no service types) ────
   console.log("Using built-in availability (no Cal.com client):", { organizationId });
   try {
     const schedule = await getOrgSchedule(organizationId);
@@ -912,7 +988,9 @@ async function bookInternal(
   sanitizedName: string,
   phone: string,
   email: string | undefined,
-  sanitizedNotes: string | undefined
+  sanitizedNotes: string | undefined,
+  durationOverride?: number,
+  serviceTypeId?: string
 ): Promise<ToolResult> {
   const supabase = createAdminClient();
 
@@ -930,7 +1008,7 @@ async function bookInternal(
   }
 
   const internalTimezone = schedule?.timezone || "America/New_York";
-  const durationMinutes = schedule?.defaultAppointmentDuration ?? DEFAULT_SLOT_DURATION_MINUTES;
+  const durationMinutes = durationOverride ?? schedule?.defaultAppointmentDuration ?? DEFAULT_SLOT_DURATION_MINUTES;
   // Ensure naive datetimes are interpreted in the org's timezone, not UTC
   const tzAwareDatetime = ensureTimezoneOffset(datetime, internalTimezone);
 
@@ -1000,6 +1078,7 @@ async function bookInternal(
       status: "confirmed",
       notes: sanitizedNotes,
       metadata: { source: "ai_receptionist" },
+      ...(serviceTypeId && { service_type_id: serviceTypeId }),
     })
     .select("id")
     .single();

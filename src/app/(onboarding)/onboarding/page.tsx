@@ -307,6 +307,18 @@ export default function OnboardingPage() {
         }
 
         const assistant = await assistantResponse.json();
+
+        // Seed industry-default service types (non-fatal)
+        try {
+          await fetch("/api/v1/service-types/seed", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ organizationId: orgId, industry: data.industry }),
+          });
+        } catch (seedErr) {
+          console.warn("Service type seeding failed (non-fatal):", seedErr);
+        }
+
         updateData({ createdOrgId: orgId, createdAssistantId: assistant.id });
       } catch (error: any) {
         toast({
