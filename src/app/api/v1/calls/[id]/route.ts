@@ -11,7 +11,7 @@ interface Membership {
 const updateCallSchema = z.object({
   callerName: z.string().max(200).optional(),
   summary: z.string().max(2000).optional(),
-  collectedData: z.record(z.unknown()).optional(),
+  collectedData: z.record(z.string().max(500)).optional(),
 });
 
 // GET /api/v1/calls/[id] - Get a single call

@@ -22,6 +22,15 @@ const { detectExpectedInput } = require("./lib/input-type-detector");
 const { requiresRecordingDisclosureHybrid, getRecordingDisclosureText } = require("./lib/recording-consent");
 const { getSupabase } = require("./lib/supabase");
 const { saveForTransfer, getTransfer, consumeTransfer, finishTransferredCall } = require("./lib/pending-transfers");
+
+// Cached Twilio REST client for recording and transfer operations
+let _twilioRestClient = null;
+function getTwilioRestClient() {
+  if (!_twilioRestClient) {
+    _twilioRestClient = require("twilio")(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+  }
+  return _twilioRestClient;
+}
 const { lookupPhoneNumber, isAiEnabled, getAnswerMode, getPhoneNumberContext } = require("./lib/answer-mode");
 const { detectAndRedact, redactObject } = require("./lib/pii-detector");
 
@@ -516,6 +525,12 @@ app.post("/twiml/ring-first-fallback", async (req, res) => {
 // Recording status callback — Twilio POSTs here after <Connect record="record-from-answer"> finishes.
 // Saves the recording URL to the call record for dashboard playback.
 app.post("/twiml/recording-status", async (req, res) => {
+  // Validate Twilio signature to prevent spoofed recording URLs
+  if (!validateTwilioSignature(req)) {
+    console.warn("[Recording] Rejected recording-status callback — invalid Twilio signature");
+    return res.status(403).send("Forbidden");
+  }
+
   try {
     const { CallSid, RecordingUrl, RecordingSid, RecordingDuration } = req.body;
 
@@ -524,6 +539,12 @@ app.post("/twiml/recording-status", async (req, res) => {
         hasCallSid: !!CallSid, hasRecordingUrl: !!RecordingUrl,
       });
       return res.status(400).send("Missing required fields");
+    }
+
+    // Validate recording URL is from Twilio (defense in depth)
+    if (!RecordingUrl.startsWith("https://api.twilio.com/")) {
+      console.warn("[Recording] Rejected non-Twilio recording URL:", RecordingUrl.slice(0, 100));
+      return res.status(400).send("Invalid recording URL");
     }
 
     // Twilio recording URLs need .mp3 appended for direct playback
@@ -902,8 +923,7 @@ wss.on("connection", (twilioWs) => {
           const recordingConsentMode = context.organization.recordingConsentMode || "auto";
           if (recordingConsentMode !== "never" && callSid) {
             try {
-              const twilio = require("twilio")(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
-              const recording = await twilio.calls(callSid).recordings.create({
+              const recording = await getTwilioRestClient().calls(callSid).recordings.create({
                 recordingStatusCallback: `${PUBLIC_URL}/twiml/recording-status`,
                 recordingStatusCallbackMethod: "POST",
                 recordingChannels: "dual",
@@ -936,8 +956,10 @@ wss.on("connection", (twilioWs) => {
             }
           );
           // Append caller context so the AI knows the caller's phone number
+          // If PII redaction is enabled, mask the phone in the prompt
+          const phoneForPrompt = session.piiRedactionEnabled ? maskPhone(callerPhone) : callerPhone;
           const callerContext = callerPhone
-            ? `\n\nCALLER CONTEXT:\nThe caller's phone number is ${callerPhone}. If they say "use the number I'm calling from" or "it's the same number", use this number: ${callerPhone}. Do NOT ask them to repeat it.`
+            ? `\n\nCALLER CONTEXT:\nThe caller's phone number is ${phoneForPrompt}. If they say "use the number I'm calling from" or "it's the same number", use this number. Do NOT ask them to repeat it.`
             : "";
           session.setSystemPrompt(systemPrompt + callerContext);
 

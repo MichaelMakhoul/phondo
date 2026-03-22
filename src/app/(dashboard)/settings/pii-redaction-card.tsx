@@ -79,7 +79,7 @@ export function PiiRedactionCard({ assistantId, initialEnabled, industry }: PiiR
           <div className="mt-3 flex items-start gap-2 rounded-md border border-yellow-500/30 bg-yellow-500/10 p-3">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-yellow-600 dark:text-yellow-400" />
             <p className="text-sm text-yellow-800 dark:text-yellow-200">
-              <span className="font-medium">Recommended:</span> Enable PII redaction for {industry === "legal" ? "legal" : "medical"} practices to protect {industry === "legal" ? "client" : "patient"} confidentiality.
+              <span className="font-medium">Recommended:</span> Enable PII redaction for {industry === "legal" ? "legal" : industry === "dental" ? "dental" : "medical"} practices to protect {industry === "legal" ? "client" : "patient"} confidentiality.
             </p>
           </div>
         )}

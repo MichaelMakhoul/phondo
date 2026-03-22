@@ -5,12 +5,6 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { Plus, Bot, Phone, ArrowUpRight } from "lucide-react";
 import { AssistantCardActions } from "./assistant-card-actions";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { checkResourceLimit } from "@/lib/stripe/billing-service";
 import { EmptyState } from "@/components/ui/empty-state";
 import { AssistantsScene } from "@/components/ui/empty-state-scenes";
