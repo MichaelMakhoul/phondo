@@ -50,6 +50,9 @@ const FEATURE_ICONS: Record<string, React.ComponentType<any>> = {
   crm: Database,
   everything: Check,
   transcript: FileText,
+  staff: Users,
+  solo: Users,
+  practitioner: Users,
 };
 
 function getIconForFeature(feature: string) {

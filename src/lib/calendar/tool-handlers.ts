@@ -235,12 +235,100 @@ export function validateBookingTime(
   return null;
 }
 
+// ─── Practitioner helpers ────────────────────────────────────────────────────
+
+interface PractitionerInfo {
+  id: string;
+  name: string;
+}
+
+/**
+ * Get active practitioners assigned to a service type.
+ * Returns empty array if no practitioners are configured for this service.
+ */
+async function getPractitionersForService(
+  organizationId: string,
+  serviceTypeId: string
+): Promise<PractitionerInfo[]> {
+  const supabase = createAdminClient();
+  const { data, error } = await (supabase as any)
+    .from("practitioner_services")
+    .select("practitioners ( id, name )")
+    .eq("service_type_id", serviceTypeId)
+    .eq("practitioners.organization_id", organizationId)
+    .eq("practitioners.is_active", true);
+
+  if (error) {
+    console.error("Failed to fetch practitioners for service:", { serviceTypeId, organizationId, error });
+    return [];
+  }
+
+  // Filter out rows where the join didn't match (practitioners is null)
+  return (data || [])
+    .filter((row: any) => row.practitioners)
+    .map((row: any) => ({
+      id: row.practitioners.id,
+      name: row.practitioners.name,
+    }));
+}
+
+/**
+ * Pick the practitioner with the fewest upcoming appointments (round-robin).
+ * Falls back to first practitioner if counts are equal.
+ */
+async function pickPractitionerRoundRobin(
+  organizationId: string,
+  practitionerIds: string[]
+): Promise<string> {
+  if (practitionerIds.length === 1) return practitionerIds[0];
+
+  const supabase = createAdminClient();
+  const now = new Date().toISOString();
+
+  // Count upcoming appointments per practitioner
+  const counts: Record<string, number> = {};
+  for (const pId of practitionerIds) {
+    counts[pId] = 0;
+  }
+
+  const { data: upcoming, error } = await (supabase as any)
+    .from("appointments")
+    .select("practitioner_id")
+    .eq("organization_id", organizationId)
+    .in("practitioner_id", practitionerIds)
+    .gte("start_time", now)
+    .in("status", ["confirmed", "pending"]);
+
+  if (!error && upcoming) {
+    for (const appt of upcoming) {
+      if (appt.practitioner_id && counts[appt.practitioner_id] !== undefined) {
+        counts[appt.practitioner_id]++;
+      }
+    }
+  }
+
+  // Return the practitioner with fewest upcoming appointments
+  let bestId = practitionerIds[0];
+  let bestCount = counts[bestId] ?? 0;
+  for (const pId of practitionerIds) {
+    if ((counts[pId] ?? 0) < bestCount) {
+      bestId = pId;
+      bestCount = counts[pId] ?? 0;
+    }
+  }
+
+  return bestId;
+}
+
 // ─── Built-in availability ──────────────────────────────────────────────────
 
 /**
  * Compute available time slots for a given date using the org's business
  * hours minus any existing (non-cancelled) appointments. Slot duration
  * defaults to 30 minutes but can be overridden via durationMinutes.
+ *
+ * When practitioners are assigned to the service, a slot is only removed
+ * if ALL practitioners for that service are booked at that time.
  *
  * @returns ISO-like datetime strings in the org's local time (no TZ offset),
  *          e.g., "2025-03-15T09:00:00". Throws on DB errors.
@@ -249,7 +337,8 @@ async function getBuiltInAvailability(
   organizationId: string,
   date: string,
   schedule?: OrgSchedule | null,
-  durationMinutes: number = DEFAULT_SLOT_DURATION_MINUTES
+  durationMinutes: number = DEFAULT_SLOT_DURATION_MINUTES,
+  serviceTypeId?: string
 ): Promise<string[]> {
   const resolvedSchedule = schedule ?? (await getOrgSchedule(organizationId));
   if (!resolvedSchedule) return [];
@@ -261,6 +350,12 @@ async function getBuiltInAvailability(
 
   if (slots.length === 0) return [];
 
+  // Check if this service has assigned practitioners
+  let practitioners: PractitionerInfo[] = [];
+  if (serviceTypeId) {
+    practitioners = await getPractitionersForService(organizationId, serviceTypeId);
+  }
+
   // Get existing appointments for this date.
   // Appointments are stored in UTC — convert date boundaries to UTC using org timezone.
   const supabase = createAdminClient();
@@ -270,6 +365,62 @@ async function getBuiltInAvailability(
   const dayStartUtc = ensureTimezoneOffset(dayStartLocal, timezone);
   const dayEndUtc = ensureTimezoneOffset(dayEndLocal, timezone);
 
+  // If practitioners are configured, fetch per-practitioner appointments
+  if (practitioners.length > 0) {
+    const practitionerIds = practitioners.map((p) => p.id);
+
+    const { data: existing, error: apptError } = await (supabase as any)
+      .from("appointments")
+      .select("start_time, duration_minutes, end_time, practitioner_id")
+      .eq("organization_id", organizationId)
+      .gte("start_time", dayStartUtc)
+      .lte("start_time", dayEndUtc)
+      .in("status", ["confirmed", "pending"])
+      .in("practitioner_id", practitionerIds);
+
+    if (apptError) {
+      console.error("Failed to fetch practitioner appointments:", { organizationId, date, error: apptError });
+      throw new Error(`Failed to fetch appointments: ${apptError.message}`);
+    }
+
+    const appointments = (existing || []) as {
+      start_time: string;
+      duration_minutes: number | null;
+      end_time: string | null;
+      practitioner_id: string | null;
+    }[];
+
+    // A slot is available if at least one practitioner is free at that time
+    return slots.filter((slotIso) => {
+      const [, timeStr] = slotIso.split("T");
+      const [slotH, slotM] = timeStr.split(":").map(Number);
+      const slotStartMin = slotH * 60 + slotM;
+      const slotEndMin = slotStartMin + durationMinutes;
+
+      // For each practitioner, check if they have a conflicting appointment
+      const busyPractitioners = new Set<string>();
+      for (const appt of appointments) {
+        const { h: aH, m: aM } = getTimeInTimezone(new Date(appt.start_time), timezone);
+        const apptStartMin = aH * 60 + aM;
+        let apptEndMin: number;
+        if (appt.end_time) {
+          const { h: eH, m: eM } = getTimeInTimezone(new Date(appt.end_time), timezone);
+          apptEndMin = eH * 60 + eM;
+        } else {
+          apptEndMin = apptStartMin + (appt.duration_minutes || DEFAULT_SLOT_DURATION_MINUTES);
+        }
+
+        if (slotStartMin < apptEndMin && slotEndMin > apptStartMin && appt.practitioner_id) {
+          busyPractitioners.add(appt.practitioner_id);
+        }
+      }
+
+      // Slot available if not all practitioners are busy
+      return busyPractitioners.size < practitionerIds.length;
+    });
+  }
+
+  // No practitioners — original behavior: check all org appointments
   const { data: existing, error: apptError } = await (supabase as any)
     .from("appointments")
     .select("start_time, duration_minutes, end_time")
@@ -653,7 +804,7 @@ export async function handleCheckAvailability(
       const schedule = await getOrgSchedule(organizationId);
       const timezone = schedule?.timezone || "America/New_York";
       const durationMinutes = serviceTypeDuration ?? schedule?.defaultAppointmentDuration ?? DEFAULT_SLOT_DURATION_MINUTES;
-      const slots = await getBuiltInAvailability(organizationId, date, schedule, durationMinutes);
+      const slots = await getBuiltInAvailability(organizationId, date, schedule, durationMinutes, service_type_id);
       return {
         success: true,
         message: formatBuiltInAvailabilityForVoice(date, slots, timezone),
@@ -1080,7 +1231,20 @@ async function bookInternal(
     }
   }
 
-  // 2. Insert appointment — the DB exclusion constraint (no_overlapping_appointments)
+  // 2. Auto-assign practitioner if service has practitioners configured
+  let assignedPractitionerId: string | undefined;
+  let assignedPractitionerName: string | undefined;
+
+  if (serviceTypeId) {
+    const practitioners = await getPractitionersForService(organizationId, serviceTypeId);
+    if (practitioners.length > 0) {
+      const practitionerIds = practitioners.map((p) => p.id);
+      assignedPractitionerId = await pickPractitionerRoundRobin(organizationId, practitionerIds);
+      assignedPractitionerName = practitioners.find((p) => p.id === assignedPractitionerId)?.name;
+    }
+  }
+
+  // 3. Insert appointment — the DB exclusion constraint (no_overlapping_appointments)
   //    prevents double-bookings atomically, so we rely on INSERT failure for conflicts.
   const bookingEmail =
     email || `booking-${crypto.randomUUID()}@noreply.phondo.ai`;
@@ -1100,6 +1264,7 @@ async function bookInternal(
       notes: sanitizedNotes,
       metadata: { source: "ai_receptionist" },
       ...(serviceTypeId && { service_type_id: serviceTypeId }),
+      ...(assignedPractitionerId && { practitioner_id: assignedPractitionerId }),
     })
     .select("id")
     .single();
@@ -1121,18 +1286,24 @@ async function bookInternal(
     };
   }
 
-  // 3. Send notification
+  // 4. Send notification
   const timezone = schedule?.timezone || "America/New_York";
   sendNotification(organizationId, phone, sanitizedName, startDate, timezone);
   const { dateStr, timeStr } = formatDateTimeForVoice(startDate, timezone);
 
+  const practitionerNote = assignedPractitionerName
+    ? ` with ${assignedPractitionerName}`
+    : "";
+
   return {
     success: true,
-    message: `I've booked your appointment for ${dateStr} at ${timeStr}. Is there anything else I can help you with?`,
+    message: `I've booked your appointment for ${dateStr} at ${timeStr}${practitionerNote}. Is there anything else I can help you with?`,
     data: {
       appointmentId: appointment.id,
       startTime: startDate.toISOString(),
       endTime: endDate.toISOString(),
+      ...(assignedPractitionerId && { practitionerId: assignedPractitionerId }),
+      ...(assignedPractitionerName && { practitionerName: assignedPractitionerName }),
     },
   };
 }
