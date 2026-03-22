@@ -66,9 +66,9 @@ export const PLANS = {
       "3 AI assistants",
       "2 phone numbers",
       "SMS notifications",
-      "Webhook integrations (Zapier/Make)",
-      "Analytics dashboard",
+      "Advanced analytics dashboard",
       "Up to 5 staff members",
+      "Call recording",
     ],
   },
   business: {
@@ -94,10 +94,9 @@ export const PLANS = {
       "1,000 calls/month",
       "10 AI assistants",
       "5 phone numbers",
-      "Up to 3 CRM integrations",
       "Up to 15 staff members",
       "Everything in Professional",
-      "Priority support",
+      "Dedicated onboarding support",
     ],
   },
   // Agency tiers (Phase 2 — not shown in UI, no Stripe products created yet)
