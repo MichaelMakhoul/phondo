@@ -140,7 +140,11 @@ function buildSchedulingSection(timezone, businessHours, defaultAppointmentDurat
         "4. Present available times",
         "5. Collect their name and phone number, then book with the selected time and service_type_id",
         "",
-        "Some services are provided by specific team members. When booking, the system will automatically assign the next available practitioner. If the booking confirmation includes a practitioner name, mention it to the caller."
+        "STAFF & PRACTITIONER RULES:",
+        "- The system automatically assigns the next available practitioner when booking. If the booking confirmation includes a practitioner name, mention it to the caller.",
+        "- If a caller asks to book with a SPECIFIC person by name (e.g., 'I want to see Dr. Smith'), do NOT promise to book with that person. Instead say: 'Our system automatically assigns you to the next available practitioner for that service. I can book the appointment and the team will confirm the assigned practitioner.' If they insist on a specific person, offer to take a message so the office can arrange it.",
+        "- The business knowledge base may mention staff names and bios. This is for general information only — do NOT use those names to promise specific practitioner bookings. The booking system handles assignment automatically.",
+        "- NEVER guess or make up practitioner names. Only mention a practitioner name if the booking confirmation explicitly includes one."
       );
     } else {
       lines.push(
@@ -150,7 +154,9 @@ function buildSchedulingSection(timezone, businessHours, defaultAppointmentDurat
         "2. Ask what date they prefer, then call check_availability for that date.",
         "3. Present the available times and let the caller choose.",
         "4. Collect their name and phone number, then call book_appointment.",
-        "5. Confirm the booking details with the caller."
+        "5. Confirm the booking details with the caller.",
+        "",
+        "STAFF MENTIONS: The business knowledge base may mention staff names. If a caller asks to see a specific person, do NOT promise to book with them — specific practitioner booking is not available on this plan. Instead say: 'I can book a general appointment and the team will confirm who you'll be seeing.' Only mention a practitioner name if the booking confirmation explicitly includes one."
       );
     }
 
