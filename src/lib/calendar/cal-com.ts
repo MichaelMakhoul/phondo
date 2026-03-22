@@ -468,8 +468,12 @@ export function formatAvailabilityForVoice(availability: CalComAvailability[], t
   if (timezone) {
     try {
       Intl.DateTimeFormat(undefined, { timeZone: timezone });
-    } catch {
-      console.error(`[cal-com] Invalid timezone "${timezone}", falling back to UTC`);
+    } catch (err) {
+      if (err instanceof RangeError) {
+        console.error(`[cal-com] Invalid timezone "${timezone}", falling back to UTC`);
+      } else {
+        console.error(`[cal-com] Unexpected error validating timezone "${timezone}":`, err);
+      }
       validTz = undefined;
     }
   }

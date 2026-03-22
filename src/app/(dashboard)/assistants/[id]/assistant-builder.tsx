@@ -312,6 +312,7 @@ export function AssistantBuilder({
         description: "Assistant has been permanently deleted.",
       });
 
+      setDeleteDialogOpen(false);
       router.push("/assistants");
     } catch (error) {
       toast({
@@ -321,7 +322,6 @@ export function AssistantBuilder({
       });
     } finally {
       setIsDeleting(false);
-      setDeleteDialogOpen(false);
     }
   };
 

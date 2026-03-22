@@ -221,7 +221,7 @@ async function streamChatResponse(apiKey, messages, options) {
             const parts = textBuffer.split(SENTENCE_BREAK);
             const candidate = parts[0];
             // Don't split if the first chunk is very short — accumulate more text
-            if (candidate.length < 40 && parts.length > 1) {
+            if (candidate.length < 40 && parts.length > 1 && textBuffer.length < 120) {
               break; // Wait for more text to accumulate
             }
             const sentence = parts.shift();

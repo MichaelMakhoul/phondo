@@ -349,7 +349,8 @@ export function KnowledgeSettings({
       trackKnowledgeEntryDeleted();
       setDeleteTarget(null);
       toast({ title: "Deleted", description: "Source removed." });
-    } catch {
+    } catch (err) {
+      console.error("[KnowledgeBase] Delete failed:", err);
       toast({
         variant: "destructive",
         title: "Error",
