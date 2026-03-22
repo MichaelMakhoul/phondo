@@ -252,24 +252,21 @@ async function getPractitionersForService(
 ): Promise<PractitionerInfo[]> {
   const supabase = createAdminClient();
   const { data, error } = await (supabase as any)
-    .from("practitioner_services")
-    .select("practitioners ( id, name )")
-    .eq("service_type_id", serviceTypeId)
-    .eq("practitioners.organization_id", organizationId)
-    .eq("practitioners.is_active", true);
+    .from("practitioners")
+    .select("id, name, practitioner_services!inner(service_type_id)")
+    .eq("organization_id", organizationId)
+    .eq("is_active", true)
+    .eq("practitioner_services.service_type_id", serviceTypeId);
 
   if (error) {
     console.error("Failed to fetch practitioners for service:", { serviceTypeId, organizationId, error });
-    return [];
+    throw new Error(`Failed to fetch practitioners for service: ${error.message}`);
   }
 
-  // Filter out rows where the join didn't match (practitioners is null)
-  return (data || [])
-    .filter((row: any) => row.practitioners)
-    .map((row: any) => ({
-      id: row.practitioners.id,
-      name: row.practitioners.name,
-    }));
+  return (data || []).map((row: any) => ({
+    id: row.id,
+    name: row.name,
+  }));
 }
 
 /**
@@ -298,6 +295,10 @@ async function pickPractitionerRoundRobin(
     .in("practitioner_id", practitionerIds)
     .gte("start_time", now)
     .in("status", ["confirmed", "pending"]);
+
+  if (error) {
+    console.error("Failed to count upcoming appointments for round-robin:", { organizationId, practitionerIds, error });
+  }
 
   if (!error && upcoming) {
     for (const appt of upcoming) {

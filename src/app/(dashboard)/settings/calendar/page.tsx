@@ -1,7 +1,6 @@
 import { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
-import { createAdminClient } from "@/lib/supabase/admin";
 import { hasFeatureAccess } from "@/lib/stripe/billing-service";
 import { CalendarSettings } from "./calendar-settings";
 import { ServiceTypesCard } from "./service-types-card";
@@ -38,7 +37,6 @@ export default async function CalendarSettingsPage() {
   const orgId = membership.organization_id;
 
   // Fetch service types, practitioners, calendar integration, assistants, and feature access in parallel
-  const adminSupabase = createAdminClient();
   const [serviceTypesResult, practitionersResult, integrationResult, assistantsResult, hasPractitionersAccess] =
     await Promise.all([
       (supabase as any)
@@ -47,7 +45,7 @@ export default async function CalendarSettingsPage() {
         .eq("organization_id", orgId)
         .eq("is_active", true)
         .order("sort_order", { ascending: true }),
-      (adminSupabase as any)
+      (supabase as any)
         .from("practitioners")
         .select(`
           id, name, title, is_active, created_at, updated_at,

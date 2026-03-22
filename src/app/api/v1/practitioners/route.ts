@@ -13,6 +13,8 @@ const createSchema = z.object({
   serviceIds: z.array(z.string().uuid()).optional(),
 });
 
+// GET is intentionally ungated — the settings page needs to read practitioners
+// even to show the locked/upgrade card when the feature is not accessible.
 export async function GET() {
   try {
     const supabase = await createClient();
@@ -113,15 +115,19 @@ export async function POST(request: NextRequest) {
     const { PLANS } = await import("@/lib/stripe/client");
     const { getSubscriptionInfo } = await import("@/lib/stripe/billing-service");
     const sub = await getSubscriptionInfo(orgId);
-    if (sub) {
-      const planConfig = PLANS[sub.plan] as any;
-      const limit = planConfig?.practitionersLimit ?? 0;
-      if (limit !== -1 && (existingCount ?? 0) >= limit) {
-        return NextResponse.json(
-          { error: `Your plan allows up to ${limit} practitioners. Upgrade to add more.` },
-          { status: 403 }
-        );
-      }
+    if (!sub) {
+      return NextResponse.json(
+        { error: "No active subscription found. Please subscribe to add practitioners." },
+        { status: 403 }
+      );
+    }
+    const planConfig = PLANS[sub.plan] as any;
+    const limit = planConfig?.practitionersLimit ?? 0;
+    if (limit !== -1 && (existingCount ?? 0) >= limit) {
+      return NextResponse.json(
+        { error: `Your plan allows up to ${limit} practitioners. Upgrade to add more.` },
+        { status: 403 }
+      );
     }
 
     // Insert practitioner
@@ -137,25 +143,47 @@ export async function POST(request: NextRequest) {
 
     if (insertError) return NextResponse.json({ error: insertError.message }, { status: 500 });
 
-    // Insert service associations
+    // Validate and insert service associations
+    let serviceWarning: string | undefined;
     if (serviceIds && serviceIds.length > 0) {
-      const rows = serviceIds.map((sid) => ({
-        practitioner_id: practitioner.id,
-        service_type_id: sid,
-      }));
+      // Validate serviceIds belong to this org
+      const { data: validServices, error: validError } = await (supabase as any)
+        .from("service_types")
+        .select("id")
+        .eq("organization_id", orgId)
+        .in("id", serviceIds);
 
-      const { error: psError } = await (supabase as any)
-        .from("practitioner_services")
-        .insert(rows);
+      if (validError) {
+        console.error("[Practitioners] Failed to validate service IDs:", validError);
+        serviceWarning = "Practitioner created but service validation failed. Services were not linked.";
+      } else {
+        const validIds = new Set((validServices || []).map((s: any) => s.id));
+        const invalidIds = serviceIds.filter((sid) => !validIds.has(sid));
+        if (invalidIds.length > 0) {
+          serviceWarning = `Some service IDs do not belong to this organization and were skipped: ${invalidIds.join(", ")}`;
+        }
 
-      if (psError) {
-        console.error("[Practitioners] Failed to insert service associations:", psError);
-        // Non-fatal — practitioner was created, services just weren't linked
+        const idsToInsert = serviceIds.filter((sid) => validIds.has(sid));
+        if (idsToInsert.length > 0) {
+          const rows = idsToInsert.map((sid) => ({
+            practitioner_id: practitioner.id,
+            service_type_id: sid,
+          }));
+
+          const { error: psError } = await (supabase as any)
+            .from("practitioner_services")
+            .insert(rows);
+
+          if (psError) {
+            console.error("[Practitioners] Failed to insert service associations:", psError);
+            serviceWarning = "Practitioner created but failed to link services. You can add them later by editing the practitioner.";
+          }
+        }
       }
     }
 
     // Re-fetch with services to return consistent shape
-    const { data: full } = await (supabase as any)
+    const { data: full, error: refetchError } = await (supabase as any)
       .from("practitioners")
       .select(`
         id, name, title, is_active, created_at, updated_at,
@@ -167,7 +195,12 @@ export async function POST(request: NextRequest) {
       .eq("id", practitioner.id)
       .single();
 
-    const result = {
+    if (refetchError || !full) {
+      console.error("[Practitioners] Failed to re-fetch after create:", refetchError);
+      return NextResponse.json({ error: "Practitioner created but failed to re-fetch" }, { status: 500 });
+    }
+
+    const result: Record<string, unknown> = {
       id: full.id,
       name: full.name,
       title: full.title,
@@ -180,6 +213,10 @@ export async function POST(request: NextRequest) {
         durationMinutes: ps.service_types?.duration_minutes ?? null,
       })),
     };
+
+    if (serviceWarning) {
+      result.warning = serviceWarning;
+    }
 
     return NextResponse.json(result, { status: 201 });
   } catch (err) {

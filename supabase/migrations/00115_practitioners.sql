@@ -59,9 +59,30 @@ CREATE POLICY "ps_delete" ON practitioner_services FOR DELETE
     WHERE organization_id IN (SELECT get_user_organizations(auth.uid()))
   ));
 
+CREATE POLICY "ps_update" ON practitioner_services FOR UPDATE
+  USING (auth.role() = 'service_role')
+  WITH CHECK (auth.role() = 'service_role');
+
 CREATE POLICY "ps_service_role" ON practitioner_services FOR ALL
   USING (auth.role() = 'service_role')
   WITH CHECK (auth.role() = 'service_role');
 
 -- Add practitioner_id to appointments
 ALTER TABLE appointments ADD COLUMN IF NOT EXISTS practitioner_id UUID REFERENCES practitioners(id) ON DELETE SET NULL;
+
+-- Prevent overlapping appointments for the same practitioner
+CREATE EXTENSION IF NOT EXISTS btree_gist;
+
+CREATE OR REPLACE FUNCTION appointment_end(start_time TIMESTAMPTZ, end_time TIMESTAMPTZ, duration_minutes INTEGER)
+RETURNS TIMESTAMPTZ
+LANGUAGE sql IMMUTABLE AS $$
+  SELECT COALESCE(end_time, start_time + (duration_minutes * interval '1 minute'));
+$$;
+
+ALTER TABLE appointments
+  ADD CONSTRAINT no_overlapping_practitioner_appointments
+  EXCLUDE USING gist (
+    practitioner_id WITH =,
+    tstzrange(start_time, appointment_end(start_time, end_time, duration_minutes)) WITH &&
+  )
+  WHERE (status IN ('confirmed', 'pending') AND practitioner_id IS NOT NULL);

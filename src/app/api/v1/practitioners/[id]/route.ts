@@ -15,9 +15,14 @@ const updateSchema = z.object({
   serviceIds: z.array(z.string().uuid()).optional(),
 });
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params;
+    if (!UUID_RE.test(id)) {
+      return NextResponse.json({ error: "Invalid practitioner ID" }, { status: 400 });
+    }
     const supabase = await createClient();
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -64,6 +69,26 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
     // Update service associations if provided
     if (parsed.data.serviceIds !== undefined) {
+      // Validate serviceIds belong to this org
+      if (parsed.data.serviceIds.length > 0) {
+        const { data: validServices, error: validError } = await (supabase as any)
+          .from("service_types")
+          .select("id")
+          .eq("organization_id", orgId)
+          .in("id", parsed.data.serviceIds);
+
+        if (validError) {
+          console.error("[Practitioners] Failed to validate service IDs:", validError);
+          return NextResponse.json({ error: "Failed to validate service IDs" }, { status: 500 });
+        }
+
+        const validIds = new Set((validServices || []).map((s: any) => s.id));
+        const invalidIds = parsed.data.serviceIds.filter((sid) => !validIds.has(sid));
+        if (invalidIds.length > 0) {
+          return NextResponse.json({ error: `Service IDs do not belong to this organization: ${invalidIds.join(", ")}` }, { status: 400 });
+        }
+      }
+
       // Delete existing associations
       const { error: deleteError } = await (supabase as any)
         .from("practitioner_services")
@@ -72,6 +97,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
       if (deleteError) {
         console.error("[Practitioners] Failed to delete service associations:", deleteError);
+        return NextResponse.json({ error: "Failed to update service associations" }, { status: 500 });
       }
 
       // Insert new associations
@@ -87,12 +113,13 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
         if (insertError) {
           console.error("[Practitioners] Failed to insert service associations:", insertError);
+          return NextResponse.json({ error: "Failed to update service associations" }, { status: 500 });
         }
       }
     }
 
     // Re-fetch with services
-    const { data: full } = await (supabase as any)
+    const { data: full, error: refetchError } = await (supabase as any)
       .from("practitioners")
       .select(`
         id, name, title, is_active, created_at, updated_at,
@@ -103,6 +130,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       `)
       .eq("id", id)
       .single();
+
+    if (refetchError || !full) {
+      console.error("[Practitioners] Failed to re-fetch after update:", refetchError);
+      return NextResponse.json({ error: "Practitioner updated but failed to re-fetch" }, { status: 500 });
+    }
 
     const result = {
       id: full.id,
@@ -128,6 +160,9 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params;
+    if (!UUID_RE.test(id)) {
+      return NextResponse.json({ error: "Invalid practitioner ID" }, { status: 400 });
+    }
     const supabase = await createClient();
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -138,6 +173,15 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
       .eq("user_id", user.id)
       .single() as { data: Membership | null };
     if (!membership) return NextResponse.json({ error: "No organization" }, { status: 404 });
+
+    // Feature gate
+    const hasAccess = await hasFeatureAccess(membership.organization_id, "practitioners");
+    if (!hasAccess) {
+      return NextResponse.json(
+        { error: "Staff management requires a Professional or higher plan" },
+        { status: 403 }
+      );
+    }
 
     // Soft delete: set is_active = false (preserves history for appointment references)
     const { data: updated, error } = await (supabase as any)
