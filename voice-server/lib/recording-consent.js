@@ -98,10 +98,14 @@ function requiresRecordingDisclosureHybrid(country, orgState, consentMode, calle
  * @param {string|null|undefined} customDisclosure - Custom disclosure text from assistant settings
  * @returns {string}
  */
-function getRecordingDisclosureText(country, customDisclosure) {
+function getRecordingDisclosureText(country, customDisclosure, businessName) {
   // Validate custom disclosure: max 500 chars, must be a string
   if (customDisclosure && typeof customDisclosure === "string" && customDisclosure.trim()) {
-    const trimmed = customDisclosure.trim().slice(0, 500);
+    let trimmed = customDisclosure.trim().slice(0, 500);
+    // Replace {business_name} placeholder with actual business name
+    if (businessName) {
+      trimmed = trimmed.replace(/{business_name}/g, businessName);
+    }
     return trimmed;
   }
   if (country === "AU") {

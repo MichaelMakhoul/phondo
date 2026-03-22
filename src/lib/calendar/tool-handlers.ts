@@ -334,13 +334,14 @@ function formatBuiltInAvailabilityForVoice(
 
   const slotsToShow = slots.slice(0, 5);
   const timeStrings = slotsToShow.map((iso) => {
-    const t = new Date(iso);
-    return t.toLocaleTimeString("en-US", {
-      hour: "numeric",
-      minute: "2-digit",
-      hour12: true,
-      timeZone: timezone,
-    });
+    // Slots are in local business time (e.g., "2026-03-23T08:00:00").
+    // Parse hours/minutes directly to avoid UTC misinterpretation.
+    const timePart = iso.split("T")[1];
+    const [h, m] = timePart.split(":").map(Number);
+    const hour12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
+    const ampm = h < 12 ? "AM" : "PM";
+    const minStr = m === 0 ? "" : `:${String(m).padStart(2, "0")}`;
+    return `${hour12}${minStr} ${ampm}`;
   });
 
   const more = slots.length > 5 ? ` and ${slots.length - 5} more` : "";

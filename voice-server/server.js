@@ -1032,7 +1032,8 @@ wss.on("connection", (twilioWs) => {
           if (consentResult.required) {
             const disclosureText = getRecordingDisclosureText(
               context.organization.country,
-              context.assistant.settings?.recordingDisclosure
+              context.assistant.settings?.recordingDisclosure,
+              context.organization.name
             );
             try {
               await sendTTS(session, twilioWs, disclosureText);
@@ -1654,7 +1655,8 @@ testWss.on("connection", (ws, req) => {
       if (testConsentResult.required) {
         const disclosureText = getRecordingDisclosureText(
           context.organization.country,
-          context.assistant.settings?.recordingDisclosure
+          context.assistant.settings?.recordingDisclosure,
+          context.organization.name
         );
         try {
           const disclosureAudio = await synthesizeSpeech(DEEPGRAM_API_KEY, disclosureText, {
