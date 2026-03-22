@@ -105,7 +105,10 @@ function buildSchedulingSection(timezone, businessHours, defaultAppointmentDurat
     lines.push(`Standard appointment duration is ${defaultAppointmentDuration} minutes.`);
   }
 
-  if (calendarEnabled) {
+  // Service types imply scheduling capability even without Cal.com or business hours
+  const hasScheduling = calendarEnabled || (serviceTypes && serviceTypes.length > 0);
+
+  if (hasScheduling) {
     lines.push(
       "SCHEDULING TOOLS:",
       "You have access to the following scheduling functions. Use them to help callers with appointments:",

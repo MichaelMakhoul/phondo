@@ -1130,7 +1130,9 @@ wss.on("connection", (twilioWs) => {
  */
 function buildLLMOptions(session, { includeTransfer = false } = {}) {
   const tools = [];
-  if (session.calendarEnabled) tools.push(...calendarToolDefinitions);
+  // Service types imply scheduling capability — enable calendar tools even without Cal.com
+  const hasScheduling = session.calendarEnabled || session.serviceTypes?.length > 0;
+  if (hasScheduling) tools.push(...calendarToolDefinitions);
   if (session.serviceTypes?.length > 0) tools.push(listServiceTypesToolDefinition);
   if (includeTransfer && session.transferRules?.length > 0) tools.push(transferToolDefinition);
   // Callback tool is always available — universal fallback
