@@ -30,12 +30,19 @@ import {
 import { useToast } from "@/components/ui/use-toast";
 import { Badge } from "@/components/ui/badge";
 import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
+import {
   Calendar,
   Check,
+  ChevronDown,
   Loader2,
   ExternalLink,
   Trash2,
   RefreshCw,
+  Users,
 } from "lucide-react";
 import { trackCalendarConnected, trackCalendarDisconnected } from "@/lib/analytics";
 
@@ -425,6 +432,83 @@ export function CalendarSettings({
           </div>
         </CardContent>
       </Card>
+
+      {/* Multi-Practitioner Help */}
+      {isConnected && (
+        <Collapsible>
+          <Card className="bg-muted/30">
+            <CardHeader className="pb-3">
+              <CollapsibleTrigger className="flex w-full items-center justify-between [&[data-state=open]>svg.chevron]:rotate-180">
+                <div className="flex items-center gap-2">
+                  <Users className="h-5 w-5 text-muted-foreground" />
+                  <CardTitle>Multiple Practitioners?</CardTitle>
+                </div>
+                <ChevronDown className="chevron h-4 w-4 text-muted-foreground transition-transform duration-200" />
+              </CollapsibleTrigger>
+            </CardHeader>
+            <CollapsibleContent>
+              <CardContent className="pt-0 space-y-4">
+                <p className="text-sm text-muted-foreground">
+                  If your practice has multiple dentists, vets, or staff members,
+                  you can set up Cal.com to automatically assign appointments to
+                  whoever is available.
+                </p>
+
+                <div className="space-y-2">
+                  <p className="text-sm font-medium">
+                    How to set up Round Robin scheduling:
+                  </p>
+                  <ol className="list-decimal list-inside space-y-1.5 text-sm text-muted-foreground">
+                    <li>
+                      Log in to your Cal.com account at{" "}
+                      <a
+                        href="https://cal.com"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-primary hover:underline"
+                      >
+                        cal.com
+                        <ExternalLink className="inline h-3 w-3 ml-1" />
+                      </a>
+                    </li>
+                    <li>
+                      Go to <strong>Event Types</strong> and edit your event type
+                      (or create a new one)
+                    </li>
+                    <li>
+                      Under <strong>&quot;Assignment&quot;</strong>, select{" "}
+                      <strong>&quot;Round Robin&quot;</strong>
+                    </li>
+                    <li>
+                      Add your team members&apos; Cal.com accounts
+                    </li>
+                    <li>
+                      Each appointment will be automatically assigned to the next
+                      available team member
+                    </li>
+                  </ol>
+                </div>
+
+                <p className="text-sm text-muted-foreground">
+                  The AI receptionist works seamlessly with Round Robin — callers
+                  will be booked with whoever is available, and the confirmation
+                  will include the assigned practitioner&apos;s name.
+                </p>
+
+                <p className="text-sm text-muted-foreground">
+                  Need help?{" "}
+                  <a
+                    href="mailto:support@phondo.com"
+                    className="text-primary hover:underline"
+                  >
+                    Contact us at support@phondo.com
+                  </a>
+                </p>
+              </CardContent>
+            </CollapsibleContent>
+          </Card>
+        </Collapsible>
+      )}
 
       {/* How It Works */}
       <Card>
