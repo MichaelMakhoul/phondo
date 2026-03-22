@@ -138,7 +138,9 @@ function buildSchedulingSection(timezone, businessHours, defaultAppointmentDurat
         "2. Call get_current_datetime to know today's date",
         "3. Call check_availability with the service_type_id and preferred date",
         "4. Present available times",
-        "5. Collect their name and phone number, then book with the selected time and service_type_id"
+        "5. Collect their name and phone number, then book with the selected time and service_type_id",
+        "",
+        "Some services are provided by specific team members. When booking, the system will automatically assign the next available practitioner. If the booking confirmation includes a practitioner name, mention it to the caller."
       );
     } else {
       lines.push(
