@@ -51,7 +51,8 @@ export async function updateSession(request: NextRequest) {
     request.nextUrl.pathname.startsWith("/calls") ||
     request.nextUrl.pathname.startsWith("/phone-numbers") ||
     request.nextUrl.pathname.startsWith("/settings") ||
-    request.nextUrl.pathname.startsWith("/billing");
+    request.nextUrl.pathname.startsWith("/billing") ||
+    request.nextUrl.pathname.startsWith("/admin");
 
   // Redirect unauthenticated users from dashboard to login
   if (!user && isDashboardRoute) {
