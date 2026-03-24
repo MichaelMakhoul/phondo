@@ -67,10 +67,18 @@ export async function POST(request: Request) {
     });
 
     return NextResponse.json(availableNumbers);
-  } catch (error) {
+  } catch (error: any) {
     console.error("Error searching phone numbers:", error);
+    const message = error?.message || "Internal server error";
+    // Surface Twilio config errors clearly
+    if (message.includes("TWILIO_ACCOUNT_SID") || message.includes("TWILIO_AUTH_TOKEN")) {
+      return NextResponse.json(
+        { error: "Twilio is not configured. Please add TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN to your environment variables." },
+        { status: 503 }
+      );
+    }
     return NextResponse.json(
-      { error: "Internal server error" },
+      { error: message },
       { status: 500 }
     );
   }

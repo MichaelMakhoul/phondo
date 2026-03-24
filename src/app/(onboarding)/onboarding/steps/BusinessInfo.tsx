@@ -130,7 +130,7 @@ export function BusinessInfo({ data, onChange, onScrape, isScraping, scrapeResul
             </dl>
             <p className="pl-6 text-xs text-green-600 dark:text-green-400">
               {scrapeResult.totalPages} page{scrapeResult.totalPages !== 1 ? "s" : ""} scraped.
-              Fields above have been pre-filled — edit them if needed.
+              Some fields below have been pre-filled — review and edit if needed.
             </p>
           </div>
         ) : (

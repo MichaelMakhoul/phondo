@@ -108,8 +108,8 @@ export default async function DashboardPage() {
       name: "Total Calls",
       value: totalCalls || 0,
       icon: PhoneCall,
-      change: "+12%",
-      changeType: "positive",
+      change: "",
+      changeType: "neutral",
     },
     {
       name: "You Answered",
@@ -136,8 +136,8 @@ export default async function DashboardPage() {
       name: "Total Talk Time",
       value: formatDuration(totalDuration),
       icon: Clock,
-      change: "+8%",
-      changeType: "positive",
+      change: "",
+      changeType: "neutral",
     },
   ];
 

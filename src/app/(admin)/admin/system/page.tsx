@@ -12,8 +12,7 @@ import { Server, Database, Activity, AlertTriangle } from "lucide-react";
 import { formatAdminDate } from "@/lib/admin/format";
 
 interface HealthRow {
-  id: string;
-  service_name: string;
+  service: string;
   is_healthy: boolean;
   consecutive_failures: number;
   last_check_at: string;
@@ -26,8 +25,8 @@ export default async function AdminSystemPage() {
   // Fetch system health records
   const { data: healthData, error: healthError } = await (supabase as any)
     .from("system_health")
-    .select("id, service_name, is_healthy, consecutive_failures, last_check_at, last_error")
-    .order("service_name", { ascending: true });
+    .select("service, is_healthy, consecutive_failures, last_check_at, last_error")
+    .order("service", { ascending: true });
 
   const healthRecords: HealthRow[] = healthData ?? [];
 
@@ -145,7 +144,7 @@ export default async function AdminSystemPage() {
             <div className="space-y-3">
               {healthRecords.map((record) => (
                 <div
-                  key={record.id}
+                  key={record.service}
                   className="rounded-lg border p-4"
                 >
                   <div className="flex items-center justify-between">
@@ -157,7 +156,7 @@ export default async function AdminSystemPage() {
                       />
                       <div>
                         <p className="text-sm font-medium">
-                          {record.service_name}
+                          {record.service}
                         </p>
                         <p className="text-xs text-muted-foreground">
                           Last checked:{" "}
