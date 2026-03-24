@@ -9,6 +9,7 @@ import {
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Server, Database, Activity, AlertTriangle } from "lucide-react";
+import { formatAdminDate } from "@/lib/admin/format";
 
 interface HealthRow {
   id: string;
@@ -160,7 +161,7 @@ export default async function AdminSystemPage() {
                         </p>
                         <p className="text-xs text-muted-foreground">
                           Last checked:{" "}
-                          {new Date(record.last_check_at).toLocaleString()}
+                          {formatAdminDate(record.last_check_at)}
                         </p>
                       </div>
                     </div>

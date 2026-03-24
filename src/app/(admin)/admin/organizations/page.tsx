@@ -1,5 +1,6 @@
 import { createAdminClient } from "@/lib/supabase/admin";
 import { Badge } from "@/components/ui/badge";
+import { formatAdminDateShort } from "@/lib/admin/format";
 import Link from "next/link";
 import {
   Table,
@@ -33,7 +34,7 @@ interface OrgRow {
 export default async function AdminOrganizationsPage() {
   const supabase = createAdminClient();
 
-  const { data: orgs } = await (supabase as any)
+  const { data: orgs, error: orgsError } = await (supabase as any)
     .from("organizations")
     .select(`
       id, name, industry, country, created_at,
@@ -51,6 +52,15 @@ export default async function AdminOrganizationsPage() {
           All registered organizations on the platform
         </p>
       </div>
+
+      {/* Error Banner */}
+      {orgsError && (
+        <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-4">
+          <p className="text-sm font-medium text-destructive">
+            Failed to load organizations: {orgsError.message}
+          </p>
+        </div>
+      )}
 
       <Card>
         <CardHeader>
@@ -120,7 +130,7 @@ export default async function AdminOrganizationsPage() {
                         {sub?.calls_used ?? 0} / {sub?.calls_limit ?? "--"}
                       </TableCell>
                       <TableCell className="text-muted-foreground">
-                        {new Date(org.created_at).toLocaleDateString()}
+                        {formatAdminDateShort(org.created_at)}
                       </TableCell>
                     </TableRow>
                   );

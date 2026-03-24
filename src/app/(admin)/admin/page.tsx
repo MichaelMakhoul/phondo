@@ -1,6 +1,7 @@
 import { createAdminClient } from "@/lib/supabase/admin";
 import { PLANS } from "@/lib/stripe/client";
 import { StatCard } from "@/components/admin/stat-card";
+import { formatAdminDate, formatAdminDateShort } from "@/lib/admin/format";
 import {
   Building2,
   CreditCard,
@@ -42,10 +43,11 @@ interface CallRow {
 }
 
 interface SystemHealthRow {
-  service_name: string;
-  status: string;
+  service: string;
+  is_healthy: boolean;
+  consecutive_failures: number;
   last_check_at: string;
-  details: Record<string, unknown> | null;
+  last_error: string | null;
 }
 
 export default async function AdminOverviewPage() {
@@ -96,7 +98,7 @@ export default async function AdminOverviewPage() {
     // System health
     (supabase as any)
       .from("system_health")
-      .select("service_name, status, last_check_at, details")
+      .select("service, is_healthy, consecutive_failures, last_check_at, last_error")
       .order("last_check_at", { ascending: false })
       .limit(5),
     // Recent signups (last 10 orgs)
@@ -112,6 +114,17 @@ export default async function AdminOverviewPage() {
       .order("created_at", { ascending: false })
       .limit(10),
   ]);
+
+  // Check for errors on main queries
+  const queryErrors: string[] = [];
+  if (orgsResult.error) queryErrors.push(`Organizations: ${orgsResult.error.message}`);
+  if (subsResult.error) queryErrors.push(`Subscriptions: ${subsResult.error.message}`);
+  if (callsTodayResult.error) queryErrors.push(`Calls today: ${callsTodayResult.error.message}`);
+  if (callsMonthResult.error) queryErrors.push(`Calls month: ${callsMonthResult.error.message}`);
+  if (phoneNumbersResult.error) queryErrors.push(`Phone numbers: ${phoneNumbersResult.error.message}`);
+  if (healthResult.error) queryErrors.push(`System health: ${healthResult.error.message}`);
+  if (recentOrgsResult.error) queryErrors.push(`Recent orgs: ${recentOrgsResult.error.message}`);
+  if (recentCallsResult.error) queryErrors.push(`Recent calls: ${recentCallsResult.error.message}`);
 
   const totalOrgs = orgsResult.count ?? 0;
   const activeSubs: SubscriptionRow[] = subsResult.data ?? [];
@@ -174,6 +187,20 @@ export default async function AdminOverviewPage() {
         </p>
       </div>
 
+      {/* Error Banner */}
+      {queryErrors.length > 0 && (
+        <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-4">
+          <p className="text-sm font-medium text-destructive">
+            Failed to load some data:
+          </p>
+          <ul className="mt-1 list-disc pl-5 text-sm text-destructive">
+            {queryErrors.map((err, i) => (
+              <li key={i}>{err}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {/* Stat Cards */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
         <StatCard
@@ -230,37 +257,38 @@ export default async function AdminOverviewPage() {
             <div className="space-y-3">
               {healthRecords.map((record) => (
                 <div
-                  key={`${record.service_name}-${record.last_check_at}`}
+                  key={`${record.service}-${record.last_check_at}`}
                   className="flex items-center justify-between rounded-lg border p-3"
                 >
                   <div className="flex items-center gap-3">
                     <div
                       className={`h-3 w-3 rounded-full ${
-                        record.status === "healthy"
+                        record.is_healthy
                           ? "bg-emerald-500"
-                          : record.status === "degraded"
-                            ? "bg-amber-500"
-                            : "bg-red-500"
+                          : "bg-red-500"
                       }`}
                     />
                     <span className="text-sm font-medium">
-                      {record.service_name}
+                      {record.service}
                     </span>
                   </div>
                   <div className="flex items-center gap-4">
+                    {record.consecutive_failures > 0 && (
+                      <span className="text-xs text-red-600">
+                        {record.consecutive_failures} failure{record.consecutive_failures !== 1 ? "s" : ""}
+                      </span>
+                    )}
                     <span
-                      className={`text-xs font-medium capitalize ${
-                        record.status === "healthy"
+                      className={`text-xs font-medium ${
+                        record.is_healthy
                           ? "text-emerald-600"
-                          : record.status === "degraded"
-                            ? "text-amber-600"
-                            : "text-red-600"
+                          : "text-red-600"
                       }`}
                     >
-                      {record.status}
+                      {record.is_healthy ? "Healthy" : "Unhealthy"}
                     </span>
                     <span className="text-xs text-muted-foreground">
-                      {new Date(record.last_check_at).toLocaleString()}
+                      {formatAdminDate(record.last_check_at)}
                     </span>
                   </div>
                 </div>
@@ -302,7 +330,7 @@ export default async function AdminOverviewPage() {
                       </p>
                     </div>
                     <span className="text-xs text-muted-foreground">
-                      {new Date(org.created_at).toLocaleDateString()}
+                      {formatAdminDateShort(org.created_at)}
                     </span>
                   </div>
                 ))}
@@ -358,7 +386,7 @@ export default async function AdminOverviewPage() {
                         </span>
                       )}
                       <p className="text-xs text-muted-foreground mt-0.5">
-                        {new Date(call.created_at).toLocaleString()}
+                        {formatAdminDate(call.created_at)}
                       </p>
                     </div>
                   </div>

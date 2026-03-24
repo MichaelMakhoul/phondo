@@ -66,23 +66,17 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid email address" }, { status: 400 });
   }
 
-  const adminSupabase = createAdminClient();
-
-  // Check email uniqueness
-  const { data: existing } = await (adminSupabase as any)
-    .from("admin_contacts")
-    .select("id")
-    .eq("email", body.email.trim())
-    .limit(1);
-
-  if (existing && existing.length > 0) {
-    return NextResponse.json(
-      { error: "A contact with this email already exists" },
-      { status: 409 }
-    );
+  if (body.tags) {
+    if (!Array.isArray(body.tags)) body.tags = [];
+    body.tags = body.tags
+      .filter((t: unknown) => typeof t === "string")
+      .map((t: string) => t.trim().slice(0, 50))
+      .slice(0, 20);
   }
 
-  const { data: contact, error } = await (adminSupabase as any)
+  const adminSupabase = createAdminClient();
+
+  const { data: contact, error: insertError } = await (adminSupabase as any)
     .from("admin_contacts")
     .insert({
       name: body.name.trim(),
@@ -95,8 +89,14 @@ export async function POST(req: NextRequest) {
     .select()
     .single();
 
-  if (error) {
-    console.error("[Admin Contacts] Failed to create contact:", error);
+  if (insertError) {
+    if (insertError.code === "23505") {
+      return NextResponse.json(
+        { error: "A contact with this email already exists" },
+        { status: 409 }
+      );
+    }
+    console.error("[Admin Contacts] Failed to create contact:", insertError);
     return NextResponse.json({ error: "Failed to create contact" }, { status: 500 });
   }
 

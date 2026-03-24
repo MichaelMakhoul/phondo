@@ -1,5 +1,6 @@
 import { createAdminClient } from "@/lib/supabase/admin";
 import { StatCard } from "@/components/admin/stat-card";
+import { formatAdminDateShort } from "@/lib/admin/format";
 import {
   Card,
   CardContent,
@@ -42,12 +43,15 @@ export default async function AdminNumbersPage() {
   // Fetch org names
   const orgIds = [...new Set(numbers.map((n) => n.organization_id))];
   let orgNameMap: Record<string, string> = {};
+  let orgQueryWarning: string | null = null;
   if (orgIds.length > 0) {
-    const { data: orgs } = await (supabase as any)
+    const { data: orgs, error: orgsError } = await (supabase as any)
       .from("organizations")
       .select("id, name")
       .in("id", orgIds);
-    if (orgs) {
+    if (orgsError) {
+      orgQueryWarning = `Could not load organization names: ${orgsError.message}`;
+    } else if (orgs) {
       orgNameMap = Object.fromEntries(
         (orgs as { id: string; name: string }[]).map((o) => [o.id, o.name])
       );
@@ -59,17 +63,22 @@ export default async function AdminNumbersPage() {
     ...new Set(numbers.filter((n) => n.assistant_id).map((n) => n.assistant_id!)),
   ];
   let assistantNameMap: Record<string, string> = {};
+  let assistantQueryWarning: string | null = null;
   if (assistantIds.length > 0) {
-    const { data: assistants } = await (supabase as any)
+    const { data: assistants, error: assistantsError } = await (supabase as any)
       .from("assistants")
       .select("id, name")
       .in("id", assistantIds);
-    if (assistants) {
+    if (assistantsError) {
+      assistantQueryWarning = `Could not load assistant names: ${assistantsError.message}`;
+    } else if (assistants) {
       assistantNameMap = Object.fromEntries(
         (assistants as { id: string; name: string }[]).map((a) => [a.id, a.name])
       );
     }
   }
+
+  const supplementaryWarnings = [orgQueryWarning, assistantQueryWarning].filter(Boolean);
 
   const totalNumbers = numbers.length;
   const activeCount = numbers.filter((n) => n.is_active).length;
@@ -101,6 +110,20 @@ export default async function AdminNumbersPage() {
           icon={Bot}
         />
       </div>
+
+      {/* Supplementary data warnings */}
+      {supplementaryWarnings.length > 0 && (
+        <div className="rounded-lg border border-amber-500/50 bg-amber-500/10 p-4">
+          <p className="text-sm font-medium text-amber-700 dark:text-amber-400">
+            Some supplementary data could not be loaded:
+          </p>
+          <ul className="mt-1 list-disc pl-5 text-sm text-amber-700 dark:text-amber-400">
+            {supplementaryWarnings.map((w, i) => (
+              <li key={i}>{w}</li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {/* Phone Numbers Table */}
       <Card>
@@ -168,7 +191,7 @@ export default async function AdminNumbersPage() {
                       {num.source_type || "-"}
                     </TableCell>
                     <TableCell className="text-muted-foreground">
-                      {new Date(num.created_at).toLocaleDateString()}
+                      {formatAdminDateShort(num.created_at)}
                     </TableCell>
                   </TableRow>
                 ))}

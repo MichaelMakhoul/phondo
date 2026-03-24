@@ -1,6 +1,7 @@
 import { createAdminClient } from "@/lib/supabase/admin";
 import { Badge } from "@/components/ui/badge";
 import { StatCard } from "@/components/admin/stat-card";
+import { formatAdminDate } from "@/lib/admin/format";
 import {
   Card,
   CardContent,
@@ -55,6 +56,12 @@ export default async function AdminCallsPage() {
       .eq("is_spam", true),
   ]);
 
+  // Check for errors
+  const queryErrors: string[] = [];
+  if (callsResult.error) queryErrors.push(`Calls: ${callsResult.error.message}`);
+  if (totalResult.error) queryErrors.push(`Total count: ${totalResult.error.message}`);
+  if (spamResult.error) queryErrors.push(`Spam count: ${spamResult.error.message}`);
+
   const calls: CallRow[] = callsResult.data ?? [];
   const totalCalls = totalResult.count ?? 0;
   const spamCalls = spamResult.count ?? 0;
@@ -98,6 +105,20 @@ export default async function AdminCallsPage() {
           Platform-wide call activity and analytics
         </p>
       </div>
+
+      {/* Error Banner */}
+      {queryErrors.length > 0 && (
+        <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-4">
+          <p className="text-sm font-medium text-destructive">
+            Failed to load some data:
+          </p>
+          <ul className="mt-1 list-disc pl-5 text-sm text-destructive">
+            {queryErrors.map((err, i) => (
+              <li key={i}>{err}</li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {/* Stat Cards */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -208,7 +229,7 @@ export default async function AdminCallsPage() {
                       )}
                     </TableCell>
                     <TableCell className="text-muted-foreground">
-                      {new Date(call.created_at).toLocaleString()}
+                      {formatAdminDate(call.created_at)}
                     </TableCell>
                   </TableRow>
                 ))}

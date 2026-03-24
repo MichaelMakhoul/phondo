@@ -2,6 +2,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { PLANS } from "@/lib/stripe/client";
 import { Badge } from "@/components/ui/badge";
 import { StatCard } from "@/components/admin/stat-card";
+import { formatAdminDateShort } from "@/lib/admin/format";
 import {
   Card,
   CardContent,
@@ -40,7 +41,7 @@ interface SubscriptionRow {
 export default async function AdminBillingPage() {
   const supabase = createAdminClient();
 
-  const { data: subs } = await (supabase as any)
+  const { data: subs, error: subsError } = await (supabase as any)
     .from("subscriptions")
     .select(
       "id, organization_id, plan_type, status, calls_used, calls_limit, current_period_end, trial_end"
@@ -83,6 +84,15 @@ export default async function AdminBillingPage() {
           Subscription revenue and billing status
         </p>
       </div>
+
+      {/* Error Banner */}
+      {subsError && (
+        <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-4">
+          <p className="text-sm font-medium text-destructive">
+            Failed to load subscriptions: {subsError.message}
+          </p>
+        </div>
+      )}
 
       {/* Stat Cards */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -161,11 +171,11 @@ export default async function AdminBillingPage() {
                       {sub.calls_used ?? 0} / {sub.calls_limit ?? "--"}
                     </TableCell>
                     <TableCell className="text-muted-foreground">
-                      {new Date(sub.current_period_end).toLocaleDateString()}
+                      {formatAdminDateShort(sub.current_period_end)}
                     </TableCell>
                     <TableCell className="text-muted-foreground">
                       {sub.trial_end
-                        ? new Date(sub.trial_end).toLocaleDateString()
+                        ? formatAdminDateShort(sub.trial_end)
                         : "--"}
                     </TableCell>
                   </TableRow>

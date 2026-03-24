@@ -15,6 +15,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
+import { formatAdminDate, formatAdminDateShort } from "@/lib/admin/format";
 import { Megaphone, Users } from "lucide-react";
 import Link from "next/link";
 import { ContactsSection } from "./contacts-section";
@@ -136,11 +137,11 @@ export default async function AdminMarketingPage() {
                     <TableCell>{campaign.sent_count}</TableCell>
                     <TableCell className="text-muted-foreground">
                       {campaign.sent_at
-                        ? new Date(campaign.sent_at).toLocaleString()
+                        ? formatAdminDate(campaign.sent_at)
                         : "-"}
                     </TableCell>
                     <TableCell className="text-muted-foreground">
-                      {new Date(campaign.created_at).toLocaleDateString()}
+                      {formatAdminDateShort(campaign.created_at)}
                     </TableCell>
                   </TableRow>
                 ))}

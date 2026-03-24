@@ -1,5 +1,6 @@
 import { createAdminClient } from "@/lib/supabase/admin";
 import { StatCard } from "@/components/admin/stat-card";
+import { formatAdminDate } from "@/lib/admin/format";
 import { Mail, AlertTriangle } from "lucide-react";
 import {
   Card,
@@ -172,7 +173,7 @@ export default async function AdminEmailsPage() {
                         : "-"}
                     </TableCell>
                     <TableCell className="text-muted-foreground">
-                      {new Date(email.created_at).toLocaleString()}
+                      {formatAdminDate(email.created_at)}
                     </TableCell>
                   </TableRow>
                 ))}

@@ -26,6 +26,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { formatAdminDate, formatAdminDateShort } from "@/lib/admin/format";
 
 interface OrgDetailProps {
   params: Promise<{ id: string }>;
@@ -79,6 +80,10 @@ interface SubscriptionRow {
 
 export default async function AdminOrgDetailPage({ params }: OrgDetailProps) {
   const { id } = await params;
+
+  const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!UUID_REGEX.test(id)) notFound();
+
   const supabase = createAdminClient();
 
   const [orgResult, subsResult, assistantsResult, phoneNumbersResult, membersResult, callsResult] =
@@ -219,7 +224,7 @@ export default async function AdminOrgDetailPage({ params }: OrgDetailProps) {
               </div>
               <div className="flex justify-between">
                 <dt className="text-muted-foreground">Created</dt>
-                <dd>{new Date(org.created_at).toLocaleString()}</dd>
+                <dd>{formatAdminDate(org.created_at)}</dd>
               </div>
             </dl>
           </CardContent>
@@ -264,14 +269,14 @@ export default async function AdminOrgDetailPage({ params }: OrgDetailProps) {
                 <div className="flex justify-between">
                   <dt className="text-muted-foreground">Period</dt>
                   <dd>
-                    {new Date(activeSub.current_period_start).toLocaleDateString()} -{" "}
-                    {new Date(activeSub.current_period_end).toLocaleDateString()}
+                    {formatAdminDateShort(activeSub.current_period_start)} -{" "}
+                    {formatAdminDateShort(activeSub.current_period_end)}
                   </dd>
                 </div>
                 {activeSub.trial_end && (
                   <div className="flex justify-between">
                     <dt className="text-muted-foreground">Trial Ends</dt>
-                    <dd>{new Date(activeSub.trial_end).toLocaleDateString()}</dd>
+                    <dd>{formatAdminDateShort(activeSub.trial_end)}</dd>
                   </div>
                 )}
               </dl>
@@ -312,7 +317,7 @@ export default async function AdminOrgDetailPage({ params }: OrgDetailProps) {
                       </Badge>
                     </TableCell>
                     <TableCell className="text-muted-foreground">
-                      {new Date(a.created_at).toLocaleDateString()}
+                      {formatAdminDateShort(a.created_at)}
                     </TableCell>
                   </TableRow>
                 ))}
@@ -358,7 +363,7 @@ export default async function AdminOrgDetailPage({ params }: OrgDetailProps) {
                       </Badge>
                     </TableCell>
                     <TableCell className="text-muted-foreground">
-                      {new Date(p.created_at).toLocaleDateString()}
+                      {formatAdminDateShort(p.created_at)}
                     </TableCell>
                   </TableRow>
                 ))}
@@ -396,7 +401,7 @@ export default async function AdminOrgDetailPage({ params }: OrgDetailProps) {
                       <TableCell>{profile?.full_name || "--"}</TableCell>
                       <TableCell className="capitalize">{m.role}</TableCell>
                       <TableCell className="text-muted-foreground">
-                        {new Date(m.created_at).toLocaleDateString()}
+                        {formatAdminDateShort(m.created_at)}
                       </TableCell>
                     </TableRow>
                   );
@@ -471,7 +476,7 @@ export default async function AdminOrgDetailPage({ params }: OrgDetailProps) {
                       )}
                     </TableCell>
                     <TableCell className="text-muted-foreground">
-                      {new Date(call.created_at).toLocaleString()}
+                      {formatAdminDate(call.created_at)}
                     </TableCell>
                   </TableRow>
                 ))}

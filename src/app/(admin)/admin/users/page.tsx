@@ -1,5 +1,6 @@
 import { createAdminClient } from "@/lib/supabase/admin";
 import { Badge } from "@/components/ui/badge";
+import { formatAdminDateShort } from "@/lib/admin/format";
 import {
   Card,
   CardContent,
@@ -48,6 +49,11 @@ export default async function AdminUsersPage() {
       .select("user_id, organization_id, role"),
   ]);
 
+  // Check for errors
+  const queryErrors: string[] = [];
+  if (profilesResult.error) queryErrors.push(`User profiles: ${profilesResult.error.message}`);
+  if (membersResult.error) queryErrors.push(`Org members: ${membersResult.error.message}`);
+
   const profiles: UserProfileRow[] = profilesResult.data ?? [];
   const members: OrgMemberRow[] = membersResult.data ?? [];
 
@@ -86,6 +92,20 @@ export default async function AdminUsersPage() {
           All registered users across the platform
         </p>
       </div>
+
+      {/* Error Banner */}
+      {queryErrors.length > 0 && (
+        <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-4">
+          <p className="text-sm font-medium text-destructive">
+            Failed to load some data:
+          </p>
+          <ul className="mt-1 list-disc pl-5 text-sm text-destructive">
+            {queryErrors.map((err, i) => (
+              <li key={i}>{err}</li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       <Card>
         <CardHeader>
@@ -148,7 +168,7 @@ export default async function AdminUsersPage() {
                         )}
                       </TableCell>
                       <TableCell className="text-muted-foreground">
-                        {new Date(user.created_at).toLocaleDateString()}
+                        {formatAdminDateShort(user.created_at)}
                       </TableCell>
                     </TableRow>
                   );

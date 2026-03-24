@@ -46,6 +46,7 @@ interface OnboardingData {
   // Step 4: Go Live
   areaCode: string;
   selectedPlan: string;
+  selectedPhoneNumber: string;
   // Created resources (persisted so we don't re-create)
   createdOrgId: string;
   createdAssistantId: string;
@@ -69,6 +70,7 @@ const initialData: OnboardingData = {
   testCallCompleted: false,
   areaCode: "",
   selectedPlan: "",
+  selectedPhoneNumber: "",
   createdOrgId: "",
   createdAssistantId: "",
 };
@@ -207,9 +209,7 @@ export default function OnboardingPage() {
       case 3:
         return true; // Test call is optional
       case 4: {
-        const countryConfig = data.country ? getCountryConfig(data.country) : null;
-        const requiredLen = countryConfig?.phone.areaCodeLength ?? 3;
-        return data.areaCode.length === requiredLen && data.selectedPlan !== "";
+        return data.selectedPhoneNumber !== "" && data.selectedPlan !== "";
       }
       default:
         return false;
@@ -392,7 +392,30 @@ export default function OnboardingPage() {
         throw new Error(subErr.error || `Failed to create subscription (status ${subRes.status})`);
       }
 
-      // Step 5: Create notification preferences with defaults
+      // Step 5: Provision the selected phone number
+      if (data.selectedPhoneNumber) {
+        const phoneRes = await fetch("/api/v1/phone-numbers", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            areaCode: data.areaCode,
+            assistantId: data.createdAssistantId || undefined,
+          }),
+        });
+
+        if (!phoneRes.ok) {
+          const phoneErr = await phoneRes.json().catch(() => ({}));
+          console.error("Phone number provisioning failed:", phoneErr);
+          // Non-fatal — user can buy a number from the dashboard later
+          toast({
+            title: "Phone number setup incomplete",
+            description: "We couldn't provision your number. You can add one from the dashboard.",
+            variant: "destructive",
+          });
+        }
+      }
+
+      // Step 6: Create notification preferences with defaults
       const { error: notifError } = await (supabase as any)
         .from("notification_preferences")
         .insert({
@@ -571,6 +594,7 @@ export default function OnboardingPage() {
                   data={{
                     areaCode: data.areaCode,
                     selectedPlan: data.selectedPlan,
+                    selectedPhoneNumber: data.selectedPhoneNumber,
                   }}
                   countryCode={data.country || "US"}
                   onChange={(updates) => updateData(updates)}

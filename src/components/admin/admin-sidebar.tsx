@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useState } from "react";
 import { cn } from "@/lib/utils";
 import {
   LayoutDashboard,
@@ -15,8 +16,15 @@ import {
   Phone,
   ArrowLeft,
   ShieldAlert,
+  Menu,
 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
 
 const adminNavigation = [
   { name: "Overview", href: "/admin", icon: LayoutDashboard },
@@ -33,9 +41,11 @@ const adminNavigation = [
 function AdminNavLink({
   item,
   pathname,
+  onClick,
 }: {
   item: (typeof adminNavigation)[number];
   pathname: string;
+  onClick?: () => void;
 }) {
   const isActive =
     item.href === "/admin"
@@ -45,6 +55,7 @@ function AdminNavLink({
   return (
     <Link
       href={item.href}
+      onClick={onClick}
       className={cn(
         "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-all",
         isActive
@@ -58,56 +69,125 @@ function AdminNavLink({
   );
 }
 
-export function AdminSidebar() {
+function SidebarNav({ onLinkClick }: { onLinkClick?: () => void }) {
   const pathname = usePathname();
 
   return (
-    <div className="hidden md:flex h-full w-64 flex-col border-r bg-card">
-      {/* Header */}
-      <div className="flex h-16 items-center border-b px-6">
+    <>
+      <nav className="space-y-1">
+        {adminNavigation.map((item) => (
+          <AdminNavLink
+            key={item.name}
+            item={item}
+            pathname={pathname}
+            onClick={onLinkClick}
+          />
+        ))}
+      </nav>
+
+      <div className="my-4 border-t" />
+
+      <nav className="space-y-1">
+        <Link
+          href="/"
+          onClick={onLinkClick}
+          className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition-all"
+        >
+          <ArrowLeft className="h-5 w-5" />
+          Back to Dashboard
+        </Link>
+      </nav>
+    </>
+  );
+}
+
+export function AdminSidebar() {
+  const [mobileOpen, setMobileOpen] = useState(false);
+
+  return (
+    <>
+      {/* Mobile top bar */}
+      <div className="fixed inset-x-0 top-0 z-40 flex h-14 items-center gap-3 border-b bg-card px-4 md:hidden">
+        <button
+          type="button"
+          onClick={() => setMobileOpen(true)}
+          className="inline-flex items-center justify-center rounded-md p-2 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+          aria-label="Open navigation menu"
+        >
+          <Menu className="h-5 w-5" />
+        </button>
         <div className="flex items-center gap-2">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-amber-500 text-white shadow-md shadow-amber-500/30">
-            <ShieldAlert className="h-5 w-5" />
+          <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-amber-500 text-white shadow-md shadow-amber-500/30">
+            <ShieldAlert className="h-4 w-4" />
           </div>
-          <span className="text-lg font-semibold">Phondo</span>
-          <span className="rounded-md bg-amber-500/10 px-2 py-0.5 text-xs font-semibold text-amber-700 dark:text-amber-400 border border-amber-500/20">
-            Admin
-          </span>
+          <span className="text-base font-semibold">Admin</span>
         </div>
       </div>
 
-      {/* Navigation */}
-      <ScrollArea className="flex-1 px-3 py-4">
-        <nav className="space-y-1">
-          {adminNavigation.map((item) => (
-            <AdminNavLink key={item.name} item={item} pathname={pathname} />
-          ))}
-        </nav>
+      {/* Mobile sheet drawer */}
+      <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
+        <SheetContent side="left" className="w-64 p-0">
+          <SheetHeader className="flex h-16 items-center border-b px-6">
+            <div className="flex items-center gap-2">
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-amber-500 text-white shadow-md shadow-amber-500/30">
+                <ShieldAlert className="h-5 w-5" />
+              </div>
+              <SheetTitle className="text-lg font-semibold">Phondo</SheetTitle>
+              <span className="rounded-md bg-amber-500/10 px-2 py-0.5 text-xs font-semibold text-amber-700 dark:text-amber-400 border border-amber-500/20">
+                Admin
+              </span>
+            </div>
+          </SheetHeader>
 
-        <div className="my-4 border-t" />
+          <ScrollArea className="flex-1 px-3 py-4">
+            <SidebarNav onLinkClick={() => setMobileOpen(false)} />
+          </ScrollArea>
 
-        <nav className="space-y-1">
-          <Link
-            href="/"
-            className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition-all"
-          >
-            <ArrowLeft className="h-5 w-5" />
-            Back to Dashboard
-          </Link>
-        </nav>
-      </ScrollArea>
+          <div className="border-t p-4">
+            <div className="rounded-lg bg-amber-500/5 border border-amber-500/10 p-3">
+              <p className="text-xs font-medium text-amber-700 dark:text-amber-400">
+                Platform Admin Panel
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Service-role access. Changes affect all users.
+              </p>
+            </div>
+          </div>
+        </SheetContent>
+      </Sheet>
 
-      {/* Footer */}
-      <div className="border-t p-4">
-        <div className="rounded-lg bg-amber-500/5 border border-amber-500/10 p-3">
-          <p className="text-xs font-medium text-amber-700 dark:text-amber-400">
-            Platform Admin Panel
-          </p>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Service-role access. Changes affect all users.
-          </p>
+      {/* Desktop sidebar (unchanged) */}
+      <div className="hidden md:flex h-full w-64 flex-col border-r bg-card">
+        {/* Header */}
+        <div className="flex h-16 items-center border-b px-6">
+          <div className="flex items-center gap-2">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-amber-500 text-white shadow-md shadow-amber-500/30">
+              <ShieldAlert className="h-5 w-5" />
+            </div>
+            <span className="text-lg font-semibold">Phondo</span>
+            <span className="rounded-md bg-amber-500/10 px-2 py-0.5 text-xs font-semibold text-amber-700 dark:text-amber-400 border border-amber-500/20">
+              Admin
+            </span>
+          </div>
+        </div>
+
+        {/* Navigation */}
+        <ScrollArea className="flex-1 px-3 py-4">
+          <SidebarNav />
+        </ScrollArea>
+
+        {/* Footer */}
+        <div className="border-t p-4">
+          <div className="rounded-lg bg-amber-500/5 border border-amber-500/10 p-3">
+            <p className="text-xs font-medium text-amber-700 dark:text-amber-400">
+              Platform Admin Panel
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Service-role access. Changes affect all users.
+            </p>
+          </div>
         </div>
       </div>
-    </div>
+    </>
   );
 }

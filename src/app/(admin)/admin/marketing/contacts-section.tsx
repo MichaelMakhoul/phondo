@@ -30,6 +30,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Users, Plus } from "lucide-react";
+import { formatAdminDateShort } from "@/lib/admin/format";
 
 interface Contact {
   id: string;
@@ -103,7 +104,8 @@ export function ContactsSection({ initialContacts }: ContactsSectionProps) {
       setContacts((prev) => [contact, ...prev]);
       resetForm();
       setDialogOpen(false);
-    } catch {
+    } catch (err) {
+      console.error("[ContactsSection] Failed to add contact:", err);
       setError("Network error. Please try again.");
     } finally {
       setSaving(false);
@@ -246,7 +248,7 @@ export function ContactsSection({ initialContacts }: ContactsSectionProps) {
                     {contact.source || "-"}
                   </TableCell>
                   <TableCell className="text-muted-foreground">
-                    {new Date(contact.created_at).toLocaleDateString()}
+                    {formatAdminDateShort(contact.created_at)}
                   </TableCell>
                 </TableRow>
               ))}

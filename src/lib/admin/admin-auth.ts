@@ -8,6 +8,10 @@ export async function isPlatformAdmin(userId: string): Promise<boolean> {
     .eq("id", userId)
     .single();
 
-  if (error || !data) return false;
+  if (error) {
+    console.error("[isPlatformAdmin] Query failed:", error);
+    return false;
+  }
+  if (!data) return false;
   return data.is_platform_admin === true;
 }
