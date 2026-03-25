@@ -6,7 +6,14 @@
  * Transfer tool (transfer_call) is handled locally via Twilio REST API.
  */
 
-const { transferCall, sendTransferSMS } = require("./twilio-transfer");
+const twilioTransfer = require("./twilio-transfer");
+const telnyxTransfer = require("./telnyx-transfer");
+
+// Route transfer calls to the correct provider
+function getTransferService(context) {
+  if (context.telephonyProvider === "telnyx") return telnyxTransfer;
+  return twilioTransfer;
+}
 const { isWithinBusinessHours } = require("../lib/business-hours");
 const { Sentry } = require("../lib/sentry");
 
@@ -473,7 +480,8 @@ async function executeTransferCall(args, context) {
     });
   }
 
-  const result = await transferCall(
+  const transferService = getTransferService(context);
+  const result = await transferService.transferCall(
     context.callSid,
     matchedRule.transferToPhone,
     announcement,
@@ -490,7 +498,7 @@ async function executeTransferCall(args, context) {
       summary ? `Summary: ${summary}` : null,
     ].filter(Boolean).join(". ") + ".";
 
-    sendTransferSMS(matchedRule.transferToPhone, context.orgPhoneNumber, smsBody)
+    transferService.sendTransferSMS(matchedRule.transferToPhone, context.orgPhoneNumber, smsBody)
       .catch((err) => console.warn("[Transfer] SMS to transfer target failed (non-fatal):", err.message));
   }
 

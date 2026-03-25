@@ -45,7 +45,8 @@ export async function POST(request: Request) {
     const { areaCode, limit = 10 } = body;
 
     if (config.phoneProvider === "telnyx") {
-      const { searchAvailableNumbers } = await import("@/lib/telnyx/client");
+      const { searchAvailableNumbers, validateTelnyxConfig } = await import("@/lib/telnyx/client");
+      validateTelnyxConfig(); // Fail fast if TELNYX_API_KEY or TELNYX_TEXML_APP_ID is missing
       const numbers = await searchAvailableNumbers(config.twilioCountryCode, areaCode, limit);
       return NextResponse.json(
         numbers.map((n) => ({

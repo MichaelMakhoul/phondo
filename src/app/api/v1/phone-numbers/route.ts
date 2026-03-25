@@ -188,11 +188,21 @@ export async function POST(request: Request) {
       phoneNumber = purchased.number;
 
       // 3. Configure voice — assign to TeXML Application (routes calls to voice server /texml)
+      // This is FATAL — without voice routing, calls to this number go nowhere
       try {
         await configureVoiceWebhook(telnyxConnectionId);
       } catch (webhookErr) {
-        console.error(`[PhoneNumbers] Failed to configure Telnyx voice for ${phoneNumber}:`, webhookErr);
-        // Non-fatal — can be configured manually
+        console.error(`[PhoneNumbers] Failed to configure Telnyx voice for ${phoneNumber} — releasing number:`, webhookErr);
+        try {
+          const { releaseNumber: releaseTelnyx } = await import("@/lib/telnyx/client");
+          await releaseTelnyx(telnyxConnectionId);
+        } catch (releaseErr) {
+          console.error(`CRITICAL: Orphaned Telnyx number! ID=${telnyxConnectionId}, number=${phoneNumber}`, releaseErr);
+        }
+        return NextResponse.json(
+          { error: "Failed to configure phone number for voice calls. Please try again." },
+          { status: 502 }
+        );
       }
 
       // 3b. Configure SMS

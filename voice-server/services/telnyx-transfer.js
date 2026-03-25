@@ -1,21 +1,19 @@
 /**
  * Telnyx call transfer and SMS using REST API.
  * Uses raw fetch to keep dependencies light (mirrors twilio-transfer.js pattern).
- *
- * Telnyx TeXML calls are transferred by updating the call with new TeXML
- * containing a <Dial> verb, same as Twilio. The difference is the API endpoint.
  */
 
 const { Sentry } = require("../lib/sentry");
 
-const TELNYX_API_KEY = process.env.TELNYX_API_KEY;
 const TELNYX_API_BASE = "https://api.telnyx.com/v2";
 
 /**
  * Fetch helper for Telnyx v2 REST API.
+ * Reads API key per-call (not module-scope) to handle late env var injection.
  */
 async function telnyxFetch(path, options = {}) {
-  if (!TELNYX_API_KEY) {
+  const apiKey = process.env.TELNYX_API_KEY;
+  if (!apiKey) {
     console.warn("[Telnyx] API key not set — cannot make Telnyx API calls");
     return null;
   }
@@ -24,7 +22,7 @@ async function telnyxFetch(path, options = {}) {
     ...options,
     signal: AbortSignal.timeout(10_000),
     headers: {
-      Authorization: `Bearer ${TELNYX_API_KEY}`,
+      Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json",
       ...options.headers,
     },
@@ -32,38 +30,48 @@ async function telnyxFetch(path, options = {}) {
 }
 
 /**
- * Transfer a Telnyx TeXML call by updating it with new TeXML containing <Dial>.
- * Uses the Telnyx Call Control API to update the active call.
+ * Transfer a Telnyx call using Call Control API.
  *
  * @param {string} callControlId - Telnyx call control ID
  * @param {string} transferTo - Phone number to transfer to
- * @param {string} announcement - TTS text to say before connecting
- * @param {string} publicUrl - Voice server public URL for callbacks
+ * @param {string} announcement - TTS text to say before connecting (unused — TeXML handles this)
+ * @param {{ fromPhone?: string, publicUrl?: string }} options
  * @returns {Promise<{ success: boolean, outcome?: string }>}
  */
-async function transferCall(callControlId, transferTo, announcement, publicUrl) {
+async function transferCall(callControlId, transferTo, announcement, options = {}) {
+  if (!process.env.TELNYX_API_KEY) {
+    Sentry.withScope((scope) => {
+      scope.setTag("service", "telnyx-transfer");
+      Sentry.captureException(new Error("TELNYX_API_KEY not configured for transfer"));
+    });
+    return { success: false, outcome: "not_configured" };
+  }
+
   try {
-    // Use Telnyx Call Control transfer action
     const res = await telnyxFetch(`/calls/${callControlId}/actions/transfer`, {
       method: "POST",
       body: JSON.stringify({
         to: transferTo,
-        from: "+61000000000", // Will be overridden by Telnyx with the original number
+        from: options.fromPhone || transferTo, // Use org's number or transfer target as fallback
         timeout_secs: 30,
-        custom_headers: [],
       }),
     });
 
     if (!res || !res.ok) {
-      const errText = res ? await res.text().catch(() => "") : "No API key";
-      console.error(`[Telnyx] Transfer failed: ${errText}`);
+      const errText = res ? await res.text().catch(() => "") : "API unavailable";
+      console.error(`[Telnyx] Transfer failed (${res?.status}): ${errText.slice(0, 200)}`);
       return { success: false, outcome: "failed" };
     }
 
     return { success: true, outcome: "initiated" };
   } catch (err) {
     console.error("[Telnyx] Transfer error:", err);
-    Sentry.captureException(err);
+    Sentry.withScope((scope) => {
+      scope.setTag("service", "telnyx-transfer");
+      scope.setExtra("callControlId", callControlId);
+      scope.setExtra("transferTo", transferTo);
+      Sentry.captureException(err);
+    });
     return { success: false, outcome: "error" };
   }
 }
@@ -89,8 +97,13 @@ async function sendTransferSMS(toPhone, fromPhone, body) {
     });
 
     if (!res || !res.ok) {
-      const errText = res ? await res.text().catch(() => "") : "No API key";
-      console.error(`[Telnyx] SMS send failed: ${errText}`);
+      const errText = res ? await res.text().catch(() => "") : "API unavailable";
+      console.error(`[Telnyx] SMS send failed (${res?.status}): ${errText.slice(0, 200)}`);
+      Sentry.withScope((scope) => {
+        scope.setTag("service", "telnyx-sms");
+        scope.setExtra("to", toPhone);
+        Sentry.captureException(new Error(`Telnyx SMS failed: ${res?.status}`));
+      });
       return null;
     }
 
@@ -98,6 +111,10 @@ async function sendTransferSMS(toPhone, fromPhone, body) {
     return data.data?.id || null;
   } catch (err) {
     console.error("[Telnyx] SMS error:", err);
+    Sentry.withScope((scope) => {
+      scope.setTag("service", "telnyx-sms");
+      Sentry.captureException(err);
+    });
     return null;
   }
 }

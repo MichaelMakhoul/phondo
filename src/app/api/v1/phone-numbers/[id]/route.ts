@@ -212,7 +212,7 @@ export async function DELETE(
     // Get phone number
     const { data: phoneNumber } = await (supabase
       .from("phone_numbers") as any)
-      .select("vapi_phone_number_id, twilio_sid")
+      .select("vapi_phone_number_id, twilio_sid, telnyx_connection_id")
       .eq("id", id)
       .eq("organization_id", membership.organization_id)
       .single();

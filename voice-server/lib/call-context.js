@@ -212,6 +212,7 @@ async function loadCallContext(calledNumber, prefetchedPhone) {
     phoneNumberId: phone.id,
     organizationId: phone.organization_id,
     assistantId: assistant.id,
+    telephonyProvider: phone.telephony_provider || "twilio",
     assistant: {
       name: assistant.name,
       systemPrompt: assistant.system_prompt,

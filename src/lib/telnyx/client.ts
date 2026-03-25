@@ -85,8 +85,18 @@ export async function searchAvailableNumbers(
 }
 
 /**
+ * Validate that all required Telnyx env vars are set before attempting a purchase.
+ * Call this early (e.g., at search time) to fail fast.
+ */
+export function validateTelnyxConfig(): void {
+  getTelnyxApiKey();
+  getTelnyxTexmlAppId();
+}
+
+/**
  * Purchase a phone number on Telnyx via Number Orders API.
  * Returns the phone number resource ID (connection_id) for webhook configuration.
+ * Polls for order completion with exponential backoff.
  */
 export async function purchaseNumber(phoneNumber: string): Promise<{ connectionId: string; number: string }> {
   // Step 1: Create a number order
@@ -103,36 +113,39 @@ export async function purchaseNumber(phoneNumber: string): Promise<{ connectionI
   }
 
   const orderData = await orderRes.json();
-  const order = orderData.data;
+  const orderId = orderData.data?.id;
 
-  // Step 2: Get the phone number resource ID
-  // The number order creates a phone_number resource — look it up
-  const lookupRes = await telnyxFetch(
-    `/phone_numbers?filter[phone_number]=${encodeURIComponent(phoneNumber)}`
-  );
+  // Step 2: Poll for the phone number resource with exponential backoff
+  const delays = [1000, 2000, 4000, 8000]; // total wait: up to 15s
+  for (const delay of delays) {
+    await new Promise((r) => setTimeout(r, delay));
 
-  if (!lookupRes.ok) {
-    throw new Error(`Telnyx number lookup failed after purchase`);
-  }
-
-  const lookupData = await lookupRes.json();
-  const phoneResource = lookupData.data?.[0];
-
-  if (!phoneResource) {
-    // Number order may be pending — wait briefly and retry
-    await new Promise((r) => setTimeout(r, 2000));
-    const retryRes = await telnyxFetch(
+    const lookupRes = await telnyxFetch(
       `/phone_numbers?filter[phone_number]=${encodeURIComponent(phoneNumber)}`
     );
-    const retryData = await retryRes.json();
-    const retryResource = retryData.data?.[0];
-    if (!retryResource) {
-      throw new Error(`Telnyx number purchased but resource not found — order may be pending`);
+    if (lookupRes.ok) {
+      const lookupData = await lookupRes.json();
+      const phoneResource = lookupData.data?.[0];
+      if (phoneResource) {
+        return { connectionId: phoneResource.id, number: phoneNumber };
+      }
     }
-    return { connectionId: retryResource.id, number: phoneNumber };
   }
 
-  return { connectionId: phoneResource.id, number: phoneNumber };
+  // Order still pending after all retries — attempt to cancel to prevent orphaned charges
+  if (orderId) {
+    console.error(`[Telnyx] Number order ${orderId} still pending after 15s — attempting cancellation`);
+    try {
+      await telnyxFetch(`/number_orders/${orderId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ status: "cancelled" }),
+      });
+    } catch {
+      console.error(`CRITICAL: Failed to cancel Telnyx order ${orderId} for ${phoneNumber}. Manual cleanup required.`);
+    }
+  }
+
+  throw new Error(`Telnyx number order timed out — the order was cancelled. Please try again.`);
 }
 
 /**
