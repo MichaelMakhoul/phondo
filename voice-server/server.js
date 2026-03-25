@@ -817,9 +817,9 @@ wss.on("connection", (twilioWs) => {
                 onTranscript: ({ transcript, isFinal }) => {
                   if (!isFinal) return;
                   console.log(`[STT] Final: "${transcript}"`);
-                  session.bufferTranscript(transcript, (combined) => {
+                  session.bufferTranscript(transcript, (combined, inputType) => {
                     console.log(`[STT] Buffered: "${combined}"`);
-                    session.queueOrProcess(combined, (text) => handleUserSpeech(session, twilioWs, text));
+                    session.queueOrProcess(combined, (text) => handleUserSpeech(session, twilioWs, text, inputType));
                   });
                 },
                 onUtteranceEnd: () => {
@@ -994,9 +994,9 @@ wss.on("connection", (twilioWs) => {
             onTranscript: ({ transcript, isFinal }) => {
               if (!isFinal) return;
               console.log(`[STT] Final: "${transcript}"`);
-              session.bufferTranscript(transcript, (combined) => {
+              session.bufferTranscript(transcript, (combined, inputType) => {
                 console.log(`[STT] Buffered: "${combined}"`);
-                session.queueOrProcess(combined, (text) => handleUserSpeech(session, twilioWs, text));
+                session.queueOrProcess(combined, (text) => handleUserSpeech(session, twilioWs, text, inputType));
               });
             },
             onUtteranceEnd: () => {
@@ -1168,7 +1168,7 @@ const SIMPLE_RESPONSE_RE = /^(yeah?|yes|no|nope|ok(ay)?|sure|alright|correct|tha
  * Select which model to use based on conversation context.
  * Returns FAST_MODEL for simple turns, FULL_MODEL for complex ones.
  */
-function selectModel(session, transcript, hasTools) {
+function selectModel(session, transcript, hasTools, inputTypeAtFlush) {
   // If this is the first user message after greeting, use full model (intent unclear)
   if (session.messages.filter((m) => m.role === "user").length <= 1) {
     return { model: FULL_MODEL, reason: "first-turn" };
@@ -1185,8 +1185,8 @@ function selectModel(session, transcript, hasTools) {
   }
 
   // If the expected input type is structured (name, phone, etc.) and user is providing it → fast model
-  if (session._expectedInputType && session._expectedInputType !== "general") {
-    return { model: FAST_MODEL, reason: `providing-${session._expectedInputType}` };
+  if (inputTypeAtFlush && inputTypeAtFlush !== "general") {
+    return { model: FAST_MODEL, reason: `providing-${inputTypeAtFlush}` };
   }
 
   // Default: full model for anything that might need tools or complex reasoning
@@ -1253,7 +1253,7 @@ function pickToolFiller(session, lang, toolNames) {
   return pickFiller(session, lang, "tool_default");
 }
 
-async function handleUserSpeech(session, twilioWs, transcript) {
+async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush) {
   if (!session) return;
   session.isProcessing = true;
 
@@ -1271,7 +1271,7 @@ async function handleUserSpeech(session, twilioWs, transcript) {
 
     const llmOptions = buildLLMOptions(session, { includeTransfer: true });
     const hasTools = llmOptions.tools?.length > 0;
-    let { model: selectedModel, reason: modelReason } = selectModel(session, transcript, hasTools);
+    let { model: selectedModel, reason: modelReason } = selectModel(session, transcript, hasTools, inputTypeAtFlush);
     if (selectedModel !== FULL_MODEL) {
       console.log(`[Model] Using ${selectedModel} (reason: ${modelReason}) for: "${transcript.slice(0, 50)}"`);
     }
@@ -1770,7 +1770,7 @@ testWss.on("connection", (ws, req) => {
           }
           if (!isFinal) return;
           console.log(`[TestSTT] Final: "${transcript}"`);
-          session.bufferTranscript(transcript, (combined) => {
+          session.bufferTranscript(transcript, (combined, inputType) => {
             console.log(`[TestSTT] Buffered: "${combined}"`);
             session.queueOrProcess(combined, (text) => handleTestUserSpeech(session, ws, text));
           });
