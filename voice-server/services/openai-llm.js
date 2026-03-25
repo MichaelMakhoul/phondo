@@ -37,8 +37,9 @@ const DEFAULT_MODEL = process.env.LLM_MODEL || config.defaultModel;
 const MAX_RETRIES = 2;
 
 function getApiKey(explicitKey) {
-  if (explicitKey) return explicitKey;
-  return process.env[config.apiKeyEnv];
+  const key = explicitKey || process.env[config.apiKeyEnv];
+  if (!key) throw new Error(`LLM API key not configured — set ${config.apiKeyEnv} env var or pass key explicitly`);
+  return key;
 }
 
 // ─── Anthropic message format conversion ────────────────────────────────────
@@ -68,7 +69,8 @@ function toAnthropicMessages(messages) {
           args = typeof tc.function.arguments === "string"
             ? JSON.parse(tc.function.arguments)
             : tc.function.arguments;
-        } catch {
+        } catch (parseErr) {
+          console.error(`[LLM] Failed to parse tool arguments for ${tc.function?.name}:`, tc.function?.arguments?.slice?.(0, 200), parseErr.message);
           args = {};
         }
         content.push({
@@ -460,6 +462,11 @@ async function parseAnthropicStream(res, onSentence) {
             toolUses[idx].arguments += delta.partial_json;
           }
         }
+      }
+      // Handle Anthropic error events (overloaded, content filtering, etc.)
+      if (parsed.type === "error") {
+        const errMsg = parsed.error?.message || JSON.stringify(parsed);
+        throw new Error(`Anthropic stream error: ${errMsg}`);
       }
       // message_stop, content_block_stop, message_delta handled implicitly
     }

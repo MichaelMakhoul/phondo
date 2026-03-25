@@ -1061,26 +1061,31 @@ wss.on("connection", (twilioWs) => {
             }
           }
 
-          // Send greeting — if disclosure failed standalone, send it first then greeting separately
-          // to avoid one giant TTS request that causes long initial silence
+          // Send greeting — disclosure and greeting as separate TTS calls
           const greeting = getGreeting(context.assistant, context.organization.name, {
             isAfterHours,
             afterHoursConfig,
           });
-          try {
-            if (disclosurePrefix) {
+
+          // Handle disclosure fallback independently from greeting
+          if (disclosurePrefix) {
+            try {
               await sendTTS(session, twilioWs, disclosurePrefix.trim());
-            }
-            await sendTTS(session, twilioWs, greeting);
-            // Mark disclosure as played only after TTS succeeds (when greeting carries it)
-            if (disclosurePrefix) {
               session.recordingDisclosurePlayed = true;
+            } catch (err) {
+              console.error("[TTS] Failed to send recording disclosure:", err);
+              session.recordingDisclosureFailed = true;
             }
+          }
+
+          try {
+            await sendTTS(session, twilioWs, greeting);
+            session.addMessage("assistant", greeting);
           } catch (err) {
             console.error("[TTS] Failed to send greeting — caller will hear silence until they speak:", err);
+            // Don't add to history since caller never heard it — tell LLM to greet them
+            session.addMessage("system", "The greeting failed to play. The caller has not been greeted yet. Start by greeting them.");
           }
-          // Always add greeting to history so LLM context is consistent
-          session.addMessage("assistant", greeting);
           const greetingInputType = detectExpectedInput(greeting);
           session.setExpectedInputType(greetingInputType);
           console.log(`[InputDetect] After greeting: ${greetingInputType}`);
@@ -1175,17 +1180,26 @@ function selectModel(session, transcript, hasTools, inputTypeAtFlush) {
   }
 
   // If user's response is very short and matches simple patterns → fast model
-  if (SIMPLE_RESPONSE_RE.test(transcript.trim()) && transcript.trim().split(/\s+/).length <= 4) {
-    // But if the last assistant message asked a complex question or we're mid-tool-chain, use full
-    const lastAssistant = [...session.messages].reverse().find((m) => m.role === "assistant" && m.content);
+  // BUT only if tools aren't available (avoid nano making tool calls)
+  const trimmed = transcript.trim();
+  const wordCount = trimmed.split(/\s+/).length;
+  if (SIMPLE_RESPONSE_RE.test(trimmed) && wordCount <= 3 && !hasTools) {
+    return { model: FAST_MODEL, reason: "simple-response-no-tools" };
+  }
+
+  // If tools are available, short confirmations still use full model (might trigger booking)
+  if (SIMPLE_RESPONSE_RE.test(trimmed) && wordCount <= 3 && hasTools) {
+    // Check if last assistant message had tool_calls (mid-chain) — always full
+    const lastAssistant = [...session.messages].reverse().find((m) => m.role === "assistant");
     if (lastAssistant?.tool_calls) {
       return { model: FULL_MODEL, reason: "post-tool-call" };
     }
-    return { model: FAST_MODEL, reason: "simple-response" };
+    // Short confirmation with tools available — use full in case it triggers a booking
+    return { model: FULL_MODEL, reason: "confirmation-with-tools" };
   }
 
-  // If the expected input type is structured (name, phone, etc.) and user is providing it → fast model
-  if (inputTypeAtFlush && inputTypeAtFlush !== "general") {
+  // If the expected input type is structured (name, phone, etc.) and response is short → fast model
+  if (inputTypeAtFlush && inputTypeAtFlush !== "general" && wordCount <= 6) {
     return { model: FAST_MODEL, reason: `providing-${inputTypeAtFlush}` };
   }
 
@@ -1303,8 +1317,13 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
         }
       }, 1500);
 
+      // Strip tools when using fast model — nano should never make tool calls
+      const iterationOptions = selectedModel === FAST_MODEL
+        ? { ...llmOptions, tools: undefined, tool_choice: undefined }
+        : llmOptions;
+
       const result = await streamChatResponse(LLM_API_KEY, session.messages, {
-        ...llmOptions,
+        ...iterationOptions,
         model: selectedModel,
         onSentence: (sentence) => {
           if (fillerTimer) clearTimeout(fillerTimer);
@@ -1334,15 +1353,22 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
         const shortChunks = sentenceQueue.filter((c) => c.length < 20).length;
         const modelTag = selectedModel === FAST_MODEL ? "fast" : "full";
         console.log(`[LLM:${modelTag}] (${Date.now() - t0}ms) streamed ${sentenceQueue.length} chunks (avg=${avgChunkLen}ch, short=${shortChunks}): "${reply}"`);
+        // Nano quality check — flag suspiciously short or empty responses
+        if (selectedModel === FAST_MODEL && reply && reply.split(/\s+/).length < 3) {
+          console.warn(`[Model:quality] Nano produced very short reply (${reply.length} chars): "${reply}"`);
+        }
         break;
       }
 
       // Tool call response — execute tools and loop (no streaming for tool calls)
       if (result.type === "tool_calls") {
-        // After tool calls, always use full model for the follow-up response
-        selectedModel = FULL_MODEL;
         const toolCalls = result.toolCalls;
-        console.log(`[LLM] (${Date.now() - t0}ms) Tool calls: ${toolCalls.map((tc) => tc.function.name).join(", ")}`);
+        // After tool calls, always use full model for the follow-up response
+        if (selectedModel === FAST_MODEL) {
+          console.warn(`[Model] Unexpected tool call from ${selectedModel} — upgrading to ${FULL_MODEL}`);
+        }
+        selectedModel = FULL_MODEL;
+        console.log(`[LLM:full] (${Date.now() - t0}ms) Tool calls: ${toolCalls.map((tc) => tc.function.name).join(", ")}`);
 
         // Add the assistant's tool call message to conversation
         session.messages.push(result.message);
@@ -1476,16 +1502,17 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
  */
 // Strip markdown formatting that LLMs sometimes include (bold, headers, etc.)
 function stripMarkdown(text) {
-  return text
-    .replace(/\*\*([^*]+)\*\*/g, "$1")   // **bold** → bold
-    .replace(/\*([^*]+)\*/g, "$1")        // *italic* → italic
-    .replace(/^#{1,6}\s+/gm, "")          // ### headers → text
-    .replace(/`([^`]+)`/g, "$1")          // `code` → code
-    .replace(/~~([^~]+)~~/g, "$1")        // ~~strikethrough~~ → text
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1") // [link](url) → link
-    .replace(/^[-*]\s+/gm, "")            // - bullet items → text
-    .replace(/^\d+\.\s+/gm, "")           // 1. numbered items → text
-    .replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{FE00}-\u{FE0F}\u{1F900}-\u{1F9FF}\u{200D}\u{20E3}\u{FE0F}]/gu, ""); // strip emojis
+  let clean = text
+    .replace(/\*{1,3}([^*]+)\*{1,3}/g, "$1") // *, **, *** → content (handles bold, italic, bold-italic)
+    .replace(/^#{1,6}\s+/gm, "")              // ### headers → text
+    .replace(/`([^`]+)`/g, "$1")              // `code` → code
+    .replace(/~~([^~]+)~~/g, "$1")            // ~~strikethrough~~ → text
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")  // [link](url) → link
+    .replace(/^[-*]\s+/gm, "")                // - bullet items → text
+    .replace(/^\d+\.\s+/gm, "")               // 1. numbered items → text
+    .replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{FE00}-\u{FE0F}\u{1F900}-\u{1F9FF}\u{1FA00}-\u{1FAFF}\u{200D}\u{20E3}]/gu, ""); // strip emojis
+  clean = clean.trim();
+  return clean || text.trim(); // fallback to original if stripping removed everything
 }
 
 async function sendTTS(session, twilioWs, text) {
