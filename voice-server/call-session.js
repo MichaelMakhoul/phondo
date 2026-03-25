@@ -221,10 +221,13 @@ class CallSession {
       }
     }
 
+    // Capture input type before reset — callback may need it for model selection
+    const inputTypeAtFlush = this._expectedInputType;
+
     // Reset to general after flushing
     this._expectedInputType = "general";
 
-    if (combined && cb) cb(combined);
+    if (combined && cb) cb(combined, inputTypeAtFlush);
   }
 
   /**
