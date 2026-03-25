@@ -76,7 +76,7 @@ function sanitizeForPrompt(str) {
     .slice(0, 200);                   // cap length
 }
 
-function buildSchedulingSection(timezone, businessHours, defaultAppointmentDuration, calendarEnabled, serviceTypes) {
+function buildSchedulingSection(timezone, businessHours, defaultAppointmentDuration, calendarEnabled, serviceTypes, options = {}) {
   const lines = [];
   lines.push("TIMEZONE & SCHEDULING:");
 
@@ -162,8 +162,22 @@ function buildSchedulingSection(timezone, businessHours, defaultAppointmentDurat
 
     lines.push(
       "",
+      "IMPORTANT — TIME AWARENESS:",
+      "After calling get_current_datetime, note the current time. When presenting availability for TODAY, NEVER suggest any time slot that has already passed. Only offer slots that are at least 30 minutes in the future. If all of today's slots have passed, proactively suggest the next available day instead of listing past times.",
+      "",
+      "IMPORTANT — PRESENTING AVAILABILITY:",
+      "Do NOT list every individual time slot — it sounds robotic and overwhelming on a phone call. Instead, summarize availability naturally:",
+      "- Good: 'We have availability tomorrow morning between 8 and 11, with appointments every 45 minutes. Would morning or later in the day work better for you?'",
+      "- Good: 'The earliest I can get you in is tomorrow at 8:45 AM. Would that work, or would you prefer later in the day?'",
+      "- Bad: 'The available times are 8 AM, 8:45 AM, 9:30 AM, 10:15 AM, 11 AM, 11:45 AM, 12:30 PM...'",
+      "Keep it conversational. Mention the appointment duration so the caller understands why slots start at specific times (e.g., 'Appointments are 45 minutes, so the closest to 9 AM would be either 8:45 or 9:30').",
+      "If the caller asks for a specific time that falls between slots, briefly explain why and offer the nearest options.",
+      "",
       "IMPORTANT — ALTERNATIVE TIMES:",
       "If the requested appointment time is not available, you MUST present the alternative available times to the caller and get their explicit confirmation before booking. Never silently substitute a different date or time. Always say something like 'That time isn't available, but I have [alternatives]. Which would you prefer?' and wait for the caller to choose.",
+      options.flexibleBooking
+        ? "If the caller insists on a specific time that falls between available slots, book them into the nearest available slot that covers their preferred time (e.g., if they want 9 AM and slots are 8:45 and 9:30, book 8:45 since it covers the 9 AM window). Briefly explain: 'I'll book you in at 8:45 — that appointment runs until 9:30, so you'll be covered at 9.' Always confirm before booking."
+        : "You can ONLY book into slots returned by check_availability. Never book a time that wasn't in the available slots, even if the caller insists. If the caller insists on an exact time that doesn't match any slot, say: 'I can only book into the available time slots. If you need a specific time, I can take a message and have the office call you back to arrange it.' Then offer to take a message.",
       "",
       "APPOINTMENT PRIVACY:",
       "Never reveal details of other people's bookings. When a caller wants to cancel or check their appointment, verify their identity first (ask for their name and confirm with the phone number on file). Only share appointment details with the person who booked it. If you cannot verify the caller's identity, ask them to call back during business hours."
@@ -467,7 +481,7 @@ function buildPromptFromConfig(config, context) {
   // 5. Timezone, business hours & scheduling
   // calendarEnabled is already adjusted by the caller (server.js resolveAfterHoursState)
   // when after-hours + disableScheduling apply
-  sections.push(buildSchedulingSection(context.timezone, context.businessHours, context.defaultAppointmentDuration, context.calendarEnabled, context.serviceTypes));
+  sections.push(buildSchedulingSection(context.timezone, context.businessHours, context.defaultAppointmentDuration, context.calendarEnabled, context.serviceTypes, { flexibleBooking: context.assistant?.settings?.flexibleBooking }));
 
   // 6. Industry guidelines
   const guidelines = getIndustryGuidelines(context.industry);
@@ -591,7 +605,7 @@ function buildSystemPrompt(assistant, organization, knowledgeBase, options) {
   }
 
   // Append scheduling section
-  systemPrompt += `\n\n${buildSchedulingSection(organization.timezone, organization.businessHours, organization.defaultAppointmentDuration, calendarEnabled, serviceTypes)}`;
+  systemPrompt += `\n\n${buildSchedulingSection(organization.timezone, organization.businessHours, organization.defaultAppointmentDuration, calendarEnabled, serviceTypes, { flexibleBooking: assistant?.settings?.flexibleBooking })}`;
 
   // Append caller ID and language rules
   systemPrompt += `\n\nIMPORTANT RULES:`;

@@ -160,6 +160,9 @@ export function AssistantBuilder({
   const [recordingDisclosure, setRecordingDisclosure] = useState(
     assistant.settings?.recordingDisclosure ?? DEFAULT_RECORDING_DISCLOSURE
   );
+  const [flexibleBooking, setFlexibleBooking] = useState(
+    assistant.settings?.flexibleBooking ?? false
+  );
 
   // Transfer rules state
   const [transferRules, setTransferRules] = useState(initialTransferRules);
@@ -259,6 +262,7 @@ export function AssistantBuilder({
             spamFilterEnabled,
             recordingEnabled,
             recordingDisclosure,
+            flexibleBooking,
           },
           promptConfig: useGuidedBuilder ? promptConfig : null,
           afterHoursConfig: promptConfig?.behaviors?.afterHoursHandling
@@ -1081,6 +1085,22 @@ export function AssistantBuilder({
                 <Switch
                   checked={spamFilterEnabled}
                   onCheckedChange={setSpamFilterEnabled}
+                />
+              </div>
+
+              <div className="flex items-center justify-between">
+                <div>
+                  <Label className="flex items-center gap-2">
+                    <Clock className="h-4 w-4" />
+                    Flexible Booking
+                  </Label>
+                  <p className="text-xs text-muted-foreground">
+                    When a caller insists on a time between slots, book the nearest available slot instead of taking a message
+                  </p>
+                </div>
+                <Switch
+                  checked={flexibleBooking}
+                  onCheckedChange={setFlexibleBooking}
                 />
               </div>
 
