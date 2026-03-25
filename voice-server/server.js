@@ -825,6 +825,10 @@ wss.on("connection", (twilioWs) => {
                 language: session.language,
                 onTranscript: ({ transcript, isFinal }) => {
                   if (!isFinal) return;
+                  if (session.isSpeaking && transcript.trim().split(/\s+/).length <= 3) {
+                    console.log(`[STT] Dropped (echo suppression while AI speaking): "${transcript}"`);
+                    return;
+                  }
                   console.log(`[STT] Final: "${transcript}"`);
                   session.bufferTranscript(transcript, (combined, inputType) => {
                     console.log(`[STT] Buffered: "${combined}"`);
@@ -1002,6 +1006,13 @@ wss.on("connection", (twilioWs) => {
             language: session.language,
             onTranscript: ({ transcript, isFinal }) => {
               if (!isFinal) return;
+              // Echo suppression: drop STT transcripts that arrive while AI is speaking.
+              // These are typically the AI's own TTS output picked up by the caller's mic.
+              // Only allow through if the transcript is substantial (>3 words = likely real user speech).
+              if (session.isSpeaking && transcript.trim().split(/\s+/).length <= 3) {
+                console.log(`[STT] Dropped (echo suppression while AI speaking): "${transcript}"`);
+                return;
+              }
               console.log(`[STT] Final: "${transcript}"`);
               session.bufferTranscript(transcript, (combined, inputType) => {
                 console.log(`[STT] Buffered: "${combined}"`);
