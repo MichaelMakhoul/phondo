@@ -84,8 +84,8 @@ function openDeepgramStream(apiKey, { onTranscript, onUtteranceEnd, onError, onC
     `&language=${lang}` +
     "&punctuate=true" +
     "&interim_results=true" +
-    "&endpointing=500" +
-    "&utterance_end_ms=1500" +
+    "&endpointing=300" +
+    "&utterance_end_ms=1000" +
     keytermsParam;
 
   const ws = new WebSocket(url, {

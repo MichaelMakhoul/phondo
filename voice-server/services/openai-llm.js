@@ -1,8 +1,36 @@
-const DEFAULT_MODEL = "gpt-4.1-mini";
+// LLM provider configuration — supports OpenAI-compatible APIs (OpenAI, Gemini, etc.)
+// Set LLM_PROVIDER env var to switch: "gemini" (default), "openai"
+const LLM_PROVIDER = process.env.LLM_PROVIDER || "gemini";
+
+const PROVIDER_CONFIG = {
+  openai: {
+    baseUrl: "https://api.openai.com/v1/chat/completions",
+    defaultModel: "gpt-4.1-mini",
+    apiKeyEnv: "OPENAI_API_KEY",
+    authHeader: (key) => `Bearer ${key}`,
+    name: "OpenAI",
+  },
+  gemini: {
+    baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+    defaultModel: "gemini-2.5-flash",
+    apiKeyEnv: "GEMINI_API_KEY",
+    authHeader: (key) => `Bearer ${key}`,
+    name: "Gemini",
+  },
+};
+
+const config = PROVIDER_CONFIG[LLM_PROVIDER] || PROVIDER_CONFIG.gemini;
+const DEFAULT_MODEL = process.env.LLM_MODEL || config.defaultModel;
 const MAX_RETRIES = 2;
 
+// Resolve API key at startup
+function getApiKey(explicitKey) {
+  if (explicitKey) return explicitKey;
+  return process.env[config.apiKeyEnv];
+}
+
 /**
- * Calls OpenAI chat completion with optional tool/function calling support.
+ * Calls chat completion with optional tool/function calling support.
  * Retries on 429 rate-limit errors.
  *
  * @param {string} apiKey
@@ -15,6 +43,7 @@ async function getChatResponse(apiKey, messages, options) {
     throw new Error("getChatResponse called with empty messages array");
   }
 
+  const resolvedKey = getApiKey(apiKey);
   const model = options?.model || DEFAULT_MODEL;
 
   const body = {
@@ -34,11 +63,11 @@ async function getChatResponse(apiKey, messages, options) {
   }
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    const res = await fetch("https://api.openai.com/v1/chat/completions", {
+    const res = await fetch(config.baseUrl, {
       method: "POST",
       signal: AbortSignal.timeout(10_000),
       headers: {
-        Authorization: `Bearer ${apiKey}`,
+        Authorization: config.authHeader(resolvedKey),
         "Content-Type": "application/json",
       },
       body: JSON.stringify(body),
@@ -54,13 +83,13 @@ async function getChatResponse(apiKey, messages, options) {
 
     if (!res.ok) {
       const text = (await res.text()).slice(0, 500);
-      throw new Error(`OpenAI API error ${res.status}: ${text}`);
+      throw new Error(`${config.name} API error ${res.status}: ${text}`);
     }
 
     const data = await res.json();
 
     if (!data.choices || data.choices.length === 0) {
-      throw new Error("OpenAI returned no choices");
+      throw new Error(`${config.name} returned no choices`);
     }
 
     const message = data.choices[0].message;
@@ -72,13 +101,13 @@ async function getChatResponse(apiKey, messages, options) {
 
     const content = message?.content;
     if (!content) {
-      throw new Error(`OpenAI returned empty content (finish_reason: ${data.choices[0].finish_reason ?? "unknown"})`);
+      throw new Error(`${config.name} returned empty content (finish_reason: ${data.choices[0].finish_reason ?? "unknown"})`);
     }
 
     return { type: "content", content };
   }
 
-  throw new Error("OpenAI API rate limited after all retries");
+  throw new Error(`${config.name} API rate limited after all retries`);
 }
 
 // Sentence boundary regex — splits on . ! ? followed by whitespace.
@@ -103,6 +132,7 @@ async function streamChatResponse(apiKey, messages, options) {
     throw new Error("streamChatResponse called with empty messages array");
   }
 
+  const resolvedKey = getApiKey(apiKey);
   const model = options?.model || DEFAULT_MODEL;
   const onSentence = options?.onSentence;
 
@@ -123,11 +153,11 @@ async function streamChatResponse(apiKey, messages, options) {
   // Retry loop for rate limits (matching getChatResponse behavior)
   let res;
   for (let attempt = 0; attempt < 3; attempt++) {
-    res = await fetch("https://api.openai.com/v1/chat/completions", {
+    res = await fetch(config.baseUrl, {
       method: "POST",
       signal: AbortSignal.timeout(15_000),
       headers: {
-        Authorization: `Bearer ${apiKey}`,
+        Authorization: config.authHeader(resolvedKey),
         "Content-Type": "application/json",
       },
       body: JSON.stringify(body),
@@ -136,7 +166,7 @@ async function streamChatResponse(apiKey, messages, options) {
     if (res.status === 429 && attempt < 2) {
       const retryAfter = res.headers.get("retry-after");
       const waitMs = retryAfter ? Number(retryAfter) * 1000 : 1000 * (attempt + 1);
-      console.warn(`[OpenAI] Stream rate limited (429), retrying in ${waitMs}ms (attempt ${attempt + 1}/3)`);
+      console.warn(`[LLM] Stream rate limited (429), retrying in ${waitMs}ms (attempt ${attempt + 1}/3)`);
       await new Promise((r) => setTimeout(r, waitMs));
       continue;
     }
@@ -146,7 +176,7 @@ async function streamChatResponse(apiKey, messages, options) {
 
   if (!res.ok) {
     const text = (await res.text()).slice(0, 500);
-    throw new Error(`OpenAI API error ${res.status}: ${text}`);
+    throw new Error(`${config.name} API error ${res.status}: ${text}`);
   }
 
   // Parse SSE stream
@@ -179,9 +209,7 @@ async function streamChatResponse(apiKey, messages, options) {
       try {
         parsed = JSON.parse(data);
       } catch (parseErr) {
-        // Context is intentionally minimal here — this function receives only the messages array,
-        // not the session/call context. The truncated chunk below is usually sufficient to diagnose.
-        console.warn("[OpenAI] Failed to parse SSE chunk (possible incomplete JSON in stream):", data.slice(0, 200));
+        console.warn(`[LLM] Failed to parse SSE chunk (possible incomplete JSON in stream):`, data.slice(0, 200));
         continue;
       }
 
@@ -214,14 +242,15 @@ async function streamChatResponse(apiKey, messages, options) {
 
         // Check for sentence boundaries and fire callback
         // Only split if the first sentence is long enough to be worth sending as a
-        // separate TTS chunk. Very short fragments (e.g., "Sure!" or "M-A-K.") create
-        // audible gaps when they need their own TTS call.
+        // separate TTS chunk. Very short fragments (e.g., "M-A-K.") create
+        // audible gaps when they need their own TTS call. Threshold lowered to
+        // 30 chars to get first audio out faster (latency optimization).
         if (onSentence) {
           while (SENTENCE_BREAK.test(textBuffer)) {
             const parts = textBuffer.split(SENTENCE_BREAK);
             const candidate = parts[0];
             // Don't split if the first chunk is very short — accumulate more text
-            if (candidate.length < 40 && parts.length > 1 && textBuffer.length < 120) {
+            if (candidate.length < 30 && parts.length > 1 && textBuffer.length < 100) {
               break; // Wait for more text to accumulate
             }
             const sentence = parts.shift();
@@ -254,10 +283,10 @@ async function streamChatResponse(apiKey, messages, options) {
   }
 
   if (!fullContent) {
-    throw new Error("OpenAI stream returned no content");
+    throw new Error(`${config.name} stream returned no content`);
   }
 
   return { type: "content", content: fullContent };
 }
 
-module.exports = { getChatResponse, streamChatResponse };
+module.exports = { getChatResponse, streamChatResponse, LLM_PROVIDER, DEFAULT_MODEL };
