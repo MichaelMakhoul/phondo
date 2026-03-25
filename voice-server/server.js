@@ -1157,6 +1157,42 @@ function buildLLMOptions(session, { includeTransfer = false } = {}) {
   return tools.length > 0 ? { tools } : {};
 }
 
+// Dual-model strategy: use fast model (nano) for simple responses, full model (mini) for complex ones
+const FAST_MODEL = process.env.LLM_FAST_MODEL || "gpt-4.1-nano";
+const FULL_MODEL = process.env.LLM_MODEL || DEFAULT_MODEL;
+
+// Patterns that indicate the user's response is simple (confirmation, short answer, goodbye)
+const SIMPLE_RESPONSE_RE = /^(yeah?|yes|no|nope|ok(ay)?|sure|alright|correct|that'?s (right|correct|all|it)|thanks?( you)?|thank you|bye|goodbye|see ya|likewise|sounds good|perfect|great|go ahead|please|please do)\b/i;
+
+/**
+ * Select which model to use based on conversation context.
+ * Returns FAST_MODEL for simple turns, FULL_MODEL for complex ones.
+ */
+function selectModel(session, transcript, hasTools) {
+  // If this is the first user message after greeting, use full model (intent unclear)
+  if (session.messages.filter((m) => m.role === "user").length <= 1) {
+    return { model: FULL_MODEL, reason: "first-turn" };
+  }
+
+  // If user's response is very short and matches simple patterns → fast model
+  if (SIMPLE_RESPONSE_RE.test(transcript.trim()) && transcript.trim().split(/\s+/).length <= 4) {
+    // But if the last assistant message asked a complex question or we're mid-tool-chain, use full
+    const lastAssistant = [...session.messages].reverse().find((m) => m.role === "assistant" && m.content);
+    if (lastAssistant?.tool_calls) {
+      return { model: FULL_MODEL, reason: "post-tool-call" };
+    }
+    return { model: FAST_MODEL, reason: "simple-response" };
+  }
+
+  // If the expected input type is structured (name, phone, etc.) and user is providing it → fast model
+  if (session._expectedInputType && session._expectedInputType !== "general") {
+    return { model: FAST_MODEL, reason: `providing-${session._expectedInputType}` };
+  }
+
+  // Default: full model for anything that might need tools or complex reasoning
+  return { model: FULL_MODEL, reason: "default" };
+}
+
 /**
  * Parse tool call arguments safely — returns empty object on parse failure.
  * @param {object} toolCall - OpenAI tool call object
@@ -1234,6 +1270,11 @@ async function handleUserSpeech(session, twilioWs, transcript) {
     session.addMessage("user", transcript);
 
     const llmOptions = buildLLMOptions(session, { includeTransfer: true });
+    const hasTools = llmOptions.tools?.length > 0;
+    let { model: selectedModel, reason: modelReason } = selectModel(session, transcript, hasTools);
+    if (selectedModel !== FULL_MODEL) {
+      console.log(`[Model] Using ${selectedModel} (reason: ${modelReason}) for: "${transcript.slice(0, 50)}"`);
+    }
     let reply = null;
 
     for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
@@ -1264,6 +1305,7 @@ async function handleUserSpeech(session, twilioWs, transcript) {
 
       const result = await streamChatResponse(LLM_API_KEY, session.messages, {
         ...llmOptions,
+        model: selectedModel,
         onSentence: (sentence) => {
           if (fillerTimer) clearTimeout(fillerTimer);
           sentenceQueue.push(sentence);
@@ -1290,12 +1332,15 @@ async function handleUserSpeech(session, twilioWs, transcript) {
           ? Math.round(sentenceQueue.reduce((s, c) => s + c.length, 0) / sentenceQueue.length)
           : 0;
         const shortChunks = sentenceQueue.filter((c) => c.length < 20).length;
-        console.log(`[LLM] (${Date.now() - t0}ms) streamed ${sentenceQueue.length} chunks (avg=${avgChunkLen}ch, short=${shortChunks}): "${reply}"`);
+        const modelTag = selectedModel === FAST_MODEL ? "fast" : "full";
+        console.log(`[LLM:${modelTag}] (${Date.now() - t0}ms) streamed ${sentenceQueue.length} chunks (avg=${avgChunkLen}ch, short=${shortChunks}): "${reply}"`);
         break;
       }
 
       // Tool call response — execute tools and loop (no streaming for tool calls)
       if (result.type === "tool_calls") {
+        // After tool calls, always use full model for the follow-up response
+        selectedModel = FULL_MODEL;
         const toolCalls = result.toolCalls;
         console.log(`[LLM] (${Date.now() - t0}ms) Tool calls: ${toolCalls.map((tc) => tc.function.name).join(", ")}`);
 
@@ -2004,7 +2049,7 @@ async function handleTestUserSpeech(session, ws, transcript) {
 
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`Voice server listening on port ${PORT}`);
-  console.log(`LLM provider: ${LLM_PROVIDER} (model: ${DEFAULT_MODEL})`);
+  console.log(`LLM provider: ${LLM_PROVIDER} (full: ${FULL_MODEL}, fast: ${FAST_MODEL})`);
   console.log(`TwiML endpoint: ${PUBLIC_URL}/twiml`);
   console.log(`WebSocket endpoint: ${WS_URL}`);
   if (TEST_CALL_SECRET) {
