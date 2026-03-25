@@ -128,14 +128,23 @@ class CallSession {
 
       // For structured inputs, check completeness before flushing
       if (this._expectedInputType !== "general") {
-        const { complete, reason } = validateInput(this._expectedInputType, combined);
-        if (complete) {
-          console.log(`[Buffer] Input validated (${this._expectedInputType}): ${reason}`);
+        // If the response is clearly natural language (no digits at all),
+        // don't wait for structured input — flush immediately.
+        // E.g., "it's the same one" when expecting a phone number.
+        const hasDigits = /\d/.test(combined) || extractSpokenDigits(combined).length > 0;
+        if (!hasDigits && combined.split(/\s+/).length >= 2) {
+          console.log(`[Buffer] Natural language response for type="${this._expectedInputType}" — flushing immediately`);
           this._flushAndReset();
         } else {
-          console.log(`[Buffer] Input incomplete (${this._expectedInputType}): ${reason} — waiting...`);
-          // Don't flush yet — debounce will restart on next STT final,
-          // or maxWait will force flush
+          const { complete, reason } = validateInput(this._expectedInputType, combined);
+          if (complete) {
+            console.log(`[Buffer] Input validated (${this._expectedInputType}): ${reason}`);
+            this._flushAndReset();
+          } else {
+            console.log(`[Buffer] Input incomplete (${this._expectedInputType}): ${reason} — waiting...`);
+            // Don't flush yet — debounce will restart on next STT final,
+            // or maxWait will force flush
+          }
         }
       } else {
         this._flushAndReset();

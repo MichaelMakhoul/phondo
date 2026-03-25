@@ -9,7 +9,7 @@ const http = require("http");
 const { WebSocketServer, WebSocket } = require("ws");
 const { CallSession } = require("./call-session");
 const { openDeepgramStream } = require("./services/deepgram-stt");
-const { getChatResponse, streamChatResponse } = require("./services/openai-llm");
+const { getChatResponse, streamChatResponse, LLM_PROVIDER, DEFAULT_MODEL } = require("./services/openai-llm");
 const { synthesizeSpeech, chunkAudioForTwilio } = require("./services/deepgram-tts");
 const { loadCallContext, loadTestCallContext } = require("./lib/call-context");
 const { buildSystemPrompt, getGreeting } = require("./lib/prompt-builder");
@@ -44,9 +44,11 @@ function maskPhone(phone) {
 }
 
 // Validate required env vars before deriving any constants
+// LLM API key env var depends on provider
+const llmKeyEnv = LLM_PROVIDER === "openai" ? "OPENAI_API_KEY" : "GEMINI_API_KEY";
 const REQUIRED_ENV = [
   "DEEPGRAM_API_KEY",
-  "OPENAI_API_KEY",
+  llmKeyEnv,
   "PUBLIC_URL",
   "TWILIO_ACCOUNT_SID",
   "TWILIO_AUTH_TOKEN",
@@ -62,7 +64,7 @@ for (const key of REQUIRED_ENV) {
 
 const PORT = process.env.PORT || 3001;
 const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY;
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const LLM_API_KEY = process.env.GEMINI_API_KEY || process.env.OPENAI_API_KEY;
 const PUBLIC_URL = process.env.PUBLIC_URL;
 const WS_SECRET = process.env.TWILIO_AUTH_TOKEN;
 const WS_URL = PUBLIC_URL.replace(/^http/, "ws") + "/ws/audio";
@@ -833,8 +835,12 @@ wss.on("connection", (twilioWs) => {
                     .finally(() => setTimeout(() => twilioWs.close(), 2000));
                 },
                 onClose: (code) => {
-                  if (code !== 1000 && code !== 1005 && session) {
+                  if (code !== 1000 && code !== 1005 && session && !session.callFailed) {
                     console.error(`[STT] Connection lost during active call (callSid=${session.callSid})`);
+                    session.callFailed = true;
+                    session.endedReason = "stt-connection-lost";
+                    sendTTS(session, twilioWs, getErrorMsg(session.language, "troubleRepeat"))
+                      .catch((ttsErr) => console.error("[STT] Failed to send reconnect message:", ttsErr));
                   }
                 },
               }, { industry: session.organization?.industry });
@@ -1011,8 +1017,12 @@ wss.on("connection", (twilioWs) => {
                 });
             },
             onClose: (code) => {
-              if (code !== 1000 && code !== 1005 && session) {
+              if (code !== 1000 && code !== 1005 && session && !session.callFailed) {
                 console.error(`[STT] Connection lost during active call (callSid=${session.callSid})`);
+                session.callFailed = true;
+                session.endedReason = "stt-connection-lost";
+                sendTTS(session, twilioWs, getErrorMsg(session.language, "troubleRepeat"))
+                  .catch((ttsErr) => console.error("[STT] Failed to send reconnect message:", ttsErr));
               }
             },
           }, { industry: session.organization?.industry });
@@ -1164,6 +1174,29 @@ const MAX_TOOL_ITERATIONS = 3;
  * Handle final user transcript: stream LLM response sentence-by-sentence,
  * synthesizing and sending TTS for each sentence as it arrives.
  */
+// Filler phrases to play while LLM is processing (rotated to avoid repetition)
+const FILLER_PHRASES = {
+  en: {
+    general: ["Sure.", "Of course.", "One moment."],
+    tool: ["One moment, let me check that for you.", "Let me look that up."],
+    phone: ["One moment while I look up your number."],
+  },
+  es: {
+    general: ["Claro.", "Por supuesto.", "Un momento."],
+    tool: ["Un momento, déjeme verificar eso.", "Permítame revisar."],
+    phone: ["Un momento mientras busco su número."],
+  },
+};
+let _fillerIndex = 0;
+
+function pickFiller(lang, type) {
+  const phrases = FILLER_PHRASES[lang] || FILLER_PHRASES.en;
+  const pool = phrases[type] || phrases.general;
+  const phrase = pool[_fillerIndex % pool.length];
+  _fillerIndex++;
+  return phrase;
+}
+
 async function handleUserSpeech(session, twilioWs, transcript) {
   if (!session) return;
   session.isProcessing = true;
@@ -1190,10 +1223,28 @@ async function handleUserSpeech(session, twilioWs, transcript) {
       const sentenceQueue = [];
       let ttsChain = Promise.resolve();
       let holdStopped = false;
+      let fillerSent = false;
 
-      const result = await streamChatResponse(OPENAI_API_KEY, session.messages, {
+      // Filler word timer: if LLM hasn't started streaming in 1.5s, play a filler
+      const fillerTimer = setTimeout(async () => {
+        if (!holdStopped && !fillerSent) {
+          fillerSent = true;
+          hold.stop();
+          holdStopped = true;
+          // Pick context-aware filler
+          const fillerType = session._expectedInputType === "phone" ? "phone" : "general";
+          const filler = pickFiller(session.language || "en", fillerType);
+          console.log(`[Filler] Playing "${filler}" (type=${fillerType})`);
+          ttsChain = ttsChain.then(() => sendTTS(session, twilioWs, filler)).catch((err) => {
+            console.error("[Filler] TTS error:", err.message);
+          });
+        }
+      }, 1500);
+
+      const result = await streamChatResponse(LLM_API_KEY, session.messages, {
         ...llmOptions,
         onSentence: (sentence) => {
+          clearTimeout(fillerTimer);
           sentenceQueue.push(sentence);
           // Stop hold audio before first TTS sentence
           if (!holdStopped) {
@@ -1207,6 +1258,8 @@ async function handleUserSpeech(session, twilioWs, transcript) {
           });
         },
       });
+
+      clearTimeout(fillerTimer);
 
       if (result.type === "content") {
         reply = result.content;
@@ -1223,6 +1276,17 @@ async function handleUserSpeech(session, twilioWs, transcript) {
 
         // Add the assistant's tool call message to conversation
         session.messages.push(result.message);
+
+        // Play a filler while tool executes (booking, availability, etc.)
+        if (!holdStopped) {
+          hold.stop();
+          holdStopped = true;
+        }
+        const toolFiller = pickFiller(session.language || "en", "tool");
+        console.log(`[Filler] Playing tool filler: "${toolFiller}" (tools: ${toolCalls.map(tc => tc.function.name).join(", ")})`);
+        ttsChain = ttsChain.then(() => sendTTS(session, twilioWs, toolFiller)).catch((err) => {
+          console.error("[Filler] Tool filler TTS error:", err.message);
+        });
 
         // Execute each tool call and add results
         for (const toolCall of toolCalls) {
@@ -1788,7 +1852,7 @@ async function handleTestUserSpeech(session, ws, transcript) {
       let ttsChain = Promise.resolve();
       let holdStopped = false;
 
-      const result = await streamChatResponse(OPENAI_API_KEY, session.messages, {
+      const result = await streamChatResponse(LLM_API_KEY, session.messages, {
         ...llmOptions,
         onSentence: (sentence) => {
           sentenceCount++;
@@ -1897,8 +1961,9 @@ async function handleTestUserSpeech(session, ws, transcript) {
   }
 }
 
-server.listen(PORT, () => {
+server.listen(PORT, "0.0.0.0", () => {
   console.log(`Voice server listening on port ${PORT}`);
+  console.log(`LLM provider: ${LLM_PROVIDER} (model: ${DEFAULT_MODEL})`);
   console.log(`TwiML endpoint: ${PUBLIC_URL}/twiml`);
   console.log(`WebSocket endpoint: ${WS_URL}`);
   if (TEST_CALL_SECRET) {
