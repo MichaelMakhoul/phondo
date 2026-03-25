@@ -83,6 +83,7 @@ function openDeepgramStream(apiKey, { onTranscript, onUtteranceEnd, onError, onC
     `&model=${model}` +
     `&language=${lang}` +
     "&punctuate=true" +
+    "&smart_format=true" +
     "&interim_results=true" +
     "&endpointing=300" +
     "&utterance_end_ms=1000" +
