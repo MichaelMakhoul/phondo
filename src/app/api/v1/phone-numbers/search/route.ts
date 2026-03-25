@@ -44,8 +44,20 @@ export async function POST(request: Request) {
     const body = await request.json();
     const { areaCode, limit = 10 } = body;
 
+    if (config.phoneProvider === "telnyx") {
+      const { searchAvailableNumbers } = await import("@/lib/telnyx/client");
+      const numbers = await searchAvailableNumbers(config.twilioCountryCode, areaCode, limit);
+      return NextResponse.json(
+        numbers.map((n) => ({
+          number: n.number,
+          locality: n.locality,
+          region: n.region,
+          areaCode: areaCode || undefined,
+        }))
+      );
+    }
+
     if (config.phoneProvider === "twilio") {
-      // Real Twilio search for AU (and future Twilio countries)
       const { searchAvailableNumbers } = await import("@/lib/twilio/client");
       const numbers = await searchAvailableNumbers(config.twilioCountryCode, areaCode, limit);
       return NextResponse.json(
@@ -70,10 +82,16 @@ export async function POST(request: Request) {
   } catch (error: any) {
     console.error("Error searching phone numbers:", error);
     const message = error?.message || "Internal server error";
-    // Surface Twilio config errors clearly
+    // Surface provider config errors clearly
     if (message.includes("TWILIO_ACCOUNT_SID") || message.includes("TWILIO_AUTH_TOKEN")) {
       return NextResponse.json(
         { error: "Twilio is not configured. Please add TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN to your environment variables." },
+        { status: 503 }
+      );
+    }
+    if (message.includes("TELNYX_API_KEY")) {
+      return NextResponse.json(
+        { error: "Telnyx is not configured. Please add TELNYX_API_KEY to your environment variables." },
         { status: 503 }
       );
     }

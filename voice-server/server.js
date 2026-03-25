@@ -326,6 +326,76 @@ app.post("/twiml", async (req, res) => {
 });
 
 /**
+ * TeXML endpoint — Telnyx-compatible version of /twiml.
+ * Telnyx TeXML uses the same XML format (TwiML-compatible) and the same
+ * WebSocket media stream protocol. The only difference is webhook signature
+ * validation and the endpoint URL used in action callbacks.
+ */
+app.post("/texml", async (req, res) => {
+  // Telnyx signature validation (TODO: implement ed25519 verification when TELNYX_PUBLIC_KEY is set)
+  // For now, we validate that the request has Telnyx-specific headers
+  const telnyxSignature = req.headers["telnyx-signature-ed25519"];
+  if (!telnyxSignature && process.env.NODE_ENV === "production") {
+    console.warn("[TeXML] Missing Telnyx signature header — rejecting in production");
+    return res.status(403).send("Forbidden");
+  }
+
+  // The rest of the logic is identical to /twiml — Telnyx TeXML sends the same body fields
+  const called = req.body.Called || req.body.To || "";
+  const from = req.body.From || req.body.Caller || "";
+
+  const phoneRecord = await lookupPhoneNumber(called);
+
+  // AI enabled check (same as /twiml)
+  try {
+    const aiEnabled = await isAiEnabled(called, phoneRecord);
+    if (!aiEnabled) {
+      const callSid = req.body.CallSid || `ai_disabled_${Date.now()}`;
+      console.log(`[TeXML] AI disabled for ${called} — returning voicemail TeXML (callSid=${callSid})`);
+
+      let ctx = null;
+      try {
+        ctx = await getPhoneNumberContext(called, phoneRecord);
+        if (ctx) {
+          const callId = await createCallRecord({ orgId: ctx.organizationId, assistantId: ctx.assistantId, phoneNumberId: ctx.phoneNumberId, callerPhone: from, callSid });
+          if (callId) {
+            await completeCallRecord(callId, { status: "completed", durationSeconds: 0, outcome: "voicemail" });
+          }
+        }
+      } catch (logErr) {
+        console.warn("[TeXML] Failed to log AI-disabled call (non-fatal):", logErr.message);
+      }
+
+      const businessName = typeof ctx?.organizationName === "string" ? ctx.organizationName : null;
+      const greeting = businessName
+        ? `Thank you for calling ${escapeXml(businessName)}. We are unable to take your call right now. Please leave a message after the beep.`
+        : `Thank you for calling. We are unable to take your call right now. Please leave a message after the beep.`;
+
+      return res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="Polly.Joanna">${greeting}</Say>
+  <Record maxLength="120" playBeep="true" />
+</Response>`);
+    }
+  } catch (err) {
+    console.error("[TeXML] isAiEnabled check threw (fail-open):", err.message);
+  }
+
+  // Default: AI answers — stream to the same WebSocket handler
+  const token = issueStreamToken(called, from, undefined, phoneRecord);
+  console.log(`[TeXML] Incoming call from=${maskPhone(from)} to=${called}, streaming to ${WS_URL}`);
+
+  res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Connect>
+    <Stream url="${escapeXml(WS_URL)}">
+      <Parameter name="auth_token" value="${escapeXml(token)}" />
+    </Stream>
+  </Connect>
+</Response>`);
+});
+
+/**
  * Transfer status callback — Twilio POSTs here after <Dial> completes.
  * If the target answered, we finish the call record.
  * If no-answer/busy/failed, we reconnect the caller to the AI.

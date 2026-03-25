@@ -164,8 +164,48 @@ export async function POST(request: Request) {
     let vapiPhoneNumberId: string;
     let phoneNumber: string;
     let twilioSid: string | null = null;
+    let telnyxConnectionId: string | null = null;
+    let telephonyProvider: "twilio" | "telnyx" = "twilio";
 
-    if (config.phoneProvider === "twilio") {
+    if (config.phoneProvider === "telnyx") {
+      // ── Telnyx flow: buy from Telnyx, assign to TeXML App ──
+      telephonyProvider = "telnyx";
+      const { searchAvailableNumbers, purchaseNumber, configureVoiceWebhook, configureSmsWebhook } =
+        await import("@/lib/telnyx/client");
+
+      // 1. Search Telnyx for a number matching area code
+      const available = await searchAvailableNumbers(config.twilioCountryCode, areaCode, 1);
+      if (available.length === 0) {
+        return NextResponse.json(
+          { error: `No phone numbers available for area code ${areaCode || "any"} in ${config.name}` },
+          { status: 404 }
+        );
+      }
+
+      // 2. Purchase from Telnyx
+      const purchased = await purchaseNumber(available[0].number);
+      telnyxConnectionId = purchased.connectionId;
+      phoneNumber = purchased.number;
+
+      // 3. Configure voice — assign to TeXML Application (routes calls to voice server /texml)
+      try {
+        await configureVoiceWebhook(telnyxConnectionId);
+      } catch (webhookErr) {
+        console.error(`[PhoneNumbers] Failed to configure Telnyx voice for ${phoneNumber}:`, webhookErr);
+        // Non-fatal — can be configured manually
+      }
+
+      // 3b. Configure SMS
+      try {
+        await configureSmsWebhook(telnyxConnectionId);
+      } catch (smsErr) {
+        console.error(`[PhoneNumbers] Failed to configure Telnyx SMS for ${phoneNumber}:`, smsErr);
+        // Non-fatal
+      }
+
+      // 4. No Vapi import for Telnyx numbers
+      vapiPhoneNumberId = "";
+    } else if (config.phoneProvider === "twilio") {
       // ── Twilio flow: buy from Twilio, configure voice webhook, silently import into Vapi ──
       const { searchAvailableNumbers, purchaseNumber, releaseNumber, configureVoiceWebhook, configureSmsWebhook, getTwilioCredentials } =
         await import("@/lib/twilio/client");
@@ -259,11 +299,13 @@ export async function POST(request: Request) {
       phone_number: phoneNumber,
       vapi_phone_number_id: vapiPhoneNumberId || null,
       twilio_sid: twilioSid,
+      telnyx_connection_id: telnyxConnectionId,
+      telephony_provider: telephonyProvider,
       friendly_name: resolvedFriendlyName,
       is_active: true,
       source_type: validatedData.sourceType,
-      // Twilio-provisioned numbers use self-hosted voice server
-      voice_provider: config.phoneProvider === "twilio" ? "self_hosted" : "vapi",
+      // Both Twilio and Telnyx numbers use self-hosted voice server
+      voice_provider: (config.phoneProvider === "twilio" || config.phoneProvider === "telnyx") ? "self_hosted" : "vapi",
     };
 
     if (validatedData.sourceType === "forwarded") {
@@ -283,7 +325,7 @@ export async function POST(request: Request) {
       .single();
 
     if (error) {
-      // Rollback: delete from Vapi (if we have one) + release from Twilio
+      // Rollback: delete from Vapi + release from carrier
       if (vapiPhoneNumberId) {
         try {
           await vapi.deletePhoneNumber(vapiPhoneNumberId);
@@ -298,6 +340,17 @@ export async function POST(request: Request) {
         } catch (e) {
           console.error(
             `CRITICAL: Orphaned Twilio number! SID=${twilioSid}, number=${phoneNumber}. Manual release required.`,
+            e
+          );
+        }
+      }
+      if (telnyxConnectionId) {
+        try {
+          const { releaseNumber } = await import("@/lib/telnyx/client");
+          await releaseNumber(telnyxConnectionId);
+        } catch (e) {
+          console.error(
+            `CRITICAL: Orphaned Telnyx number! ID=${telnyxConnectionId}, number=${phoneNumber}. Manual release required.`,
             e
           );
         }

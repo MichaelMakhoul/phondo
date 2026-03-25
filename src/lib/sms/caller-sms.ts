@@ -27,19 +27,25 @@ interface SMSSendResult {
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-async function resolveOrgTwilioNumber(
+async function resolveOrgPhoneNumber(
   orgId: string
-): Promise<string | null> {
+): Promise<{ phoneNumber: string; telephonyProvider: string } | null> {
   const supabase = createAdminClient();
   const { data, error } = await (supabase as any)
     .from("phone_numbers")
-    .select("phone_number")
+    .select("phone_number, telephony_provider")
     .eq("organization_id", orgId)
     .eq("is_active", true)
     .maybeSingle();
 
   if (error || !data) return null;
-  return data.phone_number;
+  return { phoneNumber: data.phone_number, telephonyProvider: data.telephony_provider || "twilio" };
+}
+
+// Backwards-compatible wrapper
+async function resolveOrgTwilioNumber(orgId: string): Promise<string | null> {
+  const result = await resolveOrgPhoneNumber(orgId);
+  return result?.phoneNumber || null;
 }
 
 async function isCallerOptedOut(
@@ -127,6 +133,28 @@ async function sendViaTwilio(
   return message.sid;
 }
 
+async function sendViaTelnyx(
+  to: string,
+  from: string,
+  body: string
+): Promise<string> {
+  const { sendSms } = await import("@/lib/telnyx/client");
+  const result = await sendSms(from, to, body);
+  return result.messageId;
+}
+
+async function sendSmsViaProvider(
+  to: string,
+  from: string,
+  body: string,
+  provider: string
+): Promise<string> {
+  if (provider === "telnyx") {
+    return sendViaTelnyx(to, from, body);
+  }
+  return sendViaTwilio(to, from, body);
+}
+
 // ─── Main send function ─────────────────────────────────────────────────────
 
 async function sendCallerSMS(params: {
@@ -159,11 +187,13 @@ async function sendCallerSMS(params: {
     return { sent: false, status: "blocked_spam", reason: "caller_is_spam" };
   }
 
-  // 4. Resolve org's Twilio number (once, reused for logging + sending)
-  const fromNumber = await resolveOrgTwilioNumber(orgId);
-  if (!fromNumber) {
+  // 4. Resolve org's phone number + provider
+  const phoneInfo = await resolveOrgPhoneNumber(orgId);
+  if (!phoneInfo) {
     return { sent: false, status: "failed", reason: "no_org_phone_number" };
   }
+  const fromNumber = phoneInfo.phoneNumber;
+  const smsProvider = phoneInfo.telephonyProvider;
 
   // 5. Opt-out check
   if (await isCallerOptedOut(callerPhone, orgId)) {
@@ -191,9 +221,9 @@ async function sendCallerSMS(params: {
     return { sent: false, status: "blocked_ratelimit", reason: "rate_limited" };
   }
 
-  // 7. Send via Twilio
+  // 7. Send via provider (Twilio or Telnyx)
   try {
-    const sid = await sendViaTwilio(callerPhone, fromNumber, messageBody);
+    const sid = await sendSmsViaProvider(callerPhone, fromNumber, messageBody, smsProvider);
     await logSMSSend({
       orgId,
       callerPhone,

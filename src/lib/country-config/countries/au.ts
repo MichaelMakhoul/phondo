@@ -157,6 +157,6 @@ export const AU_CONFIG: CountryConfig = {
   ],
   suspiciousAreaCodes: [],
   locale: "en-AU",
-  phoneProvider: "twilio",
+  phoneProvider: "telnyx",
   twilioCountryCode: "AU",
 };
