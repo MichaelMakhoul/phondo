@@ -769,6 +769,15 @@ wss.on("connection", (twilioWs) => {
       switch (msg.event) {
         case "connected":
           console.log("[Twilio] WebSocket connected");
+          // Keep WebSocket alive — send pings every 30s to prevent Fly.io proxy idle timeout
+          const pingInterval = setInterval(() => {
+            if (twilioWs.readyState === WebSocket.OPEN) {
+              twilioWs.ping();
+            } else {
+              clearInterval(pingInterval);
+            }
+          }, 30000);
+          twilioWs.on("close", () => clearInterval(pingInterval));
           break;
 
         case "start": {
@@ -1137,7 +1146,9 @@ wss.on("connection", (twilioWs) => {
     console.error(`[Twilio] WebSocket error (callSid=${session?.callSid}):`, err);
   });
 
-  twilioWs.on("close", () => {
+  twilioWs.on("close", (code, reason) => {
+    const reasonStr = reason ? reason.toString() : "";
+    console.log(`[Twilio] WebSocket closed (code=${code}, reason="${reasonStr}", callSid=${session?.callSid}, duration=${session?.getDurationSeconds?.() || 0}s)`);
     cleanupSession().catch((err) => {
       console.error("[Cleanup] Unhandled error in session cleanup:", err);
     });
