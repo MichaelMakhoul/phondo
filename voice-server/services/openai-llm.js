@@ -1,43 +1,158 @@
-// LLM provider configuration — supports OpenAI-compatible APIs (OpenAI, Gemini, etc.)
-// Set LLM_PROVIDER env var to switch: "gemini" (default), "openai"
-const LLM_PROVIDER = process.env.LLM_PROVIDER || "gemini";
+// LLM provider configuration — supports OpenAI, Anthropic, and Gemini
+// Set LLM_PROVIDER env var to switch: "anthropic" (default), "openai", "gemini"
+const LLM_PROVIDER = process.env.LLM_PROVIDER || "anthropic";
 
 const PROVIDER_CONFIG = {
   openai: {
-    baseUrl: "https://api.openai.com/v1/chat/completions",
     defaultModel: "gpt-4.1-mini",
     apiKeyEnv: "OPENAI_API_KEY",
-    authHeader: (key) => `Bearer ${key}`,
     name: "OpenAI",
+    type: "openai-compat",
+    baseUrl: "https://api.openai.com/v1/chat/completions",
+    authHeader: (key) => ({ Authorization: `Bearer ${key}` }),
   },
   gemini: {
-    baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
     defaultModel: "gemini-2.5-flash",
     apiKeyEnv: "GEMINI_API_KEY",
-    authHeader: (key) => `Bearer ${key}`,
     name: "Gemini",
+    type: "openai-compat",
+    baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+    authHeader: (key) => ({ Authorization: `Bearer ${key}` }),
+  },
+  anthropic: {
+    defaultModel: "claude-haiku-4-5-20251001",
+    apiKeyEnv: "ANTHROPIC_API_KEY",
+    name: "Anthropic",
+    type: "anthropic",
+    baseUrl: "https://api.anthropic.com/v1/messages",
+    authHeader: (key) => ({
+      "x-api-key": key,
+      "anthropic-version": "2023-06-01",
+    }),
   },
 };
 
-const config = PROVIDER_CONFIG[LLM_PROVIDER] || PROVIDER_CONFIG.gemini;
+const config = PROVIDER_CONFIG[LLM_PROVIDER] || PROVIDER_CONFIG.anthropic;
 const DEFAULT_MODEL = process.env.LLM_MODEL || config.defaultModel;
 const MAX_RETRIES = 2;
 
-// Resolve API key at startup
 function getApiKey(explicitKey) {
   if (explicitKey) return explicitKey;
   return process.env[config.apiKeyEnv];
 }
 
+// ─── Anthropic message format conversion ────────────────────────────────────
+
 /**
- * Calls chat completion with optional tool/function calling support.
- * Retries on 429 rate-limit errors.
- *
- * @param {string} apiKey
- * @param {Array<{ role: string, content: string } | { role: string, tool_call_id: string, content: string }>} messages
- * @param {{ model?: string, tools?: object[], tool_choice?: string }} [options]
- * @returns {Promise<{ type: "content", content: string } | { type: "tool_calls", toolCalls: object[], message: object }>}
+ * Convert OpenAI-style messages to Anthropic format.
+ * - Extracts system messages into a separate `system` param
+ * - Converts tool_calls/tool results to Anthropic content blocks
  */
+function toAnthropicMessages(messages) {
+  let system = "";
+  const converted = [];
+
+  for (const msg of messages) {
+    if (msg.role === "system") {
+      system += (system ? "\n\n" : "") + msg.content;
+      continue;
+    }
+
+    if (msg.role === "assistant" && msg.tool_calls) {
+      // Convert OpenAI tool_calls to Anthropic tool_use blocks
+      const content = [];
+      if (msg.content) content.push({ type: "text", text: msg.content });
+      for (const tc of msg.tool_calls) {
+        let args;
+        try {
+          args = typeof tc.function.arguments === "string"
+            ? JSON.parse(tc.function.arguments)
+            : tc.function.arguments;
+        } catch {
+          args = {};
+        }
+        content.push({
+          type: "tool_use",
+          id: tc.id,
+          name: tc.function.name,
+          input: args,
+        });
+      }
+      converted.push({ role: "assistant", content });
+      continue;
+    }
+
+    if (msg.role === "tool") {
+      // Convert OpenAI tool result to Anthropic tool_result block
+      converted.push({
+        role: "user",
+        content: [{
+          type: "tool_result",
+          tool_use_id: msg.tool_call_id,
+          content: msg.content,
+        }],
+      });
+      continue;
+    }
+
+    // Regular user/assistant messages
+    converted.push({ role: msg.role, content: msg.content });
+  }
+
+  return { system, messages: converted };
+}
+
+/**
+ * Convert OpenAI-style tools to Anthropic format.
+ */
+function toAnthropicTools(tools) {
+  if (!tools || tools.length === 0) return undefined;
+  return tools.map((t) => ({
+    name: t.function.name,
+    description: t.function.description,
+    input_schema: t.function.parameters,
+  }));
+}
+
+/**
+ * Parse Anthropic response into our common format.
+ */
+function parseAnthropicResponse(data) {
+  const content = data.content || [];
+  const textParts = content.filter((b) => b.type === "text").map((b) => b.text);
+  const toolUses = content.filter((b) => b.type === "tool_use");
+
+  if (toolUses.length > 0) {
+    const toolCalls = toolUses.map((tu) => ({
+      id: tu.id,
+      type: "function",
+      function: {
+        name: tu.name,
+        arguments: JSON.stringify(tu.input),
+      },
+    }));
+    // Build OpenAI-compatible assistant message for conversation history
+    const message = {
+      role: "assistant",
+      content: textParts.join("") || null,
+      tool_calls: toolCalls,
+    };
+    return { type: "tool_calls", toolCalls, message };
+  }
+
+  const text = textParts.join("");
+  if (!text) {
+    throw new Error(`Anthropic returned empty content (stop_reason: ${data.stop_reason ?? "unknown"})`);
+  }
+  return { type: "content", content: text };
+}
+
+// ─── Sentence splitting ─────────────────────────────────────────────────────
+
+const SENTENCE_BREAK = /(?<=[.!?])\s+/;
+
+// ─── Non-streaming ──────────────────────────────────────────────────────────
+
 async function getChatResponse(apiKey, messages, options) {
   if (!messages || messages.length === 0) {
     throw new Error("getChatResponse called with empty messages array");
@@ -46,30 +161,42 @@ async function getChatResponse(apiKey, messages, options) {
   const resolvedKey = getApiKey(apiKey);
   const model = options?.model || DEFAULT_MODEL;
 
-  const body = {
-    model,
-    messages,
-    max_tokens: 150,
-    temperature: 0.7,
-    stream: false,
-  };
+  let fetchUrl, headers, body;
 
-  // Add tools if provided (OpenAI function calling)
-  if (options?.tools && options.tools.length > 0) {
-    body.tools = options.tools;
-    body.tool_choice = options.tool_choice || "auto";
-    // Allow more tokens for tool call arguments
-    body.max_tokens = 300;
+  if (config.type === "anthropic") {
+    const { system, messages: anthropicMsgs } = toAnthropicMessages(messages);
+    fetchUrl = config.baseUrl;
+    headers = { ...config.authHeader(resolvedKey), "Content-Type": "application/json" };
+    body = {
+      model,
+      system: system || undefined,
+      messages: anthropicMsgs,
+      max_tokens: options?.tools?.length > 0 ? 300 : 150,
+    };
+    const tools = toAnthropicTools(options?.tools);
+    if (tools) body.tools = tools;
+  } else {
+    fetchUrl = config.baseUrl;
+    headers = { ...config.authHeader(resolvedKey), "Content-Type": "application/json" };
+    body = {
+      model,
+      messages,
+      max_tokens: 150,
+      temperature: 0.7,
+      stream: false,
+    };
+    if (options?.tools?.length > 0) {
+      body.tools = options.tools;
+      body.tool_choice = options.tool_choice || "auto";
+      body.max_tokens = 300;
+    }
   }
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    const res = await fetch(config.baseUrl, {
+    const res = await fetch(fetchUrl, {
       method: "POST",
       signal: AbortSignal.timeout(10_000),
-      headers: {
-        Authorization: config.authHeader(resolvedKey),
-        "Content-Type": "application/json",
-      },
+      headers,
       body: JSON.stringify(body),
     });
 
@@ -88,45 +215,29 @@ async function getChatResponse(apiKey, messages, options) {
 
     const data = await res.json();
 
+    if (config.type === "anthropic") {
+      return parseAnthropicResponse(data);
+    }
+
+    // OpenAI-compatible response
     if (!data.choices || data.choices.length === 0) {
       throw new Error(`${config.name} returned no choices`);
     }
-
     const message = data.choices[0].message;
-
-    // Check for tool calls
-    if (message.tool_calls && message.tool_calls.length > 0) {
+    if (message.tool_calls?.length > 0) {
       return { type: "tool_calls", toolCalls: message.tool_calls, message };
     }
-
-    const content = message?.content;
-    if (!content) {
+    if (!message?.content) {
       throw new Error(`${config.name} returned empty content (finish_reason: ${data.choices[0].finish_reason ?? "unknown"})`);
     }
-
-    return { type: "content", content };
+    return { type: "content", content: message.content };
   }
 
   throw new Error(`${config.name} API rate limited after all retries`);
 }
 
-// Sentence boundary regex — splits on . ! ? followed by whitespace.
-// Note: will split on abbreviations like "Dr. Smith" — acceptable for TTS
-// chunking since slightly early splits sound natural in speech.
-const SENTENCE_BREAK = /(?<=[.!?])\s+/;
+// ─── Streaming ──────────────────────────────────────────────────────────────
 
-/**
- * Streaming chat completion.
- * Calls `onSentence(text)` for each sentence boundary found in the stream,
- * allowing TTS to start before the full response is generated.
- *
- * For tool calls, returns the same shape as getChatResponse.
- *
- * @param {string} apiKey
- * @param {object[]} messages
- * @param {{ model?: string, tools?: object[], tool_choice?: string, onSentence?: (text: string) => void }} [options]
- * @returns {Promise<{ type: "content", content: string } | { type: "tool_calls", toolCalls: object[], message: object }>}
- */
 async function streamChatResponse(apiKey, messages, options) {
   if (!messages || messages.length === 0) {
     throw new Error("streamChatResponse called with empty messages array");
@@ -136,30 +247,45 @@ async function streamChatResponse(apiKey, messages, options) {
   const model = options?.model || DEFAULT_MODEL;
   const onSentence = options?.onSentence;
 
-  const body = {
-    model,
-    messages,
-    max_tokens: 150,
-    temperature: 0.7,
-    stream: true,
-  };
+  let fetchUrl, headers, body;
 
-  if (options?.tools && options.tools.length > 0) {
-    body.tools = options.tools;
-    body.tool_choice = options.tool_choice || "auto";
-    body.max_tokens = 300;
+  if (config.type === "anthropic") {
+    const { system, messages: anthropicMsgs } = toAnthropicMessages(messages);
+    fetchUrl = config.baseUrl;
+    headers = { ...config.authHeader(resolvedKey), "Content-Type": "application/json" };
+    body = {
+      model,
+      system: system || undefined,
+      messages: anthropicMsgs,
+      max_tokens: options?.tools?.length > 0 ? 300 : 150,
+      stream: true,
+    };
+    const tools = toAnthropicTools(options?.tools);
+    if (tools) body.tools = tools;
+  } else {
+    fetchUrl = config.baseUrl;
+    headers = { ...config.authHeader(resolvedKey), "Content-Type": "application/json" };
+    body = {
+      model,
+      messages,
+      max_tokens: 150,
+      temperature: 0.7,
+      stream: true,
+    };
+    if (options?.tools?.length > 0) {
+      body.tools = options.tools;
+      body.tool_choice = options.tool_choice || "auto";
+      body.max_tokens = 300;
+    }
   }
 
-  // Retry loop for rate limits (matching getChatResponse behavior)
+  // Retry loop for rate limits
   let res;
   for (let attempt = 0; attempt < 3; attempt++) {
-    res = await fetch(config.baseUrl, {
+    res = await fetch(fetchUrl, {
       method: "POST",
       signal: AbortSignal.timeout(15_000),
-      headers: {
-        Authorization: config.authHeader(resolvedKey),
-        "Content-Type": "application/json",
-      },
+      headers,
       body: JSON.stringify(body),
     });
 
@@ -170,7 +296,6 @@ async function streamChatResponse(apiKey, messages, options) {
       await new Promise((r) => setTimeout(r, waitMs));
       continue;
     }
-
     break;
   }
 
@@ -179,10 +304,17 @@ async function streamChatResponse(apiKey, messages, options) {
     throw new Error(`${config.name} API error ${res.status}: ${text}`);
   }
 
-  // Parse SSE stream
+  if (config.type === "anthropic") {
+    return parseAnthropicStream(res, onSentence);
+  }
+  return parseOpenAIStream(res, onSentence);
+}
+
+// ─── OpenAI-compatible stream parser ────────────────────────────────────────
+
+async function parseOpenAIStream(res, onSentence) {
   let fullContent = "";
   let textBuffer = "";
-  // Tool call accumulation
   const toolCallMap = {};
   let hasToolCalls = false;
 
@@ -195,10 +327,8 @@ async function streamChatResponse(apiKey, messages, options) {
     if (done) break;
 
     sseBuffer += decoder.decode(value, { stream: true });
-
-    // Process complete SSE lines
     const lines = sseBuffer.split("\n");
-    sseBuffer = lines.pop(); // keep incomplete line in buffer
+    sseBuffer = lines.pop();
 
     for (const line of lines) {
       if (!line.startsWith("data: ")) continue;
@@ -206,27 +336,17 @@ async function streamChatResponse(apiKey, messages, options) {
       if (data === "[DONE]") continue;
 
       let parsed;
-      try {
-        parsed = JSON.parse(data);
-      } catch (parseErr) {
-        console.warn(`[LLM] Failed to parse SSE chunk (possible incomplete JSON in stream):`, data.slice(0, 200));
-        continue;
-      }
+      try { parsed = JSON.parse(data); } catch { continue; }
 
       const delta = parsed.choices?.[0]?.delta;
       if (!delta) continue;
 
-      // Tool call deltas
       if (delta.tool_calls) {
         hasToolCalls = true;
         for (const tc of delta.tool_calls) {
           const idx = tc.index;
           if (!toolCallMap[idx]) {
-            toolCallMap[idx] = {
-              id: tc.id || "",
-              type: "function",
-              function: { name: "", arguments: "" },
-            };
+            toolCallMap[idx] = { id: tc.id || "", type: "function", function: { name: "", arguments: "" } };
           }
           if (tc.id) toolCallMap[idx].id = tc.id;
           if (tc.function?.name) toolCallMap[idx].function.name += tc.function.name;
@@ -235,58 +355,113 @@ async function streamChatResponse(apiKey, messages, options) {
         continue;
       }
 
-      // Text content delta
       if (delta.content) {
         fullContent += delta.content;
-        textBuffer += delta.content;
-
-        // Check for sentence boundaries and fire callback
-        // Only split if the first sentence is long enough to be worth sending as a
-        // separate TTS chunk. Very short fragments (e.g., "M-A-K.") create
-        // audible gaps when they need their own TTS call. Threshold lowered to
-        // 30 chars to get first audio out faster (latency optimization).
-        if (onSentence) {
-          while (SENTENCE_BREAK.test(textBuffer)) {
-            const parts = textBuffer.split(SENTENCE_BREAK);
-            const candidate = parts[0];
-            // Don't split if the first chunk is very short — accumulate more text
-            if (candidate.length < 30 && parts.length > 1 && textBuffer.length < 100) {
-              break; // Wait for more text to accumulate
-            }
-            const sentence = parts.shift();
-            textBuffer = parts.join(" ");
-            if (sentence.trim()) {
-              onSentence(sentence.trim());
-            }
-          }
-        }
+        textBuffer = processSentenceBuffer(textBuffer + delta.content, onSentence);
       }
     }
   }
 
-  // Tool calls
   if (hasToolCalls) {
-    const toolCalls = Object.keys(toolCallMap)
-      .sort((a, b) => Number(a) - Number(b))
-      .map((idx) => toolCallMap[idx]);
-    const message = {
-      role: "assistant",
-      content: null,
-      tool_calls: toolCalls,
-    };
+    const toolCalls = Object.keys(toolCallMap).sort((a, b) => Number(a) - Number(b)).map((idx) => toolCallMap[idx]);
+    return { type: "tool_calls", toolCalls, message: { role: "assistant", content: null, tool_calls: toolCalls } };
+  }
+
+  if (onSentence && textBuffer.trim()) onSentence(textBuffer.trim());
+  if (!fullContent) throw new Error(`${config.name} stream returned no content`);
+  return { type: "content", content: fullContent };
+}
+
+// ─── Anthropic stream parser ────────────────────────────────────────────────
+
+async function parseAnthropicStream(res, onSentence) {
+  let fullContent = "";
+  let textBuffer = "";
+  const toolUses = {}; // indexed by block index
+  let hasToolCalls = false;
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let sseBuffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    sseBuffer += decoder.decode(value, { stream: true });
+    const lines = sseBuffer.split("\n");
+    sseBuffer = lines.pop();
+
+    for (const line of lines) {
+      if (!line.startsWith("data: ")) continue;
+      const data = line.slice(6).trim();
+
+      let parsed;
+      try { parsed = JSON.parse(data); } catch { continue; }
+
+      // Anthropic SSE event types
+      if (parsed.type === "content_block_start") {
+        const block = parsed.content_block;
+        if (block.type === "tool_use") {
+          hasToolCalls = true;
+          toolUses[parsed.index] = {
+            id: block.id,
+            name: block.name,
+            arguments: "",
+          };
+        }
+      } else if (parsed.type === "content_block_delta") {
+        const delta = parsed.delta;
+        if (delta.type === "text_delta") {
+          fullContent += delta.text;
+          textBuffer = processSentenceBuffer(textBuffer + delta.text, onSentence);
+        } else if (delta.type === "input_json_delta") {
+          const idx = parsed.index;
+          if (toolUses[idx]) {
+            toolUses[idx].arguments += delta.partial_json;
+          }
+        }
+      }
+      // message_stop, content_block_stop, message_delta handled implicitly
+    }
+  }
+
+  if (hasToolCalls) {
+    const toolCalls = Object.keys(toolUses).sort((a, b) => Number(a) - Number(b)).map((idx) => {
+      const tu = toolUses[idx];
+      return {
+        id: tu.id,
+        type: "function",
+        function: { name: tu.name, arguments: tu.arguments },
+      };
+    });
+    const message = { role: "assistant", content: fullContent || null, tool_calls: toolCalls };
     return { type: "tool_calls", toolCalls, message };
   }
 
-  // Flush remaining text
-  if (onSentence && textBuffer.trim()) {
-    onSentence(textBuffer.trim());
-  }
-
-  if (!fullContent) {
-    throw new Error(`${config.name} stream returned no content`);
-  }
-
+  if (onSentence && textBuffer.trim()) onSentence(textBuffer.trim());
+  if (!fullContent) throw new Error(`Anthropic stream returned no content`);
   return { type: "content", content: fullContent };
+}
+
+// ─── Shared sentence buffer processing ──────────────────────────────────────
+
+function processSentenceBuffer(textBuffer, onSentence) {
+  if (!onSentence) return textBuffer;
+
+  while (SENTENCE_BREAK.test(textBuffer)) {
+    const parts = textBuffer.split(SENTENCE_BREAK);
+    const candidate = parts[0];
+    if (candidate.length < 30 && parts.length > 1 && textBuffer.length < 100) {
+      break;
+    }
+    const sentence = parts.shift();
+    textBuffer = parts.join(" ");
+    if (sentence.trim()) {
+      onSentence(sentence.trim());
+    }
+  }
+  return textBuffer;
 }
 
 module.exports = { getChatResponse, streamChatResponse, LLM_PROVIDER, DEFAULT_MODEL };
