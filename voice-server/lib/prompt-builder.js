@@ -408,9 +408,14 @@ function buildBehaviorsSection(behaviors, options) {
     "- CALLBACKS: You can schedule callback requests using the schedule_callback function. Use this when a caller wants someone to call them back, when the person they need is unavailable, or when you cannot resolve their issue directly."
   );
 
+  // Voice conversation style — critical for phone call quality
+  lines.push(
+    "- VOICE STYLE: You are on a PHONE CALL, not writing text. Be CONCISE — 1-2 sentences when possible. NEVER use markdown (**, *, #, -, bullets, numbered lists) — your text is spoken aloud by TTS. NEVER use emojis. Don't repeat information already confirmed. Don't mention appointment duration unless asked. Keep booking confirmations brief: 'You're all booked for Thursday at 9:30 with Dr. Chen. Anything else?' Ask for ONE piece of information at a time."
+  );
+
   // Caller ID awareness — prevents AI from repeatedly asking for the phone number
   lines.push(
-    '- CALLER ID: You already have the caller\'s phone number from caller ID. If the caller says "it\'s the number I\'m calling from" or similar, accept that and do NOT ask again. Only ask for a phone number if you need a different contact number.'
+    '- CALLER ID: You already have the caller\'s phone number from caller ID. If the caller says "it\'s the number I\'m calling from" or similar, accept that and use it immediately — do NOT read it back digit by digit unless they ask. Only ask for a phone number if you need a different contact number.'
   );
 
   // Language boundaries
@@ -608,8 +613,18 @@ function buildSystemPrompt(assistant, organization, knowledgeBase, options) {
   systemPrompt += `\n\n${buildSchedulingSection(organization.timezone, organization.businessHours, organization.defaultAppointmentDuration, calendarEnabled, serviceTypes, { flexibleBooking: assistant?.settings?.flexibleBooking })}`;
 
   // Append caller ID and language rules
+  systemPrompt += `\n\nIMPORTANT — VOICE CONVERSATION STYLE:`;
+  systemPrompt += `\nYou are speaking on a PHONE CALL, not writing a text message or email. Follow these rules strictly:`;
+  systemPrompt += `\n- Be CONCISE. Keep responses to 1-2 sentences when possible. A real receptionist doesn't give speeches.`;
+  systemPrompt += `\n- NEVER use markdown formatting (no **, *, #, -, bullet points, or numbered lists). Your text is spoken aloud by a text-to-speech engine — formatting characters will be read out literally.`;
+  systemPrompt += `\n- NEVER use emojis. They produce audio artifacts in text-to-speech.`;
+  systemPrompt += `\n- Don't repeat information the caller already confirmed. If they said "yes" to a time, don't re-state the full date and time in your next response.`;
+  systemPrompt += `\n- Don't mention appointment duration unless the caller asks about it.`;
+  systemPrompt += `\n- When confirming a booking, keep it brief: "You're all booked for Thursday at 9:30 with Dr. Chen. Is there anything else I can help with?" — NOT a full structured recap.`;
+  systemPrompt += `\n- Don't say "Let me confirm" and then re-read everything. One quick confirmation is enough.`;
+  systemPrompt += `\n- When asking for information (name, phone), ask ONE thing at a time. Don't bundle multiple questions.`;
   systemPrompt += `\n\nIMPORTANT RULES:`;
-  systemPrompt += `\n- CALLER ID: You already have the caller's phone number from caller ID. If the caller says "it's the number I'm calling from" or similar, accept that and do NOT ask again.`;
+  systemPrompt += `\n- CALLER ID: You already have the caller's phone number from caller ID. If the caller says "it's the number I'm calling from" or similar, accept that and use it immediately — do NOT read it back digit by digit unless they ask.`;
   systemPrompt += `\n- LANGUAGE: Only respond in the language you are configured for. If a caller speaks a different language, politely tell them you can only assist in your configured language and offer to have someone call them back.`;
   systemPrompt += `\n- HONESTY: If you do not know the answer, say so clearly. NEVER guess or make up information — especially pricing, availability, or professional advice. Instead offer to take a message or transfer the call.`;
 

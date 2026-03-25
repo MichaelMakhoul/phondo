@@ -45,7 +45,8 @@ function maskPhone(phone) {
 
 // Validate required env vars before deriving any constants
 // LLM API key env var depends on provider
-const llmKeyEnv = LLM_PROVIDER === "openai" ? "OPENAI_API_KEY" : "GEMINI_API_KEY";
+const LLM_KEY_MAP = { openai: "OPENAI_API_KEY", gemini: "GEMINI_API_KEY", anthropic: "ANTHROPIC_API_KEY" };
+const llmKeyEnv = LLM_KEY_MAP[LLM_PROVIDER] || "ANTHROPIC_API_KEY";
 const REQUIRED_ENV = [
   "DEEPGRAM_API_KEY",
   llmKeyEnv,
@@ -64,7 +65,7 @@ for (const key of REQUIRED_ENV) {
 
 const PORT = process.env.PORT || 3001;
 const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY;
-const LLM_API_KEY = process.env.GEMINI_API_KEY || process.env.OPENAI_API_KEY;
+const LLM_API_KEY = process.env.ANTHROPIC_API_KEY || process.env.GEMINI_API_KEY || process.env.OPENAI_API_KEY;
 const PUBLIC_URL = process.env.PUBLIC_URL;
 const WS_SECRET = process.env.TWILIO_AUTH_TOKEN;
 const WS_URL = PUBLIC_URL.replace(/^http/, "ws") + "/ws/audio";
@@ -1059,12 +1060,16 @@ wss.on("connection", (twilioWs) => {
             }
           }
 
-          // Send greeting (with disclosure prepended if standalone TTS failed)
-          const greeting = disclosurePrefix + getGreeting(context.assistant, context.organization.name, {
+          // Send greeting — if disclosure failed standalone, send it first then greeting separately
+          // to avoid one giant TTS request that causes long initial silence
+          const greeting = getGreeting(context.assistant, context.organization.name, {
             isAfterHours,
             afterHoursConfig,
           });
           try {
+            if (disclosurePrefix) {
+              await sendTTS(session, twilioWs, disclosurePrefix.trim());
+            }
             await sendTTS(session, twilioWs, greeting);
             // Mark disclosure as played only after TTS succeeds (when greeting carries it)
             if (disclosurePrefix) {
@@ -1178,16 +1183,23 @@ const MAX_TOOL_ITERATIONS = 3;
 const FILLER_PHRASES = {
   en: {
     general: ["Sure.", "Of course.", "One moment."],
-    tool: ["One moment, let me check that for you.", "Let me look that up."],
+    tool_check: ["One moment, let me check that for you."],
+    tool_book: ["Let me book that for you."],
+    tool_default: ["One moment."],
     phone: ["One moment while I look up your number."],
   },
   es: {
     general: ["Claro.", "Por supuesto.", "Un momento."],
-    tool: ["Un momento, déjeme verificar eso.", "Permítame revisar."],
+    tool_check: ["Un momento, déjeme verificar eso."],
+    tool_book: ["Permítame reservar eso."],
+    tool_default: ["Un momento."],
     phone: ["Un momento mientras busco su número."],
   },
 };
 let _fillerIndex = 0;
+
+// Short responses that shouldn't get a filler (goodbye, thanks, etc.)
+const SHORT_RESPONSE_PATTERNS = /^(yeah|yes|no|ok|okay|sure|thanks|thank you|bye|goodbye|that'?s all|good|likewise)\b/i;
 
 function pickFiller(lang, type) {
   const phrases = FILLER_PHRASES[lang] || FILLER_PHRASES.en;
@@ -1195,6 +1207,13 @@ function pickFiller(lang, type) {
   const phrase = pool[_fillerIndex % pool.length];
   _fillerIndex++;
   return phrase;
+}
+
+function pickToolFiller(lang, toolNames) {
+  const names = Array.isArray(toolNames) ? toolNames : [toolNames];
+  if (names.some((n) => n === "book_appointment")) return pickFiller(lang, "tool_book");
+  if (names.some((n) => n === "check_availability" || n === "get_current_datetime")) return pickFiller(lang, "tool_check");
+  return pickFiller(lang, "tool_default");
 }
 
 async function handleUserSpeech(session, twilioWs, transcript) {
@@ -1226,12 +1245,13 @@ async function handleUserSpeech(session, twilioWs, transcript) {
       let fillerSent = false;
 
       // Filler word timer: if LLM hasn't started streaming in 1.5s, play a filler
-      const fillerTimer = setTimeout(async () => {
+      // Skip fillers for short/closing responses (goodbye, thanks, etc.)
+      const skipFiller = SHORT_RESPONSE_PATTERNS.test(transcript.trim());
+      const fillerTimer = skipFiller ? null : setTimeout(async () => {
         if (!holdStopped && !fillerSent) {
           fillerSent = true;
           hold.stop();
           holdStopped = true;
-          // Pick context-aware filler
           const fillerType = session._expectedInputType === "phone" ? "phone" : "general";
           const filler = pickFiller(session.language || "en", fillerType);
           console.log(`[Filler] Playing "${filler}" (type=${fillerType})`);
@@ -1244,7 +1264,7 @@ async function handleUserSpeech(session, twilioWs, transcript) {
       const result = await streamChatResponse(LLM_API_KEY, session.messages, {
         ...llmOptions,
         onSentence: (sentence) => {
-          clearTimeout(fillerTimer);
+          if (fillerTimer) clearTimeout(fillerTimer);
           sentenceQueue.push(sentence);
           // Stop hold audio before first TTS sentence
           if (!holdStopped) {
@@ -1259,7 +1279,7 @@ async function handleUserSpeech(session, twilioWs, transcript) {
         },
       });
 
-      clearTimeout(fillerTimer);
+      if (fillerTimer) clearTimeout(fillerTimer);
 
       if (result.type === "content") {
         reply = result.content;
@@ -1282,8 +1302,9 @@ async function handleUserSpeech(session, twilioWs, transcript) {
           hold.stop();
           holdStopped = true;
         }
-        const toolFiller = pickFiller(session.language || "en", "tool");
-        console.log(`[Filler] Playing tool filler: "${toolFiller}" (tools: ${toolCalls.map(tc => tc.function.name).join(", ")})`);
+        const toolNames = toolCalls.map(tc => tc.function.name);
+        const toolFiller = pickToolFiller(session.language || "en", toolNames);
+        console.log(`[Filler] Playing tool filler: "${toolFiller}" (tools: ${toolNames.join(", ")})`);
         ttsChain = ttsChain.then(() => sendTTS(session, twilioWs, toolFiller)).catch((err) => {
           console.error("[Filler] Tool filler TTS error:", err.message);
         });
@@ -1403,9 +1424,24 @@ async function handleUserSpeech(session, twilioWs, transcript) {
 /**
  * Synthesize text and stream mulaw chunks back to Twilio.
  */
+// Strip markdown formatting that LLMs sometimes include (bold, headers, etc.)
+function stripMarkdown(text) {
+  return text
+    .replace(/\*\*([^*]+)\*\*/g, "$1")   // **bold** → bold
+    .replace(/\*([^*]+)\*/g, "$1")        // *italic* → italic
+    .replace(/^#{1,6}\s+/gm, "")          // ### headers → text
+    .replace(/`([^`]+)`/g, "$1")          // `code` → code
+    .replace(/~~([^~]+)~~/g, "$1")        // ~~strikethrough~~ → text
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1") // [link](url) → link
+    .replace(/^[-*]\s+/gm, "")            // - bullet items → text
+    .replace(/^\d+\.\s+/gm, "")           // 1. numbered items → text
+    .replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{FE00}-\u{FE0F}\u{1F900}-\u{1F9FF}\u{200D}\u{20E3}\u{FE0F}]/gu, ""); // strip emojis
+}
+
 async function sendTTS(session, twilioWs, text) {
   const t0 = Date.now();
-  const audioBuffer = await synthesizeSpeech(DEEPGRAM_API_KEY, text, {
+  const cleanText = stripMarkdown(text);
+  const audioBuffer = await synthesizeSpeech(DEEPGRAM_API_KEY, cleanText, {
     voice: session?.deepgramVoice,
   });
   console.log(`[TTS] (${Date.now() - t0}ms) ${audioBuffer.length} bytes`);
