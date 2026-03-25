@@ -1286,7 +1286,11 @@ async function handleUserSpeech(session, twilioWs, transcript) {
         reply = result.content;
         // Wait for all queued TTS to finish playing
         await ttsChain;
-        console.log(`[LLM] (${Date.now() - t0}ms) streamed ${sentenceQueue.length} chunks: "${reply}"`);
+        const avgChunkLen = sentenceQueue.length > 0
+          ? Math.round(sentenceQueue.reduce((s, c) => s + c.length, 0) / sentenceQueue.length)
+          : 0;
+        const shortChunks = sentenceQueue.filter((c) => c.length < 20).length;
+        console.log(`[LLM] (${Date.now() - t0}ms) streamed ${sentenceQueue.length} chunks (avg=${avgChunkLen}ch, short=${shortChunks}): "${reply}"`);
         break;
       }
 

@@ -321,6 +321,8 @@ async function parseOpenAIStream(res, onSentence) {
   let textBuffer = "";
   const toolCallMap = {};
   let hasToolCalls = false;
+  let parseFailures = 0;
+  let sentenceCount = 0;
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
@@ -340,7 +342,17 @@ async function parseOpenAIStream(res, onSentence) {
       if (data === "[DONE]") continue;
 
       let parsed;
-      try { parsed = JSON.parse(data); } catch { continue; }
+      try {
+        parsed = JSON.parse(data);
+      } catch {
+        parseFailures++;
+        if (parseFailures <= 3) {
+          console.warn(`[LLM] SSE parse failure #${parseFailures}:`, data.slice(0, 200));
+        } else if (parseFailures === 4) {
+          console.error(`[LLM] Multiple SSE parse failures (${parseFailures}+) — possible stream corruption`);
+        }
+        continue;
+      }
 
       const delta = parsed.choices?.[0]?.delta;
       if (!delta) continue;
@@ -361,9 +373,16 @@ async function parseOpenAIStream(res, onSentence) {
 
       if (delta.content) {
         fullContent += delta.content;
-        textBuffer = processSentenceBuffer(textBuffer + delta.content, onSentence);
+        textBuffer = processSentenceBuffer(textBuffer + delta.content, (sentence) => {
+          sentenceCount++;
+          if (onSentence) onSentence(sentence);
+        });
       }
     }
+  }
+
+  if (parseFailures > 0) {
+    console.warn(`[LLM] Stream completed with ${parseFailures} parse failure(s)`);
   }
 
   if (hasToolCalls) {
@@ -371,9 +390,14 @@ async function parseOpenAIStream(res, onSentence) {
     return { type: "tool_calls", toolCalls, message: { role: "assistant", content: null, tool_calls: toolCalls } };
   }
 
-  if (onSentence && textBuffer.trim()) onSentence(textBuffer.trim());
-  if (!fullContent) throw new Error(`${config.name} stream returned no content`);
-  return { type: "content", content: fullContent };
+  if (onSentence && textBuffer.trim()) {
+    sentenceCount++;
+    onSentence(textBuffer.trim());
+  }
+  if (!fullContent) {
+    throw new Error(`${config.name} stream returned no content${parseFailures > 0 ? ` (${parseFailures} SSE parse failures during stream)` : ""}`);
+  }
+  return { type: "content", content: fullContent, _meta: { sentenceCount, parseFailures } };
 }
 
 // ─── Anthropic stream parser ────────────────────────────────────────────────
@@ -383,6 +407,7 @@ async function parseAnthropicStream(res, onSentence) {
   let textBuffer = "";
   const toolUses = {}; // indexed by block index
   let hasToolCalls = false;
+  let parseFailures = 0;
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
@@ -401,7 +426,17 @@ async function parseAnthropicStream(res, onSentence) {
       const data = line.slice(6).trim();
 
       let parsed;
-      try { parsed = JSON.parse(data); } catch { continue; }
+      try {
+        parsed = JSON.parse(data);
+      } catch {
+        parseFailures++;
+        if (parseFailures <= 3) {
+          console.warn(`[LLM] Anthropic SSE parse failure #${parseFailures}:`, data.slice(0, 200));
+        } else if (parseFailures === 4) {
+          console.error(`[LLM] Multiple Anthropic SSE parse failures (${parseFailures}+) — possible stream corruption`);
+        }
+        continue;
+      }
 
       // Anthropic SSE event types
       if (parsed.type === "content_block_start") {
@@ -443,8 +478,14 @@ async function parseAnthropicStream(res, onSentence) {
     return { type: "tool_calls", toolCalls, message };
   }
 
+  if (parseFailures > 0) {
+    console.warn(`[LLM] Anthropic stream completed with ${parseFailures} parse failure(s)`);
+  }
+
   if (onSentence && textBuffer.trim()) onSentence(textBuffer.trim());
-  if (!fullContent) throw new Error(`Anthropic stream returned no content`);
+  if (!fullContent) {
+    throw new Error(`Anthropic stream returned no content${parseFailures > 0 ? ` (${parseFailures} SSE parse failures during stream)` : ""}`);
+  }
   return { type: "content", content: fullContent };
 }
 

@@ -205,9 +205,21 @@ class CallSession {
     this._bufferStartedAt = null;
 
     const combined = this._utteranceBuffer.join(" ").trim();
+    const fragmentCount = this._utteranceBuffer.length;
     this._utteranceBuffer = [];
     const cb = this._utteranceCallback;
     this._utteranceCallback = null;
+
+    // Log short utterance flushes — signals premature STT splitting
+    if (combined) {
+      const wordCount = combined.split(/\s+/).length;
+      if (wordCount <= 2 && fragmentCount === 1) {
+        console.log(`[Metrics] Short utterance flush: "${combined}" (${wordCount} words, type=${this._expectedInputType})`);
+      }
+      if (fragmentCount > 1) {
+        console.log(`[Metrics] Multi-fragment utterance: ${fragmentCount} fragments → "${combined}" (type=${this._expectedInputType})`);
+      }
+    }
 
     // Reset to general after flushing
     this._expectedInputType = "general";
