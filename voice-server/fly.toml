@@ -3,6 +3,7 @@ primary_region = "syd"
 
 [env]
   PORT = "3001"
+  LLM_PROVIDER = "openai"
 
 [http_service]
   internal_port = 3001
