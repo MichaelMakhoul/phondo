@@ -1173,50 +1173,8 @@ function buildLLMOptions(session, { includeTransfer = false } = {}) {
   return tools.length > 0 ? { tools } : {};
 }
 
-// Dual-model strategy: use fast model (nano) for simple responses, full model (mini) for complex ones
-const FAST_MODEL = process.env.LLM_FAST_MODEL || "gpt-4.1-nano";
+// Single model for all responses — nano was tested and rejected (poor instruction following, not actually faster)
 const FULL_MODEL = process.env.LLM_MODEL || DEFAULT_MODEL;
-
-// Patterns that indicate the user's response is simple (confirmation, short answer, goodbye)
-const SIMPLE_RESPONSE_RE = /^(yeah?|yes|no|nope|ok(ay)?|sure|alright|correct|that'?s (right|correct|all|it)|thanks?( you)?|thank you|bye|goodbye|see ya|likewise|sounds good|perfect|great|go ahead|please|please do)\b/i;
-
-/**
- * Select which model to use based on conversation context.
- * Returns FAST_MODEL for simple turns, FULL_MODEL for complex ones.
- */
-function selectModel(session, transcript, hasTools, inputTypeAtFlush) {
-  // If this is the first user message after greeting, use full model (intent unclear)
-  if (session.messages.filter((m) => m.role === "user").length <= 1) {
-    return { model: FULL_MODEL, reason: "first-turn" };
-  }
-
-  // If user's response is very short and matches simple patterns → fast model
-  // BUT only if tools aren't available (avoid nano making tool calls)
-  const trimmed = transcript.trim();
-  const wordCount = trimmed.split(/\s+/).length;
-  if (SIMPLE_RESPONSE_RE.test(trimmed) && wordCount <= 3 && !hasTools) {
-    return { model: FAST_MODEL, reason: "simple-response-no-tools" };
-  }
-
-  // If tools are available, short confirmations still use full model (might trigger booking)
-  if (SIMPLE_RESPONSE_RE.test(trimmed) && wordCount <= 3 && hasTools) {
-    // Check if last assistant message had tool_calls (mid-chain) — always full
-    const lastAssistant = [...session.messages].reverse().find((m) => m.role === "assistant");
-    if (lastAssistant?.tool_calls) {
-      return { model: FULL_MODEL, reason: "post-tool-call" };
-    }
-    // Short confirmation with tools available — use full in case it triggers a booking
-    return { model: FULL_MODEL, reason: "confirmation-with-tools" };
-  }
-
-  // If the expected input type is structured (name, phone, etc.) and response is short → fast model
-  if (inputTypeAtFlush && inputTypeAtFlush !== "general" && wordCount <= 6) {
-    return { model: FAST_MODEL, reason: `providing-${inputTypeAtFlush}` };
-  }
-
-  // Default: full model for anything that might need tools or complex reasoning
-  return { model: FULL_MODEL, reason: "default" };
-}
 
 /**
  * Parse tool call arguments safely — returns empty object on parse failure.
@@ -1241,41 +1199,32 @@ const MAX_TOOL_ITERATIONS = 3;
  * Handle final user transcript: stream LLM response sentence-by-sentence,
  * synthesizing and sending TTS for each sentence as it arrives.
  */
-// Filler phrases to play while LLM is processing (rotated to avoid repetition)
-const FILLER_PHRASES = {
+// Filler system: ONE filler per turn, only when the AI needs time to process.
+// No stacking, no "Sure. Of course. One moment." — just one natural acknowledgment.
+const FILLER_MESSAGES = {
   en: {
-    general: ["Sure.", "Of course.", "One moment."],
-    tool_check: ["One moment, let me check that for you."],
-    tool_book: ["Let me book that for you."],
-    tool_default: ["One moment."],
-    phone: ["One moment while I look up your number."],
+    waiting: "One moment.",                          // generic wait — LLM taking >1.5s
+    checking: "One moment, let me check that.",      // tool: check_availability, get_current_datetime
+    booking: "Let me book that for you.",             // tool: book_appointment
+    tool: "One moment.",                              // other tool calls
   },
   es: {
-    general: ["Claro.", "Por supuesto.", "Un momento."],
-    tool_check: ["Un momento, déjeme verificar eso."],
-    tool_book: ["Permítame reservar eso."],
-    tool_default: ["Un momento."],
-    phone: ["Un momento mientras busco su número."],
+    waiting: "Un momento.",
+    checking: "Un momento, déjeme verificar.",
+    booking: "Permítame reservar eso.",
+    tool: "Un momento.",
   },
 };
 
-// Short responses that shouldn't get a filler (goodbye, thanks, etc.)
-const SHORT_RESPONSE_PATTERNS = /^(yeah|yes|no|ok|okay|sure|thanks|thank you|bye|goodbye|that'?s all|good|likewise)\b/i;
+// Short/closing responses that don't need a filler (the AI should respond quickly to these)
+const NO_FILLER_RE = /^(yeah?|yes|no|ok(ay)?|sure|thanks?( you)?|thank you|bye|goodbye|that'?s all|good|likewise)\s*[.!?]?$/i;
 
-function pickFiller(session, lang, type) {
-  if (!session._fillerIndex) session._fillerIndex = 0;
-  const phrases = FILLER_PHRASES[lang] || FILLER_PHRASES.en;
-  const pool = phrases[type] || phrases.general;
-  const phrase = pool[session._fillerIndex % pool.length];
-  session._fillerIndex++;
-  return phrase;
-}
-
-function pickToolFiller(session, lang, toolNames) {
+function getToolFiller(lang, toolNames) {
+  const msgs = FILLER_MESSAGES[lang] || FILLER_MESSAGES.en;
   const names = Array.isArray(toolNames) ? toolNames : [toolNames];
-  if (names.some((n) => n === "book_appointment")) return pickFiller(session, lang, "tool_book");
-  if (names.some((n) => n === "check_availability" || n === "get_current_datetime")) return pickFiller(session, lang, "tool_check");
-  return pickFiller(session, lang, "tool_default");
+  if (names.some((n) => n === "book_appointment")) return msgs.booking;
+  if (names.some((n) => n === "check_availability" || n === "get_current_datetime")) return msgs.checking;
+  return msgs.tool;
 }
 
 async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush) {
@@ -1295,47 +1244,36 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
     session.addMessage("user", transcript);
 
     const llmOptions = buildLLMOptions(session, { includeTransfer: true });
-    const hasTools = llmOptions.tools?.length > 0;
-    let { model: selectedModel, reason: modelReason } = selectModel(session, transcript, hasTools, inputTypeAtFlush);
-    if (selectedModel !== FULL_MODEL) {
-      console.log(`[Model] Using ${selectedModel} (reason: ${modelReason}) for: "${transcript.slice(0, 50)}"`);
-    }
     let reply = null;
+
+    // Track whether a filler has been sent this turn — only ONE filler per turn
+    let fillerSentThisTurn = false;
 
     for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
       const t0 = Date.now();
 
-      // Stream sentence-by-sentence for text responses, accumulate for tool calls
       const sentenceQueue = [];
       let ttsChain = Promise.resolve();
       let holdStopped = false;
-      let fillerSent = false;
 
-      // Filler word timer: if LLM hasn't started streaming in 1.5s, play a filler
-      // Skip fillers for short/closing responses (goodbye, thanks, etc.)
-      const skipFiller = SHORT_RESPONSE_PATTERNS.test(transcript.trim());
-      const fillerTimer = skipFiller ? null : setTimeout(async () => {
-        if (!holdStopped && !fillerSent) {
-          fillerSent = true;
+      // Filler timer: if LLM hasn't started streaming in 1.5s, play "One moment."
+      // Only fires once per turn (fillerSentThisTurn guard) and skips closing responses
+      const skipFiller = fillerSentThisTurn || NO_FILLER_RE.test(transcript.trim());
+      const fillerTimer = skipFiller ? null : setTimeout(() => {
+        if (!holdStopped && !fillerSentThisTurn) {
+          fillerSentThisTurn = true;
           hold.stop();
           holdStopped = true;
-          const fillerType = session._expectedInputType === "phone" ? "phone" : "general";
-          const filler = pickFiller(session, session.language || "en", fillerType);
-          console.log(`[Filler] Playing "${filler}" (type=${fillerType})`);
-          ttsChain = ttsChain.then(() => sendTTS(session, twilioWs, filler)).catch((err) => {
+          const msgs = FILLER_MESSAGES[session.language] || FILLER_MESSAGES.en;
+          console.log(`[Filler] "${msgs.waiting}"`);
+          ttsChain = ttsChain.then(() => sendTTS(session, twilioWs, msgs.waiting)).catch((err) => {
             console.error("[Filler] TTS error:", err.message);
           });
         }
       }, 1500);
 
-      // Strip tools when using fast model — nano should never make tool calls
-      const iterationOptions = selectedModel === FAST_MODEL
-        ? { ...llmOptions, tools: undefined, tool_choice: undefined }
-        : llmOptions;
-
       const result = await streamChatResponse(LLM_API_KEY, session.messages, {
-        ...iterationOptions,
-        model: selectedModel,
+        ...llmOptions,
         onSentence: (sentence) => {
           if (fillerTimer) clearTimeout(fillerTimer);
           sentenceQueue.push(sentence);
@@ -1362,39 +1300,32 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
           ? Math.round(sentenceQueue.reduce((s, c) => s + c.length, 0) / sentenceQueue.length)
           : 0;
         const shortChunks = sentenceQueue.filter((c) => c.length < 20).length;
-        const modelTag = selectedModel === FAST_MODEL ? "fast" : "full";
-        console.log(`[LLM:${modelTag}] (${Date.now() - t0}ms) streamed ${sentenceQueue.length} chunks (avg=${avgChunkLen}ch, short=${shortChunks}): "${reply}"`);
-        // Nano quality check — flag suspiciously short or empty responses
-        if (selectedModel === FAST_MODEL && reply && reply.split(/\s+/).length < 3) {
-          console.warn(`[Model:quality] Nano produced very short reply (${reply.length} chars): "${reply}"`);
-        }
+        console.log(`[LLM] (${Date.now() - t0}ms) streamed ${sentenceQueue.length} chunks (avg=${avgChunkLen}ch, short=${shortChunks}): "${reply}"`);
         break;
       }
 
       // Tool call response — execute tools and loop (no streaming for tool calls)
       if (result.type === "tool_calls") {
         const toolCalls = result.toolCalls;
-        // After tool calls, always use full model for the follow-up response
-        if (selectedModel === FAST_MODEL) {
-          console.warn(`[Model] Unexpected tool call from ${selectedModel} — upgrading to ${FULL_MODEL}`);
-        }
-        selectedModel = FULL_MODEL;
-        console.log(`[LLM:full] (${Date.now() - t0}ms) Tool calls: ${toolCalls.map((tc) => tc.function.name).join(", ")}`);
+        console.log(`[LLM] (${Date.now() - t0}ms) Tool calls: ${toolCalls.map((tc) => tc.function.name).join(", ")}`);
 
         // Add the assistant's tool call message to conversation
         session.messages.push(result.message);
 
-        // Play a filler while tool executes (booking, availability, etc.)
-        if (!holdStopped) {
-          hold.stop();
-          holdStopped = true;
+        // Play ONE tool-specific filler — only if no filler was sent yet this turn
+        if (!fillerSentThisTurn) {
+          fillerSentThisTurn = true;
+          if (!holdStopped) {
+            hold.stop();
+            holdStopped = true;
+          }
+          const toolNames = toolCalls.map(tc => tc.function.name);
+          const toolFiller = getToolFiller(session.language || "en", toolNames);
+          console.log(`[Filler] "${toolFiller}" (tools: ${toolNames.join(", ")})`);
+          ttsChain = ttsChain.then(() => sendTTS(session, twilioWs, toolFiller)).catch((err) => {
+            console.error("[Filler] TTS error:", err.message);
+          });
         }
-        const toolNames = toolCalls.map(tc => tc.function.name);
-        const toolFiller = pickToolFiller(session, session.language || "en", toolNames);
-        console.log(`[Filler] Playing tool filler: "${toolFiller}" (tools: ${toolNames.join(", ")})`);
-        ttsChain = ttsChain.then(() => sendTTS(session, twilioWs, toolFiller)).catch((err) => {
-          console.error("[Filler] Tool filler TTS error:", err.message);
-        });
 
         // Execute each tool call and add results
         for (const toolCall of toolCalls) {
@@ -2087,7 +2018,7 @@ async function handleTestUserSpeech(session, ws, transcript) {
 
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`Voice server listening on port ${PORT}`);
-  console.log(`LLM provider: ${LLM_PROVIDER} (full: ${FULL_MODEL}, fast: ${FAST_MODEL})`);
+  console.log(`LLM provider: ${LLM_PROVIDER} (model: ${FULL_MODEL})`);
   console.log(`TwiML endpoint: ${PUBLIC_URL}/twiml`);
   console.log(`WebSocket endpoint: ${WS_URL}`);
   if (TEST_CALL_SECRET) {
