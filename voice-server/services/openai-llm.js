@@ -1,6 +1,6 @@
 // LLM provider configuration — supports OpenAI, Anthropic, and Gemini
 // Set LLM_PROVIDER env var to switch: "anthropic" (default), "openai", "gemini"
-const LLM_PROVIDER = process.env.LLM_PROVIDER || "anthropic";
+const LLM_PROVIDER = process.env.LLM_PROVIDER || "openai";
 
 const PROVIDER_CONFIG = {
   openai: {
@@ -84,14 +84,16 @@ function toAnthropicMessages(messages) {
 
     if (msg.role === "tool") {
       // Convert OpenAI tool result to Anthropic tool_result block
-      converted.push({
-        role: "user",
-        content: [{
-          type: "tool_result",
-          tool_use_id: msg.tool_call_id,
-          content: msg.content,
-        }],
-      });
+      // Merge consecutive tool results into one user message (Anthropic requires alternating roles)
+      const last = converted[converted.length - 1];
+      if (last && last.role === "user" && Array.isArray(last.content) && last.content[0]?.type === "tool_result") {
+        last.content.push({ type: "tool_result", tool_use_id: msg.tool_call_id, content: msg.content });
+      } else {
+        converted.push({
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: msg.tool_call_id, content: msg.content }],
+        });
+      }
       continue;
     }
 
@@ -172,6 +174,7 @@ async function getChatResponse(apiKey, messages, options) {
       system: system || undefined,
       messages: anthropicMsgs,
       max_tokens: options?.tools?.length > 0 ? 300 : 150,
+      temperature: 0.7,
     };
     const tools = toAnthropicTools(options?.tools);
     if (tools) body.tools = tools;
@@ -258,6 +261,7 @@ async function streamChatResponse(apiKey, messages, options) {
       system: system || undefined,
       messages: anthropicMsgs,
       max_tokens: options?.tools?.length > 0 ? 300 : 150,
+      temperature: 0.7,
       stream: true,
     };
     const tools = toAnthropicTools(options?.tools);

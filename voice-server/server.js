@@ -65,7 +65,7 @@ for (const key of REQUIRED_ENV) {
 
 const PORT = process.env.PORT || 3001;
 const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY;
-const LLM_API_KEY = process.env.ANTHROPIC_API_KEY || process.env.GEMINI_API_KEY || process.env.OPENAI_API_KEY;
+const LLM_API_KEY = process.env[LLM_KEY_MAP[LLM_PROVIDER] || "OPENAI_API_KEY"];
 const PUBLIC_URL = process.env.PUBLIC_URL;
 const WS_SECRET = process.env.TWILIO_AUTH_TOKEN;
 const WS_URL = PUBLIC_URL.replace(/^http/, "ws") + "/ws/audio";
@@ -1023,7 +1023,8 @@ wss.on("connection", (twilioWs) => {
                 session.callFailed = true;
                 session.endedReason = "stt-connection-lost";
                 sendTTS(session, twilioWs, getErrorMsg(session.language, "troubleRepeat"))
-                  .catch((ttsErr) => console.error("[STT] Failed to send reconnect message:", ttsErr));
+                  .catch((ttsErr) => console.error("[STT] Failed to send reconnect message:", ttsErr))
+                  .finally(() => setTimeout(() => twilioWs.close(), 3000));
               }
             },
           }, { industry: session.organization?.industry });
@@ -1196,24 +1197,24 @@ const FILLER_PHRASES = {
     phone: ["Un momento mientras busco su número."],
   },
 };
-let _fillerIndex = 0;
 
 // Short responses that shouldn't get a filler (goodbye, thanks, etc.)
 const SHORT_RESPONSE_PATTERNS = /^(yeah|yes|no|ok|okay|sure|thanks|thank you|bye|goodbye|that'?s all|good|likewise)\b/i;
 
-function pickFiller(lang, type) {
+function pickFiller(session, lang, type) {
+  if (!session._fillerIndex) session._fillerIndex = 0;
   const phrases = FILLER_PHRASES[lang] || FILLER_PHRASES.en;
   const pool = phrases[type] || phrases.general;
-  const phrase = pool[_fillerIndex % pool.length];
-  _fillerIndex++;
+  const phrase = pool[session._fillerIndex % pool.length];
+  session._fillerIndex++;
   return phrase;
 }
 
-function pickToolFiller(lang, toolNames) {
+function pickToolFiller(session, lang, toolNames) {
   const names = Array.isArray(toolNames) ? toolNames : [toolNames];
-  if (names.some((n) => n === "book_appointment")) return pickFiller(lang, "tool_book");
-  if (names.some((n) => n === "check_availability" || n === "get_current_datetime")) return pickFiller(lang, "tool_check");
-  return pickFiller(lang, "tool_default");
+  if (names.some((n) => n === "book_appointment")) return pickFiller(session, lang, "tool_book");
+  if (names.some((n) => n === "check_availability" || n === "get_current_datetime")) return pickFiller(session, lang, "tool_check");
+  return pickFiller(session, lang, "tool_default");
 }
 
 async function handleUserSpeech(session, twilioWs, transcript) {
@@ -1253,7 +1254,7 @@ async function handleUserSpeech(session, twilioWs, transcript) {
           hold.stop();
           holdStopped = true;
           const fillerType = session._expectedInputType === "phone" ? "phone" : "general";
-          const filler = pickFiller(session.language || "en", fillerType);
+          const filler = pickFiller(session, session.language || "en", fillerType);
           console.log(`[Filler] Playing "${filler}" (type=${fillerType})`);
           ttsChain = ttsChain.then(() => sendTTS(session, twilioWs, filler)).catch((err) => {
             console.error("[Filler] TTS error:", err.message);
@@ -1303,7 +1304,7 @@ async function handleUserSpeech(session, twilioWs, transcript) {
           holdStopped = true;
         }
         const toolNames = toolCalls.map(tc => tc.function.name);
-        const toolFiller = pickToolFiller(session.language || "en", toolNames);
+        const toolFiller = pickToolFiller(session, session.language || "en", toolNames);
         console.log(`[Filler] Playing tool filler: "${toolFiller}" (tools: ${toolNames.join(", ")})`);
         ttsChain = ttsChain.then(() => sendTTS(session, twilioWs, toolFiller)).catch((err) => {
           console.error("[Filler] Tool filler TTS error:", err.message);
