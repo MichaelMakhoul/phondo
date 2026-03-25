@@ -326,6 +326,126 @@ app.post("/twiml", async (req, res) => {
 });
 
 /**
+ * TeXML endpoint — Telnyx-compatible version of /twiml.
+ * Telnyx TeXML uses the same XML format (TwiML-compatible) and the same
+ * WebSocket media stream protocol. The only difference is webhook signature
+ * validation and the endpoint URL used in action callbacks.
+ */
+/**
+ * Validate Telnyx webhook signature (ed25519).
+ * Uses Node.js built-in crypto.verify with ed25519 algorithm.
+ */
+function validateTelnyxSignature(req) {
+  const publicKey = process.env.TELNYX_PUBLIC_KEY;
+  if (!publicKey) {
+    // If no public key configured, use shared secret as stopgap
+    const secret = process.env.TELNYX_WEBHOOK_SECRET;
+    if (secret) {
+      const headerSecret = req.headers["x-telnyx-secret"] || req.query?.secret;
+      return headerSecret === secret;
+    }
+    // No verification configured — reject in production, allow in dev
+    if (process.env.NODE_ENV === "production") {
+      console.error("[TeXML] No TELNYX_PUBLIC_KEY or TELNYX_WEBHOOK_SECRET configured — rejecting");
+      return false;
+    }
+    return true;
+  }
+
+  try {
+    const crypto = require("crypto");
+    const signature = req.headers["telnyx-signature-ed25519"];
+    const timestamp = req.headers["telnyx-timestamp"];
+    if (!signature || !timestamp) return false;
+
+    const payload = `${timestamp}|${JSON.stringify(req.body)}`;
+    const sigBuffer = Buffer.from(signature, "base64");
+    const keyBuffer = Buffer.from(publicKey, "base64");
+    return crypto.verify(null, Buffer.from(payload), { key: keyBuffer, format: "der", type: "spki" }, sigBuffer);
+  } catch (err) {
+    console.error("[TeXML] Signature verification error:", err.message);
+    return false;
+  }
+}
+
+app.post("/texml", async (req, res) => {
+  if (!validateTelnyxSignature(req)) {
+    console.warn("[TeXML] Rejected request — invalid Telnyx signature");
+    return res.status(403).send("Forbidden");
+  }
+
+  const called = req.body.Called || req.body.To || "";
+  const from = req.body.From || req.body.Caller || "";
+
+  const phoneRecord = await lookupPhoneNumber(called);
+
+  // AI enabled check
+  try {
+    const aiEnabled = await isAiEnabled(called, phoneRecord);
+    if (!aiEnabled) {
+      const callSid = req.body.CallSid || `ai_disabled_${Date.now()}`;
+      console.log(`[TeXML] AI disabled for ${called} — returning voicemail TeXML`);
+
+      let ctx = null;
+      try {
+        ctx = await getPhoneNumberContext(called, phoneRecord);
+        if (ctx) {
+          const callId = await createCallRecord({ orgId: ctx.organizationId, assistantId: ctx.assistantId, phoneNumberId: ctx.phoneNumberId, callerPhone: from, callSid });
+          if (callId) {
+            await completeCallRecord(callId, { status: "completed", durationSeconds: 0, outcome: "voicemail" });
+          }
+        }
+      } catch (logErr) {
+        console.warn("[TeXML] Failed to log AI-disabled call (non-fatal):", logErr.message);
+      }
+
+      const businessName = typeof ctx?.organizationName === "string" ? ctx.organizationName : null;
+      const greeting = businessName
+        ? `Thank you for calling ${escapeXml(businessName)}. We are unable to take your call right now. Please leave a message after the beep and we will get back to you as soon as possible.`
+        : `Thank you for calling. We are unable to take your call right now. Please leave a message after the beep and we will get back to you as soon as possible.`;
+
+      return res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="Polly.Joanna">${greeting}</Say>
+  <Record maxLength="120" playBeep="true" action="${escapeXml(PUBLIC_URL + '/texml/recording-done')}" />
+  <Say voice="Polly.Joanna">Thank you for your message. Goodbye.</Say>
+</Response>`);
+    }
+  } catch (err) {
+    console.error("[TeXML] isAiEnabled check threw (fail-open):", err.message);
+  }
+
+  // Ring-first mode check (same as /twiml)
+  try {
+    const answerMode = await getAnswerMode(called, phoneRecord);
+    if (answerMode && answerMode.answerMode === "ring_first") {
+      console.log(`[TeXML] Ring-first mode: from=${maskPhone(from)} to=${called}, ringing ${maskPhone(answerMode.ringFirstNumber)} for ${answerMode.ringFirstTimeout}s`);
+      return res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Dial timeout="${escapeXml(String(answerMode.ringFirstTimeout))}" action="${escapeXml(PUBLIC_URL + '/texml/ring-first-fallback')}" callerId="${escapeXml(from)}">
+    ${escapeXml(answerMode.ringFirstNumber)}
+  </Dial>
+</Response>`);
+    }
+  } catch (err) {
+    console.error("[TeXML] getAnswerMode failed (falling back to AI):", err.message);
+  }
+
+  // Default: AI answers
+  const token = issueStreamToken(called, from, undefined, phoneRecord);
+  console.log(`[TeXML] Incoming call from=${maskPhone(from)} to=${called}, streaming to ${WS_URL}`);
+
+  res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Connect>
+    <Stream url="${escapeXml(WS_URL)}">
+      <Parameter name="auth_token" value="${escapeXml(token)}" />
+    </Stream>
+  </Connect>
+</Response>`);
+});
+
+/**
  * Transfer status callback — Twilio POSTs here after <Dial> completes.
  * If the target answered, we finish the call record.
  * If no-answer/busy/failed, we reconnect the caller to the AI.
@@ -937,6 +1057,7 @@ wss.on("connection", (twilioWs) => {
             industry: context.organization.industry,
           };
           session.orgPhoneNumber = calledNumber;
+          session.telephonyProvider = context.telephonyProvider || "twilio";
           session.piiRedactionEnabled = !!(context.assistant.settings?.piiRedactionEnabled);
 
           // Start call recording via Twilio REST API if consent mode allows
@@ -1352,6 +1473,7 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
             organization: session.organization,
             callerPhone: session.callerPhone,
             orgPhoneNumber: session.orgPhoneNumber,
+            telephonyProvider: session.telephonyProvider || "twilio",
           });
 
           const resultMessage = typeof toolResult === "string" ? toolResult : toolResult.message;

@@ -212,7 +212,7 @@ export async function DELETE(
     // Get phone number
     const { data: phoneNumber } = await (supabase
       .from("phone_numbers") as any)
-      .select("vapi_phone_number_id, twilio_sid")
+      .select("vapi_phone_number_id, twilio_sid, telnyx_connection_id")
       .eq("id", id)
       .eq("organization_id", membership.organization_id)
       .single();
@@ -221,8 +221,19 @@ export async function DELETE(
       return NextResponse.json({ error: "Phone number not found" }, { status: 404 });
     }
 
-    // Release from Twilio first (paid resource — must not orphan)
-    if (phoneNumber.twilio_sid) {
+    // Release from carrier first (paid resource — must not orphan)
+    if (phoneNumber.telnyx_connection_id) {
+      try {
+        const { releaseNumber } = await import("@/lib/telnyx/client");
+        await releaseNumber(phoneNumber.telnyx_connection_id);
+      } catch (e) {
+        console.error("Failed to release from Telnyx:", e);
+        return NextResponse.json(
+          { error: "Failed to release number from Telnyx. Please try again or contact support." },
+          { status: 502 }
+        );
+      }
+    } else if (phoneNumber.twilio_sid) {
       try {
         const { releaseNumber } = await import("@/lib/twilio/client");
         await releaseNumber(phoneNumber.twilio_sid);
