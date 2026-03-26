@@ -19,7 +19,7 @@ const BUFFER_CONFIGS = {
   name:      { debounceMs: 1200, maxWaitMs: 4000,  ignoreUtteranceEnd: false },
   address:   { debounceMs: 2500, maxWaitMs: 10000, ignoreUtteranceEnd: true  },
   date_time: { debounceMs: 1000, maxWaitMs: 4000,  ignoreUtteranceEnd: false },
-  general:   { debounceMs: 400,  maxWaitMs: 2000,  ignoreUtteranceEnd: false },
+  general:   { debounceMs: 600,  maxWaitMs: 3000,  ignoreUtteranceEnd: false },
 };
 
 // Spoken digit words mapped to digit strings (English + Spanish)
