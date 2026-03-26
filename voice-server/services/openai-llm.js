@@ -520,4 +520,8 @@ function processSentenceBuffer(textBuffer, onSentence) {
   return textBuffer;
 }
 
-module.exports = { getChatResponse, streamChatResponse, LLM_PROVIDER, DEFAULT_MODEL };
+module.exports = {
+  getChatResponse, streamChatResponse, LLM_PROVIDER, DEFAULT_MODEL,
+  // Exported for testing only
+  _test: { toAnthropicMessages, toAnthropicTools, parseAnthropicResponse, processSentenceBuffer },
+};

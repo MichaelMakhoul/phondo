@@ -551,4 +551,5 @@ module.exports = {
   transferToolDefinition,
   callbackToolDefinition,
   executeToolCall,
+  _test: { getTransferService },
 };
