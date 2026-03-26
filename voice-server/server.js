@@ -997,7 +997,8 @@ wss.on("connection", (twilioWs) => {
                 language: session.language,
                 onTranscript: ({ transcript, isFinal }) => {
                   if (!isFinal) return;
-                  if (session.isSpeaking && transcript.trim().split(/\s+/).length <= 3) {
+                  const INTERRUPT_RE_RECONNECT = /^(stop|wait|hold on|no|cancel|nevermind|never mind|excuse me|hello|hey)\b/i;
+                  if (session.isSpeaking && transcript.trim().split(/\s+/).length <= 2 && !INTERRUPT_RE_RECONNECT.test(transcript.trim())) {
                     console.log(`[STT] Dropped (echo suppression while AI speaking): "${transcript}"`);
                     return;
                   }
@@ -1180,9 +1181,9 @@ wss.on("connection", (twilioWs) => {
             onTranscript: ({ transcript, isFinal }) => {
               if (!isFinal) return;
               // Echo suppression: drop STT transcripts that arrive while AI is speaking.
-              // These are typically the AI's own TTS output picked up by the caller's mic.
-              // Only allow through if the transcript is substantial (>3 words = likely real user speech).
-              if (session.isSpeaking && transcript.trim().split(/\s+/).length <= 3) {
+              // Allow through: substantial speech (>2 words) or known interrupt phrases.
+              const INTERRUPT_RE = /^(stop|wait|hold on|no|cancel|nevermind|never mind|excuse me|hello|hey)\b/i;
+              if (session.isSpeaking && transcript.trim().split(/\s+/).length <= 2 && !INTERRUPT_RE.test(transcript.trim())) {
                 console.log(`[STT] Dropped (echo suppression while AI speaking): "${transcript}"`);
                 return;
               }
@@ -1279,7 +1280,17 @@ wss.on("connection", (twilioWs) => {
               session.recordingDisclosurePlayed = true;
               session.addMessage("assistant", disclosureText);
             } else {
-              session.recordingDisclosureFailed = true;
+              // Pre-synthesis failed — MUST fall back to synchronous TTS for legal compliance
+              // In two-party consent jurisdictions, skipping disclosure is illegal
+              console.warn("[Recording] Disclosure pre-synthesis failed — falling back to synchronous TTS");
+              try {
+                await sendTTS(session, twilioWs, disclosureText);
+                session.recordingDisclosurePlayed = true;
+                session.addMessage("assistant", disclosureText);
+              } catch (fallbackErr) {
+                console.error("[Recording] CRITICAL: Disclosure fallback TTS also failed — cannot play legally required disclosure:", fallbackErr);
+                session.recordingDisclosureFailed = true;
+              }
             }
           }
 
