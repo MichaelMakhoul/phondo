@@ -139,7 +139,7 @@ describe("getBufferConfig", () => {
   it("returns phone config", () => {
     const config = getBufferConfig("phone");
     assert.equal(config.debounceMs, 2000);
-    assert.equal(config.maxWaitMs, 8000);
+    assert.equal(config.maxWaitMs, 12000);
     assert.equal(config.ignoreUtteranceEnd, true);
   });
   it("returns general config for unknown type", () => {
