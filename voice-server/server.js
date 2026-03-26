@@ -1170,8 +1170,7 @@ wss.on("connection", (twilioWs) => {
             },
           }, { industry: session.organization?.industry });
 
-          // Play recording disclosure if required by jurisdiction (hybrid: checks both org + caller state)
-          let disclosurePrefix = "";
+          // Recording disclosure + greeting — pre-synthesize disclosure while STT connects
           const consentResult = requiresRecordingDisclosureHybrid(
             context.organization.country,
             context.organization.businessState,
@@ -1182,51 +1181,79 @@ wss.on("connection", (twilioWs) => {
           session.consentReason = consentResult.reason;
           console.log(`[Recording] Consent: required=${consentResult.required}, callerState=${consentResult.callerState}, reason=${consentResult.reason}`);
 
+          // Pre-synthesize disclosure audio in parallel with STT connection
+          // This eliminates the 7+ second wait for disclosure TTS
+          let disclosureAudioPromise = null;
+          let disclosureText = "";
           if (consentResult.required) {
-            const disclosureText = getRecordingDisclosureText(
+            disclosureText = getRecordingDisclosureText(
               context.organization.country,
               context.assistant.settings?.recordingDisclosure,
               context.organization.name
             );
-            try {
-              await sendTTS(session, twilioWs, disclosureText);
-              session.recordingDisclosurePlayed = true;
-              // Add to conversation history so LLM knows disclosure was played
-              session.addMessage("assistant", disclosureText);
-            } catch (err) {
-              // Fallback: prepend disclosure to greeting so it's always delivered.
-              // In two-party consent jurisdictions, proceeding without disclosure is illegal.
-              console.error("[Recording] Disclosure TTS failed — prepending to greeting as fallback:", err);
-              disclosurePrefix = disclosureText + " ";
-              session.recordingDisclosureFailed = true;
-            }
+            disclosureAudioPromise = synthesizeSpeech(DEEPGRAM_API_KEY, disclosureText, {
+              voice: session.deepgramVoice,
+            }).catch((err) => {
+              console.error("[Recording] Disclosure pre-synthesis failed:", err);
+              return null;
+            });
           }
 
-          // Send greeting — disclosure and greeting as separate TTS calls
+          // Pre-synthesize greeting in parallel too
           const greeting = getGreeting(context.assistant, context.organization.name, {
             isAfterHours,
             afterHoursConfig,
           });
+          const greetingAudioPromise = synthesizeSpeech(DEEPGRAM_API_KEY, stripMarkdown(greeting), {
+            voice: session.deepgramVoice,
+          }).catch((err) => {
+            console.error("[TTS] Greeting pre-synthesis failed:", err);
+            return null;
+          });
 
-          // Handle disclosure fallback independently from greeting
-          if (disclosurePrefix) {
-            try {
-              await sendTTS(session, twilioWs, disclosurePrefix.trim());
+          // Wait for pre-synthesized audio and send it
+          if (disclosureAudioPromise) {
+            const disclosureAudio = await disclosureAudioPromise;
+            if (disclosureAudio) {
+              const t0 = Date.now();
+              const chunks = chunkAudioForTwilio(disclosureAudio);
+              session.isSpeaking = true;
+              for (const chunk of chunks) {
+                if (twilioWs.readyState !== WebSocket.OPEN) break;
+                twilioWs.send(JSON.stringify({ event: "media", streamSid: session.streamSid, media: { payload: chunk } }));
+              }
+              twilioWs.send(JSON.stringify({ event: "mark", streamSid: session.streamSid, mark: { name: "tts-done" } }));
+              console.log(`[TTS] Disclosure (pre-synth, ${Date.now() - t0}ms send) ${disclosureAudio.length} bytes`);
               session.recordingDisclosurePlayed = true;
-            } catch (err) {
-              console.error("[TTS] Failed to send recording disclosure:", err);
+              session.addMessage("assistant", disclosureText);
+            } else {
               session.recordingDisclosureFailed = true;
             }
           }
 
-          try {
-            await sendTTS(session, twilioWs, greeting);
+          const greetingAudio = await greetingAudioPromise;
+          if (greetingAudio) {
+            const t0 = Date.now();
+            const chunks = chunkAudioForTwilio(greetingAudio);
+            for (const chunk of chunks) {
+              if (twilioWs.readyState !== WebSocket.OPEN) break;
+              twilioWs.send(JSON.stringify({ event: "media", streamSid: session.streamSid, media: { payload: chunk } }));
+            }
+            twilioWs.send(JSON.stringify({ event: "mark", streamSid: session.streamSid, mark: { name: "tts-done" } }));
+            console.log(`[TTS] Greeting (pre-synth, ${Date.now() - t0}ms send) ${greetingAudio.length} bytes`);
             session.addMessage("assistant", greeting);
-          } catch (err) {
-            console.error("[TTS] Failed to send greeting — caller will hear silence until they speak:", err);
-            // Don't add to history since caller never heard it — tell LLM to greet them
-            session.addMessage("system", "The greeting failed to play. The caller has not been greeted yet. Start by greeting them.");
+          } else {
+            // Fallback: synthesize greeting normally if pre-synth failed
+            try {
+              await sendTTS(session, twilioWs, greeting);
+              session.addMessage("assistant", greeting);
+            } catch (err) {
+              console.error("[TTS] Greeting fallback also failed:", err);
+              session.addMessage("system", "The greeting failed to play. Start by greeting the caller.");
+            }
           }
+
+          // (Old sequential disclosure/greeting code removed — replaced by pre-synthesis above)
           const greetingInputType = detectExpectedInput(greeting);
           session.setExpectedInputType(greetingInputType);
           console.log(`[InputDetect] After greeting: ${greetingInputType}`);
