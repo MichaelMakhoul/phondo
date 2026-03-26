@@ -51,16 +51,20 @@ const REQUIRED_ENV = [
   "DEEPGRAM_API_KEY",
   llmKeyEnv,
   "PUBLIC_URL",
-  "TWILIO_ACCOUNT_SID",
-  "TWILIO_AUTH_TOKEN",
   "SUPABASE_URL",
   "SUPABASE_SERVICE_ROLE_KEY",
 ];
+// Twilio credentials are optional — only needed if serving Twilio numbers
+const OPTIONAL_PROVIDER_ENV = ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TELNYX_API_KEY"];
 for (const key of REQUIRED_ENV) {
   if (!process.env[key]) {
     console.error(`Missing required env var: ${key}`);
     process.exit(1);
   }
+}
+if (!process.env.TWILIO_ACCOUNT_SID && !process.env.TELNYX_API_KEY) {
+  console.error("At least one telephony provider must be configured: TWILIO_ACCOUNT_SID or TELNYX_API_KEY");
+  process.exit(1);
 }
 
 const PORT = process.env.PORT || 3001;
@@ -341,8 +345,10 @@ function validateTelnyxSignature(req) {
     // If no public key configured, use shared secret as stopgap
     const secret = process.env.TELNYX_WEBHOOK_SECRET;
     if (secret) {
+      const crypto = require("crypto");
       const headerSecret = req.headers["x-telnyx-secret"] || req.query?.secret;
-      return headerSecret === secret;
+      if (!headerSecret || headerSecret.length !== secret.length) return false;
+      return crypto.timingSafeEqual(Buffer.from(headerSecret), Buffer.from(secret));
     }
     // No verification configured — reject in production, allow in dev
     if (process.env.NODE_ENV === "production") {
@@ -443,6 +449,52 @@ app.post("/texml", async (req, res) => {
     </Stream>
   </Connect>
 </Response>`);
+});
+
+// TeXML callback routes — handle Telnyx callbacks with Telnyx signature validation
+app.post("/texml/ring-first-fallback", async (req, res) => {
+  if (!validateTelnyxSignature(req)) return res.status(403).send("Forbidden");
+  const called = req.body.Called || req.body.To || "";
+  const from = req.body.From || req.body.Caller || "";
+  const phoneRecord = await lookupPhoneNumber(called);
+  const token = issueStreamToken(called, from, undefined, phoneRecord);
+  console.log(`[TeXML] Ring-first fallback — connecting to AI (from=${maskPhone(from)})`);
+  res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Connect>
+    <Stream url="${escapeXml(WS_URL)}">
+      <Parameter name="auth_token" value="${escapeXml(token)}" />
+    </Stream>
+  </Connect>
+</Response>`);
+});
+
+app.post("/texml/transfer-status", async (req, res) => {
+  if (!validateTelnyxSignature(req)) return res.status(403).send("Forbidden");
+  const dialStatus = req.body.DialCallStatus || "no-answer";
+  const callSid = req.body.CallSid;
+  console.log(`[TeXML] Transfer status: ${dialStatus} (callSid=${callSid})`);
+  if (dialStatus !== "completed") {
+    const called = req.body.Called || req.body.To || "";
+    const from = req.body.From || req.body.Caller || "";
+    const phoneRecord = await lookupPhoneNumber(called);
+    const token = issueStreamToken(called, from, callSid, phoneRecord);
+    return res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Connect>
+    <Stream url="${escapeXml(WS_URL)}">
+      <Parameter name="auth_token" value="${escapeXml(token)}" />
+    </Stream>
+  </Connect>
+</Response>`);
+  }
+  res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?><Response/>`);
+});
+
+app.post("/texml/recording-done", async (req, res) => {
+  if (!validateTelnyxSignature(req)) return res.status(403).send("Forbidden");
+  console.log(`[TeXML] Recording done (callSid=${req.body.CallSid})`);
+  res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?><Response/>`);
 });
 
 /**
@@ -1235,11 +1287,14 @@ wss.on("connection", (twilioWs) => {
           if (greetingAudio) {
             const t0 = Date.now();
             const chunks = chunkAudioForTwilio(greetingAudio);
+            session.isSpeaking = true;
             for (const chunk of chunks) {
               if (twilioWs.readyState !== WebSocket.OPEN) break;
               twilioWs.send(JSON.stringify({ event: "media", streamSid: session.streamSid, media: { payload: chunk } }));
             }
             twilioWs.send(JSON.stringify({ event: "mark", streamSid: session.streamSid, mark: { name: "tts-done" } }));
+            // Safety timeout: reset isSpeaking even if mark event is lost
+            setTimeout(() => { if (session) session.isSpeaking = false; }, 20000);
             console.log(`[TTS] Greeting (pre-synth, ${Date.now() - t0}ms send) ${greetingAudio.length} bytes`);
             session.addMessage("assistant", greeting);
           } else {
@@ -1627,6 +1682,9 @@ async function sendTTS(session, twilioWs, text) {
 
   const chunks = chunkAudioForTwilio(audioBuffer);
   session.isSpeaking = true;
+  // Safety timeout: reset isSpeaking even if the mark event is lost (prevents permanent echo suppression)
+  clearTimeout(session._speakingTimeout);
+  session._speakingTimeout = setTimeout(() => { if (session) session.isSpeaking = false; }, 20000);
 
   for (const chunk of chunks) {
     if (twilioWs.readyState !== WebSocket.OPEN) break;
