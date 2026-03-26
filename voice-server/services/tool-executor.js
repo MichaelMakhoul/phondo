@@ -468,7 +468,8 @@ async function executeTransferCall(args, context) {
   const PUBLIC_URL = process.env.PUBLIC_URL;
   const transferOptions = {};
   if (PUBLIC_URL) {
-    transferOptions.actionUrl = `${PUBLIC_URL}/twiml/transfer-status`;
+    const transferPrefix = context.telephonyProvider === "telnyx" ? "texml" : "twiml";
+    transferOptions.actionUrl = `${PUBLIC_URL}/${transferPrefix}/transfer-status`;
   } else {
     console.error("[Transfer] PUBLIC_URL not set — no-answer fallback DISABLED");
     Sentry.withScope((scope) => {
