@@ -28,6 +28,7 @@ async function telnyxFetch(path: string, options: RequestInit = {}): Promise<Res
   const apiKey = getTelnyxApiKey();
   const res = await fetch(`${TELNYX_API_BASE}${path}`, {
     ...options,
+    signal: AbortSignal.timeout(10_000),
     headers: {
       Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json",
@@ -236,5 +237,9 @@ export async function sendSms(
   }
 
   const data = await res.json();
-  return { messageId: data.data?.id || "" };
+  const messageId = data.data?.id;
+  if (!messageId) {
+    throw new Error(`Telnyx SMS accepted but returned no message ID — unexpected response shape`);
+  }
+  return { messageId };
 }

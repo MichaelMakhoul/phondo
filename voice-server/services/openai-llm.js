@@ -32,7 +32,11 @@ const PROVIDER_CONFIG = {
   },
 };
 
-const config = PROVIDER_CONFIG[LLM_PROVIDER] || PROVIDER_CONFIG.anthropic;
+const config = PROVIDER_CONFIG[LLM_PROVIDER];
+if (!config) {
+  console.error(`[LLM] Invalid LLM_PROVIDER="${LLM_PROVIDER}". Must be one of: ${Object.keys(PROVIDER_CONFIG).join(", ")}`);
+  process.exit(1);
+}
 const DEFAULT_MODEL = process.env.LLM_MODEL || config.defaultModel;
 const MAX_RETRIES = 2;
 
@@ -297,7 +301,7 @@ async function streamChatResponse(apiKey, messages, options) {
 
     if (res.status === 429 && attempt < 2) {
       const retryAfter = res.headers.get("retry-after");
-      const waitMs = retryAfter ? Number(retryAfter) * 1000 : 1000 * (attempt + 1);
+      const waitMs = Math.min(retryAfter ? Number(retryAfter) * 1000 : 1000 * (attempt + 1), 5000);
       console.warn(`[LLM] Stream rate limited (429), retrying in ${waitMs}ms (attempt ${attempt + 1}/3)`);
       await new Promise((r) => setTimeout(r, waitMs));
       continue;
