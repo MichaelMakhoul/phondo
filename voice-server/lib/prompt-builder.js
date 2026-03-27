@@ -132,13 +132,15 @@ function buildSchedulingSection(timezone, businessHours, defaultAppointmentDurat
       }
       lines.push(
         "",
-        "When a caller wants to book, ask which type of appointment they need.",
-        "Use the service type ID when checking availability and booking:",
+        "When a caller wants to book, follow this EXACT workflow — do NOT skip any step:",
         "1. Ask what type of appointment they need",
-        "2. Call get_current_datetime to know today's date",
-        "3. Call check_availability with the service_type_id and preferred date",
-        "4. Present available times",
-        "5. Collect their name and phone number, then book with the selected time and service_type_id",
+        "2. Call get_current_datetime — you MUST call this tool, never guess the date",
+        "3. Call check_availability with the service_type_id and date — you MUST call this tool, never guess availability",
+        "4. Present the available times from the check_availability result",
+        "5. Once the caller picks a time, collect their name and phone number",
+        "6. Call book_appointment with datetime (ISO format), name, phone, and service_type_id — ALWAYS use book_appointment, NEVER use schedule_callback for bookings",
+        "",
+        "CRITICAL: You MUST use book_appointment (not schedule_callback) when booking. schedule_callback is ONLY for when the caller wants someone to call them back, NOT for making appointments.",
         "",
         "STAFF & PRACTITIONER RULES:",
         "- The system automatically assigns the next available practitioner when booking. If the booking confirmation includes a practitioner name, mention it to the caller.",
@@ -149,12 +151,12 @@ function buildSchedulingSection(timezone, businessHours, defaultAppointmentDurat
     } else {
       lines.push(
         "",
-        "SCHEDULING WORKFLOW:",
-        "1. When a caller wants to book, first call get_current_datetime to know today's date.",
-        "2. Ask what date they prefer, then call check_availability for that date.",
-        "3. Present the available times and let the caller choose.",
-        "4. Collect their name and phone number, then call book_appointment.",
-        "5. Confirm the booking details with the caller.",
+        "SCHEDULING WORKFLOW — follow this EXACT sequence, do NOT skip any step:",
+        "1. Call get_current_datetime — you MUST call this tool, never guess the date",
+        "2. Ask what date they prefer, then call check_availability for that date — you MUST call this tool, never guess availability",
+        "3. Present the available times from the check_availability result",
+        "4. Collect their name and phone number, then call book_appointment",
+        "5. ALWAYS use book_appointment for bookings — NEVER use schedule_callback to book appointments",
         "",
         "STAFF MENTIONS: The business knowledge base may mention staff names. If a caller asks to see a specific person, do NOT promise to book with them — specific practitioner booking is not available on this plan. Instead say: 'I can book a general appointment and the team will confirm who you'll be seeing.' Only mention a practitioner name if the booking confirmation explicitly includes one."
       );
@@ -405,7 +407,7 @@ function buildBehaviorsSection(behaviors, options) {
   }
 
   lines.push(
-    "- CALLBACKS: You can schedule callback requests using the schedule_callback function. Use this when a caller wants someone to call them back, when the person they need is unavailable, or when you cannot resolve their issue directly."
+    "- CALLBACKS: You can schedule callback requests using the schedule_callback function. Use this ONLY when a caller explicitly wants someone to call them back, or when the person they need is unavailable. NEVER use schedule_callback to book appointments — always use book_appointment for that."
   );
 
   // Voice conversation style — critical for phone call quality
