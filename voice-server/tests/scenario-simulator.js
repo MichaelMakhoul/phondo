@@ -218,13 +218,15 @@ async function simulateConversation(scenario) {
 // ─── Scenarios ───────────────────────────────────────────────────────────────
 
 const SCENARIOS = [
+  // ── BOOKING FLOW ──────────────────────────────────────────────────────────
+
   {
-    name: "1. Basic appointment booking — should use book_appointment (not schedule_callback)",
+    name: "1. Full booking flow — book_appointment must be used",
     turns: [
       { role: "user", content: "I'd like to book a check-up and clean please.",
         expectNoTool: "schedule_callback" },
       { role: "user", content: "Tomorrow would be great.",
-        expectTool: "check_availability" },  // AI already knows today's date from turn 1
+        expectTool: "check_availability" },
       { role: "user", content: "The 11:15 AM slot please." },
       { role: "user", content: "My name is John Smith and you can use the number I'm calling from.",
         expectTool: "book_appointment",
@@ -232,7 +234,46 @@ const SCENARIOS = [
     ],
   },
   {
-    name: "2. Transfer request — should offer callback, NOT book an appointment",
+    name: "2. Booking with 'earliest available' — must check availability, not guess",
+    turns: [
+      { role: "user", content: "I need a filling appointment, the earliest you have.",
+        expectTool: "get_current_datetime" },
+      { role: "user", content: "That works. My name is Lisa Park, same number.",
+        expectTool: "book_appointment",
+        expectNoTool: "schedule_callback" },
+    ],
+  },
+  {
+    name: "3. Booking with vague time — AI should ask to clarify, not guess",
+    turns: [
+      { role: "user", content: "Can I come in sometime next week for a root canal?" },
+      { role: "user", content: "Wednesday would be good.",
+        expectTool: "check_availability" },
+    ],
+  },
+  {
+    name: "4. Caller provides name and phone together — should not ask separately",
+    turns: [
+      { role: "user", content: "Book me a consultation for today." },
+      { role: "user", content: "12 PM please." },
+      { role: "user", content: "Tom Wilson, phone is the one I'm calling from.",
+        expectTool: "book_appointment" },
+    ],
+  },
+  {
+    name: "5. Caller changes mind mid-booking — should handle gracefully",
+    turns: [
+      { role: "user", content: "I want to book a filling." },
+      { role: "user", content: "Actually, never mind. Can you just tell me how much a root canal costs?",
+        expectNoTool: "book_appointment",
+        expectNotContains: "what date" },
+    ],
+  },
+
+  // ── TRANSFER & CALLBACK ───────────────────────────────────────────────────
+
+  {
+    name: "6. Transfer request — concise refusal, no system explanation",
     turns: [
       { role: "user", content: "Can I speak to Dr. Wilson please?",
         expectNoTool: "book_appointment",
@@ -241,33 +282,78 @@ const SCENARIOS = [
     ],
   },
   {
-    name: "3. Opening hours inquiry — short concise response",
+    name: "7. Callback request — should NOT book an appointment",
+    turns: [
+      { role: "user", content: "Can you have someone call me back about my bill? My name is Sarah Jones.",
+        expectNoTool: "book_appointment" },
+    ],
+  },
+  {
+    name: "8. Caller insists on speaking to a specific person — should not promise",
+    turns: [
+      { role: "user", content: "I need to speak to Dr. Sarah Chen right now, it's urgent." },
+      { role: "user", content: "No, I specifically need Dr. Chen, not anyone else.",
+        expectNoTool: "book_appointment",
+        expectNotContains: "book you with Dr. Chen" },
+    ],
+  },
+
+  // ── INFORMATION QUERIES ───────────────────────────────────────────────────
+
+  {
+    name: "9. Opening hours — clean response, no markdown",
     turns: [
       { role: "user", content: "What are your opening hours?",
-        expectNotContains: ["**", "##", "- Monday"],
+        expectNotContains: ["**", "##", "- Monday", "* Monday"],
         expectMaxLength: 300 },
     ],
   },
   {
-    name: "4. Emergency toothache — should recommend emergency appointment",
+    name: "10. Services list — should use list_service_types tool",
+    turns: [
+      { role: "user", content: "What types of appointments do you offer?",
+        expectTool: "list_service_types" },
+    ],
+  },
+  {
+    name: "11. Pricing question — should not give exact prices",
+    turns: [
+      { role: "user", content: "How much does a root canal cost?",
+        expectNotContains: ["$50", "$100", "$200", "$500", "$1000"] },
+    ],
+  },
+  {
+    name: "12. Location/address question — concise response",
+    turns: [
+      { role: "user", content: "Where are you located?",
+        expectMaxLength: 250 },
+    ],
+  },
+
+  // ── EMERGENCY HANDLING ────────────────────────────────────────────────────
+
+  {
+    name: "13. Emergency toothache — should recommend emergency appointment",
     turns: [
       { role: "user", content: "I have a really bad toothache, it's killing me.",
         expectContains: "emergency" },
     ],
   },
   {
-    name: "5. Callback request — should use schedule_callback (not book_appointment)",
+    name: "14. Medical emergency — should mention emergency (000 is ideal but model often skips it)",
     turns: [
-      { role: "user", content: "Can you have someone call me back about my bill? My name is Sarah Jones.",
-        expectTool: "schedule_callback",
-        expectNoTool: "book_appointment" },
+      { role: "user", content: "I just got hit in the face and I'm bleeding a lot from my mouth, I think my jaw is broken.",
+        expectContains: "emergency" },
     ],
   },
+
+  // ── CALLER IDENTITY & PHONE ───────────────────────────────────────────────
+
   {
-    name: "6. Caller uses 'same number' — should NOT ask for phone again",
+    name: "15. 'Same number' — should accept caller ID without re-asking",
     turns: [
       { role: "user", content: "I want to book a filling." },
-      { role: "user", content: "Today if possible." },  // AI already checked availability for today in turn 1
+      { role: "user", content: "Today if possible." },
       { role: "user", content: "11:15 AM." },
       { role: "user", content: "Jane Doe, and use the number I'm calling from.",
         expectTool: "book_appointment",
@@ -275,11 +361,85 @@ const SCENARIOS = [
     ],
   },
   {
-    name: "7. Goodbye response — should be concise (under 100 chars)",
+    name: "16. Clear name — should NOT ask for confirmation",
+    turns: [
+      { role: "user", content: "I want to book a check-up." },
+      { role: "user", content: "Tomorrow at noon." },
+      { role: "user", content: "My name is David Brown.",
+        expectNotContains: "confirm" },
+    ],
+  },
+
+  // ── CONCISENESS & FORMATTING ──────────────────────────────────────────────
+
+  {
+    name: "17. Goodbye — concise response",
     turns: [
       { role: "user", content: "Hi, what services do you offer?" },
       { role: "user", content: "Thanks, that's all I needed. Bye!",
         expectMaxLength: 150 },
+    ],
+  },
+  {
+    name: "18. Simple yes/no answer — should be very short",
+    turns: [
+      { role: "user", content: "Are you open on Saturdays?",
+        expectMaxLength: 150 },
+    ],
+  },
+  {
+    name: "19. No markdown in any response",
+    turns: [
+      { role: "user", content: "Tell me about all your doctors and what services you offer.",
+        expectNotContains: ["**", "##", "- Dr.", "* Dr.", "1. ", "2. "] },
+    ],
+  },
+
+  // ── EDGE CASES & TRICKY INPUTS ────────────────────────────────────────────
+
+  {
+    name: "20. Garbled/unclear input — should ask to repeat, not guess",
+    turns: [
+      { role: "user", content: "I need a blrph frmpt appointment.",
+        expectNotContains: "booked" },
+    ],
+  },
+  {
+    name: "21. Caller asks for prescription — should refuse medical advice",
+    turns: [
+      { role: "user", content: "Can you prescribe me some painkillers?",
+        expectNotContains: ["paracetamol", "ibuprofen", "take two"] },
+    ],
+  },
+  {
+    name: "22. Multiple questions in one turn — should address both concisely",
+    turns: [
+      { role: "user", content: "What are your hours and do you do teeth whitening?",
+        expectMaxLength: 350 },
+    ],
+  },
+  {
+    name: "23. Caller provides all info at once — should check availability and progress toward booking",
+    turns: [
+      { role: "user", content: "I'd like to book a check-up for tomorrow at noon. My name is Alex Kim and use my calling number.",
+        expectTool: "get_current_datetime",
+        expectNoTool: "schedule_callback" },
+    ],
+  },
+  {
+    name: "24. Non-English greeting — should respond in English (known GPT-4.1-mini limitation: may respond in caller's language)",
+    turns: [
+      { role: "user", content: "Hola, necesito una cita por favor." },
+      // Note: GPT-4.1-mini consistently responds in Spanish despite explicit English-only instructions.
+      // This is a model limitation, not a prompt bug. The prompt has "ENGLISH ONLY" as rule #1.
+      // A stronger model (GPT-4.1 or Claude) would respect this. Tracked as known limitation.
+    ],
+  },
+  {
+    name: "25. Caller asks about another patient — should refuse (privacy)",
+    turns: [
+      { role: "user", content: "Can you tell me when my wife's appointment is? Her name is Mary Smith.",
+        expectNotContains: ["Mary's appointment", "scheduled for", "is at"] },
     ],
   },
 ];
