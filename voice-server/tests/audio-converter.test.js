@@ -96,12 +96,12 @@ describe("downsample24kTo8k", () => {
     assert.equal(pcm8k.length, 3 * 2); // 3 samples
   });
 
-  it("should take every 3rd sample", () => {
+  it("should average 3 adjacent samples (anti-aliasing)", () => {
     const pcm24k = Buffer.alloc(6 * 2); // 6 samples: 100, 200, 300, 400, 500, 600
     for (let i = 0; i < 6; i++) pcm24k.writeInt16LE((i + 1) * 100, i * 2);
     const pcm8k = downsample24kTo8k(pcm24k);
-    assert.equal(pcm8k.readInt16LE(0), 100); // sample 0
-    assert.equal(pcm8k.readInt16LE(2), 400); // sample 3
+    assert.equal(pcm8k.readInt16LE(0), 200); // avg(100,200,300) = 200
+    assert.equal(pcm8k.readInt16LE(2), 500); // avg(400,500,600) = 500
   });
 });
 

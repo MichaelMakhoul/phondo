@@ -1223,9 +1223,11 @@ wss.on("connection", (twilioWs) => {
                 },
                 onTranscriptIn: (text) => {
                   console.log(`[GeminiLive] User: "${text}"`);
+                  session.addMessage("user", text);
                 },
                 onTranscriptOut: (text) => {
                   console.log(`[GeminiLive] AI: "${text.slice(0, 100)}"`);
+                  session.addMessage("assistant", text);
                 },
                 onInterrupted: () => {
                   // Clear Twilio's audio buffer on barge-in

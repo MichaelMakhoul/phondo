@@ -89,7 +89,8 @@ function upsample8kTo16k(pcm8k) {
 }
 
 /**
- * Downsample PCM16 from 24kHz to 8kHz (take every 3rd sample).
+ * Downsample PCM16 from 24kHz to 8kHz with averaging filter.
+ * Averages 3 adjacent samples instead of naive decimation to reduce aliasing.
  * @param {Buffer} pcm24k - PCM16 at 24kHz
  * @returns {Buffer} PCM16 at 8kHz (1/3 samples)
  */
@@ -98,8 +99,12 @@ function downsample24kTo8k(pcm24k) {
   const outCount = Math.floor(sampleCount / 3);
   const out = Buffer.alloc(outCount * 2);
   for (let i = 0; i < outCount; i++) {
-    const sample = pcm24k.readInt16LE(i * 3 * 2);
-    out.writeInt16LE(sample, i * 2);
+    const idx = i * 3;
+    const s0 = pcm24k.readInt16LE(idx * 2);
+    const s1 = (idx + 1 < sampleCount) ? pcm24k.readInt16LE((idx + 1) * 2) : s0;
+    const s2 = (idx + 2 < sampleCount) ? pcm24k.readInt16LE((idx + 2) * 2) : s1;
+    const avg = Math.round((s0 + s1 + s2) / 3);
+    out.writeInt16LE(avg, i * 2);
   }
   return out;
 }

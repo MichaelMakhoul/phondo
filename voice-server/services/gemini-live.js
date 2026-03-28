@@ -36,6 +36,7 @@ function convertSchemaToGemini(schema) {
       result.properties[key] = {
         type: (val.type || "string").toUpperCase(),
         description: val.description || "",
+        ...(val.enum && { enum: val.enum }),
       };
     }
   }
@@ -184,28 +185,30 @@ function createGeminiSession(config, callbacks) {
       const functionCalls = msg.toolCall.functionCalls || [];
       console.log(`[GeminiLive] Tool calls: ${functionCalls.map((c) => c.name).join(", ")}`);
 
-      const responses = [];
-      for (const call of functionCalls) {
-        try {
-          const result = await callbacks.onToolCall({
-            id: call.id,
-            name: call.name,
-            args: call.args || {},
-          });
-          responses.push({
-            id: call.id,
-            name: call.name,
-            response: { result: typeof result === "string" ? { message: result } : result },
-          });
-        } catch (err) {
-          console.error(`[GeminiLive] Tool ${call.name} error:`, err.message);
-          responses.push({
-            id: call.id,
-            name: call.name,
-            response: { error: err.message },
-          });
-        }
-      }
+      // Execute tool calls in parallel for lower latency
+      const responses = await Promise.all(
+        functionCalls.map(async (call) => {
+          try {
+            const result = await callbacks.onToolCall({
+              id: call.id,
+              name: call.name,
+              args: call.args || {},
+            });
+            return {
+              id: call.id,
+              name: call.name,
+              response: { result: typeof result === "string" ? { message: result } : result },
+            };
+          } catch (err) {
+            console.error(`[GeminiLive] Tool ${call.name} error:`, err.message);
+            return {
+              id: call.id,
+              name: call.name,
+              response: { error: err.message },
+            };
+          }
+        })
+      );
 
       // Send tool responses back
       if (ws.readyState === WebSocket.OPEN) {
@@ -222,9 +225,10 @@ function createGeminiSession(config, callbacks) {
       return;
     }
 
-    // Session about to end
+    // Session about to end — notify caller so server can handle gracefully
     if (msg.goAway) {
-      console.log(`[GeminiLive] Session ending in ${msg.goAway.timeLeft}`);
+      console.warn(`[GeminiLive] Session ending in ${msg.goAway.timeLeft}`);
+      callbacks.onError?.(new Error(`Gemini session expiring in ${msg.goAway.timeLeft}`));
       return;
     }
 
@@ -281,8 +285,8 @@ function createGeminiSession(config, callbacks) {
       }
     },
 
-    /** The underlying WebSocket (for health checks) */
-    ws,
+    /** WebSocket readyState (do NOT expose ws directly — URL contains API key) */
+    get readyState() { return ws.readyState; },
   };
 }
 
