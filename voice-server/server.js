@@ -18,6 +18,10 @@ const { calendarToolDefinitions, listServiceTypesToolDefinition, transferToolDef
 const { createGeminiSession } = require("./services/gemini-live");
 
 const VOICE_PIPELINE = process.env.VOICE_PIPELINE || "classic"; // "classic" or "gemini-live"
+
+// Cache for pre-synthesized disclosure audio (keyed by disclosure text hash)
+// Avoids re-synthesizing the same legal text on every call (~7s savings)
+const disclosureAudioCache = new Map();
 const { analyzeCallTranscript } = require("./services/post-call-analysis");
 const { getDeepgramVoice } = require("./lib/voice-mapping");
 const { generateHoldAudio, getHoldPreset } = require("./lib/hold-audio");
@@ -1226,14 +1230,25 @@ wss.on("connection", (twilioWs) => {
               );
               fullGreetingText = disclosureText + " " + greeting;
 
-              // Synthesize disclosure + greeting in parallel, play disclosure ASAP
-              const disclosurePromise = synthesizeSpeech(DEEPGRAM_API_KEY, stripMarkdown(disclosureText), { voice: session.deepgramVoice });
+              // Use cached disclosure audio if available (same text = same audio)
+              const disclosureCacheKey = `${context.organization.country}_${session.deepgramVoice}_${disclosureText.length}`;
+              let disclosureAudio = disclosureAudioCache.get(disclosureCacheKey);
+
+              // Synthesize disclosure (cached) + greeting in parallel
+              const disclosurePromise = disclosureAudio
+                ? Promise.resolve(disclosureAudio)
+                : synthesizeSpeech(DEEPGRAM_API_KEY, stripMarkdown(disclosureText), { voice: session.deepgramVoice });
               const greetingPromise = synthesizeSpeech(DEEPGRAM_API_KEY, stripMarkdown(greeting), { voice: session.deepgramVoice });
 
               try {
-                const disclosureAudio = await disclosurePromise;
+                disclosureAudio = await disclosurePromise;
+                // Cache for future calls
+                if (!disclosureAudioCache.has(disclosureCacheKey)) {
+                  disclosureAudioCache.set(disclosureCacheKey, disclosureAudio);
+                  console.log(`[GeminiLive] Disclosure cached (${disclosureCacheKey}, ${disclosureAudio.length} bytes)`);
+                }
                 sendAudioChunks(disclosureAudio);
-                console.log(`[GeminiLive] Disclosure played (${disclosureAudio.length} bytes)`);
+                console.log(`[GeminiLive] Disclosure played (${disclosureAudio.length} bytes, cached=${disclosureAudioCache.has(disclosureCacheKey)})`);
                 session.recordingDisclosurePlayed = true;
               } catch (err) {
                 console.error("[GeminiLive] Disclosure TTS failed:", err.message);
@@ -1263,10 +1278,26 @@ wss.on("connection", (twilioWs) => {
 
             // Build system prompt — tell Gemini greeting was already played
             let geminiSystemPrompt = session.messages[0]?.content || "You are a helpful receptionist.";
+
+            // Remove contradictory language rules for multilingual mode.
+            // The base system prompt may contain "ENGLISH ONLY" or "I can only assist in English"
+            // but if multilingual is enabled, Gemini should respond in the caller's language.
+            const isMultilingual = context.assistant.settings?.multilingualEnabled ?? false;
+            if (isMultilingual) {
+              // Strip English-only rules that would conflict with multilingual behavior
+              geminiSystemPrompt = geminiSystemPrompt
+                .replace(/ENGLISH ONLY:.*?Do NOT respond in their language\./gs, "LANGUAGE: You are multilingual. Respond in the caller's language naturally.")
+                .replace(/You MUST ONLY respond in English\..*?Do NOT use any non-English words\./gs, "Respond in the caller's language naturally.")
+                .replace(/You must respond in English\..*?Do NOT respond in their language\./gs, "Respond in the caller's language naturally.")
+                .replace(/I can only assist in English/g, "I can assist in multiple languages");
+            }
+
             geminiSystemPrompt += `\n\nIMPORTANT — GREETING ALREADY PLAYED: The recording disclosure and greeting have already been played to the caller via a separate system. Do NOT repeat the greeting or disclosure. Start directly with the conversation when the caller speaks. Do NOT invent a receptionist name like "Rachel" — you are an AI assistant.`;
 
-            // CRITICAL — tool calling enforcement for Gemini
-            geminiSystemPrompt += `\n\nCRITICAL — NEVER FABRICATE ACTIONS: You MUST call the book_appointment tool to actually book an appointment. NEVER tell the caller "I've booked your appointment" unless you have received a success response from the book_appointment tool. If the tool call fails or you cannot call it, tell the caller: "I'm having trouble booking right now. Let me take your details and have someone call you back." The same applies to all tools — never claim an action was completed without actually calling the tool.`;
+            // CRITICAL — tool calling and name enforcement for Gemini
+            geminiSystemPrompt += `\n\nCRITICAL RULES FOR THIS CONVERSATION:`;
+            geminiSystemPrompt += `\n- NEVER FABRICATE ACTIONS: You MUST call the book_appointment tool to actually book. NEVER say "I've booked" unless the tool returned success. If you can't call the tool, say: "I'm having trouble booking right now. Let me take your details and have someone call you back."`;
+            geminiSystemPrompt += `\n- ALWAYS COLLECT REAL NAME: Before calling book_appointment, you MUST ask for and receive the caller's actual name. NEVER use placeholder names like "Caller Name", "Unknown", or "Guest". If the caller refuses to give a name, offer to schedule a callback instead.`;
 
             // Transcript buffering — accumulate fragments, flush on turn complete
             let pendingUserTranscript = "";
