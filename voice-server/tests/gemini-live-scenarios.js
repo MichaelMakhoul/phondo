@@ -1,18 +1,19 @@
 #!/usr/bin/env node
 /**
- * Gemini Live Scenario Simulator
+ * Gemini Scenario Simulator
  *
- * Tests the Gemini 3.1 Flash Live model with the real system prompt and tools
- * by sending text input via the Live WebSocket API and checking AI responses
- * and tool call behavior.
+ * Tests the Gemini model with the real system prompt and tools using the
+ * OpenAI-compatible REST API (since Gemini Live's native audio models
+ * don't support text-only mode for testing).
+ *
+ * The system prompt and tools are identical to what the Live pipeline uses,
+ * so this validates the AI's decision-making behavior.
  *
  * Usage: GEMINI_API_KEY=xxx node tests/gemini-live-scenarios.js
  */
 
-const WebSocket = require("ws");
 const { buildSystemPrompt, getGreeting } = require("../lib/prompt-builder");
 const { calendarToolDefinitions, listServiceTypesToolDefinition, callbackToolDefinition } = require("../services/tool-executor");
-const { convertToolsToGemini } = require("../services/gemini-live");
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 if (!GEMINI_API_KEY) {
@@ -20,8 +21,8 @@ if (!GEMINI_API_KEY) {
   process.exit(1);
 }
 
-const GEMINI_MODEL = "models/gemini-3.1-flash-live-preview";
-const GEMINI_ENDPOINT = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
+const GEMINI_REST_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
+const GEMINI_MODEL = "gemini-2.5-flash";
 
 // ─── Mock data ───────────────────────────────────────────────────────────────
 
@@ -77,87 +78,54 @@ const TOOL_RESULTS = {
   cancel_appointment: () => ({ message: "Appointment cancelled." }),
 };
 
-// ─── Gemini Live session helper ──────────────────────────────────────────────
+// ─── Gemini REST API helper (OpenAI-compatible endpoint) ─────────────────────
 
-function createTestSession(systemPrompt, tools) {
-  return new Promise((resolve, reject) => {
-    const url = `${GEMINI_ENDPOINT}?key=${GEMINI_API_KEY}`;
-    const ws = new WebSocket(url);
-    const geminiTools = convertToolsToGemini(tools);
+async function geminiChat(messages, tools) {
+  const body = {
+    model: GEMINI_MODEL,
+    messages,
+    max_tokens: 300,
+    temperature: 0.7,
+  };
+  if (tools?.length > 0) {
+    body.tools = tools;
+    body.tool_choice = "auto";
+  }
 
-    let fullTranscript = "";
-    let toolsCalled = [];
-    let resolveResponse = null;
-    let currentResponse = "";
-
-    ws.on("open", () => {
-      const setupMsg = {
-        setup: {
-          model: GEMINI_MODEL,
-          generationConfig: {
-            responseModalities: ["TEXT"],  // Text mode for testing — no audio needed
-            temperature: 0.7,
-          },
-          systemInstruction: { parts: [{ text: systemPrompt }] },
-          tools: geminiTools.length > 0 ? [{ functionDeclarations: geminiTools }] : undefined,
-        },
-      };
-      ws.send(JSON.stringify(setupMsg));
+  // Retry on 429 rate limit (Gemini free tier: 10 RPM)
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const res = await fetch(GEMINI_REST_URL, {
+      method: "POST",
+      signal: AbortSignal.timeout(30_000),
+      headers: {
+        Authorization: `Bearer ${GEMINI_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
     });
 
-    ws.on("message", async (data) => {
-      let msg;
-      try { msg = JSON.parse(data.toString()); } catch { return; }
+    if (res.status === 429) {
+      const wait = (attempt + 1) * 10000; // 10s, 20s, 30s
+      console.log(`  [Rate limited] Waiting ${wait / 1000}s...`);
+      await new Promise((r) => setTimeout(r, wait));
+      continue;
+    }
 
-      if (msg.setupComplete) {
-        resolve({
-          sendText: (text) => {
-            return new Promise((res) => {
-              currentResponse = "";
-              toolsCalled = [];
-              resolveResponse = res;
-              ws.send(JSON.stringify({
-                clientContent: {
-                  turns: [{ role: "user", parts: [{ text }] }],
-                  turnComplete: true,
-                },
-              }));
-            });
-          },
-          close: () => ws.close(),
-          getToolsCalled: () => toolsCalled,
-        });
-        return;
-      }
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`Gemini API error ${res.status}: ${text.slice(0, 200)}`);
+    }
 
-      if (msg.serverContent) {
-        if (msg.serverContent.modelTurn?.parts) {
-          for (const part of msg.serverContent.modelTurn.parts) {
-            if (part.text) currentResponse += part.text;
-          }
-        }
-        if (msg.serverContent.turnComplete && resolveResponse) {
-          const r = resolveResponse;
-          resolveResponse = null;
-          r({ text: currentResponse, tools: [...toolsCalled] });
-        }
-      }
+    const data = await res.json();
+    const message = data.choices?.[0]?.message;
+    if (!message) throw new Error("No response from Gemini");
 
-      if (msg.toolCall) {
-        const responses = [];
-        for (const call of (msg.toolCall.functionCalls || [])) {
-          toolsCalled.push(call.name);
-          const handler = TOOL_RESULTS[call.name];
-          const result = handler ? handler(call.args || {}) : { message: `Unknown tool: ${call.name}` };
-          responses.push({ id: call.id, name: call.name, response: { result } });
-        }
-        ws.send(JSON.stringify({ toolResponse: { functionResponses: responses } }));
-      }
-    });
-
-    ws.on("error", (err) => reject(err));
-    setTimeout(() => reject(new Error("Session setup timeout")), 15000);
-  });
+    if (message.tool_calls?.length > 0) {
+      return { type: "tool_calls", toolCalls: message.tool_calls, message };
+    }
+    return { type: "content", content: message.content || "" };
+  }
+  throw new Error("Gemini rate limited after 3 retries");
 }
 
 // ─── Scenarios ───────────────────────────────────────────────────────────────
@@ -292,89 +260,101 @@ async function runScenario(scenario) {
   ) + "\n\nCALLER CONTEXT:\nThe caller's phone number is +61400000000.";
 
   const tools = [...calendarToolDefinitions, listServiceTypesToolDefinition, callbackToolDefinition];
-
-  let session;
-  try {
-    session = await createTestSession(systemPrompt, tools);
-  } catch (err) {
-    console.log(`  [ERROR] Session setup failed: ${err.message}`);
-    return { name: scenario.name, passed: false, issues: [`Setup failed: ${err.message}`] };
-  }
-
+  const messages = [{ role: "system", content: systemPrompt }];
   let passed = true;
   const issues = [];
 
   for (const turn of scenario.turns) {
+    messages.push({ role: "user", content: turn.text });
     console.log(`\nUser: "${turn.text}"`);
 
-    let response;
-    try {
-      response = await Promise.race([
-        session.sendText(turn.text),
-        new Promise((_, rej) => setTimeout(() => rej(new Error("Response timeout (30s)")), 30000)),
-      ]);
-    } catch (err) {
-      console.log(`  [ERROR] ${err.message}`);
-      issues.push(err.message);
-      passed = false;
-      break;
-    }
+    const toolsCalled = [];
+    let maxIter = 5;
 
-    const { text, tools: calledTools } = response;
-    if (calledTools.length > 0) console.log(`  [TOOLS] ${calledTools.join(", ")}`);
-    console.log(`  AI: "${text.slice(0, 150)}${text.length > 150 ? "..." : ""}"`);
+    while (maxIter-- > 0) {
+      let result;
+      try {
+        result = await geminiChat(messages, tools);
+      } catch (err) {
+        console.log(`  [ERROR] ${err.message}`);
+        issues.push(err.message);
+        passed = false;
+        break;
+      }
 
-    // Check assertions
-    if (turn.expectTool) {
-      const expected = Array.isArray(turn.expectTool) ? turn.expectTool : [turn.expectTool];
-      for (const t of expected) {
-        if (!calledTools.includes(t)) {
-          console.log(`  [FAIL] Expected tool: ${t}`);
-          issues.push(`Missing tool: ${t}`);
+      if (result.type === "tool_calls") {
+        messages.push(result.message);
+        for (const tc of result.toolCalls) {
+          const fnName = tc.function.name;
+          let args = {};
+          try { args = JSON.parse(tc.function.arguments); } catch {}
+          console.log(`  [TOOL] ${fnName}(${JSON.stringify(args).slice(0, 80)})`);
+          toolsCalled.push(fnName);
+          const handler = TOOL_RESULTS[fnName];
+          const toolResult = handler ? JSON.stringify(handler(args)) : `Unknown tool: ${fnName}`;
+          messages.push({ role: "tool", tool_call_id: tc.id, content: toolResult });
+        }
+        continue;
+      }
+
+      if (result.type === "content") {
+        const text = result.content;
+        console.log(`  AI: "${text.slice(0, 150)}${text.length > 150 ? "..." : ""}"`);
+        messages.push({ role: "assistant", content: text });
+
+        // Check assertions
+        if (turn.expectTool) {
+          const expected = Array.isArray(turn.expectTool) ? turn.expectTool : [turn.expectTool];
+          for (const t of expected) {
+            if (!toolsCalled.includes(t)) {
+              console.log(`  [FAIL] Expected tool: ${t}`);
+              issues.push(`Missing tool: ${t}`);
+              passed = false;
+            }
+          }
+        }
+        if (turn.expectNoTool) {
+          const forbidden = Array.isArray(turn.expectNoTool) ? turn.expectNoTool : [turn.expectNoTool];
+          for (const t of forbidden) {
+            if (toolsCalled.includes(t)) {
+              console.log(`  [FAIL] Should NOT call: ${t}`);
+              issues.push(`Unexpected tool: ${t}`);
+              passed = false;
+            }
+          }
+        }
+        if (turn.expectContains) {
+          const lower = text.toLowerCase();
+          const checks = Array.isArray(turn.expectContains) ? turn.expectContains : [turn.expectContains];
+          for (const c of checks) {
+            if (!lower.includes(c.toLowerCase())) {
+              console.log(`  [FAIL] Should contain: "${c}"`);
+              issues.push(`Missing: "${c}"`);
+              passed = false;
+            }
+          }
+        }
+        if (turn.expectNotContains) {
+          const lower = text.toLowerCase();
+          const checks = Array.isArray(turn.expectNotContains) ? turn.expectNotContains : [turn.expectNotContains];
+          for (const c of checks) {
+            if (lower.includes(c.toLowerCase())) {
+              console.log(`  [FAIL] Should NOT contain: "${c}"`);
+              issues.push(`Unexpected: "${c}"`);
+              passed = false;
+            }
+          }
+        }
+        if (turn.expectMaxLength && text.length > turn.expectMaxLength) {
+          console.log(`  [FAIL] Too long: ${text.length} (max ${turn.expectMaxLength})`);
+          issues.push(`Too long: ${text.length}/${turn.expectMaxLength}`);
           passed = false;
         }
+        break;
       }
-    }
-    if (turn.expectNoTool) {
-      const forbidden = Array.isArray(turn.expectNoTool) ? turn.expectNoTool : [turn.expectNoTool];
-      for (const t of forbidden) {
-        if (calledTools.includes(t)) {
-          console.log(`  [FAIL] Should NOT call: ${t}`);
-          issues.push(`Unexpected tool: ${t}`);
-          passed = false;
-        }
-      }
-    }
-    if (turn.expectContains) {
-      const lower = text.toLowerCase();
-      const checks = Array.isArray(turn.expectContains) ? turn.expectContains : [turn.expectContains];
-      for (const c of checks) {
-        if (!lower.includes(c.toLowerCase())) {
-          console.log(`  [FAIL] Should contain: "${c}"`);
-          issues.push(`Missing: "${c}"`);
-          passed = false;
-        }
-      }
-    }
-    if (turn.expectNotContains) {
-      const lower = text.toLowerCase();
-      const checks = Array.isArray(turn.expectNotContains) ? turn.expectNotContains : [turn.expectNotContains];
-      for (const c of checks) {
-        if (lower.includes(c.toLowerCase())) {
-          console.log(`  [FAIL] Should NOT contain: "${c}"`);
-          issues.push(`Unexpected: "${c}"`);
-          passed = false;
-        }
-      }
-    }
-    if (turn.expectMaxLength && text.length > turn.expectMaxLength) {
-      console.log(`  [FAIL] Too long: ${text.length} (max ${turn.expectMaxLength})`);
-      issues.push(`Too long: ${text.length}/${turn.expectMaxLength}`);
-      passed = false;
     }
   }
 
-  session.close();
   console.log(`\nResult: ${passed ? "PASS ✅" : "FAIL ❌"}`);
   if (issues.length) console.log(`Issues: ${issues.join(", ")}`);
   return { name: scenario.name, passed, issues };
@@ -389,8 +369,8 @@ async function main() {
   for (const scenario of SCENARIOS) {
     const result = await runScenario(scenario);
     results.push(result);
-    // Small delay between scenarios to avoid rate limiting
-    await new Promise((r) => setTimeout(r, 1000));
+    // Delay between scenarios to avoid rate limiting (Gemini free tier: 10 RPM)
+    await new Promise((r) => setTimeout(r, 8000));
   }
 
   console.log(`\n${"=".repeat(60)}`);
