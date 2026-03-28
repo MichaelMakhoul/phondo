@@ -1206,33 +1206,60 @@ wss.on("connection", (twilioWs) => {
             });
 
             // Pre-synthesize disclosure + greeting in parallel
-            let greetingText = greeting;
+            // Split disclosure and greeting into separate TTS calls for faster first audio.
+            // Play disclosure immediately while greeting synthesizes in parallel.
+            const sendAudioChunks = (audio) => {
+              const chunks = chunkAudioForTwilio(audio);
+              for (const chunk of chunks) {
+                if (twilioWs.readyState !== WebSocket.OPEN) break;
+                twilioWs.send(JSON.stringify({ event: "media", streamSid: session.streamSid, media: { payload: chunk } }));
+              }
+            };
+
+            let fullGreetingText = greeting;
+
             if (consentResult.required) {
               const disclosureText = getRecordingDisclosureText(
                 context.organization.country,
                 context.assistant.settings?.recordingDisclosure,
                 context.organization.name
               );
-              greetingText = disclosureText + " " + greeting;
-              session.recordingDisclosurePlayed = true;
+              fullGreetingText = disclosureText + " " + greeting;
+
+              // Synthesize disclosure + greeting in parallel, play disclosure ASAP
+              const disclosurePromise = synthesizeSpeech(DEEPGRAM_API_KEY, stripMarkdown(disclosureText), { voice: session.deepgramVoice });
+              const greetingPromise = synthesizeSpeech(DEEPGRAM_API_KEY, stripMarkdown(greeting), { voice: session.deepgramVoice });
+
+              try {
+                const disclosureAudio = await disclosurePromise;
+                sendAudioChunks(disclosureAudio);
+                console.log(`[GeminiLive] Disclosure played (${disclosureAudio.length} bytes)`);
+                session.recordingDisclosurePlayed = true;
+              } catch (err) {
+                console.error("[GeminiLive] Disclosure TTS failed:", err.message);
+              }
+
+              try {
+                const greetingAudio = await greetingPromise;
+                sendAudioChunks(greetingAudio);
+                twilioWs.send(JSON.stringify({ event: "mark", streamSid: session.streamSid, mark: { name: "tts-done" } }));
+                console.log(`[GeminiLive] Greeting played (${greetingAudio.length} bytes)`);
+              } catch (err) {
+                console.error("[GeminiLive] Greeting TTS failed:", err.message);
+              }
+            } else {
+              // No disclosure needed — just play greeting
+              try {
+                const greetingAudio = await synthesizeSpeech(DEEPGRAM_API_KEY, stripMarkdown(greeting), { voice: session.deepgramVoice });
+                sendAudioChunks(greetingAudio);
+                twilioWs.send(JSON.stringify({ event: "mark", streamSid: session.streamSid, mark: { name: "tts-done" } }));
+                console.log(`[GeminiLive] Greeting played (${greetingAudio.length} bytes)`);
+              } catch (err) {
+                console.error("[GeminiLive] Greeting TTS failed:", err.message);
+              }
             }
 
-            // Synthesize and play greeting immediately via Deepgram TTS
-            try {
-              const greetingAudio = await synthesizeSpeech(DEEPGRAM_API_KEY, stripMarkdown(greetingText), {
-                voice: session.deepgramVoice,
-              });
-              const chunks = chunkAudioForTwilio(greetingAudio);
-              for (const chunk of chunks) {
-                if (twilioWs.readyState !== WebSocket.OPEN) break;
-                twilioWs.send(JSON.stringify({ event: "media", streamSid: session.streamSid, media: { payload: chunk } }));
-              }
-              twilioWs.send(JSON.stringify({ event: "mark", streamSid: session.streamSid, mark: { name: "tts-done" } }));
-              console.log(`[GeminiLive] Greeting played via Deepgram TTS (${greetingAudio.length} bytes)`);
-              session.addMessage("assistant", greetingText);
-            } catch (err) {
-              console.error("[GeminiLive] Greeting TTS failed:", err.message);
-            }
+            session.addMessage("assistant", fullGreetingText);
 
             // Build system prompt — tell Gemini greeting was already played
             let geminiSystemPrompt = session.messages[0]?.content || "You are a helpful receptionist.";
