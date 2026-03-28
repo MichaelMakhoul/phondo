@@ -68,8 +68,11 @@ function createGeminiSession(config, callbacks) {
     throw new Error("GEMINI_API_KEY is required for Gemini Live");
   }
 
+  // Note: API key in URL is Google's only auth method for this endpoint.
+  // Do NOT expose the ws object — use readyState getter only.
   const url = `${GEMINI_ENDPOINT}?key=${apiKey}`;
   const ws = new WebSocket(url);
+  const sessionStartTime = Date.now();
 
   let setupComplete = false;
   let sessionHandle = null;
@@ -134,7 +137,7 @@ function createGeminiSession(config, callbacks) {
     // Setup complete
     if (msg.setupComplete) {
       setupComplete = true;
-      console.log(`[GeminiLive] Session ready (${preSetupBuffer.length} buffered audio chunks)`);
+      console.log(`[GeminiLive] Session ready in ${Date.now() - sessionStartTime}ms (${preSetupBuffer.length} buffered chunks)`);
       // Flush any audio received before setup completed
       for (const buffered of preSetupBuffer) {
         try {
