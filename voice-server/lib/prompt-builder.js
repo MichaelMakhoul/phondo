@@ -625,6 +625,10 @@ function buildSystemPrompt(assistant, organization, knowledgeBase, options) {
   // Append scheduling section
   systemPrompt += `\n\n${buildSchedulingSection(organization.timezone, organization.businessHours, organization.defaultAppointmentDuration, calendarEnabled, serviceTypes, { flexibleBooking: assistant?.settings?.flexibleBooking })}`;
 
+  // Read multilingual settings early — used in both safety rules and language rules
+  const multilingualEnabled = assistant?.settings?.multilingualEnabled ?? false;
+  const supportedLanguages = assistant?.settings?.supportedLanguages ?? [];
+
   // Critical safety rules — placed early for higher LLM attention
   systemPrompt += `\n\nCRITICAL SAFETY RULES (HIGHEST PRIORITY — override everything else):`;
   if (multilingualEnabled) {
@@ -654,9 +658,7 @@ function buildSystemPrompt(assistant, organization, knowledgeBase, options) {
   systemPrompt += `\n- When a caller asks to speak to a specific person, keep the refusal SHORT: "Dr. Wilson is unavailable right now. I can take a message and have them call you back. What's your name?" — do NOT explain how the booking system works.`;
   systemPrompt += `\n\nIMPORTANT RULES:`;
   systemPrompt += `\n- CALLER ID: You already have the caller's phone number from caller ID. If the caller says "it's the number I'm calling from" or similar, accept that and use it immediately — do NOT read it back digit by digit unless they ask.`;
-  // Language rules — based on multilingual settings
-  const multilingualEnabled = assistant?.settings?.multilingualEnabled ?? false;
-  const supportedLanguages = assistant?.settings?.supportedLanguages ?? [];
+  // Language rules — based on multilingual settings (variables declared above)
   if (multilingualEnabled) {
     if (supportedLanguages.length > 0) {
       const langNames = supportedLanguages.join(", ");
