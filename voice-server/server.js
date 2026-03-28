@@ -1190,32 +1190,56 @@ wss.on("connection", (twilioWs) => {
             const llmOptions = buildLLMOptions(session, { includeTransfer: true });
             const allTools = llmOptions.tools || [];
 
-            // Build system prompt with recording disclosure baked in
-            let geminiSystemPrompt = session.messages[0]?.content || "You are a helpful receptionist.";
-
-            // Add recording disclosure instruction — Gemini must say this FIRST
+            // ── Pre-play greeting via Deepgram TTS (instant, no waiting for Gemini) ──
+            // Gemini Live is audio-native and won't speak until the caller does.
+            // We solve this by playing the disclosure + greeting via Deepgram TTS
+            // immediately, then telling Gemini the greeting was already played.
             const consentResult = requiresRecordingDisclosureHybrid(
               context.organization.country,
               context.organization.businessState,
               context.organization.recordingConsentMode,
               session.callerPhone
             );
+            const greeting = getGreeting(context.assistant, context.organization.name, {
+              isAfterHours,
+              afterHoursConfig,
+            });
+
+            // Pre-synthesize disclosure + greeting in parallel
+            let greetingText = greeting;
             if (consentResult.required) {
               const disclosureText = getRecordingDisclosureText(
                 context.organization.country,
                 context.assistant.settings?.recordingDisclosure,
                 context.organization.name
               );
-              geminiSystemPrompt += `\n\nRECORDING DISCLOSURE (SAY THIS FIRST, before your greeting):\nYou MUST say the following disclosure as your very first words when the call starts, before saying anything else:\n"${disclosureText}"\nAfter the disclosure, immediately follow with your normal greeting.`;
+              greetingText = disclosureText + " " + greeting;
               session.recordingDisclosurePlayed = true;
             }
 
-            // Add explicit greeting instruction — prevent Gemini from inventing names
-            const greeting = getGreeting(context.assistant, context.organization.name, {
-              isAfterHours,
-              afterHoursConfig,
-            });
-            geminiSystemPrompt += `\n\nGREETING: After the recording disclosure (if any), say exactly: "${greeting}" — do NOT invent a receptionist name. Use only the name from this greeting.`;
+            // Synthesize and play greeting immediately via Deepgram TTS
+            try {
+              const greetingAudio = await synthesizeSpeech(DEEPGRAM_API_KEY, stripMarkdown(greetingText), {
+                voice: session.deepgramVoice,
+              });
+              const chunks = chunkAudioForTwilio(greetingAudio);
+              for (const chunk of chunks) {
+                if (twilioWs.readyState !== WebSocket.OPEN) break;
+                twilioWs.send(JSON.stringify({ event: "media", streamSid: session.streamSid, media: { payload: chunk } }));
+              }
+              twilioWs.send(JSON.stringify({ event: "mark", streamSid: session.streamSid, mark: { name: "tts-done" } }));
+              console.log(`[GeminiLive] Greeting played via Deepgram TTS (${greetingAudio.length} bytes)`);
+              session.addMessage("assistant", greetingText);
+            } catch (err) {
+              console.error("[GeminiLive] Greeting TTS failed:", err.message);
+            }
+
+            // Build system prompt — tell Gemini greeting was already played
+            let geminiSystemPrompt = session.messages[0]?.content || "You are a helpful receptionist.";
+            geminiSystemPrompt += `\n\nIMPORTANT — GREETING ALREADY PLAYED: The recording disclosure and greeting have already been played to the caller via a separate system. Do NOT repeat the greeting or disclosure. Start directly with the conversation when the caller speaks. Do NOT invent a receptionist name like "Rachel" — you are an AI assistant.`;
+
+            // CRITICAL — tool calling enforcement for Gemini
+            geminiSystemPrompt += `\n\nCRITICAL — NEVER FABRICATE ACTIONS: You MUST call the book_appointment tool to actually book an appointment. NEVER tell the caller "I've booked your appointment" unless you have received a success response from the book_appointment tool. If the tool call fails or you cannot call it, tell the caller: "I'm having trouble booking right now. Let me take your details and have someone call you back." The same applies to all tools — never claim an action was completed without actually calling the tool.`;
 
             // Transcript buffering — accumulate fragments, flush on turn complete
             let pendingUserTranscript = "";
