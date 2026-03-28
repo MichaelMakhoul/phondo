@@ -1179,6 +1179,9 @@ wss.on("connection", (twilioWs) => {
           }
 
           // ── Pipeline selection ───────────────────────────────────────────
+          if (VOICE_PIPELINE === "gemini-live" && !process.env.GEMINI_API_KEY) {
+            console.error("[GeminiLive] VOICE_PIPELINE=gemini-live but GEMINI_API_KEY not set — falling back to classic pipeline");
+          }
           if (VOICE_PIPELINE === "gemini-live" && process.env.GEMINI_API_KEY) {
             // Gemini Live pipeline — single model handles STT + LLM + TTS
             console.log(`[GeminiLive] Starting Gemini Live session for callSid=${callSid}`);
@@ -1240,11 +1243,24 @@ wss.on("connection", (twilioWs) => {
                 },
                 onError: (err) => {
                   console.error("[GeminiLive] Session error:", err.message);
-                  session.callFailed = true;
-                  session.endedReason = "gemini-error";
+                  if (session) {
+                    session.callFailed = true;
+                    session.endedReason = "gemini-error";
+                  }
+                  // Close the Twilio call — caller would be stuck in silence otherwise
+                  if (twilioWs.readyState === WebSocket.OPEN) {
+                    setTimeout(() => twilioWs.close(1000, "Gemini session error"), 1000);
+                  }
                 },
                 onClose: (code) => {
                   console.log(`[GeminiLive] Session closed (code=${code})`);
+                  // If Gemini closes unexpectedly mid-call, end the Twilio call too
+                  if (session && !session.callFailed && twilioWs.readyState === WebSocket.OPEN) {
+                    console.warn("[GeminiLive] Unexpected session close — ending Twilio call");
+                    session.callFailed = true;
+                    session.endedReason = "gemini-session-closed";
+                    setTimeout(() => twilioWs.close(1000, "Gemini session closed"), 1000);
+                  }
                 },
               }
             );

@@ -75,6 +75,8 @@ function createGeminiSession(config, callbacks) {
   let sessionHandle = null;
   let transcriptIn = "";
   let transcriptOut = "";
+  let audioErrorCount = 0;
+  const preSetupBuffer = []; // Buffer audio before setup completes
 
   ws.on("open", () => {
     console.log("[GeminiLive] WebSocket connected, sending setup...");
@@ -132,7 +134,15 @@ function createGeminiSession(config, callbacks) {
     // Setup complete
     if (msg.setupComplete) {
       setupComplete = true;
-      console.log("[GeminiLive] Session ready");
+      console.log(`[GeminiLive] Session ready (${preSetupBuffer.length} buffered audio chunks)`);
+      // Flush any audio received before setup completed
+      for (const buffered of preSetupBuffer) {
+        try {
+          const geminiAudio = twilioToGemini(buffered);
+          ws.send(JSON.stringify({ realtimeInput: { audio: { data: geminiAudio, mimeType: "audio/pcm;rate=16000" } } }));
+        } catch {}
+      }
+      preSetupBuffer.length = 0;
       return;
     }
 
@@ -188,11 +198,16 @@ function createGeminiSession(config, callbacks) {
       // Execute tool calls in parallel for lower latency
       const responses = await Promise.all(
         functionCalls.map(async (call) => {
+          // Validate tool call structure
+          if (!call.name || typeof call.name !== "string") {
+            console.error("[GeminiLive] Malformed tool call — missing name:", JSON.stringify(call).slice(0, 200));
+            return { id: call.id || "unknown", name: "unknown", response: { error: "Malformed tool call" } };
+          }
           try {
             const result = await callbacks.onToolCall({
-              id: call.id,
+              id: call.id || `auto_${Date.now()}`,
               name: call.name,
-              args: call.args || {},
+              args: (call.args && typeof call.args === "object") ? call.args : {},
             });
             return {
               id: call.id,
@@ -257,7 +272,12 @@ function createGeminiSession(config, callbacks) {
      * @param {string} twilioBase64
      */
     sendAudio(twilioBase64) {
-      if (!setupComplete || ws.readyState !== WebSocket.OPEN) return;
+      if (ws.readyState !== WebSocket.OPEN) return;
+      if (!setupComplete) {
+        // Buffer audio until setup completes — don't lose the caller's first words
+        if (preSetupBuffer.length < 200) preSetupBuffer.push(twilioBase64); // ~4s max buffer
+        return;
+      }
       try {
         const geminiAudio = twilioToGemini(twilioBase64);
         ws.send(JSON.stringify({
@@ -268,8 +288,16 @@ function createGeminiSession(config, callbacks) {
             },
           },
         }));
+        audioErrorCount = 0; // Reset on success
       } catch (err) {
-        console.error("[GeminiLive] Audio send error:", err.message);
+        audioErrorCount++;
+        if (audioErrorCount <= 3) {
+          console.error(`[GeminiLive] Audio send error (${audioErrorCount}):`, err.message);
+        }
+        if (audioErrorCount === 5) {
+          console.error("[GeminiLive] Persistent audio conversion failure — triggering error");
+          callbacks.onError?.(new Error("Persistent audio conversion failure"));
+        }
       }
     },
 
