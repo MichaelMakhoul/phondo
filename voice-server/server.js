@@ -1184,20 +1184,51 @@ wss.on("connection", (twilioWs) => {
           }
           if (VOICE_PIPELINE === "gemini-live" && process.env.GEMINI_API_KEY) {
             // Gemini Live pipeline — single model handles STT + LLM + TTS
-            console.log(`[GeminiLive] Starting Gemini Live session for callSid=${callSid}`);
+            const geminiT0 = Date.now();
+            console.log(`[GeminiLive] Starting session for callSid=${callSid}`);
 
             const llmOptions = buildLLMOptions(session, { includeTransfer: true });
             const allTools = llmOptions.tools || [];
 
+            // Build system prompt with recording disclosure baked in
+            let geminiSystemPrompt = session.messages[0]?.content || "You are a helpful receptionist.";
+
+            // Add recording disclosure instruction — Gemini must say this FIRST
+            const consentResult = requiresRecordingDisclosureHybrid(
+              context.organization.country,
+              context.organization.businessState,
+              context.organization.recordingConsentMode,
+              session.callerPhone
+            );
+            if (consentResult.required) {
+              const disclosureText = getRecordingDisclosureText(
+                context.organization.country,
+                context.assistant.settings?.recordingDisclosure,
+                context.organization.name
+              );
+              geminiSystemPrompt += `\n\nRECORDING DISCLOSURE (SAY THIS FIRST, before your greeting):\nYou MUST say the following disclosure as your very first words when the call starts, before saying anything else:\n"${disclosureText}"\nAfter the disclosure, immediately follow with your normal greeting.`;
+              session.recordingDisclosurePlayed = true;
+            }
+
+            // Add explicit greeting instruction — prevent Gemini from inventing names
+            const greeting = getGreeting(context.assistant, context.organization.name, {
+              isAfterHours,
+              afterHoursConfig,
+            });
+            geminiSystemPrompt += `\n\nGREETING: After the recording disclosure (if any), say exactly: "${greeting}" — do NOT invent a receptionist name. Use only the name from this greeting.`;
+
+            // Transcript buffering — accumulate fragments, flush on turn complete
+            let pendingUserTranscript = "";
+            let pendingAiTranscript = "";
+
             session.geminiSession = createGeminiSession(
               {
-                systemPrompt: session.messages[0]?.content || "You are a helpful receptionist.",
+                systemPrompt: geminiSystemPrompt,
                 tools: allTools,
-                voiceName: "Kore", // Bright, professional voice
+                voiceName: "Kore",
               },
               {
                 onAudio: (twilioBase64) => {
-                  // Send Gemini's audio response to Twilio
                   if (twilioWs.readyState === WebSocket.OPEN) {
                     twilioWs.send(JSON.stringify({
                       event: "media",
@@ -1207,7 +1238,6 @@ wss.on("connection", (twilioWs) => {
                   }
                 },
                 onToolCall: async (toolCall) => {
-                  // Route to existing tool executor
                   console.log(`[GeminiLive] Tool call: ${toolCall.name}(${JSON.stringify(toolCall.args).slice(0, 80)})`);
                   const result = await executeToolCall(toolCall.name, toolCall.args, {
                     organizationId: session.organizationId,
@@ -1225,21 +1255,36 @@ wss.on("connection", (twilioWs) => {
                   return { message };
                 },
                 onTranscriptIn: (text) => {
-                  console.log(`[GeminiLive] User: "${text}"`);
-                  session.addMessage("user", text);
+                  // Buffer user transcript fragments — flush on turn complete
+                  pendingUserTranscript += text;
                 },
                 onTranscriptOut: (text) => {
-                  console.log(`[GeminiLive] AI: "${text.slice(0, 100)}"`);
-                  session.addMessage("assistant", text);
+                  // Buffer AI transcript fragments — flush on turn complete
+                  pendingAiTranscript += text;
                 },
                 onInterrupted: () => {
-                  // Clear Twilio's audio buffer on barge-in
+                  // Flush any pending AI transcript before interruption
+                  if (pendingAiTranscript.trim()) {
+                    session.addMessage("assistant", pendingAiTranscript.trim());
+                    console.log(`[GeminiLive] AI: "${pendingAiTranscript.trim().slice(0, 100)}"`);
+                    pendingAiTranscript = "";
+                  }
                   if (twilioWs.readyState === WebSocket.OPEN) {
                     twilioWs.send(JSON.stringify({ event: "clear", streamSid: session.streamSid }));
                   }
                 },
                 onTurnComplete: () => {
-                  // Turn complete — ready for next user input
+                  // Flush accumulated transcripts as complete messages
+                  if (pendingUserTranscript.trim()) {
+                    session.addMessage("user", pendingUserTranscript.trim());
+                    console.log(`[GeminiLive] User (turn): "${pendingUserTranscript.trim()}"`);
+                    pendingUserTranscript = "";
+                  }
+                  if (pendingAiTranscript.trim()) {
+                    session.addMessage("assistant", pendingAiTranscript.trim());
+                    console.log(`[GeminiLive] AI (turn): "${pendingAiTranscript.trim().slice(0, 100)}"`);
+                    pendingAiTranscript = "";
+                  }
                 },
                 onError: (err) => {
                   console.error("[GeminiLive] Session error:", err.message);
