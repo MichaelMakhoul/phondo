@@ -138,6 +138,15 @@ function createGeminiSession(config, callbacks) {
     if (msg.setupComplete) {
       setupComplete = true;
       console.log(`[GeminiLive] Session ready in ${Date.now() - sessionStartTime}ms (${preSetupBuffer.length} buffered chunks)`);
+
+      // Trigger Gemini to speak the greeting immediately — it won't auto-start
+      ws.send(JSON.stringify({
+        clientContent: {
+          turns: [{ role: "user", parts: [{ text: "[Call connected. Say your recording disclosure and greeting now.]" }] }],
+          turnComplete: true,
+        },
+      }));
+
       // Flush any audio received before setup completed
       for (const buffered of preSetupBuffer) {
         try {
