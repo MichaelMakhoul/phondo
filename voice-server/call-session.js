@@ -266,6 +266,11 @@ class CallSession {
       this.deepgramWs.close();
     }
     this.deepgramWs = null;
+    // Close Gemini Live session if active
+    if (this.geminiSession) {
+      this.geminiSession.close();
+      this.geminiSession = null;
+    }
     this.messages = [];
     this.fullTranscriptMessages = [];
   }

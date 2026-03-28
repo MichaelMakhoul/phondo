@@ -15,6 +15,9 @@ const { loadCallContext, loadTestCallContext } = require("./lib/call-context");
 const { buildSystemPrompt, getGreeting } = require("./lib/prompt-builder");
 const { createCallRecord, completeCallRecord, notifyCallCompleted } = require("./lib/call-logger");
 const { calendarToolDefinitions, listServiceTypesToolDefinition, transferToolDefinition, callbackToolDefinition, executeToolCall } = require("./services/tool-executor");
+const { createGeminiSession } = require("./services/gemini-live");
+
+const VOICE_PIPELINE = process.env.VOICE_PIPELINE || "classic"; // "classic" or "gemini-live"
 const { analyzeCallTranscript } = require("./services/post-call-analysis");
 const { getDeepgramVoice } = require("./lib/voice-mapping");
 const { generateHoldAudio, getHoldPreset } = require("./lib/hold-audio");
@@ -1175,7 +1178,81 @@ wss.on("connection", (twilioWs) => {
             // Non-fatal — continue handling the call
           }
 
-          // Open Deepgram STT WebSocket
+          // ── Pipeline selection ───────────────────────────────────────────
+          if (VOICE_PIPELINE === "gemini-live" && process.env.GEMINI_API_KEY) {
+            // Gemini Live pipeline — single model handles STT + LLM + TTS
+            console.log(`[GeminiLive] Starting Gemini Live session for callSid=${callSid}`);
+
+            const llmOptions = buildLLMOptions(session, { includeTransfer: true });
+            const allTools = llmOptions.tools || [];
+
+            session.geminiSession = createGeminiSession(
+              {
+                systemPrompt: session.messages[0]?.content || "You are a helpful receptionist.",
+                tools: allTools,
+                voiceName: "Kore", // Bright, professional voice
+              },
+              {
+                onAudio: (twilioBase64) => {
+                  // Send Gemini's audio response to Twilio
+                  if (twilioWs.readyState === WebSocket.OPEN) {
+                    twilioWs.send(JSON.stringify({
+                      event: "media",
+                      streamSid: session.streamSid,
+                      media: { payload: twilioBase64 },
+                    }));
+                  }
+                },
+                onToolCall: async (toolCall) => {
+                  // Route to existing tool executor
+                  console.log(`[GeminiLive] Tool call: ${toolCall.name}(${JSON.stringify(toolCall.args).slice(0, 80)})`);
+                  const result = await executeToolCall(toolCall.name, toolCall.args, {
+                    organizationId: session.organizationId,
+                    assistantId: session.assistantId,
+                    callSid: session.callSid,
+                    callId: session.callRecordId,
+                    transferRules: session.transferRules,
+                    organization: session.organization,
+                    callerPhone: session.callerPhone,
+                    orgPhoneNumber: session.orgPhoneNumber,
+                    telephonyProvider: session.telephonyProvider || "twilio",
+                  });
+                  const message = typeof result === "string" ? result : result.message;
+                  console.log(`[GeminiLive] Tool result: "${message.slice(0, 100)}"`);
+                  return { message };
+                },
+                onTranscriptIn: (text) => {
+                  console.log(`[GeminiLive] User: "${text}"`);
+                },
+                onTranscriptOut: (text) => {
+                  console.log(`[GeminiLive] AI: "${text.slice(0, 100)}"`);
+                },
+                onInterrupted: () => {
+                  // Clear Twilio's audio buffer on barge-in
+                  if (twilioWs.readyState === WebSocket.OPEN) {
+                    twilioWs.send(JSON.stringify({ event: "clear", streamSid: session.streamSid }));
+                  }
+                },
+                onTurnComplete: () => {
+                  // Turn complete — ready for next user input
+                },
+                onError: (err) => {
+                  console.error("[GeminiLive] Session error:", err.message);
+                  session.callFailed = true;
+                  session.endedReason = "gemini-error";
+                },
+                onClose: (code) => {
+                  console.log(`[GeminiLive] Session closed (code=${code})`);
+                },
+              }
+            );
+
+            // No greeting needed — Gemini handles the full conversation including greeting
+            // The system prompt tells it what to say first
+            break; // Skip the classic pipeline setup below
+          }
+
+          // ── Classic pipeline (Deepgram STT + OpenAI LLM + Deepgram TTS) ──
           session.deepgramWs = openDeepgramStream(DEEPGRAM_API_KEY, {
             language: session.language,
             onTranscript: ({ transcript, isFinal }) => {
@@ -1327,8 +1404,14 @@ wss.on("connection", (twilioWs) => {
         }
 
         case "media": {
+          // Route audio based on pipeline mode
+          if (session?.geminiSession) {
+            // Gemini Live pipeline — send audio directly (conversion handled internally)
+            session.geminiSession.sendAudio(msg.media.payload);
+            break;
+          }
           if (!session || !session.deepgramWs) break;
-          // Forward raw mulaw audio to Deepgram (no conversion needed)
+          // Classic pipeline — forward raw mulaw audio to Deepgram (no conversion needed)
           const audio = Buffer.from(msg.media.payload, "base64");
           if (session.deepgramWs.readyState === WebSocket.OPEN) {
             session.deepgramWs.send(audio);
@@ -2247,7 +2330,7 @@ async function handleTestUserSpeech(session, ws, transcript) {
 
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`Voice server listening on port ${PORT}`);
-  console.log(`LLM provider: ${LLM_PROVIDER} (model: ${FULL_MODEL})`);
+  console.log(`Voice pipeline: ${VOICE_PIPELINE}${VOICE_PIPELINE === "gemini-live" ? " (Gemini 3.1 Flash Live)" : ` (LLM: ${LLM_PROVIDER}/${FULL_MODEL})`}`);
   console.log(`TwiML endpoint: ${PUBLIC_URL}/twiml`);
   console.log(`WebSocket endpoint: ${WS_URL}`);
   if (TEST_CALL_SECRET) {
