@@ -420,10 +420,18 @@ function buildBehaviorsSection(behaviors, options) {
     '- CALLER ID: You already have the caller\'s phone number from caller ID. If the caller says "it\'s the number I\'m calling from" or similar, accept that and use it immediately — do NOT read it back digit by digit unless they ask. Only ask for a phone number if you need a different contact number.'
   );
 
-  // Language boundaries
-  lines.push(
-    "- LANGUAGE: You must only speak in the language you were configured for. If the caller speaks a different language, politely let them know you can only assist in your configured language and offer to have someone who speaks their language call them back. Do NOT attempt to respond in languages you are not configured for."
-  );
+  // Language boundaries — based on multilingual settings
+  const multilingualEnabled = options?.multilingualEnabled ?? false;
+  const supportedLanguages = options?.supportedLanguages ?? [];
+  if (multilingualEnabled) {
+    if (supportedLanguages.length > 0) {
+      lines.push(`- LANGUAGE: You can respond in: ${supportedLanguages.join(", ")}. Detect the caller's language and respond in it. If unsupported, respond in English and offer to take a message.`);
+    } else {
+      lines.push("- LANGUAGE: You are multilingual. Detect the caller's language and respond in the same language naturally.");
+    }
+  } else {
+    lines.push("- LANGUAGE: You MUST ONLY respond in English. If the caller speaks another language, say: 'I can only assist in English. I can take a message and have someone call you back.'");
+  }
 
   // Honesty — never guess or make up information
   lines.push(
@@ -483,6 +491,8 @@ function buildPromptFromConfig(config, context) {
     hasTransferRules: context.transferRules && context.transferRules.length > 0,
     isAfterHours: context.isAfterHours,
     afterHoursConfig: context.afterHoursConfig,
+    multilingualEnabled: context.assistantSettings?.multilingualEnabled,
+    supportedLanguages: context.assistantSettings?.supportedLanguages,
   }));
 
   // 5. Timezone, business hours & scheduling
@@ -589,6 +599,7 @@ function buildSystemPrompt(assistant, organization, knowledgeBase, options) {
       isAfterHours,
       afterHoursConfig,
       serviceTypes,
+      assistantSettings: assistant.settings,
     };
     return buildPromptFromConfig(assistant.promptConfig, context);
   }
@@ -616,7 +627,15 @@ function buildSystemPrompt(assistant, organization, knowledgeBase, options) {
 
   // Critical safety rules — placed early for higher LLM attention
   systemPrompt += `\n\nCRITICAL SAFETY RULES (HIGHEST PRIORITY — override everything else):`;
-  systemPrompt += `\n1. ENGLISH ONLY: You must respond in English. If someone speaks Spanish, Mandarin, or any other language, say in English: "I'm sorry, I can only assist in English." Do NOT translate or respond in their language.`;
+  if (multilingualEnabled) {
+    if (supportedLanguages.length > 0) {
+      systemPrompt += `\n1. LANGUAGE: You can respond in: ${supportedLanguages.join(", ")}. Match the caller's language. For unsupported languages, respond in English and offer to take a message.`;
+    } else {
+      systemPrompt += `\n1. LANGUAGE: You are multilingual. Detect the caller's language and respond in the same language naturally throughout the conversation.`;
+    }
+  } else {
+    systemPrompt += `\n1. ENGLISH ONLY: You must respond in English. If someone speaks another language, say: "I'm sorry, I can only assist in English." Do NOT respond in their language.`;
+  }
   systemPrompt += `\n2. EMERGENCIES: If someone describes severe bleeding, broken bones, difficulty breathing, or any life-threatening situation, say FIRST: "Please call 000 immediately for emergency services." Then offer to help schedule a follow-up appointment.`;
   systemPrompt += `\n3. PATIENT PRIVACY: Never share any patient's appointment details with another person. If someone asks about another person's appointment, say: "I can't share that information for privacy reasons."`;
   systemPrompt += `\n4. NO MEDICAL ADVICE: Never prescribe medication or suggest treatments. Say: "I can't provide medical advice, but I can book you an appointment with our dentist."`;
@@ -635,7 +654,19 @@ function buildSystemPrompt(assistant, organization, knowledgeBase, options) {
   systemPrompt += `\n- When a caller asks to speak to a specific person, keep the refusal SHORT: "Dr. Wilson is unavailable right now. I can take a message and have them call you back. What's your name?" — do NOT explain how the booking system works.`;
   systemPrompt += `\n\nIMPORTANT RULES:`;
   systemPrompt += `\n- CALLER ID: You already have the caller's phone number from caller ID. If the caller says "it's the number I'm calling from" or similar, accept that and use it immediately — do NOT read it back digit by digit unless they ask.`;
-  systemPrompt += `\n- LANGUAGE: You MUST ONLY respond in English. This is non-negotiable. Even if the caller speaks Spanish, Mandarin, Arabic, or any other language, you MUST respond in English. Say exactly: "I'm sorry, I can only assist in English. I can take a message and have someone call you back." Do NOT translate, do NOT respond in the caller's language, do NOT use any non-English words.`;
+  // Language rules — based on multilingual settings
+  const multilingualEnabled = assistant?.settings?.multilingualEnabled ?? false;
+  const supportedLanguages = assistant?.settings?.supportedLanguages ?? [];
+  if (multilingualEnabled) {
+    if (supportedLanguages.length > 0) {
+      const langNames = supportedLanguages.join(", ");
+      systemPrompt += `\n- LANGUAGE: You can respond in the following languages: ${langNames}. Detect what language the caller is speaking and respond in that language. If the caller speaks a language NOT in this list, respond in English and offer to take a message.`;
+    } else {
+      systemPrompt += `\n- LANGUAGE: You are multilingual. Detect what language the caller is speaking and respond in the same language. Match the caller's language naturally throughout the conversation.`;
+    }
+  } else {
+    systemPrompt += `\n- LANGUAGE: You MUST ONLY respond in English. Even if the caller speaks another language, respond in English. Say: "I'm sorry, I can only assist in English. I can take a message and have someone call you back."`;
+  }
   systemPrompt += `\n- HONESTY: If you do not know the answer, say so clearly. NEVER guess or make up information — especially pricing, availability, or professional advice. Instead offer to take a message or transfer the call.`;
   systemPrompt += `\n- MEDICAL EMERGENCIES: If a caller describes severe bleeding, difficulty breathing, chest pain, a broken jaw, or any life-threatening situation, your FIRST words MUST be "Please call 000 immediately" (or 911 for US callers). Then say you can also help book an emergency appointment once they've contacted emergency services. NEVER skip telling them to call 000/911.`;
   systemPrompt += `\n- PATIENT PRIVACY: NEVER share appointment details, personal information, or any details about other patients. If someone asks about another person's appointment, politely refuse: "I can't share that information. The person who booked the appointment would need to call us directly."`;
