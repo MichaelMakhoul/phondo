@@ -19,10 +19,8 @@ const { createGeminiSession } = require("./services/gemini-live");
 
 const VOICE_PIPELINE = process.env.VOICE_PIPELINE || "classic"; // "classic" or "gemini-live"
 
-// Audio caches — avoid re-synthesizing the same text on every call
-// Disclosure: keyed by country+voice+length. Greeting: keyed by orgId+voice.
+// Audio caches — used by classic pipeline only (Gemini Live uses native TTS)
 const disclosureAudioCache = new Map();
-const greetingAudioCache = new Map();
 const { analyzeCallTranscript } = require("./services/post-call-analysis");
 const { getDeepgramVoice } = require("./lib/voice-mapping");
 const { generateHoldAudio, getHoldPreset } = require("./lib/hold-audio");
@@ -1083,60 +1081,13 @@ wss.on("connection", (twilioWs) => {
           sessions.set(streamSid, session);
           console.log(`[Twilio] Stream started — callSid=${callSid} streamSid=${streamSid} called=${calledNumber} from=${maskPhone(callerPhone)}`);
 
-          // For Gemini Live: play disclosure IMMEDIATELY while context loads in parallel.
-          // The disclosure is country-based (from phoneRecord) and doesn't need full context.
-          let earlyDisclosurePromise = null;
-          if (VOICE_PIPELINE === "gemini-live" && phoneRecord) {
-            const orgCountry = phoneRecord.organization_id ? "AU" : "AU"; // Default AU for now
-            const consentCheck = requiresRecordingDisclosureHybrid(orgCountry, null, "auto", callerPhone);
-            if (consentCheck.required) {
-              const defaultDisclosure = "Thank you for calling. You are speaking with an AI assistant and this call may be recorded for quality purposes. If you'd prefer not to be recorded, just let me know and I can transfer you to a team member. By staying on the line, you consent to both.";
-              const disclosureCacheKey = `early_${orgCountry}_aura-2-asteria-en_${defaultDisclosure.length}`;
-              let disclosureAudio = disclosureAudioCache.get(disclosureCacheKey);
-              if (!disclosureAudio) {
-                earlyDisclosurePromise = synthesizeSpeech(DEEPGRAM_API_KEY, defaultDisclosure, { voice: "aura-2-asteria-en" })
-                  .then((audio) => {
-                    disclosureAudioCache.set(disclosureCacheKey, audio);
-                    return audio;
-                  });
-              } else {
-                // Cached — play immediately
-                const sendChunks = chunkAudioForTwilio(disclosureAudio);
-                for (const chunk of sendChunks) {
-                  if (twilioWs.readyState !== WebSocket.OPEN) break;
-                  twilioWs.send(JSON.stringify({ event: "media", streamSid, media: { payload: chunk } }));
-                }
-                console.log(`[GeminiLive] Early disclosure played from cache (${disclosureAudio.length} bytes)`);
-                session.recordingDisclosurePlayed = true;
-                session._earlyDisclosurePlayed = true;
-              }
-            }
-          }
-
-          // Load call context from database — runs in parallel with early disclosure TTS
+          // Load call context from database
           let context = null;
           if (calledNumber) {
             try {
               context = await loadCallContext(calledNumber, phoneRecord);
             } catch (err) {
               console.error("[Context] Failed to load call context:", err);
-            }
-          }
-
-          // If early disclosure was synthesizing (not cached), play it now
-          if (earlyDisclosurePromise && !session._earlyDisclosurePlayed) {
-            try {
-              const audio = await earlyDisclosurePromise;
-              const sendChunks = chunkAudioForTwilio(audio);
-              for (const chunk of sendChunks) {
-                if (twilioWs.readyState !== WebSocket.OPEN) break;
-                twilioWs.send(JSON.stringify({ event: "media", streamSid, media: { payload: chunk } }));
-              }
-              console.log(`[GeminiLive] Early disclosure played after synthesis (${audio.length} bytes)`);
-              session.recordingDisclosurePlayed = true;
-              session._earlyDisclosurePlayed = true;
-            } catch (err) {
-              console.error("[GeminiLive] Early disclosure failed:", err.message);
             }
           }
 
@@ -1242,10 +1193,10 @@ wss.on("connection", (twilioWs) => {
             const llmOptions = buildLLMOptions(session, { includeTransfer: true });
             const allTools = llmOptions.tools || [];
 
-            // ── Pre-play greeting via Deepgram TTS (instant, no waiting for Gemini) ──
-            // Gemini Live is audio-native and won't speak until the caller does.
-            // We solve this by playing the disclosure + greeting via Deepgram TTS
-            // immediately, then telling Gemini the greeting was already played.
+            // ── Build greeting text for Gemini to speak ──
+            // Gemini speaks the disclosure + greeting as its FIRST utterance.
+            // This gives ONE consistent voice throughout the call and eliminates
+            // the Deepgram TTS delay + voice mismatch.
             const consentResult = requiresRecordingDisclosureHybrid(
               context.organization.country,
               context.organization.businessState,
@@ -1257,95 +1208,25 @@ wss.on("connection", (twilioWs) => {
               afterHoursConfig,
             });
 
-            // Pre-synthesize disclosure + greeting in parallel
-            // Split disclosure and greeting into separate TTS calls for faster first audio.
-            // Play disclosure immediately while greeting synthesizes in parallel.
-            const sendAudioChunks = (audio) => {
-              const chunks = chunkAudioForTwilio(audio);
-              for (const chunk of chunks) {
-                if (twilioWs.readyState !== WebSocket.OPEN) break;
-                twilioWs.send(JSON.stringify({ event: "media", streamSid: session.streamSid, media: { payload: chunk } }));
-              }
-            };
-
             let fullGreetingText = greeting;
-
-            if (consentResult.required && !session._earlyDisclosurePlayed) {
-              // Disclosure wasn't played early — play it now
+            if (consentResult.required) {
               const disclosureText = getRecordingDisclosureText(
                 context.organization.country,
                 context.assistant.settings?.recordingDisclosure,
                 context.organization.name
               );
               fullGreetingText = disclosureText + " " + greeting;
-
-              const disclosureCacheKey = `${context.organization.country}_${session.deepgramVoice}_${disclosureText.length}`;
-              let disclosureAudio = disclosureAudioCache.get(disclosureCacheKey);
-
-              // Synthesize disclosure (cached) + greeting (cached) in parallel
-              const disclosurePromise = disclosureAudio
-                ? Promise.resolve(disclosureAudio)
-                : synthesizeSpeech(DEEPGRAM_API_KEY, stripMarkdown(disclosureText), { voice: session.deepgramVoice });
-
-              const greetingCacheKey = `${context.organizationId}_${session.deepgramVoice}_${isAfterHours ? "ah" : "bh"}`;
-              let cachedGreeting = greetingAudioCache.get(greetingCacheKey);
-              const greetingPromise = cachedGreeting
-                ? Promise.resolve(cachedGreeting)
-                : synthesizeSpeech(DEEPGRAM_API_KEY, stripMarkdown(greeting), { voice: session.deepgramVoice });
-
-              try {
-                disclosureAudio = await disclosurePromise;
-                // Cache for future calls
-                if (!disclosureAudioCache.has(disclosureCacheKey)) {
-                  disclosureAudioCache.set(disclosureCacheKey, disclosureAudio);
-                  console.log(`[GeminiLive] Disclosure cached (${disclosureCacheKey}, ${disclosureAudio.length} bytes)`);
-                }
-                sendAudioChunks(disclosureAudio);
-                console.log(`[GeminiLive] Disclosure played (${disclosureAudio.length} bytes, cached=${disclosureAudioCache.has(disclosureCacheKey)})`);
-                session.recordingDisclosurePlayed = true;
-              } catch (err) {
-                console.error("[GeminiLive] Disclosure TTS failed:", err.message);
-              }
-
-              try {
-                const greetingAudio = await greetingPromise;
-                if (!greetingAudioCache.has(greetingCacheKey)) {
-                  greetingAudioCache.set(greetingCacheKey, greetingAudio);
-                }
-                sendAudioChunks(greetingAudio);
-                twilioWs.send(JSON.stringify({ event: "mark", streamSid: session.streamSid, mark: { name: "tts-done" } }));
-                console.log(`[GeminiLive] Greeting played (${greetingAudio.length} bytes, cached=${greetingAudioCache.has(greetingCacheKey)})`);
-              } catch (err) {
-                console.error("[GeminiLive] Greeting TTS failed:", err.message);
-              }
-            } else {
-              // No disclosure needed — just play greeting (cached)
-              const greetingCacheKey = `${context.organizationId}_${session.deepgramVoice}_${isAfterHours ? "ah" : "bh"}`;
-              let greetingAudio = greetingAudioCache.get(greetingCacheKey);
-              try {
-                if (!greetingAudio) {
-                  greetingAudio = await synthesizeSpeech(DEEPGRAM_API_KEY, stripMarkdown(greeting), { voice: session.deepgramVoice });
-                  greetingAudioCache.set(greetingCacheKey, greetingAudio);
-                }
-                sendAudioChunks(greetingAudio);
-                twilioWs.send(JSON.stringify({ event: "mark", streamSid: session.streamSid, mark: { name: "tts-done" } }));
-                console.log(`[GeminiLive] Greeting played (${greetingAudio.length} bytes, cached=${true})`);
-              } catch (err) {
-                console.error("[GeminiLive] Greeting TTS failed:", err.message);
-              }
+              session.recordingDisclosurePlayed = true;
             }
 
             session.addMessage("assistant", fullGreetingText);
 
-            // Build system prompt — tell Gemini greeting was already played
+            // Build system prompt — Gemini speaks the greeting itself
             let geminiSystemPrompt = session.messages[0]?.content || "You are a helpful receptionist.";
 
-            // Remove contradictory language rules for multilingual mode.
-            // The base system prompt may contain "ENGLISH ONLY" or "I can only assist in English"
-            // but if multilingual is enabled, Gemini should respond in the caller's language.
+            // Remove contradictory language rules for multilingual mode
             const isMultilingual = context.assistant.settings?.multilingualEnabled ?? false;
             if (isMultilingual) {
-              // Strip English-only rules that would conflict with multilingual behavior
               geminiSystemPrompt = geminiSystemPrompt
                 .replace(/ENGLISH ONLY:.*?Do NOT respond in their language\./gs, "LANGUAGE: You are multilingual. Respond in the caller's language naturally.")
                 .replace(/You MUST ONLY respond in English\..*?Do NOT use any non-English words\./gs, "Respond in the caller's language naturally.")
@@ -1353,12 +1234,14 @@ wss.on("connection", (twilioWs) => {
                 .replace(/I can only assist in English/g, "I can assist in multiple languages");
             }
 
-            geminiSystemPrompt += `\n\nIMPORTANT — GREETING ALREADY PLAYED: The recording disclosure and greeting have already been played to the caller via a separate system. Do NOT repeat the greeting or disclosure. Start directly with the conversation when the caller speaks. Do NOT invent a receptionist name like "Rachel" — you are an AI assistant.`;
+            geminiSystemPrompt += `\n\nIMPORTANT — YOUR FIRST MESSAGE: As soon as the call connects, immediately say the following greeting (word for word, do not add anything): "${fullGreetingText}" — Then wait for the caller to respond. Do NOT invent a receptionist name like "Rachel" — you are an AI assistant.`;
 
-            // CRITICAL — tool calling and name enforcement for Gemini
+            // CRITICAL — tool calling, filler words, and name enforcement
             geminiSystemPrompt += `\n\nCRITICAL RULES FOR THIS CONVERSATION:`;
-            geminiSystemPrompt += `\n- NEVER FABRICATE ACTIONS: You have tools (book_appointment, schedule_callback, check_availability, etc). You MUST actually call the tool before telling the caller the action was done. NEVER say "I've booked your appointment" or "I've arranged a callback" or "I've checked availability" unless the tool returned a success response. If you want to book, call book_appointment. If you want to schedule a callback, call schedule_callback. If you want to check times, call check_availability. NEVER pretend you did something without calling the tool.`;
+            geminiSystemPrompt += `\n- NEVER FABRICATE ACTIONS: You have tools (book_appointment, schedule_callback, check_availability, lookup_appointment, cancel_appointment, etc). You MUST actually call the tool before telling the caller the action was done. NEVER say "I've booked your appointment" or "I've arranged a callback" or "I've checked availability" unless the tool returned a success response. NEVER pretend you did something without calling the tool.`;
             geminiSystemPrompt += `\n- ALWAYS COLLECT REAL NAME: Before calling book_appointment or schedule_callback, you MUST ask for and receive the caller's actual name. NEVER use placeholder names like "Caller Name", "Unknown", or "Guest".`;
+            geminiSystemPrompt += `\n- FILLER WORDS DURING TOOL CALLS: When you are about to call a tool (checking availability, booking, looking up an appointment, etc.), say a brief filler BEFORE the tool call — for example: "One moment, let me check that for you", "Let me look that up", "Just a sec while I check", "Bear with me while I book that". This keeps the caller engaged during the brief silence while the tool executes. Keep fillers short (under 10 words).`;
+            geminiSystemPrompt += `\n- RESCHEDULING: When a caller asks to reschedule, you MUST: (1) look up their existing appointment with lookup_appointment, (2) cancel the old appointment with cancel_appointment, (3) then book the new one with book_appointment. Do NOT book a new appointment without cancelling the old one first — this creates duplicates.`;
 
             // Transcript buffering — accumulate fragments, flush on turn complete
             let pendingUserTranscript = "";
@@ -2543,22 +2426,4 @@ server.listen(PORT, "0.0.0.0", () => {
     console.log(`Test call WebSocket: ${PUBLIC_URL.replace(/^http/, "ws")}/ws/test`);
   }
 
-  // Pre-warm disclosure audio cache for common texts at startup.
-  // This ensures the first call doesn't wait ~8s for TTS synthesis.
-  if (VOICE_PIPELINE === "gemini-live" && DEEPGRAM_API_KEY) {
-    const defaultVoice = "aura-2-asteria-en";
-    const commonDisclosures = [
-      { country: "AU", text: "Please note, this call may be recorded for quality and training purposes." },
-      { country: "AU_custom", text: "Thank you for calling. You are speaking with an AI assistant and this call may be recorded for quality purposes. If you'd prefer not to be recorded, just let me know and I can transfer you to a team member. By staying on the line, you consent to both." },
-    ];
-    for (const d of commonDisclosures) {
-      const cacheKey = `${d.country}_${defaultVoice}_${d.text.length}`;
-      synthesizeSpeech(DEEPGRAM_API_KEY, d.text, { voice: defaultVoice })
-        .then((audio) => {
-          disclosureAudioCache.set(cacheKey, audio);
-          console.log(`[Warmup] Disclosure pre-cached: ${cacheKey} (${audio.length} bytes)`);
-        })
-        .catch((err) => console.warn(`[Warmup] Disclosure pre-cache failed: ${err.message}`));
-    }
-  }
 });
