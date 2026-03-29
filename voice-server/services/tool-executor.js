@@ -26,6 +26,7 @@ const CALENDAR_FUNCTIONS = [
   "book_appointment",
   "cancel_appointment",
   "list_service_types",
+  "lookup_appointment",
 ];
 
 /**
@@ -173,6 +174,36 @@ const calendarToolDefinitions = [
           },
         },
         required: ["phone"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "lookup_appointment",
+      description:
+        "Look up an existing appointment to check its details (date, time, practitioner). Requires the caller's name and phone number for identity verification. Use this when a caller asks about their existing appointment, wants to check the time, or needs to confirm details.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: {
+            type: "string",
+            description: "The caller's full name (for identity verification)",
+          },
+          phone: {
+            type: "string",
+            description: "The caller's phone number (for identity verification)",
+          },
+          email: {
+            type: "string",
+            description: "The caller's email address (optional, for additional verification)",
+          },
+          date_of_birth: {
+            type: "string",
+            description: "The caller's date of birth (optional, for additional verification)",
+          },
+        },
+        required: ["name", "phone"],
       },
     },
   },
