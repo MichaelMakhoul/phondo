@@ -70,6 +70,11 @@ export const rateLimitConfigs = {
     windowMs: 60 * 1000,
     maxRequests: 5,
   },
+  // Admin expensive operations (Google Places API, bulk scraping) - 3 per minute
+  adminExpensive: {
+    windowMs: 60 * 1000,
+    maxRequests: 3,
+  },
 } as const;
 
 export type RateLimitType = keyof typeof rateLimitConfigs;
