@@ -38,13 +38,10 @@ interface OrgSchedule {
 const DEFAULT_SLOT_DURATION_MINUTES = 30;
 
 /** Generate a short unique confirmation code (e.g., PH-4A9F) */
+/** Generate a 6-digit confirmation code (digits only — easy to say and hear over the phone) */
 function generateConfirmationCode(): string {
-  const chars = "0123456789ABCDEFGHJKLMNPQRSTUVWXYZ"; // No I, O to avoid confusion
-  let code = "";
-  for (let i = 0; i < 4; i++) {
-    code += chars[Math.floor(Math.random() * chars.length)];
-  }
-  return `PH-${code}`;
+  const code = Math.floor(100000 + Math.random() * 900000).toString();
+  return code;
 }
 
 // UUID format validator for service_type_id inputs
@@ -889,32 +886,66 @@ export async function handleCheckAvailability(
 
 export async function handleCancelAppointment(
   organizationId: string,
-  args: { phone?: string; reason?: string }
+  args: { phone?: string; reason?: string; confirmation_code?: string; date?: string }
 ): Promise<ToolResult> {
-  const { phone, reason } = args;
+  const { phone, reason, confirmation_code, date } = args;
 
-  if (!phone) {
+  if (!phone && !confirmation_code) {
     return {
       success: false,
       message:
-        "I need your phone number to look up your appointment. What's the phone number you booked with?",
+        "I need your phone number or confirmation code to find your appointment.",
     };
   }
 
   const supabase = createAdminClient();
 
-  // Generate all plausible phone format variants so we match regardless of
-  // how the number was stored (e.g., +61414141883 vs 0414141883).
+  // Try confirmation code first (exact match)
+  if (confirmation_code) {
+    const code = confirmation_code.trim();
+    const { data: codeMatch } = await (supabase as any)
+      .from("appointments")
+      .select("*")
+      .eq("organization_id", organizationId)
+      .eq("confirmation_code", code)
+      .in("status", ["confirmed", "pending"])
+      .single();
+
+    if (codeMatch) {
+      return cancelSingleAppointment(supabase, organizationId, codeMatch, reason);
+    }
+  }
+
+  if (!phone) {
+    return {
+      success: false,
+      message: "I couldn't find an appointment with that code. Could you provide your phone number instead?",
+    };
+  }
+
+  // Fall back to phone lookup — only future appointments
   const variants = phoneVariants(phone);
 
-  const { data: appointments, error: queryError } = await (supabase as any)
+  let query = (supabase as any)
     .from("appointments")
     .select("*")
     .eq("organization_id", organizationId)
     .in("attendee_phone", variants)
     .in("status", ["confirmed", "pending"])
-    .order("start_time", { ascending: true })
-    .limit(1);
+    .gte("start_time", new Date().toISOString()) // Only future appointments
+    .order("start_time", { ascending: true });
+
+  // If a date is specified, filter to that date
+  if (date) {
+    const dayStart = new Date(date);
+    const dayEnd = new Date(date);
+    dayEnd.setDate(dayEnd.getDate() + 1);
+    query = query.gte("start_time", dayStart.toISOString()).lt("start_time", dayEnd.toISOString());
+  }
+
+  query = query.limit(1);
+
+  const { data: appointments, error: queryError } = await query;
 
   if (queryError) {
     console.error("Failed to query appointments for cancellation:", { organizationId, phone, error: queryError });
@@ -931,12 +962,22 @@ export async function handleCancelAppointment(
     return {
       success: false,
       message:
-        "I wasn't able to find an upcoming appointment with that phone number. Could you double-check the number you booked with?",
+        "I wasn't able to find an upcoming appointment with that phone number. Could you double-check the number you booked with, or provide the confirmation code?",
     };
   }
 
+  return cancelSingleAppointment(supabase, organizationId, appointment, reason);
+}
+
+async function cancelSingleAppointment(
+  supabase: any,
+  organizationId: string,
+  appointment: any,
+  reason?: string
+): Promise<ToolResult> {
   try {
-    if (appointment.external_id) {
+    // For Cal.com appointments, try external cancellation first
+    if (appointment.external_id && appointment.provider === "cal_com") {
       const calClient = await getCalComClient(organizationId);
       if (calClient && appointment.metadata?.calComBookingId) {
         await calClient.cancelBooking(
@@ -944,28 +985,21 @@ export async function handleCancelAppointment(
           reason || "Cancelled by caller"
         );
       } else {
-        console.error("Cannot cancel Cal.com booking: missing client or booking ID", {
-          organizationId,
+        console.warn("Cal.com cancel skipped (no client or booking ID) — cancelling locally only", {
           appointmentId: appointment.id,
-          externalId: appointment.external_id,
-          hasCalClient: !!calClient,
-          hasBookingId: !!appointment.metadata?.calComBookingId,
         });
-        return {
-          success: false,
-          message:
-            "I'm having trouble cancelling the external calendar booking. Let me have someone follow up with you to make sure this is fully cancelled.",
-        };
+        // Don't fail — still cancel locally
       }
     }
 
+    // Always update DB status to cancelled
     const { error: cancelDbError } = await (supabase as any)
       .from("appointments")
       .update({ status: "cancelled" })
       .eq("id", appointment.id);
 
     if (cancelDbError) {
-      console.error("Failed to update appointment status locally:", cancelDbError);
+      console.error("Failed to update appointment status:", cancelDbError);
       return {
         success: false,
         message:
@@ -1481,7 +1515,7 @@ export async function handleLookupAppointment(
     } else {
       return {
         success: false,
-        message: "I couldn't find an appointment with that confirmation code. Could you double-check the code? It starts with PH- followed by 4 characters. If you don't have it, I can look up your appointment by name and phone number instead.",
+        message: "I couldn't find an appointment with that confirmation code. Could you double-check the code? It's a 6-digit number. If you don't have it, I can look up your appointment by name and phone number instead.",
       };
     }
   }

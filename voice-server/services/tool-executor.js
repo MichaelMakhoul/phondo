@@ -159,21 +159,28 @@ const calendarToolDefinitions = [
     function: {
       name: "cancel_appointment",
       description:
-        "Cancel an existing appointment. Looks up the appointment by the caller's phone number.",
+        "Cancel an existing appointment. Use confirmation_code for exact match, or phone + date to find the right one. When rescheduling, specify the date of the appointment to cancel.",
       parameters: {
         type: "object",
         properties: {
+          confirmation_code: {
+            type: "string",
+            description: "The 6-digit confirmation code for the appointment to cancel (preferred)",
+          },
           phone: {
             type: "string",
-            description:
-              "The phone number used when the appointment was booked",
+            description: "The phone number used when the appointment was booked (fallback)",
+          },
+          date: {
+            type: "string",
+            description: "The date of the appointment to cancel in YYYY-MM-DD format (helps find the right one when multiple exist)",
           },
           reason: {
             type: "string",
             description: "Reason for cancellation (optional)",
           },
         },
-        required: ["phone"],
+        required: [],
       },
     },
   },
@@ -182,13 +189,13 @@ const calendarToolDefinitions = [
     function: {
       name: "lookup_appointment",
       description:
-        "Look up an existing appointment. PREFERRED: use the confirmation code (PH-XXXX) for instant lookup. FALLBACK: use name + phone if the caller doesn't have their code. Ask for the confirmation code first — it was given when they booked and sent via text message.",
+        "Look up an existing appointment. PREFERRED: use the 6-digit confirmation code for instant lookup. FALLBACK: use name + phone if the caller doesn't have their code. Ask for the confirmation code first — it was given when they booked and sent via text message.",
       parameters: {
         type: "object",
         properties: {
           confirmation_code: {
             type: "string",
-            description: "The booking confirmation code (e.g., PH-4A9F). This is the preferred and most accurate lookup method.",
+            description: "The 6-digit booking confirmation code (e.g., 482916). This is the preferred and most accurate lookup method.",
           },
           name: {
             type: "string",
