@@ -325,8 +325,35 @@ app.post("/twiml", async (req, res) => {
   // Recording is started via Twilio REST API in the WebSocket handler (not TwiML)
   // because <Connect record="record-from-answer"> doesn't work with <Stream>.
 
+  // Build disclosure + greeting to play via TwiML <Say> BEFORE the stream starts.
+  // This gives instant audio (Twilio TTS, ~0ms) while Gemini session sets up in background.
+  // The greeting uses Twilio's Polly voice — not Gemini's voice — but this is acceptable
+  // because the disclosure is a formal legal notice that sounds natural in a different voice.
+  let sayTwiml = "";
+  if (VOICE_PIPELINE === "gemini-live" && phoneRecord?.organizations) {
+    const org = phoneRecord.organizations;
+    const country = org.country || "AU";
+    const consentCheck = requiresRecordingDisclosureHybrid(
+      country, org.business_state || null, org.recording_consent_mode || "auto", from
+    );
+    if (consentCheck.required) {
+      const disclosureText = getRecordingDisclosureText(
+        country,
+        null, // Use default disclosure (assistant-specific not available at TwiML level)
+        org.name
+      );
+      const businessName = org.name || "us";
+      const greetingText = `Hi there! Thanks for calling ${businessName}. How can I help you today?`;
+      sayTwiml = `<Say voice="Polly.Joanna">${escapeXml(disclosureText)} ${escapeXml(greetingText)}</Say>`;
+    } else {
+      const businessName = org.name || "us";
+      sayTwiml = `<Say voice="Polly.Joanna">Hi there! Thanks for calling ${businessName}. How can I help you today?</Say>`;
+    }
+  }
+
   res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
+  ${sayTwiml}
   <Connect>
     <Stream url="${escapeXml(WS_URL)}">
       <Parameter name="auth_token" value="${escapeXml(token)}" />
@@ -1234,7 +1261,7 @@ wss.on("connection", (twilioWs) => {
                 .replace(/I can only assist in English/g, "I can assist in multiple languages");
             }
 
-            geminiSystemPrompt += `\n\nIMPORTANT — YOUR FIRST MESSAGE: As soon as the call connects, immediately say the following greeting (word for word, do not add anything): "${fullGreetingText}" — Then wait for the caller to respond. Do NOT invent a receptionist name like "Rachel" — you are an AI assistant.`;
+            geminiSystemPrompt += `\n\nIMPORTANT — GREETING ALREADY PLAYED: The recording disclosure and greeting have already been played to the caller via a separate system. Do NOT repeat the greeting or disclosure. Start directly with the conversation when the caller speaks. Do NOT invent a receptionist name like "Rachel" — you are an AI assistant.`;
 
             // CRITICAL — tool calling, filler words, and name enforcement
             geminiSystemPrompt += `\n\nCRITICAL RULES FOR THIS CONVERSATION:`;

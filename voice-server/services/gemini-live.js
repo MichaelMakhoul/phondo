@@ -148,29 +148,9 @@ function createGeminiSession(config, callbacks) {
       }
       preSetupBuffer.length = 0;
 
-      // Trigger Gemini to speak the greeting immediately.
-      // Gemini Live won't speak until it receives a completed user turn.
-      // We send a minimal clientContent turn to trigger Gemini's first response.
-      // Strategy: try clientContent first (clean), fall back to activityStart+End.
-      try {
-        ws.send(JSON.stringify({
-          clientContent: {
-            turns: [{ role: "user", parts: [{ text: "[call connected]" }] }],
-            turnComplete: true,
-          },
-        }));
-        console.log("[GeminiLive] Sent clientContent trigger for greeting");
-      } catch (err) {
-        console.error("[GeminiLive] clientContent trigger failed:", err.message);
-        // Fallback: try activity signals
-        try {
-          ws.send(JSON.stringify({ realtimeInput: { activityStart: {} } }));
-          ws.send(JSON.stringify({ realtimeInput: { activityEnd: {} } }));
-          console.log("[GeminiLive] Sent activityStart+End fallback trigger");
-        } catch (err2) {
-          console.error("[GeminiLive] All greeting triggers failed:", err2.message);
-        }
-      }
+      // Note: Gemini 3.1 Flash Live is audio-only — clientContent text messages
+      // cause "invalid argument" (code 1007). The greeting is played via TwiML
+      // <Say> BEFORE the stream starts, so Gemini just handles the conversation.
       return;
     }
 
