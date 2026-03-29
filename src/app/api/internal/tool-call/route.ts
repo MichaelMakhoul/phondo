@@ -5,6 +5,7 @@ import {
   handleCheckAvailability,
   handleBookAppointment,
   handleCancelAppointment,
+  handleLookupAppointment,
 } from "@/lib/calendar/tool-handlers";
 import { handleScheduleCallback } from "@/lib/callbacks/tool-handler";
 import { getActiveServiceTypes } from "@/lib/service-types";
@@ -128,6 +129,15 @@ export async function POST(request: Request) {
         });
         break;
 
+      case "lookup_appointment":
+        result = await handleLookupAppointment(organizationId, {
+          name: parsedArgs.name,
+          phone: parsedArgs.phone,
+          email: parsedArgs.email,
+          date_of_birth: parsedArgs.date_of_birth,
+        });
+        break;
+
       case "schedule_callback":
         result = await handleScheduleCallback(
           organizationId,
@@ -153,7 +163,7 @@ export async function POST(request: Request) {
     return NextResponse.json({
       success: result.success,
       message: result.message,
-      data: result.data,
+      ...("data" in result && { data: (result as any).data }),
     });
   } catch (err) {
     console.error("[ToolCall] Unhandled error:", {

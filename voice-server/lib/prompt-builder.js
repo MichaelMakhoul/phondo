@@ -116,6 +116,7 @@ function buildSchedulingSection(timezone, businessHours, defaultAppointmentDurat
       "- check_availability: Check available appointment slots for a specific date (YYYY-MM-DD format).",
       "- book_appointment: Book an appointment. Requires datetime (ISO format), caller name, and phone number.",
       "- cancel_appointment: Cancel an existing appointment by the caller's phone number.",
+      "- lookup_appointment: Look up an existing appointment. Requires the caller's name and phone for identity verification. Use when a caller asks to check, confirm, or reschedule their appointment.",
       "- list_service_types: List the available appointment/service types offered by the business."
     );
 
@@ -181,8 +182,8 @@ function buildSchedulingSection(timezone, businessHours, defaultAppointmentDurat
         ? "If the caller insists on a specific time that falls between available slots, book them into the nearest available slot that covers their preferred time (e.g., if they want 9 AM and slots are 8:45 and 9:30, book 8:45 since it covers the 9 AM window). Briefly explain: 'I'll book you in at 8:45 — that appointment runs until 9:30, so you'll be covered at 9.' Always confirm before booking."
         : "You can ONLY book into slots returned by check_availability. Never book a time that wasn't in the available slots, even if the caller insists. If the caller insists on an exact time that doesn't match any slot, say: 'I can only book into the available time slots. If you need a specific time, I can take a message and have the office call you back to arrange it.' Then offer to take a message.",
       "",
-      "APPOINTMENT PRIVACY:",
-      "Never reveal details of other people's bookings. When a caller wants to cancel or check their appointment, verify their identity first (ask for their name and confirm with the phone number on file). Only share appointment details with the person who booked it. If you cannot verify the caller's identity, ask them to call back during business hours."
+      "APPOINTMENT PRIVACY & LOOKUP:",
+      "When a caller wants to check, confirm, or reschedule their appointment, use the lookup_appointment tool. Collect their name and phone number FIRST for identity verification, then call the tool. NEVER guess or make up appointment details — only share what the tool returns. If the tool can't find their appointment, offer to arrange a callback. Never reveal other people's appointment details."
     );
   } else {
     lines.push(

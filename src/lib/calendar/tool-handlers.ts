@@ -1374,3 +1374,134 @@ function sendNotification(
   sendAppointmentConfirmationSMS(organizationId, phone, appointmentDate, timezone)
     .catch((err) => console.error("Appointment confirmation SMS failed:", { organizationId, error: err }));
 }
+
+// ─── Appointment Lookup (with privacy verification) ─────────────────────────
+
+/**
+ * Look up an existing appointment after verifying the caller's identity.
+ * The business configures which fields must match (name, phone, email, dob).
+ * Only returns appointment details if ALL required fields match.
+ */
+export async function handleLookupAppointment(
+  organizationId: string,
+  args: {
+    name?: string;
+    phone?: string;
+    email?: string;
+    date_of_birth?: string;
+  }
+): Promise<{ success: boolean; message: string }> {
+  const supabase = createAdminClient();
+
+  // 1. Get the org's verification requirements
+  const { data: org, error: orgError } = await (supabase as any)
+    .from("organizations")
+    .select("appointment_verification_fields, timezone")
+    .eq("id", organizationId)
+    .single();
+
+  if (orgError || !org) {
+    return { success: false, message: "I'm having trouble accessing the system right now. Would you like me to arrange a callback instead?" };
+  }
+
+  const verificationFields: string[] = org.appointment_verification_fields || ["name", "phone"];
+  const timezone = org.timezone || "Australia/Sydney";
+
+  // 2. Check that the caller provided ALL required fields
+  const missing: string[] = [];
+  for (const field of verificationFields) {
+    if (field === "name" && !args.name?.trim()) missing.push("full name");
+    if (field === "phone" && !args.phone?.trim()) missing.push("phone number");
+    if (field === "email" && !args.email?.trim()) missing.push("email address");
+    if (field === "date_of_birth" && !args.date_of_birth?.trim()) missing.push("date of birth");
+  }
+
+  if (missing.length > 0) {
+    return {
+      success: false,
+      message: `To look up your appointment, I need to verify your identity. Could you please provide your ${missing.join(" and ")}?`,
+    };
+  }
+
+  // 3. Build the query — match ALL required fields
+  let query = (supabase as any)
+    .from("appointments")
+    .select("id, attendee_name, attendee_phone, attendee_email, start_time, end_time, duration_minutes, status, service_type_id, practitioner_id")
+    .eq("organization_id", organizationId)
+    .in("status", ["confirmed", "pending"])
+    .gte("start_time", new Date().toISOString()) // Only future appointments
+    .order("start_time", { ascending: true })
+    .limit(5);
+
+  // Apply verification filters
+  if (verificationFields.includes("name") && args.name) {
+    query = query.ilike("attendee_name", `%${args.name.trim()}%`);
+  }
+  if (verificationFields.includes("phone") && args.phone) {
+    const cleanPhone = args.phone.replace(/\D/g, "");
+    // Match last 9 digits to handle different country code formats
+    const phoneSuffix = cleanPhone.length > 9 ? cleanPhone.slice(-9) : cleanPhone;
+    query = query.ilike("attendee_phone", `%${phoneSuffix}%`);
+  }
+  if (verificationFields.includes("email") && args.email) {
+    query = query.ilike("attendee_email", `%${args.email.trim()}%`);
+  }
+
+  const { data: appointments, error: queryError } = await query;
+
+  if (queryError) {
+    console.error("Appointment lookup error:", queryError);
+    return { success: false, message: "I'm having trouble looking up appointments right now. Would you like me to arrange a callback instead?" };
+  }
+
+  if (!appointments || appointments.length === 0) {
+    return {
+      success: true,
+      message: "I couldn't find any upcoming appointments matching your details. It's possible the appointment was booked under a different name or phone number. Would you like me to arrange a callback so someone from the team can help you?",
+    };
+  }
+
+  // 4. Format the results for voice
+  const lines: string[] = [];
+  for (const apt of appointments) {
+    const date = new Date(apt.start_time);
+    const dateStr = date.toLocaleDateString("en-AU", { weekday: "long", year: "numeric", month: "long", day: "numeric", timeZone: timezone });
+    const timeStr = date.toLocaleTimeString("en-AU", { hour: "numeric", minute: "2-digit", hour12: true, timeZone: timezone });
+
+    // Look up service type name if available
+    let serviceInfo = "";
+    if (apt.service_type_id) {
+      const { data: st } = await (supabase as any)
+        .from("service_types")
+        .select("name")
+        .eq("id", apt.service_type_id)
+        .single();
+      if (st) serviceInfo = ` for a ${st.name}`;
+    }
+
+    // Look up practitioner name if available
+    let practitionerInfo = "";
+    if (apt.practitioner_id) {
+      const { data: pract } = await (supabase as any)
+        .from("practitioners")
+        .select("name")
+        .eq("id", apt.practitioner_id)
+        .single();
+      if (pract) practitionerInfo = ` with ${pract.name}`;
+    }
+
+    lines.push(`${dateStr} at ${timeStr}${serviceInfo}${practitionerInfo}`);
+  }
+
+  if (lines.length === 1) {
+    return {
+      success: true,
+      message: `I found your appointment: ${lines[0]}. Is there anything else you'd like to know about it?`,
+    };
+  }
+
+  return {
+    success: true,
+    message: `I found ${lines.length} upcoming appointments: ${lines.join(". Next, ")}. Which one would you like to know more about?`,
+  };
+}
