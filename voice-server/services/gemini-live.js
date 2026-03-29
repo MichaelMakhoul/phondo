@@ -149,15 +149,27 @@ function createGeminiSession(config, callbacks) {
       preSetupBuffer.length = 0;
 
       // Trigger Gemini to speak the greeting immediately.
-      // Gemini Live won't speak until it detects user activity ended.
-      // We simulate a "user finished speaking" signal so Gemini takes its turn
-      // and says the greeting from the system prompt.
+      // Gemini Live won't speak until it receives a completed user turn.
+      // We send a minimal clientContent turn to trigger Gemini's first response.
+      // Strategy: try clientContent first (clean), fall back to activityStart+End.
       try {
-        // Send activityEnd to signal the user's "turn" is done
-        ws.send(JSON.stringify({ realtimeInput: { activityEnd: {} } }));
-        console.log("[GeminiLive] Sent activityEnd to trigger greeting");
+        ws.send(JSON.stringify({
+          clientContent: {
+            turns: [{ role: "user", parts: [{ text: "[call connected]" }] }],
+            turnComplete: true,
+          },
+        }));
+        console.log("[GeminiLive] Sent clientContent trigger for greeting");
       } catch (err) {
-        console.error("[GeminiLive] Failed to send greeting trigger:", err.message);
+        console.error("[GeminiLive] clientContent trigger failed:", err.message);
+        // Fallback: try activity signals
+        try {
+          ws.send(JSON.stringify({ realtimeInput: { activityStart: {} } }));
+          ws.send(JSON.stringify({ realtimeInput: { activityEnd: {} } }));
+          console.log("[GeminiLive] Sent activityStart+End fallback trigger");
+        } catch (err2) {
+          console.error("[GeminiLive] All greeting triggers failed:", err2.message);
+        }
       }
       return;
     }
