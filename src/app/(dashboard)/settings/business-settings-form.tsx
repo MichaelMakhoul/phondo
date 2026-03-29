@@ -95,6 +95,7 @@ interface BusinessSettingsFormProps {
     defaultAppointmentDuration: number;
     businessState: string;
     recordingConsentMode: string;
+    appointmentVerificationFields: string[];
   };
 }
 
@@ -125,6 +126,9 @@ export function BusinessSettingsForm({
       saturday: null,
       sunday: null,
     }
+  );
+  const [verificationFields, setVerificationFields] = useState<string[]>(
+    initialData.appointmentVerificationFields || ["name", "phone"]
   );
   const [errors, setErrors] = useState<Record<string, string>>({});
   const { toast } = useToast();
@@ -204,6 +208,7 @@ export function BusinessSettingsForm({
           default_appointment_duration: appointmentDuration,
           business_state: businessState || null,
           recording_consent_mode: recordingConsentMode,
+          appointment_verification_fields: verificationFields,
         })
         .eq("id", organizationId);
 
@@ -555,6 +560,66 @@ export function BusinessSettingsForm({
               </div>
             </div>
           </RadioGroup>
+        </div>
+
+        <Separator />
+
+        {/* Appointment Verification */}
+        <div className="space-y-4">
+          <div className="flex items-center gap-2">
+            <Shield className="h-5 w-5 text-primary" />
+            <div>
+              <Label className="text-base font-medium">Appointment Verification</Label>
+              <p className="text-sm text-muted-foreground">
+                Choose which fields the AI must verify before sharing appointment details with a caller.
+                This protects patient/client privacy.
+              </p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            {[
+              { id: "name", label: "Full Name", description: "Caller must provide their name", required: true },
+              { id: "phone", label: "Phone Number", description: "Caller must confirm their phone number", required: false },
+              { id: "email", label: "Email Address", description: "Caller must provide their email", required: false },
+              { id: "date_of_birth", label: "Date of Birth", description: "Caller must provide their DOB", required: false },
+            ].map((field) => (
+              <label
+                key={field.id}
+                className={`flex items-start gap-3 rounded-lg border p-3 cursor-pointer transition-colors ${
+                  verificationFields.includes(field.id) ? "border-primary bg-primary/5" : "hover:bg-muted/50"
+                } ${field.required ? "opacity-100" : ""}`}
+              >
+                <input
+                  type="checkbox"
+                  checked={verificationFields.includes(field.id)}
+                  disabled={field.required}
+                  onChange={(e) => {
+                    if (field.required) return;
+                    setVerificationFields((prev) =>
+                      e.target.checked
+                        ? [...prev, field.id]
+                        : prev.filter((f) => f !== field.id)
+                    );
+                  }}
+                  className="mt-1 h-4 w-4 rounded border-input"
+                />
+                <div>
+                  <span className="text-sm font-medium">{field.label}</span>
+                  {field.required && (
+                    <span className="ml-1 text-xs text-muted-foreground">(always required)</span>
+                  )}
+                  <p className="text-xs text-muted-foreground">{field.description}</p>
+                </div>
+              </label>
+            ))}
+          </div>
+
+          <p className="text-xs text-muted-foreground">
+            The AI will ask callers for {verificationFields.map((f) =>
+              f === "name" ? "their name" : f === "phone" ? "their phone number" : f === "email" ? "their email" : "their date of birth"
+            ).join(", ")} before looking up or sharing any appointment information.
+          </p>
         </div>
 
         <Separator />
