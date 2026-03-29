@@ -17,6 +17,7 @@ import {
   ArrowLeft,
   ShieldAlert,
   Menu,
+  Search,
 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
@@ -36,6 +37,7 @@ const adminNavigation = [
   { name: "Marketing", href: "/admin/marketing", icon: Megaphone },
   { name: "System", href: "/admin/system", icon: Server },
   { name: "Phone Numbers", href: "/admin/numbers", icon: Phone },
+  { name: "Lead Discovery", href: "/admin/lead-discovery", icon: Search },
 ];
 
 function AdminNavLink({
