@@ -41,6 +41,14 @@ const DAYS = [
   { key: "sunday", label: "Sunday" },
 ];
 
+// Fields available for appointment lookup verification
+const VERIFICATION_FIELD_OPTIONS = [
+  { id: "name", label: "Full Name", shortLabel: "name", description: "Caller must state their name as it was booked", locked: true, recommended: false },
+  { id: "phone", label: "Phone Number", shortLabel: "phone", description: "Caller must confirm the phone number used when booking", locked: false, recommended: true },
+  { id: "email", label: "Email Address", shortLabel: "email", description: "Caller must provide the email used when booking", locked: false, recommended: false },
+  { id: "date_of_birth", label: "Date of Birth", shortLabel: "DOB", description: "Caller must provide their date of birth (recommended for medical/legal)", locked: false, recommended: false },
+];
+
 const APPOINTMENT_DURATIONS = [
   { value: "15", label: "15 minutes" },
   { value: "20", label: "20 minutes" },
@@ -569,57 +577,61 @@ export function BusinessSettingsForm({
           <div className="flex items-center gap-2">
             <Shield className="h-5 w-5 text-primary" />
             <div>
-              <Label className="text-base font-medium">Appointment Verification</Label>
+              <Label className="text-base font-medium">Appointment Lookup Verification</Label>
               <p className="text-sm text-muted-foreground">
-                Choose which fields the AI must verify before sharing appointment details with a caller.
-                This protects patient/client privacy.
+                When a caller asks to check or confirm their appointment, the AI will verify
+                their identity by asking for the selected fields first. More fields = stronger privacy.
               </p>
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            {[
-              { id: "name", label: "Full Name", description: "Caller must provide their name", required: true },
-              { id: "phone", label: "Phone Number", description: "Caller must confirm their phone number", required: false },
-              { id: "email", label: "Email Address", description: "Caller must provide their email", required: false },
-              { id: "date_of_birth", label: "Date of Birth", description: "Caller must provide their DOB", required: false },
-            ].map((field) => (
+          <div className="space-y-2">
+            {VERIFICATION_FIELD_OPTIONS.map((field) => (
               <label
                 key={field.id}
-                className={`flex items-start gap-3 rounded-lg border p-3 cursor-pointer transition-colors ${
+                className={`flex items-center gap-3 rounded-lg border p-3 cursor-pointer transition-colors ${
                   verificationFields.includes(field.id) ? "border-primary bg-primary/5" : "hover:bg-muted/50"
-                } ${field.required ? "opacity-100" : ""}`}
+                }`}
               >
                 <input
                   type="checkbox"
                   checked={verificationFields.includes(field.id)}
-                  disabled={field.required}
+                  disabled={field.locked}
                   onChange={(e) => {
-                    if (field.required) return;
+                    if (field.locked) return;
                     setVerificationFields((prev) =>
                       e.target.checked
                         ? [...prev, field.id]
                         : prev.filter((f) => f !== field.id)
                     );
                   }}
-                  className="mt-1 h-4 w-4 rounded border-input"
+                  className="h-4 w-4 rounded border-input"
                 />
-                <div>
-                  <span className="text-sm font-medium">{field.label}</span>
-                  {field.required && (
-                    <span className="ml-1 text-xs text-muted-foreground">(always required)</span>
-                  )}
+                <div className="flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium">{field.label}</span>
+                    {field.locked && (
+                      <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">Required</span>
+                    )}
+                    {field.recommended && !field.locked && (
+                      <span className="rounded bg-green-100 px-1.5 py-0.5 text-[10px] text-green-700 dark:bg-green-900/30 dark:text-green-400">Recommended</span>
+                    )}
+                  </div>
                   <p className="text-xs text-muted-foreground">{field.description}</p>
                 </div>
               </label>
             ))}
           </div>
 
-          <p className="text-xs text-muted-foreground">
-            The AI will ask callers for {verificationFields.map((f) =>
-              f === "name" ? "their name" : f === "phone" ? "their phone number" : f === "email" ? "their email" : "their date of birth"
-            ).join(", ")} before looking up or sharing any appointment information.
-          </p>
+          <div className="rounded-lg bg-muted/50 p-3">
+            <p className="text-xs text-muted-foreground">
+              <span className="font-medium">How it works:</span> When a caller asks {'"'}What time is my appointment?{'"'} or {'"'}Can I reschedule?{'"'},
+              the AI will ask for {verificationFields.map((f) => {
+                const opt = VERIFICATION_FIELD_OPTIONS.find((o) => o.id === f);
+                return opt?.shortLabel || f;
+              }).join(" + ")} before showing any appointment details. This prevents unauthorized access to booking information.
+            </p>
+          </div>
         </div>
 
         <Separator />
