@@ -19,9 +19,10 @@ const { createGeminiSession } = require("./services/gemini-live");
 
 const VOICE_PIPELINE = process.env.VOICE_PIPELINE || "classic"; // "classic" or "gemini-live"
 
-// Cache for pre-synthesized disclosure audio (keyed by disclosure text hash)
-// Avoids re-synthesizing the same legal text on every call (~7s savings)
+// Audio caches — avoid re-synthesizing the same text on every call
+// Disclosure: keyed by country+voice+length. Greeting: keyed by orgId+voice.
 const disclosureAudioCache = new Map();
+const greetingAudioCache = new Map();
 const { analyzeCallTranscript } = require("./services/post-call-analysis");
 const { getDeepgramVoice } = require("./lib/voice-mapping");
 const { generateHoldAudio, getHoldPreset } = require("./lib/hold-audio");
@@ -1234,11 +1235,16 @@ wss.on("connection", (twilioWs) => {
               const disclosureCacheKey = `${context.organization.country}_${session.deepgramVoice}_${disclosureText.length}`;
               let disclosureAudio = disclosureAudioCache.get(disclosureCacheKey);
 
-              // Synthesize disclosure (cached) + greeting in parallel
+              // Synthesize disclosure (cached) + greeting (cached) in parallel
               const disclosurePromise = disclosureAudio
                 ? Promise.resolve(disclosureAudio)
                 : synthesizeSpeech(DEEPGRAM_API_KEY, stripMarkdown(disclosureText), { voice: session.deepgramVoice });
-              const greetingPromise = synthesizeSpeech(DEEPGRAM_API_KEY, stripMarkdown(greeting), { voice: session.deepgramVoice });
+
+              const greetingCacheKey = `${context.organizationId}_${session.deepgramVoice}_${isAfterHours ? "ah" : "bh"}`;
+              let cachedGreeting = greetingAudioCache.get(greetingCacheKey);
+              const greetingPromise = cachedGreeting
+                ? Promise.resolve(cachedGreeting)
+                : synthesizeSpeech(DEEPGRAM_API_KEY, stripMarkdown(greeting), { voice: session.deepgramVoice });
 
               try {
                 disclosureAudio = await disclosurePromise;
@@ -1256,19 +1262,27 @@ wss.on("connection", (twilioWs) => {
 
               try {
                 const greetingAudio = await greetingPromise;
+                if (!greetingAudioCache.has(greetingCacheKey)) {
+                  greetingAudioCache.set(greetingCacheKey, greetingAudio);
+                }
                 sendAudioChunks(greetingAudio);
                 twilioWs.send(JSON.stringify({ event: "mark", streamSid: session.streamSid, mark: { name: "tts-done" } }));
-                console.log(`[GeminiLive] Greeting played (${greetingAudio.length} bytes)`);
+                console.log(`[GeminiLive] Greeting played (${greetingAudio.length} bytes, cached=${greetingAudioCache.has(greetingCacheKey)})`);
               } catch (err) {
                 console.error("[GeminiLive] Greeting TTS failed:", err.message);
               }
             } else {
-              // No disclosure needed — just play greeting
+              // No disclosure needed — just play greeting (cached)
+              const greetingCacheKey = `${context.organizationId}_${session.deepgramVoice}_${isAfterHours ? "ah" : "bh"}`;
+              let greetingAudio = greetingAudioCache.get(greetingCacheKey);
               try {
-                const greetingAudio = await synthesizeSpeech(DEEPGRAM_API_KEY, stripMarkdown(greeting), { voice: session.deepgramVoice });
+                if (!greetingAudio) {
+                  greetingAudio = await synthesizeSpeech(DEEPGRAM_API_KEY, stripMarkdown(greeting), { voice: session.deepgramVoice });
+                  greetingAudioCache.set(greetingCacheKey, greetingAudio);
+                }
                 sendAudioChunks(greetingAudio);
                 twilioWs.send(JSON.stringify({ event: "mark", streamSid: session.streamSid, mark: { name: "tts-done" } }));
-                console.log(`[GeminiLive] Greeting played (${greetingAudio.length} bytes)`);
+                console.log(`[GeminiLive] Greeting played (${greetingAudio.length} bytes, cached=${true})`);
               } catch (err) {
                 console.error("[GeminiLive] Greeting TTS failed:", err.message);
               }
@@ -2480,5 +2494,24 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log(`WebSocket endpoint: ${WS_URL}`);
   if (TEST_CALL_SECRET) {
     console.log(`Test call WebSocket: ${PUBLIC_URL.replace(/^http/, "ws")}/ws/test`);
+  }
+
+  // Pre-warm disclosure audio cache for common texts at startup.
+  // This ensures the first call doesn't wait ~8s for TTS synthesis.
+  if (VOICE_PIPELINE === "gemini-live" && DEEPGRAM_API_KEY) {
+    const defaultVoice = "aura-2-asteria-en";
+    const commonDisclosures = [
+      { country: "AU", text: "Please note, this call may be recorded for quality and training purposes." },
+      { country: "AU_custom", text: "Thank you for calling. You are speaking with an AI assistant and this call may be recorded for quality purposes. If you'd prefer not to be recorded, just let me know and I can transfer you to a team member. By staying on the line, you consent to both." },
+    ];
+    for (const d of commonDisclosures) {
+      const cacheKey = `${d.country}_${defaultVoice}_${d.text.length}`;
+      synthesizeSpeech(DEEPGRAM_API_KEY, d.text, { voice: defaultVoice })
+        .then((audio) => {
+          disclosureAudioCache.set(cacheKey, audio);
+          console.log(`[Warmup] Disclosure pre-cached: ${cacheKey} (${audio.length} bytes)`);
+        })
+        .catch((err) => console.warn(`[Warmup] Disclosure pre-cache failed: ${err.message}`));
+    }
   }
 });
