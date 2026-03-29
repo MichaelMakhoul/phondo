@@ -126,6 +126,8 @@ export async function POST(request: Request) {
         result = await handleCancelAppointment(organizationId, {
           phone: parsedArgs.phone,
           reason: parsedArgs.reason,
+          confirmation_code: parsedArgs.confirmation_code,
+          date: parsedArgs.date,
         });
         break;
 

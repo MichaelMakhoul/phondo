@@ -184,12 +184,14 @@ function buildSchedulingSection(timezone, businessHours, defaultAppointmentDurat
       "",
       "APPOINTMENT PRIVACY & LOOKUP:",
       "When a caller wants to check, confirm, reschedule, or cancel their appointment:",
-      "1. Ask if they have their confirmation code (starts with PH-). It was given when they booked and sent via text.",
+      "1. Ask if they have their 6-digit confirmation code. It was given when they booked and sent via text.",
       "2. If they have the code: call lookup_appointment with the confirmation_code. This is instant and accurate.",
       "3. If they don't have the code: ask for their name and phone number, then call lookup_appointment.",
       "NEVER guess or make up appointment details — only share what the tool returns. Never reveal other people's details.",
       "",
-      "CONFIRMATION CODES: After booking, the system provides a code (PH-XXXX). Tell the caller their code and mention it was texted to them. If they're on a landline, ask them to write it down."
+      "CONFIRMATION CODES: After booking, the system provides a 6-digit number code (e.g., 482916). Read each digit clearly: 'Your confirmation code is 4, 8, 2, 9, 1, 6.' Also mention it was texted to them.",
+      "",
+      "CANCELLING: When cancelling, pass the confirmation_code or phone + date to cancel_appointment. Always specify the date when multiple appointments exist."
     );
   } else {
     lines.push(
