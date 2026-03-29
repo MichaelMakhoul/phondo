@@ -139,11 +139,6 @@ function createGeminiSession(config, callbacks) {
       setupComplete = true;
       console.log(`[GeminiLive] Session ready in ${Date.now() - sessionStartTime}ms (${preSetupBuffer.length} buffered chunks)`);
 
-      // Note: gemini-3.1-flash-live-preview is audio-native and does not accept
-      // clientContent text messages — it closes the connection with "invalid argument".
-      // The greeting is triggered by the system prompt instruction + the first audio
-      // chunks from the caller (or silence). The buffered audio below will trigger it.
-
       // Flush any audio received before setup completed
       for (const buffered of preSetupBuffer) {
         try {
@@ -152,6 +147,18 @@ function createGeminiSession(config, callbacks) {
         } catch {}
       }
       preSetupBuffer.length = 0;
+
+      // Trigger Gemini to speak the greeting immediately.
+      // Gemini Live won't speak until it detects user activity ended.
+      // We simulate a "user finished speaking" signal so Gemini takes its turn
+      // and says the greeting from the system prompt.
+      try {
+        // Send activityEnd to signal the user's "turn" is done
+        ws.send(JSON.stringify({ realtimeInput: { activityEnd: {} } }));
+        console.log("[GeminiLive] Sent activityEnd to trigger greeting");
+      } catch (err) {
+        console.error("[GeminiLive] Failed to send greeting trigger:", err.message);
+      }
       return;
     }
 
