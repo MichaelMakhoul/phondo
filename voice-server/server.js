@@ -1083,13 +1083,60 @@ wss.on("connection", (twilioWs) => {
           sessions.set(streamSid, session);
           console.log(`[Twilio] Stream started — callSid=${callSid} streamSid=${streamSid} called=${calledNumber} from=${maskPhone(callerPhone)}`);
 
-          // Load call context from database — pass phoneRecord to skip redundant phone_numbers query
+          // For Gemini Live: play disclosure IMMEDIATELY while context loads in parallel.
+          // The disclosure is country-based (from phoneRecord) and doesn't need full context.
+          let earlyDisclosurePromise = null;
+          if (VOICE_PIPELINE === "gemini-live" && phoneRecord) {
+            const orgCountry = phoneRecord.organization_id ? "AU" : "AU"; // Default AU for now
+            const consentCheck = requiresRecordingDisclosureHybrid(orgCountry, null, "auto", callerPhone);
+            if (consentCheck.required) {
+              const defaultDisclosure = "Thank you for calling. You are speaking with an AI assistant and this call may be recorded for quality purposes. If you'd prefer not to be recorded, just let me know and I can transfer you to a team member. By staying on the line, you consent to both.";
+              const disclosureCacheKey = `early_${orgCountry}_aura-2-asteria-en_${defaultDisclosure.length}`;
+              let disclosureAudio = disclosureAudioCache.get(disclosureCacheKey);
+              if (!disclosureAudio) {
+                earlyDisclosurePromise = synthesizeSpeech(DEEPGRAM_API_KEY, defaultDisclosure, { voice: "aura-2-asteria-en" })
+                  .then((audio) => {
+                    disclosureAudioCache.set(disclosureCacheKey, audio);
+                    return audio;
+                  });
+              } else {
+                // Cached — play immediately
+                const sendChunks = chunkAudioForTwilio(disclosureAudio);
+                for (const chunk of sendChunks) {
+                  if (twilioWs.readyState !== WebSocket.OPEN) break;
+                  twilioWs.send(JSON.stringify({ event: "media", streamSid, media: { payload: chunk } }));
+                }
+                console.log(`[GeminiLive] Early disclosure played from cache (${disclosureAudio.length} bytes)`);
+                session.recordingDisclosurePlayed = true;
+                session._earlyDisclosurePlayed = true;
+              }
+            }
+          }
+
+          // Load call context from database — runs in parallel with early disclosure TTS
           let context = null;
           if (calledNumber) {
             try {
               context = await loadCallContext(calledNumber, phoneRecord);
             } catch (err) {
               console.error("[Context] Failed to load call context:", err);
+            }
+          }
+
+          // If early disclosure was synthesizing (not cached), play it now
+          if (earlyDisclosurePromise && !session._earlyDisclosurePlayed) {
+            try {
+              const audio = await earlyDisclosurePromise;
+              const sendChunks = chunkAudioForTwilio(audio);
+              for (const chunk of sendChunks) {
+                if (twilioWs.readyState !== WebSocket.OPEN) break;
+                twilioWs.send(JSON.stringify({ event: "media", streamSid, media: { payload: chunk } }));
+              }
+              console.log(`[GeminiLive] Early disclosure played after synthesis (${audio.length} bytes)`);
+              session.recordingDisclosurePlayed = true;
+              session._earlyDisclosurePlayed = true;
+            } catch (err) {
+              console.error("[GeminiLive] Early disclosure failed:", err.message);
             }
           }
 
@@ -1223,7 +1270,8 @@ wss.on("connection", (twilioWs) => {
 
             let fullGreetingText = greeting;
 
-            if (consentResult.required) {
+            if (consentResult.required && !session._earlyDisclosurePlayed) {
+              // Disclosure wasn't played early — play it now
               const disclosureText = getRecordingDisclosureText(
                 context.organization.country,
                 context.assistant.settings?.recordingDisclosure,
@@ -1231,7 +1279,6 @@ wss.on("connection", (twilioWs) => {
               );
               fullGreetingText = disclosureText + " " + greeting;
 
-              // Use cached disclosure audio if available (same text = same audio)
               const disclosureCacheKey = `${context.organization.country}_${session.deepgramVoice}_${disclosureText.length}`;
               let disclosureAudio = disclosureAudioCache.get(disclosureCacheKey);
 
