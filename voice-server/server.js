@@ -1357,8 +1357,8 @@ wss.on("connection", (twilioWs) => {
 
             // CRITICAL — tool calling and name enforcement for Gemini
             geminiSystemPrompt += `\n\nCRITICAL RULES FOR THIS CONVERSATION:`;
-            geminiSystemPrompt += `\n- NEVER FABRICATE ACTIONS: You MUST call the book_appointment tool to actually book. NEVER say "I've booked" unless the tool returned success. If you can't call the tool, say: "I'm having trouble booking right now. Let me take your details and have someone call you back."`;
-            geminiSystemPrompt += `\n- ALWAYS COLLECT REAL NAME: Before calling book_appointment, you MUST ask for and receive the caller's actual name. NEVER use placeholder names like "Caller Name", "Unknown", or "Guest". If the caller refuses to give a name, offer to schedule a callback instead.`;
+            geminiSystemPrompt += `\n- NEVER FABRICATE ACTIONS: You have tools (book_appointment, schedule_callback, check_availability, etc). You MUST actually call the tool before telling the caller the action was done. NEVER say "I've booked your appointment" or "I've arranged a callback" or "I've checked availability" unless the tool returned a success response. If you want to book, call book_appointment. If you want to schedule a callback, call schedule_callback. If you want to check times, call check_availability. NEVER pretend you did something without calling the tool.`;
+            geminiSystemPrompt += `\n- ALWAYS COLLECT REAL NAME: Before calling book_appointment or schedule_callback, you MUST ask for and receive the caller's actual name. NEVER use placeholder names like "Caller Name", "Unknown", or "Guest".`;
 
             // Transcript buffering — accumulate fragments, flush on turn complete
             let pendingUserTranscript = "";
