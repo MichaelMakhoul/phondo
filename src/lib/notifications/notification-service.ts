@@ -64,6 +64,7 @@ export interface AppointmentNotificationData {
   appointmentDate: Date;
   appointmentTime: string;
   serviceName?: string;
+  confirmationCode?: string;
 }
 
 export interface CallbackNotificationData {
@@ -363,6 +364,7 @@ export async function sendAppointmentNotification(
         appointmentDate: data.appointmentDate.toLocaleDateString(),
         appointmentTime: data.appointmentTime,
         serviceName: data.serviceName,
+        confirmationCode: data.confirmationCode,
       },
     }));
   }

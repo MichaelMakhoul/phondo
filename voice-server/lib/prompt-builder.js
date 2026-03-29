@@ -183,7 +183,13 @@ function buildSchedulingSection(timezone, businessHours, defaultAppointmentDurat
         : "You can ONLY book into slots returned by check_availability. Never book a time that wasn't in the available slots, even if the caller insists. If the caller insists on an exact time that doesn't match any slot, say: 'I can only book into the available time slots. If you need a specific time, I can take a message and have the office call you back to arrange it.' Then offer to take a message.",
       "",
       "APPOINTMENT PRIVACY & LOOKUP:",
-      "When a caller wants to check, confirm, or reschedule their appointment, use the lookup_appointment tool. Collect their name and phone number FIRST for identity verification, then call the tool. NEVER guess or make up appointment details — only share what the tool returns. If the tool can't find their appointment, offer to arrange a callback. Never reveal other people's appointment details."
+      "When a caller wants to check, confirm, reschedule, or cancel their appointment:",
+      "1. Ask if they have their confirmation code (starts with PH-). It was given when they booked and sent via text.",
+      "2. If they have the code: call lookup_appointment with the confirmation_code. This is instant and accurate.",
+      "3. If they don't have the code: ask for their name and phone number, then call lookup_appointment.",
+      "NEVER guess or make up appointment details — only share what the tool returns. Never reveal other people's details.",
+      "",
+      "CONFIRMATION CODES: After booking, the system provides a code (PH-XXXX). Tell the caller their code and mention it was texted to them. If they're on a landline, ask them to write it down."
     );
   } else {
     lines.push(

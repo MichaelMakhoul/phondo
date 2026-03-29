@@ -131,6 +131,7 @@ export async function POST(request: Request) {
 
       case "lookup_appointment":
         result = await handleLookupAppointment(organizationId, {
+          confirmation_code: parsedArgs.confirmation_code,
           name: parsedArgs.name,
           phone: parsedArgs.phone,
           email: parsedArgs.email,

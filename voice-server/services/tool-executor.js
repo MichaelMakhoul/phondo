@@ -182,28 +182,28 @@ const calendarToolDefinitions = [
     function: {
       name: "lookup_appointment",
       description:
-        "Look up an existing appointment to check its details (date, time, practitioner). Requires the caller's name and phone number for identity verification. Use this when a caller asks about their existing appointment, wants to check the time, or needs to confirm details.",
+        "Look up an existing appointment. PREFERRED: use the confirmation code (PH-XXXX) for instant lookup. FALLBACK: use name + phone if the caller doesn't have their code. Ask for the confirmation code first — it was given when they booked and sent via text message.",
       parameters: {
         type: "object",
         properties: {
+          confirmation_code: {
+            type: "string",
+            description: "The booking confirmation code (e.g., PH-4A9F). This is the preferred and most accurate lookup method.",
+          },
           name: {
             type: "string",
-            description: "The caller's full name (for identity verification)",
+            description: "The caller's full name (fallback if no confirmation code)",
           },
           phone: {
             type: "string",
-            description: "The caller's phone number (for identity verification)",
+            description: "The caller's phone number (fallback if no confirmation code)",
           },
           email: {
             type: "string",
-            description: "The caller's email address (optional, for additional verification)",
-          },
-          date_of_birth: {
-            type: "string",
-            description: "The caller's date of birth (optional, for additional verification)",
+            description: "The caller's email address (optional, additional verification)",
           },
         },
-        required: ["name", "phone"],
+        required: [],
       },
     },
   },
