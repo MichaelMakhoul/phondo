@@ -302,7 +302,8 @@ export async function sendAppointmentConfirmationSMS(
   orgId: string,
   callerPhone: string,
   startTime: Date,
-  timezone?: string
+  timezone?: string,
+  confirmationCode?: string
 ): Promise<SMSSendResult> {
   const supabase = createAdminClient();
 
@@ -330,6 +331,9 @@ export async function sendAppointmentConfirmationSMS(
   });
 
   let message = `Your appointment at ${businessName} is confirmed for ${dateStr} at ${timeStr}.`;
+  if (confirmationCode) {
+    message += ` Your confirmation code: ${confirmationCode}`;
+  }
   if (businessPhone) {
     message += ` To reschedule, call ${businessPhone}.`;
   }

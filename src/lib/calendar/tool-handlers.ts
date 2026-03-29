@@ -37,6 +37,16 @@ interface OrgSchedule {
 // Fallback slot duration when no org-level default is configured
 const DEFAULT_SLOT_DURATION_MINUTES = 30;
 
+/** Generate a short unique confirmation code (e.g., PH-4A9F) */
+function generateConfirmationCode(): string {
+  const chars = "0123456789ABCDEFGHJKLMNPQRSTUVWXYZ"; // No I, O to avoid confusion
+  let code = "";
+  for (let i = 0; i < 4; i++) {
+    code += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return `PH-${code}`;
+}
+
 // UUID format validator for service_type_id inputs
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -1054,6 +1064,7 @@ async function bookViaCal(
     });
 
     // Record in our database — rollback Cal.com booking if this fails
+    const calConfirmationCode = generateConfirmationCode();
     const { error: dbError } = await (supabase as any)
       .from("appointments")
       .insert({
@@ -1067,6 +1078,7 @@ async function bookViaCal(
         end_time: booking.endTime,
         status: "confirmed",
         notes: sanitizedNotes,
+        confirmation_code: calConfirmationCode,
         metadata: {
           calComBookingId: booking.id,
           eventTypeId,
@@ -1089,7 +1101,7 @@ async function bookViaCal(
 
     // Send notification
     const appointmentDate = new Date(tzAwareDatetime);
-    sendNotification(organizationId, phone, sanitizedName, appointmentDate, timezone);
+    sendNotification(organizationId, phone, sanitizedName, appointmentDate, timezone, calConfirmationCode);
 
     return {
       success: true,
@@ -1287,6 +1299,8 @@ async function bookInternal(
   const bookingEmail =
     email || `booking-${crypto.randomUUID()}@noreply.phondo.ai`;
 
+  const confirmationCode = generateConfirmationCode();
+
   const { data: appointment, error: dbError } = await (supabase as any)
     .from("appointments")
     .insert({
@@ -1300,11 +1314,12 @@ async function bookInternal(
       duration_minutes: durationMinutes,
       status: "confirmed",
       notes: sanitizedNotes,
+      confirmation_code: confirmationCode,
       metadata: { source: "ai_receptionist" },
       ...(serviceTypeId && { service_type_id: serviceTypeId }),
       ...(assignedPractitionerId && { practitioner_id: assignedPractitionerId }),
     })
-    .select("id")
+    .select("id, confirmation_code")
     .single();
 
   if (dbError) {
@@ -1326,7 +1341,7 @@ async function bookInternal(
 
   // 4. Send notification
   const timezone = schedule?.timezone || "America/New_York";
-  sendNotification(organizationId, phone, sanitizedName, startDate, timezone);
+  sendNotification(organizationId, phone, sanitizedName, startDate, timezone, confirmationCode);
   const { dateStr, timeStr } = formatDateTimeForVoice(startDate, timezone);
 
   const practitionerNote = assignedPractitionerName
@@ -1335,9 +1350,10 @@ async function bookInternal(
 
   return {
     success: true,
-    message: `I've booked your appointment for ${dateStr} at ${timeStr}${practitionerNote}. Is there anything else I can help you with?`,
+    message: `I've booked your appointment for ${dateStr} at ${timeStr}${practitionerNote}. Your confirmation code is ${confirmationCode}. Please keep this code — you'll need it if you call back to check or change your appointment. Is there anything else I can help you with?`,
     data: {
       appointmentId: appointment.id,
+      confirmationCode,
       startTime: startDate.toISOString(),
       endTime: endDate.toISOString(),
       ...(assignedPractitionerId && { practitionerId: assignedPractitionerId }),
@@ -1353,7 +1369,8 @@ function sendNotification(
   phone: string,
   name: string,
   appointmentDate: Date,
-  timezone?: string
+  timezone?: string,
+  confirmationCode?: string
 ) {
   sendAppointmentNotification({
     organizationId,
@@ -1366,25 +1383,61 @@ function sendNotification(
       hour12: true,
       ...(timezone && { timeZone: timezone }),
     }),
+    confirmationCode,
   }).catch((err) => {
     console.error("Failed to send appointment notification:", err);
   });
 
-  // SMS confirmation to the caller
-  sendAppointmentConfirmationSMS(organizationId, phone, appointmentDate, timezone)
+  // SMS confirmation to the caller (include confirmation code)
+  sendAppointmentConfirmationSMS(organizationId, phone, appointmentDate, timezone, confirmationCode)
     .catch((err) => console.error("Appointment confirmation SMS failed:", { organizationId, error: err }));
+}
+
+// ─── Appointment result formatter ───────────────────────────────────────────
+
+async function formatAppointmentResult(
+  appointments: any[],
+  timezone: string,
+  supabase: any
+): Promise<{ success: boolean; message: string }> {
+  const lines: string[] = [];
+  for (const apt of appointments) {
+    const date = new Date(apt.start_time);
+    const dateStr = date.toLocaleDateString("en-AU", { weekday: "long", year: "numeric", month: "long", day: "numeric", timeZone: timezone });
+    const timeStr = date.toLocaleTimeString("en-AU", { hour: "numeric", minute: "2-digit", hour12: true, timeZone: timezone });
+
+    let serviceInfo = "";
+    if (apt.service_type_id) {
+      const { data: st } = await supabase.from("service_types").select("name").eq("id", apt.service_type_id).single();
+      if (st) serviceInfo = ` for a ${st.name}`;
+    }
+
+    let practitionerInfo = "";
+    if (apt.practitioner_id) {
+      const { data: pract } = await supabase.from("practitioners").select("name").eq("id", apt.practitioner_id).single();
+      if (pract) practitionerInfo = ` with ${pract.name}`;
+    }
+
+    lines.push(`${dateStr} at ${timeStr}${serviceInfo}${practitionerInfo}`);
+  }
+
+  if (lines.length === 1) {
+    return { success: true, message: `I found your appointment: ${lines[0]}. Is there anything else you'd like to know about it?` };
+  }
+  return { success: true, message: `I found ${lines.length} upcoming appointments: ${lines.join(". Next, ")}. Which one would you like to know more about?` };
 }
 
 // ─── Appointment Lookup (with privacy verification) ─────────────────────────
 
 /**
- * Look up an existing appointment after verifying the caller's identity.
- * The business configures which fields must match (name, phone, email, dob).
- * Only returns appointment details if ALL required fields match.
+ * Look up an existing appointment.
+ * Priority: confirmation_code (instant, 100% accurate) > name + phone (fuzzy).
+ * The business configures which fallback fields are required via settings.
  */
 export async function handleLookupAppointment(
   organizationId: string,
   args: {
+    confirmation_code?: string;
     name?: string;
     phone?: string;
     email?: string;
@@ -1407,7 +1460,33 @@ export async function handleLookupAppointment(
   const verificationFields: string[] = org.appointment_verification_fields || ["name", "phone"];
   const timezone = org.timezone || "Australia/Sydney";
 
-  // 2. Check that the caller provided ALL required fields
+  // 2a. FAST PATH: lookup by confirmation code (instant, 100% accurate)
+  if (args.confirmation_code?.trim()) {
+    const code = args.confirmation_code.trim().toUpperCase();
+    const { data: codeMatch, error: codeError } = await (supabase as any)
+      .from("appointments")
+      .select("id, attendee_name, attendee_phone, start_time, end_time, duration_minutes, status, service_type_id, practitioner_id, confirmation_code")
+      .eq("organization_id", organizationId)
+      .eq("confirmation_code", code)
+      .in("status", ["confirmed", "pending"])
+      .single();
+
+    if (!codeError && codeMatch) {
+      return formatAppointmentResult([codeMatch], timezone, supabase);
+    }
+
+    // Code not found — fall through to name+phone verification
+    if (args.name || args.phone) {
+      // Continue with fallback verification below
+    } else {
+      return {
+        success: false,
+        message: "I couldn't find an appointment with that confirmation code. Could you double-check the code? It starts with PH- followed by 4 characters. If you don't have it, I can look up your appointment by name and phone number instead.",
+      };
+    }
+  }
+
+  // 2b. FALLBACK: verify by required fields (name, phone, etc.)
   const missing: string[] = [];
   for (const field of verificationFields) {
     if (field === "name" && !args.name?.trim()) missing.push("full name");
@@ -1461,47 +1540,5 @@ export async function handleLookupAppointment(
     };
   }
 
-  // 4. Format the results for voice
-  const lines: string[] = [];
-  for (const apt of appointments) {
-    const date = new Date(apt.start_time);
-    const dateStr = date.toLocaleDateString("en-AU", { weekday: "long", year: "numeric", month: "long", day: "numeric", timeZone: timezone });
-    const timeStr = date.toLocaleTimeString("en-AU", { hour: "numeric", minute: "2-digit", hour12: true, timeZone: timezone });
-
-    // Look up service type name if available
-    let serviceInfo = "";
-    if (apt.service_type_id) {
-      const { data: st } = await (supabase as any)
-        .from("service_types")
-        .select("name")
-        .eq("id", apt.service_type_id)
-        .single();
-      if (st) serviceInfo = ` for a ${st.name}`;
-    }
-
-    // Look up practitioner name if available
-    let practitionerInfo = "";
-    if (apt.practitioner_id) {
-      const { data: pract } = await (supabase as any)
-        .from("practitioners")
-        .select("name")
-        .eq("id", apt.practitioner_id)
-        .single();
-      if (pract) practitionerInfo = ` with ${pract.name}`;
-    }
-
-    lines.push(`${dateStr} at ${timeStr}${serviceInfo}${practitionerInfo}`);
-  }
-
-  if (lines.length === 1) {
-    return {
-      success: true,
-      message: `I found your appointment: ${lines[0]}. Is there anything else you'd like to know about it?`,
-    };
-  }
-
-  return {
-    success: true,
-    message: `I found ${lines.length} upcoming appointments: ${lines.join(". Next, ")}. Which one would you like to know more about?`,
-  };
+  return formatAppointmentResult(appointments, timezone, supabase as any);
 }
