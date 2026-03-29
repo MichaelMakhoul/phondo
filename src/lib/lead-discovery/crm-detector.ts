@@ -315,7 +315,17 @@ export async function scanWebsiteForCRM(
       };
     }
 
+    // Guard against excessively large responses
+    const contentLength = response.headers.get("content-length");
+    if (contentLength && parseInt(contentLength) > 2_000_000) {
+      return { software: null, confidence: "low", signals: [], error: "Response too large" };
+    }
+
     const html = await response.text();
+    if (html.length > 2_000_000) {
+      return { software: null, confidence: "low", signals: [], error: "Response too large" };
+    }
+
     return detectCRM(html);
   } catch (err: unknown) {
     const message =

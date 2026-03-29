@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import { isPlatformAdmin } from "@/lib/admin/admin-auth";
 import { withRateLimit } from "@/lib/security/rate-limiter";
 import { loadFilteredBusinesses } from "@/lib/lead-discovery/search-orchestrator";
+import type { CrmDetails } from "@/lib/lead-discovery/types";
 
 export async function GET(req: NextRequest) {
   // Auth
@@ -53,7 +54,7 @@ export async function GET(req: NextRequest) {
     ];
 
     const rows = businesses.map((biz) => {
-      const details = biz.detected_crm_details as Record<string, unknown> | null;
+      const details = biz.detected_crm_details as CrmDetails | null;
       return [
         csvSafe(biz.name),
         csvSafe(biz.address),
@@ -91,9 +92,14 @@ export async function GET(req: NextRequest) {
 
 function csvSafe(value: string | null | undefined): string {
   if (!value) return "";
-  // Escape double quotes and wrap in quotes if the value contains commas, quotes, or newlines
-  if (value.includes(",") || value.includes('"') || value.includes("\n")) {
-    return `"${value.replace(/"/g, '""')}"`;
+  let safe = value;
+  // Prevent CSV formula injection (values starting with =, +, -, @, tab, CR)
+  if (/^[=+\-@\t\r]/.test(safe)) {
+    safe = "'" + safe;
   }
-  return value;
+  // Escape double quotes and wrap in quotes if needed
+  if (safe.includes(",") || safe.includes('"') || safe.includes("\n") || safe.includes("'")) {
+    return `"${safe.replace(/"/g, '""')}"`;
+  }
+  return safe;
 }

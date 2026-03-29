@@ -70,23 +70,26 @@ const RESULT_LIMITS = [10, 25, 50, 100] as const;
 
 // ── Types ────────────────────────────────────────────────────────────
 
-interface Business {
-  id: string;
-  google_place_id: string;
-  name: string;
-  address: string | null;
-  phone: string | null;
-  website: string | null;
-  google_rating: number | null;
-  google_review_count: number | null;
-  profession: string | null;
-  detected_crm: string | null;
-  detected_crm_details: { software: string | null; confidence: string; signals: string[] } | null;
-  website_scanned_at: string | null;
-  website_scan_error: string | null;
-}
+import type { DiscoveredBusiness, CrmDetails } from "@/lib/lead-discovery/types";
 
-type CrmFilter = "all" | "none" | "no_website" | "has_crm";
+type Business = Pick<
+  DiscoveredBusiness,
+  | "id"
+  | "google_place_id"
+  | "name"
+  | "address"
+  | "phone"
+  | "website"
+  | "google_rating"
+  | "google_review_count"
+  | "profession"
+  | "detected_crm"
+  | "detected_crm_details"
+  | "website_scanned_at"
+  | "website_scan_error"
+>;
+
+type CrmFilter = "all" | "none" | "no_website" | "has_crm" | (string & {});
 
 // ── Component ────────────────────────────────────────────────────────
 

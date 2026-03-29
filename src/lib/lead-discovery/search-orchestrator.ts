@@ -14,6 +14,9 @@ import {
   type DiscoveredPlace,
 } from "./google-places";
 import { scanWebsiteForCRM } from "./crm-detector";
+import type { DiscoveredBusiness } from "./types";
+
+export type { DiscoveredBusiness };
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -21,25 +24,6 @@ export interface SearchParams {
   location: string;
   professions: string[];
   limit: number;
-}
-
-export interface DiscoveredBusiness {
-  id: string;
-  google_place_id: string;
-  name: string;
-  address: string | null;
-  phone: string | null;
-  website: string | null;
-  google_rating: number | null;
-  google_review_count: number | null;
-  google_types: string[] | null;
-  profession: string | null;
-  detected_crm: string | null;
-  detected_crm_details: Record<string, unknown> | null;
-  website_scanned_at: string | null;
-  website_scan_error: string | null;
-  created_at: string;
-  updated_at: string;
 }
 
 // ── Cache key ────────────────────────────────────────────────────────
@@ -182,8 +166,7 @@ export async function scanBusinessCRMs(
     await Promise.all(
       batch.map(async (biz) => {
         if (!biz.website) {
-          // No website — mark as scanned with no_website
-          await (supabase as any)
+          const { error: noWebErr } = await (supabase as any)
             .from("discovered_businesses")
             .update({
               detected_crm: "no_website",
@@ -191,12 +174,13 @@ export async function scanBusinessCRMs(
               updated_at: new Date().toISOString(),
             })
             .eq("id", biz.id);
+          if (noWebErr) console.error("[Lead Discovery] Update error (no_website):", noWebErr);
           return;
         }
 
         const result = await scanWebsiteForCRM(biz.website);
 
-        await (supabase as any)
+        const { error: scanErr } = await (supabase as any)
           .from("discovered_businesses")
           .update({
             detected_crm: result.software ?? "none",
@@ -210,6 +194,7 @@ export async function scanBusinessCRMs(
             updated_at: new Date().toISOString(),
           })
           .eq("id", biz.id);
+        if (scanErr) console.error("[Lead Discovery] Scan update error:", scanErr);
       })
     );
   }
@@ -262,6 +247,10 @@ export async function loadFilteredBusinesses(filters: {
     }
   }
 
-  const { data } = await query.limit(5000);
+  const { data, error } = await query.limit(5000);
+  if (error) {
+    console.error("[Lead Discovery] Failed to load filtered businesses:", error);
+    throw new Error(`Database query failed: ${error.message}`);
+  }
   return data ?? [];
 }
