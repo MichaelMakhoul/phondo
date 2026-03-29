@@ -137,8 +137,9 @@ describe("templates", () => {
   });
 
   describe("industryOptions", () => {
-    it("should have 15 options", () => {
-      expect(industryOptions).toHaveLength(15);
+    it("should have correct number of enabled options", () => {
+      // 8 currently enabled (7 Phase 2 industries commented out)
+      expect(industryOptions).toHaveLength(8);
     });
 
     it("should have 'other' as the last option", () => {
@@ -153,23 +154,24 @@ describe("templates", () => {
       });
     });
 
-    it("option values should match template keys", () => {
+    it("every option value should have a corresponding template", () => {
       const templateKeys = Object.keys(templates);
       const optionValues = industryOptions.map((o) => o.value);
-      expect(optionValues.sort()).toEqual(templateKeys.sort());
+      optionValues.forEach((value) => {
+        expect(templateKeys).toContain(value);
+      });
     });
 
-    it("should include all new industries", () => {
+    it("should include all currently enabled industries", () => {
       const values = industryOptions.map((o) => o.value);
-      expect(values).toContain("salon");
-      expect(values).toContain("automotive");
+      expect(values).toContain("dental");
+      expect(values).toContain("legal");
+      expect(values).toContain("home_services");
+      expect(values).toContain("medical");
       expect(values).toContain("veterinary");
-      expect(values).toContain("restaurant");
-      expect(values).toContain("accounting");
-      expect(values).toContain("insurance");
+      expect(values).toContain("salon");
       expect(values).toContain("fitness");
-      expect(values).toContain("childcare");
-      expect(values).toContain("funeral_services");
+      expect(values).toContain("other");
     });
   });
 
