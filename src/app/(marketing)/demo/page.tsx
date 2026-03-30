@@ -185,6 +185,8 @@ export default function DemoPage() {
       hasStartedRef.current = true;
       start().catch((err) => {
         console.error("[DemoPage] Unexpected error starting demo call:", err);
+        hasStartedRef.current = false;
+        setDemoState("ended");
       });
     }
   }, [demoState, selectedIndustry, start]);
