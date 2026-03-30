@@ -2056,6 +2056,11 @@ testWss.on("connection", (ws, req) => {
     }
 
     if (session) {
+      // Close Gemini session if active
+      if (session.geminiSession) {
+        try { session.geminiSession.close(); } catch {}
+        session.geminiSession = null;
+      }
       session.destroy();
       session = null;
     }
@@ -2130,6 +2135,138 @@ testWss.on("connection", (ws, req) => {
         }
       );
       session.setSystemPrompt(systemPrompt);
+
+      // ── Pipeline selection: Gemini Live vs Classic ──────────────
+      const useGeminiLive = VOICE_PIPELINE === "gemini-live" && process.env.GEMINI_API_KEY;
+
+      if (useGeminiLive) {
+        // ── Gemini Live pipeline for test/demo calls ──────────────
+        console.log("[TestGeminiLive] Initializing Gemini 3.1 Flash Live for test call");
+
+        // Build tool definitions (same as production)
+        const allTools = [
+          ...(effectiveCalendarEnabled ? calendarToolDefinitions : []),
+          ...(effectiveCalendarEnabled ? [listServiceTypesToolDefinition] : []),
+          callbackToolDefinition,
+        ];
+
+        // Build Gemini-specific system prompt with greeting instruction
+        const greeting = getGreeting(context.assistant, context.organization.name, {
+          isAfterHours,
+          afterHoursConfig,
+        });
+
+        let geminiSystemPrompt = systemPrompt;
+
+        // Remove contradictory language rules for multilingual mode
+        const isMultilingual = context.assistant.settings?.multilingualEnabled ?? false;
+        if (isMultilingual) {
+          geminiSystemPrompt = geminiSystemPrompt
+            .replace(/ENGLISH ONLY:.*?Do NOT respond in their language\./gs, "LANGUAGE: You are multilingual. Respond in the caller's language naturally.")
+            .replace(/You MUST ONLY respond in English\..*?Do NOT use any non-English words\./gs, "Respond in the caller's language naturally.")
+            .replace(/You must respond in English\..*?Do NOT respond in their language\./gs, "Respond in the caller's language naturally.")
+            .replace(/I can only assist in English/g, "I can assist in multiple languages");
+        }
+
+        geminiSystemPrompt += `\n\nIMPORTANT — YOUR FIRST MESSAGE: When the call connects, you will receive a short text message. Immediately respond by speaking the following greeting (word for word, naturally and warmly): "${greeting}" — Then wait for the caller to respond. Do NOT add anything extra. Do NOT invent a receptionist name — you are an AI assistant.`;
+
+        geminiSystemPrompt += `\n\nCRITICAL RULES FOR THIS CONVERSATION:`;
+        geminiSystemPrompt += `\n- ABSOLUTELY NEVER FABRICATE ACTIONS: This is the most important rule. You have tools (book_appointment, schedule_callback, check_availability, lookup_appointment, cancel_appointment, etc). You MUST call the tool AND receive a SUCCESS response BEFORE telling the caller the action was done. NEVER say "I've booked", "I've scheduled", "I've checked", "I've cancelled" UNLESS the tool already returned success.`;
+        geminiSystemPrompt += `\n- ALWAYS COLLECT REAL NAME: Before calling book_appointment or schedule_callback, you MUST ask for and receive the caller's actual name. NEVER use placeholder names like "Caller Name", "Unknown", or "Guest".`;
+        geminiSystemPrompt += `\n- ALWAYS SAY FILLER BEFORE EVERY TOOL CALL: Before EVERY tool call, you MUST say a short filler phrase like "One moment", "Let me check", "Just a sec", "Bear with me". NEVER go silent during a tool call.`;
+        geminiSystemPrompt += `\n- RESCHEDULING: When a caller asks to reschedule, you MUST: (1) look up their existing appointment with lookup_appointment, (2) cancel the old appointment with cancel_appointment, (3) then book the new one with book_appointment.`;
+
+        // Transcript buffering for test calls
+        let pendingUserTranscript = "";
+        let pendingAiTranscript = "";
+
+        session.geminiSession = createGeminiSession(
+          {
+            systemPrompt: geminiSystemPrompt,
+            tools: allTools,
+            voiceName: getGeminiVoice(context.assistant.voiceId),
+          },
+          {
+            onAudio: (twilioBase64) => {
+              // Convert Twilio-format base64 mulaw → raw Buffer → send as binary to browser
+              if (ws.readyState === WebSocket.OPEN) {
+                const audioBuffer = Buffer.from(twilioBase64, "base64");
+                ws.send(audioBuffer);
+              }
+            },
+            onToolCall: async (toolCall) => {
+              console.log(`[TestGeminiLive] Tool call: ${toolCall.name}(${JSON.stringify(toolCall.args).slice(0, 80)})`);
+              const result = await executeToolCall(toolCall.name, toolCall.args, {
+                organizationId: session.organizationId,
+                assistantId: session.assistantId,
+                callSid: session.callSid,
+                transferRules: [],
+                testMode: true,
+              });
+              const message = typeof result === "string" ? result : result.message;
+              console.log(`[TestGeminiLive] Tool result: "${message.slice(0, 100)}"`);
+              return { message };
+            },
+            onTranscriptIn: (text) => {
+              pendingUserTranscript += text;
+            },
+            onTranscriptOut: (text) => {
+              pendingAiTranscript += text;
+              // Send partial AI transcript to browser for display
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: "speaking", speaking: true }));
+              }
+            },
+            onInterrupted: () => {
+              if (pendingAiTranscript.trim()) {
+                session.addMessage("assistant", pendingAiTranscript.trim());
+                if (ws.readyState === WebSocket.OPEN) {
+                  ws.send(JSON.stringify({ type: "transcript", role: "assistant", content: pendingAiTranscript.trim(), isFinal: true }));
+                  ws.send(JSON.stringify({ type: "speaking", speaking: false }));
+                }
+                pendingAiTranscript = "";
+              }
+            },
+            onTurnComplete: () => {
+              if (pendingUserTranscript.trim()) {
+                session.addMessage("user", pendingUserTranscript.trim());
+                if (ws.readyState === WebSocket.OPEN) {
+                  ws.send(JSON.stringify({ type: "transcript", role: "user", content: pendingUserTranscript.trim(), isFinal: true }));
+                }
+                pendingUserTranscript = "";
+              }
+              if (pendingAiTranscript.trim()) {
+                session.addMessage("assistant", pendingAiTranscript.trim());
+                if (ws.readyState === WebSocket.OPEN) {
+                  ws.send(JSON.stringify({ type: "transcript", role: "assistant", content: pendingAiTranscript.trim(), isFinal: true }));
+                  ws.send(JSON.stringify({ type: "speaking", speaking: false }));
+                }
+                pendingAiTranscript = "";
+              }
+            },
+            onError: (err) => {
+              console.error("[TestGeminiLive] Session error:", err.message);
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: "error", message: "AI session error" }));
+                ws.close(4500, "Gemini session error");
+              }
+            },
+            onClose: (code) => {
+              console.log(`[TestGeminiLive] Session closed (code=${code})`);
+              if (ws.readyState === WebSocket.OPEN && !cleaningUp) {
+                ws.send(JSON.stringify({ type: "ended", reason: "ai-session-closed" }));
+                ws.close(1000, "Gemini session closed");
+              }
+            },
+          }
+        );
+
+        // Gemini handles greeting via system prompt — no manual TTS needed
+        console.log("[TestGeminiLive] Gemini session created — greeting will be spoken by Gemini");
+
+      } else {
+        // ── Classic pipeline (Deepgram STT + OpenAI + Deepgram TTS) ──
+        console.log("[TestClassic] Using classic pipeline for test call");
 
       // Open Deepgram STT
       session.deepgramWs = openDeepgramStream(DEEPGRAM_API_KEY, {
@@ -2239,7 +2376,9 @@ testWss.on("connection", (ws, req) => {
       session.setExpectedInputType(testGreetingInputType);
       console.log(`[TestInputDetect] After greeting: ${testGreetingInputType}`);
 
-      // Signal ready
+      } // end classic pipeline else block
+
+      // Signal ready (both pipelines)
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: "ready" }));
       }
@@ -2256,8 +2395,13 @@ testWss.on("connection", (ws, req) => {
     if (!session) return;
 
     if (isBinary) {
-      // Raw mulaw audio from browser — forward to Deepgram
-      if (session.deepgramWs && session.deepgramWs.readyState === WebSocket.OPEN) {
+      // Raw mulaw audio from browser
+      if (session.geminiSession) {
+        // Gemini Live pipeline — convert raw mulaw to base64 and send
+        const base64Audio = data.toString("base64");
+        session.geminiSession.sendAudio(base64Audio);
+      } else if (session.deepgramWs && session.deepgramWs.readyState === WebSocket.OPEN) {
+        // Classic pipeline — forward raw mulaw to Deepgram
         session.deepgramWs.send(data);
       }
     } else {
