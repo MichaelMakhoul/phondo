@@ -44,6 +44,46 @@ function generateConfirmationCode(): string {
   return code;
 }
 
+/**
+ * Get blocked time ranges for an org on a given date.
+ * Returns array of { start_time, end_time } in UTC.
+ */
+async function getBlockedTimes(
+  organizationId: string,
+  dateStartUtc: string,
+  dateEndUtc: string
+): Promise<{ start_time: string; end_time: string }[]> {
+  const supabase = createAdminClient();
+  const { data, error } = await (supabase as any)
+    .from("blocked_times")
+    .select("start_time, end_time")
+    .eq("organization_id", organizationId)
+    .lt("start_time", dateEndUtc)   // block starts before day ends
+    .gt("end_time", dateStartUtc);  // block ends after day starts
+
+  if (error) {
+    console.error("Failed to fetch blocked times:", { organizationId, error });
+    return [];
+  }
+  return data || [];
+}
+
+/** Check if a specific datetime falls within any blocked range */
+function isTimeBlocked(
+  datetime: Date,
+  durationMinutes: number,
+  blockedRanges: { start_time: string; end_time: string }[]
+): boolean {
+  const slotStart = datetime.getTime();
+  const slotEnd = slotStart + durationMinutes * 60_000;
+  return blockedRanges.some((block) => {
+    const blockStart = new Date(block.start_time).getTime();
+    const blockEnd = new Date(block.end_time).getTime();
+    // Overlap: slot starts before block ends AND slot ends after block starts
+    return slotStart < blockEnd && slotEnd > blockStart;
+  });
+}
+
 /** Escape LIKE metacharacters to prevent wildcard injection in ilike queries */
 function escapeLike(s: string): string {
   return s.replace(/[%_\\]/g, "\\$&");
@@ -410,7 +450,7 @@ async function getBuiltInAvailability(
     practitioners = await getPractitionersForService(organizationId, serviceTypeId);
   }
 
-  // Get existing appointments for this date.
+  // Get existing appointments + blocked times for this date.
   // Appointments are stored in UTC — convert date boundaries to UTC using org timezone.
   const supabase = createAdminClient();
   const { timezone } = resolvedSchedule;
@@ -418,6 +458,16 @@ async function getBuiltInAvailability(
   const dayEndLocal = `${date}T23:59:59`;
   const dayStartUtc = ensureTimezoneOffset(dayStartLocal, timezone);
   const dayEndUtc = ensureTimezoneOffset(dayEndLocal, timezone);
+
+  // Fetch blocked times for this date — filter slots that overlap
+  const blockedRanges = await getBlockedTimes(organizationId, dayStartUtc, dayEndUtc);
+  if (blockedRanges.length > 0) {
+    slots = slots.filter((slot) => {
+      const slotDate = new Date(ensureTimezoneOffset(slot, timezone));
+      return !isTimeBlocked(slotDate, durationMinutes, blockedRanges);
+    });
+    if (slots.length === 0) return [];
+  }
 
   // If practitioners are configured, fetch per-practitioner appointments
   if (practitioners.length > 0) {
@@ -1308,6 +1358,23 @@ async function bookInternal(
   }
 
   const endDate = new Date(startDate.getTime() + durationMinutes * 60_000);
+
+  // Reject bookings during blocked times
+  const blockCheckStart = new Date(startDate);
+  blockCheckStart.setHours(0, 0, 0, 0);
+  const blockCheckEnd = new Date(startDate);
+  blockCheckEnd.setHours(23, 59, 59, 999);
+  const blockedRanges = await getBlockedTimes(
+    organizationId,
+    blockCheckStart.toISOString(),
+    blockCheckEnd.toISOString()
+  );
+  if (isTimeBlocked(startDate, durationMinutes, blockedRanges)) {
+    return {
+      success: false,
+      message: "That time is currently blocked and not available for bookings. Would you like to check a different time or day?",
+    };
+  }
 
   if (schedule) {
     const parts = new Intl.DateTimeFormat("en-US", {
