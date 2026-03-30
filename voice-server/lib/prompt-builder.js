@@ -139,7 +139,7 @@ function sanitizeForPrompt(str) {
     .slice(0, 200);                   // cap length
 }
 
-function buildSchedulingSection(timezone, businessHours, defaultAppointmentDuration, calendarEnabled, serviceTypes, options = {}) {
+function buildSchedulingSection(timezone, businessHours, defaultAppointmentDuration, calendarEnabled, serviceTypes, options = {}, organization = null) {
   const lines = [];
   lines.push("TIMEZONE & SCHEDULING:");
 
@@ -561,7 +561,7 @@ function buildPromptFromConfig(config, context) {
   // 5. Timezone, business hours & scheduling
   // calendarEnabled is already adjusted by the caller (server.js resolveAfterHoursState)
   // when after-hours + disableScheduling apply
-  sections.push(buildSchedulingSection(context.timezone, context.businessHours, context.defaultAppointmentDuration, context.calendarEnabled, context.serviceTypes, { flexibleBooking: context.assistant?.settings?.flexibleBooking }));
+  sections.push(buildSchedulingSection(context.timezone, context.businessHours, context.defaultAppointmentDuration, context.calendarEnabled, context.serviceTypes, { flexibleBooking: context.assistant?.settings?.flexibleBooking }, context.organization));
 
   // 6. Industry guidelines
   const guidelines = getIndustryGuidelines(context.industry);
@@ -663,6 +663,7 @@ function buildSystemPrompt(assistant, organization, knowledgeBase, options) {
       afterHoursConfig,
       serviceTypes,
       assistantSettings: assistant.settings,
+      organization,
     };
     return buildPromptFromConfig(assistant.promptConfig, context);
   }
@@ -686,7 +687,7 @@ function buildSystemPrompt(assistant, organization, knowledgeBase, options) {
   }
 
   // Append scheduling section
-  systemPrompt += `\n\n${buildSchedulingSection(organization.timezone, organization.businessHours, organization.defaultAppointmentDuration, calendarEnabled, serviceTypes, { flexibleBooking: assistant?.settings?.flexibleBooking })}`;
+  systemPrompt += `\n\n${buildSchedulingSection(organization.timezone, organization.businessHours, organization.defaultAppointmentDuration, calendarEnabled, serviceTypes, { flexibleBooking: assistant?.settings?.flexibleBooking }, organization)}`;
 
   // Read multilingual settings early — used in both safety rules and language rules
   const multilingualEnabled = assistant?.settings?.multilingualEnabled ?? false;
