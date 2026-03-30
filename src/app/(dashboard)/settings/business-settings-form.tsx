@@ -614,14 +614,14 @@ export function BusinessSettingsForm({
               <textarea
                 value={disclosureText}
                 onChange={(e) => setDisclosureText(e.target.value)}
-                placeholder="Hi, thanks for calling {business_name}! Just letting you know, this call may be recorded. How can I help you today?"
+                placeholder="Just so you know, this call may be recorded."
                 rows={3}
                 maxLength={500}
                 className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
               />
               <p className="text-xs text-muted-foreground">
-                Leave blank to use the default. Use <code className="rounded bg-muted px-1 text-[11px]">{"{business_name}"}</code> to insert your business name.
-                This message is spoken at the start of each call before the AI begins the conversation.
+                Leave blank for the default: {'"'}Just so you know, this call may be recorded.{'"'} Use <code className="rounded bg-muted px-1 text-[11px]">{"{business_name}"}</code> to insert your business name.
+                This short message plays before the AI greets the caller.
               </p>
             </div>
           )}
