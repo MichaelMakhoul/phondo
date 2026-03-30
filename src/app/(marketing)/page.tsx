@@ -29,6 +29,10 @@ import {
   Wrench,
   Building,
   Briefcase,
+  AudioWaveform,
+  Languages,
+  Timer,
+  Ear,
 } from "lucide-react";
 import { getDisplayPlans } from "@/lib/stripe/client";
 import { formatCurrency } from "@/lib/utils";
@@ -133,9 +137,9 @@ const FEATURES = [
     description: "AI detects and filters spam calls. Only real enquiries reach your dashboard.",
   },
   {
-    icon: Globe,
-    title: "Australian Voices",
-    description: "Natural-sounding Australian accents. Your callers won't know it's AI.",
+    icon: Languages,
+    title: "90+ Languages",
+    description: "Speaks English, Mandarin, Arabic, Vietnamese, Greek, Italian, Punjabi, and 80+ more. Responds in your caller's language automatically.",
   },
   {
     icon: Zap,
@@ -176,6 +180,7 @@ const HOW_IT_WORKS = [
 const SOCIAL_PROOF = [
   { value: "24/7", desc: "Always available. No sick days, no holidays, no breaks." },
   { value: "<1s", desc: "Average answer time. Your callers never wait." },
+  { value: "90+", desc: "Languages supported. Responds in your caller's language automatically." },
   { value: "10+", desc: "Industries pre-configured. Up and running in minutes." },
 ];
 
@@ -206,7 +211,7 @@ export default function LandingPage() {
 
           <div className="relative container mx-auto px-4 py-16 text-center sm:py-24 lg:py-32">
             <Badge className="mb-6 animate-fade-in-up border-orange-500/30 bg-orange-500/10 text-orange-300 hover:bg-orange-500/20">
-              Built for Australian businesses
+              Next-generation voice AI — built for Australian businesses
             </Badge>
 
             <h1 className="mx-auto max-w-4xl text-4xl font-bold tracking-tight text-white animate-fade-in-up-delay-1 sm:text-5xl lg:text-6xl">
@@ -262,7 +267,7 @@ export default function LandingPage() {
           <div className="container mx-auto flex flex-col items-center justify-center gap-3 px-4 py-4 sm:flex-row sm:gap-4">
             <div className="flex items-center gap-2 text-sm font-medium text-foreground">
               <Headphones className="h-4 w-4 text-orange-500" />
-              Hear it for yourself — talk to our AI receptionist right now
+              Hear it for yourself — talk to our AI in English, Mandarin, Arabic, or any of 90+ languages
             </div>
             <Link href="/demo">
               <Button size="sm" className="gap-1.5 bg-orange-500 text-white hover:bg-orange-600">
@@ -305,6 +310,120 @@ export default function LandingPage() {
                 </div>
               </AnimateOnScroll>
             ))}
+          </div>
+        </section>
+
+        {/* Voice Technology — competitive advantage */}
+        <section className="border-t bg-slate-50 dark:bg-slate-900 py-16 sm:py-24">
+          <div className="container mx-auto px-4">
+            <AnimateOnScroll className="text-center">
+              <Badge className="mb-4 border-orange-500/30 bg-orange-500/10 text-orange-600 dark:text-orange-400">
+                First in Australia
+              </Badge>
+              <h2 className="text-3xl font-bold">The most natural AI voice on the market</h2>
+              <p className="mx-auto mt-3 max-w-2xl text-muted-foreground">
+                Most AI phone systems sound robotic because they convert your voice to text,
+                process it, then convert text back to speech — three separate steps with noticeable delays.
+                Phondo is one of the first AI receptionists in the world to use next-generation
+                native audio intelligence. Our AI listens, understands, and responds in one seamless step.
+              </p>
+            </AnimateOnScroll>
+
+            {/* Comparison cards */}
+            <div className="mx-auto mt-14 grid max-w-4xl gap-6 md:grid-cols-2">
+              <AnimateOnScroll animation="animate-slide-in-left">
+                <div className="rounded-xl border border-dashed border-muted-foreground/30 bg-card p-6">
+                  <div className="flex items-center gap-3 mb-4">
+                    <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-muted">
+                      <Timer className="h-5 w-5 text-muted-foreground" />
+                    </div>
+                    <h3 className="font-semibold text-muted-foreground">Other AI Receptionists</h3>
+                  </div>
+                  <div className="space-y-3 text-sm">
+                    <div className="flex items-start gap-2">
+                      <span className="mt-0.5 block h-1.5 w-1.5 rounded-full bg-muted-foreground/50 flex-shrink-0" />
+                      <span className="text-muted-foreground">Voice &rarr; Text &rarr; AI &rarr; Text &rarr; Voice <span className="text-xs">(3 steps)</span></span>
+                    </div>
+                    <div className="flex items-start gap-2">
+                      <span className="mt-0.5 block h-1.5 w-1.5 rounded-full bg-muted-foreground/50 flex-shrink-0" />
+                      <span className="text-muted-foreground">2-5 second delays between you speaking and the AI responding</span>
+                    </div>
+                    <div className="flex items-start gap-2">
+                      <span className="mt-0.5 block h-1.5 w-1.5 rounded-full bg-muted-foreground/50 flex-shrink-0" />
+                      <span className="text-muted-foreground">Robotic, flat voice that callers notice immediately</span>
+                    </div>
+                    <div className="flex items-start gap-2">
+                      <span className="mt-0.5 block h-1.5 w-1.5 rounded-full bg-muted-foreground/50 flex-shrink-0" />
+                      <span className="text-muted-foreground">Misses tone, urgency, and emotional context</span>
+                    </div>
+                  </div>
+                </div>
+              </AnimateOnScroll>
+
+              <AnimateOnScroll animation="animate-slide-in-right">
+                <div className="rounded-xl border-2 border-orange-500/50 bg-card p-6 shadow-lg shadow-orange-500/5">
+                  <div className="flex items-center gap-3 mb-4">
+                    <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-orange-500/10">
+                      <AudioWaveform className="h-5 w-5 text-orange-500" />
+                    </div>
+                    <h3 className="font-semibold">Phondo</h3>
+                    <Badge variant="secondary" className="text-xs bg-orange-500/10 text-orange-600 border-orange-500/20">Next-Gen</Badge>
+                  </div>
+                  <div className="space-y-3 text-sm">
+                    <div className="flex items-start gap-2">
+                      <Check className="mt-0.5 h-4 w-4 text-orange-500 flex-shrink-0" />
+                      <span>Voice &rarr; AI &rarr; Voice <span className="text-xs text-orange-500 font-medium">(1 step)</span></span>
+                    </div>
+                    <div className="flex items-start gap-2">
+                      <Check className="mt-0.5 h-4 w-4 text-orange-500 flex-shrink-0" />
+                      <span>Near-instant responses — conversations feel natural and human</span>
+                    </div>
+                    <div className="flex items-start gap-2">
+                      <Check className="mt-0.5 h-4 w-4 text-orange-500 flex-shrink-0" />
+                      <span>Warm, expressive voice — callers stay on the line</span>
+                    </div>
+                    <div className="flex items-start gap-2">
+                      <Check className="mt-0.5 h-4 w-4 text-orange-500 flex-shrink-0" />
+                      <span>Hears tone, pace, and urgency — adapts in real time</span>
+                    </div>
+                  </div>
+                </div>
+              </AnimateOnScroll>
+            </div>
+
+            {/* Multilingual highlight */}
+            <AnimateOnScroll className="mx-auto mt-10 max-w-4xl">
+              <div className="rounded-xl border bg-card p-6 flex flex-col sm:flex-row items-center gap-6">
+                <div className="flex h-14 w-14 flex-shrink-0 items-center justify-center rounded-2xl bg-orange-500/10">
+                  <Languages className="h-7 w-7 text-orange-500" />
+                </div>
+                <div className="text-center sm:text-left">
+                  <h3 className="text-lg font-semibold">Speaks 90+ languages — automatically</h3>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    Your caller speaks Mandarin? Your AI responds in Mandarin. Arabic? Arabic. Vietnamese, Greek,
+                    Italian, Punjabi, Cantonese, Hindi, Spanish, Korean, and 80+ more — no setup needed.
+                    Perfect for Australia&apos;s multicultural communities.
+                  </p>
+                  <div className="mt-3 flex flex-wrap justify-center sm:justify-start gap-1.5">
+                    {["English", "Mandarin", "Arabic", "Vietnamese", "Cantonese", "Punjabi", "Greek", "Italian", "Hindi", "Spanish", "Korean", "Filipino"].map((lang) => (
+                      <Badge key={lang} variant="outline" className="text-xs">{lang}</Badge>
+                    ))}
+                    <Badge variant="outline" className="text-xs text-orange-500 border-orange-500/30">+80 more</Badge>
+                  </div>
+                </div>
+              </div>
+            </AnimateOnScroll>
+
+            {/* CTA */}
+            <div className="mt-10 text-center">
+              <Link href="/demo">
+                <Button size="lg" className="gap-2 bg-orange-500 text-white hover:bg-orange-600">
+                  <Ear className="h-4 w-4" />
+                  Hear the Difference Yourself
+                </Button>
+              </Link>
+              <p className="mt-2 text-xs text-muted-foreground">Free demo call — no signup required. Try it in any language.</p>
+            </div>
           </div>
         </section>
 
@@ -420,32 +539,34 @@ export default function LandingPage() {
         <section className="border-t py-16 sm:py-24">
           <div className="container mx-auto px-4">
             <AnimateOnScroll className="text-center">
-              <h2 className="text-3xl font-bold">Built on trust and security</h2>
-              <p className="mt-3 text-muted-foreground">
-                Australian data sovereignty. Enterprise-grade security. Privacy by design.
+              <h2 className="text-3xl font-bold">Your data never leaves Australia</h2>
+              <p className="mx-auto mt-3 max-w-2xl text-muted-foreground">
+                Patient records, legal conversations, and sensitive business data are stored and processed
+                entirely on Australian soil. Nothing is sent offshore — ever. Built for industries
+                where privacy isn&apos;t optional.
               </p>
             </AnimateOnScroll>
             <div className="mx-auto mt-14 grid max-w-5xl gap-6 sm:grid-cols-2 lg:grid-cols-4">
               {[
                 {
                   icon: Server,
-                  title: "Australian Data Hosting",
-                  description: "Your data stays in Australia. Hosted on Australian infrastructure with local data sovereignty.",
+                  title: "100% Australian Infrastructure",
+                  description: "All call data, transcripts, recordings, and patient/client information is hosted and processed exclusively in Australia. No offshore servers, no exceptions.",
                 },
                 {
                   icon: Shield,
-                  title: "Enterprise Security",
-                  description: "Bank-grade encryption for all calls, transcripts, and personal data.",
+                  title: "Medical & Legal Grade Security",
+                  description: "Bank-grade encryption for every call. Designed to meet the data handling requirements of dental, medical, and legal practices.",
                 },
                 {
                   icon: Lock,
-                  title: "Privacy Compliant",
-                  description: "Compliant with Australian Privacy Act and state-aware recording consent laws.",
+                  title: "Privacy Act Compliant",
+                  description: "Full compliance with the Australian Privacy Act. State-aware recording consent for all jurisdictions. Your callers are always informed.",
                 },
                 {
                   icon: Zap,
                   title: "99.9% Uptime",
-                  description: "Enterprise-grade reliability so you never miss a call.",
+                  description: "Enterprise-grade reliability on Australian infrastructure so you never miss a call.",
                 },
               ].map((item, i) => (
                 <AnimateOnScroll
@@ -479,7 +600,7 @@ export default function LandingPage() {
             <AnimateOnScroll className="text-center">
               <h2 className="text-3xl font-bold">The numbers speak for themselves</h2>
             </AnimateOnScroll>
-            <div className="mx-auto mt-14 grid max-w-4xl gap-8 md:grid-cols-3">
+            <div className="mx-auto mt-14 grid max-w-5xl gap-8 sm:grid-cols-2 md:grid-cols-4">
               {SOCIAL_PROOF.map((item, i) => (
                 <AnimateOnScroll
                   key={item.value}

@@ -4,8 +4,13 @@ import { Ratelimit } from "@upstash/ratelimit";
 import { Redis } from "@upstash/redis";
 import { DEMO_ORG_ID, DEMO_INDUSTRIES, DEMO_RATE_LIMIT_ERROR, isDemoIndustry } from "@/lib/demo/config";
 
-// Upstash Redis rate limiter — shared across all serverless instances.
-// Falls back to in-memory if UPSTASH env vars are not set (local dev).
+// ── Rate limiting: multi-layer abuse protection ──────────────────────
+//
+// Layer 1: Upstash Redis — distributed rate limit (10 calls/hour/IP)
+// Layer 2: In-memory global counter — hard cap on total demo calls per hour (prevents bot swarms)
+// Layer 3: Short token expiry (30s) — tokens can't be stockpiled
+// Layer 4: Per-IP daily cap — even with IP rotation, limits total daily abuse
+
 const ratelimit = process.env.UPSTASH_REDIS_REST_URL
   ? new Ratelimit({
       redis: Redis.fromEnv(),
@@ -14,7 +19,51 @@ const ratelimit = process.env.UPSTASH_REDIS_REST_URL
     })
   : null;
 
-// In-memory fallback for local development (no Upstash configured)
+// Layer 2: Global hourly cap — prevents bot swarms even with different IPs
+const GLOBAL_HOURLY_CAP = 100; // Max 100 demo calls per hour across ALL users
+let globalHourlyCount = 0;
+let globalHourlyReset = Date.now() + 3_600_000;
+
+function checkGlobalCap(): boolean {
+  const now = Date.now();
+  if (now > globalHourlyReset) {
+    globalHourlyCount = 0;
+    globalHourlyReset = now + 3_600_000;
+  }
+  if (globalHourlyCount >= GLOBAL_HOURLY_CAP) {
+    return false;
+  }
+  globalHourlyCount++;
+  return true;
+}
+
+// Layer 4: Per-IP daily cap (stricter than hourly — catches slow abuse)
+const DAILY_PER_IP_CAP = 20;
+const dailyIpMap = new Map<string, { count: number; resetAt: number }>();
+
+function checkDailyCap(ip: string): boolean {
+  const now = Date.now();
+  const entry = dailyIpMap.get(ip);
+  if (!entry || now > entry.resetAt) {
+    dailyIpMap.set(ip, { count: 1, resetAt: now + 86_400_000 });
+    return true;
+  }
+  if (entry.count >= DAILY_PER_IP_CAP) {
+    return false;
+  }
+  entry.count++;
+  return true;
+}
+
+// Cleanup stale daily entries every 10 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, entry] of dailyIpMap.entries()) {
+    if (now > entry.resetAt) dailyIpMap.delete(ip);
+  }
+}, 600_000).unref?.();
+
+// In-memory hourly fallback (when Upstash is unavailable)
 const localRateLimitMap = new Map<string, { count: number; resetAt: number }>();
 
 function getClientIp(request: Request): string {
@@ -29,13 +78,18 @@ function getClientIp(request: Request): string {
   return "unknown";
 }
 
-async function checkRateLimit(ip: string): Promise<boolean> {
+async function checkHourlyRateLimit(ip: string): Promise<boolean> {
   if (ratelimit) {
-    const { success } = await ratelimit.limit(ip);
-    return success;
+    try {
+      const { success } = await ratelimit.limit(ip);
+      return success;
+    } catch (err) {
+      // Upstash unreachable (e.g. local dev) — fall through to in-memory
+      console.warn("[DemoRateLimit] Upstash unreachable, using in-memory fallback:", (err as Error).message);
+    }
   }
 
-  // Fallback: in-memory for local dev
+  // In-memory fallback
   const now = Date.now();
   const entry = localRateLimitMap.get(ip);
   if (!entry || now > entry.resetAt) {
@@ -68,9 +122,28 @@ export async function POST(request: Request) {
       );
     }
 
-    // Rate limit by IP
     const ip = getClientIp(request);
-    if (!(await checkRateLimit(ip))) {
+
+    // Layer 2: Global hourly cap (catches bot swarms)
+    if (!checkGlobalCap()) {
+      console.warn(`[DemoAbuse] Global hourly cap reached (${GLOBAL_HOURLY_CAP} calls/hr)`);
+      return NextResponse.json(
+        { error: "Demo is experiencing high demand. Please try again in a few minutes." },
+        { status: 429 }
+      );
+    }
+
+    // Layer 4: Daily per-IP cap (catches slow persistent abuse)
+    if (!checkDailyCap(ip)) {
+      console.warn(`[DemoAbuse] Daily per-IP cap reached for ${ip}`);
+      return NextResponse.json(
+        { error: "You've reached the daily demo limit. Sign up for a free trial to continue!" },
+        { status: 429 }
+      );
+    }
+
+    // Layer 1: Hourly per-IP rate limit (Upstash or in-memory)
+    if (!(await checkHourlyRateLimit(ip))) {
       return NextResponse.json(
         { error: `${DEMO_RATE_LIMIT_ERROR}. Please try again later.` },
         { status: 429 }
@@ -93,11 +166,11 @@ export async function POST(request: Request) {
 
     const demoConfig = DEMO_INDUSTRIES[industry];
 
-    // Build token identical to test-call/token format
+    // Layer 3: Short token expiry (30 seconds — can't stockpile tokens)
     const payload = {
       assistantId: demoConfig.assistantId,
       organizationId: DEMO_ORG_ID,
-      exp: Date.now() + 30_000, // 30 second expiry
+      exp: Date.now() + 30_000,
     };
 
     const payloadB64 = Buffer.from(JSON.stringify(payload)).toString("base64url");

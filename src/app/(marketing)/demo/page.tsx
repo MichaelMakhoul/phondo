@@ -96,7 +96,10 @@ export default function DemoPage() {
   const [demoState, setDemoState] = useState<DemoState>("select");
   const [selectedIndustry, setSelectedIndustry] = useState<DemoIndustry | null>(null);
   const [duration, setDuration] = useState(0);
-  const [audioSupported] = useState(() => supportsAudioWorklet());
+  const [audioSupported, setAudioSupported] = useState(true); // assume true during SSR
+  useEffect(() => {
+    setAudioSupported(supportsAudioWorklet());
+  }, []);
   const [rateLimited, setRateLimited] = useState(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
@@ -155,8 +158,15 @@ export default function DemoPage() {
     }
   }, [error]);
 
+  const transcriptContainerRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    // Only auto-scroll if user is already near the bottom (within 100px)
+    const container = transcriptContainerRef.current;
+    if (!container) return;
+    const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 100;
+    if (isNearBottom) {
+      transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
   }, [transcript]);
 
   const handleStartDemo = useCallback(
@@ -294,7 +304,7 @@ export default function DemoPage() {
                 </CardHeader>
                 <CardContent className="p-6">
                   {/* Transcript */}
-                  <div className="space-y-3 min-h-[280px] max-h-[380px] overflow-y-auto mb-6 p-2">
+                  <div ref={transcriptContainerRef} className="space-y-3 min-h-[280px] max-h-[380px] overflow-y-auto mb-6 p-2">
                     {transcript.length === 0 && status === "active" && (
                       <div className="text-center mt-12">
                         <p className="text-muted-foreground mb-4">
