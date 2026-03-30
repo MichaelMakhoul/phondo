@@ -41,12 +41,19 @@ const DAYS = [
   { key: "sunday", label: "Sunday" },
 ];
 
-// Fields available for appointment lookup verification
+// Verification method options
+const VERIFICATION_METHODS = [
+  { id: "code_and_verify", label: "Code + Identity Check", description: "Caller provides their confirmation code AND answers a verification question. Most secure." },
+  { id: "code_only", label: "Code Only", description: "Confirmation code alone is enough. Faster but less secure." },
+  { id: "details_only", label: "No Code — Verify by Details", description: "No confirmation codes. Caller verifies with name, phone, etc. Simplest for the caller." },
+];
+
+// Fields available for identity verification
 const VERIFICATION_FIELD_OPTIONS = [
-  { id: "name", label: "Full Name", shortLabel: "name", description: "Caller must state their name as it was booked", locked: true, recommended: false },
-  { id: "phone", label: "Phone Number", shortLabel: "phone", description: "Caller must confirm the phone number used when booking", locked: false, recommended: true },
-  { id: "email", label: "Email Address", shortLabel: "email", description: "Caller must provide the email used when booking", locked: false, recommended: false },
-  { id: "date_of_birth", label: "Date of Birth", shortLabel: "DOB", description: "Caller must provide their date of birth (recommended for medical/legal)", locked: false, recommended: false },
+  { id: "name", label: "Full Name", shortLabel: "name", description: "Caller must state their name as it was booked" },
+  { id: "phone", label: "Phone Number", shortLabel: "phone", description: "Caller must confirm the phone number used when booking" },
+  { id: "email", label: "Email Address", shortLabel: "email", description: "Caller must provide the email used when booking" },
+  { id: "date_of_birth", label: "Date of Birth", shortLabel: "DOB", description: "Recommended for medical and legal practices" },
 ];
 
 const APPOINTMENT_DURATIONS = [
@@ -103,7 +110,7 @@ interface BusinessSettingsFormProps {
     defaultAppointmentDuration: number;
     businessState: string;
     recordingConsentMode: string;
-    appointmentVerificationFields: string[];
+    appointmentVerificationFields: { method: string; fields: string[] } | string[];
   };
 }
 
@@ -135,9 +142,19 @@ export function BusinessSettingsForm({
       sunday: null,
     }
   );
-  const [verificationFields, setVerificationFields] = useState<string[]>(
-    initialData.appointmentVerificationFields || ["name", "phone"]
-  );
+  // Parse verification settings (structured object or legacy array)
+  const initVerification = (() => {
+    const raw = initialData.appointmentVerificationFields;
+    if (raw && !Array.isArray(raw) && raw.method) {
+      return { method: raw.method, fields: raw.fields || ["name"] };
+    }
+    if (Array.isArray(raw)) {
+      return { method: "code_and_verify", fields: raw };
+    }
+    return { method: "code_and_verify", fields: ["name"] };
+  })();
+  const [verificationMethod, setVerificationMethod] = useState(initVerification.method);
+  const [verificationFields, setVerificationFields] = useState<string[]>(initVerification.fields);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const { toast } = useToast();
   const supabase = createClient();
@@ -216,7 +233,7 @@ export function BusinessSettingsForm({
           default_appointment_duration: appointmentDuration,
           business_state: businessState || null,
           recording_consent_mode: recordingConsentMode,
-          appointment_verification_fields: verificationFields,
+          appointment_verification_fields: { method: verificationMethod, fields: verificationFields },
         })
         .eq("id", organizationId);
 
@@ -579,57 +596,85 @@ export function BusinessSettingsForm({
             <div>
               <Label className="text-base font-medium">Appointment Lookup Verification</Label>
               <p className="text-sm text-muted-foreground">
-                When a caller asks to check or confirm their appointment, the AI will verify
-                their identity by asking for the selected fields first. More fields = stronger privacy.
+                How callers verify their identity when checking, rescheduling, or cancelling appointments.
               </p>
             </div>
           </div>
 
-          <div className="space-y-2">
-            {VERIFICATION_FIELD_OPTIONS.map((field) => (
+          {/* Method selector */}
+          <RadioGroup value={verificationMethod} onValueChange={setVerificationMethod}>
+            {VERIFICATION_METHODS.map((m) => (
               <label
-                key={field.id}
-                className={`flex items-center gap-3 rounded-lg border p-3 cursor-pointer transition-colors ${
-                  verificationFields.includes(field.id) ? "border-primary bg-primary/5" : "hover:bg-muted/50"
+                key={m.id}
+                className={`flex items-start gap-3 rounded-lg border p-3 cursor-pointer transition-colors ${
+                  verificationMethod === m.id ? "border-primary bg-primary/5" : "hover:bg-muted/50"
                 }`}
               >
-                <input
-                  type="checkbox"
-                  checked={verificationFields.includes(field.id)}
-                  disabled={field.locked}
-                  onChange={(e) => {
-                    if (field.locked) return;
-                    setVerificationFields((prev) =>
-                      e.target.checked
-                        ? [...prev, field.id]
-                        : prev.filter((f) => f !== field.id)
-                    );
-                  }}
-                  className="h-4 w-4 rounded border-input"
-                />
-                <div className="flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-medium">{field.label}</span>
-                    {field.locked && (
-                      <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">Required</span>
-                    )}
-                    {field.recommended && !field.locked && (
-                      <span className="rounded bg-green-100 px-1.5 py-0.5 text-[10px] text-green-700 dark:bg-green-900/30 dark:text-green-400">Recommended</span>
-                    )}
-                  </div>
-                  <p className="text-xs text-muted-foreground">{field.description}</p>
+                <RadioGroupItem value={m.id} className="mt-0.5" />
+                <div>
+                  <span className="text-sm font-medium">{m.label}</span>
+                  <p className="text-xs text-muted-foreground">{m.description}</p>
                 </div>
               </label>
             ))}
-          </div>
+          </RadioGroup>
 
+          {/* Verification fields — shown for code_and_verify and details_only */}
+          {verificationMethod !== "code_only" && (
+            <div className="space-y-2">
+              <Label className="text-sm font-medium">
+                {verificationMethod === "code_and_verify"
+                  ? "Additional identity check (after code)"
+                  : "Identity verification fields"}
+              </Label>
+              <p className="text-xs text-muted-foreground">
+                {verificationMethod === "code_and_verify"
+                  ? "After the caller provides their code, the AI will also ask for:"
+                  : "The AI will ask callers for the following to verify their identity:"}
+              </p>
+              {VERIFICATION_FIELD_OPTIONS.map((field) => (
+                <label
+                  key={field.id}
+                  className={`flex items-center gap-3 rounded-lg border p-3 cursor-pointer transition-colors ${
+                    verificationFields.includes(field.id) ? "border-primary bg-primary/5" : "hover:bg-muted/50"
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={verificationFields.includes(field.id)}
+                    onChange={(e) => {
+                      setVerificationFields((prev) => {
+                        const next = e.target.checked
+                          ? [...prev, field.id]
+                          : prev.filter((f) => f !== field.id);
+                        // Must have at least one field
+                        return next.length === 0 ? prev : next;
+                      });
+                    }}
+                    className="h-4 w-4 rounded border-input"
+                  />
+                  <div className="flex-1">
+                    <span className="text-sm font-medium">{field.label}</span>
+                    <p className="text-xs text-muted-foreground">{field.description}</p>
+                  </div>
+                </label>
+              ))}
+            </div>
+          )}
+
+          {/* Explainer */}
           <div className="rounded-lg bg-muted/50 p-3">
             <p className="text-xs text-muted-foreground">
-              <span className="font-medium">How it works:</span> When a caller asks {'"'}What time is my appointment?{'"'} or {'"'}Can I reschedule?{'"'},
-              the AI will ask for {verificationFields.map((f) => {
-                const opt = VERIFICATION_FIELD_OPTIONS.find((o) => o.id === f);
-                return opt?.shortLabel || f;
-              }).join(" + ")} before showing any appointment details. This prevents unauthorized access to booking information.
+              <span className="font-medium">How it works:</span>{" "}
+              {verificationMethod === "code_and_verify" && (
+                <>AI asks for confirmation code + {verificationFields.map((f) => VERIFICATION_FIELD_OPTIONS.find((o) => o.id === f)?.shortLabel || f).join(" + ")} before sharing appointment details.</>
+              )}
+              {verificationMethod === "code_only" && (
+                <>AI asks for the 6-digit confirmation code only. No additional questions needed.</>
+              )}
+              {verificationMethod === "details_only" && (
+                <>AI asks for {verificationFields.map((f) => VERIFICATION_FIELD_OPTIONS.find((o) => o.id === f)?.shortLabel || f).join(" + ")} to verify identity. No confirmation codes are used.</>
+              )}
             </p>
           </div>
         </div>
