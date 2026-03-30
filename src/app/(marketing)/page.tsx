@@ -19,7 +19,6 @@ import {
   ArrowRight,
   Check,
   PhoneForwarded,
-  Globe,
   Lock,
   Server,
   Play,

@@ -2070,7 +2070,9 @@ testWss.on("connection", (ws, req) => {
     if (session) {
       // Close Gemini session if active
       if (session.geminiSession) {
-        try { session.geminiSession.close(); } catch {}
+        try { session.geminiSession.close(); } catch (err) {
+          console.warn("[TestGeminiLive] Error closing Gemini session during cleanup:", err.message);
+        }
         session.geminiSession = null;
       }
       session.destroy();

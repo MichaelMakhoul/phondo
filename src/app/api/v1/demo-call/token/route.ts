@@ -42,6 +42,7 @@ const DAILY_PER_IP_CAP = 20;
 const dailyIpMap = new Map<string, { count: number; resetAt: number }>();
 
 function checkDailyCap(ip: string): boolean {
+  pruneStaleEntries();
   const now = Date.now();
   const entry = dailyIpMap.get(ip);
   if (!entry || now > entry.resetAt) {
@@ -55,13 +56,19 @@ function checkDailyCap(ip: string): boolean {
   return true;
 }
 
-// Cleanup stale daily entries every 10 minutes
-setInterval(() => {
+// NOTE: In-memory counters (global cap + daily per-IP) reset on cold start and
+// are per-instance. They provide best-effort protection on warm instances but are
+// NOT reliable as the sole defense in serverless. Layer 2 (Upstash) is the
+// authoritative distributed rate limit.
+
+// Lazy cleanup: prune stale daily entries when map grows large (avoids setInterval in serverless)
+function pruneStaleEntries() {
+  if (dailyIpMap.size < 100) return;
   const now = Date.now();
   for (const [ip, entry] of dailyIpMap.entries()) {
     if (now > entry.resetAt) dailyIpMap.delete(ip);
   }
-}, 600_000).unref?.();
+}
 
 // In-memory hourly fallback (when Upstash is unavailable)
 const localRateLimitMap = new Map<string, { count: number; resetAt: number }>();
@@ -124,16 +131,10 @@ export async function POST(request: Request) {
 
     const ip = getClientIp(request);
 
-    // Layer 2: Global hourly cap (catches bot swarms)
-    if (!checkGlobalCap()) {
-      console.warn(`[DemoAbuse] Global hourly cap reached (${GLOBAL_HOURLY_CAP} calls/hr)`);
-      return NextResponse.json(
-        { error: "Demo is experiencing high demand. Please try again in a few minutes." },
-        { status: 429 }
-      );
-    }
+    // Check per-IP limits first (cheap) before consuming the shared global counter.
+    // This prevents a single abusive IP from exhausting the global cap for everyone.
 
-    // Layer 4: Daily per-IP cap (catches slow persistent abuse)
+    // Layer 1: Daily per-IP cap (catches slow persistent abuse)
     if (!checkDailyCap(ip)) {
       console.warn(`[DemoAbuse] Daily per-IP cap reached for ${ip}`);
       return NextResponse.json(
@@ -142,10 +143,19 @@ export async function POST(request: Request) {
       );
     }
 
-    // Layer 1: Hourly per-IP rate limit (Upstash or in-memory)
+    // Layer 2: Hourly per-IP rate limit (Upstash or in-memory)
     if (!(await checkHourlyRateLimit(ip))) {
       return NextResponse.json(
         { error: `${DEMO_RATE_LIMIT_ERROR}. Please try again later.` },
+        { status: 429 }
+      );
+    }
+
+    // Layer 3: Global hourly cap — only increment after IP passed its own checks
+    if (!checkGlobalCap()) {
+      console.warn(`[DemoAbuse] Global hourly cap reached (${GLOBAL_HOURLY_CAP} calls/hr)`);
+      return NextResponse.json(
+        { error: "Demo is experiencing high demand. Please try again in a few minutes." },
         { status: 429 }
       );
     }
