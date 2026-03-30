@@ -23,7 +23,8 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { useToast } from "@/components/ui/use-toast";
-import { Loader2, Building, Clock, Globe, Calendar, Shield } from "lucide-react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Loader2, Building, Clock, Globe, Calendar, Shield, AlertTriangle } from "lucide-react";
 import {
   SUPPORTED_COUNTRIES,
   getCountryConfig,
@@ -586,6 +587,22 @@ export function BusinessSettingsForm({
               </div>
             </div>
           </RadioGroup>
+
+          {/* Warning when "never" is selected in a jurisdiction that requires disclosure */}
+          {recordingConsentMode === "never" && (
+            country === "AU" || (country === "US" && businessState && TWO_PARTY_CONSENT_STATES.has(businessState))
+          ) && (
+            <Alert variant="destructive" className="border-amber-500/50 bg-amber-50 text-amber-900 dark:border-amber-500/30 dark:bg-amber-950/50 dark:text-amber-200 [&>svg]:text-amber-600">
+              <AlertTriangle className="h-4 w-4" />
+              <AlertDescription className="text-sm">
+                <span className="font-semibold">Legal risk: </span>
+                {country === "AU"
+                  ? "Australia requires all-party consent for call recording. Disabling the disclosure may violate the Telecommunications (Interception and Access) Act 1979."
+                  : `${US_STATES.find((s) => s.code === businessState)?.name} is a two-party consent state. Disabling the disclosure may violate state wiretapping laws.`}
+                {" "}Only disable this if you do not record calls or handle consent through a separate system before the AI answers.
+              </AlertDescription>
+            </Alert>
+          )}
         </div>
 
         <Separator />
