@@ -155,13 +155,20 @@ function createGeminiSession(config, callbacks) {
       }
 
       // Flush buffered audio after the text trigger
+      let flushErrors = 0;
       for (const buffered of preSetupBuffer) {
         try {
           const geminiAudio = twilioToGemini(buffered);
           if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ realtimeInput: { audio: { data: geminiAudio, mimeType: "audio/pcm;rate=16000" } } }));
           }
-        } catch {}
+        } catch (err) {
+          flushErrors++;
+          if (flushErrors <= 2) console.warn("[GeminiLive] Audio flush error:", err.message);
+        }
+      }
+      if (flushErrors > 0) {
+        console.warn(`[GeminiLive] ${flushErrors}/${preSetupBuffer.length} buffered chunks failed to flush`);
       }
       preSetupBuffer.length = 0;
       return;

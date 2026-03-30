@@ -37,10 +37,9 @@ interface OrgSchedule {
 // Fallback slot duration when no org-level default is configured
 const DEFAULT_SLOT_DURATION_MINUTES = 30;
 
-/** Generate a 6-digit confirmation code (digits only — easy to say and hear over the phone) */
+/** Generate a 6-digit confirmation code (crypto-secure, digits only) */
 function generateConfirmationCode(): string {
-  const code = Math.floor(100000 + Math.random() * 900000).toString();
-  return code;
+  return crypto.randomInt(100000, 999999).toString();
 }
 
 /**
@@ -62,7 +61,7 @@ async function getBlockedTimes(
 
   if (error) {
     console.error("Failed to fetch blocked times:", { organizationId, error });
-    return [];
+    throw new Error(`Blocked times query failed: ${error.message}`);
   }
   return data || [];
 }
@@ -1018,7 +1017,9 @@ export async function handleCancelAppointment(
   organizationId: string,
   args: { phone?: string; reason?: string; confirmation_code?: string; date?: string }
 ): Promise<ToolResult> {
-  const { phone, reason, confirmation_code, date } = args;
+  const { phone, confirmation_code } = args;
+  const reason = args.reason ? sanitizeString(args.reason, 500) : undefined;
+  const date = args.date && /^\d{4}-\d{2}-\d{2}$/.test(args.date) ? args.date : undefined;
 
   if (!phone && !confirmation_code) {
     return {
