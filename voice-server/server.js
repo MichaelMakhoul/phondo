@@ -1230,15 +1230,13 @@ wss.on("connection", (twilioWs) => {
             // Build system prompt — Gemini speaks the greeting itself
             let geminiSystemPrompt = session.messages[0]?.content || "You are a helpful receptionist.";
 
-            // Remove contradictory language rules for multilingual mode
-            const isMultilingual = context.assistant.settings?.multilingualEnabled ?? false;
-            if (isMultilingual) {
-              geminiSystemPrompt = geminiSystemPrompt
-                .replace(/ENGLISH ONLY:.*?Do NOT respond in their language\./gs, "LANGUAGE: You are multilingual. Respond in the caller's language naturally.")
-                .replace(/You MUST ONLY respond in English\..*?Do NOT use any non-English words\./gs, "Respond in the caller's language naturally.")
-                .replace(/You must respond in English\..*?Do NOT respond in their language\./gs, "Respond in the caller's language naturally.")
-                .replace(/I can only assist in English/g, "I can assist in multiple languages");
-            }
+            // Gemini Live is natively multilingual — always remove English-only restrictions.
+            geminiSystemPrompt = geminiSystemPrompt
+              .replace(/ENGLISH ONLY:.*?Do NOT respond in their language\./gs, "LANGUAGE: You are multilingual. Respond in the caller's language naturally.")
+              .replace(/You MUST ONLY respond in English\..*?Do NOT use any non-English words\./gs, "Respond in the caller's language naturally.")
+              .replace(/You must respond in English\..*?Do NOT respond in their language\./gs, "Respond in the caller's language naturally.")
+              .replace(/I can only assist in English/g, "I can assist in multiple languages")
+              .replace(/I'm sorry, I can only assist in English[^"']*/g, "I can assist in multiple languages");
 
             geminiSystemPrompt += `\n\nIMPORTANT — YOUR FIRST MESSAGE: When the call connects, you will receive a short text message. Immediately respond by speaking the following greeting (word for word, naturally and warmly): "${firstMessage}" — Then wait for the caller to respond. Do NOT add anything extra. Do NOT invent a receptionist name — you are an AI assistant.`;
 
@@ -2157,12 +2155,9 @@ testWss.on("connection", (ws, req) => {
         // ── Gemini Live pipeline for test/demo calls ──────────────
         console.log("[TestGeminiLive] Initializing Gemini 3.1 Flash Live for test call");
 
-        // Build tool definitions (same as production)
-        const allTools = [
-          ...(effectiveCalendarEnabled ? calendarToolDefinitions : []),
-          ...(effectiveCalendarEnabled ? [listServiceTypesToolDefinition] : []),
-          callbackToolDefinition,
-        ];
+        // Build tool definitions using the same function as production
+        const llmOptions = buildLLMOptions(session);
+        const allTools = llmOptions.tools || [];
 
         // Build Gemini-specific system prompt with greeting instruction
         const greeting = getGreeting(context.assistant, context.organization.name, {
@@ -2172,15 +2167,14 @@ testWss.on("connection", (ws, req) => {
 
         let geminiSystemPrompt = systemPrompt;
 
-        // Remove contradictory language rules for multilingual mode
-        const isMultilingual = context.assistant.settings?.multilingualEnabled ?? false;
-        if (isMultilingual) {
-          geminiSystemPrompt = geminiSystemPrompt
-            .replace(/ENGLISH ONLY:.*?Do NOT respond in their language\./gs, "LANGUAGE: You are multilingual. Respond in the caller's language naturally.")
-            .replace(/You MUST ONLY respond in English\..*?Do NOT use any non-English words\./gs, "Respond in the caller's language naturally.")
-            .replace(/You must respond in English\..*?Do NOT respond in their language\./gs, "Respond in the caller's language naturally.")
-            .replace(/I can only assist in English/g, "I can assist in multiple languages");
-        }
+        // Gemini Live is natively multilingual — always remove English-only restrictions.
+        // For demo/test calls, we always enable multilingual since we promote 90+ language support.
+        geminiSystemPrompt = geminiSystemPrompt
+          .replace(/ENGLISH ONLY:.*?Do NOT respond in their language\./gs, "LANGUAGE: You are multilingual. Respond in the caller's language naturally.")
+          .replace(/You MUST ONLY respond in English\..*?Do NOT use any non-English words\./gs, "Respond in the caller's language naturally.")
+          .replace(/You must respond in English\..*?Do NOT respond in their language\./gs, "Respond in the caller's language naturally.")
+          .replace(/I can only assist in English/g, "I can assist in multiple languages")
+          .replace(/I'm sorry, I can only assist in English[^"']*/g, "I can assist in multiple languages");
 
         geminiSystemPrompt += `\n\nIMPORTANT — YOUR FIRST MESSAGE: When the call connects, you will receive a short text message. Immediately respond by speaking the following greeting (word for word, naturally and warmly): "${greeting}" — Then wait for the caller to respond. Do NOT add anything extra. Do NOT invent a receptionist name — you are an AI assistant.`;
 
