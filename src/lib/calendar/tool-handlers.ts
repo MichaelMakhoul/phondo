@@ -44,6 +44,11 @@ function generateConfirmationCode(): string {
   return code;
 }
 
+/** Escape LIKE metacharacters to prevent wildcard injection in ilike queries */
+function escapeLike(s: string): string {
+  return s.replace(/[%_\\]/g, "\\$&");
+}
+
 // UUID format validator for service_type_id inputs
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -903,14 +908,18 @@ export async function handleCancelAppointment(
   // Try confirmation code first (exact match)
   if (confirmation_code) {
     const code = confirmation_code.trim();
-    const { data: codeMatch } = await (supabase as any)
+    const { data: codeMatch, error: codeErr } = await (supabase as any)
       .from("appointments")
-      .select("*")
+      .select("id, start_time, external_id, provider, metadata, confirmation_code, status")
       .eq("organization_id", organizationId)
       .eq("confirmation_code", code)
       .in("status", ["confirmed", "pending"])
       .single();
 
+    if (codeErr && codeErr.code !== "PGRST116") {
+      console.error("Cancel: confirmation code lookup error:", { organizationId, code, error: codeErr });
+      return { success: false, message: "I'm having trouble looking up that code right now. Would you like me to have someone call you back?" };
+    }
     if (codeMatch) {
       return cancelSingleAppointment(supabase, organizationId, codeMatch, reason);
     }
@@ -928,11 +937,11 @@ export async function handleCancelAppointment(
 
   let query = (supabase as any)
     .from("appointments")
-    .select("*")
+    .select("id, start_time, external_id, provider, metadata, confirmation_code, status")
     .eq("organization_id", organizationId)
     .in("attendee_phone", variants)
     .in("status", ["confirmed", "pending"])
-    .gte("start_time", new Date().toISOString()) // Only future appointments
+    .gte("start_time", new Date().toISOString())
     .order("start_time", { ascending: true });
 
   // If a date is specified, filter to that date
@@ -1514,7 +1523,7 @@ export async function handleLookupAppointment(
     const code = args.confirmation_code.trim();
     const { data: codeMatch, error: codeError } = await (supabase as any)
       .from("appointments")
-      .select("id, attendee_name, attendee_phone, start_time, end_time, duration_minutes, status, service_type_id, practitioner_id, confirmation_code")
+      .select("id, attendee_name, attendee_phone, attendee_email, start_time, end_time, duration_minutes, status, service_type_id, practitioner_id, confirmation_code")
       .eq("organization_id", organizationId)
       .eq("confirmation_code", code)
       .in("status", ["confirmed", "pending"])
@@ -1541,11 +1550,21 @@ export async function handleLookupAppointment(
           if (providedDigits !== storedDigits) {
             verifyFails.push("phone number");
           }
+        } else if (field === "email" && args.email?.trim()) {
+          const providedEmail = args.email.trim().toLowerCase();
+          const storedEmail = (codeMatch.attendee_email || "").toLowerCase();
+          if (storedEmail && providedEmail !== storedEmail) {
+            verifyFails.push("email");
+          }
         } else if (field === "name" && !args.name?.trim()) {
-          // Field required but not provided — ask for it
           return {
             success: false,
             message: "I found an appointment with that code. For security, could you also confirm the name on the booking?",
+          };
+        } else if (field === "email" && !args.email?.trim()) {
+          return {
+            success: false,
+            message: "I found an appointment with that code. For security, could you also confirm the email address on the booking?",
           };
         } else if (field === "phone" && !args.phone?.trim()) {
           return {
@@ -1609,7 +1628,7 @@ export async function handleLookupAppointment(
 
   // Apply verification filters
   if (verificationFields.includes("name") && args.name) {
-    query = query.ilike("attendee_name", `%${args.name.trim()}%`);
+    query = query.ilike("attendee_name", `%${escapeLike(args.name.trim())}%`);
   }
   if (verificationFields.includes("phone") && args.phone) {
     const cleanPhone = args.phone.replace(/\D/g, "");
@@ -1618,7 +1637,7 @@ export async function handleLookupAppointment(
     query = query.ilike("attendee_phone", `%${phoneSuffix}%`);
   }
   if (verificationFields.includes("email") && args.email) {
-    query = query.ilike("attendee_email", `%${args.email.trim()}%`);
+    query = query.ilike("attendee_email", `%${escapeLike(args.email.trim())}%`);
   }
 
   const { data: appointments, error: queryError } = await query;
