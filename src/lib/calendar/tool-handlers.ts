@@ -388,7 +388,19 @@ async function getBuiltInAvailability(
   const hours = getHoursForDate(resolvedSchedule, date);
   if (!hours) return []; // Closed
 
-  const slots = generateSlots(date, hours.open, hours.close, durationMinutes);
+  let slots = generateSlots(date, hours.open, hours.close, durationMinutes);
+
+  // Filter out past time slots when checking today's availability
+  const orgTz = resolvedSchedule.timezone;
+  const nowInTz = new Date(new Date().toLocaleString("en-US", { timeZone: orgTz }));
+  const todayStr = `${nowInTz.getFullYear()}-${String(nowInTz.getMonth() + 1).padStart(2, "0")}-${String(nowInTz.getDate()).padStart(2, "0")}`;
+  if (date === todayStr) {
+    const nowMinutes = nowInTz.getHours() * 60 + nowInTz.getMinutes();
+    slots = slots.filter((slot) => {
+      const [h, m] = slot.split("T")[1].split(":").map(Number);
+      return h * 60 + m > nowMinutes;
+    });
+  }
 
   if (slots.length === 0) return [];
 
@@ -1090,6 +1102,14 @@ async function bookViaCal(
     const timezone = calSchedule?.timezone || "America/New_York";
     const tzAwareDatetime = ensureTimezoneOffset(datetime, timezone);
 
+    // Reject bookings in the past
+    if (new Date(tzAwareDatetime).getTime() < Date.now()) {
+      return {
+        success: false,
+        message: "That time has already passed. Would you like to book a later time today or a different day?",
+      };
+    }
+
     const bookingEmail =
       email || `booking-${crypto.randomUUID()}@noreply.phondo.ai`;
 
@@ -1275,6 +1295,15 @@ async function bookInternal(
       success: false,
       message:
         "I didn't understand that date and time. Could you say it again?",
+    };
+  }
+
+  // Reject bookings in the past
+  if (startDate.getTime() < Date.now()) {
+    return {
+      success: false,
+      message:
+        "That time has already passed. Would you like to book a later time today or a different day?",
     };
   }
 
