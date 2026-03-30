@@ -118,7 +118,7 @@ const calendarToolDefinitions = [
     function: {
       name: "book_appointment",
       description:
-        "Book an appointment at a specific date and time. Requires the caller's name and phone number. If the business has service types, include the service_type_id.",
+        "Book an appointment. IMPORTANT: You MUST explicitly ask the caller for their full name AND receive their answer BEFORE calling this tool. Do NOT guess, assume, or fabricate a name. If you haven't asked for and received the name yet, ask first, then call this tool.",
       parameters: {
         type: "object",
         properties: {
@@ -129,7 +129,7 @@ const calendarToolDefinitions = [
           },
           name: {
             type: "string",
-            description: "The caller's full name",
+            description: "The caller's full name — MUST be explicitly stated by the caller during this call. Never guess or fabricate.",
           },
           phone: {
             type: "string",
