@@ -6,6 +6,7 @@ import { CalendarSettings } from "./calendar-settings";
 import { ServiceTypesCard } from "./service-types-card";
 import { PractitionersCard } from "./practitioners-card";
 import { CalendarIntegrationCollapsible } from "./calendar-integration-collapsible";
+import { BlockedTimesCard } from "./blocked-times-card";
 
 export const metadata: Metadata = {
   title: "Scheduling | Phondo",
@@ -102,6 +103,9 @@ export default async function CalendarSettingsPage() {
         serviceTypes={serviceTypesResult.data || []}
         hasPractitionersAccess={hasPractitionersAccess}
       />
+
+      {/* Blocked Times */}
+      <BlockedTimesCard />
 
       {/* Secondary: Calendar Integration (collapsed by default) */}
       <CalendarIntegrationCollapsible
