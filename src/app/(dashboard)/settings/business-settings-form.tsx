@@ -53,7 +53,8 @@ const VERIFICATION_FIELD_OPTIONS = [
   { id: "name", label: "Full Name", shortLabel: "name", description: "Caller must state their name as it was booked" },
   { id: "phone", label: "Phone Number", shortLabel: "phone", description: "Caller must confirm the phone number used when booking" },
   { id: "email", label: "Email Address", shortLabel: "email", description: "Caller must provide the email used when booking" },
-  { id: "date_of_birth", label: "Date of Birth", shortLabel: "DOB", description: "Recommended for medical and legal practices" },
+  // DOB: disabled until appointments store date_of_birth (SCRUM-147 follow-up)
+  // { id: "date_of_birth", label: "Date of Birth", shortLabel: "DOB", description: "Recommended for medical and legal practices" },
 ];
 
 const APPOINTMENT_DURATIONS = [
