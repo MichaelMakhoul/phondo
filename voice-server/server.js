@@ -1224,7 +1224,8 @@ wss.on("connection", (twilioWs) => {
               firstMessage = `${disclosureText} ${greeting}`;
               session.recordingDisclosurePlayed = true;
             }
-            session.addMessage("assistant", firstMessage);
+            // Don't add greeting to transcript manually — Gemini's outputTranscription
+            // captures it when it actually speaks. Adding it here causes duplicates.
 
             // Build system prompt — Gemini speaks the greeting itself
             let geminiSystemPrompt = session.messages[0]?.content || "You are a helpful receptionist.";
@@ -1243,9 +1244,9 @@ wss.on("connection", (twilioWs) => {
 
             // CRITICAL — tool calling, filler words, and name enforcement
             geminiSystemPrompt += `\n\nCRITICAL RULES FOR THIS CONVERSATION:`;
-            geminiSystemPrompt += `\n- NEVER FABRICATE ACTIONS: You have tools (book_appointment, schedule_callback, check_availability, lookup_appointment, cancel_appointment, etc). You MUST actually call the tool before telling the caller the action was done. NEVER say "I've booked your appointment" or "I've arranged a callback" or "I've checked availability" unless the tool returned a success response. NEVER pretend you did something without calling the tool.`;
+            geminiSystemPrompt += `\n- ABSOLUTELY NEVER FABRICATE ACTIONS: This is the most important rule. You have tools (book_appointment, schedule_callback, check_availability, lookup_appointment, cancel_appointment, etc). You MUST call the tool AND receive a SUCCESS response BEFORE telling the caller the action was done. NEVER say "I've booked", "I've scheduled", "I've checked", "I've cancelled" UNLESS the tool already returned success. If you need to book, say "Let me book that for you" then call the tool, then ONLY after success say "Done, your appointment is booked." NEVER confirm an action before the tool responds.`;
             geminiSystemPrompt += `\n- ALWAYS COLLECT REAL NAME: Before calling book_appointment or schedule_callback, you MUST ask for and receive the caller's actual name. NEVER use placeholder names like "Caller Name", "Unknown", or "Guest".`;
-            geminiSystemPrompt += `\n- FILLER WORDS DURING TOOL CALLS: When you are about to call a tool (checking availability, booking, looking up an appointment, etc.), say a brief filler BEFORE the tool call — for example: "One moment, let me check that for you", "Let me look that up", "Just a sec while I check", "Bear with me while I book that". This keeps the caller engaged during the brief silence while the tool executes. Keep fillers short (under 10 words).`;
+            geminiSystemPrompt += `\n- ALWAYS SAY FILLER BEFORE EVERY TOOL CALL: Before EVERY tool call, you MUST say a short filler phrase like "One moment", "Let me check", "Just a sec", "Bear with me". NEVER go silent during a tool call. The caller should always hear something before the pause.`;
             geminiSystemPrompt += `\n- RESCHEDULING: When a caller asks to reschedule, you MUST: (1) look up their existing appointment with lookup_appointment, (2) cancel the old appointment with cancel_appointment, (3) then book the new one with book_appointment. Do NOT book a new appointment without cancelling the old one first — this creates duplicates.`;
 
             // Transcript buffering — accumulate fragments, flush on turn complete

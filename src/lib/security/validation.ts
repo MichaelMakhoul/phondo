@@ -199,11 +199,15 @@ export function escapeHtml(str: string): string {
  */
 export function isValidPhoneNumber(phone: string): boolean {
   if (!phone) return false;
-  // Remove all non-digits
-  const digits = phone.replace(/\D/g, "");
-  // US phone: 10 digits, or 11 if starts with 1
-  // Also allow international: 7-15 digits
-  return digits.length >= 7 && digits.length <= 15;
+  // Remove all non-digits except leading +
+  const cleaned = phone.replace(/[^\d+]/g, "");
+  const digits = cleaned.replace(/\D/g, "");
+  // Valid phone numbers: 8-13 digits (covers AU mobile 10, US 10-11, intl up to 13)
+  // E.164 max is 15 but practical numbers rarely exceed 13
+  if (digits.length < 8 || digits.length > 13) return false;
+  // Must not be all the same digit (e.g., 0000000000)
+  if (/^(\d)\1+$/.test(digits)) return false;
+  return true;
 }
 
 /**
