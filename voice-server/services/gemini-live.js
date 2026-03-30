@@ -139,23 +139,14 @@ function createGeminiSession(config, callbacks) {
       setupComplete = true;
       console.log(`[GeminiLive] Session ready in ${Date.now() - sessionStartTime}ms (${preSetupBuffer.length} buffered chunks)`);
 
-      // Flush any audio received before setup completed
-      for (const buffered of preSetupBuffer) {
-        try {
-          const geminiAudio = twilioToGemini(buffered);
-          ws.send(JSON.stringify({ realtimeInput: { audio: { data: geminiAudio, mimeType: "audio/pcm;rate=16000" } } }));
-        } catch {}
-      }
-      preSetupBuffer.length = 0;
-
-      // Trigger Gemini to speak the greeting immediately.
-      // Send a hidden clientContent text turn to "poke" the model.
-      // The system instructions tell Gemini what to say on its first turn.
+      // IMPORTANT: Send clientContent trigger FIRST, BEFORE any audio.
+      // Mixing realtimeInput (audio) with clientContent (text) causes
+      // "invalid argument" crashes. Send text trigger alone, then flush audio.
       // Ref: https://ai.google.dev/gemini-api/docs/live#first-message
       try {
         ws.send(JSON.stringify({
           clientContent: {
-            turns: [{ role: "user", parts: [{ text: "." }] }],
+            turns: [{ role: "user", parts: [{ text: "Call connected." }] }],
             turnComplete: true,
           },
         }));
@@ -163,6 +154,21 @@ function createGeminiSession(config, callbacks) {
       } catch (err) {
         console.error("[GeminiLive] clientContent trigger failed:", err.message);
       }
+
+      // Flush buffered audio AFTER the clientContent trigger.
+      // Small delay to ensure clientContent is processed first.
+      setTimeout(() => {
+        for (const buffered of preSetupBuffer) {
+          try {
+            const geminiAudio = twilioToGemini(buffered);
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ realtimeInput: { audio: { data: geminiAudio, mimeType: "audio/pcm;rate=16000" } } }));
+            }
+          } catch {}
+        }
+        preSetupBuffer.length = 0;
+      }, 100);
+
       return;
     }
 
