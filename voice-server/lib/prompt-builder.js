@@ -25,9 +25,8 @@ function buildVerificationInstructions(organization) {
     fields = raw;
   }
 
-  const fieldLabels = fields.map((f) =>
-    f === "name" ? "full name" : f === "phone" ? "phone number" : f === "email" ? "email address" : f === "date_of_birth" ? "date of birth" : f
-  );
+  const FIELD_LABELS = { name: "full name", phone: "phone number", email: "email address", date_of_birth: "date of birth" };
+  const fieldLabels = fields.map((f) => FIELD_LABELS[f] || f);
   const fieldList = fieldLabels.join(" and ");
 
   const lines = ["APPOINTMENT PRIVACY & LOOKUP:"];

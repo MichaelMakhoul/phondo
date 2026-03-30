@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { z } from "zod";
+import { isValidUUID } from "@/lib/security/validation";
 
 interface Membership {
   organization_id: string;
@@ -44,7 +45,7 @@ export async function GET() {
 
     if (error) throw error;
     return NextResponse.json(data || []);
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error("GET /blocked-times error:", err);
     return NextResponse.json({ error: "Failed to fetch blocked times" }, { status: 500 });
   }
@@ -107,7 +108,7 @@ export async function POST(request: NextRequest) {
       conflicts: conflicts || [],
       conflictCount: (conflicts || []).length,
     }, { status: 201 });
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error("POST /blocked-times error:", err);
     return NextResponse.json({ error: "Failed to create blocked time" }, { status: 500 });
   }
@@ -125,6 +126,7 @@ export async function DELETE(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const id = searchParams.get("id");
     if (!id) return NextResponse.json({ error: "Missing id" }, { status: 400 });
+    if (!isValidUUID(id)) return NextResponse.json({ error: "Invalid id format" }, { status: 400 });
 
     const { error } = await (supabase as any)
       .from("blocked_times")
@@ -134,7 +136,7 @@ export async function DELETE(request: NextRequest) {
 
     if (error) throw error;
     return NextResponse.json({ success: true });
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error("DELETE /blocked-times error:", err);
     return NextResponse.json({ error: "Failed to delete blocked time" }, { status: 500 });
   }

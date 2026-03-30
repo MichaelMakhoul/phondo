@@ -87,8 +87,7 @@ function escapeLike(s: string): string {
   return s.replace(/[%_\\]/g, "\\$&");
 }
 
-// UUID format validator for service_type_id inputs
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+import { isValidUUID } from "@/lib/security/validation";
 
 // ─── Shared helpers ─────────────────────────────────────────────────────────
 
@@ -596,12 +595,6 @@ function formatBuiltInAvailabilityForVoice(
     return { h, m };
   });
 
-  const formatTime = (h: number, m: number) => {
-    const hour12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
-    const ampm = h < 12 ? "AM" : "PM";
-    return m === 0 ? `${hour12} ${ampm}` : `${hour12}:${String(m).padStart(2, "0")} ${ampm}`;
-  };
-
   // Group into morning (before 12) and afternoon (12+)
   const morning = parsedSlots.filter((s) => s.h < 12);
   const afternoon = parsedSlots.filter((s) => s.h >= 12);
@@ -847,7 +840,7 @@ export async function handleBookAppointment(
   const sanitizedNotes = notes ? sanitizeString(notes, 500) : undefined;
 
   // ── Validate service_type_id format before DB query ────────────────────
-  if (service_type_id && !UUID_RE.test(service_type_id)) {
+  if (service_type_id && !isValidUUID(service_type_id)) {
     return {
       success: false,
       message: "That appointment type doesn't seem right. Could you tell me which type of appointment you'd like?",
@@ -921,7 +914,7 @@ export async function handleCheckAvailability(
   const { date, service_type_id } = args;
 
   // ── Validate service_type_id format before DB query ────────────────────
-  if (service_type_id && !UUID_RE.test(service_type_id)) {
+  if (service_type_id && !isValidUUID(service_type_id)) {
     return {
       success: false,
       message: "That appointment type doesn't seem right. Could you tell me which type of appointment you'd like?",
@@ -1605,7 +1598,7 @@ async function formatAppointmentResult(
   appointments: any[],
   timezone: string,
   supabase: any
-): Promise<{ success: boolean; message: string }> {
+): Promise<ToolResult> {
   const lines: string[] = [];
   for (const apt of appointments) {
     const date = new Date(apt.start_time);
@@ -1649,7 +1642,7 @@ export async function handleLookupAppointment(
     email?: string;
     date_of_birth?: string;
   }
-): Promise<{ success: boolean; message: string }> {
+): Promise<ToolResult> {
   const supabase = createAdminClient();
 
   // 1. Get the org's verification requirements

@@ -199,9 +199,7 @@ export function escapeHtml(str: string): string {
  */
 export function isValidPhoneNumber(phone: string): boolean {
   if (!phone) return false;
-  // Remove all non-digits except leading +
-  const cleaned = phone.replace(/[^\d+]/g, "");
-  const digits = cleaned.replace(/\D/g, "");
+  const digits = phone.replace(/\D/g, "");
   // Valid phone numbers: 8-15 digits (E.164 standard max is 15)
   if (digits.length < 8 || digits.length > 15) return false;
   // Must not be all the same digit (e.g., 0000000000)
