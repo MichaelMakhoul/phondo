@@ -15,11 +15,14 @@ const createSchema = z.object({
 });
 
 async function getOrgId(supabase: any, userId: string): Promise<string | null> {
-  const { data } = await (supabase as any)
+  const { data, error } = await (supabase as any)
     .from("org_members")
     .select("organization_id")
     .eq("user_id", userId)
-    .single() as { data: Membership | null };
+    .single() as { data: Membership | null; error: any };
+  if (error && error.code !== "PGRST116") {
+    console.error("getOrgId DB error:", { userId, code: error.code, message: error.message });
+  }
   return data?.organization_id || null;
 }
 
@@ -69,14 +72,18 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "End time must be after start time" }, { status: 400 });
     }
 
-    // Check for conflicting appointments
-    const { data: conflicts } = await (supabase as any)
+    // Check for conflicting appointments (no codes — security sensitive)
+    const { data: conflicts, error: conflictErr } = await (supabase as any)
       .from("appointments")
-      .select("id, attendee_name, start_time, confirmation_code")
+      .select("id, attendee_name, start_time")
       .eq("organization_id", orgId)
       .in("status", ["confirmed", "pending"])
       .lt("start_time", endTime)
       .gt("end_time", startTime);
+
+    if (conflictErr) {
+      console.error("Failed to check conflicts for blocked time:", conflictErr);
+    }
 
     // Insert the block
     const { data: block, error } = await (supabase as any)
