@@ -1491,12 +1491,27 @@ export async function handleLookupAppointment(
     return { success: false, message: "I'm having trouble accessing the system right now. Would you like me to arrange a callback instead?" };
   }
 
-  const verificationFields: string[] = org.appointment_verification_fields || ["name", "phone"];
+  // Parse verification settings (structured object or legacy array)
+  const rawSettings = org.appointment_verification_fields;
+  let verificationMethod: string;
+  let verificationFields: string[];
+  if (rawSettings && typeof rawSettings === "object" && !Array.isArray(rawSettings) && rawSettings.method) {
+    verificationMethod = rawSettings.method; // "code_and_verify" | "code_only" | "details_only"
+    verificationFields = Array.isArray(rawSettings.fields) ? rawSettings.fields : ["name"];
+  } else if (Array.isArray(rawSettings)) {
+    // Legacy: plain array of fields → treat as code_and_verify
+    verificationMethod = "code_and_verify";
+    verificationFields = rawSettings;
+  } else {
+    verificationMethod = "code_and_verify";
+    verificationFields = ["name"];
+  }
   const timezone = org.timezone || "Australia/Sydney";
+  const usesCode = verificationMethod !== "details_only";
 
-  // 2a. FAST PATH: lookup by confirmation code (instant, 100% accurate)
-  if (args.confirmation_code?.trim()) {
-    const code = args.confirmation_code.trim().toUpperCase();
+  // 2a. CODE PATH: lookup by confirmation code
+  if (usesCode && args.confirmation_code?.trim()) {
+    const code = args.confirmation_code.trim();
     const { data: codeMatch, error: codeError } = await (supabase as any)
       .from("appointments")
       .select("id, attendee_name, attendee_phone, start_time, end_time, duration_minutes, status, service_type_id, practitioner_id, confirmation_code")
@@ -1506,21 +1521,67 @@ export async function handleLookupAppointment(
       .single();
 
     if (!codeError && codeMatch) {
+      // code_only: return immediately, no extra verification
+      if (verificationMethod === "code_only") {
+        return formatAppointmentResult([codeMatch], timezone, supabase);
+      }
+
+      // code_and_verify: code matched, now check verification fields
+      const verifyFails: string[] = [];
+      for (const field of verificationFields) {
+        if (field === "name" && args.name?.trim()) {
+          const providedName = args.name.trim().toLowerCase();
+          const storedName = (codeMatch.attendee_name || "").toLowerCase();
+          if (!storedName.includes(providedName) && !providedName.includes(storedName)) {
+            verifyFails.push("name");
+          }
+        } else if (field === "phone" && args.phone?.trim()) {
+          const providedDigits = args.phone.replace(/\D/g, "").slice(-9);
+          const storedDigits = (codeMatch.attendee_phone || "").replace(/\D/g, "").slice(-9);
+          if (providedDigits !== storedDigits) {
+            verifyFails.push("phone number");
+          }
+        } else if (field === "name" && !args.name?.trim()) {
+          // Field required but not provided — ask for it
+          return {
+            success: false,
+            message: "I found an appointment with that code. For security, could you also confirm the name on the booking?",
+          };
+        } else if (field === "phone" && !args.phone?.trim()) {
+          return {
+            success: false,
+            message: "I found an appointment with that code. For security, could you also confirm the phone number on the booking?",
+          };
+        } else if (field === "date_of_birth" && !args.date_of_birth?.trim()) {
+          return {
+            success: false,
+            message: "I found an appointment with that code. For security, could you also confirm your date of birth?",
+          };
+        }
+      }
+
+      if (verifyFails.length > 0) {
+        return {
+          success: false,
+          message: `The ${verifyFails.join(" and ")} you provided doesn't match what we have on file. Would you like to try again, or I can arrange a callback?`,
+        };
+      }
+
       return formatAppointmentResult([codeMatch], timezone, supabase);
     }
 
-    // Code not found — fall through to name+phone verification
+    // Code not found
     if (args.name || args.phone) {
-      // Continue with fallback verification below
+      // Fall through to field-based lookup
     } else {
       return {
         success: false,
-        message: "I couldn't find an appointment with that confirmation code. Could you double-check the code? It's a 6-digit number. If you don't have it, I can look up your appointment by name and phone number instead.",
+        message: "I couldn't find an appointment with that code. Could you double-check? It's a 6-digit number. If you don't have it, I can look up your appointment by name and phone number instead.",
       };
     }
   }
 
-  // 2b. FALLBACK: verify by required fields (name, phone, etc.)
+  // 2b. FIELD-BASED VERIFICATION (details_only mode, or code fallback)
   const missing: string[] = [];
   for (const field of verificationFields) {
     if (field === "name" && !args.name?.trim()) missing.push("full name");

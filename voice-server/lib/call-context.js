@@ -80,7 +80,7 @@ async function loadCallContext(calledNumber, prefetchedPhone) {
   // 3. Load organization
   const { data: org, error: orgError } = await supabase
     .from("organizations")
-    .select("id, name, industry, timezone, business_hours, default_appointment_duration, country, business_state, recording_consent_mode")
+    .select("id, name, industry, timezone, business_hours, default_appointment_duration, country, business_state, recording_consent_mode, appointment_verification_fields")
     .eq("id", phone.organization_id)
     .single();
 
@@ -263,7 +263,7 @@ async function loadTestCallContext(assistantId, organizationId) {
   // 2. Load organization
   const { data: org, error: orgError } = await supabase
     .from("organizations")
-    .select("id, name, industry, timezone, business_hours, default_appointment_duration, country, business_state, recording_consent_mode")
+    .select("id, name, industry, timezone, business_hours, default_appointment_duration, country, business_state, recording_consent_mode, appointment_verification_fields")
     .eq("id", organizationId)
     .single();
 

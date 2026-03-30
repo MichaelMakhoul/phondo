@@ -9,6 +9,69 @@
  * message-taking guidance is used instead.
  */
 
+/**
+ * Build verification instructions based on the org's appointment_verification_fields setting.
+ * Returns an array of prompt lines.
+ */
+function buildVerificationInstructions(organization) {
+  const raw = organization?.appointment_verification_fields;
+  let method = "code_and_verify";
+  let fields = ["name"];
+
+  if (raw && typeof raw === "object" && !Array.isArray(raw) && raw.method) {
+    method = raw.method;
+    fields = Array.isArray(raw.fields) ? raw.fields : ["name"];
+  } else if (Array.isArray(raw)) {
+    fields = raw;
+  }
+
+  const fieldLabels = fields.map((f) =>
+    f === "name" ? "full name" : f === "phone" ? "phone number" : f === "email" ? "email address" : f === "date_of_birth" ? "date of birth" : f
+  );
+  const fieldList = fieldLabels.join(" and ");
+
+  const lines = ["APPOINTMENT PRIVACY & LOOKUP:"];
+
+  if (method === "code_and_verify") {
+    lines.push(
+      "When a caller wants to check, confirm, reschedule, or cancel their appointment:",
+      `1. Ask if they have their 6-digit confirmation code. It was given when they booked and sent via text.`,
+      `2. If they have the code: also ask for their ${fieldList} for security verification, then call lookup_appointment with confirmation_code AND the verification details.`,
+      `3. If they DON'T have the code: ask for their ${fieldList}, then call lookup_appointment with those details.`,
+      "NEVER reveal appointment details until verification succeeds. If verification fails, offer a callback.",
+      "",
+      "CONFIRMATION CODES: After booking, the system provides a 6-digit code (e.g., 482916). Read each digit clearly. Also mention it was texted to them.",
+    );
+  } else if (method === "code_only") {
+    lines.push(
+      "When a caller wants to check, confirm, reschedule, or cancel their appointment:",
+      "1. Ask for their 6-digit confirmation code. It was given when they booked and sent via text.",
+      "2. Call lookup_appointment with the confirmation_code. No additional verification needed.",
+      "3. If they don't have the code: ask for their name and phone number as fallback.",
+      "",
+      "CONFIRMATION CODES: After booking, the system provides a 6-digit code (e.g., 482916). Read each digit clearly. Also mention it was texted to them.",
+    );
+  } else {
+    // details_only — no confirmation codes
+    lines.push(
+      "When a caller wants to check, confirm, reschedule, or cancel their appointment:",
+      `1. Ask for their ${fieldList} to verify their identity.`,
+      `2. Call lookup_appointment with the details provided.`,
+      "3. NEVER reveal appointment details until verification succeeds.",
+      "",
+      "Do NOT ask for or mention confirmation codes — this business does not use them.",
+    );
+  }
+
+  lines.push(
+    "",
+    "CANCELLING: When cancelling, pass the confirmation_code or phone + date to cancel_appointment. Always specify the date when multiple appointments exist.",
+    "NEVER guess or make up appointment details — only share what the tool returns. Never reveal other people's details."
+  );
+
+  return lines;
+}
+
 const toneDescriptions = {
   professional:
     "You speak in a polished, formal, and business-like manner. Use complete sentences and professional language.",
@@ -76,7 +139,7 @@ function sanitizeForPrompt(str) {
     .slice(0, 200);                   // cap length
 }
 
-function buildSchedulingSection(timezone, businessHours, defaultAppointmentDuration, calendarEnabled, serviceTypes, options = {}) {
+function buildSchedulingSection(timezone, businessHours, defaultAppointmentDuration, calendarEnabled, serviceTypes, options = {}, organization = null) {
   const lines = [];
   lines.push("TIMEZONE & SCHEDULING:");
 
@@ -182,16 +245,7 @@ function buildSchedulingSection(timezone, businessHours, defaultAppointmentDurat
         ? "If the caller insists on a specific time that falls between available slots, book them into the nearest available slot that covers their preferred time (e.g., if they want 9 AM and slots are 8:45 and 9:30, book 8:45 since it covers the 9 AM window). Briefly explain: 'I'll book you in at 8:45 — that appointment runs until 9:30, so you'll be covered at 9.' Always confirm before booking."
         : "You can ONLY book into slots returned by check_availability. Never book a time that wasn't in the available slots, even if the caller insists. If the caller insists on an exact time that doesn't match any slot, say: 'I can only book into the available time slots. If you need a specific time, I can take a message and have the office call you back to arrange it.' Then offer to take a message.",
       "",
-      "APPOINTMENT PRIVACY & LOOKUP:",
-      "When a caller wants to check, confirm, reschedule, or cancel their appointment:",
-      "1. Ask if they have their 6-digit confirmation code. It was given when they booked and sent via text.",
-      "2. If they have the code: call lookup_appointment with the confirmation_code. This is instant and accurate.",
-      "3. If they don't have the code: ask for their name and phone number, then call lookup_appointment.",
-      "NEVER guess or make up appointment details — only share what the tool returns. Never reveal other people's details.",
-      "",
-      "CONFIRMATION CODES: After booking, the system provides a 6-digit number code (e.g., 482916). Read each digit clearly: 'Your confirmation code is 4, 8, 2, 9, 1, 6.' Also mention it was texted to them.",
-      "",
-      "CANCELLING: When cancelling, pass the confirmation_code or phone + date to cancel_appointment. Always specify the date when multiple appointments exist."
+      ...buildVerificationInstructions(organization)
     );
   } else {
     lines.push(
@@ -507,7 +561,7 @@ function buildPromptFromConfig(config, context) {
   // 5. Timezone, business hours & scheduling
   // calendarEnabled is already adjusted by the caller (server.js resolveAfterHoursState)
   // when after-hours + disableScheduling apply
-  sections.push(buildSchedulingSection(context.timezone, context.businessHours, context.defaultAppointmentDuration, context.calendarEnabled, context.serviceTypes, { flexibleBooking: context.assistant?.settings?.flexibleBooking }));
+  sections.push(buildSchedulingSection(context.timezone, context.businessHours, context.defaultAppointmentDuration, context.calendarEnabled, context.serviceTypes, { flexibleBooking: context.assistant?.settings?.flexibleBooking }, context.organization));
 
   // 6. Industry guidelines
   const guidelines = getIndustryGuidelines(context.industry);
@@ -609,6 +663,7 @@ function buildSystemPrompt(assistant, organization, knowledgeBase, options) {
       afterHoursConfig,
       serviceTypes,
       assistantSettings: assistant.settings,
+      organization,
     };
     return buildPromptFromConfig(assistant.promptConfig, context);
   }
@@ -632,7 +687,7 @@ function buildSystemPrompt(assistant, organization, knowledgeBase, options) {
   }
 
   // Append scheduling section
-  systemPrompt += `\n\n${buildSchedulingSection(organization.timezone, organization.businessHours, organization.defaultAppointmentDuration, calendarEnabled, serviceTypes, { flexibleBooking: assistant?.settings?.flexibleBooking })}`;
+  systemPrompt += `\n\n${buildSchedulingSection(organization.timezone, organization.businessHours, organization.defaultAppointmentDuration, calendarEnabled, serviceTypes, { flexibleBooking: assistant?.settings?.flexibleBooking }, organization)}`;
 
   // Read multilingual settings early — used in both safety rules and language rules
   const multilingualEnabled = assistant?.settings?.multilingualEnabled ?? false;
