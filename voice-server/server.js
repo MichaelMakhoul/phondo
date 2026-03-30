@@ -1246,7 +1246,8 @@ wss.on("connection", (twilioWs) => {
             geminiSystemPrompt += `\n\nCRITICAL RULES FOR THIS CONVERSATION:`;
             geminiSystemPrompt += `\n- ABSOLUTELY NEVER FABRICATE ACTIONS: This is the most important rule. You have tools (book_appointment, schedule_callback, check_availability, lookup_appointment, cancel_appointment, etc). You MUST call the tool AND receive a SUCCESS response BEFORE telling the caller the action was done. NEVER say "I've booked", "I've scheduled", "I've checked", "I've cancelled" UNLESS the tool already returned success. If you need to book, say "Let me book that for you" then call the tool, then ONLY after success say "Done, your appointment is booked." NEVER confirm an action before the tool responds.`;
             // Build name verification instruction based on business config
-            const nameField = context.assistant.promptConfig?.fields?.find((f) => f.id === "full_name");
+            // Check verification method for name fields (first_name or legacy full_name)
+            const nameField = context.assistant.promptConfig?.fields?.find((f) => f.id === "first_name" || f.id === "full_name");
             const nameVerification = nameField?.verification || "repeat-confirm";
             let nameInstruction = "";
             if (nameVerification === "spell-out") {
@@ -1257,7 +1258,7 @@ wss.on("connection", (twilioWs) => {
               nameInstruction = "Repeat the name back and ask them to confirm it's correct.";
             }
 
-            geminiSystemPrompt += `\n- NAME COLLECTION IS MANDATORY — ZERO EXCEPTIONS: Before calling book_appointment, you MUST: (1) Ask "What is your full name?", (2) WAIT for the caller to state their name, (3) ${nameInstruction}, (4) ONLY THEN include that confirmed name in the tool call. Names MUST be recorded in English alphabet (Latin letters) — even if the conversation is in Arabic, Chinese, etc. If the caller gives a name in non-Latin script, ask: "Could you spell that for me using English letters?" Never guess or fabricate a name.`;
+            geminiSystemPrompt += `\n- NAME COLLECTION IS MANDATORY — ZERO EXCEPTIONS: Before calling book_appointment, you MUST: (1) Ask for FIRST NAME and LAST NAME separately — "What's your first name?" then "And your last name?", (2) ${nameInstruction}, (3) Pass first_name and last_name as SEPARATE parameters to book_appointment (not "name"). Names MUST be in English letters — if the conversation is in another language, ask: "Could you spell that using English letters?" If the caller only gives one name, ask for the other. Never guess or fabricate.`;
             geminiSystemPrompt += `\n- CONFIRM BOOKING DETAILS: After book_appointment succeeds, read back ALL details to the caller: name, date, time, practitioner, and confirmation code. Then ask "Is everything correct?" If the caller says something is wrong, fix it (cancel and rebook with the correct details). Do NOT end the booking conversation without confirmation.`;
             geminiSystemPrompt += `\n- ALWAYS SAY FILLER BEFORE EVERY TOOL CALL: Before EVERY tool call, you MUST say a short filler phrase like "One moment", "Let me check", "Just a sec", "Bear with me". NEVER go silent during a tool call.`;
             geminiSystemPrompt += `\n- RESCHEDULING: When a caller asks to reschedule, you MUST: (1) look up their existing appointment with lookup_appointment, (2) cancel the old appointment with cancel_appointment, (3) then book the new one with book_appointment. Do NOT book a new appointment without cancelling the old one first.`;

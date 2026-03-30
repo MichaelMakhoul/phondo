@@ -19,7 +19,7 @@ describe("prompt-builder integration", () => {
       expect(prompt).toContain("Springfield Medical Center");
       expect(prompt).toContain("friendly and warm"); // tone
       expect(prompt).toContain("Open Mon-Fri 8am-6pm"); // knowledge base
-      expect(prompt).toContain("Full Name"); // universal field
+      expect(prompt).toContain("First Name"); // universal field
       expect(prompt).toContain("Date of Birth"); // medical field
       expect(prompt).toContain("Medicare Card Number"); // medical field
       expect(prompt).toContain("SCHEDULING:"); // behavior

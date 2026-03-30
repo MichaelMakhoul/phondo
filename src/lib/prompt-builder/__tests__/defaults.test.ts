@@ -38,7 +38,7 @@ describe("defaults", () => {
       allIndustries.forEach((industry) => {
         const config = getDefaultConfig(industry);
         const ids = config.fields.map((f) => f.id);
-        expect(ids).toContain("full_name");
+        expect(ids).toContain("first_name");
         expect(ids).toContain("phone_number");
         expect(ids).toContain("email_address");
       });
@@ -185,7 +185,7 @@ describe("defaults", () => {
       const config = getDefaultConfig("spaceship_repair");
       const ids = config.fields.map((f) => f.id);
       // Should have universal fields
-      expect(ids).toContain("full_name");
+      expect(ids).toContain("first_name");
       // Should have 'other' industry fields
       expect(ids).toContain("reason_for_calling");
     });

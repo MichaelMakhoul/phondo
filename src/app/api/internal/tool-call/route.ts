@@ -100,7 +100,10 @@ export async function POST(request: Request) {
       case "book_appointment":
         result = await handleBookAppointment(organizationId, {
           datetime: parsedArgs.datetime,
+          // Support both old (name) and new (first_name + last_name) formats
           name: parsedArgs.name,
+          first_name: parsedArgs.first_name,
+          last_name: parsedArgs.last_name,
           phone: parsedArgs.phone,
           email: parsedArgs.email,
           notes: parsedArgs.notes,

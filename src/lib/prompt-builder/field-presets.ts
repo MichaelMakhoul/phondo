@@ -3,8 +3,16 @@ import type { CollectionField, FieldCategory } from "./types";
 // Universal fields — shown for all industries
 export const universalFields: CollectionField[] = [
   {
-    id: "full_name",
-    label: "Full Name",
+    id: "first_name",
+    label: "First Name",
+    type: "text",
+    required: true,
+    verification: "repeat-confirm",
+    category: "universal",
+  },
+  {
+    id: "last_name",
+    label: "Last Name",
     type: "text",
     required: true,
     verification: "repeat-confirm",

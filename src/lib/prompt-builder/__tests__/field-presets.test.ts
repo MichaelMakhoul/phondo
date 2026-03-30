@@ -9,32 +9,35 @@ import type { FieldCategory } from "../types";
 describe("field-presets", () => {
   describe("universalFields", () => {
     it("should have exactly 3 universal fields", () => {
-      expect(universalFields).toHaveLength(3);
+      expect(universalFields).toHaveLength(4);
     });
 
-    it("should include full_name, phone_number, and email_address", () => {
+    it("should include first_name, last_name, phone_number, and email_address", () => {
       const ids = universalFields.map((f) => f.id);
-      expect(ids).toContain("full_name");
+      expect(ids).toContain("first_name");
+      expect(ids).toContain("last_name");
       expect(ids).toContain("phone_number");
       expect(ids).toContain("email_address");
     });
 
-    it("should mark full_name and phone_number as required", () => {
-      const fullName = universalFields.find((f) => f.id === "full_name");
+    it("should mark first_name, last_name, and phone_number as required", () => {
+      const firstName = universalFields.find((f) => f.id === "first_name");
+      const lastName = universalFields.find((f) => f.id === "last_name");
       const phone = universalFields.find((f) => f.id === "phone_number");
       const email = universalFields.find((f) => f.id === "email_address");
 
-      expect(fullName?.required).toBe(true);
+      expect(firstName?.required).toBe(true);
+      expect(lastName?.required).toBe(true);
       expect(phone?.required).toBe(true);
       expect(email?.required).toBe(false);
     });
 
     it("should have correct verification methods", () => {
-      const fullName = universalFields.find((f) => f.id === "full_name");
+      const firstName = universalFields.find((f) => f.id === "first_name");
       const phone = universalFields.find((f) => f.id === "phone_number");
       const email = universalFields.find((f) => f.id === "email_address");
 
-      expect(fullName?.verification).toBe("repeat-confirm");
+      expect(firstName?.verification).toBe("repeat-confirm");
       expect(phone?.verification).toBe("read-back-digits");
       expect(email?.verification).toBe("spell-out");
     });

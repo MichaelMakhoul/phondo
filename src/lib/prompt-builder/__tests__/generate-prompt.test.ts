@@ -70,7 +70,7 @@ describe("generate-prompt", () => {
       const config = getDefaultConfig("medical");
       const prompt = buildPromptFromConfig(config, baseContext);
       expect(prompt).toContain("Required information:");
-      expect(prompt).toContain("Full Name");
+      expect(prompt).toContain("First Name");
       expect(prompt).toContain("Phone Number");
     });
 
