@@ -202,9 +202,8 @@ export function isValidPhoneNumber(phone: string): boolean {
   // Remove all non-digits except leading +
   const cleaned = phone.replace(/[^\d+]/g, "");
   const digits = cleaned.replace(/\D/g, "");
-  // Valid phone numbers: 8-13 digits (covers AU mobile 10, US 10-11, intl up to 13)
-  // E.164 max is 15 but practical numbers rarely exceed 13
-  if (digits.length < 8 || digits.length > 13) return false;
+  // Valid phone numbers: 8-15 digits (E.164 standard max is 15)
+  if (digits.length < 8 || digits.length > 15) return false;
   // Must not be all the same digit (e.g., 0000000000)
   if (/^(\d)\1+$/.test(digits)) return false;
   return true;

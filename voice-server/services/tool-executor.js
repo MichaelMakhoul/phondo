@@ -154,7 +154,7 @@ const calendarToolDefinitions = [
               "The ID of the service/appointment type being booked. Include this when the business has service types configured.",
           },
         },
-        required: ["datetime", "name", "phone"],
+        required: ["datetime", "first_name", "last_name", "phone"],
       },
     },
   },
@@ -564,7 +564,7 @@ async function executeTransferCall(args, context) {
 function simulateCalendarWrite(functionName, args) {
   if (functionName === "book_appointment") {
     return {
-      message: `Appointment confirmed for ${args.name} at ${args.datetime}. A confirmation will be sent shortly.`,
+      message: `Appointment confirmed for ${[args.first_name, args.last_name].filter(Boolean).join(" ") || args.name || "the caller"} at ${args.datetime}. A confirmation will be sent shortly.`,
     };
   }
   if (functionName === "cancel_appointment") {
