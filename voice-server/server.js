@@ -325,35 +325,40 @@ app.post("/twiml", async (req, res) => {
   // Recording is started via Twilio REST API in the WebSocket handler (not TwiML)
   // because <Connect record="record-from-answer"> doesn't work with <Stream>.
 
-  // Build disclosure + greeting to play via TwiML <Say> BEFORE the stream starts.
-  // This gives instant audio (Twilio TTS, ~0ms) while Gemini session sets up in background.
-  // The greeting uses Twilio's Polly voice — not Gemini's voice — but this is acceptable
-  // because the disclosure is a formal legal notice that sounds natural in a different voice.
-  let sayTwiml = "";
+  // Build greeting TwiML — plays BEFORE the stream starts.
+  // Flow: brief ring (2s) → friendly greeting with disclosure → stream opens
+  let greetingTwiml = "";
   if (VOICE_PIPELINE === "gemini-live" && phoneRecord?.organizations) {
     const org = phoneRecord.organizations;
+    const businessName = org.name || "us";
     const country = org.country || "AU";
     const consentCheck = requiresRecordingDisclosureHybrid(
       country, org.business_state || null, org.recording_consent_mode || "auto", from
     );
+
+    // Build a natural, friendly greeting with disclosure woven in
+    let greetingText;
     if (consentCheck.required) {
-      const disclosureText = getRecordingDisclosureText(
-        country,
-        null, // Use default disclosure (assistant-specific not available at TwiML level)
-        org.name
-      );
-      const businessName = org.name || "us";
-      const greetingText = `Hi there! Thanks for calling ${businessName}. How can I help you today?`;
-      sayTwiml = `<Say voice="Polly.Joanna">${escapeXml(disclosureText)} ${escapeXml(greetingText)}</Say>`;
+      if (org.recording_disclosure_text) {
+        // Business has a custom disclosure — use it
+        let custom = org.recording_disclosure_text.trim().slice(0, 500);
+        custom = custom.replace(/{business_name}/g, businessName);
+        greetingText = `${custom} How can I help you today?`;
+      } else {
+        // Default: short, natural, not robotic
+        greetingText = `Hi, thanks for calling ${businessName}! Just letting you know, this call may be recorded. How can I help you today?`;
+      }
     } else {
-      const businessName = org.name || "us";
-      sayTwiml = `<Say voice="Polly.Joanna">Hi there! Thanks for calling ${businessName}. How can I help you today?</Say>`;
+      greetingText = `Hi, thanks for calling ${businessName}! How can I help you today?`;
     }
+
+    // Brief pause (simulates natural pickup) + greeting
+    greetingTwiml = `<Pause length="2"/><Say voice="Polly.Joanna">${escapeXml(greetingText)}</Say>`;
   }
 
   res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  ${sayTwiml}
+  ${greetingTwiml}
   <Connect>
     <Stream url="${escapeXml(WS_URL)}">
       <Parameter name="auth_token" value="${escapeXml(token)}" />
@@ -1239,7 +1244,7 @@ wss.on("connection", (twilioWs) => {
             if (consentResult.required) {
               const disclosureText = getRecordingDisclosureText(
                 context.organization.country,
-                context.assistant.settings?.recordingDisclosure,
+                context.organization.recording_disclosure_text,
                 context.organization.name
               );
               fullGreetingText = disclosureText + " " + greeting;
@@ -1434,7 +1439,7 @@ wss.on("connection", (twilioWs) => {
           if (consentResult.required) {
             disclosureText = getRecordingDisclosureText(
               context.organization.country,
-              context.assistant.settings?.recordingDisclosure,
+              context.organization.recording_disclosure_text,
               context.organization.name
             );
             disclosureAudioPromise = synthesizeSpeech(DEEPGRAM_API_KEY, disclosureText, {
@@ -2202,7 +2207,7 @@ testWss.on("connection", (ws, req) => {
       if (testConsentResult.required) {
         const disclosureText = getRecordingDisclosureText(
           context.organization.country,
-          context.assistant.settings?.recordingDisclosure,
+          context.organization.recording_disclosure_text,
           context.organization.name
         );
         try {

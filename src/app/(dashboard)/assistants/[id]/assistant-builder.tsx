@@ -1193,43 +1193,11 @@ export function AssistantBuilder({
                 )}
               </div>
 
-              <div className="border-t pt-4 space-y-4">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <Label>Call Recording</Label>
-                    <p className="text-xs text-muted-foreground">
-                      Record calls for quality assurance. A disclosure will be
-                      played at the start of each call.
-                    </p>
-                  </div>
-                  <Switch
-                    checked={recordingEnabled}
-                    onCheckedChange={setRecordingEnabled}
-                  />
-                </div>
-
-                {recordingEnabled && (
-                  <div className="space-y-2">
-                    <Label htmlFor="recordingDisclosure">
-                      Recording & AI Disclosure
-                    </Label>
-                    <Textarea
-                      id="recordingDisclosure"
-                      value={recordingDisclosure}
-                      onChange={(e) => setRecordingDisclosure(e.target.value)}
-                      rows={4}
-                      placeholder="Disclosure message played before the greeting..."
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      This message is spoken before your greeting. Use{" "}
-                      <code className="bg-muted px-1 rounded">
-                        {"{business_name}"}
-                      </code>{" "}
-                      to insert your business name. Callers who decline
-                      recording will be offered a transfer to a team member.
-                    </p>
-                  </div>
-                )}
+              <div className="border-t pt-4">
+                <p className="text-sm text-muted-foreground">
+                  Call recording and disclosure settings apply to all assistants and are configured in{" "}
+                  <a href="/settings" className="text-primary underline underline-offset-4 hover:text-primary/80">Business Settings</a>.
+                </p>
               </div>
             </CardContent>
           </Card>

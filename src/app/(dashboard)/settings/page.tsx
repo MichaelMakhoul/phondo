@@ -28,6 +28,7 @@ interface Organization {
   default_appointment_duration: number | null;
   business_state: string | null;
   recording_consent_mode: string | null;
+  recording_disclosure_text: string | null;
   appointment_verification_fields: string[] | null;
 }
 
@@ -55,7 +56,7 @@ export default async function SettingsPage() {
         id, name, slug, type, logo_url, primary_color,
         business_name, industry, business_website, business_phone, business_address,
         timezone, country, business_hours, default_appointment_duration,
-        business_state, recording_consent_mode, appointment_verification_fields
+        business_state, recording_consent_mode, recording_disclosure_text, appointment_verification_fields
       )
     `
     )
@@ -84,6 +85,7 @@ export default async function SettingsPage() {
           defaultAppointmentDuration: organization.default_appointment_duration ?? 30,
           businessState: organization.business_state || "",
           recordingConsentMode: organization.recording_consent_mode || "auto",
+          recordingDisclosureText: organization.recording_disclosure_text || "",
           appointmentVerificationFields: organization.appointment_verification_fields || ["name", "phone"],
         }}
       />

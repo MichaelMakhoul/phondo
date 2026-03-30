@@ -112,6 +112,7 @@ interface BusinessSettingsFormProps {
     defaultAppointmentDuration: number;
     businessState: string;
     recordingConsentMode: string;
+    recordingDisclosureText: string;
     appointmentVerificationFields: { method: string; fields: string[] } | string[];
   };
 }
@@ -133,6 +134,7 @@ export function BusinessSettingsForm({
   );
   const [businessState, setBusinessState] = useState(initialData.businessState);
   const [recordingConsentMode, setRecordingConsentMode] = useState(initialData.recordingConsentMode);
+  const [disclosureText, setDisclosureText] = useState(initialData.recordingDisclosureText || "");
   const [businessHours, setBusinessHours] = useState<BusinessHours>(
     initialData.businessHours || {
       monday: { open: "09:00", close: "17:00" },
@@ -235,6 +237,7 @@ export function BusinessSettingsForm({
           default_appointment_duration: appointmentDuration,
           business_state: businessState || null,
           recording_consent_mode: recordingConsentMode,
+          recording_disclosure_text: disclosureText.trim() || null,
           appointment_verification_fields: { method: verificationMethod, fields: verificationFields },
         })
         .eq("id", organizationId);
@@ -602,6 +605,25 @@ export function BusinessSettingsForm({
                 {" "}Only disable this if you do not record calls or handle consent through a separate system before the AI answers.
               </AlertDescription>
             </Alert>
+          )}
+
+          {/* Custom disclosure text — shown when mode is not "never" */}
+          {recordingConsentMode !== "never" && (
+            <div className="space-y-2">
+              <Label className="text-sm font-medium">Custom Disclosure Message (optional)</Label>
+              <textarea
+                value={disclosureText}
+                onChange={(e) => setDisclosureText(e.target.value)}
+                placeholder="Hi, thanks for calling {business_name}! Just letting you know, this call may be recorded. How can I help you today?"
+                rows={3}
+                maxLength={500}
+                className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+              />
+              <p className="text-xs text-muted-foreground">
+                Leave blank to use the default. Use <code className="rounded bg-muted px-1 text-[11px]">{"{business_name}"}</code> to insert your business name.
+                This message is spoken at the start of each call before the AI begins the conversation.
+              </p>
+            </div>
           )}
         </div>
 
