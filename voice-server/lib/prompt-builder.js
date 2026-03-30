@@ -576,8 +576,11 @@ function buildPromptFromConfig(config, context) {
   }
 
   // 8. Language instruction (must be last to override any English defaults above)
-  if (context.language && context.language !== "en" && LANGUAGE_INSTRUCTIONS[context.language]) {
-    sections.push(LANGUAGE_INSTRUCTIONS[context.language]);
+  if (context.language && context.language !== "en") {
+    const langInstruction = getLanguageInstruction(context.language);
+    if (langInstruction) {
+      sections.push(langInstruction);
+    }
   }
 
   return sections.filter(Boolean).join("\n\n");
@@ -601,6 +604,18 @@ function generateGreeting(tone, businessName, language) {
     }
   }
 
+  if (language === "ar") {
+    switch (tone) {
+      case "professional":
+        return `شكراً لاتصالكم بـ ${name}. كيف يمكنني مساعدتكم اليوم؟`;
+      case "casual":
+        return `أهلاً! اتصلتم بـ ${name}. كيف أقدر أساعدكم؟`;
+      case "friendly":
+      default:
+        return `أهلاً وسهلاً! شكراً لاتصالكم بـ ${name}. كيف يمكنني مساعدتكم؟`;
+    }
+  }
+
   switch (tone) {
     case "professional":
       return `Thank you for calling ${name}. How may I assist you today?`;
@@ -615,12 +630,33 @@ function generateGreeting(tone, businessName, language) {
 /**
  * Language instruction appended to prompts for non-English assistants.
  */
-const LANGUAGE_INSTRUCTIONS = {
-  es: `LANGUAGE:
+const LANGUAGE_NAMES = {
+  ar: "Arabic", es: "Spanish", fr: "French", zh: "Chinese", hi: "Hindi",
+  ja: "Japanese", ko: "Korean", pt: "Portuguese", de: "German", it: "Italian",
+  ru: "Russian", tr: "Turkish", vi: "Vietnamese", th: "Thai", id: "Indonesian",
+};
+
+function getLanguageInstruction(langCode) {
+  if (langCode === "es") {
+    return `LANGUAGE:
 You MUST conduct the entire conversation in Spanish. All responses, greetings, questions, confirmations, and error messages must be in Spanish.
 If the caller speaks English, still respond in Spanish but accommodate code-switching naturally (e.g., if they say an English name or address, accept it without translation).
-Use formal Spanish ("usted") by default unless the caller uses informal ("tú") first.`,
-};
+Use formal Spanish ("usted") by default unless the caller uses informal ("tú") first.`;
+  }
+  if (langCode === "ar") {
+    return `LANGUAGE:
+You MUST conduct the entire conversation in Arabic. All responses, greetings, questions, confirmations, and error messages must be in Arabic.
+Use Modern Standard Arabic by default, but naturally accommodate dialect if the caller uses one (e.g., Egyptian, Levantine, Gulf).
+If the caller speaks English, still respond in Arabic but accept English names, addresses, and technical terms without translation.`;
+  }
+  const name = LANGUAGE_NAMES[langCode];
+  if (name) {
+    return `LANGUAGE:
+You MUST conduct the entire conversation in ${name}. All responses, greetings, questions, confirmations, and error messages must be in ${name}.
+If the caller speaks a different language, still respond in ${name} but accept names and addresses without translation.`;
+  }
+  return null;
+}
 
 /**
  * Build system prompt for an assistant — handles both guided (prompt_config) and legacy prompts.
@@ -740,8 +776,9 @@ function buildSystemPrompt(assistant, organization, knowledgeBase, options) {
 
 
   // Append language instruction for non-English assistants
-  if (language !== "en" && LANGUAGE_INSTRUCTIONS[language]) {
-    systemPrompt += `\n\n${LANGUAGE_INSTRUCTIONS[language]}`;
+  if (language !== "en") {
+    const langInst = getLanguageInstruction(language);
+    if (langInst) systemPrompt += `\n\n${langInst}`;
   }
 
   return systemPrompt;
