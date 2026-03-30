@@ -22,7 +22,7 @@ const VOICE_PIPELINE = process.env.VOICE_PIPELINE || "classic"; // "classic" or 
 // Audio caches — used by classic pipeline only (Gemini Live uses native TTS)
 const disclosureAudioCache = new Map();
 const { analyzeCallTranscript } = require("./services/post-call-analysis");
-const { getDeepgramVoice } = require("./lib/voice-mapping");
+const { getDeepgramVoice, getGeminiVoice } = require("./lib/voice-mapping");
 const { generateHoldAudio, getHoldPreset } = require("./lib/hold-audio");
 const { detectExpectedInput } = require("./lib/input-type-detector");
 const { requiresRecordingDisclosureHybrid, getRecordingDisclosureText } = require("./lib/recording-consent");
@@ -1278,7 +1278,7 @@ wss.on("connection", (twilioWs) => {
               {
                 systemPrompt: geminiSystemPrompt,
                 tools: allTools,
-                voiceName: "Kore",
+                voiceName: getGeminiVoice(context.assistant.voiceId),
               },
               {
                 onAudio: (twilioBase64) => {

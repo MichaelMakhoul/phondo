@@ -108,4 +108,46 @@ function getDeepgramVoice(voiceId, language) {
   return VOICE_MAP[resolvedId] || DEFAULT_DEEPGRAM_VOICE;
 }
 
-module.exports = { getDeepgramVoice, VOICE_MAP, VOICE_MAP_ES, DEFAULT_DEEPGRAM_VOICE, DEFAULT_DEEPGRAM_VOICE_ES };
+// Gemini Live voice mapping — ElevenLabs voice ID → Gemini voice name
+// Female: Kore (warm), Aoede (friendly), Leda (calm), Zephyr (bright)
+// Male: Puck (friendly), Charon (deep), Fenrir (calm), Orus (warm)
+const GEMINI_VOICE_MAP = {
+  // Australian voices
+  "XB0fDUnXU5powFXDhCwa": "Kore",    // Charlotte
+  "ZQe5CZNOzWyzPSCn5a3c": "Puck",    // James
+  "IKne3meq5aSn9XLyUdCD": "Charon",  // Liam
+  // American voices
+  "EXAVITQu4vr4xnSDxMaL": "Aoede",   // Sarah
+  "21m00Tcm4TlvDq8ikWAM": "Leda",    // Rachel
+  "pNInz6obpgDQGcFmaJgB": "Fenrir",  // Adam
+  "jBpfuIE2acCO8z3wKNLl": "Zephyr",  // Emily
+  "yoZ06aMxZJJ28mfd3POQ": "Orus",    // Sam
+  "ErXwobaYiN019PkySvjV": "Puck",    // Antoni
+  "MF3mGyEYCl7XYWbV9V6O": "Kore",    // Elli
+  "TxGEqnHWrfWFTfGW9XjX": "Charon",  // Josh
+  "VR6AewLTigWG4xSOukaG": "Fenrir",  // Arnold
+  "AZnzlk1XvdvUeBnXmlld": "Aoede",   // Domi
+  "CYw3kZ02Hs0563khs1Fj": "Orus",    // Dave
+  // British voices
+  "onwK4e9ZLuTAKqWW03F9": "Charon",  // Daniel
+  "ThT5KcBeYPX3keUQqHPh": "Leda",    // Dorothy
+  "SOYHLrjzK2X1ezoPC6cr": "Puck",    // Harry
+  "oWAxZDx7w5VEj9dCyTzz": "Zephyr",  // Grace
+  // Spanish voices
+  "es-diana": "Kore",
+  "es-javier": "Puck",
+  "es-carina": "Aoede",
+  "es-alvaro": "Charon",
+  "es-selena": "Leda",
+  "es-nestor": "Fenrir",
+};
+
+const DEFAULT_GEMINI_VOICE = "Kore";
+
+function getGeminiVoice(voiceId) {
+  if (!voiceId) return DEFAULT_GEMINI_VOICE;
+  const resolvedId = SHORT_NAME_TO_ID[voiceId.toLowerCase()] || voiceId;
+  return GEMINI_VOICE_MAP[resolvedId] || DEFAULT_GEMINI_VOICE;
+}
+
+module.exports = { getDeepgramVoice, getGeminiVoice, VOICE_MAP, VOICE_MAP_ES, GEMINI_VOICE_MAP, DEFAULT_DEEPGRAM_VOICE, DEFAULT_DEEPGRAM_VOICE_ES, DEFAULT_GEMINI_VOICE };

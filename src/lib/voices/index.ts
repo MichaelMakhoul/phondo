@@ -35,6 +35,7 @@ export interface CatalogVoice {
   description: string;
   previewText: string;
   deepgramVoice: string; // Deepgram Aura voice model name for self-hosted TTS
+  geminiVoice: string; // Gemini Live voice name (Kore, Puck, Aoede, Charon, etc.)
   language: VoiceLanguage; // Language this voice speaks
   recommended?: boolean; // Show "Recommended" badge in voice picker
   personaTagline?: string; // Short persona branding (e.g. "The Sydney Office Manager")
@@ -55,6 +56,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     description: "Warm, friendly Australian female",
     previewText: "Hi there! Thanks for getting in touch. What can I do for you?",
     deepgramVoice: "aura-asteria-en",
+    geminiVoice: "Kore",
     language: "en",
     recommended: true,
     personaTagline: "The Sydney Office Manager",
@@ -68,6 +70,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     description: "Professional Australian male",
     previewText: "G'day! Thanks for calling. How can I help you today?",
     deepgramVoice: "aura-arcas-en",
+    geminiVoice: "Puck",
     language: "en",
     recommended: true,
     personaTagline: "The Melbourne Professional",
@@ -81,6 +84,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     description: "Friendly, laid-back Australian male",
     previewText: "Hey! Good to hear from you. How can I help?",
     deepgramVoice: "aura-orion-en",
+    geminiVoice: "Charon",
     language: "en",
     recommended: true,
     personaTagline: "The Brisbane All-Rounder",
@@ -96,6 +100,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     description: "Warm, professional female",
     previewText: "Hello! Thank you for calling. How may I assist you today?",
     deepgramVoice: "aura-asteria-en",
+    geminiVoice: "Aoede",
     language: "en",
   },
   {
@@ -107,6 +112,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     description: "Professional, authoritative female",
     previewText: "Good morning! I'd be happy to help you with your inquiry.",
     deepgramVoice: "aura-luna-en",
+    geminiVoice: "Leda",
     language: "en",
   },
   {
@@ -118,6 +124,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     description: "Friendly, trustworthy male",
     previewText: "Hi there! Thanks for reaching out. What can I do for you?",
     deepgramVoice: "aura-orion-en",
+    geminiVoice: "Fenrir",
     language: "en",
   },
   {
@@ -129,6 +136,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     description: "Upbeat, enthusiastic female",
     previewText: "Hey! Great to hear from you! How can I help?",
     deepgramVoice: "aura-stella-en",
+    geminiVoice: "Zephyr",
     language: "en",
   },
   {
@@ -140,6 +148,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     description: "Calm, professional male",
     previewText: "Thank you for your call. I'm here to help you today.",
     deepgramVoice: "aura-arcas-en",
+    geminiVoice: "Orus",
     language: "en",
   },
   {
@@ -151,6 +160,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     description: "Friendly, conversational male",
     previewText: "Hey, thanks for calling! What can I help you with today?",
     deepgramVoice: "aura-orion-en",
+    geminiVoice: "Puck",
     language: "en",
   },
   {
@@ -162,6 +172,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     description: "Warm, approachable female",
     previewText: "Hi there! I'm happy to help. What do you need?",
     deepgramVoice: "aura-asteria-en",
+    geminiVoice: "Kore",
     language: "en",
   },
   {
@@ -173,6 +184,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     description: "Deep, warm professional male",
     previewText: "Good to hear from you. How may I be of assistance?",
     deepgramVoice: "aura-orpheus-en",
+    geminiVoice: "Charon",
     language: "en",
   },
   {
@@ -184,6 +196,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     description: "Authoritative, confident male",
     previewText: "Welcome. I'm here to assist you with whatever you need.",
     deepgramVoice: "aura-angus-en",
+    geminiVoice: "Fenrir",
     language: "en",
   },
   {
@@ -195,6 +208,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     description: "Energetic, vibrant female",
     previewText: "Hi! Welcome! What can I do for you today?",
     deepgramVoice: "aura-stella-en",
+    geminiVoice: "Aoede",
     language: "en",
   },
   {
@@ -206,6 +220,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     description: "Casual, conversational male",
     previewText: "Hey there! How's it going? What can I help with?",
     deepgramVoice: "aura-perseus-en",
+    geminiVoice: "Orus",
     language: "en",
   },
 
@@ -219,6 +234,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     description: "Polished British male",
     previewText: "Good day. How may I assist you this afternoon?",
     deepgramVoice: "aura-arcas-en",
+    geminiVoice: "Charon",
     language: "en",
   },
   {
@@ -230,6 +246,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     description: "Warm, eloquent British female",
     previewText: "Hello, thank you for reaching out. How can I help?",
     deepgramVoice: "aura-asteria-en",
+    geminiVoice: "Leda",
     language: "en",
   },
   {
@@ -241,6 +258,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     description: "Authoritative British male",
     previewText: "Good morning. I'm here to assist you. How may I help?",
     deepgramVoice: "aura-angus-en",
+    geminiVoice: "Puck",
     language: "en",
   },
   {
@@ -252,6 +270,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     description: "Soothing, refined British female",
     previewText: "Hello, lovely to hear from you. How can I assist?",
     deepgramVoice: "aura-hera-en",
+    geminiVoice: "Zephyr",
     language: "en",
   },
 
@@ -265,6 +284,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     description: "Warm, professional Spanish female",
     previewText: "¡Hola! Gracias por llamar. ¿En qué puedo ayudarle hoy?",
     deepgramVoice: "aura-2-diana-es",
+    geminiVoice: "Kore",
     language: "es",
     recommended: true,
   },
@@ -277,6 +297,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     description: "Friendly, conversational Spanish male",
     previewText: "¡Hola! Bienvenido. ¿Cómo puedo ayudarle?",
     deepgramVoice: "aura-2-javier-es",
+    geminiVoice: "Puck",
     language: "es",
     recommended: true,
   },
@@ -289,6 +310,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     description: "Professional, authoritative Spanish female",
     previewText: "Buenos días. Estoy aquí para asistirle. ¿En qué puedo servirle?",
     deepgramVoice: "aura-2-carina-es",
+    geminiVoice: "Aoede",
     language: "es",
   },
   {
@@ -300,6 +322,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     description: "Calm, professional Spanish male",
     previewText: "Gracias por su llamada. Estoy aquí para ayudarle.",
     deepgramVoice: "aura-2-alvaro-es",
+    geminiVoice: "Charon",
     language: "es",
   },
   {
@@ -311,6 +334,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     description: "Upbeat, friendly Spanish female",
     previewText: "¡Hola! ¡Qué gusto escucharle! ¿En qué puedo ayudarle?",
     deepgramVoice: "aura-2-selena-es",
+    geminiVoice: "Leda",
     language: "es",
   },
   {
@@ -322,6 +346,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     description: "Warm, deep Spanish male",
     previewText: "Buenas. ¿En qué puedo asistirle el día de hoy?",
     deepgramVoice: "aura-2-nestor-es",
+    geminiVoice: "Fenrir",
     language: "es",
   },
 ];
