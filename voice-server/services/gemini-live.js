@@ -139,36 +139,31 @@ function createGeminiSession(config, callbacks) {
       setupComplete = true;
       console.log(`[GeminiLive] Session ready in ${Date.now() - sessionStartTime}ms (${preSetupBuffer.length} buffered chunks)`);
 
-      // IMPORTANT: Send clientContent trigger FIRST, BEFORE any audio.
-      // Mixing realtimeInput (audio) with clientContent (text) causes
-      // "invalid argument" crashes. Send text trigger alone, then flush audio.
-      // Ref: https://ai.google.dev/gemini-api/docs/live#first-message
+      // Trigger Gemini to speak the greeting immediately.
+      // NOTE: clientContent is BLOCKED on gemini-3.1-flash-live-preview (causes 1007).
+      // Use realtimeInput.text instead — this is the correct way to send text on 3.1.
+      // Ref: https://ai.google.dev/api/live (realtimeInput.text field)
       try {
         ws.send(JSON.stringify({
-          clientContent: {
-            turns: [{ role: "user", parts: [{ text: "Call connected." }] }],
-            turnComplete: true,
+          realtimeInput: {
+            text: "Call connected.",
           },
         }));
-        console.log("[GeminiLive] Sent clientContent trigger for greeting");
+        console.log("[GeminiLive] Sent realtimeInput.text trigger for greeting");
       } catch (err) {
-        console.error("[GeminiLive] clientContent trigger failed:", err.message);
+        console.error("[GeminiLive] Greeting trigger failed:", err.message);
       }
 
-      // Flush buffered audio AFTER the clientContent trigger.
-      // Small delay to ensure clientContent is processed first.
-      setTimeout(() => {
-        for (const buffered of preSetupBuffer) {
-          try {
-            const geminiAudio = twilioToGemini(buffered);
-            if (ws.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({ realtimeInput: { audio: { data: geminiAudio, mimeType: "audio/pcm;rate=16000" } } }));
-            }
-          } catch {}
-        }
-        preSetupBuffer.length = 0;
-      }, 100);
-
+      // Flush buffered audio after the text trigger
+      for (const buffered of preSetupBuffer) {
+        try {
+          const geminiAudio = twilioToGemini(buffered);
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ realtimeInput: { audio: { data: geminiAudio, mimeType: "audio/pcm;rate=16000" } } }));
+          }
+        } catch {}
+      }
+      preSetupBuffer.length = 0;
       return;
     }
 
