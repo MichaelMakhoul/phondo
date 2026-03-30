@@ -80,7 +80,7 @@ async function loadCallContext(calledNumber, prefetchedPhone) {
   // 3. Load organization
   const { data: org, error: orgError } = await supabase
     .from("organizations")
-    .select("id, name, industry, timezone, business_hours, default_appointment_duration, country, business_state, recording_consent_mode, appointment_verification_fields")
+    .select("id, name, industry, timezone, business_hours, default_appointment_duration, country, business_state, recording_consent_mode, appointment_verification_fields, recording_disclosure_text")
     .eq("id", phone.organization_id)
     .single();
 
@@ -232,6 +232,7 @@ async function loadCallContext(calledNumber, prefetchedPhone) {
       businessState: org.business_state || null,
       recordingConsentMode: org.recording_consent_mode || "auto",
       appointment_verification_fields: org.appointment_verification_fields || null,
+      recording_disclosure_text: org.recording_disclosure_text || null,
     },
     knowledgeBase,
     calendarEnabled,
@@ -264,7 +265,7 @@ async function loadTestCallContext(assistantId, organizationId) {
   // 2. Load organization
   const { data: org, error: orgError } = await supabase
     .from("organizations")
-    .select("id, name, industry, timezone, business_hours, default_appointment_duration, country, business_state, recording_consent_mode, appointment_verification_fields")
+    .select("id, name, industry, timezone, business_hours, default_appointment_duration, country, business_state, recording_consent_mode, appointment_verification_fields, recording_disclosure_text")
     .eq("id", organizationId)
     .single();
 
@@ -408,6 +409,7 @@ async function loadTestCallContext(assistantId, organizationId) {
       businessState: org.business_state || null,
       recordingConsentMode: org.recording_consent_mode || "auto",
       appointment_verification_fields: org.appointment_verification_fields || null,
+      recording_disclosure_text: org.recording_disclosure_text || null,
     },
     knowledgeBase,
     calendarEnabled,
