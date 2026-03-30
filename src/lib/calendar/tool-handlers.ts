@@ -756,14 +756,26 @@ export async function handleBookAppointment(
   organizationId: string,
   args: {
     datetime?: string;
-    name?: string;
+    name?: string; // Legacy: combined full name
+    first_name?: string;
+    last_name?: string;
     phone?: string;
     email?: string;
     notes?: string;
     service_type_id?: string;
   }
 ): Promise<ToolResult> {
-  const { datetime, name, phone, email, notes, service_type_id } = args;
+  const { datetime, phone, email, notes, service_type_id } = args;
+
+  // Build the name from first/last or legacy full name
+  const firstName = args.first_name?.trim() || "";
+  const lastName = args.last_name?.trim() || "";
+  let name: string | undefined;
+  if (firstName || lastName) {
+    name = [firstName, lastName].filter(Boolean).join(" ");
+  } else {
+    name = args.name;
+  }
 
   if (!datetime) {
     return {
@@ -777,7 +789,35 @@ export async function handleBookAppointment(
     return {
       success: false,
       message:
-        "I need your name to complete the booking. What name should I put this under?",
+        "I need your name to complete the booking. Could you tell me your first name and last name please?",
+    };
+  }
+
+  // Check if business requires both first and last name
+  const supabaseForFields = createAdminClient();
+  const { data: assistant } = await (supabaseForFields as any)
+    .from("assistants")
+    .select("prompt_config")
+    .eq("organization_id", organizationId)
+    .limit(1)
+    .single();
+
+  const fields = assistant?.prompt_config?.fields || [];
+  const firstNameField = fields.find((f: any) => f.id === "first_name");
+  const lastNameField = fields.find((f: any) => f.id === "last_name");
+  // Also check legacy full_name for backwards compat
+  const fullNameField = fields.find((f: any) => f.id === "full_name");
+
+  if (lastNameField?.required && !lastName) {
+    return {
+      success: false,
+      message: "I also need your last name to complete the booking. What is your last name?",
+    };
+  }
+  if (firstNameField?.required && !firstName && !fullNameField) {
+    return {
+      success: false,
+      message: "I need your first name to complete the booking. What is your first name?",
     };
   }
 
@@ -1463,6 +1503,8 @@ async function bookInternal(
       organization_id: organizationId,
       provider: "internal",
       attendee_name: sanitizedName,
+      attendee_first_name: sanitizedName.split(" ")[0] || null,
+      attendee_last_name: sanitizedName.includes(" ") ? sanitizedName.split(" ").slice(1).join(" ") : null,
       attendee_phone: phone,
       attendee_email: bookingEmail,
       start_time: startDate.toISOString(),

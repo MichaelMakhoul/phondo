@@ -118,7 +118,7 @@ const calendarToolDefinitions = [
     function: {
       name: "book_appointment",
       description:
-        "Book an appointment. IMPORTANT: You MUST explicitly ask the caller for their full name AND receive their answer BEFORE calling this tool. Do NOT guess, assume, or fabricate a name. If you haven't asked for and received the name yet, ask first, then call this tool.",
+        "Book an appointment. You MUST ask for the caller's first name and last name separately BEFORE calling this tool. Never guess or fabricate names.",
       parameters: {
         type: "object",
         properties: {
@@ -127,9 +127,13 @@ const calendarToolDefinitions = [
             description:
               "The appointment date and time in ISO format (e.g., 2026-03-15T14:00:00)",
           },
-          name: {
+          first_name: {
             type: "string",
-            description: "The caller's full name — MUST be explicitly stated by the caller during this call. Never guess or fabricate.",
+            description: "The caller's first name in English letters — MUST be stated by the caller.",
+          },
+          last_name: {
+            type: "string",
+            description: "The caller's last name/surname in English letters — MUST be stated by the caller.",
           },
           phone: {
             type: "string",

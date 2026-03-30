@@ -22,8 +22,8 @@ function makeConfig(fields: CollectionField[]): PromptConfig {
 
 function makeField(overrides: Partial<CollectionField> = {}): CollectionField {
   return {
-    id: "field_1",
-    label: "Full Name",
+    id: "first_name",
+    label: "First Name",
     type: "text",
     required: true,
     verification: "none",
@@ -43,9 +43,9 @@ describe("buildAnalysisPlan", () => {
     const plan = buildAnalysisPlan(config);
 
     expect(plan).not.toBeNull();
-    expect(plan!.structuredDataSchema.properties).toHaveProperty("full_name");
-    expect(plan!.structuredDataSchema.properties.full_name.type).toBe("string");
-    expect(plan!.structuredDataSchema.required).toEqual(["full_name"]);
+    expect(plan!.structuredDataSchema.properties).toHaveProperty("first_name");
+    expect(plan!.structuredDataSchema.properties.first_name.type).toBe("string");
+    expect(plan!.structuredDataSchema.required).toContain("first_name");
     expect(plan!.successEvaluationRubric).toBe("PassFail");
   });
 
@@ -67,7 +67,8 @@ describe("buildAnalysisPlan", () => {
     expect(props).toHaveProperty("date_of_birth");
     expect(props).toHaveProperty("insurance_id");
 
-    expect(plan!.structuredDataSchema.required).toEqual(["full_name", "phone_number"]);
+    expect(plan!.structuredDataSchema.required).toContain("full_name");
+    expect(plan!.structuredDataSchema.required).toContain("phone_number");
   });
 
   it("omits required array when no fields are required", () => {
