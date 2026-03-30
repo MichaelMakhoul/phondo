@@ -1245,9 +1245,22 @@ wss.on("connection", (twilioWs) => {
             // CRITICAL — tool calling, filler words, and name enforcement
             geminiSystemPrompt += `\n\nCRITICAL RULES FOR THIS CONVERSATION:`;
             geminiSystemPrompt += `\n- ABSOLUTELY NEVER FABRICATE ACTIONS: This is the most important rule. You have tools (book_appointment, schedule_callback, check_availability, lookup_appointment, cancel_appointment, etc). You MUST call the tool AND receive a SUCCESS response BEFORE telling the caller the action was done. NEVER say "I've booked", "I've scheduled", "I've checked", "I've cancelled" UNLESS the tool already returned success. If you need to book, say "Let me book that for you" then call the tool, then ONLY after success say "Done, your appointment is booked." NEVER confirm an action before the tool responds.`;
-            geminiSystemPrompt += `\n- NAME COLLECTION IS MANDATORY — ZERO EXCEPTIONS: Before calling book_appointment, you MUST: (1) explicitly ask "What is your full name?" or "Can I get your name please?", (2) WAIT for the caller to clearly state their name, (3) ONLY THEN include that exact name in the tool call. You must NEVER guess, assume, infer, or fabricate a name. If you haven't heard the caller clearly say their name in this conversation, DO NOT call book_appointment — ask for the name first. This is a legal requirement.`;
-            geminiSystemPrompt += `\n- ALWAYS SAY FILLER BEFORE EVERY TOOL CALL: Before EVERY tool call, you MUST say a short filler phrase like "One moment", "Let me check", "Just a sec", "Bear with me". NEVER go silent during a tool call. The caller should always hear something before the pause.`;
-            geminiSystemPrompt += `\n- RESCHEDULING: When a caller asks to reschedule, you MUST: (1) look up their existing appointment with lookup_appointment, (2) cancel the old appointment with cancel_appointment, (3) then book the new one with book_appointment. Do NOT book a new appointment without cancelling the old one first — this creates duplicates.`;
+            // Build name verification instruction based on business config
+            const nameField = context.assistant.promptConfig?.fields?.find((f) => f.id === "full_name");
+            const nameVerification = nameField?.verification || "repeat-confirm";
+            let nameInstruction = "";
+            if (nameVerification === "spell-out") {
+              nameInstruction = "Ask them to spell it out letter by letter using the English alphabet (e.g., 'M-I-C-H-A-E-L'). If the caller spells it in another language, ask them to use English letters.";
+            } else if (nameVerification === "read-back-characters") {
+              nameInstruction = "Read back the name character by character to confirm.";
+            } else {
+              nameInstruction = "Repeat the name back and ask them to confirm it's correct.";
+            }
+
+            geminiSystemPrompt += `\n- NAME COLLECTION IS MANDATORY — ZERO EXCEPTIONS: Before calling book_appointment, you MUST: (1) Ask "What is your full name?", (2) WAIT for the caller to state their name, (3) ${nameInstruction}, (4) ONLY THEN include that confirmed name in the tool call. Names MUST be recorded in English alphabet (Latin letters) — even if the conversation is in Arabic, Chinese, etc. If the caller gives a name in non-Latin script, ask: "Could you spell that for me using English letters?" Never guess or fabricate a name.`;
+            geminiSystemPrompt += `\n- CONFIRM BOOKING DETAILS: After book_appointment succeeds, read back ALL details to the caller: name, date, time, practitioner, and confirmation code. Then ask "Is everything correct?" If the caller says something is wrong, fix it (cancel and rebook with the correct details). Do NOT end the booking conversation without confirmation.`;
+            geminiSystemPrompt += `\n- ALWAYS SAY FILLER BEFORE EVERY TOOL CALL: Before EVERY tool call, you MUST say a short filler phrase like "One moment", "Let me check", "Just a sec", "Bear with me". NEVER go silent during a tool call.`;
+            geminiSystemPrompt += `\n- RESCHEDULING: When a caller asks to reschedule, you MUST: (1) look up their existing appointment with lookup_appointment, (2) cancel the old appointment with cancel_appointment, (3) then book the new one with book_appointment. Do NOT book a new appointment without cancelling the old one first.`;
 
             // Transcript buffering — accumulate fragments, flush on turn complete
             let pendingUserTranscript = "";
