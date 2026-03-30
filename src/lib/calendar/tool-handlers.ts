@@ -459,8 +459,11 @@ async function getBuiltInAvailability(
   const dayStartUtc = ensureTimezoneOffset(dayStartLocal, timezone);
   const dayEndUtc = ensureTimezoneOffset(dayEndLocal, timezone);
 
-  // Fetch blocked times for this date — filter slots that overlap
-  const blockedRanges = await getBlockedTimes(organizationId, dayStartUtc, dayEndUtc);
+  // Fetch blocked times for this date — filter slots that overlap.
+  // Use ISO strings (Z suffix) for consistent Supabase comparison.
+  const dayStartISO = new Date(dayStartUtc).toISOString();
+  const dayEndISO = new Date(dayEndUtc).toISOString();
+  const blockedRanges = await getBlockedTimes(organizationId, dayStartISO, dayEndISO);
   if (blockedRanges.length > 0) {
     slots = slots.filter((slot) => {
       const slotDate = new Date(ensureTimezoneOffset(slot, timezone));
@@ -589,20 +592,35 @@ function formatBuiltInAvailabilityForVoice(
     timeZone: timezone,
   });
 
-  const slotsToShow = slots.slice(0, 5);
-  const timeStrings = slotsToShow.map((iso) => {
-    // Slots are in local business time (e.g., "2026-03-23T08:00:00").
-    // Parse hours/minutes directly to avoid UTC misinterpretation.
-    const timePart = iso.split("T")[1];
-    const [h, m] = timePart.split(":").map(Number);
-    const hour12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
-    const ampm = h < 12 ? "AM" : "PM";
-    const minStr = m === 0 ? "" : `:${String(m).padStart(2, "0")}`;
-    return `${hour12}${minStr} ${ampm}`;
+  // Parse slot times into hours
+  const parsedSlots = slots.map((iso) => {
+    const [h, m] = iso.split("T")[1].split(":").map(Number);
+    return { h, m };
   });
 
-  const more = slots.length > 5 ? ` and ${slots.length - 5} more` : "";
-  return `On ${dateStr}, I have openings at ${timeStrings.join(", ")}${more}. Which time works best for you?`;
+  const formatTime = (h: number, m: number) => {
+    const hour12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
+    const ampm = h < 12 ? "AM" : "PM";
+    return m === 0 ? `${hour12} ${ampm}` : `${hour12}:${String(m).padStart(2, "0")} ${ampm}`;
+  };
+
+  // Group into morning (before 12) and afternoon (12+)
+  const morning = parsedSlots.filter((s) => s.h < 12);
+  const afternoon = parsedSlots.filter((s) => s.h >= 12);
+
+  const parts: string[] = [];
+  if (morning.length > 0) {
+    const first = formatTime(morning[0].h, morning[0].m);
+    const last = formatTime(morning[morning.length - 1].h, morning[morning.length - 1].m);
+    parts.push(morning.length === 1 ? `${first} in the morning` : `mornings between ${first} and ${last}`);
+  }
+  if (afternoon.length > 0) {
+    const first = formatTime(afternoon[0].h, afternoon[0].m);
+    const last = formatTime(afternoon[afternoon.length - 1].h, afternoon[afternoon.length - 1].m);
+    parts.push(afternoon.length === 1 ? `${first} in the afternoon` : `afternoons between ${first} and ${last}`);
+  }
+
+  return `On ${dateStr}, I have ${slots.length} available slots — ${parts.join(" and ")}. Would you prefer morning or afternoon?`;
 }
 
 // ─── Timezone helpers ────────────────────────────────────────────────────────
@@ -1359,11 +1377,10 @@ async function bookInternal(
 
   const endDate = new Date(startDate.getTime() + durationMinutes * 60_000);
 
-  // Reject bookings during blocked times
-  const blockCheckStart = new Date(startDate);
-  blockCheckStart.setHours(0, 0, 0, 0);
-  const blockCheckEnd = new Date(startDate);
-  blockCheckEnd.setHours(23, 59, 59, 999);
+  // Reject bookings during blocked times — use a wide 48-hour window around
+  // the booking time to catch blocks regardless of timezone offset
+  const blockCheckStart = new Date(startDate.getTime() - 24 * 60 * 60_000);
+  const blockCheckEnd = new Date(startDate.getTime() + 24 * 60 * 60_000);
   const blockedRanges = await getBlockedTimes(
     organizationId,
     blockCheckStart.toISOString(),
