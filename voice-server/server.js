@@ -325,38 +325,12 @@ app.post("/twiml", async (req, res) => {
   // Recording is started via Twilio REST API in the WebSocket handler (not TwiML)
   // because <Connect record="record-from-answer"> doesn't work with <Stream>.
 
-  // TwiML plays ONLY the legal disclosure (short, Polly voice).
-  // Gemini then speaks the friendly greeting in its own voice.
-  // This keeps the Polly voice to a minimum — just the legal bit.
-  // Flow: brief pause (2s) → short disclosure (Polly) → stream opens → Gemini greets
-  let disclosureTwiml = "";
-  if (VOICE_PIPELINE === "gemini-live" && phoneRecord?.organizations) {
-    const org = phoneRecord.organizations;
-    const businessName = org.name || "us";
-    const country = org.country || "AU";
-    const consentCheck = requiresRecordingDisclosureHybrid(
-      country, org.business_state || null, org.recording_consent_mode || "auto", from
-    );
-
-    if (consentCheck.required) {
-      let disclosureText;
-      if (org.recording_disclosure_text) {
-        let custom = org.recording_disclosure_text.trim().slice(0, 500);
-        disclosureText = custom.replace(/{business_name}/g, businessName);
-      } else {
-        // Short and natural — just the legal notice
-        disclosureText = `Just so you know, this call may be recorded.`;
-      }
-      disclosureTwiml = `<Pause length="2"/><Say voice="Polly.Joanna">${escapeXml(disclosureText)}</Say>`;
-    } else {
-      // No disclosure needed — just a brief pause before Gemini speaks
-      disclosureTwiml = `<Pause length="2"/>`;
-    }
-  }
+  // Gemini Live: NO TwiML <Say> — Gemini speaks everything in one voice.
+  // The clientContent trigger (sent after setupComplete) makes Gemini speak
+  // the greeting immediately, including the recording disclosure.
 
   res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  ${disclosureTwiml}
   <Connect>
     <Stream url="${escapeXml(WS_URL)}">
       <Parameter name="auth_token" value="${escapeXml(token)}" />
@@ -1238,12 +1212,19 @@ wss.on("connection", (twilioWs) => {
               afterHoursConfig,
             });
 
-            // Disclosure was already played via TwiML <Say> — Gemini only needs the greeting
+            // Build the full first message — disclosure (if needed) + greeting
+            let firstMessage = greeting;
             if (consentResult.required) {
+              const disclosureText = getRecordingDisclosureText(
+                context.organization.country,
+                context.organization.recording_disclosure_text,
+                context.organization.name
+              );
+              // Weave disclosure naturally into the greeting
+              firstMessage = `${disclosureText} ${greeting}`;
               session.recordingDisclosurePlayed = true;
             }
-            // Add greeting to transcript (disclosure was played separately by Polly)
-            session.addMessage("assistant", greeting);
+            session.addMessage("assistant", firstMessage);
 
             // Build system prompt — Gemini speaks the greeting itself
             let geminiSystemPrompt = session.messages[0]?.content || "You are a helpful receptionist.";
@@ -1258,7 +1239,7 @@ wss.on("connection", (twilioWs) => {
                 .replace(/I can only assist in English/g, "I can assist in multiple languages");
             }
 
-            geminiSystemPrompt += `\n\nIMPORTANT — CALL START: The recording disclosure has already been played. Do NOT repeat it or mention recording. Your FIRST words should be a warm, friendly greeting like: "Hi, thanks for calling ${context.organization.name || 'us'}! How can I help you today?" — keep it short and natural. Do NOT invent a receptionist name — you are an AI assistant.`;
+            geminiSystemPrompt += `\n\nIMPORTANT — YOUR FIRST MESSAGE: When the call connects, you will receive a short text message. Immediately respond by speaking the following greeting (word for word, naturally and warmly): "${firstMessage}" — Then wait for the caller to respond. Do NOT add anything extra. Do NOT invent a receptionist name — you are an AI assistant.`;
 
             // CRITICAL — tool calling, filler words, and name enforcement
             geminiSystemPrompt += `\n\nCRITICAL RULES FOR THIS CONVERSATION:`;

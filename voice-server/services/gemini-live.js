@@ -148,9 +148,21 @@ function createGeminiSession(config, callbacks) {
       }
       preSetupBuffer.length = 0;
 
-      // Note: Gemini 3.1 Flash Live is audio-only — clientContent text messages
-      // cause "invalid argument" (code 1007). The greeting is played via TwiML
-      // <Say> BEFORE the stream starts, so Gemini just handles the conversation.
+      // Trigger Gemini to speak the greeting immediately.
+      // Send a hidden clientContent text turn to "poke" the model.
+      // The system instructions tell Gemini what to say on its first turn.
+      // Ref: https://ai.google.dev/gemini-api/docs/live#first-message
+      try {
+        ws.send(JSON.stringify({
+          clientContent: {
+            turns: [{ role: "user", parts: [{ text: "." }] }],
+            turnComplete: true,
+          },
+        }));
+        console.log("[GeminiLive] Sent clientContent trigger for greeting");
+      } catch (err) {
+        console.error("[GeminiLive] clientContent trigger failed:", err.message);
+      }
       return;
     }
 
