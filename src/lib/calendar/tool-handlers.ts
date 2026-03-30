@@ -37,7 +37,6 @@ interface OrgSchedule {
 // Fallback slot duration when no org-level default is configured
 const DEFAULT_SLOT_DURATION_MINUTES = 30;
 
-/** Generate a short unique confirmation code (e.g., PH-4A9F) */
 /** Generate a 6-digit confirmation code (digits only — easy to say and hear over the phone) */
 function generateConfirmationCode(): string {
   const code = Math.floor(100000 + Math.random() * 900000).toString();
@@ -879,7 +878,9 @@ export async function handleBookAppointment(
       email,
       sanitizedNotes,
       serviceTypeDuration,
-      service_type_id
+      service_type_id,
+      firstName,
+      lastName
     );
   }
 
@@ -906,7 +907,11 @@ export async function handleBookAppointment(
     sanitizedName,
     phone,
     email,
-    sanitizedNotes
+    sanitizedNotes,
+    undefined, // durationOverride
+    undefined, // serviceTypeId
+    firstName,
+    lastName
   );
 }
 
@@ -1375,7 +1380,9 @@ async function bookInternal(
   email: string | undefined,
   sanitizedNotes: string | undefined,
   durationOverride?: number,
-  serviceTypeId?: string
+  serviceTypeId?: string,
+  firstNameOverride?: string,
+  lastNameOverride?: string
 ): Promise<ToolResult> {
   const supabase = createAdminClient();
 
@@ -1503,8 +1510,8 @@ async function bookInternal(
       organization_id: organizationId,
       provider: "internal",
       attendee_name: sanitizedName,
-      attendee_first_name: sanitizedName.split(" ")[0] || null,
-      attendee_last_name: sanitizedName.includes(" ") ? sanitizedName.split(" ").slice(1).join(" ") : null,
+      attendee_first_name: firstNameOverride || sanitizedName.split(" ")[0] || null,
+      attendee_last_name: lastNameOverride || (sanitizedName.includes(" ") ? sanitizedName.split(" ").slice(1).join(" ") : null),
       attendee_phone: phone,
       attendee_email: bookingEmail,
       start_time: startDate.toISOString(),
