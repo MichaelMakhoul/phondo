@@ -1249,7 +1249,7 @@ wss.on("connection", (twilioWs) => {
             const nameVerification = nameField?.verification || "repeat-confirm";
             let nameInstruction = "";
             if (nameVerification === "spell-out") {
-              nameInstruction = "Ask them to spell it out letter by letter using the English alphabet (e.g., 'M-I-C-H-A-E-L'). If the caller spells it in another language, ask them to use English letters.";
+              nameInstruction = "Ask them to spell it out letter by letter using the English alphabet (e.g., 'M-I-C-H-A-E-L'). After they spell it, READ THE SPELLING BACK to confirm: 'So that's M-I-C-H-A-E-L, is that correct?' WAIT for them to confirm before proceeding. If they say no, ask them to spell it again.";
             } else if (nameVerification === "read-back-characters") {
               nameInstruction = "Read back the name character by character to confirm.";
             } else {
@@ -1259,7 +1259,7 @@ wss.on("connection", (twilioWs) => {
             geminiSystemPrompt += `\n- NAME COLLECTION IS MANDATORY — ZERO EXCEPTIONS: Before calling book_appointment, you MUST: (1) Ask for FIRST NAME — wait for answer, (2) ${nameInstruction}, (3) Ask for LAST NAME — wait for answer, (4) ${nameInstruction}, (5) ONLY after you have BOTH confirmed names, call book_appointment with first_name and last_name. Names MUST be in English letters. If you are unsure of the spelling, ask again. NEVER call book_appointment until the caller has fully spelled and confirmed BOTH names. If you only have one name, ask for the other BEFORE booking.`;
             geminiSystemPrompt += `\n- CONFIRM BOOKING DETAILS: After book_appointment succeeds, read back ALL details to the caller: name, date, time, practitioner, and confirmation code. Then ask "Is everything correct?" If the caller says something is wrong, fix it (cancel and rebook with the correct details). Do NOT end the booking conversation without confirmation.`;
             geminiSystemPrompt += `\n- FILLER WORDS — SPEAK FIRST, THEN CALL TOOL: When you need to call a tool, you MUST speak a filler phrase FIRST as a separate response BEFORE making the tool call. Say something like "One moment, let me check that" or "Just a sec" and WAIT for the audio to play. THEN make the tool call in the next step. NEVER bundle the filler and tool result into one response. The caller must hear the filler DURING the silence, not after. Example flow: (1) caller asks for availability → (2) you say "Let me check that for you" → (3) you call check_availability → (4) you say "We have slots on Wednesday...". Steps 2 and 4 must be SEPARATE speech outputs.`;
-            geminiSystemPrompt += `\n- RESCHEDULING: When a caller asks to reschedule, you MUST: (1) look up their existing appointment with lookup_appointment, (2) cancel the old appointment with cancel_appointment, (3) then book the new one with book_appointment. Do NOT book a new appointment without cancelling the old one first.`;
+            geminiSystemPrompt += `\n- RESCHEDULING: When a caller asks to reschedule, you MUST: (1) look up their existing appointment with lookup_appointment, (2) cancel the old appointment with cancel_appointment using the confirmation_code FROM THE LOOKUP RESULT or phone + date (NEVER guess or fabricate a code), (3) then book the new one with book_appointment. Do NOT book a new appointment without cancelling the old one first.`;
 
             // Transcript buffering — accumulate fragments, flush on turn complete
             let pendingUserTranscript = "";
