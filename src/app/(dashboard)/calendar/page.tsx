@@ -61,11 +61,12 @@ export default async function CalendarPage() {
     weekCount,
     monthCount,
   ] = await Promise.all([
-    // Appointments for visible grid range
+    // Appointments for visible grid range (exclude cancelled)
     (supabase as any)
       .from("appointments")
       .select("*")
       .eq("organization_id", organizationId)
+      .neq("status", "cancelled")
       .gte("start_time", gridStart.toISOString())
       .lte("start_time", gridEnd.toISOString())
       .order("start_time", { ascending: true }),
