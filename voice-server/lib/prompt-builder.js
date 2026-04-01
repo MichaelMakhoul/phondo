@@ -487,9 +487,9 @@ function buildBehaviorsSection(behaviors, options) {
   const supportedLanguages = options?.supportedLanguages ?? [];
   if (multilingualEnabled) {
     if (supportedLanguages.length > 0) {
-      lines.push(`- LANGUAGE: You can respond in: ${supportedLanguages.join(", ")}. Detect the caller's language and respond in it. If unsupported, respond in English and offer to take a message.`);
+      lines.push(`- LANGUAGE: You can respond in: ${supportedLanguages.join(", ")}. Detect the caller's language and respond in it. If the caller switches language mid-call, switch with them immediately. If unsupported, respond in English and offer to take a message.`);
     } else {
-      lines.push("- LANGUAGE: You are multilingual. Detect the caller's language and respond in the same language naturally.");
+      lines.push("- LANGUAGE: You are multilingual. Detect the caller's language and respond in the same language naturally. If the caller switches language mid-call, switch with them immediately.");
     }
   } else {
     lines.push("- LANGUAGE: You MUST ONLY respond in English. If the caller speaks another language, say: 'I can only assist in English. I can take a message and have someone call you back.'");
