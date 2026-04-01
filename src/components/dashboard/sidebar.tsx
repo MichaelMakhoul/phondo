@@ -10,6 +10,7 @@ import {
   PhoneCall,
   PhoneForwarded,
   CalendarDays,
+  ClipboardList,
   Settings,
   CreditCard,
   BookOpen,
@@ -63,6 +64,11 @@ export const navigation = [
     name: "Calendar",
     href: "/calendar",
     icon: CalendarDays,
+  },
+  {
+    name: "Appointments",
+    href: "/appointments",
+    icon: ClipboardList,
   },
 ];
 

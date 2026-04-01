@@ -1162,12 +1162,41 @@ wss.on("connection", (twilioWs) => {
               serviceTypes: context.serviceTypes,
             }
           );
-          // Append caller context so the AI knows the caller's phone number
-          // If PII redaction is enabled, mask the phone in the prompt
+          // Append caller context — phone number + client history
           const phoneForPrompt = session.piiRedactionEnabled ? maskPhone(callerPhone) : callerPhone;
-          const callerContext = callerPhone
-            ? `\n\nCALLER CONTEXT:\nThe caller's phone number is ${phoneForPrompt}. If they say "use the number I'm calling from" or "it's the same number", use this number. Do NOT ask them to repeat it.`
-            : "";
+          let callerContext = "";
+          if (callerPhone) {
+            callerContext = `\n\nCALLER CONTEXT:\nThe caller's phone number is ${phoneForPrompt}. If they say "use the number I'm calling from" or "it's the same number", use this number. Do NOT ask them to repeat it.`;
+
+            // Client history — check if this is a returning caller
+            try {
+              const supabaseClient = require("./lib/supabase").getSupabase();
+              const phoneSuffix = callerPhone.replace(/\D/g, "").slice(-9);
+              const [apptResult, callResult] = await Promise.all([
+                supabaseClient.from("appointments").select("attendee_name, start_time, status", { count: "exact", head: false })
+                  .eq("organization_id", context.organizationId).ilike("attendee_phone", `%${phoneSuffix}%`).in("status", ["confirmed", "completed"]).order("start_time", { ascending: false }).limit(3),
+                supabaseClient.from("calls").select("id", { count: "exact", head: true })
+                  .eq("organization_id", context.organizationId).ilike("caller_phone", `%${phoneSuffix}%`),
+              ]);
+              const pastAppts = apptResult.data || [];
+              const totalCalls = callResult.count || 0;
+              if (pastAppts.length > 0 || totalCalls > 1) {
+                const clientName = pastAppts[0]?.attendee_name || null;
+                const visitCount = pastAppts.length;
+                callerContext += `\nCLIENT HISTORY: This is a RETURNING client.`;
+                if (clientName) callerContext += ` Their name on file is "${clientName}".`;
+                callerContext += ` They have ${visitCount} previous appointment${visitCount !== 1 ? "s" : ""} and ${totalCalls} previous call${totalCalls !== 1 ? "s" : ""}.`;
+                if (pastAppts[0]) {
+                  const lastDate = new Date(pastAppts[0].start_time).toLocaleDateString("en-AU", { month: "long", day: "numeric" });
+                  callerContext += ` Their most recent appointment was on ${lastDate}.`;
+                }
+                callerContext += ` Greet them warmly — e.g. "Welcome back!" and do not ask for details already on file.`;
+              }
+            } catch (histErr) {
+              // Non-fatal — continue without history
+              console.warn("[ClientHistory] Failed to fetch (non-fatal):", histErr.message);
+            }
+          }
           session.setSystemPrompt(systemPrompt + callerContext);
 
           // Create call record in database
