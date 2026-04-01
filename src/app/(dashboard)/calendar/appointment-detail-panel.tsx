@@ -98,7 +98,8 @@ export function AppointmentDetailPanel({
         body: JSON.stringify({ status: newStatus }),
       });
       if (!res.ok) throw new Error("Failed to update");
-      toast({ title: `Appointment ${newStatus}` });
+      const label = newStatus === "no_show" ? "No Show" : newStatus.charAt(0).toUpperCase() + newStatus.slice(1);
+      toast({ title: `Appointment marked as ${label}` });
       onUpdated();
       fetchAppointment();
     } catch {
@@ -141,6 +142,14 @@ export function AppointmentDetailPanel({
     });
   };
 
+  const formatStatus = (status: string) => {
+    const labels: Record<string, string> = {
+      confirmed: "Confirmed", pending: "Pending", cancelled: "Cancelled",
+      completed: "Completed", no_show: "No Show", rescheduled: "Rescheduled",
+    };
+    return labels[status] || status;
+  };
+
   const formatTime = (iso: string) => {
     return new Date(iso).toLocaleTimeString("en-AU", {
       hour: "numeric", minute: "2-digit", hour12: true,
@@ -172,7 +181,7 @@ export function AppointmentDetailPanel({
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <Badge className={STATUS_COLORS[appt.status] || ""}>
-                  {appt.status.replace("_", " ")}
+                  {formatStatus(appt.status)}
                 </Badge>
                 {appt.confirmation_code && (
                   <span className="text-xs text-muted-foreground font-mono">
@@ -394,6 +403,26 @@ export function AppointmentDetailPanel({
                       Cancel Appointment
                     </Button>
                   </div>
+                </div>
+              </>
+            )}
+
+            {/* Undo — revert to confirmed for non-active statuses */}
+            {!isActive && !editing && appt.status !== "confirmed" && (
+              <>
+                <Separator />
+                <div className="space-y-2">
+                  <p className="text-sm text-muted-foreground">
+                    This appointment is marked as <span className="font-medium">{formatStatus(appt.status)}</span>.
+                  </p>
+                  <Button
+                    variant="outline" size="sm" className="w-full"
+                    onClick={() => handleStatusChange("confirmed")}
+                    disabled={saving}
+                  >
+                    <Check className="h-3.5 w-3.5 mr-1" />
+                    Revert to Confirmed
+                  </Button>
                 </div>
               </>
             )}
