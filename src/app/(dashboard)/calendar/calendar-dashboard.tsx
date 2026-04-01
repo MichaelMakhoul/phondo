@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useCallback } from "react";
+import { AppointmentDetailPanel } from "./appointment-detail-panel";
 import Link from "next/link";
 import {
   Card,
@@ -180,6 +181,8 @@ export function CalendarDashboard({
   const [stats, setStats] = useState<Stats>(initialStats);
   const [isLoading, setIsLoading] = useState(false);
   const [calendarView, setCalendarView] = useState<CalendarView>("days");
+  const [detailApptId, setDetailApptId] = useState<string | null>(null);
+  const [detailOpen, setDetailOpen] = useState(false);
   const [yearRangeStart, setYearRangeStart] = useState(() => Math.floor(new Date().getFullYear() / 12) * 12);
 
   const visibleDays = useMemo(() => getVisibleDays(currentMonth), [currentMonth]);
@@ -245,6 +248,10 @@ export function CalendarDashboard({
       setIsLoading(false);
     }
   }
+
+  const refreshCurrentMonth = useCallback(() => {
+    goToMonth(currentMonth);
+  }, [currentMonth]);
 
   return (
     <div className="space-y-6">
@@ -570,7 +577,10 @@ export function CalendarDashboard({
                   {selectedDayAppointments.map((appt) => (
                     <div
                       key={appt.id}
-                      className="rounded-lg border p-3 space-y-2"
+                      className="rounded-lg border p-3 space-y-2 cursor-pointer hover:border-primary/50 hover:bg-muted/30 transition-colors"
+                      onClick={() => { setDetailApptId(appt.id); setDetailOpen(true); }}
+                      role="button"
+                      tabIndex={0}
                     >
                       <div className="flex items-center justify-between">
                         <span className="text-xs font-medium text-muted-foreground">
@@ -641,7 +651,10 @@ export function CalendarDashboard({
               {upcomingAppointments.map((appt) => (
                 <div
                   key={appt.id}
-                  className="flex items-center gap-4 rounded-lg border p-3"
+                  className="flex items-center gap-4 rounded-lg border p-3 cursor-pointer hover:border-primary/50 hover:bg-muted/30 transition-colors"
+                  onClick={() => { setDetailApptId(appt.id); setDetailOpen(true); }}
+                  role="button"
+                  tabIndex={0}
                 >
                   <div className="shrink-0 text-center">
                     <div className="text-xs font-medium text-muted-foreground">
@@ -668,6 +681,14 @@ export function CalendarDashboard({
           )}
         </CardContent>
       </Card>
+
+      {/* Appointment Detail Panel */}
+      <AppointmentDetailPanel
+        appointmentId={detailApptId}
+        open={detailOpen}
+        onClose={() => { setDetailOpen(false); setDetailApptId(null); }}
+        onUpdated={refreshCurrentMonth}
+      />
     </div>
   );
 }
