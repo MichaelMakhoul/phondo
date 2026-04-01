@@ -605,7 +605,7 @@ export function CalendarDashboard({
                             </span>
                           </div>
                         )}
-                        {appt.attendee_email && (
+                        {appt.attendee_email && !appt.attendee_email.includes("@noreply.phondo.ai") && (
                           <div className="flex items-center gap-2">
                             <Mail className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
                             <span className="text-sm text-muted-foreground truncate">

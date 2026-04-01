@@ -152,7 +152,7 @@ export function AppointmentDetailPanel({
 
   return (
     <Sheet open={open} onOpenChange={(o) => !o && onClose()}>
-      <SheetContent className="w-full sm:max-w-lg overflow-y-auto">
+      <SheetContent className="w-full sm:max-w-lg overflow-y-auto px-6">
         <SheetHeader>
           <SheetTitle className="flex items-center gap-2">
             <Calendar className="h-5 w-5" />
@@ -292,10 +292,10 @@ export function AppointmentDetailPanel({
                       </a>
                     </div>
                   )}
-                  {appt.attendee_email && (
+                  {appt.attendee_email && !appt.attendee_email.includes("@noreply.phondo.ai") && (
                     <div className="flex items-center gap-2">
                       <Mail className="h-4 w-4 text-muted-foreground" />
-                      <span className="text-sm text-muted-foreground">{appt.attendee_email}</span>
+                      <span className="text-sm text-muted-foreground truncate">{appt.attendee_email}</span>
                     </div>
                   )}
                   {appt.notes && (
