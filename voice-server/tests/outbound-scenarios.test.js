@@ -17,14 +17,16 @@ describe("outbound-scenarios", () => {
     assert.equal(getScenario("nonexistent"), null);
   });
 
-  it("returns all scenarios", () => {
+  it("returns all scenarios with required fields", () => {
     const all = getAllScenarios();
-    assert.ok(all.length >= 47, `expected at least 47 scenarios, got ${all.length}`);
+    assert.equal(all.length, 49, `expected exactly 49 scenarios, got ${all.length}`);
     // Every scenario has required fields
     for (const s of all) {
       assert.ok(s.id, `missing id on scenario: ${JSON.stringify(s).slice(0, 50)}`);
       assert.ok(s.name, `missing name on: ${s.id}`);
       assert.ok(s.prompt, `missing prompt on: ${s.id}`);
+      assert.ok(s.section, `missing section on: ${s.id}`);
+      assert.ok(Array.isArray(s.expectedOutcomes), `missing expectedOutcomes on: ${s.id}`);
     }
   });
 
@@ -36,8 +38,12 @@ describe("outbound-scenarios", () => {
   });
 
   it("adapts scenario for different industry", () => {
+    const base = getScenario("book-happy-path");
     const dental = getScenarioForIndustry("book-happy-path", "dental");
     const legal = getScenarioForIndustry("book-happy-path", "legal");
+    // Dental null override should return base prompt unchanged
+    assert.equal(dental.prompt, base.prompt, "dental null override should return base");
+    // Legal override should differ
     assert.ok(dental.prompt !== legal.prompt, "prompts should differ by industry");
     assert.ok(legal.prompt.toLowerCase().includes("consult") || legal.prompt.toLowerCase().includes("legal") || legal.prompt.toLowerCase().includes("law"), "legal prompt should mention legal context");
   });
