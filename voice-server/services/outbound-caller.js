@@ -5,6 +5,7 @@
 
 const crypto = require("crypto");
 const { WebSocket } = require("ws");
+const { Sentry } = require("../lib/sentry");
 const { createGeminiSession } = require("./gemini-live");
 const { getScenario, getScenarioForIndustry } = require("../lib/outbound-scenarios");
 const { swapAssistant, restoreAssistant, getTestAssistantId } = require("../lib/outbound-fixtures");
@@ -100,7 +101,9 @@ async function twilioCreateCall(to, from, twimlUrl, statusCallbackUrl) {
 
   if (!resp.ok) {
     const body = await resp.text();
-    throw new Error(`Twilio call creation failed (${resp.status}): ${body}`);
+    const err = new Error(`Twilio call creation failed (${resp.status}): ${body}`);
+    Sentry.captureException(err);
+    throw err;
   }
 
   const data = await resp.json();
@@ -186,9 +189,11 @@ async function makeOutboundCall(config) {
     await new Promise((r) => setTimeout(r, 500));
   }
 
+  let callToken = null;
+
   try {
     // Generate call token
-    const callToken = generateOutboundToken({
+    callToken = generateOutboundToken({
       scenarioId: scenario.id,
       targetNumber,
       industry: industry || null,
@@ -216,7 +221,19 @@ async function makeOutboundCall(config) {
     // Initiate the Twilio call
     const twimlUrl = `${PUBLIC_URL}/outbound/twiml/${encodeURIComponent(callToken)}`;
     const statusUrl = `${PUBLIC_URL}/outbound/status/${encodeURIComponent(callToken)}`;
-    const callSid = await twilioCreateCall(targetNumber, OUTBOUND_CALLER_NUMBER, twimlUrl, statusUrl);
+
+    let callSid;
+    try {
+      callSid = await twilioCreateCall(targetNumber, OUTBOUND_CALLER_NUMBER, twimlUrl, statusUrl);
+    } catch (twilioErr) {
+      // Clean up pending call entry + timeout to prevent leak and unhandled rejection
+      const leaked = pendingCalls.get(callToken);
+      if (leaked) {
+        leaked.reject(twilioErr); // clears the timeout via the wrapped reject
+        pendingCalls.delete(callToken);
+      }
+      throw twilioErr;
+    }
 
     console.log(`[Outbound] Call initiated: ${callSid} → ${targetNumber} (scenario=${scenario.id}, industry=${industry || "default"})`);
 
@@ -235,6 +252,7 @@ async function makeOutboundCall(config) {
         await restoreAssistant(targetNumber, previousAssistantId);
       } catch (restoreErr) {
         console.error("[Outbound] CRITICAL: Failed to restore assistant:", restoreErr.message);
+        Sentry.captureException(restoreErr);
       }
     }
   }
@@ -266,6 +284,8 @@ async function runOutboundSuite(config) {
 
   if (!targetNumber) throw new Error("targetNumber is required");
   if (!scenarios || scenarios.length === 0) throw new Error("scenarios array is required");
+
+  const suiteStartedAt = Date.now();
 
   const effectiveDelay = rateLimitMode === "free"
     ? Math.max(delayBetweenCallsMs, 15000)
@@ -349,7 +369,7 @@ async function runOutboundSuite(config) {
       completed,
       failed,
       totalDuration,
-      wallClockSeconds: Math.round((Date.now() - (results[0]?.call?.startedAt ? new Date(results[0].call.startedAt).getTime() : Date.now())) / 1000),
+      wallClockSeconds: Math.round((Date.now() - suiteStartedAt) / 1000),
     },
   };
 }
@@ -362,6 +382,15 @@ async function runOutboundSuite(config) {
  *
  * @param {WebSocket} twilioWs - The Twilio Media Stream WebSocket
  * @param {object} tokenData - Verified token payload
+ */
+/**
+ * Handle an outbound WebSocket connection from Twilio.
+ * IMPORTANT: tokenData must have `_token` set to the raw token string
+ * for pendingCalls Map lookup. The caller (server.js) must attach it:
+ *   tokenData._token = rawTokenString;
+ *
+ * @param {WebSocket} twilioWs
+ * @param {object} tokenData - Verified token payload with `_token` attached
  */
 function handleOutboundConnection(twilioWs, tokenData) {
   const pending = pendingCalls.get(tokenData._token);
@@ -518,6 +547,7 @@ function handleOutboundConnection(twilioWs, tokenData) {
           },
           onError: (err) => {
             console.error("[Outbound] Gemini session error:", err.message);
+            Sentry.captureException(err);
             cleanup("failed", err.message);
             if (twilioWs.readyState === WebSocket.OPEN) twilioWs.close(4500, "Gemini error");
           },
