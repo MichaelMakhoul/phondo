@@ -1,6 +1,11 @@
 /**
- * Outbound calling service — orchestrates Twilio outbound calls
+ * Outbound calling service — orchestrates Telnyx outbound calls
  * with Gemini Live AI playing a caller persona.
+ *
+ * Uses Telnyx TeXML API for outbound call creation (TwiML-compatible).
+ * The outbound call dials the target number, Telnyx fetches our TeXML
+ * endpoint which returns <Connect><Stream>, and the WebSocket handler
+ * wires the Gemini session.
  */
 
 const crypto = require("crypto");
@@ -10,8 +15,8 @@ const { createGeminiSession } = require("./gemini-live");
 const { getScenario, getScenarioForIndustry } = require("../lib/outbound-scenarios");
 const { swapAssistant, restoreAssistant, getTestAssistantId } = require("../lib/outbound-fixtures");
 
-const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
-const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
+const TELNYX_API_KEY = process.env.TELNYX_API_KEY;
+const TELNYX_TEXML_APP_ID = process.env.TELNYX_TEXML_APP_ID;
 const PUBLIC_URL = process.env.PUBLIC_URL;
 const INTERNAL_API_SECRET = process.env.INTERNAL_API_SECRET;
 const OUTBOUND_CALLER_NUMBER = process.env.OUTBOUND_CALLER_NUMBER;
@@ -21,7 +26,7 @@ const pendingCalls = new Map();
 
 // ── Token helpers ──
 
-const TOKEN_TTL_MS = 300_000; // 5 minutes — Twilio trial accounts add delays before TwiML fetch
+const TOKEN_TTL_MS = 120_000; // 2 minutes — enough for Telnyx call setup + TeXML fetch
 
 function generateOutboundToken(data, secret) {
   const payload = { ...data, exp: Date.now() + TOKEN_TTL_MS };
@@ -70,40 +75,38 @@ RULES:
 - Keep your responses concise — real callers don't give speeches.`;
 }
 
-// ── Twilio REST call creation ──
+// ── Telnyx TeXML call creation ──
 
 /**
- * @param {object} [options]
- * @param {string} [options.sendDigits] - DTMF digits to send after call connects (e.g., "wwwwwwww1" for trial bypass)
+ * Create an outbound call via Telnyx TeXML API.
+ * TeXML is TwiML-compatible — the texmlUrl should return standard <Response><Connect><Stream> XML.
+ *
+ * @param {string} to - E.164 phone number to call
+ * @param {string} from - E.164 Telnyx number to call from
+ * @param {string} texmlUrl - URL that returns TeXML/TwiML for the outbound leg
+ * @param {string} statusCallbackUrl - URL for call status callbacks
+ * @returns {Promise<string>} Call control ID (Telnyx equivalent of CallSid)
  */
-async function twilioCreateCall(to, from, twimlUrl, statusCallbackUrl, options) {
-  if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN) {
-    throw new Error("Twilio credentials not configured");
+async function telnyxCreateCall(to, from, texmlUrl, statusCallbackUrl) {
+  if (!TELNYX_API_KEY || !TELNYX_TEXML_APP_ID) {
+    throw new Error("TELNYX_API_KEY and TELNYX_TEXML_APP_ID are required for outbound calls");
   }
 
-  const url = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Calls.json`;
-  const auth = Buffer.from(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`).toString("base64");
+  const url = `https://api.telnyx.com/v2/texml/calls/${TELNYX_TEXML_APP_ID}`;
 
   const params = new URLSearchParams({
     To: to,
     From: from,
-    Url: twimlUrl,
+    Url: texmlUrl,
     StatusCallback: statusCallbackUrl,
     StatusCallbackEvent: "completed",
-    StatusCallbackMethod: "POST",
   });
-
-  // Twilio trial accounts play "Press any key to execute this call" to the called party.
-  // SendDigits sends DTMF after the call connects, dismissing the trial message.
-  if (options?.sendDigits) {
-    params.set("SendDigits", options.sendDigits);
-  }
 
   const resp = await fetch(url, {
     method: "POST",
     signal: AbortSignal.timeout(15_000),
     headers: {
-      Authorization: `Basic ${auth}`,
+      Authorization: `Bearer ${TELNYX_API_KEY}`,
       "Content-Type": "application/x-www-form-urlencoded",
     },
     body: params.toString(),
@@ -111,27 +114,29 @@ async function twilioCreateCall(to, from, twimlUrl, statusCallbackUrl, options) 
 
   if (!resp.ok) {
     const body = await resp.text();
-    const err = new Error(`Twilio call creation failed (${resp.status}): ${body}`);
+    const err = new Error(`Telnyx call creation failed (${resp.status}): ${body}`);
     Sentry.captureException(err);
     throw err;
   }
 
   const data = await resp.json();
-  return data.sid; // CallSid
+  // TeXML API returns call_sid in the response
+  return data.data?.call_sid || data.data?.id || data.sid;
 }
 
-async function twilioHangup(callSid) {
-  if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN) return;
-
-  const url = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Calls/${callSid}.json`;
-  const auth = Buffer.from(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`).toString("base64");
+/**
+ * Hang up a Telnyx call via TeXML update.
+ * @param {string} callSid - Telnyx call SID
+ */
+async function telnyxHangup(callSid) {
+  if (!TELNYX_API_KEY || !TELNYX_TEXML_APP_ID) return;
 
   try {
-    await fetch(url, {
+    await fetch(`https://api.telnyx.com/v2/texml/calls/${TELNYX_TEXML_APP_ID}/${callSid}/update`, {
       method: "POST",
       signal: AbortSignal.timeout(10_000),
       headers: {
-        Authorization: `Basic ${auth}`,
+        Authorization: `Bearer ${TELNYX_API_KEY}`,
         "Content-Type": "application/x-www-form-urlencoded",
       },
       body: new URLSearchParams({ Status: "completed" }).toString(),
@@ -163,7 +168,6 @@ async function makeOutboundCall(config) {
     industry,
     maxDurationSeconds = 180,
     voiceName = "Puck",
-    trialMode = true, // Twilio trial accounts need DTMF to dismiss "press any key" message
   } = config;
 
   if (!targetNumber) throw new Error("targetNumber is required");
@@ -213,8 +217,7 @@ async function makeOutboundCall(config) {
 
     // Create a promise that resolves when the call ends
     const resultPromise = new Promise((resolve, reject) => {
-      // Trial accounts add ~5 min delay before outbound TwiML is fetched
-      const setupBufferSeconds = trialMode ? 330 : 30;
+      const setupBufferSeconds = 30;
       const timeoutMs = (maxDurationSeconds + setupBufferSeconds) * 1000;
       const timeout = setTimeout(() => {
         pendingCalls.delete(callToken);
@@ -231,24 +234,21 @@ async function makeOutboundCall(config) {
       });
     });
 
-    // Initiate the Twilio call
-    const twimlUrl = `${PUBLIC_URL}/outbound/twiml/${encodeURIComponent(callToken)}`;
+    // Initiate the Telnyx outbound call
+    const texmlUrl = `${PUBLIC_URL}/outbound/twiml/${encodeURIComponent(callToken)}`;
     const statusUrl = `${PUBLIC_URL}/outbound/status/${encodeURIComponent(callToken)}`;
 
     let callSid;
     try {
-      callSid = await twilioCreateCall(targetNumber, OUTBOUND_CALLER_NUMBER, twimlUrl, statusUrl, {
-        // 'w' = 0.5s pause. 8x = 4s wait for trial message to play, then press 1.
-        sendDigits: trialMode ? "wwwwwwww1" : undefined,
-      });
-    } catch (twilioErr) {
+      callSid = await telnyxCreateCall(targetNumber, OUTBOUND_CALLER_NUMBER, texmlUrl, statusUrl);
+    } catch (telnyxErr) {
       // Clean up pending call entry + timeout to prevent leak and unhandled rejection
       const leaked = pendingCalls.get(callToken);
       if (leaked) {
-        leaked.reject(twilioErr); // clears the timeout via the wrapped reject
+        leaked.reject(telnyxErr); // clears the timeout via the wrapped reject
         pendingCalls.delete(callToken);
       }
-      throw twilioErr;
+      throw telnyxErr;
     }
 
     console.log(`[Outbound] Call initiated: ${callSid} → ${targetNumber} (scenario=${scenario.id}, industry=${industry || "default"})`);
@@ -507,7 +507,7 @@ function handleOutboundConnection(twilioWs, tokenData) {
       // Start max duration timer
       maxDurationTimer = setTimeout(() => {
         console.log(`[Outbound] Max duration (${maxDurationSeconds}s) reached — hanging up`);
-        if (pending.callSid) twilioHangup(pending.callSid);
+        if (pending.callSid) telnyxHangup(pending.callSid);
         cleanup("timeout");
         if (twilioWs.readyState === WebSocket.OPEN) twilioWs.close(1000, "Max duration");
       }, maxDurationSeconds * 1000);
