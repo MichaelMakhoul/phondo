@@ -221,25 +221,36 @@ async function createFixture(industry) {
     .single();
 
   if (existing) {
-    return { orgId, assistantId, status: "already_exists" };
+    // Org exists — check if assistant also exists (may have failed on a previous run)
+    const { data: existingAssistant } = await supabase
+      .from("assistants")
+      .select("id")
+      .eq("id", assistantId)
+      .single();
+
+    if (existingAssistant) {
+      return { orgId, assistantId, status: "already_exists" };
+    }
+    // Org exists but assistant doesn't — fall through to create assistant + resources
+    console.log(`[Fixtures] Org ${industry} exists but assistant missing — creating assistant`);
   }
 
-  // Generate URL-safe slug from org name (e.g., "Smile Hub Dental" → "smile-hub-dental-test")
-  const slug = def.orgName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "") + "-test";
-
-  // Create organization
-  const { error: orgError } = await supabase.from("organizations").insert({
-    id: orgId,
-    name: def.orgName,
-    slug,
-    industry: def.industry,
+  // Create organization (skip if it already exists from a partial previous run)
+  if (!existing) {
+    const slug = def.orgName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "") + "-test";
+    const { error: orgError } = await supabase.from("organizations").insert({
+      id: orgId,
+      name: def.orgName,
+      slug,
+      industry: def.industry,
     timezone: def.timezone,
     business_hours: def.businessHours,
     country: "AU",
     default_appointment_duration: def.serviceTypes[0]?.duration_minutes || 30,
     recording_consent_mode: "auto",
-  });
-  if (orgError) throw new Error(`Failed to create org: ${orgError.message}`);
+    });
+    if (orgError) throw new Error(`Failed to create org: ${orgError.message}`);
+  }
 
   // Build promptConfig using same defaults as the UI
   const promptConfig = {
@@ -259,10 +270,12 @@ async function createFixture(industry) {
   };
 
   // Create assistant
+  // system_prompt is a legacy NOT NULL column — runtime uses prompt_config when present
   const { error: assistantError } = await supabase.from("assistants").insert({
     id: assistantId,
     organization_id: orgId,
     name: `${def.orgName} Receptionist`,
+    system_prompt: `You are the AI receptionist for ${def.orgName}. Be helpful and professional.`,
     prompt_config: promptConfig,
     settings: {},
     is_active: true,
