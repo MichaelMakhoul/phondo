@@ -72,7 +72,11 @@ RULES:
 
 // ── Twilio REST call creation ──
 
-async function twilioCreateCall(to, from, twimlUrl, statusCallbackUrl) {
+/**
+ * @param {object} [options]
+ * @param {string} [options.sendDigits] - DTMF digits to send after call connects (e.g., "wwwwwwww1" for trial bypass)
+ */
+async function twilioCreateCall(to, from, twimlUrl, statusCallbackUrl, options) {
   if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN) {
     throw new Error("Twilio credentials not configured");
   }
@@ -88,6 +92,12 @@ async function twilioCreateCall(to, from, twimlUrl, statusCallbackUrl) {
     StatusCallbackEvent: "completed",
     StatusCallbackMethod: "POST",
   });
+
+  // Twilio trial accounts play "Press any key to execute this call" to the called party.
+  // SendDigits sends DTMF after the call connects, dismissing the trial message.
+  if (options?.sendDigits) {
+    params.set("SendDigits", options.sendDigits);
+  }
 
   const resp = await fetch(url, {
     method: "POST",
@@ -153,6 +163,7 @@ async function makeOutboundCall(config) {
     industry,
     maxDurationSeconds = 180,
     voiceName = "Puck",
+    trialMode = true, // Twilio trial accounts need DTMF to dismiss "press any key" message
   } = config;
 
   if (!targetNumber) throw new Error("targetNumber is required");
@@ -224,7 +235,10 @@ async function makeOutboundCall(config) {
 
     let callSid;
     try {
-      callSid = await twilioCreateCall(targetNumber, OUTBOUND_CALLER_NUMBER, twimlUrl, statusUrl);
+      callSid = await twilioCreateCall(targetNumber, OUTBOUND_CALLER_NUMBER, twimlUrl, statusUrl, {
+        // 'w' = 0.5s pause. 8x = 4s wait for trial message to play, then press 1.
+        sendDigits: trialMode ? "wwwwwwww1" : undefined,
+      });
     } catch (twilioErr) {
       // Clean up pending call entry + timeout to prevent leak and unhandled rejection
       const leaked = pendingCalls.get(callToken);
