@@ -871,6 +871,7 @@ app.post("/outbound/twiml/:token", (req, res) => {
     console.warn("[Outbound] Rejected TwiML request — invalid token");
     return res.status(403).send("Forbidden");
   }
+  console.log(`[Outbound] TwiML requested for scenario=${tokenData.scenarioId} → streaming to /ws/outbound`);
   const wsUrl = PUBLIC_URL.replace(/^http/, "ws") + `/ws/outbound?token=${encodeURIComponent(req.params.token)}`;
   res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>

@@ -21,7 +21,7 @@ const pendingCalls = new Map();
 
 // ── Token helpers ──
 
-const TOKEN_TTL_MS = 60_000; // 60 seconds
+const TOKEN_TTL_MS = 300_000; // 5 minutes — Twilio trial accounts add delays before TwiML fetch
 
 function generateOutboundToken(data, secret) {
   const payload = { ...data, exp: Date.now() + TOKEN_TTL_MS };
@@ -213,10 +213,12 @@ async function makeOutboundCall(config) {
 
     // Create a promise that resolves when the call ends
     const resultPromise = new Promise((resolve, reject) => {
-      const timeoutMs = (maxDurationSeconds + 30) * 1000; // buffer for setup
+      // Trial accounts add ~5 min delay before outbound TwiML is fetched
+      const setupBufferSeconds = trialMode ? 330 : 30;
+      const timeoutMs = (maxDurationSeconds + setupBufferSeconds) * 1000;
       const timeout = setTimeout(() => {
         pendingCalls.delete(callToken);
-        reject(new Error(`Call timed out after ${maxDurationSeconds + 30}s`));
+        reject(new Error(`Call timed out after ${maxDurationSeconds + setupBufferSeconds}s`));
       }, timeoutMs);
 
       pendingCalls.set(callToken, {
