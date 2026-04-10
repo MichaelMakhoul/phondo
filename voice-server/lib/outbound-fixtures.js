@@ -224,10 +224,14 @@ async function createFixture(industry) {
     return { orgId, assistantId, status: "already_exists" };
   }
 
+  // Generate URL-safe slug from org name (e.g., "Smile Hub Dental" → "smile-hub-dental-test")
+  const slug = def.orgName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "") + "-test";
+
   // Create organization
   const { error: orgError } = await supabase.from("organizations").insert({
     id: orgId,
     name: def.orgName,
+    slug,
     industry: def.industry,
     timezone: def.timezone,
     business_hours: def.businessHours,
