@@ -495,6 +495,22 @@ async function getBuiltInAvailability(
       practitioner_id: string | null;
     }[];
 
+    // Fetch practitioner-specific blocked times for this date
+    const { data: practBlocks } = await (supabase as any)
+      .from("blocked_times")
+      .select("practitioner_id, start_time, end_time")
+      .eq("organization_id", organizationId)
+      .not("practitioner_id", "is", null)
+      .in("practitioner_id", practitionerIds)
+      .lt("start_time", dayEndISO)
+      .gt("end_time", dayStartISO);
+
+    const practitionerBlocks = (practBlocks || []) as {
+      practitioner_id: string;
+      start_time: string;
+      end_time: string;
+    }[];
+
     // A slot is available if at least one practitioner is free at that time
     return slots.filter((slotIso) => {
       const [, timeStr] = slotIso.split("T");
@@ -517,6 +533,18 @@ async function getBuiltInAvailability(
 
         if (slotStartMin < apptEndMin && slotEndMin > apptStartMin && appt.practitioner_id) {
           busyPractitioners.add(appt.practitioner_id);
+        }
+      }
+
+      // Also mark practitioners busy if they have a blocked time overlapping this slot
+      for (const block of practitionerBlocks) {
+        const bStart = getTimeInTimezone(new Date(block.start_time), timezone);
+        const bEnd = getTimeInTimezone(new Date(block.end_time), timezone);
+        const bStartMin = bStart.h * 60 + bStart.m;
+        const bEndMin = bEnd.h * 60 + bEnd.m;
+
+        if (slotStartMin < bEndMin && slotEndMin > bStartMin && block.practitioner_id) {
+          busyPractitioners.add(block.practitioner_id);
         }
       }
 
@@ -755,6 +783,7 @@ export async function handleBookAppointment(
     email?: string;
     notes?: string;
     service_type_id?: string;
+    practitioner_id?: string;
   }
 ): Promise<ToolResult> {
   const { datetime, phone, email, notes, service_type_id } = args;
@@ -873,7 +902,8 @@ export async function handleBookAppointment(
       serviceTypeDuration,
       service_type_id,
       firstName,
-      lastName
+      lastName,
+      args.practitioner_id || undefined
     );
   }
 
@@ -904,7 +934,8 @@ export async function handleBookAppointment(
     undefined, // durationOverride
     undefined, // serviceTypeId
     firstName,
-    lastName
+    lastName,
+    args.practitioner_id || undefined
   );
 }
 
@@ -1380,7 +1411,8 @@ async function bookInternal(
   durationOverride?: number,
   serviceTypeId?: string,
   firstNameOverride?: string,
-  lastNameOverride?: string
+  lastNameOverride?: string,
+  requestedPractitionerId?: string
 ): Promise<ToolResult> {
   const supabase = createAdminClient();
 
@@ -1474,11 +1506,73 @@ async function bookInternal(
     }
   }
 
-  // 2. Auto-assign practitioner if service has practitioners configured
+  // 2. Assign practitioner — specific request or round-robin auto-assign
   let assignedPractitionerId: string | undefined;
   let assignedPractitionerName: string | undefined;
 
-  if (serviceTypeId) {
+  if (requestedPractitionerId) {
+    // Caller requested a specific practitioner — validate they exist and are available
+    const resolvedServiceTypeId = serviceTypeId;
+    const practitioners = resolvedServiceTypeId
+      ? await getPractitionersForService(organizationId, resolvedServiceTypeId)
+      : [];
+
+    if (resolvedServiceTypeId && practitioners.length > 0) {
+      const requested = practitioners.find(p => p.id === requestedPractitionerId);
+      if (!requested) {
+        return {
+          success: false,
+          message: `The requested practitioner is not available for this service type. I can book with the next available practitioner instead, or you can choose from our team.`,
+        };
+      }
+    }
+
+    // Check if this practitioner is free at the requested time
+    const supabaseAdmin = createAdminClient();
+    const { data: conflicts } = await (supabaseAdmin as any)
+      .from("appointments")
+      .select("id")
+      .eq("organization_id", organizationId)
+      .eq("practitioner_id", requestedPractitionerId)
+      .in("status", ["confirmed", "pending"])
+      .lt("start_time", endDate.toISOString())
+      .gt("end_time", startDate.toISOString())
+      .limit(1);
+
+    if (conflicts && conflicts.length > 0) {
+      return {
+        success: false,
+        message: `That practitioner is already booked at this time. Would you like me to check their next available slot, or book with another practitioner?`,
+      };
+    }
+
+    // Also check practitioner-specific blocked times
+    const { data: blocks } = await (supabaseAdmin as any)
+      .from("blocked_times")
+      .select("id")
+      .eq("organization_id", organizationId)
+      .eq("practitioner_id", requestedPractitionerId)
+      .lt("start_time", endDate.toISOString())
+      .gt("end_time", startDate.toISOString())
+      .limit(1);
+
+    if (blocks && blocks.length > 0) {
+      return {
+        success: false,
+        message: `That practitioner is unavailable at this time (they may be on a break or off). Would you like to try a different time or see another practitioner?`,
+      };
+    }
+
+    assignedPractitionerId = requestedPractitionerId;
+    // Try to resolve the name for the confirmation message
+    if (serviceTypeId) {
+      const allPractitioners = practitioners.length > 0
+        ? practitioners
+        : await getPractitionersForService(organizationId, serviceTypeId);
+      assignedPractitionerName = allPractitioners.find(p => p.id === requestedPractitionerId)?.name;
+    }
+  } else if (serviceTypeId) {
+    // No specific practitioner requested — use round-robin (existing logic)
     const practitioners = await getPractitionersForService(organizationId, serviceTypeId);
     if (practitioners.length > 0) {
       const practitionerIds = practitioners.map((p) => p.id);

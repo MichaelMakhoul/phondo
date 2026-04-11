@@ -153,6 +153,11 @@ const calendarToolDefinitions = [
             description:
               "The ID of the service/appointment type being booked. Include this when the business has service types configured.",
           },
+          practitioner_id: {
+            type: "string",
+            description:
+              "The ID of the specific practitioner to book with. Only use this when the caller has explicitly requested a specific practitioner by name and you have confirmed their ID from the PRACTITIONERS ON STAFF list in your context. Omit for auto-assignment.",
+          },
         },
         required: ["datetime", "first_name", "last_name", "phone"],
       },
