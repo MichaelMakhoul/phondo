@@ -620,6 +620,121 @@ These scenarios verify the schedule cache feature — pre-loaded availability th
 
 ---
 
+## SECTION 16: Specific Practitioner Booking (SCRUM-186)
+
+These scenarios verify that callers can request a specific practitioner and the system correctly handles per-practitioner availability, time-off, and booking.
+
+### Scenario 16.1 — Book with Specific Practitioner (Happy Path)
+**Prerequisites:** 2+ practitioners active (e.g., Dr. Sarah Chen, Lisa Thompson). Both have open slots today.
+**Script:**
+> "I'd like to book a check-up with Dr. Sarah Chen"
+> (Follow normal booking flow — name, phone, etc.)
+
+**Expected:**
+- [ ] AI checks Dr. Chen's specific availability (not aggregate)
+- [ ] Offers times when Dr. Chen is free
+- [ ] Booking confirmation includes "with Dr. Sarah Chen"
+- [ ] Appointment in dashboard has Dr. Chen as assigned practitioner
+
+---
+
+### Scenario 16.2 — Requested Practitioner is Fully Booked
+**Prerequisites:** Block all of Dr. Chen's remaining slots today via existing appointments.
+**Script:**
+> "I want to see Dr. Chen today"
+
+**Expected:**
+- [ ] AI says Dr. Chen is not available today
+- [ ] Suggests alternative: "Dr. Chen is fully booked today, but Lisa Thompson has availability at [times]. Would you like to book with her, or would you prefer a different day with Dr. Chen?"
+- [ ] Does NOT silently book with a different practitioner
+
+---
+
+### Scenario 16.3 — Practitioner on Day Off (Blocked Time)
+**Prerequisites:** Add a blocked time for Dr. Chen for today via dashboard (select her name, mark "All day", reason "Personal day").
+**Script:**
+> "Is Dr. Chen available today?"
+
+**Expected:**
+- [ ] AI says Dr. Chen is not available today (recognizes the block)
+- [ ] Suggests next day Dr. Chen is available OR offers another practitioner
+- [ ] Does NOT show Dr. Chen's slots as available
+
+---
+
+### Scenario 16.4 — Practitioner on Lunch Break (Time-Specific Block)
+**Prerequisites:** Add a blocked time for Lisa Thompson today 12:00-1:00 PM (title "Lunch break").
+**Script:**
+> "Can I book with Lisa at 12:30?"
+
+**Expected:**
+- [ ] AI says Lisa is not available at 12:30
+- [ ] Offers Lisa's next available time (e.g., "Lisa is on break until 1 PM. She has a slot at 1:00 PM — would that work?")
+- [ ] Does NOT offer 12:30 for any practitioner assignment
+
+---
+
+### Scenario 16.5 — Org-Level Block Still Works
+**Prerequisites:** Add an org-level blocked time (no practitioner selected) for a time slot.
+**Script:**
+> "What's available at [blocked time]?"
+
+**Expected:**
+- [ ] AI says no one is available at that time
+- [ ] Org-level block applies to ALL practitioners
+- [ ] Works the same as before the per-practitioner feature
+
+---
+
+### Scenario 16.6 — Practitioner Not Found by Name
+**Script:**
+> "I'd like to see Dr. Johnson" (no practitioner by that name exists)
+
+**Expected:**
+- [ ] AI says it doesn't have a practitioner by that name
+- [ ] Lists available practitioners: "We have Dr. Sarah Chen and Lisa Thompson. Would you like to book with one of them?"
+- [ ] Does NOT guess or make up a practitioner
+
+---
+
+### Scenario 16.7 — Caller Doesn't Specify Practitioner (Round-Robin)
+**Script:**
+> "I'd like to book a check-up" (no practitioner preference mentioned)
+
+**Expected:**
+- [ ] AI proceeds with normal booking flow (aggregate availability)
+- [ ] System auto-assigns practitioner via round-robin
+- [ ] Booking confirmation mentions which practitioner was assigned
+
+---
+
+### Scenario 16.8 — Dashboard: Block Time for Specific Practitioner
+**Script (dashboard, not voice):**
+> Go to Settings > Calendar > Blocked Times
+> Click "Block Time"
+> Select a practitioner from the dropdown
+> Set date, time, reason
+> Save
+
+**Expected:**
+- [ ] Practitioner dropdown shows all active practitioners + "All staff (org-wide)" option
+- [ ] Saved block shows practitioner name in the list
+- [ ] Block only affects that practitioner's availability, not others
+
+---
+
+### Scenario 16.9 — Per-Practitioner Availability in Prompt
+**Script:**
+> "Who's working today?"
+> "How busy is Dr. Chen?"
+
+**Expected:**
+- [ ] AI knows which practitioners are on staff
+- [ ] AI can say how many appointments each has today
+- [ ] AI mentions if a practitioner is off (has an all-day block)
+
+---
+
 ## Scoring
 
 After running all scenarios, tally:
