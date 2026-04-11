@@ -82,11 +82,21 @@ function applyDelta(orgId, action, data) {
 
   if (action === "book") {
     const { appointment, dateKey, slotTime } = data;
+    const hasPractitioners = (entry.snapshot.practitioners || []).length > 0;
 
-    // Push the new appointment
+    if (hasPractitioners) {
+      // Multi-practitioner orgs: we don't know which practitioner was assigned
+      // (that happens server-side in pickPractitionerRoundRobin). A surgical
+      // slot removal would be wrong — e.g., if 2 of 3 dentists are free at 9am,
+      // removing the 9am slot hides valid availability. Safest to invalidate
+      // and let the next read re-fetch from DB.
+      invalidate(orgId);
+      return;
+    }
+
+    // Single-practitioner / no-practitioner orgs: surgical delta is safe
     entry.snapshot.appointments.push(appointment);
 
-    // Remove the booked slot from the date's available slots
     if (entry.snapshot.slots[dateKey]) {
       entry.snapshot.slots[dateKey] = entry.snapshot.slots[dateKey].filter(
         (s) => s !== slotTime

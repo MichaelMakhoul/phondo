@@ -91,8 +91,9 @@ describe("schedule-cache", () => {
   });
 
   describe("applyDelta", () => {
-    it("book: adds appointment and removes slot", () => {
-      const snap = makeSnapshot();
+    it("book (no practitioners): adds appointment and removes slot surgically", () => {
+      // No practitioners = safe to do surgical slot removal
+      const snap = makeSnapshot({ practitioners: [] });
       mod.setSchedule("org-1", snap);
 
       const appointment = {
@@ -101,10 +102,6 @@ describe("schedule-cache", () => {
         end_time: "2026-04-12T09:30:00",
         duration_minutes: 30,
         status: "confirmed",
-        practitioner_id: "p1",
-        attendee_name: "Jane Doe",
-        service_type_id: "st1",
-        confirmation_code: "ABC123",
       };
 
       mod.applyDelta("org-1", "book", {
@@ -118,6 +115,22 @@ describe("schedule-cache", () => {
       assert.deepEqual(updated.appointments[0], appointment);
       assert.equal(updated.slots["2026-04-12"].includes("2026-04-12T09:00:00"), false);
       assert.equal(updated.slots["2026-04-12"].length, 2);
+    });
+
+    it("book (with practitioners): invalidates cache instead of surgical removal", () => {
+      // With practitioners, we can't safely remove just one slot because
+      // other practitioners might still be free at that time.
+      const snap = makeSnapshot(); // default has practitioners
+      mod.setSchedule("org-1", snap);
+
+      mod.applyDelta("org-1", "book", {
+        appointment: { id: "apt-1", start_time: "2026-04-12T09:00:00" },
+        dateKey: "2026-04-12",
+        slotTime: "2026-04-12T09:00:00",
+      });
+
+      // Cache should be invalidated (not surgically updated)
+      assert.equal(mod.getSchedule("org-1"), null);
     });
 
     it("cancel: invalidates cache entirely", () => {

@@ -992,6 +992,32 @@ function buildLiveScheduleSection(snapshot, todayStr) {
     }
   }
 
+  // Practitioner info — so the AI knows who's working and how busy they are
+  const practitioners = snapshot.practitioners || [];
+  const appointments = snapshot.appointments || [];
+  if (practitioners.length > 0) {
+    lines.push("");
+    lines.push("PRACTITIONERS ON STAFF:");
+    for (const p of practitioners) {
+      // Count today's appointments for this practitioner
+      const todayAppts = appointments.filter((a) => {
+        if (a.practitioner_id !== p.id) return false;
+        try {
+          const apptDate = new Intl.DateTimeFormat("en-CA", { timeZone: timezone }).format(new Date(a.start_time));
+          return apptDate === todayStr;
+        } catch { return false; }
+      });
+      const apptCount = todayAppts.length;
+      const busyNote = apptCount > 0 ? ` (${apptCount} appointment${apptCount === 1 ? "" : "s"} today)` : " (no appointments today)";
+      lines.push(`- ${p.name}${busyNote}`);
+    }
+    lines.push("");
+    lines.push("PRACTITIONER RULES:");
+    lines.push("- If a caller asks 'is [name] in today?', you can answer based on the info above.");
+    lines.push("- The system auto-assigns the best available practitioner when booking. You cannot guarantee a specific practitioner.");
+    lines.push("- If a caller insists on a specific person, offer to take a message so the office can arrange it.");
+  }
+
   lines.push("");
   lines.push("SCHEDULE USAGE RULES:");
   lines.push("- For TODAY and TOMORROW: Use the slot times above directly. Do NOT call check_availability or get_current_datetime — you already have the data.");
