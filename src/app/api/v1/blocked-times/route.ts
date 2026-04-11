@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { z } from "zod";
 import { isValidUUID } from "@/lib/security/validation";
+import { invalidateVoiceScheduleCache } from "@/lib/voice-cache/invalidate";
 
 interface Membership {
   organization_id: string;
@@ -13,6 +14,7 @@ const createSchema = z.object({
   endTime: z.string().datetime(),
   allDay: z.boolean().optional(),
   reason: z.string().max(500).optional(),
+  practitionerId: z.string().uuid().nullable().optional(),
 });
 
 async function getOrgId(supabase: any, userId: string): Promise<string | null> {
@@ -38,7 +40,7 @@ export async function GET() {
 
     const { data, error } = await (supabase as any)
       .from("blocked_times")
-      .select("id, title, start_time, end_time, all_day, reason, created_at")
+      .select("id, title, start_time, end_time, all_day, reason, practitioner_id, created_at")
       .eq("organization_id", orgId)
       .gte("end_time", new Date().toISOString()) // Only future/current blocks
       .order("start_time", { ascending: true });
@@ -66,7 +68,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: parsed.error.issues[0].message }, { status: 400 });
     }
 
-    const { title, startTime, endTime, allDay, reason } = parsed.data;
+    const { title, startTime, endTime, allDay, reason, practitionerId } = parsed.data;
 
     // Validate end > start
     if (new Date(endTime) <= new Date(startTime)) {
@@ -74,13 +76,19 @@ export async function POST(request: NextRequest) {
     }
 
     // Check for conflicting appointments (no codes — security sensitive)
-    const { data: conflicts, error: conflictErr } = await (supabase as any)
+    let conflictQuery = (supabase as any)
       .from("appointments")
       .select("id, attendee_name, start_time")
       .eq("organization_id", orgId)
       .in("status", ["confirmed", "pending"])
       .lt("start_time", endTime)
       .gt("end_time", startTime);
+
+    if (practitionerId) {
+      conflictQuery = conflictQuery.eq("practitioner_id", practitionerId);
+    }
+
+    const { data: conflicts, error: conflictErr } = await conflictQuery;
 
     if (conflictErr) {
       console.error("Failed to check conflicts for blocked time:", conflictErr);
@@ -96,12 +104,15 @@ export async function POST(request: NextRequest) {
         end_time: endTime,
         all_day: allDay || false,
         reason: reason || null,
+        practitioner_id: practitionerId || null,
         created_by: user.id,
       })
-      .select("id, title, start_time, end_time, all_day, reason, created_at")
+      .select("id, title, start_time, end_time, all_day, reason, practitioner_id, created_at")
       .single();
 
     if (error) throw error;
+
+    invalidateVoiceScheduleCache(orgId).catch((err) => console.warn("[VoiceCacheInvalidate] fire-and-forget failed:", err instanceof Error ? err.message : err));
 
     return NextResponse.json({
       block,
@@ -135,6 +146,9 @@ export async function DELETE(request: NextRequest) {
       .eq("organization_id", orgId);
 
     if (error) throw error;
+
+    invalidateVoiceScheduleCache(orgId).catch((err) => console.warn("[VoiceCacheInvalidate] fire-and-forget failed:", err instanceof Error ? err.message : err));
+
     return NextResponse.json({ success: true });
   } catch (err: unknown) {
     console.error("DELETE /blocked-times error:", err);

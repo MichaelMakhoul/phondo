@@ -153,6 +153,11 @@ const calendarToolDefinitions = [
             description:
               "The ID of the service/appointment type being booked. Include this when the business has service types configured.",
           },
+          practitioner_id: {
+            type: "string",
+            description:
+              "The ID of the specific practitioner to book with. Only use this when the caller has explicitly requested a specific practitioner by name and you have confirmed their ID from the PRACTITIONERS ON STAFF list in your context. Omit for auto-assignment.",
+          },
         },
         required: ["datetime", "first_name", "last_name", "phone"],
       },
@@ -279,11 +284,127 @@ const transferToolDefinition = {
 };
 
 /**
+ * Resolve get_current_datetime locally from the organization timezone.
+ * Eliminates an HTTP round-trip — timezone is already in the call context.
+ *
+ * @param {string} timezone - IANA timezone string (e.g. "Australia/Sydney")
+ * @returns {{ message: string }}
+ */
+function resolveCurrentDatetime(timezone) {
+  const now = new Date();
+  const dateFormatter = new Intl.DateTimeFormat("en-US", {
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    timeZone: timezone,
+  });
+  const timeFormatter = new Intl.DateTimeFormat("en-US", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h12",
+    timeZone: timezone,
+  });
+  const isoDateFormatter = new Intl.DateTimeFormat("en-CA", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    timeZone: timezone,
+  });
+  return {
+    message: `Current date and time: ${dateFormatter.format(now)}, ${timeFormatter.format(now)} (${timezone}). Today's date in YYYY-MM-DD format: ${isoDateFormatter.format(now)}.`,
+  };
+}
+
+/**
+ * Resolve check_availability from the pre-fetched schedule snapshot.
+ * Returns a formatted response if the requested date is in the cache,
+ * or null on cache miss so the caller falls through to the API.
+ *
+ * @param {{ date: string, service_type_id?: string }} args
+ * @param {{ slots: Record<string, Array<{ start: string, end: string }>>, timezone: string, generatedAt: string }} snapshot
+ * @returns {{ message: string } | null}
+ */
+function resolveAvailabilityFromCache(args, snapshot) {
+  const date = args.date;
+  if (!date || !snapshot.slots || !(date in snapshot.slots)) {
+    return null; // Cache miss — let the API handle it
+  }
+
+  const dateSlots = snapshot.slots[date];
+  // Get aggregate slots (works for both flat array and structured object)
+  let daySlots = Array.isArray(dateSlots) ? dateSlots : (dateSlots?._any || []);
+
+  // Nice readable date label (e.g. "Monday, April 12")
+  const dateLabel = new Intl.DateTimeFormat("en-US", {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+    timeZone: snapshot.timezone || "UTC",
+  }).format(new Date(date + "T12:00:00")); // noon to avoid DST edge cases
+
+  // Fall through to API when requested service has non-default duration
+  if (args.service_type_id && snapshot.serviceTypes) {
+    const st = snapshot.serviceTypes.find(s => s.id === args.service_type_id);
+    if (st && st.duration_minutes !== snapshot.defaultDuration) {
+      return null; // Duration mismatch — fall through to API
+    }
+  }
+
+  // Re-filter past slots for today (cache was built at snapshot time, may be stale)
+  const tz = snapshot.timezone;
+  if (tz) {
+    const nowInTz = new Date();
+    const todayStr = new Intl.DateTimeFormat("en-CA", { timeZone: tz }).format(nowInTz);
+    if (date === todayStr) {
+      const nowParts = new Intl.DateTimeFormat("en-US", { hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: tz }).format(nowInTz);
+      const [nowH, nowM] = nowParts.split(":").map(Number);
+      const nowMinutes = nowH * 60 + nowM;
+      daySlots = daySlots.filter(slot => {
+        const s = typeof slot === "string" ? slot : slot;
+        const [, timeStr] = s.split("T");
+        if (!timeStr) return true;
+        const [h, m] = timeStr.split(":").map(Number);
+        return h * 60 + m > nowMinutes;
+      });
+    }
+  }
+
+  if (daySlots.length === 0) {
+    return {
+      message: `No available slots on ${dateLabel}. Fully booked.`,
+    };
+  }
+
+  // Format each slot start time as "h:mm AM/PM"
+  // Slots can be plain ISO strings or {start, end} objects
+  const times = daySlots.map((slot) => {
+    const s = typeof slot === "string" ? slot : (slot.start || slot);
+    const [, timeStr] = s.split("T");
+    if (!timeStr) return null;
+    const [h, m] = timeStr.split(":").map(Number);
+    const period = h >= 12 ? "PM" : "AM";
+    const displayH = h === 0 ? 12 : h > 12 ? h - 12 : h;
+    return `${displayH}:${String(m).padStart(2, "0")} ${period}`;
+  }).filter(Boolean);
+
+  // Use snapshot defaultDuration for the duration note
+  let durationNote = "";
+  if (snapshot.defaultDuration && snapshot.defaultDuration > 0) {
+    durationNote = ` (${snapshot.defaultDuration}-minute slots)`;
+  }
+
+  return {
+    message: `${daySlots.length} available slot${daySlots.length === 1 ? "" : "s"} on ${dateLabel}${durationNote}: ${times.join(", ")}.`,
+  };
+}
+
+/**
  * Execute a tool call by routing to the appropriate handler.
  *
  * @param {string} functionName
  * @param {object} args - parsed arguments from the LLM
- * @param {{ organizationId: string, assistantId: string, callSid?: string, callId?: string, transferRules?: object[], testMode?: boolean, organization?: { timezone?: string, businessHours?: object }, callerPhone?: string, orgPhoneNumber?: string }} context
+ * @param {{ organizationId: string, assistantId: string, callSid?: string, callId?: string, transferRules?: object[], testMode?: boolean, organization?: { timezone?: string, businessHours?: object }, callerPhone?: string, orgPhoneNumber?: string, scheduleSnapshot?: object }} context
  * @returns {Promise<{ message: string, action?: string, transferTo?: string, transferAttempt?: object }>}
  */
 async function executeToolCall(functionName, args, context) {
@@ -298,6 +419,17 @@ async function executeToolCall(functionName, args, context) {
       return simulateCallbackWrite(args);
     }
     return executeCalendarCall(functionName, args, context);
+  }
+
+  // ── Cache-resolved reads (no HTTP round-trip) ──
+  if (functionName === "get_current_datetime" && context.organization?.timezone) {
+    return resolveCurrentDatetime(context.organization.timezone);
+  }
+
+  if (functionName === "check_availability" && context.scheduleSnapshot) {
+    const cached = resolveAvailabilityFromCache(args, context.scheduleSnapshot);
+    if (cached) return cached; // Cache hit
+    // Cache miss — fall through to API
   }
 
   if (CALENDAR_FUNCTIONS.includes(functionName)) {
@@ -593,5 +725,5 @@ module.exports = {
   transferToolDefinition,
   callbackToolDefinition,
   executeToolCall,
-  _test: { getTransferService },
+  _test: { getTransferService, resolveCurrentDatetime, resolveAvailabilityFromCache },
 };

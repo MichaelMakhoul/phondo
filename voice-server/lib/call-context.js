@@ -420,4 +420,490 @@ async function loadTestCallContext(assistantId, organizationId) {
   };
 }
 
-module.exports = { loadCallContext, loadTestCallContext };
+// ─── Schedule Snapshot helpers ──────────────────────────────────────────────
+
+/**
+ * Extract hour and minute from a Date in a specific timezone.
+ * Uses Intl.DateTimeFormat for correct DST-aware conversion.
+ *
+ * @param {Date} date
+ * @param {string} timezone - IANA timezone (e.g. "Australia/Sydney")
+ * @returns {{ hours: number, minutes: number }}
+ */
+function getTimeComponents(date, timezone) {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    hour12: false,
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  const parts = formatter.formatToParts(date);
+  const hourPart = parts.find((p) => p.type === "hour");
+  const minutePart = parts.find((p) => p.type === "minute");
+  return {
+    hours: parseInt(hourPart?.value || "0", 10),
+    minutes: parseInt(minutePart?.value || "0", 10),
+  };
+}
+
+/**
+ * Returns an array of "YYYY-MM-DD" date strings for the next N business days,
+ * skipping closed days according to businessHours config.
+ *
+ * @param {string} timezone - IANA timezone
+ * @param {object} businessHours - Map of lowercase day name -> { open, close } or { closed: true }
+ * @param {number} [days=7] - Number of business days to find
+ * @returns {string[]}
+ */
+function getBusinessDates(timezone, businessHours, days = 7) {
+  if (!timezone || !businessHours || typeof businessHours !== "object") {
+    return [];
+  }
+
+  const dates = [];
+  const dateFormatter = new Intl.DateTimeFormat("en-CA", { timeZone: timezone });
+  const dayNameFormatter = new Intl.DateTimeFormat("en-US", { weekday: "long", timeZone: timezone });
+
+  const now = new Date();
+  const MAX_SCAN = 21; // safety cap: never scan more than 21 calendar days
+
+  for (let i = 0; i < MAX_SCAN && dates.length < days; i++) {
+    const candidate = new Date(now.getTime() + i * 24 * 60 * 60 * 1000);
+    const dayName = dayNameFormatter.format(candidate).toLowerCase();
+    const dayConfig = businessHours[dayName];
+
+    // Skip closed days or days with no config
+    if (!dayConfig || dayConfig.closed === true || !dayConfig.open || !dayConfig.close) {
+      continue;
+    }
+
+    dates.push(dateFormatter.format(candidate));
+  }
+
+  return dates;
+}
+
+/**
+ * Generate time slots for a given date between open and close times.
+ *
+ * @param {string} date - "YYYY-MM-DD"
+ * @param {string} open - "HH:MM" (24h)
+ * @param {string} close - "HH:MM" (24h)
+ * @param {number} [durationMinutes=30]
+ * @returns {string[]} Array of "YYYY-MM-DDThh:mm:00" strings
+ */
+function generateTimeSlots(date, open, close, durationMinutes = 30) {
+  if (!date || !open || !close) return [];
+
+  const [openH, openM] = open.split(":").map(Number);
+  const [closeH, closeM] = close.split(":").map(Number);
+
+  if (isNaN(openH) || isNaN(openM) || isNaN(closeH) || isNaN(closeM)) return [];
+
+  const openMinutes = openH * 60 + (openM || 0);
+  const closeMinutes = closeH * 60 + (closeM || 0);
+
+  const slots = [];
+  for (let m = openMinutes; m + durationMinutes <= closeMinutes; m += durationMinutes) {
+    const hh = String(Math.floor(m / 60)).padStart(2, "0");
+    const mm = String(m % 60).padStart(2, "0");
+    slots.push(`${date}T${hh}:${mm}:00`);
+  }
+  return slots;
+}
+
+/**
+ * Convert a local datetime string + timezone into a UTC ISO string for Supabase queries.
+ * E.g. "2026-04-12T00:00:00" in "Australia/Sydney" -> UTC ISO string.
+ *
+ * @param {string} localDatetime - "YYYY-MM-DDThh:mm:ss"
+ * @param {string} timezone - IANA timezone
+ * @returns {string} UTC ISO string
+ */
+function localToUtcIso(localDatetime, timezone) {
+  // Use Intl to find the UTC offset for this timezone at this moment,
+  // then compute the UTC equivalent.
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+    hour12: false,
+  });
+  const utcFormatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: "UTC",
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+    hour12: false,
+  });
+
+  // Treat the local datetime as a UTC instant to get a reference point
+  const refDate = new Date(`${localDatetime}Z`);
+  if (isNaN(refDate.getTime())) return new Date().toISOString();
+
+  const getPart = (parts, type) =>
+    parts.find((p) => p.type === type)?.value || "0";
+
+  const tzParts = formatter.formatToParts(refDate);
+  const utcParts = utcFormatter.formatToParts(refDate);
+
+  const tzTotal = new Date(
+    parseInt(getPart(tzParts, "year"), 10),
+    parseInt(getPart(tzParts, "month"), 10) - 1,
+    parseInt(getPart(tzParts, "day"), 10),
+    parseInt(getPart(tzParts, "hour"), 10),
+    parseInt(getPart(tzParts, "minute"), 10)
+  ).getTime();
+
+  const utcTotal = new Date(
+    parseInt(getPart(utcParts, "year"), 10),
+    parseInt(getPart(utcParts, "month"), 10) - 1,
+    parseInt(getPart(utcParts, "day"), 10),
+    parseInt(getPart(utcParts, "hour"), 10),
+    parseInt(getPart(utcParts, "minute"), 10)
+  ).getTime();
+
+  const offsetMs = tzTotal - utcTotal;
+  // The local datetime should map to (refDate - offset) in UTC
+  const utcDate = new Date(refDate.getTime() - offsetMs);
+  return utcDate.toISOString();
+}
+
+/**
+ * Load a 7-business-day schedule snapshot for an organization.
+ * Used by the schedule cache to pre-fetch availability data.
+ *
+ * @param {string} organizationId
+ * @param {{ timezone: string, businessHours: object, defaultAppointmentDuration?: number }} orgConfig
+ * @param {Array<{ id: string, name: string, duration_minutes: number }>} [serviceTypes]
+ * @returns {Promise<object|null>} ScheduleSnapshot or null if config is invalid
+ */
+async function loadScheduleSnapshot(organizationId, orgConfig, serviceTypes) {
+  const { timezone, businessHours, defaultAppointmentDuration } = orgConfig || {};
+
+  // Validate required config
+  if (!timezone || !businessHours || typeof businessHours !== "object" || Object.keys(businessHours).length === 0) {
+    console.warn("[ScheduleSnapshot] Missing timezone or businessHours — cannot compute snapshot", {
+      organizationId, hasTimezone: !!timezone, hasBusinessHours: !!businessHours,
+    });
+    return null;
+  }
+
+  const duration = defaultAppointmentDuration || 30;
+
+  // 1. Get the next 7 business days
+  const dates = getBusinessDates(timezone, businessHours, 7);
+  if (dates.length === 0) {
+    console.warn("[ScheduleSnapshot] No business dates found in next 21 calendar days", { organizationId });
+    return null;
+  }
+
+  // 2. Convert date boundaries to UTC for Supabase queries
+  const firstDate = dates[0];
+  const lastDate = dates[dates.length - 1];
+  const rangeStartUtc = localToUtcIso(`${firstDate}T00:00:00`, timezone);
+  const rangeEndUtc = localToUtcIso(`${lastDate}T23:59:59`, timezone);
+
+  const supabase = getSupabase();
+
+  // 3. Parallel fetch: appointments, blocked_times, practitioners
+  const [appointmentsResult, blockedResult, practitionersResult] = await Promise.all([
+    supabase
+      .from("appointments")
+      .select("id, start_time, end_time, duration_minutes, status, practitioner_id, attendee_name, service_type_id, confirmation_code")
+      .eq("organization_id", organizationId)
+      .in("status", ["confirmed", "pending"])
+      .gte("start_time", rangeStartUtc)
+      .lte("start_time", rangeEndUtc),
+
+    supabase
+      .from("blocked_times")
+      .select("id, start_time, end_time, practitioner_id")
+      .eq("organization_id", organizationId)
+      .gte("start_time", rangeStartUtc)
+      .lte("end_time", rangeEndUtc),
+
+    supabase
+      .from("practitioners")
+      .select("id, name, is_active")
+      .eq("organization_id", organizationId)
+      .eq("is_active", true),
+  ]);
+
+  if (appointmentsResult.error) {
+    console.error("[ScheduleSnapshot] Appointments fetch failed — skipping snapshot:", appointmentsResult.error);
+    return null;
+  }
+  if (blockedResult.error) {
+    console.error("[ScheduleSnapshot] Blocked times fetch error:", blockedResult.error);
+  }
+  if (practitionersResult.error) {
+    console.error("[ScheduleSnapshot] Practitioners fetch error:", practitionersResult.error);
+  }
+
+  const appointments = appointmentsResult.data || [];
+  const blockedTimes = blockedResult.data || [];
+  const practitioners = practitionersResult.data || [];
+
+  // 4. If practitioners exist, fetch practitioner_services mapping
+  let enrichedPractitioners = practitioners.map((p) => ({
+    id: p.id,
+    name: p.name,
+    serviceTypeIds: [],
+  }));
+
+  if (practitioners.length > 0) {
+    const practitionerIds = practitioners.map((p) => p.id);
+    const { data: psData, error: psError } = await supabase
+      .from("practitioner_services")
+      .select("practitioner_id, service_type_id")
+      .in("practitioner_id", practitionerIds);
+
+    if (psError) {
+      console.error("[ScheduleSnapshot] Practitioner services fetch error:", psError);
+    } else if (psData) {
+      const serviceMap = {};
+      for (const row of psData) {
+        if (!serviceMap[row.practitioner_id]) {
+          serviceMap[row.practitioner_id] = [];
+        }
+        serviceMap[row.practitioner_id].push(row.service_type_id);
+      }
+      enrichedPractitioners = practitioners.map((p) => ({
+        id: p.id,
+        name: p.name,
+        serviceTypeIds: serviceMap[p.id] || [],
+      }));
+    }
+  }
+
+  // 5. Compute available slots per date
+  const slots = {};
+
+  // Get current time in org timezone for filtering past slots on today
+  const now = new Date();
+  const todayStr = new Intl.DateTimeFormat("en-CA", { timeZone: timezone }).format(now);
+  const nowComponents = getTimeComponents(now, timezone);
+  const nowMinutes = nowComponents.hours * 60 + nowComponents.minutes;
+
+  for (const date of dates) {
+    // Get day name for this date (use noon to avoid DST boundary issues)
+    const dateObj = new Date(`${date}T12:00:00Z`);
+    const dayName = new Intl.DateTimeFormat("en-US", { weekday: "long", timeZone: timezone })
+      .format(dateObj)
+      .toLowerCase();
+    const dayConfig = businessHours[dayName];
+
+    if (!dayConfig || dayConfig.closed || !dayConfig.open || !dayConfig.close) {
+      slots[date] = [];
+      continue;
+    }
+
+    // Generate all possible slots for this day
+    let daySlots = generateTimeSlots(date, dayConfig.open, dayConfig.close, duration);
+
+    // Filter past slots for today
+    if (date === todayStr) {
+      daySlots = daySlots.filter((slot) => {
+        const [, timeStr] = slot.split("T");
+        const [h, m] = timeStr.split(":").map(Number);
+        return h * 60 + m > nowMinutes;
+      });
+    }
+
+    // Filter org-level blocked time overlaps (blocks without a practitioner_id)
+    const orgBlocks = blockedTimes.filter((bt) => !bt.practitioner_id);
+    if (orgBlocks.length > 0) {
+      daySlots = daySlots.filter((slot) => {
+        const [, timeStr] = slot.split("T");
+        const [slotH, slotM] = timeStr.split(":").map(Number);
+        const slotStartMin = slotH * 60 + slotM;
+        const slotEndMin = slotStartMin + duration;
+
+        return !orgBlocks.some((bt) => {
+          const btStart = getTimeComponents(new Date(bt.start_time), timezone);
+          const btEnd = getTimeComponents(new Date(bt.end_time), timezone);
+          const btStartMin = btStart.hours * 60 + btStart.minutes;
+          const btEndMin = btEnd.hours * 60 + btEnd.minutes;
+
+          // Check if the blocked date overlaps with this slot's date
+          const btStartDate = new Intl.DateTimeFormat("en-CA", { timeZone: timezone }).format(new Date(bt.start_time));
+          const btEndDate = new Intl.DateTimeFormat("en-CA", { timeZone: timezone }).format(new Date(bt.end_time));
+
+          // Only consider blocks that overlap this date
+          if (btEndDate < date || btStartDate > date) return false;
+
+          // If block spans across the whole day, all slots are blocked
+          if (btStartDate < date && btEndDate > date) return true;
+
+          // Compute effective block boundaries for this date
+          const effectiveStart = btStartDate < date ? 0 : btStartMin;
+          const effectiveEnd = btEndDate > date ? 24 * 60 : btEndMin;
+
+          return slotStartMin < effectiveEnd && slotEndMin > effectiveStart;
+        });
+      });
+    }
+
+    // Save slots after org-level block filtering (before appointment filtering)
+    // Used as base for per-practitioner computation below
+    const slotsAfterOrgBlocks = [...daySlots];
+
+    // Filter appointment overlaps (compare in org-local minutes-since-midnight)
+    // When practitioners exist, a slot is only unavailable when ALL practitioners
+    // are busy at that time. This matches the logic in getBuiltInAvailability()
+    // (src/lib/calendar/tool-handlers.ts).
+    if (appointments.length > 0) {
+      const practitionerIds = enrichedPractitioners.map((p) => p.id);
+      const hasPractitioners = practitionerIds.length > 0;
+
+      daySlots = daySlots.filter((slot) => {
+        const [, timeStr] = slot.split("T");
+        const [slotH, slotM] = timeStr.split(":").map(Number);
+        const slotStartMin = slotH * 60 + slotM;
+        const slotEndMin = slotStartMin + duration;
+
+        if (hasPractitioners) {
+          // Multi-practitioner: slot available if at least one practitioner is free
+          const busyPractitioners = new Set();
+          for (const appt of appointments) {
+            const apptDate = new Intl.DateTimeFormat("en-CA", { timeZone: timezone })
+              .format(new Date(appt.start_time));
+            if (apptDate !== date) continue;
+
+            const apptStart = getTimeComponents(new Date(appt.start_time), timezone);
+            const apptStartMin = apptStart.hours * 60 + apptStart.minutes;
+            let apptEndMin;
+            if (appt.end_time) {
+              const apptEnd = getTimeComponents(new Date(appt.end_time), timezone);
+              apptEndMin = apptEnd.hours * 60 + apptEnd.minutes;
+            } else {
+              apptEndMin = apptStartMin + (appt.duration_minutes || duration);
+            }
+
+            if (slotStartMin < apptEndMin && slotEndMin > apptStartMin && appt.practitioner_id) {
+              busyPractitioners.add(appt.practitioner_id);
+            }
+          }
+          // Slot available if not ALL practitioners are busy
+          return busyPractitioners.size < practitionerIds.length;
+        }
+
+        // No practitioners: original behavior — any overlapping appointment blocks the slot
+        return !appointments.some((appt) => {
+          const apptDate = new Intl.DateTimeFormat("en-CA", { timeZone: timezone })
+            .format(new Date(appt.start_time));
+          if (apptDate !== date) return false;
+
+          const apptStart = getTimeComponents(new Date(appt.start_time), timezone);
+          const apptStartMin = apptStart.hours * 60 + apptStart.minutes;
+
+          let apptEndMin;
+          if (appt.end_time) {
+            const apptEnd = getTimeComponents(new Date(appt.end_time), timezone);
+            apptEndMin = apptEnd.hours * 60 + apptEnd.minutes;
+          } else {
+            apptEndMin = apptStartMin + (appt.duration_minutes || duration);
+          }
+
+          return slotStartMin < apptEndMin && slotEndMin > apptStartMin;
+        });
+      });
+    }
+
+    // Compute per-practitioner availability (only when practitioners exist)
+    const practSlots = {};
+    if (enrichedPractitioners.length > 0) {
+      for (const practitioner of enrichedPractitioners) {
+        // Start with all base day slots (after org-level block filtering but BEFORE appointment filtering)
+        let pSlots = [...slotsAfterOrgBlocks];
+
+        // Filter by this practitioner's specific blocked times
+        const practBlocks = blockedTimes.filter((bt) => bt.practitioner_id === practitioner.id);
+        if (practBlocks.length > 0) {
+          pSlots = pSlots.filter((slot) => {
+            const [, timeStr] = slot.split("T");
+            const [slotH, slotM] = timeStr.split(":").map(Number);
+            const slotStartMin = slotH * 60 + slotM;
+            const slotEndMin = slotStartMin + duration;
+
+            return !practBlocks.some((bt) => {
+              const btStart = getTimeComponents(new Date(bt.start_time), timezone);
+              const btEnd = getTimeComponents(new Date(bt.end_time), timezone);
+              const btStartMin = btStart.hours * 60 + btStart.minutes;
+              const btEndMin = btEnd.hours * 60 + btEnd.minutes;
+
+              const btStartDate = new Intl.DateTimeFormat("en-CA", { timeZone: timezone }).format(new Date(bt.start_time));
+              const btEndDate = new Intl.DateTimeFormat("en-CA", { timeZone: timezone }).format(new Date(bt.end_time));
+
+              if (btEndDate < date || btStartDate > date) return false;
+              if (btStartDate < date && btEndDate > date) return true;
+
+              const effectiveStart = btStartDate < date ? 0 : btStartMin;
+              const effectiveEnd = btEndDate > date ? 24 * 60 : btEndMin;
+
+              return slotStartMin < effectiveEnd && slotEndMin > effectiveStart;
+            });
+          });
+        }
+
+        // Filter by this practitioner's appointments
+        const practAppts = appointments.filter((a) => a.practitioner_id === practitioner.id);
+        if (practAppts.length > 0) {
+          pSlots = pSlots.filter((slot) => {
+            const [, timeStr] = slot.split("T");
+            const [slotH, slotM] = timeStr.split(":").map(Number);
+            const slotStartMin = slotH * 60 + slotM;
+            const slotEndMin = slotStartMin + duration;
+
+            return !practAppts.some((appt) => {
+              const apptDate = new Intl.DateTimeFormat("en-CA", { timeZone: timezone })
+                .format(new Date(appt.start_time));
+              if (apptDate !== date) return false;
+
+              const apptStart = getTimeComponents(new Date(appt.start_time), timezone);
+              const apptStartMin = apptStart.hours * 60 + apptStart.minutes;
+              let apptEndMin;
+              if (appt.end_time) {
+                const apptEnd = getTimeComponents(new Date(appt.end_time), timezone);
+                apptEndMin = apptEnd.hours * 60 + apptEnd.minutes;
+              } else {
+                apptEndMin = apptStartMin + (appt.duration_minutes || duration);
+              }
+
+              return slotStartMin < apptEndMin && slotEndMin > apptStartMin;
+            });
+          });
+        }
+
+        practSlots[practitioner.id] = pSlots;
+      }
+    }
+
+    // Build final slot structure: structured when practitioners exist, flat otherwise
+    if (enrichedPractitioners.length === 0) {
+      slots[date] = daySlots; // flat array (backward compatible)
+    } else {
+      slots[date] = { _any: daySlots, ...practSlots };
+    }
+  }
+
+  return {
+    appointments,
+    blockedTimes,
+    practitioners: enrichedPractitioners,
+    slots,
+    serviceTypes: serviceTypes || [],
+    timezone,
+    businessHours,
+    defaultDuration: duration,
+  };
+}
+
+module.exports = {
+  loadCallContext,
+  loadTestCallContext,
+  loadScheduleSnapshot,
+  getBusinessDates,
+  generateTimeSlots,
+  _test: { getTimeComponents },
+};

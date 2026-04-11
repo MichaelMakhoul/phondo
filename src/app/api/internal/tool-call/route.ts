@@ -108,6 +108,7 @@ export async function POST(request: Request) {
           email: parsedArgs.email,
           notes: parsedArgs.notes,
           service_type_id: parsedArgs.service_type_id,
+          practitioner_id: parsedArgs.practitioner_id,
         });
         break;
 
