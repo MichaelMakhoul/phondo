@@ -21,6 +21,13 @@ interface BlockedTime {
   end_time: string;
   all_day: boolean;
   reason: string | null;
+  practitioner_id: string | null;
+}
+
+interface Practitioner {
+  id: string;
+  name: string;
+  title: string | null;
 }
 
 interface ConflictingAppointment {
@@ -36,6 +43,8 @@ export function BlockedTimesCard() {
   const [adding, setAdding] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [conflicts, setConflicts] = useState<ConflictingAppointment[]>([]);
+  const [practitioners, setPractitioners] = useState<Practitioner[]>([]);
+  const [selectedPractitioner, setSelectedPractitioner] = useState<string>("");
 
   // Form state
   const [title, setTitle] = useState("");
@@ -59,6 +68,12 @@ export function BlockedTimesCard() {
   };
 
   useEffect(() => { fetchBlocks(); }, []);
+
+  useEffect(() => {
+    fetch("/api/v1/practitioners").then(r => r.ok ? r.json() : []).then(data => {
+      setPractitioners(Array.isArray(data) ? data : data.practitioners || []);
+    }).catch(() => {});
+  }, []);
 
   const handleAdd = async () => {
     if (!title.trim() || !date) {
@@ -84,6 +99,7 @@ export function BlockedTimesCard() {
           endTime: endISO,
           allDay,
           reason: reason.trim() || undefined,
+          practitionerId: selectedPractitioner || null,
         }),
       });
 
@@ -99,6 +115,7 @@ export function BlockedTimesCard() {
       setDate("");
       setReason("");
       setAllDay(false);
+      setSelectedPractitioner("");
 
       if (conflictCount > 0) {
         setConflicts(newConflicts);
@@ -201,6 +218,23 @@ export function BlockedTimesCard() {
                   </div>
                 </>
               )}
+              {practitioners.length > 0 && (
+                <div className="col-span-2">
+                  <Label>Applies to</Label>
+                  <select
+                    value={selectedPractitioner}
+                    onChange={(e) => setSelectedPractitioner(e.target.value)}
+                    className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  >
+                    <option value="">All staff (org-wide)</option>
+                    {practitioners.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}{p.title ? ` — ${p.title}` : ""}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
               <div className="col-span-2">
                 <Label>Reason (optional)</Label>
                 <Input
@@ -268,6 +302,11 @@ export function BlockedTimesCard() {
               <div key={block.id} className="flex items-center justify-between rounded-lg border p-3">
                 <div>
                   <span className="text-sm font-medium">{block.title}</span>
+                  {block.practitioner_id && (
+                    <span className="ml-2 text-xs text-muted-foreground bg-muted px-1.5 py-0.5 rounded">
+                      {practitioners.find(p => p.id === block.practitioner_id)?.name || "Staff member"}
+                    </span>
+                  )}
                   <p className="text-xs text-muted-foreground">
                     {block.all_day
                       ? formatDate(block.start_time)
