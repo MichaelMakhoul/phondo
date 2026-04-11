@@ -331,7 +331,9 @@ function resolveAvailabilityFromCache(args, snapshot) {
     return null; // Cache miss — let the API handle it
   }
 
-  const daySlots = snapshot.slots[date];
+  const dateSlots = snapshot.slots[date];
+  // Get aggregate slots (works for both flat array and structured object)
+  const daySlots = Array.isArray(dateSlots) ? dateSlots : (dateSlots?._any || []);
 
   // Nice readable date label (e.g. "Monday, April 12")
   const dateLabel = new Intl.DateTimeFormat("en-US", {

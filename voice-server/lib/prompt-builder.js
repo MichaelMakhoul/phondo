@@ -928,6 +928,18 @@ function getCurrentTimeFormatted(timezone) {
 }
 
 /**
+ * Extract aggregate slots from a date's slot entry.
+ * Handles both flat array format (no practitioners) and structured object format.
+ *
+ * @param {Array|object|undefined} dateSlots - slots entry for a date
+ * @returns {Array} aggregate slots
+ */
+function getAnySlots(dateSlots) {
+  if (Array.isArray(dateSlots)) return dateSlots; // flat format (no practitioners)
+  return dateSlots?._any || []; // structured format
+}
+
+/**
  * Build a LIVE SCHEDULE section for injection into the system prompt.
  * Uses pre-loaded cached schedule data so the AI can answer availability
  * questions without calling check_availability for today/tomorrow.
@@ -956,7 +968,7 @@ function buildLiveScheduleSection(snapshot, todayStr) {
 
   for (let i = 0; i < detailedDates.length; i++) {
     const dateKey = detailedDates[i];
-    const slots = snapshot.slots[dateKey] || [];
+    const slots = getAnySlots(snapshot.slots[dateKey]);
     const label = formatDateLabel(dateKey, timezone);
 
     let dayLabel;
@@ -982,7 +994,7 @@ function buildLiveScheduleSection(snapshot, todayStr) {
     lines.push("Upcoming days (slot count only — call check_availability for specific times on these dates):");
 
     for (const dateKey of summaryDates) {
-      const slots = snapshot.slots[dateKey] || [];
+      const slots = getAnySlots(snapshot.slots[dateKey]);
       const label = formatDateLabel(dateKey, timezone);
       if (slots.length === 0) {
         lines.push(`- ${label}: Fully booked`);
@@ -1008,14 +1020,28 @@ function buildLiveScheduleSection(snapshot, todayStr) {
         } catch { return false; }
       });
       const apptCount = todayAppts.length;
-      const busyNote = apptCount > 0 ? ` (${apptCount} appointment${apptCount === 1 ? "" : "s"} today)` : " (no appointments today)";
-      lines.push(`- ${p.name}${busyNote}`);
+
+      // Per-practitioner slot count from structured slots
+      const todaySlots = snapshot.slots[todayStr];
+      const practSlotCount = (todaySlots && !Array.isArray(todaySlots) && todaySlots[p.id])
+        ? todaySlots[p.id].length
+        : null;
+
+      const statusParts = [];
+      if (practSlotCount !== null) {
+        statusParts.push(`${practSlotCount} open slot${practSlotCount === 1 ? "" : "s"} today`);
+      }
+      statusParts.push(`${apptCount} appointment${apptCount === 1 ? "" : "s"} today`);
+
+      lines.push(`- ${p.name} [ID: ${p.id}]: ${statusParts.join(", ")}`);
     }
     lines.push("");
-    lines.push("PRACTITIONER RULES:");
-    lines.push("- If a caller asks 'is [name] in today?', you can answer based on the info above.");
-    lines.push("- The system auto-assigns the best available practitioner when booking. You cannot guarantee a specific practitioner.");
-    lines.push("- If a caller insists on a specific person, offer to take a message so the office can arrange it.");
+    lines.push("PRACTITIONER BOOKING RULES:");
+    lines.push("- If a caller asks for a specific practitioner by name, check their availability from the list above.");
+    lines.push("- When booking with a specific practitioner, pass their ID as practitioner_id to book_appointment.");
+    lines.push("- If the requested practitioner is unavailable, suggest alternative times for that practitioner OR offer another practitioner.");
+    lines.push("- If no specific practitioner is requested, omit practitioner_id — the system auto-assigns the best available.");
+    lines.push("- NEVER fabricate practitioner IDs. Only use IDs from the PRACTITIONERS ON STAFF list.");
   }
 
   lines.push("");

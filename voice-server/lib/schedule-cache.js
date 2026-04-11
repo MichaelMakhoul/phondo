@@ -98,9 +98,14 @@ function applyDelta(orgId, action, data) {
     entry.snapshot.appointments.push(appointment);
 
     if (entry.snapshot.slots[dateKey]) {
-      entry.snapshot.slots[dateKey] = entry.snapshot.slots[dateKey].filter(
-        (s) => s !== slotTime
-      );
+      const dateSlots = entry.snapshot.slots[dateKey];
+      if (Array.isArray(dateSlots)) {
+        // Flat format — remove directly
+        entry.snapshot.slots[dateKey] = dateSlots.filter((s) => s !== slotTime);
+      } else if (dateSlots._any) {
+        // Structured format — remove from _any
+        dateSlots._any = dateSlots._any.filter((s) => s !== slotTime);
+      }
     }
 
     emitter.emit("schedule-changed", { orgId });

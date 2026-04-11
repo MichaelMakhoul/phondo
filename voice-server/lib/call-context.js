@@ -617,7 +617,7 @@ async function loadScheduleSnapshot(organizationId, orgConfig, serviceTypes) {
 
     supabase
       .from("blocked_times")
-      .select("id, start_time, end_time")
+      .select("id, start_time, end_time, practitioner_id")
       .eq("organization_id", organizationId)
       .gte("start_time", rangeStartUtc)
       .lte("end_time", rangeEndUtc),
@@ -709,15 +709,16 @@ async function loadScheduleSnapshot(organizationId, orgConfig, serviceTypes) {
       });
     }
 
-    // Filter blocked time overlaps
-    if (blockedTimes.length > 0) {
+    // Filter org-level blocked time overlaps (blocks without a practitioner_id)
+    const orgBlocks = blockedTimes.filter((bt) => !bt.practitioner_id);
+    if (orgBlocks.length > 0) {
       daySlots = daySlots.filter((slot) => {
         const [, timeStr] = slot.split("T");
         const [slotH, slotM] = timeStr.split(":").map(Number);
         const slotStartMin = slotH * 60 + slotM;
         const slotEndMin = slotStartMin + duration;
 
-        return !blockedTimes.some((bt) => {
+        return !orgBlocks.some((bt) => {
           const btStart = getTimeComponents(new Date(bt.start_time), timezone);
           const btEnd = getTimeComponents(new Date(bt.end_time), timezone);
           const btStartMin = btStart.hours * 60 + btStart.minutes;
@@ -741,6 +742,10 @@ async function loadScheduleSnapshot(organizationId, orgConfig, serviceTypes) {
         });
       });
     }
+
+    // Save slots after org-level block filtering (before appointment filtering)
+    // Used as base for per-practitioner computation below
+    const slotsAfterOrgBlocks = [...daySlots];
 
     // Filter appointment overlaps (compare in org-local minutes-since-midnight)
     // When practitioners exist, a slot is only unavailable when ALL practitioners
@@ -804,7 +809,81 @@ async function loadScheduleSnapshot(organizationId, orgConfig, serviceTypes) {
       });
     }
 
-    slots[date] = daySlots;
+    // Compute per-practitioner availability (only when practitioners exist)
+    const practSlots = {};
+    if (enrichedPractitioners.length > 0) {
+      for (const practitioner of enrichedPractitioners) {
+        // Start with all base day slots (after org-level block filtering but BEFORE appointment filtering)
+        let pSlots = [...slotsAfterOrgBlocks];
+
+        // Filter by this practitioner's specific blocked times
+        const practBlocks = blockedTimes.filter((bt) => bt.practitioner_id === practitioner.id);
+        if (practBlocks.length > 0) {
+          pSlots = pSlots.filter((slot) => {
+            const [, timeStr] = slot.split("T");
+            const [slotH, slotM] = timeStr.split(":").map(Number);
+            const slotStartMin = slotH * 60 + slotM;
+            const slotEndMin = slotStartMin + duration;
+
+            return !practBlocks.some((bt) => {
+              const btStart = getTimeComponents(new Date(bt.start_time), timezone);
+              const btEnd = getTimeComponents(new Date(bt.end_time), timezone);
+              const btStartMin = btStart.hours * 60 + btStart.minutes;
+              const btEndMin = btEnd.hours * 60 + btEnd.minutes;
+
+              const btStartDate = new Intl.DateTimeFormat("en-CA", { timeZone: timezone }).format(new Date(bt.start_time));
+              const btEndDate = new Intl.DateTimeFormat("en-CA", { timeZone: timezone }).format(new Date(bt.end_time));
+
+              if (btEndDate < date || btStartDate > date) return false;
+              if (btStartDate < date && btEndDate > date) return true;
+
+              const effectiveStart = btStartDate < date ? 0 : btStartMin;
+              const effectiveEnd = btEndDate > date ? 24 * 60 : btEndMin;
+
+              return slotStartMin < effectiveEnd && slotEndMin > effectiveStart;
+            });
+          });
+        }
+
+        // Filter by this practitioner's appointments
+        const practAppts = appointments.filter((a) => a.practitioner_id === practitioner.id);
+        if (practAppts.length > 0) {
+          pSlots = pSlots.filter((slot) => {
+            const [, timeStr] = slot.split("T");
+            const [slotH, slotM] = timeStr.split(":").map(Number);
+            const slotStartMin = slotH * 60 + slotM;
+            const slotEndMin = slotStartMin + duration;
+
+            return !practAppts.some((appt) => {
+              const apptDate = new Intl.DateTimeFormat("en-CA", { timeZone: timezone })
+                .format(new Date(appt.start_time));
+              if (apptDate !== date) return false;
+
+              const apptStart = getTimeComponents(new Date(appt.start_time), timezone);
+              const apptStartMin = apptStart.hours * 60 + apptStart.minutes;
+              let apptEndMin;
+              if (appt.end_time) {
+                const apptEnd = getTimeComponents(new Date(appt.end_time), timezone);
+                apptEndMin = apptEnd.hours * 60 + apptEnd.minutes;
+              } else {
+                apptEndMin = apptStartMin + (appt.duration_minutes || duration);
+              }
+
+              return slotStartMin < apptEndMin && slotEndMin > apptStartMin;
+            });
+          });
+        }
+
+        practSlots[practitioner.id] = pSlots;
+      }
+    }
+
+    // Build final slot structure: structured when practitioners exist, flat otherwise
+    if (enrichedPractitioners.length === 0) {
+      slots[date] = daySlots; // flat array (backward compatible)
+    } else {
+      slots[date] = { _any: daySlots, ...practSlots };
+    }
   }
 
   return {
