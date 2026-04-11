@@ -16,6 +16,7 @@ import {
   getActiveServiceTypes,
   getServiceType,
 } from "@/lib/service-types";
+import { invalidateVoiceScheduleCache } from "@/lib/voice-cache/invalidate";
 
 interface ToolResult {
   success: boolean;
@@ -1135,6 +1136,9 @@ async function cancelSingleAppointment(
       };
     }
 
+    // Invalidate voice server schedule cache (fire-and-forget)
+    invalidateVoiceScheduleCache(organizationId).catch(() => {});
+
     const schedule = await getOrgSchedule(organizationId).catch(() => null);
     const timezone = schedule?.timezone || "America/New_York";
     const { dateStr, timeStr } = formatDateTimeForVoice(
@@ -1546,6 +1550,9 @@ async function bookInternal(
   const practitionerNote = assignedPractitionerName
     ? ` with ${assignedPractitionerName}`
     : "";
+
+  // Invalidate voice server schedule cache (fire-and-forget)
+  invalidateVoiceScheduleCache(organizationId).catch(() => {});
 
   return {
     success: true,
