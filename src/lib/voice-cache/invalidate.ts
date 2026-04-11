@@ -8,20 +8,19 @@
  * - Layer 3: TTL safety net (3 minutes, catches everything)
  */
 
-const VOICE_SERVER_URL = process.env.VOICE_SERVER_PUBLIC_URL;
-const INTERNAL_API_SECRET = process.env.INTERNAL_API_SECRET;
-
 export async function invalidateVoiceScheduleCache(organizationId: string): Promise<void> {
-  if (!VOICE_SERVER_URL || !INTERNAL_API_SECRET) {
+  const voiceServerUrl = process.env.VOICE_SERVER_PUBLIC_URL;
+  const internalSecret = process.env.INTERNAL_API_SECRET;
+  if (!voiceServerUrl || !internalSecret) {
     return; // Voice server not configured — skip silently
   }
 
   try {
-    const res = await fetch(`${VOICE_SERVER_URL}/cache/invalidate`, {
+    const res = await fetch(`${voiceServerUrl}/cache/invalidate`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Internal-Secret": INTERNAL_API_SECRET,
+        "X-Internal-Secret": internalSecret,
       },
       body: JSON.stringify({ organizationId }),
       signal: AbortSignal.timeout(3000),

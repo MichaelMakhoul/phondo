@@ -57,6 +57,7 @@ async function getBlockedTimes(
     .from("blocked_times")
     .select("start_time, end_time")
     .eq("organization_id", organizationId)
+    .is("practitioner_id", null)
     .lt("start_time", dateEndUtc)   // block starts before day ends
     .gt("end_time", dateStartUtc);  // block ends after day starts
 
@@ -1168,7 +1169,7 @@ async function cancelSingleAppointment(
     }
 
     // Invalidate voice server schedule cache (fire-and-forget)
-    invalidateVoiceScheduleCache(organizationId).catch(() => {});
+    invalidateVoiceScheduleCache(organizationId).catch((err) => console.warn("[VoiceCacheInvalidate] fire-and-forget failed:", err instanceof Error ? err.message : err));
 
     const schedule = await getOrgSchedule(organizationId).catch(() => null);
     const timezone = schedule?.timezone || "America/New_York";
@@ -1527,6 +1528,21 @@ async function bookInternal(
       }
     }
 
+    // When no service type, validate practitioner belongs to this org
+    if (!resolvedServiceTypeId) {
+      const { data: practitioner } = await (supabase as any)
+        .from("practitioners")
+        .select("id")
+        .eq("id", requestedPractitionerId)
+        .eq("organization_id", organizationId)
+        .eq("is_active", true)
+        .single();
+
+      if (!practitioner) {
+        return { success: false, message: "The requested practitioner was not found or is not available." };
+      }
+    }
+
     // Check if this practitioner is free at the requested time
     const supabaseAdmin = createAdminClient();
     const { data: conflicts } = await (supabaseAdmin as any)
@@ -1646,7 +1662,7 @@ async function bookInternal(
     : "";
 
   // Invalidate voice server schedule cache (fire-and-forget)
-  invalidateVoiceScheduleCache(organizationId).catch(() => {});
+  invalidateVoiceScheduleCache(organizationId).catch((err) => console.warn("[VoiceCacheInvalidate] fire-and-forget failed:", err instanceof Error ? err.message : err));
 
   return {
     success: true,

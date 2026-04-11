@@ -630,7 +630,8 @@ async function loadScheduleSnapshot(organizationId, orgConfig, serviceTypes) {
   ]);
 
   if (appointmentsResult.error) {
-    console.error("[ScheduleSnapshot] Appointments fetch error:", appointmentsResult.error);
+    console.error("[ScheduleSnapshot] Appointments fetch failed — skipping snapshot:", appointmentsResult.error);
+    return null;
   }
   if (blockedResult.error) {
     console.error("[ScheduleSnapshot] Blocked times fetch error:", blockedResult.error);

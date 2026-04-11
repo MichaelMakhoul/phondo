@@ -816,6 +816,10 @@ app.post("/cache/invalidate", (req, res) => {
   if (!organizationId) {
     return res.status(400).json({ error: "organizationId required" });
   }
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!UUID_RE.test(organizationId)) {
+    return res.status(400).json({ error: "Invalid organizationId format" });
+  }
   console.log(`[CacheInvalidate] Invalidating schedule cache for org=${organizationId}`);
   scheduleCache.invalidate(organizationId);
   res.json({ success: true });
@@ -1233,15 +1237,14 @@ wss.on("connection", (twilioWs) => {
                 );
                 if (scheduleSnapshot) {
                   scheduleCache.setSchedule(context.organizationId, scheduleSnapshot);
-                  console.log(`[ScheduleCache] Loaded snapshot for org=${context.organizationId} (${Object.keys(scheduleSnapshot.slots).length} days, ${Object.values(scheduleSnapshot.slots).flat().length} total slots)`);
+                  console.log(`[ScheduleCache] Loaded snapshot for org=${context.organizationId} (${Object.keys(scheduleSnapshot.slots).length} days, ${Object.values(scheduleSnapshot.slots).reduce((sum, v) => sum + (Array.isArray(v) ? v.length : (v?._any?.length || 0)), 0)} total slots)`);
                 }
               } else {
                 console.log(`[ScheduleCache] Cache hit for org=${context.organizationId}`);
               }
 
               if (scheduleSnapshot) {
-                const nowInTz = new Date(new Date().toLocaleString("en-US", { timeZone: context.organization.timezone }));
-                const todayStr = `${nowInTz.getFullYear()}-${String(nowInTz.getMonth() + 1).padStart(2, "0")}-${String(nowInTz.getDate()).padStart(2, "0")}`;
+                const todayStr = new Intl.DateTimeFormat("en-CA", { timeZone: context.organization.timezone }).format(new Date());
                 const liveSection = buildLiveScheduleSection(scheduleSnapshot, todayStr);
                 if (liveSection) {
                   const currentPrompt = session.messages[0]?.content || "";
@@ -1256,12 +1259,16 @@ wss.on("connection", (twilioWs) => {
 
           // Subscribe to cache changes from other sessions (same org)
           if (scheduleSnapshot) {
-            session._cacheUnsub = scheduleCache.onScheduleChanged(context.organizationId, () => {
+            session._cacheUnsub = scheduleCache.onScheduleChanged(context.organizationId, async () => {
               try {
-                const fresh = scheduleCache.getSchedule(context.organizationId);
+                let fresh = scheduleCache.getSchedule(context.organizationId);
+                if (!fresh && (session.calendarEnabled || session.serviceTypes?.length > 0)) {
+                  fresh = await loadScheduleSnapshot(context.organizationId, session.organization, session.serviceTypes);
+                  if (fresh) scheduleCache.setSchedule(context.organizationId, fresh);
+                }
                 if (fresh) {
                   session.scheduleSnapshot = fresh;
-                  console.log(`[ScheduleCache] Session ${session.callSid} updated from shared cache`);
+                  console.log(`[ScheduleCache] Session ${session.callSid || "live"} refreshed from cache event`);
                 }
               } catch (err) {
                 console.warn("[ScheduleCache] Failed to refresh session:", err.message);
@@ -1399,7 +1406,7 @@ wss.on("connection", (twilioWs) => {
 
                   // Apply cache delta for writes
                   if (session.scheduleSnapshot) {
-                    if (toolCall.name === "book_appointment" && !message.includes("not available") && !message.includes("conflict") && !message.includes("unable")) {
+                    if (toolCall.name === "book_appointment" && (message.includes("confirmed") || message.includes("booked") || message.includes("confirmation"))) {
                       scheduleCache.applyDelta(session.organizationId, "book", {
                         appointment: {
                           id: "pending-" + Date.now(),
@@ -1885,7 +1892,7 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
 
           // Apply optimistic cache delta for write operations
           if (session.scheduleSnapshot) {
-            if (fnName === "book_appointment" && !resultMessage.includes("not available") && !resultMessage.includes("conflict") && !resultMessage.includes("unable")) {
+            if (fnName === "book_appointment" && (resultMessage.includes("confirmed") || resultMessage.includes("booked") || resultMessage.includes("confirmation"))) {
               scheduleCache.applyDelta(session.organizationId, "book", {
                 appointment: {
                   id: "pending-" + Date.now(),
@@ -2308,15 +2315,14 @@ testWss.on("connection", (ws, req) => {
             );
             if (scheduleSnapshot) {
               scheduleCache.setSchedule(context.organizationId, scheduleSnapshot);
-              console.log(`[ScheduleCache] Test call: loaded snapshot for org=${context.organizationId} (${Object.keys(scheduleSnapshot.slots).length} days, ${Object.values(scheduleSnapshot.slots).flat().length} total slots)`);
+              console.log(`[ScheduleCache] Test call: loaded snapshot for org=${context.organizationId} (${Object.keys(scheduleSnapshot.slots).length} days, ${Object.values(scheduleSnapshot.slots).reduce((sum, v) => sum + (Array.isArray(v) ? v.length : (v?._any?.length || 0)), 0)} total slots)`);
             }
           } else {
             console.log(`[ScheduleCache] Test call: cache hit for org=${context.organizationId}`);
           }
 
           if (scheduleSnapshot) {
-            const nowInTz = new Date(new Date().toLocaleString("en-US", { timeZone: context.organization.timezone }));
-            const todayStr = `${nowInTz.getFullYear()}-${String(nowInTz.getMonth() + 1).padStart(2, "0")}-${String(nowInTz.getDate()).padStart(2, "0")}`;
+            const todayStr = new Intl.DateTimeFormat("en-CA", { timeZone: context.organization.timezone }).format(new Date());
             const liveSection = buildLiveScheduleSection(scheduleSnapshot, todayStr);
             if (liveSection) {
               const currentPrompt = session.messages[0]?.content || "";
@@ -2331,12 +2337,16 @@ testWss.on("connection", (ws, req) => {
 
       // Subscribe to cache changes from other sessions (same org)
       if (scheduleSnapshot) {
-        session._cacheUnsub = scheduleCache.onScheduleChanged(context.organizationId, () => {
+        session._cacheUnsub = scheduleCache.onScheduleChanged(context.organizationId, async () => {
           try {
-            const fresh = scheduleCache.getSchedule(context.organizationId);
+            let fresh = scheduleCache.getSchedule(context.organizationId);
+            if (!fresh && (session.calendarEnabled || session.serviceTypes?.length > 0)) {
+              fresh = await loadScheduleSnapshot(context.organizationId, session.organization, session.serviceTypes);
+              if (fresh) scheduleCache.setSchedule(context.organizationId, fresh);
+            }
             if (fresh) {
               session.scheduleSnapshot = fresh;
-              console.log(`[ScheduleCache] Test session ${session.callSid} updated from shared cache`);
+              console.log(`[ScheduleCache] Test session ${session.callSid || "test"} refreshed from cache event`);
             }
           } catch (err) {
             console.warn("[ScheduleCache] Test call: failed to refresh session:", err.message);

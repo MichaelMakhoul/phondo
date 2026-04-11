@@ -112,7 +112,7 @@ export async function POST(request: NextRequest) {
 
     if (error) throw error;
 
-    invalidateVoiceScheduleCache(orgId).catch(() => {});
+    invalidateVoiceScheduleCache(orgId).catch((err) => console.warn("[VoiceCacheInvalidate] fire-and-forget failed:", err instanceof Error ? err.message : err));
 
     return NextResponse.json({
       block,
@@ -147,7 +147,7 @@ export async function DELETE(request: NextRequest) {
 
     if (error) throw error;
 
-    invalidateVoiceScheduleCache(orgId).catch(() => {});
+    invalidateVoiceScheduleCache(orgId).catch((err) => console.warn("[VoiceCacheInvalidate] fire-and-forget failed:", err instanceof Error ? err.message : err));
 
     return NextResponse.json({ success: true });
   } catch (err: unknown) {

@@ -974,7 +974,7 @@ function buildLiveScheduleSection(snapshot, todayStr) {
     let dayLabel;
     if (dateKey === todayStr) {
       dayLabel = `Today (${label})`;
-    } else if (i === 1 || dateKey === getNextDay(todayStr)) {
+    } else if (dateKey === getNextDay(todayStr)) {
       dayLabel = `Tomorrow (${label})`;
     } else {
       dayLabel = label;

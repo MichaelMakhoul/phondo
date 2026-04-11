@@ -333,7 +333,7 @@ function resolveAvailabilityFromCache(args, snapshot) {
 
   const dateSlots = snapshot.slots[date];
   // Get aggregate slots (works for both flat array and structured object)
-  const daySlots = Array.isArray(dateSlots) ? dateSlots : (dateSlots?._any || []);
+  let daySlots = Array.isArray(dateSlots) ? dateSlots : (dateSlots?._any || []);
 
   // Nice readable date label (e.g. "Monday, April 12")
   const dateLabel = new Intl.DateTimeFormat("en-US", {
@@ -343,6 +343,33 @@ function resolveAvailabilityFromCache(args, snapshot) {
     timeZone: snapshot.timezone || "UTC",
   }).format(new Date(date + "T12:00:00")); // noon to avoid DST edge cases
 
+  // Fall through to API when requested service has non-default duration
+  if (args.service_type_id && snapshot.serviceTypes) {
+    const st = snapshot.serviceTypes.find(s => s.id === args.service_type_id);
+    if (st && st.duration_minutes !== snapshot.defaultDuration) {
+      return null; // Duration mismatch — fall through to API
+    }
+  }
+
+  // Re-filter past slots for today (cache was built at snapshot time, may be stale)
+  const tz = snapshot.timezone;
+  if (tz) {
+    const nowInTz = new Date();
+    const todayStr = new Intl.DateTimeFormat("en-CA", { timeZone: tz }).format(nowInTz);
+    if (date === todayStr) {
+      const nowParts = new Intl.DateTimeFormat("en-US", { hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: tz }).format(nowInTz);
+      const [nowH, nowM] = nowParts.split(":").map(Number);
+      const nowMinutes = nowH * 60 + nowM;
+      daySlots = daySlots.filter(slot => {
+        const s = typeof slot === "string" ? slot : slot;
+        const [, timeStr] = s.split("T");
+        if (!timeStr) return true;
+        const [h, m] = timeStr.split(":").map(Number);
+        return h * 60 + m > nowMinutes;
+      });
+    }
+  }
+
   if (daySlots.length === 0) {
     return {
       message: `No available slots on ${dateLabel}. Fully booked.`,
@@ -350,31 +377,25 @@ function resolveAvailabilityFromCache(args, snapshot) {
   }
 
   // Format each slot start time as "h:mm AM/PM"
-  const timeFormatter = new Intl.DateTimeFormat("en-US", {
-    hour: "numeric",
-    minute: "2-digit",
-    hourCycle: "h12",
-    timeZone: snapshot.timezone || "UTC",
-  });
+  // Slots can be plain ISO strings or {start, end} objects
+  const times = daySlots.map((slot) => {
+    const s = typeof slot === "string" ? slot : (slot.start || slot);
+    const [, timeStr] = s.split("T");
+    if (!timeStr) return null;
+    const [h, m] = timeStr.split(":").map(Number);
+    const period = h >= 12 ? "PM" : "AM";
+    const displayH = h === 0 ? 12 : h > 12 ? h - 12 : h;
+    return `${displayH}:${String(m).padStart(2, "0")} ${period}`;
+  }).filter(Boolean);
 
-  const formattedTimes = daySlots.map((slot) =>
-    timeFormatter.format(new Date(slot.start))
-  );
-
-  // Derive duration from first slot (all slots in a day typically share duration)
+  // Use snapshot defaultDuration for the duration note
   let durationNote = "";
-  if (daySlots[0].start && daySlots[0].end) {
-    const durationMs =
-      new Date(daySlots[0].end).getTime() -
-      new Date(daySlots[0].start).getTime();
-    const durationMin = Math.round(durationMs / 60000);
-    if (durationMin > 0) {
-      durationNote = ` (${durationMin}-minute slots)`;
-    }
+  if (snapshot.defaultDuration && snapshot.defaultDuration > 0) {
+    durationNote = ` (${snapshot.defaultDuration}-minute slots)`;
   }
 
   return {
-    message: `${daySlots.length} available slot${daySlots.length === 1 ? "" : "s"} on ${dateLabel}${durationNote}: ${formattedTimes.join(", ")}.`,
+    message: `${daySlots.length} available slot${daySlots.length === 1 ? "" : "s"} on ${dateLabel}${durationNote}: ${times.join(", ")}.`,
   };
 }
 

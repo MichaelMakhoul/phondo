@@ -42,11 +42,12 @@ function makeSnapshot() {
   return {
     timezone: "Australia/Sydney",
     generatedAt: new Date().toISOString(),
+    defaultDuration: 30,
     slots: {
       "2026-04-13": [
-        { start: "2026-04-13T09:00:00+10:00", end: "2026-04-13T09:30:00+10:00" },
-        { start: "2026-04-13T10:00:00+10:00", end: "2026-04-13T10:30:00+10:00" },
-        { start: "2026-04-13T14:00:00+10:00", end: "2026-04-13T14:30:00+10:00" },
+        "2026-04-13T09:00:00",
+        "2026-04-13T10:00:00",
+        "2026-04-13T14:00:00",
       ],
       "2026-04-14": [],
     },
@@ -243,9 +244,10 @@ describe("resolveAvailabilityFromCache unit", () => {
     const snapshot = {
       timezone: "Australia/Sydney",
       generatedAt: new Date().toISOString(),
+      defaultDuration: 30,
       slots: {
         "2026-04-15": [
-          { start: "2026-04-15T11:00:00+10:00", end: "2026-04-15T11:30:00+10:00" },
+          "2026-04-15T11:00:00",
         ],
       },
     };
