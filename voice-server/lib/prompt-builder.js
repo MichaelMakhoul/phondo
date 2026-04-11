@@ -864,10 +864,161 @@ function getGreeting(assistant, organizationName, options) {
   return generateGreeting(tone, organizationName, language);
 }
 
+/**
+ * Convert an ISO datetime string like "2026-04-12T09:00:00" to "9:00 AM".
+ * Uses simple parsing (no Intl) since the input is always local time.
+ */
+function formatSlotTime(isoTime) {
+  if (!isoTime || typeof isoTime !== "string") return "";
+  // Extract the time portion after 'T'
+  const tIdx = isoTime.indexOf("T");
+  if (tIdx === -1) return "";
+  const timePart = isoTime.slice(tIdx + 1); // "09:00:00" or "14:30:00"
+  const [hStr, mStr] = timePart.split(":");
+  const h = parseInt(hStr, 10);
+  const m = parseInt(mStr, 10);
+  if (isNaN(h) || isNaN(m)) return "";
+  const period = h >= 12 ? "PM" : "AM";
+  const hour12 = h % 12 || 12;
+  const mins = m === 0 ? "" : `:${String(m).padStart(2, "0")}`;
+  return `${hour12}${mins} ${period}`;
+}
+
+/**
+ * Format a date key "YYYY-MM-DD" into a short weekday + month + day label.
+ * e.g. "2026-04-12" → "Sat, Apr 12"
+ */
+function formatDateLabel(dateKey, timezone) {
+  // Parse as local date in the given timezone by creating a date at noon UTC
+  // and using Intl to format it.
+  const [y, mo, d] = dateKey.split("-").map(Number);
+  // Use a date at noon UTC to avoid DST edge cases
+  const date = new Date(Date.UTC(y, mo - 1, d, 12, 0, 0));
+  try {
+    const fmt = new Intl.DateTimeFormat("en-US", {
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+      timeZone: "UTC", // The date components are already correct for the target tz
+    });
+    return fmt.format(date);
+  } catch {
+    // Fallback if Intl fails
+    const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    return `${days[date.getUTCDay()]}, ${months[date.getUTCMonth()]} ${date.getUTCDate()}`;
+  }
+}
+
+/**
+ * Get the current time formatted as "h:mm AM/PM" in the given timezone.
+ */
+function getCurrentTimeFormatted(timezone) {
+  try {
+    const fmt = new Intl.DateTimeFormat("en-US", {
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+      timeZone: timezone,
+    });
+    return fmt.format(new Date());
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Build a LIVE SCHEDULE section for injection into the system prompt.
+ * Uses pre-loaded cached schedule data so the AI can answer availability
+ * questions without calling check_availability for today/tomorrow.
+ *
+ * @param {object|null} snapshot - ScheduleSnapshot with slots, timezone, etc.
+ * @param {string} todayStr - "YYYY-MM-DD" in org timezone
+ * @returns {string} Prompt section (empty string if no data)
+ */
+function buildLiveScheduleSection(snapshot, todayStr) {
+  if (!snapshot || !snapshot.slots) return "";
+
+  const timezone = snapshot.timezone || "UTC";
+  const dates = Object.keys(snapshot.slots).sort();
+  if (dates.length === 0) return "";
+
+  const currentTime = getCurrentTimeFormatted(timezone);
+  const lines = [];
+
+  lines.push("LIVE SCHEDULE (pre-loaded, use this instead of calling check_availability for listed dates):");
+  lines.push(`Current date: ${todayStr}, Current time: ${currentTime} (${timezone})`);
+  lines.push("");
+
+  // First 2 dates get detailed slot times
+  const detailedDates = dates.slice(0, 2);
+  const summaryDates = dates.slice(2);
+
+  for (let i = 0; i < detailedDates.length; i++) {
+    const dateKey = detailedDates[i];
+    const slots = snapshot.slots[dateKey] || [];
+    const label = formatDateLabel(dateKey, timezone);
+
+    let dayLabel;
+    if (dateKey === todayStr) {
+      dayLabel = `Today (${label})`;
+    } else if (i === 1 || dateKey === getNextDay(todayStr)) {
+      dayLabel = `Tomorrow (${label})`;
+    } else {
+      dayLabel = label;
+    }
+
+    if (slots.length === 0) {
+      lines.push(`${dayLabel}: Fully booked - no slots available.`);
+    } else {
+      const times = slots.map(formatSlotTime).filter(Boolean).join(", ");
+      lines.push(`${dayLabel}: ${times} (${slots.length} slot${slots.length === 1 ? "" : "s"})`);
+    }
+  }
+
+  // Remaining dates get count-only summary
+  if (summaryDates.length > 0) {
+    lines.push("");
+    lines.push("Upcoming days (slot count only — call check_availability for specific times on these dates):");
+
+    for (const dateKey of summaryDates) {
+      const slots = snapshot.slots[dateKey] || [];
+      const label = formatDateLabel(dateKey, timezone);
+      if (slots.length === 0) {
+        lines.push(`- ${label}: Fully booked`);
+      } else {
+        lines.push(`- ${label}: ${slots.length} slot${slots.length === 1 ? "" : "s"} available`);
+      }
+    }
+  }
+
+  lines.push("");
+  lines.push("SCHEDULE USAGE RULES:");
+  lines.push("- For TODAY and TOMORROW: Use the slot times above directly. Do NOT call check_availability or get_current_datetime — you already have the data.");
+  lines.push("- For dates listed with slot counts only: Call check_availability to get the specific times.");
+  lines.push("- For dates NOT listed above: Call check_availability as usual (these are beyond the cached window).");
+  lines.push("- IMPORTANT: When booking, you MUST still call book_appointment — never confirm a booking without calling the tool.");
+
+  return lines.join("\n");
+}
+
+/**
+ * Get the next calendar day from a "YYYY-MM-DD" string.
+ */
+function getNextDay(dateStr) {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const date = new Date(Date.UTC(y, m - 1, d + 1, 12, 0, 0));
+  const ny = date.getUTCFullYear();
+  const nm = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const nd = String(date.getUTCDate()).padStart(2, "0");
+  return `${ny}-${nm}-${nd}`;
+}
+
 module.exports = {
   buildPromptFromConfig,
   buildSchedulingSection,
   buildSystemPrompt,
+  buildLiveScheduleSection,
   generateGreeting,
   generateAfterHoursGreeting,
   getGreeting,
