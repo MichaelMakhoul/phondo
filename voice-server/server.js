@@ -11,8 +11,9 @@ const { CallSession } = require("./call-session");
 const { openDeepgramStream } = require("./services/deepgram-stt");
 const { getChatResponse, streamChatResponse, LLM_PROVIDER, DEFAULT_MODEL } = require("./services/openai-llm");
 const { synthesizeSpeech, chunkAudioForTwilio } = require("./services/deepgram-tts");
-const { loadCallContext, loadTestCallContext } = require("./lib/call-context");
-const { buildSystemPrompt, getGreeting } = require("./lib/prompt-builder");
+const { loadCallContext, loadTestCallContext, loadScheduleSnapshot } = require("./lib/call-context");
+const { buildSystemPrompt, getGreeting, buildLiveScheduleSection } = require("./lib/prompt-builder");
+const scheduleCache = require("./lib/schedule-cache");
 const { createCallRecord, completeCallRecord, notifyCallCompleted } = require("./lib/call-logger");
 const { calendarToolDefinitions, listServiceTypesToolDefinition, transferToolDefinition, callbackToolDefinition, executeToolCall } = require("./services/tool-executor");
 const { createGeminiSession } = require("./services/gemini-live");
@@ -806,6 +807,20 @@ app.get("/health", async (req, res) => {
   }
 });
 
+app.post("/cache/invalidate", (req, res) => {
+  const secret = req.headers["x-internal-secret"];
+  if (!secret || secret !== process.env.INTERNAL_API_SECRET) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  const { organizationId } = req.body;
+  if (!organizationId) {
+    return res.status(400).json({ error: "organizationId required" });
+  }
+  console.log(`[CacheInvalidate] Invalidating schedule cache for org=${organizationId}`);
+  scheduleCache.invalidate(organizationId);
+  res.json({ success: true });
+});
+
 // Sentry Express error handler — captures unhandled route errors
 app.use((err, req, res, _next) => {
   Sentry.captureException(err);
@@ -831,6 +846,12 @@ wss.on("connection", (twilioWs) => {
     const s = session;
     session = null;
     sessions.delete(s.streamSid);
+
+    // Unsubscribe from schedule cache events
+    if (s._cacheUnsub) {
+      s._cacheUnsub();
+      s._cacheUnsub = null;
+    }
 
     // If a transfer is pending, don't run post-call processing yet —
     // the /twiml/transfer-status callback or TTL cleanup will handle it.
@@ -1199,6 +1220,55 @@ wss.on("connection", (twilioWs) => {
           }
           session.setSystemPrompt(systemPrompt + callerContext);
 
+          // ── Schedule cache: pre-fetch availability snapshot ──
+          let scheduleSnapshot = null;
+          if (session.calendarEnabled || session.serviceTypes?.length > 0) {
+            try {
+              scheduleSnapshot = scheduleCache.getSchedule(context.organizationId);
+              if (!scheduleSnapshot) {
+                scheduleSnapshot = await loadScheduleSnapshot(
+                  context.organizationId,
+                  context.organization,
+                  context.serviceTypes
+                );
+                if (scheduleSnapshot) {
+                  scheduleCache.setSchedule(context.organizationId, scheduleSnapshot);
+                  console.log(`[ScheduleCache] Loaded snapshot for org=${context.organizationId} (${Object.keys(scheduleSnapshot.slots).length} days, ${Object.values(scheduleSnapshot.slots).flat().length} total slots)`);
+                }
+              } else {
+                console.log(`[ScheduleCache] Cache hit for org=${context.organizationId}`);
+              }
+
+              if (scheduleSnapshot) {
+                const nowInTz = new Date(new Date().toLocaleString("en-US", { timeZone: context.organization.timezone }));
+                const todayStr = `${nowInTz.getFullYear()}-${String(nowInTz.getMonth() + 1).padStart(2, "0")}-${String(nowInTz.getDate()).padStart(2, "0")}`;
+                const liveSection = buildLiveScheduleSection(scheduleSnapshot, todayStr);
+                if (liveSection) {
+                  const currentPrompt = session.messages[0]?.content || "";
+                  session.setSystemPrompt(currentPrompt + "\n" + liveSection);
+                }
+              }
+            } catch (err) {
+              console.warn("[ScheduleCache] Failed to load snapshot (non-fatal):", err.message);
+            }
+          }
+          session.scheduleSnapshot = scheduleSnapshot;
+
+          // Subscribe to cache changes from other sessions (same org)
+          if (scheduleSnapshot) {
+            session._cacheUnsub = scheduleCache.onScheduleChanged(context.organizationId, () => {
+              try {
+                const fresh = scheduleCache.getSchedule(context.organizationId);
+                if (fresh) {
+                  session.scheduleSnapshot = fresh;
+                  console.log(`[ScheduleCache] Session ${session.callSid} updated from shared cache`);
+                }
+              } catch (err) {
+                console.warn("[ScheduleCache] Failed to refresh session:", err.message);
+              }
+            });
+          }
+
           // Create call record in database
           try {
             const callRecordId = await createCallRecord({
@@ -1322,9 +1392,30 @@ wss.on("connection", (twilioWs) => {
                     callerPhone: session.callerPhone,
                     orgPhoneNumber: session.orgPhoneNumber,
                     telephonyProvider: session.telephonyProvider || "twilio",
+                    scheduleSnapshot: session.scheduleSnapshot,
                   });
                   const message = typeof result === "string" ? result : result.message;
                   console.log(`[GeminiLive] Tool result: "${message.slice(0, 100)}"`);
+
+                  // Apply cache delta for writes
+                  if (session.scheduleSnapshot) {
+                    if (toolCall.name === "book_appointment" && !message.includes("not available") && !message.includes("conflict") && !message.includes("unable")) {
+                      scheduleCache.applyDelta(session.organizationId, "book", {
+                        appointment: {
+                          id: "pending-" + Date.now(),
+                          start_time: toolCall.args.datetime,
+                          duration_minutes: session.serviceTypes?.find((st) => st.id === toolCall.args.service_type_id)?.duration_minutes || 30,
+                          status: "confirmed",
+                        },
+                        dateKey: toolCall.args.datetime?.split("T")[0],
+                        slotTime: toolCall.args.datetime,
+                      });
+                    }
+                    if (toolCall.name === "cancel_appointment") {
+                      scheduleCache.invalidate(session.organizationId);
+                    }
+                  }
+
                   return { message };
                 },
                 onTranscriptIn: (text) => {
@@ -1786,10 +1877,30 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
             callerPhone: session.callerPhone,
             orgPhoneNumber: session.orgPhoneNumber,
             telephonyProvider: session.telephonyProvider || "twilio",
+            scheduleSnapshot: session.scheduleSnapshot,
           });
 
           const resultMessage = typeof toolResult === "string" ? toolResult : toolResult.message;
           console.log(`[ToolCall] ${fnName} result: "${resultMessage.slice(0, 100)}..."`);
+
+          // Apply optimistic cache delta for write operations
+          if (session.scheduleSnapshot) {
+            if (fnName === "book_appointment" && !resultMessage.includes("not available") && !resultMessage.includes("conflict") && !resultMessage.includes("unable")) {
+              scheduleCache.applyDelta(session.organizationId, "book", {
+                appointment: {
+                  id: "pending-" + Date.now(),
+                  start_time: fnArgs.datetime,
+                  duration_minutes: session.serviceTypes?.find((st) => st.id === fnArgs.service_type_id)?.duration_minutes || 30,
+                  status: "confirmed",
+                },
+                dateKey: fnArgs.datetime?.split("T")[0],
+                slotTime: fnArgs.datetime,
+              });
+            }
+            if (fnName === "cancel_appointment") {
+              scheduleCache.invalidate(session.organizationId);
+            }
+          }
 
           // Track transfer attempt on session for call metadata
           if (toolResult.transferAttempt) {
@@ -2097,6 +2208,11 @@ testWss.on("connection", (ws, req) => {
     }
 
     if (session) {
+      // Unsubscribe from schedule cache events
+      if (session._cacheUnsub) {
+        session._cacheUnsub();
+        session._cacheUnsub = null;
+      }
       // Close Gemini session if active
       if (session.geminiSession) {
         try { session.geminiSession.close(); } catch (err) {
@@ -2179,6 +2295,55 @@ testWss.on("connection", (ws, req) => {
       );
       session.setSystemPrompt(systemPrompt);
 
+      // ── Schedule cache: pre-fetch availability snapshot for test calls ──
+      let scheduleSnapshot = null;
+      if (session.calendarEnabled || session.serviceTypes?.length > 0) {
+        try {
+          scheduleSnapshot = scheduleCache.getSchedule(context.organizationId);
+          if (!scheduleSnapshot) {
+            scheduleSnapshot = await loadScheduleSnapshot(
+              context.organizationId,
+              context.organization,
+              context.serviceTypes
+            );
+            if (scheduleSnapshot) {
+              scheduleCache.setSchedule(context.organizationId, scheduleSnapshot);
+              console.log(`[ScheduleCache] Test call: loaded snapshot for org=${context.organizationId} (${Object.keys(scheduleSnapshot.slots).length} days, ${Object.values(scheduleSnapshot.slots).flat().length} total slots)`);
+            }
+          } else {
+            console.log(`[ScheduleCache] Test call: cache hit for org=${context.organizationId}`);
+          }
+
+          if (scheduleSnapshot) {
+            const nowInTz = new Date(new Date().toLocaleString("en-US", { timeZone: context.organization.timezone }));
+            const todayStr = `${nowInTz.getFullYear()}-${String(nowInTz.getMonth() + 1).padStart(2, "0")}-${String(nowInTz.getDate()).padStart(2, "0")}`;
+            const liveSection = buildLiveScheduleSection(scheduleSnapshot, todayStr);
+            if (liveSection) {
+              const currentPrompt = session.messages[0]?.content || "";
+              session.setSystemPrompt(currentPrompt + "\n" + liveSection);
+            }
+          }
+        } catch (err) {
+          console.warn("[ScheduleCache] Test call: failed to load snapshot (non-fatal):", err.message);
+        }
+      }
+      session.scheduleSnapshot = scheduleSnapshot;
+
+      // Subscribe to cache changes from other sessions (same org)
+      if (scheduleSnapshot) {
+        session._cacheUnsub = scheduleCache.onScheduleChanged(context.organizationId, () => {
+          try {
+            const fresh = scheduleCache.getSchedule(context.organizationId);
+            if (fresh) {
+              session.scheduleSnapshot = fresh;
+              console.log(`[ScheduleCache] Test session ${session.callSid} updated from shared cache`);
+            }
+          } catch (err) {
+            console.warn("[ScheduleCache] Test call: failed to refresh session:", err.message);
+          }
+        });
+      }
+
       // ── Pipeline selection: Gemini Live vs Classic ──────────────
       const useGeminiLive = VOICE_PIPELINE === "gemini-live" && process.env.GEMINI_API_KEY;
 
@@ -2241,6 +2406,8 @@ testWss.on("connection", (ws, req) => {
                 callSid: session.callSid,
                 transferRules: [],
                 testMode: true,
+                organization: session.organization,
+                scheduleSnapshot: session.scheduleSnapshot,
               });
               const message = typeof result === "string" ? result : result.message;
               console.log(`[TestGeminiLive] Tool result: "${message.slice(0, 100)}"`);
@@ -2551,6 +2718,8 @@ async function handleTestUserSpeech(session, ws, transcript) {
             callSid: session.callSid,
             transferRules: [],
             testMode: true,
+            organization: session.organization,
+            scheduleSnapshot: session.scheduleSnapshot,
           });
 
           const resultMessage = typeof toolResult === "string" ? toolResult : toolResult.message;
