@@ -743,15 +743,47 @@ async function loadScheduleSnapshot(organizationId, orgConfig, serviceTypes) {
     }
 
     // Filter appointment overlaps (compare in org-local minutes-since-midnight)
+    // When practitioners exist, a slot is only unavailable when ALL practitioners
+    // are busy at that time. This matches the logic in getBuiltInAvailability()
+    // (src/lib/calendar/tool-handlers.ts).
     if (appointments.length > 0) {
+      const practitionerIds = enrichedPractitioners.map((p) => p.id);
+      const hasPractitioners = practitionerIds.length > 0;
+
       daySlots = daySlots.filter((slot) => {
         const [, timeStr] = slot.split("T");
         const [slotH, slotM] = timeStr.split(":").map(Number);
         const slotStartMin = slotH * 60 + slotM;
         const slotEndMin = slotStartMin + duration;
 
+        if (hasPractitioners) {
+          // Multi-practitioner: slot available if at least one practitioner is free
+          const busyPractitioners = new Set();
+          for (const appt of appointments) {
+            const apptDate = new Intl.DateTimeFormat("en-CA", { timeZone: timezone })
+              .format(new Date(appt.start_time));
+            if (apptDate !== date) continue;
+
+            const apptStart = getTimeComponents(new Date(appt.start_time), timezone);
+            const apptStartMin = apptStart.hours * 60 + apptStart.minutes;
+            let apptEndMin;
+            if (appt.end_time) {
+              const apptEnd = getTimeComponents(new Date(appt.end_time), timezone);
+              apptEndMin = apptEnd.hours * 60 + apptEnd.minutes;
+            } else {
+              apptEndMin = apptStartMin + (appt.duration_minutes || duration);
+            }
+
+            if (slotStartMin < apptEndMin && slotEndMin > apptStartMin && appt.practitioner_id) {
+              busyPractitioners.add(appt.practitioner_id);
+            }
+          }
+          // Slot available if not ALL practitioners are busy
+          return busyPractitioners.size < practitionerIds.length;
+        }
+
+        // No practitioners: original behavior — any overlapping appointment blocks the slot
         return !appointments.some((appt) => {
-          // Check if appointment is on this date
           const apptDate = new Intl.DateTimeFormat("en-CA", { timeZone: timezone })
             .format(new Date(appt.start_time));
           if (apptDate !== date) return false;
