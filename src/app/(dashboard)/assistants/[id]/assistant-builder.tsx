@@ -1154,7 +1154,7 @@ export function AssistantBuilder({
                     <div>
                       <Label className="text-sm">Supported Languages</Label>
                       <p className="text-xs text-muted-foreground mb-2">
-                        Select which languages the AI can respond in. Leave empty to support all languages.
+                        Languages callers are likely to speak. Used for three things: (1) the AI adapts its responses to the caller&apos;s language, (2) the system prompt tells the AI to treat unexpected-language transcription as STT errors, and (3) post-call analysis uses the list to normalise mis-detected languages in the saved transcript. Leave empty to let the AI auto-detect any language.
                       </p>
                       <div className="flex flex-wrap gap-2">
                         {AVAILABLE_LANGUAGES.map((lang) => (
