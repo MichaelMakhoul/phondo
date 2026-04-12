@@ -1128,9 +1128,11 @@ wss.on("connection", (twilioWs) => {
           const recordingConsentMode = context.organization.recordingConsentMode || "auto";
           if (recordingConsentMode !== "never" && callSid) {
             try {
+              const recordingCallbackBase = process.env.APP_PUBLIC_URL || PUBLIC_URL;
               const recording = await getTwilioRestClient().calls(callSid).recordings.create({
-                recordingStatusCallback: `${PUBLIC_URL}/twiml/recording-status`,
+                recordingStatusCallback: `${recordingCallbackBase}/api/webhooks/twilio-recording-done`,
                 recordingStatusCallbackMethod: "POST",
+                recordingStatusCallbackEvent: ["completed"],
                 recordingChannels: "dual",
               });
               console.log(`[Recording] Started recording for callSid=${callSid} recordingSid=${recording.sid}`);
