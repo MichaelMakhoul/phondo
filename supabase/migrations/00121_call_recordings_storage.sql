@@ -16,11 +16,7 @@ INSERT INTO storage.buckets (id, name, public)
 VALUES ('call-recordings', 'call-recordings', false)
 ON CONFLICT (id) DO NOTHING;
 
--- Block all anon/authenticated access to call-recordings bucket; service role bypasses RLS by design.
--- Dashboard reads flow through a Next.js route that uses the service role to generate signed URLs.
-CREATE POLICY "call-recordings deny all"
-  ON storage.objects
-  FOR ALL
-  TO authenticated, anon
-  USING (bucket_id <> 'call-recordings')
-  WITH CHECK (bucket_id <> 'call-recordings');
+-- No RLS policies are added for call-recordings: storage.objects has RLS enabled and
+-- default-denies, so absent any allow policy for this bucket, only the service role
+-- can read/write. Dashboard reads go through a Next.js route that uses the service
+-- role to issue short-lived signed URLs.
