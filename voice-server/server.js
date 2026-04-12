@@ -137,10 +137,14 @@ function resolveAfterHoursState(context) {
   return { isAfterHours: isActive, afterHoursConfig, effectiveCalendarEnabled };
 }
 
-// Global error handlers to prevent silent crashes
-process.on("unhandledRejection", (reason) => {
+// Global error handlers — fail fast and let Fly.io restart the process.
+// Both handlers exit with code 1 so a broken process doesn't linger in a
+// zombie state. Fly's init will immediately restart the VM.
+process.on("unhandledRejection", async (reason) => {
   console.error("[FATAL] Unhandled promise rejection:", reason);
   Sentry.captureException(reason);
+  await Sentry.flush(2000).catch(() => {});
+  process.exit(1);
 });
 
 process.on("uncaughtException", async (err) => {
@@ -1260,13 +1264,16 @@ wss.on("connection", (twilioWs) => {
           // Subscribe to cache changes from other sessions (same org)
           if (scheduleSnapshot) {
             session._cacheUnsub = scheduleCache.onScheduleChanged(context.organizationId, async () => {
+              // Guard: session may have been cleaned up between invalidation and this callback
+              if (!session) return;
               try {
                 let fresh = scheduleCache.getSchedule(context.organizationId);
                 if (!fresh && (session.calendarEnabled || session.serviceTypes?.length > 0)) {
                   fresh = await loadScheduleSnapshot(context.organizationId, session.organization, session.serviceTypes);
                   if (fresh) scheduleCache.setSchedule(context.organizationId, fresh);
                 }
-                if (fresh) {
+                // Re-check session after await — it may have been cleaned up during the fetch
+                if (fresh && session) {
                   session.scheduleSnapshot = fresh;
                   console.log(`[ScheduleCache] Session ${session.callSid || "live"} refreshed from cache event`);
                 }
@@ -1388,6 +1395,11 @@ wss.on("connection", (twilioWs) => {
                   }
                 },
                 onToolCall: async (toolCall) => {
+                  // Guard: session may be null if Gemini delivers buffered tool calls after cleanup
+                  if (!session) {
+                    console.warn(`[GeminiLive] Ignoring tool call ${toolCall.name} — session already cleaned up`);
+                    return { message: "" };
+                  }
                   console.log(`[GeminiLive] Tool call: ${toolCall.name}(${JSON.stringify(toolCall.args).slice(0, 80)})`);
                   const result = await executeToolCall(toolCall.name, toolCall.args, {
                     organizationId: session.organizationId,
@@ -1404,8 +1416,8 @@ wss.on("connection", (twilioWs) => {
                   const message = typeof result === "string" ? result : result.message;
                   console.log(`[GeminiLive] Tool result: "${message.slice(0, 100)}"`);
 
-                  // Apply cache delta for writes
-                  if (session.scheduleSnapshot) {
+                  // Apply cache delta for writes — guard against cleanup race
+                  if (session && session.scheduleSnapshot) {
                     if (toolCall.name === "book_appointment" && (message.includes("confirmed") || message.includes("booked") || message.includes("confirmation"))) {
                       scheduleCache.applyDelta(session.organizationId, "book", {
                         appointment: {
@@ -1434,6 +1446,11 @@ wss.on("connection", (twilioWs) => {
                   pendingAiTranscript += text;
                 },
                 onInterrupted: () => {
+                  // Guard: session may be null if Gemini delivers buffered events after cleanup
+                  if (!session) {
+                    pendingAiTranscript = "";
+                    return;
+                  }
                   // Flush any pending AI transcript before interruption
                   if (pendingAiTranscript.trim()) {
                     session.addMessage("assistant", pendingAiTranscript.trim());
@@ -1445,6 +1462,12 @@ wss.on("connection", (twilioWs) => {
                   }
                 },
                 onTurnComplete: () => {
+                  // Guard: session may be null if Gemini delivers buffered events after cleanup
+                  if (!session) {
+                    pendingUserTranscript = "";
+                    pendingAiTranscript = "";
+                    return;
+                  }
                   // Flush accumulated transcripts as complete messages
                   if (pendingUserTranscript.trim()) {
                     session.addMessage("user", pendingUserTranscript.trim());
@@ -1743,6 +1766,7 @@ const MAX_TOOL_ITERATIONS = 3;
  */
 // Filler system: ONE filler per turn, only when the AI needs time to process.
 // No stacking, no "Sure. Of course. One moment." — just one natural acknowledgment.
+// Covers all languages supported by the prompt builder's LANGUAGE_NAMES map.
 const FILLER_MESSAGES = {
   en: {
     waiting: "One moment.",                          // generic wait — LLM taking >1.5s
@@ -1756,9 +1780,97 @@ const FILLER_MESSAGES = {
     booking: "Permítame reservar eso.",
     tool: "Un momento.",
   },
+  ar: {
+    waiting: "لحظة من فضلك.",
+    checking: "لحظة، دعني أتحقق من ذلك.",
+    booking: "دعني أحجز لك ذلك.",
+    tool: "لحظة من فضلك.",
+  },
+  fr: {
+    waiting: "Un instant.",
+    checking: "Un instant, je vérifie cela.",
+    booking: "Je vais réserver cela pour vous.",
+    tool: "Un instant.",
+  },
+  de: {
+    waiting: "Einen Moment bitte.",
+    checking: "Einen Moment, ich prüfe das.",
+    booking: "Ich buche das für Sie.",
+    tool: "Einen Moment bitte.",
+  },
+  it: {
+    waiting: "Un momento.",
+    checking: "Un momento, lascia che controlli.",
+    booking: "Lascia che lo prenoti per te.",
+    tool: "Un momento.",
+  },
+  pt: {
+    waiting: "Um momento.",
+    checking: "Um momento, deixa eu verificar.",
+    booking: "Deixa eu reservar isso para você.",
+    tool: "Um momento.",
+  },
+  zh: {
+    waiting: "请稍等。",
+    checking: "请稍等，让我查一下。",
+    booking: "让我为您预约。",
+    tool: "请稍等。",
+  },
+  hi: {
+    waiting: "एक क्षण।",
+    checking: "एक क्षण, मुझे जांचने दें।",
+    booking: "मैं आपके लिए बुक करता हूं।",
+    tool: "एक क्षण।",
+  },
+  ja: {
+    waiting: "少々お待ちください。",
+    checking: "少々お待ちください、確認させていただきます。",
+    booking: "ご予約いたします。",
+    tool: "少々お待ちください。",
+  },
+  ko: {
+    waiting: "잠시만 기다려 주세요.",
+    checking: "잠시만요, 확인해 드릴게요.",
+    booking: "예약해 드리겠습니다.",
+    tool: "잠시만 기다려 주세요.",
+  },
+  ru: {
+    waiting: "Одну минуту.",
+    checking: "Одну минуту, я проверю.",
+    booking: "Я забронирую это для вас.",
+    tool: "Одну минуту.",
+  },
+  tr: {
+    waiting: "Bir dakika.",
+    checking: "Bir dakika, kontrol edeyim.",
+    booking: "Sizin için rezerve edeyim.",
+    tool: "Bir dakika.",
+  },
+  vi: {
+    waiting: "Một chút ạ.",
+    checking: "Một chút, để tôi kiểm tra.",
+    booking: "Để tôi đặt cho bạn.",
+    tool: "Một chút ạ.",
+  },
+  th: {
+    waiting: "สักครู่นะคะ",
+    checking: "สักครู่ ขอเช็คก่อนนะคะ",
+    booking: "ขอจองให้นะคะ",
+    tool: "สักครู่นะคะ",
+  },
+  id: {
+    waiting: "Sebentar ya.",
+    checking: "Sebentar, saya cek dulu.",
+    booking: "Saya bookingkan untuk Anda.",
+    tool: "Sebentar ya.",
+  },
 };
 
-// Short/closing responses that don't need a filler (the AI should respond quickly to these)
+// Short/closing responses that don't need a filler.
+// Language-agnostic heuristic: treat transcripts under ~12 characters (after trimming)
+// as short utterances that should NOT trigger a filler. This covers "yes/no/ok/thanks/bye"
+// and their equivalents in any language without maintaining per-language regex lists.
+const NO_FILLER_MAX_LEN = 12;
 const NO_FILLER_RE = /^(yeah?|yes|no|ok(ay)?|sure|thanks?( you)?|thank you|bye|goodbye|that'?s all|good|likewise)\s*[.!?]?$/i;
 
 function getToolFiller(lang, toolNames) {
@@ -1799,8 +1911,12 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
       let holdStopped = false;
 
       // Filler timer: if LLM hasn't started streaming in 1.5s, play "One moment."
-      // Only fires once per turn (fillerSentThisTurn guard) and skips closing responses
-      const skipFiller = fillerSentThisTurn || NO_FILLER_RE.test(transcript.trim());
+      // Only fires once per turn (fillerSentThisTurn guard) and skips closing responses.
+      // Short transcripts (< NO_FILLER_MAX_LEN chars) are treated as closings in any language.
+      const trimmedTranscript = transcript.trim();
+      const skipFiller = fillerSentThisTurn
+        || NO_FILLER_RE.test(trimmedTranscript)
+        || trimmedTranscript.length <= NO_FILLER_MAX_LEN;
       const fillerTimer = skipFiller ? null : setTimeout(() => {
         if (!holdStopped && !fillerSentThisTurn) {
           fillerSentThisTurn = true;
@@ -2338,13 +2454,16 @@ testWss.on("connection", (ws, req) => {
       // Subscribe to cache changes from other sessions (same org)
       if (scheduleSnapshot) {
         session._cacheUnsub = scheduleCache.onScheduleChanged(context.organizationId, async () => {
+          // Guard: session may have been cleaned up between invalidation and this callback
+          if (!session) return;
           try {
             let fresh = scheduleCache.getSchedule(context.organizationId);
             if (!fresh && (session.calendarEnabled || session.serviceTypes?.length > 0)) {
               fresh = await loadScheduleSnapshot(context.organizationId, session.organization, session.serviceTypes);
               if (fresh) scheduleCache.setSchedule(context.organizationId, fresh);
             }
-            if (fresh) {
+            // Re-check session after await — it may have been cleaned up during the fetch
+            if (fresh && session) {
               session.scheduleSnapshot = fresh;
               console.log(`[ScheduleCache] Test session ${session.callSid || "test"} refreshed from cache event`);
             }
@@ -2409,6 +2528,11 @@ testWss.on("connection", (ws, req) => {
               }
             },
             onToolCall: async (toolCall) => {
+              // Guard: session may be null if Gemini delivers buffered tool calls after cleanup
+              if (!session) {
+                console.warn(`[TestGeminiLive] Ignoring tool call ${toolCall.name} — session already cleaned up`);
+                return { message: "" };
+              }
               console.log(`[TestGeminiLive] Tool call: ${toolCall.name}(${JSON.stringify(toolCall.args).slice(0, 80)})`);
               const result = await executeToolCall(toolCall.name, toolCall.args, {
                 organizationId: session.organizationId,
@@ -2434,6 +2558,11 @@ testWss.on("connection", (ws, req) => {
               }
             },
             onInterrupted: () => {
+              // Guard: session may be null if Gemini delivers buffered events after cleanup
+              if (!session) {
+                pendingAiTranscript = "";
+                return;
+              }
               if (pendingAiTranscript.trim()) {
                 session.addMessage("assistant", pendingAiTranscript.trim());
                 if (ws.readyState === WebSocket.OPEN) {
@@ -2444,6 +2573,12 @@ testWss.on("connection", (ws, req) => {
               }
             },
             onTurnComplete: () => {
+              // Guard: session may be null if Gemini delivers buffered events after cleanup
+              if (!session) {
+                pendingUserTranscript = "";
+                pendingAiTranscript = "";
+                return;
+              }
               if (pendingUserTranscript.trim()) {
                 session.addMessage("user", pendingUserTranscript.trim());
                 if (ws.readyState === WebSocket.OPEN) {
@@ -2795,3 +2930,56 @@ server.listen(PORT, "0.0.0.0", () => {
   }
 
 });
+
+// ── Graceful shutdown on SIGTERM / SIGINT ──
+// Fly.io sends SIGINT when deploying, auto-stopping, or restarting a machine.
+// Give active calls a grace period to wind down cleanly instead of abruptly
+// dropping callers mid-sentence.
+let isShuttingDown = false;
+const SHUTDOWN_GRACE_MS = 15_000; // 15s — enough for current LLM turn + brief "please hold" message
+
+async function gracefulShutdown(signal) {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  console.log(`[Shutdown] Received ${signal} — draining active calls (grace=${SHUTDOWN_GRACE_MS}ms)`);
+
+  // Stop accepting new HTTP/WS connections
+  server.close(() => {
+    console.log("[Shutdown] HTTP server stopped accepting new connections");
+  });
+
+  // Snapshot active sessions so the Map doesn't mutate under us
+  const activeSessionEntries = Array.from(sessions.entries());
+  console.log(`[Shutdown] ${activeSessionEntries.length} active call session(s) to drain`);
+
+  // Hard cutoff — if calls haven't wound down in 15s, force exit
+  const hardCutoff = setTimeout(() => {
+    console.warn("[Shutdown] Grace period exceeded — forcing exit");
+    Sentry.flush(1000).catch(() => {}).finally(() => process.exit(0));
+  }, SHUTDOWN_GRACE_MS);
+  hardCutoff.unref();
+
+  // Mark every active session as shutting down; the Gemini/classic pipelines
+  // check this flag and stop generating new tool calls / new sentences.
+  for (const [, sess] of activeSessionEntries) {
+    if (sess) {
+      sess.shuttingDown = true;
+      sess.endedReason = sess.endedReason || "server-shutdown";
+    }
+  }
+
+  // Poll until no active sessions remain, then flush Sentry and exit clean
+  const pollInterval = setInterval(async () => {
+    if (sessions.size === 0) {
+      clearInterval(pollInterval);
+      clearTimeout(hardCutoff);
+      console.log("[Shutdown] All sessions drained — exiting cleanly");
+      await Sentry.flush(2000).catch(() => {});
+      process.exit(0);
+    }
+  }, 500);
+  pollInterval.unref();
+}
+
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));
