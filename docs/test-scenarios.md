@@ -735,6 +735,208 @@ These scenarios verify that callers can request a specific practitioner and the 
 
 ---
 
+## SECTION 17: Call Recording Playback (SCRUM-207)
+
+Verifies recordings are captured by the provider, posted to the Next.js webhook, stored in Supabase Storage, and played back via signed URL in the dashboard.
+
+### Scenario 17.1 — Telnyx Recording Round-Trip (Primary)
+**Prerequisites:** Provisioned Telnyx number linked to an active assistant. Recording mode `auto` or `always` (NOT `never`). Call Control Application webhook URL set to `${APP_PUBLIC_URL}/api/webhooks/telnyx-recording-done`.
+
+**Script:**
+> Call the Telnyx number. Let the AI greet you. Have a ~30 second conversation. Hang up.
+
+**Expected:**
+- [ ] Voice server logs show TeXML `<Connect record="record-from-answer">`
+- [ ] Within ~15 seconds of hang-up, Next.js logs show `[telnyx-recording-done]` webhook 200
+- [ ] `calls.recording_storage_path` is populated for the new row
+- [ ] Supabase Storage bucket `call-recordings` contains `<org_id>/<call_id>.mp3`
+- [ ] Dashboard call detail page renders an audio player (no auth prompt)
+- [ ] Signed URL in the `<audio src>` has a `?token=...` query string
+
+### Scenario 17.2 — Twilio Recording Round-Trip (Fallback)
+**Prerequisites:** Twilio number with voice-server `/twiml` configured as voice URL. Org recording_consent_mode = `auto` or `always`.
+
+**Script:**
+> Call the Twilio number. Have a short conversation. Hang up.
+
+**Expected:**
+- [ ] Voice server logs show `[Recording] Started recording for callSid=...`
+- [ ] `[twilio-recording-done]` webhook returns 200 in Next.js logs within ~15s
+- [ ] Recording downloaded and uploaded to Supabase Storage
+- [ ] Dashboard plays it via signed URL, no basic-auth prompt
+
+### Scenario 17.3 — Recording Mode `never`
+**Prerequisites:** Set org `recording_consent_mode` to `never`.
+
+**Script:**
+> Place a test call.
+
+**Expected:**
+- [ ] TeXML/TwiML does NOT include `record="record-from-answer"`
+- [ ] Voice server does NOT call `recordings.create` via Twilio REST
+- [ ] No recording webhook fires
+- [ ] `recording_storage_path` remains null
+- [ ] Dashboard shows no Recording card
+
+### Scenario 17.4 — Idempotent Webhook Retry
+**Script:**
+> Manually replay a recording-done webhook (curl with same signature/body, or replay from provider portal).
+
+**Expected:**
+- [ ] Second call returns `{ ok: true }` without re-uploading (helper short-circuits on `recording_sid` match)
+- [ ] Storage object unchanged (same size, timestamp)
+- [ ] No duplicate DB update
+
+### Scenario 17.5 — Legacy Call (Pre-SCRUM-207)
+**Prerequisites:** Open an older call row that has `recording_url` set but no `recording_storage_path`.
+
+**Expected:**
+- [ ] Dashboard shows "Legacy recording (stored with provider). This recording predates in-app playback." message
+- [ ] Does NOT attempt to play the broken provider URL
+
+### Scenario 17.6 — Signed URL Expiry
+**Script:**
+> Open a call detail page. Wait ~11 minutes without interacting. Click play.
+
+**Expected:**
+- [ ] Playback might fail (URL expired)
+- [ ] Reloading the page fetches a fresh signed URL and works
+- [ ] No sensitive URL leaks into page source (only a short-lived signed URL)
+
+---
+
+## SECTION 18: Cleaned Transcript (SCRUM-208)
+
+Verifies that post-call analysis produces a usable `cleaned_transcript` that strips STT artifacts (e.g., Korean/Hindi/Chinese tokens when the caller spoke Arabic/French/English).
+
+### Scenario 18.1 — English-Only Call, Clean STT
+**Script:**
+> Have a completely English conversation (30s+).
+
+**Expected:**
+- [ ] `calls.cleaned_transcript` populated
+- [ ] Dashboard transcript card shows Cleaned/Raw toggle buttons
+- [ ] Cleaned view ≈ raw view (no unexpected rewriting)
+- [ ] No `original` field on turns (because nothing changed)
+- [ ] Default view is Cleaned
+
+### Scenario 18.2 — Arabic Caller, STT Mis-Detection
+**Prerequisites:** Assistant `supportedLanguages` = ["en", "ar"], multilingual enabled.
+**Script:**
+> Speak a few sentences in Arabic (e.g., "مرحبا، أريد حجز موعد غدا")
+
+**Expected:**
+- [ ] Raw transcript may contain garbled Korean/Hindi characters (known Gemini Live issue)
+- [ ] Cleaned transcript shows the intended Arabic text
+- [ ] `original` field retains the garbled STT output for comparison
+- [ ] AI analysis summary is still sensible English
+- [ ] Raw/Cleaned toggle lets you compare both views
+
+### Scenario 18.3 — Mixed English + French
+**Prerequisites:** `supportedLanguages` = ["en", "fr"], multilingual enabled.
+**Script:**
+> Greet in English, then switch to French mid-call.
+
+**Expected:**
+- [ ] Cleaned turns preserve the language each turn was actually spoken in
+- [ ] No forced translation
+- [ ] `language` field populated on each turn when detectable
+- [ ] AI summary still in English (by design)
+
+### Scenario 18.4 — Very Short Call (<20 chars transcript)
+**Script:**
+> Pick up, say "wrong number", hang up.
+
+**Expected:**
+- [ ] `cleaned_transcript` is null (analysis skipped for short calls)
+- [ ] Dashboard falls back to Raw view automatically (toggle hidden)
+
+### Scenario 18.5 — Severe STT Garbage (Can't Recover)
+**Script:**
+> Whisper or mumble unintelligibly for 20+ seconds.
+
+**Expected:**
+- [ ] Post-call analysis either returns `cleaned_transcript: null` or best-effort garbage
+- [ ] No server crash, no pipeline failure
+- [ ] Dashboard degrades gracefully to Raw
+
+### Scenario 18.6 — Analysis Timeout / Failure
+**Prerequisites:** Temporarily kill OpenAI API key in env.
+**Script:**
+> Make a normal test call.
+
+**Expected:**
+- [ ] Raw transcript still saved
+- [ ] `cleaned_transcript` is null
+- [ ] Dashboard still renders Raw view
+- [ ] Sentry error logged for the missing key
+
+---
+
+## SECTION 19: Supported Languages Setting (SCRUM-209)
+
+Verifies the Supported Languages multi-select affects: (1) AI response language, (2) system prompt hint, (3) post-call cleanup.
+
+### Scenario 19.1 — Setting Is Empty + Multilingual Off
+**Prerequisites:** `supportedLanguages` = [], `multilingualEnabled` = false.
+**Script:**
+> Greet in Spanish: "Hola, necesito una cita"
+
+**Expected:**
+- [ ] AI responds in English, offers to take a message
+- [ ] System prompt contains English-only directive
+- [ ] No CALLER LANGUAGE HINT in the prompt
+- [ ] Cleaned transcript shows no language-recovery influence
+
+### Scenario 19.2 — Setting = [en, ar]
+**Prerequisites:** `supportedLanguages` = ["en", "ar"], multilingual enabled.
+**Script:**
+> Greet in Arabic.
+
+**Expected:**
+- [ ] AI responds in Arabic
+- [ ] System prompt contains "CALLER LANGUAGE HINT: ... en, ar"
+- [ ] Post-call cleanup prefers Arabic recovery for garbled turns
+
+### Scenario 19.3 — Setting = [en, fr, es]
+**Prerequisites:** `supportedLanguages` = ["en", "fr", "es"], multilingual enabled.
+**Script:**
+> Greet in French, then in Spanish, then in English.
+
+**Expected:**
+- [ ] AI follows each language switch
+- [ ] Cleaned transcript turns have `language` set to fr/es/en respectively
+- [ ] System prompt enumerates all three in the LANGUAGE HINT line
+
+### Scenario 19.4 — Tooltip Copy
+**Action:** Open assistant settings → view the Supported Languages help text.
+
+**Expected:**
+- [ ] Help text mentions all three effects: AI responses, prompt hint, post-call cleanup
+- [ ] Matches the copy checked in under SCRUM-209
+
+### Scenario 19.5 — No Regression When Multilingual Enabled But Empty List
+**Prerequisites:** `multilingualEnabled` = true, `supportedLanguages` = [].
+**Script:**
+> Call in any language.
+
+**Expected:**
+- [ ] AI auto-detects and responds (existing behaviour preserved)
+- [ ] No CALLER LANGUAGE HINT line in prompt (nothing to hint about)
+- [ ] Post-call analysis runs without language hint and still produces cleaned output
+
+### Scenario 19.6 — Language Switch Mid-Call Under Hint
+**Prerequisites:** `supportedLanguages` = ["en", "ar"], multilingual enabled.
+**Script:**
+> Start in English, switch to Arabic mid-call, then back to English.
+
+**Expected:**
+- [ ] AI keeps up with switches (existing behaviour)
+- [ ] Cleaned transcript correctly labels each turn's language
+- [ ] No weird "refuse to answer" loops from the hint accidentally misapplying
+
+---
+
 ## Scoring
 
 After running all scenarios, tally:
