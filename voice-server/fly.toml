@@ -16,7 +16,7 @@ primary_region = "syd"
   [[http_service.checks]]
     interval = "15s"
     timeout = "10s"
-    grace_period = "10s"
+    grace_period = "30s"   # 30s startup buffer — prevents transient warn/error during deploys
     method = "GET"
     path = "/health"
     protocol = "http"
