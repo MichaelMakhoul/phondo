@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import { format } from "date-fns";
 import {
@@ -50,6 +50,8 @@ interface Call {
   caller_name: string | null;
   duration_seconds: number | null;
   recording_url: string | null;
+  recording_storage_path: string | null;
+  cleaned_transcript: { turns: Array<{ role: "user" | "assistant"; text: string; original?: string; language?: string }> } | null;
   summary: string | null;
   transcript: string | null;
   outcome: string | null;
@@ -146,6 +148,11 @@ export function CallDetail({ call: initialCall }: { call: Call }) {
   const [call, setCall] = useState<Call>(initialCall);
   const [isEditing, setIsEditing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [recordingUrl, setRecordingUrl] = useState<string | null>(null);
+  const [recordingLoading, setRecordingLoading] = useState(false);
+  const [transcriptMode, setTranscriptMode] = useState<"raw" | "cleaned">(
+    call.cleaned_transcript ? "cleaned" : "raw"
+  );
   const [editCallerName, setEditCallerName] = useState(call.caller_name || "");
   const [editSummary, setEditSummary] = useState(call.summary || "");
   const [editCollectedData, setEditCollectedData] = useState<Record<string, string>>(
@@ -218,6 +225,25 @@ export function CallDetail({ call: initialCall }: { call: Call }) {
       setIsSaving(false);
     }
   }
+
+  useEffect(() => {
+    if (!call.recording_storage_path) return;
+    let cancelled = false;
+    setRecordingLoading(true);
+    (async () => {
+      try {
+        const res = await fetch(`/api/v1/calls/${call.id}/recording-url`);
+        if (!res.ok) return;
+        const json = await res.json();
+        if (!cancelled && json.url) setRecordingUrl(json.url);
+      } catch {
+        // silent — UI shows fallback below
+      } finally {
+        if (!cancelled) setRecordingLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [call.id, call.recording_storage_path]);
 
   const ownerAnswered = (call.metadata?.answeredBy as string) === "owner";
   const successEval = call.metadata?.successEvaluation as string | undefined;
@@ -638,7 +664,44 @@ export function CallDetail({ call: initialCall }: { call: Call }) {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              {call.transcript ? (
+              {call.cleaned_transcript && (
+                <div className="mb-3 flex gap-2">
+                  <Button
+                    size="sm"
+                    variant={transcriptMode === "cleaned" ? "default" : "outline"}
+                    onClick={() => setTranscriptMode("cleaned")}
+                  >
+                    Cleaned
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={transcriptMode === "raw" ? "default" : "outline"}
+                    onClick={() => setTranscriptMode("raw")}
+                  >
+                    Raw
+                  </Button>
+                </div>
+              )}
+
+              {transcriptMode === "cleaned" && call.cleaned_transcript ? (
+                <ScrollArea className="h-[400px]">
+                  <div className="space-y-3 text-sm">
+                    {call.cleaned_transcript.turns.map((turn, i) => (
+                      <div key={i}>
+                        <span className="font-semibold">
+                          {turn.role === "user" ? "Caller" : "AI"}:
+                        </span>{" "}
+                        {turn.text}
+                        {turn.original && turn.original !== turn.text && (
+                          <div className="mt-1 text-xs text-muted-foreground">
+                            Original: {turn.original}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </ScrollArea>
+              ) : call.transcript ? (
                 <ScrollArea className="h-[400px]">
                   <pre className="whitespace-pre-wrap font-sans text-sm">
                     {call.transcript}
@@ -665,7 +728,7 @@ export function CallDetail({ call: initialCall }: { call: Call }) {
         {/* Right Column */}
         <div className="space-y-6">
           {/* Recording */}
-          {call.recording_url && (
+          {(call.recording_storage_path || call.recording_url) && (
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
@@ -674,9 +737,19 @@ export function CallDetail({ call: initialCall }: { call: Call }) {
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                <audio controls className="w-full" src={call.recording_url}>
-                  Your browser does not support the audio element.
-                </audio>
+                {recordingUrl ? (
+                  <audio controls className="w-full" src={recordingUrl}>
+                    Your browser does not support the audio element.
+                  </audio>
+                ) : call.recording_storage_path ? (
+                  <p className="text-sm text-muted-foreground">
+                    {recordingLoading ? "Loading recording…" : "Recording unavailable."}
+                  </p>
+                ) : (
+                  <p className="text-sm text-muted-foreground">
+                    Legacy recording (stored with provider). This recording predates in-app playback.
+                  </p>
+                )}
               </CardContent>
             </Card>
           )}
