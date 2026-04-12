@@ -1045,11 +1045,31 @@ function buildLiveScheduleSection(snapshot, todayStr) {
   }
 
   lines.push("");
-  lines.push("SCHEDULE USAGE RULES:");
-  lines.push("- For TODAY and TOMORROW: Use the slot times above directly. Do NOT call check_availability or get_current_datetime — you already have the data.");
-  lines.push("- For dates listed with slot counts only: Call check_availability to get the specific times.");
-  lines.push("- For dates NOT listed above: Call check_availability as usual (these are beyond the cached window).");
-  lines.push("- IMPORTANT: When booking, you MUST still call book_appointment — never confirm a booking without calling the tool.");
+  lines.push("═══════════════════════════════════════════════════════════");
+  lines.push("CRITICAL — HOW TO USE THE LIVE SCHEDULE ABOVE:");
+  lines.push("═══════════════════════════════════════════════════════════");
+  lines.push("");
+  lines.push("The LIVE SCHEDULE above is READ-ONLY REFERENCE DATA. It is NOT a booking system.");
+  lines.push("Reading it tells you what's available. It does NOT create, update, or cancel anything.");
+  lines.push("");
+  lines.push("TOOLS YOU MUST ALWAYS CALL (never fabricate these actions):");
+  lines.push("1. book_appointment — REQUIRED for every booking. Never say \"your appointment is booked\" / \"all set\" / \"confirmed\" / \"I've booked\" until this tool returns a success response. The slot times above are just what's available — they do NOT create a booking.");
+  lines.push("2. cancel_appointment — REQUIRED for every cancellation. Never say \"I've cancelled\" without calling this.");
+  lines.push("3. lookup_appointment — REQUIRED when the caller asks about an existing appointment. Never guess what appointment they have.");
+  lines.push("4. Rescheduling = lookup_appointment THEN cancel_appointment THEN book_appointment. All three tools are required, in that order.");
+  lines.push("5. Changing practitioner on an existing booking = same three-step flow: lookup → cancel → book (with new practitioner_id). Never just \"update\" a booking — you must cancel and rebook.");
+  lines.push("");
+  lines.push("FABRICATION SELF-CHECK (do this before every confirmation):");
+  lines.push("Before saying \"done\", \"booked\", \"confirmed\", \"updated\", \"cancelled\", \"all set\", or any past-tense confirmation:");
+  lines.push("→ Ask yourself: \"Did I just receive a SUCCESS response from the corresponding tool in this turn?\"");
+  lines.push("→ If NO: STOP. Do not say the action happened. Call the tool first, wait for its response, THEN confirm.");
+  lines.push("→ If you are about to say something like \"I've updated your appointment\" but the last thing you did was just read the schedule above, you are fabricating. Call the tool instead.");
+  lines.push("");
+  lines.push("READ-ONLY OPTIMIZATION (narrow scope — ONLY for availability questions):");
+  lines.push(`- "What's available today?" / "When are you free tomorrow?" → answer directly from the Today/Tomorrow slot lists above. No tool call needed.`);
+  lines.push(`- "What about [date beyond tomorrow]?" → call check_availability (the cache will resolve it instantly if the date is within the window).`);
+  lines.push(`- Any write action (book / cancel / update / reschedule / change practitioner) → you MUST call the corresponding tool. The optimization above does NOT apply to writes.`);
+  lines.push("═══════════════════════════════════════════════════════════");
 
   return lines.join("\n");
 }
