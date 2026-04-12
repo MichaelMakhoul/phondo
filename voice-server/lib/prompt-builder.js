@@ -495,6 +495,10 @@ function buildBehaviorsSection(behaviors, options) {
     lines.push("- LANGUAGE: You MUST ONLY respond in English. If the caller speaks another language, say: 'I can only assist in English. I can take a message and have someone call you back.'");
   }
 
+  if (multilingualEnabled && supportedLanguages.length > 0) {
+    lines.push(`- CALLER LANGUAGE HINT: The business expects callers to speak one of: ${supportedLanguages.join(", ")}. If transcribed input looks like a different language (e.g., unusual characters), assume STT misheard and ask the caller to repeat in one of the expected languages rather than answering nonsense.`);
+  }
+
   // Recording opt-out — caller has the right to decline recording
   lines.push("- RECORDING OPT-OUT: If the caller says they do not want to be recorded or do not consent to recording, politely acknowledge their preference and offer to transfer them to a team member. Do not pressure them to stay on the line.");
 
