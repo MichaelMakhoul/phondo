@@ -456,9 +456,18 @@ app.post("/texml", async (req, res) => {
   const token = issueStreamToken(called, from, undefined, phoneRecord);
   console.log(`[TeXML] Incoming call from=${maskPhone(from)} to=${called}, streaming to ${WS_URL}`);
 
+  // Telnyx recording webhook configuration (one-time, manual portal step):
+  //   In the Telnyx portal → Call Control Application → Webhook URL, set:
+  //     https://<APP_PUBLIC_URL>/api/webhooks/telnyx-recording-done
+  //   Telnyx posts call.recording.saved events to that URL. The TeXML
+  //   record="record-from-answer" attribute below triggers the recording itself.
+  const telnyxRecordingMode = phoneRecord?.organizations?.recording_consent_mode || "auto";
+  const telnyxShouldRecord = telnyxRecordingMode !== "never";
+  const telnyxConnectAttrs = telnyxShouldRecord ? ` record="record-from-answer"` : "";
+
   res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Connect>
+  <Connect${telnyxConnectAttrs}>
     <Stream url="${escapeXml(WS_URL)}">
       <Parameter name="auth_token" value="${escapeXml(token)}" />
     </Stream>
@@ -698,8 +707,9 @@ app.post("/twiml/ring-first-fallback", async (req, res) => {
 
   const ringFirstRecordingMode = ringFirstPhoneRecord?.organizations?.recording_consent_mode || "auto";
   const ringFirstShouldRecord = ringFirstRecordingMode !== "never";
+  const recordingCallbackBase = process.env.APP_PUBLIC_URL || PUBLIC_URL;
   const ringFirstConnectAttrs = ringFirstShouldRecord
-    ? ` record="record-from-answer" recordingStatusCallback="${escapeXml(PUBLIC_URL + '/twiml/recording-status')}" recordingStatusCallbackMethod="POST"`
+    ? ` record="record-from-answer" recordingStatusCallback="${escapeXml(recordingCallbackBase + '/api/webhooks/twilio-recording-done')}" recordingStatusCallbackMethod="POST" recordingStatusCallbackEvent="completed"`
     : "";
 
   res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
@@ -712,57 +722,18 @@ app.post("/twiml/ring-first-fallback", async (req, res) => {
 </Response>`);
 });
 
-// Recording status callback — Twilio POSTs here after <Connect record="record-from-answer"> finishes.
-// Saves the recording URL to the call record for dashboard playback.
+// Legacy Twilio recording callback. The new flow POSTs directly to the Next.js
+// webhook /api/webhooks/twilio-recording-done. This handler stays as a no-op so
+// older-provisioned numbers still return 200 instead of 404.
 app.post("/twiml/recording-status", async (req, res) => {
-  // Validate Twilio signature to prevent spoofed recording URLs
   if (!validateTwilioSignature(req)) {
-    console.warn("[Recording] Rejected recording-status callback — invalid Twilio signature");
     return res.status(403).send("Forbidden");
   }
-
-  try {
-    const { CallSid, RecordingUrl, RecordingSid, RecordingDuration } = req.body;
-
-    if (!CallSid || !RecordingUrl) {
-      console.warn("[Recording] Missing required fields in status callback:", {
-        hasCallSid: !!CallSid, hasRecordingUrl: !!RecordingUrl,
-      });
-      return res.status(400).send("Missing required fields");
-    }
-
-    // Validate recording URL is from Twilio (defense in depth)
-    if (!RecordingUrl.startsWith("https://api.twilio.com/")) {
-      console.warn("[Recording] Rejected non-Twilio recording URL:", RecordingUrl.slice(0, 100));
-      return res.status(400).send("Invalid recording URL");
-    }
-
-    // Twilio recording URLs need .mp3 appended for direct playback
-    const playbackUrl = `${RecordingUrl}.mp3`;
-
-    const supabase = getSupabase();
-
-    // Call records use "sh_<CallSid>" as vapi_call_id (legacy naming from Vapi migration)
-    const { error } = await supabase
-      .from("calls")
-      .update({ recording_url: playbackUrl })
-      .eq("vapi_call_id", `sh_${CallSid}`);
-
-    if (error) {
-      console.error("[Recording] Failed to save recording URL:", {
-        CallSid, RecordingSid, error: error.message,
-      });
-    } else {
-      console.log("[Recording] Saved recording URL:", {
-        CallSid, RecordingSid, duration: RecordingDuration,
-      });
-    }
-
-    res.status(200).send("OK");
-  } catch (err) {
-    console.error("[Recording] Status callback error:", err);
-    res.status(500).send("Error");
-  }
+  console.log("[Recording] Legacy callback hit — new flow is /api/webhooks/twilio-recording-done. Ignoring.", {
+    CallSid: req.body.CallSid,
+    RecordingSid: req.body.RecordingSid,
+  });
+  res.status(200).send("OK");
 });
 
 // Recording callback for AI-disabled voicemail — Twilio POSTs here after recording ends.
