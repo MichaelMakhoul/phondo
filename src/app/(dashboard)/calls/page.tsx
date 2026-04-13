@@ -33,6 +33,7 @@ interface Call {
   metadata: { successEvaluation?: string; answeredBy?: string } | null;
   duration_seconds: number | null;
   recording_url: string | null;
+  recording_storage_path: string | null;
   created_at: string;
   is_spam: boolean | null;
   spam_score: number | null;
@@ -269,7 +270,7 @@ function CallsTable({
               >
                 {call.status}
               </Badge>
-              {call.recording_url && (
+              {(call.recording_storage_path || call.recording_url) && (
                 <Play className="h-3.5 w-3.5 text-muted-foreground" />
               )}
               <ChevronRight className="h-4 w-4 text-muted-foreground" />
@@ -399,15 +400,11 @@ function CallsTable({
                 </TableCell>
                 <TableCell className="text-right">
                   <div className="flex justify-end gap-2">
-                    {call.recording_url && (
+                    {(call.recording_storage_path || call.recording_url) && (
                       <Button variant="ghost" size="icon" asChild>
-                        <a
-                          href={call.recording_url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                        >
+                        <Link href={`/calls/${call.id}`}>
                           <Play className="h-4 w-4" />
-                        </a>
+                        </Link>
                       </Button>
                     )}
                     {showSpamActions && (

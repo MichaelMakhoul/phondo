@@ -1,5 +1,5 @@
 -- 00121_call_recordings_storage.sql
--- Supabase Storage bucket for call recordings + new columns on calls (SCRUM-207).
+-- Supabase Storage bucket for call recordings + new columns on calls.
 
 ALTER TABLE calls
   ADD COLUMN IF NOT EXISTS recording_storage_path TEXT,
@@ -16,7 +16,9 @@ INSERT INTO storage.buckets (id, name, public)
 VALUES ('call-recordings', 'call-recordings', false)
 ON CONFLICT (id) DO NOTHING;
 
--- No RLS policies are added for call-recordings: storage.objects has RLS enabled and
--- default-denies, so absent any allow policy for this bucket, only the service role
--- can read/write. Dashboard reads go through a Next.js route that uses the service
--- role to issue short-lived signed URLs.
+-- Defense-in-depth: ensure RLS is enabled on storage.objects. Supabase enables
+-- this by default but we assert it here so a future config drift can't silently
+-- expose the bucket. With RLS on and no allow policies for this bucket, only
+-- service-role keys can read/write. Dashboard reads go through a Next.js route
+-- that uses the service role to issue short-lived signed URLs.
+ALTER TABLE storage.objects ENABLE ROW LEVEL SECURITY;

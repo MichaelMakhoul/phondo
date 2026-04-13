@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import * as Sentry from "@sentry/nextjs";
 import { createClient } from "@/lib/supabase/server";
 import { createRecordingSignedUrl } from "@/lib/call-recordings/signed-url";
 
@@ -22,14 +23,33 @@ export async function GET(
     .eq("id", id)
     .maybeSingle();
 
-  if (error) return new NextResponse("db error", { status: 500 });
+  if (error) {
+    console.error("[RecordingUrl] DB lookup failed:", { id, error });
+    Sentry.withScope((scope) => {
+      scope.setTag("service", "recording-url");
+      scope.setExtras({ id });
+      Sentry.captureException(error);
+    });
+    return new NextResponse("db error", { status: 500 });
+  }
   if (!call) return new NextResponse("not found", { status: 404 });
   if (!call.recording_storage_path) {
     return NextResponse.json({ url: null });
   }
 
   const url = await createRecordingSignedUrl(call.recording_storage_path);
-  if (!url) return new NextResponse("sign failed", { status: 500 });
+  if (!url) {
+    console.error("[RecordingUrl] sign failed:", {
+      id,
+      storagePath: call.recording_storage_path,
+    });
+    Sentry.withScope((scope) => {
+      scope.setTag("service", "recording-url");
+      scope.setExtras({ id, storagePath: call.recording_storage_path });
+      Sentry.captureMessage("RecordingUrl: createSignedUrl returned null", "error");
+    });
+    return new NextResponse("sign failed", { status: 500 });
+  }
 
   return NextResponse.json({ url, expiresIn: 600 });
 }

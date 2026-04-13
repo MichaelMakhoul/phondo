@@ -1,5 +1,5 @@
 -- 00120_cleaned_transcript.sql
--- Adds cleaned_transcript JSONB for post-call analysis STT-normalised output (SCRUM-208).
+-- Adds cleaned_transcript JSONB for post-call analysis STT-normalised output.
 -- Structure: { turns: [{ role: 'user'|'assistant', text: string, original?: string, language?: string }] }
 -- Nullable because cleanup is best-effort and older calls predate this column.
 

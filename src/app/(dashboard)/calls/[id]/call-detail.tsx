@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import Link from "next/link";
 import { format } from "date-fns";
+import { parseCleanedTranscript } from "@/lib/call-recordings/cleaned-transcript";
 import {
   ArrowLeft,
   PhoneIncoming,
@@ -51,7 +52,8 @@ interface Call {
   duration_seconds: number | null;
   recording_url: string | null;
   recording_storage_path: string | null;
-  cleaned_transcript: { turns: Array<{ role: "user" | "assistant"; text: string; original?: string; language?: string }> } | null;
+  // Untrusted JSONB from the DB — parse with parseCleanedTranscript at the boundary.
+  cleaned_transcript: unknown;
   summary: string | null;
   transcript: string | null;
   outcome: string | null;
@@ -150,8 +152,12 @@ export function CallDetail({ call: initialCall }: { call: Call }) {
   const [isSaving, setIsSaving] = useState(false);
   const [recordingUrl, setRecordingUrl] = useState<string | null>(null);
   const [recordingLoading, setRecordingLoading] = useState(false);
+  const cleaned = useMemo(
+    () => parseCleanedTranscript(call.cleaned_transcript),
+    [call.cleaned_transcript],
+  );
   const [transcriptMode, setTranscriptMode] = useState<"raw" | "cleaned">(
-    call.cleaned_transcript ? "cleaned" : "raw"
+    cleaned ? "cleaned" : "raw"
   );
   const [editCallerName, setEditCallerName] = useState(call.caller_name || "");
   const [editSummary, setEditSummary] = useState(call.summary || "");
@@ -227,7 +233,11 @@ export function CallDetail({ call: initialCall }: { call: Call }) {
   }
 
   useEffect(() => {
-    if (!call.recording_storage_path) return;
+    if (!call.recording_storage_path) {
+      setRecordingLoading(false);
+      setRecordingUrl(null);
+      return;
+    }
     let cancelled = false;
     setRecordingLoading(true);
     (async () => {
@@ -236,8 +246,8 @@ export function CallDetail({ call: initialCall }: { call: Call }) {
         if (!res.ok) return;
         const json = await res.json();
         if (!cancelled && json.url) setRecordingUrl(json.url);
-      } catch {
-        // silent — UI shows fallback below
+      } catch (err) {
+        console.error("[CallDetail] Failed to fetch signed URL:", err);
       } finally {
         if (!cancelled) setRecordingLoading(false);
       }
@@ -664,7 +674,7 @@ export function CallDetail({ call: initialCall }: { call: Call }) {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              {call.cleaned_transcript && (
+              {cleaned && (
                 <div className="mb-3 flex gap-2">
                   <Button
                     size="sm"
@@ -683,10 +693,10 @@ export function CallDetail({ call: initialCall }: { call: Call }) {
                 </div>
               )}
 
-              {transcriptMode === "cleaned" && call.cleaned_transcript ? (
+              {transcriptMode === "cleaned" && cleaned ? (
                 <ScrollArea className="h-[400px]">
                   <div className="space-y-3 text-sm">
-                    {call.cleaned_transcript.turns.map((turn, i) => (
+                    {cleaned.turns.map((turn, i) => (
                       <div key={i}>
                         <span className="font-semibold">
                           {turn.role === "user" ? "Caller" : "AI"}:
@@ -745,11 +755,11 @@ export function CallDetail({ call: initialCall }: { call: Call }) {
                   <p className="text-sm text-muted-foreground">
                     {recordingLoading ? "Loading recording…" : "Recording unavailable."}
                   </p>
-                ) : (
-                  <p className="text-sm text-muted-foreground">
-                    Legacy recording (stored with provider). This recording predates in-app playback.
-                  </p>
-                )}
+                ) : call.recording_url ? (
+                  <audio controls className="w-full" src={call.recording_url}>
+                    Your browser does not support the audio element.
+                  </audio>
+                ) : null}
               </CardContent>
             </Card>
           )}
