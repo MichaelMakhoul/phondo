@@ -488,15 +488,12 @@ function buildBehaviorsSection(behaviors, options) {
   if (multilingualEnabled) {
     if (supportedLanguages.length > 0) {
       lines.push(`- LANGUAGE: You can respond in: ${supportedLanguages.join(", ")}. Detect the caller's language and respond in it. If the caller switches language mid-call, switch with them immediately. If unsupported, respond in English and offer to take a message.`);
+      lines.push(`- CALLER LANGUAGE HINT: The business expects callers to speak one of: ${supportedLanguages.join(", ")}. If transcribed input looks like a different language (e.g., unusual characters), assume STT misheard and ask the caller to repeat in one of the expected languages rather than answering nonsense.`);
     } else {
       lines.push("- LANGUAGE: You are multilingual. Detect the caller's language and respond in the same language naturally. If the caller switches language mid-call, switch with them immediately.");
     }
   } else {
     lines.push("- LANGUAGE: You MUST ONLY respond in English. If the caller speaks another language, say: 'I can only assist in English. I can take a message and have someone call you back.'");
-  }
-
-  if (multilingualEnabled && supportedLanguages.length > 0) {
-    lines.push(`- CALLER LANGUAGE HINT: The business expects callers to speak one of: ${supportedLanguages.join(", ")}. If transcribed input looks like a different language (e.g., unusual characters), assume STT misheard and ask the caller to repeat in one of the expected languages rather than answering nonsense.`);
   }
 
   // Recording opt-out — caller has the right to decline recording
