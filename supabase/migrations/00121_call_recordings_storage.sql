@@ -16,9 +16,11 @@ INSERT INTO storage.buckets (id, name, public)
 VALUES ('call-recordings', 'call-recordings', false)
 ON CONFLICT (id) DO NOTHING;
 
--- Defense-in-depth: ensure RLS is enabled on storage.objects. Supabase enables
--- this by default but we assert it here so a future config drift can't silently
--- expose the bucket. With RLS on and no allow policies for this bucket, only
--- service-role keys can read/write. Dashboard reads go through a Next.js route
--- that uses the service role to issue short-lived signed URLs.
-ALTER TABLE storage.objects ENABLE ROW LEVEL SECURITY;
+-- Note on bucket access:
+-- Supabase enables RLS on storage.objects by default. With no allow policy
+-- for the call-recordings bucket, only the service role can read/write.
+-- Dashboard reads go through a Next.js route that uses the service role to
+-- issue short-lived signed URLs. We do NOT add an explicit ALTER TABLE here
+-- because storage.objects is owned by supabase_storage_admin and the user-level
+-- migration role lacks the privilege to alter it — running such a statement
+-- would fail on any fresh Supabase project with `must be owner of table objects`.
