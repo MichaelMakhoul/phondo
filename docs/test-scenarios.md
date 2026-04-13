@@ -746,7 +746,7 @@ Verifies recordings are captured by the provider, posted to the Next.js webhook,
 > Call the Telnyx number. Let the AI greet you. Have a ~30 second conversation. Hang up.
 
 **Expected:**
-- [ ] Voice server logs show TeXML `<Connect record="record-from-answer">`
+- [ ] Voice server logs show `[Recording] Started Telnyx recording for callSid=... recordingId=...`
 - [ ] Within ~15 seconds of hang-up, Next.js logs show `[telnyx-recording-done]` webhook 200
 - [ ] `calls.recording_storage_path` is populated for the new row
 - [ ] Supabase Storage bucket `call-recordings` contains `<org_id>/<call_id>.mp3`
@@ -760,7 +760,7 @@ Verifies recordings are captured by the provider, posted to the Next.js webhook,
 > Call the Twilio number. Have a short conversation. Hang up.
 
 **Expected:**
-- [ ] Voice server logs show `[Recording] Started recording for callSid=...`
+- [ ] Voice server logs show `[Recording] Started Twilio recording for callSid=...`
 - [ ] `[twilio-recording-done]` webhook returns 200 in Next.js logs within ~15s
 - [ ] Recording downloaded and uploaded to Supabase Storage
 - [ ] Dashboard plays it via signed URL, no basic-auth prompt
@@ -772,8 +772,9 @@ Verifies recordings are captured by the provider, posted to the Next.js webhook,
 > Place a test call.
 
 **Expected:**
-- [ ] TeXML/TwiML does NOT include `record="record-from-answer"`
-- [ ] Voice server does NOT call `recordings.create` via Twilio REST
+- [ ] TwiML ring-first fallback `<Connect>` does NOT include `record="record-from-answer"` (Twilio path)
+- [ ] Voice server does NOT call `recordings.create` via Twilio REST (line `[Recording] Started Twilio recording` is absent)
+- [ ] Voice server does NOT call Telnyx Call Control `record_start` (line `[Recording] Started Telnyx recording` is absent)
 - [ ] No recording webhook fires
 - [ ] `recording_storage_path` remains null
 - [ ] Dashboard shows no Recording card
@@ -802,6 +803,18 @@ Verifies recordings are captured by the provider, posted to the Next.js webhook,
 - [ ] Playback might fail (URL expired)
 - [ ] Reloading the page fetches a fresh signed URL and works
 - [ ] No sensitive URL leaks into page source (only a short-lived signed URL)
+
+### Scenario 17.7 — APP_PUBLIC_URL Missing (Hard-Fail)
+**Prerequisites:** Temporarily unset `APP_PUBLIC_URL` on the voice-server (Fly secret).
+**Script:**
+> Place a test call with recording mode = `auto`.
+
+**Expected:**
+- [ ] Voice server logs show `[Recording] APP_PUBLIC_URL not set — refusing to start recording`
+- [ ] Sentry receives an exception event tagged `service: "recording-start"`
+- [ ] No call to provider record-start API (Twilio `recordings.create` or Telnyx `record_start`)
+- [ ] Call still proceeds normally — recording is just disabled
+- [ ] `calls.recording_storage_path` remains null
 
 ---
 
@@ -870,6 +883,17 @@ Verifies that post-call analysis produces a usable `cleaned_transcript` that str
 - [ ] `cleaned_transcript` is null
 - [ ] Dashboard still renders Raw view
 - [ ] Sentry error logged for the missing key
+
+### Scenario 18.7 — Cleanup Truncation Doesn't Drop Structured Fields
+**Prerequisites:** Have a long, complex call (3+ minutes, multiple topics) that historically truncated `cleaned_transcript`.
+**Script:**
+> Place a long test call.
+
+**Expected:**
+- [ ] `calls.summary`, `caller_name`, `sentiment` are populated
+- [ ] `calls.cleaned_transcript` may be null if cleanup truncated
+- [ ] Sentry shows a separate `step: "cleanup"` exception WITHOUT a corresponding `step: "structured"` exception
+- [ ] Dashboard displays the structured fields normally and falls back to Raw transcript view
 
 ---
 
