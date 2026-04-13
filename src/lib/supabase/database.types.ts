@@ -14,6 +14,164 @@ export type Database = {
   }
   public: {
     Tables: {
+      admin_contacts: {
+        Row: {
+          company: string | null
+          created_at: string | null
+          email: string
+          id: string
+          industry: string | null
+          name: string | null
+          notes: string | null
+          source: string | null
+          tags: string[] | null
+          unsubscribed_at: string | null
+        }
+        Insert: {
+          company?: string | null
+          created_at?: string | null
+          email: string
+          id?: string
+          industry?: string | null
+          name?: string | null
+          notes?: string | null
+          source?: string | null
+          tags?: string[] | null
+          unsubscribed_at?: string | null
+        }
+        Update: {
+          company?: string | null
+          created_at?: string | null
+          email?: string
+          id?: string
+          industry?: string | null
+          name?: string | null
+          notes?: string | null
+          source?: string | null
+          tags?: string[] | null
+          unsubscribed_at?: string | null
+        }
+        Relationships: []
+      }
+      admin_email_campaigns: {
+        Row: {
+          audience_filter: Json | null
+          body: string
+          created_at: string | null
+          id: string
+          name: string
+          scheduled_at: string | null
+          sent_at: string | null
+          sent_count: number | null
+          status: string
+          subject: string
+        }
+        Insert: {
+          audience_filter?: Json | null
+          body: string
+          created_at?: string | null
+          id?: string
+          name: string
+          scheduled_at?: string | null
+          sent_at?: string | null
+          sent_count?: number | null
+          status?: string
+          subject: string
+        }
+        Update: {
+          audience_filter?: Json | null
+          body?: string
+          created_at?: string | null
+          id?: string
+          name?: string
+          scheduled_at?: string | null
+          sent_at?: string | null
+          sent_count?: number | null
+          status?: string
+          subject?: string
+        }
+        Relationships: []
+      }
+      admin_email_log: {
+        Row: {
+          created_at: string | null
+          id: string
+          organization_id: string | null
+          provider_id: string | null
+          recipient: string
+          status: string
+          subject: string
+          type: string
+        }
+        Insert: {
+          created_at?: string | null
+          id?: string
+          organization_id?: string | null
+          provider_id?: string | null
+          recipient: string
+          status?: string
+          subject: string
+          type: string
+        }
+        Update: {
+          created_at?: string | null
+          id?: string
+          organization_id?: string | null
+          provider_id?: string | null
+          recipient?: string
+          status?: string
+          subject?: string
+          type?: string
+        }
+        Relationships: []
+      }
+      admin_email_sends: {
+        Row: {
+          campaign_id: string | null
+          clicked_at: string | null
+          created_at: string | null
+          error: string | null
+          id: string
+          opened_at: string | null
+          recipient_email: string
+          recipient_name: string | null
+          sent_at: string | null
+          status: string
+        }
+        Insert: {
+          campaign_id?: string | null
+          clicked_at?: string | null
+          created_at?: string | null
+          error?: string | null
+          id?: string
+          opened_at?: string | null
+          recipient_email: string
+          recipient_name?: string | null
+          sent_at?: string | null
+          status?: string
+        }
+        Update: {
+          campaign_id?: string | null
+          clicked_at?: string | null
+          created_at?: string | null
+          error?: string | null
+          id?: string
+          opened_at?: string | null
+          recipient_email?: string
+          recipient_name?: string | null
+          sent_at?: string | null
+          status?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "admin_email_sends_campaign_id_fkey"
+            columns: ["campaign_id"]
+            isOneToOne: false
+            referencedRelation: "admin_email_campaigns"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       api_keys: {
         Row: {
           created_at: string
@@ -65,9 +223,12 @@ export type Database = {
         Row: {
           assistant_id: string | null
           attendee_email: string | null
+          attendee_first_name: string | null
+          attendee_last_name: string | null
           attendee_name: string
           attendee_phone: string | null
           call_id: string | null
+          confirmation_code: string | null
           created_at: string | null
           duration_minutes: number | null
           end_time: string | null
@@ -76,7 +237,9 @@ export type Database = {
           metadata: Json | null
           notes: string | null
           organization_id: string
+          practitioner_id: string | null
           provider: string
+          service_type_id: string | null
           start_time: string
           status: string
           updated_at: string | null
@@ -84,9 +247,12 @@ export type Database = {
         Insert: {
           assistant_id?: string | null
           attendee_email?: string | null
+          attendee_first_name?: string | null
+          attendee_last_name?: string | null
           attendee_name: string
           attendee_phone?: string | null
           call_id?: string | null
+          confirmation_code?: string | null
           created_at?: string | null
           duration_minutes?: number | null
           end_time?: string | null
@@ -95,7 +261,9 @@ export type Database = {
           metadata?: Json | null
           notes?: string | null
           organization_id: string
+          practitioner_id?: string | null
           provider?: string
+          service_type_id?: string | null
           start_time: string
           status?: string
           updated_at?: string | null
@@ -103,9 +271,12 @@ export type Database = {
         Update: {
           assistant_id?: string | null
           attendee_email?: string | null
+          attendee_first_name?: string | null
+          attendee_last_name?: string | null
           attendee_name?: string
           attendee_phone?: string | null
           call_id?: string | null
+          confirmation_code?: string | null
           created_at?: string | null
           duration_minutes?: number | null
           end_time?: string | null
@@ -114,7 +285,9 @@ export type Database = {
           metadata?: Json | null
           notes?: string | null
           organization_id?: string
+          practitioner_id?: string | null
           provider?: string
+          service_type_id?: string | null
           start_time?: string
           status?: string
           updated_at?: string | null
@@ -139,6 +312,20 @@ export type Database = {
             columns: ["organization_id"]
             isOneToOne: false
             referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "appointments_practitioner_id_fkey"
+            columns: ["practitioner_id"]
+            isOneToOne: false
+            referencedRelation: "practitioners"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "appointments_service_type_id_fkey"
+            columns: ["service_type_id"]
+            isOneToOne: false
+            referencedRelation: "service_types"
             referencedColumns: ["id"]
           },
         ]
@@ -255,6 +442,60 @@ export type Database = {
             columns: ["organization_id"]
             isOneToOne: false
             referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      blocked_times: {
+        Row: {
+          all_day: boolean | null
+          created_at: string | null
+          created_by: string | null
+          end_time: string
+          id: string
+          organization_id: string
+          practitioner_id: string | null
+          reason: string | null
+          start_time: string
+          title: string
+        }
+        Insert: {
+          all_day?: boolean | null
+          created_at?: string | null
+          created_by?: string | null
+          end_time: string
+          id?: string
+          organization_id: string
+          practitioner_id?: string | null
+          reason?: string | null
+          start_time: string
+          title: string
+        }
+        Update: {
+          all_day?: boolean | null
+          created_at?: string | null
+          created_by?: string | null
+          end_time?: string
+          id?: string
+          organization_id?: string
+          practitioner_id?: string | null
+          reason?: string | null
+          start_time?: string
+          title?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "blocked_times_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "blocked_times_practitioner_id_fkey"
+            columns: ["practitioner_id"]
+            isOneToOne: false
+            referencedRelation: "practitioners"
             referencedColumns: ["id"]
           },
         ]
@@ -530,6 +771,7 @@ export type Database = {
           assistant_id: string | null
           caller_name: string | null
           caller_phone: string | null
+          cleaned_transcript: Json | null
           collected_data: Json | null
           cost_cents: number | null
           created_at: string
@@ -543,6 +785,8 @@ export type Database = {
           organization_id: string
           outcome: string | null
           phone_number_id: string | null
+          recording_sid: string | null
+          recording_storage_path: string | null
           recording_url: string | null
           sentiment: string | null
           spam_score: number | null
@@ -557,6 +801,7 @@ export type Database = {
           assistant_id?: string | null
           caller_name?: string | null
           caller_phone?: string | null
+          cleaned_transcript?: Json | null
           collected_data?: Json | null
           cost_cents?: number | null
           created_at?: string
@@ -570,6 +815,8 @@ export type Database = {
           organization_id: string
           outcome?: string | null
           phone_number_id?: string | null
+          recording_sid?: string | null
+          recording_storage_path?: string | null
           recording_url?: string | null
           sentiment?: string | null
           spam_score?: number | null
@@ -584,6 +831,7 @@ export type Database = {
           assistant_id?: string | null
           caller_name?: string | null
           caller_phone?: string | null
+          cleaned_transcript?: Json | null
           collected_data?: Json | null
           cost_cents?: number | null
           created_at?: string
@@ -597,6 +845,8 @@ export type Database = {
           organization_id?: string
           outcome?: string | null
           phone_number_id?: string | null
+          recording_sid?: string | null
+          recording_storage_path?: string | null
           recording_url?: string | null
           sentiment?: string | null
           spam_score?: number | null
@@ -892,6 +1142,7 @@ export type Database = {
       }
       organizations: {
         Row: {
+          appointment_verification_fields: Json | null
           business_address: string | null
           business_hours: Json | null
           business_name: string | null
@@ -908,6 +1159,7 @@ export type Database = {
           parent_org_id: string | null
           primary_color: string | null
           recording_consent_mode: string
+          recording_disclosure_text: string | null
           slug: string
           stripe_customer_id: string | null
           timezone: string | null
@@ -915,6 +1167,7 @@ export type Database = {
           updated_at: string
         }
         Insert: {
+          appointment_verification_fields?: Json | null
           business_address?: string | null
           business_hours?: Json | null
           business_name?: string | null
@@ -931,6 +1184,7 @@ export type Database = {
           parent_org_id?: string | null
           primary_color?: string | null
           recording_consent_mode?: string
+          recording_disclosure_text?: string | null
           slug: string
           stripe_customer_id?: string | null
           timezone?: string | null
@@ -938,6 +1192,7 @@ export type Database = {
           updated_at?: string
         }
         Update: {
+          appointment_verification_fields?: Json | null
           business_address?: string | null
           business_hours?: Json | null
           business_name?: string | null
@@ -954,6 +1209,7 @@ export type Database = {
           parent_org_id?: string | null
           primary_color?: string | null
           recording_consent_mode?: string
+          recording_disclosure_text?: string | null
           slug?: string
           stripe_customer_id?: string | null
           timezone?: string | null
@@ -983,6 +1239,8 @@ export type Database = {
           organization_id: string
           phone_number: string
           source_type: string
+          telephony_provider: string
+          telnyx_connection_id: string | null
           twilio_sid: string | null
           updated_at: string
           user_phone_number: string | null
@@ -1001,6 +1259,8 @@ export type Database = {
           organization_id: string
           phone_number: string
           source_type?: string
+          telephony_provider?: string
+          telnyx_connection_id?: string | null
           twilio_sid?: string | null
           updated_at?: string
           user_phone_number?: string | null
@@ -1019,6 +1279,8 @@ export type Database = {
           organization_id?: string
           phone_number?: string
           source_type?: string
+          telephony_provider?: string
+          telnyx_connection_id?: string | null
           twilio_sid?: string | null
           updated_at?: string
           user_phone_number?: string | null
@@ -1035,6 +1297,121 @@ export type Database = {
           },
           {
             foreignKeyName: "phone_numbers_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      practitioner_services: {
+        Row: {
+          practitioner_id: string
+          service_type_id: string
+        }
+        Insert: {
+          practitioner_id: string
+          service_type_id: string
+        }
+        Update: {
+          practitioner_id?: string
+          service_type_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "practitioner_services_practitioner_id_fkey"
+            columns: ["practitioner_id"]
+            isOneToOne: false
+            referencedRelation: "practitioners"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "practitioner_services_service_type_id_fkey"
+            columns: ["service_type_id"]
+            isOneToOne: false
+            referencedRelation: "service_types"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      practitioners: {
+        Row: {
+          availability_override: Json | null
+          created_at: string | null
+          id: string
+          is_active: boolean
+          name: string
+          organization_id: string
+          title: string | null
+          updated_at: string | null
+        }
+        Insert: {
+          availability_override?: Json | null
+          created_at?: string | null
+          id?: string
+          is_active?: boolean
+          name: string
+          organization_id: string
+          title?: string | null
+          updated_at?: string | null
+        }
+        Update: {
+          availability_override?: Json | null
+          created_at?: string | null
+          id?: string
+          is_active?: boolean
+          name?: string
+          organization_id?: string
+          title?: string | null
+          updated_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "practitioners_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      service_types: {
+        Row: {
+          created_at: string | null
+          description: string | null
+          duration_minutes: number
+          id: string
+          is_active: boolean
+          name: string
+          organization_id: string
+          sort_order: number
+          updated_at: string | null
+        }
+        Insert: {
+          created_at?: string | null
+          description?: string | null
+          duration_minutes?: number
+          id?: string
+          is_active?: boolean
+          name: string
+          organization_id: string
+          sort_order?: number
+          updated_at?: string | null
+        }
+        Update: {
+          created_at?: string | null
+          description?: string | null
+          duration_minutes?: number
+          id?: string
+          is_active?: boolean
+          name?: string
+          organization_id?: string
+          sort_order?: number
+          updated_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "service_types_organization_id_fkey"
             columns: ["organization_id"]
             isOneToOne: false
             referencedRelation: "organizations"
@@ -1109,6 +1486,33 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      system_health: {
+        Row: {
+          consecutive_failures: number
+          is_healthy: boolean
+          last_check_at: string | null
+          last_error: string | null
+          service: string
+          updated_at: string | null
+        }
+        Insert: {
+          consecutive_failures?: number
+          is_healthy?: boolean
+          last_check_at?: string | null
+          last_error?: string | null
+          service: string
+          updated_at?: string | null
+        }
+        Update: {
+          consecutive_failures?: number
+          is_healthy?: boolean
+          last_check_at?: string | null
+          last_error?: string | null
+          service?: string
+          updated_at?: string | null
+        }
+        Relationships: []
       }
       transfer_rules: {
         Row: {
@@ -1240,6 +1644,7 @@ export type Database = {
           email: string
           full_name: string | null
           id: string
+          is_platform_admin: boolean
           updated_at: string
         }
         Insert: {
@@ -1248,6 +1653,7 @@ export type Database = {
           email: string
           full_name?: string | null
           id: string
+          is_platform_admin?: boolean
           updated_at?: string
         }
         Update: {
@@ -1256,6 +1662,7 @@ export type Database = {
           email?: string
           full_name?: string | null
           id?: string
+          is_platform_admin?: boolean
           updated_at?: string
         }
         Relationships: []
@@ -1265,6 +1672,10 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      appointment_end: {
+        Args: { duration_minutes: number; end_time: string; start_time: string }
+        Returns: string
+      }
       create_organization_with_owner: {
         Args: {
           org_name: string
