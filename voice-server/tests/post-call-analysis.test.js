@@ -5,22 +5,54 @@ const assert = require("node:assert/strict");
 let origApiKey;
 let origFetch;
 
-function mockOpenAIResponse(analysisObj) {
-  return function fakeFetch() {
+/**
+ * Build a fake fetch that returns:
+ *   - structuredObj when the request system prompt looks like the structured-data prompt
+ *   - cleanupObj when the request looks like the STT cleanup prompt
+ *
+ * The new post-call-analysis service makes TWO parallel OpenAI calls; this stub
+ * has to be able to respond to either.
+ */
+function mockOpenAI({ structuredObj = null, cleanupObj = null } = {}) {
+  return function fakeFetch(_url, init) {
+    let body = {};
+    try {
+      body = init && init.body ? JSON.parse(init.body) : {};
+    } catch {
+      body = {};
+    }
+    const systemMsg =
+      (body.messages && body.messages.find((m) => m.role === "system")?.content) || "";
+    const isStructured = systemMsg.includes("Extract the following information from the transcript");
+    const responseObj = isStructured ? structuredObj : cleanupObj;
+
     return Promise.resolve({
       ok: true,
       json: () =>
         Promise.resolve({
           choices: [
             {
+              finish_reason: "stop",
               message: {
-                content: JSON.stringify(analysisObj),
+                content: JSON.stringify(responseObj || {}),
               },
             },
           ],
         }),
     });
   };
+}
+
+/**
+ * Convenience helper for tests that only care about the structured response.
+ * Provides a minimal valid cleanup payload so the cleanup call also "succeeds"
+ * without affecting structured assertions.
+ */
+function mockStructuredOnly(structuredObj) {
+  return mockOpenAI({
+    structuredObj,
+    cleanupObj: { turns: [] },
+  });
 }
 
 describe("analyzeCallTranscript", () => {
@@ -42,7 +74,7 @@ describe("analyzeCallTranscript", () => {
   }
 
   it('returns "positive" sentiment correctly', async () => {
-    globalThis.fetch = mockOpenAIResponse({
+    globalThis.fetch = mockStructuredOnly({
       caller_name: "John",
       caller_phone_reason: "Booking appointment",
       appointment_requested: true,
@@ -60,7 +92,7 @@ describe("analyzeCallTranscript", () => {
   });
 
   it('returns "negative" sentiment correctly', async () => {
-    globalThis.fetch = mockOpenAIResponse({
+    globalThis.fetch = mockStructuredOnly({
       caller_name: null,
       caller_phone_reason: "Complaint",
       appointment_requested: false,
@@ -78,7 +110,7 @@ describe("analyzeCallTranscript", () => {
   });
 
   it('normalizes invalid sentiment value to null', async () => {
-    globalThis.fetch = mockOpenAIResponse({
+    globalThis.fetch = mockStructuredOnly({
       caller_name: "Jane",
       caller_phone_reason: "Inquiry",
       appointment_requested: false,
@@ -96,7 +128,7 @@ describe("analyzeCallTranscript", () => {
   });
 
   it("defaults missing sentiment field to null", async () => {
-    globalThis.fetch = mockOpenAIResponse({
+    globalThis.fetch = mockStructuredOnly({
       caller_name: "Bob",
       caller_phone_reason: "Question",
       appointment_requested: false,
@@ -113,7 +145,7 @@ describe("analyzeCallTranscript", () => {
   });
 
   it("still returns existing fields correctly alongside sentiment", async () => {
-    globalThis.fetch = mockOpenAIResponse({
+    globalThis.fetch = mockStructuredOnly({
       caller_name: "Alice Smith",
       caller_phone_reason: "Schedule cleaning",
       appointment_requested: true,
@@ -146,6 +178,126 @@ describe("analyzeCallTranscript", () => {
 
   it("returns null when API key is missing", async () => {
     delete process.env.OPENAI_API_KEY;
+    const analyzeCallTranscript = getAnalyzer();
+    const result = await analyzeCallTranscript("This is a long enough transcript to analyze properly.");
+
+    assert.equal(result, null);
+  });
+
+  it("returns structured fields even when cleanup call truncates", async () => {
+    // Cleanup call returns finish_reason: "length" → throws → cleanedTranscript = null
+    // Structured call still succeeds with normal fields.
+    globalThis.fetch = function fakeFetch(_url, init) {
+      const body = JSON.parse(init.body);
+      const systemMsg = body.messages.find((m) => m.role === "system").content;
+      const isStructured = systemMsg.includes("Extract the following information from the transcript");
+
+      if (isStructured) {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              choices: [
+                {
+                  finish_reason: "stop",
+                  message: {
+                    content: JSON.stringify({
+                      caller_name: "Truncation Test",
+                      caller_phone_reason: "Test",
+                      appointment_requested: false,
+                      summary: "Structured succeeded.",
+                      success_evaluation: "successful",
+                      sentiment: "neutral",
+                    }),
+                  },
+                },
+              ],
+            }),
+        });
+      }
+      // Cleanup call: simulate truncation
+      return Promise.resolve({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            choices: [
+              {
+                finish_reason: "length",
+                message: {
+                  content: '{"turns":[{"role":"user","text":"hello',
+                },
+              },
+            ],
+          }),
+      });
+    };
+
+    const analyzeCallTranscript = getAnalyzer();
+    const result = await analyzeCallTranscript("This is a long enough transcript to analyze properly.");
+
+    assert.notEqual(result, null);
+    assert.equal(result.callerName, "Truncation Test");
+    assert.equal(result.summary, "Structured succeeded.");
+    assert.equal(result.cleanedTranscript, null);
+  });
+
+  it("returns cleaned transcript even when structured call fails", async () => {
+    // Structured call returns a non-OK response; cleanup succeeds.
+    globalThis.fetch = function fakeFetch(_url, init) {
+      const body = JSON.parse(init.body);
+      const systemMsg = body.messages.find((m) => m.role === "system").content;
+      const isStructured = systemMsg.includes("Extract the following information from the transcript");
+
+      if (isStructured) {
+        return Promise.resolve({
+          ok: false,
+          status: 500,
+          text: () => Promise.resolve("Internal Server Error"),
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            choices: [
+              {
+                finish_reason: "stop",
+                message: {
+                  content: JSON.stringify({
+                    turns: [
+                      { role: "user", text: "Hi there" },
+                      { role: "assistant", text: "Hello, how can I help?" },
+                    ],
+                  }),
+                },
+              },
+            ],
+          }),
+      });
+    };
+
+    const analyzeCallTranscript = getAnalyzer();
+    const result = await analyzeCallTranscript("This is a long enough transcript to analyze properly.");
+
+    assert.notEqual(result, null);
+    // Structured failed → fallback null fields
+    assert.equal(result.callerName, null);
+    assert.equal(result.summary, null);
+    assert.equal(result.sentiment, null);
+    // Cleanup succeeded
+    assert.notEqual(result.cleanedTranscript, null);
+    assert.equal(result.cleanedTranscript.turns.length, 2);
+  });
+
+  it("returns null when both calls fail", async () => {
+    globalThis.fetch = function fakeFetch() {
+      return Promise.resolve({
+        ok: false,
+        status: 500,
+        text: () => Promise.resolve("Internal Server Error"),
+      });
+    };
+
     const analyzeCallTranscript = getAnalyzer();
     const result = await analyzeCallTranscript("This is a long enough transcript to analyze properly.");
 
