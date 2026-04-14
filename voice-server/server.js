@@ -829,11 +829,35 @@ function pcmToWav(pcmBuffer, { sampleRate = 24000, channels = 1, bitsPerSample =
   return Buffer.concat([header, pcmBuffer]);
 }
 
+// In-memory cache for preview audio. Key = `${voiceId}|${text}`, value =
+// ready-to-stream WAV Buffer. Since the preview text per voice is fixed in
+// the catalog (8 voices × 1 preview text each), the cache max size is small.
+// The cache survives as long as the voice-server process is up; a deploy or
+// Fly auto-stop resets it, which is intentional — new catalog entries get
+// regenerated on first access.
+const previewCache = new Map();
+const PREVIEW_CACHE_MAX = 32;
+
+function previewCacheGet(key) {
+  return previewCache.get(key) || null;
+}
+
+function previewCacheSet(key, buffer) {
+  if (previewCache.size >= PREVIEW_CACHE_MAX) {
+    // Drop the oldest entry (insertion-ordered Maps give us LRU-ish semantics)
+    const firstKey = previewCache.keys().next().value;
+    if (firstKey !== undefined) previewCache.delete(firstKey);
+  }
+  previewCache.set(key, buffer);
+}
+
 // Voice preview endpoint — synthesises a short sample using the SAME Gemini
 // Live voices the production pipeline uses, so what the user hears in the
 // preview is what callers hear on a real call. Uses Gemini TTS
-// (gemini-2.5-flash-preview-tts), which returns base64 PCM at 24kHz mono —
-// we wrap it in a WAV container for browser playback.
+// (gemini-2.5-pro-preview-tts — higher rate limits than the flash preview),
+// returns base64 PCM at 24kHz mono, wrapped in a WAV container for browser
+// playback. Results are cached in-memory so subsequent clicks on the same
+// voice are free and can't hit Gemini rate limits.
 app.post("/preview", async (req, res) => {
   const secret = req.headers["x-internal-secret"];
   if (!secret || secret !== process.env.INTERNAL_API_SECRET) {
@@ -852,6 +876,18 @@ app.post("/preview", async (req, res) => {
   }
 
   const geminiVoice = getGeminiVoice(voiceId);
+  const cacheKey = `${geminiVoice}|${text}`;
+
+  // Cache short-circuit — repeat previews never hit Gemini, no rate-limit risk.
+  const cached = previewCacheGet(cacheKey);
+  if (cached) {
+    res.setHeader("Content-Type", "audio/wav");
+    res.setHeader("Content-Length", cached.length.toString());
+    res.setHeader("Cache-Control", "private, max-age=3600");
+    res.setHeader("X-Preview-Cache", "hit");
+    return res.send(cached);
+  }
+
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     console.error("[preview] GEMINI_API_KEY not set");
@@ -860,7 +896,7 @@ app.post("/preview", async (req, res) => {
 
   try {
     const geminiRes = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${encodeURIComponent(apiKey)}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro-preview-tts:generateContent?key=${encodeURIComponent(apiKey)}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -881,9 +917,25 @@ app.post("/preview", async (req, res) => {
     if (!geminiRes.ok) {
       const errText = await geminiRes.text().catch(() => "");
       console.error(
-        `[preview] Gemini TTS ${geminiRes.status} for voice=${geminiVoice}: ${errText.slice(0, 300)}`
+        `[preview] Gemini TTS ${geminiRes.status} for voice=${geminiVoice}: ${errText.slice(0, 800)}`
       );
-      return res.status(502).json({ error: "Voice preview generation failed" });
+      // Pass the upstream status through so the client can distinguish 429
+      // (rate-limited — retry after a moment) from 5xx (actual server error).
+      // 4xx/5xx from Gemini go through as-is; unexpected codes become 502.
+      const forwardStatus =
+        geminiRes.status === 429 || (geminiRes.status >= 400 && geminiRes.status < 500)
+          ? geminiRes.status
+          : 502;
+      if (geminiRes.status === 429) {
+        res.setHeader("Retry-After", "30");
+      }
+      return res.status(forwardStatus).json({
+        error:
+          geminiRes.status === 429
+            ? "Voice preview is rate-limited by the provider. Please try again in a moment."
+            : "Voice preview generation failed",
+        upstreamStatus: geminiRes.status,
+      });
     }
 
     const payload = await geminiRes.json();
@@ -897,10 +949,12 @@ app.post("/preview", async (req, res) => {
 
     const pcmBuffer = Buffer.from(audioPart.inlineData.data, "base64");
     const wavBuffer = pcmToWav(pcmBuffer, { sampleRate: 24000, channels: 1, bitsPerSample: 16 });
+    previewCacheSet(cacheKey, wavBuffer);
 
     res.setHeader("Content-Type", "audio/wav");
     res.setHeader("Content-Length", wavBuffer.length.toString());
     res.setHeader("Cache-Control", "private, max-age=3600");
+    res.setHeader("X-Preview-Cache", "miss");
     res.send(wavBuffer);
   } catch (err) {
     console.error("[preview] exception:", err);
