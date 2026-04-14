@@ -128,7 +128,7 @@ export function AssistantBuilder({
   const [systemPrompt, setSystemPrompt] = useState(assistant.system_prompt);
   const [firstMessage, setFirstMessage] = useState(assistant.first_message);
   const [voiceId, setVoiceId] = useState(resolveVoiceId(assistant.voice_id));
-  const [language, setLanguage] = useState<VoiceLanguage>((assistant.language as VoiceLanguage) || "en");
+  const [language] = useState<VoiceLanguage>((assistant.language as VoiceLanguage) || "en");
   const [initialLanguage] = useState<VoiceLanguage>((assistant.language as VoiceLanguage) || "en");
   const [isActive, setIsActive] = useState(assistant.is_active);
 
@@ -705,27 +705,12 @@ export function AssistantBuilder({
         <TabsContent value="voice" className="space-y-6">
           <Card>
             <CardHeader>
-              <CardTitle>Voice & Language</CardTitle>
+              <CardTitle>Voice</CardTitle>
               <CardDescription>
-                Choose the language and voice for your assistant
+                Choose a voice for your assistant. The AI automatically responds in whatever language the caller speaks — no per-language configuration needed.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="space-y-2">
-                <Label>Language</Label>
-                <Select value={language} onValueChange={(v) => setLanguage(v as VoiceLanguage)}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="en">English</SelectItem>
-                    <SelectItem value="es">Español (Spanish)</SelectItem>
-                  </SelectContent>
-                </Select>
-                <p className="text-xs text-muted-foreground">
-                  The assistant will conduct calls entirely in this language.
-                </p>
-              </div>
               <div className="space-y-2">
                 <Label>Voice</Label>
                 <VoiceSelector value={voiceId} onChange={setVoiceId} language={language} />

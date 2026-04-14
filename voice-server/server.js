@@ -1114,7 +1114,7 @@ wss.on("connection", (twilioWs) => {
           session.phoneNumberId = context.phoneNumberId;
           session.transferRules = context.transferRules || [];
           session.language = context.assistant.language || "en";
-          session.deepgramVoice = getDeepgramVoice(context.assistant.voiceId, session.language);
+          session.deepgramVoice = getDeepgramVoice(context.assistant.voiceId);
           session.holdPreset = getHoldPreset(context.organization.industry);
           session.organization = {
             timezone: context.organization.timezone,
@@ -2405,7 +2405,7 @@ testWss.on("connection", (ws, req) => {
       session.assistantId = assistantId;
       session.transferRules = context.transferRules || [];
       session.language = context.assistant.language || "en";
-      session.deepgramVoice = getDeepgramVoice(context.assistant.voiceId, session.language);
+      session.deepgramVoice = getDeepgramVoice(context.assistant.voiceId);
       session.holdPreset = getHoldPreset(context.organization.industry);
       session.organization = {
         timezone: context.organization.timezone,
