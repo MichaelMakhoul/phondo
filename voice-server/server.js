@@ -850,7 +850,7 @@ wss.on("connection", (twilioWs) => {
     let analysis = null;
     if (transcript && durationSeconds > 5) {
       try {
-        analysis = await analyzeCallTranscript(transcript, { supportedLanguages: s.supportedLanguages ?? [] });
+        analysis = await analyzeCallTranscript(transcript);
         if (analysis) {
           console.log(`[PostCall] Analysis complete: caller=${analysis.callerName || "unknown"}, reason=${analysis.callerPhoneReason || "unknown"}, success=${analysis.successEvaluation}`);
         }
@@ -1124,7 +1124,6 @@ wss.on("connection", (twilioWs) => {
           session.orgPhoneNumber = calledNumber;
           session.telephonyProvider = context.telephonyProvider || "twilio";
           session.piiRedactionEnabled = !!(context.assistant.settings?.piiRedactionEnabled);
-          session.supportedLanguages = context.assistant.settings?.supportedLanguages ?? [];
 
           // Start call recording if consent mode allows.
           // - Twilio: <Connect> record= doesn't work with <Stream>, so use REST API.
@@ -2093,7 +2092,6 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
               destinationIndex: toolResult.destinationIndex || 0,
               startedAt: session.startedAt,
               language: session.language || "en",
-              supportedLanguages: session.supportedLanguages || [],
             });
 
             // Close Deepgram — stream will close when Twilio starts <Dial>
@@ -2414,7 +2412,6 @@ testWss.on("connection", (ws, req) => {
         businessHours: context.organization.businessHours,
       };
       session.orgPhoneNumber = null; // no real phone number in test mode
-      session.supportedLanguages = context.assistant.settings?.supportedLanguages ?? [];
 
       // After-hours detection
       let { isAfterHours, afterHoursConfig, effectiveCalendarEnabled } = resolveAfterHoursState(context);

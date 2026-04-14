@@ -30,12 +30,9 @@ Return a JSON object with these fields:
 
 Return ONLY valid JSON, no other text.`;
 
-function buildCleanupPrompt({ supportedLanguages }) {
-  const languageHint = supportedLanguages && supportedLanguages.length > 0
-    ? `\nThe caller is most likely speaking one of: ${supportedLanguages.join(", ")}. If the raw transcript contains tokens that look like a different language (e.g. Korean, Hindi, or Chinese characters when the caller probably spoke Arabic, French, or English), treat them as STT errors and recover the likely intended text.`
-    : "";
+const CLEANUP_PROMPT = `You are normalising a phone call transcript that may contain speech-to-text errors, especially misdetected languages.
 
-  return `You are normalising a phone call transcript that may contain speech-to-text errors, especially misdetected languages.${languageHint}
+First, infer the language each turn was actually spoken in by looking at context (surrounding turns, common names, business context). Phone STT often mis-routes audio into the wrong language tokenizer, producing random Korean/Chinese/Japanese/Hindi characters inside an otherwise coherent English/Arabic/French/Spanish conversation — treat those as STT errors and recover the likely intended text.
 
 Produce a cleaned version of the conversation.
 
@@ -45,11 +42,11 @@ Return a JSON object with this shape:
 Rules:
 - Keep each turn in the language the caller/AI actually used (do NOT translate).
 - If a turn's raw text contains obviously wrong characters (e.g., Korean or Chinese tokens inside an otherwise English utterance), replace them with the most likely intended text and preserve the raw text under "original".
+- Set "language" to the ISO 639-1 code of the language each turn was actually spoken in (en, ar, fr, es, zh, etc.) when you can tell.
 - Preserve turn order. Infer speaker labels from "User:"/"Assistant:" markers in the input.
 - If the transcript is too garbled to confidently recover, return { "turns": [] }.
 
 Return ONLY valid JSON.`;
-}
 
 async function callOpenAI({ system, user, maxTokens }) {
   if (!OPENAI_API_KEY) {
@@ -125,10 +122,10 @@ async function analyzeStructured(transcript) {
   }
 }
 
-async function analyzeCleanup(transcript, supportedLanguages) {
+async function analyzeCleanup(transcript) {
   try {
     const parsed = await callOpenAI({
-      system: buildCleanupPrompt({ supportedLanguages }),
+      system: CLEANUP_PROMPT,
       user: `Clean up this transcript:\n\n${transcript.slice(0, 6000)}`,
       maxTokens: 2500,
     });
@@ -155,13 +152,9 @@ async function analyzeCleanup(transcript, supportedLanguages) {
  * the other.
  *
  * @param {string} transcript - The full call transcript
- * @param {object} [options] - Optional configuration
- * @param {string[]} [options.supportedLanguages] - Languages the assistant supports (for STT hint)
  * @returns {Promise<object|null>} Extracted data or null if both calls fail
  */
-async function analyzeCallTranscript(transcript, options = {}) {
-  const { supportedLanguages = [] } = options;
-
+async function analyzeCallTranscript(transcript) {
   if (!transcript || transcript.trim().length < 20) {
     return null; // Too short to analyze meaningfully
   }
@@ -177,7 +170,7 @@ async function analyzeCallTranscript(transcript, options = {}) {
 
   const [structured, cleanedTranscript] = await Promise.all([
     analyzeStructured(transcript),
-    analyzeCleanup(transcript, supportedLanguages),
+    analyzeCleanup(transcript),
   ]);
 
   if (!structured && !cleanedTranscript) return null;

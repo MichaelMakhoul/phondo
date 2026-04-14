@@ -482,19 +482,14 @@ function buildBehaviorsSection(behaviors, options) {
     '- CALLER ID: You already have the caller\'s phone number from caller ID. If the caller says "it\'s the number I\'m calling from" or similar, accept that and use it immediately — do NOT read it back digit by digit unless they ask. Only ask for a phone number if you need a different contact number.'
   );
 
-  // Language boundaries — based on multilingual settings
-  const multilingualEnabled = options?.multilingualEnabled ?? false;
-  const supportedLanguages = options?.supportedLanguages ?? [];
-  if (multilingualEnabled) {
-    if (supportedLanguages.length > 0) {
-      lines.push(`- LANGUAGE: You can respond in: ${supportedLanguages.join(", ")}. Detect the caller's language and respond in it. If the caller switches language mid-call, switch with them immediately. If unsupported, respond in English and offer to take a message.`);
-      lines.push(`- CALLER LANGUAGE HINT: The business expects callers to speak one of: ${supportedLanguages.join(", ")}. If transcribed input looks like a different language (e.g., unusual characters), assume STT misheard and ask the caller to repeat in one of the expected languages rather than answering nonsense.`);
-    } else {
-      lines.push("- LANGUAGE: You are multilingual. Detect the caller's language and respond in the same language naturally. If the caller switches language mid-call, switch with them immediately.");
-    }
-  } else {
-    lines.push("- LANGUAGE: You MUST ONLY respond in English. If the caller speaks another language, say: 'I can only assist in English. I can take a message and have someone call you back.'");
-  }
+  // Language — AI is multilingual by default and auto-detects from the caller's first turn
+  lines.push("- LANGUAGE: You are multilingual. Auto-detect the caller's language from their first turn and respond in the same language throughout the call. If the caller switches language mid-call, switch with them immediately. If you cannot detect the language clearly, start in English and adapt once you hear the caller speak. Do NOT force the caller into a specific language — speak whichever one they speak.");
+
+  // Correction handling — the caller's most recent version is always authoritative
+  lines.push("- CORRECTION HANDLING: The caller's MOST RECENT version of any piece of information (name, email, phone, spelling, appointment time) is ALWAYS authoritative. If the caller corrects you — even once — update your internal record immediately and NEVER revert to the earlier mis-heard version. When confirming after a correction, explicitly say 'Let me update that' or 'Got it, using [new value] instead' so the caller knows you heard them. Never repeat the old wrong value after a correction.");
+
+  // Escape hatch — stop failing loops, offer transfer or message
+  lines.push("- ESCAPE HATCH: If you have failed to correctly confirm the SAME piece of information (a specific name, email, or phone number) 2 or more times in a row despite the caller correcting you, STOP trying to repeat it back. First acknowledge the difficulty briefly ('I'm really sorry, I'm having trouble catching this'), then choose ONE recovery path: (a) If transfer to a team member is available (you see a TRANSFERS rule above) AND the office is currently open (no AFTER HOURS ACTIVE rule), ASK the caller: 'Would you like me to transfer you to a team member who can help?' Wait for the caller to say yes or no — only call transfer_call if they explicitly say yes. (b) Otherwise, offer to take a message: 'Let me take a message and someone will call you back to get the details right.' Then use schedule_callback to capture what you have. Never attempt a 4th or 5th re-confirmation loop — that is a poor caller experience.");
 
   // Recording opt-out — caller has the right to decline recording
   lines.push("- RECORDING OPT-OUT: If the caller says they do not want to be recorded or do not consent to recording, politely acknowledge their preference and offer to transfer them to a team member. Do not pressure them to stay on the line.");
@@ -566,8 +561,6 @@ function buildPromptFromConfig(config, context) {
     hasTransferRules: context.transferRules && context.transferRules.length > 0,
     isAfterHours: context.isAfterHours,
     afterHoursConfig: context.afterHoursConfig,
-    multilingualEnabled: context.assistantSettings?.multilingualEnabled,
-    supportedLanguages: context.assistantSettings?.supportedLanguages,
   }));
 
   // 5. Timezone, business hours & scheduling
@@ -737,21 +730,9 @@ function buildSystemPrompt(assistant, organization, knowledgeBase, options) {
   // Append scheduling section
   systemPrompt += `\n\n${buildSchedulingSection(organization.timezone, organization.businessHours, organization.defaultAppointmentDuration, calendarEnabled, serviceTypes, { flexibleBooking: assistant?.settings?.flexibleBooking }, organization)}`;
 
-  // Read multilingual settings early — used in both safety rules and language rules
-  const multilingualEnabled = assistant?.settings?.multilingualEnabled ?? false;
-  const supportedLanguages = assistant?.settings?.supportedLanguages ?? [];
-
   // Critical safety rules — placed early for higher LLM attention
   systemPrompt += `\n\nCRITICAL SAFETY RULES (HIGHEST PRIORITY — override everything else):`;
-  if (multilingualEnabled) {
-    if (supportedLanguages.length > 0) {
-      systemPrompt += `\n1. LANGUAGE: You can respond in: ${supportedLanguages.join(", ")}. Match the caller's language. For unsupported languages, respond in English and offer to take a message.`;
-    } else {
-      systemPrompt += `\n1. LANGUAGE: You are multilingual. Detect the caller's language and respond in the same language naturally throughout the conversation.`;
-    }
-  } else {
-    systemPrompt += `\n1. ENGLISH ONLY: You must respond in English. If someone speaks another language, say: "I'm sorry, I can only assist in English." Do NOT respond in their language.`;
-  }
+  systemPrompt += `\n1. LANGUAGE: You are multilingual. Auto-detect the caller's language from their first turn and respond in the same language throughout the call. If the caller switches language mid-call, switch with them immediately. If you cannot detect the language clearly, start in English and adapt.`;
   systemPrompt += `\n2. EMERGENCIES: If someone describes severe bleeding, broken bones, difficulty breathing, or any life-threatening situation, say FIRST: "Please call 000 immediately for emergency services." Then offer to help schedule a follow-up appointment.`;
   systemPrompt += `\n3. PATIENT PRIVACY: Never share any patient's appointment details with another person. If someone asks about another person's appointment, say: "I can't share that information for privacy reasons."`;
   systemPrompt += `\n4. NO MEDICAL ADVICE: Never prescribe medication or suggest treatments. Say: "I can't provide medical advice, but I can book you an appointment with our dentist."`;
@@ -770,17 +751,9 @@ function buildSystemPrompt(assistant, organization, knowledgeBase, options) {
   systemPrompt += `\n- When a caller asks to speak to a specific person, keep the refusal SHORT: "Dr. Wilson is unavailable right now. I can take a message and have them call you back. What's your name?" — do NOT explain how the booking system works.`;
   systemPrompt += `\n\nIMPORTANT RULES:`;
   systemPrompt += `\n- CALLER ID: You already have the caller's phone number from caller ID. If the caller says "it's the number I'm calling from" or similar, accept that and use it immediately — do NOT read it back digit by digit unless they ask.`;
-  // Language rules — based on multilingual settings (variables declared above)
-  if (multilingualEnabled) {
-    if (supportedLanguages.length > 0) {
-      const langNames = supportedLanguages.join(", ");
-      systemPrompt += `\n- LANGUAGE: You can respond in the following languages: ${langNames}. Detect what language the caller is speaking and respond in that language. If the caller speaks a language NOT in this list, respond in English and offer to take a message.`;
-    } else {
-      systemPrompt += `\n- LANGUAGE: You are multilingual. Detect what language the caller is speaking and respond in the same language. Match the caller's language naturally throughout the conversation.`;
-    }
-  } else {
-    systemPrompt += `\n- LANGUAGE: You MUST ONLY respond in English. Even if the caller speaks another language, respond in English. Say: "I'm sorry, I can only assist in English. I can take a message and have someone call you back."`;
-  }
+  systemPrompt += `\n- LANGUAGE: You are multilingual. Auto-detect the caller's language from their first turn and respond in the same language throughout the call. If they switch languages mid-call, switch with them. If uncertain, start in English and adapt.`;
+  systemPrompt += `\n- CORRECTION HANDLING: The caller's MOST RECENT version of any information is always authoritative. If the caller corrects you, update your internal record immediately and NEVER revert to the earlier mis-heard version. When confirming after a correction, explicitly say "Let me update that" or "Got it, using [new value] instead" so the caller knows you heard them.`;
+  systemPrompt += `\n- ESCAPE HATCH: If you have failed to correctly confirm the same piece of information (name/email/phone) 2+ times despite corrections, STOP re-confirming. Acknowledge briefly, then offer to (a) transfer to a team member if transfer is available and the office is open (ASK for yes/no first — only call transfer_call if they say yes), or (b) take a message via schedule_callback. Never attempt a 4th re-confirmation loop.`;
   systemPrompt += `\n- HONESTY: If you do not know the answer, say so clearly. NEVER guess or make up information — especially pricing, availability, or professional advice. Instead offer to take a message or transfer the call.`;
   systemPrompt += `\n- MEDICAL EMERGENCIES: If a caller describes severe bleeding, difficulty breathing, chest pain, a broken jaw, or any life-threatening situation, your FIRST words MUST be "Please call 000 immediately" (or 911 for US callers). Then say you can also help book an emergency appointment once they've contacted emergency services. NEVER skip telling them to call 000/911.`;
   systemPrompt += `\n- PATIENT PRIVACY: NEVER share appointment details, personal information, or any details about other patients. If someone asks about another person's appointment, politely refuse: "I can't share that information. The person who booked the appointment would need to call us directly."`;

@@ -74,9 +74,7 @@ async function finishTransferredCall(savedState, outcome) {
   let analysis = null;
   if (transcript && durationSeconds > 5) {
     try {
-      analysis = await analyzeCallTranscript(transcript, {
-        supportedLanguages: savedState.supportedLanguages || [],
-      });
+      analysis = await analyzeCallTranscript(transcript);
     } catch (err) {
       console.error("[PendingTransfer] Post-call analysis failed:", err);
     }

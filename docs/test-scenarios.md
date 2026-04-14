@@ -899,67 +899,78 @@ Verifies that post-call analysis produces a usable `cleaned_transcript` that str
 
 ---
 
-## SECTION 19: Supported Languages Setting (SCRUM-209)
+## SECTION 19: Multilingual + Correction + Escape Hatch (SCRUM-209 / SCRUM-216)
 
-Verifies the Supported Languages multi-select affects: (1) AI response language, (2) system prompt hint, (3) post-call cleanup.
+Verifies the AI (1) auto-detects the caller's language without any per-assistant configuration, (2) honours corrections the caller makes to mis-heard data, and (3) falls back to a transfer-to-human or take-a-message escape hatch instead of looping forever on failed confirmations.
 
-### Scenario 19.1 — Setting Is Empty + Multilingual Off
-**Prerequisites:** `supportedLanguages` = [], `multilingualEnabled` = false.
+Note: there is NO "Multilingual Support" toggle or language multi-select in the assistant settings anymore — SCRUM-216 removed them. The assistant is always multilingual and always auto-detects.
+
+### Scenario 19.1 — Auto-detect English (baseline)
+**Prerequisites:** Any assistant. Dashboard has no language setting to configure.
+
 **Script:**
-> Greet in Spanish: "Hola, necesito una cita"
+> Call in English. Greet with "Hi, I'd like to book an appointment."
 
 **Expected:**
-- [ ] AI responds in English, offers to take a message
-- [ ] System prompt contains English-only directive
-- [ ] No CALLER LANGUAGE HINT in the prompt
-- [ ] Cleaned transcript shows no language-recovery influence
+- [ ] AI greets in English and responds in English throughout
+- [ ] System prompt contains "You are multilingual. Auto-detect..." — NO "supportedLanguages" reference
+- [ ] Cleaned transcript shows every turn with `language: "en"`
 
-### Scenario 19.2 — Setting = [en, ar]
-**Prerequisites:** `supportedLanguages` = ["en", "ar"], multilingual enabled.
+### Scenario 19.2 — Auto-detect Arabic
 **Script:**
-> Greet in Arabic.
+> Call and greet in Arabic: "مرحبا، أريد حجز موعد"
 
 **Expected:**
-- [ ] AI responds in Arabic
-- [ ] System prompt contains "CALLER LANGUAGE HINT: ... en, ar"
-- [ ] Post-call cleanup prefers Arabic recovery for garbled turns
+- [ ] AI responds in Arabic from the first turn
+- [ ] No "I can only assist in English" refusal
+- [ ] Cleaned transcript turns labelled `language: "ar"` on user turns (at least)
+- [ ] AI's letter spellings (if any) use Arabic letter names — documented caveat, acceptable for now
 
-### Scenario 19.3 — Setting = [en, fr, es]
-**Prerequisites:** `supportedLanguages` = ["en", "fr", "es"], multilingual enabled.
+### Scenario 19.3 — Mid-call language switch
 **Script:**
-> Greet in French, then in Spanish, then in English.
+> Start in English ("Hi, I'm calling for an appointment"), switch to French mid-call ("Je voudrais changer l'heure"), then back to English.
 
 **Expected:**
-- [ ] AI follows each language switch
-- [ ] Cleaned transcript turns have `language` set to fr/es/en respectively
-- [ ] System prompt enumerates all three in the LANGUAGE HINT line
+- [ ] AI switches to French when the caller switches
+- [ ] AI switches back to English on the third turn
+- [ ] No "please speak one language" complaints
+- [ ] Cleaned transcript turns labelled with the correct language per turn
 
-### Scenario 19.4 — Tooltip Copy
-**Action:** Open assistant settings → view the Supported Languages help text.
-
-**Expected:**
-- [ ] Help text mentions all three effects: AI responses, prompt hint, post-call cleanup
-- [ ] Matches the copy checked in under SCRUM-209
-
-### Scenario 19.5 — No Regression When Multilingual Enabled But Empty List
-**Prerequisites:** `multilingualEnabled` = true, `supportedLanguages` = [].
+### Scenario 19.4 — Correction authority (the core bug fix)
 **Script:**
-> Call in any language.
+> When the AI asks for your name and gets it wrong (e.g. hears "Michel" instead of "Michael"), correct it once: "No — it's Michael, with an 'a-e' in the middle." Continue the call normally. Let the AI use your name 3+ more times (confirmations, goodbye).
 
 **Expected:**
-- [ ] AI auto-detects and responds (existing behaviour preserved)
-- [ ] No CALLER LANGUAGE HINT line in prompt (nothing to hint about)
-- [ ] Post-call analysis runs without language hint and still produces cleaned output
+- [ ] Immediately after the correction, the AI explicitly acknowledges the change ("Let me update that, Michael" or similar) — NOT silently re-confirming
+- [ ] Every subsequent reference to your name in the call uses the corrected version, NOT the mis-heard one
+- [ ] `calls.caller_name` in the DB at end of call matches the corrected name
+- [ ] Cleaned transcript's structured fields match the corrected name
 
-### Scenario 19.6 — Language Switch Mid-Call Under Hint
-**Prerequisites:** `supportedLanguages` = ["en", "ar"], multilingual enabled.
+### Scenario 19.5 — Escape hatch WITH transfer available + office open
+**Prerequisites:** Assistant has `behaviors.transferToHuman = true`, at least one active transfer rule exists, and the business is currently within business hours.
+
 **Script:**
-> Start in English, switch to Arabic mid-call, then back to English.
+> When asked for your email, deliberately say something the AI is likely to mishear. Correct it twice ("No, it's actually michael..."). After the second correction, DO NOT correct it a third time — wait for the AI's response.
 
 **Expected:**
-- [ ] AI keeps up with switches (existing behaviour)
-- [ ] Cleaned transcript correctly labels each turn's language
-- [ ] No weird "refuse to answer" loops from the hint accidentally misapplying
+- [ ] After the second failed confirmation, the AI stops re-confirming
+- [ ] AI says something like "I'm having trouble catching this. Would you like me to transfer you to a team member who can help?" — it ASKS, it does NOT transfer immediately
+- [ ] If you say "yes" → `transfer_call` tool fires with the caller connected to the transfer target
+- [ ] If you say "no" → the AI falls through to path (b) and offers to take a message
+- [ ] No 4th or 5th re-confirmation loop
+
+### Scenario 19.6 — Escape hatch WITHOUT transfer (or after hours)
+**Prerequisites:** Either `behaviors.transferToHuman = false` OR no active transfer rules OR the business is currently after hours.
+
+**Script:**
+> Same as 19.5 — mis-hear-then-correct twice on the email field. Stop correcting after the second attempt.
+
+**Expected:**
+- [ ] AI stops re-confirming after the second failure
+- [ ] AI does NOT offer a transfer (because it's unavailable)
+- [ ] AI says something like "I'm having trouble catching this — let me take a message and someone will call you back"
+- [ ] `schedule_callback` tool fires with the name + phone + notes captured so far
+- [ ] The call ends cleanly, not in a confirmation loop
 
 ---
 

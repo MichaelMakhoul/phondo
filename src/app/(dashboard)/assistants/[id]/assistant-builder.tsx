@@ -39,7 +39,6 @@ import {
   ArrowLeft,
   Bot,
   Clock,
-  Globe,
   Mic,
   Phone,
   ShieldAlert,
@@ -68,25 +67,6 @@ import {
 
 // Industry templates
 const INDUSTRY_TEMPLATES = getIndustryTemplates();
-
-// Languages supported for multilingual AI responses
-const AVAILABLE_LANGUAGES = [
-  { code: "en", name: "English", flag: "🇬🇧" },
-  { code: "ar", name: "Arabic", flag: "🇸🇦" },
-  { code: "zh", name: "Chinese", flag: "🇨🇳" },
-  { code: "es", name: "Spanish", flag: "🇪🇸" },
-  { code: "hi", name: "Hindi", flag: "🇮🇳" },
-  { code: "fr", name: "French", flag: "🇫🇷" },
-  { code: "it", name: "Italian", flag: "🇮🇹" },
-  { code: "ja", name: "Japanese", flag: "🇯🇵" },
-  { code: "ko", name: "Korean", flag: "🇰🇷" },
-  { code: "pt", name: "Portuguese", flag: "🇧🇷" },
-  { code: "de", name: "German", flag: "🇩🇪" },
-  { code: "vi", name: "Vietnamese", flag: "🇻🇳" },
-  { code: "el", name: "Greek", flag: "🇬🇷" },
-  { code: "tr", name: "Turkish", flag: "🇹🇷" },
-  { code: "fil", name: "Filipino", flag: "🇵🇭" },
-];
 
 /** Parse a comma-separated keyword string into a trimmed, non-empty array. */
 function parseKeywords(input: string): string[] {
@@ -182,12 +162,6 @@ export function AssistantBuilder({
   );
   const [flexibleBooking, setFlexibleBooking] = useState(
     assistant.settings?.flexibleBooking ?? false
-  );
-  const [multilingualEnabled, setMultilingualEnabled] = useState(
-    assistant.settings?.multilingualEnabled ?? false
-  );
-  const [supportedLanguages, setSupportedLanguages] = useState<string[]>(
-    assistant.settings?.supportedLanguages ?? []
   );
 
   // Transfer rules state
@@ -289,8 +263,6 @@ export function AssistantBuilder({
             recordingEnabled,
             recordingDisclosure,
             flexibleBooking,
-            multilingualEnabled,
-            supportedLanguages: multilingualEnabled ? supportedLanguages : [],
           },
           promptConfig: useGuidedBuilder ? promptConfig : null,
           afterHoursConfig: promptConfig?.behaviors?.afterHoursHandling
@@ -1132,65 +1104,10 @@ export function AssistantBuilder({
                 />
               </div>
 
-              <div className="border-t pt-4 space-y-4">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <Label className="flex items-center gap-2">
-                      <Globe className="h-4 w-4" />
-                      Multilingual Support
-                    </Label>
-                    <p className="text-xs text-muted-foreground">
-                      Respond in the caller&apos;s language automatically
-                    </p>
-                  </div>
-                  <Switch
-                    checked={multilingualEnabled}
-                    onCheckedChange={setMultilingualEnabled}
-                  />
-                </div>
-
-                {multilingualEnabled && (
-                  <div className="space-y-3 pl-2 border-l-2 border-primary/20 ml-2">
-                    <div>
-                      <Label className="text-sm">Supported Languages</Label>
-                      <p className="text-xs text-muted-foreground mb-2">
-                        Languages your callers speak. The AI matches the caller&apos;s language, and post-call analysis uses this list to clean up STT mistakes. Leave empty to auto-detect any language.
-                      </p>
-                      <div className="flex flex-wrap gap-2">
-                        {AVAILABLE_LANGUAGES.map((lang) => (
-                          <button
-                            key={lang.code}
-                            type="button"
-                            onClick={() => {
-                              setSupportedLanguages((prev) =>
-                                prev.includes(lang.code)
-                                  ? prev.filter((l) => l !== lang.code)
-                                  : [...prev, lang.code]
-                              );
-                            }}
-                            className={`rounded-full px-3 py-1 text-xs transition-colors ${
-                              supportedLanguages.includes(lang.code)
-                                ? "bg-primary text-primary-foreground"
-                                : "bg-muted hover:bg-muted/80"
-                            }`}
-                          >
-                            {lang.flag} {lang.name}
-                          </button>
-                        ))}
-                      </div>
-                      {supportedLanguages.length > 0 && (
-                        <p className="text-xs text-muted-foreground mt-2">
-                          AI will respond in: {supportedLanguages.map((c) => AVAILABLE_LANGUAGES.find((l) => l.code === c)?.name).filter(Boolean).join(", ")}
-                        </p>
-                      )}
-                      {supportedLanguages.length === 0 && (
-                        <p className="text-xs text-muted-foreground mt-2">
-                          AI will respond in any language the caller speaks
-                        </p>
-                      )}
-                    </div>
-                  </div>
-                )}
+              <div className="border-t pt-4">
+                <p className="text-sm text-muted-foreground">
+                  Your AI automatically detects the caller&apos;s language and responds in the same language. No configuration needed.
+                </p>
               </div>
 
               <div className="border-t pt-4">
