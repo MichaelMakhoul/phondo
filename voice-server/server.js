@@ -78,6 +78,10 @@ const PORT = process.env.PORT || 3001;
 const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY;
 const LLM_API_KEY = process.env[LLM_KEY_MAP[LLM_PROVIDER] || "OPENAI_API_KEY"];
 const PUBLIC_URL = process.env.PUBLIC_URL;
+// Public URL of the Next.js app — used to build recording webhook URLs that
+// Twilio/Telnyx POST to. Intentionally NO fallback to PUBLIC_URL: if unset,
+// recording is hard-disabled (otherwise we'd POST to the voice server's URL → 404).
+const APP_PUBLIC_URL = process.env.APP_PUBLIC_URL;
 const WS_SECRET = process.env.TWILIO_AUTH_TOKEN;
 const WS_URL = PUBLIC_URL.replace(/^http/, "ws") + "/ws/audio";
 const INTERNAL_API_URL = process.env.INTERNAL_API_URL;
@@ -453,6 +457,9 @@ app.post("/texml", async (req, res) => {
   }
 
   // Default: AI answers
+  // Note: recording is started via Telnyx Call Control `record_start` API in the
+  // WebSocket stream-start handler — NOT via TeXML — because TeXML-initiated
+  // recording does not reliably fire `call.recording.saved` events.
   const token = issueStreamToken(called, from, undefined, phoneRecord);
   console.log(`[TeXML] Incoming call from=${maskPhone(from)} to=${called}, streaming to ${WS_URL}`);
 
@@ -697,9 +704,13 @@ app.post("/twiml/ring-first-fallback", async (req, res) => {
   console.log(`[RingFirst] Owner missed → AI fallback for from=${maskPhone(from)} to=${called}`);
 
   const ringFirstRecordingMode = ringFirstPhoneRecord?.organizations?.recording_consent_mode || "auto";
-  const ringFirstShouldRecord = ringFirstRecordingMode !== "never";
+  let ringFirstShouldRecord = ringFirstRecordingMode !== "never";
+  if (ringFirstShouldRecord && !APP_PUBLIC_URL) {
+    console.warn("[Recording] APP_PUBLIC_URL not set — refusing to attach recording attributes to ring-first <Connect> (callback would 404). Recording disabled for this call.");
+    ringFirstShouldRecord = false;
+  }
   const ringFirstConnectAttrs = ringFirstShouldRecord
-    ? ` record="record-from-answer" recordingStatusCallback="${escapeXml(PUBLIC_URL + '/twiml/recording-status')}" recordingStatusCallbackMethod="POST"`
+    ? ` record="record-from-answer" recordingStatusCallback="${escapeXml(APP_PUBLIC_URL + '/api/webhooks/twilio-recording-done')}" recordingStatusCallbackMethod="POST" recordingStatusCallbackEvent="completed failed absent"`
     : "";
 
   res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
@@ -712,57 +723,18 @@ app.post("/twiml/ring-first-fallback", async (req, res) => {
 </Response>`);
 });
 
-// Recording status callback — Twilio POSTs here after <Connect record="record-from-answer"> finishes.
-// Saves the recording URL to the call record for dashboard playback.
+// Legacy Twilio recording callback. The new flow POSTs directly to the Next.js
+// webhook /api/webhooks/twilio-recording-done. This handler stays as a no-op so
+// older-provisioned numbers still return 200 instead of 404.
 app.post("/twiml/recording-status", async (req, res) => {
-  // Validate Twilio signature to prevent spoofed recording URLs
   if (!validateTwilioSignature(req)) {
-    console.warn("[Recording] Rejected recording-status callback — invalid Twilio signature");
     return res.status(403).send("Forbidden");
   }
-
-  try {
-    const { CallSid, RecordingUrl, RecordingSid, RecordingDuration } = req.body;
-
-    if (!CallSid || !RecordingUrl) {
-      console.warn("[Recording] Missing required fields in status callback:", {
-        hasCallSid: !!CallSid, hasRecordingUrl: !!RecordingUrl,
-      });
-      return res.status(400).send("Missing required fields");
-    }
-
-    // Validate recording URL is from Twilio (defense in depth)
-    if (!RecordingUrl.startsWith("https://api.twilio.com/")) {
-      console.warn("[Recording] Rejected non-Twilio recording URL:", RecordingUrl.slice(0, 100));
-      return res.status(400).send("Invalid recording URL");
-    }
-
-    // Twilio recording URLs need .mp3 appended for direct playback
-    const playbackUrl = `${RecordingUrl}.mp3`;
-
-    const supabase = getSupabase();
-
-    // Call records use "sh_<CallSid>" as vapi_call_id (legacy naming from Vapi migration)
-    const { error } = await supabase
-      .from("calls")
-      .update({ recording_url: playbackUrl })
-      .eq("vapi_call_id", `sh_${CallSid}`);
-
-    if (error) {
-      console.error("[Recording] Failed to save recording URL:", {
-        CallSid, RecordingSid, error: error.message,
-      });
-    } else {
-      console.log("[Recording] Saved recording URL:", {
-        CallSid, RecordingSid, duration: RecordingDuration,
-      });
-    }
-
-    res.status(200).send("OK");
-  } catch (err) {
-    console.error("[Recording] Status callback error:", err);
-    res.status(500).send("Error");
-  }
+  console.log("[Recording] Legacy callback hit — new flow is /api/webhooks/twilio-recording-done. Ignoring.", {
+    CallSid: req.body.CallSid,
+    RecordingSid: req.body.RecordingSid,
+  });
+  res.status(200).send("OK");
 });
 
 // Recording callback for AI-disabled voicemail — Twilio POSTs here after recording ends.
@@ -930,6 +902,7 @@ wss.on("connection", (twilioWs) => {
           consentReason: s.consentReason || null,
           sentiment: analysis?.sentiment || null,
           piiRedacted,
+          cleanedTranscript: analysis?.cleanedTranscript ?? null,
         });
       } catch (err) {
         console.error("[Cleanup] Failed to complete call record:", err);
@@ -1152,20 +1125,81 @@ wss.on("connection", (twilioWs) => {
           session.telephonyProvider = context.telephonyProvider || "twilio";
           session.piiRedactionEnabled = !!(context.assistant.settings?.piiRedactionEnabled);
 
-          // Start call recording via Twilio REST API if consent mode allows
-          // (Connect record= doesn't work with Stream — must use REST API)
+          // Start call recording if consent mode allows.
+          // - Twilio: <Connect> record= doesn't work with <Stream>, so use REST API.
+          // - Telnyx: TeXML-initiated recording doesn't reliably fire `call.recording.saved`,
+          //   so use Call Control `record_start` API. context.callSid IS the Telnyx
+          //   call_control_id (see tool-executor.js → telnyxTransfer.transferCall).
           const recordingConsentMode = context.organization.recordingConsentMode || "auto";
           if (recordingConsentMode !== "never" && callSid) {
-            try {
-              const recording = await getTwilioRestClient().calls(callSid).recordings.create({
-                recordingStatusCallback: `${PUBLIC_URL}/twiml/recording-status`,
-                recordingStatusCallbackMethod: "POST",
-                recordingChannels: "dual",
+            if (!APP_PUBLIC_URL) {
+              // Hard-fail: never start recording with the wrong callback URL —
+              // PUBLIC_URL points at the voice server, which doesn't host the
+              // /api/webhooks/* routes (those live on Next.js).
+              const skipErr = new Error("APP_PUBLIC_URL not set — refusing to start recording with wrong callback URL");
+              console.warn(`[Recording] ${skipErr.message} (callSid=${callSid})`);
+              Sentry.withScope((scope) => {
+                scope.setTag("service", "recording-start");
+                scope.setExtra("callSid", callSid);
+                scope.setExtra("provider", session.telephonyProvider);
+                Sentry.captureException(skipErr);
               });
-              console.log(`[Recording] Started recording for callSid=${callSid} recordingSid=${recording.sid}`);
-            } catch (recErr) {
-              // Non-fatal — call continues without recording
-              console.warn("[Recording] Failed to start recording (non-fatal):", recErr.message);
+            } else if (session.telephonyProvider === "twilio") {
+              try {
+                const recording = await getTwilioRestClient().calls(callSid).recordings.create({
+                  recordingStatusCallback: `${APP_PUBLIC_URL}/api/webhooks/twilio-recording-done`,
+                  recordingStatusCallbackMethod: "POST",
+                  recordingStatusCallbackEvent: ["completed", "failed", "absent"],
+                  recordingChannels: "dual",
+                });
+                console.log(`[Recording] Started Twilio recording for callSid=${callSid} recordingSid=${recording.sid}`);
+              } catch (recErr) {
+                // Non-fatal — call continues without recording
+                console.warn("[Recording] Failed to start Twilio recording (non-fatal):", recErr.message);
+                Sentry.withScope((scope) => {
+                  scope.setTag("service", "twilio-recording");
+                  scope.setExtra("callSid", callSid);
+                  Sentry.captureException(recErr);
+                });
+              }
+            } else if (session.telephonyProvider === "telnyx") {
+              // call.recording.saved events fire to the Call Control Application's
+              // webhook URL (configured in the Telnyx portal once per app). The
+              // payload.call_control_id will match what we store as
+              // vapi_call_id = sh_${callSid} so the lookup works.
+              try {
+                if (!process.env.TELNYX_API_KEY) {
+                  throw new Error("TELNYX_API_KEY not configured");
+                }
+                const recRes = await fetch(`https://api.telnyx.com/v2/calls/${callSid}/actions/record_start`, {
+                  method: "POST",
+                  signal: AbortSignal.timeout(10_000),
+                  headers: {
+                    Authorization: `Bearer ${process.env.TELNYX_API_KEY}`,
+                    "Content-Type": "application/json",
+                  },
+                  body: JSON.stringify({
+                    format: "mp3",
+                    channels: "dual",
+                    play_beep: false,
+                  }),
+                });
+                if (!recRes.ok) {
+                  const errText = await recRes.text().catch(() => "");
+                  throw new Error(`Telnyx record_start failed (${recRes.status}): ${errText.slice(0, 200)}`);
+                }
+                const recData = await recRes.json().catch(() => ({}));
+                const recordingId = recData?.data?.recording_id || "unknown";
+                console.log(`[Recording] Started Telnyx recording for callSid=${callSid} recordingId=${recordingId}`);
+              } catch (recErr) {
+                // Non-fatal — call continues without recording
+                console.warn("[Recording] Failed to start Telnyx recording (non-fatal):", recErr.message);
+                Sentry.withScope((scope) => {
+                  scope.setTag("service", "telnyx-recording");
+                  scope.setExtra("callSid", callSid);
+                  Sentry.captureException(recErr);
+                });
+              }
             }
           }
 

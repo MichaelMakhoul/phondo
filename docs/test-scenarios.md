@@ -735,6 +735,248 @@ These scenarios verify that callers can request a specific practitioner and the 
 
 ---
 
+## SECTION 17: Call Recording Playback (SCRUM-207)
+
+Verifies recordings are captured by the provider, posted to the Next.js webhook, stored in Supabase Storage, and played back via signed URL in the dashboard.
+
+### Scenario 17.1 — Telnyx Recording Round-Trip (Deferred)
+**Prerequisites:** Provisioned Telnyx number linked to an active assistant. Recording mode `auto` or `always` (NOT `never`). Call Control Application webhook URL set to `${APP_PUBLIC_URL}/api/webhooks/telnyx-recording-done`.
+
+> **Skip until Telnyx AU regulatory approval is re-started.** As of 2026-04-13 the telephony decision flipped to Twilio-primary for AU (see `telephony_provider_strategy.md`), so Telnyx is a dormant fallback. Run 17.2 instead — it exercises the same recording pipeline on the primary provider.
+
+**Script:**
+> Call the Telnyx number. Let the AI greet you. Have a ~30 second conversation. Hang up.
+
+**Expected:**
+- [ ] Voice server logs show `[Recording] Started Telnyx recording for callSid=... recordingId=...`
+- [ ] Within ~15 seconds of hang-up, Next.js logs show `[telnyx-recording-done]` webhook 200
+- [ ] `calls.recording_storage_path` is populated for the new row
+- [ ] Supabase Storage bucket `call-recordings` contains `<org_id>/<call_id>.mp3`
+- [ ] Dashboard call detail page renders an audio player (no auth prompt)
+- [ ] Signed URL in the `<audio src>` has a `?token=...` query string
+
+### Scenario 17.2 — Twilio Recording Round-Trip (Primary)
+**Prerequisites:** Twilio number with voice-server `/twiml` configured as voice URL. Org recording_consent_mode = `auto` or `always`.
+
+**Script:**
+> Call the Twilio number. Have a short conversation. Hang up.
+
+**Expected:**
+- [ ] Voice server logs show `[Recording] Started Twilio recording for callSid=...`
+- [ ] `[twilio-recording-done]` webhook returns 200 in Next.js logs within ~15s
+- [ ] Recording downloaded and uploaded to Supabase Storage
+- [ ] Dashboard plays it via signed URL, no basic-auth prompt
+
+### Scenario 17.3 — Recording Mode `never`
+**Prerequisites:** Set org `recording_consent_mode` to `never`.
+
+**Script:**
+> Place a test call.
+
+**Expected:**
+- [ ] TwiML ring-first fallback `<Connect>` does NOT include `record="record-from-answer"` (Twilio path)
+- [ ] Voice server does NOT call `recordings.create` via Twilio REST (line `[Recording] Started Twilio recording` is absent)
+- [ ] Voice server does NOT call Telnyx Call Control `record_start` (line `[Recording] Started Telnyx recording` is absent)
+- [ ] No recording webhook fires
+- [ ] `recording_storage_path` remains null
+- [ ] Dashboard shows no Recording card
+
+### Scenario 17.4 — Idempotent Webhook Retry
+**Script:**
+> Manually replay a recording-done webhook (curl with same signature/body, or replay from provider portal).
+
+**Expected:**
+- [ ] Second call returns `{ ok: true }` without re-uploading (helper short-circuits on `recording_sid` match)
+- [ ] Storage object unchanged (same size, timestamp)
+- [ ] No duplicate DB update
+
+### Scenario 17.5 — Legacy Call (Pre-SCRUM-207)
+**Prerequisites:** Open an older call row that has `recording_url` set but no `recording_storage_path`.
+
+**Expected:**
+- [ ] Dashboard shows "Legacy recording (stored with provider). This recording predates in-app playback." message
+- [ ] Does NOT attempt to play the broken provider URL
+
+### Scenario 17.6 — Signed URL Expiry
+**Script:**
+> Open a call detail page. Wait ~11 minutes without interacting. Click play.
+
+**Expected:**
+- [ ] Playback might fail (URL expired)
+- [ ] Reloading the page fetches a fresh signed URL and works
+- [ ] No sensitive URL leaks into page source (only a short-lived signed URL)
+
+### Scenario 17.7 — APP_PUBLIC_URL Missing (Hard-Fail)
+**Prerequisites:** Temporarily unset `APP_PUBLIC_URL` on the voice-server (Fly secret).
+**Script:**
+> Place a test call with recording mode = `auto`.
+
+**Expected:**
+- [ ] Voice server logs show `[Recording] APP_PUBLIC_URL not set — refusing to start recording`
+- [ ] Sentry receives an exception event tagged `service: "recording-start"`
+- [ ] No call to provider record-start API (Twilio `recordings.create` or Telnyx `record_start`)
+- [ ] Call still proceeds normally — recording is just disabled
+- [ ] `calls.recording_storage_path` remains null
+
+---
+
+## SECTION 18: Cleaned Transcript (SCRUM-208)
+
+Verifies that post-call analysis produces a usable `cleaned_transcript` that strips STT artifacts (e.g., Korean/Hindi/Chinese tokens when the caller spoke Arabic/French/English).
+
+### Scenario 18.1 — English-Only Call, Clean STT
+**Script:**
+> Have a completely English conversation (30s+).
+
+**Expected:**
+- [ ] `calls.cleaned_transcript` populated
+- [ ] Dashboard transcript card shows Cleaned/Raw toggle buttons
+- [ ] Cleaned view ≈ raw view (no unexpected rewriting)
+- [ ] No `original` field on turns (because nothing changed)
+- [ ] Default view is Cleaned
+
+### Scenario 18.2 — Arabic Caller, STT Mis-Detection
+**Prerequisites:** Assistant `supportedLanguages` = ["en", "ar"], multilingual enabled.
+**Script:**
+> Speak a few sentences in Arabic (e.g., "مرحبا، أريد حجز موعد غدا")
+
+**Expected:**
+- [ ] Raw transcript may contain garbled Korean/Hindi characters (known Gemini Live issue)
+- [ ] Cleaned transcript shows the intended Arabic text
+- [ ] `original` field retains the garbled STT output for comparison
+- [ ] AI analysis summary is still sensible English
+- [ ] Raw/Cleaned toggle lets you compare both views
+
+### Scenario 18.3 — Mixed English + French
+**Prerequisites:** `supportedLanguages` = ["en", "fr"], multilingual enabled.
+**Script:**
+> Greet in English, then switch to French mid-call.
+
+**Expected:**
+- [ ] Cleaned turns preserve the language each turn was actually spoken in
+- [ ] No forced translation
+- [ ] `language` field populated on each turn when detectable
+- [ ] AI summary still in English (by design)
+
+### Scenario 18.4 — Very Short Call (<20 chars transcript)
+**Script:**
+> Pick up, say "wrong number", hang up.
+
+**Expected:**
+- [ ] `cleaned_transcript` is null (analysis skipped for short calls)
+- [ ] Dashboard falls back to Raw view automatically (toggle hidden)
+
+### Scenario 18.5 — Severe STT Garbage (Can't Recover)
+**Script:**
+> Whisper or mumble unintelligibly for 20+ seconds.
+
+**Expected:**
+- [ ] Post-call analysis either returns `cleaned_transcript: null` or best-effort garbage
+- [ ] No server crash, no pipeline failure
+- [ ] Dashboard degrades gracefully to Raw
+
+### Scenario 18.6 — Analysis Timeout / Failure
+**Prerequisites:** Temporarily kill OpenAI API key in env.
+**Script:**
+> Make a normal test call.
+
+**Expected:**
+- [ ] Raw transcript still saved
+- [ ] `cleaned_transcript` is null
+- [ ] Dashboard still renders Raw view
+- [ ] Sentry error logged for the missing key
+
+### Scenario 18.7 — Cleanup Truncation Doesn't Drop Structured Fields
+**Prerequisites:** Have a long, complex call (3+ minutes, multiple topics) that historically truncated `cleaned_transcript`.
+**Script:**
+> Place a long test call.
+
+**Expected:**
+- [ ] `calls.summary`, `caller_name`, `sentiment` are populated
+- [ ] `calls.cleaned_transcript` may be null if cleanup truncated
+- [ ] Sentry shows a separate `step: "cleanup"` exception WITHOUT a corresponding `step: "structured"` exception
+- [ ] Dashboard displays the structured fields normally and falls back to Raw transcript view
+
+---
+
+## SECTION 19: Multilingual + Correction + Escape Hatch (SCRUM-209 / SCRUM-216)
+
+Verifies the AI (1) auto-detects the caller's language without any per-assistant configuration, (2) honours corrections the caller makes to mis-heard data, and (3) falls back to a transfer-to-human or take-a-message escape hatch instead of looping forever on failed confirmations.
+
+Note: there is NO "Multilingual Support" toggle or language multi-select in the assistant settings anymore — SCRUM-216 removed them. The assistant is always multilingual and always auto-detects.
+
+### Scenario 19.1 — Auto-detect English (baseline)
+**Prerequisites:** Any assistant. Dashboard has no language setting to configure.
+
+**Script:**
+> Call in English. Greet with "Hi, I'd like to book an appointment."
+
+**Expected:**
+- [ ] AI greets in English and responds in English throughout
+- [ ] System prompt contains "You are multilingual. Auto-detect..." — NO "supportedLanguages" reference
+- [ ] Cleaned transcript shows every turn with `language: "en"`
+
+### Scenario 19.2 — Auto-detect Arabic
+**Script:**
+> Call and greet in Arabic: "مرحبا، أريد حجز موعد"
+
+**Expected:**
+- [ ] AI responds in Arabic from the first turn
+- [ ] No "I can only assist in English" refusal
+- [ ] Cleaned transcript turns labelled `language: "ar"` on user turns (at least)
+- [ ] AI's letter spellings (if any) use Arabic letter names — documented caveat, acceptable for now
+
+### Scenario 19.3 — Mid-call language switch
+**Script:**
+> Start in English ("Hi, I'm calling for an appointment"), switch to French mid-call ("Je voudrais changer l'heure"), then back to English.
+
+**Expected:**
+- [ ] AI switches to French when the caller switches
+- [ ] AI switches back to English on the third turn
+- [ ] No "please speak one language" complaints
+- [ ] Cleaned transcript turns labelled with the correct language per turn
+
+### Scenario 19.4 — Correction authority (the core bug fix)
+**Script:**
+> When the AI asks for your name and gets it wrong (e.g. hears "Michel" instead of "Michael"), correct it once: "No — it's Michael, with an 'a-e' in the middle." Continue the call normally. Let the AI use your name 3+ more times (confirmations, goodbye).
+
+**Expected:**
+- [ ] Immediately after the correction, the AI explicitly acknowledges the change ("Let me update that, Michael" or similar) — NOT silently re-confirming
+- [ ] Every subsequent reference to your name in the call uses the corrected version, NOT the mis-heard one
+- [ ] `calls.caller_name` in the DB at end of call matches the corrected name
+- [ ] Cleaned transcript's structured fields match the corrected name
+
+### Scenario 19.5 — Escape hatch WITH transfer available + office open
+**Prerequisites:** Assistant has `behaviors.transferToHuman = true`, at least one active transfer rule exists, and the business is currently within business hours.
+
+**Script:**
+> When asked for your email, deliberately say something the AI is likely to mishear. Correct it twice ("No, it's actually michael..."). After the second correction, DO NOT correct it a third time — wait for the AI's response.
+
+**Expected:**
+- [ ] After the second failed confirmation, the AI stops re-confirming
+- [ ] AI acknowledges the difficulty briefly ("I'm really sorry, I'm having trouble catching this") — it does NOT just silently retry
+- [ ] AI offers BOTH options in a single turn: "Would you like me to transfer you to a team member who can help right now, or would you prefer I take a message and have them call you back?" — it ASKS, it does NOT auto-transfer
+- [ ] If you pick transfer → `transfer_call` tool fires with the caller connected to the transfer target
+- [ ] If you pick message → `schedule_callback` tool fires with the name + phone + notes captured so far
+- [ ] If you say "just drop the email, forget about it" → AI respects the decision, confirms it won't use the email, and continues the call using the other info you already provided. Does NOT ask for the email again.
+- [ ] No 4th or 5th re-confirmation loop under any path
+
+### Scenario 19.6 — Escape hatch WITHOUT transfer (or after hours)
+**Prerequisites:** Either `behaviors.transferToHuman = false` OR no active transfer rules OR the business is currently after hours.
+
+**Script:**
+> Same as 19.5 — mis-hear-then-correct twice on the email field. Stop correcting after the second attempt.
+
+**Expected:**
+- [ ] AI stops re-confirming after the second failure
+- [ ] AI does NOT offer a transfer (because it's unavailable) — skips the two-option choice and goes directly to the message path
+- [ ] AI says something like "I'm sorry, I'm having trouble with this — let me take a message and someone will call you back to get the details right"
+- [ ] `schedule_callback` tool fires with the name + phone + notes captured so far
+- [ ] If you say "just drop the email, forget about it" → AI respects the decision and continues with the info already captured
+- [ ] The call ends cleanly, not in a confirmation loop
+
+---
+
 ## Scoring
 
 After running all scenarios, tally:
