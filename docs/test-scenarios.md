@@ -739,8 +739,10 @@ These scenarios verify that callers can request a specific practitioner and the 
 
 Verifies recordings are captured by the provider, posted to the Next.js webhook, stored in Supabase Storage, and played back via signed URL in the dashboard.
 
-### Scenario 17.1 — Telnyx Recording Round-Trip (Primary)
+### Scenario 17.1 — Telnyx Recording Round-Trip (Deferred)
 **Prerequisites:** Provisioned Telnyx number linked to an active assistant. Recording mode `auto` or `always` (NOT `never`). Call Control Application webhook URL set to `${APP_PUBLIC_URL}/api/webhooks/telnyx-recording-done`.
+
+> **Skip until Telnyx AU regulatory approval is re-started.** As of 2026-04-13 the telephony decision flipped to Twilio-primary for AU (see `telephony_provider_strategy.md`), so Telnyx is a dormant fallback. Run 17.2 instead — it exercises the same recording pipeline on the primary provider.
 
 **Script:**
 > Call the Telnyx number. Let the AI greet you. Have a ~30 second conversation. Hang up.
@@ -753,7 +755,7 @@ Verifies recordings are captured by the provider, posted to the Next.js webhook,
 - [ ] Dashboard call detail page renders an audio player (no auth prompt)
 - [ ] Signed URL in the `<audio src>` has a `?token=...` query string
 
-### Scenario 17.2 — Twilio Recording Round-Trip (Fallback)
+### Scenario 17.2 — Twilio Recording Round-Trip (Primary)
 **Prerequisites:** Twilio number with voice-server `/twiml` configured as voice URL. Org recording_consent_mode = `auto` or `always`.
 
 **Script:**
