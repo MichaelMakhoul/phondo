@@ -12,6 +12,8 @@ import { useToast } from "@/components/ui/use-toast";
 import { Phone } from "lucide-react";
 import { trackSignUp } from "@/lib/analytics";
 
+const SIGNUP_ENABLED = process.env.NEXT_PUBLIC_ENABLE_SIGNUP === "true";
+
 export default function SignupPage() {
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
@@ -20,6 +22,46 @@ export default function SignupPage() {
   const router = useRouter();
   const { toast } = useToast();
   const supabase = createClient();
+
+  if (!SIGNUP_ENABLED) {
+    return (
+      <div className="relative flex min-h-screen flex-col items-center justify-center bg-hero-gradient px-4">
+        <div className="absolute inset-0 bg-grid-pattern" />
+        <div className="relative w-full max-w-md">
+          <Link href="/" className="mb-8 flex items-center justify-center gap-2">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-orange-500">
+              <Phone className="h-5 w-5 text-white" />
+            </div>
+            <span className="text-2xl font-bold text-white">Phondo</span>
+          </Link>
+          <Card className="w-full">
+            <CardHeader className="text-center">
+              <CardTitle className="text-2xl">Phondo is in private beta</CardTitle>
+              <CardDescription>
+                We&apos;re onboarding customers one at a time while we finish polishing the platform. Drop us a line and we&apos;ll add you to the early-access list.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Button
+                asChild
+                className="w-full bg-orange-500 text-white hover:bg-orange-600"
+              >
+                <a href="mailto:hello@phondo.ai?subject=Phondo%20Early%20Access%20Request">
+                  Request early access
+                </a>
+              </Button>
+            </CardContent>
+            <CardFooter className="justify-center text-center text-sm text-muted-foreground">
+              Already have an account?{" "}
+              <Link href="/login" className="ml-1 text-orange-500 hover:underline">
+                Sign in
+              </Link>
+            </CardFooter>
+          </Card>
+        </div>
+      </div>
+    );
+  }
 
   const handleEmailSignup = async (e: React.FormEvent) => {
     e.preventDefault();

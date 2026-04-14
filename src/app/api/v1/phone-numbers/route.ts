@@ -70,6 +70,17 @@ export async function GET() {
 // POST /api/v1/phone-numbers - Provision a new phone number (purchased or forwarded)
 export async function POST(request: Request) {
   try {
+    // Pre-launch kill switch: hard-block real carrier purchases. Default closed.
+    if (process.env.PROVISIONING_ENABLED !== "true") {
+      return NextResponse.json(
+        {
+          error: "Phone number provisioning is temporarily unavailable. Please contact hello@phondo.ai for early access.",
+          code: "PROVISIONING_DISABLED",
+        },
+        { status: 503 }
+      );
+    }
+
     const supabase = await createClient();
     const { data: { user } } = await supabase.auth.getUser();
 
