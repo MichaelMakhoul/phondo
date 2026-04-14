@@ -954,10 +954,12 @@ Note: there is NO "Multilingual Support" toggle or language multi-select in the 
 
 **Expected:**
 - [ ] After the second failed confirmation, the AI stops re-confirming
-- [ ] AI says something like "I'm having trouble catching this. Would you like me to transfer you to a team member who can help?" — it ASKS, it does NOT transfer immediately
-- [ ] If you say "yes" → `transfer_call` tool fires with the caller connected to the transfer target
-- [ ] If you say "no" → the AI falls through to path (b) and offers to take a message
-- [ ] No 4th or 5th re-confirmation loop
+- [ ] AI acknowledges the difficulty briefly ("I'm really sorry, I'm having trouble catching this") — it does NOT just silently retry
+- [ ] AI offers BOTH options in a single turn: "Would you like me to transfer you to a team member who can help right now, or would you prefer I take a message and have them call you back?" — it ASKS, it does NOT auto-transfer
+- [ ] If you pick transfer → `transfer_call` tool fires with the caller connected to the transfer target
+- [ ] If you pick message → `schedule_callback` tool fires with the name + phone + notes captured so far
+- [ ] If you say "just drop the email, forget about it" → AI respects the decision, confirms it won't use the email, and continues the call using the other info you already provided. Does NOT ask for the email again.
+- [ ] No 4th or 5th re-confirmation loop under any path
 
 ### Scenario 19.6 — Escape hatch WITHOUT transfer (or after hours)
 **Prerequisites:** Either `behaviors.transferToHuman = false` OR no active transfer rules OR the business is currently after hours.
@@ -967,9 +969,10 @@ Note: there is NO "Multilingual Support" toggle or language multi-select in the 
 
 **Expected:**
 - [ ] AI stops re-confirming after the second failure
-- [ ] AI does NOT offer a transfer (because it's unavailable)
-- [ ] AI says something like "I'm having trouble catching this — let me take a message and someone will call you back"
+- [ ] AI does NOT offer a transfer (because it's unavailable) — skips the two-option choice and goes directly to the message path
+- [ ] AI says something like "I'm sorry, I'm having trouble with this — let me take a message and someone will call you back to get the details right"
 - [ ] `schedule_callback` tool fires with the name + phone + notes captured so far
+- [ ] If you say "just drop the email, forget about it" → AI respects the decision and continues with the info already captured
 - [ ] The call ends cleanly, not in a confirmation loop
 
 ---
