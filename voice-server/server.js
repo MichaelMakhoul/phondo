@@ -801,6 +801,68 @@ app.post("/cache/invalidate", (req, res) => {
   res.json({ success: true });
 });
 
+// Voice preview endpoint — synthesises a short sample via Deepgram Aura and
+// streams MP3 back to the caller. Used by the assistant-builder UI to preview
+// voices. Replaces the old ElevenLabs path that was returning 402 (quota
+// exhausted). Deepgram is already the fallback TTS engine for the voice
+// pipeline, so we reuse the same voice mapping and API key.
+app.post("/preview", async (req, res) => {
+  const secret = req.headers["x-internal-secret"];
+  if (!secret || secret !== process.env.INTERNAL_API_SECRET) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  const { voiceId, text } = req.body || {};
+  if (!voiceId || typeof voiceId !== "string") {
+    return res.status(400).json({ error: "voiceId (string) required" });
+  }
+  if (!text || typeof text !== "string") {
+    return res.status(400).json({ error: "text (string) required" });
+  }
+  if (text.length > 500) {
+    return res.status(400).json({ error: "text must be 500 chars or fewer" });
+  }
+
+  const deepgramVoice = getDeepgramVoice(voiceId);
+  const apiKey = process.env.DEEPGRAM_API_KEY;
+  if (!apiKey) {
+    console.error("[preview] DEEPGRAM_API_KEY not set");
+    return res.status(503).json({ error: "Voice preview is not configured on the server." });
+  }
+
+  try {
+    const dgRes = await fetch(
+      `https://api.deepgram.com/v1/speak?model=${encodeURIComponent(deepgramVoice)}`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Token ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ text }),
+      }
+    );
+
+    if (!dgRes.ok) {
+      const errText = await dgRes.text().catch(() => "");
+      console.error(`[preview] Deepgram ${dgRes.status} for voice=${deepgramVoice}: ${errText.slice(0, 200)}`);
+      return res.status(502).json({ error: "Voice preview generation failed" });
+    }
+
+    const audioBuffer = Buffer.from(await dgRes.arrayBuffer());
+    res.setHeader("Content-Type", "audio/mpeg");
+    res.setHeader("Content-Length", audioBuffer.length.toString());
+    res.setHeader("Cache-Control", "private, max-age=3600");
+    res.send(audioBuffer);
+  } catch (err) {
+    console.error("[preview] exception:", err);
+    Sentry.captureException(err);
+    if (!res.headersSent) {
+      res.status(500).json({ error: "Internal error generating voice preview" });
+    }
+  }
+});
+
 // Sentry Express error handler — captures unhandled route errors
 app.use((err, req, res, _next) => {
   Sentry.captureException(err);
