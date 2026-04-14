@@ -406,12 +406,34 @@ export default function OnboardingPage() {
         if (!phoneRes.ok) {
           const phoneErr = await phoneRes.json().catch(() => ({}));
           console.error("Phone number provisioning failed:", phoneErr);
-          // Non-fatal — user can buy a number from the dashboard later
+
+          // PROVISIONING_DISABLED is the pre-launch kill switch. Block advancement
+          // entirely and surface a clear blocking error — never advance to the
+          // "You're Live!" celebration screen with a trial subscription created
+          // but no phone number behind it.
+          if (phoneRes.status === 503 && phoneErr?.code === "PROVISIONING_DISABLED") {
+            toast({
+              variant: "destructive",
+              title: "We're in private beta",
+              description:
+                "Phondo isn't accepting new signups just yet. Drop us a line at hello@phondo.ai and we'll get you early access.",
+            });
+            setIsCompleting(false);
+            return;
+          }
+
+          // Any other provisioning failure: also block advancement so the user
+          // doesn't land in a half-configured state where they have a live
+          // subscription but no phone number.
           toast({
-            title: "Phone number setup incomplete",
-            description: "We couldn't provision your number. You can add one from the dashboard.",
             variant: "destructive",
+            title: "Phone number setup failed",
+            description:
+              phoneErr?.error ||
+              "We couldn't provision your number. Please try again in a moment or contact support.",
           });
+          setIsCompleting(false);
+          return;
         }
       }
 

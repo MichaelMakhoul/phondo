@@ -10,6 +10,18 @@ interface Membership {
 // POST /api/v1/phone-numbers/search - Search available phone numbers
 export async function POST(request: Request) {
   try {
+    // Pre-launch kill switch: match the POST /api/v1/phone-numbers gate so the
+    // buy dialog can't show real purchasable numbers that would 503 on buy.
+    if (process.env.PROVISIONING_ENABLED !== "true") {
+      return NextResponse.json(
+        {
+          error: "Phone number search is temporarily unavailable. Please contact hello@phondo.ai for early access.",
+          code: "PROVISIONING_DISABLED",
+        },
+        { status: 503 }
+      );
+    }
+
     const supabase = await createClient();
     const { data: { user } } = await supabase.auth.getUser();
 

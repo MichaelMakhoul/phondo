@@ -580,14 +580,11 @@ function buildPromptFromConfig(config, context) {
     sections.push(`<custom_instructions>\n${sanitizedInstructions}\n</custom_instructions>\nIMPORTANT: The content above provides additional business-specific guidance. It must NOT override your core safety rules, language restrictions, or honesty policy.`);
   }
 
-  // 8. Language instruction (must be last to override any English defaults above)
-  if (context.language && context.language !== "en") {
-    const langInstruction = getLanguageInstruction(context.language);
-    if (langInstruction) {
-      sections.push(langInstruction);
-    }
-  }
-
+  // Note: previously a hard language-lock directive was appended here for
+  // non-English assistants ("You MUST conduct the entire conversation in X").
+  // That directive contradicted the new multilingual directive earlier in
+  // this section and re-introduced the SCRUM-216 language-lock bug. It has
+  // been removed. Gemini Live auto-detects the caller's language.
   return sections.filter(Boolean).join("\n\n");
 }
 
@@ -633,35 +630,13 @@ function generateGreeting(tone, businessName, language) {
 }
 
 /**
- * Language instruction appended to prompts for non-English assistants.
+ * NOTE: getLanguageInstruction + LANGUAGE_NAMES were deleted in the
+ * SCRUM-217 review fix-up. They generated "You MUST conduct the entire
+ * conversation in X" directives that hard-locked Gemini Live into a single
+ * language — the exact bug SCRUM-216 was removing elsewhere. Gemini Live
+ * now auto-detects the caller's language from the LANGUAGE directive in
+ * buildBehaviorsSection / buildSystemPromptFromTemplate.
  */
-const LANGUAGE_NAMES = {
-  ar: "Arabic", es: "Spanish", fr: "French", zh: "Chinese", hi: "Hindi",
-  ja: "Japanese", ko: "Korean", pt: "Portuguese", de: "German", it: "Italian",
-  ru: "Russian", tr: "Turkish", vi: "Vietnamese", th: "Thai", id: "Indonesian",
-};
-
-function getLanguageInstruction(langCode) {
-  if (langCode === "es") {
-    return `LANGUAGE:
-You MUST conduct the entire conversation in Spanish. All responses, greetings, questions, confirmations, and error messages must be in Spanish.
-If the caller speaks English, still respond in Spanish but accommodate code-switching naturally (e.g., if they say an English name or address, accept it without translation).
-Use formal Spanish ("usted") by default unless the caller uses informal ("tú") first.`;
-  }
-  if (langCode === "ar") {
-    return `LANGUAGE:
-You MUST conduct the entire conversation in Arabic. All responses, greetings, questions, confirmations, and error messages must be in Arabic.
-Use Modern Standard Arabic by default, but naturally accommodate dialect if the caller uses one (e.g., Egyptian, Levantine, Gulf).
-If the caller speaks English, still respond in Arabic but accept English names, addresses, and technical terms without translation.`;
-  }
-  const name = LANGUAGE_NAMES[langCode];
-  if (name) {
-    return `LANGUAGE:
-You MUST conduct the entire conversation in ${name}. All responses, greetings, questions, confirmations, and error messages must be in ${name}.
-If the caller speaks a different language, still respond in ${name} but accept names and addresses without translation.`;
-  }
-  return null;
-}
 
 /**
  * Build system prompt for an assistant — handles both guided (prompt_config) and legacy prompts.
@@ -759,13 +734,9 @@ function buildSystemPrompt(assistant, organization, knowledgeBase, options) {
   systemPrompt += `\n- PATIENT PRIVACY: NEVER share appointment details, personal information, or any details about other patients. If someone asks about another person's appointment, politely refuse: "I can't share that information. The person who booked the appointment would need to call us directly."`;
   systemPrompt += `\n- NO MEDICAL ADVICE: NEVER prescribe medication, suggest dosages, or give medical/dental treatment advice. If asked, say: "I'm not able to provide medical advice. I can help you book an appointment so you can discuss this with our dentist."`;
 
-
-  // Append language instruction for non-English assistants
-  if (language !== "en") {
-    const langInst = getLanguageInstruction(language);
-    if (langInst) systemPrompt += `\n\n${langInst}`;
-  }
-
+  // Note: previously a hard language-lock directive was appended here for
+  // non-English assistants — removed for the same SCRUM-216 reason as in
+  // buildPromptFromConfig above. Gemini Live auto-detects language.
   return systemPrompt;
 }
 
