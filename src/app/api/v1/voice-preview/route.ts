@@ -83,18 +83,31 @@ export async function POST(request: Request) {
       console.error(
         `[voice-preview] voice-server ${upstream.status} for voice=${voiceId}: ${JSON.stringify(errorPayload).slice(0, 200)}`
       );
+
+      // Pass 429 through unchanged so the browser can surface a "try again" UI.
+      // Pass other 4xx through as-is. Remap 5xx to 502.
+      const forwardStatus =
+        upstream.status === 429 || (upstream.status >= 400 && upstream.status < 500)
+          ? upstream.status
+          : 502;
+
+      const responseHeaders: Record<string, string> = {};
+      const retryAfter = upstream.headers.get("retry-after");
+      if (retryAfter) responseHeaders["Retry-After"] = retryAfter;
+
       return NextResponse.json(
         { error: errorPayload?.error || "Failed to generate voice preview" },
-        { status: upstream.status >= 500 ? 502 : upstream.status }
+        { status: forwardStatus, headers: responseHeaders }
       );
     }
 
     const audioBuffer = await upstream.arrayBuffer();
+    const upstreamContentType = upstream.headers.get("content-type") || "audio/wav";
 
     return new NextResponse(audioBuffer, {
       status: 200,
       headers: {
-        "Content-Type": "audio/mpeg",
+        "Content-Type": upstreamContentType,
         "Content-Length": audioBuffer.byteLength.toString(),
         "Cache-Control": "private, max-age=3600",
       },
