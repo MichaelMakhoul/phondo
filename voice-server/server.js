@@ -801,11 +801,39 @@ app.post("/cache/invalidate", (req, res) => {
   res.json({ success: true });
 });
 
-// Voice preview endpoint — synthesises a short sample via Deepgram Aura and
-// streams MP3 back to the caller. Used by the assistant-builder UI to preview
-// voices. Replaces the old ElevenLabs path that was returning 402 (quota
-// exhausted). Deepgram is already the fallback TTS engine for the voice
-// pipeline, so we reuse the same voice mapping and API key.
+/**
+ * Build a minimal WAV container around a raw PCM buffer.
+ * Gemini TTS returns PCM at 24kHz mono 16-bit — we need to wrap it in a WAV
+ * header so the browser's <audio> element can play it directly.
+ */
+function pcmToWav(pcmBuffer, { sampleRate = 24000, channels = 1, bitsPerSample = 16 } = {}) {
+  const byteRate = sampleRate * channels * (bitsPerSample / 8);
+  const blockAlign = channels * (bitsPerSample / 8);
+  const dataSize = pcmBuffer.length;
+  const fileSize = 36 + dataSize;
+
+  const header = Buffer.alloc(44);
+  header.write("RIFF", 0);
+  header.writeUInt32LE(fileSize, 4);
+  header.write("WAVE", 8);
+  header.write("fmt ", 12);
+  header.writeUInt32LE(16, 16); // PCM chunk size
+  header.writeUInt16LE(1, 20); // PCM format
+  header.writeUInt16LE(channels, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(byteRate, 28);
+  header.writeUInt16LE(blockAlign, 32);
+  header.writeUInt16LE(bitsPerSample, 34);
+  header.write("data", 36);
+  header.writeUInt32LE(dataSize, 40);
+  return Buffer.concat([header, pcmBuffer]);
+}
+
+// Voice preview endpoint — synthesises a short sample using the SAME Gemini
+// Live voices the production pipeline uses, so what the user hears in the
+// preview is what callers hear on a real call. Uses Gemini TTS
+// (gemini-2.5-flash-preview-tts), which returns base64 PCM at 24kHz mono —
+// we wrap it in a WAV container for browser playback.
 app.post("/preview", async (req, res) => {
   const secret = req.headers["x-internal-secret"];
   if (!secret || secret !== process.env.INTERNAL_API_SECRET) {
@@ -823,37 +851,57 @@ app.post("/preview", async (req, res) => {
     return res.status(400).json({ error: "text must be 500 chars or fewer" });
   }
 
-  const deepgramVoice = getDeepgramVoice(voiceId);
-  const apiKey = process.env.DEEPGRAM_API_KEY;
+  const geminiVoice = getGeminiVoice(voiceId);
+  const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    console.error("[preview] DEEPGRAM_API_KEY not set");
+    console.error("[preview] GEMINI_API_KEY not set");
     return res.status(503).json({ error: "Voice preview is not configured on the server." });
   }
 
   try {
-    const dgRes = await fetch(
-      `https://api.deepgram.com/v1/speak?model=${encodeURIComponent(deepgramVoice)}`,
+    const geminiRes = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${encodeURIComponent(apiKey)}`,
       {
         method: "POST",
-        headers: {
-          Authorization: `Token ${apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ text }),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text }] }],
+          generationConfig: {
+            responseModalities: ["AUDIO"],
+            speechConfig: {
+              voiceConfig: {
+                prebuiltVoiceConfig: { voiceName: geminiVoice },
+              },
+            },
+          },
+        }),
       }
     );
 
-    if (!dgRes.ok) {
-      const errText = await dgRes.text().catch(() => "");
-      console.error(`[preview] Deepgram ${dgRes.status} for voice=${deepgramVoice}: ${errText.slice(0, 200)}`);
+    if (!geminiRes.ok) {
+      const errText = await geminiRes.text().catch(() => "");
+      console.error(
+        `[preview] Gemini TTS ${geminiRes.status} for voice=${geminiVoice}: ${errText.slice(0, 300)}`
+      );
       return res.status(502).json({ error: "Voice preview generation failed" });
     }
 
-    const audioBuffer = Buffer.from(await dgRes.arrayBuffer());
-    res.setHeader("Content-Type", "audio/mpeg");
-    res.setHeader("Content-Length", audioBuffer.length.toString());
+    const payload = await geminiRes.json();
+    const audioPart = payload?.candidates?.[0]?.content?.parts?.find(
+      (p) => p?.inlineData?.data
+    );
+    if (!audioPart) {
+      console.error("[preview] Gemini TTS returned no audio part:", JSON.stringify(payload).slice(0, 500));
+      return res.status(502).json({ error: "Voice preview generation failed (no audio in response)" });
+    }
+
+    const pcmBuffer = Buffer.from(audioPart.inlineData.data, "base64");
+    const wavBuffer = pcmToWav(pcmBuffer, { sampleRate: 24000, channels: 1, bitsPerSample: 16 });
+
+    res.setHeader("Content-Type", "audio/wav");
+    res.setHeader("Content-Length", wavBuffer.length.toString());
     res.setHeader("Cache-Control", "private, max-age=3600");
-    res.send(audioBuffer);
+    res.send(wavBuffer);
   } catch (err) {
     console.error("[preview] exception:", err);
     Sentry.captureException(err);
