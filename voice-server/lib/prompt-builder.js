@@ -960,8 +960,10 @@ function buildLiveScheduleSection(snapshot, todayStr) {
   const currentTime = getCurrentTimeFormatted(timezone);
   const lines = [];
 
-  lines.push("LIVE SCHEDULE (pre-loaded, use this instead of calling check_availability for listed dates):");
+  lines.push("LIVE SCHEDULE (pre-loaded AGGREGATE availability — sum across ALL practitioners):");
   lines.push(`Current date: ${todayStr}, Current time: ${currentTime} (${timezone})`);
+  lines.push("");
+  lines.push("⚠️ IMPORTANT: the times below are AGGREGATE (any-practitioner). If a caller asks for a SPECIFIC practitioner by name, DO NOT use these times. Instead, call `check_availability` with `practitioner_id` set to that practitioner's ID from the PRACTITIONERS ON STAFF list below — this is the ONLY way to see slots that respect that practitioner's personal blocked times (days off, lunch breaks, etc.). Booking with practitioner_id on a day they're blocked WILL fail.");
   lines.push("");
 
   // First 2 dates get detailed slot times
