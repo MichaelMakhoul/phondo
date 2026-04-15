@@ -164,8 +164,11 @@ export async function POST(request: NextRequest) {
     }
 
     // SCRUM-245: invalidate voice-server schedule cache so any in-flight
-    // or next calls see the new booking instead of stale slots.
-    await invalidateVoiceScheduleCache(orgId);
+    // or next calls see the new booking instead of stale slots. Fire-and-forget
+    // — must not block the dashboard response on a flaky internal HTTP call.
+    invalidateVoiceScheduleCache(orgId).catch((err) => {
+      console.error("[appointments POST] cache invalidation failed (non-fatal):", err);
+    });
 
     return NextResponse.json(appointment, { status: 201 });
   } catch (err: unknown) {

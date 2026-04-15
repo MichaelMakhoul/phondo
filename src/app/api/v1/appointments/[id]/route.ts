@@ -172,8 +172,11 @@ export async function PATCH(
     }
 
     // SCRUM-245: invalidate voice-server schedule cache so reschedules and
-    // status/practitioner changes show up on the next call.
-    await invalidateVoiceScheduleCache(orgId);
+    // status/practitioner changes show up on the next call. Fire-and-forget
+    // — must not block the dashboard response on a flaky internal HTTP call.
+    invalidateVoiceScheduleCache(orgId).catch((err) => {
+      console.error("[appointments PATCH] cache invalidation failed (non-fatal):", err);
+    });
 
     return NextResponse.json(updated);
   } catch (err: unknown) {
@@ -209,8 +212,11 @@ export async function DELETE(
     if (error) throw error;
 
     // SCRUM-245: invalidate voice-server schedule cache so the cancelled
-    // slot reopens immediately for in-flight or next calls.
-    await invalidateVoiceScheduleCache(orgId);
+    // slot reopens immediately for in-flight or next calls. Fire-and-forget
+    // — must not block the dashboard response on a flaky internal HTTP call.
+    invalidateVoiceScheduleCache(orgId).catch((err) => {
+      console.error("[appointments DELETE] cache invalidation failed (non-fatal):", err);
+    });
 
     return NextResponse.json({ success: true });
   } catch (err: unknown) {

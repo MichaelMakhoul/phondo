@@ -1,4 +1,3 @@
-import { NextResponse } from "next/server";
 import Twilio from "twilio";
 import * as Sentry from "@sentry/nextjs";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -41,8 +40,16 @@ export async function POST(request: Request) {
 
     const isValid = Twilio.validateRequest(twilioAuthToken, signature, url, params);
     if (!isValid) {
-      console.warn("[TwilioSMSStatus] Invalid Twilio signature — rejecting");
-      return NextResponse.json({ error: "Invalid signature" }, { status: 403 });
+      // Don't return 4xx — Twilio retries on errors and we don't want a
+      // bad-signature flood to cause a retry storm. Log + Sentry alert and
+      // ack with empty TwiML so the provider stops retrying.
+      console.warn("[TwilioSMSStatus] Invalid Twilio signature — silently dropping");
+      Sentry.withScope((scope) => {
+        scope.setTag("service", "twilio-sms-status");
+        scope.setTag("reason", "invalid_signature");
+        Sentry.captureMessage("Twilio SMS status webhook signature invalid", "warning");
+      });
+      return emptyTwiml(200);
     }
 
     // 2. Parse Twilio payload
@@ -91,6 +98,19 @@ export async function POST(request: Request) {
       // Could be a textback SMS (not a booking confirmation) or a stale SID we don't track.
       // Log at info level — not an error.
       console.log(`[TwilioSMSStatus] No matching confirmation row for ${messageSid} (may be textback or untracked SMS)`);
+      return emptyTwiml(200);
+    }
+
+    // 4a. Idempotency + lifecycle regression guard.
+    //     Twilio re-fires callbacks; ignore duplicates (status already there)
+    //     and never regress (e.g., delivered → sent shouldn't happen but guard anyway).
+    if (confirmation.status === nextStatus) {
+      return emptyTwiml(200);
+    }
+    if (statusRank(confirmation.status) > statusRank(nextStatus)) {
+      console.log(
+        `[TwilioSMSStatus] Skipping regression for ${messageSid}: ${confirmation.status} → ${nextStatus}`
+      );
       return emptyTwiml(200);
     }
 
@@ -160,4 +180,22 @@ function emptyTwiml(status: number) {
     status,
     headers: { "Content-Type": "text/xml" },
   });
+}
+
+// Higher rank = further along the lifecycle. Used to block regressions when
+// Twilio re-fires an earlier callback after we've already advanced the row.
+function statusRank(status: string): number {
+  switch (status) {
+    case "pending": return 0;
+    case "sent": return 1;
+    case "delivered":
+    case "undelivered":
+    case "failed":
+    case "opted_out":
+    case "skipped_cap":
+    case "skipped_no_contact":
+    case "skipped_disabled":
+      return 2;
+    default: return 0;
+  }
 }

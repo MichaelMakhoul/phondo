@@ -10,12 +10,16 @@
  * Sends from the org's Twilio number (caller recognizes it).
  */
 
+import * as Sentry from "@sentry/nextjs";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getNotificationPreferences } from "@/lib/notifications/notification-service";
 import { getTwilioClient } from "@/lib/twilio/client";
 import { hasFeatureAccess } from "@/lib/stripe/billing-service";
 
-type MessageType = "missed_call_textback" | "appointment_confirmation";
+type MessageType =
+  | "missed_call_textback"
+  | "appointment_confirmation"
+  | "appointment_cancellation";
 
 type SMSStatus = "sent" | "skipped" | "blocked_plan" | "blocked_spam" | "blocked_optout" | "blocked_ratelimit" | "failed";
 
@@ -169,16 +173,24 @@ async function sendSmsViaProvider(
 // SCRUM-240 Phase 1: optional appointment tracking for confirmation/cancellation SMS.
 // When these are provided, a row is written to `appointment_confirmations` so
 // the Twilio status webhook can update delivery state.
+//
+// `intent` separates confirmation vs cancellation rows for the same appointment
+// so they don't collide on idempotency_key. Each intent gets its own row.
 interface AppointmentContext {
   appointmentId: string;
   appointmentStartTime: string | Date;
   channel: "sms" | "email";
+  intent: "confirmation" | "cancellation";
 }
 
 async function checkOrgConfirmationEnabled(orgId: string): Promise<boolean> {
   // Org-level opt-out gate: organizations.send_customer_confirmations (default TRUE).
   // Returns true if enabled (default), false if the business disabled it.
-  // Fail-open on DB error — missing column means pre-migration schema.
+  //
+  // Failure modes:
+  //  - 42703 (column missing) → pre-migration schema, fail OPEN (default behavior is on)
+  //  - any other error        → fail CLOSED. Without a confident read of the toggle
+  //                             we shouldn't risk SMS-ing a business that disabled it.
   const supabase = createAdminClient();
   const { data, error } = await (supabase as any)
     .from("organizations")
@@ -186,11 +198,22 @@ async function checkOrgConfirmationEnabled(orgId: string): Promise<boolean> {
     .eq("id", orgId)
     .maybeSingle();
   if (error) {
-    console.warn("[CallerSMS] Failed to read send_customer_confirmations, failing open:", {
+    if (error.code === "42703") {
+      console.warn("[CallerSMS] send_customer_confirmations column missing — defaulting to enabled (pre-migration)");
+      return true;
+    }
+    console.error("[CallerSMS] Failed to read send_customer_confirmations — failing CLOSED:", {
       orgId,
-      error: error.message,
+      code: error.code,
+      message: error.message,
     });
-    return true;
+    Sentry.withScope((scope) => {
+      scope.setTag("service", "caller-sms");
+      scope.setTag("reason", "org_toggle_read_failed");
+      scope.setExtras({ orgId, code: error.code });
+      Sentry.captureException(error);
+    });
+    return false;
   }
   return data?.send_customer_confirmations !== false;
 }
@@ -200,6 +223,7 @@ async function upsertAppointmentConfirmation(params: {
   appointmentId: string;
   appointmentStartTime: string | Date;
   channel: "sms" | "email";
+  intent: "confirmation" | "cancellation";
   recipient: string;
   status: "sent" | "failed" | "opted_out" | "skipped_cap" | "skipped_disabled";
   providerMessageId?: string | null;
@@ -209,7 +233,11 @@ async function upsertAppointmentConfirmation(params: {
     params.appointmentStartTime instanceof Date
       ? params.appointmentStartTime.toISOString()
       : params.appointmentStartTime;
-  const idempotencyKey = `${params.appointmentId}:${params.channel}:${startIso}`;
+  // SCRUM-247: include `intent` so confirmation and cancellation rows for the
+  // same appointment get separate rows (otherwise a cancellation upsert would
+  // overwrite the confirmation row's provider_message_id, breaking delivery
+  // tracking for the original confirmation).
+  const idempotencyKey = `${params.appointmentId}:${params.channel}:${params.intent}:${startIso}`;
   const now = new Date().toISOString();
 
   const supabase = createAdminClient();
@@ -234,7 +262,20 @@ async function upsertAppointmentConfirmation(params: {
   if (error) {
     console.error("[CallerSMS] Failed to upsert appointment_confirmations:", {
       appointmentId: params.appointmentId,
+      intent: params.intent,
+      status: params.status,
       error: error.message,
+    });
+    Sentry.withScope((scope) => {
+      scope.setTag("service", "caller-sms");
+      scope.setTag("reason", "confirmation_upsert_failed");
+      scope.setExtras({
+        appointmentId: params.appointmentId,
+        intent: params.intent,
+        status: params.status,
+        idempotencyKey,
+      });
+      Sentry.captureException(error);
     });
     // Non-fatal — SMS was (maybe) sent even if we can't track it
   }
@@ -250,9 +291,12 @@ async function sendCallerSMS(params: {
 }): Promise<SMSSendResult> {
   const { orgId, callerPhone, messageType, messageBody, isSpam, appointment } = params;
 
-  // 0. Org-level opt-out (SCRUM-240 Phase 1) — only applies to appointment_confirmation,
-  //    missed-call textback stays on its own feature toggle.
-  if (messageType === "appointment_confirmation") {
+  // 0. Org-level opt-out (SCRUM-240 Phase 1) — applies to both confirmation and
+  //    cancellation messages. If the business turned off customer SMS we honor it.
+  //    Missed-call textback stays on its own feature toggle.
+  const isAppointmentMessage =
+    messageType === "appointment_confirmation" || messageType === "appointment_cancellation";
+  if (isAppointmentMessage) {
     const orgEnabled = await checkOrgConfirmationEnabled(orgId);
     if (!orgEnabled) {
       if (appointment) {
@@ -261,6 +305,7 @@ async function sendCallerSMS(params: {
           appointmentId: appointment.appointmentId,
           appointmentStartTime: appointment.appointmentStartTime,
           channel: "sms",
+          intent: appointment.intent,
           recipient: callerPhone,
           status: "skipped_disabled",
         });
@@ -269,8 +314,10 @@ async function sendCallerSMS(params: {
     }
   }
 
-  // 1. Check feature toggle
+  // 1. Check feature toggle (per-user notification_preferences toggle)
   const prefs = await getNotificationPreferences(orgId);
+  // Both confirmation and cancellation share the same per-user toggle —
+  // turning off "appointment confirmations" turns off both.
   const toggleKey =
     messageType === "missed_call_textback"
       ? "sms_textback_on_missed_call"
@@ -283,6 +330,7 @@ async function sendCallerSMS(params: {
         appointmentId: appointment.appointmentId,
         appointmentStartTime: appointment.appointmentStartTime,
         channel: "sms",
+        intent: appointment.intent,
         recipient: callerPhone,
         status: "skipped_disabled",
       });
@@ -324,6 +372,7 @@ async function sendCallerSMS(params: {
         appointmentId: appointment.appointmentId,
         appointmentStartTime: appointment.appointmentStartTime,
         channel: "sms",
+        intent: appointment.intent,
         recipient: callerPhone,
         status: "opted_out",
       });
@@ -347,6 +396,7 @@ async function sendCallerSMS(params: {
         appointmentId: appointment.appointmentId,
         appointmentStartTime: appointment.appointmentStartTime,
         channel: "sms",
+        intent: appointment.intent,
         recipient: callerPhone,
         status: "skipped_cap",
       });
@@ -379,6 +429,7 @@ async function sendCallerSMS(params: {
         appointmentId: appointment.appointmentId,
         appointmentStartTime: appointment.appointmentStartTime,
         channel: "sms",
+        intent: appointment.intent,
         recipient: callerPhone,
         status: "sent",
         providerMessageId: sid,
@@ -402,6 +453,7 @@ async function sendCallerSMS(params: {
         appointmentId: appointment.appointmentId,
         appointmentStartTime: appointment.appointmentStartTime,
         channel: "sms",
+        intent: appointment.intent,
         recipient: callerPhone,
         status: "failed",
         errorMessage: err.message,
@@ -511,7 +563,12 @@ export async function sendAppointmentConfirmationSMS(
     messageType: "appointment_confirmation",
     messageBody: message,
     appointment: appointmentId
-      ? { appointmentId, appointmentStartTime: startTime, channel: "sms" }
+      ? {
+          appointmentId,
+          appointmentStartTime: startTime,
+          channel: "sms",
+          intent: "confirmation",
+        }
       : undefined,
   });
 }
@@ -519,6 +576,11 @@ export async function sendAppointmentConfirmationSMS(
 /**
  * SCRUM-240 Phase 1: send a cancellation SMS when an appointment is cancelled
  * via cancel_appointment tool. User decided we should send one.
+ *
+ * SCRUM-247: uses its own `appointment_cancellation` message type so the rate
+ * limit bucket is independent from the booking confirmation. Without this,
+ * a caller who books and immediately cancels gets blocked from the cancellation
+ * SMS for an hour because the confirmation already filled the bucket.
  */
 export async function sendCancellationSMS(
   orgId: string,
@@ -561,10 +623,15 @@ export async function sendCancellationSMS(
   return sendCallerSMS({
     orgId,
     callerPhone,
-    messageType: "appointment_confirmation", // reuse the same rate limit bucket
+    messageType: "appointment_cancellation",
     messageBody: message,
     appointment: appointmentId
-      ? { appointmentId, appointmentStartTime: startTime, channel: "sms" }
+      ? {
+          appointmentId,
+          appointmentStartTime: startTime,
+          channel: "sms",
+          intent: "cancellation",
+        }
       : undefined,
   });
 }
