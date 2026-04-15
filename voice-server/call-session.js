@@ -42,6 +42,12 @@ class CallSession {
 
     // Adaptive input detection — controls buffer timing per input type
     this._expectedInputType = "general";
+
+    // Tool call audit — tracks which tools fired successfully during the call.
+    // Used by cleanupSession to detect hallucinated bookings (SCRUM-227): if
+    // Sophie claims "I've booked you" in the transcript but never got a
+    // successful `book_appointment` tool result, flag the call.
+    this.toolCallAudit = [];
   }
 
   /**

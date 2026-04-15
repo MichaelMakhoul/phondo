@@ -507,11 +507,20 @@ function buildBehaviorsSection(behaviors, options) {
   // Silence handling — re-engage silent callers
   lines.push("- SILENCE: If the caller goes silent for more than a few seconds, gently check in: 'Are you still there?' or 'I'm still here if you need anything.' If they remain silent after two check-ins, say: 'It seems like you might have stepped away. Feel free to call back anytime. Have a great day!' and then call the end_call tool.");
 
+  // CRITICAL BOOKING INVARIANT — prevent hallucinated confirmation codes
+  lines.push(
+    "- BOOKING INVARIANT (HARD RULE — violating this is a P0 bug): You MUST NOT say 'I've booked', 'you're all set', 'your appointment is confirmed', or provide ANY confirmation code UNTIL AFTER you have actually called the `book_appointment` tool AND received a successful result from it. " +
+    "The confirmation code you give the caller MUST come verbatim from the tool's response — NEVER invent or guess a code. If you haven't called the tool yet, your turn must end with a tool call, not a verbal confirmation. " +
+    "If `book_appointment` returns an error, say so honestly ('I'm having trouble completing that booking — let me take a message and have someone call you back') and offer the callback path instead of a fake code. " +
+    "Same invariant applies to `cancel_appointment` (for cancellations), `schedule_callback` (for callbacks), and `transfer_call` (for transfers) — never claim the action succeeded until the tool confirms it."
+  );
+
   // Call termination — MUST call end_call after a natural farewell
   lines.push(
     "- ENDING THE CALL: When the conversation is naturally over — the caller has said 'goodbye', 'thanks, bye', or similar AND you have acknowledged with a warm farewell like 'Have a great day!' — you MUST immediately call the `end_call` tool to terminate the phone call. " +
     "Do NOT keep repeating 'bye' back and forth. Do NOT generate another turn after saying goodbye. One farewell + end_call tool. " +
-    "Also call `end_call` after these completion points: (1) a booking is confirmed and the caller has acknowledged, (2) a message/callback has been captured and the caller has no further questions, (3) a transfer attempt has failed and the caller has accepted a message instead. " +
+    "Also call `end_call` after these completion points: (1) a booking is confirmed by a successful `book_appointment` tool result AND the caller has acknowledged, (2) a message/callback has been captured by `schedule_callback` AND the caller has no further questions, (3) a transfer attempt has failed and the caller has accepted a message instead. " +
+    "Before calling `end_call` for ANY booking/cancellation/callback completion path, verify the relevant TOOL call succeeded earlier in the same conversation — not just that you said the words. " +
     "Only call `end_call` ONCE per conversation."
   );
 

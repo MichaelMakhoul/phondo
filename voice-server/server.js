@@ -1163,8 +1163,34 @@ wss.on("connection", (twilioWs) => {
 
     let transcript = s.getTranscript();
     const durationSeconds = s.getDurationSeconds();
-    const callStatus = s.callFailed ? "failed" : "completed";
-    const endedReason = s.endedReason || "caller-hangup";
+    let callStatus = s.callFailed ? "failed" : "completed";
+    let endedReason = s.endedReason || "caller-hangup";
+
+    // SCRUM-227: detect hallucinated bookings. If the transcript contains
+    // language like "I've booked" or a fabricated 6-digit confirmation code
+    // but the call never made a successful book_appointment tool call, flag
+    // the call loudly so we catch it before a customer shows up to nothing.
+    const bookingClaimRe = /\b(i've booked|you'?re all set|your appointment (?:is|has been) (?:booked|confirmed)|confirmation code (?:is )?\d{3,8})\b/i;
+    const claimsBooking = bookingClaimRe.test(transcript || "");
+    const hadSuccessfulBookTool = (s.toolCallAudit || []).some(
+      (t) => t.name === "book_appointment" && t.successful
+    );
+    if (claimsBooking && !hadSuccessfulBookTool) {
+      console.error(`[HallucinatedBooking] callSid=${s.callSid} claimed a booking in transcript but book_appointment tool was NOT called successfully. toolCallAudit=${JSON.stringify(s.toolCallAudit || [])}`);
+      Sentry.withScope((scope) => {
+        scope.setTag("service", "voice-server");
+        scope.setTag("bug", "hallucinated_booking");
+        scope.setExtras({
+          callSid: s.callSid,
+          organizationId: s.organizationId,
+          toolCallAudit: s.toolCallAudit || [],
+          transcriptHead: (transcript || "").slice(0, 500),
+        });
+        Sentry.captureMessage("Hallucinated booking detected (SCRUM-227)", "error");
+      });
+      callStatus = "failed";
+      endedReason = "hallucinated_booking";
+    }
 
     // Run post-call analysis (best-effort, awaited because results feed into the call record)
     let analysis = null;
@@ -1769,6 +1795,13 @@ wss.on("connection", (twilioWs) => {
                   });
                   const message = typeof result === "string" ? result : result.message;
                   console.log(`[GeminiLive] Tool result: "${message.slice(0, 100)}"`);
+
+                  // SCRUM-227: audit tool calls so cleanupSession can detect
+                  // hallucinated bookings (AI said "booked" but never called the tool).
+                  if (session) {
+                    const successful = !(typeof result === "object" && result?.error);
+                    session.toolCallAudit.push({ name: toolCall.name, successful, at: Date.now() });
+                  }
 
                   // Apply cache delta for writes — guard against cleanup race
                   if (session && session.scheduleSnapshot) {
