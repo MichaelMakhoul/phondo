@@ -1839,8 +1839,19 @@ wss.on("connection", (twilioWs) => {
 
                   // SCRUM-227: audit tool calls so cleanupSession can detect
                   // hallucinated bookings (AI said "booked" but never called the tool).
+                  // For write-actions (book_appointment, cancel_appointment,
+                  // schedule_callback), "successful" means the result text
+                  // actually contains a confirmation phrase — a result saying
+                  // "Dr X isn't available" doesn't count as a successful booking
+                  // even if it doesn't have an `error` field.
                   if (session) {
-                    const successful = !(typeof result === "object" && result?.error);
+                    let successful = !(typeof result === "object" && result?.error);
+                    if (successful && toolCall.name === "book_appointment") {
+                      // Require actual success signal: "confirmation code", "booked", "confirmed"
+                      const msg = typeof result === "string" ? result : (result?.message || "");
+                      const hasSuccessSignal = /\b(confirmation code|i've booked|you'?re all set|booked your|appointment (?:is|has been) (?:booked|confirmed))\b/i.test(msg);
+                      if (!hasSuccessSignal) successful = false;
+                    }
                     session.toolCallAudit.push({ name: toolCall.name, successful, at: Date.now() });
                   }
 
