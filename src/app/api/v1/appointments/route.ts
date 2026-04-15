@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { isValidPhoneNumber } from "@/lib/security/validation";
+import { invalidateVoiceScheduleCache } from "@/lib/voice-cache/invalidate";
 import { z } from "zod";
 import crypto from "crypto";
 
@@ -161,6 +162,10 @@ export async function POST(request: NextRequest) {
       }
       throw error;
     }
+
+    // SCRUM-245: invalidate voice-server schedule cache so any in-flight
+    // or next calls see the new booking instead of stale slots.
+    await invalidateVoiceScheduleCache(orgId);
 
     return NextResponse.json(appointment, { status: 201 });
   } catch (err: unknown) {

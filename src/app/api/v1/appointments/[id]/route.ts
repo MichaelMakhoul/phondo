@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { isValidUUID } from "@/lib/security/validation";
 import { getClientHistory } from "@/lib/clients/client-history";
+import { invalidateVoiceScheduleCache } from "@/lib/voice-cache/invalidate";
 import { z } from "zod";
 
 interface Membership {
@@ -170,6 +171,10 @@ export async function PATCH(
       throw error;
     }
 
+    // SCRUM-245: invalidate voice-server schedule cache so reschedules and
+    // status/practitioner changes show up on the next call.
+    await invalidateVoiceScheduleCache(orgId);
+
     return NextResponse.json(updated);
   } catch (err: unknown) {
     console.error("PATCH /appointments/[id] error:", err);
@@ -202,6 +207,11 @@ export async function DELETE(
       .eq("organization_id", orgId);
 
     if (error) throw error;
+
+    // SCRUM-245: invalidate voice-server schedule cache so the cancelled
+    // slot reopens immediately for in-flight or next calls.
+    await invalidateVoiceScheduleCache(orgId);
+
     return NextResponse.json({ success: true });
   } catch (err: unknown) {
     console.error("DELETE /appointments/[id] error:", err);
