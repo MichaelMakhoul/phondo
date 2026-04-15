@@ -1750,9 +1750,27 @@ wss.on("connection", (twilioWs) => {
             }
 
             geminiSystemPrompt += `\n- NAME COLLECTION IS MANDATORY — ZERO EXCEPTIONS: Before calling book_appointment, you MUST: (1) Ask for FIRST NAME — wait for answer, (2) ${nameInstruction}, (3) Ask for LAST NAME — wait for answer, (4) ${nameInstruction}, (5) ONLY after you have BOTH confirmed names, call book_appointment with first_name and last_name. Names MUST be in English letters. If you are unsure of the spelling, ask again. NEVER call book_appointment until the caller has fully spelled and confirmed BOTH names. If you only have one name, ask for the other BEFORE booking.`;
-            geminiSystemPrompt += `\n- CONFIRM BOOKING DETAILS: After book_appointment succeeds, read back ALL details to the caller: name, date, time, practitioner, and confirmation code. Then ask "Is everything correct?" If the caller says something is wrong, fix it (cancel and rebook with the correct details). Do NOT end the booking conversation without confirmation.`;
+            geminiSystemPrompt += `\n- CONFIRM BOOKING DETAILS: AFTER the book_appointment TOOL CALL has returned a result AND you have copied the confirmation code from the TOOL RESPONSE (never invented one), read back ALL details to the caller: name, date, time, practitioner, and the tool-provided confirmation code. Then ask "Is everything correct?" If the caller says something is wrong, fix it (cancel and rebook with the correct details). Do NOT end the booking conversation without confirmation.`;
             geminiSystemPrompt += `\n- FILLER WORDS — SPEAK FIRST, THEN CALL TOOL: When you need to call a tool, you MUST speak a filler phrase FIRST as a separate response BEFORE making the tool call. Say something like "One moment, let me check that" or "Just a sec" and WAIT for the audio to play. THEN make the tool call in the next step. NEVER bundle the filler and tool result into one response. The caller must hear the filler DURING the silence, not after. Example flow: (1) caller asks for availability → (2) you say "Let me check that for you" → (3) you call check_availability → (4) you say "We have slots on Wednesday...". Steps 2 and 4 must be SEPARATE speech outputs.`;
             geminiSystemPrompt += `\n- RESCHEDULING: When a caller asks to reschedule, you MUST: (1) look up their existing appointment with lookup_appointment, (2) cancel the old appointment with cancel_appointment using the confirmation_code FROM THE LOOKUP RESULT or phone + date (NEVER guess or fabricate a code), (3) then book the new one with book_appointment. Do NOT book a new appointment without cancelling the old one first.`;
+
+            // SCRUM-227: booking invariant restated as the LAST instruction so it's
+            // the freshest rule in Gemini's context when it decides what to do.
+            geminiSystemPrompt += `\n\n══════════════════════════════════════════════════════\n` +
+              `🚨 FINAL CRITICAL RULE — READ THIS LAST 🚨\n` +
+              `══════════════════════════════════════════════════════\n` +
+              `BOOKING PATH (strict order — no exceptions):\n` +
+              `  1. Caller says a time works ("9am is fine")\n` +
+              `  2. You ask for first name (if not captured)\n` +
+              `  3. You ask for last name (if not captured)\n` +
+              `  4. You say a short filler: "One moment, let me book that for you."\n` +
+              `  5. You CALL THE book_appointment TOOL — this is non-negotiable\n` +
+              `  6. You WAIT for the tool result\n` +
+              `  7. You COPY the confirmation code FROM THE TOOL RESULT and read it to the caller\n` +
+              `  8. You call end_call AFTER the caller acknowledges\n\n` +
+              `YOU MUST NOT speak the words "you're all set", "I've booked", "your appointment is confirmed", or any confirmation code BEFORE step 5 completes successfully. If you speak these words without a prior successful book_appointment tool call, THE CALL HAS FAILED and the caller will have no actual appointment.\n\n` +
+              `If book_appointment returns an error, do NOT invent a code to cover for the failure. Say: "I'm really sorry, I'm having trouble completing that booking — let me take your details and have someone call you back." Then call schedule_callback.\n` +
+              `══════════════════════════════════════════════════════`;
 
             // Transcript buffering — accumulate fragments, flush on turn complete
             let pendingUserTranscript = "";
