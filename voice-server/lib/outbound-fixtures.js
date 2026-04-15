@@ -45,7 +45,7 @@ const FIXTURE_DEFS = {
     kbEntries: [
       {
         title: "Pricing",
-        source_type: "text",
+        source_type: "manual",
         content: "Check-up & Clean: $199. Filling: $150-$350 depending on size. Emergency consultation: $120. We accept all major private health insurance providers. New patient discount: 15% off first visit.",
       },
       {
@@ -78,7 +78,7 @@ const FIXTURE_DEFS = {
     kbEntries: [
       {
         title: "Practice Areas",
-        source_type: "text",
+        source_type: "manual",
         content: "Parker & Associates specialises in property law, contract disputes, family law, and estate planning. We do NOT handle criminal law or immigration matters.",
       },
       {
@@ -112,7 +112,7 @@ const FIXTURE_DEFS = {
     kbEntries: [
       {
         title: "Services & Pricing",
-        source_type: "text",
+        source_type: "manual",
         content: "Emergency callout: $150 + parts. Routine maintenance starts at $120/hour. Free quotes for jobs over $500. We service all of Sydney metro. Licensed and insured (Licence #12345).",
       },
     ],
@@ -166,7 +166,7 @@ const FIXTURE_DEFS = {
     kbEntries: [
       {
         title: "Services",
-        source_type: "text",
+        source_type: "manual",
         content: "Harbour Realty specialises in residential property sales and rentals across Sydney's North Shore. Free appraisals for potential sellers. Current listings available on our website.",
       },
     ],
@@ -191,7 +191,7 @@ const FIXTURE_DEFS = {
     kbEntries: [
       {
         title: "Pricing",
-        source_type: "text",
+        source_type: "manual",
         content: "Cut & Style: $85 (short), $110 (long). Colour: from $150. Cut & Colour: from $220. All services include a complimentary scalp massage and Olaplex treatment. Closed Mondays and Sundays.",
       },
     ],
@@ -217,7 +217,7 @@ const FIXTURE_DEFS = {
     kbEntries: [
       {
         title: "Services & Pricing",
-        source_type: "text",
+        source_type: "manual",
         content: "Logbook service: from $290 (4-cyl) / $390 (6-cyl). Brake pad replacement: $250-$450 per axle. Pink Slip: $42. We service all makes and models. Loan cars available on request, 24-hour notice. Drop off by 8:30am for same-day pickup on most services.",
       },
       {
@@ -251,7 +251,7 @@ const FIXTURE_DEFS = {
     kbEntries: [
       {
         title: "Services",
-        source_type: "text",
+        source_type: "manual",
         content: "Consultation: $95. Vaccination (F3/C5): $120. Dental clean under GA: $450-$900 depending on size and extractions needed. We treat dogs, cats, rabbits, and small pocket pets. For bird/reptile care we refer to specialists. Emergency out-of-hours: SASH Small Animal Specialist Hospital (North Ryde).",
       },
     ],
@@ -276,7 +276,7 @@ const FIXTURE_DEFS = {
     kbEntries: [
       {
         title: "Services & Fees",
-        source_type: "text",
+        source_type: "manual",
         content: "Individual tax return: $165 (simple) / $250 (with investment property or shares). BAS + bookkeeping: from $400/quarter. Advisory meetings: $220/hr. ABN/company setup: $550 flat. We are registered tax agents with the TPB. Tax return deadline (via us): 15 May the following year.",
       },
     ],
@@ -301,7 +301,7 @@ const FIXTURE_DEFS = {
     kbEntries: [
       {
         title: "Services",
-        source_type: "text",
+        source_type: "manual",
         content: "Coastal Insurance Brokers specialises in home & contents, landlord, business pack, and professional indemnity insurance. We compare across 12+ insurers including QBE, Allianz, CGU, and Vero. Free initial consultation. We do NOT sell life insurance or health insurance — for those we refer to specialist brokers.",
       },
     ],
@@ -328,7 +328,7 @@ const FIXTURE_DEFS = {
     kbEntries: [
       {
         title: "Membership & Pricing",
-        source_type: "text",
+        source_type: "manual",
         content: "Memberships: $25/week (24-month commitment) or $35/week (no lock-in). Free 3-day trial for new members — just book in! Personal training: $85/session, cheaper in packs of 10. Group classes included in membership. 24/7 access included with all memberships.",
       },
     ],
@@ -482,18 +482,25 @@ function getTestAssistantId(industry) {
 }
 
 /**
- * Swap the assistant on a phone number. Returns the previous assistant_id for restoration.
+ * Swap the assistant AND organization on a phone number. Returns the previous
+ * { assistant_id, organization_id } pair for restoration.
+ *
+ * IMPORTANT: `loadCallContext` reads the org from `phone_numbers.organization_id`,
+ * not from the assistant's own org. So the swap MUST update both fields
+ * atomically, otherwise the call loads: new assistant + OLD org's KB/services/
+ * prompt which reverts the business name in the greeting.
+ *
  * @param {string} phoneNumber - E.164 phone number
  * @param {string} newAssistantId - The assistant to swap in
- * @returns {Promise<string|null>} Previous assistant_id, or null if phone not found
+ * @returns {Promise<{assistantId: string, organizationId: string}|null>} Previous pair, or null
  */
 async function swapAssistant(phoneNumber, newAssistantId) {
   const supabase = getSupabase();
 
-  // Get current assistant
+  // Get current assistant + org
   const { data: phone, error: lookupError } = await supabase
     .from("phone_numbers")
-    .select("id, assistant_id")
+    .select("id, assistant_id, organization_id")
     .eq("phone_number", phoneNumber)
     .eq("is_active", true)
     .single();
@@ -503,40 +510,81 @@ async function swapAssistant(phoneNumber, newAssistantId) {
     return null;
   }
 
-  const previousAssistantId = phone.assistant_id;
+  const previous = {
+    assistantId: phone.assistant_id,
+    organizationId: phone.organization_id,
+  };
 
-  // Swap
+  // Look up the new assistant's organization so we can update both fields
+  const { data: newAssistant, error: assistantLookupErr } = await supabase
+    .from("assistants")
+    .select("organization_id")
+    .eq("id", newAssistantId)
+    .single();
+  if (assistantLookupErr || !newAssistant) {
+    throw new Error(`Failed to look up new assistant ${newAssistantId}: ${assistantLookupErr?.message || "not found"}`);
+  }
+
+  // Swap BOTH assistant_id and organization_id atomically
   const { error: updateError } = await supabase
     .from("phone_numbers")
-    .update({ assistant_id: newAssistantId })
+    .update({
+      assistant_id: newAssistantId,
+      organization_id: newAssistant.organization_id,
+    })
     .eq("id", phone.id);
 
   if (updateError) {
     throw new Error(`Failed to swap assistant: ${updateError.message}`);
   }
 
-  console.log(`[Fixtures] Swapped assistant on ${phoneNumber}: ${previousAssistantId} → ${newAssistantId}`);
-  return previousAssistantId;
+  console.log(`[Fixtures] Swapped on ${phoneNumber}: assistant ${previous.assistantId} → ${newAssistantId}, org ${previous.organizationId} → ${newAssistant.organization_id}`);
+  return previous;
 }
 
 /**
- * Restore the assistant on a phone number.
+ * Restore the assistant AND organization on a phone number.
+ * Accepts either a string assistantId (legacy) or an object { assistantId, organizationId }.
+ *
  * @param {string} phoneNumber - E.164 phone number
- * @param {string} assistantId - The assistant to restore
+ * @param {string|{assistantId: string, organizationId: string}} previous
  */
-async function restoreAssistant(phoneNumber, assistantId) {
+async function restoreAssistant(phoneNumber, previous) {
   const supabase = getSupabase();
+  const update = { assistant_id: null, organization_id: null };
+
+  if (typeof previous === "string") {
+    // Legacy: caller only saved the assistant ID. Look up the org.
+    const { data: a, error: e } = await supabase
+      .from("assistants")
+      .select("organization_id")
+      .eq("id", previous)
+      .single();
+    if (e || !a) {
+      console.error(`[Fixtures] Failed to look up org for legacy restore: ${e?.message || "not found"}`);
+      return;
+    }
+    update.assistant_id = previous;
+    update.organization_id = a.organization_id;
+  } else if (previous && typeof previous === "object") {
+    update.assistant_id = previous.assistantId;
+    update.organization_id = previous.organizationId;
+  } else {
+    console.error("[Fixtures] restoreAssistant called with invalid `previous`:", previous);
+    return;
+  }
+
   const { error } = await supabase
     .from("phone_numbers")
-    .update({ assistant_id: assistantId })
+    .update(update)
     .eq("phone_number", phoneNumber)
     .eq("is_active", true);
 
   if (error) {
-    console.error(`[Fixtures] Failed to restore assistant on ${phoneNumber}:`, error.message);
+    console.error(`[Fixtures] Failed to restore on ${phoneNumber}:`, error.message);
     throw error;
   }
-  console.log(`[Fixtures] Restored assistant on ${phoneNumber}: ${assistantId}`);
+  console.log(`[Fixtures] Restored on ${phoneNumber}: assistant=${update.assistant_id}, org=${update.organization_id}`);
 }
 
 module.exports = {
