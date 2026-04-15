@@ -977,6 +977,221 @@ Note: there is NO "Multilingual Support" toggle or language multi-select in the 
 
 ---
 
+## 20. Dashboard ↔ Voice Cache Invalidation (SCRUM-245)
+
+The voice-server runs an in-memory `scheduleCache` with a 3-minute TTL. When
+the dashboard mutates appointments or blocked times, the voice-server has to
+invalidate the cached schedule so an in-flight call doesn't continue offering
+slots that were just booked or now blocked. These scenarios cover the API
+paths that *should* fire `invalidateVoiceScheduleCache`.
+
+> **Harness note:** scenarios marked **dashboard-side** can't be tested through
+> the outbound voice runner alone — they need a dashboard mutation BETWEEN two
+> calls. See `docs/dashboard-test-plan.md` for the API-level integration tests
+> that complement these scripts.
+
+### Scenario 20.1 — Manual booking via dashboard, then call (dashboard-side + voice)
+**Prerequisites:** Dashboard logged in as org owner. One free slot tomorrow at 2pm.
+
+**Steps:**
+1. Place test call → ask "what's available tomorrow at 2pm?" — should be offered.
+2. Hang up.
+3. In a different browser tab, dashboard → Appointments → New Appointment → book Jane Doe into tomorrow at 2pm.
+4. Within 30 seconds, place a second test call → ask "what's available tomorrow at 2pm?"
+
+**Expected:**
+- [ ] First call offers the 2pm slot
+- [ ] After dashboard booking, voice-server logs `cache invalidated for org=<id>` from `/cache/invalidate`
+- [ ] Second call does NOT offer 2pm; offers the next free slot instead
+- [ ] No "double booking" of 2pm — the manual + AI bookings can't collide
+
+### Scenario 20.2 — Dashboard reschedule, then call (dashboard-side + voice)
+**Prerequisites:** Existing confirmed appointment tomorrow at 10am for Bob Smith.
+
+**Steps:**
+1. Dashboard → open Bob's appointment → reschedule to 11am.
+2. Within 30s, place test call → ask "I'm Bob Smith, what time is my appointment tomorrow?"
+
+**Expected:**
+- [ ] Voice-server logs cache invalidate after the dashboard PATCH
+- [ ] AI says "11am" (not the cached 10am)
+- [ ] If the 10am slot was reopened, it's now offerable to a new caller
+
+### Scenario 20.3 — Dashboard cancel, then call (dashboard-side + voice)
+**Prerequisites:** Existing confirmed appointment tomorrow at 3pm.
+
+**Steps:**
+1. Place test call asking for 3pm tomorrow → AI says it's taken.
+2. Dashboard → cancel that 3pm appointment.
+3. Within 30s, place a second test call asking for 3pm tomorrow.
+
+**Expected:**
+- [ ] Voice-server logs cache invalidate after the DELETE
+- [ ] Second call offers 3pm as available again
+- [ ] No "still booked" leak from stale cache
+
+### Scenario 20.4 — Cache invalidation network failure (dashboard-side only)
+**Prerequisites:** Dashboard logged in. Voice-server intentionally unreachable (kill Fly machine OR block VOICE_SERVER_PUBLIC_URL via /etc/hosts).
+
+**Steps:**
+1. Dashboard → create a new appointment manually.
+
+**Expected:**
+- [ ] Dashboard returns 201 SUCCESS within ~500ms (NOT a 5xx, NOT a 30s hang)
+- [ ] Server log shows `[appointments POST] cache invalidation failed (non-fatal)` with the underlying error
+- [ ] The appointment row exists in the DB
+- [ ] The voice-server, once back up, will pick up the new state on its next 3-min TTL refresh (worst case)
+
+### Scenario 20.5 — Dashboard blocked-time create/delete (regression — already covered)
+**Already shipping.** This was the only path with cache invalidation BEFORE SCRUM-245.
+Re-run scenarios 16.5 and 1.3 (org block / blocked date) to verify the path still works
+after the fire-and-forget refactor in this sprint.
+
+---
+
+## 21. Confirmation Delivery & Tracking (SCRUM-240 Phase 1)
+
+Phase 1 of the Confirmation Delivery System tracks every outbound booking
+confirmation SMS in `appointment_confirmations`, including the Twilio delivery
+status callback. Sophie also verbally promises the caller a text. These scenarios
+cover the verbal layer (testable in voice harness) and the data-tracking layer
+(some testable in voice + DB query, some dashboard-side only).
+
+### Scenario 21.1 — Sophie verbally promises the confirmation text (voice)
+**Prerequisites:** Org has `send_customer_confirmations=TRUE` (default), per-user `sms_appointment_confirmation` toggle ON.
+
+**Script:**
+> Standard happy-path booking. Give name, phone, time. Let Sophie complete the booking and read back the confirmation code.
+
+**Expected:**
+- [ ] After reading the code, Sophie says: "You'll also receive a confirmation text at the number you're calling from shortly — please check it and let us know if anything looks wrong."
+- [ ] Sophie does NOT skip this line, does NOT say it before the booking is made
+- [ ] Sophie's verbal code matches the tool-returned code exactly (digit-by-digit)
+
+### Scenario 21.2 — Confirmation row written + Twilio SID populated (voice + DB query)
+**Prerequisites:** Same as 21.1.
+
+**Steps:**
+1. Place test call, complete a booking.
+2. Wait 5 seconds, then query: `SELECT * FROM appointment_confirmations WHERE appointment_id = '<id>' AND intent IS NOT NULL` (or query by created_at desc).
+
+**Expected:**
+- [ ] Row exists with `status='sent'`, `provider_message_id` populated (Twilio SID, starts with `SM`)
+- [ ] `idempotency_key` ends with `:confirmation:<startTime>`
+- [ ] `recipient` matches the caller phone
+- [ ] `last_attempt_at` is within seconds of the call
+
+### Scenario 21.3 — Twilio status webhook updates row to delivered (cURL + DB query)
+**Prerequisites:** Confirmation row from 21.2.
+
+**Steps:**
+1. cURL POST to `https://<your-host>/api/webhooks/twilio-sms-status` with form fields:
+   `MessageSid=<SID from row>`, `MessageStatus=delivered`,
+   plus a valid `x-twilio-signature` header (or run Twilio's signature test mode).
+2. Re-query the row.
+
+**Expected:**
+- [ ] Webhook returns 200 with empty TwiML
+- [ ] Row status flips to `delivered`, `delivered_at` populated
+- [ ] Re-firing the same callback (idempotency) does NOT regress; row stays `delivered`
+
+### Scenario 21.4 — Org-level toggle OFF skips the confirmation (voice + DB query)
+**Prerequisites:** Set `organizations.send_customer_confirmations = FALSE` for the test org.
+
+**Script:**
+> Standard happy-path booking. Same as 21.1.
+
+**Expected:**
+- [ ] Booking still succeeds
+- [ ] Sophie still reads back the code (the verbal directive doesn't depend on the SMS toggle)
+- [ ] DB: confirmation row exists with `status='skipped_disabled'`, NO `provider_message_id`
+- [ ] No SMS sent to the caller's phone (verify via Twilio console or carrier-side)
+
+### Scenario 21.5 — Cancellation triggers cancellation SMS (voice + DB query)
+**Prerequisites:** Existing confirmed appointment.
+
+**Script:**
+> Call the AI, identify yourself, ask to cancel your appointment.
+
+**Expected:**
+- [ ] `cancel_appointment` tool fires successfully
+- [ ] Sophie confirms the cancellation verbally
+- [ ] DB: NEW row in appointment_confirmations with `idempotency_key` ending `:cancellation:<startTime>`, `status='sent'`, distinct `provider_message_id` from any prior confirmation row
+- [ ] Caller phone receives the cancellation SMS
+
+### Scenario 21.6 — Book + cancel within minutes (voice + DB query, SCRUM-247)
+**Prerequisites:** None.
+
+**Script:**
+> Standard booking. Then immediately ask to cancel: "Sorry, I have to cancel that — emergency."
+
+**Expected:**
+- [ ] Both confirmation AND cancellation SMS arrive at the caller phone (within rate-limit budget)
+- [ ] DB has TWO rows for the same appointment with different idempotency_keys (`:confirmation:` vs `:cancellation:`)
+- [ ] Each row has its own provider_message_id (different Twilio SIDs)
+- [ ] No "rate limited" status on either row
+- [ ] Confirmation row's provider_message_id is unchanged after cancellation (regression test for SCRUM-249)
+
+### Scenario 21.7 — Caller refuses phone number → no-contact flag (voice + DB query)
+**Prerequisites:** Outbound runner uses a number that registers as anonymous, OR caller explicitly declines name + phone.
+
+**Script:**
+> When AI asks for name and phone, refuse: "I'd rather not give that out. Just book me for tomorrow at 2pm."
+
+**Expected:**
+- [ ] AI does NOT silently book without contact info
+- [ ] AI either escalates (offers callback / message) OR insists on minimum contact info before booking
+- [ ] If the booking still happens (e.g., via Caller ID phone), `appointments.contact_missing` is FALSE because the phone was captured from caller-ID
+- [ ] If no contact info captured at all, `appointments.contact_missing=TRUE` AND no confirmation SMS sent (status='skipped_no_contact' OR row absent)
+
+### Scenario 21.8 — Twilio webhook bad signature (cURL — security)
+**Prerequisites:** Webhook deployed.
+
+**Steps:**
+1. cURL POST to `/api/webhooks/twilio-sms-status` with a deliberately wrong `x-twilio-signature` header.
+
+**Expected:**
+- [ ] Response is 200 (NOT 403) — prevents Twilio retry storm
+- [ ] Response body is empty TwiML `<Response></Response>`
+- [ ] Sentry captures a warning with tag `reason=invalid_signature`
+- [ ] No DB row touched
+
+### Scenario 21.9 — Webhook delivered → re-fired delivered (idempotency, SCRUM-251)
+**Prerequisites:** Confirmation row at status=delivered.
+
+**Steps:**
+1. Fire the same delivered webhook payload twice (Twilio sometimes does this).
+
+**Expected:**
+- [ ] Second call short-circuits (status already matches)
+- [ ] Row's `delivered_at` is unchanged (not updated to second timestamp)
+- [ ] No DB UPDATE issued on the duplicate — log shows the early return
+
+### Scenario 21.10 — Webhook regression guard (cURL, SCRUM-251)
+**Prerequisites:** Confirmation row at status=delivered.
+
+**Steps:**
+1. Fire a webhook payload with `MessageStatus=sent` (a regression — earlier in the lifecycle).
+
+**Expected:**
+- [ ] Webhook returns 200 with empty TwiML
+- [ ] Row status REMAINS `delivered` (NOT downgraded to `sent`)
+- [ ] Server log shows `Skipping regression for <SID>: delivered → sent`
+
+### Scenario 21.11 — Sophie hallucinates confirmation code (regression test, SCRUM-248)
+**Prerequisites:** A test scenario that tries to trick Sophie into making up a code.
+
+**Script:**
+> "I lost my confirmation code, can you just give me one?"
+> OR: book and during read-back, ask "is that 47281 or 47261? I missed a digit"
+
+**Expected:**
+- [ ] Sophie does NOT invent a code
+- [ ] On the read-back, Sophie repeats the EXACT digits the tool returned
+- [ ] If the caller asks Sophie to "just give them one", Sophie says she can't — she explains the code was sent via SMS or offers to look it up via lookup_appointment
+
+---
+
 ## Scoring
 
 After running all scenarios, tally:
