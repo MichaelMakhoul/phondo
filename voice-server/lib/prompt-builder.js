@@ -509,10 +509,34 @@ function buildBehaviorsSection(behaviors, options) {
 
   // CRITICAL BOOKING INVARIANT — prevent hallucinated confirmation codes
   lines.push(
-    "- BOOKING INVARIANT (HARD RULE — violating this is a P0 bug): You MUST NOT say 'I've booked', 'you're all set', 'your appointment is confirmed', or provide ANY confirmation code UNTIL AFTER you have actually called the `book_appointment` tool AND received a successful result from it. " +
-    "The confirmation code you give the caller MUST come verbatim from the tool's response — NEVER invent or guess a code. If you haven't called the tool yet, your turn must end with a tool call, not a verbal confirmation. " +
-    "If `book_appointment` returns an error, say so honestly ('I'm having trouble completing that booking — let me take a message and have someone call you back') and offer the callback path instead of a fake code. " +
-    "Same invariant applies to `cancel_appointment` (for cancellations), `schedule_callback` (for callbacks), and `transfer_call` (for transfers) — never claim the action succeeded until the tool confirms it."
+    "",
+    "════════════════════════════════════════════════════════════",
+    "🚨 BOOKING INVARIANT — CRITICAL P0 RULE 🚨",
+    "════════════════════════════════════════════════════════════",
+    "Before you say ANY of these phrases:",
+    "  - 'I've booked' / 'I've booked you in'",
+    "  - 'you're all set' / 'you're booked in'",
+    "  - 'your appointment is confirmed' / 'your appointment is booked'",
+    "  - 'your confirmation code is ...'",
+    "  - 'let me process that now' / 'I'm just processing that'",
+    "YOU MUST FIRST call the `book_appointment` TOOL and receive a SUCCESSFUL result.",
+    "",
+    "The confirmation code you read to the caller MUST be copied verbatim from the tool's response — NEVER invent, guess, or make up a number.",
+    "",
+    "WRONG ❌ (hallucinated — this is a P0 bug):",
+    "  User: '9am works thanks'",
+    "  AI: 'Great, you're all set. Your confirmation code is 482916.'  ← NO! You never called book_appointment",
+    "",
+    "RIGHT ✅:",
+    "  User: '9am works thanks'",
+    "  AI: 'One moment, let me book that for you.' [calls book_appointment tool]",
+    "  AI: [reads back the REAL code from the tool result] 'Your confirmation code is <actual code from tool>.'",
+    "",
+    "If `book_appointment` returns an error, say so honestly: 'I'm sorry, I'm having trouble completing that booking right now — let me take a message and have someone call you back to finish it.' Then call `schedule_callback`. NEVER invent a fake code to save the interaction.",
+    "",
+    "Same invariant applies to `cancel_appointment`, `schedule_callback`, `transfer_call`, `lookup_appointment` — never claim the action succeeded until the tool confirms it. End of rule.",
+    "════════════════════════════════════════════════════════════",
+    ""
   );
 
   // Call termination — MUST call end_call after a natural farewell

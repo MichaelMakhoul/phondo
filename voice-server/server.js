@@ -1781,6 +1781,26 @@ wss.on("connection", (twilioWs) => {
                     return { message: "" };
                   }
                   console.log(`[GeminiLive] Tool call: ${toolCall.name}(${JSON.stringify(toolCall.args).slice(0, 80)})`);
+
+                  // SCRUM-227: intercept end_call if the transcript claims a booking
+                  // but book_appointment was never successfully called. Return an
+                  // error result instead of actually ending the call, which forces
+                  // Gemini to recover (usually by then calling book_appointment).
+                  if (toolCall.name === "end_call") {
+                    const transcriptSoFar = session.getTranscript?.() || "";
+                    const bookingClaimRe = /\b(i've booked|you'?re all set|your appointment (?:is|has been) (?:booked|confirmed)|confirmation code (?:is )?[\s\d]{3,12})\b/i;
+                    const claimsBooking = bookingClaimRe.test(transcriptSoFar);
+                    const hadBookTool = (session.toolCallAudit || []).some((t) => t.name === "book_appointment" && t.successful);
+                    if (claimsBooking && !hadBookTool) {
+                      console.error(`[HallucinationGuard] Blocking end_call — transcript claims booking but book_appointment never called successfully. callSid=${session.callSid}`);
+                      session.toolCallAudit.push({ name: "end_call_blocked", successful: false, at: Date.now() });
+                      return {
+                        message:
+                          "CANNOT END CALL YET: The transcript shows you told the caller they are booked, but you have NOT actually called the book_appointment tool yet. This is a critical error — you may have hallucinated a confirmation code. You MUST: (1) apologise to the caller for the confusion, (2) call book_appointment NOW with the correct details (first_name, last_name, phone, datetime, service_type_id), (3) read back the REAL confirmation code from the tool result, (4) then call end_call. Do NOT fabricate another code.",
+                      };
+                    }
+                  }
+
                   const result = await executeToolCall(toolCall.name, toolCall.args, {
                     organizationId: session.organizationId,
                     assistantId: session.assistantId,
