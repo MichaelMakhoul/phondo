@@ -262,9 +262,11 @@ function createGeminiSession(config, callbacks) {
       );
 
       // Detect end_call sentinel before stripping it from the wire payload.
-      const shouldEnd = responses.some(
-        (r) => r.name === "end_call" || r._rawResult?.__endCall === true
-      );
+      // IMPORTANT: only close when the tool's RESULT carries __endCall=true.
+      // Checking by tool NAME would also close on an intercepted end_call (e.g.
+      // the SCRUM-227 HallucinationGuard returns a scolding message without
+      // __endCall=true to keep the session alive for Gemini to recover).
+      const shouldEnd = responses.some((r) => r._rawResult?.__endCall === true);
 
       // Send tool responses back (without internal _rawResult helper).
       if (ws.readyState === WebSocket.OPEN) {
