@@ -2612,11 +2612,12 @@ const testWss = new WebSocketServer({ noServer: true });
 // dials a target number. Paired with the /outbound/* REST endpoints.
 const outboundWss = new WebSocketServer({ noServer: true });
 outboundWss.on("connection", (ws, req) => {
+  console.log(`[Outbound WS] connection req.url=${req.url}`);
   const url = new URL(req.url, `http://${req.headers.host}`);
   const token = url.searchParams.get("token");
   const tokenData = verifyOutboundToken(token, INTERNAL_API_SECRET);
   if (!tokenData) {
-    console.warn("[Outbound] Rejected /ws/outbound — invalid token");
+    console.warn(`[Outbound] Rejected /ws/outbound — invalid token (url=${req.url}, tokenLen=${token?.length || 0})`);
     ws.close(1008, "invalid token");
     return;
   }
@@ -2626,6 +2627,7 @@ outboundWss.on("connection", (ws, req) => {
 // Route WebSocket upgrades by path — ws library doesn't support multiple
 // WebSocketServer instances with { server, path } on the same HTTP server.
 server.on("upgrade", (request, socket, head) => {
+  console.log(`[Upgrade] url=${request.url}`);
   const { pathname } = new URL(request.url, `http://${request.headers.host}`);
 
   if (pathname === "/ws/audio") {
