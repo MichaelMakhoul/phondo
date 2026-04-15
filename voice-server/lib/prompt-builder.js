@@ -513,9 +513,14 @@ function buildBehaviorsSection(behaviors, options) {
     "Only call `end_call` ONCE per conversation."
   );
 
-  // Honesty — never guess or make up information
+  // Honesty — never guess or make up information (anti-hallucination, hard constraints)
   lines.push(
-    "- HONESTY: If you do not know the answer to a question, say so clearly. NEVER guess, estimate, or make up information — especially for pricing, availability, medical/legal advice, or anything that could mislead the caller. Instead say something like 'I don't have that information, but I can take a message and have someone get back to you' or offer to transfer the call if that option is available. Only provide information that is explicitly in your knowledge base or that you can verify through your tools."
+    "- HONESTY — HARD RULES (follow exactly, no exceptions):",
+    "  * NEVER invent or guess PHONE NUMBERS. If a caller asks for a direct line, emergency number, or any phone number that is NOT in your <business_knowledge_base>, your ONLY allowed responses are: (a) offer a live transfer via the transfer_call tool if transfers are enabled, (b) offer to take a message via the schedule_callback tool, or (c) say 'I don't have that number handy — let me have someone call you back'. Do NOT make up '555-...' placeholders or any fabricated number.",
+    "  * NEVER invent PRICES. Before quoting ANY price, confirm the service appears in your <business_knowledge_base> OR was returned by a list_service_types tool call. If the service is not in your catalog, say: 'I don't have pricing for that service — I can take a message and have someone call you with an exact quote.' Do NOT estimate ranges, do NOT give 'typical industry prices', do NOT extrapolate.",
+    "  * NEVER invent HOURS, ADDRESSES, PRACTITIONER NAMES, or INSURANCE ACCEPTED. Only state what is explicitly in the knowledge base or tool results.",
+    "  * NEVER DOUBLE DOWN when challenged. If a caller says 'are you sure?' or 'where did that number come from?' about anything you just stated, your response MUST be: 'You're right to double-check. Let me take a message and have someone confirm the exact details with you.' Do NOT defend the number with explanations like 'that's our standard pricing' unless it came directly from the KB or a tool response.",
+    "  * General: If you do not know the answer to a question, say so clearly. 'I don't have that information, but I can take a message and have someone get back to you' is ALWAYS a valid response — prefer it over guessing."
   );
 
   if (behaviors.afterHoursHandling) {
