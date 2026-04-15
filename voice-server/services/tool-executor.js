@@ -95,7 +95,7 @@ const calendarToolDefinitions = [
     function: {
       name: "check_availability",
       description:
-        "Check available appointment slots for a specific date. Returns a list of available times. If the business has service types configured, pass the service_type_id to get slots with the correct duration.",
+        "Check available appointment slots for a specific date. Returns a list of available times. If the business has service types configured, pass the service_type_id to get slots with the correct duration. If the caller has explicitly requested a SPECIFIC practitioner by name, pass their practitioner_id to get ONLY that practitioner's available slots (respecting their blocked times and existing appointments).",
       parameters: {
         type: "object",
         properties: {
@@ -107,6 +107,11 @@ const calendarToolDefinitions = [
             type: "string",
             description:
               "The ID of the service/appointment type. Use this to get availability with the correct duration for that service.",
+          },
+          practitioner_id: {
+            type: "string",
+            description:
+              "The ID of a specific practitioner. Use this ONLY when the caller has explicitly named a practitioner and you have their ID from the PRACTITIONERS ON STAFF list. Returns slots where THIS practitioner is free (honors their personal blocked times). Omit for aggregate availability across all practitioners.",
           },
         },
         required: ["date"],
@@ -352,8 +357,14 @@ function resolveAvailabilityFromCache(args, snapshot) {
   }
 
   const dateSlots = snapshot.slots[date];
-  // Get aggregate slots (works for both flat array and structured object)
-  let daySlots = Array.isArray(dateSlots) ? dateSlots : (dateSlots?._any || []);
+  // SCRUM-237: if caller specified a practitioner, return THAT practitioner's
+  // slots (which respect their personal blocked_times). Otherwise aggregate.
+  let daySlots;
+  if (args.practitioner_id && !Array.isArray(dateSlots) && dateSlots?.[args.practitioner_id] !== undefined) {
+    daySlots = dateSlots[args.practitioner_id] || [];
+  } else {
+    daySlots = Array.isArray(dateSlots) ? dateSlots : (dateSlots?._any || []);
+  }
 
   // Nice readable date label (e.g. "Monday, April 12")
   const dateLabel = new Intl.DateTimeFormat("en-US", {

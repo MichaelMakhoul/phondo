@@ -1032,10 +1032,11 @@ function buildLiveScheduleSection(snapshot, todayStr) {
     }
     lines.push("");
     lines.push("PRACTITIONER BOOKING RULES:");
-    lines.push("- If a caller asks for a specific practitioner by name, check their availability from the list above.");
+    lines.push("- If a caller asks for a specific practitioner by name, check their availability from the list above for TODAY, or call check_availability with practitioner_id set to their ID for OTHER dates. This guarantees you see only slots where THAT practitioner is free (including their personal day-off blocks and lunch breaks).");
     lines.push("- When booking with a specific practitioner, pass their ID as practitioner_id to book_appointment.");
-    lines.push("- If the requested practitioner is unavailable, suggest alternative times for that practitioner OR offer another practitioner.");
-    lines.push("- If no specific practitioner is requested, omit practitioner_id — the system auto-assigns the best available.");
+    lines.push("- If the requested practitioner is unavailable (0 open slots, or check_availability returns no times), say so honestly and offer: (a) a different time with the same practitioner on a different day, or (b) a different practitioner at the originally requested time. NEVER silently book with a different practitioner without telling the caller.");
+    lines.push("- If no specific practitioner is requested, omit practitioner_id from both check_availability and book_appointment — the system auto-assigns the best available.");
+    lines.push("- When listing 'who do you have', list ALL practitioners from the PRACTITIONERS ON STAFF list above — do not skip anyone, including hygienists or junior staff.");
     lines.push("- NEVER fabricate practitioner IDs. Only use IDs from the PRACTITIONERS ON STAFF list.");
   }
 
