@@ -1081,7 +1081,9 @@ app.post("/outbound/twiml/:token", (req, res) => {
     return res.status(403).send("Forbidden");
   }
   console.log(`[Outbound] TwiML requested for scenario=${tokenData.scenarioId} → streaming to /ws/outbound`);
-  const wsUrl = PUBLIC_URL.replace(/^http/, "ws") + `/ws/outbound?token=${encodeURIComponent(req.params.token)}`;
+  // Token goes in the PATH, not a query string — Twilio Media Streams strips
+  // query params from the <Stream url> before opening the WebSocket.
+  const wsUrl = PUBLIC_URL.replace(/^http/, "ws") + `/ws/outbound/${encodeURIComponent(req.params.token)}`;
   res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
@@ -2612,9 +2614,10 @@ const testWss = new WebSocketServer({ noServer: true });
 // dials a target number. Paired with the /outbound/* REST endpoints.
 const outboundWss = new WebSocketServer({ noServer: true });
 outboundWss.on("connection", (ws, req) => {
-  console.log(`[Outbound WS] connection req.url=${req.url}`);
   const url = new URL(req.url, `http://${req.headers.host}`);
-  const token = url.searchParams.get("token");
+  // /ws/outbound/<token> — strip prefix, decode.
+  const rawToken = url.pathname.replace(/^\/ws\/outbound\/?/, "");
+  const token = rawToken ? decodeURIComponent(rawToken) : null;
   const tokenData = verifyOutboundToken(token, INTERNAL_API_SECRET);
   if (!tokenData) {
     console.warn(`[Outbound] Rejected /ws/outbound — invalid token (url=${req.url}, tokenLen=${token?.length || 0})`);
