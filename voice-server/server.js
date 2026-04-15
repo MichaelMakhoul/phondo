@@ -19,6 +19,15 @@ const scheduleCache = require("./lib/schedule-cache");
 const { createCallRecord, completeCallRecord, notifyCallCompleted } = require("./lib/call-logger");
 const { calendarToolDefinitions, listServiceTypesToolDefinition, transferToolDefinition, callbackToolDefinition, executeToolCall } = require("./services/tool-executor");
 const { createGeminiSession } = require("./services/gemini-live");
+// SCRUM-166 outbound calling service (cherry-picked to main for smoke testing)
+const {
+  makeOutboundCall,
+  runOutboundSuite,
+  handleOutboundConnection,
+  verifyOutboundToken,
+  pendingCalls: outboundPendingCalls,
+} = require("./services/outbound-caller");
+const { createAllFixtures } = require("./lib/outbound-fixtures");
 
 const VOICE_PIPELINE = process.env.VOICE_PIPELINE || "classic"; // "classic" or "gemini-live"
 
@@ -97,6 +106,10 @@ if (!INTERNAL_API_URL || !INTERNAL_API_SECRET) {
 
 if (!TEST_CALL_SECRET) {
   console.warn("[Startup] TEST_CALL_SECRET not set — browser test calls will be disabled (token validation will reject all requests)");
+}
+
+if (!process.env.OUTBOUND_CALLER_NUMBER) {
+  console.warn("[Startup] OUTBOUND_CALLER_NUMBER not set — outbound test calls will not work");
 }
 
 // Localized error/fallback messages spoken to callers via TTS
@@ -1000,6 +1013,110 @@ app.post("/preview", async (req, res) => {
       res.status(500).json({ error: "Internal error generating voice preview" });
     }
   }
+});
+
+// ── SCRUM-166: Outbound calling service endpoints ───────────────────────────
+// Cherry-picked from feature/SCRUM-166-outbound-calling-service for automated
+// smoke testing of the inbound AI receptionist. Each /outbound/call places a
+// real Twilio call from OUTBOUND_CALLER_NUMBER to the target; Twilio hits
+// /outbound/twiml/:token which returns <Connect><Stream> pointing at
+// /ws/outbound, and outbound-caller wires a Gemini Live "caller persona"
+// session into that WebSocket so the outbound side has a real speaker.
+
+function validateInternalSecret(req) {
+  const secret = req.headers["x-internal-secret"];
+  return secret && INTERNAL_API_SECRET && secret === INTERNAL_API_SECRET;
+}
+
+app.post("/outbound/call", express.json(), async (req, res) => {
+  if (!validateInternalSecret(req)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+  try {
+    const result = await makeOutboundCall(req.body);
+    res.json(result);
+  } catch (err) {
+    console.error("[Outbound] /outbound/call error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/outbound/suite", express.json(), async (req, res) => {
+  if (!validateInternalSecret(req)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+  const scenarios = req.body.scenarios || [];
+  const maxDuration = req.body.maxDurationSeconds || 180;
+  const delay = req.body.delayBetweenCallsMs || 15000;
+  const timeoutMs = (scenarios.length * (maxDuration * 1000 + delay)) + 30000;
+  req.setTimeout(timeoutMs);
+  res.setTimeout(timeoutMs);
+  try {
+    const result = await runOutboundSuite(req.body);
+    res.json(result);
+  } catch (err) {
+    console.error("[Outbound] /outbound/suite error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/outbound/setup-fixtures", express.json(), async (req, res) => {
+  if (!validateInternalSecret(req)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+  try {
+    const industries = req.body.industries || null;
+    const fixtures = await createAllFixtures(industries);
+    res.json({ fixtures });
+  } catch (err) {
+    console.error("[Outbound] /outbound/setup-fixtures error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/outbound/twiml/:token", (req, res) => {
+  const tokenData = verifyOutboundToken(req.params.token, INTERNAL_API_SECRET);
+  if (!tokenData) {
+    console.warn("[Outbound] Rejected TwiML request — invalid token");
+    return res.status(403).send("Forbidden");
+  }
+  console.log(`[Outbound] TwiML requested for scenario=${tokenData.scenarioId} → streaming to /ws/outbound`);
+  const wsUrl = PUBLIC_URL.replace(/^http/, "ws") + `/ws/outbound?token=${encodeURIComponent(req.params.token)}`;
+  res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Connect>
+    <Stream url="${escapeXml(wsUrl)}" />
+  </Connect>
+</Response>`);
+});
+
+app.post("/outbound/status/:token", (req, res) => {
+  const callStatus = req.body.CallStatus;
+  if (callStatus === "no-answer" || callStatus === "busy" || callStatus === "failed") {
+    const tokenData = verifyOutboundToken(req.params.token, INTERNAL_API_SECRET);
+    if (tokenData) {
+      const pending = outboundPendingCalls.get(req.params.token);
+      if (pending) {
+        outboundPendingCalls.delete(req.params.token);
+        pending.resolve({
+          status: callStatus === "no-answer" ? "no_answer" : "failed",
+          scenario: { id: pending.scenario.id, name: pending.scenario.name },
+          call: {
+            sid: req.body.CallSid,
+            from: process.env.OUTBOUND_CALLER_NUMBER,
+            to: tokenData.targetNumber,
+            duration: 0,
+            startedAt: null,
+            endedAt: new Date().toISOString(),
+          },
+          transcript: [],
+          expectedOutcomes: pending.scenario.expectedOutcomes || [],
+          error: `Call ${callStatus}`,
+        });
+      }
+    }
+  }
+  res.sendStatus(200);
 });
 
 // Sentry Express error handler — captures unhandled route errors
@@ -2490,6 +2607,22 @@ function startHoldAudio(session, ws, mode) {
 // Browser-to-server voice pipeline for test calls (no Twilio, no cost)
 const testWss = new WebSocketServer({ noServer: true });
 
+// --- Outbound caller persona WebSocket (/ws/outbound) ---
+// Gemini Live session that ACTS AS the caller when the outbound calling service
+// dials a target number. Paired with the /outbound/* REST endpoints.
+const outboundWss = new WebSocketServer({ noServer: true });
+outboundWss.on("connection", (ws, req) => {
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  const token = url.searchParams.get("token");
+  const tokenData = verifyOutboundToken(token, INTERNAL_API_SECRET);
+  if (!tokenData) {
+    console.warn("[Outbound] Rejected /ws/outbound — invalid token");
+    ws.close(1008, "invalid token");
+    return;
+  }
+  handleOutboundConnection(ws, tokenData);
+});
+
 // Route WebSocket upgrades by path — ws library doesn't support multiple
 // WebSocketServer instances with { server, path } on the same HTTP server.
 server.on("upgrade", (request, socket, head) => {
@@ -2502,6 +2635,10 @@ server.on("upgrade", (request, socket, head) => {
   } else if (pathname === "/ws/test") {
     testWss.handleUpgrade(request, socket, head, (ws) => {
       testWss.emit("connection", ws, request);
+    });
+  } else if (pathname.startsWith("/ws/outbound")) {
+    outboundWss.handleUpgrade(request, socket, head, (ws) => {
+      outboundWss.emit("connection", ws, request);
     });
   } else {
     socket.destroy();
@@ -3162,6 +3299,10 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log(`WebSocket endpoint: ${WS_URL}`);
   if (TEST_CALL_SECRET) {
     console.log(`Test call WebSocket: ${PUBLIC_URL.replace(/^http/, "ws")}/ws/test`);
+  }
+  if (process.env.OUTBOUND_CALLER_NUMBER) {
+    console.log(`Outbound call endpoint: ${PUBLIC_URL}/outbound/call`);
+    console.log(`Outbound caller number: ${process.env.OUTBOUND_CALLER_NUMBER}`);
   }
 
 });
