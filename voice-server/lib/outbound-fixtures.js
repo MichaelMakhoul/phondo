@@ -196,6 +196,143 @@ const FIXTURE_DEFS = {
       },
     ],
   },
+  automotive: {
+    orgName: "Sydney Auto Care",
+    industry: "automotive",
+    tone: "casual",
+    timezone: "Australia/Sydney",
+    businessHours: {
+      monday: { open: "07:30", close: "17:30" },
+      tuesday: { open: "07:30", close: "17:30" },
+      wednesday: { open: "07:30", close: "17:30" },
+      thursday: { open: "07:30", close: "17:30" },
+      friday: { open: "07:30", close: "17:00" },
+      saturday: { open: "08:00", close: "12:00" },
+    },
+    serviceTypes: [
+      { name: "Logbook Service", duration_minutes: 120, description: "Manufacturer-recommended service that maintains your new-car warranty" },
+      { name: "Brake Inspection", duration_minutes: 45, description: "Visual + test drive inspection of brake pads, rotors, and fluid" },
+      { name: "Pink Slip (eSafety)", duration_minutes: 30, description: "NSW annual safety inspection for rego renewal" },
+    ],
+    kbEntries: [
+      {
+        title: "Services & Pricing",
+        source_type: "text",
+        content: "Logbook service: from $290 (4-cyl) / $390 (6-cyl). Brake pad replacement: $250-$450 per axle. Pink Slip: $42. We service all makes and models. Loan cars available on request, 24-hour notice. Drop off by 8:30am for same-day pickup on most services.",
+      },
+      {
+        title: "FAQ",
+        source_type: "faq",
+        content: JSON.stringify([
+          { question: "Do I need to book in advance?", answer: "For logbook services yes — usually 1 week ahead. Pink slips and brake inspections we can often fit in same-week." },
+          { question: "Can you pick up my car?", answer: "Yes, within 5km of the shop for a $30 fee." },
+        ]),
+      },
+    ],
+  },
+  veterinary: {
+    orgName: "Bondi Beach Vet",
+    industry: "veterinary",
+    tone: "friendly",
+    timezone: "Australia/Sydney",
+    businessHours: {
+      monday: { open: "08:00", close: "18:00" },
+      tuesday: { open: "08:00", close: "18:00" },
+      wednesday: { open: "08:00", close: "18:00" },
+      thursday: { open: "08:00", close: "18:00" },
+      friday: { open: "08:00", close: "18:00" },
+      saturday: { open: "09:00", close: "14:00" },
+    },
+    serviceTypes: [
+      { name: "Consultation", duration_minutes: 20, description: "Standard vet check-up" },
+      { name: "Vaccination", duration_minutes: 15, description: "Annual booster vaccinations" },
+      { name: "Dental Clean (under GA)", duration_minutes: 90, description: "Teeth cleaning under general anaesthetic" },
+    ],
+    kbEntries: [
+      {
+        title: "Services",
+        source_type: "text",
+        content: "Consultation: $95. Vaccination (F3/C5): $120. Dental clean under GA: $450-$900 depending on size and extractions needed. We treat dogs, cats, rabbits, and small pocket pets. For bird/reptile care we refer to specialists. Emergency out-of-hours: SASH Small Animal Specialist Hospital (North Ryde).",
+      },
+    ],
+  },
+  accounting: {
+    orgName: "Harbourview Accountants",
+    industry: "accounting",
+    tone: "professional",
+    timezone: "Australia/Sydney",
+    businessHours: {
+      monday: { open: "09:00", close: "17:30" },
+      tuesday: { open: "09:00", close: "17:30" },
+      wednesday: { open: "09:00", close: "17:30" },
+      thursday: { open: "09:00", close: "17:30" },
+      friday: { open: "09:00", close: "17:00" },
+    },
+    serviceTypes: [
+      { name: "Individual Tax Return", duration_minutes: 45, description: "Personal income tax return prep" },
+      { name: "Business BAS / Bookkeeping", duration_minutes: 60, description: "Quarterly BAS lodgement and bookkeeping review" },
+      { name: "Advisory Meeting", duration_minutes: 60, description: "Tax planning or business advisory discussion" },
+    ],
+    kbEntries: [
+      {
+        title: "Services & Fees",
+        source_type: "text",
+        content: "Individual tax return: $165 (simple) / $250 (with investment property or shares). BAS + bookkeeping: from $400/quarter. Advisory meetings: $220/hr. ABN/company setup: $550 flat. We are registered tax agents with the TPB. Tax return deadline (via us): 15 May the following year.",
+      },
+    ],
+  },
+  insurance: {
+    orgName: "Coastal Insurance Brokers",
+    industry: "insurance",
+    tone: "professional",
+    timezone: "Australia/Sydney",
+    businessHours: {
+      monday: { open: "08:30", close: "17:00" },
+      tuesday: { open: "08:30", close: "17:00" },
+      wednesday: { open: "08:30", close: "17:00" },
+      thursday: { open: "08:30", close: "17:00" },
+      friday: { open: "08:30", close: "16:30" },
+    },
+    serviceTypes: [
+      { name: "New Policy Consultation", duration_minutes: 45, description: "Review insurance needs and recommend coverage" },
+      { name: "Claims Assistance", duration_minutes: 30, description: "Help lodging or following up a claim" },
+      { name: "Policy Review", duration_minutes: 30, description: "Annual review of existing policies" },
+    ],
+    kbEntries: [
+      {
+        title: "Services",
+        source_type: "text",
+        content: "Coastal Insurance Brokers specialises in home & contents, landlord, business pack, and professional indemnity insurance. We compare across 12+ insurers including QBE, Allianz, CGU, and Vero. Free initial consultation. We do NOT sell life insurance or health insurance — for those we refer to specialist brokers.",
+      },
+    ],
+  },
+  fitness: {
+    orgName: "CrossPeak Fitness Gym",
+    industry: "fitness",
+    tone: "casual",
+    timezone: "Australia/Sydney",
+    businessHours: {
+      monday: { open: "05:30", close: "21:30" },
+      tuesday: { open: "05:30", close: "21:30" },
+      wednesday: { open: "05:30", close: "21:30" },
+      thursday: { open: "05:30", close: "21:30" },
+      friday: { open: "05:30", close: "20:00" },
+      saturday: { open: "07:00", close: "17:00" },
+      sunday: { open: "07:00", close: "17:00" },
+    },
+    serviceTypes: [
+      { name: "Free Trial Session", duration_minutes: 60, description: "Try out the gym with a trainer-led intro" },
+      { name: "Personal Training Session", duration_minutes: 45, description: "1-on-1 session with a personal trainer" },
+      { name: "Group Class (HIIT)", duration_minutes: 45, description: "High-intensity interval training group class" },
+    ],
+    kbEntries: [
+      {
+        title: "Membership & Pricing",
+        source_type: "text",
+        content: "Memberships: $25/week (24-month commitment) or $35/week (no lock-in). Free 3-day trial for new members — just book in! Personal training: $85/session, cheaper in packs of 10. Group classes included in membership. 24/7 access included with all memberships.",
+      },
+    ],
+  },
 };
 
 /**
