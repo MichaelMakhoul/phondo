@@ -1845,8 +1845,16 @@ wss.on("connection", (twilioWs) => {
                     setTimeout(() => twilioWs.close(1000, "Gemini session error"), 1000);
                   }
                 },
-                onClose: (code) => {
-                  console.log(`[GeminiLive] Session closed (code=${code})`);
+                onClose: (code, reason) => {
+                  console.log(`[GeminiLive] Session closed (code=${code}, reason="${reason}")`);
+                  // Planned close via end_call tool — not a failure.
+                  if (reason === "end_call") {
+                    if (session) session.endedReason = "end_call_tool";
+                    if (twilioWs.readyState === WebSocket.OPEN) {
+                      setTimeout(() => twilioWs.close(1000, "end_call"), 1000);
+                    }
+                    return;
+                  }
                   // If Gemini closes unexpectedly mid-call, end the Twilio call too
                   if (session && !session.callFailed && twilioWs.readyState === WebSocket.OPEN) {
                     console.warn("[GeminiLive] Unexpected session close — ending Twilio call");

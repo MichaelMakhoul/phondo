@@ -569,8 +569,8 @@ function handleOutboundConnection(twilioWs, tokenData) {
             cleanup("failed", err.message);
             if (twilioWs.readyState === WebSocket.OPEN) twilioWs.close(4500, "Gemini error");
           },
-          onClose: (code) => {
-            console.log(`[Outbound] Gemini session closed (code=${code})`);
+          onClose: (code, reason) => {
+            console.log(`[Outbound] Gemini session closed (code=${code}, reason="${reason || ""}")`);
             cleanup("completed");
             if (twilioWs.readyState === WebSocket.OPEN) twilioWs.close(1000, "Call ended");
           },

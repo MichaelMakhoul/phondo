@@ -60,7 +60,7 @@ function convertSchemaToGemini(schema) {
  * @param {function} callbacks.onInterrupted - () => void — user barged in
  * @param {function} callbacks.onTurnComplete - () => void — AI finished speaking
  * @param {function} callbacks.onError - (err: Error) => void
- * @param {function} callbacks.onClose - (code: number) => void
+ * @param {function} callbacks.onClose - (code: number, reason: string) => void — reason is "end_call" when closed via end_call tool, empty otherwise
  * @returns {{ sendAudio, close, ws }}
  */
 function createGeminiSession(config, callbacks) {
@@ -80,6 +80,7 @@ function createGeminiSession(config, callbacks) {
   let transcriptIn = "";
   let transcriptOut = "";
   let audioErrorCount = 0;
+  let intentionalCloseReason = null; // Set when we close via end_call tool
   const preSetupBuffer = []; // Buffer audio before setup completes
 
   ws.on("open", () => {
@@ -276,6 +277,7 @@ function createGeminiSession(config, callbacks) {
 
       if (shouldEnd) {
         console.log("[GeminiLive] end_call invoked — closing session in 400ms");
+        intentionalCloseReason = "end_call";
         setTimeout(() => {
           if (ws.readyState === WebSocket.OPEN) {
             try { ws.close(1000, "end_call"); } catch {}
@@ -312,9 +314,10 @@ function createGeminiSession(config, callbacks) {
   });
 
   ws.on("close", (code, reason) => {
-    const reasonStr = reason ? reason.toString() : "";
-    console.log(`[GeminiLive] WebSocket closed (code=${code}, reason="${reasonStr}")`);
-    callbacks.onClose?.(code);
+    const wireReason = reason ? reason.toString() : "";
+    const effectiveReason = intentionalCloseReason || wireReason;
+    console.log(`[GeminiLive] WebSocket closed (code=${code}, reason="${effectiveReason}")`);
+    callbacks.onClose?.(code, effectiveReason);
   });
 
   return {
