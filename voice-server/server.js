@@ -1459,6 +1459,9 @@ wss.on("connection", (twilioWs) => {
           session.assistantId = context.assistantId;
           session.phoneNumberId = context.phoneNumberId;
           session.transferRules = context.transferRules || [];
+          // SCRUM-238: expose behaviors on session so buildLLMOptions can
+          // gate the transfer_call tool by behaviors.transferToHuman.
+          session.behaviors = context.assistant?.promptConfig?.behaviors || {};
           session.language = context.assistant.language || "en";
           session.deepgramVoice = getDeepgramVoice(context.assistant.voiceId);
           session.holdPreset = getHoldPreset(context.organization.industry);
@@ -2165,7 +2168,14 @@ function buildLLMOptions(session, { includeTransfer = false } = {}) {
   const hasScheduling = session.calendarEnabled || session.serviceTypes?.length > 0;
   if (hasScheduling) tools.push(...calendarToolDefinitions);
   if (session.serviceTypes?.length > 0) tools.push(listServiceTypesToolDefinition);
-  if (includeTransfer && session.transferRules?.length > 0) tools.push(transferToolDefinition);
+  // SCRUM-238: gate transfer_call on BOTH includeTransfer AND the org's
+  // behaviors.transferToHuman flag. Having transfer_rules rows in the DB
+  // alone should NOT enable transfers if the business has explicitly
+  // disabled the behavior.
+  const behaviorAllowsTransfer = session.behaviors?.transferToHuman !== false;
+  if (includeTransfer && behaviorAllowsTransfer && session.transferRules?.length > 0) {
+    tools.push(transferToolDefinition);
+  }
   // Always-available tools — callback (universal fallback) + end_call (terminate after goodbye)
   tools.push(callbackToolDefinition);
   tools.push(endCallToolDefinition);
