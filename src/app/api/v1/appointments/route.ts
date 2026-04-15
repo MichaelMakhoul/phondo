@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { isValidPhoneNumber } from "@/lib/security/validation";
 import { invalidateVoiceScheduleCache } from "@/lib/voice-cache/invalidate";
@@ -165,7 +165,18 @@ export async function POST(request: NextRequest) {
 
     // SCRUM-245: invalidate voice-server schedule cache so any in-flight
     // or next calls see the new booking instead of stale slots.
-    await invalidateVoiceScheduleCache(orgId);
+    //
+    // We use Next 15's `after()` instead of bare fire-and-forget because Vercel
+    // serverless freezes the function instance when the response is flushed,
+    // which would silently drop any unawaited promise. `after()` keeps the
+    // invocation alive until the callback settles.
+    after(async () => {
+      try {
+        await invalidateVoiceScheduleCache(orgId);
+      } catch (err) {
+        console.error("[appointments POST] cache invalidation failed (non-fatal):", err);
+      }
+    });
 
     return NextResponse.json(appointment, { status: 201 });
   } catch (err: unknown) {
