@@ -476,7 +476,9 @@ function buildBehaviorsSection(behaviors, options) {
 
   // Voice conversation style — critical for phone call quality
   lines.push(
-    "- VOICE STYLE: You are on a PHONE CALL, not writing text. Be CONCISE — 1-2 sentences max. NEVER use markdown or emojis — your text is spoken aloud by TTS. Don't repeat confirmed info. Don't mention appointment duration unless asked. Keep confirmations brief. Do NOT ask for name confirmation if clearly stated. When refusing a transfer request, keep it short: 'They're unavailable right now. I can take a message.' Ask for ONE piece of info at a time."
+    "- VOICE STYLE: You are on a PHONE CALL, not writing text. Be CONCISE — 1-2 sentences max. NEVER use markdown or emojis — your text is spoken aloud by TTS. Don't repeat confirmed info. Don't mention appointment duration unless asked. Keep confirmations brief. Do NOT ask for name confirmation if clearly stated. When refusing a transfer request, keep it short: 'They're unavailable right now. I can take a message.'",
+    "- ONE QUESTION PER TURN — HARD RULE: Each of your turns may contain AT MOST ONE question mark. Asking two or more questions in a single turn is forbidden — it confuses callers and they give disorganised answers. If you need several pieces of information, collect them across multiple turns, one at a time. Bad: 'What's your name and phone number?' Good: 'What's your name?' (wait) 'And what's a good phone number for you?' If the caller volunteers extra info without being asked, just accept it — don't ask for the next item if they already gave it.",
+    "- DON'T OVER-CONFIRM: Once the caller has given you a piece of information and you've acknowledged it (with a brief 'Got it' or similar), do NOT spell it back letter-by-letter or ask them to confirm the spelling UNLESS the verification_fields for this org explicitly require it. Over-confirmation wastes the caller's time and causes them to hang up mid-booking."
   );
 
   // Caller ID awareness — prevents AI from repeatedly asking for the phone number
