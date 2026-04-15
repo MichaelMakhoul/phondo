@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { isValidUUID } from "@/lib/security/validation";
 import { getClientHistory } from "@/lib/clients/client-history";
@@ -172,10 +172,15 @@ export async function PATCH(
     }
 
     // SCRUM-245: invalidate voice-server schedule cache so reschedules and
-    // status/practitioner changes show up on the next call. Fire-and-forget
-    // — must not block the dashboard response on a flaky internal HTTP call.
-    invalidateVoiceScheduleCache(orgId).catch((err) => {
-      console.error("[appointments PATCH] cache invalidation failed (non-fatal):", err);
+    // status/practitioner changes show up on the next call.
+    // See appointments/route.ts POST for why we use after() instead of
+    // bare fire-and-forget on Vercel.
+    after(async () => {
+      try {
+        await invalidateVoiceScheduleCache(orgId);
+      } catch (err) {
+        console.error("[appointments PATCH] cache invalidation failed (non-fatal):", err);
+      }
     });
 
     return NextResponse.json(updated);
@@ -212,10 +217,15 @@ export async function DELETE(
     if (error) throw error;
 
     // SCRUM-245: invalidate voice-server schedule cache so the cancelled
-    // slot reopens immediately for in-flight or next calls. Fire-and-forget
-    // — must not block the dashboard response on a flaky internal HTTP call.
-    invalidateVoiceScheduleCache(orgId).catch((err) => {
-      console.error("[appointments DELETE] cache invalidation failed (non-fatal):", err);
+    // slot reopens immediately for in-flight or next calls.
+    // See appointments/route.ts POST for why we use after() instead of
+    // bare fire-and-forget on Vercel.
+    after(async () => {
+      try {
+        await invalidateVoiceScheduleCache(orgId);
+      } catch (err) {
+        console.error("[appointments DELETE] cache invalidation failed (non-fatal):", err);
+      }
     });
 
     return NextResponse.json({ success: true });

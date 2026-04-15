@@ -66,6 +66,12 @@ async function isCallerOptedOut(
 
   if (error) {
     console.error("[CallerSMS] Opt-out check failed — blocking send to be safe:", { phone, orgId, error });
+    Sentry.withScope((scope) => {
+      scope.setTag("service", "caller-sms");
+      scope.setTag("reason", "optout_check_failed");
+      scope.setExtras({ orgId, code: error.code });
+      Sentry.captureException(error);
+    });
     return true; // Fail closed: treat as opted out
   }
   return !!data;
@@ -79,7 +85,7 @@ async function isRateLimited(
   const supabase = createAdminClient();
 
   // missed_call_textback: max 1 per caller per org per 24h
-  // appointment_confirmation: max 1 per caller per org per 1h
+  // appointment_confirmation / appointment_cancellation: max 1 per type per caller per org per 1h
   const windowHours = messageType === "missed_call_textback" ? 24 : 1;
   const since = new Date(Date.now() - windowHours * 60 * 60 * 1000).toISOString();
 
@@ -94,6 +100,12 @@ async function isRateLimited(
 
   if (error) {
     console.error("[CallerSMS] Rate limit check failed — blocking send to be safe:", { phone, messageType, orgId, error });
+    Sentry.withScope((scope) => {
+      scope.setTag("service", "caller-sms");
+      scope.setTag("reason", "rate_limit_check_failed");
+      scope.setExtras({ orgId, messageType, code: error.code });
+      Sentry.captureException(error);
+    });
     return true; // Fail closed: treat as rate limited
   }
   return (count ?? 0) > 0;
@@ -121,8 +133,21 @@ async function logSMSSend(params: {
     error_message: params.errorMessage || null,
   });
   if (error) {
+    // Failure here breaks rate limiting (the rate limit query counts these
+    // log rows), so it's important to surface — Sentry, not just console.
     console.error("[CallerSMS] Failed to log SMS send — rate limiting may be affected:", {
       messageType: params.messageType, callerPhone: params.callerPhone, error,
+    });
+    Sentry.withScope((scope) => {
+      scope.setTag("service", "caller-sms");
+      scope.setTag("reason", "sms_log_insert_failed");
+      scope.setExtras({
+        orgId: params.orgId,
+        messageType: params.messageType,
+        status: params.status,
+        code: error.code,
+      });
+      Sentry.captureException(error);
     });
   }
 }
@@ -183,26 +208,45 @@ interface AppointmentContext {
   intent: "confirmation" | "cancellation";
 }
 
-async function checkOrgConfirmationEnabled(orgId: string): Promise<boolean> {
+// 3-state result: lets the caller distinguish "user disabled it" from "we
+// couldn't read the toggle". The unknown branch writes a `skipped_db_error`
+// row to appointment_confirmations so the failure is observable in the dashboard.
+type OrgConfirmationCheck = "enabled" | "disabled" | "unknown";
+
+async function checkOrgConfirmationEnabled(orgId: string): Promise<OrgConfirmationCheck> {
   // Org-level opt-out gate: organizations.send_customer_confirmations (default TRUE).
-  // Returns true if enabled (default), false if the business disabled it.
   //
   // Failure modes:
   //  - 42703 (column missing) → pre-migration schema, fail OPEN (default behavior is on)
-  //  - any other error        → fail CLOSED. Without a confident read of the toggle
-  //                             we shouldn't risk SMS-ing a business that disabled it.
+  //  - any other error        → retry once with 100ms backoff. If still failing,
+  //                             return "unknown" so the caller can write a
+  //                             skipped_db_error row instead of dropping the
+  //                             SMS silently. SCRUM-251 P0-3.
   const supabase = createAdminClient();
-  const { data, error } = await (supabase as any)
-    .from("organizations")
-    .select("send_customer_confirmations")
-    .eq("id", orgId)
-    .maybeSingle();
+
+  // Retry helper — a single transient ECONNRESET / DNS hiccup shouldn't
+  // kill confirmations for an entire booking session.
+  async function readOnce(): Promise<{ data: any; error: any }> {
+    return await (supabase as any)
+      .from("organizations")
+      .select("send_customer_confirmations")
+      .eq("id", orgId)
+      .maybeSingle();
+  }
+
+  let { data, error } = await readOnce();
+  if (error && error.code !== "42703") {
+    // First retry — short backoff. Don't retry on 42703 since that's deterministic.
+    await new Promise((r) => setTimeout(r, 100));
+    ({ data, error } = await readOnce());
+  }
+
   if (error) {
     if (error.code === "42703") {
       console.warn("[CallerSMS] send_customer_confirmations column missing — defaulting to enabled (pre-migration)");
-      return true;
+      return "enabled";
     }
-    console.error("[CallerSMS] Failed to read send_customer_confirmations — failing CLOSED:", {
+    console.error("[CallerSMS] Failed to read send_customer_confirmations after retry — returning UNKNOWN:", {
       orgId,
       code: error.code,
       message: error.message,
@@ -210,12 +254,13 @@ async function checkOrgConfirmationEnabled(orgId: string): Promise<boolean> {
     Sentry.withScope((scope) => {
       scope.setTag("service", "caller-sms");
       scope.setTag("reason", "org_toggle_read_failed");
+      scope.setLevel("error");
       scope.setExtras({ orgId, code: error.code });
       Sentry.captureException(error);
     });
-    return false;
+    return "unknown";
   }
-  return data?.send_customer_confirmations !== false;
+  return data?.send_customer_confirmations !== false ? "enabled" : "disabled";
 }
 
 async function upsertAppointmentConfirmation(params: {
@@ -225,7 +270,13 @@ async function upsertAppointmentConfirmation(params: {
   channel: "sms" | "email";
   intent: "confirmation" | "cancellation";
   recipient: string;
-  status: "sent" | "failed" | "opted_out" | "skipped_cap" | "skipped_disabled";
+  status:
+    | "sent"
+    | "failed"
+    | "opted_out"
+    | "skipped_cap"
+    | "skipped_disabled"
+    | "skipped_db_error";
   providerMessageId?: string | null;
   errorMessage?: string | null;
 }): Promise<void> {
@@ -297,8 +348,8 @@ async function sendCallerSMS(params: {
   const isAppointmentMessage =
     messageType === "appointment_confirmation" || messageType === "appointment_cancellation";
   if (isAppointmentMessage) {
-    const orgEnabled = await checkOrgConfirmationEnabled(orgId);
-    if (!orgEnabled) {
+    const orgCheck = await checkOrgConfirmationEnabled(orgId);
+    if (orgCheck === "disabled") {
       if (appointment) {
         await upsertAppointmentConfirmation({
           orgId,
@@ -311,6 +362,24 @@ async function sendCallerSMS(params: {
         });
       }
       return { sent: false, status: "skipped", reason: "org_disabled" };
+    }
+    if (orgCheck === "unknown") {
+      // SCRUM-251 P0-3: fail closed but with an observable trace. The dashboard
+      // can surface skipped_db_error rows so ops know "we couldn't read the
+      // toggle for this org during this window" — instead of zero trace.
+      if (appointment) {
+        await upsertAppointmentConfirmation({
+          orgId,
+          appointmentId: appointment.appointmentId,
+          appointmentStartTime: appointment.appointmentStartTime,
+          channel: "sms",
+          intent: appointment.intent,
+          recipient: callerPhone,
+          status: "skipped_db_error",
+          errorMessage: "checkOrgConfirmationEnabled returned unknown after retry",
+        });
+      }
+      return { sent: false, status: "skipped", reason: "db_error" };
     }
   }
 
