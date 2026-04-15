@@ -167,25 +167,36 @@ export async function POST(request: NextRequest) {
     // Record the booking in our database
     const appointmentDate = new Date(datetime);
 
-    await (supabase as any).from("appointments").insert({
-      organization_id: organizationId,
-      external_id: booking.uid,
-      provider: "cal_com",
-      attendee_name: sanitizedName,
-      attendee_phone: phone,
-      attendee_email: bookingEmail,
-      start_time: datetime,
-      end_time: booking.endTime,
-      status: "confirmed",
-      notes: sanitizedNotes,
-      metadata: {
-        calComBookingId: booking.id,
-        eventTypeId,
-      },
-    }).catch((err: Error) => {
+    // SCRUM-240 Phase 1: capture appointment.id so the SMS can be tracked
+    // in appointment_confirmations. If the insert fails, we still send the
+    // SMS without tracking (the booking exists in Cal.com anyway).
+    let localAppointmentId: string | undefined;
+    try {
+      const { data: inserted } = await (supabase as any)
+        .from("appointments")
+        .insert({
+          organization_id: organizationId,
+          external_id: booking.uid,
+          provider: "cal_com",
+          attendee_name: sanitizedName,
+          attendee_phone: phone,
+          attendee_email: bookingEmail,
+          start_time: datetime,
+          end_time: booking.endTime,
+          status: "confirmed",
+          notes: sanitizedNotes,
+          metadata: {
+            calComBookingId: booking.id,
+            eventTypeId,
+          },
+        })
+        .select("id")
+        .single();
+      localAppointmentId = inserted?.id;
+    } catch (err) {
       // Don't fail if we can't record locally - the booking still exists in Cal.com
       console.error("Failed to record appointment locally:", err);
-    });
+    }
 
     // Send notification to business owner
     await sendAppointmentNotification({
@@ -203,8 +214,14 @@ export async function POST(request: NextRequest) {
     });
 
     // SMS confirmation to the caller
-    sendAppointmentConfirmationSMS(organizationId, phone, appointmentDate, integration.settings?.timezone)
-      .catch((err) => console.error("Appointment confirmation SMS failed:", { organizationId, error: err }));
+    sendAppointmentConfirmationSMS(
+      organizationId,
+      phone,
+      appointmentDate,
+      integration.settings?.timezone,
+      undefined,
+      localAppointmentId
+    ).catch((err) => console.error("Appointment confirmation SMS failed:", { organizationId, error: err }));
 
     // Format confirmation message for voice
     const voiceResponse = formatBookingConfirmation(booking);

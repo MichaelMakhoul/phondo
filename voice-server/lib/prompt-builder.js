@@ -39,7 +39,7 @@ function buildVerificationInstructions(organization) {
       `3. If they DON'T have the code: ask for their ${fieldList}, then call lookup_appointment with those details.`,
       "NEVER reveal appointment details until verification succeeds. If verification fails, offer a callback.",
       "",
-      "AFTER BOOKING: Read back ALL details to the caller: name, date, time, practitioner, and 6-digit confirmation code (read each digit clearly). Ask 'Is everything correct?' If wrong, cancel and rebook with correct details. Also mention the code was texted to them.",
+      "AFTER BOOKING: Read back ALL details to the caller: name, date, time, practitioner, and 6-digit confirmation code (read each digit clearly). Then TELL THE CALLER: 'You'll also receive a confirmation text at the number you're calling from shortly — please check it and let us know if anything looks wrong.' Finally ask 'Is everything correct?' If wrong, cancel and rebook with correct details.",
     );
   } else if (method === "code_only") {
     lines.push(
@@ -48,7 +48,7 @@ function buildVerificationInstructions(organization) {
       "2. Call lookup_appointment with the confirmation_code. No additional verification needed.",
       "3. If they don't have the code: ask for their name and phone number as fallback.",
       "",
-      "AFTER BOOKING: Read back ALL details to the caller: name, date, time, practitioner, and 6-digit confirmation code (read each digit clearly). Ask 'Is everything correct?' If wrong, cancel and rebook with correct details. Also mention the code was texted to them.",
+      "AFTER BOOKING: Read back ALL details to the caller: name, date, time, practitioner, and 6-digit confirmation code (read each digit clearly). Then TELL THE CALLER: 'You'll also receive a confirmation text at the number you're calling from shortly — please check it and let us know if anything looks wrong.' Finally ask 'Is everything correct?' If wrong, cancel and rebook with correct details.",
     );
   } else {
     // details_only — no confirmation codes

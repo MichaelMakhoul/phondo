@@ -114,6 +114,7 @@ interface BusinessSettingsFormProps {
     recordingConsentMode: string;
     recordingDisclosureText: string;
     appointmentVerificationFields: { method: string; fields: string[] } | string[];
+    sendCustomerConfirmations: boolean;
   };
 }
 
@@ -135,6 +136,9 @@ export function BusinessSettingsForm({
   const [businessState, setBusinessState] = useState(initialData.businessState);
   const [recordingConsentMode, setRecordingConsentMode] = useState(initialData.recordingConsentMode);
   const [disclosureText, setDisclosureText] = useState(initialData.recordingDisclosureText || "");
+  const [sendCustomerConfirmations, setSendCustomerConfirmations] = useState(
+    initialData.sendCustomerConfirmations ?? true
+  );
   const [businessHours, setBusinessHours] = useState<BusinessHours>(
     initialData.businessHours || {
       monday: { open: "09:00", close: "17:00" },
@@ -239,6 +243,7 @@ export function BusinessSettingsForm({
           recording_consent_mode: recordingConsentMode,
           recording_disclosure_text: disclosureText.trim() || null,
           appointment_verification_fields: { method: verificationMethod, fields: verificationFields },
+          send_customer_confirmations: sendCustomerConfirmations,
         })
         .eq("id", organizationId);
 
@@ -625,6 +630,34 @@ export function BusinessSettingsForm({
               </p>
             </div>
           )}
+        </div>
+
+        <Separator />
+
+        {/* Customer Confirmation Messages (SCRUM-240 Phase 1) */}
+        <div className="space-y-4">
+          <div className="flex items-center gap-2">
+            <Shield className="h-5 w-5 text-primary" />
+            <div>
+              <Label className="text-base font-medium">Customer Confirmation Messages</Label>
+              <p className="text-sm text-muted-foreground">
+                When enabled, we automatically text customers a booking confirmation (and a cancellation notice) after your AI receptionist books or cancels an appointment. Gives them a chance to catch mistakes before they arrive.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between rounded-lg border p-4">
+            <div className="space-y-0.5">
+              <Label className="text-sm font-medium">Send confirmation texts</Label>
+              <p className="text-xs text-muted-foreground">
+                Recommended. Turn off only if you have your own confirmation system.
+              </p>
+            </div>
+            <Switch
+              checked={sendCustomerConfirmations}
+              onCheckedChange={setSendCustomerConfirmations}
+            />
+          </div>
         </div>
 
         <Separator />

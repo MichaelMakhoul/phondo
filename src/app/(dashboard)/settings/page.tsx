@@ -30,6 +30,7 @@ interface Organization {
   recording_consent_mode: string | null;
   recording_disclosure_text: string | null;
   appointment_verification_fields: string[] | null;
+  send_customer_confirmations: boolean | null;
 }
 
 interface Membership {
@@ -56,7 +57,8 @@ export default async function SettingsPage() {
         id, name, slug, type, logo_url, primary_color,
         business_name, industry, business_website, business_phone, business_address,
         timezone, country, business_hours, default_appointment_duration,
-        business_state, recording_consent_mode, recording_disclosure_text, appointment_verification_fields
+        business_state, recording_consent_mode, recording_disclosure_text, appointment_verification_fields,
+        send_customer_confirmations
       )
     `
     )
@@ -87,6 +89,7 @@ export default async function SettingsPage() {
           recordingConsentMode: organization.recording_consent_mode || "auto",
           recordingDisclosureText: organization.recording_disclosure_text || "",
           appointmentVerificationFields: organization.appointment_verification_fields || ["name", "phone"],
+          sendCustomerConfirmations: organization.send_customer_confirmations !== false,
         }}
       />
 

@@ -126,10 +126,16 @@ async function logSMSSend(params: {
 async function sendViaTwilio(
   to: string,
   from: string,
-  body: string
+  body: string,
+  opts?: { statusCallback?: string }
 ): Promise<string> {
   const client = getTwilioClient();
-  const message = await client.messages.create({ body, to, from });
+  const message = await client.messages.create({
+    body,
+    to,
+    from,
+    ...(opts?.statusCallback ? { statusCallback: opts.statusCallback } : {}),
+  });
   return message.sid;
 }
 
@@ -138,6 +144,8 @@ async function sendViaTelnyx(
   from: string,
   body: string
 ): Promise<string> {
+  // Telnyx status callbacks use a different mechanism (webhook profile
+  // configured at account level, not per-message). Phase 1 Twilio-only.
   const { sendSms } = await import("@/lib/telnyx/client");
   const result = await sendSms(from, to, body);
   return result.messageId;
@@ -147,15 +155,90 @@ async function sendSmsViaProvider(
   to: string,
   from: string,
   body: string,
-  provider: string
+  provider: string,
+  opts?: { statusCallback?: string }
 ): Promise<string> {
   if (provider === "telnyx") {
     return sendViaTelnyx(to, from, body);
   }
-  return sendViaTwilio(to, from, body);
+  return sendViaTwilio(to, from, body, opts);
 }
 
 // ─── Main send function ─────────────────────────────────────────────────────
+
+// SCRUM-240 Phase 1: optional appointment tracking for confirmation/cancellation SMS.
+// When these are provided, a row is written to `appointment_confirmations` so
+// the Twilio status webhook can update delivery state.
+interface AppointmentContext {
+  appointmentId: string;
+  appointmentStartTime: string | Date;
+  channel: "sms" | "email";
+}
+
+async function checkOrgConfirmationEnabled(orgId: string): Promise<boolean> {
+  // Org-level opt-out gate: organizations.send_customer_confirmations (default TRUE).
+  // Returns true if enabled (default), false if the business disabled it.
+  // Fail-open on DB error — missing column means pre-migration schema.
+  const supabase = createAdminClient();
+  const { data, error } = await (supabase as any)
+    .from("organizations")
+    .select("send_customer_confirmations")
+    .eq("id", orgId)
+    .maybeSingle();
+  if (error) {
+    console.warn("[CallerSMS] Failed to read send_customer_confirmations, failing open:", {
+      orgId,
+      error: error.message,
+    });
+    return true;
+  }
+  return data?.send_customer_confirmations !== false;
+}
+
+async function upsertAppointmentConfirmation(params: {
+  orgId: string;
+  appointmentId: string;
+  appointmentStartTime: string | Date;
+  channel: "sms" | "email";
+  recipient: string;
+  status: "sent" | "failed" | "opted_out" | "skipped_cap" | "skipped_disabled";
+  providerMessageId?: string | null;
+  errorMessage?: string | null;
+}): Promise<void> {
+  const startIso =
+    params.appointmentStartTime instanceof Date
+      ? params.appointmentStartTime.toISOString()
+      : params.appointmentStartTime;
+  const idempotencyKey = `${params.appointmentId}:${params.channel}:${startIso}`;
+  const now = new Date().toISOString();
+
+  const supabase = createAdminClient();
+  const row: Record<string, any> = {
+    appointment_id: params.appointmentId,
+    organization_id: params.orgId,
+    channel: params.channel,
+    recipient: params.recipient,
+    status: params.status,
+    idempotency_key: idempotencyKey,
+    last_attempt_at: now,
+    attempts: 1,
+  };
+  if (params.providerMessageId) row.provider_message_id = params.providerMessageId;
+  if (params.errorMessage) row.last_error = params.errorMessage;
+  if (params.status === "sent") row.sent_at = now;
+
+  const { error } = await (supabase as any)
+    .from("appointment_confirmations")
+    .upsert(row, { onConflict: "idempotency_key" });
+
+  if (error) {
+    console.error("[CallerSMS] Failed to upsert appointment_confirmations:", {
+      appointmentId: params.appointmentId,
+      error: error.message,
+    });
+    // Non-fatal — SMS was (maybe) sent even if we can't track it
+  }
+}
 
 async function sendCallerSMS(params: {
   orgId: string;
@@ -163,8 +246,28 @@ async function sendCallerSMS(params: {
   messageType: MessageType;
   messageBody: string;
   isSpam?: boolean;
+  appointment?: AppointmentContext;
 }): Promise<SMSSendResult> {
-  const { orgId, callerPhone, messageType, messageBody, isSpam } = params;
+  const { orgId, callerPhone, messageType, messageBody, isSpam, appointment } = params;
+
+  // 0. Org-level opt-out (SCRUM-240 Phase 1) — only applies to appointment_confirmation,
+  //    missed-call textback stays on its own feature toggle.
+  if (messageType === "appointment_confirmation") {
+    const orgEnabled = await checkOrgConfirmationEnabled(orgId);
+    if (!orgEnabled) {
+      if (appointment) {
+        await upsertAppointmentConfirmation({
+          orgId,
+          appointmentId: appointment.appointmentId,
+          appointmentStartTime: appointment.appointmentStartTime,
+          channel: "sms",
+          recipient: callerPhone,
+          status: "skipped_disabled",
+        });
+      }
+      return { sent: false, status: "skipped", reason: "org_disabled" };
+    }
+  }
 
   // 1. Check feature toggle
   const prefs = await getNotificationPreferences(orgId);
@@ -174,6 +277,16 @@ async function sendCallerSMS(params: {
       : "sms_appointment_confirmation";
 
   if (!prefs || !prefs[toggleKey]) {
+    if (appointment) {
+      await upsertAppointmentConfirmation({
+        orgId,
+        appointmentId: appointment.appointmentId,
+        appointmentStartTime: appointment.appointmentStartTime,
+        channel: "sms",
+        recipient: callerPhone,
+        status: "skipped_disabled",
+      });
+    }
     return { sent: false, status: "skipped", reason: "feature_disabled" };
   }
 
@@ -205,6 +318,16 @@ async function sendCallerSMS(params: {
       messageBody,
       status: "blocked_optout",
     });
+    if (appointment) {
+      await upsertAppointmentConfirmation({
+        orgId,
+        appointmentId: appointment.appointmentId,
+        appointmentStartTime: appointment.appointmentStartTime,
+        channel: "sms",
+        recipient: callerPhone,
+        status: "opted_out",
+      });
+    }
     return { sent: false, status: "blocked_optout", reason: "caller_opted_out" };
   }
 
@@ -218,12 +341,29 @@ async function sendCallerSMS(params: {
       messageBody,
       status: "blocked_ratelimit",
     });
+    if (appointment) {
+      await upsertAppointmentConfirmation({
+        orgId,
+        appointmentId: appointment.appointmentId,
+        appointmentStartTime: appointment.appointmentStartTime,
+        channel: "sms",
+        recipient: callerPhone,
+        status: "skipped_cap",
+      });
+    }
     return { sent: false, status: "blocked_ratelimit", reason: "rate_limited" };
   }
 
   // 7. Send via provider (Twilio or Telnyx)
+  // SCRUM-240: pass statusCallback so Twilio POSTs back delivery updates
+  // to /api/webhooks/twilio-sms-status which updates appointment_confirmations.
+  const statusCallback = process.env.NEXT_PUBLIC_APP_URL
+    ? `${process.env.NEXT_PUBLIC_APP_URL}/api/webhooks/twilio-sms-status`
+    : undefined;
   try {
-    const sid = await sendSmsViaProvider(callerPhone, fromNumber, messageBody, smsProvider);
+    const sid = await sendSmsViaProvider(callerPhone, fromNumber, messageBody, smsProvider, {
+      statusCallback,
+    });
     await logSMSSend({
       orgId,
       callerPhone,
@@ -233,6 +373,17 @@ async function sendCallerSMS(params: {
       twilioMessageSid: sid,
       status: "sent",
     });
+    if (appointment) {
+      await upsertAppointmentConfirmation({
+        orgId,
+        appointmentId: appointment.appointmentId,
+        appointmentStartTime: appointment.appointmentStartTime,
+        channel: "sms",
+        recipient: callerPhone,
+        status: "sent",
+        providerMessageId: sid,
+      });
+    }
     console.log(`[CallerSMS] Sent ${messageType} to ${callerPhone} from ${fromNumber}`);
     return { sent: true, status: "sent" };
   } catch (err: any) {
@@ -245,6 +396,17 @@ async function sendCallerSMS(params: {
       status: "failed",
       errorMessage: err.message,
     });
+    if (appointment) {
+      await upsertAppointmentConfirmation({
+        orgId,
+        appointmentId: appointment.appointmentId,
+        appointmentStartTime: appointment.appointmentStartTime,
+        channel: "sms",
+        recipient: callerPhone,
+        status: "failed",
+        errorMessage: err.message,
+      });
+    }
     throw err;
   }
 }
@@ -303,7 +465,11 @@ export async function sendAppointmentConfirmationSMS(
   callerPhone: string,
   startTime: Date,
   timezone?: string,
-  confirmationCode?: string
+  confirmationCode?: string,
+  // SCRUM-240 Phase 1: optional appointment tracking.
+  // When provided, a row is written to appointment_confirmations so the
+  // Twilio status webhook can update delivery state.
+  appointmentId?: string
 ): Promise<SMSSendResult> {
   const supabase = createAdminClient();
 
@@ -344,5 +510,61 @@ export async function sendAppointmentConfirmationSMS(
     callerPhone,
     messageType: "appointment_confirmation",
     messageBody: message,
+    appointment: appointmentId
+      ? { appointmentId, appointmentStartTime: startTime, channel: "sms" }
+      : undefined,
+  });
+}
+
+/**
+ * SCRUM-240 Phase 1: send a cancellation SMS when an appointment is cancelled
+ * via cancel_appointment tool. User decided we should send one.
+ */
+export async function sendCancellationSMS(
+  orgId: string,
+  callerPhone: string,
+  startTime: Date,
+  timezone?: string,
+  appointmentId?: string
+): Promise<SMSSendResult> {
+  const supabase = createAdminClient();
+
+  const { data: org } = await (supabase as any)
+    .from("organizations")
+    .select("business_name, business_phone, timezone")
+    .eq("id", orgId)
+    .single();
+
+  const businessName = org?.business_name || "our office";
+  const businessPhone = org?.business_phone || "";
+
+  const tz = timezone || org?.timezone || "America/New_York";
+  const dateStr = startTime.toLocaleDateString("en-US", {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+    timeZone: tz,
+  });
+  const timeStr = startTime.toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+    timeZone: tz,
+  });
+
+  let message = `Your appointment at ${businessName} on ${dateStr} at ${timeStr} has been cancelled.`;
+  if (businessPhone) {
+    message += ` If this was a mistake, please call ${businessPhone}.`;
+  }
+  message += "\n\nReply STOP to opt-out.";
+
+  return sendCallerSMS({
+    orgId,
+    callerPhone,
+    messageType: "appointment_confirmation", // reuse the same rate limit bucket
+    messageBody: message,
+    appointment: appointmentId
+      ? { appointmentId, appointmentStartTime: startTime, channel: "sms" }
+      : undefined,
   });
 }

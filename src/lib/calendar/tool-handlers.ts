@@ -6,7 +6,7 @@ import {
   formatAvailabilityForVoice,
 } from "@/lib/calendar/cal-com";
 import { sendAppointmentNotification } from "@/lib/notifications/notification-service";
-import { sendAppointmentConfirmationSMS } from "@/lib/sms/caller-sms";
+import { sendAppointmentConfirmationSMS, sendCancellationSMS } from "@/lib/sms/caller-sms";
 import {
   sanitizeString,
   isValidPhoneNumber,
@@ -1178,6 +1178,20 @@ async function cancelSingleAppointment(
       timezone
     );
 
+    // SCRUM-240 Phase 1: send cancellation SMS to the caller (fire-and-forget).
+    // User explicitly decided we should send one.
+    if (appointment.attendee_phone) {
+      sendCancellationSMS(
+        organizationId,
+        appointment.attendee_phone,
+        new Date(appointment.start_time),
+        timezone,
+        appointment.id
+      ).catch((err) =>
+        console.error("Cancellation SMS failed:", { organizationId, error: err })
+      );
+    }
+
     return {
       success: true,
       message: `Your appointment on ${dateStr} at ${timeStr} has been cancelled. Would you like to reschedule or is there anything else I can help with?`,
@@ -1652,9 +1666,11 @@ async function bookInternal(
     };
   }
 
-  // 4. Send notification
+  // 4. Send notification (SCRUM-240 Phase 1: pass appointment.id so the SMS
+  // is tracked in appointment_confirmations and Twilio status callbacks can
+  // update delivery state)
   const timezone = schedule?.timezone || "America/New_York";
-  sendNotification(organizationId, phone, sanitizedName, startDate, timezone, confirmationCode);
+  sendNotification(organizationId, phone, sanitizedName, startDate, timezone, confirmationCode, appointment.id);
   const { dateStr, timeStr } = formatDateTimeForVoice(startDate, timezone);
 
   const practitionerNote = assignedPractitionerName
@@ -1686,7 +1702,10 @@ function sendNotification(
   name: string,
   appointmentDate: Date,
   timezone?: string,
-  confirmationCode?: string
+  confirmationCode?: string,
+  // SCRUM-240 Phase 1: optional appointment.id so the confirmation SMS is
+  // tracked in the new appointment_confirmations table.
+  appointmentId?: string
 ) {
   sendAppointmentNotification({
     organizationId,
@@ -1705,7 +1724,7 @@ function sendNotification(
   });
 
   // SMS confirmation to the caller (include confirmation code)
-  sendAppointmentConfirmationSMS(organizationId, phone, appointmentDate, timezone, confirmationCode)
+  sendAppointmentConfirmationSMS(organizationId, phone, appointmentDate, timezone, confirmationCode, appointmentId)
     .catch((err) => console.error("Appointment confirmation SMS failed:", { organizationId, error: err }));
 }
 
