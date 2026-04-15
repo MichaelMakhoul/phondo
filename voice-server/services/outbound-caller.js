@@ -520,6 +520,8 @@ function handleOutboundConnection(twilioWs, tokenData) {
           systemPrompt: callerPrompt,
           tools: [], // Outbound caller has no tools — it's just talking
           voiceName: voiceName || "Puck",
+          // Do NOT speak first — wait for the inbound receptionist's greeting.
+          triggerGreeting: false,
         },
         {
           onAudio: (twilioBase64) => {

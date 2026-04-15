@@ -51,6 +51,7 @@ function convertSchemaToGemini(schema) {
  * @param {string} config.systemPrompt - Full system prompt
  * @param {object[]} config.tools - OpenAI-format tool definitions
  * @param {string} [config.voiceName] - Gemini voice name (default: "Kore")
+ * @param {boolean} [config.triggerGreeting=true] - Send realtimeInput.text to nudge AI to speak first. Disable for outbound caller personas that should wait for the other side.
  * @param {object} callbacks
  * @param {function} callbacks.onAudio - (base64MulawChunk: string) => void — Twilio-ready audio
  * @param {function} callbacks.onToolCall - (toolCall: {id, name, args}) => Promise<any> — execute tool
@@ -143,15 +144,20 @@ function createGeminiSession(config, callbacks) {
       // NOTE: clientContent is BLOCKED on gemini-3.1-flash-live-preview (causes 1007).
       // Use realtimeInput.text instead — this is the correct way to send text on 3.1.
       // Ref: https://ai.google.dev/api/live (realtimeInput.text field)
-      try {
-        ws.send(JSON.stringify({
-          realtimeInput: {
-            text: "Call connected.",
-          },
-        }));
-        console.log("[GeminiLive] Sent realtimeInput.text trigger for greeting");
-      } catch (err) {
-        console.error("[GeminiLive] Greeting trigger failed:", err.message);
+      // Outbound caller personas disable this — they should wait for the receptionist to greet.
+      if (config.triggerGreeting !== false) {
+        try {
+          ws.send(JSON.stringify({
+            realtimeInput: {
+              text: "Call connected.",
+            },
+          }));
+          console.log("[GeminiLive] Sent realtimeInput.text trigger for greeting");
+        } catch (err) {
+          console.error("[GeminiLive] Greeting trigger failed:", err.message);
+        }
+      } else {
+        console.log("[GeminiLive] Greeting trigger skipped (triggerGreeting=false)");
       }
 
       // Flush buffered audio after the text trigger
@@ -241,6 +247,7 @@ function createGeminiSession(config, callbacks) {
               id: call.id,
               name: call.name,
               response: { result: typeof result === "string" ? { message: result } : result },
+              _rawResult: result,
             };
           } catch (err) {
             console.error(`[GeminiLive] Tool ${call.name} error:`, err.message);
@@ -253,11 +260,27 @@ function createGeminiSession(config, callbacks) {
         })
       );
 
-      // Send tool responses back
+      // Detect end_call sentinel before stripping it from the wire payload.
+      const shouldEnd = responses.some(
+        (r) => r.name === "end_call" || r._rawResult?.__endCall === true
+      );
+
+      // Send tool responses back (without internal _rawResult helper).
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
-          toolResponse: { functionResponses: responses },
+          toolResponse: {
+            functionResponses: responses.map(({ id, name, response }) => ({ id, name, response })),
+          },
         }));
+      }
+
+      if (shouldEnd) {
+        console.log("[GeminiLive] end_call invoked — closing session in 400ms");
+        setTimeout(() => {
+          if (ws.readyState === WebSocket.OPEN) {
+            try { ws.close(1000, "end_call"); } catch {}
+          }
+        }, 400);
       }
       return;
     }

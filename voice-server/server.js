@@ -17,7 +17,7 @@ const { loadCallContext, loadTestCallContext, loadScheduleSnapshot } = require("
 const { buildSystemPrompt, getGreeting, buildLiveScheduleSection } = require("./lib/prompt-builder");
 const scheduleCache = require("./lib/schedule-cache");
 const { createCallRecord, completeCallRecord, notifyCallCompleted } = require("./lib/call-logger");
-const { calendarToolDefinitions, listServiceTypesToolDefinition, transferToolDefinition, callbackToolDefinition, executeToolCall } = require("./services/tool-executor");
+const { calendarToolDefinitions, listServiceTypesToolDefinition, transferToolDefinition, callbackToolDefinition, endCallToolDefinition, executeToolCall } = require("./services/tool-executor");
 const { createGeminiSession } = require("./services/gemini-live");
 // SCRUM-166 outbound calling service (cherry-picked to main for smoke testing)
 const {
@@ -2087,8 +2087,9 @@ function buildLLMOptions(session, { includeTransfer = false } = {}) {
   if (hasScheduling) tools.push(...calendarToolDefinitions);
   if (session.serviceTypes?.length > 0) tools.push(listServiceTypesToolDefinition);
   if (includeTransfer && session.transferRules?.length > 0) tools.push(transferToolDefinition);
-  // Callback tool is always available — universal fallback
+  // Always-available tools — callback (universal fallback) + end_call (terminate after goodbye)
   tools.push(callbackToolDefinition);
+  tools.push(endCallToolDefinition);
   return tools.length > 0 ? { tools } : {};
 }
 

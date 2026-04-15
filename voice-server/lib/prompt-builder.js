@@ -65,7 +65,9 @@ function buildVerificationInstructions(organization) {
   lines.push(
     "",
     "CANCELLING: When cancelling, pass the confirmation_code or phone + date to cancel_appointment. Always specify the date when multiple appointments exist.",
-    "NEVER guess or make up appointment details — only share what the tool returns. Never reveal other people's details."
+    "NEVER guess or make up appointment details — only share what the tool returns. Never reveal other people's details.",
+    "",
+    "LOOKUP FAILURE FALLBACK: If lookup_appointment returns no matching appointment after ONE retry with corrected details, STOP retrying. Offer exactly ONE of these choices and do what the caller asks: (a) transfer to a team member, (b) take a message / schedule a callback via the schedule_callback tool. After the caller picks and you complete that action, say goodbye and call the end_call tool. Do NOT loop back to lookup_appointment, do NOT re-ask for identity verification, do NOT re-offer the same choices again."
   );
 
   return lines;
@@ -501,7 +503,15 @@ function buildBehaviorsSection(behaviors, options) {
   lines.push("- STAY ON TOPIC: If the caller asks off-topic questions (jokes, politics, personal opinions), politely redirect: 'I appreciate the question! I'm here to help with appointments and business inquiries. Is there anything I can help you with today?'");
 
   // Silence handling — re-engage silent callers
-  lines.push("- SILENCE: If the caller goes silent for more than a few seconds, gently check in: 'Are you still there?' or 'I'm still here if you need anything.' If they remain silent after two check-ins, say: 'It seems like you might have stepped away. Feel free to call back anytime. Have a great day!' and end the call.");
+  lines.push("- SILENCE: If the caller goes silent for more than a few seconds, gently check in: 'Are you still there?' or 'I'm still here if you need anything.' If they remain silent after two check-ins, say: 'It seems like you might have stepped away. Feel free to call back anytime. Have a great day!' and then call the end_call tool.");
+
+  // Call termination — MUST call end_call after a natural farewell
+  lines.push(
+    "- ENDING THE CALL: When the conversation is naturally over — the caller has said 'goodbye', 'thanks, bye', or similar AND you have acknowledged with a warm farewell like 'Have a great day!' — you MUST immediately call the `end_call` tool to terminate the phone call. " +
+    "Do NOT keep repeating 'bye' back and forth. Do NOT generate another turn after saying goodbye. One farewell + end_call tool. " +
+    "Also call `end_call` after these completion points: (1) a booking is confirmed and the caller has acknowledged, (2) a message/callback has been captured and the caller has no further questions, (3) a transfer attempt has failed and the caller has accepted a message instead. " +
+    "Only call `end_call` ONCE per conversation."
+  );
 
   // Honesty — never guess or make up information
   lines.push(

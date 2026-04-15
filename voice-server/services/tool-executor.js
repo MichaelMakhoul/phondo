@@ -283,6 +283,26 @@ const transferToolDefinition = {
   },
 };
 
+const endCallToolDefinition = {
+  type: "function",
+  function: {
+    name: "end_call",
+    description:
+      "End the phone call cleanly after the conversation has naturally concluded. Call this immediately AFTER you say a farewell like 'goodbye' or 'have a great day' and the caller has acknowledged. Only call this once per conversation — subsequent calls do nothing.",
+    parameters: {
+      type: "object",
+      properties: {
+        reason: {
+          type: "string",
+          description:
+            "Brief reason for ending the call (e.g., 'booking complete', 'caller finished', 'message captured').",
+        },
+      },
+      required: [],
+    },
+  },
+};
+
 /**
  * Resolve get_current_datetime locally from the organization timezone.
  * Eliminates an HTTP round-trip — timezone is already in the call context.
@@ -408,6 +428,12 @@ function resolveAvailabilityFromCache(args, snapshot) {
  * @returns {Promise<{ message: string, action?: string, transferTo?: string, transferAttempt?: object }>}
  */
 async function executeToolCall(functionName, args, context) {
+  // ── End call (handled by caller of executeToolCall — e.g. gemini-live.js)──
+  // This is a sentinel: we just acknowledge, the session owner closes the socket.
+  if (functionName === "end_call") {
+    return { message: "Ending the call. Goodbye.", __endCall: true };
+  }
+
   // ── Transfer call (handled locally via Twilio) ──
   if (functionName === "transfer_call") {
     return executeTransferCall(args, context);
@@ -724,6 +750,7 @@ module.exports = {
   listServiceTypesToolDefinition,
   transferToolDefinition,
   callbackToolDefinition,
+  endCallToolDefinition,
   executeToolCall,
   _test: { getTransferService, resolveCurrentDatetime, resolveAvailabilityFromCache },
 };
