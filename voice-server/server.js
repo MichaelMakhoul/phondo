@@ -2624,6 +2624,8 @@ outboundWss.on("connection", (ws, req) => {
     ws.close(1008, "invalid token");
     return;
   }
+  // handleOutboundConnection looks up pendingCalls.get(tokenData._token)
+  tokenData._token = token;
   handleOutboundConnection(ws, tokenData);
 });
 
