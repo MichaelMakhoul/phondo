@@ -117,7 +117,7 @@ async function getOrgSchedule(
   if (!org) return null;
 
   return {
-    timezone: org.timezone || "America/New_York",
+    timezone: org.timezone || "Australia/Sydney",
     businessHours: org.business_hours ?? {},
     defaultAppointmentDuration: org.default_appointment_duration ?? 30,
   };
@@ -731,7 +731,7 @@ export function ensureTimezoneOffset(datetime: string, timezone: string): string
 export async function handleGetCurrentDatetime(
   organizationId: string
 ): Promise<ToolResult> {
-  let timezone = "America/New_York";
+  let timezone = "Australia/Sydney";
   try {
     const schedule = await getOrgSchedule(organizationId);
     if (schedule?.timezone) timezone = schedule.timezone;
@@ -994,7 +994,7 @@ export async function handleCheckAvailability(
     console.log("Using built-in availability (service types configured):", { organizationId, service_type_id });
     try {
       const schedule = await getOrgSchedule(organizationId);
-      const timezone = schedule?.timezone || "America/New_York";
+      const timezone = schedule?.timezone || "Australia/Sydney";
       const durationMinutes = serviceTypeDuration ?? schedule?.defaultAppointmentDuration ?? DEFAULT_SLOT_DURATION_MINUTES;
       const slots = await getBuiltInAvailability(organizationId, date, schedule, durationMinutes, service_type_id);
       return {
@@ -1022,7 +1022,7 @@ export async function handleCheckAvailability(
   console.log("Using built-in availability (no Cal.com client):", { organizationId });
   try {
     const schedule = await getOrgSchedule(organizationId);
-    const timezone = schedule?.timezone || "America/New_York";
+    const timezone = schedule?.timezone || "Australia/Sydney";
     const durationMinutes = schedule?.defaultAppointmentDuration ?? DEFAULT_SLOT_DURATION_MINUTES;
     const slots = await getBuiltInAvailability(organizationId, date, schedule, durationMinutes);
     return {
@@ -1100,7 +1100,7 @@ export async function handleCancelAppointment(
     .order("start_time", { ascending: true });
 
   const schedule = await getOrgSchedule(organizationId);
-  const tz = schedule?.timezone || "America/New_York";
+  const tz = schedule?.timezone || "Australia/Sydney";
 
   // SCRUM-259: exact datetime match takes priority — used when cancelling
   // an appointment just booked in the same call ("cancel the 10:15 one").
@@ -1200,7 +1200,7 @@ async function cancelSingleAppointment(
     invalidateVoiceScheduleCache(organizationId).catch((err) => console.warn("[VoiceCacheInvalidate] fire-and-forget failed:", err instanceof Error ? err.message : err));
 
     const schedule = await getOrgSchedule(organizationId).catch(() => null);
-    const timezone = schedule?.timezone || "America/New_York";
+    const timezone = schedule?.timezone || "Australia/Sydney";
     const { dateStr, timeStr } = formatDateTimeForVoice(
       new Date(appointment.start_time),
       timezone
@@ -1284,7 +1284,7 @@ async function bookViaCal(
   try {
     // Fetch org timezone to ensure naive datetime gets proper offset
     const calSchedule = await getOrgSchedule(organizationId).catch(() => null);
-    const timezone = calSchedule?.timezone || "America/New_York";
+    const timezone = calSchedule?.timezone || "Australia/Sydney";
     const tzAwareDatetime = ensureTimezoneOffset(datetime, timezone);
 
     // Reject bookings in the past
@@ -1420,7 +1420,7 @@ async function checkAvailabilityViaCal(
   try {
     // Fetch org timezone so we can pass timezone-aware boundaries and format output
     const schedule = await getOrgSchedule(organizationId).catch(() => null);
-    const timezone = schedule?.timezone || "America/New_York";
+    const timezone = schedule?.timezone || "Australia/Sydney";
 
     const startTime = ensureTimezoneOffset(`${date}T00:00:00`, timezone);
     const endTime = ensureTimezoneOffset(`${date}T23:59:59`, timezone);
@@ -1472,7 +1472,7 @@ async function bookInternal(
     };
   }
 
-  const internalTimezone = schedule?.timezone || "America/New_York";
+  const internalTimezone = schedule?.timezone || "Australia/Sydney";
   const durationMinutes = durationOverride ?? schedule?.defaultAppointmentDuration ?? DEFAULT_SLOT_DURATION_MINUTES;
   // Ensure naive datetimes are interpreted in the org's timezone, not UTC
   const tzAwareDatetime = ensureTimezoneOffset(datetime, internalTimezone);
@@ -1697,7 +1697,7 @@ async function bookInternal(
   // 4. Send notification (SCRUM-240 Phase 1: pass appointment.id so the SMS
   // is tracked in appointment_confirmations and Twilio status callbacks can
   // update delivery state)
-  const timezone = schedule?.timezone || "America/New_York";
+  const timezone = schedule?.timezone || "Australia/Sydney";
   sendNotification(organizationId, phone, sanitizedName, startDate, timezone, confirmationCode, appointment.id);
   const { dateStr, timeStr } = formatDateTimeForVoice(startDate, timezone);
 
