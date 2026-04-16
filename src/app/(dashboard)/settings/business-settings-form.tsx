@@ -22,6 +22,8 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { TimePicker } from "@/components/ui/time-picker";
+import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/components/ui/use-toast";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Loader2, Building, Clock, Globe, Calendar, Shield, AlertTriangle } from "lucide-react";
@@ -479,22 +481,16 @@ export function BusinessSettingsForm({
 
                 {businessHours[day.key] ? (
                   <div className="flex items-center gap-2 text-sm pl-10 sm:pl-0">
-                    <Input
-                      type="time"
+                    <TimePicker
                       value={businessHours[day.key]?.open || "09:00"}
-                      onChange={(e) =>
-                        updateDayHours(day.key, "open", e.target.value)
-                      }
-                      className="w-[7.5rem]"
+                      onChange={(v) => updateDayHours(day.key, "open", v)}
+                      className="w-[8rem]"
                     />
                     <span className="text-muted-foreground">to</span>
-                    <Input
-                      type="time"
+                    <TimePicker
                       value={businessHours[day.key]?.close || "17:00"}
-                      onChange={(e) =>
-                        updateDayHours(day.key, "close", e.target.value)
-                      }
-                      className="w-[7.5rem]"
+                      onChange={(v) => updateDayHours(day.key, "close", v)}
+                      className="w-[8rem]"
                     />
                   </div>
                 ) : (
@@ -712,19 +708,16 @@ export function BusinessSettingsForm({
                     verificationFields.includes(field.id) ? "border-primary bg-primary/5" : "hover:bg-muted/50"
                   }`}
                 >
-                  <input
-                    type="checkbox"
+                  <Checkbox
                     checked={verificationFields.includes(field.id)}
-                    onChange={(e) => {
+                    onCheckedChange={(checked) => {
                       setVerificationFields((prev) => {
-                        const next = e.target.checked
+                        const next = checked === true
                           ? [...prev, field.id]
                           : prev.filter((f) => f !== field.id);
-                        // Must have at least one field
                         return next.length === 0 ? prev : next;
                       });
                     }}
-                    className="h-4 w-4 rounded border-input"
                   />
                   <div className="flex-1">
                     <span className="text-sm font-medium">{field.label}</span>
