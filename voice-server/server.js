@@ -1849,19 +1849,23 @@ wss.on("connection", (twilioWs) => {
                   // Flag so goodbye-loop auto-end knows a tool call is in progress
                   // and won't close the session mid-execution.
                   if (session) session._toolCallInFlight = true;
-                  const result = await executeToolCall(toolCall.name, toolCall.args, {
-                    organizationId: session.organizationId,
-                    assistantId: session.assistantId,
-                    callSid: session.callSid,
-                    callId: session.callRecordId,
-                    transferRules: session.transferRules,
-                    organization: session.organization,
-                    callerPhone: session.callerPhone,
-                    orgPhoneNumber: session.orgPhoneNumber,
-                    telephonyProvider: session.telephonyProvider || "twilio",
-                    scheduleSnapshot: session.scheduleSnapshot,
-                  });
-                  if (session) session._toolCallInFlight = false;
+                  let result;
+                  try {
+                    result = await executeToolCall(toolCall.name, toolCall.args, {
+                      organizationId: session.organizationId,
+                      assistantId: session.assistantId,
+                      callSid: session.callSid,
+                      callId: session.callRecordId,
+                      transferRules: session.transferRules,
+                      organization: session.organization,
+                      callerPhone: session.callerPhone,
+                      orgPhoneNumber: session.orgPhoneNumber,
+                      telephonyProvider: session.telephonyProvider || "twilio",
+                      scheduleSnapshot: session.scheduleSnapshot,
+                    });
+                  } finally {
+                    if (session) session._toolCallInFlight = false;
+                  }
                   const message = typeof result === "string" ? result : result.message;
                   console.log(`[GeminiLive] Tool result: "${message.slice(0, 100)}"`);
 
@@ -1994,8 +1998,12 @@ wss.on("connection", (twilioWs) => {
                           } catch (closeErr) {
                             console.warn("[GoodbyeLoop] Error closing Gemini session:", closeErr);
                           }
-                          if (twilioWs.readyState === WebSocket.OPEN) {
-                            twilioWs.close(1000, "end_call");
+                          try {
+                            if (twilioWs.readyState === WebSocket.OPEN) {
+                              twilioWs.close(1000, "end_call");
+                            }
+                          } catch (wsErr) {
+                            console.warn("[GoodbyeLoop] Error closing Twilio WebSocket:", wsErr);
                           }
                         }
                       }

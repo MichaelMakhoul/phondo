@@ -37,8 +37,12 @@ export function DashboardHeader({ user, organization }: DashboardHeaderProps) {
   const supabase = createClient();
 
   const handleSignOut = async () => {
-    trackLogout();
-    await supabase.auth.signOut();
+    try {
+      trackLogout();
+      await supabase.auth.signOut();
+    } catch (error) {
+      console.error("Sign out failed:", error);
+    }
     router.push("/login");
     router.refresh();
   };
