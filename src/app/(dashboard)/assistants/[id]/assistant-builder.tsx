@@ -497,35 +497,35 @@ export function AssistantBuilder({
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="space-y-3">
         <div className="flex items-center gap-4">
           <Link href="/assistants">
             <Button variant="ghost" size="icon">
               <ArrowLeft className="h-4 w-4" />
             </Button>
           </Link>
-          <div>
+          <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
-              <h1 className="text-2xl font-bold">{assistant.name}</h1>
+              <h1 className="text-2xl font-bold truncate">{assistant.name}</h1>
               <Badge variant={isActive ? "success" : "secondary"}>
                 {isActive ? "Active" : "Inactive"}
               </Badge>
             </div>
             {assistant.phone_numbers && assistant.phone_numbers.length > 0 && (
-              <p className="text-sm text-muted-foreground">
+              <p className="text-sm text-muted-foreground truncate">
                 {assistant.phone_numbers.map((p) => p.phone_number).join(", ")}
               </p>
             )}
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <Link href={`/assistants/${assistant.id}/test`}>
-            <Button variant="outline">
+          <Link href={`/assistants/${assistant.id}/test`} className="flex-1 md:flex-none">
+            <Button variant="outline" className="w-full md:w-auto">
               <Phone className="h-4 w-4 mr-2" />
               Test Call
             </Button>
           </Link>
-          <Button onClick={handleSave} disabled={isSaving}>
+          <Button onClick={handleSave} disabled={isSaving} className="flex-1 md:flex-none">
             {isSaving ? (
               <>
                 <Loader2 className="h-4 w-4 mr-2 animate-spin" />

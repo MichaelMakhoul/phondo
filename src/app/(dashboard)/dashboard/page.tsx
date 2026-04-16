@@ -144,15 +144,15 @@ export default async function DashboardPage() {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <DashboardGreeting firstName={firstName} />
           <p className="text-muted-foreground">
             Here&apos;s how your AI receptionist is performing
           </p>
         </div>
-        <Link href="/assistants/new">
-          <Button className="btn-primary-glow">
+        <Link href="/assistants/new" className="shrink-0">
+          <Button className="btn-primary-glow w-full sm:w-auto">
             <Plus className="mr-2 h-4 w-4" />
             New Assistant
           </Button>

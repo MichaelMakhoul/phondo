@@ -111,36 +111,44 @@ function BillingContent() {
   }, []);
 
   const loadBillingData = async () => {
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    if (!user) return;
+    try {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) return;
 
-    const { data: membership } = (await supabase
-      .from("org_members")
-      .select("organization_id")
-      .eq("user_id", user.id)
-      .single()) as { data: { organization_id: string } | null };
+      const { data: membership } = (await supabase
+        .from("org_members")
+        .select("organization_id")
+        .eq("user_id", user.id)
+        .single()) as { data: { organization_id: string } | null };
 
-    if (!membership) return;
+      if (!membership) return;
 
-    const orgId = membership.organization_id;
+      const orgId = membership.organization_id;
 
-    // Get subscription
-    const { data: sub } = await supabase
-      .from("subscriptions")
-      .select("*")
-      .eq("organization_id", orgId)
-      .single();
+      // Get subscription
+      const { data: sub, error: subError } = await (supabase as any)
+        .from("subscriptions")
+        .select("*")
+        .eq("organization_id", orgId)
+        .single();
 
-    if (sub) {
-      setSubscription(sub as Subscription);
-      setCurrentPlan((sub as Subscription).plan_type);
-    } else {
-      setCurrentPlan(null);
+      if (subError && subError.code !== "PGRST116") {
+        console.error("Failed to load subscription:", subError);
+      }
+
+      if (sub) {
+        setSubscription(sub as Subscription);
+        setCurrentPlan((sub as Subscription).plan_type);
+      } else {
+        setCurrentPlan(null);
+      }
+    } catch (err) {
+      console.error("Failed to load billing data:", err);
+    } finally {
+      setIsLoading(false);
     }
-
-    setIsLoading(false);
   };
 
   const handleSubscribe = async (planId: string) => {

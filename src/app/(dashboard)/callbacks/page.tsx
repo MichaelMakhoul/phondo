@@ -177,23 +177,25 @@ export default async function CallbacksPage() {
 
       {/* Callbacks Table with Tabs */}
       <Tabs defaultValue="pending" className="space-y-4">
-        <TabsList>
-          <TabsTrigger value="pending" className="flex items-center gap-2">
-            <Clock className="h-4 w-4" />
-            Pending ({pendingCount})
-          </TabsTrigger>
-          <TabsTrigger value="completed" className="flex items-center gap-2">
-            <CheckCircle2 className="h-4 w-4" />
-            Completed ({completedCount})
-          </TabsTrigger>
-          <TabsTrigger value="expired" className="flex items-center gap-2">
-            <TimerOff className="h-4 w-4" />
-            Expired ({expiredCount})
-          </TabsTrigger>
-          <TabsTrigger value="all" className="flex items-center gap-2">
-            All ({allCallbacks.length})
-          </TabsTrigger>
-        </TabsList>
+        <div className="overflow-x-auto -mx-4 px-4">
+          <TabsList>
+            <TabsTrigger value="pending" className="flex items-center gap-2">
+              <Clock className="h-4 w-4" />
+              Pending ({pendingCount})
+            </TabsTrigger>
+            <TabsTrigger value="completed" className="flex items-center gap-2">
+              <CheckCircle2 className="h-4 w-4" />
+              Completed ({completedCount})
+            </TabsTrigger>
+            <TabsTrigger value="expired" className="flex items-center gap-2">
+              <TimerOff className="h-4 w-4" />
+              Expired ({expiredCount})
+            </TabsTrigger>
+            <TabsTrigger value="all" className="flex items-center gap-2">
+              All ({allCallbacks.length})
+            </TabsTrigger>
+          </TabsList>
+        </div>
 
         <TabsContent value="pending">
           <Card>

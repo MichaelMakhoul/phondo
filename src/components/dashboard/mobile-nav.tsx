@@ -15,8 +15,6 @@ import {
   CalendarDays,
   ClipboardList,
   BookOpen,
-  Users,
-  Webhook,
   CreditCard,
   Settings,
 } from "lucide-react";
@@ -40,8 +38,6 @@ const MORE_NAV_ITEMS = [
   { name: "Calendar", href: "/calendar", icon: CalendarDays },
   { name: "Appointments", href: "/appointments", icon: ClipboardList },
   { name: "Knowledge Base", href: "/settings/knowledge", icon: BookOpen },
-  { name: "Team", href: "/settings/team", icon: Users },
-  { name: "Integrations", href: "/settings/integrations", icon: Webhook },
   { name: "Billing", href: "/billing", icon: CreditCard },
   { name: "Settings", href: "/settings", icon: Settings },
 ];
@@ -68,7 +64,7 @@ export function MobileBottomNav() {
 
   return (
     <>
-      <nav className="fixed bottom-0 left-0 right-0 z-50 border-t bg-card md:hidden">
+      <nav className="fixed bottom-0 left-0 right-0 z-50 border-t bg-card pb-[env(safe-area-inset-bottom)] md:hidden">
         <div className="flex items-center justify-around">
           {MOBILE_NAV_ITEMS.map((item) => {
             const isActive = isPathActive(item.href, pathname);

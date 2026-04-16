@@ -61,19 +61,19 @@ export default async function PhoneNumbersPage() {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <div className="flex items-center gap-2">
             <h1 className="text-2xl font-bold">Phone Numbers</h1>
-            <p className="text-muted-foreground">
-              Manage phone numbers for your assistants
-            </p>
+            {showLimitBadge && (
+              <Badge variant={atLimit ? "destructive" : "secondary"}>
+                {limitInfo.currentCount} of {limitInfo.limit}
+              </Badge>
+            )}
           </div>
-          {showLimitBadge && (
-            <Badge variant={atLimit ? "destructive" : "secondary"} className="ml-2">
-              {limitInfo.currentCount} of {limitInfo.limit}
-            </Badge>
-          )}
+          <p className="text-muted-foreground">
+            Manage phone numbers for your assistants
+          </p>
         </div>
         <div className="flex items-center gap-2">
           {atLimit && (

@@ -467,9 +467,9 @@ export function BusinessSettingsForm({
             {DAYS.map((day) => (
               <div
                 key={day.key}
-                className="flex items-center gap-4 py-2 border-b last:border-0"
+                className="flex flex-col gap-2 py-2 border-b last:border-0 sm:flex-row sm:items-center sm:gap-4"
               >
-                <div className="w-28 flex items-center gap-2">
+                <div className="w-28 flex items-center gap-2 shrink-0">
                   <Switch
                     checked={!!businessHours[day.key]}
                     onCheckedChange={() => toggleDayOpen(day.key)}
@@ -478,14 +478,14 @@ export function BusinessSettingsForm({
                 </div>
 
                 {businessHours[day.key] ? (
-                  <div className="flex items-center gap-2 text-sm">
+                  <div className="flex items-center gap-2 text-sm pl-10 sm:pl-0">
                     <Input
                       type="time"
                       value={businessHours[day.key]?.open || "09:00"}
                       onChange={(e) =>
                         updateDayHours(day.key, "open", e.target.value)
                       }
-                      className="w-32"
+                      className="w-[7.5rem]"
                     />
                     <span className="text-muted-foreground">to</span>
                     <Input
@@ -494,11 +494,11 @@ export function BusinessSettingsForm({
                       onChange={(e) =>
                         updateDayHours(day.key, "close", e.target.value)
                       }
-                      className="w-32"
+                      className="w-[7.5rem]"
                     />
                   </div>
                 ) : (
-                  <span className="text-sm text-muted-foreground">Closed</span>
+                  <span className="text-sm text-muted-foreground pl-10 sm:pl-0">Closed</span>
                 )}
               </div>
             ))}

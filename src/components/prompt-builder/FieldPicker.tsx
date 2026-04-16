@@ -71,13 +71,13 @@ export function FieldPicker({ fields, onChange }: FieldPickerProps) {
   const renderFieldRow = (field: CollectionField, removable: boolean) => (
     <div
       key={field.id}
-      className="flex items-center gap-3 rounded-md border px-3 py-2"
+      className="flex flex-col gap-2 rounded-md border px-3 py-2 sm:flex-row sm:items-center sm:gap-3"
     >
-      <div className="flex-1 min-w-0">
+      <div className="shrink-0">
         <span className="text-sm font-medium">{field.label}</span>
       </div>
 
-      <div className="flex items-center gap-2 shrink-0">
+      <div className="flex items-center gap-2 sm:ml-auto shrink-0">
         <div className="flex items-center gap-1.5">
           <Switch
             checked={field.required}
@@ -93,7 +93,7 @@ export function FieldPicker({ fields, onChange }: FieldPickerProps) {
           value={field.verification}
           onValueChange={(v) => updateVerification(field.id, v as VerificationMethod)}
         >
-          <SelectTrigger className="h-7 w-[130px] text-xs">
+          <SelectTrigger className="h-7 w-[110px] text-xs">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>

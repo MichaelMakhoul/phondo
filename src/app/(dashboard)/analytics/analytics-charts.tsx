@@ -37,13 +37,13 @@ export function AnalyticsCharts({ dailyStats }: AnalyticsChartsProps) {
           <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
           <XAxis
             dataKey="label"
-            tick={{ fontSize: 12 }}
-            className="fill-muted-foreground"
+            tick={{ fontSize: 12, fill: "hsl(var(--muted-foreground))" }}
+            stroke="hsl(var(--border))"
           />
           <YAxis
             allowDecimals={false}
-            tick={{ fontSize: 12 }}
-            className="fill-muted-foreground"
+            tick={{ fontSize: 12, fill: "hsl(var(--muted-foreground))" }}
+            stroke="hsl(var(--border))"
           />
           <Tooltip
             contentStyle={{
@@ -52,6 +52,8 @@ export function AnalyticsCharts({ dailyStats }: AnalyticsChartsProps) {
               backgroundColor: "hsl(var(--popover))",
               color: "hsl(var(--popover-foreground))",
             }}
+            itemStyle={{ color: "hsl(var(--popover-foreground))" }}
+            labelStyle={{ color: "hsl(var(--popover-foreground))" }}
             formatter={(value: any, name: any) => [
               value,
               name === "answered" ? "Answered" : "Missed",
@@ -59,9 +61,11 @@ export function AnalyticsCharts({ dailyStats }: AnalyticsChartsProps) {
             labelFormatter={(label: any) => String(label)}
           />
           <Legend
-            formatter={(value: string) =>
-              value === "answered" ? "Answered" : "Missed"
-            }
+            formatter={(value: string) => (
+              <span className="text-foreground">
+                {value === "answered" ? "Answered" : "Missed"}
+              </span>
+            )}
           />
           <Bar dataKey="answered" stackId="calls" fill="hsl(142, 71%, 45%)" radius={[0, 0, 0, 0]} />
           <Bar dataKey="missed" stackId="calls" fill="hsl(var(--muted))" radius={[4, 4, 0, 0]} />
