@@ -241,22 +241,11 @@ function CallsTable({
                 </p>
               </div>
             </div>
-            <div className="flex items-center gap-2 shrink-0">
+            <div className="flex items-center gap-1.5 shrink-0 ml-2">
               {call.metadata?.answeredBy === "owner" && (
-                <Badge variant="secondary" className="text-xs">
+                <Badge variant="secondary" className="text-xs px-1">
                   <User className="h-3 w-3" />
                 </Badge>
-              )}
-              {isSpamView && call.spam_score != null && (
-                <span className="flex items-center gap-1 text-xs text-muted-foreground">
-                  <span
-                    className={`inline-block h-2 w-2 rounded-full ${
-                      call.spam_score >= 70 ? "bg-red-500" :
-                      call.spam_score >= 50 ? "bg-orange-500" : "bg-yellow-500"
-                    }`}
-                  />
-                  {call.spam_score}%
-                </span>
               )}
               <Badge
                 variant={
@@ -270,9 +259,6 @@ function CallsTable({
               >
                 {call.status}
               </Badge>
-              {(call.recording_storage_path || call.recording_url) && (
-                <Play className="h-3.5 w-3.5 text-muted-foreground" />
-              )}
               <ChevronRight className="h-4 w-4 text-muted-foreground" />
             </div>
           </Link>

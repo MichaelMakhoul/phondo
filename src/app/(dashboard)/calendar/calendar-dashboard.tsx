@@ -25,6 +25,7 @@ import {
   Phone,
   Mail,
   FileText,
+  X,
   Calendar as CalendarIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -181,6 +182,10 @@ export function CalendarDashboard({
   const [isLoading, setIsLoading] = useState(false);
   const [calendarView, setCalendarView] = useState<CalendarView>("days");
   const [detailApptId, setDetailApptId] = useState<string | null>(null);
+  const [calBannerDismissed, setCalBannerDismissed] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return localStorage.getItem("phondo:calendar-banner-dismissed") === "true";
+  });
   const [detailOpen, setDetailOpen] = useState(false);
   const [yearRangeStart, setYearRangeStart] = useState(() => Math.floor(new Date().getFullYear() / 12) * 12);
 
@@ -302,7 +307,7 @@ export function CalendarDashboard({
       </div>
 
       {/* External calendar integration banner (optional — built-in booking works without it) */}
-      {!calendarConnected && (
+      {!calendarConnected && !calBannerDismissed && (
         <Card className="border-blue-200 bg-blue-50 dark:border-blue-900 dark:bg-blue-950/50">
           <CardContent className="flex items-center gap-3 p-4">
             <CalendarCheck2 className="h-5 w-5 text-blue-600 dark:text-blue-400 shrink-0" />
@@ -315,7 +320,19 @@ export function CalendarDashboard({
               </p>
             </div>
             <Button variant="outline" size="sm" asChild>
-              <Link href="/settings/calendar">Connect</Link>
+              <Link href="/settings/scheduling">Connect</Link>
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6 shrink-0 text-blue-600 dark:text-blue-400"
+              onClick={() => {
+                setCalBannerDismissed(true);
+                localStorage.setItem("phondo:calendar-banner-dismissed", "true");
+              }}
+            >
+              <X className="h-4 w-4" />
+              <span className="sr-only">Dismiss</span>
             </Button>
           </CardContent>
         </Card>
