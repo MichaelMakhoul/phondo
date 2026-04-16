@@ -1460,6 +1460,10 @@ wss.on("connection", (twilioWs) => {
           session.assistantId = context.assistantId;
           session.phoneNumberId = context.phoneNumberId;
           session.transferRules = context.transferRules || [];
+          // SCRUM-260: expose forwarding fields so transfer_call can fall back
+          // to the business's own number when no transfer rules are configured.
+          session.userPhoneNumber = context.userPhoneNumber || null;
+          session.forwardingStatus = context.forwardingStatus || null;
           // SCRUM-238: expose behaviors on session so buildLLMOptions can
           // gate the transfer_call tool by behaviors.transferToHuman.
           session.behaviors = context.assistant?.promptConfig?.behaviors || {};
@@ -1570,6 +1574,8 @@ wss.on("connection", (twilioWs) => {
             {
               calendarEnabled: effectiveCalendarEnabled,
               transferRules: session.transferRules,
+              userPhoneNumber: session.userPhoneNumber,
+              forwardingStatus: session.forwardingStatus,
               isAfterHours,
               afterHoursConfig,
               serviceTypes: context.serviceTypes,
@@ -1859,6 +1865,8 @@ wss.on("connection", (twilioWs) => {
                       callSid: session.callSid,
                       callId: session.callRecordId,
                       transferRules: session.transferRules,
+                      userPhoneNumber: session.userPhoneNumber,
+                      forwardingStatus: session.forwardingStatus,
                       organization: session.organization,
                       callerPhone: session.callerPhone,
                       orgPhoneNumber: session.orgPhoneNumber,
@@ -2672,6 +2680,8 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
             callSid: session.callSid,
             callId: session.callRecordId,
             transferRules: session.transferRules,
+            userPhoneNumber: session.userPhoneNumber,
+            forwardingStatus: session.forwardingStatus,
             organization: session.organization,
             callerPhone: session.callerPhone,
             orgPhoneNumber: session.orgPhoneNumber,
@@ -2740,6 +2750,8 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
               calendarEnabled: session.calendarEnabled,
               serviceTypes: session.serviceTypes || [],
               transferRules: session.transferRules,
+              userPhoneNumber: session.userPhoneNumber,
+              forwardingStatus: session.forwardingStatus,
               deepgramVoice: session.deepgramVoice,
               holdPreset: session.holdPreset,
               organization: session.organization,

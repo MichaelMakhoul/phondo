@@ -117,6 +117,7 @@ interface BusinessSettingsFormProps {
     recordingDisclosureText: string;
     appointmentVerificationFields: { method: string; fields: string[] } | string[];
     sendCustomerConfirmations: boolean;
+    smsSender: string | null;
   };
 }
 
@@ -141,6 +142,8 @@ export function BusinessSettingsForm({
   const [sendCustomerConfirmations, setSendCustomerConfirmations] = useState(
     initialData.sendCustomerConfirmations ?? true
   );
+  const [smsSender, setSmsSender] = useState(initialData.smsSender || "");
+  const [smsSenderError, setSmsSenderError] = useState<string | null>(null);
   const [businessHours, setBusinessHours] = useState<BusinessHours>(
     initialData.businessHours || {
       monday: { open: "09:00", close: "17:00" },
@@ -226,6 +229,20 @@ export function BusinessSettingsForm({
 
   const handleSave = async () => {
     if (!validate()) return;
+    // SCRUM-260: validate SMS sender (alphanumeric, 1-11 chars, at least one letter)
+    if (smsSender.trim()) {
+      const s = smsSender.trim();
+      let smsErr: string | null = null;
+      if (s.length > 11) smsErr = "SMS sender must be at most 11 characters";
+      else if (!/^[A-Za-z0-9 ]+$/.test(s)) smsErr = "SMS sender can only contain letters, numbers, and spaces";
+      else if (!/[A-Za-z]/.test(s)) smsErr = "SMS sender must contain at least one letter";
+      if (smsErr) {
+        setSmsSenderError(smsErr);
+        toast({ variant: "destructive", title: "Invalid SMS sender", description: smsErr });
+        return;
+      }
+      setSmsSenderError(null);
+    }
     setIsLoading(true);
     try {
       const { error } = await (supabase as any)
@@ -246,6 +263,7 @@ export function BusinessSettingsForm({
           recording_disclosure_text: disclosureText.trim() || null,
           appointment_verification_fields: { method: verificationMethod, fields: verificationFields },
           send_customer_confirmations: sendCustomerConfirmations,
+          sms_sender: smsSender.trim() || null,
         })
         .eq("id", organizationId);
 
@@ -654,6 +672,35 @@ export function BusinessSettingsForm({
               onCheckedChange={setSendCustomerConfirmations}
             />
           </div>
+
+          {/* SCRUM-260: Alphanumeric SMS sender — shown as the sender name on texts */}
+          {sendCustomerConfirmations && (
+            <div className="rounded-lg border p-4 space-y-2">
+              <Label htmlFor="smsSender" className="text-sm font-medium">
+                SMS sender name
+              </Label>
+              <p className="text-xs text-muted-foreground">
+                What customers see as the sender when they receive a text. Up to 11 letters, numbers, and spaces — must contain at least one letter. Leave blank to send from your phone number instead.
+              </p>
+              <Input
+                id="smsSender"
+                value={smsSender}
+                onChange={(e) => {
+                  setSmsSender(e.target.value);
+                  setSmsSenderError(null);
+                }}
+                placeholder="e.g. SmileHub"
+                maxLength={11}
+                className={smsSenderError ? "border-destructive" : ""}
+              />
+              {smsSenderError && (
+                <p className="text-xs text-destructive">{smsSenderError}</p>
+              )}
+              <p className="text-xs text-muted-foreground">
+                <strong>Heads up:</strong> when sending with a sender name, customers can&apos;t reply to the text. They&apos;ll need to call you directly to change or cancel.
+              </p>
+            </div>
+          )}
         </div>
 
         <Separator />

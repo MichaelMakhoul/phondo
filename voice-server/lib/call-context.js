@@ -40,7 +40,7 @@ async function loadCallContext(calledNumber, prefetchedPhone) {
     //    since all Twilio-routed numbers now point at the voice server)
     const { data, error: phoneError } = await supabase
       .from("phone_numbers")
-      .select("id, organization_id, assistant_id")
+      .select("id, organization_id, assistant_id, user_phone_number, forwarding_status, source_type")
       .eq("phone_number", calledNumber)
       .eq("is_active", true)
       .eq("ai_enabled", true)
@@ -213,6 +213,12 @@ async function loadCallContext(calledNumber, prefetchedPhone) {
     organizationId: phone.organization_id,
     assistantId: assistant.id,
     telephonyProvider: phone.telephony_provider || "twilio",
+    // SCRUM-260: forwarding fields — the business's own number (when they
+    // forward their existing number into Phondo) and its current state.
+    // Used as a fallback transfer destination when no transfer rules exist.
+    userPhoneNumber: phone.user_phone_number || null,
+    forwardingStatus: phone.forwarding_status || null,
+    sourceType: phone.source_type || null,
     assistant: {
       name: assistant.name,
       systemPrompt: assistant.system_prompt,

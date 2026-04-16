@@ -52,6 +52,77 @@ async function resolveOrgTwilioNumber(orgId: string): Promise<string | null> {
   return result?.phoneNumber || null;
 }
 
+/**
+ * Resolve the SMS sender for an org. Prefers the alphanumeric sender ID (SCRUM-260)
+ * so customer-facing SMS show the business name instead of a phone number.
+ * Falls back to the org's phone number when:
+ *   - `sms_sender` is null (not configured), OR
+ *   - The provider is Telnyx (Telnyx doesn't support alphanumeric senders the same way)
+ */
+async function resolveSmsSender(
+  orgId: string
+): Promise<{ sender: string; isAlphanumeric: boolean; telephonyProvider: string } | null> {
+  const supabase = createAdminClient();
+  const phoneInfo = await resolveOrgPhoneNumber(orgId);
+  if (!phoneInfo) return null;
+
+  const provider = phoneInfo.telephonyProvider;
+
+  // Only Twilio supports alphanumeric senders in this codebase.
+  // Telnyx requires a provisioned sender profile; until we wire that, use phone.
+  if (provider !== "twilio") {
+    return { sender: phoneInfo.phoneNumber, isAlphanumeric: false, telephonyProvider: provider };
+  }
+
+  const { data, error } = await (supabase as any)
+    .from("organizations")
+    .select("sms_sender")
+    .eq("id", orgId)
+    .maybeSingle();
+
+  if (error) {
+    // 42703: column doesn't exist yet (pre-migration). Fall back silently.
+    if (error.code !== "42703") {
+      console.warn("[CallerSMS] Failed to read sms_sender, falling back to phone number:", {
+        orgId, code: error.code, message: error.message,
+      });
+    }
+    return { sender: phoneInfo.phoneNumber, isAlphanumeric: false, telephonyProvider: provider };
+  }
+
+  const alphanumeric = data?.sms_sender;
+  if (alphanumeric && /[A-Za-z]/.test(alphanumeric)) {
+    return { sender: alphanumeric, isAlphanumeric: true, telephonyProvider: provider };
+  }
+  return { sender: phoneInfo.phoneNumber, isAlphanumeric: false, telephonyProvider: provider };
+}
+
+/**
+ * SCRUM-260: Rewrite the opt-out instructions when the SMS sender is
+ * alphanumeric (e.g. "SmileHub"). Recipients can't reply STOP to an
+ * alphanumeric sender — the reply goes nowhere — so we replace the
+ * "Reply STOP to opt-out." line with a phone-based opt-out when a
+ * business phone is available, or drop it entirely if not.
+ */
+async function rewriteOptOutForAlphanumeric(
+  body: string,
+  orgId: string
+): Promise<string> {
+  const OPT_OUT_RE = /\n+Reply STOP to opt-out\.?\s*$/i;
+  if (!OPT_OUT_RE.test(body)) return body;
+  const supabase = createAdminClient();
+  const { data: org } = await (supabase as any)
+    .from("organizations")
+    .select("business_phone")
+    .eq("id", orgId)
+    .maybeSingle();
+  const phone = org?.business_phone;
+  const replacement = phone
+    ? `\n\nTo opt out of these messages, please call ${phone}.`
+    : ""; // No phone available — drop the reply-STOP line (can't be honored anyway)
+  return body.replace(OPT_OUT_RE, replacement);
+}
+
 async function isCallerOptedOut(
   phone: string,
   orgId: string
@@ -417,13 +488,15 @@ async function sendCallerSMS(params: {
     return { sent: false, status: "blocked_spam", reason: "caller_is_spam" };
   }
 
-  // 4. Resolve org's phone number + provider
-  const phoneInfo = await resolveOrgPhoneNumber(orgId);
-  if (!phoneInfo) {
+  // 4. Resolve SMS sender — prefers alphanumeric sender ID (business name)
+  //    so voice-only AU numbers can still send SMS. Falls back to the org's
+  //    phone number when no sms_sender is configured, or for Telnyx.
+  const senderInfo = await resolveSmsSender(orgId);
+  if (!senderInfo) {
     return { sent: false, status: "failed", reason: "no_org_phone_number" };
   }
-  const fromNumber = phoneInfo.phoneNumber;
-  const smsProvider = phoneInfo.telephonyProvider;
+  const fromNumber = senderInfo.sender;
+  const smsProvider = senderInfo.telephonyProvider;
 
   // 5. Opt-out check
   if (await isCallerOptedOut(callerPhone, orgId)) {
@@ -479,8 +552,16 @@ async function sendCallerSMS(params: {
   const statusCallback = process.env.NEXT_PUBLIC_APP_URL
     ? `${process.env.NEXT_PUBLIC_APP_URL}/api/webhooks/twilio-sms-status`
     : undefined;
+
+  // SCRUM-260: alphanumeric senders are one-way — recipients can't reply STOP.
+  // Replace the standard opt-out line with a phone-based instruction so the
+  // message remains compliant (Spam Act 2003 / TCPA require a working opt-out).
+  const finalMessageBody = senderInfo.isAlphanumeric
+    ? await rewriteOptOutForAlphanumeric(messageBody, orgId)
+    : messageBody;
+
   try {
-    const sid = await sendSmsViaProvider(callerPhone, fromNumber, messageBody, smsProvider, {
+    const sid = await sendSmsViaProvider(callerPhone, fromNumber, finalMessageBody, smsProvider, {
       statusCallback,
     });
     await logSMSSend({
@@ -488,7 +569,7 @@ async function sendCallerSMS(params: {
       callerPhone,
       fromNumber,
       messageType,
-      messageBody,
+      messageBody: finalMessageBody,
       twilioMessageSid: sid,
       status: "sent",
     });
@@ -512,7 +593,7 @@ async function sendCallerSMS(params: {
       callerPhone,
       fromNumber,
       messageType,
-      messageBody,
+      messageBody: finalMessageBody,
       status: "failed",
       errorMessage: err.message,
     });

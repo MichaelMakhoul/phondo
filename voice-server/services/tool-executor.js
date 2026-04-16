@@ -557,7 +557,34 @@ async function executeCalendarCall(functionName, args, context) {
  */
 async function executeTransferCall(args, context) {
   const { reason, urgency, summary, confirmed } = args;
-  const transferRules = context.transferRules || [];
+  let transferRules = context.transferRules || [];
+
+  // SCRUM-260: if no explicit transfer rules are configured but the business
+  // has forwarding set up (their own number redirects into Phondo), fall back
+  // to their user_phone_number as the transfer destination. Matches the
+  // intuitive expectation: "caller asked for a human → send them to the
+  // business's published line."
+  //
+  // Safety caveat: if the business uses UNCONDITIONAL forwarding, this could
+  // create a loop (their number forwards back to Phondo). Most businesses
+  // configure CONDITIONAL forwarding (busy/no-answer only) in which case
+  // transferring to their number rings their office normally. The business
+  // can override this by configuring an explicit transfer rule in the dashboard.
+  if (transferRules.length === 0 && context.userPhoneNumber && context.forwardingStatus === "active") {
+    console.log(`[Transfer] No explicit rules; using user_phone_number ${context.userPhoneNumber} as fallback destination`);
+    transferRules = [{
+      id: null,
+      name: "forwarding_fallback",
+      triggerKeywords: [],
+      triggerIntent: null,
+      transferToPhone: context.userPhoneNumber,
+      transferToName: "a team member",
+      announcementMessage: null,
+      priority: 0,
+      destinations: [],
+      requireConfirmation: false,
+    }];
+  }
 
   if (transferRules.length === 0) {
     return {

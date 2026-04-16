@@ -331,6 +331,17 @@ export function ForwardingSetupDialog({
           </div>
         </div>
         <p className="text-xs text-muted-foreground">{inst.note}</p>
+
+        {/* SCRUM-260: explain the transfer-to-human fallback */}
+        <div className="rounded-md bg-blue-50 dark:bg-blue-950/30 p-3 text-xs text-blue-900 dark:text-blue-100">
+          <p className="font-medium mb-1">One more thing — transfers to a human</p>
+          <p>
+            When a caller asks to speak to a person, the AI will transfer them back to your number ({userPhone || "your business number"}). Most businesses want this. If you want transfers to go elsewhere instead, set up Transfer Rules in Settings after you finish here.
+          </p>
+          <p className="mt-2 text-[11px] text-blue-800 dark:text-blue-200">
+            <strong>Note:</strong> if you use &quot;unconditional&quot; forwarding (forward ALL calls to us), this will create a loop. Use &quot;when busy&quot; or &quot;when unanswered&quot; forwarding, or configure a different transfer destination.
+          </p>
+        </div>
       </div>
     );
   };

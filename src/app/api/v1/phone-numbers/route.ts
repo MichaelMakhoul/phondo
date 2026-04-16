@@ -379,6 +379,31 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
+    // SCRUM-260: auto-populate the org's alphanumeric SMS sender if not yet set.
+    // Customer-facing SMS (confirmations) default to the business name. The business
+    // can customize this later in Settings. Fire-and-forget — phone purchase is the
+    // primary outcome, SMS default is a nice-to-have.
+    try {
+      const { data: orgRow } = await (supabase as any)
+        .from("organizations")
+        .select("name, business_name, sms_sender")
+        .eq("id", membership.organization_id)
+        .maybeSingle();
+      if (orgRow && !orgRow.sms_sender) {
+        const { computeDefaultSmsSender } = await import("@/lib/sms/sms-sender");
+        const defaultSender = computeDefaultSmsSender(orgRow.business_name || orgRow.name);
+        if (defaultSender) {
+          await (supabase as any)
+            .from("organizations")
+            .update({ sms_sender: defaultSender })
+            .eq("id", membership.organization_id);
+        }
+      }
+    } catch (e) {
+      // Non-fatal — SMS sender default can be populated later.
+      console.warn("[PhoneNumbers] Failed to set default sms_sender:", e);
+    }
+
     return NextResponse.json(phoneNumberRecord, { status: 201 });
   } catch (error: any) {
     console.error("Error buying phone number:", error);
