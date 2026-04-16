@@ -36,7 +36,7 @@ export default function SettingsLayout({
         </p>
       </div>
 
-      <nav className="flex gap-1 border-b overflow-x-auto">
+      <nav className="flex gap-1 border-b overflow-x-auto scrollbar-hide">
         {settingsTabs.map((tab) => {
           const isActive =
             tab.href === "/settings"

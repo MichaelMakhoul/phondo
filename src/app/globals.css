@@ -69,6 +69,14 @@
 
 /* Landing page utilities */
 @layer utilities {
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+
   .bg-hero-gradient {
     background: linear-gradient(to bottom, var(--hero-bg-from), var(--hero-bg-to));
   }

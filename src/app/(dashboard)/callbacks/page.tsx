@@ -177,7 +177,7 @@ export default async function CallbacksPage() {
 
       {/* Callbacks Table with Tabs */}
       <Tabs defaultValue="pending" className="space-y-4">
-        <div className="overflow-x-auto -mx-4 px-4">
+        <div className="overflow-x-auto scrollbar-hide -mx-4 px-4">
           <TabsList>
             <TabsTrigger value="pending" className="flex items-center gap-2">
               <Clock className="h-4 w-4" />

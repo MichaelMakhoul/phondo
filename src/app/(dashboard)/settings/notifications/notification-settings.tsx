@@ -371,7 +371,8 @@ export function NotificationSettings({
         </CardContent>
       </Card>
 
-      {/* TODO(SCRUM-235): re-enable when webhook delivery is hardened
+      {/* TODO(SCRUM-235): re-enable when webhook delivery is hardened */}
+      {false && (
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -403,7 +404,7 @@ export function NotificationSettings({
           </div>
         </CardContent>
       </Card>
-      */}
+      )}
 
       {/* Save Button */}
       <div className="flex justify-end">
