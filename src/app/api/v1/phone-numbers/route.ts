@@ -381,27 +381,35 @@ export async function POST(request: Request) {
 
     // SCRUM-260: auto-populate the org's alphanumeric SMS sender if not yet set.
     // Customer-facing SMS (confirmations) default to the business name. The business
-    // can customize this later in Settings. Fire-and-forget — phone purchase is the
-    // primary outcome, SMS default is a nice-to-have.
+    // can customize this later in Settings. Non-fatal — phone purchase is the
+    // primary outcome, SMS default is a nice-to-have — but log failures so a
+    // systematic breakage (RLS denial, schema drift) is visible in production.
     try {
-      const { data: orgRow } = await (supabase as any)
+      const { data: orgRow, error: readErr } = await (supabase as any)
         .from("organizations")
         .select("name, business_name, sms_sender")
         .eq("id", membership.organization_id)
         .maybeSingle();
+      if (readErr) throw readErr;
       if (orgRow && !orgRow.sms_sender) {
         const { computeDefaultSmsSender } = await import("@/lib/sms/sms-sender");
         const defaultSender = computeDefaultSmsSender(orgRow.business_name || orgRow.name);
         if (defaultSender) {
-          await (supabase as any)
+          const { error: updateErr } = await (supabase as any)
             .from("organizations")
             .update({ sms_sender: defaultSender })
             .eq("id", membership.organization_id);
+          if (updateErr) throw updateErr;
         }
       }
     } catch (e) {
-      // Non-fatal — SMS sender default can be populated later.
-      console.warn("[PhoneNumbers] Failed to set default sms_sender:", e);
+      // Don't block phone provisioning — but make the failure observable so
+      // we catch RLS/permission regressions that would leave every new org
+      // without a default SMS sender.
+      console.error("[PhoneNumbers] Failed to set default sms_sender (non-fatal):", {
+        organizationId: membership.organization_id,
+        error: e instanceof Error ? e.message : String(e),
+      });
     }
 
     return NextResponse.json(phoneNumberRecord, { status: 201 });

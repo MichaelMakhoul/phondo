@@ -81,12 +81,22 @@ async function resolveSmsSender(
     .maybeSingle();
 
   if (error) {
-    // 42703: column doesn't exist yet (pre-migration). Fall back silently.
-    if (error.code !== "42703") {
-      console.warn("[CallerSMS] Failed to read sms_sender, falling back to phone number:", {
-        orgId, code: error.code, message: error.message,
-      });
+    // 42703 (column doesn't exist): expected pre-migration — silent fallback.
+    // Any other error is unexpected (RLS, timeout, connection pool) — log to
+    // Sentry so we catch regressions where branded senders silently degrade
+    // to phone numbers.
+    if (error.code === "42703") {
+      return { sender: phoneInfo.phoneNumber, isAlphanumeric: false, telephonyProvider: provider };
     }
+    console.error("[CallerSMS] Failed to read sms_sender (degraded to phone):", {
+      orgId, code: error.code, message: error.message,
+    });
+    Sentry.withScope((scope) => {
+      scope.setTag("service", "caller-sms");
+      scope.setTag("reason", "sms_sender_read_failed");
+      scope.setExtras({ orgId, code: error.code });
+      Sentry.captureException(error);
+    });
     return { sender: phoneInfo.phoneNumber, isAlphanumeric: false, telephonyProvider: provider };
   }
 
@@ -101,26 +111,65 @@ async function resolveSmsSender(
  * SCRUM-260: Rewrite the opt-out instructions when the SMS sender is
  * alphanumeric (e.g. "SmileHub"). Recipients can't reply STOP to an
  * alphanumeric sender — the reply goes nowhere — so we replace the
- * "Reply STOP to opt-out." line with a phone-based opt-out when a
- * business phone is available, or drop it entirely if not.
+ * "Reply STOP to opt-out." line with a working opt-out channel.
+ *
+ * Compliance note (Australian Spam Act 2003 / US TCPA): every commercial
+ * SMS MUST carry a working unsubscribe facility. We NEVER drop the opt-out
+ * line silently. Resolution order:
+ *   1. Business phone configured → "Call {phone} to opt out"
+ *   2. No business phone → fallback to Phondo's platform opt-out email
+ *      (PHONDO_OPT_OUT_EMAIL, default support@phondo.ai) so there's ALWAYS
+ *      a working channel.
  */
+const OPT_OUT_MARKER_RE = /\n+Reply STOP to opt-?out\.?\s*$/i;
+const DEFAULT_OPT_OUT_EMAIL = "support@phondo.ai";
+
 async function rewriteOptOutForAlphanumeric(
   body: string,
   orgId: string
 ): Promise<string> {
-  const OPT_OUT_RE = /\n+Reply STOP to opt-out\.?\s*$/i;
-  if (!OPT_OUT_RE.test(body)) return body;
+  if (!OPT_OUT_MARKER_RE.test(body)) {
+    // No opt-out marker present — the template must have been modified.
+    // Surface this as a compliance alert so we can fix the template.
+    console.error("[CallerSMS] Alphanumeric SMS body has no opt-out marker — compliance risk:", {
+      orgId, bodyPreview: body.slice(0, 60),
+    });
+    Sentry.withScope((scope) => {
+      scope.setTag("service", "caller-sms");
+      scope.setTag("reason", "sms_opt_out_marker_missing");
+      scope.setExtras({ orgId, bodyPreview: body.slice(0, 60) });
+      Sentry.captureMessage("SMS body missing opt-out marker — compliance alert", "error");
+    });
+    return body;
+  }
+
   const supabase = createAdminClient();
-  const { data: org } = await (supabase as any)
+  const { data: org, error } = await (supabase as any)
     .from("organizations")
     .select("business_phone")
     .eq("id", orgId)
     .maybeSingle();
+
+  if (error) {
+    console.error("[CallerSMS] Failed to read business_phone for opt-out rewrite:", {
+      orgId, code: error.code, message: error.message,
+    });
+    Sentry.withScope((scope) => {
+      scope.setTag("service", "caller-sms");
+      scope.setTag("reason", "opt_out_phone_read_failed");
+      scope.setExtras({ orgId, code: error.code });
+      Sentry.captureException(error);
+    });
+    // Fall through — use platform email fallback so we still send a
+    // compliant opt-out instruction rather than silently dropping it.
+  }
+
   const phone = org?.business_phone;
+  const email = process.env.PHONDO_OPT_OUT_EMAIL || DEFAULT_OPT_OUT_EMAIL;
   const replacement = phone
     ? `\n\nTo opt out of these messages, please call ${phone}.`
-    : ""; // No phone available — drop the reply-STOP line (can't be honored anyway)
-  return body.replace(OPT_OUT_RE, replacement);
+    : `\n\nTo opt out of these messages, email ${email}.`;
+  return body.replace(OPT_OUT_MARKER_RE, replacement);
 }
 
 async function isCallerOptedOut(

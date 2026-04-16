@@ -9,6 +9,12 @@
 const twilioTransfer = require("./twilio-transfer");
 const telnyxTransfer = require("./telnyx-transfer");
 
+/** Mask PII phone numbers in logs: "+61412345678" → "+61***678" */
+function maskPhone(phone) {
+  if (!phone || phone.length < 6) return phone || "unknown";
+  return phone.slice(0, 3) + "***" + phone.slice(-3);
+}
+
 // Route transfer calls to the correct provider
 function getTransferService(context) {
   if (context.telephonyProvider === "telnyx") return telnyxTransfer;
@@ -565,25 +571,49 @@ async function executeTransferCall(args, context) {
   // intuitive expectation: "caller asked for a human → send them to the
   // business's published line."
   //
-  // Safety caveat: if the business uses UNCONDITIONAL forwarding, this could
-  // create a loop (their number forwards back to Phondo). Most businesses
-  // configure CONDITIONAL forwarding (busy/no-answer only) in which case
-  // transferring to their number rings their office normally. The business
-  // can override this by configuring an explicit transfer rule in the dashboard.
-  if (transferRules.length === 0 && context.userPhoneNumber && context.forwardingStatus === "active") {
-    console.log(`[Transfer] No explicit rules; using user_phone_number ${context.userPhoneNumber} as fallback destination`);
-    transferRules = [{
-      id: null,
-      name: "forwarding_fallback",
-      triggerKeywords: [],
-      triggerIntent: null,
-      transferToPhone: context.userPhoneNumber,
-      transferToName: "a team member",
-      announcementMessage: null,
-      priority: 0,
-      destinations: [],
-      requireConfirmation: false,
-    }];
+  // Guards:
+  //   - sourceType must be "forwarded" (not a purchased Phondo-pool number)
+  //   - forwarding_status must be "active" (not "pending_setup" or "paused")
+  //   - userPhoneNumber must not equal orgPhoneNumber (loop prevention — if
+  //     they match, dialing user_phone_number routes back into Phondo and
+  //     burns both legs until Twilio cuts off)
+  //
+  // Users on UNCONDITIONAL carrier forwarding can still loop via the carrier
+  // side (their number → Phondo → back to their number → Phondo again). The
+  // setup UI warns about this and recommends conditional forwarding.
+  if (
+    transferRules.length === 0 &&
+    context.userPhoneNumber &&
+    context.forwardingStatus === "active" &&
+    context.sourceType === "forwarded"
+  ) {
+    const normalized = (s) => (s || "").replace(/[^\d+]/g, "");
+    const userNorm = normalized(context.userPhoneNumber);
+    const orgNorm = normalized(context.orgPhoneNumber);
+    if (userNorm && userNorm === orgNorm) {
+      console.error(`[Transfer] user_phone_number equals Phondo number — refusing fallback to avoid loop. callSid=${context.callSid}`);
+      Sentry.withScope((scope) => {
+        scope.setTag("service", "transfer_call");
+        scope.setTag("reason", "user_phone_equals_phondo");
+        scope.setExtras({ callSid: context.callSid, organizationId: context.organizationId });
+        Sentry.captureMessage("Transfer fallback refused — user_phone_number equals Phondo number", "warning");
+      });
+      // Fall through without synthesizing the fallback rule.
+    } else {
+      console.log(`[Transfer] No explicit rules; using forwarded user_phone_number ${maskPhone(context.userPhoneNumber)} as fallback destination`);
+      transferRules = [{
+        id: null,
+        name: "forwarding_fallback",
+        triggerKeywords: [],
+        triggerIntent: null,
+        transferToPhone: context.userPhoneNumber,
+        transferToName: "a team member",
+        announcementMessage: null,
+        priority: 0,
+        destinations: [],
+        requireConfirmation: false,
+      }];
+    }
   }
 
   if (transferRules.length === 0) {

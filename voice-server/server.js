@@ -1464,6 +1464,7 @@ wss.on("connection", (twilioWs) => {
           // to the business's own number when no transfer rules are configured.
           session.userPhoneNumber = context.userPhoneNumber || null;
           session.forwardingStatus = context.forwardingStatus || null;
+          session.sourceType = context.sourceType || null;
           // SCRUM-238: expose behaviors on session so buildLLMOptions can
           // gate the transfer_call tool by behaviors.transferToHuman.
           session.behaviors = context.assistant?.promptConfig?.behaviors || {};
@@ -1576,6 +1577,7 @@ wss.on("connection", (twilioWs) => {
               transferRules: session.transferRules,
               userPhoneNumber: session.userPhoneNumber,
               forwardingStatus: session.forwardingStatus,
+              sourceType: session.sourceType,
               isAfterHours,
               afterHoursConfig,
               serviceTypes: context.serviceTypes,
@@ -1867,6 +1869,7 @@ wss.on("connection", (twilioWs) => {
                       transferRules: session.transferRules,
                       userPhoneNumber: session.userPhoneNumber,
                       forwardingStatus: session.forwardingStatus,
+                      sourceType: session.sourceType,
                       organization: session.organization,
                       callerPhone: session.callerPhone,
                       orgPhoneNumber: session.orgPhoneNumber,
@@ -2682,6 +2685,7 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
             transferRules: session.transferRules,
             userPhoneNumber: session.userPhoneNumber,
             forwardingStatus: session.forwardingStatus,
+            sourceType: session.sourceType,
             organization: session.organization,
             callerPhone: session.callerPhone,
             orgPhoneNumber: session.orgPhoneNumber,
@@ -2752,6 +2756,7 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
               transferRules: session.transferRules,
               userPhoneNumber: session.userPhoneNumber,
               forwardingStatus: session.forwardingStatus,
+              sourceType: session.sourceType,
               deepgramVoice: session.deepgramVoice,
               holdPreset: session.holdPreset,
               organization: session.organization,
