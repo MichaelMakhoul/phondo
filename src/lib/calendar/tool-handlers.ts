@@ -1096,12 +1096,18 @@ export async function handleCancelAppointment(
     .gte("start_time", new Date().toISOString())
     .order("start_time", { ascending: true });
 
-  // If a date is specified, filter to that date
+  // If a date is specified, filter to that date using the org's timezone.
+  // SCRUM-259: the naive `new Date(date)` used UTC midnight, but appointments
+  // are stored in UTC offset from the org's local time. An 8 AM AEST appointment
+  // is stored as 2026-04-20T22:00Z — a UTC-midnight filter for April 21 misses it.
+  // Use ensureTimezoneOffset (same pattern as handleLookupAppointment) to convert
+  // the local date boundaries to UTC.
   if (date) {
-    const dayStart = new Date(date);
-    const dayEnd = new Date(date);
-    dayEnd.setDate(dayEnd.getDate() + 1);
-    query = query.gte("start_time", dayStart.toISOString()).lt("start_time", dayEnd.toISOString());
+    const schedule = await getOrgSchedule(organizationId);
+    const tz = schedule?.timezone || "America/New_York";
+    const dayStartUtc = ensureTimezoneOffset(`${date}T00:00:00`, tz);
+    const dayEndUtc = ensureTimezoneOffset(`${date}T23:59:59`, tz);
+    query = query.gte("start_time", dayStartUtc).lte("start_time", dayEndUtc);
   }
 
   query = query.limit(1);
