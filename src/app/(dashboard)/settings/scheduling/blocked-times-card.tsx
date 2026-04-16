@@ -11,6 +11,16 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
+import { DatePicker } from "@/components/ui/date-picker";
+import { TimePicker } from "@/components/ui/time-picker";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useToast } from "@/components/ui/use-toast";
 import { Loader2, Plus, Trash2, Clock, AlertTriangle } from "lucide-react";
 
@@ -44,7 +54,7 @@ export function BlockedTimesCard() {
   const [showForm, setShowForm] = useState(false);
   const [conflicts, setConflicts] = useState<ConflictingAppointment[]>([]);
   const [practitioners, setPractitioners] = useState<Practitioner[]>([]);
-  const [selectedPractitioner, setSelectedPractitioner] = useState<string>("");
+  const [selectedPractitioner, setSelectedPractitioner] = useState<string>("all");
 
   // Form state
   const [title, setTitle] = useState("");
@@ -99,7 +109,7 @@ export function BlockedTimesCard() {
           endTime: endISO,
           allDay,
           reason: reason.trim() || undefined,
-          practitionerId: selectedPractitioner || null,
+          practitionerId: selectedPractitioner && selectedPractitioner !== "all" ? selectedPractitioner : null,
         }),
       });
 
@@ -115,7 +125,7 @@ export function BlockedTimesCard() {
       setDate("");
       setReason("");
       setAllDay(false);
-      setSelectedPractitioner("");
+      setSelectedPractitioner("all");
 
       if (conflictCount > 0) {
         setConflicts(newConflicts);
@@ -192,47 +202,47 @@ export function BlockedTimesCard() {
                 />
               </div>
               <div>
-                <Label>Date</Label>
-                <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+                <Label className="mb-1 block">Date</Label>
+                <DatePicker value={date} onChange={setDate} placeholder="Select date" />
               </div>
-              <div className="flex items-end gap-2">
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
+              <div className="flex items-end gap-2 pb-1">
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id="all-day"
                     checked={allDay}
-                    onChange={(e) => setAllDay(e.target.checked)}
-                    className="h-4 w-4 rounded border-input"
+                    onCheckedChange={(v) => setAllDay(v === true)}
                   />
-                  <span className="text-sm">All day</span>
-                </label>
+                  <label htmlFor="all-day" className="text-sm cursor-pointer">All day</label>
+                </div>
               </div>
               {!allDay && (
                 <>
                   <div>
-                    <Label>Start Time</Label>
-                    <Input type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} />
+                    <Label className="mb-1 block">Start Time</Label>
+                    <TimePicker value={startTime} onChange={setStartTime} />
                   </div>
                   <div>
-                    <Label>End Time</Label>
-                    <Input type="time" value={endTime} onChange={(e) => setEndTime(e.target.value)} />
+                    <Label className="mb-1 block">End Time</Label>
+                    <TimePicker value={endTime} onChange={setEndTime} />
                   </div>
                 </>
               )}
               {practitioners.length > 0 && (
                 <div className="sm:col-span-2">
-                  <Label>Applies to</Label>
-                  <select
-                    value={selectedPractitioner}
-                    onChange={(e) => setSelectedPractitioner(e.target.value)}
-                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                  >
-                    <option value="">All staff (org-wide)</option>
-                    {practitioners.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.name}{p.title ? ` — ${p.title}` : ""}
-                      </option>
-                    ))}
-                  </select>
+                  <Label className="mb-1 block">Applies to</Label>
+                  <Select value={selectedPractitioner} onValueChange={setSelectedPractitioner}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="All staff (org-wide)" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All staff (org-wide)</SelectItem>
+                      {practitioners.map((p) => (
+                        <SelectItem key={p.id} value={p.id}>
+                          {p.name}{p.title ? ` — ${p.title}` : ""}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
               )}
               <div className="sm:col-span-2">
