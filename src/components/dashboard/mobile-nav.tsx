@@ -10,36 +10,16 @@ import {
   PhoneCall,
   BarChart3,
   MoreHorizontal,
-  Phone,
-  PhoneForwarded,
-  CalendarDays,
-  ClipboardList,
-  BookOpen,
-  CreditCard,
-  Settings,
 } from "lucide-react";
-import {
-  Sheet,
-  SheetContent,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet";
+import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
+import { SidebarContent } from "@/components/dashboard/sidebar";
+import { navigation, secondaryNavigation } from "@/components/dashboard/sidebar";
 
 const MOBILE_NAV_ITEMS = [
   { name: "Home", href: "/dashboard", icon: LayoutDashboard },
   { name: "Assistants", href: "/assistants", icon: Bot },
   { name: "Calls", href: "/calls", icon: PhoneCall },
   { name: "Analytics", href: "/analytics", icon: BarChart3 },
-];
-
-const MORE_NAV_ITEMS = [
-  { name: "Phone Numbers", href: "/phone-numbers", icon: Phone },
-  { name: "Callbacks", href: "/callbacks", icon: PhoneForwarded },
-  { name: "Calendar", href: "/calendar", icon: CalendarDays },
-  { name: "Appointments", href: "/appointments", icon: ClipboardList },
-  { name: "Knowledge Base", href: "/settings/knowledge", icon: BookOpen },
-  { name: "Billing", href: "/billing", icon: CreditCard },
-  { name: "Settings", href: "/settings", icon: Settings },
 ];
 
 function isPathActive(href: string, pathname: string): boolean {
@@ -54,13 +34,18 @@ function isPathActive(href: string, pathname: string): boolean {
   return pathname === href || pathname.startsWith(`${href}/`);
 }
 
-export function MobileBottomNav() {
+interface MobileBottomNavProps {
+  currentOrg?: { name: string; type: string } | null;
+}
+
+export function MobileBottomNav({ currentOrg }: MobileBottomNavProps) {
   const pathname = usePathname();
   const [moreOpen, setMoreOpen] = useState(false);
 
-  const isMoreActive = MORE_NAV_ITEMS.some((item) =>
-    isPathActive(item.href, pathname)
-  );
+  const allNavItems = [...navigation, ...secondaryNavigation];
+  const isMoreActive = allNavItems
+    .filter((item) => !MOBILE_NAV_ITEMS.some((m) => m.href === item.href))
+    .some((item) => isPathActive(item.href, pathname));
 
   return (
     <>
@@ -102,34 +87,23 @@ export function MobileBottomNav() {
         </div>
       </nav>
 
-      {/* More sheet */}
+      {/* More drawer — reuses sidebar design */}
       <Sheet open={moreOpen} onOpenChange={setMoreOpen}>
-        <SheetContent side="bottom" className="rounded-t-xl pb-8">
-          <SheetHeader className="pb-2">
-            <SheetTitle className="text-left">More</SheetTitle>
-          </SheetHeader>
-          <nav className="grid grid-cols-4 gap-3">
-            {MORE_NAV_ITEMS.map((item) => {
-              const isActive = isPathActive(item.href, pathname);
-
-              return (
-                <Link
-                  key={item.name}
-                  href={item.href}
-                  onClick={() => setMoreOpen(false)}
-                  className={cn(
-                    "flex flex-col items-center gap-1.5 rounded-lg p-3 text-center transition-colors",
-                    isActive
-                      ? "bg-primary/10 text-primary"
-                      : "text-muted-foreground hover:bg-muted"
-                  )}
-                >
-                  <item.icon className="h-5 w-5" />
-                  <span className="text-[10px] font-medium leading-tight">{item.name}</span>
-                </Link>
-              );
-            })}
-          </nav>
+        <SheetContent
+          side="left"
+          className="w-64 p-0"
+          onClick={(e) => {
+            if ((e.target as HTMLElement).closest("a")) {
+              setMoreOpen(false);
+            }
+          }}
+        >
+          <SheetTitle className="sr-only">Navigation</SheetTitle>
+          <div className="flex h-full flex-col">
+            <SidebarContent
+              currentOrg={currentOrg ? { name: currentOrg.name, type: currentOrg.type } : undefined}
+            />
+          </div>
         </SheetContent>
       </Sheet>
     </>

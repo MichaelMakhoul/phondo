@@ -109,7 +109,7 @@ export default async function DashboardLayout({
         <main id="main-content" className="flex-1 overflow-y-auto bg-muted/30 p-4 pb-24 md:p-6 md:pb-6">
           {children}
         </main>
-        <MobileBottomNav />
+        <MobileBottomNav currentOrg={currentOrg ? { name: currentOrg.name, type: currentOrg.type || "business" } : null} />
       </div>
       {currentOrg && (
         <AnalyticsIdentifier
