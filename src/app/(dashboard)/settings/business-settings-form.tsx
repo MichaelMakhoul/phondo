@@ -108,6 +108,7 @@ interface BusinessSettingsFormProps {
     industry: string;
     websiteUrl: string;
     phone: string;
+    businessEmail: string;
     address: string;
     timezone: string;
     businessHours: BusinessHours | null;
@@ -117,6 +118,7 @@ interface BusinessSettingsFormProps {
     recordingDisclosureText: string;
     appointmentVerificationFields: { method: string; fields: string[] } | string[];
     sendCustomerConfirmations: boolean;
+    smsSender: string | null;
   };
 }
 
@@ -130,6 +132,7 @@ export function BusinessSettingsForm({
   const [industry, setIndustry] = useState(initialData.industry);
   const [websiteUrl, setWebsiteUrl] = useState(initialData.websiteUrl);
   const [phone, setPhone] = useState(initialData.phone);
+  const [businessEmail, setBusinessEmail] = useState(initialData.businessEmail || "");
   const [address, setAddress] = useState(initialData.address);
   const [timezone, setTimezone] = useState(initialData.timezone);
   const [appointmentDuration, setAppointmentDuration] = useState(
@@ -141,6 +144,8 @@ export function BusinessSettingsForm({
   const [sendCustomerConfirmations, setSendCustomerConfirmations] = useState(
     initialData.sendCustomerConfirmations ?? true
   );
+  const [smsSender, setSmsSender] = useState(initialData.smsSender || "");
+  const [smsSenderError, setSmsSenderError] = useState<string | null>(null);
   const [businessHours, setBusinessHours] = useState<BusinessHours>(
     initialData.businessHours || {
       monday: { open: "09:00", close: "17:00" },
@@ -198,6 +203,15 @@ export function BusinessSettingsForm({
       }
     }
 
+    if (businessEmail.trim()) {
+      // Matches the DB CHECK constraint: something@something.something, no spaces
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(businessEmail.trim())) {
+        newErrors.businessEmail = "Enter a valid email address";
+      } else if (businessEmail.trim().length > 254) {
+        newErrors.businessEmail = "Email is too long";
+      }
+    }
+
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };
@@ -226,6 +240,20 @@ export function BusinessSettingsForm({
 
   const handleSave = async () => {
     if (!validate()) return;
+    // SCRUM-260: validate SMS sender (alphanumeric, 1-11 chars, at least one letter)
+    if (smsSender.trim()) {
+      const s = smsSender.trim();
+      let smsErr: string | null = null;
+      if (s.length > 11) smsErr = "SMS sender must be at most 11 characters";
+      else if (!/^[A-Za-z0-9 ]+$/.test(s)) smsErr = "SMS sender can only contain letters, numbers, and spaces";
+      else if (!/[A-Za-z]/.test(s)) smsErr = "SMS sender must contain at least one letter";
+      if (smsErr) {
+        setSmsSenderError(smsErr);
+        toast({ variant: "destructive", title: "Invalid SMS sender", description: smsErr });
+        return;
+      }
+      setSmsSenderError(null);
+    }
     setIsLoading(true);
     try {
       const { error } = await (supabase as any)
@@ -237,6 +265,7 @@ export function BusinessSettingsForm({
           industry,
           business_website: websiteUrl,
           business_phone: phone,
+          business_email: businessEmail.trim() || null,
           business_address: address,
           timezone,
           business_hours: businessHours,
@@ -246,6 +275,7 @@ export function BusinessSettingsForm({
           recording_disclosure_text: disclosureText.trim() || null,
           appointment_verification_fields: { method: verificationMethod, fields: verificationFields },
           send_customer_confirmations: sendCustomerConfirmations,
+          sms_sender: smsSender.trim() || null,
         })
         .eq("id", organizationId);
 
@@ -417,6 +447,23 @@ export function BusinessSettingsForm({
             {errors.phone && (
               <p className="text-xs text-destructive">{errors.phone}</p>
             )}
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="businessEmail">Business Email</Label>
+            <Input
+              id="businessEmail"
+              type="email"
+              value={businessEmail}
+              onChange={(e) => { setBusinessEmail(e.target.value); clearError("businessEmail"); }}
+              placeholder="hello@yourbusiness.com"
+              className={errors.businessEmail ? "border-destructive" : ""}
+            />
+            {errors.businessEmail && (
+              <p className="text-xs text-destructive">{errors.businessEmail}</p>
+            )}
+            <p className="text-xs text-muted-foreground">
+              Used as an opt-out contact on text messages when you&apos;re not giving out your phone number.
+            </p>
           </div>
         </div>
 
@@ -654,6 +701,38 @@ export function BusinessSettingsForm({
               onCheckedChange={setSendCustomerConfirmations}
             />
           </div>
+
+          {/* SCRUM-260: Alphanumeric SMS sender — shown as the sender name on texts */}
+          {sendCustomerConfirmations && (
+            <div className="rounded-lg border p-4 space-y-2">
+              <Label htmlFor="smsSender" className="text-sm font-medium">
+                SMS sender name
+              </Label>
+              <p className="text-xs text-muted-foreground">
+                What customers see as the sender when they receive a text. Up to 11 letters, numbers, and spaces — must contain at least one letter. Leave blank to send from your phone number instead.
+              </p>
+              <Input
+                id="smsSender"
+                value={smsSender}
+                onChange={(e) => {
+                  setSmsSender(e.target.value);
+                  setSmsSenderError(null);
+                }}
+                placeholder="e.g. SmileHub"
+                maxLength={11}
+                className={smsSenderError ? "border-destructive" : ""}
+              />
+              {smsSenderError && (
+                <p className="text-xs text-destructive">{smsSenderError}</p>
+              )}
+              <p className="text-xs text-muted-foreground">
+                <strong>Heads up:</strong> when sending with a sender name, customers can&apos;t reply to the text. Every text will say &quot;replies aren&apos;t monitored&quot; and point them at your phone or email instead.
+              </p>
+              <p className="text-xs text-muted-foreground">
+                The contact that appears in every text (legal opt-out requirement): <strong>{phone || businessEmail || "not set"}</strong>. We prefer your phone if set, then your email. Set at least one in the Business Info section above.
+              </p>
+            </div>
+          )}
         </div>
 
         <Separator />

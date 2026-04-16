@@ -10,7 +10,7 @@ async function lookupPhoneNumber(calledNumber) {
     const supabase = getSupabase();
     const { data: phone, error } = await supabase
       .from("phone_numbers")
-      .select("id, organization_id, assistant_id, ai_enabled, organizations(name, country, recording_consent_mode, business_state, recording_disclosure_text)")
+      .select("id, organization_id, assistant_id, ai_enabled, user_phone_number, forwarding_status, source_type, organizations(name, country, recording_consent_mode, business_state, recording_disclosure_text)")
       .eq("phone_number", calledNumber)
       .eq("is_active", true)
       .single();

@@ -21,6 +21,7 @@ interface Organization {
   industry: string | null;
   business_website: string | null;
   business_phone: string | null;
+  business_email: string | null;
   business_address: string | null;
   timezone: string | null;
   country: string | null;
@@ -31,6 +32,7 @@ interface Organization {
   recording_disclosure_text: string | null;
   appointment_verification_fields: string[] | null;
   send_customer_confirmations: boolean | null;
+  sms_sender: string | null;
 }
 
 interface Membership {
@@ -55,10 +57,10 @@ export default async function SettingsPage() {
       role,
       organizations (
         id, name, slug, type, logo_url, primary_color,
-        business_name, industry, business_website, business_phone, business_address,
+        business_name, industry, business_website, business_phone, business_email, business_address,
         timezone, country, business_hours, default_appointment_duration,
         business_state, recording_consent_mode, recording_disclosure_text, appointment_verification_fields,
-        send_customer_confirmations
+        send_customer_confirmations, sms_sender
       )
     `
     )
@@ -81,6 +83,7 @@ export default async function SettingsPage() {
           industry: organization.industry || "",
           websiteUrl: organization.business_website || "",
           phone: organization.business_phone || "",
+          businessEmail: organization.business_email || "",
           address: organization.business_address || "",
           timezone: organization.timezone || "America/New_York",
           businessHours: organization.business_hours || null,
@@ -90,6 +93,7 @@ export default async function SettingsPage() {
           recordingDisclosureText: organization.recording_disclosure_text || "",
           appointmentVerificationFields: organization.appointment_verification_fields || ["name", "phone"],
           sendCustomerConfirmations: organization.send_customer_confirmations !== false,
+          smsSender: organization.sms_sender || null,
         }}
       />
 
