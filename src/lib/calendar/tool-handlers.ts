@@ -736,7 +736,7 @@ export async function handleGetCurrentDatetime(
     const schedule = await getOrgSchedule(organizationId);
     if (schedule?.timezone) timezone = schedule.timezone;
   } catch (error) {
-    console.error("Failed to fetch org timezone for get_current_datetime, falling back to America/New_York:", {
+    console.error("Failed to fetch org timezone for get_current_datetime, falling back to Australia/Sydney:", {
       organizationId,
       error: error instanceof Error ? error.message : String(error),
     });
@@ -1099,22 +1099,30 @@ export async function handleCancelAppointment(
     .gte("start_time", new Date().toISOString())
     .order("start_time", { ascending: true });
 
-  const schedule = await getOrgSchedule(organizationId);
+  // Consistent with rest of file — catch DB errors gracefully.
+  const schedule = await getOrgSchedule(organizationId).catch(() => null);
   const tz = schedule?.timezone || "Australia/Sydney";
 
   // SCRUM-259: exact datetime match takes priority — used when cancelling
   // an appointment just booked in the same call ("cancel the 10:15 one").
-  if (datetime) {
-    const dtUtc = ensureTimezoneOffset(datetime, tz);
-    // ±15 min window to handle rounding
-    const dtStart = new Date(new Date(dtUtc).getTime() - 15 * 60 * 1000).toISOString();
-    const dtEnd = new Date(new Date(dtUtc).getTime() + 15 * 60 * 1000).toISOString();
-    query = query.gte("start_time", dtStart).lte("start_time", dtEnd);
-  } else if (date) {
-    // Day-level filter using the org's timezone.
-    const dayStartUtc = ensureTimezoneOffset(`${date}T00:00:00`, tz);
-    const dayEndUtc = ensureTimezoneOffset(`${date}T23:59:59`, tz);
-    query = query.gte("start_time", dayStartUtc).lte("start_time", dayEndUtc);
+  // Wrapped in try-catch to guard against malformed datetime strings that
+  // pass the regex (e.g., "9999-99-99T99:99") but produce Invalid Date.
+  try {
+    if (datetime) {
+      const dtUtc = ensureTimezoneOffset(datetime, tz);
+      const dtMs = new Date(dtUtc).getTime();
+      if (isNaN(dtMs)) throw new Error("Invalid datetime");
+      const dtStart = new Date(dtMs - 15 * 60 * 1000).toISOString();
+      const dtEnd = new Date(dtMs + 15 * 60 * 1000).toISOString();
+      query = query.gte("start_time", dtStart).lte("start_time", dtEnd);
+    } else if (date) {
+      const dayStartUtc = ensureTimezoneOffset(`${date}T00:00:00`, tz);
+      const dayEndUtc = ensureTimezoneOffset(`${date}T23:59:59`, tz);
+      query = query.gte("start_time", dayStartUtc).lte("start_time", dayEndUtc);
+    }
+  } catch (dateErr) {
+    console.warn("cancel_appointment: invalid date/datetime, skipping date filter:", { date, datetime, error: dateErr });
+    // Fall through without date filter — phone-only lookup is still valid.
   }
 
   // Fetch up to 5 matches — if there are multiple, ask Sophie to disambiguate.

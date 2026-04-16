@@ -1846,6 +1846,9 @@ wss.on("connection", (twilioWs) => {
                     }
                   }
 
+                  // Flag so goodbye-loop auto-end knows a tool call is in progress
+                  // and won't close the session mid-execution.
+                  if (session) session._toolCallInFlight = true;
                   const result = await executeToolCall(toolCall.name, toolCall.args, {
                     organizationId: session.organizationId,
                     assistantId: session.assistantId,
@@ -1858,6 +1861,7 @@ wss.on("connection", (twilioWs) => {
                     telephonyProvider: session.telephonyProvider || "twilio",
                     scheduleSnapshot: session.scheduleSnapshot,
                   });
+                  if (session) session._toolCallInFlight = false;
                   const message = typeof result === "string" ? result : result.message;
                   console.log(`[GeminiLive] Tool result: "${message.slice(0, 100)}"`);
 
@@ -1926,48 +1930,10 @@ wss.on("connection", (twilioWs) => {
                   pendingUserTranscript += text;
                 },
                 onTranscriptOut: (text) => {
-                  // Buffer AI transcript fragments — flush on turn complete
+                  // Buffer AI transcript fragments — flush on turn complete.
+                  // Goodbye-loop detection moved to onTurnComplete so the counter
+                  // increments once per TURN, not once per streaming fragment.
                   pendingAiTranscript += text;
-
-                  // SCRUM-258: goodbye-loop detector. If Sophie says "goodbye"-type
-                  // phrases 3+ times in a row without calling end_call, something
-                  // has gone wrong. Auto-end the call.
-                  // NOTE: test against pendingAiTranscript (accumulated turn), not
-                  // the raw fragment `text`, because streaming delivers one word at
-                  // a time (e.g., "Have" + " a great" + " day.").
-                  if (session) {
-                    const isGoodbye = /\b(goodbye|bye|have a (great|nice|wonderful) day|take care|see you)\b/i.test(pendingAiTranscript);
-                    if (isGoodbye) {
-                      session.consecutiveGoodbyeCount = (session.consecutiveGoodbyeCount || 0) + 1;
-                      if (session.consecutiveGoodbyeCount >= 3) {
-                        console.warn(`[GoodbyeLoop] Detected ${session.consecutiveGoodbyeCount} consecutive goodbye outputs without end_call. callSid=${session.callSid}`);
-                        if (session.consecutiveGoodbyeCount >= 3 && !session._goodbyeAutoEndFired) {
-                          session._goodbyeAutoEndFired = true;
-                          Sentry.withScope((scope) => {
-                            scope.setTag("service", "goodbye_loop_detector");
-                            scope.setExtras({
-                              callSid: session.callSid,
-                              organizationId: session.organizationId,
-                              count: session.consecutiveGoodbyeCount,
-                            });
-                            Sentry.captureMessage("Goodbye loop detected — auto-ending call", "warning");
-                          });
-                          // SCRUM-258: auto-end the call when 3+ consecutive goodbyes
-                          // AND the conversation has clearly concluded. Gemini can't
-                          // reliably combine speech + end_call in one turn, so we
-                          // do it server-side.
-                          console.log(`[GoodbyeLoop] Auto-ending call after ${session.consecutiveGoodbyeCount} goodbyes. callSid=${session.callSid}`);
-                          session.endedReason = "goodbye_loop_autoend";
-                          try { if (session.geminiSession?.close) session.geminiSession.close(); } catch (e) { /* swallow */ }
-                          if (twilioWs.readyState === WebSocket.OPEN) {
-                            twilioWs.close(1000, "end_call");
-                          }
-                        }
-                      }
-                    } else if (text.trim().length > 5) {
-                      session.consecutiveGoodbyeCount = 0;
-                    }
-                  }
                 },
                 onInterrupted: () => {
                   // Guard: session may be null if Gemini delivers buffered events after cleanup
@@ -1999,8 +1965,44 @@ wss.on("connection", (twilioWs) => {
                     pendingUserTranscript = "";
                   }
                   if (pendingAiTranscript.trim()) {
-                    session.addMessage("assistant", pendingAiTranscript.trim());
-                    console.log(`[GeminiLive] AI (turn): "${pendingAiTranscript.trim().slice(0, 100)}"`);
+                    const aiTurnText = pendingAiTranscript.trim();
+                    session.addMessage("assistant", aiTurnText);
+                    console.log(`[GeminiLive] AI (turn): "${aiTurnText.slice(0, 100)}"`);
+
+                    // SCRUM-258: goodbye-loop detector — runs once per COMPLETE turn,
+                    // not per streaming fragment, to count TURNS not fragments.
+                    const isGoodbye = /\b(goodbye|bye|have a (great|nice|wonderful) day|take care|see you)\b/i.test(aiTurnText);
+                    if (isGoodbye) {
+                      session.consecutiveGoodbyeCount = (session.consecutiveGoodbyeCount || 0) + 1;
+                      if (session.consecutiveGoodbyeCount >= 3 && !session._goodbyeAutoEndFired) {
+                        // Guard: don't auto-end if a tool call is in-flight — the booking
+                        // may have succeeded and the result hasn't been read back yet.
+                        const toolInFlight = session._toolCallInFlight;
+                        if (toolInFlight) {
+                          console.warn(`[GoodbyeLoop] Skipping auto-end — tool call in flight. callSid=${session.callSid}`);
+                        } else {
+                          session._goodbyeAutoEndFired = true;
+                          console.log(`[GoodbyeLoop] Auto-ending call after ${session.consecutiveGoodbyeCount} goodbye turns. callSid=${session.callSid}`);
+                          Sentry.withScope((scope) => {
+                            scope.setTag("service", "goodbye_loop_detector");
+                            scope.setExtras({ callSid: session.callSid, count: session.consecutiveGoodbyeCount });
+                            Sentry.captureMessage("Goodbye loop detected — auto-ending call", "warning");
+                          });
+                          session.endedReason = "goodbye_loop_autoend";
+                          try {
+                            if (session.geminiSession?.close) session.geminiSession.close();
+                          } catch (closeErr) {
+                            console.warn("[GoodbyeLoop] Error closing Gemini session:", closeErr);
+                          }
+                          if (twilioWs.readyState === WebSocket.OPEN) {
+                            twilioWs.close(1000, "end_call");
+                          }
+                        }
+                      }
+                    } else if (aiTurnText.length > 10) {
+                      session.consecutiveGoodbyeCount = 0;
+                    }
+
                     pendingAiTranscript = "";
                   }
                 },

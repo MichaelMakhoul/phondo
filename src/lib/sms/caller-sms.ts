@@ -606,7 +606,7 @@ export async function sendAppointmentConfirmationSMS(
   const businessName = org?.business_name || "our office";
   const businessPhone = org?.business_phone || "";
 
-  const tz = timezone || org?.timezone || "America/New_York";
+  const tz = timezone || org?.timezone || "Australia/Sydney";
   const dateStr = startTime.toLocaleDateString("en-US", {
     weekday: "long",
     month: "long",
@@ -669,7 +669,7 @@ export async function sendCancellationSMS(
   const businessName = org?.business_name || "our office";
   const businessPhone = org?.business_phone || "";
 
-  const tz = timezone || org?.timezone || "America/New_York";
+  const tz = timezone || org?.timezone || "Australia/Sydney";
   const dateStr = startTime.toLocaleDateString("en-US", {
     weekday: "long",
     month: "long",
