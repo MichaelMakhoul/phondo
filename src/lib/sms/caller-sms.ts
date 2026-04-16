@@ -15,6 +15,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { getNotificationPreferences } from "@/lib/notifications/notification-service";
 import { getTwilioClient } from "@/lib/twilio/client";
 import { hasFeatureAccess } from "@/lib/stripe/billing-service";
+import { OPT_OUT_MARKER_RE } from "./sms-sender";
 
 type MessageType =
   | "missed_call_textback"
@@ -121,7 +122,6 @@ async function resolveSmsSender(
  *      (PHONDO_OPT_OUT_EMAIL, default support@phondo.ai) so there's ALWAYS
  *      a working channel.
  */
-const OPT_OUT_MARKER_RE = /\n+Reply STOP to opt-?out\.?\s*$/i;
 const DEFAULT_OPT_OUT_EMAIL = "support@phondo.ai";
 
 async function rewriteOptOutForAlphanumeric(

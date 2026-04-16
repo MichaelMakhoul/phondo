@@ -699,6 +699,9 @@ export function BusinessSettingsForm({
               <p className="text-xs text-muted-foreground">
                 <strong>Heads up:</strong> when sending with a sender name, customers can&apos;t reply to the text. They&apos;ll need to call you directly to change or cancel.
               </p>
+              <p className="text-xs text-muted-foreground">
+                Because replies don&apos;t work, your business phone number ({phone || "set in the Business Info section above"}) will appear in every confirmation SMS as the opt-out contact (legal requirement). Make sure this is a number you&apos;re happy to share with customers.
+              </p>
             </div>
           )}
         </div>

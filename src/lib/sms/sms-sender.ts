@@ -45,3 +45,17 @@ export function validateSmsSender(sender: string): string | null {
 export function isPhoneNumberSender(sender: string): boolean {
   return /^\+\d+$/.test(sender);
 }
+
+/**
+ * Shared marker for the "Reply STOP to opt-out" line in outbound SMS templates.
+ * Keep templates and the opt-out rewriter in sync — if you change the text
+ * of the opt-out line, update the `OPT_OUT_MARKER_TEXT` below and re-run
+ * the sms-sender tests.
+ *
+ * The rewriter uses this regex to locate and replace the opt-out line when
+ * the sender is alphanumeric (recipients can't reply to alphanumeric IDs).
+ */
+export const OPT_OUT_MARKER_TEXT = "Reply STOP to opt-out.";
+// Matches "Reply STOP to opt-out" / "opt out" / "optout" (any hyphen/space)
+// at the tail of the body, with or without the trailing period.
+export const OPT_OUT_MARKER_RE = /\n+Reply STOP to opt[\s-]?out\.?\s*$/i;

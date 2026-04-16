@@ -617,13 +617,20 @@ async function executeTransferCall(args, context) {
   }
 
   if (transferRules.length === 0) {
+    // SCRUM-260: if forwarding exists but is still "pending_setup" (business
+    // hasn't completed the carrier setup yet), the team isn't actually
+    // reachable by transfer. Take a message instead and note the status.
+    const forwardingPending =
+      context.sourceType === "forwarded" &&
+      context.forwardingStatus === "pending_setup";
     return {
       message:
         "I apologize, but I'm not able to transfer your call right now. Let me take your information and have someone call you back. Can you confirm your name and phone number?",
       transferAttempt: {
         ruleId: null, ruleName: null, targetPhone: null, targetName: null,
         reason: reason || null, urgency: urgency || "low",
-        outcome: "no_rules_configured", outsideBusinessHours: false,
+        outcome: forwardingPending ? "forwarding_pending_setup" : "no_rules_configured",
+        outsideBusinessHours: false,
         timestamp: new Date().toISOString(),
       },
     };
