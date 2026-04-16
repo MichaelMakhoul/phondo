@@ -88,6 +88,11 @@ export function ROICalculator() {
             Net savings: {formatCurrency(stats.netSavingsPerYear)}/year after plan cost
           </p>
         </div>
+
+        <p className="text-[10px] text-muted-foreground leading-relaxed">
+          Estimates based on industry averages: $450 revenue per missed call, 47% recovery rate with AI + SMS, Professional plan at $249/mo.
+          Your actual savings depend on your call value, conversion rate, and selected plan.
+        </p>
       </div>
     </div>
   );

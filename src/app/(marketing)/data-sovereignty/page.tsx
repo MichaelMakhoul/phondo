@@ -26,7 +26,7 @@ const INFRASTRUCTURE = [
     icon: Server,
     title: "Australian-Hosted Database",
     description:
-      "All call data, transcripts, and business information stored on Supabase servers in Sydney (ap-southeast-2). Your data never leaves Australian soil.",
+      "All call data, transcripts, and business information stored in Sydney (ap-southeast-2) on enterprise-grade managed infrastructure. Your data never leaves Australian soil.",
   },
   {
     icon: Globe,
@@ -44,7 +44,7 @@ const INFRASTRUCTURE = [
     icon: MapPin,
     title: "Australian Voice Processing",
     description:
-      "Voice calls routed through our Sydney-based voice server on Fly.io. Call metadata and transcripts stored exclusively in Australia.",
+      "Voice calls routed through our Sydney-based voice servers. Call metadata and transcripts stored exclusively in Australia.",
   },
 ];
 
@@ -55,7 +55,7 @@ const COMPLIANCE_POINTS = [
   "No data shared with offshore third parties without consent",
   "Call recording consent handled per state requirements",
   "Enterprise-grade infrastructure with built-in security monitoring",
-  "Hosted on SOC 2 Type II certified infrastructure (Supabase)",
+  "Hosted on SOC 2 Type II certified managed infrastructure",
   "GDPR-ready for international clients",
 ];
 

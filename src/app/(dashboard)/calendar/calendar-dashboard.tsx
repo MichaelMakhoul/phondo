@@ -300,21 +300,21 @@ export function CalendarDashboard({
         </Card>
       </div>
 
-      {/* Warning Banner */}
+      {/* External calendar integration banner (optional — built-in booking works without it) */}
       {!calendarConnected && (
-        <Card className="border-amber-200 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/50">
+        <Card className="border-blue-200 bg-blue-50 dark:border-blue-900 dark:bg-blue-950/50">
           <CardContent className="flex items-center gap-3 p-4">
-            <AlertTriangle className="h-5 w-5 text-amber-600 dark:text-amber-400 shrink-0" />
+            <CalendarCheck2 className="h-5 w-5 text-blue-600 dark:text-blue-400 shrink-0" />
             <div className="flex-1">
-              <p className="text-sm font-medium text-amber-800 dark:text-amber-200">
-                Calendar not connected
+              <p className="text-sm font-medium text-blue-800 dark:text-blue-200">
+                External calendar sync (optional)
               </p>
-              <p className="text-sm text-amber-600 dark:text-amber-400">
-                Connect your Cal.com calendar to enable appointment booking.
+              <p className="text-sm text-blue-600 dark:text-blue-400">
+                Connect an external calendar for two-way sync with your existing scheduling tools.
               </p>
             </div>
             <Button variant="outline" size="sm" asChild>
-              <Link href="/settings/calendar">Connect Calendar</Link>
+              <Link href="/settings/calendar">Connect</Link>
             </Button>
           </CardContent>
         </Card>
