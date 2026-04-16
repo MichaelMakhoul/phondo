@@ -38,7 +38,7 @@ const callbackToolDefinition = {
   function: {
     name: "schedule_callback",
     description:
-      "Schedule a callback request when a caller wants the business to call them back. Use this when the caller requests a callback, when you cannot resolve their issue, or when the person they need is unavailable.",
+      "Schedule a callback request in the database. You MUST call this function to actually schedule a callback — do NOT tell the caller a callback is scheduled until this tool returns success. Use when the caller requests a callback, when you cannot resolve their issue, or when the person they need is unavailable.",
     parameters: {
       type: "object",
       properties: {
@@ -123,7 +123,7 @@ const calendarToolDefinitions = [
     function: {
       name: "book_appointment",
       description:
-        "Book an appointment. You MUST ask for the caller's first name and last name separately BEFORE calling this tool. Never guess or fabricate names.",
+        "Executes the actual booking in the database. You MUST call this function to secure a time slot — it is IMPOSSIBLE to book an appointment without calling this tool. Do NOT verbally confirm a booking to the caller until this tool returns a success response. Collect first name, last name, phone, and datetime BEFORE calling.",
       parameters: {
         type: "object",
         properties: {
@@ -173,7 +173,7 @@ const calendarToolDefinitions = [
     function: {
       name: "cancel_appointment",
       description:
-        "Cancel an existing appointment. Use the caller's phone number + datetime for precise match (BEST), or phone + date. If you just booked the appointment, use the exact datetime from the booking result.",
+        "Cancel an existing appointment in the database. You MUST call this function to actually cancel — do NOT tell the caller the appointment is cancelled until this tool returns success. Use phone + datetime for precise match, or phone + date.",
       parameters: {
         type: "object",
         properties: {

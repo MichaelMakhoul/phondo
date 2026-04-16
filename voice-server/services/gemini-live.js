@@ -354,6 +354,22 @@ function createGeminiSession(config, callbacks) {
       return { input: transcriptIn, output: transcriptOut };
     },
 
+    /**
+     * Inject a text message into Gemini's context mid-conversation.
+     * Used by the phantom action detector to nudge Gemini to call a
+     * tool it skipped, and by the Tier 2 validator for corrections.
+     * @param {string} text — the correction/instruction text
+     */
+    sendText(text) {
+      if (ws.readyState !== WebSocket.OPEN) return;
+      try {
+        ws.send(JSON.stringify({ realtimeInput: { text } }));
+        console.log(`[GeminiLive] Injected text: "${text.slice(0, 100)}..."`);
+      } catch (err) {
+        console.error("[GeminiLive] sendText failed:", err.message);
+      }
+    },
+
     /** Close the session */
     close() {
       if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {

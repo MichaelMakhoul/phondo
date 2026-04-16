@@ -19,6 +19,7 @@ const scheduleCache = require("./lib/schedule-cache");
 const { createCallRecord, completeCallRecord, notifyCallCompleted } = require("./lib/call-logger");
 const { calendarToolDefinitions, listServiceTypesToolDefinition, transferToolDefinition, callbackToolDefinition, endCallToolDefinition, executeToolCall } = require("./services/tool-executor");
 const { createGeminiSession } = require("./services/gemini-live");
+const { validateToolResponse } = require("./services/turn-validator");
 // SCRUM-166 outbound calling service (cherry-picked to main for smoke testing)
 const {
   makeOutboundCall,
@@ -1738,7 +1739,7 @@ wss.on("connection", (twilioWs) => {
 
             // CRITICAL — tool calling, filler words, and name enforcement
             geminiSystemPrompt += `\n\nCRITICAL RULES FOR THIS CONVERSATION:`;
-            geminiSystemPrompt += `\n- ABSOLUTELY NEVER FABRICATE ACTIONS: This is the most important rule. You have tools (book_appointment, schedule_callback, check_availability, lookup_appointment, cancel_appointment, etc). You MUST call the tool AND receive a SUCCESS response BEFORE telling the caller the action was done. NEVER say "I've booked", "I've scheduled", "I've checked", "I've cancelled" UNLESS the tool already returned success. If you need to book, say "Let me book that for you" then call the tool, then ONLY after success say "Done, your appointment is booked." NEVER confirm an action before the tool responds.`;
+            geminiSystemPrompt += `\n- ABSOLUTELY NEVER FABRICATE ACTIONS: This is the most important rule. It is IMPOSSIBLE to book, cancel, or schedule anything without calling the corresponding tool. The tools (book_appointment, cancel_appointment, schedule_callback) are the ONLY way actions happen in the database. If you say "I've booked your appointment" without calling book_appointment first, the caller will have NO actual appointment — this is a catastrophic failure. The correct sequence is ALWAYS: (1) say a filler phrase like "One moment, let me do that for you", (2) CALL THE TOOL, (3) WAIT for the tool to return a result, (4) ONLY THEN tell the caller what happened based on the tool's response. NEVER speak the words "booked", "confirmed", "cancelled", "scheduled" BEFORE the tool returns. If you catch yourself about to confirm an action — STOP and call the tool first.`;
             // Build name verification instruction based on business config
             // Check verification method for name fields (first_name or legacy full_name)
             const nameField = context.assistant.promptConfig?.fields?.find((f) => f.id === "first_name" || f.id === "full_name");
@@ -1773,7 +1774,8 @@ wss.on("connection", (twilioWs) => {
               `  7. You read back the booking details (name, date, time, practitioner) from the tool result\n` +
               `  8. You tell the caller they will receive a confirmation text\n` +
               `  9. You call end_call AFTER the caller acknowledges\n\n` +
-              `YOU MUST NOT speak the words "you're all set", "I've booked", or "your appointment is confirmed" BEFORE step 5 completes successfully. If you speak these words without a prior successful book_appointment tool call, THE CALL HAS FAILED and the caller will have no actual appointment.\n\n` +
+              `BETWEEN step 4 and step 7, you MUST be SILENT — do not speak any words while the tool is executing. Wait for the tool result before opening your mouth again. The tool call takes 1-3 seconds; the caller will hear your filler phrase during this time.\n\n` +
+              `YOU MUST NOT speak the words "you're all set", "I've booked", "appointment is confirmed", or anything that implies success BEFORE step 6 (tool result) arrives. If you speak these words without a prior successful book_appointment result, THE CALL HAS FAILED and the caller has NO actual appointment.\n\n` +
               `If book_appointment returns an error, do NOT pretend the booking succeeded. Say: "I'm really sorry, I'm having trouble completing that booking — let me take your details and have someone call you back." Then call schedule_callback.\n` +
               `══════════════════════════════════════════════════════`;
 
@@ -1868,6 +1870,12 @@ wss.on("connection", (twilioWs) => {
                   }
                   const message = typeof result === "string" ? result : result.message;
                   console.log(`[GeminiLive] Tool result: "${message.slice(0, 100)}"`);
+
+                  // Track last tool result for Tier 2 validator — it compares
+                  // Sophie's spoken response against what the tool actually returned.
+                  if (session) {
+                    session._lastToolResult = { name: toolCall.name, message, at: Date.now() };
+                  }
 
                   // SCRUM-227: audit tool calls so cleanupSession can detect
                   // hallucinated bookings (AI said "booked" but never called the tool).
@@ -2009,6 +2017,104 @@ wss.on("connection", (twilioWs) => {
                       }
                     } else if (aiTurnText.length > 10) {
                       session.consecutiveGoodbyeCount = 0;
+                    }
+
+                    // ── TIER 1: Phantom action detector ──────────────────────
+                    // If Sophie claimed an action (booking, cancel, callback)
+                    // but the corresponding tool was never called successfully,
+                    // inject a correction into Gemini's context so it actually
+                    // calls the tool on the next turn.
+                    const actionClaims = {
+                      booking: /\b(i've booked|you'?re all set|your appointment (?:is|has been) (?:booked|confirmed)|booked you in)\b/i,
+                      cancellation: /\b(i've cancel|that'?s cancel|appointment (?:is|has been) cancel|cancel.*for you)\b/i,
+                      callback: /\b(i've scheduled.*callback|callback (?:is|has been) scheduled|someone will call you back)\b/i,
+                    };
+
+                    for (const [action, regex] of Object.entries(actionClaims)) {
+                      if (!regex.test(aiTurnText)) continue;
+
+                      const toolName = action === "booking" ? "book_appointment"
+                                     : action === "cancellation" ? "cancel_appointment"
+                                     : "schedule_callback";
+
+                      const hadTool = (session.toolCallAudit || []).some(
+                        (t) => t.name === toolName && t.successful
+                      );
+
+                      if (!hadTool) {
+                        session._phantomActionCount = (session._phantomActionCount || 0) + 1;
+                        console.error(
+                          `[PhantomAction] Sophie claimed ${action} but ${toolName} was never called successfully ` +
+                          `(attempt ${session._phantomActionCount}). callSid=${session.callSid}`
+                        );
+                        Sentry.withScope((scope) => {
+                          scope.setTag("service", "phantom_action_detector");
+                          scope.setTag("action", action);
+                          scope.setExtras({ callSid: session.callSid, toolName, attempt: session._phantomActionCount });
+                          Sentry.captureMessage(`Phantom ${action} detected — tool never called`, "error");
+                        });
+
+                        // Inject correction — but limit to 2 attempts to avoid an
+                        // infinite correction loop if Gemini keeps ignoring us.
+                        if (session._phantomActionCount <= 2 && session.geminiSession?.sendText) {
+                          session.geminiSession.sendText(
+                            `CRITICAL ERROR: You just told the caller the ${action} was done, but you did NOT call ${toolName}. ` +
+                            `The action did NOT happen — the caller has NO ${action === "booking" ? "appointment" : action}. ` +
+                            `You MUST now: (1) apologize briefly ("I'm sorry, let me actually do that for you now"), ` +
+                            `(2) call ${toolName} NOW with the correct details, ` +
+                            `(3) then confirm the REAL result to the caller. Do NOT end the call until ${toolName} has been called.`
+                          );
+                        } else if (session._phantomActionCount > 2) {
+                          // Gemini is ignoring corrections — fall back to schedule_callback
+                          console.error(`[PhantomAction] ${session._phantomActionCount} phantom attempts — falling back to callback. callSid=${session.callSid}`);
+                          if (session.geminiSession?.sendText) {
+                            session.geminiSession.sendText(
+                              `STOP: You have failed to call ${toolName} after multiple attempts. ` +
+                              `Apologize to the caller and say: "I'm having some technical difficulties — ` +
+                              `let me take your details and have someone call you back to confirm." ` +
+                              `Then call schedule_callback with the caller's details.`
+                            );
+                          }
+                        }
+                        break; // Only handle the first matching claim per turn
+                      }
+                    }
+
+                    // ── TIER 2: Claude Haiku tool-result validator ────────────
+                    // After a tool result turn, compare Sophie's spoken response
+                    // against what the tool actually returned. Catches wrong dates,
+                    // times, practitioner names, and other subtle mismatches.
+                    // Runs async — no caller-facing latency. Correction injected
+                    // into Gemini's next turn if discrepancy found.
+                    if (session._lastToolResult && !session._phantomActionCount) {
+                      const lastTool = session._lastToolResult;
+                      // Only validate if this turn is likely the response to the tool
+                      // (within 10 seconds of the tool result)
+                      if (Date.now() - lastTool.at < 10000) {
+                        validateToolResponse({
+                          toolName: lastTool.name,
+                          toolResult: lastTool.message,
+                          spokenResponse: aiTurnText,
+                        }).then((validation) => {
+                          if (!validation.accurate && session?.geminiSession?.sendText) {
+                            console.warn(`[Tier2Validator] Discrepancy in ${lastTool.name}: ${validation.discrepancy}. callSid=${session.callSid}`);
+                            Sentry.withScope((scope) => {
+                              scope.setTag("service", "tier2_validator");
+                              scope.setExtras({ callSid: session.callSid, toolName: lastTool.name, discrepancy: validation.discrepancy });
+                              Sentry.captureMessage(`Tier 2: detail mismatch in ${lastTool.name}`, "warning");
+                            });
+                            session.geminiSession.sendText(
+                              `CORRECTION: You told the caller something that doesn't match what actually happened. ` +
+                              `The discrepancy is: ${validation.discrepancy}. ` +
+                              `Please correct this with the caller now — say "Actually, let me clarify that..." ` +
+                              `and give them the correct information from the tool result.`
+                            );
+                          }
+                        }).catch((err) => {
+                          console.warn("[Tier2Validator] Validation error (non-fatal):", err.message);
+                        });
+                      }
+                      session._lastToolResult = null; // Consumed
                     }
 
                     pendingAiTranscript = "";
