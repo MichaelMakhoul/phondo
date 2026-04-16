@@ -173,17 +173,21 @@ const calendarToolDefinitions = [
     function: {
       name: "cancel_appointment",
       description:
-        "Cancel an existing appointment. Use the caller's phone number + date to find the right one. When rescheduling, always specify the date of the appointment to cancel.",
+        "Cancel an existing appointment. Use the caller's phone number + datetime for precise match (BEST), or phone + date. If you just booked the appointment, use the exact datetime from the booking result.",
       parameters: {
         type: "object",
         properties: {
           phone: {
             type: "string",
-            description: "The phone number used when the appointment was booked (fallback)",
+            description: "The phone number used when the appointment was booked",
+          },
+          datetime: {
+            type: "string",
+            description: "Exact date+time of the appointment in ISO format, e.g. '2026-04-21T10:15:00'. Use this when cancelling an appointment you just booked — it's the most precise.",
           },
           date: {
             type: "string",
-            description: "The date of the appointment to cancel in YYYY-MM-DD format (helps find the right one when multiple exist)",
+            description: "The date only (YYYY-MM-DD) if you don't know the exact time. Less precise — use datetime when possible.",
           },
           reason: {
             type: "string",

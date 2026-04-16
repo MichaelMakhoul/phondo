@@ -1041,11 +1041,14 @@ export async function handleCheckAvailability(
 
 export async function handleCancelAppointment(
   organizationId: string,
-  args: { phone?: string; reason?: string; confirmation_code?: string; date?: string }
+  args: { phone?: string; reason?: string; confirmation_code?: string; date?: string; datetime?: string }
 ): Promise<ToolResult> {
   const { phone, confirmation_code } = args;
   const reason = args.reason ? sanitizeString(args.reason, 500) : undefined;
   const date = args.date && /^\d{4}-\d{2}-\d{2}$/.test(args.date) ? args.date : undefined;
+  // SCRUM-259: accept exact datetime for precise cancel ("cancel the 10:15 AM one").
+  // Sophie knows the exact time from the booking she just made.
+  const datetime = args.datetime && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(args.datetime) ? args.datetime : undefined;
 
   if (!phone && !confirmation_code) {
     return {
@@ -1096,21 +1099,26 @@ export async function handleCancelAppointment(
     .gte("start_time", new Date().toISOString())
     .order("start_time", { ascending: true });
 
-  // If a date is specified, filter to that date using the org's timezone.
-  // SCRUM-259: the naive `new Date(date)` used UTC midnight, but appointments
-  // are stored in UTC offset from the org's local time. An 8 AM AEST appointment
-  // is stored as 2026-04-20T22:00Z — a UTC-midnight filter for April 21 misses it.
-  // Use ensureTimezoneOffset (same pattern as handleLookupAppointment) to convert
-  // the local date boundaries to UTC.
-  if (date) {
-    const schedule = await getOrgSchedule(organizationId);
-    const tz = schedule?.timezone || "America/New_York";
+  const schedule = await getOrgSchedule(organizationId);
+  const tz = schedule?.timezone || "America/New_York";
+
+  // SCRUM-259: exact datetime match takes priority — used when cancelling
+  // an appointment just booked in the same call ("cancel the 10:15 one").
+  if (datetime) {
+    const dtUtc = ensureTimezoneOffset(datetime, tz);
+    // ±15 min window to handle rounding
+    const dtStart = new Date(new Date(dtUtc).getTime() - 15 * 60 * 1000).toISOString();
+    const dtEnd = new Date(new Date(dtUtc).getTime() + 15 * 60 * 1000).toISOString();
+    query = query.gte("start_time", dtStart).lte("start_time", dtEnd);
+  } else if (date) {
+    // Day-level filter using the org's timezone.
     const dayStartUtc = ensureTimezoneOffset(`${date}T00:00:00`, tz);
     const dayEndUtc = ensureTimezoneOffset(`${date}T23:59:59`, tz);
     query = query.gte("start_time", dayStartUtc).lte("start_time", dayEndUtc);
   }
 
-  query = query.limit(1);
+  // Fetch up to 5 matches — if there are multiple, ask Sophie to disambiguate.
+  query = query.limit(5);
 
   const { data: appointments, error: queryError } = await query;
 
@@ -1123,9 +1131,7 @@ export async function handleCancelAppointment(
     };
   }
 
-  const appointment = appointments?.[0] ?? null;
-
-  if (!appointment) {
+  if (!appointments?.length) {
     return {
       success: false,
       message:
@@ -1133,7 +1139,23 @@ export async function handleCancelAppointment(
     };
   }
 
-  return cancelSingleAppointment(supabase, organizationId, appointment, reason);
+  // Single match — cancel directly.
+  if (appointments.length === 1) {
+    return cancelSingleAppointment(supabase, organizationId, appointments[0], reason);
+  }
+
+  // Multiple matches — ask Sophie to disambiguate. Format times in the
+  // org's timezone so the caller recognizes them.
+  const options = appointments.map((a: any) => {
+    const d = new Date(a.start_time);
+    const dateStr = d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: tz });
+    const timeStr = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true, timeZone: tz });
+    return `${dateStr} at ${timeStr}`;
+  }).join("; ");
+  return {
+    success: false,
+    message: `I found ${appointments.length} upcoming appointments for this caller: ${options}. Which one would you like to cancel? Please call cancel_appointment again with the exact datetime parameter.`,
+  };
 }
 
 async function cancelSingleAppointment(
