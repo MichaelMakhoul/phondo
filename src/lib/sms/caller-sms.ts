@@ -586,7 +586,10 @@ export async function sendAppointmentConfirmationSMS(
   callerPhone: string,
   startTime: Date,
   timezone?: string,
-  confirmationCode?: string,
+  // SCRUM-259: confirmationCode parameter removed — codes are no longer
+  // included in customer-facing SMS to avoid confusion with business's
+  // own confirmation systems.
+  _confirmationCode?: string,
   // SCRUM-240 Phase 1: optional appointment tracking.
   // When provided, a row is written to appointment_confirmations so the
   // Twilio status webhook can update delivery state.
@@ -618,9 +621,6 @@ export async function sendAppointmentConfirmationSMS(
   });
 
   let message = `Your appointment at ${businessName} is confirmed for ${dateStr} at ${timeStr}.`;
-  if (confirmationCode) {
-    message += ` Your confirmation code: ${confirmationCode}`;
-  }
   if (businessPhone) {
     message += ` To reschedule, call ${businessPhone}.`;
   }

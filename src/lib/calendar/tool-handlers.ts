@@ -1051,7 +1051,7 @@ export async function handleCancelAppointment(
     return {
       success: false,
       message:
-        "I need your phone number or confirmation code to find your appointment.",
+        "I need your phone number to find your appointment.",
     };
   }
 
@@ -1123,7 +1123,7 @@ export async function handleCancelAppointment(
     return {
       success: false,
       message:
-        "I wasn't able to find an upcoming appointment with that phone number. Could you double-check the number you booked with, or provide the confirmation code?",
+        "I wasn't able to find an upcoming appointment with that phone number. Could you double-check the number, or tell me the date of the appointment?",
     };
   }
 
@@ -1682,7 +1682,7 @@ async function bookInternal(
 
   return {
     success: true,
-    message: `I've booked your appointment for ${dateStr} at ${timeStr}${practitionerNote}. Your confirmation code is ${confirmationCode}. Please keep this code — you'll need it if you call back to check or change your appointment. Is there anything else I can help you with?`,
+    message: `I've booked your appointment for ${dateStr} at ${timeStr}${practitionerNote}. The appointment is confirmed. Is there anything else I can help you with?`,
     data: {
       appointmentId: appointment.id,
       confirmationCode,
