@@ -61,7 +61,8 @@ export default async function DashboardPage() {
       supabase
         .from("phone_numbers")
         .select("*", { count: "exact", head: true })
-        .eq("organization_id", orgId),
+        .eq("organization_id", orgId)
+        .eq("is_active", true),
       supabase
         .from("calls")
         .select("*", { count: "exact", head: true })

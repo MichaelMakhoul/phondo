@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils";
 const settingsTabs = [
   { name: "General", href: "/settings" },
   { name: "Notifications", href: "/settings/notifications" },
-  { name: "Scheduling", href: "/settings/calendar" },
+  { name: "Scheduling", href: "/settings/scheduling" },
   { name: "Profile", href: "/settings/profile" },
 ];
 

@@ -108,7 +108,7 @@ function NavLink({ item, pathname }: { item: typeof navigation[number]; pathname
       ? pathname === "/settings" ||
         pathname === "/settings/profile" ||
         pathname === "/settings/notifications" ||
-        pathname === "/settings/calendar"
+        pathname === "/settings/scheduling"
       : pathname === item.href || pathname.startsWith(`${item.href}/`);
 
   return (

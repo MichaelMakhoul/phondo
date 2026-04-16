@@ -37,7 +37,15 @@ import {
   Loader2,
   ArrowLeft,
   BookOpen,
+  MoreVertical,
+  Power,
 } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { EmptyState } from "@/components/ui/empty-state";
 import { KnowledgeScene } from "@/components/ui/empty-state-scenes";
 import { trackKnowledgeEntryAdded, trackKnowledgeEntryDeleted } from "@/lib/analytics";
@@ -718,54 +726,52 @@ export function KnowledgeSettings({
             const Icon = SOURCE_TYPE_ICONS[entry.source_type] || FileText;
             return (
               <Card key={entry.id}>
-                <CardContent className="flex items-center justify-between py-4 px-6">
-                  <div className="flex items-center gap-4">
-                    <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-muted">
-                      <Icon className="h-5 w-5 text-muted-foreground" />
+                <CardContent className="flex items-start gap-3 py-4 px-4 sm:px-6 sm:items-center">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-muted">
+                    <Icon className="h-5 w-5 text-muted-foreground" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <p className="font-medium truncate">{entry.title || "Untitled"}</p>
+                      <Badge variant={entry.is_active ? "default" : "secondary"}>
+                        {entry.is_active ? "Active" : "Inactive"}
+                      </Badge>
+                      <Badge variant="outline">
+                        {SOURCE_TYPE_LABELS[entry.source_type] || entry.source_type}
+                      </Badge>
                     </div>
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <p className="font-medium">{entry.title || "Untitled"}</p>
-                        <Badge variant={entry.is_active ? "default" : "secondary"}>
-                          {entry.is_active ? "Active" : "Inactive"}
-                        </Badge>
-                        <Badge variant="outline">
-                          {SOURCE_TYPE_LABELS[entry.source_type] || entry.source_type}
-                        </Badge>
-                      </div>
-                      <p className="text-xs text-muted-foreground mt-0.5">
-                        {entry.source_url && <span>{entry.source_url} &middot; </span>}
-                        Added{" "}
-                        {format(new Date(entry.created_at), "MMM d, yyyy")}
-                      </p>
-                    </div>
+                    <p className="text-xs text-muted-foreground mt-0.5 truncate">
+                      {entry.source_url && <span>{entry.source_url} &middot; </span>}
+                      Added{" "}
+                      {format(new Date(entry.created_at), "MMM d, yyyy")}
+                    </p>
                   </div>
 
-                  <div className="flex items-center gap-1">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      aria-label="Edit source"
-                      onClick={() => openEdit(entry)}
-                    >
-                      <Pencil className="h-4 w-4" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => handleToggle(entry)}
-                    >
-                      {entry.is_active ? "Deactivate" : "Activate"}
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      aria-label="Delete source"
-                      onClick={() => confirmDelete(entry)}
-                    >
-                      <Trash2 className="h-4 w-4 text-destructive" />
-                    </Button>
-                  </div>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="ghost" size="icon" className="shrink-0 h-8 w-8">
+                        <MoreVertical className="h-4 w-4" />
+                        <span className="sr-only">Actions</span>
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem onClick={() => openEdit(entry)}>
+                        <Pencil className="mr-2 h-4 w-4" />
+                        Edit
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => handleToggle(entry)}>
+                        <Power className="mr-2 h-4 w-4" />
+                        {entry.is_active ? "Deactivate" : "Activate"}
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        className="text-destructive"
+                        onClick={() => confirmDelete(entry)}
+                      >
+                        <Trash2 className="mr-2 h-4 w-4" />
+                        Delete
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                 </CardContent>
               </Card>
             );

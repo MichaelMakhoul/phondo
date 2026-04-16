@@ -268,7 +268,7 @@ export function AppointmentsList({ serviceTypes, practitioners }: Props) {
               {appointments.map((appt) => (
                 <div
                   key={appt.id}
-                  className="flex items-center gap-4 p-4 cursor-pointer hover:bg-muted/30 transition-colors"
+                  className="flex items-start gap-3 p-4 cursor-pointer hover:bg-muted/30 transition-colors sm:items-center sm:gap-4"
                   onClick={() => { setDetailId(appt.id); setDetailOpen(true); }}
                 >
                   <div className="flex-1 min-w-0">
@@ -276,7 +276,7 @@ export function AppointmentsList({ serviceTypes, practitioners }: Props) {
                       <User className="h-4 w-4 text-muted-foreground shrink-0" />
                       <span className="text-sm font-medium truncate">{appt.attendee_name}</span>
                     </div>
-                    <div className="flex items-center gap-4 mt-1">
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 mt-1">
                       {appt.attendee_phone && (
                         <div className="flex items-center gap-1">
                           <Phone className="h-3 w-3 text-muted-foreground" />
@@ -284,18 +284,16 @@ export function AppointmentsList({ serviceTypes, practitioners }: Props) {
                         </div>
                       )}
                       {appt.service_types?.name && (
-                        <span className="text-xs text-muted-foreground">{appt.service_types.name}</span>
+                        <span className="text-xs text-muted-foreground truncate max-w-[120px] sm:max-w-none">{appt.service_types.name}</span>
+                      )}
+                      <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                        <Calendar className="h-3 w-3" />
+                        <span>{formatDateTime(appt.start_time)}</span>
+                      </div>
+                      {appt.practitioners?.name && (
+                        <span className="text-xs text-muted-foreground">with {appt.practitioners.name}</span>
                       )}
                     </div>
-                  </div>
-                  <div className="text-right shrink-0">
-                    <div className="flex items-center gap-1 text-sm">
-                      <Calendar className="h-3.5 w-3.5 text-muted-foreground" />
-                      <span>{formatDateTime(appt.start_time)}</span>
-                    </div>
-                    {appt.practitioners?.name && (
-                      <span className="text-xs text-muted-foreground">with {appt.practitioners.name}</span>
-                    )}
                   </div>
                   <Badge className={`shrink-0 ${STATUS_COLORS[appt.status] || ""}`}>
                     {appt.status.replace("_", " ")}

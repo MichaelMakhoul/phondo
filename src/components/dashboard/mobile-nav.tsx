@@ -28,7 +28,7 @@ function isPathActive(href: string, pathname: string): boolean {
       pathname === "/settings" ||
       pathname === "/settings/profile" ||
       pathname === "/settings/notifications" ||
-      pathname === "/settings/calendar"
+      pathname === "/settings/scheduling"
     );
   }
   return pathname === href || pathname.startsWith(`${href}/`);
