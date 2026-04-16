@@ -1753,10 +1753,10 @@ wss.on("connection", (twilioWs) => {
             }
 
             geminiSystemPrompt += `\n- NAME COLLECTION IS MANDATORY — ZERO EXCEPTIONS: Before calling book_appointment, you MUST: (1) Ask for FIRST NAME — wait for answer, (2) ${nameInstruction}, (3) Ask for LAST NAME — wait for answer, (4) ${nameInstruction}, (5) ONLY after you have BOTH confirmed names, call book_appointment with first_name and last_name. Names MUST be in English letters. If you are unsure of the spelling, ask again. NEVER call book_appointment until the caller has fully spelled and confirmed BOTH names. If you only have one name, ask for the other BEFORE booking.`;
-            geminiSystemPrompt += `\n- CONFIRM BOOKING DETAILS — READ ONLY THE TOOL-RETURNED CODE: AFTER book_appointment returns a result, COPY the confirmation_code FROM THE TOOL RESPONSE EXACTLY. NEVER invent, guess, substitute, or "round" digits. NEVER say a code that wasn't in the tool result. If the tool result did not include a code, do NOT say a code — say "Let me pull that up for you" and call lookup_appointment. Read back ALL details to the caller: name, date, time, practitioner, and the 6 digits one-by-one as they appear in the tool result (e.g., "four-seven-two, eight-one-nine"). Then ALSO tell the caller: "You'll receive a confirmation text at the number you're calling from shortly — please check it and let us know if anything looks wrong." (This SMS gives the caller a chance to catch mistakes before the appointment.) Then ask "Is everything correct?" If the caller says something is wrong, fix it (cancel and rebook with the correct details). Do NOT end the booking conversation without confirmation.`;
+            geminiSystemPrompt += `\n- CONFIRM BOOKING DETAILS: AFTER book_appointment returns a successful result, read back ALL details to the caller: name, date, time, and practitioner. Then ALSO tell the caller: "You'll receive a confirmation text at the number you're calling from shortly — please check it and let us know if anything looks wrong." Then ask "Is everything correct?" If the caller says something is wrong, fix it (cancel and rebook with the correct details). Do NOT end the booking conversation without confirmation.`;
             geminiSystemPrompt += `\n- FILLER WORDS — SPEAK FIRST, THEN CALL TOOL: When you need to call a tool, you MUST speak a filler phrase FIRST as a separate response BEFORE making the tool call. Say something like "One moment, let me check that" or "Just a sec" and WAIT for the audio to play. THEN make the tool call in the next step. NEVER bundle the filler and tool result into one response. The caller must hear the filler DURING the silence, not after. Example flow: (1) caller asks for availability → (2) you say "Let me check that for you" → (3) you call check_availability → (4) you say "We have slots on Wednesday...". Steps 2 and 4 must be SEPARATE speech outputs.`;
             geminiSystemPrompt += `\n- POST-CONFIRMATION CLOSE — MANDATORY: When the caller responds to "Is everything correct?" with ANY positive answer (yes, sounds right, sounds good, thanks, perfect, great, looks good, sure, yep, absolutely) or says goodbye, you MUST follow this exact sequence in ONE response: (1) Say ONE brief warm closing phrase — "Perfect! You're all set. Have a great day!" (2) IMMEDIATELY call end_call with reason="booking_complete" in the SAME response. NEVER say "goodbye" without calling end_call. NEVER mirror the caller's goodbye. NEVER continue the conversation after the caller confirms. The closing phrase and the end_call MUST happen together, without waiting for another turn.`;
-            geminiSystemPrompt += `\n- RESCHEDULING: When a caller asks to reschedule, you MUST: (1) look up their existing appointment with lookup_appointment, (2) cancel the old appointment with cancel_appointment using the confirmation_code FROM THE LOOKUP RESULT or phone + date (NEVER guess or fabricate a code), (3) then book the new one with book_appointment. Do NOT book a new appointment without cancelling the old one first.`;
+            geminiSystemPrompt += `\n- RESCHEDULING: When a caller asks to reschedule, you MUST: (1) look up their existing appointment with lookup_appointment using their name and phone, (2) cancel the old appointment with cancel_appointment using phone + date, (3) then book the new one with book_appointment. Do NOT book a new appointment without cancelling the old one first.`;
 
             // SCRUM-227: booking invariant restated as the LAST instruction so it's
             // the freshest rule in Gemini's context when it decides what to do.
@@ -1770,10 +1770,11 @@ wss.on("connection", (twilioWs) => {
               `  4. You say a short filler: "One moment, let me book that for you."\n` +
               `  5. You CALL THE book_appointment TOOL — this is non-negotiable\n` +
               `  6. You WAIT for the tool result\n` +
-              `  7. You COPY the confirmation code FROM THE TOOL RESULT and read it to the caller\n` +
-              `  8. You call end_call AFTER the caller acknowledges\n\n` +
-              `YOU MUST NOT speak the words "you're all set", "I've booked", "your appointment is confirmed", or any confirmation code BEFORE step 5 completes successfully. If you speak these words without a prior successful book_appointment tool call, THE CALL HAS FAILED and the caller will have no actual appointment.\n\n` +
-              `If book_appointment returns an error, do NOT invent a code to cover for the failure. Say: "I'm really sorry, I'm having trouble completing that booking — let me take your details and have someone call you back." Then call schedule_callback.\n` +
+              `  7. You read back the booking details (name, date, time, practitioner) from the tool result\n` +
+              `  8. You tell the caller they will receive a confirmation text\n` +
+              `  9. You call end_call AFTER the caller acknowledges\n\n` +
+              `YOU MUST NOT speak the words "you're all set", "I've booked", or "your appointment is confirmed" BEFORE step 5 completes successfully. If you speak these words without a prior successful book_appointment tool call, THE CALL HAS FAILED and the caller will have no actual appointment.\n\n` +
+              `If book_appointment returns an error, do NOT pretend the booking succeeded. Say: "I'm really sorry, I'm having trouble completing that booking — let me take your details and have someone call you back." Then call schedule_callback.\n` +
               `══════════════════════════════════════════════════════`;
 
             // Transcript buffering — accumulate fragments, flush on turn complete
@@ -1810,7 +1811,7 @@ wss.on("connection", (twilioWs) => {
                   // Gemini to recover (usually by then calling book_appointment).
                   if (toolCall.name === "end_call") {
                     const transcriptSoFar = session.getTranscript?.() || "";
-                    const bookingClaimRe = /\b(i've booked|you'?re all set|your appointment (?:is|has been) (?:booked|confirmed)|confirmation code (?:is )?[\s\d]{3,12})\b/i;
+                    const bookingClaimRe = /\b(i've booked|you'?re all set|your appointment (?:is|has been) (?:booked|confirmed))\b/i;
                     const claimsBooking = bookingClaimRe.test(transcriptSoFar);
                     const hadBookTool = (session.toolCallAudit || []).some((t) => t.name === "book_appointment" && t.successful);
                     if (claimsBooking && !hadBookTool) {
@@ -1818,7 +1819,7 @@ wss.on("connection", (twilioWs) => {
                       session.toolCallAudit.push({ name: "end_call_blocked", successful: false, at: Date.now() });
                       return {
                         message:
-                          "CANNOT END CALL YET: The transcript shows you told the caller they are booked, but you have NOT actually called the book_appointment tool yet. This is a critical error — you may have hallucinated a confirmation code. You MUST: (1) apologise to the caller for the confusion, (2) call book_appointment NOW with the correct details (first_name, last_name, phone, datetime, service_type_id), (3) read back the REAL confirmation code from the tool result, (4) then call end_call. Do NOT fabricate another code.",
+                          "CANNOT END CALL YET: The transcript shows you told the caller they are booked, but you have NOT actually called the book_appointment tool yet. This is a critical error. You MUST: (1) apologise to the caller for the confusion, (2) call book_appointment NOW with the correct details (first_name, last_name, phone, datetime, service_type_id), (3) read back the booking details from the tool result, (4) then call end_call.",
                       };
                     }
                   }
@@ -1840,7 +1841,7 @@ wss.on("connection", (twilioWs) => {
                         Sentry.captureMessage("Duplicate book_appointment intercepted", "warning");
                       });
                       return {
-                        message: `CRITICAL: You already booked this exact appointment in this call (confirmation code ${existing.code}). The booking is LOCKED in the database. DO NOT call book_appointment again. DO NOT read another confirmation code. The correct code to tell the caller is ${existing.code}. If the caller wants to change the appointment, you MUST call cancel_appointment first with code ${existing.code}, then book_appointment with the NEW details.`,
+                        message: `CRITICAL: You already booked this exact appointment in this call. The booking is LOCKED in the database. DO NOT call book_appointment again. If the caller wants to change the appointment, you MUST call cancel_appointment first (use phone + date), then book_appointment with the NEW details.`,
                       };
                     }
                   }
@@ -2524,7 +2525,7 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
               session.messages.push({
                 role: "tool",
                 tool_call_id: toolCall.id,
-                content: `CRITICAL: You already booked this exact appointment in this call (confirmation code ${existing.code}). The booking is LOCKED in the database. DO NOT call book_appointment again.`,
+                content: `CRITICAL: You already booked this exact appointment in this call. The booking is LOCKED in the database. DO NOT call book_appointment again.`,
               });
               continue;
             }

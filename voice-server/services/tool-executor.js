@@ -173,14 +173,10 @@ const calendarToolDefinitions = [
     function: {
       name: "cancel_appointment",
       description:
-        "Cancel an existing appointment. Use confirmation_code for exact match, or phone + date to find the right one. When rescheduling, specify the date of the appointment to cancel.",
+        "Cancel an existing appointment. Use the caller's phone number + date to find the right one. When rescheduling, always specify the date of the appointment to cancel.",
       parameters: {
         type: "object",
         properties: {
-          confirmation_code: {
-            type: "string",
-            description: "The 6-digit confirmation code for the appointment to cancel (preferred)",
-          },
           phone: {
             type: "string",
             description: "The phone number used when the appointment was booked (fallback)",
@@ -203,21 +199,17 @@ const calendarToolDefinitions = [
     function: {
       name: "lookup_appointment",
       description:
-        "Look up an existing appointment. PREFERRED: use the 6-digit confirmation code for instant lookup. FALLBACK: use name + phone if the caller doesn't have their code. Ask for the confirmation code first — it was given when they booked and sent via text message.",
+        "Look up an existing appointment. Use the caller's name and phone number (from caller ID or ask). You can also add date or email for more precise results.",
       parameters: {
         type: "object",
         properties: {
-          confirmation_code: {
-            type: "string",
-            description: "The 6-digit booking confirmation code (e.g., 482916). This is the preferred and most accurate lookup method.",
-          },
           name: {
             type: "string",
-            description: "The caller's full name (fallback if no confirmation code)",
+            description: "The caller's full name",
           },
           phone: {
             type: "string",
-            description: "The caller's phone number (fallback if no confirmation code)",
+            description: "The caller's phone number",
           },
           email: {
             type: "string",

@@ -42,11 +42,11 @@ const DAYS = [
   { key: "sunday", label: "Sunday" },
 ];
 
-// Verification method options
+// Verification method options — code-based modes removed in SCRUM-259 to
+// eliminate AI hallucination issues with spoken confirmation codes.
+// The AI now always verifies callers by name, phone, and other identity fields.
 const VERIFICATION_METHODS = [
-  { id: "code_and_verify", label: "Code + Identity Check", description: "Caller provides their confirmation code AND answers a verification question. Most secure." },
-  { id: "code_only", label: "Code Only", description: "Confirmation code alone is enough. Faster but less secure." },
-  { id: "details_only", label: "No Code — Verify by Details", description: "No confirmation codes. Caller verifies with name, phone, etc. Simplest for the caller." },
+  { id: "details_only", label: "Verify by Details", description: "Caller verifies their identity with name, phone number, and other fields you choose below." },
 ];
 
 // Fields available for identity verification
@@ -153,13 +153,13 @@ export function BusinessSettingsForm({
   // Parse verification settings (structured object or legacy array)
   const initVerification = (() => {
     const raw = initialData.appointmentVerificationFields;
-    if (raw && !Array.isArray(raw) && raw.method) {
-      return { method: raw.method, fields: raw.fields || ["name"] };
+    if (raw && !Array.isArray(raw) && raw.fields) {
+      return { method: "details_only", fields: raw.fields || ["name", "phone"] };
     }
     if (Array.isArray(raw)) {
-      return { method: "code_and_verify", fields: raw };
+      return { method: "details_only", fields: raw };
     }
-    return { method: "code_and_verify", fields: ["name"] };
+    return { method: "details_only", fields: ["name", "phone"] };
   })();
   const [verificationMethod, setVerificationMethod] = useState(initVerification.method);
   const [verificationFields, setVerificationFields] = useState<string[]>(initVerification.fields);
