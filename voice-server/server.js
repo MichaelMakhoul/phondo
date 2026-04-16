@@ -1931,14 +1931,18 @@ wss.on("connection", (twilioWs) => {
 
                   // SCRUM-258: goodbye-loop detector. If Sophie says "goodbye"-type
                   // phrases 3+ times in a row without calling end_call, something
-                  // has gone wrong. Log + Sentry alert so ops can investigate.
+                  // has gone wrong. Auto-end the call.
+                  // NOTE: test against pendingAiTranscript (accumulated turn), not
+                  // the raw fragment `text`, because streaming delivers one word at
+                  // a time (e.g., "Have" + " a great" + " day.").
                   if (session) {
-                    const isGoodbye = /\b(goodbye|bye|have a (great|nice|wonderful) day|take care|see you)\b/i.test(text);
+                    const isGoodbye = /\b(goodbye|bye|have a (great|nice|wonderful) day|take care|see you)\b/i.test(pendingAiTranscript);
                     if (isGoodbye) {
                       session.consecutiveGoodbyeCount = (session.consecutiveGoodbyeCount || 0) + 1;
                       if (session.consecutiveGoodbyeCount >= 3) {
                         console.warn(`[GoodbyeLoop] Detected ${session.consecutiveGoodbyeCount} consecutive goodbye outputs without end_call. callSid=${session.callSid}`);
-                        if (session.consecutiveGoodbyeCount === 3) {
+                        if (session.consecutiveGoodbyeCount >= 3 && !session._goodbyeAutoEndFired) {
+                          session._goodbyeAutoEndFired = true;
                           Sentry.withScope((scope) => {
                             scope.setTag("service", "goodbye_loop_detector");
                             scope.setExtras({
@@ -1951,13 +1955,12 @@ wss.on("connection", (twilioWs) => {
                           // SCRUM-258: auto-end the call when 3+ consecutive goodbyes
                           // AND the conversation has clearly concluded. Gemini can't
                           // reliably combine speech + end_call in one turn, so we
-                          // do it server-side. The call has ended naturally — Sophie
-                          // said her closing phrase, the caller acknowledged.
-                          console.log(`[GoodbyeLoop] Auto-ending call. callSid=${session.callSid}`);
+                          // do it server-side.
+                          console.log(`[GoodbyeLoop] Auto-ending call after ${session.consecutiveGoodbyeCount} goodbyes. callSid=${session.callSid}`);
                           session.endedReason = "goodbye_loop_autoend";
-                          if (session.geminiSession?.close) session.geminiSession.close();
+                          try { if (session.geminiSession?.close) session.geminiSession.close(); } catch (e) { /* swallow */ }
                           if (twilioWs.readyState === WebSocket.OPEN) {
-                            setTimeout(() => twilioWs.close(1000, "end_call"), 1000);
+                            twilioWs.close(1000, "end_call");
                           }
                         }
                       }
