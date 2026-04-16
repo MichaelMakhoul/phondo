@@ -73,7 +73,7 @@ export function FieldPicker({ fields, onChange }: FieldPickerProps) {
       key={field.id}
       className="flex flex-col gap-2 rounded-md border px-3 py-2 sm:flex-row sm:items-center sm:gap-3"
     >
-      <div className="shrink-0">
+      <div className="shrink-0 sm:flex-1 sm:min-w-0">
         <span className="text-sm font-medium">{field.label}</span>
       </div>
 

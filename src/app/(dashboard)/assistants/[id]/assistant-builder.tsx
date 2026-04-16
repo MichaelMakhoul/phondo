@@ -497,7 +497,7 @@ export function AssistantBuilder({
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="space-y-3">
+      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div className="flex items-center gap-4">
           <Link href="/assistants">
             <Button variant="ghost" size="icon">

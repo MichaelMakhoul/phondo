@@ -87,6 +87,7 @@ function BillingContent() {
   const [currentPlan, setCurrentPlan] = useState<string | null>(null);
   const [subscription, setSubscription] = useState<Subscription | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [loadingPlan, setLoadingPlan] = useState<string | null>(null);
   const searchParams = useSearchParams();
   const { toast } = useToast();
@@ -115,7 +116,10 @@ function BillingContent() {
       const {
         data: { user },
       } = await supabase.auth.getUser();
-      if (!user) return;
+      if (!user) {
+        setLoadError("Your session has expired. Please sign in again.");
+        return;
+      }
 
       const { data: membership } = (await supabase
         .from("org_members")
@@ -123,7 +127,10 @@ function BillingContent() {
         .eq("user_id", user.id)
         .single()) as { data: { organization_id: string } | null };
 
-      if (!membership) return;
+      if (!membership) {
+        setLoadError("We couldn't find your organization. Please contact support.");
+        return;
+      }
 
       const orgId = membership.organization_id;
 
@@ -136,6 +143,8 @@ function BillingContent() {
 
       if (subError && subError.code !== "PGRST116") {
         console.error("Failed to load subscription:", subError);
+        setLoadError("We couldn't load your subscription. Please refresh and try again.");
+        return;
       }
 
       if (sub) {
@@ -146,6 +155,7 @@ function BillingContent() {
       }
     } catch (err) {
       console.error("Failed to load billing data:", err);
+      setLoadError("Something went wrong loading your billing data. Please refresh the page.");
     } finally {
       setIsLoading(false);
     }
@@ -218,6 +228,23 @@ function BillingContent() {
     return (
       <div className="flex h-64 items-center justify-center">
         <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-4 py-16 text-center">
+        <div className="rounded-full bg-destructive/10 p-3">
+          <AlertTriangle className="h-6 w-6 text-destructive" />
+        </div>
+        <div>
+          <h3 className="font-semibold">Failed to load billing</h3>
+          <p className="text-sm text-muted-foreground mt-1">{loadError}</p>
+        </div>
+        <Button variant="outline" onClick={() => { setLoadError(null); setIsLoading(true); loadBillingData(); }}>
+          Try again
+        </Button>
       </div>
     );
   }
