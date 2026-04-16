@@ -162,7 +162,7 @@ export function BlockedTimesCard() {
   return (
     <Card>
       <CardHeader>
-        <div className="flex items-center justify-between">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <CardTitle className="flex items-center gap-2">
               <Clock className="h-5 w-5" />
@@ -172,7 +172,7 @@ export function BlockedTimesCard() {
               Block times when no appointments should be booked (holidays, breaks, meetings).
             </CardDescription>
           </div>
-          <Button size="sm" onClick={() => setShowForm(!showForm)}>
+          <Button size="sm" className="w-full sm:w-auto" onClick={() => setShowForm(!showForm)}>
             <Plus className="mr-1 h-4 w-4" />
             Block Time
           </Button>
@@ -182,8 +182,8 @@ export function BlockedTimesCard() {
         {/* Add form */}
         {showForm && (
           <div className="rounded-lg border p-4 space-y-3 bg-muted/30">
-            <div className="grid grid-cols-2 gap-3">
-              <div className="col-span-2">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div className="sm:col-span-2">
                 <Label>Title</Label>
                 <Input
                   value={title}
@@ -219,12 +219,12 @@ export function BlockedTimesCard() {
                 </>
               )}
               {practitioners.length > 0 && (
-                <div className="col-span-2">
+                <div className="sm:col-span-2">
                   <Label>Applies to</Label>
                   <select
                     value={selectedPractitioner}
                     onChange={(e) => setSelectedPractitioner(e.target.value)}
-                    className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                   >
                     <option value="">All staff (org-wide)</option>
                     {practitioners.map((p) => (
@@ -235,7 +235,7 @@ export function BlockedTimesCard() {
                   </select>
                 </div>
               )}
-              <div className="col-span-2">
+              <div className="sm:col-span-2">
                 <Label>Reason (optional)</Label>
                 <Input
                   value={reason}
