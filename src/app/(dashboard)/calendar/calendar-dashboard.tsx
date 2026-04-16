@@ -357,6 +357,13 @@ export function CalendarDashboard({
                   }
                 }}
                 disabled={isLoading}
+                aria-label={
+                  calendarView === "years"
+                    ? "Previous 12 years"
+                    : calendarView === "months"
+                      ? "Previous year"
+                      : "Previous month"
+                }
               >
                 <ChevronLeft className="h-4 w-4" />
               </Button>
@@ -392,6 +399,13 @@ export function CalendarDashboard({
                   }
                 }}
                 disabled={isLoading}
+                aria-label={
+                  calendarView === "years"
+                    ? "Next 12 years"
+                    : calendarView === "months"
+                      ? "Next year"
+                      : "Next month"
+                }
               >
                 <ChevronRight className="h-4 w-4" />
               </Button>

@@ -19,7 +19,7 @@ export function CallHeatmap({ data }: CallHeatmapProps) {
     data.find((d) => d.day === day && d.hour === hour)?.count ?? 0;
 
   return (
-    <div className="space-y-2 overflow-x-auto">
+    <div className="space-y-2 overflow-x-auto" tabIndex={0} role="region" aria-label="Call volume heatmap">
       <div className="min-w-[600px]">
         {/* Hour labels */}
         <div className="flex">

@@ -219,11 +219,11 @@ export function BlockedTimesCard() {
                 <>
                   <div>
                     <Label className="mb-1 block">Start Time</Label>
-                    <TimePicker value={startTime} onChange={setStartTime} />
+                    <TimePicker value={startTime} onChange={setStartTime} aria-label="Start time" />
                   </div>
                   <div>
                     <Label className="mb-1 block">End Time</Label>
-                    <TimePicker value={endTime} onChange={setEndTime} />
+                    <TimePicker value={endTime} onChange={setEndTime} aria-label="End time" />
                   </div>
                 </>
               )}
@@ -231,7 +231,7 @@ export function BlockedTimesCard() {
                 <div className="sm:col-span-2">
                   <Label className="mb-1 block">Applies to</Label>
                   <Select value={selectedPractitioner} onValueChange={setSelectedPractitioner}>
-                    <SelectTrigger>
+                    <SelectTrigger aria-label="Applies to staff">
                       <SelectValue placeholder="All staff (org-wide)" />
                     </SelectTrigger>
                     <SelectContent>

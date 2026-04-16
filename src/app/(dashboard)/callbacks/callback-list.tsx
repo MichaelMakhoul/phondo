@@ -88,7 +88,7 @@ export function CallbackActions({ callbackId, callerPhone }: CallbackActionsProp
             size="sm"
             onClick={() => updateStatus("completed", notes)}
             disabled={loading !== null}
-            className="text-green-600 hover:text-green-700 hover:bg-green-50"
+            className="text-green-700 dark:text-green-400 hover:text-green-800 hover:bg-green-50 dark:hover:bg-green-950 dark:hover:text-green-300"
           >
             {loading === "completed" ? (
               <Loader2 className="h-4 w-4 animate-spin" />
@@ -122,7 +122,7 @@ export function CallbackActions({ callbackId, callerPhone }: CallbackActionsProp
         size="sm"
         onClick={() => setShowNotes(true)}
         disabled={loading !== null}
-        className="text-green-600 hover:text-green-700 hover:bg-green-50"
+        className="text-green-700 dark:text-green-400 hover:text-green-800 hover:bg-green-50 dark:hover:bg-green-950 dark:hover:text-green-300"
       >
         {loading === "completed" ? (
           <Loader2 className="h-4 w-4 animate-spin" />

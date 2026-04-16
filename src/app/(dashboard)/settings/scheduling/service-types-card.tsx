@@ -231,7 +231,7 @@ export function ServiceTypesCard({ initialServiceTypes }: ServiceTypesCardProps)
                   className="flex-1"
                 />
                 <Select value={editDuration} onValueChange={setEditDuration}>
-                  <SelectTrigger className="w-[120px]">
+                  <SelectTrigger className="w-[120px]" aria-label="Duration">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -253,6 +253,7 @@ export function ServiceTypesCard({ initialServiceTypes }: ServiceTypesCardProps)
                   variant="ghost"
                   onClick={() => handleEdit(st.id)}
                   disabled={isSaving || !editName.trim()}
+                  aria-label="Save changes"
                 >
                   {isSaving ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
@@ -260,7 +261,7 @@ export function ServiceTypesCard({ initialServiceTypes }: ServiceTypesCardProps)
                     <Check className="h-4 w-4" />
                   )}
                 </Button>
-                <Button size="icon" variant="ghost" onClick={cancelEditing}>
+                <Button size="icon" variant="ghost" onClick={cancelEditing} aria-label="Cancel">
                   <X className="h-4 w-4" />
                 </Button>
               </div>
@@ -287,6 +288,7 @@ export function ServiceTypesCard({ initialServiceTypes }: ServiceTypesCardProps)
                     variant="ghost"
                     className="h-8 w-8"
                     onClick={() => startEditing(st)}
+                    aria-label={`Edit ${st.name}`}
                   >
                     <Pencil className="h-3.5 w-3.5" />
                   </Button>
@@ -295,6 +297,7 @@ export function ServiceTypesCard({ initialServiceTypes }: ServiceTypesCardProps)
                     variant="ghost"
                     className="h-8 w-8 text-destructive hover:text-destructive"
                     onClick={() => setDeleteTarget(st)}
+                    aria-label={`Delete ${st.name}`}
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                   </Button>
@@ -318,7 +321,7 @@ export function ServiceTypesCard({ initialServiceTypes }: ServiceTypesCardProps)
                 }}
               />
               <Select value={newDuration} onValueChange={setNewDuration}>
-                <SelectTrigger className="w-[120px]">
+                <SelectTrigger className="w-[120px]" aria-label="Duration">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -340,6 +343,7 @@ export function ServiceTypesCard({ initialServiceTypes }: ServiceTypesCardProps)
                 variant="ghost"
                 onClick={handleAdd}
                 disabled={isSaving || !newName.trim()}
+                aria-label="Add service type"
               >
                 {isSaving ? (
                   <Loader2 className="h-4 w-4 animate-spin" />
@@ -347,7 +351,7 @@ export function ServiceTypesCard({ initialServiceTypes }: ServiceTypesCardProps)
                   <Check className="h-4 w-4" />
                 )}
               </Button>
-              <Button size="icon" variant="ghost" onClick={resetAddForm}>
+              <Button size="icon" variant="ghost" onClick={resetAddForm} aria-label="Cancel">
                 <X className="h-4 w-4" />
               </Button>
             </div>

@@ -350,6 +350,7 @@ function BillingContent() {
               {!isUnlimited && (
                 <Progress
                   value={Math.min(usagePercentage, 100)}
+                  aria-label={`Usage: ${usagePercentage}% of plan limit`}
                   className={`h-2 ${
                     isOverLimit
                       ? "[&>div]:bg-red-500"

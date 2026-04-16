@@ -173,6 +173,7 @@ export function NotificationSettings({
             <Switch
               checked={preferences.email_on_missed_call}
               onCheckedChange={() => handleToggle("email_on_missed_call")}
+              aria-label="Email notifications for missed calls"
             />
           </div>
 
@@ -186,6 +187,7 @@ export function NotificationSettings({
             <Switch
               checked={preferences.email_on_voicemail}
               onCheckedChange={() => handleToggle("email_on_voicemail")}
+              aria-label="Email notifications for voicemails"
             />
           </div>
 
@@ -199,6 +201,7 @@ export function NotificationSettings({
             <Switch
               checked={preferences.email_on_appointment_booked}
               onCheckedChange={() => handleToggle("email_on_appointment_booked")}
+              aria-label="Email notifications for appointment bookings"
             />
           </div>
 
@@ -212,6 +215,7 @@ export function NotificationSettings({
             <Switch
               checked={preferences.email_on_callback_scheduled}
               onCheckedChange={() => handleToggle("email_on_callback_scheduled")}
+              aria-label="Email notifications for callback requests"
             />
           </div>
 
@@ -225,6 +229,7 @@ export function NotificationSettings({
             <Switch
               checked={preferences.email_daily_summary}
               onCheckedChange={() => handleToggle("email_daily_summary")}
+              aria-label="Daily summary email"
             />
           </div>
         </CardContent>
@@ -272,6 +277,7 @@ export function NotificationSettings({
               checked={preferences.sms_on_missed_call}
               onCheckedChange={() => handleToggle("sms_on_missed_call")}
               disabled={!preferences.sms_phone_number}
+              aria-label="SMS notifications for missed calls"
             />
           </div>
 
@@ -286,6 +292,7 @@ export function NotificationSettings({
               checked={preferences.sms_on_voicemail}
               onCheckedChange={() => handleToggle("sms_on_voicemail")}
               disabled={!preferences.sms_phone_number}
+              aria-label="SMS notifications for voicemails"
             />
           </div>
 
@@ -300,6 +307,7 @@ export function NotificationSettings({
               checked={preferences.sms_on_callback_scheduled}
               onCheckedChange={() => handleToggle("sms_on_callback_scheduled")}
               disabled={!preferences.sms_phone_number}
+              aria-label="SMS notifications for callback requests"
             />
           </div>
         </CardContent>
@@ -342,6 +350,7 @@ export function NotificationSettings({
               checked={preferences.sms_textback_on_missed_call}
               onCheckedChange={() => handleToggle("sms_textback_on_missed_call")}
               disabled={!smsCallerEnabled}
+              aria-label="Send SMS text-back on missed calls"
             />
           </div>
 
@@ -358,6 +367,7 @@ export function NotificationSettings({
               checked={preferences.sms_appointment_confirmation}
               onCheckedChange={() => handleToggle("sms_appointment_confirmation")}
               disabled={!smsCallerEnabled}
+              aria-label="Send SMS appointment confirmation"
             />
           </div>
         </CardContent>
