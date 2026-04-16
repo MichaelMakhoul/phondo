@@ -161,23 +161,15 @@ function createGeminiSession(config, callbacks) {
         console.log("[GeminiLive] Greeting trigger skipped (triggerGreeting=false)");
       }
 
-      // Flush buffered audio after the text trigger
-      let flushErrors = 0;
-      for (const buffered of preSetupBuffer) {
-        try {
-          const geminiAudio = twilioToGemini(buffered);
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ realtimeInput: { audio: { data: geminiAudio, mimeType: "audio/pcm;rate=16000" } } }));
-          }
-        } catch (err) {
-          flushErrors++;
-          if (flushErrors <= 2) console.warn("[GeminiLive] Audio flush error:", err.message);
-        }
+      // SCRUM-259: Do NOT flush pre-setup buffered audio. This audio is
+      // phone-line silence/noise captured before the Gemini WebSocket was
+      // ready. Flushing it after the text greeting trigger causes Gemini to
+      // interpret the audio as a new user turn and speak the greeting TWICE.
+      // Real caller audio will arrive fresh after setupComplete — no loss.
+      if (preSetupBuffer.length > 0) {
+        console.log(`[GeminiLive] Discarding ${preSetupBuffer.length} pre-setup audio chunks (would cause double greeting)`);
+        preSetupBuffer.length = 0;
       }
-      if (flushErrors > 0) {
-        console.warn(`[GeminiLive] ${flushErrors}/${preSetupBuffer.length} buffered chunks failed to flush`);
-      }
-      preSetupBuffer.length = 0;
       return;
     }
 
