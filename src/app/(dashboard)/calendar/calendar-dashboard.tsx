@@ -240,6 +240,8 @@ export function CalendarDashboard({
         const data = await res.json();
         setAppointments(data.appointments);
         setStats(data.stats);
+      } else {
+        console.error(`Failed to fetch appointments: HTTP ${res.status}`);
       }
     } catch (error) {
       console.error("Failed to fetch appointments:", error);
