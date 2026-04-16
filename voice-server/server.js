@@ -1946,8 +1946,19 @@ wss.on("connection", (twilioWs) => {
                               organizationId: session.organizationId,
                               count: session.consecutiveGoodbyeCount,
                             });
-                            Sentry.captureMessage("Goodbye loop detected — end_call not invoked after 3 consecutive goodbye outputs", "warning");
+                            Sentry.captureMessage("Goodbye loop detected — auto-ending call", "warning");
                           });
+                          // SCRUM-258: auto-end the call when 3+ consecutive goodbyes
+                          // AND the conversation has clearly concluded. Gemini can't
+                          // reliably combine speech + end_call in one turn, so we
+                          // do it server-side. The call has ended naturally — Sophie
+                          // said her closing phrase, the caller acknowledged.
+                          console.log(`[GoodbyeLoop] Auto-ending call. callSid=${session.callSid}`);
+                          session.endedReason = "goodbye_loop_autoend";
+                          if (session.geminiSession?.close) session.geminiSession.close();
+                          if (twilioWs.readyState === WebSocket.OPEN) {
+                            setTimeout(() => twilioWs.close(1000, "end_call"), 1000);
+                          }
                         }
                       }
                     } else if (text.trim().length > 5) {
