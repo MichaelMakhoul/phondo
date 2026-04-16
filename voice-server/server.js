@@ -1755,6 +1755,7 @@ wss.on("connection", (twilioWs) => {
             geminiSystemPrompt += `\n- NAME COLLECTION IS MANDATORY — ZERO EXCEPTIONS: Before calling book_appointment, you MUST: (1) Ask for FIRST NAME — wait for answer, (2) ${nameInstruction}, (3) Ask for LAST NAME — wait for answer, (4) ${nameInstruction}, (5) ONLY after you have BOTH confirmed names, call book_appointment with first_name and last_name. Names MUST be in English letters. If you are unsure of the spelling, ask again. NEVER call book_appointment until the caller has fully spelled and confirmed BOTH names. If you only have one name, ask for the other BEFORE booking.`;
             geminiSystemPrompt += `\n- CONFIRM BOOKING DETAILS — READ ONLY THE TOOL-RETURNED CODE: AFTER book_appointment returns a result, COPY the confirmation_code FROM THE TOOL RESPONSE EXACTLY. NEVER invent, guess, substitute, or "round" digits. NEVER say a code that wasn't in the tool result. If the tool result did not include a code, do NOT say a code — say "Let me pull that up for you" and call lookup_appointment. Read back ALL details to the caller: name, date, time, practitioner, and the 6 digits one-by-one as they appear in the tool result (e.g., "four-seven-two, eight-one-nine"). Then ALSO tell the caller: "You'll receive a confirmation text at the number you're calling from shortly — please check it and let us know if anything looks wrong." (This SMS gives the caller a chance to catch mistakes before the appointment.) Then ask "Is everything correct?" If the caller says something is wrong, fix it (cancel and rebook with the correct details). Do NOT end the booking conversation without confirmation.`;
             geminiSystemPrompt += `\n- FILLER WORDS — SPEAK FIRST, THEN CALL TOOL: When you need to call a tool, you MUST speak a filler phrase FIRST as a separate response BEFORE making the tool call. Say something like "One moment, let me check that" or "Just a sec" and WAIT for the audio to play. THEN make the tool call in the next step. NEVER bundle the filler and tool result into one response. The caller must hear the filler DURING the silence, not after. Example flow: (1) caller asks for availability → (2) you say "Let me check that for you" → (3) you call check_availability → (4) you say "We have slots on Wednesday...". Steps 2 and 4 must be SEPARATE speech outputs.`;
+            geminiSystemPrompt += `\n- POST-CONFIRMATION CLOSE — MANDATORY: When the caller responds to "Is everything correct?" with ANY positive answer (yes, sounds right, sounds good, thanks, perfect, great, looks good, sure, yep, absolutely) or says goodbye, you MUST follow this exact sequence in ONE response: (1) Say ONE brief warm closing phrase — "Perfect! You're all set. Have a great day!" (2) IMMEDIATELY call end_call with reason="booking_complete" in the SAME response. NEVER say "goodbye" without calling end_call. NEVER mirror the caller's goodbye. NEVER continue the conversation after the caller confirms. The closing phrase and the end_call MUST happen together, without waiting for another turn.`;
             geminiSystemPrompt += `\n- RESCHEDULING: When a caller asks to reschedule, you MUST: (1) look up their existing appointment with lookup_appointment, (2) cancel the old appointment with cancel_appointment using the confirmation_code FROM THE LOOKUP RESULT or phone + date (NEVER guess or fabricate a code), (3) then book the new one with book_appointment. Do NOT book a new appointment without cancelling the old one first.`;
 
             // SCRUM-227: booking invariant restated as the LAST instruction so it's
@@ -1822,6 +1823,28 @@ wss.on("connection", (twilioWs) => {
                     }
                   }
 
+                  // SCRUM-257: intercept duplicate book_appointment calls.
+                  // After a successful booking, Sophie sometimes "second-guesses"
+                  // herself and re-calls the tool, producing a different code and
+                  // confusing the caller. The intercept returns a hard rejection
+                  // so she can't create a duplicate.
+                  if (toolCall.name === "book_appointment" && session.confirmedBookings?.size > 0) {
+                    const reqKey = `${toolCall.args.datetime}|${(toolCall.args.first_name || "").toLowerCase()}|${(toolCall.args.last_name || "").toLowerCase()}`;
+                    const existing = session.confirmedBookings.get(reqKey);
+                    if (existing) {
+                      console.warn(`[RebookGuard] Blocking duplicate book_appointment — already booked code=${existing.code} callSid=${session.callSid}`);
+                      session.toolCallAudit.push({ name: "book_appointment_blocked", successful: false, at: Date.now() });
+                      Sentry.withScope((scope) => {
+                        scope.setTag("service", "rebook_guard");
+                        scope.setExtras({ callSid: session.callSid, existingCode: existing.code, attemptedDatetime: toolCall.args.datetime });
+                        Sentry.captureMessage("Duplicate book_appointment intercepted", "warning");
+                      });
+                      return {
+                        message: `CRITICAL: You already booked this exact appointment in this call (confirmation code ${existing.code}). The booking is LOCKED in the database. DO NOT call book_appointment again. DO NOT read another confirmation code. The correct code to tell the caller is ${existing.code}. If the caller wants to change the appointment, you MUST call cancel_appointment first with code ${existing.code}, then book_appointment with the NEW details.`,
+                      };
+                    }
+                  }
+
                   const result = await executeToolCall(toolCall.name, toolCall.args, {
                     organizationId: session.organizationId,
                     assistantId: session.assistantId,
@@ -1855,6 +1878,27 @@ wss.on("connection", (twilioWs) => {
                     session.toolCallAudit.push({ name: toolCall.name, successful, at: Date.now() });
                   }
 
+                  // SCRUM-257: track confirmed bookings to prevent duplicates.
+                  // Key = `datetime|first_name|last_name` (lowered) so the same
+                  // attendee+time can't be booked twice but a family booking
+                  // (different attendee) still goes through.
+                  if (session && toolCall.name === "book_appointment" && (message.includes("confirmed") || message.includes("booked") || message.includes("confirmation"))) {
+                    if (!session.confirmedBookings) session.confirmedBookings = new Map();
+                    const bookKey = `${toolCall.args.datetime}|${(toolCall.args.first_name || "").toLowerCase()}|${(toolCall.args.last_name || "").toLowerCase()}`;
+                    const codeMatch = message.match(/\b(\d{6})\b/);
+                    session.confirmedBookings.set(bookKey, {
+                      code: codeMatch?.[1] || "unknown",
+                      datetime: toolCall.args.datetime,
+                      name: `${toolCall.args.first_name || ""} ${toolCall.args.last_name || ""}`.trim(),
+                      at: Date.now(),
+                    });
+                  }
+                  // SCRUM-257: clear confirmedBookings entry on successful cancel so
+                  // the reschedule flow (cancel → book) still works.
+                  if (session && toolCall.name === "cancel_appointment" && !message.toLowerCase().includes("error") && !message.toLowerCase().includes("not found")) {
+                    if (session.confirmedBookings) session.confirmedBookings.clear();
+                  }
+
                   // Apply cache delta for writes — guard against cleanup race
                   if (session && session.scheduleSnapshot) {
                     if (toolCall.name === "book_appointment" && (message.includes("confirmed") || message.includes("booked") || message.includes("confirmation"))) {
@@ -1883,6 +1927,32 @@ wss.on("connection", (twilioWs) => {
                 onTranscriptOut: (text) => {
                   // Buffer AI transcript fragments — flush on turn complete
                   pendingAiTranscript += text;
+
+                  // SCRUM-258: goodbye-loop detector. If Sophie says "goodbye"-type
+                  // phrases 3+ times in a row without calling end_call, something
+                  // has gone wrong. Log + Sentry alert so ops can investigate.
+                  if (session) {
+                    const isGoodbye = /\b(goodbye|bye|have a (great|nice|wonderful) day|take care|see you)\b/i.test(text);
+                    if (isGoodbye) {
+                      session.consecutiveGoodbyeCount = (session.consecutiveGoodbyeCount || 0) + 1;
+                      if (session.consecutiveGoodbyeCount >= 3) {
+                        console.warn(`[GoodbyeLoop] Detected ${session.consecutiveGoodbyeCount} consecutive goodbye outputs without end_call. callSid=${session.callSid}`);
+                        if (session.consecutiveGoodbyeCount === 3) {
+                          Sentry.withScope((scope) => {
+                            scope.setTag("service", "goodbye_loop_detector");
+                            scope.setExtras({
+                              callSid: session.callSid,
+                              organizationId: session.organizationId,
+                              count: session.consecutiveGoodbyeCount,
+                            });
+                            Sentry.captureMessage("Goodbye loop detected — end_call not invoked after 3 consecutive goodbye outputs", "warning");
+                          });
+                        }
+                      }
+                    } else if (text.trim().length > 5) {
+                      session.consecutiveGoodbyeCount = 0;
+                    }
+                  }
                 },
                 onInterrupted: () => {
                   // Guard: session may be null if Gemini delivers buffered events after cleanup
@@ -2445,6 +2515,21 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
           const fnName = toolCall.function.name;
           const fnArgs = parseToolArgs(toolCall, "ToolCall");
 
+          // SCRUM-257: rebook intercept (classic pipeline — mirrors Gemini path)
+          if (fnName === "book_appointment" && session.confirmedBookings?.size > 0) {
+            const reqKey = `${fnArgs.datetime}|${(fnArgs.first_name || "").toLowerCase()}|${(fnArgs.last_name || "").toLowerCase()}`;
+            const existing = session.confirmedBookings.get(reqKey);
+            if (existing) {
+              console.warn(`[RebookGuard] Blocking duplicate book_appointment (classic) — code=${existing.code} callSid=${session.callSid}`);
+              session.messages.push({
+                role: "tool",
+                tool_call_id: toolCall.id,
+                content: `CRITICAL: You already booked this exact appointment in this call (confirmation code ${existing.code}). The booking is LOCKED in the database. DO NOT call book_appointment again.`,
+              });
+              continue;
+            }
+          }
+
           const toolResult = await executeToolCall(fnName, fnArgs, {
             organizationId: session.organizationId,
             assistantId: session.assistantId,
@@ -2460,6 +2545,22 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
 
           const resultMessage = typeof toolResult === "string" ? toolResult : toolResult.message;
           console.log(`[ToolCall] ${fnName} result: "${resultMessage.slice(0, 100)}..."`);
+
+          // SCRUM-257: track confirmed bookings (classic pipeline)
+          if (fnName === "book_appointment" && (resultMessage.includes("confirmed") || resultMessage.includes("booked") || resultMessage.includes("confirmation"))) {
+            if (!session.confirmedBookings) session.confirmedBookings = new Map();
+            const bookKey = `${fnArgs.datetime}|${(fnArgs.first_name || "").toLowerCase()}|${(fnArgs.last_name || "").toLowerCase()}`;
+            const codeMatch = resultMessage.match(/\b(\d{6})\b/);
+            session.confirmedBookings.set(bookKey, {
+              code: codeMatch?.[1] || "unknown",
+              datetime: fnArgs.datetime,
+              name: `${fnArgs.first_name || ""} ${fnArgs.last_name || ""}`.trim(),
+              at: Date.now(),
+            });
+          }
+          if (fnName === "cancel_appointment" && !resultMessage.toLowerCase().includes("error") && !resultMessage.toLowerCase().includes("not found")) {
+            if (session.confirmedBookings) session.confirmedBookings.clear();
+          }
 
           // Apply optimistic cache delta for write operations
           if (session.scheduleSnapshot) {
