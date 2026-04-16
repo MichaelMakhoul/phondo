@@ -55,7 +55,7 @@ export const metadata: Metadata = {
   openGraph: {
     title: "Phondo | AI Receptionist for Australian Businesses",
     description:
-      "62% of SMB calls go unanswered. Each one costs $450 in lost revenue. Phondo answers every call, 24/7.",
+      "Industry research shows most SMB calls go unanswered — each one costs hundreds in lost revenue. Phondo answers every call, 24/7.",
     type: "website",
   },
 };
@@ -85,7 +85,7 @@ const INDUSTRIES = [
     icon: Wrench,
     color: "bg-amber-500/10 text-amber-500",
     description: "Job quotes, emergency dispatch, booking & scheduling",
-    stat: "47% more bookings",
+    stat: "More bookings, fewer missed jobs",
   },
   {
     name: "And More...",
@@ -98,10 +98,10 @@ const INDUSTRIES = [
 ];
 
 const STATS = [
-  { value: "62%", label: "of SMB calls go unanswered" },
-  { value: "$450", label: "average revenue lost per missed call" },
-  { value: "85%", label: "of callers who reach voicemail never call back" },
-  { value: "47%", label: "higher engagement with SMS text-back" },
+  { value: "62%", label: "of SMB calls go unanswered*" },
+  { value: "$450", label: "average revenue lost per missed call*" },
+  { value: "85%", label: "of callers who reach voicemail never call back*" },
+  { value: "47%", label: "higher engagement with SMS text-back*" },
 ];
 
 const FEATURES = [
@@ -118,7 +118,7 @@ const FEATURES = [
   {
     icon: MessageSquare,
     title: "SMS Text-Back",
-    description: "Missed calls get an instant text with a booking link. 47% recovery rate.",
+    description: "Missed calls get an instant text with a booking link to recover lost leads.",
   },
   {
     icon: PhoneForwarded,
@@ -258,6 +258,9 @@ export default function LandingPage() {
                 </div>
               ))}
             </div>
+            <p className="mt-4 text-[10px] text-slate-500">
+              *Based on industry research and aggregated SMB data. Actual results vary by business type, call volume, and industry.
+            </p>
           </div>
         </section>
 

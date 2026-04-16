@@ -71,16 +71,8 @@ export function NotificationSettings({
       newErrors.sms_phone_number = "Phone number is required when SMS notifications are enabled";
     }
 
-    if (preferences.webhook_url) {
-      try {
-        const url = new URL(preferences.webhook_url);
-        if (!["http:", "https:"].includes(url.protocol)) {
-          newErrors.webhook_url = "URL must start with http:// or https://";
-        }
-      } catch {
-        newErrors.webhook_url = "Enter a valid URL (e.g. https://example.com/webhook)";
-      }
-    }
+    // TODO(SCRUM-235): re-enable webhook validation when feature is unhidden
+    // Webhook UI is currently hidden — skip validation to prevent invisible errors blocking save
 
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
@@ -371,7 +363,8 @@ export function NotificationSettings({
         </CardContent>
       </Card>
 
-      {/* Webhook Integration */}
+      {/* TODO(SCRUM-235): re-enable when webhook delivery is hardened */}
+      {false && (
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -403,6 +396,7 @@ export function NotificationSettings({
           </div>
         </CardContent>
       </Card>
+      )}
 
       {/* Save Button */}
       <div className="flex justify-end">

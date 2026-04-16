@@ -39,13 +39,13 @@ export function DurationChart({ data }: DurationChartProps) {
           <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
           <XAxis
             dataKey="label"
-            tick={{ fontSize: 12 }}
-            className="fill-muted-foreground"
+            tick={{ fontSize: 12, fill: "hsl(var(--muted-foreground))" }}
+            stroke="hsl(var(--border))"
           />
           <YAxis
             tickFormatter={(v) => formatDuration(v)}
-            tick={{ fontSize: 12 }}
-            className="fill-muted-foreground"
+            tick={{ fontSize: 12, fill: "hsl(var(--muted-foreground))" }}
+            stroke="hsl(var(--border))"
           />
           <Tooltip
             contentStyle={{
@@ -54,6 +54,8 @@ export function DurationChart({ data }: DurationChartProps) {
               backgroundColor: "hsl(var(--popover))",
               color: "hsl(var(--popover-foreground))",
             }}
+            itemStyle={{ color: "hsl(var(--popover-foreground))" }}
+            labelStyle={{ color: "hsl(var(--popover-foreground))" }}
             formatter={(value: any) => [formatDuration(value), "Avg Duration"]}
             labelFormatter={(label: any) => String(label)}
           />

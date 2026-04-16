@@ -54,11 +54,13 @@ export function OutcomeChart({ data }: OutcomeChartProps) {
               backgroundColor: "hsl(var(--popover))",
               color: "hsl(var(--popover-foreground))",
             }}
+            itemStyle={{ color: "hsl(var(--popover-foreground))" }}
+            labelStyle={{ color: "hsl(var(--popover-foreground))" }}
             formatter={(value: any, name: any) => [value, name]}
           />
           <Legend
             formatter={(value: string) => (
-              <span className="text-sm">{value}</span>
+              <span className="text-sm text-foreground">{value}</span>
             )}
           />
         </PieChart>

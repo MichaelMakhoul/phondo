@@ -48,19 +48,19 @@ export default async function AssistantsPage() {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <div className="flex items-center gap-2">
             <h1 className="text-2xl font-bold">AI Assistants</h1>
-            <p className="text-muted-foreground">
-              Create and manage your AI receptionists
-            </p>
+            {showLimitBadge && (
+              <Badge variant={atLimit ? "destructive" : "secondary"}>
+                {limitInfo.currentCount} of {limitInfo.limit}
+              </Badge>
+            )}
           </div>
-          {showLimitBadge && (
-            <Badge variant={atLimit ? "destructive" : "secondary"} className="ml-2">
-              {limitInfo.currentCount} of {limitInfo.limit}
-            </Badge>
-          )}
+          <p className="text-muted-foreground">
+            Create and manage your AI receptionists
+          </p>
         </div>
         <div className="flex items-center gap-2">
           {atLimit && (
@@ -71,13 +71,13 @@ export default async function AssistantsPage() {
             </Link>
           )}
           {atLimit ? (
-            <Button disabled>
+            <Button disabled className="flex-1 sm:flex-none">
               <Plus className="mr-2 h-4 w-4" />
               New Assistant
             </Button>
           ) : (
-            <Link href="/assistants/new">
-              <Button>
+            <Link href="/assistants/new" className="flex-1 sm:flex-none">
+              <Button className="w-full sm:w-auto">
                 <Plus className="mr-2 h-4 w-4" />
                 New Assistant
               </Button>

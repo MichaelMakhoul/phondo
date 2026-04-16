@@ -1,6 +1,5 @@
 "use client";
 
-import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
@@ -13,12 +12,10 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
-import { LogOut, Menu, User, CreditCard } from "lucide-react";
+import { LogOut, User, CreditCard } from "lucide-react";
 import { NotificationBell } from "@/components/dashboard/notification-bell";
 import { trackLogout } from "@/lib/analytics";
 import { ThemeToggle } from "@/components/theme-toggle";
-import { SidebarContent } from "@/components/dashboard/sidebar";
 
 interface DashboardHeaderProps {
   user: {
@@ -38,7 +35,6 @@ interface DashboardHeaderProps {
 export function DashboardHeader({ user, organization }: DashboardHeaderProps) {
   const router = useRouter();
   const supabase = createClient();
-  const [mobileOpen, setMobileOpen] = useState(false);
 
   const handleSignOut = async () => {
     trackLogout();
@@ -59,19 +55,9 @@ export function DashboardHeader({ user, organization }: DashboardHeaderProps) {
   return (
     <header className="flex h-16 items-center justify-between border-b bg-card px-4 shadow-sm md:px-6">
       <div className="flex items-center gap-2">
-        {/* Mobile hamburger */}
-        <Button
-          variant="ghost"
-          size="icon"
-          className="md:hidden"
-          onClick={() => setMobileOpen(true)}
-        >
-          <Menu className="h-5 w-5" />
-          <span className="sr-only">Open menu</span>
-        </Button>
         {/* Mobile org name */}
         {organization && (
-          <span className="text-sm font-medium truncate max-w-[150px] md:hidden">
+          <span className="text-sm font-medium truncate max-w-[180px] md:hidden">
             {organization.name}
           </span>
         )}
@@ -123,22 +109,6 @@ export function DashboardHeader({ user, organization }: DashboardHeaderProps) {
         </DropdownMenu>
       </div>
 
-      {/* Mobile sidebar sheet */}
-      <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
-        <SheetContent side="left" className="w-64 p-0" onClick={(e) => {
-          // Close sheet when clicking a nav link
-          if ((e.target as HTMLElement).closest("a")) {
-            setMobileOpen(false);
-          }
-        }}>
-          <SheetTitle className="sr-only">Navigation</SheetTitle>
-          <div className="flex h-full flex-col">
-            <SidebarContent
-              currentOrg={organization ? { name: organization.name, type: organization.type || "business" } : undefined}
-            />
-          </div>
-        </SheetContent>
-      </Sheet>
     </header>
   );
 }
