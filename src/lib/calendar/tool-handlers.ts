@@ -1092,7 +1092,7 @@ export async function handleCancelAppointment(
 
   let query = (supabase as any)
     .from("appointments")
-    .select("id, start_time, external_id, provider, metadata, confirmation_code, status")
+    .select("id, start_time, external_id, provider, metadata, confirmation_code, status, created_at")
     .eq("organization_id", organizationId)
     .in("attendee_phone", variants)
     .in("status", ["confirmed", "pending"])
@@ -1144,8 +1144,18 @@ export async function handleCancelAppointment(
     return cancelSingleAppointment(supabase, organizationId, appointments[0], reason);
   }
 
-  // Multiple matches — ask Sophie to disambiguate. Format times in the
-  // org's timezone so the caller recognizes them.
+  // Multiple matches — but if exactly ONE was created in the last 5 minutes,
+  // it's almost certainly the one just booked in this call. Auto-cancel it
+  // instead of asking the caller to disambiguate (they'll say "the one you
+  // just booked" which Gemini can't reliably relay as a tool parameter).
+  const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+  const recentlyCreated = appointments.filter((a: any) => a.created_at > fiveMinAgo);
+  if (recentlyCreated.length === 1) {
+    return cancelSingleAppointment(supabase, organizationId, recentlyCreated[0], reason);
+  }
+
+  // Still multiple matches and none uniquely recent — ask Sophie to
+  // disambiguate. Format times in the org's timezone.
   const options = appointments.map((a: any) => {
     const d = new Date(a.start_time);
     const dateStr = d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: tz });
