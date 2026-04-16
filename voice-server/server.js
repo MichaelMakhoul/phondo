@@ -1935,7 +1935,12 @@ wss.on("connection", (twilioWs) => {
                     }
                   }
 
-                  return { message };
+                  // Preserve __endCall flag so gemini-live.js can detect end_call
+                  // and close the WebSocket. Without this, the session stays open
+                  // indefinitely after end_call.
+                  const ret = { message };
+                  if (typeof result === "object" && result?.__endCall) ret.__endCall = true;
+                  return ret;
                 },
                 onTranscriptIn: (text) => {
                   // Buffer user transcript fragments — flush on turn complete
