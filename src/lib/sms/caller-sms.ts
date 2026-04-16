@@ -110,17 +110,18 @@ async function resolveSmsSender(
 
 /**
  * SCRUM-260: Rewrite the opt-out instructions when the SMS sender is
- * alphanumeric (e.g. "SmileHub"). Recipients can't reply STOP to an
- * alphanumeric sender — the reply goes nowhere — so we replace the
- * "Reply STOP to opt-out." line with a working opt-out channel.
+ * alphanumeric (e.g. "SmileHub"). Recipients can't reply to an alphanumeric
+ * sender — the reply goes nowhere — so the message needs to (1) tell the
+ * recipient not to reply, (2) give them a working way to reach the business
+ * for questions, and (3) give them a working way to opt out.
  *
  * Compliance note (Australian Spam Act 2003 / US TCPA): every commercial
  * SMS MUST carry a working unsubscribe facility. We NEVER drop the opt-out
- * line silently. Resolution order:
- *   1. Business phone configured → "Call {phone} to opt out"
- *   2. No business phone → fallback to Phondo's platform opt-out email
- *      (PHONDO_OPT_OUT_EMAIL, default support@phondo.ai) so there's ALWAYS
- *      a working channel.
+ * line silently. Resolution order for the contact channel:
+ *   1. business_phone → "Replies aren't monitored — call {phone} to opt out"
+ *   2. business_email → "Replies aren't monitored — email {email} to opt out"
+ *   3. Neither → platform opt-out email (PHONDO_OPT_OUT_EMAIL, default
+ *      support@phondo.ai) as a compliance backstop.
  */
 const DEFAULT_OPT_OUT_EMAIL = "support@phondo.ai";
 
@@ -146,17 +147,17 @@ async function rewriteOptOutForAlphanumeric(
   const supabase = createAdminClient();
   const { data: org, error } = await (supabase as any)
     .from("organizations")
-    .select("business_phone")
+    .select("business_phone, business_email")
     .eq("id", orgId)
     .maybeSingle();
 
   if (error) {
-    console.error("[CallerSMS] Failed to read business_phone for opt-out rewrite:", {
+    console.error("[CallerSMS] Failed to read business contact for opt-out rewrite:", {
       orgId, code: error.code, message: error.message,
     });
     Sentry.withScope((scope) => {
       scope.setTag("service", "caller-sms");
-      scope.setTag("reason", "opt_out_phone_read_failed");
+      scope.setTag("reason", "opt_out_contact_read_failed");
       scope.setExtras({ orgId, code: error.code });
       Sentry.captureException(error);
     });
@@ -165,10 +166,22 @@ async function rewriteOptOutForAlphanumeric(
   }
 
   const phone = org?.business_phone;
-  const email = process.env.PHONDO_OPT_OUT_EMAIL || DEFAULT_OPT_OUT_EMAIL;
-  const replacement = phone
-    ? `\n\nTo opt out of these messages, please call ${phone}.`
-    : `\n\nTo opt out of these messages, email ${email}.`;
+  const email = org?.business_email;
+  const platformEmail = process.env.PHONDO_OPT_OUT_EMAIL || DEFAULT_OPT_OUT_EMAIL;
+
+  // Single combined line: tells recipient replies don't work AND how to
+  // contact the business AND how to opt out — all in one sentence to keep
+  // the SMS short (every char is billed).
+  let replacement: string;
+  if (phone) {
+    replacement = `\n\nReplies aren't monitored. For anything else or to opt out, call ${phone}.`;
+  } else if (email) {
+    replacement = `\n\nReplies aren't monitored. For anything else or to opt out, email ${email}.`;
+  } else {
+    // No business contact at all — legally we still need a working opt-out
+    // channel, so route to the platform address.
+    replacement = `\n\nReplies aren't monitored. To opt out, email ${platformEmail}.`;
+  }
   return body.replace(OPT_OUT_MARKER_RE, replacement);
 }
 

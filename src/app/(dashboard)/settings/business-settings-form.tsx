@@ -108,6 +108,7 @@ interface BusinessSettingsFormProps {
     industry: string;
     websiteUrl: string;
     phone: string;
+    businessEmail: string;
     address: string;
     timezone: string;
     businessHours: BusinessHours | null;
@@ -131,6 +132,7 @@ export function BusinessSettingsForm({
   const [industry, setIndustry] = useState(initialData.industry);
   const [websiteUrl, setWebsiteUrl] = useState(initialData.websiteUrl);
   const [phone, setPhone] = useState(initialData.phone);
+  const [businessEmail, setBusinessEmail] = useState(initialData.businessEmail || "");
   const [address, setAddress] = useState(initialData.address);
   const [timezone, setTimezone] = useState(initialData.timezone);
   const [appointmentDuration, setAppointmentDuration] = useState(
@@ -201,6 +203,15 @@ export function BusinessSettingsForm({
       }
     }
 
+    if (businessEmail.trim()) {
+      // Matches the DB CHECK constraint: something@something.something, no spaces
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(businessEmail.trim())) {
+        newErrors.businessEmail = "Enter a valid email address";
+      } else if (businessEmail.trim().length > 254) {
+        newErrors.businessEmail = "Email is too long";
+      }
+    }
+
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };
@@ -254,6 +265,7 @@ export function BusinessSettingsForm({
           industry,
           business_website: websiteUrl,
           business_phone: phone,
+          business_email: businessEmail.trim() || null,
           business_address: address,
           timezone,
           business_hours: businessHours,
@@ -435,6 +447,23 @@ export function BusinessSettingsForm({
             {errors.phone && (
               <p className="text-xs text-destructive">{errors.phone}</p>
             )}
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="businessEmail">Business Email</Label>
+            <Input
+              id="businessEmail"
+              type="email"
+              value={businessEmail}
+              onChange={(e) => { setBusinessEmail(e.target.value); clearError("businessEmail"); }}
+              placeholder="hello@yourbusiness.com"
+              className={errors.businessEmail ? "border-destructive" : ""}
+            />
+            {errors.businessEmail && (
+              <p className="text-xs text-destructive">{errors.businessEmail}</p>
+            )}
+            <p className="text-xs text-muted-foreground">
+              Used as an opt-out contact on text messages when you&apos;re not giving out your phone number.
+            </p>
           </div>
         </div>
 
@@ -697,10 +726,10 @@ export function BusinessSettingsForm({
                 <p className="text-xs text-destructive">{smsSenderError}</p>
               )}
               <p className="text-xs text-muted-foreground">
-                <strong>Heads up:</strong> when sending with a sender name, customers can&apos;t reply to the text. They&apos;ll need to call you directly to change or cancel.
+                <strong>Heads up:</strong> when sending with a sender name, customers can&apos;t reply to the text. Every text will say &quot;replies aren&apos;t monitored&quot; and point them at your phone or email instead.
               </p>
               <p className="text-xs text-muted-foreground">
-                Because replies don&apos;t work, your business phone number ({phone || "set in the Business Info section above"}) will appear in every confirmation SMS as the opt-out contact (legal requirement). Make sure this is a number you&apos;re happy to share with customers.
+                The contact that appears in every text (legal opt-out requirement): <strong>{phone || businessEmail || "not set"}</strong>. We prefer your phone if set, then your email. Set at least one in the Business Info section above.
               </p>
             </div>
           )}
