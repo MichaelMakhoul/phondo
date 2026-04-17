@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Suspense } from "react";
 import { Inter } from "next/font/google";
 import "./globals.css";
@@ -12,6 +12,15 @@ const inter = Inter({ subsets: ["latin"] });
 export const metadata: Metadata = {
   title: "Phondo - AI Receptionist Platform",
   description: "Create and deploy AI-powered phone receptionists for your business",
+};
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  // Allow users to pinch-zoom (accessibility) but lock initial scale so iOS
+  // doesn't remember zoom state after focusing a small input.
+  maximumScale: 5,
+  userScalable: true,
 };
 
 export default function RootLayout({

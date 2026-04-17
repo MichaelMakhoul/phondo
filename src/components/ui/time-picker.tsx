@@ -33,6 +33,8 @@ interface TimePickerProps {
   placeholder?: string
   className?: string
   disabled?: boolean
+  /** Accessible label for screen readers (e.g. "Start time") */
+  "aria-label"?: string
 }
 
 export function TimePicker({
@@ -41,10 +43,11 @@ export function TimePicker({
   placeholder = "Select time",
   className,
   disabled,
+  "aria-label": ariaLabel = "Select time",
 }: TimePickerProps) {
   return (
     <Select value={value} onValueChange={onChange} disabled={disabled}>
-      <SelectTrigger className={className}>
+      <SelectTrigger className={className} aria-label={ariaLabel}>
         <SelectValue placeholder={placeholder} />
       </SelectTrigger>
       <SelectContent className="max-h-[280px]">

@@ -334,7 +334,7 @@ export function BusinessSettingsForm({
             Country
           </Label>
           <Select value={country} onValueChange={handleCountryChange}>
-            <SelectTrigger className="w-full md:w-[300px]">
+            <SelectTrigger className="w-full md:w-[300px]" aria-label="Country">
               <SelectValue placeholder="Select country" />
             </SelectTrigger>
             <SelectContent>
@@ -356,7 +356,7 @@ export function BusinessSettingsForm({
           <div className="space-y-2">
             <Label>State</Label>
             <Select value={businessState} onValueChange={setBusinessState}>
-              <SelectTrigger className="w-full md:w-[300px]">
+              <SelectTrigger className="w-full md:w-[300px]" aria-label="State">
                 <SelectValue placeholder="Select state" />
               </SelectTrigger>
               <SelectContent>
@@ -401,7 +401,7 @@ export function BusinessSettingsForm({
           <div className="space-y-2">
             <Label htmlFor="industry">Industry</Label>
             <Select value={industry} onValueChange={setIndustry}>
-              <SelectTrigger>
+              <SelectTrigger aria-label="Industry">
                 <SelectValue placeholder="Select your industry" />
               </SelectTrigger>
               <SelectContent>
@@ -486,7 +486,7 @@ export function BusinessSettingsForm({
             Timezone
           </Label>
           <Select value={timezone} onValueChange={setTimezone}>
-            <SelectTrigger className="w-full md:w-[300px]">
+            <SelectTrigger className="w-full md:w-[300px]" aria-label="Timezone">
               <SelectValue placeholder="Select timezone" />
             </SelectTrigger>
             <SelectContent>
@@ -522,6 +522,7 @@ export function BusinessSettingsForm({
                   <Switch
                     checked={!!businessHours[day.key]}
                     onCheckedChange={() => toggleDayOpen(day.key)}
+                    aria-label={`${day.label} open`}
                   />
                   <span className="text-sm font-medium">{day.label}</span>
                 </div>
@@ -532,12 +533,14 @@ export function BusinessSettingsForm({
                       value={businessHours[day.key]?.open || "09:00"}
                       onChange={(v) => updateDayHours(day.key, "open", v)}
                       className="w-[8rem]"
+                      aria-label={`${day.label} open time`}
                     />
                     <span className="text-muted-foreground">to</span>
                     <TimePicker
                       value={businessHours[day.key]?.close || "17:00"}
                       onChange={(v) => updateDayHours(day.key, "close", v)}
                       className="w-[8rem]"
+                      aria-label={`${day.label} close time`}
                     />
                   </div>
                 ) : (
@@ -560,7 +563,7 @@ export function BusinessSettingsForm({
             value={String(appointmentDuration)}
             onValueChange={(v) => setAppointmentDuration(Number(v))}
           >
-            <SelectTrigger className="w-full md:w-[300px]">
+            <SelectTrigger className="w-full md:w-[300px]" aria-label="Default appointment duration">
               <SelectValue placeholder="Select duration" />
             </SelectTrigger>
             <SelectContent>
@@ -699,6 +702,7 @@ export function BusinessSettingsForm({
             <Switch
               checked={sendCustomerConfirmations}
               onCheckedChange={setSendCustomerConfirmations}
+              aria-label="Send customer confirmation texts"
             />
           </div>
 

@@ -165,7 +165,7 @@ export function AppointmentsList({ serviceTypes, practitioners }: Props) {
           />
         </div>
         <Select value={statusFilter} onValueChange={(v) => { setStatusFilter(v); setPage(1); }}>
-          <SelectTrigger className="w-40">
+          <SelectTrigger className="w-40" aria-label="Filter by status">
             <SelectValue placeholder="Status" />
           </SelectTrigger>
           <SelectContent>
@@ -214,7 +214,7 @@ export function AppointmentsList({ serviceTypes, practitioners }: Props) {
                 <div>
                   <Label className="text-xs">Service Type</Label>
                   <Select value={newAppt.service_type_id} onValueChange={(v) => setNewAppt({ ...newAppt, service_type_id: v })}>
-                    <SelectTrigger><SelectValue placeholder="Select..." /></SelectTrigger>
+                    <SelectTrigger aria-label="Service type"><SelectValue placeholder="Select..." /></SelectTrigger>
                     <SelectContent>
                       {serviceTypes.map((s) => (
                         <SelectItem key={s.id} value={s.id}>{s.name} ({s.duration_minutes}m)</SelectItem>
@@ -227,7 +227,7 @@ export function AppointmentsList({ serviceTypes, practitioners }: Props) {
                 <div>
                   <Label className="text-xs">Practitioner</Label>
                   <Select value={newAppt.practitioner_id} onValueChange={(v) => setNewAppt({ ...newAppt, practitioner_id: v })}>
-                    <SelectTrigger><SelectValue placeholder="Select..." /></SelectTrigger>
+                    <SelectTrigger aria-label="Practitioner"><SelectValue placeholder="Select..." /></SelectTrigger>
                     <SelectContent>
                       {practitioners.map((p) => (
                         <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
@@ -310,10 +310,10 @@ export function AppointmentsList({ serviceTypes, practitioners }: Props) {
                 Page {page} of {totalPages} ({total} total)
               </span>
               <div className="flex gap-2">
-                <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage(page - 1)}>
+                <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage(page - 1)} aria-label="Previous page">
                   <ChevronLeft className="h-4 w-4" />
                 </Button>
-                <Button variant="outline" size="sm" disabled={page >= totalPages} onClick={() => setPage(page + 1)}>
+                <Button variant="outline" size="sm" disabled={page >= totalPages} onClick={() => setPage(page + 1)} aria-label="Next page">
                   <ChevronRight className="h-4 w-4" />
                 </Button>
               </div>
