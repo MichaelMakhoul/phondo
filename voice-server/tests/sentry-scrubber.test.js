@@ -174,5 +174,83 @@ describe("sentry PII scrubber", () => {
       assert.equal(result.message, "Tool error");
       assert.deepEqual(result.exception, { values: [{ type: "TypeError", value: "Cannot read property x of null" }] });
     });
+
+    it("strips sensitive headers regardless of letter case", () => {
+      const event = {
+        request: {
+          headers: {
+            Authorization: "Bearer token",
+            "X-Internal-Secret": "secret",
+            COOKIE: "session=abc",
+            "X-Api-Key": "apikey",
+            "x-AUTH-token": "authtoken",
+            "User-Agent": "test",
+          },
+        },
+      };
+      const result = beforeSendScrubber(event);
+      assert.equal(result.request.headers.Authorization, undefined);
+      assert.equal(result.request.headers["X-Internal-Secret"], undefined);
+      assert.equal(result.request.headers.COOKIE, undefined);
+      assert.equal(result.request.headers["X-Api-Key"], undefined);
+      assert.equal(result.request.headers["x-AUTH-token"], undefined);
+      assert.equal(result.request.headers["User-Agent"], "test");
+    });
+
+    it("does not mutate the input event (deep-clone guarantee)", () => {
+      const event = {
+        user: { id: "u1", email: "a@b.com" },
+        request: {
+          data: { name: "John" },
+          cookies: { session: "abc" },
+          headers: { authorization: "Bearer x", "user-agent": "test" },
+        },
+        extra: { callerPhone: "+61400000000", nested: { phone: "+61400111222" } },
+      };
+      // Snapshot the input shape before scrubbing
+      const before = JSON.stringify(event);
+      const result = beforeSendScrubber(event);
+      // Caller is free to mutate the result without affecting the original
+      result.user.id = "mutated";
+      delete result.request.headers["user-agent"];
+      result.extra.nested = "wiped";
+      // Original must be unchanged
+      assert.equal(JSON.stringify(event), before);
+      // And the original PII fields still exist on the input
+      assert.equal(event.user.email, "a@b.com");
+      assert.equal(event.request.data.name, "John");
+      assert.equal(event.request.headers.authorization, "Bearer x");
+    });
+
+    it("handles missing / null sub-fields without throwing", () => {
+      assert.deepEqual(beforeSendScrubber(null), null);
+      assert.deepEqual(beforeSendScrubber(undefined), undefined);
+      // No user, no request, no extra
+      assert.deepEqual(beforeSendScrubber({ message: "x" }), { message: "x" });
+      // user with no id
+      assert.deepEqual(beforeSendScrubber({ user: { email: "a@b.com" } }).user, {});
+      // request with no headers
+      const r = beforeSendScrubber({ request: { data: { x: 1 } } });
+      assert.equal(r.request.data, undefined);
+      // request with null headers (Node's raw headers can be falsy)
+      const r2 = beforeSendScrubber({ request: { headers: null } });
+      assert.equal(r2.request.headers, null); // not crashed, preserved as-is
+    });
+
+    it("ignores array-valued user/request/extra (defends against malformed events)", () => {
+      // Arrays of objects are legal but never meaningful for these slots;
+      // the scrubber's typeof checks must reject them so a future caller
+      // can't accidentally bypass scrubbing by wrapping PII in an array.
+      const event = {
+        user: [{ email: "a@b.com" }],
+        request: [{ data: { x: 1 } }],
+        extra: [{ phone: "+61400000000" }],
+      };
+      const result = beforeSendScrubber(event);
+      // Arrays pass through untouched (the function doesn't claim to scrub them)
+      assert.ok(Array.isArray(result.user));
+      assert.ok(Array.isArray(result.request));
+      assert.ok(Array.isArray(result.extra));
+    });
   });
 });

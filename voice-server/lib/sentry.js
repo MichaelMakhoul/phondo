@@ -133,10 +133,118 @@ const Sentry = {
   setTag() {},
   setExtra() {},
   startTransaction() { return { finish() {} }; },
+
+  /**
+   * flush() is called by server.js inside uncaughtException / unhandledRejection
+   * / SIGTERM handlers via `await Sentry.flush(2000).catch(() => {})`. The
+   * structured-log shim writes synchronously to console — there is literally
+   * nothing to flush — but the callers expect a Promise. Returning a resolved
+   * Promise<true> matches @sentry/node's contract (true = all events flushed
+   * within the timeout) so the chained `.catch(() => {})` doesn't throw.
+   * Without this method, crash/shutdown handlers throw
+   *   TypeError: Sentry.flush is not a function
+   * and the original error gets swallowed by the failed cleanup.
+   */
+  flush(_timeoutMs) {
+    return Promise.resolve(true);
+  },
+
+  /**
+   * close() is the partner of flush() in @sentry/node — used during graceful
+   * shutdown to flush + tear down the transport. Same Promise<true> contract.
+   * Not used today but listed alongside flush() so future callers don't trip
+   * on the same TypeError.
+   */
+  close(_timeoutMs) {
+    return Promise.resolve(true);
+  },
 };
+
+/**
+ * Headers that must always be removed before an event is recorded.
+ * Mirrors what the original @sentry/node `beforeSend` hook stripped — secrets
+ * and session credentials must never leave the process boundary.
+ */
+const SENSITIVE_HEADER_NAMES = new Set([
+  "x-internal-secret",
+  "authorization",
+  "cookie",
+  "x-api-key",
+  "x-auth-token",
+]);
+
+/**
+ * Sanitize a Sentry-style event payload before it's emitted.
+ *
+ * Today the structured-log backend doesn't transport @sentry/node events — it
+ * calls captureException/captureMessage directly and writes to stdout. But the
+ * helper is still exported via `_test` so:
+ *   1. It documents the PII contract that any future real Sentry transport
+ *      must honour (the test suite is the canonical spec).
+ *   2. If anyone re-wires a real Sentry SDK in the future, they can drop this
+ *      function into the `beforeSend` hook and the PII guarantees survive.
+ *
+ * The function is pure — the input is deep-cloned via structuredClone() up
+ * front, so callers can mutate the original event freely afterward without
+ * affecting the scrubbed copy (and vice versa). All branches below operate
+ * on the clone.
+ *
+ * structuredClone is available in Node 17+; voice-server runs on Node 20 LTS
+ * (verified in voice-server/fly.toml / .github/workflows/ci.yml).
+ */
+function beforeSendScrubber(event) {
+  if (!event || typeof event !== "object") return event;
+
+  // Deep-clone defensively. Sentry events are JSON-shaped (no functions,
+  // no class instances, no Buffers), so structuredClone is safe. If a
+  // future caller passes something exotic and it throws, we fall back to
+  // the JSON round-trip — same effective shape, slightly slower.
+  let out;
+  try {
+    out = structuredClone(event);
+  } catch {
+    out = JSON.parse(JSON.stringify(event));
+  }
+
+  // user.id is safe to keep (UUID, no PII). Everything else on user is PII.
+  if (out.user && typeof out.user === "object" && !Array.isArray(out.user)) {
+    const { id } = out.user;
+    out.user = id !== undefined ? { id } : {};
+  }
+
+  // request.data is the raw request body — usually contains caller input.
+  // request.cookies are session tokens. Both go entirely.
+  if (out.request && typeof out.request === "object" && !Array.isArray(out.request)) {
+    delete out.request.data;
+    delete out.request.cookies;
+    // headers must be a plain object — arrays / null / undefined are skipped.
+    if (
+      out.request.headers
+      && typeof out.request.headers === "object"
+      && !Array.isArray(out.request.headers)
+    ) {
+      for (const k of Object.keys(out.request.headers)) {
+        if (SENSITIVE_HEADER_NAMES.has(k.toLowerCase())) {
+          delete out.request.headers[k];
+        }
+      }
+    }
+  }
+
+  // extra carries developer-attached context — run the field-name scrubber so
+  // anything matching PII patterns becomes "[scrubbed]" while safe technical
+  // keys (orgId, callSid, httpStatus, etc.) pass through untouched.
+  if (out.extra && typeof out.extra === "object" && !Array.isArray(out.extra)) {
+    out.extra = scrubObject(out.extra);
+  }
+
+  // message + exception + breadcrumbs are kept as-is — they're the actual
+  // diagnostic payload we WANT to see in the alert.
+  return out;
+}
 
 function initSentry() {
   console.log("[Sentry] Using structured-log backend (Grafana Loki AU) — all alerts go to logs");
 }
 
-module.exports = { initSentry, Sentry, _test: { scrubObject, isPiiKey } };
+module.exports = { initSentry, Sentry, _test: { scrubObject, isPiiKey, beforeSendScrubber } };
