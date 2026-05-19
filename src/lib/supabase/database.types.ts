@@ -1232,6 +1232,7 @@ export type Database = {
           assistant_id: string | null
           carrier: string | null
           created_at: string
+          fallback_forward_number: string | null
           forwarding_status: string | null
           friendly_name: string | null
           id: string
@@ -1252,6 +1253,7 @@ export type Database = {
           assistant_id?: string | null
           carrier?: string | null
           created_at?: string
+          fallback_forward_number?: string | null
           forwarding_status?: string | null
           friendly_name?: string | null
           id?: string
@@ -1272,6 +1274,7 @@ export type Database = {
           assistant_id?: string | null
           carrier?: string | null
           created_at?: string
+          fallback_forward_number?: string | null
           forwarding_status?: string | null
           friendly_name?: string | null
           id?: string

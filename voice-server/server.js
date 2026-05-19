@@ -62,6 +62,10 @@ function maskPhone(phone) {
   return phone.slice(0, 3) + "***" + phone.slice(-3);
 }
 
+// Mirror of API-layer E164_REGEX. Defense-in-depth at the dialer so a bad
+// value introduced via direct SQL or a future bug can't be sent to Twilio.
+const E164_REGEX_VOICE = /^\+[1-9]\d{7,14}$/;
+
 // Validate required env vars before deriving any constants
 // LLM API key env var depends on provider
 const LLM_KEY_MAP = { openai: "OPENAI_API_KEY", gemini: "GEMINI_API_KEY", anthropic: "ANTHROPIC_API_KEY" };
@@ -282,9 +286,19 @@ app.post("/twiml", async (req, res) => {
     const aiEnabled = await isAiEnabled(called, phoneRecord);
     if (!aiEnabled) {
       const callSid = req.body.CallSid || `ai_disabled_${Date.now()}`;
-      console.log(`[TwiML] AI disabled for ${called} — returning voicemail TwiML (callSid=${callSid})`);
+      const rawFallback = phoneRecord && typeof phoneRecord.fallback_forward_number === "string"
+        ? phoneRecord.fallback_forward_number.trim()
+        : "";
+      // Defense-in-depth: re-validate at the voice-server before dialing.
+      // The API + DB CHECK already enforce this; this guards against any
+      // future writer that bypasses both (cron, manual SQL).
+      const fallback = E164_REGEX_VOICE.test(rawFallback) ? rawFallback : "";
 
-      // Log call so owner sees it in dashboard (uses createCallRecord for correct schema)
+      // Log call so owner sees it in dashboard. Leave outcome=null when we
+      // are about to dial a fallback — it will be finalised in the action
+      // callback once we know whether the dial completed. Writing an
+      // optimistic "transferred" here would corrupt analytics if the
+      // fallback is unreachable.
       let ctx = null;
       try {
         ctx = await getPhoneNumberContext(called, phoneRecord);
@@ -296,18 +310,37 @@ app.post("/twiml", async (req, res) => {
             callerPhone: from,
             callSid,
           });
-          if (callId) {
+          if (callId && !fallback) {
+            // No fallback configured → completing as voicemail right now is
+            // correct; the recording will overwrite duration when it lands.
             await completeCallRecord(callId, {
               status: "completed",
               durationSeconds: 0,
               outcome: "voicemail",
             });
           }
+          // When fallback IS configured, leave the call record open. The
+          // /twiml/ai-disabled-fallback-status callback will finalise it.
         }
       } catch (logErr) {
         console.warn("[TwiML] Failed to log AI-disabled call (non-fatal):", logErr.message);
       }
 
+      if (fallback) {
+        console.log(`[TwiML] AI disabled for ${called} — forwarding to fallback ${maskPhone(fallback)} (callSid=${callSid})`);
+        // action callback lets us (a) update the call record with the real
+        // DialCallStatus + DialCallDuration, and (b) fall through to
+        // voicemail if the fallback was unreachable rather than dropping
+        // the caller. Mirrors the existing /twiml/ring-first-fallback flow.
+        return res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Dial callerId="${escapeXml(from)}" timeout="30" action="${escapeXml(PUBLIC_URL + '/twiml/ai-disabled-fallback-status')}">
+    ${escapeXml(fallback)}
+  </Dial>
+</Response>`);
+      }
+
+      console.log(`[TwiML] AI disabled for ${called} — returning voicemail TwiML (callSid=${callSid})`);
       const businessName = typeof ctx?.organizationName === "string" ? ctx.organizationName : null;
       const greeting = businessName
         ? `Thank you for calling ${escapeXml(businessName)}. We are unable to take your call right now. Please leave a message after the beep and we will get back to you as soon as possible.`
@@ -425,21 +458,44 @@ app.post("/texml", async (req, res) => {
     const aiEnabled = await isAiEnabled(called, phoneRecord);
     if (!aiEnabled) {
       const callSid = req.body.CallSid || `ai_disabled_${Date.now()}`;
-      console.log(`[TeXML] AI disabled for ${called} — returning voicemail TeXML`);
+      const rawFallback = phoneRecord && typeof phoneRecord.fallback_forward_number === "string"
+        ? phoneRecord.fallback_forward_number.trim()
+        : "";
+      const fallback = E164_REGEX_VOICE.test(rawFallback) ? rawFallback : "";
 
       let ctx = null;
       try {
         ctx = await getPhoneNumberContext(called, phoneRecord);
         if (ctx) {
           const callId = await createCallRecord({ orgId: ctx.organizationId, assistantId: ctx.assistantId, phoneNumberId: ctx.phoneNumberId, callerPhone: from, callSid });
-          if (callId) {
-            await completeCallRecord(callId, { status: "completed", durationSeconds: 0, outcome: "voicemail" });
+          if (callId && !fallback) {
+            await completeCallRecord(callId, {
+              status: "completed",
+              durationSeconds: 0,
+              outcome: "voicemail",
+            });
           }
+          // Fallback path: record finalised by /texml/ai-disabled-fallback-status.
         }
       } catch (logErr) {
         console.warn("[TeXML] Failed to log AI-disabled call (non-fatal):", logErr.message);
       }
 
+      if (fallback) {
+        console.log(`[TeXML] AI disabled for ${called} — forwarding to fallback ${maskPhone(fallback)} (callSid=${callSid})`);
+        // Telnyx outbound rules require a Telnyx-owned callerId; using the
+        // inbound `from` is rejected. Use the called (org's Telnyx) number
+        // so the dial is accepted. The fallback target's mobile will see
+        // the business number — they know who's forwarding.
+        return res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Dial callerId="${escapeXml(called)}" timeout="30" action="${escapeXml(PUBLIC_URL + '/texml/ai-disabled-fallback-status')}">
+    ${escapeXml(fallback)}
+  </Dial>
+</Response>`);
+      }
+
+      console.log(`[TeXML] AI disabled for ${called} — returning voicemail TeXML`);
       const businessName = typeof ctx?.organizationName === "string" ? ctx.organizationName : null;
       const greeting = businessName
         ? `Thank you for calling ${escapeXml(businessName)}. We are unable to take your call right now. Please leave a message after the beep and we will get back to you as soon as possible.`
@@ -736,6 +792,134 @@ app.post("/twiml/ring-first-fallback", async (req, res) => {
       <Parameter name="auth_token" value="${escapeXml(token)}" />
     </Stream>
   </Connect>
+</Response>`);
+});
+
+/**
+ * Kill-switch fallback status — Twilio POSTs here after the <Dial> to the
+ * customer's configured fallback number completes. If the owner answered,
+ * finalise the call record as a successful transfer. Otherwise, fall
+ * through to voicemail so the caller is never just dropped.
+ *
+ * Mirrors /twiml/ring-first-fallback but for the AI-paused path.
+ */
+async function finaliseFallbackDial(callSid, dialStatus, durationSeconds) {
+  // Find the open call record created when /twiml first detected ai_enabled=false.
+  // We used `vapi_call_id = sh_${callSid}` in createCallRecord, so we look it up
+  // by that key. Failing silently here would lose the audit trail.
+  const supabase = getSupabase();
+  const { data: callRow, error: findErr } = await supabase
+    .from("calls")
+    .select("id")
+    .eq("vapi_call_id", `sh_${callSid}`)
+    .maybeSingle();
+  if (findErr) {
+    console.error(`[FallbackStatus] Lookup failed for callSid=${callSid}:`, findErr.message);
+    return;
+  }
+  if (!callRow) {
+    console.warn(`[FallbackStatus] No call record for callSid=${callSid} — kill-switch path may have skipped createCallRecord`);
+    return;
+  }
+  try {
+    await completeCallRecord(callRow.id, {
+      status: "completed",
+      durationSeconds,
+      outcome: dialStatus === "completed" ? "transferred" : "voicemail",
+      answeredBy: dialStatus === "completed" ? "owner" : undefined,
+    });
+  } catch (err) {
+    console.error(`[FallbackStatus] completeCallRecord failed for callSid=${callSid}:`, err.message);
+  }
+}
+
+app.post("/twiml/ai-disabled-fallback-status", async (req, res) => {
+  if (!validateTwilioSignature(req)) {
+    console.warn("[FallbackStatus] Rejected request — invalid Twilio signature");
+    return res.status(403).send("Forbidden");
+  }
+
+  const callSid = req.body.CallSid;
+  const dialStatus = req.body.DialCallStatus; // completed, no-answer, busy, failed, canceled
+  const durationSeconds = parseInt(req.body.DialCallDuration, 10) || 0;
+  const called = req.body.Called || "";
+
+  console.log(`[FallbackStatus] callSid=${callSid} dialStatus=${dialStatus} duration=${durationSeconds}s`);
+
+  // Always update the call record so the dashboard reflects reality.
+  await finaliseFallbackDial(callSid, dialStatus, durationSeconds);
+
+  if (dialStatus === "completed") {
+    // Owner picked up — Twilio handles teardown.
+    return res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Hangup/>
+</Response>`);
+  }
+
+  // Owner unreachable (no-answer / busy / failed / canceled). Don't drop the
+  // caller — fall through to a brief apology + voicemail recording so the
+  // business at least gets a message. The recording lands via
+  // /twiml/ai-disabled-recording-done (same webhook as the no-fallback path).
+  let businessName = null;
+  try {
+    const phoneRecord = await lookupPhoneNumber(called);
+    const ctx = await getPhoneNumberContext(called, phoneRecord);
+    businessName = typeof ctx?.organizationName === "string" ? ctx.organizationName : null;
+  } catch (err) {
+    console.warn("[FallbackStatus] Failed to load business name for voicemail greeting:", err.message);
+  }
+  const greeting = businessName
+    ? `Thank you for calling ${escapeXml(businessName)}. We are unable to take your call right now. Please leave a message after the beep and we will get back to you as soon as possible.`
+    : `Thank you for calling. We are unable to take your call right now. Please leave a message after the beep and we will get back to you as soon as possible.`;
+
+  res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="Polly.Joanna">${greeting}</Say>
+  <Record maxLength="120" playBeep="true" action="${escapeXml(PUBLIC_URL + '/twiml/ai-disabled-recording-done')}" />
+  <Say voice="Polly.Joanna">Thank you for your message. Goodbye.</Say>
+</Response>`);
+});
+
+app.post("/texml/ai-disabled-fallback-status", async (req, res) => {
+  if (!validateTelnyxSignature(req)) {
+    console.warn("[FallbackStatus] Rejected TeXML request — invalid Telnyx signature");
+    return res.status(403).send("Forbidden");
+  }
+
+  const callSid = req.body.CallSid;
+  const dialStatus = req.body.DialCallStatus;
+  const durationSeconds = parseInt(req.body.DialCallDuration, 10) || 0;
+  const called = req.body.Called || req.body.To || "";
+
+  console.log(`[FallbackStatus][TeXML] callSid=${callSid} dialStatus=${dialStatus} duration=${durationSeconds}s`);
+
+  await finaliseFallbackDial(callSid, dialStatus, durationSeconds);
+
+  if (dialStatus === "completed") {
+    return res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Hangup/>
+</Response>`);
+  }
+
+  let businessName = null;
+  try {
+    const phoneRecord = await lookupPhoneNumber(called);
+    const ctx = await getPhoneNumberContext(called, phoneRecord);
+    businessName = typeof ctx?.organizationName === "string" ? ctx.organizationName : null;
+  } catch (err) {
+    console.warn("[FallbackStatus][TeXML] Failed to load business name:", err.message);
+  }
+  const greeting = businessName
+    ? `Thank you for calling ${escapeXml(businessName)}. We are unable to take your call right now. Please leave a message after the beep and we will get back to you as soon as possible.`
+    : `Thank you for calling. We are unable to take your call right now. Please leave a message after the beep and we will get back to you as soon as possible.`;
+
+  res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="Polly.Joanna">${greeting}</Say>
+  <Record maxLength="120" playBeep="true" action="${escapeXml(PUBLIC_URL + '/texml/recording-done')}" />
+  <Say voice="Polly.Joanna">Thank you for your message. Goodbye.</Say>
 </Response>`);
 });
 
