@@ -29,6 +29,9 @@
  */
 
 import * as Sentry from "@sentry/nextjs";
+import { SENTRY_REASONS } from "./error-ids";
+import type { Database } from "@/lib/supabase/database.types";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 interface RateLimitEntry {
   count: number;
@@ -41,14 +44,45 @@ interface RateLimitConfig {
 }
 
 /**
- * The minimal Supabase surface `rateLimitDistributed` needs. Typed
- * permissively (matches the `(supabase as any)` convention used
- * elsewhere in the repo to work around SSR type inference) so the
- * helper accepts both the generated `SupabaseClient<Database>` and the
- * narrower stub objects we use in tests.
+ * Argument and return shape of the `check_rate_limit_bucket` RPC,
+ * derived from the generated Supabase types. The narrow value-side
+ * shape lets compile-time catch a typo like `p_window_ms` →
+ * `p_windowMs` at the call site (which would otherwise slip into the
+ * always-fail-back path and only show up in Sentry).
+ *
+ * Note: the generated `SupabaseClient<Database>` type accepts a wider
+ * set of overloads, so it's structurally assignable to this shape.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export type RateLimitSupabaseClient = { rpc: (fn: string, args: any) => any };
+type CheckRateLimitBucketArgs =
+  Database["public"]["Functions"]["check_rate_limit_bucket"]["Args"];
+type CheckRateLimitBucketReturns =
+  Database["public"]["Functions"]["check_rate_limit_bucket"]["Returns"];
+
+/**
+ * The Supabase surface `rateLimitDistributed` needs.
+ *
+ * Accepts either the full generated `SupabaseClient<Database>` (which
+ * carries every overload) or a narrower stub object we use in tests.
+ * The `args` arg is typed to `CheckRateLimitBucketArgs` so a typo on
+ * the RPC name or arg shape trips the typechecker.
+ *
+ * SCRUM-291: this was previously `{ rpc: (fn: string, args: any) => any }`
+ * to work around the pre-00135 SSR-type-inference gap. Now that
+ * `database.types.ts` knows about `check_rate_limit_bucket`, callers
+ * can pass `createAdminClient()` directly without the
+ * `as unknown as Parameters<typeof rateLimitDistributed>[0]` double-cast.
+ */
+export type RateLimitSupabaseClient =
+  | SupabaseClient<Database>
+  | {
+      rpc: (
+        fn: "check_rate_limit_bucket",
+        args: CheckRateLimitBucketArgs,
+      ) => Promise<{
+        data: CheckRateLimitBucketReturns | null;
+        error: unknown;
+      }>;
+    };
 
 // In-memory store (use Redis for distributed systems)
 const store = new Map<string, RateLimitEntry>();
@@ -210,8 +244,13 @@ export function rateLimit(
   };
 
   if (!result.allowed) {
-    headers["Retry-After"] = Math.ceil(
-      (result.resetTime - Date.now()) / 1000
+    // SCRUM-291: clamp to >= 1 so a degenerate `resetTime < Date.now()`
+    // case never emits `Retry-After: 0`, which some clients interpret
+    // as "retry immediately" and would just trigger another 429. Same
+    // clamp as the async `rateLimitDistributed` (`buildHeaders` below).
+    headers["Retry-After"] = Math.max(
+      1,
+      Math.ceil((result.resetTime - Date.now()) / 1000),
     ).toString();
   }
 
@@ -267,9 +306,35 @@ export function withRateLimit(
 // under the cap" against the same key.
 // ─────────────────────────────────────────────────────────────────────
 
-interface RateLimitBucketRow {
-  count: number;
-  reset_time: string;
+/**
+ * Single bucket row as returned by `check_rate_limit_bucket`. Derived
+ * from the generated Supabase types so a Postgres-side rename + regen
+ * propagates here without a duplicate hand-maintained shape.
+ */
+type RateLimitBucketRow = CheckRateLimitBucketReturns[number];
+
+/** RPC name lives in one place so the call site and the union type
+ *  stay in lockstep — a rename in one spot is a typecheck error in
+ *  the other. */
+const CHECK_BUCKET_RPC = "check_rate_limit_bucket" as const;
+
+/**
+ * Stringify an RPC error for logs/Sentry. Plain `String(obj)` returns
+ * "[object Object]" for Supabase error responses, stripping the PG
+ * code/message/hint/details that on-call needs to triage. Preserve
+ * Error instances as-is and JSON-stringify everything else.
+ */
+function stringifyRpcError(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (err === null || err === undefined) return "unknown";
+  if (typeof err === "object") {
+    try {
+      return JSON.stringify(err);
+    } catch {
+      return Object.prototype.toString.call(err);
+    }
+  }
+  return String(err);
 }
 
 function buildHeaders(
@@ -350,16 +415,22 @@ export async function rateLimitDistributed(
   let row: RateLimitBucketRow | null = null;
   let rpcError: unknown = null;
   try {
-    const { data, error } = (await supabase.rpc("check_rate_limit_bucket", {
+    // No more `as { data: unknown; error: unknown }` widener — both
+    // arms of the `RateLimitSupabaseClient` union already return a
+    // narrowed `{ data: CheckRateLimitBucketReturns | null; error: unknown }`
+    // for this RPC name+args combination (the generated Database type
+    // for the real client; the stub-arm signature for tests).
+    const { data, error } = await supabase.rpc(CHECK_BUCKET_RPC, {
       p_key: key,
       p_window_ms: config.windowMs,
       p_max_requests: config.maxRequests,
-    })) as { data: unknown; error: unknown };
+    });
     if (error) {
       rpcError = error;
     } else if (Array.isArray(data) && data.length > 0) {
       // PostgREST returns TABLE(...)-typed RPCs as an array of row objects.
-      row = data[0] as RateLimitBucketRow;
+      // `data[0]` is now correctly typed as `RateLimitBucketRow` — no cast.
+      row = data[0];
     } else {
       rpcError = new Error("check_rate_limit_bucket returned empty result");
     }
@@ -389,7 +460,13 @@ export async function rateLimitDistributed(
   // permission denied (caller mis-using a non-service-role client).
   // Branch on the profile's cost-control flag — see function docstring
   // for the trade-off.
-  const errStr = rpcError instanceof Error ? rpcError.message : String(rpcError);
+  //
+  // Stringify Supabase error objects deliberately — `String({})` yields
+  // "[object Object]" and silently strips PG codes (e.g. "57P01" for
+  // admin shutdown, "42501" for permission denied). On-call triage
+  // depends on those codes, so JSON-stringify non-Error objects to
+  // preserve them in console + Sentry.
+  const errStr = stringifyRpcError(rpcError);
   console.error(
     "[rate-limiter] distributed check failed",
     failClosed ? "— failing CLOSED (costControl)" : "— falling back to local Map",
@@ -398,14 +475,15 @@ export async function rateLimitDistributed(
   try {
     Sentry.withScope((scope) => {
       scope.setTag("service", "next-api");
-      scope.setTag("reason", "rate-limit-distributed-failed");
+      scope.setTag("reason", SENTRY_REASONS.RATE_LIMIT_DISTRIBUTED_FAILED);
       scope.setTag("failMode", failClosed ? "closed" : "local-fallback");
       scope.setLevel("warning");
-      scope.setExtras({ key, type });
+      // Pass the raw object as an extra so the full PG error (code, hint,
+      // details) lands in Sentry even if the captureException message is
+      // just the stringified summary.
+      scope.setExtras({ key, type, rpcErrorRaw: rpcError });
       Sentry.captureException(
-        rpcError instanceof Error
-          ? rpcError
-          : new Error(String(rpcError ?? "unknown")),
+        rpcError instanceof Error ? rpcError : new Error(errStr),
       );
     });
   } catch (sentryErr) {
