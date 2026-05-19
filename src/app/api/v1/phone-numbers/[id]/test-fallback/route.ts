@@ -3,16 +3,12 @@ import * as Sentry from "@sentry/nextjs";
 import { createClient } from "@/lib/supabase/server";
 import { getTwilioClient } from "@/lib/twilio/client";
 import { rateLimit } from "@/lib/security/rate-limiter";
+import { getUserRoleInOrg, isOrgAdmin } from "@/lib/auth/org-membership";
 import {
   expectedE164PrefixForCountry,
   matchesCountryPrefix,
   buildTestCallTwiml,
 } from "./helpers";
-
-interface Membership {
-  organization_id: string;
-  role?: string;
-}
 
 interface PhoneNumberRow {
   id: string;
@@ -51,17 +47,25 @@ export async function POST(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { data: membership } = await supabase
-      .from("org_members")
-      .select("organization_id, role")
-      .eq("user_id", user.id)
-      .single() as { data: Membership | null };
-    if (!membership) {
-      return NextResponse.json({ error: "No organization found" }, { status: 404 });
+    // SCRUM-276: resource-first resolution. Load the phone-number row
+    // FIRST (RLS scopes to whichever orgs the user has access to), then
+    // check the user's role IN THIS RESOURCE'S ORG. The legacy pattern of
+    // `.single()` on `org_members` broke for multi-org users.
+    const { data: row, error } = await (supabase
+      .from("phone_numbers") as any)
+      .select("id, phone_number, fallback_forward_number, twilio_sid, source_type, organization_id, organizations(country)")
+      .eq("id", id)
+      .single() as { data: PhoneNumberRow | null; error: unknown };
+    if (error || !row) {
+      return NextResponse.json({ error: "Phone number not found" }, { status: 404 });
     }
 
-    const isAdmin = !!membership.role && ["owner", "admin"].includes(membership.role);
-    if (!isAdmin) {
+    const roleRow = await getUserRoleInOrg(supabase, user.id, row.organization_id);
+    if (!roleRow) {
+      // RLS would normally hide the row from a non-member; defense-in-depth.
+      return NextResponse.json({ error: "Phone number not found" }, { status: 404 });
+    }
+    if (!isOrgAdmin(roleRow.role)) {
       // Mirrors the PATCH role-gate on `fallback_forward_number` itself —
       // outbound dialing must not be triggerable by a viewer.
       return NextResponse.json(
@@ -72,9 +76,10 @@ export async function POST(
 
     // Per-org rate limit (1 call / min). Use orgId as identifier so two
     // admins in the same org share the budget — the limit is on the spend,
-    // not the user.
+    // not the user. Moved after the row lookup so we don't rate-limit
+    // requests that 404 anyway, and so the orgId comes from the resource.
     const { allowed, headers } = rateLimit(
-      membership.organization_id,
+      row.organization_id,
       "phone-numbers/test-fallback",
       "fallbackTestCall",
     );
@@ -86,16 +91,6 @@ export async function POST(
         { error: "Your organization can place 1 test call per minute. Please wait, then try again." },
         { status: 429, headers },
       );
-    }
-
-    const { data: row, error } = await (supabase
-      .from("phone_numbers") as any)
-      .select("id, phone_number, fallback_forward_number, twilio_sid, source_type, organization_id, organizations(country)")
-      .eq("id", id)
-      .eq("organization_id", membership.organization_id)
-      .single() as { data: PhoneNumberRow | null; error: unknown };
-    if (error || !row) {
-      return NextResponse.json({ error: "Phone number not found" }, { status: 404 });
     }
 
     const fallback = (row.fallback_forward_number || "").trim();
@@ -165,7 +160,7 @@ export async function POST(
     } catch (twErr) {
       const message = twErr instanceof Error ? twErr.message : "Failed to place call";
       console.error("[TestFallback] Twilio calls.create failed:", {
-        orgId: membership.organization_id,
+        orgId: row.organization_id,
         phoneNumberId: id,
         error: message,
       });
@@ -179,7 +174,7 @@ export async function POST(
         scope.setTag("reason", "twilio-create-call-failed");
         scope.setLevel("warning");
         scope.setExtras({
-          orgId: membership.organization_id,
+          orgId: row.organization_id,
           phoneNumberId: id,
         });
         Sentry.captureException(twErr);
