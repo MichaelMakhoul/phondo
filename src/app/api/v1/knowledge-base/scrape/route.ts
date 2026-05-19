@@ -21,16 +21,20 @@ export async function POST(request: NextRequest) {
     // Rate limit — KB scrape is paid-action (Web Unlocker / proxy
     // pool charges per request). SCRUM-290: shared Postgres-backed
     // limiter, `expensive` profile is `costControl: true`.
-    const { allowed, headers } = await withRateLimitDistributed(
+    const rl = await withRateLimitDistributed(
       createAdminClient(),
       request,
       "/api/v1/knowledge-base/scrape",
       "expensive",
     );
-    if (!allowed) {
+    if (!rl.allowed) {
+      // SCRUM-302: brownout-deny vs quota-deny UX distinction.
+      const error = rl.failReason === "service-degraded"
+        ? "Service temporarily unavailable. Please try again in a moment."
+        : "Too many requests. Please try again later.";
       return NextResponse.json(
-        { error: "Too many requests. Please try again later." },
-        { status: 429, headers }
+        { error, failReason: rl.failReason },
+        { status: 429, headers: rl.headers }
       );
     }
 

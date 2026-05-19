@@ -23,16 +23,22 @@ export async function POST(request: Request) {
     // Map to the shared Postgres-backed limiter; `expensive` profile
     // has `costControl: true` so a Supabase brownout fails closed
     // rather than reopening the cold-start parallelism bypass.
-    const { allowed, headers } = await withRateLimitDistributed(
+    const rl = await withRateLimitDistributed(
       createAdminClient(),
       request,
       "/api/v1/voice-preview",
       "expensive",
     );
-    if (!allowed) {
+    if (!rl.allowed) {
+      // SCRUM-302: distinguish brownout-deny ("Supabase degraded") from
+      // quota-deny ("you hammered the API") so users mid-onboarding
+      // don't see a misleading "Too many requests" for one click.
+      const error = rl.failReason === "service-degraded"
+        ? "Service temporarily unavailable. Please try again in a moment."
+        : "Too many requests. Please try again later.";
       return NextResponse.json(
-        { error: "Too many requests. Please try again later." },
-        { status: 429, headers }
+        { error, failReason: rl.failReason },
+        { status: 429, headers: rl.headers }
       );
     }
 

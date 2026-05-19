@@ -26,8 +26,12 @@ export async function POST(req: NextRequest) {
     "adminExpensive",
   );
   if (!rl.allowed) {
+    // SCRUM-302: brownout vs quota distinction.
+    const error = rl.failReason === "service-degraded"
+      ? "Service temporarily unavailable. Please try again in a moment."
+      : "Rate limit exceeded. Max 3 searches per minute.";
     return NextResponse.json(
-      { error: "Rate limit exceeded. Max 3 searches per minute." },
+      { error, failReason: rl.failReason },
       { status: 429, headers: rl.headers }
     );
   }
