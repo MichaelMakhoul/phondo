@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import * as Sentry from "@sentry/nextjs";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { SENTRY_REASONS } from "@/lib/security/error-ids";
 
 /**
  * Midnight UTC keep-alive cron. Three jobs in one tick so the Vercel
@@ -73,14 +74,17 @@ export async function GET(req: NextRequest) {
   // log — the non-number branch below treats shape drift as a warning
   // (not success) so a silent regression here surfaces in Sentry.
   try {
-    const { data, error } = await (supabase as any).rpc("cleanup_rate_limit_buckets");
+    // No `as any` — `database.types.ts` knows `cleanup_rate_limit_buckets`
+    // returns `number` and takes no args (since SCRUM-291's `gen types`
+    // regen), so a typo on the RPC name now fails the typechecker.
+    const { data, error } = await supabase.rpc("cleanup_rate_limit_buckets");
     if (error) {
       results.rate_limit_cleanup = `error: ${error.message}`;
       console.error("[KeepAlive] rate_limit_cleanup RPC failed:", error);
       Sentry.withScope((scope) => {
         scope.setTag("service", "next-cron");
         scope.setTag("cron", "keep-alive");
-        scope.setTag("reason", "rate-limit-cleanup-failed");
+        scope.setTag("reason", SENTRY_REASONS.RATE_LIMIT_CLEANUP_FAILED);
         scope.setLevel("warning");
         Sentry.captureException(error);
       });
@@ -98,7 +102,7 @@ export async function GET(req: NextRequest) {
       Sentry.withScope((scope) => {
         scope.setTag("service", "next-cron");
         scope.setTag("cron", "keep-alive");
-        scope.setTag("reason", "rate-limit-cleanup-unexpected-shape");
+        scope.setTag("reason", SENTRY_REASONS.RATE_LIMIT_CLEANUP_UNEXPECTED_SHAPE);
         scope.setLevel("warning");
         scope.setExtras({ dataType: data === null ? "null" : typeof data });
         Sentry.captureMessage(
@@ -117,7 +121,7 @@ export async function GET(req: NextRequest) {
       Sentry.withScope((scope) => {
         scope.setTag("service", "next-cron");
         scope.setTag("cron", "keep-alive");
-        scope.setTag("reason", "rate-limit-cleanup-threw");
+        scope.setTag("reason", SENTRY_REASONS.RATE_LIMIT_CLEANUP_THREW);
         scope.setLevel("warning");
         Sentry.captureException(
           err instanceof Error ? err : new Error(String(err)),

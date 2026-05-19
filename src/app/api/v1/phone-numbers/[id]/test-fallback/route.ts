@@ -97,12 +97,12 @@ export async function POST(
     // per-instance Map. A Supabase brownout temporarily blocks
     // admins from testing fallback — better than reopening the
     // unbounded-Twilio-cost bypass during the outage.
-    // Cast: the generated Database.rpc overload only lists known RPCs from
-    // the last `supabase gen types` run, so `check_rate_limit_bucket`
-    // isn't visible to the type-narrowed `.rpc()` signature. Matches the
-    // repo's `(supabase as any)` convention for SSR type-inference gaps.
+    // SCRUM-291: `createAdminClient()` is structurally assignable to
+    // `RateLimitSupabaseClient` after the `supabase gen types` regen in
+    // SCRUM-291 — the generated `Database` now includes the
+    // `check_rate_limit_bucket` overload, so no cast is needed here.
     const { allowed, headers } = await rateLimitDistributed(
-      createAdminClient() as unknown as Parameters<typeof rateLimitDistributed>[0],
+      createAdminClient(),
       row.organization_id,
       "phone-numbers/test-fallback",
       "fallbackTestCall",

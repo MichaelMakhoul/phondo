@@ -219,6 +219,78 @@ export type Database = {
           },
         ]
       }
+      appointment_confirmations: {
+        Row: {
+          appointment_id: string
+          attempts: number
+          channel: string
+          created_at: string
+          delivered_at: string | null
+          id: string
+          idempotency_key: string
+          last_attempt_at: string | null
+          last_error: string | null
+          organization_id: string
+          provider_message_id: string | null
+          recipient: string
+          sent_at: string | null
+          status: string
+          template_language: string | null
+          updated_at: string
+        }
+        Insert: {
+          appointment_id: string
+          attempts?: number
+          channel: string
+          created_at?: string
+          delivered_at?: string | null
+          id?: string
+          idempotency_key: string
+          last_attempt_at?: string | null
+          last_error?: string | null
+          organization_id: string
+          provider_message_id?: string | null
+          recipient: string
+          sent_at?: string | null
+          status?: string
+          template_language?: string | null
+          updated_at?: string
+        }
+        Update: {
+          appointment_id?: string
+          attempts?: number
+          channel?: string
+          created_at?: string
+          delivered_at?: string | null
+          id?: string
+          idempotency_key?: string
+          last_attempt_at?: string | null
+          last_error?: string | null
+          organization_id?: string
+          provider_message_id?: string | null
+          recipient?: string
+          sent_at?: string | null
+          status?: string
+          template_language?: string | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "appointment_confirmations_appointment_id_fkey"
+            columns: ["appointment_id"]
+            isOneToOne: false
+            referencedRelation: "appointments"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "appointment_confirmations_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       appointments: {
         Row: {
           assistant_id: string | null
@@ -229,6 +301,8 @@ export type Database = {
           attendee_phone: string | null
           call_id: string | null
           confirmation_code: string | null
+          contact_missing: boolean
+          contact_missing_reason: string | null
           created_at: string | null
           duration_minutes: number | null
           end_time: string | null
@@ -253,6 +327,8 @@ export type Database = {
           attendee_phone?: string | null
           call_id?: string | null
           confirmation_code?: string | null
+          contact_missing?: boolean
+          contact_missing_reason?: string | null
           created_at?: string | null
           duration_minutes?: number | null
           end_time?: string | null
@@ -277,6 +353,8 @@ export type Database = {
           attendee_phone?: string | null
           call_id?: string | null
           confirmation_code?: string | null
+          contact_missing?: boolean
+          contact_missing_reason?: string | null
           created_at?: string | null
           duration_minutes?: number | null
           end_time?: string | null
@@ -1099,7 +1177,7 @@ export type Database = {
           {
             foreignKeyName: "notification_preferences_organization_id_fkey"
             columns: ["organization_id"]
-            isOneToOne: false
+            isOneToOne: true
             referencedRelation: "organizations"
             referencedColumns: ["id"]
           },
@@ -1144,6 +1222,7 @@ export type Database = {
         Row: {
           appointment_verification_fields: Json | null
           business_address: string | null
+          business_email: string | null
           business_hours: Json | null
           business_name: string | null
           business_phone: string | null
@@ -1160,7 +1239,9 @@ export type Database = {
           primary_color: string | null
           recording_consent_mode: string
           recording_disclosure_text: string | null
+          send_customer_confirmations: boolean
           slug: string
+          sms_sender: string | null
           stripe_customer_id: string | null
           timezone: string | null
           type: Database["public"]["Enums"]["organization_type"]
@@ -1169,6 +1250,7 @@ export type Database = {
         Insert: {
           appointment_verification_fields?: Json | null
           business_address?: string | null
+          business_email?: string | null
           business_hours?: Json | null
           business_name?: string | null
           business_phone?: string | null
@@ -1185,7 +1267,9 @@ export type Database = {
           primary_color?: string | null
           recording_consent_mode?: string
           recording_disclosure_text?: string | null
+          send_customer_confirmations?: boolean
           slug: string
+          sms_sender?: string | null
           stripe_customer_id?: string | null
           timezone?: string | null
           type?: Database["public"]["Enums"]["organization_type"]
@@ -1194,6 +1278,7 @@ export type Database = {
         Update: {
           appointment_verification_fields?: Json | null
           business_address?: string | null
+          business_email?: string | null
           business_hours?: Json | null
           business_name?: string | null
           business_phone?: string | null
@@ -1210,7 +1295,9 @@ export type Database = {
           primary_color?: string | null
           recording_consent_mode?: string
           recording_disclosure_text?: string | null
+          send_customer_confirmations?: boolean
           slug?: string
+          sms_sender?: string | null
           stripe_customer_id?: string | null
           timezone?: string | null
           type?: Database["public"]["Enums"]["organization_type"]
@@ -1377,6 +1464,27 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      rate_limit_buckets: {
+        Row: {
+          count: number
+          created_at: string
+          key: string
+          reset_time: string
+        }
+        Insert: {
+          count?: number
+          created_at?: string
+          key: string
+          reset_time: string
+        }
+        Update: {
+          count?: number
+          created_at?: string
+          key?: string
+          reset_time?: string
+        }
+        Relationships: []
       }
       service_types: {
         Row: {
@@ -1679,6 +1787,14 @@ export type Database = {
         Args: { duration_minutes: number; end_time: string; start_time: string }
         Returns: string
       }
+      check_rate_limit_bucket: {
+        Args: { p_key: string; p_max_requests: number; p_window_ms: number }
+        Returns: {
+          count: number
+          reset_time: string
+        }[]
+      }
+      cleanup_rate_limit_buckets: { Args: never; Returns: number }
       create_organization_with_owner: {
         Args: {
           org_name: string
