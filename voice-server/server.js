@@ -405,8 +405,26 @@ ${disclosureSay}  <Dial callerId="${escapeXml(from)}" timeout="30" action="${esc
 </Response>`);
     }
   } catch (err) {
-    // Non-fatal — fall through to default AI-first behavior
+    // Non-fatal — fall through to default AI-first behavior. Still surface
+    // to Sentry though: ring-first is a customer intent ("ring my mobile
+    // first, then AI as fallback"). Silently degrading to AI-first is a
+    // UX-level intent violation, even if it's not a kill-switch violation.
     console.error("[TwiML] getAnswerMode failed (falling back to AI):", err.message);
+    try {
+      Sentry.withScope((scope) => {
+        scope.setTag("service", "voice-server");
+        scope.setTag("reason", "ring-first-degraded");
+        scope.setLevel("warning");
+        scope.setExtras({
+          calledMasked: maskPhone(called),
+          callSid: reqCallSid,
+          provider: "twilio",
+        });
+        Sentry.captureException(err);
+      });
+    } catch (sentryErr) {
+      console.error("[TwiML] Sentry capture failed (suppressed):", sentryErr.message);
+    }
   }
 
   // Default: AI answers immediately — pass phoneRecord to avoid re-querying in loadCallContext
@@ -594,7 +612,24 @@ ${disclosureSay}  <Dial callerId="${escapeXml(called)}" timeout="30" action="${e
 </Response>`);
     }
   } catch (err) {
+    // See /twiml note above — ring-first degradation is a UX-level intent
+    // violation worth alerting on.
     console.error("[TeXML] getAnswerMode failed (falling back to AI):", err.message);
+    try {
+      Sentry.withScope((scope) => {
+        scope.setTag("service", "voice-server");
+        scope.setTag("reason", "ring-first-degraded");
+        scope.setLevel("warning");
+        scope.setExtras({
+          calledMasked: maskPhone(called),
+          callSid: reqCallSid,
+          provider: "telnyx",
+        });
+        Sentry.captureException(err);
+      });
+    } catch (sentryErr) {
+      console.error("[TeXML] Sentry capture failed (suppressed):", sentryErr.message);
+    }
   }
 
   // Default: AI answers

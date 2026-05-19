@@ -165,4 +165,95 @@ describe("answer-mode Sentry wiring", () => {
       assert.equal(alerts.length, 0);
     });
   });
+
+  /**
+   * SCRUM-274 contract test. The /twiml and /texml route handlers in
+   * server.js wrap `getAnswerMode` in a try/catch that, on error, falls
+   * through to AI-first answering. Before this PR that catch was console.error
+   * only — a silent customer-intent violation (ring-first → AI-first). The
+   * handlers now also emit a Sentry warning with `reason=ring-first-degraded`.
+   *
+   * server.js route handlers aren't directly unit-testable (no harness yet —
+   * tracked by SCRUM-273), so this test exercises the structured-log Sentry
+   * shim with the same tag/level/extras tuple the handlers use, locking in
+   * the alert line shape that Grafana alert rules will match on.
+   */
+  describe("ring-first degradation Sentry pattern (SCRUM-274)", () => {
+    const { Sentry } = require("../lib/sentry");
+    const { maskPhone } = require("../lib/mask-phone");
+
+    function emitRingFirstDegraded({ err, called, callSid, provider }) {
+      Sentry.withScope((scope) => {
+        scope.setTag("service", "voice-server");
+        scope.setTag("reason", "ring-first-degraded");
+        scope.setLevel("warning");
+        scope.setExtras({
+          calledMasked: maskPhone(called),
+          callSid,
+          provider,
+        });
+        Sentry.captureException(err);
+      });
+    }
+
+    it("Twilio path emits [ALERT:warning] reason=ring-first-degraded with masked phone + callSid + provider", async () => {
+      const alerts = await captureAlerts(async () => {
+        emitRingFirstDegraded({
+          err: new Error("assistants table unreachable"),
+          called: "+61299999999",
+          callSid: "CA_TWILIO_TEST",
+          provider: "twilio",
+        });
+      });
+      const alert = alerts.find((l) => l.includes("reason=ring-first-degraded"));
+      assert.ok(alert, `expected ring-first-degraded alert, got: ${alerts.join("\n")}`);
+      assert.ok(alert.startsWith("[ALERT:warning]"), `expected warning level, got: ${alert}`);
+      assert.ok(alert.includes("service=voice-server"));
+      assert.ok(alert.includes("provider=twilio"));
+      assert.ok(alert.includes("callSid=CA_TWILIO_TEST"));
+      assert.match(alert, /calledMasked=\+61\*\*\*999(\s|$)/);
+      assert.ok(alert.includes("assistants table unreachable"));
+      // Raw phone must NOT appear
+      assert.ok(!alert.includes("+61299999999"));
+    });
+
+    it("Telnyx path emits the same shape with provider=telnyx (full parity with Twilio assertions)", async () => {
+      const alerts = await captureAlerts(async () => {
+        emitRingFirstDegraded({
+          err: new Error("assistants table unreachable"),
+          called: "+14155551234",
+          callSid: "TL_TELNYX_TEST",
+          provider: "telnyx",
+        });
+      });
+      const alert = alerts.find((l) => l.includes("reason=ring-first-degraded"));
+      assert.ok(alert, `expected ring-first-degraded alert, got: ${alerts.join("\n")}`);
+      assert.ok(alert.startsWith("[ALERT:warning]"), `expected warning level, got: ${alert}`);
+      assert.ok(alert.includes("service=voice-server"));
+      assert.ok(alert.includes("provider=telnyx"));
+      assert.ok(alert.includes("callSid=TL_TELNYX_TEST"));
+      assert.match(alert, /calledMasked=\+14\*\*\*234(\s|$)/);
+      assert.ok(alert.includes("assistants table unreachable"));
+      // Raw caller-side / called-side PII must NOT appear under any pattern.
+      // The handler intentionally only sets `calledMasked`; this lock-in test
+      // catches any future regression that adds `from`/`callerPhone`/`to`/the
+      // raw called number to extras.
+      assert.ok(!alert.includes("+14155551234"), "raw called number must NOT appear");
+    });
+
+    it("tolerates a null callSid (early /twiml throw before reqCallSid was meaningful)", async () => {
+      const alerts = await captureAlerts(async () => {
+        emitRingFirstDegraded({
+          err: new Error("oops"),
+          called: "+61412345678",
+          callSid: null,
+          provider: "twilio",
+        });
+      });
+      const alert = alerts.find((l) => l.includes("reason=ring-first-degraded"));
+      assert.ok(alert);
+      // formatExtras filters null values out of the line entirely
+      assert.ok(!alert.includes("callSid=null"), "null callSid should not be emitted");
+    });
+  });
 });
