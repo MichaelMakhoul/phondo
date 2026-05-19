@@ -46,6 +46,29 @@ jobs:
       - name: Run tests
         run: npm test -- --run
 
+  # SCRUM-287: voice-server has its own node:test suite (not vitest).
+  # Without this job the kill-switch handler tests, server-sentry-sites
+  # contract tests, answer-mode-sentry tests, etc. would not run in CI.
+  voice-server-test:
+    name: Voice-Server Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: voice-server/package-lock.json
+
+      - name: Install voice-server deps
+        run: npm ci
+        working-directory: voice-server
+
+      - name: Run voice-server tests
+        run: npm test
+        working-directory: voice-server
+
   build:
     name: Build
     runs-on: ubuntu-latest
