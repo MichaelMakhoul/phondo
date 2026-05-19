@@ -53,6 +53,7 @@ function getTwilioRestClient() {
 const { lookupPhoneNumber, isAiEnabled, getAnswerMode, getPhoneNumberContext } = require("./lib/answer-mode");
 const { detectAndRedact, redactObject } = require("./lib/pii-detector");
 const { maskPhone } = require("./lib/mask-phone");
+const { buildFallbackDisclosureSay } = require("./lib/fallback-dial-consent");
 
 // Mirror of API-layer E164_REGEX. Defense-in-depth at the dialer so a bad
 // value introduced via direct SQL or a future bug can't be sent to Twilio.
@@ -343,9 +344,10 @@ app.post("/twiml", async (req, res) => {
         // DialCallStatus + DialCallDuration, and (b) fall through to
         // voicemail if the fallback was unreachable rather than dropping
         // the caller. Mirrors the existing /twiml/ring-first-fallback flow.
+        const disclosureSay = buildFallbackDisclosureSay({ phoneRecord, callerPhone: from, escapeXml, callSid });
         return res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Dial callerId="${escapeXml(from)}" timeout="30" action="${escapeXml(PUBLIC_URL + '/twiml/ai-disabled-fallback-status')}">
+${disclosureSay}  <Dial callerId="${escapeXml(from)}" timeout="30" action="${escapeXml(PUBLIC_URL + '/twiml/ai-disabled-fallback-status')}">
     ${escapeXml(fallback)}
   </Dial>
 </Response>`);
@@ -535,9 +537,10 @@ app.post("/texml", async (req, res) => {
         // inbound `from` is rejected. Use the called (org's Telnyx) number
         // so the dial is accepted. The fallback target's mobile will see
         // the business number — they know who's forwarding.
+        const disclosureSay = buildFallbackDisclosureSay({ phoneRecord, callerPhone: from, escapeXml, callSid });
         return res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Dial callerId="${escapeXml(called)}" timeout="30" action="${escapeXml(PUBLIC_URL + '/texml/ai-disabled-fallback-status')}">
+${disclosureSay}  <Dial callerId="${escapeXml(called)}" timeout="30" action="${escapeXml(PUBLIC_URL + '/texml/ai-disabled-fallback-status')}">
     ${escapeXml(fallback)}
   </Dial>
 </Response>`);
