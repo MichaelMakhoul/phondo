@@ -136,20 +136,23 @@ describe("rateLimitDistributed", () => {
   it("fails CLOSED on RPC error for cost-control type (fallbackTestCall)", async () => {
     const stub = makeStubSupabase();
     stub.setResult({ data: null, error: { code: "57P01", message: "admin shutdown" } });
-    const { allowed, headers } = await rateLimitDistributed(
+    const result = await rateLimitDistributed(
       stub.client,
       "fc-error-org",
       "endpoint",
       "fallbackTestCall",
     );
-    expect(allowed).toBe(false);
-    expect(headers["X-RateLimit-Limit"]).toBe("1");
-    expect(headers["X-RateLimit-Remaining"]).toBe("0");
+    expect(result.allowed).toBe(false);
+    expect(result.headers["X-RateLimit-Limit"]).toBe("1");
+    expect(result.headers["X-RateLimit-Remaining"]).toBe("0");
     // Retry-After should be present and anchor to the configured window
-    expect(Number(headers["Retry-After"])).toBeGreaterThan(0);
-    expect(Number(headers["Retry-After"])).toBeLessThanOrEqual(60);
+    expect(Number(result.headers["Retry-After"])).toBeGreaterThan(0);
+    expect(Number(result.headers["Retry-After"])).toBeLessThanOrEqual(60);
     // Sentry must be paged with failMode=closed
     expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    // SCRUM-302: fail-closed branch tags the result so callers can
+    // render a distinct UX message ("service degraded" vs "quota burn").
+    expect(result.failReason).toBe("service-degraded");
   });
 
   it("fails CLOSED on RPC throw for cost-control type", async () => {
@@ -423,6 +426,94 @@ describe("withRateLimitDistributed (IP-keyed async wrapper)", () => {
     );
     expect(allowed).toBe(true);
     expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("failReason discrimination (SCRUM-302: brownout-deny vs quota-deny)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("quota-deny (count > max, RPC succeeded) does NOT set failReason", async () => {
+    const stub = makeStubSupabase();
+    // Post-increment count = 2, max = 1 → over the cap.
+    stub.setResult({
+      data: [{ count: 2, reset_time: new Date(Date.now() + 30_000).toISOString() }],
+      error: null,
+    });
+    const result = await rateLimitDistributed(
+      stub.client,
+      "quota-org",
+      "endpoint",
+      "fallbackTestCall",
+    );
+    expect(result.allowed).toBe(false);
+    // No failReason on the legitimate quota-burn path — quota-deny is
+    // the user's fault ("you hammered the API"), brownout-deny isn't.
+    expect(result.failReason).toBeUndefined();
+  });
+
+  it("brownout-deny (RPC errored, costControl=true) sets failReason='service-degraded'", async () => {
+    const stub = makeStubSupabase();
+    stub.setResult({ data: null, error: { code: "57P01", message: "admin shutdown" } });
+    const result = await rateLimitDistributed(
+      stub.client,
+      "brownout-org",
+      "endpoint",
+      "fallbackTestCall",
+    );
+    expect(result.allowed).toBe(false);
+    expect(result.failReason).toBe("service-degraded");
+  });
+
+  it("brownout-deny via withRateLimitDistributed propagates failReason", async () => {
+    // The wrapper delegates to rateLimitDistributed; verify the field
+    // isn't accidentally dropped on the way through.
+    const stub = makeStubSupabase();
+    stub.setThrows(new Error("ECONNREFUSED"));
+    const request = new Request("http://localhost/api/v1/voice-preview", {
+      headers: { "x-vercel-forwarded-for": "192.0.2.1" },
+    });
+    const result = await withRateLimitDistributed(
+      stub.client,
+      request,
+      "/api/v1/voice-preview",
+      "expensive",
+    );
+    expect(result.allowed).toBe(false);
+    expect(result.failReason).toBe("service-degraded");
+  });
+
+  it("non-cost-control fallback to local Map does NOT set failReason", async () => {
+    // standard profile + RPC error → falls back to local Map, allowed=true.
+    // failReason should remain undefined (not a denial at all).
+    const stub = makeStubSupabase();
+    stub.setResult({ data: null, error: { code: "57P01", message: "down" } });
+    const result = await rateLimitDistributed(
+      stub.client,
+      "fallback-org-noreason",
+      "endpoint",
+      "standard",
+    );
+    expect(result.allowed).toBe(true);
+    expect(result.failReason).toBeUndefined();
+  });
+
+  it("happy path (allowed=true) does NOT set failReason", async () => {
+    const stub = makeStubSupabase();
+    const result = await rateLimitDistributed(
+      stub.client,
+      "happy-org",
+      "endpoint",
+      "fallbackTestCall",
+    );
+    expect(result.allowed).toBe(true);
+    expect(result.failReason).toBeUndefined();
+  });
+
+  it("sync rateLimit() never sets failReason (it's a distributed-limiter-only concept)", () => {
+    const result = rateLimit("sync-id", "endpoint", "standard");
+    expect(result.failReason).toBeUndefined();
   });
 });
 

@@ -25,8 +25,14 @@ export async function POST(req: NextRequest) {
     "adminExpensive",
   );
   if (!rl.allowed) {
+    // SCRUM-302: distinguish brownout-deny ("Supabase degraded") from
+    // quota-deny ("hit 3/min admin cap") so triage doesn't waste time
+    // on the wrong layer.
+    const error = rl.failReason === "service-degraded"
+      ? "Service temporarily unavailable. Please try again in a moment."
+      : "Rate limit exceeded";
     return NextResponse.json(
-      { error: "Rate limit exceeded" },
+      { error, failReason: rl.failReason },
       { status: 429, headers: rl.headers }
     );
   }

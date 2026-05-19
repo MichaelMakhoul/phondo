@@ -104,12 +104,16 @@ vi.mock("@/lib/twilio/client", () => ({
 
 // Rate-limiter mock — track call args so tests can verify the per-org key.
 // SCRUM-277: route now uses `rateLimitDistributed` (async, takes supabase as
-// first arg). The mock keeps the same allowed/headers shape so existing
-// assertions still hold for the route's return-value contract.
-const rateLimitState: { allowed: boolean } = { allowed: true };
+// first arg). SCRUM-302: also model `failReason` so tests can drive the
+// brownout-deny vs quota-deny UX branches.
+const rateLimitState: {
+  allowed: boolean;
+  failReason?: "service-degraded";
+} = { allowed: true };
 const rateLimitMock = vi.fn(async () => ({
   allowed: rateLimitState.allowed,
   headers: { "Retry-After": "60" },
+  ...(rateLimitState.failReason ? { failReason: rateLimitState.failReason } : {}),
 }));
 vi.mock("@/lib/security/rate-limiter", () => ({
   rateLimitDistributed: rateLimitMock,
@@ -192,6 +196,7 @@ beforeEach(() => {
   twilioState.shouldThrow = null;
   twilioState.nextSid = "CA_TEST_SID";
   rateLimitState.allowed = true;
+  rateLimitState.failReason = undefined;
 });
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -344,11 +349,28 @@ describe("POST /api/v1/phone-numbers/[id]/test-fallback — validation", () => {
 // ──────────────────────────────────────────────────────────────────────────
 
 describe("POST /api/v1/phone-numbers/[id]/test-fallback — rate limit", () => {
-  it("429 when the per-org rate limit is exhausted", async () => {
+  it("429 when the per-org rate limit is exhausted (quota-deny)", async () => {
     rateLimitState.allowed = false;
+    // No failReason → quota-deny: body uses the per-org "1/min" message.
     const res = await callRoute();
     expect(res.status).toBe(429);
     expect(res.headers.get("Retry-After")).toBe("60");
+    expect(twilioCreate).not.toHaveBeenCalled();
+    const body = await res.json();
+    expect(body.error).toContain("1 test call per minute");
+    expect(body.failReason).toBeUndefined();
+  });
+
+  it("429 with service-degraded message when limiter returns failReason='service-degraded' (SCRUM-302)", async () => {
+    rateLimitState.allowed = false;
+    rateLimitState.failReason = "service-degraded";
+    const res = await callRoute();
+    expect(res.status).toBe(429);
+    const body = await res.json();
+    // The brownout-deny path must NOT use the "1/min" message — that
+    // would mislead the admin who clicked Test once.
+    expect(body.error).toContain("Service temporarily unavailable");
+    expect(body.failReason).toBe("service-degraded");
     expect(twilioCreate).not.toHaveBeenCalled();
   });
 

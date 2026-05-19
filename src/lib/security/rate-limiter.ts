@@ -87,6 +87,27 @@ export type RateLimitSupabaseClient =
 // In-memory store (use Redis for distributed systems)
 const store = new Map<string, RateLimitEntry>();
 
+/**
+ * Result of a rate-limit check. Returned by both the sync `rateLimit()`
+ * and async `rateLimitDistributed()` (+ `withRateLimitDistributed`).
+ *
+ * `failReason` is set ONLY on the distributed limiter's fail-CLOSED
+ * branch (cost-control profiles during a Supabase brownout) so callers
+ * can distinguish "service is degraded, try again in a moment" from
+ * "you've hit your quota, slow down". Both still return 429 with
+ * Retry-After — only the JSON body should differ. SCRUM-302.
+ */
+export type RateLimitFailReason = "service-degraded";
+
+export interface RateLimitResult {
+  allowed: boolean;
+  headers: Record<string, string>;
+  /** Set only when allowed=false AND the deny came from the
+   *  fail-CLOSED brownout path. Quota-exhausted denies leave this
+   *  undefined so the existing 429 UX stays unchanged. */
+  failReason?: RateLimitFailReason;
+}
+
 // Clean up expired entries periodically
 const CLEANUP_INTERVAL = 60 * 1000; // 1 minute
 let cleanupTimer: NodeJS.Timeout | null = null;
@@ -229,10 +250,7 @@ export function rateLimit(
   identifier: string,
   endpoint: string,
   type: RateLimitType = "standard"
-): {
-  allowed: boolean;
-  headers: Record<string, string>;
-} {
+): RateLimitResult {
   const config = rateLimitConfigs[type];
   const key = getRateLimitKey(identifier, endpoint);
   const result = checkRateLimit(key, config);
@@ -419,7 +437,7 @@ export async function rateLimitDistributed(
   identifier: string,
   endpoint: string,
   type: RateLimitType = "standard",
-): Promise<{ allowed: boolean; headers: Record<string, string> }> {
+): Promise<RateLimitResult> {
   const config = rateLimitConfigs[type];
   const key = getRateLimitKey(identifier, endpoint);
   // `costControl` is only present on profiles that opt in (typed as
@@ -518,10 +536,17 @@ export async function rateLimitDistributed(
     // the bypass the distributed limiter exists to close. Headers
     // mirror the normal 429 shape, with a conservative Retry-After
     // anchored to the configured window so clients back off.
+    //
+    // SCRUM-302: tag this branch with `failReason: "service-degraded"`
+    // so callers can render a distinct UX message — a user mid-
+    // onboarding sees "Service temporarily unavailable" rather than
+    // a misleading "Too many requests" when they made one request and
+    // have plenty of quota.
     const resetTime = Date.now() + config.windowMs;
     return {
       allowed: false,
       headers: buildHeaders(config, config.maxRequests + 1, resetTime, false),
+      failReason: "service-degraded",
     };
   }
   return rateLimit(identifier, endpoint, type);
@@ -548,7 +573,7 @@ export async function withRateLimitDistributed(
   request: Request,
   endpoint: string,
   type: RateLimitType = "standard",
-): Promise<{ allowed: boolean; headers: Record<string, string> }> {
+): Promise<RateLimitResult> {
   const clientIp = getClientIp(new Headers(request.headers));
   return rateLimitDistributed(supabase, clientIp, endpoint, type);
 }

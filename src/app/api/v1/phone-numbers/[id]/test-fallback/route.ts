@@ -101,19 +101,26 @@ export async function POST(
     // `RateLimitSupabaseClient` after the `supabase gen types` regen in
     // SCRUM-291 — the generated `Database` now includes the
     // `check_rate_limit_bucket` overload, so no cast is needed here.
-    const { allowed, headers } = await rateLimitDistributed(
+    const rl = await rateLimitDistributed(
       createAdminClient(),
       row.organization_id,
       "phone-numbers/test-fallback",
       "fallbackTestCall",
     );
-    if (!allowed) {
-      // Make the per-org scope explicit — otherwise a second admin
-      // troubleshooting fallback config is left wondering why their own
-      // first request is throttled.
+    if (!rl.allowed) {
+      // SCRUM-302: distinguish brownout-deny from quota-deny. An admin
+      // who clicked "Test fallback" once during a Supabase brownout
+      // should see "Service temporarily unavailable", not a misleading
+      // "1 call per minute" rate-limit message.
+      const error = rl.failReason === "service-degraded"
+        ? "Service temporarily unavailable. Please try again in a moment."
+        // Make the per-org scope explicit — otherwise a second admin
+        // troubleshooting fallback config is left wondering why their own
+        // first request is throttled.
+        : "Your organization can place 1 test call per minute. Please wait, then try again.";
       return NextResponse.json(
-        { error: "Your organization can place 1 test call per minute. Please wait, then try again." },
-        { status: 429, headers },
+        { error, failReason: rl.failReason },
+        { status: 429, headers: rl.headers },
       );
     }
 
