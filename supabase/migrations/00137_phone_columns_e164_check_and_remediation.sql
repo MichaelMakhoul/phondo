@@ -22,6 +22,19 @@
 -- forms. Those normalisation gaps are tracked in SCRUM-303.
 
 -- ---------------------------------------------------------------------------
+-- Step 0: Pre-existing schema bug fix.
+-- `transfer_rules` has an `update_updated_at_column()` BEFORE-UPDATE trigger
+-- but the table was missing the `updated_at` column the trigger references.
+-- Discovered while running this migration against prod on 2026-05-20:
+-- every UPDATE to transfer_rules was failing with
+-- `record "new" has no field "updated_at"`. Adding the column unblocks
+-- both this migration and the dashboard's edit/toggle of transfer rules.
+-- Idempotent (IF NOT EXISTS) so re-runs and fresh envs both work.
+-- ---------------------------------------------------------------------------
+ALTER TABLE transfer_rules
+  ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+-- ---------------------------------------------------------------------------
 -- Step 1: Audit log — emit every non-E.164 value as a NOTICE before mutating.
 -- ---------------------------------------------------------------------------
 DO $$
