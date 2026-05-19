@@ -29,7 +29,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/components/ui/use-toast";
-import { Phone, MoreVertical, Bot, PhoneForwarded, AlertCircle, Loader2, PhoneOff } from "lucide-react";
+import { Phone, MoreVertical, Bot, PhoneForwarded, AlertCircle, Loader2, PhoneOff, Info } from "lucide-react";
 import { formatPhoneNumber } from "@/lib/utils";
 import {
   getCountryConfig,
@@ -473,6 +473,16 @@ export function PhoneNumberCard({ phoneNumber, countryCode, assistants = [] }: P
             <DialogDescription>
               When you pause AI on this number, incoming calls will forward here instead of going to voicemail. Use your mobile so you can pick up if something breaks.
             </DialogDescription>
+            <div className="mt-2 flex items-start gap-2 rounded-md border border-blue-500/20 bg-blue-500/5 p-2.5 text-xs text-blue-700 dark:text-blue-300">
+              <Info className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
+              <p>
+                <strong>Different from Call Transfers.</strong> This number
+                only rings when you toggle <strong>AI off</strong> on this
+                card (emergency shutoff). For mid-call human handoffs while
+                AI is running, configure Call Transfers under
+                Assistant → Transfers.
+              </p>
+            </div>
           </DialogHeader>
           <div className="space-y-2">
             <Input
