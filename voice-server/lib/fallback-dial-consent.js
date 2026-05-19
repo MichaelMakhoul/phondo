@@ -27,6 +27,7 @@
 
 const { requiresRecordingDisclosureHybrid, getRecordingDisclosureText } = require("./recording-consent");
 const { Sentry } = require("./sentry");
+const { getPollyVoice } = require("./polly-voice");
 
 function safeCapture(fn) {
   try {
@@ -44,7 +45,9 @@ function safeCapture(fn) {
  * @param {string} args.callerPhone - E.164 caller number for state inference.
  * @param {(s: string) => string} args.escapeXml - XML escape function from the route handler.
  * @param {string|null} [args.callSid] - Optional callSid for Sentry triage.
- * @returns {string} `"  <Say voice=\"Polly.Joanna\">…</Say>\n"` or `""`.
+ * @returns {string} `"  <Say voice=\"<polly-voice>\">…</Say>\n"` or `""`.
+ *   Voice name is chosen by getPollyVoice(country) — AU → Polly.Nicole,
+ *   US/CA/default → Polly.Joanna.
  */
 function buildFallbackDisclosureSay({ phoneRecord, callerPhone, escapeXml, callSid = null }) {
   try {
@@ -83,7 +86,8 @@ function buildFallbackDisclosureSay({ phoneRecord, callerPhone, escapeXml, callS
       org.recording_disclosure_text,
       org.name,
     );
-    return `  <Say voice="Polly.Joanna">${escapeXml(text)}</Say>\n`;
+    const voice = getPollyVoice(country);
+    return `  <Say voice="${voice}">${escapeXml(text)}</Say>\n`;
   } catch (err) {
     console.error("[FallbackDialConsent] Failed to build disclosure (skipping):", err.message);
     safeCapture(() => {

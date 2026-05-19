@@ -54,6 +54,7 @@ const { lookupPhoneNumber, isAiEnabled, getAnswerMode, getPhoneNumberContext } =
 const { detectAndRedact, redactObject } = require("./lib/pii-detector");
 const { maskPhone } = require("./lib/mask-phone");
 const { buildFallbackDisclosureSay } = require("./lib/fallback-dial-consent");
+const { getPollyVoice } = require("./lib/polly-voice");
 
 // Mirror of API-layer E164_REGEX. Defense-in-depth at the dialer so a bad
 // value introduced via direct SQL or a future bug can't be sent to Twilio.
@@ -359,11 +360,12 @@ ${disclosureSay}  <Dial callerId="${escapeXml(from)}" timeout="30" action="${esc
         ? `Thank you for calling ${escapeXml(businessName)}. We are unable to take your call right now. Please leave a message after the beep and we will get back to you as soon as possible.`
         : `Thank you for calling. We are unable to take your call right now. Please leave a message after the beep and we will get back to you as soon as possible.`;
 
+      const pollyVoice = getPollyVoice(phoneRecord?.organizations?.country);
       return res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say voice="Polly.Joanna">${greeting}</Say>
+  <Say voice="${pollyVoice}">${greeting}</Say>
   <Record maxLength="120" playBeep="true" action="${escapeXml(PUBLIC_URL + '/twiml/ai-disabled-recording-done')}" />
-  <Say voice="Polly.Joanna">Thank you for your message. Goodbye.</Say>
+  <Say voice="${pollyVoice}">Thank you for your message. Goodbye.</Say>
 </Response>`);
     }
   } catch (err) {
@@ -570,11 +572,12 @@ ${disclosureSay}  <Dial callerId="${escapeXml(called)}" timeout="30" action="${e
         ? `Thank you for calling ${escapeXml(businessName)}. We are unable to take your call right now. Please leave a message after the beep and we will get back to you as soon as possible.`
         : `Thank you for calling. We are unable to take your call right now. Please leave a message after the beep and we will get back to you as soon as possible.`;
 
+      const pollyVoice = getPollyVoice(phoneRecord?.organizations?.country);
       return res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say voice="Polly.Joanna">${greeting}</Say>
+  <Say voice="${pollyVoice}">${greeting}</Say>
   <Record maxLength="120" playBeep="true" action="${escapeXml(PUBLIC_URL + '/texml/recording-done')}" />
-  <Say voice="Polly.Joanna">Thank you for your message. Goodbye.</Say>
+  <Say voice="${pollyVoice}">Thank you for your message. Goodbye.</Say>
 </Response>`);
     }
   } catch (err) {
@@ -996,10 +999,12 @@ app.post("/twiml/ai-disabled-fallback-status", async (req, res) => {
   // business at least gets a message. The recording lands via
   // /twiml/ai-disabled-recording-done (same webhook as the no-fallback path).
   let businessName = null;
+  let orgCountry = null;
   try {
     const phoneRecord = await lookupPhoneNumber(called, { callSid });
     const ctx = await getPhoneNumberContext(called, phoneRecord, { callSid });
     businessName = typeof ctx?.organizationName === "string" ? ctx.organizationName : null;
+    orgCountry = phoneRecord?.organizations?.country || null;
   } catch (err) {
     console.warn("[FallbackStatus] Failed to load business name for voicemail greeting:", err.message);
     try {
@@ -1018,11 +1023,12 @@ app.post("/twiml/ai-disabled-fallback-status", async (req, res) => {
     ? `Thank you for calling ${escapeXml(businessName)}. We are unable to take your call right now. Please leave a message after the beep and we will get back to you as soon as possible.`
     : `Thank you for calling. We are unable to take your call right now. Please leave a message after the beep and we will get back to you as soon as possible.`;
 
+  const pollyVoice = getPollyVoice(orgCountry);
   res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say voice="Polly.Joanna">${greeting}</Say>
+  <Say voice="${pollyVoice}">${greeting}</Say>
   <Record maxLength="120" playBeep="true" action="${escapeXml(PUBLIC_URL + '/twiml/ai-disabled-recording-done')}" />
-  <Say voice="Polly.Joanna">Thank you for your message. Goodbye.</Say>
+  <Say voice="${pollyVoice}">Thank you for your message. Goodbye.</Say>
 </Response>`);
 });
 
@@ -1049,10 +1055,12 @@ app.post("/texml/ai-disabled-fallback-status", async (req, res) => {
   }
 
   let businessName = null;
+  let orgCountry = null;
   try {
     const phoneRecord = await lookupPhoneNumber(called, { callSid });
     const ctx = await getPhoneNumberContext(called, phoneRecord, { callSid });
     businessName = typeof ctx?.organizationName === "string" ? ctx.organizationName : null;
+    orgCountry = phoneRecord?.organizations?.country || null;
   } catch (err) {
     console.warn("[FallbackStatus][TeXML] Failed to load business name:", err.message);
     try {
@@ -1071,11 +1079,12 @@ app.post("/texml/ai-disabled-fallback-status", async (req, res) => {
     ? `Thank you for calling ${escapeXml(businessName)}. We are unable to take your call right now. Please leave a message after the beep and we will get back to you as soon as possible.`
     : `Thank you for calling. We are unable to take your call right now. Please leave a message after the beep and we will get back to you as soon as possible.`;
 
+  const pollyVoice = getPollyVoice(orgCountry);
   res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say voice="Polly.Joanna">${greeting}</Say>
+  <Say voice="${pollyVoice}">${greeting}</Say>
   <Record maxLength="120" playBeep="true" action="${escapeXml(PUBLIC_URL + '/texml/recording-done')}" />
-  <Say voice="Polly.Joanna">Thank you for your message. Goodbye.</Say>
+  <Say voice="${pollyVoice}">Thank you for your message. Goodbye.</Say>
 </Response>`);
 });
 
@@ -1120,9 +1129,15 @@ app.post("/twiml/ai-disabled-recording-done", async (req, res) => {
     }
   }
 
+  // No phoneRecord in scope at this callback — Twilio only sends CallSid +
+  // recording metadata. Fetching the org country would require an extra DB
+  // roundtrip just for a 5-word hang-up acknowledgment; the AU/UK accent
+  // was already delivered on the greeting + record-end "Thank you for your
+  // message. Goodbye." Falls through to Polly.Joanna by design.
+  const pollyVoice = getPollyVoice(null);
   res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say voice="Polly.Joanna">Thank you for your message. Goodbye.</Say>
+  <Say voice="${pollyVoice}">Thank you for your message. Goodbye.</Say>
   <Hangup/>
 </Response>`);
 });
