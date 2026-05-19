@@ -572,41 +572,67 @@ describe("server.js Sentry sites — contract tests (SCRUM-273)", () => {
   });
 
   describe("Production introspection (catches divergence between this file and server.js)", () => {
-    // These tests read server.js source and grep for the actual
-    // setTag("reason", "...") and setLevel("...") literals. A typo
-    // introduced in server.js — say, `fail-open` becoming `fail_open` —
-    // will trip the union check below even though every other test in this
-    // file uses the hand-maintained helpers. Without this safety net the
-    // contract tests would happily report green while production was
-    // broken.
+    // These tests read the production sources and grep for the actual
+    // setTag("reason", "...") literals. A typo in production — say,
+    // `fail-open` becoming `fail_open` — will trip the union check
+    // below even though every other test in this file uses the
+    // hand-maintained helpers. Without this safety net the contract
+    // tests would happily report green while production was broken.
+    //
+    // SCRUM-287: the kill-switch handlers (log-failed, fail-open,
+    // fallback-finalise-failed, voicemail-greeting-lookup-failed) were
+    // extracted into `voice-server/lib/route-handlers/kill-switch.js`,
+    // so we now grep BOTH server.js and the extracted module. The
+    // `ring-first-degraded` reason still lives in server.js (the
+    // ring-first branch is out of scope for the Wave 1 extraction).
     const serverSource = fs.readFileSync(SERVER_JS_PATH, "utf8");
+    const KILL_SWITCH_PATH = path.join(__dirname, "..", "lib", "route-handlers", "kill-switch.js");
+    const killSwitchSource = fs.readFileSync(KILL_SWITCH_PATH, "utf8");
+    const productionSources = [serverSource, killSwitchSource];
 
-    /** Distinct `reason` literals found in server.js. */
+    /** Distinct `reason` literals found across all production sources. */
     const productionReasons = (() => {
       const found = new Set();
-      for (const match of serverSource.matchAll(/scope\.setTag\("reason",\s*"([^"]+)"\)/g)) {
-        found.add(match[1]);
+      for (const src of productionSources) {
+        for (const match of src.matchAll(/scope\.setTag\("reason",\s*"([^"]+)"\)/g)) {
+          found.add(match[1]);
+        }
       }
       return [...found].sort();
     })();
 
-    it("server.js uses EXACTLY the REASONS this file knows about (catches typos & unknown adds)", () => {
+    it("server.js + kill-switch.js use EXACTLY the REASONS this file knows about (catches typos & unknown adds)", () => {
       assert.deepEqual(
         productionReasons,
         [...REASONS].sort(),
-        "server.js reason set drifted from this file — add a helper for any new reason or fix the typo",
+        "production reason set drifted from this file — add a helper for any new reason or fix the typo",
       );
     });
 
-    it("server.js contains 10 distinct call sites (matches helper count for the 5 reasons)", () => {
-      // 5 reasons × ~2 call sites (twilio + telnyx mirrors, plus fallback
-      // having lookup + complete). If a Sentry block is deleted from
-      // server.js, this drops; if one is added, this trips.
-      const calls = serverSource.match(/scope\.setTag\("reason",/g) || [];
+    it("production contains 7 reason-tagged call sites (5 in kill-switch.js + 2 in server.js)", () => {
+      // SCRUM-287 consolidated provider mirrors: log-failed, fail-open,
+      // and voicemail-greeting-lookup-failed each fire from ONE site
+      // that parameterizes provider (twilio|telnyx). fallback-finalise-
+      // failed has 2 sites (lookup + complete stages, distinguished by
+      // the `stage` extra). ring-first-degraded has 2 sites in
+      // server.js (twilio + telnyx mirrors, not yet extracted). Total
+      // 5 in kill-switch.js + 2 in server.js = 7.
+      const serverCalls = serverSource.match(/scope\.setTag\("reason",/g) || [];
+      const killSwitchCalls = killSwitchSource.match(/scope\.setTag\("reason",/g) || [];
       assert.equal(
-        calls.length,
-        10,
-        `expected 10 reason-tagged Sentry sites in server.js, found ${calls.length} — update this test deliberately when sites are added/removed`,
+        serverCalls.length,
+        2,
+        `expected 2 reason-tagged sites in server.js (ring-first-degraded twilio + telnyx), found ${serverCalls.length}`,
+      );
+      assert.equal(
+        killSwitchCalls.length,
+        5,
+        `expected 5 reason-tagged sites in kill-switch.js, found ${killSwitchCalls.length}`,
+      );
+      assert.equal(
+        serverCalls.length + killSwitchCalls.length,
+        7,
+        `expected 7 reason-tagged Sentry sites total — update this test deliberately when sites are added/removed`,
       );
     });
   });
