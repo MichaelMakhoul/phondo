@@ -1,13 +1,18 @@
-# Loop prompt: Onboarding + Email follow-ups
+# Loop prompt: Onboarding + Owner-notification follow-ups
 
-Created 2026-05-20 after Phase 1 onboarding UX (PR #212) shipped and the SCRUM-282 confirmation-text fix landed. Implements four tickets discovered during manual testing:
+Created 2026-05-20 after Phase 1 onboarding UX (PR #212) shipped and the SCRUM-282 confirmation-text fix landed. Implements three tickets discovered during manual testing:
 
 | Ticket | Title | Priority | Effort |
 |---|---|---|---|
 | [SCRUM-281](https://michaelo.atlassian.net/browse/SCRUM-281) | Notify business owner when AI calls end as "unsuccessful" | P2 | ~3-4h |
-| [SCRUM-286](https://michaelo.atlassian.net/browse/SCRUM-286) | Caller-side appointment confirmation email (OFF by default) | P2 | ~4-5h |
 | [SCRUM-284](https://michaelo.atlassian.net/browse/SCRUM-284) | Onboarding Phase 2: dedicated Forwarding step in the wizard | P2 | ~4-6h |
 | [SCRUM-285](https://michaelo.atlassian.net/browse/SCRUM-285) | Onboarding Phase 3: dashboard setup checklist for new orgs | P3 | ~6-8h |
+
+## Permanently cancelled — DO NOT IMPLEMENT
+
+- **[SCRUM-286 — WON'T DO]** Caller-side appointment confirmation email. **Cancelled 2026-05-20.** Voice-captured emails have no caller-ID anchor and can be mistranscribed, creating a non-trivial probability of sending sensitive appointment details to the wrong recipient. Privacy Act 1988 / AHPRA / solicitor-client privilege risk for medical/dental/legal verticals. The recommended pattern for customers who need caller email confirmations is to integrate with their existing CRM (Cliniko, ServiceM8, Clio) which already sends those emails through verified channels. **Do not reopen** without product-owner discussion — see the ticket comment thread for full reasoning.
+- **[SCRUM-288 — WON'T DO]** Caller email double opt-in verification. **Cancelled 2026-05-20** alongside SCRUM-286 (its only purpose was to enable safe caller email).
+- **Implication for the SCRUM-282 prompt guard:** the "NEVER promise a confirmation text, email, or any other follow-up notification" wording is **permanent for the email channel**. SMS-side wording will be re-introduced conditionally when SMS sender registration completes under SCRUM-264.
 
 ## How to use
 
@@ -22,9 +27,8 @@ Then paste the prompt below as the argument. The interval is omitted intentional
 ## Order rationale
 
 1. **SCRUM-281 first** — smallest, no dependencies, fills an obvious owner-side notification gap.
-2. **SCRUM-286 next** — pairs with re-enabling the prompt language guarded by SCRUM-282; uses the same notification-service plumbing as #1.
-3. **SCRUM-284 next** — onboarding wizard step uses existing transfer_rules + fallback_forward_number APIs (no new infra).
-4. **SCRUM-285 last** — biggest scope (dashboard component + state derivation across many tables).
+2. **SCRUM-284 next** — onboarding wizard step uses existing transfer_rules + fallback_forward_number APIs (no new infra).
+3. **SCRUM-285 last** — biggest scope (dashboard component + state derivation across many tables).
 
 ## The prompt
 
@@ -32,16 +36,15 @@ Then paste the prompt below as the argument. The interval is omitted intentional
 Work through the following Jira tickets in this priority order, one per loop iteration:
 
 1. SCRUM-281 — Notify business owner when AI calls end as "unsuccessful" (P2, ~3-4h)
-2. SCRUM-286 — Caller-side appointment confirmation email (OFF by default) (P2, ~4-5h)
-3. SCRUM-284 — Onboarding Phase 2: dedicated Forwarding step in the wizard (P2, ~4-6h)
-4. SCRUM-285 — Onboarding Phase 3: dashboard setup checklist for new orgs (P3, ~6-8h)
+2. SCRUM-284 — Onboarding Phase 2: dedicated Forwarding step in the wizard (P2, ~4-6h)
+3. SCRUM-285 — Onboarding Phase 3: dashboard setup checklist for new orgs (P3, ~6-8h)
 
 EACH ITERATION = ONE TICKET, START TO MERGE. Do not start the next ticket in the same iteration.
 
 STEP 1 — Pick the next ticket
 - Fetch each ticket above from Jira (mcp__mcp-atlassian__jira_get_issue, in parallel).
 - The next ticket is the first one in the list above whose status is NOT "Done".
-- If all four are "Done", post a final summary listing every merged PR URL and exit. Do not schedule another wakeup.
+- If all three are "Done", post a final summary listing every merged PR URL and exit. Do not schedule another wakeup.
 
 STEP 2 — Prep the workspace
 - `git checkout main && git pull --ff-only`. Abort if either fails — never force-overwrite local changes.
@@ -51,7 +54,6 @@ STEP 2 — Prep the workspace
 
 STEP 3 — Implement per the ticket's acceptance criteria
 - Touch only the files described in the ticket. Do not refactor adjacent code.
-- For SCRUM-286 specifically: also re-enable the conditional confirmation-text wording in voice-server prompts that SCRUM-282 removed. The flag passed into the prompt builder gates the language. Update the SCRUM-282 regression test (voice-server/tests/prompt-no-confirmation-promise.test.js) to allow the wording when the flag is true.
 - For SCRUM-285 specifically: derive completion state from existing tables (phone_numbers, transfer_rules, calls, organizations, notification_preferences) — do not add new tracking tables unless absolutely needed.
 - If new behaviour, add tests. Never delete or weaken existing tests.
 - For DB changes: write a new migration file (next number after the most recent one), DO NOT apply it yet.
@@ -103,7 +105,7 @@ STEP 9 — Mark Jira Done
 
 STEP 10 — Schedule next iteration
 - If more tickets remain in the list above (status != "Done"), end this iteration with a one-line status. The /loop runtime will fire this prompt again to pick up the next ticket.
-- If all four are now Done, post a final summary message to the user with every merged PR URL and exit. Do not schedule another wakeup.
+- If all three are now Done, post a final summary message to the user with every merged PR URL and exit. Do not schedule another wakeup.
 
 GUARDRAILS
 - If any review agent flags a P0 you cannot resolve, STOP. Add a PR comment describing the blocker, mark the Jira ticket "Blocked" (or add a "blocked" label), and exit this iteration.
@@ -111,7 +113,7 @@ GUARDRAILS
 - Never push to main directly. Never use `--no-verify`. Never `--force-push` without `--force-with-lease`.
 - Migrations are applied to production. Treat them as one-way operations. If you realise a migration is wrong AFTER applying, write a follow-up migration that fixes forward, do not try to roll back.
 - Keep test coverage. Every new public function or behaviour gets a vitest case. Never weaken or delete existing tests to make CI pass.
-- For SCRUM-286 caller email: the feature MUST be OFF by default at the org level. The migration column default MUST be false. The dashboard toggle MUST start unchecked. This is a deliberate user requirement — some businesses run their own confirmation systems and would be hurt by duplicate emails.
+- This loop does NOT include SCRUM-286 (caller-side email). That ticket is blocked on SCRUM-288 (double opt-in verification) — see this file's "Deferred" section. Do not attempt to implement caller email in this loop. If a follow-up review finding suggests caller email is needed for completeness, link to SCRUM-286/288 instead of implementing.
 - The user has authorized git, gh, supabase MCP, and fly CLI operations per CLAUDE.md. You do not need to ask for permission inside this loop.
 ```
 
@@ -127,5 +129,6 @@ If another Claude Code session is doing non-code work in parallel (prospecting, 
 
 ## Skipped intentionally
 
+- **SCRUM-286 (caller-side email) is NOT in this loop.** Deferred until SCRUM-288 (verification flow) ships, to avoid leaking sensitive appointment details to wrong recipients from voice-captured emails. See "Deferred" section at the top.
 - **Phase 3 dashboard checklist auto-dismiss / per-user state.** Item 7 of SCRUM-285 (notification-prefs "confirmed" flag) is the only place where a new "explicitly confirmed" flag is needed. The rest derives from existing data.
-- **Re-enabling the AI confirmation language as part of SCRUM-282.** That ticket only removes the promise. Re-enabling lives in SCRUM-286 (caller email) and a future SCRUM-264 follow-up (SMS once ABN clears).
+- **Re-enabling the AI confirmation language as part of SCRUM-282.** That ticket only removes the promise. Re-enabling lives in SCRUM-286 / SCRUM-288 (caller email + verification) and a future SCRUM-264 follow-up (SMS once ABN clears).
