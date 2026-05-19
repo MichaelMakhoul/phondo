@@ -1,7 +1,34 @@
 /**
- * Simple in-memory rate limiter
- * For production, consider using Redis-based rate limiting
+ * Rate limiter.
+ *
+ * Two flavours live here side by side:
+ *
+ *   1. `rateLimit(...)` — the original per-process Map. Synchronous, zero
+ *      DB cost, fine for UX-grade limits ("don't hammer the API") where a
+ *      motivated attacker hitting parallel lambda instances isn't a real
+ *      threat to the business.
+ *
+ *   2. `rateLimitDistributed(supabase, ...)` — async, hits a shared
+ *      Postgres atomic counter (`check_rate_limit_bucket`). Required for
+ *      cost-control limits on paid-action endpoints (Twilio outbound,
+ *      Google Places, ElevenLabs preview, etc.) where per-instance
+ *      enforcement is genuinely bypassable.
+ *
+ * Callers pick the right tool: stay sync for UX limits, opt into async +
+ * shared store for endpoints whose abuse costs us real money. The headers
+ * and 429 contract are identical between the two so middleware-style
+ * usage doesn't have to branch.
+ *
+ * On distributed lookup failure (DB brownout) the async helper falls
+ * BACK to the local Map limiter rather than failing closed — locking
+ * users out during a Supabase outage is worse than the per-instance
+ * weakness the function is meant to fix. The fallback is Sentry-paged.
+ *
+ * See SCRUM-277 for the broader rationale and the migration that adds
+ * the Postgres side (00135_rate_limit_buckets.sql).
  */
+
+import * as Sentry from "@sentry/nextjs";
 
 interface RateLimitEntry {
   count: number;
@@ -12,6 +39,16 @@ interface RateLimitConfig {
   windowMs: number; // Time window in milliseconds
   maxRequests: number; // Max requests per window
 }
+
+/**
+ * The minimal Supabase surface `rateLimitDistributed` needs. Typed
+ * permissively (matches the `(supabase as any)` convention used
+ * elsewhere in the repo to work around SSR type inference) so the
+ * helper accepts both the generated `SupabaseClient<Database>` and the
+ * narrower stub objects we use in tests.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type RateLimitSupabaseClient = { rpc: (fn: string, args: any) => any };
 
 // In-memory store (use Redis for distributed systems)
 const store = new Map<string, RateLimitEntry>();
@@ -42,7 +79,16 @@ function startCleanup() {
 startCleanup();
 
 /**
- * Default rate limit configurations
+ * Default rate limit configurations.
+ *
+ * `costControl: true` opts the profile into fail-CLOSED behaviour when
+ * the distributed limiter (rateLimitDistributed) can't reach Postgres.
+ * Use it for any profile that gates a paid third-party action (Twilio
+ * outbound, ElevenLabs, Google Places, etc.) — falling back to the
+ * per-instance Map during a brownout would otherwise restore the exact
+ * bypass `rateLimitDistributed` exists to close. Everything else (UX-
+ * grade limits, webhook spam guards) keeps fail-open semantics so a
+ * Supabase blip doesn't lock legitimate users out.
  */
 export const rateLimitConfigs = {
   // Standard API calls - 100 per minute
@@ -64,6 +110,7 @@ export const rateLimitConfigs = {
   expensive: {
     windowMs: 60 * 1000,
     maxRequests: 10,
+    costControl: true,
   },
   // Test calls - 5 per minute
   testCall: {
@@ -76,11 +123,13 @@ export const rateLimitConfigs = {
   fallbackTestCall: {
     windowMs: 60 * 1000,
     maxRequests: 1,
+    costControl: true,
   },
   // Admin expensive operations (Google Places API, bulk scraping) - 3 per minute
   adminExpensive: {
     windowMs: 60 * 1000,
     maxRequests: 3,
+    costControl: true,
   },
 } as const;
 
@@ -206,4 +255,180 @@ export function withRateLimit(
 ) {
   const clientIp = getClientIp(new Headers(request.headers));
   return rateLimit(clientIp, endpoint, type);
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Distributed (cross-instance) rate limiter — SCRUM-277.
+//
+// Backed by the `rate_limit_buckets` table and `check_rate_limit_bucket`
+// SECURITY DEFINER RPC. The RPC does an atomic UPSERT that either
+// increments an active bucket or resets an expired one in a single
+// round-trip, so two concurrent lambdas can never both observe "we're
+// under the cap" against the same key.
+// ─────────────────────────────────────────────────────────────────────
+
+interface RateLimitBucketRow {
+  count: number;
+  reset_time: string;
+}
+
+function buildHeaders(
+  config: RateLimitConfig,
+  count: number,
+  resetTime: number,
+  allowed: boolean,
+): Record<string, string> {
+  const remaining = Math.max(0, config.maxRequests - count);
+  const headers: Record<string, string> = {
+    "X-RateLimit-Limit": config.maxRequests.toString(),
+    "X-RateLimit-Remaining": remaining.toString(),
+    "X-RateLimit-Reset": Math.ceil(resetTime / 1000).toString(),
+  };
+  if (!allowed) {
+    // Retry-After is integer seconds (RFC 7231). Round up so a partial
+    // second doesn't tell the client "retry now" while the window is
+    // still 0.4s open.
+    headers["Retry-After"] = Math.max(
+      1,
+      Math.ceil((resetTime - Date.now()) / 1000),
+    ).toString();
+  }
+  return headers;
+}
+
+/**
+ * Cross-instance rate-limit check. Use for paid-action endpoints (Twilio
+ * outbound calls, ElevenLabs voice preview, Google Places API, etc.)
+ * where a motivated abuser hitting parallel lambda instances would
+ * otherwise bypass the per-process Map.
+ *
+ * Failure mode is driven by the profile's `costControl` flag:
+ *   - costControl=true → fail CLOSED on RPC error (return 429 with
+ *     `Retry-After: 60`). Falling back to the per-instance Map during a
+ *     Supabase brownout would restore the exact bypass this function
+ *     exists to close, so we'd rather lock the (rare) outage admin out
+ *     than expose unbounded Twilio cost.
+ *   - costControl=false (or absent) → fall back to the local Map
+ *     limiter. UX-grade limits ("don't hammer the API") shouldn't lock
+ *     users out during a DB blip.
+ *
+ * Both modes Sentry-page on RPC failure so on-call sees the degraded
+ * mode regardless of which path was taken.
+ *
+ * IMPORTANT: this function calls a SECURITY DEFINER RPC whose EXECUTE
+ * is restricted to `service_role` (the `authenticated` grant was
+ * revoked in migration 00136 after the cross-tenant poisoning vector
+ * was found). The caller MUST pass a service-role-level Supabase client
+ * (e.g. `createAdminClient()` from `@/lib/supabase/admin`). A user-bound
+ * cookie client will hit the RPC and get `permission denied`, which the
+ * function will treat as a brownout and either fail closed
+ * (cost-control) or fall back (non-cost-control) — so the only visible
+ * symptom of using the wrong client is the Sentry page. Verify the
+ * client type in code review.
+ *
+ * @param supabase  Service-role Supabase client (see note above).
+ * @param identifier  Per-org UUID, IP address, or other namespace
+ *                    component. Combined with `endpoint` to form the
+ *                    bucket key — same shape as the sync limiter.
+ * @param endpoint    Short identifier of the protected route.
+ * @param type        Configured limit profile.
+ */
+export async function rateLimitDistributed(
+  supabase: RateLimitSupabaseClient,
+  identifier: string,
+  endpoint: string,
+  type: RateLimitType = "standard",
+): Promise<{ allowed: boolean; headers: Record<string, string> }> {
+  const config = rateLimitConfigs[type];
+  const key = getRateLimitKey(identifier, endpoint);
+  // `costControl` is only present on profiles that opt in (typed as
+  // optional in `RateLimitConfigEntry`). Cast defensively here so future
+  // profiles added without the flag keep their fail-open default.
+  const failClosed =
+    (config as { costControl?: boolean }).costControl === true;
+
+  let row: RateLimitBucketRow | null = null;
+  let rpcError: unknown = null;
+  try {
+    const { data, error } = (await supabase.rpc("check_rate_limit_bucket", {
+      p_key: key,
+      p_window_ms: config.windowMs,
+      p_max_requests: config.maxRequests,
+    })) as { data: unknown; error: unknown };
+    if (error) {
+      rpcError = error;
+    } else if (Array.isArray(data) && data.length > 0) {
+      // PostgREST returns TABLE(...)-typed RPCs as an array of row objects.
+      row = data[0] as RateLimitBucketRow;
+    } else {
+      rpcError = new Error("check_rate_limit_bucket returned empty result");
+    }
+  } catch (err) {
+    rpcError = err;
+  }
+
+  if (row) {
+    // count is post-increment — if count > max, this request put us over.
+    const resetTime = new Date(row.reset_time).getTime();
+    if (Number.isNaN(resetTime)) {
+      // Shouldn't happen — Postgres returned a malformed timestamp. Treat
+      // as DB error (fall back) so we don't emit a nonsense Retry-After.
+      rpcError = new Error(
+        `check_rate_limit_bucket returned non-parseable reset_time: ${row.reset_time}`,
+      );
+    } else {
+      const allowed = row.count <= config.maxRequests;
+      return {
+        allowed,
+        headers: buildHeaders(config, row.count, resetTime, allowed),
+      };
+    }
+  }
+
+  // Fallback path: DB unreachable, returned malformed data, or RPC
+  // permission denied (caller mis-using a non-service-role client).
+  // Branch on the profile's cost-control flag — see function docstring
+  // for the trade-off.
+  const errStr = rpcError instanceof Error ? rpcError.message : String(rpcError);
+  console.error(
+    "[rate-limiter] distributed check failed",
+    failClosed ? "— failing CLOSED (costControl)" : "— falling back to local Map",
+    { key, type, error: errStr },
+  );
+  try {
+    Sentry.withScope((scope) => {
+      scope.setTag("service", "next-api");
+      scope.setTag("reason", "rate-limit-distributed-failed");
+      scope.setTag("failMode", failClosed ? "closed" : "local-fallback");
+      scope.setLevel("warning");
+      scope.setExtras({ key, type });
+      Sentry.captureException(
+        rpcError instanceof Error
+          ? rpcError
+          : new Error(String(rpcError ?? "unknown")),
+      );
+    });
+  } catch (sentryErr) {
+    // Sentry shim defect must not crash the limiter, but the swallowed
+    // shim error is itself a meta-silent-failure signal. Emit a console
+    // breadcrumb so a permanent shim regression is at least visible
+    // in Vercel/Loki logs even if no Sentry events are arriving.
+    console.error(
+      "[rate-limiter] Sentry capture failed (continuing limiter):",
+      sentryErr,
+    );
+  }
+
+  if (failClosed) {
+    // Pay-per-call profile during a brownout: deny rather than re-open
+    // the bypass the distributed limiter exists to close. Headers
+    // mirror the normal 429 shape, with a conservative Retry-After
+    // anchored to the configured window so clients back off.
+    const resetTime = Date.now() + config.windowMs;
+    return {
+      allowed: false,
+      headers: buildHeaders(config, config.maxRequests + 1, resetTime, false),
+    };
+  }
+  return rateLimit(identifier, endpoint, type);
 }
