@@ -23,10 +23,16 @@ vi.mock("@sentry/nextjs", () => ({
 /**
  * Minimal stub of the Supabase RPC surface. `rpcResult` is mutated per
  * test so we can model success/error/empty/malformed responses without
- * pulling in @supabase/supabase-js. The stub is cast to
- * `RateLimitSupabaseClient` at construction so the tighter
- * compile-time contract (introduced in SCRUM-291) doesn't have to
- * leak into every test that wants to model an off-nominal RPC reply.
+ * pulling in @supabase/supabase-js.
+ *
+ * SCRUM-298: `RateLimitSupabaseClient` is now the branded
+ * `ServiceRoleSupabaseClient` newtype, so the stub goes through
+ * `as unknown as ...` to bypass both the brand and the full
+ * SupabaseClient surface. This is the canonical
+ * "test fixture for a branded type" pattern — the brand exists to
+ * stop production code from passing the wrong client; tests
+ * deliberately ignore it to model error paths the strict type
+ * cannot express.
  */
 function makeStubSupabase(): {
   client: RateLimitSupabaseClient;
@@ -514,6 +520,62 @@ describe("failReason discrimination (SCRUM-302: brownout-deny vs quota-deny)", (
   it("sync rateLimit() never sets failReason (it's a distributed-limiter-only concept)", () => {
     const result = rateLimit("sync-id", "endpoint", "standard");
     expect(result.failReason).toBeUndefined();
+  });
+});
+
+describe("ServiceRoleSupabaseClient brand (SCRUM-298)", () => {
+  // These tests prove the brand at compile time. `@ts-expect-error`
+  // comments fail the build if the type system stops rejecting the
+  // wrong client shape — that build break IS the regression test.
+  //
+  // Production calls are wrapped in `if (false)` so the typechecker
+  // sees them but the runtime never executes (avoids unhandled
+  // promise rejections + stderr noise from the destructure-on-undefined).
+
+  it("rejects an unbranded SupabaseClient<Database> (the user-bound cookie client)", () => {
+    // Simulates `await createClient()` — the SSR cookie client. The
+    // shape is a full SupabaseClient<Database> so the only mismatch
+    // available for `@ts-expect-error` to catch is the brand itself.
+    // (A bare object would be rejected on structural grounds too, so
+    // that wouldn't actually prove the brand — see SCRUM-298 review.)
+    const cookieClient =
+      {} as unknown as import("@supabase/supabase-js").SupabaseClient<
+        import("@/lib/supabase/database.types").Database
+      >;
+    if (false as boolean) {
+      // @ts-expect-error — `SupabaseClient<Database>` is NOT assignable
+      // to `ServiceRoleSupabaseClient` (brand missing). If the brand
+      // is ever rolled back the error here disappears and the unused
+      // expect-error fails the build.
+      rateLimitDistributed(cookieClient, "id", "ep", "standard");
+    }
+    expect(true).toBe(true);
+  });
+
+  it("rejects an unbranded SupabaseClient<Database> at `withRateLimitDistributed` too", () => {
+    // Parallel coverage so a future contributor who decides
+    // withRateLimitDistributed should accept a wider type is forced
+    // to update this assertion explicitly.
+    const cookieClient =
+      {} as unknown as import("@supabase/supabase-js").SupabaseClient<
+        import("@/lib/supabase/database.types").Database
+      >;
+    const dummyRequest = new Request("http://localhost/");
+    if (false as boolean) {
+      // @ts-expect-error — same brand-rejection contract as the
+      // un-wrapped helper above.
+      withRateLimitDistributed(cookieClient, dummyRequest, "ep", "standard");
+    }
+    expect(true).toBe(true);
+  });
+
+  it("accepts the stub via `as unknown as RateLimitSupabaseClient` (test escape hatch)", async () => {
+    // This is what every other test in this file does. The brand
+    // is real, but tests bypass it deliberately to model RPC error
+    // paths the strict type can't express.
+    const stub = makeStubSupabase();
+    await rateLimitDistributed(stub.client, "id", "ep", "standard");
+    expect(stub.rpc).toHaveBeenCalled();
   });
 });
 
