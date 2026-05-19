@@ -232,7 +232,34 @@ describe("buildFallbackDisclosureSay", () => {
         callerPhone: "+61412345678",
         escapeXml,
       });
-      assert.match(result, /^ {2}<Say voice="Polly\.Joanna">.+<\/Say>\n$/);
+      // SCRUM-275: AU orgs now use Polly.Nicole, not Polly.Joanna
+      assert.match(result, /^ {2}<Say voice="Polly\.Nicole">.+<\/Say>\n$/);
+    });
+
+    it("uses Polly.Nicole for AU orgs (SCRUM-275)", () => {
+      const phoneRecord = makePhoneRecord({ country: "AU", business_state: "NSW" });
+      const result = buildFallbackDisclosureSay({
+        phoneRecord,
+        callerPhone: "+61412345678",
+        escapeXml,
+      });
+      assert.ok(result.includes('voice="Polly.Nicole"'), `expected Polly.Nicole for AU, got: ${result}`);
+      assert.ok(!result.includes("Polly.Joanna"), "should NOT use US voice for AU org");
+    });
+
+    it("uses Polly.Joanna for US orgs (SCRUM-275)", () => {
+      const phoneRecord = makePhoneRecord({
+        country: "US",
+        business_state: "CA",
+        recording_consent_mode: "always", // force disclosure for US-CA
+      });
+      const result = buildFallbackDisclosureSay({
+        phoneRecord,
+        callerPhone: "+14155551234",
+        escapeXml,
+      });
+      assert.ok(result.includes('voice="Polly.Joanna"'), `expected Polly.Joanna for US, got: ${result}`);
+      assert.ok(!result.includes("Polly.Nicole"));
     });
   });
 
