@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { scrapeWebsite, generateKnowledgeBase } from "@/lib/scraper/website-scraper";
 import { isUrlAllowed } from "@/lib/security/validation";
-import { withRateLimit } from "@/lib/security/rate-limiter";
+import { withRateLimitDistributed } from "@/lib/security/rate-limiter";
 import { resyncOrgAssistants } from "@/lib/knowledge-base";
 
 /**
@@ -17,8 +18,15 @@ import { resyncOrgAssistants } from "@/lib/knowledge-base";
  */
 export async function POST(request: NextRequest) {
   try {
-    // Rate limit - expensive operation
-    const { allowed, headers } = withRateLimit(request, "/api/v1/knowledge-base/scrape", "expensive");
+    // Rate limit — KB scrape is paid-action (Web Unlocker / proxy
+    // pool charges per request). SCRUM-290: shared Postgres-backed
+    // limiter, `expensive` profile is `costControl: true`.
+    const { allowed, headers } = await withRateLimitDistributed(
+      createAdminClient(),
+      request,
+      "/api/v1/knowledge-base/scrape",
+      "expensive",
+    );
     if (!allowed) {
       return NextResponse.json(
         { error: "Too many requests. Please try again later." },

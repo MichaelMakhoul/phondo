@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { withRateLimit } from "@/lib/security/rate-limiter";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { withRateLimitDistributed } from "@/lib/security/rate-limiter";
 import { isValidVoiceId } from "@/lib/security/validation";
 
 // Maximum text length to prevent abuse (Deepgram charges per character)
@@ -17,8 +18,17 @@ const MAX_TEXT_LENGTH = 500;
  */
 export async function POST(request: Request) {
   try {
-    // Rate limit - voice preview is a moderately expensive operation
-    const { allowed, headers } = withRateLimit(request, "/api/v1/voice-preview", "expensive");
+    // Rate limit — Deepgram TTS charges per character, so this is a
+    // paid-action endpoint. SCRUM-290 migrated from the per-instance
+    // Map to the shared Postgres-backed limiter; `expensive` profile
+    // has `costControl: true` so a Supabase brownout fails closed
+    // rather than reopening the cold-start parallelism bypass.
+    const { allowed, headers } = await withRateLimitDistributed(
+      createAdminClient(),
+      request,
+      "/api/v1/voice-preview",
+      "expensive",
+    );
     if (!allowed) {
       return NextResponse.json(
         { error: "Too many requests. Please try again later." },

@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { isPlatformAdmin } from "@/lib/admin/admin-auth";
-import { withRateLimit } from "@/lib/security/rate-limiter";
+import { withRateLimitDistributed } from "@/lib/security/rate-limiter";
 import { loadFilteredBusinesses } from "@/lib/lead-discovery/search-orchestrator";
 import type { CrmDetails } from "@/lib/lead-discovery/types";
 
@@ -15,8 +16,15 @@ export async function GET(req: NextRequest) {
   if (!(await isPlatformAdmin(user.id)))
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
-  // Rate limit
-  const rl = withRateLimit(req, "admin-lead-discovery-export", "adminExpensive");
+  // Rate limit — admin export hits the DB at scale + may trigger
+  // downstream API calls. SCRUM-290: shared limiter, `adminExpensive`
+  // is costControl.
+  const rl = await withRateLimitDistributed(
+    createAdminClient(),
+    req,
+    "admin-lead-discovery-export",
+    "adminExpensive",
+  );
   if (!rl.allowed) {
     return NextResponse.json(
       { error: "Rate limit exceeded" },
@@ -82,11 +90,19 @@ export async function GET(req: NextRequest) {
       headers: {
         "Content-Type": "text/csv; charset=utf-8",
         "Content-Disposition": `attachment; filename="${filename}"`,
+        // SCRUM-290 review fix: include rate-limit headers on success so
+        // admin clients can back off proactively when nearing the
+        // adminExpensive cap. Scan and search return these on 200 too —
+        // export was the lone outlier.
+        ...rl.headers,
       },
     });
   } catch (err) {
     console.error("[Lead Discovery Export] Error:", err);
-    return NextResponse.json({ error: "Export failed" }, { status: 500 });
+    return NextResponse.json(
+      { error: "Export failed" },
+      { status: 500, headers: rl.headers },
+    );
   }
 }
 

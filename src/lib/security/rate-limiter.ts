@@ -262,25 +262,41 @@ export function rateLimit(
  * Handles common proxy headers
  */
 export function getClientIp(headers: Headers): string {
-  // Check common proxy headers
-  const forwardedFor = headers.get("x-forwarded-for");
-  if (forwardedFor) {
-    // Get the first IP in the chain (client IP)
-    return forwardedFor.split(",")[0].trim();
-  }
+  // SCRUM-290 security fix: header priority. The previous order trusted
+  // `x-forwarded-for` first and took its FIRST comma-separated entry —
+  // but on Vercel that entry is client-supplied. A malicious caller
+  // could send `x-forwarded-for: <victim-IP>` to bucket their requests
+  // under another user's IP and lock that user out of paid-action
+  // endpoints (the bucket is now global in Postgres, so the lockout is
+  // platform-wide, not just per-lambda).
+  //
+  // Vercel-controlled headers (which the edge always sets and the
+  // client cannot fake) take precedence here. We fall back to taking
+  // the LAST entry of `x-forwarded-for` — that's the one the trusted
+  // proxy actually appended, not what the client claimed.
 
-  const realIp = headers.get("x-real-ip");
-  if (realIp) {
-    return realIp.trim();
-  }
-
-  // Vercel-specific header
+  // 1. `x-vercel-forwarded-for` — set by Vercel edge to the true client
+  //    IP. Untaintable by client headers in production.
   const vercelIp = headers.get("x-vercel-forwarded-for");
   if (vercelIp) {
     return vercelIp.split(",")[0].trim();
   }
 
-  // Fallback
+  // 2. `x-real-ip` — also Vercel-set; single value, not a chain.
+  const realIp = headers.get("x-real-ip");
+  if (realIp) {
+    return realIp.trim();
+  }
+
+  // 3. `x-forwarded-for` — fall back to the LAST entry. The proxy
+  //    appends the actual client IP last; everything before it is
+  //    client-supplied and untrusted.
+  const forwardedFor = headers.get("x-forwarded-for");
+  if (forwardedFor) {
+    const parts = forwardedFor.split(",");
+    return parts[parts.length - 1].trim();
+  }
+
   return "unknown";
 }
 
@@ -509,4 +525,30 @@ export async function rateLimitDistributed(
     };
   }
   return rateLimit(identifier, endpoint, type);
+}
+
+/**
+ * Distributed equivalent of `withRateLimit(request, ...)` — keys on the
+ * caller's IP for paid-action endpoints that don't have a per-org
+ * identifier handy at the time of the rate-limit check (e.g. routes
+ * that do the auth check AFTER the rate limit). Use this when migrating
+ * existing `withRateLimit` call sites; for routes that already load a
+ * resource first, call `rateLimitDistributed` with the org id directly.
+ *
+ * SCRUM-290 follow-up to SCRUM-277 — covers the 6 paid-action endpoints
+ * (voice-preview, scrape-preview, knowledge-base/scrape, lead-discovery
+ * scan/search/export) that previously bypassed the per-instance Map by
+ * parallelising across lambda cold-starts.
+ *
+ * Caller must supply a service-role Supabase client (see the
+ * `rateLimitDistributed` docstring for the why).
+ */
+export async function withRateLimitDistributed(
+  supabase: RateLimitSupabaseClient,
+  request: Request,
+  endpoint: string,
+  type: RateLimitType = "standard",
+): Promise<{ allowed: boolean; headers: Record<string, string> }> {
+  const clientIp = getClientIp(new Headers(request.headers));
+  return rateLimitDistributed(supabase, clientIp, endpoint, type);
 }
