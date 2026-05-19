@@ -816,17 +816,33 @@ function generateEmailHtml(template: string, data: Record<string, any>): string 
     return `<p>Notification from Phondo</p>`;
   }
 
-  // Branded email shell. Uses table-based layout instead of flexbox because
+  // Branded email shell. Table-based layout instead of flexbox because
   // Outlook 2016/2019 and several mobile clients still don't reliably
-  // support flex. Inline SVG (Lucide phone icon) embedded as a data URI
-  // because external image hosting would require a CDN we don't yet run.
+  // support flex.
+  //
+  // Logomark: a stylised "P" letter glyph in white on the brand-orange
+  // tile. An earlier revision used an inline Lucide phone SVG, but code
+  // review caught that Gmail web, Outlook desktop, Yahoo, and AOL all
+  // strip <svg> at render time — the orange tile would appear empty for
+  // a majority of recipients. A letter glyph renders everywhere. When
+  // we have a hosted PNG at phondo.ai/email-assets/ we can swap in a
+  // richer mark.
+  //
+  // Body typography is inlined on the inner <td> because Gmail web
+  // strips <style> blocks above ~102KB and many clients ignore class
+  // selectors entirely. The <style> block stays as progressive
+  // enhancement for clients that do respect it.
   //
   // Brand colours match the marketing site:
   //   #f97316 (orange-500) — primary accent
   //   #0f172a (slate-900) — wordmark
   //   #6b7280 (gray-500)  — secondary text
   const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://phondo.ai";
-  const phoneIconSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg>`;
+  // Strip trailing slash so concatenation produces clean URLs even when
+  // NEXT_PUBLIC_APP_URL is set with one (silent-failure-hunter P2 #1).
+  const escapedAppUrl = escapeHtml(appUrl.replace(/\/$/, ""));
+  const bodyFont =
+    "font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;";
 
   return `
     <!DOCTYPE html>
@@ -848,18 +864,16 @@ function generateEmailHtml(template: string, data: Record<string, any>): string 
       <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background: #f9fafb;">
         <tr>
           <td align="center" style="padding: 24px 12px;">
-            <table cellpadding="0" cellspacing="0" border="0" class="container">
+            <table cellpadding="0" cellspacing="0" border="0" class="container" style="max-width: 600px; background: #ffffff;">
               <!-- Header -->
               <tr>
                 <td style="background: #ffffff; padding: 20px 24px; border-bottom: 1px solid #e5e7eb;">
-                  <table cellpadding="0" cellspacing="0" border="0">
+                  <table cellpadding="0" cellspacing="0" border="0" role="presentation">
                     <tr>
-                      <td style="background: #f97316; border-radius: 8px; padding: 8px 8px 4px 8px; line-height: 0;" valign="middle">
-                        ${phoneIconSvg}
-                      </td>
+                      <td style="background: #f97316; border-radius: 8px; width: 36px; height: 36px; ${bodyFont} font-size: 22px; font-weight: 700; color: #ffffff; line-height: 36px; text-align: center; vertical-align: middle;" align="center" valign="middle" aria-hidden="true">P</td>
                       <td style="padding-left: 12px;" valign="middle">
-                        <a href="${escapeHtml(appUrl)}" style="text-decoration: none;">
-                          <span style="font-size: 22px; font-weight: 700; color: #0f172a; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;">Phondo</span>
+                        <a href="${escapedAppUrl}" target="_blank" rel="noopener noreferrer" style="text-decoration: none;" aria-label="Phondo">
+                          <span style="font-size: 22px; font-weight: 700; color: #0f172a; ${bodyFont}">Phondo</span>
                         </a>
                       </td>
                     </tr>
@@ -868,18 +882,18 @@ function generateEmailHtml(template: string, data: Record<string, any>): string 
               </tr>
               <!-- Body -->
               <tr>
-                <td class="inner" style="background: #ffffff;">
+                <td class="inner" style="background: #ffffff; padding: 32px 24px; ${bodyFont} line-height: 1.6; color: #1f2937; font-size: 15px;">
                   ${templateFn(safeData)}
                 </td>
               </tr>
               <!-- Footer -->
               <tr>
-                <td style="background: #f9fafb; padding: 20px 24px; border-top: 1px solid #e5e7eb;">
-                  <p style="font-size: 12px; color: #6b7280; margin: 0;">
+                <td style="background: #f9fafb; padding: 20px 24px; border-top: 1px solid #e5e7eb; ${bodyFont}">
+                  <p style="font-size: 12px; color: #6b7280; margin: 0; line-height: 1.6;">
                     This email was sent by Phondo AI Receptionist.<br/>
-                    <a href="${escapeHtml(appUrl)}/settings/notifications" style="color: #6b7280; text-decoration: underline;">Manage notification preferences</a>
+                    <a href="${escapedAppUrl}/settings/notifications" target="_blank" rel="noopener noreferrer" style="color: #6b7280; text-decoration: underline;">Manage notification preferences</a>
                     &nbsp;·&nbsp;
-                    <a href="${escapeHtml(appUrl)}" style="color: #6b7280; text-decoration: underline;">Open dashboard</a>
+                    <a href="${escapedAppUrl}" target="_blank" rel="noopener noreferrer" style="color: #6b7280; text-decoration: underline;">Open dashboard</a>
                   </p>
                 </td>
               </tr>
