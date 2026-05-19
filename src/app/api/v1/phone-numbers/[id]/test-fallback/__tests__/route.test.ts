@@ -42,6 +42,14 @@ const supabaseState: {
   queries: {},
 };
 
+// SCRUM-277: the route now uses `createAdminClient()` (service-role) for
+// the rate-limit RPC. We don't exercise the real RPC here (that's covered
+// by rate-limiter.test.ts), but we mock the factory so the route can
+// import it without blowing up on missing env vars.
+vi.mock("@/lib/supabase/admin", () => ({
+  createAdminClient: vi.fn(() => ({ rpc: vi.fn() })),
+}));
+
 vi.mock("@/lib/supabase/server", () => ({
   createClient: vi.fn(async () => ({
     auth: {
@@ -95,13 +103,16 @@ vi.mock("@/lib/twilio/client", () => ({
 }));
 
 // Rate-limiter mock — track call args so tests can verify the per-org key.
+// SCRUM-277: route now uses `rateLimitDistributed` (async, takes supabase as
+// first arg). The mock keeps the same allowed/headers shape so existing
+// assertions still hold for the route's return-value contract.
 const rateLimitState: { allowed: boolean } = { allowed: true };
-const rateLimitMock = vi.fn(() => ({
+const rateLimitMock = vi.fn(async () => ({
   allowed: rateLimitState.allowed,
   headers: { "Retry-After": "60" },
 }));
 vi.mock("@/lib/security/rate-limiter", () => ({
-  rateLimit: rateLimitMock,
+  rateLimitDistributed: rateLimitMock,
 }));
 
 vi.mock("@sentry/nextjs", () => ({
@@ -358,8 +369,12 @@ describe("POST /api/v1/phone-numbers/[id]/test-fallback — rate limit", () => {
     await callRoute();
     expect(rateLimitMock).toHaveBeenCalled();
     const args = (rateLimitMock.mock.calls as any[][])[0];
-    // Identifier is the FIRST positional arg
-    expect(args[0]).toBe("org-xyz");
+    // SCRUM-277: rateLimitDistributed signature is
+    //   (supabase, identifier, endpoint, type)
+    // Supabase client is arg[0]; org identifier is arg[1].
+    expect(args[1]).toBe("org-xyz");
+    expect(args[2]).toBe("phone-numbers/test-fallback");
+    expect(args[3]).toBe("fallbackTestCall");
   });
 });
 

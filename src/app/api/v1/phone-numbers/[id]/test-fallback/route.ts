@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import * as Sentry from "@sentry/nextjs";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { getTwilioClient } from "@/lib/twilio/client";
-import { rateLimit } from "@/lib/security/rate-limiter";
+import { rateLimitDistributed } from "@/lib/security/rate-limiter";
 import { getUserRoleInOrg, isOrgAdmin } from "@/lib/auth/org-membership";
 import {
   expectedE164PrefixForCountry,
@@ -78,7 +79,30 @@ export async function POST(
     // admins in the same org share the budget — the limit is on the spend,
     // not the user. Moved after the row lookup so we don't rate-limit
     // requests that 404 anyway, and so the orgId comes from the resource.
-    const { allowed, headers } = rateLimit(
+    //
+    // SCRUM-277: use the distributed (cross-instance) limiter — this
+    // endpoint dials Twilio on every accepted request, so a motivated
+    // abuser parallelising across lambda cold-starts would otherwise
+    // trivially bypass the per-process Map.
+    //
+    // The RPC requires service-role (migration 00136 revoked the
+    // `authenticated` grant after review surfaced a cross-tenant
+    // poisoning vector — anyone with a JWT could otherwise call the
+    // RPC directly with a victim org's UUID and lock it out). The
+    // user-bound `supabase` client above CANNOT be used here, even
+    // though it would feel natural — pass `createAdminClient()` instead.
+    //
+    // `fallbackTestCall` is a `costControl` profile, so the limiter
+    // fails CLOSED on RPC error rather than falling back to the
+    // per-instance Map. A Supabase brownout temporarily blocks
+    // admins from testing fallback — better than reopening the
+    // unbounded-Twilio-cost bypass during the outage.
+    // Cast: the generated Database.rpc overload only lists known RPCs from
+    // the last `supabase gen types` run, so `check_rate_limit_bucket`
+    // isn't visible to the type-narrowed `.rpc()` signature. Matches the
+    // repo's `(supabase as any)` convention for SSR type-inference gaps.
+    const { allowed, headers } = await rateLimitDistributed(
+      createAdminClient() as unknown as Parameters<typeof rateLimitDistributed>[0],
       row.organization_id,
       "phone-numbers/test-fallback",
       "fallbackTestCall",
@@ -168,17 +192,28 @@ export async function POST(
       // disabled for the destination country, unverified caller-id on
       // trial accounts) would otherwise be invisible in Sentry. Capture
       // with org/phone context so on-call can triage which tenant tripped.
-      Sentry.withScope((scope) => {
-        scope.setTag("service", "next-api");
-        scope.setTag("route", "phone-numbers/test-fallback");
-        scope.setTag("reason", "twilio-create-call-failed");
-        scope.setLevel("warning");
-        scope.setExtras({
-          orgId: row.organization_id,
-          phoneNumberId: id,
+      //
+      // Wrap the capture itself in try/catch: a Sentry shim defect must
+      // not turn a useful 502 into a generic 500 by throwing out of the
+      // catch block. Same defensive posture as `rateLimitDistributed`.
+      try {
+        Sentry.withScope((scope) => {
+          scope.setTag("service", "next-api");
+          scope.setTag("route", "phone-numbers/test-fallback");
+          scope.setTag("reason", "twilio-create-call-failed");
+          scope.setLevel("warning");
+          scope.setExtras({
+            orgId: row.organization_id,
+            phoneNumberId: id,
+          });
+          Sentry.captureException(twErr);
         });
-        Sentry.captureException(twErr);
-      });
+      } catch (sentryErr) {
+        console.error(
+          "[TestFallback] Sentry capture failed (continuing — returning 502):",
+          sentryErr,
+        );
+      }
       return NextResponse.json(
         { error: "Could not place the test call. Please try again in a moment." },
         { status: 502 },
