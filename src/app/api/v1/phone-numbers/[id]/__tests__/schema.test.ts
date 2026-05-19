@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { updatePhoneNumberSchema, E164_REGEX } from "../route";
+import { updatePhoneNumberSchema, E164_REGEX } from "../schema";
 
 // SCRUM-kill-switch regression suite for the PATCH input schema.
 // The tri-state semantics (undefined / null / string) are load-bearing — a
