@@ -94,11 +94,64 @@ UPDATE transfer_rules t
  WHERE t.id = n.id;
 
 -- ---------------------------------------------------------------------------
--- Step 3: Disable transfer rules that still have a bad phone after step 2.
--- We DON'T delete — that loses the owner's intent. Leaving the row with
--- is_active=false means it shows up in the dashboard with a clear "this
--- rule is disabled because the phone is invalid" surface (the CHECK
--- constraint at step 5 only allows bad phones on disabled rules).
+-- Step 3a: Walk the destinations JSONB on every transfer_rule and normalise
+-- recoverable phones inline. Rules with unrecoverable fallback phones are
+-- disabled — same blast radius as a bad transfer_to_phone (voice-server's
+-- tool-executor dials destinations too, so a non-E.164 fallback would
+-- reproduce the original SCRUM-295 hang-up bug one layer deeper).
+-- ---------------------------------------------------------------------------
+DO $$
+DECLARE
+  rec RECORD;
+  dest JSONB;
+  new_dest JSONB;
+  i INT;
+  raw_phone TEXT;
+  has_bad BOOLEAN;
+BEGIN
+  FOR rec IN
+    SELECT id, destinations
+      FROM transfer_rules
+     WHERE destinations IS NOT NULL
+       AND jsonb_typeof(destinations) = 'array'
+       AND jsonb_array_length(destinations) > 0
+  LOOP
+    new_dest := '[]'::jsonb;
+    has_bad := false;
+    FOR i IN 0..jsonb_array_length(rec.destinations) - 1 LOOP
+      dest := rec.destinations -> i;
+      raw_phone := dest ->> 'phone';
+      IF raw_phone IS NULL OR raw_phone = '' THEN
+        new_dest := new_dest || dest;
+      ELSIF raw_phone ~ '^\+[1-9][0-9]{7,14}$' THEN
+        new_dest := new_dest || dest;
+      ELSIF regexp_replace(raw_phone, '\D', '', 'g') ~ '^0[23478][0-9]{8}$' THEN
+        new_dest := new_dest || (
+          dest || jsonb_build_object(
+            'phone',
+            '+61' || substring(regexp_replace(raw_phone, '\D', '', 'g') from 2)
+          )
+        );
+        RAISE NOTICE 'SCRUM-295: normalised destination phone in rule % from "%" to E.164', rec.id, raw_phone;
+      ELSE
+        new_dest := new_dest || dest;
+        has_bad := true;
+        RAISE NOTICE 'SCRUM-295: unrecoverable destination phone "%" in rule % — rule will be disabled', raw_phone, rec.id;
+      END IF;
+    END LOOP;
+    UPDATE transfer_rules
+       SET destinations = new_dest,
+           is_active = CASE WHEN has_bad THEN false ELSE is_active END
+     WHERE id = rec.id;
+  END LOOP;
+END $$;
+
+-- ---------------------------------------------------------------------------
+-- Step 3b: Disable transfer rules that still have a bad transfer_to_phone
+-- after step 2. We DON'T delete — that loses the owner's intent. Leaving
+-- the row with is_active=false means the CHECK constraint at step 5 still
+-- accepts it; reactivating requires a valid phone (enforced by the API and
+-- the CHECK together).
 -- ---------------------------------------------------------------------------
 UPDATE transfer_rules
    SET is_active = false
@@ -132,9 +185,18 @@ ALTER TABLE notification_preferences
   CHECK (sms_phone_number IS NULL OR sms_phone_number ~ '^\+[1-9][0-9]{7,14}$');
 
 -- transfer_rules.transfer_to_phone is NOT NULL. Allow bad values to linger
--- ONLY when is_active=false so that step 3 doesn't conflict with the
+-- ONLY when is_active=false so that step 3b doesn't conflict with the
 -- constraint. Re-enabling a rule whose phone hasn't been fixed will fail
 -- at the DB layer — the owner has to enter a valid number first.
+--
+-- DESIGN NOTE (intentional carve-out): this CHECK lets is_active=false rows
+-- store arbitrary garbage in transfer_to_phone, which is necessary to keep
+-- the migration idempotent without losing the owner's original input.
+-- Future inserts MUST go through the API layer (which calls validatePhone)
+-- — do NOT use this carve-out as a backdoor for seed scripts or imports.
+-- If we later add a Settings UI surface for "you have disabled rules" we
+-- can tighten this to require valid E.164 on all rows by NULL-ing-out the
+-- preserved bad values once the user has been notified.
 ALTER TABLE transfer_rules
   ADD CONSTRAINT transfer_rules_transfer_to_phone_e164_chk
   CHECK (transfer_to_phone ~ '^\+[1-9][0-9]{7,14}$' OR is_active = false);

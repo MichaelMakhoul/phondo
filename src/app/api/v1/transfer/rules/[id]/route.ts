@@ -111,9 +111,10 @@ export async function PATCH(
 
     // SCRUM-295: normalise any phone the user is changing. PATCH only
     // validates fields that were actually sent — undefined means "leave
-    // unchanged" so we skip those.
-    let normalisedTransferToPhone = transferToPhone;
-    let normalisedDestinations = destinations;
+    // unchanged" so we skip those, and the explicit union types stop
+    // future readers from assuming the values were already validated.
+    let normalisedTransferToPhone: string | undefined = transferToPhone;
+    let normalisedDestinations: { phone: string; name: string }[] | undefined = destinations;
     if (transferToPhone !== undefined || destinations !== undefined) {
       const country = await getOrgCountry(organizationId, supabase);
 

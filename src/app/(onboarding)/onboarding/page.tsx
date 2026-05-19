@@ -220,6 +220,23 @@ export default function OnboardingPage() {
   const handleNext = async () => {
     if (currentStep >= 4 || !canProceed() || isLoading) return;
 
+    // SCRUM-295: block step 1 → 2 if the phone is non-empty but won't
+    // normalise to E.164. Without this guard the bad value silently becomes
+    // null at the step 2 → 3 write below, and the user finishes onboarding
+    // thinking they configured a forwarding number when they didn't.
+    if (currentStep === 1 && data.businessPhone.trim()) {
+      const c: SupportedCountry = data.country === "US" ? "US" : "AU";
+      if (!parsePhoneToE164(data.businessPhone, c)) {
+        const example = c === "US" ? "+14155551234" : "+61412345678";
+        toast({
+          variant: "destructive",
+          title: "Invalid business phone",
+          description: `"${data.businessPhone}" isn't a valid ${c} phone number. Use international format (e.g. ${example}).`,
+        });
+        return;
+      }
+    }
+
     // When moving from step 2 → 3, create org + assistant so test call works
     if (currentStep === 2 && !data.createdAssistantId) {
       setIsLoading(true);

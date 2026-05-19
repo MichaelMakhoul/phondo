@@ -258,12 +258,13 @@ export function BusinessSettingsForm({
       setSmsSenderError(null);
     }
     setIsLoading(true);
-    // SCRUM-295: pass the normalised E.164 form to the DB, not the raw input.
-    // validate() has already rejected anything that won't normalise, so the
-    // null fallback is defensive — it shouldn't trigger in practice.
+    // SCRUM-295: validate() has already rejected anything that doesn't
+    // normalise, so parsePhoneToE164 is guaranteed to return a string here
+    // when phone is non-empty. No raw-input fallback — a raw value would
+    // just trip the DB CHECK constraint with a confusing generic error.
     const targetCountry: SupportedCountry = country === "US" ? "US" : "AU";
     const normalisedPhone = phone.trim()
-      ? parsePhoneToE164(phone, targetCountry) || phone
+      ? parsePhoneToE164(phone, targetCountry)
       : null;
     try {
       const { error } = await (supabase as any)
