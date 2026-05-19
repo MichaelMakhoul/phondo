@@ -66,6 +66,7 @@ export function PhoneNumberCard({ phoneNumber, countryCode, assistants = [] }: P
   const [fallbackInput, setFallbackInput] = useState<string>(phoneNumber.fallback_forward_number || "");
   const [fallbackError, setFallbackError] = useState<string | null>(null);
   const [savingFallback, setSavingFallback] = useState(false);
+  const [sendingTestCall, setSendingTestCall] = useState(false);
 
   async function handleAssign() {
     if (!selectedAssistant) return;
@@ -141,12 +142,51 @@ export function PhoneNumberCard({ phoneNumber, countryCode, assistants = [] }: P
           ? `When AI is paused, calls forward to ${formatPhoneNumber(value, countryCode)}.`
           : "When AI is paused, calls will go to voicemail.",
       });
+      // Sync local input state to what the server now considers canonical
+      // — otherwise the Test-call enabled check (fallbackInput.trim() ===
+      // fallbackNumber) can stay false during the brief window between
+      // save success and the server-component re-render landing.
+      setFallbackInput(value || "");
       setFallbackOpen(false);
       router.refresh();
     } catch (err) {
       setFallbackError(err instanceof Error ? err.message : "Failed to save");
     } finally {
       setSavingFallback(false);
+    }
+  }
+
+  async function sendTestCall() {
+    setSendingTestCall(true);
+    setFallbackError(null);
+    try {
+      const res = await fetch(
+        `/api/v1/phone-numbers/${phoneNumber.id}/test-fallback`,
+        { method: "POST" },
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || "Could not place test call");
+      }
+      toast({
+        title: "Test call placed",
+        description:
+          fallbackNumber
+            ? `${formatPhoneNumber(fallbackNumber, countryCode)} should ring within 5 seconds.`
+            : "Your phone should ring within 5 seconds.",
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to place test call";
+      // Show inline in the dialog AND toast so the user sees it whether
+      // their toast tray is collapsed or not.
+      setFallbackError(message);
+      toast({
+        title: "Test call failed",
+        description: message,
+        variant: "destructive",
+      });
+    } finally {
+      setSendingTestCall(false);
     }
   }
 
@@ -417,7 +457,16 @@ export function PhoneNumberCard({ phoneNumber, countryCode, assistants = [] }: P
       </Dialog>
 
       {/* Fallback Forwarding Dialog */}
-      <Dialog open={fallbackOpen} onOpenChange={setFallbackOpen}>
+      <Dialog
+        open={fallbackOpen}
+        onOpenChange={(open) => {
+          setFallbackOpen(open);
+          // Reset transient error when the dialog is closed, otherwise a
+          // failed test-call's error border lingers the next time it's
+          // reopened until the user types.
+          if (!open) setFallbackError(null);
+        }}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Fallback forwarding number</DialogTitle>
@@ -447,21 +496,64 @@ export function PhoneNumberCard({ phoneNumber, countryCode, assistants = [] }: P
               </p>
             )}
           </div>
+          {/*
+            Test-call control. Lives above the footer so it doesn't visually
+            compete with Save/Cancel — verifying is something you do AFTER
+            you've saved a value. Disabled until a saved fallback exists AND
+            the input matches the saved value (no testing stale input).
+          */}
+          {fallbackNumber && (
+            <div className="flex items-start gap-3 rounded-md border border-border bg-muted/40 p-3">
+              <div className="flex-1">
+                <p className="text-sm font-medium">Verify it works</p>
+                <p className="text-xs text-muted-foreground">
+                  Phondo will call {formatPhoneNumber(fallbackNumber, countryCode)} with a brief
+                  confirmation message. Limit: 1 test call per minute.
+                </p>
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={sendTestCall}
+                disabled={
+                  sendingTestCall ||
+                  savingFallback ||
+                  // Don't test a stale or edited value — make the user save
+                  // first so the test exercises what's actually live.
+                  fallbackInput.trim() !== fallbackNumber
+                }
+                aria-label="Send a test call to the fallback number"
+              >
+                {sendingTestCall ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Calling...
+                  </>
+                ) : (
+                  <>
+                    <PhoneForwarded className="mr-2 h-4 w-4" />
+                    Test call
+                  </>
+                )}
+              </Button>
+            </div>
+          )}
           <DialogFooter className="gap-2 sm:gap-0">
             {fallbackNumber && (
               <Button
                 variant="ghost"
                 onClick={() => saveFallback(null)}
-                disabled={savingFallback}
+                disabled={savingFallback || sendingTestCall}
                 className="mr-auto"
               >
                 Clear
               </Button>
             )}
-            <Button variant="outline" onClick={() => setFallbackOpen(false)} disabled={savingFallback}>
+            <Button variant="outline" onClick={() => setFallbackOpen(false)} disabled={savingFallback || sendingTestCall}>
               Cancel
             </Button>
-            <Button onClick={() => saveFallback(fallbackInput.trim() || null)} disabled={savingFallback || (!fallbackInput.trim() && !fallbackNumber)}>
+            <Button onClick={() => saveFallback(fallbackInput.trim() || null)} disabled={savingFallback || sendingTestCall || (!fallbackInput.trim() && !fallbackNumber)}>
               {savingFallback ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Saving...</> : "Save"}
             </Button>
           </DialogFooter>

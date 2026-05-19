@@ -70,6 +70,13 @@ export const rateLimitConfigs = {
     windowMs: 60 * 1000,
     maxRequests: 5,
   },
+  // Fallback test calls (outbound, paid Twilio call) — 1 per minute per org
+  // to prevent abuse. Tight on purpose: a typo'd fallback is rare and the
+  // legitimate use case is "verify once after editing".
+  fallbackTestCall: {
+    windowMs: 60 * 1000,
+    maxRequests: 1,
+  },
   // Admin expensive operations (Google Places API, bulk scraping) - 3 per minute
   adminExpensive: {
     windowMs: 60 * 1000,
