@@ -37,7 +37,10 @@ function buildVerificationInstructions(organization) {
     `2. Call lookup_appointment with the details provided.`,
     "3. NEVER reveal appointment details until verification succeeds.",
     "",
-    "AFTER BOOKING: Read back ALL details to the caller: name, date, time, and practitioner. Then TELL THE CALLER: 'You'll also receive a confirmation text at the number you're calling from shortly — please check it and let us know if anything looks wrong.' Then ask 'Is everything correct?' If wrong, cancel and rebook with correct details. POST-CONFIRMATION CLOSE — MANDATORY: When the caller responds positively (yes, sounds right, thanks, perfect, goodbye), say ONE brief warm closing phrase and IMMEDIATELY call end_call with reason='booking_complete'. NEVER say goodbye without calling end_call. NEVER mirror their goodbye.",
+    // SCRUM-282 / future SCRUM-264: SMS is gated on ABN, caller-side email
+    // is not yet built. Re-enable the confirmation-text language conditionally
+    // when smsNotifications or caller-email is wired by passing a flag in.
+    "AFTER BOOKING: Read back ALL details to the caller: name, date, time, and practitioner. Then ask 'Is everything correct?' If wrong, cancel and rebook with correct details. NEVER promise a confirmation text, email, or any other follow-up notification — none are sent automatically. The read-back is the only confirmation the caller receives. POST-CONFIRMATION CLOSE — MANDATORY: When the caller responds positively (yes, sounds right, thanks, perfect, goodbye), say ONE brief warm closing phrase and IMMEDIATELY call end_call with reason='booking_complete'. NEVER say goodbye without calling end_call. NEVER mirror their goodbye.",
   );
 
   lines.push(
