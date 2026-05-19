@@ -52,15 +52,7 @@ function getTwilioRestClient() {
 }
 const { lookupPhoneNumber, isAiEnabled, getAnswerMode, getPhoneNumberContext } = require("./lib/answer-mode");
 const { detectAndRedact, redactObject } = require("./lib/pii-detector");
-
-/**
- * Mask a phone number for safe logging — keeps first 3 and last 3 chars.
- * e.g. "+61412345678" → "+61***678"
- */
-function maskPhone(phone) {
-  if (!phone || phone.length < 6) return phone || "unknown";
-  return phone.slice(0, 3) + "***" + phone.slice(-3);
-}
+const { maskPhone } = require("./lib/mask-phone");
 
 // Mirror of API-layer E164_REGEX. Defense-in-depth at the dialer so a bad
 // value introduced via direct SQL or a future bug can't be sent to Twilio.
@@ -277,15 +269,16 @@ app.post("/twiml", async (req, res) => {
 
   const called = req.body.Called || "";
   const from = req.body.From || "";
+  const reqCallSid = req.body.CallSid || null;
 
   // Single phone number lookup — shared across isAiEnabled, getAnswerMode, and loadCallContext
-  const phoneRecord = await lookupPhoneNumber(called);
+  const phoneRecord = await lookupPhoneNumber(called, { callSid: reqCallSid });
 
   // Check if AI answering is disabled for this number (emergency shutoff)
   try {
-    const aiEnabled = await isAiEnabled(called, phoneRecord);
+    const aiEnabled = await isAiEnabled(called, phoneRecord, { callSid: reqCallSid });
     if (!aiEnabled) {
-      const callSid = req.body.CallSid || `ai_disabled_${Date.now()}`;
+      const callSid = reqCallSid || `ai_disabled_${Date.now()}`;
       const rawFallback = phoneRecord && typeof phoneRecord.fallback_forward_number === "string"
         ? phoneRecord.fallback_forward_number.trim()
         : "";
@@ -301,7 +294,7 @@ app.post("/twiml", async (req, res) => {
       // fallback is unreachable.
       let ctx = null;
       try {
-        ctx = await getPhoneNumberContext(called, phoneRecord);
+        ctx = await getPhoneNumberContext(called, phoneRecord, { callSid });
         if (ctx) {
           const callId = await createCallRecord({
             orgId: ctx.organizationId,
@@ -324,6 +317,24 @@ app.post("/twiml", async (req, res) => {
         }
       } catch (logErr) {
         console.warn("[TwiML] Failed to log AI-disabled call (non-fatal):", logErr.message);
+        // Page on this — a regression in createCallRecord / completeCallRecord
+        // would silently break the dashboard for every paused-AI call.
+        try {
+          Sentry.withScope((scope) => {
+            scope.setTag("service", "voice-server");
+            scope.setTag("reason", "log-failed");
+            scope.setLevel("warning");
+            scope.setExtras({
+              calledMasked: maskPhone(called),
+              callSid,
+              orgId: ctx?.organizationId,
+              provider: "twilio",
+            });
+            Sentry.captureException(logErr);
+          });
+        } catch (sentryErr) {
+          console.error("[TwiML] Sentry capture failed (suppressed):", sentryErr.message);
+        }
       }
 
       if (fallback) {
@@ -354,8 +365,28 @@ app.post("/twiml", async (req, res) => {
 </Response>`);
     }
   } catch (err) {
-    // Fail-open: if the check itself throws, let AI answer
-    console.error("[TwiML] isAiEnabled check threw (fail-open):", err.message);
+    // Fail-open: if anything in the kill-switch handler throws, let AI answer.
+    // This is the outermost net — `isAiEnabled` already captures its own DB
+    // failures, but any synchronous defect in the surrounding code (XML
+    // escaping, response building, etc.) would otherwise silently route the
+    // caller to AI despite a paused AI setting. Page on it explicitly.
+    console.error("[TwiML] kill-switch handler threw (fail-open):", err.message);
+    try {
+      Sentry.withScope((scope) => {
+        scope.setTag("service", "voice-server");
+        scope.setTag("reason", "fail-open");
+        scope.setLevel("error");
+        scope.setExtras({
+          calledMasked: maskPhone(called),
+          callSid: reqCallSid,
+          provider: "twilio",
+          stage: "killswitch-handler",
+        });
+        Sentry.captureException(err);
+      });
+    } catch (sentryErr) {
+      console.error("[TwiML] Sentry capture failed (suppressed):", sentryErr.message);
+    }
   }
 
   // Check if this assistant uses ring-first mode
@@ -450,14 +481,15 @@ app.post("/texml", async (req, res) => {
 
   const called = req.body.Called || req.body.To || "";
   const from = req.body.From || req.body.Caller || "";
+  const reqCallSid = req.body.CallSid || null;
 
-  const phoneRecord = await lookupPhoneNumber(called);
+  const phoneRecord = await lookupPhoneNumber(called, { callSid: reqCallSid });
 
   // AI enabled check
   try {
-    const aiEnabled = await isAiEnabled(called, phoneRecord);
+    const aiEnabled = await isAiEnabled(called, phoneRecord, { callSid: reqCallSid });
     if (!aiEnabled) {
-      const callSid = req.body.CallSid || `ai_disabled_${Date.now()}`;
+      const callSid = reqCallSid || `ai_disabled_${Date.now()}`;
       const rawFallback = phoneRecord && typeof phoneRecord.fallback_forward_number === "string"
         ? phoneRecord.fallback_forward_number.trim()
         : "";
@@ -465,7 +497,7 @@ app.post("/texml", async (req, res) => {
 
       let ctx = null;
       try {
-        ctx = await getPhoneNumberContext(called, phoneRecord);
+        ctx = await getPhoneNumberContext(called, phoneRecord, { callSid });
         if (ctx) {
           const callId = await createCallRecord({ orgId: ctx.organizationId, assistantId: ctx.assistantId, phoneNumberId: ctx.phoneNumberId, callerPhone: from, callSid });
           if (callId && !fallback) {
@@ -479,6 +511,22 @@ app.post("/texml", async (req, res) => {
         }
       } catch (logErr) {
         console.warn("[TeXML] Failed to log AI-disabled call (non-fatal):", logErr.message);
+        try {
+          Sentry.withScope((scope) => {
+            scope.setTag("service", "voice-server");
+            scope.setTag("reason", "log-failed");
+            scope.setLevel("warning");
+            scope.setExtras({
+              calledMasked: maskPhone(called),
+              callSid,
+              orgId: ctx?.organizationId,
+              provider: "telnyx",
+            });
+            Sentry.captureException(logErr);
+          });
+        } catch (sentryErr) {
+          console.error("[TeXML] Sentry capture failed (suppressed):", sentryErr.message);
+        }
       }
 
       if (fallback) {
@@ -509,7 +557,25 @@ app.post("/texml", async (req, res) => {
 </Response>`);
     }
   } catch (err) {
-    console.error("[TeXML] isAiEnabled check threw (fail-open):", err.message);
+    // Outer net for the kill-switch handler — see /twiml note above. Page
+    // when this fires: AI is answering despite a paused-AI setting.
+    console.error("[TeXML] kill-switch handler threw (fail-open):", err.message);
+    try {
+      Sentry.withScope((scope) => {
+        scope.setTag("service", "voice-server");
+        scope.setTag("reason", "fail-open");
+        scope.setLevel("error");
+        scope.setExtras({
+          calledMasked: maskPhone(called),
+          callSid: reqCallSid,
+          provider: "telnyx",
+          stage: "killswitch-handler",
+        });
+        Sentry.captureException(err);
+      });
+    } catch (sentryErr) {
+      console.error("[TeXML] Sentry capture failed (suppressed):", sentryErr.message);
+    }
   }
 
   // Ring-first mode check (same as /twiml)
@@ -803,18 +869,29 @@ app.post("/twiml/ring-first-fallback", async (req, res) => {
  *
  * Mirrors /twiml/ring-first-fallback but for the AI-paused path.
  */
-async function finaliseFallbackDial(callSid, dialStatus, durationSeconds) {
+async function finaliseFallbackDial(callSid, dialStatus, durationSeconds, provider = "unknown") {
   // Find the open call record created when /twiml first detected ai_enabled=false.
   // We used `vapi_call_id = sh_${callSid}` in createCallRecord, so we look it up
   // by that key. Failing silently here would lose the audit trail.
   const supabase = getSupabase();
   const { data: callRow, error: findErr } = await supabase
     .from("calls")
-    .select("id")
+    .select("id, organization_id")
     .eq("vapi_call_id", `sh_${callSid}`)
     .maybeSingle();
   if (findErr) {
     console.error(`[FallbackStatus] Lookup failed for callSid=${callSid}:`, findErr.message);
+    try {
+      Sentry.withScope((scope) => {
+        scope.setTag("service", "voice-server");
+        scope.setTag("reason", "fallback-finalise-failed");
+        scope.setLevel("warning");
+        scope.setExtras({ callSid, dialStatus, durationSeconds, stage: "lookup", provider });
+        Sentry.captureException(findErr);
+      });
+    } catch (sentryErr) {
+      console.error("[FallbackStatus] Sentry capture failed (suppressed):", sentryErr.message);
+    }
     return;
   }
   if (!callRow) {
@@ -830,6 +907,25 @@ async function finaliseFallbackDial(callSid, dialStatus, durationSeconds) {
     });
   } catch (err) {
     console.error(`[FallbackStatus] completeCallRecord failed for callSid=${callSid}:`, err.message);
+    try {
+      Sentry.withScope((scope) => {
+        scope.setTag("service", "voice-server");
+        scope.setTag("reason", "fallback-finalise-failed");
+        scope.setLevel("warning");
+        scope.setExtras({
+          callSid,
+          dialStatus,
+          durationSeconds,
+          stage: "complete",
+          callId: callRow.id,
+          orgId: callRow.organization_id,
+          provider,
+        });
+        Sentry.captureException(err);
+      });
+    } catch (sentryErr) {
+      console.error("[FallbackStatus] Sentry capture failed (suppressed):", sentryErr.message);
+    }
   }
 }
 
@@ -847,7 +943,7 @@ app.post("/twiml/ai-disabled-fallback-status", async (req, res) => {
   console.log(`[FallbackStatus] callSid=${callSid} dialStatus=${dialStatus} duration=${durationSeconds}s`);
 
   // Always update the call record so the dashboard reflects reality.
-  await finaliseFallbackDial(callSid, dialStatus, durationSeconds);
+  await finaliseFallbackDial(callSid, dialStatus, durationSeconds, "twilio");
 
   if (dialStatus === "completed") {
     // Owner picked up — Twilio handles teardown.
@@ -863,11 +959,22 @@ app.post("/twiml/ai-disabled-fallback-status", async (req, res) => {
   // /twiml/ai-disabled-recording-done (same webhook as the no-fallback path).
   let businessName = null;
   try {
-    const phoneRecord = await lookupPhoneNumber(called);
-    const ctx = await getPhoneNumberContext(called, phoneRecord);
+    const phoneRecord = await lookupPhoneNumber(called, { callSid });
+    const ctx = await getPhoneNumberContext(called, phoneRecord, { callSid });
     businessName = typeof ctx?.organizationName === "string" ? ctx.organizationName : null;
   } catch (err) {
     console.warn("[FallbackStatus] Failed to load business name for voicemail greeting:", err.message);
+    try {
+      Sentry.withScope((scope) => {
+        scope.setTag("service", "voice-server");
+        scope.setTag("reason", "voicemail-greeting-lookup-failed");
+        scope.setLevel("warning");
+        scope.setExtras({ callSid, calledMasked: maskPhone(called), provider: "twilio" });
+        Sentry.captureException(err);
+      });
+    } catch (sentryErr) {
+      console.error("[FallbackStatus] Sentry capture failed (suppressed):", sentryErr.message);
+    }
   }
   const greeting = businessName
     ? `Thank you for calling ${escapeXml(businessName)}. We are unable to take your call right now. Please leave a message after the beep and we will get back to you as soon as possible.`
@@ -894,7 +1001,7 @@ app.post("/texml/ai-disabled-fallback-status", async (req, res) => {
 
   console.log(`[FallbackStatus][TeXML] callSid=${callSid} dialStatus=${dialStatus} duration=${durationSeconds}s`);
 
-  await finaliseFallbackDial(callSid, dialStatus, durationSeconds);
+  await finaliseFallbackDial(callSid, dialStatus, durationSeconds, "telnyx");
 
   if (dialStatus === "completed") {
     return res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
@@ -905,11 +1012,22 @@ app.post("/texml/ai-disabled-fallback-status", async (req, res) => {
 
   let businessName = null;
   try {
-    const phoneRecord = await lookupPhoneNumber(called);
-    const ctx = await getPhoneNumberContext(called, phoneRecord);
+    const phoneRecord = await lookupPhoneNumber(called, { callSid });
+    const ctx = await getPhoneNumberContext(called, phoneRecord, { callSid });
     businessName = typeof ctx?.organizationName === "string" ? ctx.organizationName : null;
   } catch (err) {
     console.warn("[FallbackStatus][TeXML] Failed to load business name:", err.message);
+    try {
+      Sentry.withScope((scope) => {
+        scope.setTag("service", "voice-server");
+        scope.setTag("reason", "voicemail-greeting-lookup-failed");
+        scope.setLevel("warning");
+        scope.setExtras({ callSid, calledMasked: maskPhone(called), provider: "telnyx" });
+        Sentry.captureException(err);
+      });
+    } catch (sentryErr) {
+      console.error("[FallbackStatus][TeXML] Sentry capture failed (suppressed):", sentryErr.message);
+    }
   }
   const greeting = businessName
     ? `Thank you for calling ${escapeXml(businessName)}. We are unable to take your call right now. Please leave a message after the beep and we will get back to you as soon as possible.`

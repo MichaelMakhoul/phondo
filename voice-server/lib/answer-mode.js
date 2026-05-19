@@ -1,11 +1,43 @@
 const { getSupabase } = require("./supabase");
+const { Sentry } = require("./sentry");
+const { maskPhone } = require("./mask-phone");
+
+/**
+ * Emit a Sentry event for a fail-open path in the AI-enabled check.
+ * Centralised so all four call sites tag identically — Grafana alerts
+ * key off `reason=fail-open` (or the specific sub-reason) to fire when
+ * customer intent (AI paused) is being silently violated.
+ *
+ * Wrapped in try/catch as defense-in-depth: a defect in the Sentry shim
+ * must not propagate out and crash the route that called us.
+ */
+function captureFailOpen(err, reason, calledNumber, level = "warning", extras = {}) {
+  try {
+    Sentry.withScope((scope) => {
+      scope.setTag("service", "voice-server");
+      scope.setTag("reason", reason);
+      scope.setLevel(level);
+      scope.setExtras({
+        calledMasked: maskPhone(calledNumber),
+        ...extras,
+      });
+      Sentry.captureException(err);
+    });
+  } catch (sentryErr) {
+    console.error("[AnswerMode] captureFailOpen failed (suppressed):", sentryErr.message);
+  }
+}
 
 /**
  * Single phone_numbers lookup used by /twiml to avoid redundant DB queries.
  * Returns the combined data needed by isAiEnabled, getAnswerMode, getPhoneNumberContext,
  * and loadCallContext — or null if not found.
+ *
+ * @param {string} calledNumber - E.164 phone number
+ * @param {object} [opts] - Optional context for observability
+ * @param {string} [opts.callSid] - CallSid for Sentry triage (correlates alert → call leg)
  */
-async function lookupPhoneNumber(calledNumber) {
+async function lookupPhoneNumber(calledNumber, opts = {}) {
   try {
     const supabase = getSupabase();
     const { data: phone, error } = await supabase
@@ -20,12 +52,17 @@ async function lookupPhoneNumber(calledNumber) {
         console.error("[AnswerMode] lookupPhoneNumber DB error:", {
           calledNumber, code: error.code, message: error.message,
         });
+        // This is the prefetched hot path's fail-open source — a DB read
+        // failure here cascades into isAiEnabled returning `true`, violating
+        // any customer who has deliberately paused AI. Page on it.
+        captureFailOpen(error, "fail-open", calledNumber, "error", { callSid: opts.callSid });
       }
       return null;
     }
     return phone;
   } catch (err) {
     console.error("[AnswerMode] lookupPhoneNumber failed:", err.message);
+    captureFailOpen(err, "fail-open", calledNumber, "error", { callSid: opts.callSid });
     return null;
   }
 }
@@ -36,8 +73,10 @@ async function lookupPhoneNumber(calledNumber) {
  *
  * @param {string} calledNumber - E.164 phone number
  * @param {object} [prefetchedPhone] - Optional pre-fetched phone record from lookupPhoneNumber()
+ * @param {object} [opts] - Optional context for observability
+ * @param {string} [opts.callSid] - CallSid for Sentry triage
  */
-async function isAiEnabled(calledNumber, prefetchedPhone) {
+async function isAiEnabled(calledNumber, prefetchedPhone, opts = {}) {
   try {
     // If pre-fetched data provided, use it directly
     if (prefetchedPhone !== undefined) {
@@ -59,6 +98,8 @@ async function isAiEnabled(calledNumber, prefetchedPhone) {
         console.error("[AnswerMode] isAiEnabled DB error (fail-open):", {
           calledNumber, code: error.code, message: error.message,
         });
+        // Real DB error → customer intent (paused AI) may be violated. Page on this.
+        captureFailOpen(error, "fail-open", calledNumber, "error", { callSid: opts.callSid });
       }
       return true; // fail-open
     }
@@ -66,6 +107,7 @@ async function isAiEnabled(calledNumber, prefetchedPhone) {
     return data.ai_enabled !== false;
   } catch (err) {
     console.error("[AnswerMode] isAiEnabled check failed (fail-open):", err.message);
+    captureFailOpen(err, "fail-open", calledNumber, "error", { callSid: opts.callSid });
     return true; // fail-open
   }
 }
@@ -127,8 +169,10 @@ async function getAnswerMode(calledNumber, prefetchedPhone) {
  *
  * @param {string} calledNumber - E.164 phone number
  * @param {object} [prefetchedPhone] - Optional pre-fetched phone record from lookupPhoneNumber()
+ * @param {object} [opts] - Optional context for observability
+ * @param {string} [opts.callSid] - CallSid for Sentry triage
  */
-async function getPhoneNumberContext(calledNumber, prefetchedPhone) {
+async function getPhoneNumberContext(calledNumber, prefetchedPhone, opts = {}) {
   if (prefetchedPhone) {
     if (!prefetchedPhone.assistant_id) return null;
     return {
@@ -149,6 +193,14 @@ async function getPhoneNumberContext(calledNumber, prefetchedPhone) {
     .eq("is_active", true)
     .single();
 
+  if (error && error.code !== "PGRST116") {
+    // Real DB error (not "no rows") — surface so we can tell silent skips
+    // ("no record") apart from broken lookups.
+    console.error("[AnswerMode] getPhoneNumberContext DB error:", {
+      calledNumber, code: error.code, message: error.message,
+    });
+    captureFailOpen(error, "context-lookup-failed", calledNumber, "warning", { callSid: opts.callSid });
+  }
   if (error || !phone || !phone.assistant_id) return null;
 
   return {
