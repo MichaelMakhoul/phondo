@@ -183,13 +183,52 @@ describe("getPhoneNumberContext", () => {
     assert.equal(result, null);
   });
 
-  it("returns null when phone number has no assistant_id", async () => {
+  // SCRUM-271: phone-without-assistant is a legitimate operational state
+  // (mid-onboarding, kill-switch-only setup). Previously this returned null
+  // and every caller silently skipped the call-logging path.
+  it("returns context with assistantId:null when phone has no assistant (standalone query)", async () => {
     mockPhoneResult = { data: { id: "ph-1", organization_id: "org-1", assistant_id: null }, error: null };
     const result = await getPhoneNumberContext("+61299999999");
-    assert.equal(result, null);
+    assert.deepEqual(result, {
+      organizationId: "org-1",
+      assistantId: null,
+      phoneNumberId: "ph-1",
+      organizationName: null,
+    });
   });
 
-  it("returns correct IDs when phone number is found", async () => {
+  it("returns context with assistantId:null when prefetched phone has no assistant", async () => {
+    // Bypass the supabase mock — prefetched path doesn't touch the DB.
+    const result = await getPhoneNumberContext("+61299999999", {
+      id: "ph-2",
+      organization_id: "org-2",
+      assistant_id: null,
+      organizations: { name: "Acme" },
+    });
+    assert.deepEqual(result, {
+      organizationId: "org-2",
+      assistantId: null,
+      phoneNumberId: "ph-2",
+      organizationName: "Acme",
+    });
+  });
+
+  it("returns context with assistantId:null when prefetched phone has assistant_id=undefined", async () => {
+    const result = await getPhoneNumberContext("+61299999999", {
+      id: "ph-3",
+      organization_id: "org-3",
+      // assistant_id intentionally omitted
+      organizations: { name: "Beta Inc" },
+    });
+    assert.deepEqual(result, {
+      organizationId: "org-3",
+      assistantId: null,
+      phoneNumberId: "ph-3",
+      organizationName: "Beta Inc",
+    });
+  });
+
+  it("returns correct IDs when phone number is found with assistant", async () => {
     mockPhoneResult = {
       data: { id: "ph-1", organization_id: "org-1", assistant_id: "ast-1" },
       error: null,
@@ -200,6 +239,21 @@ describe("getPhoneNumberContext", () => {
       assistantId: "ast-1",
       phoneNumberId: "ph-1",
       organizationName: null,
+    });
+  });
+
+  it("returns context (no DB hit) when prefetched phone is provided with assistant", async () => {
+    const result = await getPhoneNumberContext("+61299999999", {
+      id: "ph-4",
+      organization_id: "org-4",
+      assistant_id: "ast-4",
+      organizations: { name: "Gamma" },
+    });
+    assert.deepEqual(result, {
+      organizationId: "org-4",
+      assistantId: "ast-4",
+      phoneNumberId: "ph-4",
+      organizationName: "Gamma",
     });
   });
 });

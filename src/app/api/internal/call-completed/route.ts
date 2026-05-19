@@ -30,7 +30,10 @@ function verifyInternalSecret(request: Request): boolean {
 interface CallCompletedPayload {
   callId: string | null;
   organizationId: string;
-  assistantId: string;
+  // Null when the phone number had no assistant assigned (kill-switch
+  // fallback / mid-onboarding / etc.) — the webhook still fires for billing
+  // and notification purposes, just without the assistant-name lookup at line 261.
+  assistantId: string | null;
   callerPhone: string;
   status: string;
   durationSeconds: number;
