@@ -164,8 +164,17 @@ async function getAnswerMode(calledNumber, prefetchedPhone) {
 
 /**
  * Look up organization, assistant, and phone number IDs for a called number.
- * Used to create call records for owner-answered ring-first calls.
- * Returns { organizationId, assistantId, phoneNumberId, organizationName } or null.
+ * Used to create call records for owner-answered ring-first calls AND for the
+ * kill-switch fallback path, where "phone exists but no assistant assigned"
+ * is a legitimate operational state (customer mid-onboarding, or deliberately
+ * leaving AI off while a fallback handles calls).
+ *
+ * Returns { organizationId, assistantId, phoneNumberId, organizationName }.
+ * `assistantId` is `null` when the phone has no assistant assigned — callers
+ * (createCallRecord, notifyCallCompleted, deliverWebhooks, increment_call_usage)
+ * all tolerate null today, and `calls.assistant_id` is nullable in the DB.
+ *
+ * Returns null only when the phone row itself cannot be found.
  *
  * @param {string} calledNumber - E.164 phone number
  * @param {object} [prefetchedPhone] - Optional pre-fetched phone record from lookupPhoneNumber()
@@ -174,10 +183,9 @@ async function getAnswerMode(calledNumber, prefetchedPhone) {
  */
 async function getPhoneNumberContext(calledNumber, prefetchedPhone, opts = {}) {
   if (prefetchedPhone) {
-    if (!prefetchedPhone.assistant_id) return null;
     return {
       organizationId: prefetchedPhone.organization_id,
-      assistantId: prefetchedPhone.assistant_id,
+      assistantId: prefetchedPhone.assistant_id || null,
       phoneNumberId: prefetchedPhone.id,
       organizationName: prefetchedPhone.organizations?.name || null,
     };
@@ -201,11 +209,11 @@ async function getPhoneNumberContext(calledNumber, prefetchedPhone, opts = {}) {
     });
     captureFailOpen(error, "context-lookup-failed", calledNumber, "warning", { callSid: opts.callSid });
   }
-  if (error || !phone || !phone.assistant_id) return null;
+  if (error || !phone) return null;
 
   return {
     organizationId: phone.organization_id,
-    assistantId: phone.assistant_id,
+    assistantId: phone.assistant_id || null,
     phoneNumberId: phone.id,
     organizationName: phone.organizations?.name || null,
   };
