@@ -5,6 +5,7 @@ import {
   rateLimit,
   rateLimitDistributed,
   rateLimitConfigs,
+  withRateLimitDistributed,
   type RateLimitSupabaseClient,
 } from "../rate-limiter";
 
@@ -287,6 +288,141 @@ describe("checkRateLimit (sync local limiter — unchanged behavior)", () => {
     const third = checkRateLimit(key, config);
     expect(third.allowed).toBe(false);
     expect(third.remaining).toBe(0);
+  });
+});
+
+describe("withRateLimitDistributed (IP-keyed async wrapper)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("keys the rate-limit bucket on x-vercel-forwarded-for (untaintable in prod)", async () => {
+    const stub = makeStubSupabase();
+    const request = new Request("http://localhost/api/v1/voice-preview", {
+      headers: { "x-vercel-forwarded-for": "203.0.113.42" },
+    });
+    await withRateLimitDistributed(
+      stub.client,
+      request,
+      "/api/v1/voice-preview",
+      "expensive",
+    );
+    expect(stub.rpc).toHaveBeenCalledTimes(1);
+    const callArgs = stub.rpc.mock.calls[0][1] as Record<string, unknown>;
+    expect(callArgs.p_key).toBe("203.0.113.42:/api/v1/voice-preview");
+  });
+
+  it("falls back to x-real-ip when x-vercel-forwarded-for is absent", async () => {
+    const stub = makeStubSupabase();
+    const request = new Request("http://localhost/admin/scan", {
+      headers: { "x-real-ip": "198.51.100.7" },
+    });
+    await withRateLimitDistributed(
+      stub.client,
+      request,
+      "admin-lead-discovery-scan",
+      "adminExpensive",
+    );
+    const callArgs = stub.rpc.mock.calls[0][1] as Record<string, unknown>;
+    expect(callArgs.p_key).toBe("198.51.100.7:admin-lead-discovery-scan");
+  });
+
+  it("SECURITY: trusts the LAST entry of x-forwarded-for (the proxy-appended one), not the first", async () => {
+    // SCRUM-290 security fix: previously the helper took the FIRST
+    // entry of x-forwarded-for, which on Vercel is client-supplied.
+    // An attacker sending `x-forwarded-for: <victim-IP>` could lock
+    // the victim out of paid-action endpoints (the bucket is global
+    // in Postgres post-SCRUM-290). Lock the priority order in.
+    const stub = makeStubSupabase();
+    const request = new Request("http://localhost/api/v1/voice-preview", {
+      // Format: <attacker-supplied>, <real-attacker-IP-appended-by-Vercel>
+      headers: { "x-forwarded-for": "10.0.0.1, 192.0.2.99" },
+    });
+    await withRateLimitDistributed(
+      stub.client,
+      request,
+      "/api/v1/voice-preview",
+      "expensive",
+    );
+    const callArgs = stub.rpc.mock.calls[0][1] as Record<string, unknown>;
+    // Must bucket the ATTACKER, not the spoofed victim IP.
+    expect(callArgs.p_key).toBe("192.0.2.99:/api/v1/voice-preview");
+    expect(callArgs.p_key).not.toBe("10.0.0.1:/api/v1/voice-preview");
+  });
+
+  it("SECURITY: x-vercel-forwarded-for wins even when x-forwarded-for tries to spoof", async () => {
+    const stub = makeStubSupabase();
+    const request = new Request("http://localhost/api/v1/scrape-preview", {
+      headers: {
+        // Attacker tries to spoof via x-forwarded-for
+        "x-forwarded-for": "10.0.0.1",
+        // Vercel sets x-vercel-forwarded-for to the real client IP
+        "x-vercel-forwarded-for": "192.0.2.99",
+      },
+    });
+    await withRateLimitDistributed(stub.client, request, "scrape", "expensive");
+    const callArgs = stub.rpc.mock.calls[0][1] as Record<string, unknown>;
+    expect(callArgs.p_key).toBe("192.0.2.99:scrape");
+  });
+
+  it("falls back to 'unknown' when no IP header is present", async () => {
+    const stub = makeStubSupabase();
+    const request = new Request("http://localhost/api/v1/scrape-preview");
+    await withRateLimitDistributed(stub.client, request, "scrape", "expensive");
+    const callArgs = stub.rpc.mock.calls[0][1] as Record<string, unknown>;
+    expect(callArgs.p_key).toBe("unknown:scrape");
+  });
+
+  it("forwards the right windowMs + maxRequests for adminExpensive profile", async () => {
+    const stub = makeStubSupabase();
+    const request = new Request("http://localhost/admin/scan", {
+      headers: { "x-real-ip": "198.51.100.7" },
+    });
+    await withRateLimitDistributed(
+      stub.client,
+      request,
+      "admin-lead-discovery-scan",
+      "adminExpensive",
+    );
+    const callArgs = stub.rpc.mock.calls[0][1] as Record<string, unknown>;
+    expect(callArgs.p_max_requests).toBe(rateLimitConfigs.adminExpensive.maxRequests);
+    expect(callArgs.p_window_ms).toBe(rateLimitConfigs.adminExpensive.windowMs);
+  });
+
+  it("fails CLOSED on RPC error for costControl profile (no per-instance fallback)", async () => {
+    const stub = makeStubSupabase();
+    stub.setResult({ data: null, error: { code: "57P01", message: "admin shutdown" } });
+    const request = new Request("http://localhost/api/v1/voice-preview", {
+      headers: { "x-vercel-forwarded-for": "192.0.2.1" },
+    });
+    const { allowed, headers } = await withRateLimitDistributed(
+      stub.client,
+      request,
+      "/api/v1/voice-preview",
+      "expensive",
+    );
+    expect(allowed).toBe(false);
+    expect(Number(headers["Retry-After"])).toBeGreaterThan(0);
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to LOCAL Map on RPC error for non-costControl profile", async () => {
+    // Covers the fail-OPEN path through the wrapper (the lower-level
+    // rateLimitDistributed has its own tests; this proves the wrapper
+    // doesn't swallow the path).
+    const stub = makeStubSupabase();
+    stub.setResult({ data: null, error: { code: "57P01", message: "down" } });
+    const request = new Request("http://localhost/api/v1/standard", {
+      headers: { "x-vercel-forwarded-for": "10.0.0.2" },
+    });
+    const { allowed } = await withRateLimitDistributed(
+      stub.client,
+      request,
+      "/api/v1/standard",
+      "standard",
+    );
+    expect(allowed).toBe(true);
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
   });
 });
 

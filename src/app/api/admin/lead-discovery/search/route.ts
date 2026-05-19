@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { isPlatformAdmin } from "@/lib/admin/admin-auth";
-import { withRateLimit } from "@/lib/security/rate-limiter";
+import { withRateLimitDistributed } from "@/lib/security/rate-limiter";
 import { executeSearch } from "@/lib/lead-discovery/search-orchestrator";
 
 const VALID_LIMITS = [10, 25, 50, 100] as const;
@@ -16,8 +17,14 @@ export async function POST(req: NextRequest) {
   if (!(await isPlatformAdmin(user.id)))
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
-  // Rate limit
-  const rl = withRateLimit(req, "admin-lead-discovery-search", "adminExpensive");
+  // Rate limit — Google Places API charges per call. SCRUM-290:
+  // shared Postgres-backed limiter, `adminExpensive` is costControl.
+  const rl = await withRateLimitDistributed(
+    createAdminClient(),
+    req,
+    "admin-lead-discovery-search",
+    "adminExpensive",
+  );
   if (!rl.allowed) {
     return NextResponse.json(
       { error: "Rate limit exceeded. Max 3 searches per minute." },
