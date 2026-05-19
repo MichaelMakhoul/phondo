@@ -2121,11 +2121,21 @@ wss.on("connection", (twilioWs) => {
             geminiSystemPrompt += `\n- FILLER WORDS — SPEAK FIRST, THEN CALL TOOL: When you need to call a tool, you MUST speak a filler phrase FIRST as a separate response BEFORE making the tool call. Say something like "One moment, let me check that" or "Just a sec" and WAIT for the audio to play. THEN make the tool call in the next step. NEVER bundle the filler and tool result into one response. The caller must hear the filler DURING the silence, not after. Example flow: (1) caller asks for availability → (2) you say "Let me check that for you" → (3) you call check_availability → (4) you say "We have slots on Wednesday...". Steps 2 and 4 must be SEPARATE speech outputs.`;
             geminiSystemPrompt += `\n- POST-CONFIRMATION CLOSE — MANDATORY: When the caller responds to "Is everything correct?" with ANY positive answer (yes, sounds right, sounds good, thanks, perfect, great, looks good, sure, yep, absolutely) or says goodbye, you MUST follow this exact sequence in ONE response: (1) Say ONE brief warm closing phrase — "Perfect! You're all set. Have a great day!" (2) IMMEDIATELY call end_call with reason="booking_complete" in the SAME response. NEVER say "goodbye" without calling end_call. NEVER mirror the caller's goodbye. NEVER continue the conversation after the caller confirms. The closing phrase and the end_call MUST happen together, without waiting for another turn.`;
             geminiSystemPrompt += `\n- RESCHEDULING: When a caller asks to reschedule, you MUST: (1) look up their existing appointment with lookup_appointment using their name and phone, (2) cancel the old appointment with cancel_appointment using phone + date, (3) then book the new one with book_appointment. Do NOT book a new appointment without cancelling the old one first.`;
-            // SCRUM-294: imperative transfer instruction. Previous behaviour was the
-            // AI arguing back ("would you still prefer to speak with a person?") when
-            // a caller explicitly asked for a transfer. The phrasing here enumerates
-            // common variants so the model can't claim the wording was ambiguous.
-            geminiSystemPrompt += `\n- TRANSFERS — MUST OBEY: If the caller asks to be transferred, asks to speak to a human / person / manager / somebody / an actual human / a real person / staff, says 'transfer me' / 'put me through' / 'I want to talk to someone' / 'can I speak to a human' / 'get me a person' or any equivalent intent — you MUST IMMEDIATELY say a short filler ("One moment, let me try to connect you") and call the transfer_call tool. Do NOT ask "is there something specific you need first?" Do NOT redirect them to booking. Do NOT offer alternatives BEFORE attempting the transfer. Do NOT argue. The caller's request is the entire signal — honour it. Only AFTER the transfer attempt fails (the tool returns an error or "no answer") may you offer to take a message or schedule a callback. If no transfer rules are configured for this org, acknowledge the request and use schedule_callback to capture details — never argue or claim the AI can help instead.`;
+            // SCRUM-294: imperative transfer instruction. Two variants because
+            // the transfer_call tool is only REGISTERED when both
+            // session.behaviors.transferToHuman !== false AND there's at least
+            // one transfer rule (see line ~2764). If the prompt told the model
+            // to call transfer_call when the tool wasn't registered, Gemini
+            // would hallucinate the invocation and break mid-call — exactly the
+            // class of silent failure SCRUM-294 was filed to fix.
+            const transferAvailableInbound =
+              session.behaviors?.transferToHuman !== false &&
+              (session.transferRules?.length || 0) > 0;
+            if (transferAvailableInbound) {
+              geminiSystemPrompt += `\n- TRANSFERS — MUST OBEY: If the caller asks to be transferred, asks to speak to a human / person / manager / somebody / an actual human / a real person / staff, says 'transfer me' / 'put me through' / 'I want to talk to someone' / 'can I speak to a human' / 'get me a person' or any equivalent intent — you MUST IMMEDIATELY say a short filler ("One moment, let me try to connect you") and call the transfer_call tool. Do NOT ask "is there something specific you need first?" Do NOT redirect them to booking. Do NOT offer alternatives BEFORE attempting the transfer. Do NOT argue. The caller's request is the entire signal — honour it. Only AFTER the transfer attempt fails (the tool returns an error or "no answer") may you offer to take a message or schedule a callback.`;
+            } else {
+              geminiSystemPrompt += `\n- TRANSFERS — MUST OBEY: If the caller asks to be transferred, asks to speak to a human / person / manager / somebody / an actual human / a real person / staff, says 'transfer me' / 'put me through' / 'I want to talk to someone' / 'can I speak to a human' / 'get me a person' or any equivalent intent — this business has not configured a transfer destination, so you MUST IMMEDIATELY acknowledge the request and call schedule_callback to capture their name and number. Do NOT argue. Do NOT claim you can help instead. Do NOT redirect to booking. The caller asked for a human — your only job is to capture their details and reassure them someone will call back.`;
+            }
 
             // SCRUM-227: booking invariant restated as the LAST instruction so it's
             // the freshest rule in Gemini's context when it decides what to do.
@@ -3602,9 +3612,13 @@ testWss.on("connection", (ws, req) => {
         geminiSystemPrompt += `\n- ALWAYS COLLECT REAL NAME: Before calling book_appointment or schedule_callback, you MUST ask for and receive the caller's actual name. NEVER use placeholder names like "Caller Name", "Unknown", or "Guest".`;
         geminiSystemPrompt += `\n- ALWAYS SAY FILLER BEFORE EVERY TOOL CALL: Before EVERY tool call, you MUST say a short filler phrase like "One moment", "Let me check", "Just a sec", "Bear with me". NEVER go silent during a tool call.`;
         geminiSystemPrompt += `\n- RESCHEDULING: When a caller asks to reschedule, you MUST: (1) look up their existing appointment with lookup_appointment, (2) cancel the old appointment with cancel_appointment, (3) then book the new one with book_appointment.`;
-        // SCRUM-294: imperative transfer instruction (mirror of the line above ~2125).
-        // Outbound/test-call code path; same wording.
-        geminiSystemPrompt += `\n- TRANSFERS — MUST OBEY: If the caller asks to be transferred, asks to speak to a human / person / manager / somebody / an actual human / a real person / staff, says 'transfer me' / 'put me through' / 'I want to talk to someone' / 'can I speak to a human' / 'get me a person' or any equivalent intent — you MUST IMMEDIATELY say a short filler ("One moment, let me try to connect you") and call the transfer_call tool. Do NOT ask "is there something specific you need first?" Do NOT redirect them to booking. Do NOT offer alternatives BEFORE attempting the transfer. Do NOT argue. Only AFTER the transfer attempt fails may you offer to take a message or schedule a callback.`;
+        // SCRUM-294: test/demo calls never have transfer rules (transferRules: []
+        // is passed to executeToolCall a few lines below), so transfer_call is
+        // never in the tool list. If we told the model to call it, Gemini would
+        // hallucinate the invocation. Use the no-rules variant: capture the
+        // request via schedule_callback so the demo gracefully handles the
+        // intent instead of either arguing or fabricating a transfer.
+        geminiSystemPrompt += `\n- TRANSFERS — MUST OBEY: If the caller asks to be transferred, asks to speak to a human / person / manager / somebody / an actual human / a real person / staff, says 'transfer me' / 'put me through' / 'I want to talk to someone' / 'can I speak to a human' / 'get me a person' or any equivalent intent — this is a demo/test call so a live transfer isn't available. You MUST IMMEDIATELY acknowledge the request and call schedule_callback to capture their name and number. Do NOT argue. Do NOT claim you can help instead. Do NOT redirect to booking.`;
 
         // Transcript buffering for test calls
         let pendingUserTranscript = "";

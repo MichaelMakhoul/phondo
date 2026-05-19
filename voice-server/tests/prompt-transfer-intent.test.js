@@ -35,18 +35,29 @@ const MUST_OBEY_FRAGMENT = "TRANSFERS — MUST OBEY";
 // The MUST-OBEY blocks themselves quote these phrases as "do NOT say X" so
 // we strip those blocks before scanning — otherwise the test trips on its
 // own guardrail wording. Same pattern as SCRUM-282's guard-strip approach.
+//
+// `keep the refusal` is a SCRUM-294 follow-up addition: the legacy
+// buildSystemPrompt path used to say "keep the refusal SHORT" before this
+// PR, which directly told the model to refuse rather than transfer. The
+// pattern stays in this list permanently so the wording can never come
+// back via a copy-paste from an old prompt template.
 const FORBIDDEN_NEAR_TRANSFER = [
   /would you still prefer to speak/i,
   /can I help (?:you )?(?:with )?(?:that|something)/i,
+  /keep the refusal/i,
+  /preemptive(?:ly)? refus/i,
 ];
 
 function stripMustObeyBlocks(src) {
-  // Remove lines that contain the MUST-OBEY block AND any block-comment
-  // lines that explain past bad behaviour — these legitimately quote the
-  // forbidden phrasings to instruct the model what NOT to say.
+  // Remove lines that contain the TRANSFERS — MUST OBEY block specifically,
+  // plus any block-comment lines that explain past bad behaviour — those
+  // legitimately quote the forbidden phrasings to instruct the model what
+  // NOT to say. We anchor on "TRANSFERS — MUST OBEY" rather than the
+  // generic "MUST OBEY" so future emphatic rules in other domains (e.g.
+  // "BOOKING — MUST OBEY") don't accidentally get stripped along with them.
   return src
     .split("\n")
-    .filter((line) => !/MUST OBEY|MUST IMMEDIATELY|arguing back|SCRUM-294/i.test(line))
+    .filter((line) => !/TRANSFERS — MUST OBEY|arguing back|SCRUM-294/i.test(line))
     .join("\n");
 }
 

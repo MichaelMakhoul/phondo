@@ -767,7 +767,15 @@ function buildSystemPrompt(assistant, organization, knowledgeBase, options) {
   systemPrompt += `\n- Keep booking confirmations brief: "You're all booked for Thursday at 9:30 with Dr. Chen. Anything else?"`;
   systemPrompt += `\n- Do NOT ask for name confirmation if the caller stated their name clearly. Only confirm if the name was unclear or unusual.`;
   systemPrompt += `\n- When asking for information (name, phone), ask ONE thing at a time.`;
-  systemPrompt += `\n- When a caller asks to speak to a specific person, keep the refusal SHORT: "Dr. Wilson is unavailable right now. I can take a message and have them call you back. What's your name?" — do NOT explain how the booking system works.`;
+  // SCRUM-294: the legacy buildSystemPrompt path used to instruct "keep the
+  // refusal SHORT" when callers asked for a transfer — that was the bug.
+  // The MUST-OBEY wording below mirrors what buildBehaviorsSection emits in
+  // the structured-prompt path, so this code path can't silently argue back.
+  if (transferRules && transferRules.length > 0) {
+    systemPrompt += `\n- TRANSFERS — MUST OBEY: If the caller asks to be transferred, asks to speak to a human / person / manager / somebody / an actual human / a real person / staff, says 'transfer me' / 'put me through' / 'I want to talk to someone' / 'can I speak to a human' / 'get me a person' or any equivalent intent — you MUST IMMEDIATELY say a short filler ("One moment, let me try to connect you") and call the transfer_call tool. Do NOT ask "is there something specific you need first?" Do NOT redirect them to booking. Do NOT offer alternatives BEFORE attempting the transfer. Do NOT argue. Only AFTER the transfer attempt fails may you offer to take a message or schedule a callback.`;
+  } else {
+    systemPrompt += `\n- TRANSFERS — MUST OBEY: If the caller asks to be transferred, asks to speak to a human / person / manager / somebody / an actual human / a real person / staff, says 'transfer me' / 'put me through' / 'I want to talk to someone' / 'can I speak to a human' / 'get me a person' or any equivalent intent — this business has not configured a transfer destination, so you MUST IMMEDIATELY acknowledge the request and call schedule_callback to capture their name and number. Do NOT argue. Do NOT claim you can help instead. Do NOT redirect to booking.`;
+  }
   systemPrompt += `\n\nIMPORTANT RULES:`;
   systemPrompt += `\n- CALLER ID: You already have the caller's phone number from caller ID. If the caller says "it's the number I'm calling from" or similar, accept that and use it immediately — do NOT read it back digit by digit unless they ask.`;
   systemPrompt += `\n- LANGUAGE: You are multilingual. Auto-detect the caller's language from their first turn and respond in the same language throughout the call. If they switch languages mid-call, switch with them. If uncertain, start in English and adapt.`;
