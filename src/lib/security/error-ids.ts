@@ -30,6 +30,24 @@ export const SENTRY_REASONS = {
 
   /** cleanup_rate_limit_buckets returned an unexpected shape (non-integer). */
   RATE_LIMIT_CLEANUP_UNEXPECTED_SHAPE: "rate-limit-cleanup-unexpected-shape",
+
+  // ─── keep-alive cron ping failures (SCRUM-292) ──────────────────────
+  /** Supabase liveness ping RPC returned an error object. */
+  SUPABASE_PING_FAILED: "supabase-ping-failed",
+
+  /** Supabase liveness ping threw (network / SDK fault). */
+  SUPABASE_PING_THREW: "supabase-ping-threw",
+
+  /** Upstash Redis ping returned an unexpected (non-PONG) response. */
+  UPSTASH_PING_FAILED: "upstash-ping-failed",
+
+  /** Upstash Redis ping threw (network / SDK fault). */
+  UPSTASH_PING_THREW: "upstash-ping-threw",
+
+  /** Upstash env vars are half-configured (one of URL/TOKEN set, the
+   *  other missing) — the ping cannot run, so this would silently
+   *  decay if treated as "skipped". */
+  UPSTASH_HALF_CONFIGURED: "upstash-half-configured",
 } as const;
 
 export type SentryReason = (typeof SENTRY_REASONS)[keyof typeof SENTRY_REASONS];
