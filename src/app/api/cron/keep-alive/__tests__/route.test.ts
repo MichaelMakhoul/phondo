@@ -37,6 +37,27 @@ vi.mock("@/lib/supabase/admin", () => ({
   })),
 }));
 
+// SCRUM-292: mockable @upstash/redis import so tests can drive the
+// 4 Upstash branches (ok / unexpected response / throw / skipped).
+const upstashState: {
+  pongResponse: string;
+  throws: Error | null;
+} = {
+  pongResponse: "PONG",
+  throws: null,
+};
+
+vi.mock("@upstash/redis", () => ({
+  Redis: {
+    fromEnv: vi.fn(() => ({
+      ping: vi.fn(async () => {
+        if (upstashState.throws) throw upstashState.throws;
+        return upstashState.pongResponse;
+      }),
+    })),
+  },
+}));
+
 /**
  * SCRUM-293: capture per-scope tags/level/extras so each Sentry-paging
  * test can assert the EXACT `reason` tag value, not just that
@@ -115,7 +136,15 @@ beforeEach(() => {
   supabaseState.selectThrows = null;
   supabaseState.rpcResult = { data: 0, error: null };
   supabaseState.rpcThrows = null;
+  upstashState.pongResponse = "PONG";
+  upstashState.throws = null;
 });
+
+/** Enable the Upstash branch for tests that need to exercise it. */
+function withUpstashConfigured() {
+  process.env.UPSTASH_REDIS_REST_URL = "https://test.upstash.io";
+  process.env.UPSTASH_REDIS_REST_TOKEN = "test-token";
+}
 
 // ──────────────────────────────────────────────────────────────────────────
 // Auth gates (pre-existing behavior — locked in to catch regression)
@@ -369,5 +398,167 @@ describe("GET /api/cron/keep-alive — job independence", () => {
     supabaseState.selectThrows = new Error("kaboom");
     await callRoute({ authorization: `Bearer ${CRON_SECRET}` });
     expect(rpcMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// SCRUM-292: Supabase + Upstash ping failures now page Sentry (was
+// previously console.error only — silent decay if Vercel cron alerts off).
+// ──────────────────────────────────────────────────────────────────────────
+
+describe("GET /api/cron/keep-alive — Supabase ping Sentry pages (SCRUM-292)", () => {
+  it("503 + Sentry-paged with reason=supabase-ping-failed when select returns an error", async () => {
+    supabaseState.selectError = { code: "08000", message: "connection refused" };
+    const res = await callRoute({ authorization: `Bearer ${CRON_SECRET}` });
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body.supabase).toMatch(/^error: connection refused/);
+    expect(Sentry.captureException).toHaveBeenCalled();
+    // Pick the supabase-ping scope (cleanup may also page if rpc errors,
+    // but the default state has the cleanup happy-path so only supabase
+    // page should fire).
+    const sb = sentryState.scopeCalls.find(
+      (s) => s.tags.reason === "supabase-ping-failed",
+    );
+    expect(sb).toBeDefined();
+    expect(sb).toEqual({
+      tags: { service: "next-cron", cron: "keep-alive", reason: "supabase-ping-failed" },
+      level: "warning",
+      extras: {},
+    });
+  });
+
+  it("503 + Sentry-paged with reason=supabase-ping-threw on a thrown ping", async () => {
+    supabaseState.selectThrows = new Error("ECONNREFUSED");
+    await callRoute({ authorization: `Bearer ${CRON_SECRET}` });
+    const sb = sentryState.scopeCalls.find(
+      (s) => s.tags.reason === "supabase-ping-threw",
+    );
+    expect(sb).toBeDefined();
+    expect(sb?.level).toBe("warning");
+  });
+
+  it("happy path does NOT page Sentry for the supabase branch", async () => {
+    // (default state) — explicitly verify no supabase-ping reason ever fires.
+    await callRoute({ authorization: `Bearer ${CRON_SECRET}` });
+    const supabaseReasons = sentryState.scopeCalls
+      .map((s) => s.tags.reason)
+      .filter((r) => r && r.startsWith("supabase-ping"));
+    expect(supabaseReasons).toEqual([]);
+  });
+});
+
+describe("GET /api/cron/keep-alive — Upstash ping Sentry pages (SCRUM-292)", () => {
+  it("503 + Sentry-paged with reason=upstash-ping-failed on non-PONG response", async () => {
+    withUpstashConfigured();
+    upstashState.pongResponse = "WRONG";
+    const res = await callRoute({ authorization: `Bearer ${CRON_SECRET}` });
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body.upstash).toMatch(/^unexpected: WRONG/);
+    const up = sentryState.scopeCalls.find(
+      (s) => s.tags.reason === "upstash-ping-failed",
+    );
+    expect(up).toBeDefined();
+    expect(up?.level).toBe("warning");
+    // The response value is preserved as an extra so on-call sees what
+    // the backend actually returned without digging into the body.
+    expect(up?.extras).toEqual({ response: "WRONG" });
+  });
+
+  it("503 + Sentry-paged with reason=upstash-ping-threw on a thrown ping", async () => {
+    withUpstashConfigured();
+    upstashState.throws = new Error("Redis connection refused");
+    await callRoute({ authorization: `Bearer ${CRON_SECRET}` });
+    const up = sentryState.scopeCalls.find(
+      (s) => s.tags.reason === "upstash-ping-threw",
+    );
+    expect(up).toBeDefined();
+    expect(up?.level).toBe("warning");
+  });
+
+  it("happy PONG response does NOT page Sentry", async () => {
+    withUpstashConfigured();
+    upstashState.pongResponse = "PONG";
+    await callRoute({ authorization: `Bearer ${CRON_SECRET}` });
+    const upstashReasons = sentryState.scopeCalls
+      .map((s) => s.tags.reason)
+      .filter((r) => r && r.startsWith("upstash-ping"));
+    expect(upstashReasons).toEqual([]);
+  });
+
+  it("503 + Sentry-paged with reason=upstash-half-configured when only URL is set", async () => {
+    // SCRUM-292 review fix (P1): the previous code silently treated
+    // half-configured as "skipped". A deploy that rotated the token
+    // but forgot to refresh both env vars would silently decay Redis
+    // until inactivity expiration. The cron exists to catch this.
+    process.env.UPSTASH_REDIS_REST_URL = "https://test.upstash.io";
+    delete process.env.UPSTASH_REDIS_REST_TOKEN;
+    const res = await callRoute({ authorization: `Bearer ${CRON_SECRET}` });
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body.upstash).toMatch(/^half-configured.*URL set, TOKEN missing/);
+    const up = sentryState.scopeCalls.find(
+      (s) => s.tags.reason === "upstash-half-configured",
+    );
+    expect(up).toBeDefined();
+    expect(up?.level).toBe("warning");
+    expect(up?.extras).toEqual({ urlSet: true, tokenSet: false });
+  });
+
+  it("503 + Sentry-paged with reason=upstash-half-configured when only TOKEN is set", async () => {
+    delete process.env.UPSTASH_REDIS_REST_URL;
+    process.env.UPSTASH_REDIS_REST_TOKEN = "test-token";
+    const res = await callRoute({ authorization: `Bearer ${CRON_SECRET}` });
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body.upstash).toMatch(/^half-configured.*TOKEN set, URL missing/);
+    const up = sentryState.scopeCalls.find(
+      (s) => s.tags.reason === "upstash-half-configured",
+    );
+    expect(up).toBeDefined();
+    expect(up?.extras).toEqual({ urlSet: false, tokenSet: true });
+  });
+
+  it("'skipped (not configured)' branch does NOT page Sentry — Upstash is optional", async () => {
+    // Default beforeEach state: env vars unset. The cron's
+    // "skipped (not configured)" branch should be silent. A regression
+    // that started paging here would spam Sentry on every Hobby-plan
+    // deploy that hasn't set Upstash up yet.
+    delete process.env.UPSTASH_REDIS_REST_URL;
+    delete process.env.UPSTASH_REDIS_REST_TOKEN;
+    await callRoute({ authorization: `Bearer ${CRON_SECRET}` });
+    const upstashReasons = sentryState.scopeCalls
+      .map((s) => s.tags.reason)
+      .filter((r) => r && r.startsWith("upstash-ping"));
+    expect(upstashReasons).toEqual([]);
+  });
+});
+
+describe("GET /api/cron/keep-alive — defensive Sentry shim for ping branches", () => {
+  it("Supabase ping Sentry shim defect does NOT crash the cron", async () => {
+    supabaseState.selectError = { code: "57P01", message: "admin shutdown" };
+    vi.mocked(Sentry.withScope).mockImplementationOnce(() => {
+      throw new Error("sentry transport down");
+    });
+    const res = await callRoute({ authorization: `Bearer ${CRON_SECRET}` });
+    // Cron must still return a Response. Both jobs that follow
+    // (Upstash skipped, cleanup happy-path) should still record.
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body.supabase).toMatch(/^error: admin shutdown/);
+    expect(body.rate_limit_cleanup).toBe("ok");
+  });
+
+  it("Upstash ping Sentry shim defect does NOT crash the cron", async () => {
+    withUpstashConfigured();
+    upstashState.throws = new Error("Redis down");
+    vi.mocked(Sentry.withScope).mockImplementationOnce(() => {
+      throw new Error("sentry transport down");
+    });
+    const res = await callRoute({ authorization: `Bearer ${CRON_SECRET}` });
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body.upstash).toBe("error");
   });
 });
