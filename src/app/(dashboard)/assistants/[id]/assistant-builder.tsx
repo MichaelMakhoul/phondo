@@ -174,7 +174,12 @@ export function AssistantBuilder({
   const [newTriggerIntent, setNewTriggerIntent] = useState("");
   const [newAnnouncement, setNewAnnouncement] = useState("");
   const [newPriority, setNewPriority] = useState(0);
-  const [newRequireConfirmation, setNewRequireConfirmation] = useState(false);
+  // SCRUM-294 follow-up: default ON. The MUST-OBEY prompt fires transfer_call
+  // the moment the AI detects intent — that's correct when the caller is
+  // unambiguous, but can misfire on ambiguous mentions ("transfer my
+  // prescription"). The confirmation step adds 1-2 seconds and removes that
+  // risk. Owners can still turn it off per rule (e.g. emergency lines).
+  const [newRequireConfirmation, setNewRequireConfirmation] = useState(true);
 
   // Inline edit state
   const [editingRuleId, setEditingRuleId] = useState<string | null>(null);
@@ -393,7 +398,7 @@ export function AssistantBuilder({
       setNewTriggerIntent("");
       setNewAnnouncement("");
       setNewPriority(0);
-      setNewRequireConfirmation(false);
+      setNewRequireConfirmation(true);
 
       trackTransferRuleCreated();
       toast({
@@ -830,12 +835,18 @@ export function AssistantBuilder({
                         </p>
                       </div>
                     </div>
-                    <div className="flex items-center gap-2">
-                      <Switch
-                        checked={newRequireConfirmation}
-                        onCheckedChange={setNewRequireConfirmation}
-                      />
-                      <Label className="text-sm">Ask caller to confirm before transferring</Label>
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <Switch
+                          checked={newRequireConfirmation}
+                          onCheckedChange={setNewRequireConfirmation}
+                        />
+                        <Label className="text-sm">Ask caller to confirm before transferring</Label>
+                      </div>
+                      <p className="text-xs text-muted-foreground ml-11">
+                        When ON: AI asks &quot;Shall I transfer you to &lt;name&gt;?&quot; and waits for yes/no before dialling.
+                        When OFF: AI transfers immediately on detecting transfer intent.
+                      </p>
                     </div>
                   </div>
 
@@ -893,7 +904,8 @@ export function AssistantBuilder({
                                 <Label className="text-sm">Ask caller to confirm before transferring</Label>
                               </div>
                               <p className="text-xs text-muted-foreground ml-11">
-                                The AI asks once before dialing. Fallback numbers are tried automatically without re-asking.
+                                When ON: AI asks &quot;Shall I transfer you to &lt;name&gt;?&quot; and waits for yes/no before dialling.
+                                When OFF: AI transfers immediately on detecting transfer intent. Fallback numbers always try automatically without re-asking.
                               </p>
                             </div>
                             <div className="space-y-2">
