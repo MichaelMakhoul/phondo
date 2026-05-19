@@ -5,6 +5,7 @@ import {
   deleteTransferRule,
 } from "@/lib/transfer/transfer-service";
 import { isValidUUID } from "@/lib/security/validation";
+import { getOrgCountry, validatePhone } from "@/lib/phone/validate-for-org";
 
 /**
  * PATCH /api/v1/transfer/rules/:id
@@ -83,7 +84,8 @@ export async function PATCH(
       requireConfirmation,
     } = body;
 
-    // Validate destinations array if provided
+    // Validate destinations array shape if provided. Phone format is
+    // validated below via validatePhone().
     if (destinations !== undefined) {
       if (!Array.isArray(destinations)) {
         return NextResponse.json(
@@ -107,17 +109,46 @@ export async function PATCH(
       }
     }
 
+    // SCRUM-295: normalise any phone the user is changing. PATCH only
+    // validates fields that were actually sent — undefined means "leave
+    // unchanged" so we skip those.
+    let normalisedTransferToPhone = transferToPhone;
+    let normalisedDestinations = destinations;
+    if (transferToPhone !== undefined || destinations !== undefined) {
+      const country = await getOrgCountry(organizationId, supabase);
+
+      if (transferToPhone !== undefined) {
+        const primary = validatePhone(transferToPhone, country, "Transfer phone number");
+        if (!primary.ok) {
+          return NextResponse.json({ error: primary.error }, { status: 400 });
+        }
+        normalisedTransferToPhone = primary.value;
+      }
+
+      if (destinations !== undefined) {
+        const next: { phone: string; name: string }[] = [];
+        for (const dest of destinations as Array<{ phone: string; name?: string }>) {
+          const result = validatePhone(dest.phone, country, "Destination phone");
+          if (!result.ok) {
+            return NextResponse.json({ error: result.error }, { status: 400 });
+          }
+          next.push({ phone: result.value, name: dest.name ?? "" });
+        }
+        normalisedDestinations = next;
+      }
+    }
+
     // Update the rule
     await updateTransferRule(ruleId, organizationId, {
       name,
       triggerKeywords,
       triggerIntent,
-      transferToPhone,
+      transferToPhone: normalisedTransferToPhone,
       transferToName,
       announcementMessage,
       priority,
       isActive,
-      destinations,
+      destinations: normalisedDestinations,
       requireConfirmation,
     });
 

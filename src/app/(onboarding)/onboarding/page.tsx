@@ -15,6 +15,7 @@ import { Success } from "./steps/Success";
 import { ArrowLeft, ArrowRight, Loader2, CheckCircle2, Clock } from "lucide-react";
 import { getCountryConfig } from "@/lib/country-config";
 import { buildCustomInstructionsFromBusinessInfo } from "@/lib/scraper/build-custom-instructions";
+import { parsePhoneToE164, type SupportedCountry } from "@/lib/phone/normalize";
 import {
   trackOnboardingStart,
   trackOnboardingStepComplete,
@@ -241,11 +242,19 @@ export default function OnboardingPage() {
 
         // Update org with business info
         const countryConfig = data.country ? getCountryConfig(data.country) : null;
+        // SCRUM-295: normalise to E.164 before write. If we can't normalise,
+        // fall back to null rather than writing garbage — the DB CHECK
+        // constraint would reject it anyway. The form's own validate() should
+        // have caught this, so a null here means the user truly skipped it.
+        const targetCountry: SupportedCountry = data.country === "US" ? "US" : "AU";
+        const normalisedBusinessPhone = data.businessPhone?.trim()
+          ? parsePhoneToE164(data.businessPhone, targetCountry)
+          : null;
         await (supabase as any)
           .from("organizations")
           .update({
             industry: data.industry,
-            business_phone: data.businessPhone || null,
+            business_phone: normalisedBusinessPhone,
             business_website: data.businessWebsite || null,
             business_address: data.scrapedAddress || null,
             country: data.country || "US",

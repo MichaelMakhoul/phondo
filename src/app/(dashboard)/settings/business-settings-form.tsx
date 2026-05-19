@@ -33,6 +33,7 @@ import {
   getTimezonesForCountry,
 } from "@/lib/country-config";
 import { industryOptions } from "@/lib/templates";
+import { parsePhoneToE164, type SupportedCountry } from "@/lib/phone/normalize";
 
 const DAYS = [
   { key: "monday", label: "Monday" },
@@ -185,10 +186,12 @@ export function BusinessSettingsForm({
     }
 
     if (phone.trim()) {
-      // Allow digits, spaces, dashes, parens, plus sign — min 7 digits
-      const digits = phone.replace(/\D/g, "");
-      if (digits.length < 7 || digits.length > 15) {
-        newErrors.phone = "Enter a valid phone number (7-15 digits)";
+      // SCRUM-295: must normalise to E.164. The DB CHECK constraint will
+      // reject anything else, so catch it client-side with a clearer error.
+      const targetCountry: SupportedCountry = country === "US" ? "US" : "AU";
+      if (!parsePhoneToE164(phone, targetCountry)) {
+        const example = targetCountry === "US" ? "+14155551234" : "+61412345678";
+        newErrors.phone = `Enter a valid ${targetCountry} phone number (e.g. ${example})`;
       }
     }
 
@@ -255,6 +258,13 @@ export function BusinessSettingsForm({
       setSmsSenderError(null);
     }
     setIsLoading(true);
+    // SCRUM-295: pass the normalised E.164 form to the DB, not the raw input.
+    // validate() has already rejected anything that won't normalise, so the
+    // null fallback is defensive — it shouldn't trigger in practice.
+    const targetCountry: SupportedCountry = country === "US" ? "US" : "AU";
+    const normalisedPhone = phone.trim()
+      ? parsePhoneToE164(phone, targetCountry) || phone
+      : null;
     try {
       const { error } = await (supabase as any)
         .from("organizations")
@@ -264,7 +274,7 @@ export function BusinessSettingsForm({
           name: businessName, // Keep name in sync
           industry,
           business_website: websiteUrl,
-          business_phone: phone,
+          business_phone: normalisedPhone,
           business_email: businessEmail.trim() || null,
           business_address: address,
           timezone,

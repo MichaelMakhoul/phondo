@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { hasFeatureAccess } from "@/lib/stripe/billing-service";
+import { getOrgCountry, validatePhone } from "@/lib/phone/validate-for-org";
 
 interface Membership {
   organization_id: string;
@@ -98,6 +99,22 @@ export async function PUT(request: Request) {
       if (field in rawBody) {
         body[field] = rawBody[field];
       }
+    }
+
+    // SCRUM-295: sms_phone_number must be E.164 (otherwise Twilio refuses
+    // to send and the business gets no missed-call alerts). Empty string
+    // and null both mean "clear the field" — allow those through.
+    if (
+      "sms_phone_number" in body &&
+      body.sms_phone_number !== null &&
+      body.sms_phone_number !== ""
+    ) {
+      const country = await getOrgCountry(membership.organization_id, supabase);
+      const result = validatePhone(body.sms_phone_number, country, "SMS phone number");
+      if (!result.ok) {
+        return NextResponse.json({ error: result.error }, { status: 400 });
+      }
+      body.sms_phone_number = result.value;
     }
 
     // Gate SMS caller fields behind plan access.

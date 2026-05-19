@@ -363,7 +363,10 @@ export function AssistantBuilder({
       });
 
       if (!response.ok) {
-        throw new Error("Failed to create transfer rule");
+        // Surface the structured error from the API (e.g. "is not a valid
+        // AU phone number"). SCRUM-295 — fallback covers network/parse fails.
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.error || "Failed to create transfer rule");
       }
 
       const { rule } = await response.json();
@@ -381,11 +384,11 @@ export function AssistantBuilder({
         title: "Transfer Rule Added",
         description: "Callers can now be transferred to this number.",
       });
-    } catch {
+    } catch (err: any) {
       toast({
         variant: "destructive",
         title: "Error",
-        description: "Failed to add transfer rule.",
+        description: err?.message || "Failed to add transfer rule.",
       });
     }
   };
@@ -458,7 +461,10 @@ export function AssistantBuilder({
       });
 
       if (!response.ok) {
-        throw new Error("Failed to update transfer rule");
+        // Surface the API's validation error so the user sees WHY the
+        // number was rejected (e.g. wrong digit count). SCRUM-295.
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.error || "Failed to update transfer rule");
       }
 
       setTransferRules(
@@ -484,11 +490,11 @@ export function AssistantBuilder({
       toast({
         title: "Transfer Rule Updated",
       });
-    } catch {
+    } catch (err: any) {
       toast({
         variant: "destructive",
         title: "Error",
-        description: "Failed to update transfer rule.",
+        description: err?.message || "Failed to update transfer rule.",
       });
     } finally {
       setIsEditSaving(false);
