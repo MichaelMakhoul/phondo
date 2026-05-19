@@ -5,6 +5,7 @@ import {
   createTransferRule,
 } from "@/lib/transfer/transfer-service";
 import { isValidUUID } from "@/lib/security/validation";
+import { getOrgCountry, validatePhone } from "@/lib/phone/validate-for-org";
 
 /**
  * GET /api/v1/transfer/rules
@@ -184,7 +185,8 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Validate destinations array if provided
+    // Validate destinations array shape if provided. Phone-format validation
+    // happens below via validatePhone() — these checks only catch shape errors.
     if (destinations !== undefined) {
       if (!Array.isArray(destinations)) {
         return NextResponse.json(
@@ -208,6 +210,35 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // SCRUM-295: normalise every user-entered phone number to E.164 before
+    // it touches the DB. Twilio's <Dial> verb rejects non-E.164 silently,
+    // which is what broke call 035fa552. One country lookup feeds all
+    // normalisations for this request.
+    const country = await getOrgCountry(organizationId, supabase);
+
+    const primary = validatePhone(transferToPhone, country, "Transfer phone number");
+    if (!primary.ok) {
+      return NextResponse.json({ error: primary.error }, { status: 400 });
+    }
+    const normalisedTransferToPhone = primary.value;
+
+    // Preserve the original destination shape ({ phone, name }) but swap
+    // each phone with its E.164 form. The transfer service type requires
+    // `{ phone: string; name: string }[]`; the cast at the end matches the
+    // existing API contract — name validation isn't tightened here.
+    let normalisedDestinations: { phone: string; name: string }[] | undefined;
+    if (destinations !== undefined) {
+      const next: { phone: string; name: string }[] = [];
+      for (const dest of destinations as Array<{ phone: string; name?: string }>) {
+        const result = validatePhone(dest.phone, country, "Destination phone");
+        if (!result.ok) {
+          return NextResponse.json({ error: result.error }, { status: 400 });
+        }
+        next.push({ phone: result.value, name: dest.name ?? "" });
+      }
+      normalisedDestinations = next;
+    }
+
     // Verify assistant belongs to organization
     const { data: assistant } = await (supabase as any)
       .from("assistants")
@@ -228,11 +259,11 @@ export async function POST(request: NextRequest) {
       name,
       triggerKeywords,
       triggerIntent,
-      transferToPhone,
+      transferToPhone: normalisedTransferToPhone,
       transferToName,
       announcementMessage,
       priority,
-      destinations,
+      destinations: normalisedDestinations,
       requireConfirmation,
     });
 
