@@ -37,17 +37,53 @@ vi.mock("@/lib/supabase/admin", () => ({
   })),
 }));
 
+/**
+ * SCRUM-293: capture per-scope tags/level/extras so each Sentry-paging
+ * test can assert the EXACT `reason` tag value, not just that
+ * `captureException` was called. Vitest hoists `vi.mock` calls above
+ * everything else, so the shared state has to be wrapped in `vi.hoisted`
+ * to be reachable from inside the factory.
+ */
+const sentryState = vi.hoisted(() => ({
+  scopeCalls: [] as Array<{
+    tags: Record<string, string>;
+    extras: Record<string, unknown>;
+    level: string | null;
+  }>,
+  reset() {
+    this.scopeCalls = [];
+  },
+}));
+
 vi.mock("@sentry/nextjs", () => ({
-  withScope: vi.fn((fn: (scope: any) => void) =>
+  withScope: vi.fn((fn: (scope: any) => void) => {
+    const tags: Record<string, string> = {};
+    const extras: Record<string, unknown> = {};
+    let level: string | null = null;
     fn({
-      setTag: vi.fn(),
-      setLevel: vi.fn(),
-      setExtras: vi.fn(),
-    }),
-  ),
+      // Sentry's real API accepts Primitive values (string | number | boolean)
+      // — widen the mock so a future numeric tag wouldn't get a type error
+      // here while still being tracked correctly.
+      setTag: (k: string, v: string | number | boolean) => {
+        tags[k] = String(v);
+      },
+      setLevel: (l: string) => {
+        level = l;
+      },
+      setExtras: (e: Record<string, unknown>) => {
+        Object.assign(extras, e);
+      },
+    });
+    sentryState.scopeCalls.push({ tags, extras, level });
+  }),
   captureException: vi.fn(),
   captureMessage: vi.fn(),
 }));
+
+/** Inspect the most recent scope captured via `Sentry.withScope`. */
+function lastScope() {
+  return sentryState.scopeCalls[sentryState.scopeCalls.length - 1];
+}
 
 // ──────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -69,6 +105,7 @@ async function callRoute(headers: Record<string, string> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  sentryState.reset();
   process.env.CRON_SECRET = CRON_SECRET;
   // Upstash configured-off by default so we test the "skipped" branch
   // and don't try to import @upstash/redis in CI.
@@ -133,6 +170,12 @@ describe("GET /api/cron/keep-alive — happy path", () => {
   it("does NOT page Sentry on the happy path", async () => {
     await callRoute({ authorization: `Bearer ${CRON_SECRET}` });
     expect(Sentry.captureException).not.toHaveBeenCalled();
+    // SCRUM-293: also assert NO captureMessage / withScope fired,
+    // catching a future "success branch accidentally pages a 'deleted
+    // 0 rows' warning" regression.
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+    expect(Sentry.withScope).not.toHaveBeenCalled();
+    expect(sentryState.scopeCalls).toHaveLength(0);
   });
 
   it("returns timestamp in ISO-8601 shape", async () => {
@@ -158,6 +201,16 @@ describe("GET /api/cron/keep-alive — rate_limit_cleanup failures (SCRUM-289)",
     expect(body.ok).toBe(false);
     expect(body.rate_limit_cleanup).toMatch(/^error: admin shutdown/);
     expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    // SCRUM-293: lock the per-tag contract — Grafana alerts route on these.
+    expect(lastScope()).toEqual({
+      tags: {
+        service: "next-cron",
+        cron: "keep-alive",
+        reason: "rate-limit-cleanup-failed",
+      },
+      level: "warning",
+      extras: {},
+    });
   });
 
   it("503 + Sentry-paged when the cleanup RPC throws (network error)", async () => {
@@ -168,6 +221,17 @@ describe("GET /api/cron/keep-alive — rate_limit_cleanup failures (SCRUM-289)",
     expect(body.ok).toBe(false);
     expect(body.rate_limit_cleanup).toBe("error");
     expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    // SCRUM-293: throw branch uses a distinct reason tag (so triage can
+    // tell "RPC errored" apart from "RPC threw / network down").
+    expect(lastScope()).toEqual({
+      tags: {
+        service: "next-cron",
+        cron: "keep-alive",
+        reason: "rate-limit-cleanup-threw",
+      },
+      level: "warning",
+      extras: {},
+    });
   });
 
   it("cleanup RPC failure does NOT short-circuit the Supabase ping result", async () => {
@@ -195,18 +259,17 @@ describe("GET /api/cron/keep-alive — rate_limit_cleanup failures (SCRUM-289)",
   });
 
   it("Sentry capture is tagged with reason=rate-limit-cleanup-failed on RPC error", async () => {
+    // SCRUM-293: was previously a stub claiming "out of scope" — now
+    // actually asserts the per-tag contract. The other two cleanup
+    // tests above also lock in per-tag values; this one stays as the
+    // explicit contract-test breadcrumb for future readers.
     supabaseState.rpcResult = {
       data: null,
       error: { code: "57P01", message: "admin shutdown" },
     };
     await callRoute({ authorization: `Bearer ${CRON_SECRET}` });
-    // The mock's withScope passes a fresh scope object; we can verify the
-    // capture happened, and the scope setup ran (no throw). For per-tag
-    // assertions we'd need a shared scope mock — out of scope for this
-    // ticket; the per-tag contract is locked in by server-sentry-sites
-    // tests in voice-server.
-    expect(Sentry.withScope).toHaveBeenCalled();
-    expect(Sentry.captureException).toHaveBeenCalled();
+    expect(lastScope().tags.reason).toBe("rate-limit-cleanup-failed");
+    expect(lastScope().level).toBe("warning");
   });
 });
 
@@ -224,6 +287,11 @@ describe("GET /api/cron/keep-alive — RPC shape drift (SCRUM-289 review fix)", 
     expect(body.ok).toBe(false);
     expect(body.rate_limit_cleanup).toMatch(/^warn: unexpected RPC shape/);
     expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+    // SCRUM-293: shape-drift gets its own reason tag — distinguishes
+    // "RPC ran but lied" from "RPC errored" in alert routing.
+    expect(lastScope().tags.reason).toBe("rate-limit-cleanup-unexpected-shape");
+    expect(lastScope().level).toBe("warning");
+    expect(lastScope().extras).toEqual({ dataType: "null" });
   });
 
   it("503 + Sentry-paged when RPC returns an array (PostgREST shape regression)", async () => {
@@ -234,6 +302,10 @@ describe("GET /api/cron/keep-alive — RPC shape drift (SCRUM-289 review fix)", 
     const res = await callRoute({ authorization: `Bearer ${CRON_SECRET}` });
     expect(res.status).toBe(503);
     expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+    expect(lastScope().tags.reason).toBe("rate-limit-cleanup-unexpected-shape");
+    // dataType disambiguates the shape so on-call sees which regression
+    // is in play (array vs. string vs. null) without opening the event.
+    expect(lastScope().extras).toEqual({ dataType: "object" });
   });
 
   it("503 + Sentry-paged when RPC returns a string ('integer-as-string' from some PG drivers)", async () => {
@@ -241,6 +313,8 @@ describe("GET /api/cron/keep-alive — RPC shape drift (SCRUM-289 review fix)", 
     const res = await callRoute({ authorization: `Bearer ${CRON_SECRET}` });
     expect(res.status).toBe(503);
     expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+    expect(lastScope().tags.reason).toBe("rate-limit-cleanup-unexpected-shape");
+    expect(lastScope().extras).toEqual({ dataType: "string" });
   });
 
   it("captures the unexpected data type in the warning message body", async () => {
@@ -273,6 +347,10 @@ describe("GET /api/cron/keep-alive — Sentry shim defect resilience", () => {
     expect(res.status).toBe(503);
     const body = await res.json();
     expect(body.rate_limit_cleanup).toBe("error");
+    // SCRUM-293: no scope was captured because the shim throw aborted
+    // the withScope callback before it ran. If a future refactor adds
+    // a fallback "retry" capture, this will trip and force a decision.
+    expect(sentryState.scopeCalls).toHaveLength(0);
   });
 });
 
