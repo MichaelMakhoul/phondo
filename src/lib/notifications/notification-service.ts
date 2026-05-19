@@ -816,23 +816,77 @@ function generateEmailHtml(template: string, data: Record<string, any>): string 
     return `<p>Notification from Phondo</p>`;
   }
 
+  // Branded email shell. Uses table-based layout instead of flexbox because
+  // Outlook 2016/2019 and several mobile clients still don't reliably
+  // support flex. Inline SVG (Lucide phone icon) embedded as a data URI
+  // because external image hosting would require a CDN we don't yet run.
+  //
+  // Brand colours match the marketing site:
+  //   #f97316 (orange-500) — primary accent
+  //   #0f172a (slate-900) — wordmark
+  //   #6b7280 (gray-500)  — secondary text
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://phondo.ai";
+  const phoneIconSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg>`;
+
   return `
     <!DOCTYPE html>
     <html>
     <head>
+      <meta charset="utf-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1" />
       <style>
-        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; }
-        h2 { color: #1a1a1a; }
-        a { color: #0066cc; }
+        body { margin: 0; padding: 0; background: #f9fafb; }
+        .container { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; line-height: 1.6; color: #1f2937; max-width: 600px; margin: 0 auto; background: #ffffff; }
+        .inner { padding: 32px 24px; }
+        h2 { color: #0f172a; margin: 0 0 16px 0; font-size: 20px; font-weight: 700; }
+        p { margin: 0 0 12px 0; }
+        a { color: #f97316; text-decoration: underline; }
+        table.data-table td { padding: 8px; }
       </style>
     </head>
     <body>
-      ${templateFn(safeData)}
-      <hr style="margin-top: 30px; border: none; border-top: 1px solid #ddd;" />
-      <p style="font-size: 12px; color: #666;">
-        This email was sent by Phondo AI Receptionist.
-        <a href="${process.env.NEXT_PUBLIC_APP_URL || "https://phondo.ai"}/settings/notifications">Manage notification preferences</a>
-      </p>
+      <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background: #f9fafb;">
+        <tr>
+          <td align="center" style="padding: 24px 12px;">
+            <table cellpadding="0" cellspacing="0" border="0" class="container">
+              <!-- Header -->
+              <tr>
+                <td style="background: #ffffff; padding: 20px 24px; border-bottom: 1px solid #e5e7eb;">
+                  <table cellpadding="0" cellspacing="0" border="0">
+                    <tr>
+                      <td style="background: #f97316; border-radius: 8px; padding: 8px 8px 4px 8px; line-height: 0;" valign="middle">
+                        ${phoneIconSvg}
+                      </td>
+                      <td style="padding-left: 12px;" valign="middle">
+                        <a href="${escapeHtml(appUrl)}" style="text-decoration: none;">
+                          <span style="font-size: 22px; font-weight: 700; color: #0f172a; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;">Phondo</span>
+                        </a>
+                      </td>
+                    </tr>
+                  </table>
+                </td>
+              </tr>
+              <!-- Body -->
+              <tr>
+                <td class="inner" style="background: #ffffff;">
+                  ${templateFn(safeData)}
+                </td>
+              </tr>
+              <!-- Footer -->
+              <tr>
+                <td style="background: #f9fafb; padding: 20px 24px; border-top: 1px solid #e5e7eb;">
+                  <p style="font-size: 12px; color: #6b7280; margin: 0;">
+                    This email was sent by Phondo AI Receptionist.<br/>
+                    <a href="${escapeHtml(appUrl)}/settings/notifications" style="color: #6b7280; text-decoration: underline;">Manage notification preferences</a>
+                    &nbsp;·&nbsp;
+                    <a href="${escapeHtml(appUrl)}" style="color: #6b7280; text-decoration: underline;">Open dashboard</a>
+                  </p>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+      </table>
     </body>
     </html>
   `;
