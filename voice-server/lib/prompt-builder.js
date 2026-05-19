@@ -449,11 +449,17 @@ function buildBehaviorsSection(behaviors, options) {
   if (behaviors.transferToHuman) {
     if (options && options.hasTransferRules) {
       lines.push(
-        "- TRANSFERS: You can transfer calls using the transfer_call function. Use it when a caller requests to speak with a person, has a complex issue you cannot resolve, or when there is an emergency. Some transfers require confirmation — if the tool tells you to confirm with the caller first, ask them and call the function again with confirmed set to true."
+        // SCRUM-294: callers asking for a human must be transferred — no negotiation.
+        // The previous wording ("Use it when a caller requests...") let the model
+        // rationalise "be helpful first" and argue back. The new wording is
+        // imperative + enumerates common variants so the LLM can't claim ambiguity.
+        "- TRANSFERS — MUST OBEY: If a caller asks to be transferred, asks to speak to a human / person / manager / somebody / an actual human / a real person / staff, says 'transfer me' / 'put me through' / 'I want to talk to someone' / 'can I speak to a human' / 'get me a person' or expresses ANY equivalent intent — you MUST IMMEDIATELY call the transfer_call function. Do NOT ask 'is there something specific you need first?' Do NOT try to redirect to booking or other tools. Do NOT offer alternatives BEFORE attempting the transfer. Do NOT argue, suggest you can help, or imply the AI is the better path. The caller's request is the entire signal — honour it. Only AFTER the transfer attempt fails (the tool returns an error or 'no answer') may you offer a callback or message. Some transfers require confirmation — if the tool tells you to confirm with the caller first, ask the short 'Shall I transfer you to <name>?' question and call the function again with confirmed=true."
       );
     } else {
       lines.push(
-        "- TRANSFERS: If a caller requests to speak with a person, or if the situation requires human attention, offer to transfer the call."
+        // SCRUM-294: even without transfer rules, the AI must acknowledge transfer
+        // intent and offer a callback — never argue back.
+        "- TRANSFERS — NO RULES CONFIGURED: If a caller asks to be transferred or to speak with a human, acknowledge the request immediately ('Of course, let me see what I can do') and use schedule_callback to take their details so a human can call them back. NEVER argue, suggest the AI can help instead, or imply the AI is the better path."
       );
     }
   }
@@ -464,7 +470,7 @@ function buildBehaviorsSection(behaviors, options) {
 
   // Voice conversation style — critical for phone call quality
   lines.push(
-    "- VOICE STYLE: You are on a PHONE CALL, not writing text. Be CONCISE — 1-2 sentences max. NEVER use markdown or emojis — your text is spoken aloud by TTS. Don't repeat confirmed info. Don't mention appointment duration unless asked. Keep confirmations brief. Do NOT ask for name confirmation if clearly stated. When refusing a transfer request, keep it short: 'They're unavailable right now. I can take a message.'",
+    "- VOICE STYLE: You are on a PHONE CALL, not writing text. Be CONCISE — 1-2 sentences max. NEVER use markdown or emojis — your text is spoken aloud by TTS. Don't repeat confirmed info. Don't mention appointment duration unless asked. Keep confirmations brief. Do NOT ask for name confirmation if clearly stated. If a transfer attempt fails because the target is unreachable: 'They're unavailable right now. I can take a message.' — but only AFTER the transfer attempt fails. You may NEVER refuse a transfer request preemptively (SCRUM-294).",
     "- ONE QUESTION PER TURN — HARD RULE: Each of your turns may contain AT MOST ONE question mark. Asking two or more questions in a single turn is forbidden — it confuses callers and they give disorganised answers. If you need several pieces of information, collect them across multiple turns, one at a time. Bad: 'What's your name and phone number?' Good: 'What's your name?' (wait) 'And what's a good phone number for you?' If the caller volunteers extra info without being asked, just accept it — don't ask for the next item if they already gave it.",
     "- DON'T OVER-CONFIRM: Once the caller has given you a piece of information and you've acknowledged it (with a brief 'Got it' or similar), do NOT spell it back letter-by-letter or ask them to confirm the spelling UNLESS the verification_fields for this org explicitly require it. Over-confirmation wastes the caller's time and causes them to hang up mid-booking."
   );
@@ -761,7 +767,15 @@ function buildSystemPrompt(assistant, organization, knowledgeBase, options) {
   systemPrompt += `\n- Keep booking confirmations brief: "You're all booked for Thursday at 9:30 with Dr. Chen. Anything else?"`;
   systemPrompt += `\n- Do NOT ask for name confirmation if the caller stated their name clearly. Only confirm if the name was unclear or unusual.`;
   systemPrompt += `\n- When asking for information (name, phone), ask ONE thing at a time.`;
-  systemPrompt += `\n- When a caller asks to speak to a specific person, keep the refusal SHORT: "Dr. Wilson is unavailable right now. I can take a message and have them call you back. What's your name?" — do NOT explain how the booking system works.`;
+  // SCRUM-294: the legacy buildSystemPrompt path used to instruct "keep the
+  // refusal SHORT" when callers asked for a transfer — that was the bug.
+  // The MUST-OBEY wording below mirrors what buildBehaviorsSection emits in
+  // the structured-prompt path, so this code path can't silently argue back.
+  if (transferRules && transferRules.length > 0) {
+    systemPrompt += `\n- TRANSFERS — MUST OBEY: If the caller asks to be transferred, asks to speak to a human / person / manager / somebody / an actual human / a real person / staff, says 'transfer me' / 'put me through' / 'I want to talk to someone' / 'can I speak to a human' / 'get me a person' or any equivalent intent — you MUST IMMEDIATELY say a short filler ("One moment, let me try to connect you") and call the transfer_call tool. Do NOT ask "is there something specific you need first?" Do NOT redirect them to booking. Do NOT offer alternatives BEFORE attempting the transfer. Do NOT argue. Only AFTER the transfer attempt fails may you offer to take a message or schedule a callback.`;
+  } else {
+    systemPrompt += `\n- TRANSFERS — MUST OBEY: If the caller asks to be transferred, asks to speak to a human / person / manager / somebody / an actual human / a real person / staff, says 'transfer me' / 'put me through' / 'I want to talk to someone' / 'can I speak to a human' / 'get me a person' or any equivalent intent — this business has not configured a transfer destination, so you MUST IMMEDIATELY acknowledge the request and call schedule_callback to capture their name and number. Do NOT argue. Do NOT claim you can help instead. Do NOT redirect to booking.`;
+  }
   systemPrompt += `\n\nIMPORTANT RULES:`;
   systemPrompt += `\n- CALLER ID: You already have the caller's phone number from caller ID. If the caller says "it's the number I'm calling from" or similar, accept that and use it immediately — do NOT read it back digit by digit unless they ask.`;
   systemPrompt += `\n- LANGUAGE: You are multilingual. Auto-detect the caller's language from their first turn and respond in the same language throughout the call. If they switch languages mid-call, switch with them. If uncertain, start in English and adapt.`;
