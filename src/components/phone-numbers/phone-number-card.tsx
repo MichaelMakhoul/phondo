@@ -27,8 +27,9 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Input } from "@/components/ui/input";
 import { useToast } from "@/components/ui/use-toast";
-import { Phone, MoreVertical, Bot, PhoneForwarded, AlertCircle, Loader2 } from "lucide-react";
+import { Phone, MoreVertical, Bot, PhoneForwarded, AlertCircle, Loader2, PhoneOff } from "lucide-react";
 import { formatPhoneNumber } from "@/lib/utils";
 import {
   getCountryConfig,
@@ -61,6 +62,10 @@ export function PhoneNumberCard({ phoneNumber, countryCode, assistants = [] }: P
   const [selectedAssistant, setSelectedAssistant] = useState<string>(phoneNumber.assistants?.id || "");
   const [assigning, setAssigning] = useState(false);
   const [releasing, setReleasing] = useState(false);
+  const [fallbackOpen, setFallbackOpen] = useState(false);
+  const [fallbackInput, setFallbackInput] = useState<string>(phoneNumber.fallback_forward_number || "");
+  const [fallbackError, setFallbackError] = useState<string | null>(null);
+  const [savingFallback, setSavingFallback] = useState(false);
 
   async function handleAssign() {
     if (!selectedAssistant) return;
@@ -115,6 +120,35 @@ export function PhoneNumberCard({ phoneNumber, countryCode, assistants = [] }: P
 
   const isForwarded = phoneNumber.source_type === "forwarded";
   const aiEnabled = phoneNumber.ai_enabled;
+  const fallbackNumber = phoneNumber.fallback_forward_number;
+
+  async function saveFallback(value: string | null) {
+    setSavingFallback(true);
+    setFallbackError(null);
+    try {
+      const res = await fetch(`/api/v1/phone-numbers/${phoneNumber.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fallbackForwardNumber: value }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Failed to save fallback number");
+      }
+      toast({
+        title: value ? "Fallback number saved" : "Fallback cleared",
+        description: value
+          ? `When AI is paused, calls forward to ${formatPhoneNumber(value, countryCode)}.`
+          : "When AI is paused, calls will go to voicemail.",
+      });
+      setFallbackOpen(false);
+      router.refresh();
+    } catch (err) {
+      setFallbackError(err instanceof Error ? err.message : "Failed to save");
+    } finally {
+      setSavingFallback(false);
+    }
+  }
 
   async function doToggle(newValue: boolean) {
     setToggling(true);
@@ -182,8 +216,9 @@ export function PhoneNumberCard({ phoneNumber, countryCode, assistants = [] }: P
       : "To resume AI answering, re-enable call forwarding on your phone through your carrier settings.";
   } else {
     dialogTitle = "Pause AI for this number?";
-    dialogDescription =
-      "Incoming calls will go to voicemail until you re-enable AI. Callers will be able to leave a message.";
+    dialogDescription = fallbackNumber
+      ? `Incoming calls will forward to ${formatPhoneNumber(fallbackNumber, countryCode)} until you re-enable AI.`
+      : "Incoming calls will go to voicemail until you re-enable AI. Tip: set a fallback number from the menu to forward calls to your mobile instead.";
   }
 
   const dialCodeLabel = carrierInfo && dialCode
@@ -234,6 +269,15 @@ export function PhoneNumberCard({ phoneNumber, countryCode, assistants = [] }: P
                   <DropdownMenuItem onClick={() => setAssignOpen(true)}>
                     Assign Assistant
                   </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={() => {
+                      setFallbackInput(fallbackNumber || "");
+                      setFallbackError(null);
+                      setFallbackOpen(true);
+                    }}
+                  >
+                    {fallbackNumber ? "Edit Fallback Number" : "Set Fallback Number"}
+                  </DropdownMenuItem>
                   {isForwarded && (
                     <DropdownMenuItem>View Forwarding Instructions</DropdownMenuItem>
                   )}
@@ -266,6 +310,19 @@ export function PhoneNumberCard({ phoneNumber, countryCode, assistants = [] }: P
                 Forwards from{" "}
                 <span className="font-medium text-foreground">
                   {formatPhoneNumber(phoneNumber.user_phone_number, countryCode)}
+                </span>
+              </p>
+            </div>
+          )}
+
+          {/* Fallback forwarding info */}
+          {fallbackNumber && (
+            <div className="flex items-center gap-2 rounded-lg bg-muted/50 p-2.5">
+              <PhoneOff className="h-3.5 w-3.5 text-muted-foreground" />
+              <p className="text-xs text-muted-foreground">
+                When AI is paused, forwards to{" "}
+                <span className="font-medium text-foreground">
+                  {formatPhoneNumber(fallbackNumber, countryCode)}
                 </span>
               </p>
             </div>
@@ -354,6 +411,58 @@ export function PhoneNumberCard({ phoneNumber, countryCode, assistants = [] }: P
             </Button>
             <Button variant="destructive" onClick={handleRelease} disabled={releasing}>
               {releasing ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Releasing...</> : isForwarded ? "Remove Forwarding" : "Yes, Release Number"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Fallback Forwarding Dialog */}
+      <Dialog open={fallbackOpen} onOpenChange={setFallbackOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Fallback forwarding number</DialogTitle>
+            <DialogDescription>
+              When you pause AI on this number, incoming calls will forward here instead of going to voicemail. Use your mobile so you can pick up if something breaks.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Input
+              type="tel"
+              inputMode="tel"
+              placeholder="+61412345678"
+              value={fallbackInput}
+              onChange={(e) => {
+                setFallbackInput(e.target.value);
+                setFallbackError(null);
+              }}
+              autoFocus
+              disabled={savingFallback}
+              className={fallbackError ? "border-destructive" : ""}
+            />
+            {fallbackError ? (
+              <p className="text-xs text-destructive">{fallbackError}</p>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Use E.164 format with country code (e.g., +61412345678 for Australia, +14155551234 for the US). Leave blank and click Clear to remove.
+              </p>
+            )}
+          </div>
+          <DialogFooter className="gap-2 sm:gap-0">
+            {fallbackNumber && (
+              <Button
+                variant="ghost"
+                onClick={() => saveFallback(null)}
+                disabled={savingFallback}
+                className="mr-auto"
+              >
+                Clear
+              </Button>
+            )}
+            <Button variant="outline" onClick={() => setFallbackOpen(false)} disabled={savingFallback}>
+              Cancel
+            </Button>
+            <Button onClick={() => saveFallback(fallbackInput.trim() || null)} disabled={savingFallback || (!fallbackInput.trim() && !fallbackNumber)}>
+              {savingFallback ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Saving...</> : "Save"}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -2,20 +2,13 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getVapiClient } from "@/lib/vapi";
 import { z } from "zod";
+import { updatePhoneNumberSchema, SENSITIVE_FIELDS } from "./schema";
 
 // Type for org_members query result
 interface Membership {
   organization_id: string;
   role?: string;
 }
-
-const updatePhoneNumberSchema = z.object({
-  assistantId: z.string().uuid().nullable().optional(),
-  friendlyName: z.string().optional(),
-  forwardingStatus: z.enum(["pending_setup", "active", "paused"]).optional(),
-  carrier: z.string().optional(),
-  aiEnabled: z.boolean().optional(),
-});
 
 // GET /api/v1/phone-numbers/[id] - Get a single phone number
 export async function GET(
@@ -81,7 +74,7 @@ export async function PATCH(
 
     const { data: membership } = await supabase
       .from("org_members")
-      .select("organization_id")
+      .select("organization_id, role")
       .eq("user_id", user.id)
       .single() as { data: Membership | null };
 
@@ -104,6 +97,19 @@ export async function PATCH(
     const body = await request.json();
     const validatedData = updatePhoneNumberSchema.parse(body);
 
+    // Role gate for sensitive fields. Setting a fallback or pausing AI
+    // affects call routing for the whole org — restrict to owner/admin.
+    const isAdmin = !!membership.role && ["owner", "admin"].includes(membership.role);
+    const wantsSensitiveChange = SENSITIVE_FIELDS.some(
+      (key) => (validatedData as Record<string, unknown>)[key] !== undefined
+    );
+    if (wantsSensitiveChange && !isAdmin) {
+      return NextResponse.json(
+        { error: "Only org owners and admins can change AI status or fallback forwarding" },
+        { status: 403 }
+      );
+    }
+
     // Get Vapi assistant ID if assigning to an assistant
     let vapiAssistantId: string | undefined;
     if (validatedData.assistantId) {
@@ -119,8 +125,14 @@ export async function PATCH(
       }
     }
 
-    // Sync to Vapi (non-fatal — self-hosted is primary)
-    if (currentPhoneNumber.vapi_phone_number_id) {
+    // Sync to Vapi only if assistant or friendly name actually changed.
+    // Calling Vapi with undefined assistantId/name can clobber the existing
+    // mapping depending on SDK semantics; skip the call entirely when this
+    // PATCH only touches local fields (ai_enabled, fallback_forward_number).
+    const vapiFieldsChanged =
+      validatedData.assistantId !== undefined ||
+      validatedData.friendlyName !== undefined;
+    if (vapiFieldsChanged && currentPhoneNumber.vapi_phone_number_id) {
       try {
         const vapi = getVapiClient();
         await vapi.updatePhoneNumber(currentPhoneNumber.vapi_phone_number_id, {
@@ -148,6 +160,33 @@ export async function PATCH(
     }
     if (validatedData.aiEnabled !== undefined) {
       updateData.ai_enabled = validatedData.aiEnabled;
+    }
+    if (validatedData.fallbackForwardNumber !== undefined) {
+      const fb = validatedData.fallbackForwardNumber;
+      if (fb) {
+        // Reject self-forward to the same row — would loop instantly
+        if (fb === currentPhoneNumber.phone_number) {
+          return NextResponse.json(
+            { error: "Fallback number cannot be the same as this phone number" },
+            { status: 400 }
+          );
+        }
+        // Reject forward to ANY other Phondo-managed number in this org —
+        // an A→B→A configuration creates a multi-hop loop billed per minute.
+        const { data: orgNumberMatch } = await (supabase
+          .from("phone_numbers") as any)
+          .select("id")
+          .eq("organization_id", membership.organization_id)
+          .eq("phone_number", fb)
+          .maybeSingle();
+        if (orgNumberMatch) {
+          return NextResponse.json(
+            { error: "Fallback cannot be another Phondo-managed number in your organization (would create a forwarding loop)" },
+            { status: 400 }
+          );
+        }
+      }
+      updateData.fallback_forward_number = fb;
     }
 
     const { data: phoneNumber, error } = await (supabase
