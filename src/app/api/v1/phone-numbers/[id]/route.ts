@@ -3,14 +3,12 @@ import { createClient } from "@/lib/supabase/server";
 import { getVapiClient } from "@/lib/vapi";
 import { z } from "zod";
 import { updatePhoneNumberSchema, SENSITIVE_FIELDS } from "./schema";
-
-// Type for org_members query result
-interface Membership {
-  organization_id: string;
-  role?: string;
-}
+import { getUserRoleInOrg, isOrgAdmin } from "@/lib/auth/org-membership";
 
 // GET /api/v1/phone-numbers/[id] - Get a single phone number
+// SCRUM-276: resource-first resolution — load the row (RLS scopes to user's
+// accessible orgs) instead of resolving membership first via `.single()`,
+// which broke multi-org users.
 export async function GET(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
@@ -24,16 +22,6 @@ export async function GET(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { data: membership } = await supabase
-      .from("org_members")
-      .select("organization_id")
-      .eq("user_id", user.id)
-      .single() as { data: Membership | null };
-
-    if (!membership) {
-      return NextResponse.json({ error: "No organization found" }, { status: 404 });
-    }
-
     const { data: phoneNumber, error } = await (supabase
       .from("phone_numbers") as any)
       .select(`
@@ -41,7 +29,6 @@ export async function GET(
         assistants (id, name)
       `)
       .eq("id", id)
-      .eq("organization_id", membership.organization_id)
       .single();
 
     if (error || !phoneNumber) {
@@ -59,6 +46,8 @@ export async function GET(
 }
 
 // PATCH /api/v1/phone-numbers/[id] - Update a phone number (assign to assistant)
+// SCRUM-276: resource-first resolution — load row by id (RLS scopes to user's
+// accessible orgs), then check role for THAT row's specific org.
 export async function PATCH(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
@@ -72,25 +61,24 @@ export async function PATCH(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { data: membership } = await supabase
-      .from("org_members")
-      .select("organization_id, role")
-      .eq("user_id", user.id)
-      .single() as { data: Membership | null };
-
-    if (!membership) {
-      return NextResponse.json({ error: "No organization found" }, { status: 404 });
-    }
-
-    // Get current phone number
+    // Get current phone number — RLS automatically scopes to whichever orgs
+    // this user has access to. A multi-org user finds rows from any of them.
     const { data: currentPhoneNumber } = await (supabase
       .from("phone_numbers") as any)
       .select("*")
       .eq("id", id)
-      .eq("organization_id", membership.organization_id)
       .single();
 
     if (!currentPhoneNumber) {
+      return NextResponse.json({ error: "Phone number not found" }, { status: 404 });
+    }
+
+    // Now resolve the user's role IN THIS RESOURCE'S ORG. (user_id, org_id)
+    // is unique, so .single() inside the helper is safe.
+    const roleRow = await getUserRoleInOrg(supabase, user.id, currentPhoneNumber.organization_id);
+    if (!roleRow) {
+      // Shouldn't happen — RLS would have hidden the row if the user wasn't
+      // a member — but defense-in-depth in case the policy is later widened.
       return NextResponse.json({ error: "Phone number not found" }, { status: 404 });
     }
 
@@ -99,25 +87,26 @@ export async function PATCH(
 
     // Role gate for sensitive fields. Setting a fallback or pausing AI
     // affects call routing for the whole org — restrict to owner/admin.
-    const isAdmin = !!membership.role && ["owner", "admin"].includes(membership.role);
     const wantsSensitiveChange = SENSITIVE_FIELDS.some(
       (key) => (validatedData as Record<string, unknown>)[key] !== undefined
     );
-    if (wantsSensitiveChange && !isAdmin) {
+    if (wantsSensitiveChange && !isOrgAdmin(roleRow.role)) {
       return NextResponse.json(
         { error: "Only org owners and admins can change AI status or fallback forwarding" },
         { status: 403 }
       );
     }
 
-    // Get Vapi assistant ID if assigning to an assistant
+    // Get Vapi assistant ID if assigning to an assistant. Scope to the
+    // phone number's own org so a multi-org user can't accidentally cross-link
+    // an assistant from a different org they happen to belong to.
     let vapiAssistantId: string | undefined;
     if (validatedData.assistantId) {
       const { data: assistant } = await (supabase
         .from("assistants") as any)
         .select("vapi_assistant_id")
         .eq("id", validatedData.assistantId)
-        .eq("organization_id", membership.organization_id)
+        .eq("organization_id", currentPhoneNumber.organization_id)
         .single();
 
       if (assistant?.vapi_assistant_id) {
@@ -176,7 +165,7 @@ export async function PATCH(
         const { data: orgNumberMatch } = await (supabase
           .from("phone_numbers") as any)
           .select("id")
-          .eq("organization_id", membership.organization_id)
+          .eq("organization_id", currentPhoneNumber.organization_id)
           .eq("phone_number", fb)
           .maybeSingle();
         if (orgNumberMatch) {
@@ -193,7 +182,7 @@ export async function PATCH(
       .from("phone_numbers") as any)
       .update(updateData)
       .eq("id", id)
-      .eq("organization_id", membership.organization_id)
+      .eq("organization_id", currentPhoneNumber.organization_id)
       .select(`
         *,
         assistants (id, name)
@@ -221,6 +210,7 @@ export async function PATCH(
 }
 
 // DELETE /api/v1/phone-numbers/[id] - Release a phone number
+// SCRUM-276: resource-first resolution; mirrors GET/PATCH pattern.
 export async function DELETE(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
@@ -234,30 +224,26 @@ export async function DELETE(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { data: membership } = await supabase
-      .from("org_members")
-      .select("organization_id, role")
-      .eq("user_id", user.id)
-      .single() as { data: Membership | null };
-
-    if (!membership) {
-      return NextResponse.json({ error: "No organization found" }, { status: 404 });
-    }
-
-    if (!membership.role || !["owner", "admin"].includes(membership.role)) {
-      return NextResponse.json({ error: "Insufficient permissions" }, { status: 403 });
-    }
-
-    // Get phone number
+    // Load phone number first (RLS scopes to user's accessible orgs).
     const { data: phoneNumber } = await (supabase
       .from("phone_numbers") as any)
-      .select("vapi_phone_number_id, twilio_sid, telnyx_connection_id")
+      .select("organization_id, vapi_phone_number_id, twilio_sid, telnyx_connection_id")
       .eq("id", id)
-      .eq("organization_id", membership.organization_id)
       .single();
 
     if (!phoneNumber) {
       return NextResponse.json({ error: "Phone number not found" }, { status: 404 });
+    }
+
+    // Now check role for THIS phone's org.
+    const roleRow = await getUserRoleInOrg(supabase, user.id, phoneNumber.organization_id);
+    if (!roleRow) {
+      // RLS would normally hide this row from a non-member, but
+      // defense-in-depth — treat as 404 (don't leak existence to non-members).
+      return NextResponse.json({ error: "Phone number not found" }, { status: 404 });
+    }
+    if (!isOrgAdmin(roleRow.role)) {
+      return NextResponse.json({ error: "Insufficient permissions" }, { status: 403 });
     }
 
     // Release from carrier first (paid resource — must not orphan)
@@ -297,12 +283,13 @@ export async function DELETE(
       }
     }
 
-    // Delete from database only after external resources are cleaned up
+    // Delete from database only after external resources are cleaned up.
+    // Scope by the phone's own org (defense-in-depth alongside the RLS load above).
     const { error } = await (supabase
       .from("phone_numbers") as any)
       .delete()
       .eq("id", id)
-      .eq("organization_id", membership.organization_id);
+      .eq("organization_id", phoneNumber.organization_id);
 
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 500 });
