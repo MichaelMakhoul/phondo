@@ -39,6 +39,7 @@ import {
   ArrowLeft,
   Bot,
   Clock,
+  Info,
   Mic,
   Phone,
   ShieldAlert,
@@ -728,8 +729,21 @@ export function AssistantBuilder({
                 Call Transfers
               </CardTitle>
               <CardDescription>
-                Configure when and where calls should be transferred to a human
+                Hand a live call off to a human while the AI is on the line
+                (e.g., when the caller asks to speak to someone or needs help
+                the AI can&apos;t handle).
               </CardDescription>
+              <div className="mt-3 flex items-start gap-2 rounded-md border border-blue-500/20 bg-blue-500/5 p-3 text-xs text-blue-700 dark:text-blue-300">
+                <Info className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
+                <p>
+                  <strong>Different from Fallback Forwarding.</strong> Call
+                  Transfers fires <strong>during a live AI call</strong>. If
+                  you instead want all calls to go straight to a human when AI
+                  is <em>paused</em> (emergency shutoff), set up the
+                  <strong> Fallback Forwarding</strong> number under
+                  Phone Numbers → ⋮ → Set Fallback Number.
+                </p>
+              </div>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="flex items-center justify-between">
