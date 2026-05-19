@@ -45,15 +45,19 @@ function escapeXml(s) {
 
 /**
  * Transfer an active Twilio call to another phone number.
- * Updates the call with TwiML that announces the transfer and dials the target.
+ * Updates the call with TwiML that dials the target. If `whisperText` is
+ * supplied AND PUBLIC_URL is set, the recipient hears a whisper announcement
+ * + recording disclosure BEFORE the caller is bridged in (via
+ * <Number url="..."> referencing /twiml/transfer-whisper).
  *
  * @param {string} callSid - The active Twilio CallSid
  * @param {string} transferTo - E.164 phone number to transfer to
- * @param {string} [announcement] - Message to say before connecting
- * @param {{ actionUrl?: string, timeout?: number }} [options]
+ * @param {string} [announcement] - Message the AI spoke to the CALLER before
+ *   transfer (already played via Deepgram/Gemini TTS — not used in TwiML)
+ * @param {{ actionUrl?: string, timeout?: number, whisperText?: string }} [options]
  * @returns {Promise<{ success: boolean, message: string }>}
  */
-async function transferCall(callSid, transferTo, announcement, { actionUrl, timeout = 25 } = {}) {
+async function transferCall(callSid, transferTo, announcement, { actionUrl, timeout = 25, whisperText } = {}) {
   if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN) {
     console.error("[Transfer] Missing TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN");
     Sentry.withScope((scope) => {
@@ -74,8 +78,11 @@ async function transferCall(callSid, transferTo, announcement, { actionUrl, time
     };
   }
 
-  // Announcement is already played via Deepgram TTS before this call —
-  // only Dial here to avoid a duplicate robotic Twilio voice.
+  // The AI's announcement to the CALLER is played via Gemini/Deepgram TTS
+  // before this call. The TwiML below dials the recipient — if whisperText
+  // is provided AND PUBLIC_URL is set, we route the dial through
+  // /twiml/transfer-whisper so the RECIPIENT hears an announcement +
+  // recording disclosure when they pick up, before the caller is bridged.
   const safeNumber = transferTo.replace(/[^+\d]/g, "");
 
   // Build <Dial> with optional action URL for no-answer fallback
@@ -85,10 +92,31 @@ async function transferCall(callSid, transferTo, announcement, { actionUrl, time
     dialAttrs.push(`action="${escapeXml(actionUrl)}"`);
   }
 
+  // Build <Number> with optional whisper URL.
+  // Twilio fetches the url when the recipient picks up and plays the TwiML
+  // to them ONLY (the caller doesn't hear it). After the TwiML finishes
+  // the legs are bridged. See https://www.twilio.com/docs/voice/twiml/number
+  let numberAttrs = "";
+  if (whisperText && typeof whisperText === "string" && whisperText.trim() && process.env.PUBLIC_URL) {
+    const whisperUrl = `${process.env.PUBLIC_URL.replace(/\/$/, "")}/twiml/transfer-whisper?text=${encodeURIComponent(whisperText.slice(0, 2000))}`;
+    numberAttrs = ` url="${escapeXml(whisperUrl)}"`;
+  }
+
+  const numberXml = numberAttrs
+    ? `<Number${numberAttrs}>${safeNumber}</Number>`
+    : safeNumber;
+
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Dial ${dialAttrs.join(" ")}>${safeNumber}</Dial>
+  <Dial ${dialAttrs.join(" ")}>${numberXml}</Dial>
 </Response>`;
+
+  // Drain delay: the AI says a short filler ("One moment, let me connect
+  // you") and then immediately calls this tool. Without a brief pause,
+  // posting the new TwiML replaces the live media stream while the filler
+  // is still streaming — the caller hears "let me t—". 1.5s is long enough
+  // for the typical 3-5 word filler to finish on most TTS voices.
+  await new Promise((r) => setTimeout(r, 1500));
 
   try {
     const res = await twilioPost(`Calls/${callSid}.json`, { Twiml: twiml });

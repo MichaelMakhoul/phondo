@@ -21,6 +21,7 @@ function getTransferService(context) {
   return twilioTransfer;
 }
 const { isWithinBusinessHours } = require("../lib/business-hours");
+const { requiresRecordingDisclosureHybrid, getRecordingDisclosureText } = require("../lib/recording-consent");
 const { Sentry } = require("../lib/sentry");
 
 const INTERNAL_API_URL = process.env.INTERNAL_API_URL;
@@ -735,9 +736,41 @@ async function executeTransferCall(args, context) {
     };
   }
 
+  // Build whisper text the RECIPIENT hears when they pick up — combines the
+  // configured announcement message AND (if the org requires it) a recording
+  // disclosure. AU law requires every party to know they're being recorded;
+  // before this change the recipient was bridged in cold.
+  const whisperParts = [];
+  if (matchedRule.announcementMessage && typeof matchedRule.announcementMessage === "string") {
+    whisperParts.push(matchedRule.announcementMessage.trim());
+  }
+  try {
+    const org = context.organization || {};
+    const consent = requiresRecordingDisclosureHybrid(
+      org.country,
+      org.businessState,
+      org.recording_consent_mode || "auto",
+      context.callerPhone || null
+    );
+    if (consent?.required) {
+      const disclosure = getRecordingDisclosureText(
+        org.country,
+        org.recording_disclosure_text,
+        org.name
+      );
+      if (disclosure) whisperParts.push(disclosure);
+    }
+  } catch (err) {
+    // Non-fatal — log and skip the disclosure leg of the whisper. The
+    // transfer itself still proceeds; this just means the recipient won't
+    // hear the disclosure for this one call.
+    console.warn("[Transfer] Failed to compute disclosure for whisper:", err.message);
+  }
+  const whisperText = whisperParts.filter(Boolean).join(" ") || undefined;
+
   // Pass action URL so Twilio POSTs dial outcome for no-answer fallback
   const PUBLIC_URL = process.env.PUBLIC_URL;
-  const transferOptions = {};
+  const transferOptions = { whisperText };
   if (PUBLIC_URL) {
     const transferPrefix = context.telephonyProvider === "telnyx" ? "texml" : "twiml";
     transferOptions.actionUrl = `${PUBLIC_URL}/${transferPrefix}/transfer-status`;

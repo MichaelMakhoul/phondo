@@ -539,6 +539,43 @@ app.post("/texml/recording-done", async (req, res) => {
 });
 
 /**
+ * Transfer whisper — Twilio fetches this when the transfer recipient picks
+ * up, before bridging the caller in. Returns a <Say> TwiML that the
+ * RECIPIENT hears (caller doesn't). Used to:
+ *   - Announce the transfer ("This is a transferred call from <business>…")
+ *   - Play the recording disclosure (required for AU all-party consent)
+ *
+ * Query params:
+ *   text — the message to speak. URL-encoded, max 2000 chars.
+ *
+ * The signature validator covers query params, so the URL we hand Twilio
+ * in <Number url="..."> can't be replayed with different text.
+ */
+app.post("/twiml/transfer-whisper", async (req, res) => {
+  if (!validateTwilioSignature(req)) {
+    console.warn("[TransferWhisper] Rejected request — invalid Twilio signature");
+    return res.status(403).send("Forbidden");
+  }
+
+  const rawText = (req.query.text || req.body.text || "").toString();
+  const text = rawText.slice(0, 2000).trim();
+  if (!text) {
+    return res.type("text/xml").send('<?xml version="1.0" encoding="UTF-8"?><Response/>');
+  }
+
+  const safeText = text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+
+  res.type("text/xml").send(
+    `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Say>${safeText}</Say>\n</Response>`
+  );
+});
+
+/**
  * Transfer status callback — Twilio POSTs here after <Dial> completes.
  * If the target answered, we finish the call record.
  * If no-answer/busy/failed, we reconnect the caller to the AI.
@@ -1821,7 +1858,7 @@ wss.on("connection", (twilioWs) => {
               session.behaviors?.transferToHuman !== false &&
               (session.transferRules?.length || 0) > 0;
             if (transferAvailableInbound) {
-              geminiSystemPrompt += `\n- TRANSFERS — MUST OBEY: If the caller asks to be transferred, asks to speak to a human / person / manager / somebody / an actual human / a real person / staff, says 'transfer me' / 'put me through' / 'I want to talk to someone' / 'can I speak to a human' / 'get me a person' or any equivalent intent — you MUST IMMEDIATELY say a short filler ("One moment, let me try to connect you") and call the transfer_call tool. Do NOT ask "is there something specific you need first?" Do NOT redirect them to booking. Do NOT offer alternatives BEFORE attempting the transfer. Do NOT argue. The caller's request is the entire signal — honour it. Only AFTER the transfer attempt fails (the tool returns an error or "no answer") may you offer to take a message or schedule a callback.`;
+              geminiSystemPrompt += `\n- TRANSFERS — MUST OBEY: If the caller asks to be transferred, asks to speak to a human / person / manager / somebody / an actual human / a real person / staff, says 'transfer me' / 'put me through' / 'I want to talk to someone' / 'can I speak to a human' / 'get me a person' or any equivalent intent — you MUST IMMEDIATELY say a short filler ("One moment, let me connect you") and call the transfer_call tool in the same turn. The caller already asked — asking again is disobedience. Forbidden phrasings (do NOT say any of these): 'would you like me to transfer you?', 'do you want me to connect you?', 'I can also take a message', 'I can help with that instead', 'is there something specific you need first?', 'first let me check...', 'could you just tell me briefly what you need to discuss with them'. Do NOT ask the caller what they want to discuss. Do NOT offer the message/callback option BEFORE the transfer attempt. Only AFTER the tool returns an error or 'no answer' may you offer a callback or message. If the tool's RESPONSE message tells you to confirm with the caller first, do that — otherwise NEVER ask permission, just transfer.`;
             } else {
               geminiSystemPrompt += `\n- TRANSFERS — MUST OBEY: If the caller asks to be transferred, asks to speak to a human / person / manager / somebody / an actual human / a real person / staff, says 'transfer me' / 'put me through' / 'I want to talk to someone' / 'can I speak to a human' / 'get me a person' or any equivalent intent — this business has not configured a transfer destination, so you MUST IMMEDIATELY acknowledge the request and call schedule_callback to capture their name and number. Do NOT argue. Do NOT claim you can help instead. Do NOT redirect to booking. The caller asked for a human — your only job is to capture their details and reassure them someone will call back.`;
             }
