@@ -31,7 +31,7 @@
 import * as Sentry from "@sentry/nextjs";
 import { SENTRY_REASONS } from "./error-ids";
 import type { Database } from "@/lib/supabase/database.types";
-import type { SupabaseClient } from "@supabase/supabase-js";
+import type { ServiceRoleSupabaseClient } from "@/lib/supabase/admin";
 
 interface RateLimitEntry {
   count: number;
@@ -50,39 +50,27 @@ interface RateLimitConfig {
  * `p_windowMs` at the call site (which would otherwise slip into the
  * always-fail-back path and only show up in Sentry).
  *
- * Note: the generated `SupabaseClient<Database>` type accepts a wider
- * set of overloads, so it's structurally assignable to this shape.
+ * Exported (SCRUM-298) so test stubs and other rate-limiter
+ * extensions can model the contract without re-deriving it.
  */
-type CheckRateLimitBucketArgs =
+export type CheckRateLimitBucketArgs =
   Database["public"]["Functions"]["check_rate_limit_bucket"]["Args"];
-type CheckRateLimitBucketReturns =
+export type CheckRateLimitBucketReturns =
   Database["public"]["Functions"]["check_rate_limit_bucket"]["Returns"];
 
 /**
  * The Supabase surface `rateLimitDistributed` needs.
  *
- * Accepts either the full generated `SupabaseClient<Database>` (which
- * carries every overload) or a narrower stub object we use in tests.
- * The `args` arg is typed to `CheckRateLimitBucketArgs` so a typo on
- * the RPC name or arg shape trips the typechecker.
- *
- * SCRUM-291: this was previously `{ rpc: (fn: string, args: any) => any }`
- * to work around the pre-00135 SSR-type-inference gap. Now that
- * `database.types.ts` knows about `check_rate_limit_bucket`, callers
- * can pass `createAdminClient()` directly without the
- * `as unknown as Parameters<typeof rateLimitDistributed>[0]` double-cast.
+ * SCRUM-298: tightened from a `SupabaseClient<Database> | stub` union
+ * down to just `ServiceRoleSupabaseClient` (the branded type returned
+ * by `createAdminClient()`). The stub-arm never earned its keep — test
+ * stubs cast through `unknown` anyway because they model error paths
+ * the strict type cannot express. The brand makes the service-role
+ * requirement (from migration 00136 which REVOKE'd the RPC from
+ * `authenticated`) a compile-time error rather than a docstring +
+ * code-review convention.
  */
-export type RateLimitSupabaseClient =
-  | SupabaseClient<Database>
-  | {
-      rpc: (
-        fn: "check_rate_limit_bucket",
-        args: CheckRateLimitBucketArgs,
-      ) => Promise<{
-        data: CheckRateLimitBucketReturns | null;
-        error: unknown;
-      }>;
-    };
+export type RateLimitSupabaseClient = ServiceRoleSupabaseClient;
 
 // In-memory store (use Redis for distributed systems)
 const store = new Map<string, RateLimitEntry>();
@@ -347,9 +335,9 @@ export function withRateLimit(
  */
 type RateLimitBucketRow = CheckRateLimitBucketReturns[number];
 
-/** RPC name lives in one place so the call site and the union type
- *  stay in lockstep — a rename in one spot is a typecheck error in
- *  the other. */
+/** RPC name lives in one place so the call site and the generated
+ *  `Database["public"]["Functions"]` overload stay in lockstep — a
+ *  rename in one spot is a typecheck error in the other. */
 const CHECK_BUCKET_RPC = "check_rate_limit_bucket" as const;
 
 /**
@@ -440,20 +428,23 @@ export async function rateLimitDistributed(
 ): Promise<RateLimitResult> {
   const config = rateLimitConfigs[type];
   const key = getRateLimitKey(identifier, endpoint);
-  // `costControl` is only present on profiles that opt in (typed as
-  // optional in `RateLimitConfigEntry`). Cast defensively here so future
-  // profiles added without the flag keep their fail-open default.
-  const failClosed =
-    (config as { costControl?: boolean }).costControl === true;
+  // SCRUM-298: `costControl` is only present on profiles that opt in.
+  // Use `in` to narrow rather than cast — TypeScript discriminates
+  // the as-const literal-typed configs cleanly, so a future profile
+  // that forgets the flag still defaults to fail-open here without
+  // needing a cast.
+  const failClosed = "costControl" in config && config.costControl === true;
 
   let row: RateLimitBucketRow | null = null;
   let rpcError: unknown = null;
   try {
-    // No more `as { data: unknown; error: unknown }` widener — both
-    // arms of the `RateLimitSupabaseClient` union already return a
-    // narrowed `{ data: CheckRateLimitBucketReturns | null; error: unknown }`
-    // for this RPC name+args combination (the generated Database type
-    // for the real client; the stub-arm signature for tests).
+    // No `as { data: unknown; error: unknown }` widener needed — the
+    // branded `SupabaseClient<Database>` carries the narrowed
+    // `check_rate_limit_bucket` overload directly, so destructuring
+    // `{ data, error }` returns `CheckRateLimitBucketReturns | null`
+    // plus `error: unknown` for free. SCRUM-298 collapsed the prior
+    // `RateLimitSupabaseClient` union (which required this widener
+    // to bridge the two arms) down to just the branded type.
     const { data, error } = await supabase.rpc(CHECK_BUCKET_RPC, {
       p_key: key,
       p_window_ms: config.windowMs,
