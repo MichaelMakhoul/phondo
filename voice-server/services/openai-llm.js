@@ -1,3 +1,4 @@
+// @ts-nocheck -- SCRUM-317: pre-existing checkJs baseline (burn down incrementally; do NOT add new untyped code here)
 // LLM provider configuration — supports OpenAI, Anthropic, and Gemini
 // Set LLM_PROVIDER env var to switch: "anthropic" (default), "openai", "gemini"
 const LLM_PROVIDER = process.env.LLM_PROVIDER || "openai";

@@ -65,6 +65,13 @@ jobs:
         run: npm ci
         working-directory: voice-server
 
+      # SCRUM-313: checkJs enforces the JSDoc @param {SentryReason} types
+      # (and any other typed JSDoc) at build time. Pre-existing errors are
+      # @ts-nocheck'd with a baseline tracked in SCRUM-317.
+      - name: Type check (checkJs)
+        run: npm run typecheck
+        working-directory: voice-server
+
       - name: Run voice-server tests
         run: npm test
         working-directory: voice-server

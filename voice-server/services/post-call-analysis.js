@@ -1,3 +1,4 @@
+// @ts-nocheck -- SCRUM-317: pre-existing checkJs baseline (burn down incrementally; do NOT add new untyped code here)
 /**
  * Post-call structured data extraction using OpenAI with JSON mode.
  * Analyzes the conversation transcript after a call ends in TWO parallel calls:

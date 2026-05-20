@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test": "find tests -name '*.test.js' -print0 | xargs -0 node --test"
+    "test": "find tests -name '*.test.js' -print0 | xargs -0 node --test",
+    "typecheck": "tsc -p jsconfig.json"
   },
   "dependencies": {
     "@sentry/node": "^10.40.0",
@@ -15,5 +16,9 @@
     "express": "^4.21.2",
     "twilio": "^5.13.1",
     "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.41",
+    "typescript": "^5.9.3"
   }
 }

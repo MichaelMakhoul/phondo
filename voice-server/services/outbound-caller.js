@@ -1,3 +1,4 @@
+// @ts-nocheck -- SCRUM-317: pre-existing checkJs baseline (burn down incrementally; do NOT add new untyped code here)
 /**
  * Outbound calling service — orchestrates Twilio outbound calls
  * with Gemini Live AI playing a caller persona.

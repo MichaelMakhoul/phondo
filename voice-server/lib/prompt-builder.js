@@ -1,3 +1,4 @@
+// @ts-nocheck -- SCRUM-317: pre-existing checkJs baseline (burn down incrementally; do NOT add new untyped code here)
 /**
  * Plain JS port of src/lib/prompt-builder/generate-prompt.ts
  * and legacy prompt handling from src/lib/knowledge-base/aggregate.ts.
