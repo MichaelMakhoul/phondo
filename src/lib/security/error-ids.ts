@@ -74,7 +74,20 @@ export const SENTRY_REASONS = {
   SCRAPE_PREVIEW_FAILED: "scrape-preview-failed",
   /** scrape-preview's "should never happen" LLM extract branch — the
    *  helper claims its catch is internal, but if it ever bubbles out
-   *  we want to see it loudly. Uses level=error. */
+   *  we want to see it loudly. Uses level=error.
+   *
+   *  CONTRACT: `extractBusinessInfoWithLLM` (src/lib/scraper/website-
+   *  scraper.ts) returns `{}` on every POST-validation error path (its
+   *  pre-`try` arg guard is the only window that could throw, and the
+   *  route always passes a well-formed pages array), so this fires 0× in
+   *  production. If this alert EVER fires, the catch-internally contract
+   *  has broken — RUNBOOK: check website-scraper.ts's
+   *  `extractBusinessInfoWithLLM` for a regression in the inner catch
+   *  handler (e.g. an OpenAI SDK upgrade or a refactor that lets an
+   *  error escape the function). The scrape itself is unaffected (the
+   *  LLM step is non-fatal); the alert is a code-health signal, not a
+   *  customer-facing incident. Covered by scrape-preview/__tests__/
+   *  route.test.ts (SCRUM-307). */
   SCRAPE_PREVIEW_LLM_EXTRACT_BUG: "scrape-preview-llm-extract-bug",
   KB_SCRAPE_FAILED: "kb-scrape-failed",
   /** resyncOrgAssistants failure after a successful knowledge-base
