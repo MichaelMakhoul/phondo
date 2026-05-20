@@ -452,7 +452,7 @@ function resolveAvailabilityFromCache(args, snapshot) {
  *
  * @param {string} functionName
  * @param {object} args - parsed arguments from the LLM
- * @param {{ organizationId: string, assistantId: string, callSid?: string, callId?: string, transferRules?: object[], testMode?: boolean, organization?: { timezone?: string, businessHours?: object }, callerPhone?: string, orgPhoneNumber?: string, scheduleSnapshot?: object, telephonyProvider?: string }} context
+ * @param {{ organizationId: string, assistantId: string, callSid?: string, callId?: string, transferRules?: object[], testMode?: boolean, organization?: { timezone?: string, businessHours?: object }, callerPhone?: string, orgPhoneNumber?: string, userPhoneNumber?: string, forwardingStatus?: string, sourceType?: string, scheduleSnapshot?: object, telephonyProvider?: string }} context
  * @returns {Promise<{ message: string, action?: string, transferTo?: string, transferAttempt?: object, __endCall?: boolean } & Record<string, any>>}
  */
 async function executeToolCall(functionName, args, context) {
