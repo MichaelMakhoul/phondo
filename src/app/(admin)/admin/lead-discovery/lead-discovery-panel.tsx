@@ -105,6 +105,8 @@ export function LeadDiscoveryPanel() {
   const [scanning, setScanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [cached, setCached] = useState(false);
+  // SCRUM-318: true when Google Places quota/outage-truncated the results.
+  const [partial, setPartial] = useState(false);
 
   // Filter state
   const [crmFilter, setCrmFilter] = useState<CrmFilter | string>("all");
@@ -119,6 +121,7 @@ export function LeadDiscoveryPanel() {
     setSearching(true);
     setError(null);
     setBusinesses([]);
+    setPartial(false);
 
     try {
       const res = await fetch("/api/admin/lead-discovery/search", {
@@ -140,6 +143,7 @@ export function LeadDiscoveryPanel() {
       const data = await res.json();
       setBusinesses(data.businesses ?? []);
       setCached(data.cached ?? false);
+      setPartial(data.partial ?? false);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Network error");
     } finally {
@@ -386,6 +390,18 @@ export function LeadDiscoveryPanel() {
             {cached && (
               <Badge variant="secondary" className="text-xs">
                 Cached results
+              </Badge>
+            )}
+
+            {/* SCRUM-318: partial results aren't cached, so this is mutually
+                exclusive with the "Cached results" badge above. */}
+            {partial && (
+              <Badge
+                variant="outline"
+                className="gap-1 text-xs text-amber-600 border-amber-300"
+              >
+                <AlertCircle className="h-3 w-3" />
+                Partial results — quota limit hit, some categories may be incomplete
               </Badge>
             )}
 
