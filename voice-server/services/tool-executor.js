@@ -22,6 +22,7 @@ function getTransferService(context) {
 }
 const { isWithinBusinessHours } = require("../lib/business-hours");
 const { Sentry } = require("../lib/sentry");
+const { SENTRY_REASONS, setReasonTag } = require("../lib/sentry-reasons");
 
 const INTERNAL_API_URL = process.env.INTERNAL_API_URL;
 const INTERNAL_API_SECRET = process.env.INTERNAL_API_SECRET;
@@ -594,7 +595,7 @@ async function executeTransferCall(args, context) {
       console.error(`[Transfer] user_phone_number equals Phondo number — refusing fallback to avoid loop. callSid=${context.callSid}`);
       Sentry.withScope((scope) => {
         scope.setTag("service", "transfer_call");
-        scope.setTag("reason", "user_phone_equals_phondo");
+        setReasonTag(scope, SENTRY_REASONS.USER_PHONE_EQUALS_PHONDO);
         scope.setExtras({ callSid: context.callSid, organizationId: context.organizationId });
         Sentry.captureMessage("Transfer fallback refused — user_phone_number equals Phondo number", "warning");
       });

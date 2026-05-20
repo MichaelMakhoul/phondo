@@ -5,6 +5,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { getTwilioClient } from "@/lib/twilio/client";
 import { rateLimitDistributed } from "@/lib/security/rate-limiter";
 import { SENTRY_REASONS } from "@/lib/security/error-ids";
+import { setReasonTag } from "@/lib/observability/sentry-tags";
 import { getUserRoleInOrg, isOrgAdmin } from "@/lib/auth/org-membership";
 import {
   expectedE164PrefixForCountry,
@@ -209,7 +210,9 @@ export async function POST(
           scope.setTag("service", "next-api");
           scope.setTag("route", "phone-numbers/test-fallback");
           // SCRUM-300: migrated from inline literal to SENTRY_REASONS.
-          scope.setTag("reason", SENTRY_REASONS.TWILIO_CREATE_CALL_FAILED);
+          // SCRUM-297: migrated to setReasonTag helper for consistency
+          // with the rest of the codebase.
+          setReasonTag(scope, SENTRY_REASONS.TWILIO_CREATE_CALL_FAILED);
           scope.setLevel("warning");
           scope.setExtras({
             orgId: row.organization_id,

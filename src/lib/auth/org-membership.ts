@@ -33,6 +33,8 @@
  */
 
 import * as Sentry from "@sentry/nextjs";
+import { SENTRY_REASONS } from "@/lib/security/error-ids";
+import { setReasonTag } from "@/lib/observability/sentry-tags";
 
 export interface OrgRole {
   role: string | null;
@@ -92,7 +94,7 @@ export async function getUserRoleInOrg(
     try {
       Sentry.withScope((scope) => {
         scope.setTag("service", "next-api");
-        scope.setTag("reason", "org-role-lookup-failed");
+        setReasonTag(scope, SENTRY_REASONS.ORG_ROLE_LOOKUP_FAILED);
         scope.setLevel("warning");
         scope.setExtras({ userId, organizationId, code: error.code });
         Sentry.captureException(error);

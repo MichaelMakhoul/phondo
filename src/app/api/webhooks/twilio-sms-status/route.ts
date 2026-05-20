@@ -2,6 +2,8 @@ import Twilio from "twilio";
 import * as Sentry from "@sentry/nextjs";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { withRateLimit, getClientIp } from "@/lib/security/rate-limiter";
+import { SENTRY_REASONS } from "@/lib/security/error-ids";
+import { setReasonTag } from "@/lib/observability/sentry-tags";
 
 /**
  * POST /api/webhooks/twilio-sms-status
@@ -81,7 +83,7 @@ export async function POST(request: Request) {
       if (Math.random() < INVALID_SIG_SENTRY_SAMPLE_RATE) {
         Sentry.withScope((scope) => {
           scope.setTag("service", "twilio-sms-status");
-          scope.setTag("reason", "invalid_signature");
+          setReasonTag(scope, SENTRY_REASONS.INVALID_SIGNATURE);
           scope.setExtras({
             ip: getClientIp(headers),
             userAgent: headers.get("user-agent") || "unknown",
@@ -165,7 +167,7 @@ export async function POST(request: Request) {
       );
       Sentry.withScope((scope) => {
         scope.setTag("service", "twilio-sms-status");
-        scope.setTag("reason", "terminal_state_collision");
+        setReasonTag(scope, SENTRY_REASONS.TERMINAL_STATE_COLLISION);
         scope.setExtras({
           messageSid,
           confirmationId: confirmation.id,

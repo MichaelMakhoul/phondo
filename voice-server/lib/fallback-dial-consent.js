@@ -27,6 +27,7 @@
 
 const { requiresRecordingDisclosureHybrid, getRecordingDisclosureText } = require("./recording-consent");
 const { Sentry } = require("./sentry");
+const { SENTRY_REASONS, setReasonTag } = require("./sentry-reasons");
 const { getPollyVoice } = require("./polly-voice");
 
 function safeCapture(fn) {
@@ -60,7 +61,7 @@ function buildFallbackDisclosureSay({ phoneRecord, callerPhone, escapeXml, callS
       safeCapture(() => {
         Sentry.withScope((scope) => {
           scope.setTag("service", "voice-server");
-          scope.setTag("reason", "disclosure-org-missing");
+          setReasonTag(scope, SENTRY_REASONS.DISCLOSURE_ORG_MISSING);
           scope.setLevel("warning");
           scope.setExtras({ callSid });
           Sentry.captureMessage(
@@ -93,7 +94,7 @@ function buildFallbackDisclosureSay({ phoneRecord, callerPhone, escapeXml, callS
     safeCapture(() => {
       Sentry.withScope((scope) => {
         scope.setTag("service", "voice-server");
-        scope.setTag("reason", "disclosure-build-failed");
+        setReasonTag(scope, SENTRY_REASONS.DISCLOSURE_BUILD_FAILED);
         scope.setLevel("warning");
         scope.setExtras({ callSid });
         Sentry.captureException(err);

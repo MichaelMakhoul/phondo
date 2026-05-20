@@ -585,17 +585,57 @@ describe("server.js Sentry sites — contract tests (SCRUM-273)", () => {
     // so we now grep BOTH server.js and the extracted module. The
     // `ring-first-degraded` reason still lives in server.js (the
     // ring-first branch is out of scope for the Wave 1 extraction).
+    //
+    // SCRUM-297: production now uses `setReasonTag(scope, SENTRY_REASONS.X)`
+    // instead of inline `scope.setTag("reason", "literal")`. The scanner
+    // below recognises BOTH patterns and resolves constant names to
+    // their wire values via the live `sentry-reasons` module, so the
+    // assertion below still compares wire values (the spec the Grafana
+    // alert rules match on).
     const serverSource = fs.readFileSync(SERVER_JS_PATH, "utf8");
     const KILL_SWITCH_PATH = path.join(__dirname, "..", "lib", "route-handlers", "kill-switch.js");
     const killSwitchSource = fs.readFileSync(KILL_SWITCH_PATH, "utf8");
     const productionSources = [serverSource, killSwitchSource];
+    const { SENTRY_REASONS } = require("../lib/sentry-reasons");
 
-    /** Distinct `reason` literals found across all production sources. */
+    /**
+     * Resolve a `setReasonTag(scope, SENTRY_REASONS.X)` site to its
+     * wire-format value. Returns null when the constant name doesn't
+     * exist in `SENTRY_REASONS` — surfaces the typo loudly when the
+     * dedup-by-value pass would otherwise hide it as undefined.
+     */
+    const resolveConstant = (name) =>
+      Object.prototype.hasOwnProperty.call(SENTRY_REASONS, name)
+        ? SENTRY_REASONS[name]
+        : null;
+
+    /** Count BOTH inline literal AND setReasonTag() patterns. The
+     *  scope-identifier match is `\w+` (not literal "scope") so that
+     *  a future site using `Sentry.withScope((s) => setReasonTag(s, ...))`
+     *  is still counted — SCRUM-297 review surfaced the original
+     *  hardcoded `scope,` as a future-fragility hazard. */
+    const countReasonSites = (src) => {
+      const inline = (src.match(/\w+\.setTag\("reason",/g) || []).length;
+      const helper = (src.match(/setReasonTag\(\s*\w+\s*,/g) || []).length;
+      return inline + helper;
+    };
+
+    /** Distinct `reason` wire values found across all production sources. */
     const productionReasons = (() => {
       const found = new Set();
+      const inlineRe = /\w+\.setTag\("reason",\s*"([^"]+)"\)/g;
+      const helperRe = /setReasonTag\(\s*\w+\s*,\s*SENTRY_REASONS\.([A-Z0-9_]+)\s*\)/g;
       for (const src of productionSources) {
-        for (const match of src.matchAll(/scope\.setTag\("reason",\s*"([^"]+)"\)/g)) {
+        for (const match of src.matchAll(inlineRe)) {
           found.add(match[1]);
+        }
+        for (const match of src.matchAll(helperRe)) {
+          const value = resolveConstant(match[1]);
+          assert.ok(
+            value,
+            `setReasonTag(scope, SENTRY_REASONS.${match[1]}) references a constant that doesn't exist in sentry-reasons.js`,
+          );
+          found.add(value);
         }
       }
       return [...found].sort();
@@ -617,20 +657,20 @@ describe("server.js Sentry sites — contract tests (SCRUM-273)", () => {
       // the `stage` extra). ring-first-degraded has 2 sites in
       // server.js (twilio + telnyx mirrors, not yet extracted). Total
       // 5 in kill-switch.js + 2 in server.js = 7.
-      const serverCalls = serverSource.match(/scope\.setTag\("reason",/g) || [];
-      const killSwitchCalls = killSwitchSource.match(/scope\.setTag\("reason",/g) || [];
+      const serverCount = countReasonSites(serverSource);
+      const killSwitchCount = countReasonSites(killSwitchSource);
       assert.equal(
-        serverCalls.length,
+        serverCount,
         2,
-        `expected 2 reason-tagged sites in server.js (ring-first-degraded twilio + telnyx), found ${serverCalls.length}`,
+        `expected 2 reason-tagged sites in server.js (ring-first-degraded twilio + telnyx), found ${serverCount}`,
       );
       assert.equal(
-        killSwitchCalls.length,
+        killSwitchCount,
         5,
-        `expected 5 reason-tagged sites in kill-switch.js, found ${killSwitchCalls.length}`,
+        `expected 5 reason-tagged sites in kill-switch.js, found ${killSwitchCount}`,
       );
       assert.equal(
-        serverCalls.length + killSwitchCalls.length,
+        serverCount + killSwitchCount,
         7,
         `expected 7 reason-tagged Sentry sites total — update this test deliberately when sites are added/removed`,
       );

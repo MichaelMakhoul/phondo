@@ -1,6 +1,7 @@
 require("dotenv").config();
 
 const { initSentry, Sentry } = require("./lib/sentry");
+const { SENTRY_REASONS, setReasonTag } = require("./lib/sentry-reasons");
 initSentry();
 
 const crypto = require("crypto");
@@ -336,7 +337,7 @@ app.post("/twiml", async (req, res) => {
     try {
       Sentry.withScope((scope) => {
         scope.setTag("service", "voice-server");
-        scope.setTag("reason", "ring-first-degraded");
+        setReasonTag(scope, SENTRY_REASONS.RING_FIRST_DEGRADED);
         scope.setLevel("warning");
         scope.setExtras({
           calledMasked: maskPhone(called),
@@ -461,7 +462,7 @@ app.post("/texml", async (req, res) => {
     try {
       Sentry.withScope((scope) => {
         scope.setTag("service", "voice-server");
-        scope.setTag("reason", "ring-first-degraded");
+        setReasonTag(scope, SENTRY_REASONS.RING_FIRST_DEGRADED);
         scope.setLevel("warning");
         scope.setExtras({
           calledMasked: maskPhone(called),

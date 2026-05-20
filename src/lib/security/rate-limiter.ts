@@ -30,6 +30,7 @@
 
 import * as Sentry from "@sentry/nextjs";
 import { SENTRY_REASONS } from "./error-ids";
+import { setReasonTag } from "@/lib/observability/sentry-tags";
 import type { Database } from "@/lib/supabase/database.types";
 import type { ServiceRoleSupabaseClient } from "@/lib/supabase/admin";
 
@@ -500,7 +501,7 @@ export async function rateLimitDistributed(
   try {
     Sentry.withScope((scope) => {
       scope.setTag("service", "next-api");
-      scope.setTag("reason", SENTRY_REASONS.RATE_LIMIT_DISTRIBUTED_FAILED);
+      setReasonTag(scope, SENTRY_REASONS.RATE_LIMIT_DISTRIBUTED_FAILED);
       scope.setTag("failMode", failClosed ? "closed" : "local-fallback");
       scope.setLevel("warning");
       // Pass the raw object as an extra so the full PG error (code, hint,
