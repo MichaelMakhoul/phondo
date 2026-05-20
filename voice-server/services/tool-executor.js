@@ -1,4 +1,3 @@
-// @ts-nocheck -- SCRUM-317: pre-existing checkJs baseline (burn down incrementally; do NOT add new untyped code here)
 /**
  * Routes tool calls to appropriate handlers.
  *
@@ -351,8 +350,12 @@ function resolveCurrentDatetime(timezone) {
  * Returns a formatted response if the requested date is in the cache,
  * or null on cache miss so the caller falls through to the API.
  *
- * @param {{ date: string, service_type_id?: string }} args
- * @param {{ slots: Record<string, Array<{ start: string, end: string }>>, timezone: string, generatedAt: string }} snapshot
+ * @param {{ date: string, service_type_id?: string, practitioner_id?: string }} args
+ * @param {{ slots: Record<string, Array<string | { start: string, end: string }> | Record<string, Array<string | { start: string, end: string }>>>, timezone: string, generatedAt: string, serviceTypes?: Array<{ id: string, duration_minutes?: number }>, defaultDuration?: number }} snapshot
+ *   `slots[date]` is EITHER a flat slot array (aggregated) OR a per-
+ *   practitioner record keyed by practitioner id (with an `_any`
+ *   bucket) — SCRUM-237. The code branches on `Array.isArray`. Each
+ *   slot is EITHER a plain ISO string OR a `{ start, end }` object.
  * @returns {{ message: string } | null}
  */
 function resolveAvailabilityFromCache(args, snapshot) {
@@ -397,7 +400,12 @@ function resolveAvailabilityFromCache(args, snapshot) {
       const [nowH, nowM] = nowParts.split(":").map(Number);
       const nowMinutes = nowH * 60 + nowM;
       daySlots = daySlots.filter(slot => {
-        const s = typeof slot === "string" ? slot : slot;
+        // SCRUM-317: was `typeof slot === "string" ? slot : slot` — a
+        // no-op that passed the {start,end} OBJECT to .split() (latent
+        // bug; checkJs surfaced it, and object slots DO reach here via
+        // per-practitioner `_any` buckets — SCRUM-237). Extract `.start`
+        // for object slots; `|| ""` guards a malformed missing start.
+        const s = (typeof slot === "string" ? slot : slot.start) || "";
         const [, timeStr] = s.split("T");
         if (!timeStr) return true;
         const [h, m] = timeStr.split(":").map(Number);
@@ -415,7 +423,11 @@ function resolveAvailabilityFromCache(args, snapshot) {
   // Format each slot start time as "h:mm AM/PM"
   // Slots can be plain ISO strings or {start, end} objects
   const times = daySlots.map((slot) => {
-    const s = typeof slot === "string" ? slot : (slot.start || slot);
+    // SCRUM-317: drop the `|| slot` fallback — it made `s` possibly the
+    // object (then .split would throw). An object slot always has a
+    // string `.start`; `|| ""` guards a malformed missing start so the
+    // `if (!timeStr) return null` below filters it out cleanly.
+    const s = (typeof slot === "string" ? slot : slot.start) || "";
     const [, timeStr] = s.split("T");
     if (!timeStr) return null;
     const [h, m] = timeStr.split(":").map(Number);
@@ -440,8 +452,8 @@ function resolveAvailabilityFromCache(args, snapshot) {
  *
  * @param {string} functionName
  * @param {object} args - parsed arguments from the LLM
- * @param {{ organizationId: string, assistantId: string, callSid?: string, callId?: string, transferRules?: object[], testMode?: boolean, organization?: { timezone?: string, businessHours?: object }, callerPhone?: string, orgPhoneNumber?: string, scheduleSnapshot?: object }} context
- * @returns {Promise<{ message: string, action?: string, transferTo?: string, transferAttempt?: object }>}
+ * @param {{ organizationId: string, assistantId: string, callSid?: string, callId?: string, transferRules?: object[], testMode?: boolean, organization?: { timezone?: string, businessHours?: object }, callerPhone?: string, orgPhoneNumber?: string, scheduleSnapshot?: object, telephonyProvider?: string }} context
+ * @returns {Promise<{ message: string, action?: string, transferTo?: string, transferAttempt?: object, __endCall?: boolean } & Record<string, any>>}
  */
 async function executeToolCall(functionName, args, context) {
   // ── End call (handled by caller of executeToolCall — e.g. gemini-live.js)──
@@ -543,7 +555,7 @@ async function executeCalendarCall(functionName, args, context) {
       };
     }
 
-    const data = await res.json();
+    const data = /** @type {{ message?: string }} */ (await res.json());
     return { message: data.message || "The operation completed but returned no message." };
   } catch (err) {
     console.error(`[ToolExecutor] Failed to execute ${functionName}:`, err.message);
@@ -795,6 +807,16 @@ async function executeTransferCall(args, context) {
     transferOptions
   );
 
+  // SCRUM-317: twilio's transferCall returns { success, message } but
+  // telnyx returns { success, outcome? } (no message) — divergent
+  // contracts. Normalise to a caller-facing string so a telnyx transfer
+  // doesn't surface `message: undefined` (latent gap pre-checkJs).
+  const resultMessage = "message" in result && result.message
+    ? result.message
+    : result.success
+      ? "Connecting you now."
+      : "I wasn't able to complete the transfer.";
+
   transferAttempt.outcome = result.success ? "initiated" : "failed";
 
   // Send SMS context to transfer target (fire-and-forget)
@@ -810,7 +832,7 @@ async function executeTransferCall(args, context) {
   }
 
   return {
-    message: result.message,
+    message: resultMessage,
     action: result.success ? "transfer" : "callback",
     transferTo: matchedRule.transferToPhone,
     transferTargetName: targetName,
