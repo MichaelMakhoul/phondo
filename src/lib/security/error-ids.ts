@@ -96,6 +96,15 @@ export const SENTRY_REASONS = {
   KB_SCRAPE_RESYNC_FAILED: "kb-scrape-resync-failed",
   LEAD_DISCOVERY_SCAN_FAILED: "lead-discovery-scan-failed",
   LEAD_DISCOVERY_SEARCH_FAILED: "lead-discovery-search-failed",
+  /** searchMultipleProfessions returned PARTIAL results — a profession (or
+   *  a later page within one) quota/outage-failed AFTER earlier results
+   *  were already collected. The search still 200s with what it found, but
+   *  the result is NOT durably cached (SCRUM-318) so the next identical
+   *  search retries the missing slice instead of serving a truncated set
+   *  for the 7-day cache TTL. Distinct from LEAD_DISCOVERY_SEARCH_FAILED
+   *  (the whole search threw → 500) so a Grafana rule can alert on silent
+   *  truncation at warning level. SCRUM-318. */
+  LEAD_DISCOVERY_SEARCH_PARTIAL: "lead-discovery-search-partial",
   LEAD_DISCOVERY_EXPORT_FAILED: "lead-discovery-export-failed",
   /** scanBusinessCRMs completed but N per-business CRM updates failed —
    *  the scan still returns 200 with the rows that DID update. Distinct

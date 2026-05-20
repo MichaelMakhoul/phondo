@@ -15,6 +15,7 @@ import {
 import {
   searchMultipleProfessions,
   type DiscoveredPlace,
+  type PlacesSearchResult,
 } from "./google-places";
 import { scanWebsiteForCRM } from "./crm-detector";
 import { PlacesApiError, LeadDiscoveryDbError } from "./errors";
@@ -48,7 +49,7 @@ function computeCacheKey(params: SearchParams): string {
 export async function executeSearch(
   params: SearchParams,
   adminClient?: ServiceRoleSupabaseClient,
-): Promise<{ businesses: DiscoveredBusiness[]; cached: boolean }> {
+): Promise<{ businesses: DiscoveredBusiness[]; cached: boolean; partial: boolean }> {
   // SCRUM-301: callers can thread their pre-constructed admin client
   // through to avoid spinning up another SupabaseClient + GoTrueClient
   // + RealtimeClient. Falls back to creating a fresh one to keep
@@ -70,7 +71,7 @@ export async function executeSearch(
       (p) => p.placeId
     );
     if (placeIds.length === 0) {
-      return { businesses: [], cached: true };
+      return { businesses: [], cached: true, partial: false };
     }
     // SCRUM-309: capture the read error. A cache HIT means this query
     // had results before — silently returning [] on a DB error would
@@ -86,7 +87,9 @@ export async function executeSearch(
         { cause: cacheHitReadError },
       );
     }
-    return { businesses: businesses ?? [], cached: true };
+    // A cache HIT is a COMPLETE prior result by construction — SCRUM-318
+    // never writes a cache entry for a partial search — so partial is false.
+    return { businesses: businesses ?? [], cached: true, partial: false };
   }
 
   // 2. Cache miss — search Google Places
@@ -96,9 +99,9 @@ export async function executeSearch(
   // outage (5xx), and key/project (403) failures all reach here typed,
   // so we pass them through unchanged. A raw network/parse throw gets
   // wrapped so it still classifies as google-places.
-  let places;
+  let searchResult: PlacesSearchResult;
   try {
-    places = await searchMultipleProfessions(
+    searchResult = await searchMultipleProfessions(
       params.location,
       params.professions,
       params.limit
@@ -111,8 +114,14 @@ export async function executeSearch(
     );
   }
 
+  // SCRUM-318: `partial` is true when a profession (or a later page within
+  // one) quota/outage-failed AFTER earlier results were collected. We still
+  // persist the businesses we DID find, but must NOT durably cache a
+  // truncated set (see the cache step below).
+  const { places, partial } = searchResult;
+
   if (places.length === 0) {
-    return { businesses: [], cached: false };
+    return { businesses: [], cached: false, partial: false };
   }
 
   // 3. Upsert into discovered_businesses
@@ -137,22 +146,45 @@ export async function executeSearch(
     console.error("[Lead Discovery] Business upsert error:", upsertError);
   }
 
-  // 4. Save cache entry (7-day TTL)
-  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
-  const { error: cacheError } = await (supabase as any).from("lead_search_cache").upsert(
-    {
-      query_hash: cacheKey,
-      location: params.location,
-      professions: params.professions,
-      result_count: places.length,
-      google_response: places,
-      expires_at: expiresAt,
-    },
-    { onConflict: "query_hash" }
-  );
+  // 4. Save cache entry (7-day TTL) — COMPLETE results only.
+  // SCRUM-318: a partial result must NOT be durably cached, or every
+  // identical search for the next 7 days serves the truncated set behind a
+  // "Cached results" badge and never re-calls Google — so the missing
+  // professions stay silently absent for a week. Skipping the write means
+  // the next search re-attempts the failed slice (bounded by the route's
+  // adminExpensive rate limit). Page a warning so on-call sees the
+  // degradation, consistent with SCRUM-315's partial-scan pattern.
+  if (partial) {
+    pageSentry({
+      service: "next-api",
+      reason: SENTRY_REASONS.LEAD_DISCOVERY_SEARCH_PARTIAL,
+      level: "warning",
+      message: `Google Places returned partial results (${places.length} businesses) — skipping durable cache so the next search retries`,
+      tags: { failureKind: "google-places" },
+      extras: {
+        location: params.location,
+        professionCount: params.professions.length,
+        gotResults: places.length,
+        placesStatus: searchResult.failedStatus,
+      },
+    });
+  } else {
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    const { error: cacheError } = await (supabase as any).from("lead_search_cache").upsert(
+      {
+        query_hash: cacheKey,
+        location: params.location,
+        professions: params.professions,
+        result_count: places.length,
+        google_response: places,
+        expires_at: expiresAt,
+      },
+      { onConflict: "query_hash" }
+    );
 
-  if (cacheError) {
-    console.error("[Lead Discovery] Cache upsert error:", cacheError);
+    if (cacheError) {
+      console.error("[Lead Discovery] Cache upsert error:", cacheError);
+    }
   }
 
   // 5. Reload from DB (to get generated IDs)
@@ -173,7 +205,7 @@ export async function executeSearch(
     );
   }
 
-  return { businesses: businesses ?? [], cached: false };
+  return { businesses: businesses ?? [], cached: false, partial };
 }
 
 // ── CRM scanning ─────────────────────────────────────────────────────

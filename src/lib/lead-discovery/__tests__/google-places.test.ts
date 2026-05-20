@@ -2,11 +2,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { searchPlaces, searchMultipleProfessions } from "../google-places";
 import { PlacesApiError } from "../errors";
 
-function okResponse(places: unknown[]) {
+function okResponse(places: unknown[], nextPageToken?: string) {
   return {
     ok: true,
     status: 200,
-    json: async () => ({ places }),
+    json: async () => ({ places, nextPageToken }),
   };
 }
 
@@ -19,6 +19,10 @@ function errResponse(status: number) {
 }
 
 const onePlace = [{ id: "p1", displayName: { text: "Biz 1" }, formattedAddress: "1 St" }];
+const twentyPlaces = Array.from({ length: 20 }, (_, i) => ({
+  id: `p${i}`,
+  displayName: { text: `Biz ${i}` },
+}));
 
 beforeEach(() => {
   vi.stubEnv("GOOGLE_PLACES_API_KEY", "test-key");
@@ -50,11 +54,29 @@ describe("searchPlaces (SCRUM-314)", () => {
     await expect(searchPlaces({ location: "Sydney", profession: "dentist", limit: 10 })).rejects.toThrow();
   });
 
-  it("returns normalised places on 200", async () => {
+  it("returns normalised places on 200, not partial", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => okResponse(onePlace)));
     const out = await searchPlaces({ location: "Sydney", profession: "dentist", limit: 10 });
-    expect(out).toHaveLength(1);
-    expect(out[0]).toMatchObject({ placeId: "p1", name: "Biz 1" });
+    expect(out.places).toHaveLength(1);
+    expect(out.places[0]).toMatchObject({ placeId: "p1", name: "Biz 1" });
+    expect(out.partial).toBe(false);
+  });
+
+  it("SCRUM-318: preserves page-1 results when a LATER page fails (partial, not throw)", async () => {
+    // Page 1 → 20 places + a nextPageToken (forces a page 2); page 2 → 503.
+    // Old behaviour discarded all 20; now we return them flagged partial.
+    let call = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        call += 1;
+        return call === 1 ? okResponse(twentyPlaces, "tok-2") : errResponse(503);
+      }),
+    );
+    const out = await searchPlaces({ location: "Sydney", profession: "dentist", limit: 25 });
+    expect(out.places).toHaveLength(20);
+    expect(out.partial).toBe(true);
+    expect(out.failedStatus).toBe(503);
   });
 });
 
@@ -79,7 +101,29 @@ describe("searchMultipleProfessions (SCRUM-314)", () => {
     const out = await searchMultipleProfessions("Sydney", ["dentist", "lawyer"], 10);
     // Profession 1's result survived; profession 2's quota error did NOT
     // nuke it (logged + returned partial).
-    expect(out).toHaveLength(1);
-    expect(out[0].placeId).toBe("p1");
+    expect(out.places).toHaveLength(1);
+    expect(out.places[0].placeId).toBe("p1");
+    // SCRUM-318: the truncation is now signalled so executeSearch can skip
+    // the durable cache + page a warning.
+    expect(out.partial).toBe(true);
+    expect(out.failedStatus).toBe(429);
+  });
+
+  it("is NOT partial when every profession succeeds", async () => {
+    let call = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        call += 1;
+        // Two professions, distinct placeIds so neither is deduped away.
+        return call === 1
+          ? okResponse([{ id: "a1", displayName: { text: "A" } }])
+          : okResponse([{ id: "b1", displayName: { text: "B" } }]);
+      }),
+    );
+    const out = await searchMultipleProfessions("Sydney", ["dentist", "lawyer"], 10);
+    expect(out.places).toHaveLength(2);
+    expect(out.partial).toBe(false);
+    expect(out.failedStatus).toBeUndefined();
   });
 });
