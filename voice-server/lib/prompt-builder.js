@@ -97,17 +97,6 @@ function formatHourForPrompt(time) {
 }
 
 /**
- * Build the scheduling/timezone section appended to every prompt.
- * When calendarEnabled is true, includes real tool-calling instructions;
- * otherwise falls back to message-taking guidance.
- *
- * @param {string} [timezone]
- * @param {object} [businessHours]
- * @param {number} [defaultAppointmentDuration]
- * @param {boolean} [calendarEnabled=false]
- * @param {Array<{id: string, name: string, duration_minutes: number, description?: string}>} [serviceTypes]
- */
-/**
  * Sanitize a string for safe injection into prompts.
  * Strips control characters, newlines, and excessive whitespace.
  */
@@ -121,6 +110,19 @@ function sanitizeForPrompt(str) {
     .slice(0, 200);                   // cap length
 }
 
+/**
+ * Build the scheduling/timezone section appended to every prompt.
+ * When calendarEnabled is true, includes real tool-calling instructions;
+ * otherwise falls back to message-taking guidance.
+ *
+ * @param {string} [timezone]
+ * @param {object} [businessHours]
+ * @param {number} [defaultAppointmentDuration]
+ * @param {boolean} [calendarEnabled=false]
+ * @param {Array<{id: string, name: string, duration_minutes: number, description?: string}>} [serviceTypes]
+ * @param {{ flexibleBooking?: boolean }} [options]
+ * @param {object|null} [organization]
+ */
 function buildSchedulingSection(timezone, businessHours, defaultAppointmentDuration, calendarEnabled, serviceTypes, options = {}, organization = null) {
   const lines = [];
   lines.push("TIMEZONE & SCHEDULING:");
@@ -722,7 +724,11 @@ function buildSystemPrompt(assistant, organization, knowledgeBase, options) {
       isAfterHours,
       afterHoursConfig,
       serviceTypes,
-      assistantSettings: assistant.settings,
+      // SCRUM-319: buildPromptFromConfig reads context.assistant?.settings?.
+      // flexibleBooking — it must be NESTED under `assistant`, not the flat
+      // `assistantSettings` key (which nothing read, so flexibleBooking was
+      // always falsy through this guided-prompt path).
+      assistant: { settings: assistant.settings },
       organization,
     };
     return buildPromptFromConfig(assistant.promptConfig, context);
