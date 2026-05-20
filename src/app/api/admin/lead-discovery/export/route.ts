@@ -5,6 +5,8 @@ import { isPlatformAdmin } from "@/lib/admin/admin-auth";
 import { withRateLimitDistributed } from "@/lib/security/rate-limiter";
 import { loadFilteredBusinesses } from "@/lib/lead-discovery/search-orchestrator";
 import type { CrmDetails } from "@/lib/lead-discovery/types";
+import { SENTRY_REASONS } from "@/lib/security/error-ids";
+import { pageSentry } from "@/lib/observability/page-sentry";
 
 export async function GET(req: NextRequest) {
   // SCRUM-301: construct ONCE per request — see scan/route.ts.
@@ -106,6 +108,13 @@ export async function GET(req: NextRequest) {
     });
   } catch (err) {
     console.error("[Lead Discovery Export] Error:", err);
+    // SCRUM-300: catch-all pages Sentry.
+    pageSentry({
+      service: "next-api",
+      reason: SENTRY_REASONS.LEAD_DISCOVERY_EXPORT_FAILED,
+      err,
+      extras: { location, professionCount: professions?.length, crmFilter },
+    });
     return NextResponse.json(
       { error: "Export failed" },
       { status: 500, headers: rl.headers },

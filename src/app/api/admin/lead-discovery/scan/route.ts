@@ -5,6 +5,8 @@ import { isPlatformAdmin } from "@/lib/admin/admin-auth";
 import { withRateLimitDistributed } from "@/lib/security/rate-limiter";
 import { scanBusinessCRMs } from "@/lib/lead-discovery/search-orchestrator";
 import { isValidUUID } from "@/lib/security/validation";
+import { SENTRY_REASONS } from "@/lib/security/error-ids";
+import { pageSentry } from "@/lib/observability/page-sentry";
 
 export async function POST(req: NextRequest) {
   // SCRUM-301: construct the admin client ONCE per request so it can
@@ -68,6 +70,14 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ businesses }, { headers: rl.headers });
   } catch (err) {
     console.error("[Lead Discovery Scan] Error:", err);
+    // SCRUM-300: catch-all pages Sentry. Previously a generic 500
+    // disappeared into Vercel logs with no on-call signal.
+    pageSentry({
+      service: "next-api",
+      reason: SENTRY_REASONS.LEAD_DISCOVERY_SCAN_FAILED,
+      err,
+      extras: { businessIdCount: ids.length },
+    });
     // SCRUM-301 review: include `rl.headers` on the 500 path so the
     // admin client doesn't lose its quota state when scanBusinessCRMs
     // throws (matches export-route behaviour from SCRUM-290).

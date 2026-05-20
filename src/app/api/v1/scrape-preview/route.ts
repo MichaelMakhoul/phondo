@@ -4,6 +4,8 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { scrapeWebsite, generateKnowledgeBase, extractBusinessInfoWithLLM } from "@/lib/scraper/website-scraper";
 import { isUrlAllowedAsync } from "@/lib/security/validation";
 import { withRateLimitDistributed } from "@/lib/security/rate-limiter";
+import { SENTRY_REASONS } from "@/lib/security/error-ids";
+import { pageSentry } from "@/lib/observability/page-sentry";
 
 /**
  * POST /api/v1/scrape-preview
@@ -85,6 +87,17 @@ export async function POST(request: NextRequest) {
     } catch (err) {
       // Should never happen — extractBusinessInfoWithLLM catches internally.
       console.error('[scrape-preview] BUG: extractBusinessInfoWithLLM threw unexpectedly:', err);
+      // SCRUM-300: the comment correctly calls this a BUG. Page at
+      // ERROR level so the next time the catch-internally contract
+      // breaks (OpenAI SDK change, retry-exhaustion, etc.) on-call
+      // sees it instead of just a console line.
+      pageSentry({
+        service: "next-api",
+        reason: SENTRY_REASONS.SCRAPE_PREVIEW_LLM_EXTRACT_BUG,
+        level: "error",
+        err,
+        extras: { url },
+      });
     }
 
     // Regex extracts phone/email only; all other fields come from LLM.
@@ -111,6 +124,12 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     console.error("Scrape preview error:", error);
+    // SCRUM-300: route-level catch now pages Sentry.
+    pageSentry({
+      service: "next-api",
+      reason: SENTRY_REASONS.SCRAPE_PREVIEW_FAILED,
+      err: error,
+    });
     return NextResponse.json({ error: "Failed to scrape website" }, { status: 500 });
   }
 }

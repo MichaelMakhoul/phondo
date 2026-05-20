@@ -48,6 +48,37 @@ export const SENTRY_REASONS = {
    *  other missing) — the ping cannot run, so this would silently
    *  decay if treated as "skipped". */
   UPSTASH_HALF_CONFIGURED: "upstash-half-configured",
+
+  // ─── paid-action route catch blocks (SCRUM-300) ─────────────────────
+  // Each paid-action route used to swallow throws in its catch-all
+  // with just console.error + a generic 500. These reasons tag each
+  // route's catch-all so Grafana can split alerts per route.
+  VOICE_PREVIEW_FAILED: "voice-preview-failed",
+  VOICE_PREVIEW_UPSTREAM_NON_2XX: "voice-preview-upstream-non-2xx",
+  /** Required env vars for voice-preview are missing — deployment
+   *  misconfig. Uses level=error (vs warning) so it pages on-call
+   *  immediately rather than waiting for an alert threshold. */
+  VOICE_PREVIEW_ENV_MISSING: "voice-preview-env-missing",
+  SCRAPE_PREVIEW_FAILED: "scrape-preview-failed",
+  /** scrape-preview's "should never happen" LLM extract branch — the
+   *  helper claims its catch is internal, but if it ever bubbles out
+   *  we want to see it loudly. Uses level=error. */
+  SCRAPE_PREVIEW_LLM_EXTRACT_BUG: "scrape-preview-llm-extract-bug",
+  KB_SCRAPE_FAILED: "kb-scrape-failed",
+  /** resyncOrgAssistants failure after a successful knowledge-base
+   *  scrape — user already got their KB content, but the assistant
+   *  prompt didn't refresh. Surfaces in UI as a `resyncWarning` field. */
+  KB_SCRAPE_RESYNC_FAILED: "kb-scrape-resync-failed",
+  LEAD_DISCOVERY_SCAN_FAILED: "lead-discovery-scan-failed",
+  LEAD_DISCOVERY_SEARCH_FAILED: "lead-discovery-search-failed",
+  LEAD_DISCOVERY_EXPORT_FAILED: "lead-discovery-export-failed",
+  /** Migrated from the inline `"twilio-create-call-failed"` literal
+   *  the test-fallback route was using since SCRUM-268. */
+  TWILIO_CREATE_CALL_FAILED: "twilio-create-call-failed",
+  /** isPlatformAdmin's Postgres query failed — fails closed (treats
+   *  user as non-admin) but pages so a real admin denied during a
+   *  brownout isn't invisible. */
+  ADMIN_AUTH_LOOKUP_FAILED: "admin-auth-lookup-failed",
 } as const;
 
 export type SentryReason = (typeof SENTRY_REASONS)[keyof typeof SENTRY_REASONS];
