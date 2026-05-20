@@ -33,6 +33,24 @@ class CallSession {
     this.pendingTransfer = false;
     this.piiRedactionEnabled = false;
 
+    // Call context — populated by loadCallContext()/loadTestCallContext() in
+    // server.js once the stream connects (not known at construction). Declared
+    // here so the session's full shape is typed (SCRUM-317); all are read via
+    // optional chaining and assigned before first use, so null init is inert.
+    this.organization = null;       // full organization row
+    this.orgPhoneNumber = null;     // business E.164 number (the AI's line)
+    this.userPhoneNumber = null;    // owner's number (transfer/forward target)
+    this.serviceTypes = null;       // bookable service types for scheduling
+    this.behaviors = null;          // assistant behavior flags (transferToHuman, …)
+    this.telephonyProvider = null;  // "twilio" | "telnyx"
+    this.sourceType = null;         // how the call arrived (e.g. forwarded)
+    this.forwardingStatus = null;   // call-forwarding verification status
+    this.transferAttempt = null;    // in-progress transfer bookkeeping
+    this.scheduleSnapshot = null;   // cached availability snapshot
+    this._cacheUnsub = null;        // unsubscribe fn for the schedule-cache listener
+    this.callerState = null;        // detected caller US state (recording consent)
+    this.consentReason = null;      // recording-consent decision reason
+
     // Utterance buffering — accumulate STT finals before sending to LLM
     this._utteranceBuffer = [];
     this._utteranceTimer = null;

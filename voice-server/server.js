@@ -1,4 +1,3 @@
-// @ts-nocheck -- SCRUM-317: pre-existing checkJs baseline (burn down incrementally; do NOT add new untyped code here)
 require("dotenv").config();
 
 const { initSentry, Sentry } = require("./lib/sentry");
@@ -8,6 +7,10 @@ initSentry();
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
+// express ships no bundled types and @types/express isn't a dependency; keeping
+// it untyped scopes the SCRUM-317 burndown (typing every route handler — and the
+// req/res/query shapes that come with it — is a separate effort).
+// @ts-ignore -- missing type declarations for "express"
 const express = require("express");
 const http = require("http");
 const { WebSocketServer, WebSocket } = require("ws");
@@ -389,7 +392,6 @@ function validateTelnyxSignature(req) {
     // If no public key configured, use shared secret as stopgap
     const secret = process.env.TELNYX_WEBHOOK_SECRET;
     if (secret) {
-      const crypto = require("crypto");
       const headerSecret = req.headers["x-telnyx-secret"] || req.query?.secret;
       if (!headerSecret || headerSecret.length !== secret.length) return false;
       return crypto.timingSafeEqual(Buffer.from(headerSecret), Buffer.from(secret));
@@ -403,7 +405,6 @@ function validateTelnyxSignature(req) {
   }
 
   try {
-    const crypto = require("crypto");
     const signature = req.headers["telnyx-signature-ed25519"];
     const timestamp = req.headers["telnyx-timestamp"];
     if (!signature || !timestamp) return false;
@@ -1072,7 +1073,7 @@ app.post("/preview", async (req, res) => {
       });
     }
 
-    const payload = await geminiRes.json();
+    const payload = /** @type {any} */ (await geminiRes.json());
     const audioPart = payload?.candidates?.[0]?.content?.parts?.find(
       (p) => p?.inlineData?.data
     );
@@ -1373,7 +1374,9 @@ wss.on("connection", (twilioWs) => {
   twilioWs.on("message", async (raw) => {
     let msg;
     try {
-      msg = JSON.parse(raw);
+      // raw is ws RawData; Twilio media-stream frames arrive as JSON text, so
+      // toString() is a no-op on the string and a utf8 decode on a Buffer.
+      msg = JSON.parse(raw.toString());
     } catch (err) {
       console.warn("[Twilio] Received non-JSON message, ignoring");
       return;
@@ -1626,7 +1629,7 @@ wss.on("connection", (twilioWs) => {
                   const errText = await recRes.text().catch(() => "");
                   throw new Error(`Telnyx record_start failed (${recRes.status}): ${errText.slice(0, 200)}`);
                 }
-                const recData = await recRes.json().catch(() => ({}));
+                const recData = /** @type {any} */ (await recRes.json().catch(() => ({})));
                 const recordingId = recData?.data?.recording_id || "unknown";
                 console.log(`[Recording] Started Telnyx recording for callSid=${callSid} recordingId=${recordingId}`);
               } catch (recErr) {
@@ -3759,7 +3762,7 @@ async function handleTestUserSpeech(session, ws, transcript) {
   }
 }
 
-server.listen(PORT, "0.0.0.0", () => {
+server.listen(Number(PORT), "0.0.0.0", () => {
   console.log(`Voice server listening on port ${PORT}`);
   console.log(`Voice pipeline: ${VOICE_PIPELINE}${VOICE_PIPELINE === "gemini-live" ? " (Gemini 3.1 Flash Live)" : ` (LLM: ${LLM_PROVIDER}/${FULL_MODEL})`}`);
   console.log(`TwiML endpoint: ${PUBLIC_URL}/twiml`);
