@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
+import { LeadDiscoveryDbError } from "@/lib/lead-discovery/errors";
 
 // ──────────────────────────────────────────────────────────────────────────
 // Module mocks. Hoisted above all imports of the route under test.
@@ -64,6 +65,12 @@ const scanBusinessCRMsMock = vi.fn(async (ids: string[], client?: unknown) => {
 });
 vi.mock("@/lib/lead-discovery/search-orchestrator", () => ({
   scanBusinessCRMs: scanBusinessCRMsMock,
+}));
+
+// SCRUM-309: mock pageSentry so we can assert the failureKind extra.
+const pageSentryMock = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/observability/page-sentry", () => ({
+  pageSentry: pageSentryMock,
 }));
 
 // SCRUM-301 review: validation helper is a pure function with no
@@ -163,6 +170,39 @@ describe("POST /api/admin/lead-discovery/scan — admin client memoization (SCRU
     // they receive the route-level singleton.
     expect(callTracker.isPlatformAdminClientArg).toBe(adminClientSentinel);
     expect(callTracker.scanClientArg).toBe(adminClientSentinel);
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// SCRUM-309: failureKind discriminator on the catch-all Sentry page
+// ──────────────────────────────────────────────────────────────────────────
+
+describe("POST /api/admin/lead-discovery/scan — failureKind discriminator (SCRUM-309)", () => {
+  it("tags failureKind=db-query when scanBusinessCRMs throws a LeadDiscoveryDbError", async () => {
+    scanBusinessCRMsMock.mockRejectedValueOnce(
+      new LeadDiscoveryDbError("Failed to load businesses for scanning: timeout"),
+    );
+    const res = await callRoute();
+    expect(res.status).toBe(500);
+    expect(pageSentryMock).toHaveBeenCalledTimes(1);
+    // failureKind is a TAG (filterable), not an extra.
+    expect(pageSentryMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reason: "lead-discovery-scan-failed",
+        tags: { failureKind: "db-query" },
+      }),
+    );
+  });
+
+  it("tags failureKind=unknown for a raw (unwrapped) throw", async () => {
+    scanBusinessCRMsMock.mockRejectedValueOnce(new Error("totally unexpected"));
+    const res = await callRoute();
+    expect(res.status).toBe(500);
+    expect(pageSentryMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tags: { failureKind: "unknown" },
+      }),
+    );
   });
 });
 

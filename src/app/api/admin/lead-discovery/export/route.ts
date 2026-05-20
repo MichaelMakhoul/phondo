@@ -4,6 +4,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { isPlatformAdmin } from "@/lib/admin/admin-auth";
 import { withRateLimitDistributed } from "@/lib/security/rate-limiter";
 import { loadFilteredBusinesses } from "@/lib/lead-discovery/search-orchestrator";
+import { classifyLeadDiscoveryFailure } from "@/lib/lead-discovery/errors";
 import type { CrmDetails } from "@/lib/lead-discovery/types";
 import { SENTRY_REASONS } from "@/lib/security/error-ids";
 import { pageSentry } from "@/lib/observability/page-sentry";
@@ -113,6 +114,9 @@ export async function GET(req: NextRequest) {
       service: "next-api",
       reason: SENTRY_REASONS.LEAD_DISCOVERY_EXPORT_FAILED,
       err,
+      // SCRUM-309: failureKind as a filterable TAG. Export failures are
+      // almost always db-query (the loadFilteredBusinesses query).
+      tags: { failureKind: classifyLeadDiscoveryFailure(err) },
       extras: { location, professionCount: professions?.length, crmFilter },
     });
     return NextResponse.json(

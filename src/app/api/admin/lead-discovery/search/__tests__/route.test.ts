@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
+import { PlacesApiError, LeadDiscoveryDbError } from "@/lib/lead-discovery/errors";
 
 /**
  * SCRUM-301 contract tests for the search route — mirror of the scan
@@ -60,6 +61,12 @@ const executeSearchMock = vi.fn(async (_params: unknown, client?: unknown) => {
 });
 vi.mock("@/lib/lead-discovery/search-orchestrator", () => ({
   executeSearch: executeSearchMock,
+}));
+
+// SCRUM-309: mock pageSentry so we can assert the failureKind tag.
+const pageSentryMock = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/observability/page-sentry", () => ({
+  pageSentry: pageSentryMock,
 }));
 
 function makeReq(body: unknown = { location: "Sydney", professions: ["dentist"], limit: 25 }) {
@@ -150,5 +157,47 @@ describe("POST /api/admin/lead-discovery/search — input validation", () => {
   it("400 on invalid limit value", async () => {
     const res = await callRoute({ location: "Sydney", professions: ["dentist"], limit: 7 });
     expect(res.status).toBe(400);
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// SCRUM-309: failureKind discriminator. The search route is the only one
+// that can produce `google-places`, so it's the highest-value coverage.
+// ──────────────────────────────────────────────────────────────────────────
+
+describe("POST /api/admin/lead-discovery/search — failureKind discriminator (SCRUM-309)", () => {
+  it("tags failureKind=google-places when executeSearch throws a PlacesApiError", async () => {
+    executeSearchMock.mockRejectedValueOnce(
+      new PlacesApiError("GOOGLE_PLACES_API_KEY not configured"),
+    );
+    const res = await callRoute();
+    expect(res.status).toBe(500);
+    expect(pageSentryMock).toHaveBeenCalledTimes(1);
+    expect(pageSentryMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reason: "lead-discovery-search-failed",
+        tags: { failureKind: "google-places" },
+      }),
+    );
+  });
+
+  it("tags failureKind=db-query when executeSearch throws a LeadDiscoveryDbError", async () => {
+    executeSearchMock.mockRejectedValueOnce(
+      new LeadDiscoveryDbError("Failed to reload searched businesses: timeout"),
+    );
+    const res = await callRoute();
+    expect(res.status).toBe(500);
+    expect(pageSentryMock).toHaveBeenCalledWith(
+      expect.objectContaining({ tags: { failureKind: "db-query" } }),
+    );
+  });
+
+  it("tags failureKind=unknown for a raw (unwrapped) throw", async () => {
+    executeSearchMock.mockRejectedValueOnce(new Error("totally unexpected"));
+    const res = await callRoute();
+    expect(res.status).toBe(500);
+    expect(pageSentryMock).toHaveBeenCalledWith(
+      expect.objectContaining({ tags: { failureKind: "unknown" } }),
+    );
   });
 });
