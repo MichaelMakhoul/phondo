@@ -43,11 +43,20 @@ export abstract class LeadDiscoveryError extends Error {
   }
 }
 
-/** Google Places API failure (missing key, network error, non-JSON body). */
+/**
+ * Google Places API failure (missing key, network error, non-JSON body,
+ * or a non-2xx HTTP response). `status` carries the upstream HTTP status
+ * when the failure was a non-2xx response (e.g. 429 quota, 5xx outage) —
+ * undefined for network/parse failures — so on-call can tell a quota
+ * exhaustion apart from a Google outage. SCRUM-314.
+ */
 export class PlacesApiError extends LeadDiscoveryError {
-  constructor(message: string, options?: { cause?: unknown }) {
+  readonly status?: number;
+
+  constructor(message: string, options?: { cause?: unknown; status?: number }) {
     super(message, "google-places", options);
     this.name = "PlacesApiError";
+    this.status = options?.status;
   }
 }
 

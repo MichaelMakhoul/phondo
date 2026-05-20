@@ -5,6 +5,8 @@
  * Env: GOOGLE_PLACES_API_KEY
  */
 
+import { PlacesApiError } from "./errors";
+
 // ── Types ────────────────────────────────────────────────────────────
 
 export interface PlacesSearchParams {
@@ -85,7 +87,19 @@ export async function searchPlaces(
         `[Google Places] API error ${res.status}:`,
         errBody.slice(0, 500)
       );
-      break; // Return whatever we have so far
+      // SCRUM-314: throw instead of swallowing. A non-2xx (429 quota,
+      // 5xx outage, 403 key/project issue) previously `break`'d and
+      // returned partial/empty results — a quota-exhausted search then
+      // looked identical to "this area has no businesses". Throw a typed
+      // PlacesApiError carrying the status; searchMultipleProfessions
+      // decides whether to surface partial results or rethrow. Errors
+      // raised on a later page discard this profession's earlier pages,
+      // but quota/auth failures almost always hit page 1, and the
+      // aggregate caller still keeps results from prior professions.
+      throw new PlacesApiError(
+        `Google Places API returned ${res.status}`,
+        { status: res.status },
+      );
     }
 
     const data = await res.json();
@@ -119,11 +133,35 @@ export async function searchMultipleProfessions(
   for (const profession of professions) {
     if (results.length >= totalLimit) break;
 
-    const places = await searchPlaces({
-      location,
-      profession,
-      limit: perProfessionLimit,
-    });
+    let places: DiscoveredPlace[];
+    try {
+      places = await searchPlaces({
+        location,
+        profession,
+        limit: perProfessionLimit,
+      });
+    } catch (err) {
+      // SCRUM-314: a Places API failure (PlacesApiError from searchPlaces,
+      // or a raw network/parse throw). Decide at the AGGREGATE level:
+      //  - If we already have results from earlier professions, log and
+      //    return the partial aggregate — a quota error on profession 3
+      //    shouldn't nuke professions 1-2's data.
+      //  - If we have nothing yet, rethrow so executeSearch surfaces it
+      //    as failureKind=google-places (the user sees "try again" rather
+      //    than a misleading empty "no businesses found").
+      if (results.length > 0) {
+        // SCRUM-318 tracks upgrading this partial path: page a warning
+        // + flag the result partial + avoid the 7-day cache so a quota
+        // blot doesn't freeze a truncated result set. For now it's a
+        // console breadcrumb (the zero-result case below already 500s).
+        console.warn(
+          `[Google Places] '${profession}' failed after ${results.length} results — returning partial:`,
+          err instanceof Error ? err.message : err,
+        );
+        break;
+      }
+      throw err;
+    }
 
     for (const place of places) {
       if (results.length >= totalLimit) break;
