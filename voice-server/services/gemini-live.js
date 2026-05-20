@@ -90,6 +90,16 @@ function createGeminiSession(config, callbacks) {
   let intentionalCloseReason = null; // Set when we close via end_call tool
   const preSetupBuffer = []; // Buffer audio before setup completes
 
+  // Audio-drain bookkeeping for end_call.
+  // Gemini Live emits tool calls in the SAME turn as the closing audio
+  // ("Have a great day!" + call end_call). Without waiting for the audio
+  // to actually finish streaming to Twilio, the closing phrase is cut off
+  // mid-word. We wait for the next `turnComplete` event (= Gemini finished
+  // streaming audio for this turn), then add a fixed drain buffer for
+  // Twilio's playback. Fixed timeout as a backstop in case turnComplete
+  // never arrives.
+  let pendingEndCallClose = false;
+
   ws.on("open", () => {
     console.log("[GeminiLive] WebSocket connected, sending setup...");
 
@@ -219,6 +229,18 @@ function createGeminiSession(config, callbacks) {
       // Turn complete
       if (sc.turnComplete) {
         callbacks.onTurnComplete?.();
+        // If end_call fired during this turn, Gemini has now finished
+        // streaming the closing audio. Schedule the WS close after a short
+        // drain window so Twilio finishes playing what's buffered.
+        if (pendingEndCallClose) {
+          pendingEndCallClose = false;
+          console.log("[GeminiLive] Turn complete after end_call — closing in 800ms drain");
+          setTimeout(() => {
+            if (ws.readyState === WebSocket.OPEN) {
+              try { ws.close(1000, "end_call"); } catch {}
+            }
+          }, 800);
+        }
       }
 
       return;
@@ -277,13 +299,24 @@ function createGeminiSession(config, callbacks) {
       }
 
       if (shouldEnd) {
-        console.log("[GeminiLive] end_call invoked — closing session in 400ms");
+        // Don't close immediately. Gemini Live emits tool calls in the same
+        // turn as audio output, so the closing phrase ("Have a great day!")
+        // may still be streaming. Mark a pending close — the actual close
+        // is triggered by the next turnComplete event (above) plus a short
+        // drain window. The fixed 4 s timer below is a backstop in case
+        // turnComplete never arrives.
         intentionalCloseReason = "end_call";
+        pendingEndCallClose = true;
+        console.log("[GeminiLive] end_call invoked — waiting for turnComplete + drain before close");
+
         setTimeout(() => {
+          if (!pendingEndCallClose) return; // turnComplete already closed us
+          pendingEndCallClose = false;
           if (ws.readyState === WebSocket.OPEN) {
+            console.log("[GeminiLive] Backstop timer fired — closing after end_call (no turnComplete in 4 s)");
             try { ws.close(1000, "end_call"); } catch {}
           }
-        }, 400);
+        }, 4_000);
       }
       return;
     }

@@ -46,18 +46,29 @@ const FORBIDDEN_NEAR_TRANSFER = [
   /can I help (?:you )?(?:with )?(?:that|something)/i,
   /keep the refusal/i,
   /preemptive(?:ly)? refus/i,
+  // SCRUM-294 round 2: production calls on 2026-05-19 (post first deploy)
+  // showed Gemini still soft-asking ("would you like me to transfer you?"
+  // / "do you want me to connect you?") instead of just calling the tool.
+  // Those exact phrasings now appear inside the MUST-OBEY block as
+  // forbidden-list quotes — the strip helper removes the block before
+  // scanning so the test catches them only OUTSIDE the guard.
+  /would you like me to (?:transfer|connect)/i,
+  /do you want me to (?:transfer|connect)/i,
 ];
 
 function stripMustObeyBlocks(src) {
-  // Remove lines that contain the TRANSFERS — MUST OBEY block specifically,
-  // plus any block-comment lines that explain past bad behaviour — those
-  // legitimately quote the forbidden phrasings to instruct the model what
-  // NOT to say. We anchor on "TRANSFERS — MUST OBEY" rather than the
-  // generic "MUST OBEY" so future emphatic rules in other domains (e.g.
-  // "BOOKING — MUST OBEY") don't accidentally get stripped along with them.
+  // Remove lines that legitimately mention transfer-related phrasings as
+  // part of guard documentation:
+  //   - The MUST-OBEY block itself (quotes forbidden phrases as "do NOT say X")
+  //   - SCRUM-294 comment lines that explain the failure history
+  //   - ESCAPE HATCH wording — a separate, LEGITIMATE flow where the AI
+  //     asks the caller to pick between transfer vs message AFTER 2+ failed
+  //     identity-confirmation attempts. The choice-style "Would you like me
+  //     to transfer you ... OR take a message?" is intentional there and
+  //     must not trip the forbidden-phrase scan.
   return src
     .split("\n")
-    .filter((line) => !/TRANSFERS — MUST OBEY|arguing back|SCRUM-294/i.test(line))
+    .filter((line) => !/TRANSFERS — MUST OBEY|arguing back|SCRUM-294|ESCAPE HATCH/i.test(line))
     .join("\n");
 }
 

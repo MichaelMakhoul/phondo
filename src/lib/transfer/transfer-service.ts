@@ -314,7 +314,10 @@ export async function createTransferRule(
       priority: data.priority || 0,
       is_active: true,
       destinations: data.destinations || [],
-      require_confirmation: data.requireConfirmation ?? false,
+      // SCRUM-294 follow-up: default ON. Prevents accidental transfers from
+      // ambiguous mentions (e.g. caller says "transfer my prescription").
+      // Owners can opt out per-rule via the UI toggle.
+      require_confirmation: data.requireConfirmation ?? true,
     })
     .select()
     .single();

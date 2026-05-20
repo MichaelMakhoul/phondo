@@ -174,7 +174,12 @@ export function AssistantBuilder({
   const [newTriggerIntent, setNewTriggerIntent] = useState("");
   const [newAnnouncement, setNewAnnouncement] = useState("");
   const [newPriority, setNewPriority] = useState(0);
-  const [newRequireConfirmation, setNewRequireConfirmation] = useState(false);
+  // SCRUM-294 follow-up: default ON. The MUST-OBEY prompt fires transfer_call
+  // the moment the AI detects intent — that's correct when the caller is
+  // unambiguous, but can misfire on ambiguous mentions ("transfer my
+  // prescription"). The confirmation step adds 1-2 seconds and removes that
+  // risk. Owners can still turn it off per rule (e.g. emergency lines).
+  const [newRequireConfirmation, setNewRequireConfirmation] = useState(true);
 
   // Inline edit state
   const [editingRuleId, setEditingRuleId] = useState<string | null>(null);
@@ -370,14 +375,30 @@ export function AssistantBuilder({
       }
 
       const { rule } = await response.json();
-      setTransferRules([...transferRules, rule]);
+      // The API returns the rule in camelCase (transferToPhone, ...) but the
+      // dashboard reads snake_case from the initial Supabase query. Convert
+      // here so a freshly-created rule isn't a blank card. SCRUM-294 follow-up.
+      const ruleSnake: TransferRule = {
+        id: rule.id,
+        name: rule.name,
+        trigger_keywords: rule.triggerKeywords || [],
+        trigger_intent: rule.triggerIntent ?? null,
+        transfer_to_phone: rule.transferToPhone,
+        transfer_to_name: rule.transferToName ?? null,
+        announcement_message: rule.announcementMessage ?? null,
+        priority: rule.priority ?? 0,
+        is_active: rule.isActive ?? true,
+        destinations: rule.destinations || [],
+        require_confirmation: rule.requireConfirmation ?? false,
+      };
+      setTransferRules([...transferRules, ruleSnake]);
       setNewTransferPhone("");
       setNewTransferName("");
       setNewTriggerKeywords("");
       setNewTriggerIntent("");
       setNewAnnouncement("");
       setNewPriority(0);
-      setNewRequireConfirmation(false);
+      setNewRequireConfirmation(true);
 
       trackTransferRuleCreated();
       toast({
@@ -786,37 +807,20 @@ export function AssistantBuilder({
                         <Plus className="h-4 w-4" />
                       </Button>
                     </div>
+                    {/* SCRUM-294 follow-up: trigger_keywords + trigger_intent
+                        inputs removed — the AI now recognises transfer intent
+                        semantically (MUST-OBEY block in voice-server). Keyword
+                        matching added nothing but prompt bloat. DB columns and
+                        API params are kept for back-compat. */}
                     <div className="flex gap-2">
                       <div className="flex-1 space-y-1">
                         <Input
-                          placeholder="Trigger keywords (comma-separated)"
-                          value={newTriggerKeywords}
-                          onChange={(e) => setNewTriggerKeywords(e.target.value)}
-                        />
-                        <p className="text-xs text-muted-foreground">
-                          When the AI determines the caller needs help with these topics, it will transfer. Defaults to general phrases if empty.
-                        </p>
-                      </div>
-                      <div className="flex-1 space-y-1">
-                        <Input
-                          placeholder="Category (optional)"
-                          value={newTriggerIntent}
-                          onChange={(e) => setNewTriggerIntent(e.target.value)}
-                        />
-                        <p className="text-xs text-muted-foreground">
-                          e.g. billing_inquiry, emergency
-                        </p>
-                      </div>
-                    </div>
-                    <div className="flex gap-2">
-                      <div className="flex-1 space-y-1">
-                        <Input
-                          placeholder="Announcement message (optional)"
+                          placeholder="Announcement to play to the recipient (optional)"
                           value={newAnnouncement}
                           onChange={(e) => setNewAnnouncement(e.target.value)}
                         />
                         <p className="text-xs text-muted-foreground">
-                          What the AI says before transferring. Uses a default if empty.
+                          Played to the person being transferred to when they pick up — e.g. &quot;Transfer from Smile Hub Dental, caller needs help with X.&quot; Leave blank to skip.
                         </p>
                       </div>
                       <div className="w-32 space-y-1">
@@ -831,12 +835,18 @@ export function AssistantBuilder({
                         </p>
                       </div>
                     </div>
-                    <div className="flex items-center gap-2">
-                      <Switch
-                        checked={newRequireConfirmation}
-                        onCheckedChange={setNewRequireConfirmation}
-                      />
-                      <Label className="text-sm">Ask caller to confirm before transferring</Label>
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <Switch
+                          checked={newRequireConfirmation}
+                          onCheckedChange={setNewRequireConfirmation}
+                        />
+                        <Label className="text-sm">Ask caller to confirm before transferring</Label>
+                      </div>
+                      <p className="text-xs text-muted-foreground ml-11">
+                        When ON: AI asks &quot;Shall I transfer you to &lt;name&gt;?&quot; and waits for yes/no before dialling.
+                        When OFF: AI transfers immediately on detecting transfer intent.
+                      </p>
                     </div>
                   </div>
 
@@ -868,25 +878,11 @@ export function AssistantBuilder({
                                 className="flex-1"
                               />
                             </div>
-                            <div className="flex gap-2">
-                              <div className="flex-1">
-                                <Input
-                                  placeholder="Trigger keywords (comma-separated)"
-                                  value={editForm.trigger_keywords}
-                                  onChange={(e) => setEditForm({ ...editForm, trigger_keywords: e.target.value })}
-                                />
-                              </div>
-                              <div className="flex-1">
-                                <Input
-                                  placeholder="Category (optional)"
-                                  value={editForm.trigger_intent}
-                                  onChange={(e) => setEditForm({ ...editForm, trigger_intent: e.target.value })}
-                                />
-                              </div>
-                            </div>
+                            {/* trigger_keywords + trigger_intent inputs hidden
+                                — the AI handles intent semantically now. */}
                             <div className="flex gap-2">
                               <Input
-                                placeholder="Announcement message (optional)"
+                                placeholder="Announcement to play to the recipient (optional)"
                                 value={editForm.announcement_message}
                                 onChange={(e) => setEditForm({ ...editForm, announcement_message: e.target.value })}
                                 className="flex-1"
@@ -908,7 +904,8 @@ export function AssistantBuilder({
                                 <Label className="text-sm">Ask caller to confirm before transferring</Label>
                               </div>
                               <p className="text-xs text-muted-foreground ml-11">
-                                The AI asks once before dialing. Fallback numbers are tried automatically without re-asking.
+                                When ON: AI asks &quot;Shall I transfer you to &lt;name&gt;?&quot; and waits for yes/no before dialling.
+                                When OFF: AI transfers immediately on detecting transfer intent. Fallback numbers always try automatically without re-asking.
                               </p>
                             </div>
                             <div className="space-y-2">
