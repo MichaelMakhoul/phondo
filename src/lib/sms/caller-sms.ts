@@ -15,6 +15,8 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { getNotificationPreferences } from "@/lib/notifications/notification-service";
 import { getTwilioClient } from "@/lib/twilio/client";
 import { hasFeatureAccess } from "@/lib/stripe/billing-service";
+import { SENTRY_REASONS } from "@/lib/security/error-ids";
+import { setReasonTag } from "@/lib/observability/sentry-tags";
 import { OPT_OUT_MARKER_RE } from "./sms-sender";
 
 type MessageType =
@@ -94,7 +96,7 @@ async function resolveSmsSender(
     });
     Sentry.withScope((scope) => {
       scope.setTag("service", "caller-sms");
-      scope.setTag("reason", "sms_sender_read_failed");
+      setReasonTag(scope, SENTRY_REASONS.SMS_SENDER_READ_FAILED);
       scope.setExtras({ orgId, code: error.code });
       Sentry.captureException(error);
     });
@@ -137,7 +139,7 @@ async function rewriteOptOutForAlphanumeric(
     });
     Sentry.withScope((scope) => {
       scope.setTag("service", "caller-sms");
-      scope.setTag("reason", "sms_opt_out_marker_missing");
+      setReasonTag(scope, SENTRY_REASONS.SMS_OPT_OUT_MARKER_MISSING);
       scope.setExtras({ orgId, bodyPreview: body.slice(0, 60) });
       Sentry.captureMessage("SMS body missing opt-out marker — compliance alert", "error");
     });
@@ -157,7 +159,7 @@ async function rewriteOptOutForAlphanumeric(
     });
     Sentry.withScope((scope) => {
       scope.setTag("service", "caller-sms");
-      scope.setTag("reason", "opt_out_contact_read_failed");
+      setReasonTag(scope, SENTRY_REASONS.OPT_OUT_CONTACT_READ_FAILED);
       scope.setExtras({ orgId, code: error.code });
       Sentry.captureException(error);
     });
@@ -201,7 +203,7 @@ async function isCallerOptedOut(
     console.error("[CallerSMS] Opt-out check failed — blocking send to be safe:", { phone, orgId, error });
     Sentry.withScope((scope) => {
       scope.setTag("service", "caller-sms");
-      scope.setTag("reason", "optout_check_failed");
+      setReasonTag(scope, SENTRY_REASONS.OPTOUT_CHECK_FAILED);
       scope.setExtras({ orgId, code: error.code });
       Sentry.captureException(error);
     });
@@ -235,7 +237,7 @@ async function isRateLimited(
     console.error("[CallerSMS] Rate limit check failed — blocking send to be safe:", { phone, messageType, orgId, error });
     Sentry.withScope((scope) => {
       scope.setTag("service", "caller-sms");
-      scope.setTag("reason", "rate_limit_check_failed");
+      setReasonTag(scope, SENTRY_REASONS.RATE_LIMIT_CHECK_FAILED);
       scope.setExtras({ orgId, messageType, code: error.code });
       Sentry.captureException(error);
     });
@@ -273,7 +275,7 @@ async function logSMSSend(params: {
     });
     Sentry.withScope((scope) => {
       scope.setTag("service", "caller-sms");
-      scope.setTag("reason", "sms_log_insert_failed");
+      setReasonTag(scope, SENTRY_REASONS.SMS_LOG_INSERT_FAILED);
       scope.setExtras({
         orgId: params.orgId,
         messageType: params.messageType,
@@ -386,7 +388,7 @@ async function checkOrgConfirmationEnabled(orgId: string): Promise<OrgConfirmati
     });
     Sentry.withScope((scope) => {
       scope.setTag("service", "caller-sms");
-      scope.setTag("reason", "org_toggle_read_failed");
+      setReasonTag(scope, SENTRY_REASONS.ORG_TOGGLE_READ_FAILED);
       scope.setLevel("error");
       scope.setExtras({ orgId, code: error.code });
       Sentry.captureException(error);
@@ -452,7 +454,7 @@ async function upsertAppointmentConfirmation(params: {
     });
     Sentry.withScope((scope) => {
       scope.setTag("service", "caller-sms");
-      scope.setTag("reason", "confirmation_upsert_failed");
+      setReasonTag(scope, SENTRY_REASONS.CONFIRMATION_UPSERT_FAILED);
       scope.setExtras({
         appointmentId: params.appointmentId,
         intent: params.intent,

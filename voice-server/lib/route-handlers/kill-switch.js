@@ -1,5 +1,7 @@
 "use strict";
 
+const { SENTRY_REASONS, setReasonTag } = require("../sentry-reasons");
+
 /**
  * Kill-switch route handlers extracted from server.js (SCRUM-287).
  *
@@ -139,7 +141,7 @@ async function handleAiDisabledBranch(req, res, opts) {
       try {
         Sentry.withScope((scope) => {
           scope.setTag("service", "voice-server");
-          scope.setTag("reason", "log-failed");
+          setReasonTag(scope, SENTRY_REASONS.LOG_FAILED);
           scope.setLevel("warning");
           scope.setExtras({
             calledMasked: maskPhone(called),
@@ -210,7 +212,7 @@ ${disclosureSay}  <Dial callerId="${escapeXml(fallbackCallerId)}" timeout="30" a
     try {
       Sentry.withScope((scope) => {
         scope.setTag("service", "voice-server");
-        scope.setTag("reason", "fail-open");
+        setReasonTag(scope, SENTRY_REASONS.FAIL_OPEN);
         scope.setLevel("error");
         scope.setExtras({
           calledMasked: maskPhone(called),
@@ -253,7 +255,7 @@ async function finaliseFallbackDial(callSid, dialStatus, durationSeconds, provid
     try {
       Sentry.withScope((scope) => {
         scope.setTag("service", "voice-server");
-        scope.setTag("reason", "fallback-finalise-failed");
+        setReasonTag(scope, SENTRY_REASONS.FALLBACK_FINALISE_FAILED);
         scope.setLevel("warning");
         scope.setExtras({
           callSid,
@@ -290,7 +292,7 @@ async function finaliseFallbackDial(callSid, dialStatus, durationSeconds, provid
     try {
       Sentry.withScope((scope) => {
         scope.setTag("service", "voice-server");
-        scope.setTag("reason", "fallback-finalise-failed");
+        setReasonTag(scope, SENTRY_REASONS.FALLBACK_FINALISE_FAILED);
         scope.setLevel("warning");
         scope.setExtras({
           callSid,
@@ -380,7 +382,7 @@ async function handleAiDisabledFallbackStatus(req, res, opts) {
     try {
       Sentry.withScope((scope) => {
         scope.setTag("service", "voice-server");
-        scope.setTag("reason", "voicemail-greeting-lookup-failed");
+        setReasonTag(scope, SENTRY_REASONS.VOICEMAIL_GREETING_LOOKUP_FAILED);
         scope.setLevel("warning");
         scope.setExtras({ callSid, calledMasked: maskPhone(called), provider });
         Sentry.captureException(err);

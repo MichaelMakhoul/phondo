@@ -1,6 +1,7 @@
 const { getSupabase } = require("./supabase");
 const { Sentry } = require("./sentry");
 const { maskPhone } = require("./mask-phone");
+const { SENTRY_REASONS, setReasonTag } = require("./sentry-reasons");
 
 /**
  * Emit a Sentry event for a fail-open path in the AI-enabled check.
@@ -10,12 +11,23 @@ const { maskPhone } = require("./mask-phone");
  *
  * Wrapped in try/catch as defense-in-depth: a defect in the Sentry shim
  * must not propagate out and crash the route that called us.
+ *
+ * SCRUM-297: `reason` is now typed against `SENTRY_REASONS` via JSDoc.
+ * Callers pass `SENTRY_REASONS.FAIL_OPEN` / `SENTRY_REASONS.CONTEXT_LOOKUP_FAILED`
+ * etc. so a typo trips IDE diagnostics instead of silently breaking
+ * the matching Grafana alert rule.
+ *
+ * @param {unknown} err
+ * @param {import("./sentry-reasons").SentryReason} reason
+ * @param {string} calledNumber
+ * @param {"warning" | "error"} [level]
+ * @param {Record<string, unknown>} [extras]
  */
 function captureFailOpen(err, reason, calledNumber, level = "warning", extras = {}) {
   try {
     Sentry.withScope((scope) => {
       scope.setTag("service", "voice-server");
-      scope.setTag("reason", reason);
+      setReasonTag(scope, reason);
       scope.setLevel(level);
       scope.setExtras({
         calledMasked: maskPhone(calledNumber),
@@ -55,14 +67,14 @@ async function lookupPhoneNumber(calledNumber, opts = {}) {
         // This is the prefetched hot path's fail-open source — a DB read
         // failure here cascades into isAiEnabled returning `true`, violating
         // any customer who has deliberately paused AI. Page on it.
-        captureFailOpen(error, "fail-open", calledNumber, "error", { callSid: opts.callSid });
+        captureFailOpen(error, SENTRY_REASONS.FAIL_OPEN, calledNumber, "error", { callSid: opts.callSid });
       }
       return null;
     }
     return phone;
   } catch (err) {
     console.error("[AnswerMode] lookupPhoneNumber failed:", err.message);
-    captureFailOpen(err, "fail-open", calledNumber, "error", { callSid: opts.callSid });
+    captureFailOpen(err, SENTRY_REASONS.FAIL_OPEN, calledNumber, "error", { callSid: opts.callSid });
     return null;
   }
 }
@@ -99,7 +111,7 @@ async function isAiEnabled(calledNumber, prefetchedPhone, opts = {}) {
           calledNumber, code: error.code, message: error.message,
         });
         // Real DB error → customer intent (paused AI) may be violated. Page on this.
-        captureFailOpen(error, "fail-open", calledNumber, "error", { callSid: opts.callSid });
+        captureFailOpen(error, SENTRY_REASONS.FAIL_OPEN, calledNumber, "error", { callSid: opts.callSid });
       }
       return true; // fail-open
     }
@@ -107,7 +119,7 @@ async function isAiEnabled(calledNumber, prefetchedPhone, opts = {}) {
     return data.ai_enabled !== false;
   } catch (err) {
     console.error("[AnswerMode] isAiEnabled check failed (fail-open):", err.message);
-    captureFailOpen(err, "fail-open", calledNumber, "error", { callSid: opts.callSid });
+    captureFailOpen(err, SENTRY_REASONS.FAIL_OPEN, calledNumber, "error", { callSid: opts.callSid });
     return true; // fail-open
   }
 }
@@ -207,7 +219,7 @@ async function getPhoneNumberContext(calledNumber, prefetchedPhone, opts = {}) {
     console.error("[AnswerMode] getPhoneNumberContext DB error:", {
       calledNumber, code: error.code, message: error.message,
     });
-    captureFailOpen(error, "context-lookup-failed", calledNumber, "warning", { callSid: opts.callSid });
+    captureFailOpen(error, SENTRY_REASONS.CONTEXT_LOOKUP_FAILED, calledNumber, "warning", { callSid: opts.callSid });
   }
   if (error || !phone) return null;
 

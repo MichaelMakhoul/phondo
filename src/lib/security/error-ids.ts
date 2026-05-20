@@ -15,7 +15,19 @@
  * directly, so the constant value is the spec.
  *
  * Add new constants here when you introduce a new Sentry reason. Don't
- * inline strings at capture sites.
+ * inline strings at capture sites — use `setReasonTag(scope, reason)`
+ * from `@/lib/observability/sentry-tags` or `pageSentry({ reason })`
+ * from `@/lib/observability/page-sentry` so the typechecker enforces
+ * the constraint.
+ *
+ * Casing convention (SCRUM-297):
+ *   - NEW reasons use kebab-case (`my-thing-failed`).
+ *   - LEGACY reasons that pre-date this file (caller-sms, twilio
+ *     webhook, `user_phone_equals_phondo` in voice-server) keep their
+ *     existing snake_case wire format to preserve any Grafana alert
+ *     rules already keyed on those strings. Renaming them would be a
+ *     coordinated flag-day operation (update code + alert rules in
+ *     the same window) and is out of scope here.
  */
 
 export const SENTRY_REASONS = {
@@ -79,6 +91,51 @@ export const SENTRY_REASONS = {
    *  user as non-admin) but pages so a real admin denied during a
    *  brownout isn't invisible. */
   ADMIN_AUTH_LOOKUP_FAILED: "admin-auth-lookup-failed",
+
+  // ─── org membership lookup (SCRUM-297) ──────────────────────────────
+  /** getUserRoleInOrg's Postgres query failed — fails closed (returns
+   *  null → 404/403) but pages so a real admin denied during a brownout
+   *  isn't invisible. Distinct from ADMIN_AUTH_LOOKUP_FAILED above:
+   *  that's platform-admin, this is per-org role. */
+  ORG_ROLE_LOOKUP_FAILED: "org-role-lookup-failed",
+
+  // ─── caller-sms (SCRUM-297, legacy snake_case wire format) ──────────
+  // The 8 reasons below pre-date this constants file. Wire format kept
+  // as snake_case so existing Grafana rules / on-call runbooks still
+  // match. New SMS reasons should use kebab-case.
+  /** Failed to read `organizations.sms_sender` — degraded SMS to use
+   *  the phone-number sender. Page so the branded-sender feature can't
+   *  silently regress to phone-number senders across the fleet. */
+  SMS_SENDER_READ_FAILED: "sms_sender_read_failed",
+  /** Alphanumeric SMS body has no opt-out marker — compliance risk
+   *  (every commercial SMS must carry a working unsubscribe facility
+   *  per AU Spam Act 2003 / US TCPA). */
+  SMS_OPT_OUT_MARKER_MISSING: "sms_opt_out_marker_missing",
+  /** Failed to look up org's business phone/email when rewriting the
+   *  alphanumeric opt-out line. */
+  OPT_OUT_CONTACT_READ_FAILED: "opt_out_contact_read_failed",
+  /** Failed to check opt-out status before sending caller SMS. */
+  OPTOUT_CHECK_FAILED: "optout_check_failed",
+  /** Failed to evaluate the per-org rate-limit cap before sending
+   *  caller SMS. */
+  RATE_LIMIT_CHECK_FAILED: "rate_limit_check_failed",
+  /** Failed to insert the outbound SMS log row. */
+  SMS_LOG_INSERT_FAILED: "sms_log_insert_failed",
+  /** Failed to read the org's SMS-notifications-enabled toggle. */
+  ORG_TOGGLE_READ_FAILED: "org_toggle_read_failed",
+  /** Failed to upsert the appointment-confirmation tracking row after
+   *  sending a confirmation SMS. */
+  CONFIRMATION_UPSERT_FAILED: "confirmation_upsert_failed",
+
+  // ─── twilio sms-status webhook (SCRUM-297, legacy snake_case) ───────
+  /** Twilio signature validation failed on the SMS status webhook —
+   *  brute-force probe or genuine misconfig. Sampled 1-in-50 to avoid
+   *  Sentry-quota burn during attack noise. */
+  INVALID_SIGNATURE: "invalid_signature",
+  /** Two terminal delivery callbacks arrived out of order — e.g.
+   *  `undelivered` after `delivered`. We keep the first; this tag lets
+   *  on-call investigate whether the carrier or our handler is buggy. */
+  TERMINAL_STATE_COLLISION: "terminal_state_collision",
 } as const;
 
 export type SentryReason = (typeof SENTRY_REASONS)[keyof typeof SENTRY_REASONS];
