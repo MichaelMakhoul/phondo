@@ -4,6 +4,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { isPlatformAdmin } from "@/lib/admin/admin-auth";
 import { withRateLimitDistributed } from "@/lib/security/rate-limiter";
 import { scanBusinessCRMs } from "@/lib/lead-discovery/search-orchestrator";
+import { classifyLeadDiscoveryFailure } from "@/lib/lead-discovery/errors";
 import { isValidUUID } from "@/lib/security/validation";
 import { SENTRY_REASONS } from "@/lib/security/error-ids";
 import { pageSentry } from "@/lib/observability/page-sentry";
@@ -76,6 +77,11 @@ export async function POST(req: NextRequest) {
       service: "next-api",
       reason: SENTRY_REASONS.LEAD_DISCOVERY_SCAN_FAILED,
       err,
+      // SCRUM-309: failureKind is a TAG (not an extra) — Sentry/Grafana
+      // can only filter, group, and alert-split on indexed tags, which
+      // is exactly the "filter on the board instead of opening every
+      // stack" outcome this ticket targets.
+      tags: { failureKind: classifyLeadDiscoveryFailure(err) },
       extras: { businessIdCount: ids.length },
     });
     // SCRUM-301 review: include `rl.headers` on the 500 path so the

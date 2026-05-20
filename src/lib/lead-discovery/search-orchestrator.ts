@@ -17,6 +17,7 @@ import {
   type DiscoveredPlace,
 } from "./google-places";
 import { scanWebsiteForCRM } from "./crm-detector";
+import { PlacesApiError, LeadDiscoveryDbError } from "./errors";
 import type { DiscoveredBusiness } from "./types";
 
 export type { DiscoveredBusiness };
@@ -69,19 +70,43 @@ export async function executeSearch(
     if (placeIds.length === 0) {
       return { businesses: [], cached: true };
     }
-    const { data: businesses } = await (supabase as any)
+    // SCRUM-309: capture the read error. A cache HIT means this query
+    // had results before — silently returning [] on a DB error would
+    // be actively misleading (looks like the cached query now finds
+    // nothing). Throw so it 500s + pages with failureKind=db-query.
+    const { data: businesses, error: cacheHitReadError } = await (supabase as any)
       .from("discovered_businesses")
       .select("*")
       .in("google_place_id", placeIds);
+    if (cacheHitReadError) {
+      throw new LeadDiscoveryDbError(
+        `Failed to load cached businesses: ${cacheHitReadError.message}`,
+        { cause: cacheHitReadError },
+      );
+    }
     return { businesses: businesses ?? [], cached: true };
   }
 
   // 2. Cache miss — search Google Places
-  const places = await searchMultipleProfessions(
-    params.location,
-    params.professions,
-    params.limit
-  );
+  // SCRUM-309: tag Google Places throws so the route catch can set
+  // failureKind=google-places. NOTE: searchPlaces() currently only
+  // THROWS on a missing API key or a hard fetch/network rejection — it
+  // logs-and-continues on a non-2xx (quota/rate-limit) response, so
+  // those degrade to fewer results rather than reaching here. SCRUM-314
+  // tracks making searchPlaces surface a typed quota/HTTP error too.
+  let places;
+  try {
+    places = await searchMultipleProfessions(
+      params.location,
+      params.professions,
+      params.limit
+    );
+  } catch (err) {
+    throw new PlacesApiError(
+      err instanceof Error ? err.message : "Google Places search failed",
+      { cause: err },
+    );
+  }
 
   if (places.length === 0) {
     return { businesses: [], cached: false };
@@ -128,11 +153,22 @@ export async function executeSearch(
   }
 
   // 5. Reload from DB (to get generated IDs)
+  // SCRUM-309: capture the read error. We've already spent the (paid,
+  // rate-limited) Google Places calls by this point — silently
+  // returning [] on a reload failure would discard that work and look
+  // like an empty search. Throw so it 500s + pages with db-query.
   const placeIds = places.map((p) => p.placeId);
-  const { data: businesses } = await (supabase as any)
+  const { data: businesses, error: reloadError } = await (supabase as any)
     .from("discovered_businesses")
     .select("*")
     .in("google_place_id", placeIds);
+
+  if (reloadError) {
+    throw new LeadDiscoveryDbError(
+      `Failed to reload searched businesses: ${reloadError.message}`,
+      { cause: reloadError },
+    );
+  }
 
   return { businesses: businesses ?? [], cached: false };
 }
@@ -153,18 +189,35 @@ export async function scanBusinessCRMs(
   const supabase = adminClient ?? createAdminClient();
 
   // Load businesses that need scanning
-  const { data: businesses } = await (supabase as any)
+  // SCRUM-309: capture the read error and throw a typed DB error. The
+  // read previously fell through silently — a real DB outage looked
+  // identical to "all already scanned" and the scan returned [] as if
+  // it succeeded. Now it 500s + pages with failureKind=db-query.
+  const { data: businesses, error: loadError } = await (supabase as any)
     .from("discovered_businesses")
     .select("*")
     .in("id", businessIds)
     .is("detected_crm", null);
 
+  if (loadError) {
+    throw new LeadDiscoveryDbError(
+      `Failed to load businesses for scanning: ${loadError.message}`,
+      { cause: loadError },
+    );
+  }
+
   if (!businesses || businesses.length === 0) {
     // Return already-scanned businesses if any
-    const { data: all } = await (supabase as any)
+    const { data: all, error: allError } = await (supabase as any)
       .from("discovered_businesses")
       .select("*")
       .in("id", businessIds);
+    if (allError) {
+      throw new LeadDiscoveryDbError(
+        `Failed to load already-scanned businesses: ${allError.message}`,
+        { cause: allError },
+      );
+    }
     return all ?? [];
   }
 
@@ -210,10 +263,17 @@ export async function scanBusinessCRMs(
   }
 
   // Return updated records
-  const { data: updated } = await (supabase as any)
+  const { data: updated, error: reloadError } = await (supabase as any)
     .from("discovered_businesses")
     .select("*")
     .in("id", businessIds);
+
+  if (reloadError) {
+    throw new LeadDiscoveryDbError(
+      `Failed to reload scanned businesses: ${reloadError.message}`,
+      { cause: reloadError },
+    );
+  }
 
   return updated ?? [];
 }
@@ -264,7 +324,10 @@ export async function loadFilteredBusinesses(
   const { data, error } = await query.limit(5000);
   if (error) {
     console.error("[Lead Discovery] Failed to load filtered businesses:", error);
-    throw new Error(`Database query failed: ${error.message}`);
+    // SCRUM-309: typed so the export route catch tags failureKind=db-query.
+    throw new LeadDiscoveryDbError(`Database query failed: ${error.message}`, {
+      cause: error,
+    });
   }
   return data ?? [];
 }

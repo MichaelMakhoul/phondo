@@ -4,6 +4,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { isPlatformAdmin } from "@/lib/admin/admin-auth";
 import { withRateLimitDistributed } from "@/lib/security/rate-limiter";
 import { executeSearch } from "@/lib/lead-discovery/search-orchestrator";
+import { classifyLeadDiscoveryFailure } from "@/lib/lead-discovery/errors";
 import { SENTRY_REASONS } from "@/lib/security/error-ids";
 import { pageSentry } from "@/lib/observability/page-sentry";
 
@@ -88,6 +89,10 @@ export async function POST(req: NextRequest) {
       service: "next-api",
       reason: SENTRY_REASONS.LEAD_DISCOVERY_SEARCH_FAILED,
       err,
+      // SCRUM-309: failureKind discriminator as a filterable TAG
+      // (google-places | db-query | unknown). `location` stays an
+      // extra — it's free-text and would pollute the tag index.
+      tags: { failureKind: classifyLeadDiscoveryFailure(err) },
       extras: { location, professionCount: professions.length, limit },
     });
     // SCRUM-301 review: include `rl.headers` on the 500 path so the
