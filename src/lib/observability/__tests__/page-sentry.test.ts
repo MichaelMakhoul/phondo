@@ -194,3 +194,99 @@ describe("pageSentry helper (SCRUM-300)", () => {
     expect(Sentry.captureMessage).not.toHaveBeenCalled();
   });
 });
+
+describe("pageSentry structured [ALERT] logging (SCRUM-320)", () => {
+  // The @sentry/nextjs SDK is disabled in prod (no DSN), so the
+  // structured stdout line is the PRIMARY signal. It must emit the same
+  // [ALERT:*] format the voice-server shim uses, independent of Sentry.
+  it("emits [ALERT:error] [service] msg | reason=… for an error-level call", () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    pageSentry({
+      service: "next-api",
+      reason: "voice-preview-failed",
+      level: "error",
+      message: "voice-server returned 500",
+    });
+    expect(errorSpy).toHaveBeenCalledWith(
+      "[ALERT:error] [next-api] voice-server returned 500 | reason=voice-preview-failed",
+    );
+    errorSpy.mockRestore();
+  });
+
+  it("emits [ALERT:warning] via console.warn at the default level, with err.message as the summary", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    pageSentry({
+      service: "next-cron",
+      reason: "supabase-ping-failed",
+      err: new Error("connection refused"),
+      tags: { cron: "keep-alive" },
+    });
+    const line = warnSpy.mock.calls[0][0] as string;
+    expect(line).toContain("[ALERT:warning] [next-cron] connection refused");
+    expect(line).toContain("reason=supabase-ping-failed");
+    expect(line).toContain("cron=keep-alive");
+    warnSpy.mockRestore();
+  });
+
+  it("PII-scrubs the extras in the structured line", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    pageSentry({
+      service: "next-api",
+      reason: "voice-preview-failed",
+      message: "boom",
+      extras: { callerPhone: "+61400000000", orgId: "uuid-1" },
+    });
+    const line = warnSpy.mock.calls[0][0] as string;
+    expect(line).toContain("callerPhone=[scrubbed]");
+    expect(line).toContain("orgId=uuid-1");
+    expect(line).not.toContain("+61400000000");
+    warnSpy.mockRestore();
+  });
+
+  it("emits the structured line EVEN WHEN the Sentry SDK throws (independent of Sentry)", () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(Sentry.withScope).mockImplementationOnce(() => {
+      throw new Error("sentry down");
+    });
+    pageSentry({
+      service: "next-api",
+      reason: "voice-preview-failed",
+      level: "error",
+      message: "still alerted",
+    });
+    // The [ALERT] line is emitted before/independent of the Sentry block.
+    expect(errorSpy).toHaveBeenCalledWith("[ALERT:error] [next-api] still alerted | reason=voice-preview-failed");
+    errorSpy.mockRestore();
+  });
+
+  it("includes the err stack as a single-lined `stack=` field (matches the voice-server ` → ` joiner)", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const err = new Error("x");
+    err.stack = "Error: x\n  at a (f.js:1:1)\n  at b (f.js:2:2)\n  at c (f.js:3:3)";
+    pageSentry({ service: "next-api", reason: "voice-preview-failed", err });
+    const line = warnSpy.mock.calls[0][0] as string;
+    // First 3 stack lines, joined with " → " (the 4th frame dropped).
+    expect(line).toContain("stack=Error: x →   at a (f.js:1:1) →   at b (f.js:2:2)");
+    expect(line).not.toContain("f.js:3:3");
+    warnSpy.mockRestore();
+  });
+
+  it("does NOT crash the caller when an extras value is unserializable (nested BigInt)", () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(() =>
+      pageSentry({
+        service: "next-api",
+        reason: "voice-preview-failed",
+        message: "boom",
+        // Nested BigInt → JSON.stringify throws inside the formatter.
+        extras: { meta: { n: BigInt(10) } as unknown as Record<string, unknown> },
+      }),
+    ).not.toThrow();
+    // The formatter defect is caught + logged, not propagated.
+    expect(errorSpy).toHaveBeenCalledWith(
+      "[pageSentry] structured_log_failed (continuing):",
+      expect.anything(),
+    );
+    errorSpy.mockRestore();
+  });
+});

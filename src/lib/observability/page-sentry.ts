@@ -1,5 +1,52 @@
 import * as Sentry from "@sentry/nextjs";
 import type { SentryReason } from "@/lib/security/error-ids";
+import { scrubObject } from "./sentry-scrub";
+
+/**
+ * Emit a structured `[ALERT:<level>] [<service>] <message> | k=v …` line
+ * — the SAME format the voice-server's structured-log shim
+ * (`voice-server/lib/sentry.js`) uses — so the existing Grafana Loki
+ * alert rules (which match `[ALERT:error]` / `[ALERT:warning]`) cover the
+ * Next.js half once Vercel logs are drained to Loki.
+ *
+ * SCRUM-320: this is the PRIMARY signal. `@sentry/nextjs` is disabled in
+ * production (no `NEXT_PUBLIC_SENTRY_DSN`), so the `Sentry.captureException`
+ * call in pageSentry is a no-op — without this line a paged Next.js error
+ * would surface nowhere alertable. Extras are PII-scrubbed via the
+ * SCRUM-312 scrubber. Pure stdout; never throws (caller wraps it).
+ */
+function emitStructuredAlert(opts: {
+  service: string;
+  reason: SentryReason;
+  level: "warning" | "error";
+  err?: unknown;
+  message?: string;
+  extras?: Record<string, unknown>;
+  tags?: Record<string, string>;
+}): void {
+  const { service, reason, level, err, message, extras, tags } = opts;
+  const summary =
+    message ??
+    (err instanceof Error
+      ? err.message
+      : err !== undefined
+        ? String(err)
+        : `pageSentry called with no payload (reason=${reason})`);
+
+  const fields: Record<string, unknown> = { reason, ...tags, ...extras };
+  if (err instanceof Error && err.stack) {
+    // First 3 stack frames, single-lined — matches the voice-server shim.
+    fields.stack = err.stack.split("\n").slice(0, 3).join(" → ");
+  }
+  const scrubbed = scrubObject(fields) as Record<string, unknown>;
+  const pairs = Object.entries(scrubbed)
+    .filter(([, v]) => v !== undefined && v !== null)
+    .map(([k, v]) => `${k}=${typeof v === "object" ? JSON.stringify(v) : v}`);
+
+  const line = `[ALERT:${level}] [${service}] ${summary}${pairs.length ? ` | ${pairs.join(" ")}` : ""}`;
+  if (level === "error") console.error(line);
+  else console.warn(line);
+}
 
 /**
  * Shared helper for paging Sentry from server-side code.
@@ -50,9 +97,21 @@ export function pageSentry(opts: {
   tags?: Record<string, string>;
 }) {
   const { service, reason, level = "warning", err, message, extras, tags } = opts;
+
+  // SCRUM-320: PRIMARY signal — a structured [ALERT:*] stdout line that
+  // works regardless of the (currently-unset) Sentry DSN, so Next.js
+  // errors are visible in Vercel logs and Loki-alertable once drained.
+  // Wrapped so a formatting/scrub defect can't crash the caller.
+  try {
+    emitStructuredAlert({ service, reason, level, err, message, extras, tags });
+  } catch (logErr) {
+    console.error("[pageSentry] structured_log_failed (continuing):", logErr);
+  }
+
   // SCRUM-277 contract: a Sentry shim defect must not crash a cron
   // or route handler — Sentry is a side-channel. The outer try
-  // remains in place to preserve that contract.
+  // remains in place to preserve that contract. (Secondary path: only
+  // transports if a NEXT_PUBLIC_SENTRY_DSN is ever configured.)
   //
   // SCRUM-300 review: prior code logged "[pageSentry] capture
   // failed" for ANY swallow, which conflated two very different
