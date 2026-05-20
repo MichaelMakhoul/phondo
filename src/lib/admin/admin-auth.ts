@@ -38,8 +38,20 @@ export async function isPlatformAdmin(
 
   if (error) {
     // Legitimate "not found" — no row in user_profiles is a normal
-    // case for users not in the admin pool. Don't page.
-    if (error.code === NO_ROWS_ERROR_CODE) return false;
+    // case for users not in the admin pool. We don't PAGE (that would
+    // be noise), but SCRUM-308 adds a Loki breadcrumb so that if a user
+    // who SHOULD be a platform admin reports being locked out, on-call
+    // can correlate the denial. Measured 2026-05-20: 0 of 3 users lacked
+    // a profile row, so this effectively never fires today and carries
+    // no noise risk. Revisit (sample, or gate on elevated perms
+    // elsewhere) only if signup ever leaves many users profileless.
+    if (error.code === NO_ROWS_ERROR_CODE) {
+      console.warn(
+        "[isPlatformAdmin] No user_profiles row — treating as non-admin:",
+        { userId },
+      );
+      return false;
+    }
 
     // Anything else (network, RLS regression, admin-shutdown, etc.)
     // is a real fault. The caller still gets a fail-closed `false`,
