@@ -7,27 +7,25 @@ import { scanBusinessCRMs } from "@/lib/lead-discovery/search-orchestrator";
 import { isValidUUID } from "@/lib/security/validation";
 
 export async function POST(req: NextRequest) {
-  // Auth
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  if (!(await isPlatformAdmin(user.id)))
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  // SCRUM-301: construct the admin client ONCE per request so it can
+  // be threaded through the rate-limit RPC, the isPlatformAdmin check,
+  // and the orchestrator without each layer spinning up a new
+  // SupabaseClient + GoTrueClient + RealtimeClient + Postgrest stack.
+  const adminClient = createAdminClient();
 
-  // Rate limit — Google Places API charges per call. SCRUM-290:
-  // shared Postgres-backed limiter, `adminExpensive` is costControl.
+  // SCRUM-301: rate-limit BEFORE auth so unauthenticated attackers
+  // hammering the endpoint hit the limiter (cheap, IP-keyed) rather
+  // than the auth + isPlatformAdmin Postgres lookups. Google Places
+  // API charges per call → `adminExpensive` is costControl (fails
+  // CLOSED on RPC error rather than reopening the per-instance bypass).
   const rl = await withRateLimitDistributed(
-    createAdminClient(),
+    adminClient,
     req,
     "admin-lead-discovery-scan",
     "adminExpensive",
   );
   if (!rl.allowed) {
-    // SCRUM-302: distinguish brownout-deny ("Supabase degraded") from
-    // quota-deny ("hit 3/min admin cap") so triage doesn't waste time
-    // on the wrong layer.
+    // SCRUM-302: brownout-deny vs quota-deny.
     const error = rl.failReason === "service-degraded"
       ? "Service temporarily unavailable. Please try again in a moment."
       : "Rate limit exceeded";
@@ -36,6 +34,15 @@ export async function POST(req: NextRequest) {
       { status: 429, headers: rl.headers }
     );
   }
+
+  // Auth + admin gates run AFTER the rate-limit check.
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!(await isPlatformAdmin(user.id, adminClient)))
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
   // Parse body
   let body: { businessIds?: string[] };
@@ -57,10 +64,16 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const businesses = await scanBusinessCRMs(ids);
+    const businesses = await scanBusinessCRMs(ids, adminClient);
     return NextResponse.json({ businesses }, { headers: rl.headers });
   } catch (err) {
     console.error("[Lead Discovery Scan] Error:", err);
-    return NextResponse.json({ error: "Scan failed" }, { status: 500 });
+    // SCRUM-301 review: include `rl.headers` on the 500 path so the
+    // admin client doesn't lose its quota state when scanBusinessCRMs
+    // throws (matches export-route behaviour from SCRUM-290).
+    return NextResponse.json(
+      { error: "Scan failed" },
+      { status: 500, headers: rl.headers },
+    );
   }
 }
