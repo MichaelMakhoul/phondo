@@ -25,12 +25,17 @@ import type { SentryReason } from "@/lib/security/error-ids";
  * @param message     Non-Error condition (e.g. "RPC returned wrong
  *                    shape"). Routes through `captureMessage` —
  *                    SCRUM-304 will revisit this to attach stack traces.
- * @param extras      Arbitrary context for triage. NOTE: there is NO
- *                    PII scrubber on the Next.js Sentry config (the
- *                    voice-server has one at `voice-server/lib/sentry.js`
- *                    but that scrubber doesn't apply here). Callers
- *                    must mask phone numbers, emails, full names, etc.
- *                    before passing them in.
+ * @param extras      Arbitrary context for triage. A `beforeSend` PII
+ *                    scrubber runs on every Next.js Sentry event
+ *                    (SCRUM-312, `src/lib/observability/sentry-scrub.ts`):
+ *                    it masks values under PII-named keys (phone, email,
+ *                    name, address, …) and truncates long strings. That
+ *                    is a safety net, not a license — it keys on the
+ *                    field NAME, so PII smuggled under a benign key
+ *                    (e.g. `note: "call John on +61…"`) still gets
+ *                    through. Prefer passing IDs (orgId, callSid) over
+ *                    raw values, and use PII-suggestive key names when
+ *                    a value could contain PII so the scrubber catches it.
  */
 export function pageSentry(opts: {
   service: "next-api" | "next-cron";
