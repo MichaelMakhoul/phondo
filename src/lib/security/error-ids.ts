@@ -97,6 +97,13 @@ export const SENTRY_REASONS = {
   LEAD_DISCOVERY_SCAN_FAILED: "lead-discovery-scan-failed",
   LEAD_DISCOVERY_SEARCH_FAILED: "lead-discovery-search-failed",
   LEAD_DISCOVERY_EXPORT_FAILED: "lead-discovery-export-failed",
+  /** scanBusinessCRMs completed but N per-business CRM updates failed —
+   *  the scan still returns 200 with the rows that DID update. Distinct
+   *  from LEAD_DISCOVERY_SCAN_FAILED (the whole scan threw → 500) so a
+   *  Grafana rule can alert on a SYSTEMATIC update regression (a
+   *  permanently-stuck set of rows re-scraped every scan) at warning
+   *  level without conflating it with hard failures. SCRUM-315. */
+  LEAD_DISCOVERY_SCAN_UPDATE_PARTIAL: "lead-discovery-scan-update-partial",
   /** Migrated from the inline `"twilio-create-call-failed"` literal
    *  the test-fallback route was using since SCRUM-268. */
   TWILIO_CREATE_CALL_FAILED: "twilio-create-call-failed",

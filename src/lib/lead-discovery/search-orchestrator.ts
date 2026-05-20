@@ -18,6 +18,8 @@ import {
 } from "./google-places";
 import { scanWebsiteForCRM } from "./crm-detector";
 import { PlacesApiError, LeadDiscoveryDbError } from "./errors";
+import { SENTRY_REASONS } from "@/lib/security/error-ids";
+import { pageSentry } from "@/lib/observability/page-sentry";
 import type { DiscoveredBusiness } from "./types";
 
 export type { DiscoveredBusiness };
@@ -221,13 +223,18 @@ export async function scanBusinessCRMs(
     return all ?? [];
   }
 
-  // Process in batches
+  // Process in batches. SCRUM-315: a single row's UPDATE failing must
+  // NOT abort the batch (the row just stays unscanned and is re-selected
+  // next pass), but the COUNT of failures was previously console-only
+  // and invisible to alerting. Each task returns 1 on update failure;
+  // we sum them and page ONCE at the end if any failed (see below).
   const toScan = businesses as DiscoveredBusiness[];
+  let updateFailures = 0;
   for (let i = 0; i < toScan.length; i += SCAN_CONCURRENCY) {
     const batch = toScan.slice(i, i + SCAN_CONCURRENCY);
 
-    await Promise.all(
-      batch.map(async (biz) => {
+    const batchFailures = await Promise.all(
+      batch.map(async (biz): Promise<number> => {
         if (!biz.website) {
           const { error: noWebErr } = await (supabase as any)
             .from("discovered_businesses")
@@ -237,8 +244,11 @@ export async function scanBusinessCRMs(
               updated_at: new Date().toISOString(),
             })
             .eq("id", biz.id);
-          if (noWebErr) console.error("[Lead Discovery] Update error (no_website):", noWebErr);
-          return;
+          if (noWebErr) {
+            console.error("[Lead Discovery] Update error (no_website):", noWebErr);
+            return 1;
+          }
+          return 0;
         }
 
         const result = await scanWebsiteForCRM(biz.website);
@@ -257,9 +267,38 @@ export async function scanBusinessCRMs(
             updated_at: new Date().toISOString(),
           })
           .eq("id", biz.id);
-        if (scanErr) console.error("[Lead Discovery] Scan update error:", scanErr);
+        if (scanErr) {
+          console.error("[Lead Discovery] Scan update error:", scanErr);
+          return 1;
+        }
+        return 0;
       })
     );
+    updateFailures += batchFailures.reduce((sum, n) => sum + n, 0);
+  }
+
+  // SCRUM-315: surface the aggregate failure count ONCE per scan (not
+  // per row). A systematic update regression (column rename, constraint,
+  // RLS) otherwise produces a permanently-stuck set of rows that get
+  // re-scraped every scan with no on-call signal — the route returns 200.
+  // Distinct reason from the route's hard-failure page so a Grafana rule
+  // can alert on this partial-degradation case separately.
+  //
+  // Note: this count is best-effort. It covers UPDATEs that RESOLVE with
+  // a Postgres `{ error }`. An UPDATE that REJECTS (transport/network
+  // fault) throws out of the Promise.all and skips this page entirely —
+  // that's a HARD failure and correctly surfaces as the route's
+  // LEAD_DISCOVERY_SCAN_FAILED 500 instead (with the per-row console
+  // breadcrumbs above still in Loki).
+  if (updateFailures > 0) {
+    pageSentry({
+      service: "next-api",
+      reason: SENTRY_REASONS.LEAD_DISCOVERY_SCAN_UPDATE_PARTIAL,
+      level: "warning",
+      message: `scanBusinessCRMs: ${updateFailures} of ${toScan.length} per-business CRM updates failed`,
+      tags: { failureKind: "db-query" },
+      extras: { updateFailures, scanned: toScan.length },
+    });
   }
 
   // Return updated records
