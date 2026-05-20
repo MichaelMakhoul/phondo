@@ -87,6 +87,10 @@ export const SENTRY_REASONS = {
   /** Migrated from the inline `"twilio-create-call-failed"` literal
    *  the test-fallback route was using since SCRUM-268. */
   TWILIO_CREATE_CALL_FAILED: "twilio-create-call-failed",
+  /** test-fallback route's outer catch — an unexpected throw anywhere
+   *  in the handler (not the scoped Twilio-create failure above).
+   *  level=error: the route promised JSON but hit an unhandled path. */
+  TEST_FALLBACK_UNEXPECTED: "test-fallback-unexpected",
   /** isPlatformAdmin's Postgres query failed — fails closed (treats
    *  user as non-admin) but pages so a real admin denied during a
    *  brownout isn't invisible. */
