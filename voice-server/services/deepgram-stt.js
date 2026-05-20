@@ -1,3 +1,4 @@
+// @ts-nocheck -- SCRUM-317: pre-existing checkJs baseline (burn down incrementally; do NOT add new untyped code here)
 const WebSocket = require("ws");
 const { Sentry } = require("../lib/sentry");
 

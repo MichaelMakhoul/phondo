@@ -1,3 +1,4 @@
+// @ts-nocheck -- SCRUM-317: pre-existing checkJs baseline (burn down incrementally; do NOT add new untyped code here)
 /**
  * Tier 2 Turn Validator — Claude Haiku verifies Sophie's spoken response
  * matches the actual tool result.

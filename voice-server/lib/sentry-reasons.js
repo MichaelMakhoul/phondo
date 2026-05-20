@@ -67,15 +67,16 @@ const SENTRY_REASONS = Object.freeze({
 
 /**
  * Sentinel used when `setReasonTag` is called with a non-string
- * argument — almost always a typo on the JS side (no `@ts-check`,
- * no `jsconfig.json` in voice-server today, so JSDoc `@param` is
- * cosmetic — see SCRUM-313 follow-up). Without this sentinel the
- * structured-log shim at `lib/sentry.js` filters `undefined` out
- * of `formatExtras` entirely and the `reason=` token never appears
- * in the alert line, so the matching Grafana rule silently never
- * fires. The sentinel produces a loud-but-wrong alert (a developer
- * sees `reason=invalid-reason-passed` and chases the typo) rather
- * than the silent miss that would otherwise result.
+ * argument. SCRUM-313 added a `jsconfig.json` + a `tsc --checkJs` CI
+ * step, so for CHECKED files a `SENTRY_REASONS.TYPO` is now a build
+ * error — but `server.js` + `tool-executor.js` are still @ts-nocheck'd
+ * (SCRUM-317 burndown), so a typo at those call sites stays a runtime
+ * concern. This sentinel is the defense-in-depth net: without it the
+ * structured-log shim at `lib/sentry.js` filters `undefined` out of
+ * `formatExtras` entirely and the `reason=` token never appears in the
+ * alert line, so the matching Grafana rule silently never fires. The
+ * sentinel produces a loud-but-wrong alert (a developer sees
+ * `reason=invalid-reason-passed` and chases the typo) instead.
  */
 const INVALID_REASON_SENTINEL = "invalid-reason-passed";
 
@@ -86,11 +87,12 @@ const INVALID_REASON_SENTINEL = "invalid-reason-passed";
  * type narrows the second arg to a value of `SENTRY_REASONS`, so
  * editors flag a typo and a rename in `SENTRY_REASONS` propagates.
  *
- * SCRUM-297 review: the JSDoc enforcement is editor-only in this
- * project (no `tsc --checkJs` step in CI). The runtime guard below
- * is the real safety net — without it, a typo in a SENTRY_REASONS
- * key produces `undefined`, which the structured-log shim then
- * strips from the alert line, silently breaking the Grafana rule.
+ * SCRUM-313: the JSDoc `@param {SentryReason}` is now CI-enforced for
+ * checked files (`tsc --checkJs`), so a typo here fails the build. The
+ * runtime guard below remains as defense-in-depth — it still covers
+ * the @ts-nocheck'd call sites (server.js, tool-executor.js) until the
+ * SCRUM-317 burndown, where a typo would otherwise produce `undefined`
+ * and the structured-log shim would strip it from the alert line.
  *
  * For sites that DON'T need to attach additional scope tags / extras,
  * prefer wrapping the whole capture in a higher-level helper (e.g.
