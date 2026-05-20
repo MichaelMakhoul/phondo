@@ -1,4 +1,3 @@
-// @ts-nocheck -- SCRUM-317: pre-existing checkJs baseline (burn down incrementally; do NOT add new untyped code here)
 /**
  * Plain JS port of src/lib/prompt-builder/generate-prompt.ts
  * and legacy prompt handling from src/lib/knowledge-base/aggregate.ts.
@@ -578,7 +577,7 @@ function buildBehaviorsSection(behaviors, options) {
  * Build a full system prompt from a guided PromptConfig + context.
  *
  * @param {object} config
- * @param {{ businessName?: string, industry?: string, knowledgeBase?: string, timezone?: string, businessHours?: object, defaultAppointmentDuration?: number, calendarEnabled?: boolean, isAfterHours?: boolean, afterHoursConfig?: object }} context
+ * @param {{ businessName?: string, industry?: string, knowledgeBase?: string, timezone?: string, businessHours?: object, defaultAppointmentDuration?: number, calendarEnabled?: boolean, isAfterHours?: boolean, afterHoursConfig?: object, transferRules?: any[], serviceTypes?: any[], assistant?: { settings?: { flexibleBooking?: boolean } }, organization?: object }} context
  */
 function buildPromptFromConfig(config, context) {
   const sections = [];

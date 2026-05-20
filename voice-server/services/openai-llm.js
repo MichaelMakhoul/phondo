@@ -1,4 +1,3 @@
-// @ts-nocheck -- SCRUM-317: pre-existing checkJs baseline (burn down incrementally; do NOT add new untyped code here)
 // LLM provider configuration — supports OpenAI, Anthropic, and Gemini
 // Set LLM_PROVIDER env var to switch: "anthropic" (default), "openai", "gemini"
 const LLM_PROVIDER = process.env.LLM_PROVIDER || "openai";
@@ -170,7 +169,11 @@ async function getChatResponse(apiKey, messages, options) {
   const resolvedKey = getApiKey(apiKey);
   const model = options?.model || DEFAULT_MODEL;
 
-  let fetchUrl, headers, body;
+  let fetchUrl, headers;
+  // Request payload differs by provider (anthropic vs openai-compatible)
+  // and gains tools/tool_choice conditionally — type it as an open record.
+  /** @type {Record<string, any>} */
+  let body;
 
   if (config.type === "anthropic") {
     const { system, messages: anthropicMsgs } = toAnthropicMessages(messages);
@@ -223,7 +226,9 @@ async function getChatResponse(apiKey, messages, options) {
       throw new Error(`${config.name} API error ${res.status}: ${text}`);
     }
 
-    const data = await res.json();
+    // Response shape is provider-specific (anthropic: content/stop_reason;
+    // openai-compatible: choices[].message) — branched on config.type below.
+    const data = /** @type {any} */ (await res.json());
 
     if (config.type === "anthropic") {
       return parseAnthropicResponse(data);
@@ -257,7 +262,10 @@ async function streamChatResponse(apiKey, messages, options) {
   const model = options?.model || DEFAULT_MODEL;
   const onSentence = options?.onSentence;
 
-  let fetchUrl, headers, body;
+  let fetchUrl, headers;
+  // See getChatResponse: provider-specific payload + conditional tools.
+  /** @type {Record<string, any>} */
+  let body;
 
   if (config.type === "anthropic") {
     const { system, messages: anthropicMsgs } = toAnthropicMessages(messages);
