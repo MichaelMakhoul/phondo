@@ -17,6 +17,11 @@ import { pageSentry } from "@/lib/observability/page-sentry";
  * - url: string (required) - The website URL to scrape
  */
 export async function POST(request: NextRequest) {
+  // SCRUM-311: hoisted above the try so the outer catch can attach it
+  // to the Sentry extras — the most likely failure (scrapeWebsite:
+  // proxy pool exhausted, target 403, DNS fail) needs the URL for
+  // on-call to cluster events by site pattern.
+  let url: string | undefined;
   try {
     // Rate limit — scrape is a paid-action endpoint (Web Unlocker /
     // proxy pool charges per request). SCRUM-290: shared Postgres-
@@ -53,7 +58,7 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json();
-    const { url } = body;
+    url = body.url;
 
     if (!url || typeof url !== "string") {
       return NextResponse.json({ error: "URL is required" }, { status: 400 });
@@ -125,10 +130,18 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     console.error("Scrape preview error:", error);
     // SCRUM-300: route-level catch now pages Sentry.
+    // SCRUM-311: `url` is hoisted above the try so it's in scope here
+    // for triage. Best-effort: it's absent when the throw originated
+    // BEFORE assignment — most realistically a malformed request body
+    // making `request.json()` throw, but also a client-construction or
+    // auth-SDK throw. A missing `url` extra therefore means "failed
+    // during pre-parse/auth", not "Sentry dropped it". pageSentry
+    // tolerates an undefined extra value.
     pageSentry({
       service: "next-api",
       reason: SENTRY_REASONS.SCRAPE_PREVIEW_FAILED,
       err: error,
+      extras: { url },
     });
     return NextResponse.json({ error: "Failed to scrape website" }, { status: 500 });
   }

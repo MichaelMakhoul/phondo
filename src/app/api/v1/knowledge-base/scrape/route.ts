@@ -19,6 +19,12 @@ import { pageSentry } from "@/lib/observability/page-sentry";
  * - maxPages: number (optional) - Maximum pages to scrape (default: 20)
  */
 export async function POST(request: NextRequest) {
+  // SCRUM-311: hoisted above the try so the outer catch can attach
+  // them to the Sentry extras. `organizationId` lets on-call cluster
+  // scrape failures by tenant (a single tenant with a bad stored URL
+  // retry-looping); `url` clusters by site pattern (cloudflare, geo).
+  let url: string | undefined;
+  let organizationId: string | undefined;
   try {
     // Rate limit — KB scrape is paid-action (Web Unlocker / proxy
     // pool charges per request). SCRUM-290: shared Postgres-backed
@@ -69,11 +75,12 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const organizationId = membership.organization_id as string;
+    organizationId = membership.organization_id as string;
 
     // Parse request body
     const body = await request.json();
-    const { url, title, maxPages = 20 } = body;
+    const { title, maxPages = 20 } = body;
+    url = body.url;
 
     if (!url) {
       return NextResponse.json(
@@ -193,14 +200,20 @@ export async function POST(request: NextRequest) {
     });
   } catch (error: any) {
     console.error("Scrape error:", error);
-    // SCRUM-300: route-level catch now pages Sentry. `url` and
-    // `organizationId` are declared inside the try and not in scope
-    // here — adding them requires hoisting, tracked separately to
-    // keep this change focused.
+    // SCRUM-300: route-level catch now pages Sentry.
+    // SCRUM-311: `url` + `organizationId` are hoisted above the try so
+    // on-call can cluster scrape failures by tenant and site pattern.
+    // Best-effort: each is absent when the throw originated before its
+    // assignment. `organizationId` is set after the membership lookup;
+    // `url` after `request.json()` — so a malformed request body throws
+    // with `organizationId` present but `url` absent. A missing extra
+    // means "failed before that stage", not "Sentry dropped it".
+    // pageSentry tolerates undefined extra values.
     pageSentry({
       service: "next-api",
       reason: SENTRY_REASONS.KB_SCRAPE_FAILED,
       err: error,
+      extras: { url, organizationId },
     });
     // Don't expose internal error details to client
     return NextResponse.json(
