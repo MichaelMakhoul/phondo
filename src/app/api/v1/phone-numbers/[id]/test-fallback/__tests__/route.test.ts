@@ -109,12 +109,20 @@ vi.mock("@/lib/twilio/client", () => ({
 const rateLimitState: {
   allowed: boolean;
   failReason?: "service-degraded";
+  shouldThrow?: Error | null;
 } = { allowed: true };
-const rateLimitMock = vi.fn(async () => ({
-  allowed: rateLimitState.allowed,
-  headers: { "Retry-After": "60" },
-  ...(rateLimitState.failReason ? { failReason: rateLimitState.failReason } : {}),
-}));
+const rateLimitMock = vi.fn(async () => {
+  // SCRUM-310: lever to drive the route's OUTER catch — an unexpected
+  // throw BEFORE the Twilio inner try — so the new TEST_FALLBACK_UNEXPECTED
+  // pageSentry path can be asserted. The limiter runs early in the
+  // handler, inside the outer try.
+  if (rateLimitState.shouldThrow) throw rateLimitState.shouldThrow;
+  return {
+    allowed: rateLimitState.allowed,
+    headers: { "Retry-After": "60" },
+    ...(rateLimitState.failReason ? { failReason: rateLimitState.failReason } : {}),
+  };
+});
 vi.mock("@/lib/security/rate-limiter", () => ({
   rateLimitDistributed: rateLimitMock,
 }));
@@ -197,6 +205,7 @@ beforeEach(() => {
   twilioState.nextSid = "CA_TEST_SID";
   rateLimitState.allowed = true;
   rateLimitState.failReason = undefined;
+  rateLimitState.shouldThrow = null;
 });
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -442,6 +451,23 @@ describe("POST /api/v1/phone-numbers/[id]/test-fallback — Twilio integration",
     expect(args.twiml).toContain("<Hangup");
     // <Say> must come before <Hangup/> for the message to actually play
     expect(args.twiml.indexOf("<Say")).toBeLessThan(args.twiml.indexOf("<Hangup"));
+  });
+
+  it("500 + pages Sentry (TEST_FALLBACK_UNEXPECTED) when an unexpected error throws before the Twilio call", async () => {
+    // SCRUM-310: the outer catch previously called raw
+    // Sentry.captureException with no reason tag + no shim. It now
+    // routes through pageSentry(reason=TEST_FALLBACK_UNEXPECTED,
+    // level=error). Drive it via the rate-limiter throwing (runs
+    // before the inner Twilio try, so it lands in the outer catch).
+    const unexpected = new Error("supabase brownout mid-handler");
+    rateLimitState.shouldThrow = unexpected;
+    const res = await callRoute();
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body.error).toBe("Internal server error");
+    // pageSentry routes an Error through Sentry.captureException unchanged.
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureException).toHaveBeenCalledWith(unexpected);
   });
 
   it("happy path does NOT page Sentry", async () => {

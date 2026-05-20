@@ -1,11 +1,10 @@
 import { NextResponse } from "next/server";
-import * as Sentry from "@sentry/nextjs";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getTwilioClient } from "@/lib/twilio/client";
 import { rateLimitDistributed } from "@/lib/security/rate-limiter";
 import { SENTRY_REASONS } from "@/lib/security/error-ids";
-import { setReasonTag } from "@/lib/observability/sentry-tags";
+import { pageSentry } from "@/lib/observability/page-sentry";
 import { getUserRoleInOrg, isOrgAdmin } from "@/lib/auth/org-membership";
 import {
   expectedE164PrefixForCountry,
@@ -201,31 +200,16 @@ export async function POST(
       // disabled for the destination country, unverified caller-id on
       // trial accounts) would otherwise be invisible in Sentry. Capture
       // with org/phone context so on-call can triage which tenant tripped.
-      //
-      // Wrap the capture itself in try/catch: a Sentry shim defect must
-      // not turn a useful 502 into a generic 500 by throwing out of the
-      // catch block. Same defensive posture as `rateLimitDistributed`.
-      try {
-        Sentry.withScope((scope) => {
-          scope.setTag("service", "next-api");
-          scope.setTag("route", "phone-numbers/test-fallback");
-          // SCRUM-300: migrated from inline literal to SENTRY_REASONS.
-          // SCRUM-297: migrated to setReasonTag helper for consistency
-          // with the rest of the codebase.
-          setReasonTag(scope, SENTRY_REASONS.TWILIO_CREATE_CALL_FAILED);
-          scope.setLevel("warning");
-          scope.setExtras({
-            orgId: row.organization_id,
-            phoneNumberId: id,
-          });
-          Sentry.captureException(twErr);
-        });
-      } catch (sentryErr) {
-        console.error(
-          "[TestFallback] Sentry capture failed (continuing — returning 502):",
-          sentryErr,
-        );
-      }
+      // SCRUM-310: migrated from the hand-rolled withScope + try/catch
+      // shim to pageSentry, which bundles the SCRUM-277 defensive shim
+      // (a Sentry transport defect can't turn this 502 into a 500).
+      pageSentry({
+        service: "next-api",
+        reason: SENTRY_REASONS.TWILIO_CREATE_CALL_FAILED,
+        err: twErr,
+        extras: { orgId: row.organization_id, phoneNumberId: id },
+        tags: { route: "phone-numbers/test-fallback" },
+      });
       return NextResponse.json(
         { error: "Could not place the test call. Please try again in a moment." },
         { status: 502 },
@@ -235,7 +219,18 @@ export async function POST(
     return NextResponse.json({ ok: true, callSid });
   } catch (err) {
     console.error("[TestFallback] Unexpected error:", err);
-    Sentry.captureException(err);
+    // SCRUM-310: the outer catch previously called raw
+    // Sentry.captureException(err) with no service/reason tag and no
+    // defensive shim — a Sentry throw here would escape and turn the
+    // promised JSON 500 into an unstyled HTML 500. pageSentry adds the
+    // tags (so the Grafana alert routes) and the shim.
+    pageSentry({
+      service: "next-api",
+      reason: SENTRY_REASONS.TEST_FALLBACK_UNEXPECTED,
+      level: "error",
+      err,
+      tags: { route: "phone-numbers/test-fallback" },
+    });
     return NextResponse.json(
       { error: "Internal server error" },
       { status: 500 },
