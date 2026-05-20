@@ -5,6 +5,8 @@ import { scrapeWebsite, generateKnowledgeBase } from "@/lib/scraper/website-scra
 import { isUrlAllowed } from "@/lib/security/validation";
 import { withRateLimitDistributed } from "@/lib/security/rate-limiter";
 import { resyncOrgAssistants } from "@/lib/knowledge-base";
+import { SENTRY_REASONS } from "@/lib/security/error-ids";
+import { pageSentry } from "@/lib/observability/page-sentry";
 
 /**
  * POST /api/v1/knowledge-base/scrape
@@ -137,6 +139,17 @@ export async function POST(request: NextRequest) {
 
     if (insertError) {
       console.error("Failed to save knowledge base:", insertError);
+      // SCRUM-300 review: the user has already paid for the full
+      // scrape + LLM extract by the time we reach here. A user
+      // pressing "try again" re-spends. If insert is wedged (column
+      // rename in a migration, RLS regression, etc.) the user burns
+      // money in a retry loop with no on-call signal. Page Sentry.
+      pageSentry({
+        service: "next-api",
+        reason: SENTRY_REASONS.KB_SCRAPE_FAILED,
+        err: insertError,
+        extras: { organizationId, url },
+      });
       return NextResponse.json(
         { error: "Scraped successfully but failed to save. Please try again." },
         { status: 500 }
@@ -149,6 +162,16 @@ export async function POST(request: NextRequest) {
       await resyncOrgAssistants(supabase, organizationId);
     } catch (err) {
       console.error("Failed to resync assistants:", err);
+      // SCRUM-300: KB is saved but the assistant prompt didn't refresh.
+      // User sees the `resyncWarning` in the response, but without
+      // Sentry on-call wouldn't know a systemic regression in
+      // resyncOrgAssistants is happening across orgs.
+      pageSentry({
+        service: "next-api",
+        reason: SENTRY_REASONS.KB_SCRAPE_RESYNC_FAILED,
+        err,
+        extras: { organizationId },
+      });
       resyncWarning = "Knowledge base saved, but assistants may take a moment to reflect changes.";
     }
 
@@ -170,6 +193,15 @@ export async function POST(request: NextRequest) {
     });
   } catch (error: any) {
     console.error("Scrape error:", error);
+    // SCRUM-300: route-level catch now pages Sentry. `url` and
+    // `organizationId` are declared inside the try and not in scope
+    // here — adding them requires hoisting, tracked separately to
+    // keep this change focused.
+    pageSentry({
+      service: "next-api",
+      reason: SENTRY_REASONS.KB_SCRAPE_FAILED,
+      err: error,
+    });
     // Don't expose internal error details to client
     return NextResponse.json(
       { error: "Failed to scrape website" },

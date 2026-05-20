@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import * as Sentry from "@sentry/nextjs";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { SENTRY_REASONS, type SentryReason } from "@/lib/security/error-ids";
+import { pageSentry as sharedPageSentry } from "@/lib/observability/page-sentry";
 
 /**
  * Midnight UTC keep-alive cron. Three jobs in one tick so the Vercel
@@ -26,14 +26,11 @@ import { SENTRY_REASONS, type SentryReason } from "@/lib/security/error-ids";
  */
 
 /**
- * Page Sentry with the cron's standard scope tags + a per-failure
- * `reason`. The `try/catch (sentryErr)` shim around the actual
- * Sentry.withScope call is the suppression contract from SCRUM-277 —
- * a permanent Sentry shim defect must not crash the cron.
- *
- * Use `captureException` for thrown/error-object failures (keeps the
- * stack trace on the Sentry side) and `captureMessage` for non-Error
- * conditions like "RPC returned unexpected shape".
+ * Local wrapper around the shared `pageSentry` helper that pre-fills
+ * the cron's standard tags (`service: "next-cron"`, `cron: "keep-alive"`).
+ * Lets the call sites below stay tight while leaving the shared shim
+ * (`src/lib/observability/page-sentry.ts`) as the single source of
+ * truth for the SCRUM-277 try/catch (sentryErr) suppression contract.
  */
 function pageSentry(opts: {
   reason: SentryReason;
@@ -42,36 +39,15 @@ function pageSentry(opts: {
   message?: string;
   extras?: Record<string, unknown>;
 }) {
-  const { reason, level = "warning", err, message, extras } = opts;
-  try {
-    Sentry.withScope((scope) => {
-      scope.setTag("service", "next-cron");
-      scope.setTag("cron", "keep-alive");
-      scope.setTag("reason", reason);
-      scope.setLevel(level);
-      if (extras) scope.setExtras(extras);
-      if (err !== undefined) {
-        Sentry.captureException(
-          err instanceof Error ? err : new Error(String(err)),
-        );
-      } else if (message) {
-        Sentry.captureMessage(message);
-      }
-    });
-  } catch (sentryErr) {
-    // Sentry shim defect must not crash the cron — but make the
-    // breadcrumb loud enough that a programming-error-in-the-helper
-    // (vs. a genuine Sentry-transport-down) is easy to spot in Loki.
-    // Log the full error including stack so the next on-call shift
-    // can distinguish "Sentry is down" from "our pageSentry helper
-    // has a bug" without having to repro.
-    console.error(
-      "[KeepAlive] Sentry capture failed (continuing cron):",
-      sentryErr instanceof Error
-        ? `${sentryErr.message}\n${sentryErr.stack ?? ""}`
-        : sentryErr,
-    );
-  }
+  sharedPageSentry({
+    service: "next-cron",
+    reason: opts.reason,
+    level: opts.level,
+    err: opts.err,
+    message: opts.message,
+    extras: opts.extras,
+    tags: { cron: "keep-alive" },
+  });
 }
 
 export async function GET(req: NextRequest) {

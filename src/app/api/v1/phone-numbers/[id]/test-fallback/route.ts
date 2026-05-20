@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getTwilioClient } from "@/lib/twilio/client";
 import { rateLimitDistributed } from "@/lib/security/rate-limiter";
+import { SENTRY_REASONS } from "@/lib/security/error-ids";
 import { getUserRoleInOrg, isOrgAdmin } from "@/lib/auth/org-membership";
 import {
   expectedE164PrefixForCountry,
@@ -207,7 +208,8 @@ export async function POST(
         Sentry.withScope((scope) => {
           scope.setTag("service", "next-api");
           scope.setTag("route", "phone-numbers/test-fallback");
-          scope.setTag("reason", "twilio-create-call-failed");
+          // SCRUM-300: migrated from inline literal to SENTRY_REASONS.
+          scope.setTag("reason", SENTRY_REASONS.TWILIO_CREATE_CALL_FAILED);
           scope.setLevel("warning");
           scope.setExtras({
             orgId: row.organization_id,

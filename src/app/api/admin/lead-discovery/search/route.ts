@@ -4,6 +4,8 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { isPlatformAdmin } from "@/lib/admin/admin-auth";
 import { withRateLimitDistributed } from "@/lib/security/rate-limiter";
 import { executeSearch } from "@/lib/lead-discovery/search-orchestrator";
+import { SENTRY_REASONS } from "@/lib/security/error-ids";
+import { pageSentry } from "@/lib/observability/page-sentry";
 
 const VALID_LIMITS = [10, 25, 50, 100] as const;
 
@@ -81,6 +83,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(result, { headers: rl.headers });
   } catch (err) {
     console.error("[Lead Discovery Search] Error:", err);
+    // SCRUM-300: catch-all pages Sentry.
+    pageSentry({
+      service: "next-api",
+      reason: SENTRY_REASONS.LEAD_DISCOVERY_SEARCH_FAILED,
+      err,
+      extras: { location, professionCount: professions.length, limit },
+    });
     // SCRUM-301 review: include `rl.headers` on the 500 path so the
     // admin client doesn't lose its quota state when executeSearch
     // throws (matches export-route behaviour from SCRUM-290).
