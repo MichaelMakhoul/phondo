@@ -1,4 +1,3 @@
-// @ts-nocheck -- SCRUM-317: pre-existing checkJs baseline (burn down incrementally; do NOT add new untyped code here)
 /**
  * Outbound calling service — orchestrates Twilio outbound calls
  * with Gemini Live AI playing a caller persona.
@@ -117,7 +116,7 @@ async function twilioCreateCall(to, from, twimlUrl, statusCallbackUrl, options) 
     throw err;
   }
 
-  const data = await resp.json();
+  const data = /** @type {{ sid?: string }} */ (await resp.json());
   return data.sid; // CallSid
 }
 
@@ -154,6 +153,7 @@ async function twilioHangup(callSid) {
  * @param {string} [config.industry] - Industry for assistant swapping + scenario adaptation
  * @param {number} [config.maxDurationSeconds] - Auto-hangup (default 180)
  * @param {string} [config.voiceName] - Gemini voice (default "Puck" — different from inbound default)
+ * @param {boolean} [config.trialMode] - Twilio trial accounts need DTMF to dismiss the "press any key" message (default true)
  * @returns {Promise<object>} Call result
  */
 async function makeOutboundCall(config) {

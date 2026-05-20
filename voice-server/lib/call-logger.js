@@ -42,6 +42,31 @@ async function createCallRecord({ orgId, assistantId, phoneNumberId, callerPhone
  * Update the call record when the call ends.
  * Accepts optional post-call analysis results.
  * Throws on failure so the caller can handle it.
+ *
+ * Every field below is optional — callers (e.g. pending-transfers)
+ * pass whatever subset they have, and the body only writes the ones
+ * that are set. SCRUM-317: typed as all-optional so checkJs accepts a
+ * partial payload (the destructure alone would infer them required).
+ *
+ * @param {string} callId
+ * @param {object} fields
+ * @param {string} [fields.status]
+ * @param {number} [fields.durationSeconds]
+ * @param {*} [fields.transcript]
+ * @param {*} [fields.summary]
+ * @param {*} [fields.callerName]
+ * @param {*} [fields.collectedData]
+ * @param {*} [fields.successEvaluation]
+ * @param {boolean} [fields.recordingDisclosurePlayed]
+ * @param {boolean} [fields.recordingDisclosureFailed]
+ * @param {*} [fields.transferAttempt]
+ * @param {*} [fields.callerState]
+ * @param {*} [fields.consentReason]
+ * @param {*} [fields.sentiment]
+ * @param {*} [fields.piiRedacted]
+ * @param {*} [fields.answeredBy]
+ * @param {*} [fields.outcome]
+ * @param {*} [fields.cleanedTranscript]
  */
 async function completeCallRecord(callId, {
   status,

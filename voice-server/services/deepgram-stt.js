@@ -1,4 +1,3 @@
-// @ts-nocheck -- SCRUM-317: pre-existing checkJs baseline (burn down incrementally; do NOT add new untyped code here)
 const WebSocket = require("ws");
 const { Sentry } = require("../lib/sentry");
 
@@ -100,7 +99,10 @@ function openDeepgramStream(apiKey, { onTranscript, onUtteranceEnd, onError, onC
 
   ws.on("message", (data) => {
     try {
-      const msg = JSON.parse(data);
+      // ws delivers RawData (Buffer | ArrayBuffer | Buffer[]); decode to
+      // string for JSON.parse (Buffer would coerce at runtime, but the
+      // typed form is explicit).
+      const msg = JSON.parse(data.toString());
       if (msg.type === "Error") {
         onError(new Error(`Deepgram error: ${msg.message || JSON.stringify(msg)}`));
         return;

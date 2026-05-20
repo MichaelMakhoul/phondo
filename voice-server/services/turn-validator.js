@@ -1,4 +1,3 @@
-// @ts-nocheck -- SCRUM-317: pre-existing checkJs baseline (burn down incrementally; do NOT add new untyped code here)
 /**
  * Tier 2 Turn Validator — Claude Haiku verifies Sophie's spoken response
  * matches the actual tool result.
@@ -77,7 +76,7 @@ OR
       return { accurate: true };
     }
 
-    const data = await res.json();
+    const data = /** @type {{ content?: Array<{ text?: string }> }} */ (await res.json());
     const text = data.content?.[0]?.text?.trim() || "";
 
     // Parse the JSON response

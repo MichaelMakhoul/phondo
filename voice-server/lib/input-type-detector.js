@@ -1,4 +1,3 @@
-// @ts-nocheck -- SCRUM-317: pre-existing checkJs baseline (burn down incrementally; do NOT add new untyped code here)
 /**
  * Input Type Detector
  *
@@ -116,7 +115,9 @@ function detectExpectedInput(lastAssistantMessage) {
   for (const [type, patterns] of Object.entries(INPUT_PATTERNS)) {
     for (const pattern of patterns) {
       if (pattern.test(lastAssistantMessage)) {
-        return type;
+        // INPUT_PATTERNS keys ARE the return union; Object.entries widens
+        // the key to `string`, so narrow it back to the declared type.
+        return /** @type {"phone"|"email"|"name"|"address"|"date_time"|"general"} */ (type);
       }
     }
   }
