@@ -239,7 +239,10 @@ async function getChatResponse(apiKey, messages, options) {
       throw new Error(`${config.name} returned no choices`);
     }
     const message = data.choices[0].message;
-    if (message.tool_calls?.length > 0) {
+    // SCRUM-319: optional-chain for symmetry with the `!message?.content`
+    // guard below — a choices[0] with no `message` should fall through to the
+    // clean "returned empty content" error, not throw a TypeError here.
+    if (message?.tool_calls?.length > 0) {
       return { type: "tool_calls", toolCalls: message.tool_calls, message };
     }
     if (!message?.content) {
