@@ -185,6 +185,64 @@ describe("check_availability — cache resolution", () => {
   });
 });
 
+// SCRUM-317: regression coverage for the object-slot paths that the
+// checkJs burndown fixed. Slots can be plain ISO strings OR { start, end }
+// objects, in a flat array OR a per-practitioner record (with an `_any`
+// bucket — SCRUM-237). The old code passed object slots straight to
+// `.split()` (a crash) on the today-refilter path.
+describe("check_availability — object-slot shapes (SCRUM-317)", () => {
+  const objSlot = (iso) => ({ start: iso, end: iso });
+
+  it("formats {start,end} OBJECT slots on a non-today date (was: .split on object)", () => {
+    const snapshot = {
+      timezone: "Australia/Sydney",
+      generatedAt: new Date().toISOString(),
+      defaultDuration: 30,
+      slots: { "2026-04-13": [objSlot("2026-04-13T09:00:00"), objSlot("2026-04-13T14:00:00")] },
+    };
+    const result = resolveAvailabilityFromCache({ date: "2026-04-13" }, snapshot);
+    assert.ok(result && result.message, "should resolve, not throw");
+    assert.match(result.message, /9:00 AM/);
+    assert.match(result.message, /2:00 PM/);
+  });
+
+  it("handles object slots on the TODAY-refilter path (the crashing branch)", () => {
+    // Compute 'today' in the snapshot tz so the date === todayStr branch runs.
+    const tz = "Australia/Sydney";
+    const today = new Intl.DateTimeFormat("en-CA", { timeZone: tz }).format(new Date());
+    const snapshot = {
+      timezone: tz,
+      generatedAt: new Date().toISOString(),
+      defaultDuration: 30,
+      // 23:59 so the past-slot re-filter keeps it regardless of run time.
+      slots: { [today]: [objSlot(`${today}T23:59:00`)] },
+    };
+    // Old code: `s = ...: slot` → s.split is not a function → throws.
+    const result = resolveAvailabilityFromCache({ date: today }, snapshot);
+    assert.ok(result && result.message, "should resolve the today path without throwing");
+  });
+
+  it("resolves per-practitioner record slots via the _any bucket", () => {
+    const snapshot = {
+      timezone: "Australia/Sydney",
+      generatedAt: new Date().toISOString(),
+      defaultDuration: 30,
+      slots: {
+        "2026-04-13": {
+          _any: ["2026-04-13T09:00:00"],
+          "pract-1": ["2026-04-13T11:00:00"],
+        },
+      },
+    };
+    // No practitioner_id → aggregate via _any.
+    const agg = resolveAvailabilityFromCache({ date: "2026-04-13" }, snapshot);
+    assert.match(agg.message, /9:00 AM/);
+    // practitioner_id → that practitioner's slots.
+    const pract = resolveAvailabilityFromCache({ date: "2026-04-13", practitioner_id: "pract-1" }, snapshot);
+    assert.match(pract.message, /11:00 AM/);
+  });
+});
+
 describe("write operations always use API", () => {
   beforeEach(() => {
     fetchCalled = false;
