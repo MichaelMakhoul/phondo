@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
 import { PlacesApiError, LeadDiscoveryDbError } from "@/lib/lead-discovery/errors";
+// SCRUM-314: PlacesApiError now carries an HTTP status surfaced in extras.
 
 /**
  * SCRUM-301 contract tests for the search route — mirror of the scan
@@ -166,9 +167,9 @@ describe("POST /api/admin/lead-discovery/search — input validation", () => {
 // ──────────────────────────────────────────────────────────────────────────
 
 describe("POST /api/admin/lead-discovery/search — failureKind discriminator (SCRUM-309)", () => {
-  it("tags failureKind=google-places when executeSearch throws a PlacesApiError", async () => {
+  it("tags failureKind=google-places + surfaces the Places HTTP status (SCRUM-314)", async () => {
     executeSearchMock.mockRejectedValueOnce(
-      new PlacesApiError("GOOGLE_PLACES_API_KEY not configured"),
+      new PlacesApiError("Google Places API returned 429", { status: 429 }),
     );
     const res = await callRoute();
     expect(res.status).toBe(500);
@@ -177,6 +178,7 @@ describe("POST /api/admin/lead-discovery/search — failureKind discriminator (S
       expect.objectContaining({
         reason: "lead-discovery-search-failed",
         tags: { failureKind: "google-places" },
+        extras: expect.objectContaining({ placesStatus: 429 }),
       }),
     );
   });

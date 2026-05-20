@@ -90,12 +90,12 @@ export async function executeSearch(
   }
 
   // 2. Cache miss — search Google Places
-  // SCRUM-309: tag Google Places throws so the route catch can set
-  // failureKind=google-places. NOTE: searchPlaces() currently only
-  // THROWS on a missing API key or a hard fetch/network rejection — it
-  // logs-and-continues on a non-2xx (quota/rate-limit) response, so
-  // those degrade to fewer results rather than reaching here. SCRUM-314
-  // tracks making searchPlaces surface a typed quota/HTTP error too.
+  // SCRUM-309 + SCRUM-314: tag Google Places throws so the route catch
+  // sets failureKind=google-places. searchPlaces now throws a typed
+  // PlacesApiError (carrying the HTTP status) on a non-2xx — quota (429),
+  // outage (5xx), and key/project (403) failures all reach here typed,
+  // so we pass them through unchanged. A raw network/parse throw gets
+  // wrapped so it still classifies as google-places.
   let places;
   try {
     places = await searchMultipleProfessions(
@@ -104,6 +104,7 @@ export async function executeSearch(
       params.limit
     );
   } catch (err) {
+    if (err instanceof PlacesApiError) throw err;
     throw new PlacesApiError(
       err instanceof Error ? err.message : "Google Places search failed",
       { cause: err },

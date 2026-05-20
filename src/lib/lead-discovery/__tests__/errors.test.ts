@@ -8,9 +8,10 @@ import {
 
 describe("lead-discovery typed errors (SCRUM-309)", () => {
   it("PlacesApiError carries failureKind=google-places", () => {
-    // Note: searchPlaces only throws on missing key / hard network
-    // failure (non-2xx is swallowed upstream — see SCRUM-314), so this
-    // message reflects what actually reaches the wrap, not "quota".
+    // SCRUM-314: searchPlaces now THROWS a PlacesApiError (carrying the
+    // HTTP status) on a non-2xx — quota (429), outage (5xx), key/project
+    // (403) — as well as on a missing key / hard network failure (no
+    // status). This case exercises the no-status (missing-key) path.
     const err = new PlacesApiError("GOOGLE_PLACES_API_KEY not configured");
     expect(err).toBeInstanceOf(LeadDiscoveryError);
     expect(err).toBeInstanceOf(Error);
@@ -23,6 +24,14 @@ describe("lead-discovery typed errors (SCRUM-309)", () => {
     expect(err).toBeInstanceOf(LeadDiscoveryError);
     expect(err.failureKind).toBe("db-query");
     expect(err.name).toBe("LeadDiscoveryDbError");
+  });
+
+  it("PlacesApiError carries the optional HTTP status (SCRUM-314)", () => {
+    const err = new PlacesApiError("Google Places API returned 429", { status: 429 });
+    expect(err.status).toBe(429);
+    expect(err.failureKind).toBe("google-places");
+    // status is optional — undefined for network/parse failures.
+    expect(new PlacesApiError("network fail").status).toBeUndefined();
   });
 
   it("preserves the underlying cause for stack triage", () => {

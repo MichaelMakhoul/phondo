@@ -4,7 +4,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { isPlatformAdmin } from "@/lib/admin/admin-auth";
 import { withRateLimitDistributed } from "@/lib/security/rate-limiter";
 import { executeSearch } from "@/lib/lead-discovery/search-orchestrator";
-import { classifyLeadDiscoveryFailure } from "@/lib/lead-discovery/errors";
+import { classifyLeadDiscoveryFailure, PlacesApiError } from "@/lib/lead-discovery/errors";
 import { SENTRY_REASONS } from "@/lib/security/error-ids";
 import { pageSentry } from "@/lib/observability/page-sentry";
 
@@ -92,8 +92,15 @@ export async function POST(req: NextRequest) {
       // SCRUM-309: failureKind discriminator as a filterable TAG
       // (google-places | db-query | unknown). `location` stays an
       // extra — it's free-text and would pollute the tag index.
+      // SCRUM-314: surface the Places HTTP status (429 quota vs 5xx
+      // outage vs 403 key/project) when the failure was a Places non-2xx.
       tags: { failureKind: classifyLeadDiscoveryFailure(err) },
-      extras: { location, professionCount: professions.length, limit },
+      extras: {
+        location,
+        professionCount: professions.length,
+        limit,
+        placesStatus: err instanceof PlacesApiError ? err.status : undefined,
+      },
     });
     // SCRUM-301 review: include `rl.headers` on the 500 path so the
     // admin client doesn't lose its quota state when executeSearch
