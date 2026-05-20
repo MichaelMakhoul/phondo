@@ -1,4 +1,3 @@
-// @ts-nocheck -- SCRUM-317: pre-existing checkJs baseline (burn down incrementally; do NOT add new untyped code here)
 /**
  * Gemini 3.1 Flash Live — WebSocket client for real-time voice AI.
  *
@@ -62,7 +61,14 @@ function convertSchemaToGemini(schema) {
  * @param {function} callbacks.onTurnComplete - () => void — AI finished speaking
  * @param {function} callbacks.onError - (err: Error) => void
  * @param {function} callbacks.onClose - (code: number, reason: string) => void — reason is "end_call" when closed via end_call tool, empty otherwise
- * @returns {{ sendAudio, close, ws }}
+ * @returns {{
+ *   sendAudio: (twilioBase64: string) => void,
+ *   getTranscripts: () => { input: string, output: string },
+ *   sendText: (text: string) => void,
+ *   close: () => void,
+ *   readyState: number
+ * }} Session handle. Note `ws` is intentionally NOT exposed (its URL
+ *   carries the API key) — use `readyState` instead.
  */
 function createGeminiSession(config, callbacks) {
   const apiKey = process.env.GEMINI_API_KEY;

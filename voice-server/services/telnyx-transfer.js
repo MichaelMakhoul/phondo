@@ -1,4 +1,3 @@
-// @ts-nocheck -- SCRUM-317: pre-existing checkJs baseline (burn down incrementally; do NOT add new untyped code here)
 /**
  * Telnyx call transfer and SMS using REST API.
  * Uses raw fetch to keep dependencies light (mirrors twilio-transfer.js pattern).
@@ -108,7 +107,7 @@ async function sendTransferSMS(toPhone, fromPhone, body) {
       return null;
     }
 
-    const data = await res.json();
+    const data = /** @type {{ data?: { id?: string } }} */ (await res.json());
     return data.data?.id || null;
   } catch (err) {
     console.error("[Telnyx] SMS error:", err);

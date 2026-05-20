@@ -1,4 +1,3 @@
-// @ts-nocheck -- SCRUM-317: pre-existing checkJs baseline (burn down incrementally; do NOT add new untyped code here)
 /**
  * Post-call structured data extraction using OpenAI with JSON mode.
  * Analyzes the conversation transcript after a call ends in TWO parallel calls:
@@ -79,7 +78,9 @@ async function callOpenAI({ system, user, maxTokens }) {
     throw new Error(`OpenAI ${res.status}: ${text}`);
   }
 
-  const data = await res.json();
+  const data = /** @type {{ choices?: Array<{ finish_reason?: string; message?: { content?: string } }> }} */ (
+    await res.json()
+  );
   const choice = data.choices?.[0];
   const finishReason = choice?.finish_reason;
   const content = choice?.message?.content;

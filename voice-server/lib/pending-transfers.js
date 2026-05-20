@@ -1,4 +1,3 @@
-// @ts-nocheck -- SCRUM-317: pre-existing checkJs baseline (burn down incrementally; do NOT add new untyped code here)
 /**
  * In-memory store for sessions waiting on transfer dial callbacks.
  * When Twilio's <Dial> finishes (answered, no-answer, busy, failed),
