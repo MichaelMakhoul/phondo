@@ -8,33 +8,41 @@ import { executeSearch } from "@/lib/lead-discovery/search-orchestrator";
 const VALID_LIMITS = [10, 25, 50, 100] as const;
 
 export async function POST(req: NextRequest) {
-  // Auth
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  if (!(await isPlatformAdmin(user.id)))
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  // SCRUM-301: construct ONCE per request — see scan/route.ts for
+  // the full rationale.
+  const adminClient = createAdminClient();
 
-  // Rate limit — Google Places API charges per call. SCRUM-290:
-  // shared Postgres-backed limiter, `adminExpensive` is costControl.
+  // SCRUM-301: rate-limit BEFORE auth. Google Places API charges per
+  // call → `adminExpensive` is costControl.
   const rl = await withRateLimitDistributed(
-    createAdminClient(),
+    adminClient,
     req,
     "admin-lead-discovery-search",
     "adminExpensive",
   );
   if (!rl.allowed) {
     // SCRUM-302: brownout vs quota distinction.
+    // SCRUM-301 review: harmonised wording with scan/export (the old
+    // "Max 3 searches per minute" leaked the exact cap to unauthenticated
+    // probes; the standard X-RateLimit-* headers already carry the
+    // contract for legitimate clients).
     const error = rl.failReason === "service-degraded"
       ? "Service temporarily unavailable. Please try again in a moment."
-      : "Rate limit exceeded. Max 3 searches per minute.";
+      : "Rate limit exceeded";
     return NextResponse.json(
       { error, failReason: rl.failReason },
       { status: 429, headers: rl.headers }
     );
   }
+
+  // SCRUM-301: auth + admin gates run AFTER rate-limit.
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!(await isPlatformAdmin(user.id, adminClient)))
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
   // Parse & validate body
   let body: { location?: string; professions?: string[]; limit?: number };
@@ -69,10 +77,16 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const result = await executeSearch({ location, professions, limit });
+    const result = await executeSearch({ location, professions, limit }, adminClient);
     return NextResponse.json(result, { headers: rl.headers });
   } catch (err) {
     console.error("[Lead Discovery Search] Error:", err);
-    return NextResponse.json({ error: "Search failed" }, { status: 500 });
+    // SCRUM-301 review: include `rl.headers` on the 500 path so the
+    // admin client doesn't lose its quota state when executeSearch
+    // throws (matches export-route behaviour from SCRUM-290).
+    return NextResponse.json(
+      { error: "Search failed" },
+      { status: 500, headers: rl.headers },
+    );
   }
 }

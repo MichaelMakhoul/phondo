@@ -7,20 +7,15 @@ import { loadFilteredBusinesses } from "@/lib/lead-discovery/search-orchestrator
 import type { CrmDetails } from "@/lib/lead-discovery/types";
 
 export async function GET(req: NextRequest) {
-  // Auth
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  if (!(await isPlatformAdmin(user.id)))
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  // SCRUM-301: construct ONCE per request — see scan/route.ts.
+  const adminClient = createAdminClient();
 
-  // Rate limit — admin export hits the DB at scale + may trigger
-  // downstream API calls. SCRUM-290: shared limiter, `adminExpensive`
-  // is costControl.
+  // SCRUM-301: rate-limit BEFORE auth so unauth abuse hits the
+  // limiter rather than two Postgres lookups. Admin export hits the
+  // DB at scale + may trigger downstream API calls →
+  // `adminExpensive` is costControl.
   const rl = await withRateLimitDistributed(
-    createAdminClient(),
+    adminClient,
     req,
     "admin-lead-discovery-export",
     "adminExpensive",
@@ -36,6 +31,15 @@ export async function GET(req: NextRequest) {
     );
   }
 
+  // SCRUM-301: auth + admin gates run AFTER rate-limit.
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!(await isPlatformAdmin(user.id, adminClient)))
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+
   // Parse query params
   const url = new URL(req.url);
   const location = url.searchParams.get("location") ?? undefined;
@@ -44,11 +48,10 @@ export async function GET(req: NextRequest) {
   const crmFilter = url.searchParams.get("crmFilter") ?? undefined;
 
   try {
-    const businesses = await loadFilteredBusinesses({
-      location,
-      professions,
-      crmFilter,
-    });
+    const businesses = await loadFilteredBusinesses(
+      { location, professions, crmFilter },
+      adminClient,
+    );
 
     // Build CSV
     const headers = [

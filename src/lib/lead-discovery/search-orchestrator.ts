@@ -8,7 +8,10 @@
  */
 
 import crypto from "crypto";
-import { createAdminClient } from "@/lib/supabase/admin";
+import {
+  createAdminClient,
+  type ServiceRoleSupabaseClient,
+} from "@/lib/supabase/admin";
 import {
   searchMultipleProfessions,
   type DiscoveredPlace,
@@ -40,9 +43,14 @@ function computeCacheKey(params: SearchParams): string {
 // ── Execute search (cache-first) ─────────────────────────────────────
 
 export async function executeSearch(
-  params: SearchParams
+  params: SearchParams,
+  adminClient?: ServiceRoleSupabaseClient,
 ): Promise<{ businesses: DiscoveredBusiness[]; cached: boolean }> {
-  const supabase = createAdminClient();
+  // SCRUM-301: callers can thread their pre-constructed admin client
+  // through to avoid spinning up another SupabaseClient + GoTrueClient
+  // + RealtimeClient. Falls back to creating a fresh one to keep
+  // existing single-call sites working.
+  const supabase = adminClient ?? createAdminClient();
   const cacheKey = computeCacheKey(params);
 
   // 1. Check cache
@@ -138,9 +146,11 @@ const SCAN_CONCURRENCY = 3;
  * Processes in batches of SCAN_CONCURRENCY to avoid hammering websites.
  */
 export async function scanBusinessCRMs(
-  businessIds: string[]
+  businessIds: string[],
+  adminClient?: ServiceRoleSupabaseClient,
 ): Promise<DiscoveredBusiness[]> {
-  const supabase = createAdminClient();
+  // SCRUM-301: thread the caller's admin client through if provided.
+  const supabase = adminClient ?? createAdminClient();
 
   // Load businesses that need scanning
   const { data: businesses } = await (supabase as any)
@@ -210,12 +220,16 @@ export async function scanBusinessCRMs(
 
 // ── Load filtered results (for export) ───────────────────────────────
 
-export async function loadFilteredBusinesses(filters: {
-  location?: string;
-  professions?: string[];
-  crmFilter?: string; // "all" | "none" | "no_website" | "has_crm" | specific CRM name
-}): Promise<DiscoveredBusiness[]> {
-  const supabase = createAdminClient();
+export async function loadFilteredBusinesses(
+  filters: {
+    location?: string;
+    professions?: string[];
+    crmFilter?: string; // "all" | "none" | "no_website" | "has_crm" | specific CRM name
+  },
+  adminClient?: ServiceRoleSupabaseClient,
+): Promise<DiscoveredBusiness[]> {
+  // SCRUM-301: thread the caller's admin client through if provided.
+  const supabase = adminClient ?? createAdminClient();
 
   let query = (supabase as any)
     .from("discovered_businesses")
