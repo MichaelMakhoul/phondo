@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requireCronAuth } from "@/lib/security/cron-auth";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { sendAdminAlert } from "@/lib/notifications/admin-alerts";
 
@@ -6,16 +7,8 @@ const SERVICE_NAME = "voice-server";
 const HEALTH_TIMEOUT_MS = 10_000;
 
 export async function GET(req: NextRequest) {
-  const cronSecret = process.env.CRON_SECRET;
-  if (!cronSecret) {
-    console.error("[HealthCheck] CRON_SECRET not configured");
-    return NextResponse.json({ error: "Server misconfiguration" }, { status: 500 });
-  }
-
-  const authHeader = req.headers.get("authorization");
-  if (authHeader !== `Bearer ${cronSecret}`) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  const authFail = requireCronAuth(req, "health-check");
+  if (authFail) return authFail;
 
   const voiceServerUrl = process.env.VOICE_SERVER_PUBLIC_URL;
 

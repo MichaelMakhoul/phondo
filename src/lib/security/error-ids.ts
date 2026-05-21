@@ -61,6 +61,12 @@ export const SENTRY_REASONS = {
    *  decay if treated as "skipped". */
   UPSTASH_HALF_CONFIGURED: "upstash-half-configured",
 
+  /** SCRUM-324: CRON_SECRET is not set, so a cron route can't authenticate
+   *  and 500s without running. A deploy misconfig that silently disables
+   *  EVERY cron — paged at error level (via requireCronAuth) so a future
+   *  regression is caught, instead of the old bare console.error / silent 500. */
+  CRON_SECRET_MISSING: "cron-secret-missing",
+
   // ─── paid-action route catch blocks (SCRUM-300) ─────────────────────
   // Each paid-action route used to swallow throws in its catch-all
   // with just console.error + a generic 500. These reasons tag each
