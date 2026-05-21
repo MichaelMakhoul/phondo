@@ -1764,6 +1764,7 @@ function sendNotification(
       hour12: true,
       ...(timezone && { timeZone: timezone }),
     }),
+    timezone,
     confirmationCode,
   }).catch((err) => {
     console.error("Failed to send appointment notification:", err);

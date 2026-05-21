@@ -199,6 +199,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Send notification to business owner
+    const bookingTimezone = integration.settings?.timezone;
     await sendAppointmentNotification({
       organizationId,
       callerPhone: phone,
@@ -208,7 +209,9 @@ export async function POST(request: NextRequest) {
         hour: "numeric",
         minute: "2-digit",
         hour12: true,
+        ...(bookingTimezone && { timeZone: bookingTimezone }),
       }),
+      timezone: bookingTimezone,
     }).catch((err) => {
       console.error("Failed to send appointment notification:", err);
     });

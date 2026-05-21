@@ -65,6 +65,10 @@ export interface AppointmentNotificationData {
   appointmentTime: string;
   serviceName?: string;
   confirmationCode?: string;
+  // IANA timezone of the org (e.g. "Australia/Sydney"). Without it the date
+  // renders in the server's UTC zone, which shifts a 9:30am Sydney booking
+  // back to the previous day. SCRUM date-bug fix.
+  timezone?: string;
 }
 
 export interface CallbackNotificationData {
@@ -341,6 +345,24 @@ export async function sendVoicemailNotification(
 }
 
 /**
+ * Format an appointment date in the org's timezone, unambiguously.
+ *
+ * Spelling out the month ("5 June 2026") avoids the D/M/Y vs M/D/Y confusion
+ * entirely — an AU owner reading "6/4/2026" can't tell if it's 6 April or
+ * June 4. The explicit timeZone stops the date shifting across the UTC
+ * boundary (a 9:30am Sydney booking would otherwise render as the prior day).
+ */
+export function formatAppointmentDate(date: Date, timezone?: string): string {
+  return new Intl.DateTimeFormat("en-AU", {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+    ...(timezone && { timeZone: timezone }),
+  }).format(date);
+}
+
+/**
  * Send appointment booking notification
  */
 export async function sendAppointmentNotification(
@@ -354,14 +376,15 @@ export async function sendAppointmentNotification(
   const channels: Promise<void>[] = [];
 
   if (prefs.email_on_appointment_booked && email) {
+    const formattedDate = formatAppointmentDate(data.appointmentDate, data.timezone);
     channels.push(sendEmail({
       to: email,
-      subject: `New Appointment Booked - ${data.appointmentDate.toLocaleDateString()}`,
+      subject: `New Appointment Booked - ${formattedDate}`,
       template: "appointment-booked",
       data: {
         callerPhone: data.callerPhone,
         callerName: data.callerName,
-        appointmentDate: data.appointmentDate.toLocaleDateString(),
+        appointmentDate: formattedDate,
         appointmentTime: data.appointmentTime,
         serviceName: data.serviceName,
         confirmationCode: data.confirmationCode,
