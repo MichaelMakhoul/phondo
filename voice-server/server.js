@@ -46,6 +46,7 @@ const { detectExpectedInput } = require("./lib/input-type-detector");
 const { requiresRecordingDisclosureHybrid, getRecordingDisclosureText } = require("./lib/recording-consent");
 const { getSupabase } = require("./lib/supabase");
 const { saveForTransfer, getTransfer, consumeTransfer, finishTransferredCall } = require("./lib/pending-transfers");
+const { forwardingFallbackEligible } = require("./lib/transfer-eligibility");
 
 // Cached Twilio REST client for recording and transfer operations
 let _twilioRestClient = null;
@@ -1554,6 +1555,10 @@ wss.on("connection", (twilioWs) => {
           session.orgPhoneNumber = calledNumber;
           session.telephonyProvider = context.telephonyProvider || "twilio";
           session.piiRedactionEnabled = !!(context.assistant.settings?.piiRedactionEnabled);
+          // SCRUM-327: owner opt-in (default off) for the forwarded-number
+          // transfer fallback — gates whether transfer_call is offered when no
+          // explicit transfer rules exist (see forwardingFallbackEligible).
+          session.transferToForwardedNumber = context.assistant?.settings?.transferToForwardedNumber === true;
 
           // Start call recording if consent mode allows.
           // - Twilio: <Connect> record= doesn't work with <Stream>, so use REST API.
@@ -1851,8 +1856,9 @@ wss.on("connection", (twilioWs) => {
             // would hallucinate the invocation and break mid-call — exactly the
             // class of silent failure SCRUM-294 was filed to fix.
             const transferAvailableInbound =
-              session.behaviors?.transferToHuman !== false &&
-              (session.transferRules?.length || 0) > 0;
+              (session.behaviors?.transferToHuman !== false &&
+                (session.transferRules?.length || 0) > 0) ||
+              forwardingFallbackEligible(session);
             if (transferAvailableInbound) {
               geminiSystemPrompt += `\n- TRANSFERS — MUST OBEY: If the caller asks to be transferred, asks to speak to a human / person / manager / somebody / an actual human / a real person / staff, says 'transfer me' / 'put me through' / 'I want to talk to someone' / 'can I speak to a human' / 'get me a person' or any equivalent intent — you MUST IMMEDIATELY say a short filler ("One moment, let me connect you") and call the transfer_call tool in the same turn. The caller already asked — asking again is disobedience. Forbidden phrasings (do NOT say any of these): 'would you like me to transfer you?', 'do you want me to connect you?', 'I can also take a message', 'I can help with that instead', 'is there something specific you need first?', 'first let me check...', 'could you just tell me briefly what you need to discuss with them'. Do NOT ask the caller what they want to discuss. Do NOT offer the message/callback option BEFORE the transfer attempt. Only AFTER the tool returns an error or 'no answer' may you offer a callback or message. If the tool's RESPONSE message tells you to confirm with the caller first, do that — otherwise NEVER ask permission, just transfer.`;
             } else {
@@ -2493,7 +2499,16 @@ function buildLLMOptions(session, { includeTransfer = false } = {}) {
   // alone should NOT enable transfers if the business has explicitly
   // disabled the behavior.
   const behaviorAllowsTransfer = session.behaviors?.transferToHuman !== false;
-  if (includeTransfer && behaviorAllowsTransfer && session.transferRules?.length > 0) {
+  // SCRUM-327: offer transfer_call when EITHER explicit rules exist (still
+  // gated by the org's transferToHuman behavior) OR the org opted into the
+  // forwarded-number fallback. The fallback opt-in is its own authorization and
+  // bypasses transferToHuman (an industry default, off for dental/home_services)
+  // so the toggle works for every vertical.
+  if (
+    includeTransfer &&
+    ((behaviorAllowsTransfer && session.transferRules?.length > 0) ||
+      forwardingFallbackEligible(session))
+  ) {
     tools.push(transferToolDefinition);
   }
   // Always-available tools — callback (universal fallback) + end_call (terminate after goodbye)
@@ -2849,6 +2864,7 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
               userPhoneNumber: session.userPhoneNumber,
               forwardingStatus: session.forwardingStatus,
               sourceType: session.sourceType,
+              transferToForwardedNumber: session.transferToForwardedNumber,
               deepgramVoice: session.deepgramVoice,
               holdPreset: session.holdPreset,
               organization: session.organization,
