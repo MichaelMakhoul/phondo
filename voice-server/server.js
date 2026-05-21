@@ -1419,22 +1419,11 @@ wss.on("connection", (twilioWs) => {
 
               session = new CallSession(reconnectCallSid);
               session.streamSid = streamSid;
-              session.messages = savedState.messages;
-              session.organizationId = savedState.organizationId;
-              session.assistantId = savedState.assistantId;
-              session.phoneNumberId = savedState.phoneNumberId;
-              session.callerPhone = savedState.callerPhone;
-              session.callRecordId = savedState.callRecordId;
-              session.calendarEnabled = savedState.calendarEnabled;
-              session.serviceTypes = savedState.serviceTypes || [];
-              session.transferRules = savedState.transferRules;
-              session.deepgramVoice = savedState.deepgramVoice;
-              session.holdPreset = savedState.holdPreset;
-              session.organization = savedState.organization;
-              session.orgPhoneNumber = savedState.orgPhoneNumber;
-              session.transferAttempt = savedState.transferAttempt;
-              session.startedAt = savedState.startedAt;
-              session.language = savedState.language || "en";
+              // SCRUM-325: restore via the shared mapping so the forwarding
+              // fields (userPhoneNumber/forwardingStatus/sourceType) come back
+              // too — a 2nd transfer on the reconnected call needs them for the
+              // forwarded-number fallback.
+              session.restoreFrom(savedState);
               sessions.set(streamSid, session);
 
               // Re-open Deepgram STT
