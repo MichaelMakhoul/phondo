@@ -95,6 +95,10 @@ class CallSession {
     this.forwardingStatus = savedState.forwardingStatus;
     this.sourceType = savedState.sourceType;
     this.transferToForwardedNumber = savedState.transferToForwardedNumber === true;
+    // SCRUM-326: restore the telephony provider so a reconnected Telnyx org's
+    // next transfer routes through the Telnyx (not the default Twilio) service.
+    // Default "twilio" mirrors how it's read at the executeToolCall context sites.
+    this.telephonyProvider = savedState.telephonyProvider || "twilio";
     this.deepgramVoice = savedState.deepgramVoice;
     this.holdPreset = savedState.holdPreset;
     this.organization = savedState.organization;

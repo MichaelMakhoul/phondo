@@ -24,6 +24,7 @@ describe("CallSession.restoreFrom (SCRUM-325)", () => {
       forwardingStatus: "active",
       sourceType: "forwarded",
       transferToForwardedNumber: true,
+      telephonyProvider: "telnyx",
       deepgramVoice: "aura-2-thalia-en",
       holdPreset: "calm",
       organization: { name: "Acme" },
@@ -61,15 +62,21 @@ describe("CallSession.restoreFrom (SCRUM-325)", () => {
     assert.equal(s.holdPreset, "calm");
     assert.deepEqual(s.organization, { name: "Acme" });
     assert.equal(s.orgPhoneNumber, "+61200000000");
+    // SCRUM-326: the telephony provider must survive reconnect, else a 2nd
+    // transfer on a reconnected Telnyx call routes through the Twilio service.
+    assert.equal(s.telephonyProvider, "telnyx");
     assert.equal(s.transferAttempt.outcome, "no-answer");
     assert.equal(s.startedAt, 1700000000000);
     assert.equal(s.language, "es");
   });
 
-  it("defaults serviceTypes to [] and language to 'en' when absent", () => {
+  it("defaults serviceTypes to [], language to 'en', telephonyProvider to 'twilio' when absent", () => {
     const s = new CallSession("call-2");
     s.restoreFrom({ messages: [] });
     assert.deepEqual(s.serviceTypes, []);
     assert.equal(s.language, "en");
+    // SCRUM-326: an older in-flight saved state lacking telephonyProvider must
+    // fall back to "twilio" (the executeToolCall context default), not null.
+    assert.equal(s.telephonyProvider, "twilio");
   });
 });

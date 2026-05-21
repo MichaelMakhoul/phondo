@@ -2867,6 +2867,7 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
               forwardingStatus: session.forwardingStatus,
               sourceType: session.sourceType,
               transferToForwardedNumber: session.transferToForwardedNumber,
+              telephonyProvider: session.telephonyProvider,
               deepgramVoice: session.deepgramVoice,
               holdPreset: session.holdPreset,
               organization: session.organization,
