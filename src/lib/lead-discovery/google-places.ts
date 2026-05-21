@@ -41,6 +41,12 @@ export interface PlacesSearchResult {
   /** Upstream HTTP status of the page/profession that degraded the result,
    *  when `partial` and the failure was a non-2xx. undefined otherwise. */
   failedStatus?: number;
+  /** Coarse cause when `partial`, for alert triage where there's no HTTP
+   *  status — a soft empty-page truncation ("empty-page") or a raw
+   *  network/parse throw ("network-or-parse:<name>"). Mirrors `http-<status>`
+   *  for the non-2xx case so the alert can tell quota from outage from soft
+   *  truncation. SCRUM-321. */
+  failedReason?: string;
 }
 
 // ── Field mask — only request fields we need (cost control) ──────────
@@ -116,7 +122,12 @@ export async function searchPlaces(
       //    ~20 valid results. The aggregate caller surfaces the partial
       //    signal (skip durable cache + warn) rather than hard-failing.
       if (results.length > 0) {
-        return { places: results, partial: true, failedStatus: res.status };
+        return {
+          places: results,
+          partial: true,
+          failedStatus: res.status,
+          failedReason: `http-${res.status}`,
+        };
       }
       throw new PlacesApiError(
         `Google Places API returned ${res.status}`,
@@ -133,13 +144,22 @@ export async function searchPlaces(
     }
 
     pageToken = data.nextPageToken as string | undefined;
-    // A 200 with an empty `places` page (even with a nextPageToken still
-    // present), or a 200 missing `places` entirely, is treated as a COMPLETE
-    // result — a soft/empty-page truncation is NOT flagged partial here, the
-    // way a non-2xx above is. Flipping that needs a deliberate call on
-    // Google Places (New) empty-page semantics + loop-safety; tracked in
-    // SCRUM-321.
-    if (!pageToken || places.length === 0) break;
+    if (!pageToken) break; // no continuation token — genuinely complete
+
+    // SCRUM-321: a 200 with an empty `places` page (or a body missing
+    // `places`) WHILE a nextPageToken is still present is a truncated
+    // sequence — Google returned a usable-result-free page mid-pagination.
+    // If we already collected results, return them flagged partial so
+    // executeSearch skips the durable cache + warns: a false partial only
+    // costs a skipped cache + a warning, whereas a false "complete" silently
+    // drops ~20 results behind the 7-day cache TTL. With zero results so far
+    // it's just an empty query (no businesses) — return non-partial.
+    if (places.length === 0) {
+      if (results.length > 0) {
+        return { places: results, partial: true, failedReason: "empty-page" };
+      }
+      break;
+    }
   }
 
   return { places: results, partial: false };
@@ -166,6 +186,7 @@ export async function searchMultipleProfessions(
   const results: DiscoveredPlace[] = [];
   let partial = false;
   let failedStatus: number | undefined;
+  let failedReason: string | undefined;
 
   // Run professions sequentially to avoid burst API costs
   for (const profession of professions) {
@@ -189,7 +210,14 @@ export async function searchMultipleProfessions(
       //    a misleading empty "no businesses found").
       if (results.length > 0) {
         partial = true;
-        if (err instanceof PlacesApiError) failedStatus = err.status;
+        if (err instanceof PlacesApiError) {
+          failedStatus = err.status;
+          failedReason = err.status ? `http-${err.status}` : "google-places";
+        } else {
+          // SCRUM-321: raw network/parse throw — no HTTP status. Carry a
+          // coarse reason so the alert can tell this apart from a quota (429).
+          failedReason = err instanceof Error ? `network-or-parse:${err.name}` : "network-or-parse";
+        }
         console.warn(
           `[Google Places] '${profession}' failed after ${results.length} results — returning partial:`,
           err instanceof Error ? err.message : err,
@@ -204,7 +232,10 @@ export async function searchMultipleProfessions(
     // Carry the flag up; keep collecting from the remaining professions.
     if (pageResult.partial) {
       partial = true;
+      // Keep failedStatus + failedReason sourced from the SAME (first) failure
+      // so the alert can't show e.g. a 503 status with an "empty-page" reason.
       if (failedStatus === undefined) failedStatus = pageResult.failedStatus;
+      if (failedReason === undefined) failedReason = pageResult.failedReason;
     }
 
     for (const place of pageResult.places) {
@@ -220,7 +251,7 @@ export async function searchMultipleProfessions(
   // edit shouldn't be able to emit a status on a complete result and feed a
   // misleading value into the Sentry triage extra.
   return partial
-    ? { places: results, partial: true, failedStatus }
+    ? { places: results, partial: true, failedStatus, failedReason }
     : { places: results, partial: false };
 }
 
