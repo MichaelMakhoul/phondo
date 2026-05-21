@@ -23,6 +23,7 @@ describe("CallSession.restoreFrom (SCRUM-325)", () => {
       userPhoneNumber: "+61411111111",
       forwardingStatus: "active",
       sourceType: "forwarded",
+      transferToForwardedNumber: true,
       deepgramVoice: "aura-2-thalia-en",
       holdPreset: "calm",
       organization: { name: "Acme" },
@@ -40,6 +41,9 @@ describe("CallSession.restoreFrom (SCRUM-325)", () => {
     assert.equal(s.userPhoneNumber, "+61411111111");
     assert.equal(s.forwardingStatus, "active");
     assert.equal(s.sourceType, "forwarded");
+    // SCRUM-327: the opt-in flag must survive reconnect, else a 2nd transfer
+    // on the reconnected call loses the forwarded-number fallback.
+    assert.equal(s.transferToForwardedNumber, true);
   });
 
   it("restores the rest of the saveForTransfer payload", () => {

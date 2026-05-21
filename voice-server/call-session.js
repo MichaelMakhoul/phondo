@@ -50,6 +50,7 @@ class CallSession {
     this._cacheUnsub = null;        // unsubscribe fn for the schedule-cache listener
     this.callerState = null;        // detected caller US state (recording consent)
     this.consentReason = null;      // recording-consent decision reason
+    this.transferToForwardedNumber = false; // SCRUM-327: owner opt-in — transfer to the forwarded number when no rules
 
     // Utterance buffering — accumulate STT finals before sending to LLM
     this._utteranceBuffer = [];
@@ -93,6 +94,7 @@ class CallSession {
     this.userPhoneNumber = savedState.userPhoneNumber;
     this.forwardingStatus = savedState.forwardingStatus;
     this.sourceType = savedState.sourceType;
+    this.transferToForwardedNumber = savedState.transferToForwardedNumber === true;
     this.deepgramVoice = savedState.deepgramVoice;
     this.holdPreset = savedState.holdPreset;
     this.organization = savedState.organization;

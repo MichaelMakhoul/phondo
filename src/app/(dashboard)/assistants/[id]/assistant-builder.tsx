@@ -42,6 +42,7 @@ import {
   Info,
   Mic,
   Phone,
+  PhoneForwarded,
   ShieldAlert,
   BookOpen,
   Settings,
@@ -164,6 +165,11 @@ export function AssistantBuilder({
   const [flexibleBooking, setFlexibleBooking] = useState(
     assistant.settings?.flexibleBooking ?? false
   );
+  // SCRUM-327: opt-in (default off) — transfer to the owner's forwarded number
+  // when a caller asks for a human and no transfer rules are configured.
+  const [transferToForwardedNumber, setTransferToForwardedNumber] = useState(
+    assistant.settings?.transferToForwardedNumber ?? false
+  );
 
   // Transfer rules state
   const [transferRules, setTransferRules] = useState(initialTransferRules);
@@ -269,6 +275,7 @@ export function AssistantBuilder({
             recordingEnabled,
             recordingDisclosure,
             flexibleBooking,
+            transferToForwardedNumber,
           },
           promptConfig: useGuidedBuilder ? promptConfig : null,
           afterHoursConfig: promptConfig?.behaviors?.afterHoursHandling
@@ -783,6 +790,31 @@ export function AssistantBuilder({
                 <Switch
                   checked={transferEnabled}
                   onCheckedChange={setTransferEnabled}
+                />
+              </div>
+
+              {/* SCRUM-327: forwarded-number fallback — opt-in, default OFF.
+                  Always visible (it's the "no rules configured" fallback). */}
+              <div className="flex items-start justify-between gap-3 rounded-md border border-amber-500/20 bg-amber-500/5 p-3">
+                <div>
+                  <Label className="flex items-center gap-2">
+                    <PhoneForwarded className="h-4 w-4" />
+                    Transfer to my number when no rules are set
+                  </Label>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Only applies if you <strong>forward your business line to us</strong>. When a caller
+                    asks for a human and you have <strong>no transfer destinations</strong> configured,
+                    the AI calls your forwarded number instead of taking a message.{" "}
+                    <span className="font-medium text-amber-700 dark:text-amber-400">
+                      Use <strong>conditional</strong> forwarding (only when busy/unanswered) —
+                      unconditional forwarding can loop the call back into the AI.
+                    </span>{" "}
+                    Off by default.
+                  </p>
+                </div>
+                <Switch
+                  checked={transferToForwardedNumber}
+                  onCheckedChange={setTransferToForwardedNumber}
                 />
               </div>
 

@@ -53,6 +53,7 @@ const updateAssistantSchema = z.object({
     ringFirstNumber: z.string().regex(/^\+\d{7,15}$/).nullable().optional(),
     ringFirstTimeout: z.number().min(5).max(60).nullable().optional(),
     piiRedactionEnabled: z.boolean().optional(),
+    transferToForwardedNumber: z.boolean().optional(),
   }).passthrough().optional(),
 });
 
