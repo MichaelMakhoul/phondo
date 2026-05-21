@@ -112,6 +112,11 @@ export const SENTRY_REASONS = {
    *  truncation at warning level. SCRUM-318. */
   LEAD_DISCOVERY_SEARCH_PARTIAL: "lead-discovery-search-partial",
   LEAD_DISCOVERY_EXPORT_FAILED: "lead-discovery-export-failed",
+  /** discovered_businesses upsert failed during executeSearch — non-fatal
+   *  (the reload still recovers whatever IS persisted), but paged at warning
+   *  (SCRUM-321) so a silent write regression (column rename / constraint /
+   *  RLS) doesn't masquerade as a normal or quota-truncated result. */
+  LEAD_DISCOVERY_UPSERT_FAILED: "lead-discovery-upsert-failed",
   /** scanBusinessCRMs completed but N per-business CRM updates failed —
    *  the scan still returns 200 with the rows that DID update. Distinct
    *  from LEAD_DISCOVERY_SCAN_FAILED (the whole scan threw → 500) so a

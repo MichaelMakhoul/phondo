@@ -78,6 +78,30 @@ describe("searchPlaces (SCRUM-314)", () => {
     expect(out.partial).toBe(true);
     expect(out.failedStatus).toBe(503);
   });
+
+  it("SCRUM-321: flags partial on an empty `places` page that still has a nextPageToken (soft truncation)", async () => {
+    let call = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        call += 1;
+        // page 1 → 20 places + token; page 2 → 200 with [] but STILL a token.
+        return call === 1 ? okResponse(twentyPlaces, "tok-2") : okResponse([], "tok-3");
+      }),
+    );
+    const out = await searchPlaces({ location: "Sydney", profession: "dentist", limit: 25 });
+    expect(out.places).toHaveLength(20);
+    expect(out.partial).toBe(true);
+    expect(out.failedReason).toBe("empty-page");
+    expect(out.failedStatus).toBeUndefined();
+  });
+
+  it("SCRUM-321: an empty FIRST page (no results yet) is a complete empty result, not partial", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => okResponse([], "tok")));
+    const out = await searchPlaces({ location: "Sydney", profession: "dentist", limit: 25 });
+    expect(out.places).toHaveLength(0);
+    expect(out.partial).toBe(false);
+  });
 });
 
 describe("searchMultipleProfessions (SCRUM-314)", () => {
@@ -125,5 +149,22 @@ describe("searchMultipleProfessions (SCRUM-314)", () => {
     expect(out.places).toHaveLength(2);
     expect(out.partial).toBe(false);
     expect(out.failedStatus).toBeUndefined();
+  });
+
+  it("SCRUM-321: a raw (non-HTTP) throw after results carries failedReason for triage", async () => {
+    let call = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        call += 1;
+        if (call === 1) return okResponse(onePlace);
+        throw new Error("socket hang up"); // raw network throw on profession 2
+      }),
+    );
+    const out = await searchMultipleProfessions("Sydney", ["dentist", "lawyer"], 10);
+    expect(out.places).toHaveLength(1);
+    expect(out.partial).toBe(true);
+    expect(out.failedStatus).toBeUndefined();
+    expect(out.failedReason).toBe("network-or-parse:Error");
   });
 });

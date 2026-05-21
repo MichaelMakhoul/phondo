@@ -143,7 +143,21 @@ export async function executeSearch(
     .upsert(rows, { onConflict: "google_place_id", ignoreDuplicates: false });
 
   if (upsertError) {
+    // SCRUM-321: non-fatal (the reload below still returns whatever IS in
+    // discovered_businesses), but a silent upsert failure means the reload
+    // can return an incomplete/stale set that looks like a normal result. Page
+    // at warning (consistent with SCRUM-315's partial-scan pattern) so a
+    // persistent write regression (column rename / constraint / RLS) surfaces
+    // instead of being misattributed to a Google quota truncation.
     console.error("[Lead Discovery] Business upsert error:", upsertError);
+    pageSentry({
+      service: "next-api",
+      reason: SENTRY_REASONS.LEAD_DISCOVERY_UPSERT_FAILED,
+      level: "warning",
+      message: `discovered_businesses upsert failed for ${rows.length} rows — reload may return incomplete data`,
+      tags: { failureKind: "db-query" },
+      extras: { rowCount: rows.length, location: params.location },
+    });
   }
 
   // 4. Save cache entry (7-day TTL) — COMPLETE results only.
@@ -166,6 +180,9 @@ export async function executeSearch(
         professionCount: params.professions.length,
         gotResults: places.length,
         placesStatus: searchResult.failedStatus,
+        // SCRUM-321: coarse cause when there's no HTTP status (soft empty-page
+        // truncation or a raw network/parse throw) so the alert is actionable.
+        failedReason: searchResult.failedReason,
       },
     });
   } else {

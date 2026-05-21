@@ -173,7 +173,7 @@ describe("scanBusinessCRMs — UPDATE failure counting (SCRUM-315)", () => {
  * `single()` returns the cache row (only lead_search_cache calls it); the
  * chain is thenable for the reload; `upsert()` records which table it hit.
  */
-function makeExecClient(opts: { cacheRow?: unknown; reloadRows?: unknown[] }) {
+function makeExecClient(opts: { cacheRow?: unknown; reloadRows?: unknown[]; bizUpsertError?: unknown }) {
   const calls = { cacheUpsert: 0, bizUpsert: 0, tables: [] as string[] };
   const reloadRows = opts.reloadRows ?? [];
   const cacheRow = opts.cacheRow ?? null;
@@ -189,9 +189,12 @@ function makeExecClient(opts: { cacheRow?: unknown; reloadRows?: unknown[] }) {
         error: null,
       }),
       upsert: async () => {
-        if (table === "lead_search_cache") calls.cacheUpsert += 1;
-        else calls.bizUpsert += 1;
-        return { error: null };
+        if (table === "lead_search_cache") {
+          calls.cacheUpsert += 1;
+          return { error: null };
+        }
+        calls.bizUpsert += 1;
+        return { error: opts.bizUpsertError ?? null };
       },
       then: (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) =>
         Promise.resolve({ data: reloadRows, error: null }).then(resolve, reject),
@@ -224,7 +227,7 @@ describe("executeSearch — partial result handling (SCRUM-318)", () => {
   const params = { location: "Bondi NSW", professions: ["dentist", "lawyer"], limit: 25 };
 
   it("PARTIAL: skips the durable cache write, persists what it found, and pages a warning", async () => {
-    searchMultiMock.mockResolvedValueOnce({ places: [place("p1")], partial: true, failedStatus: 429 });
+    searchMultiMock.mockResolvedValueOnce({ places: [place("p1")], partial: true, failedStatus: 429, failedReason: "http-429" });
     const { client, calls } = makeExecClient({ reloadRows: [{ id: "1", name: "B" }] });
 
     const out = await executeSearch(params, client);
@@ -242,7 +245,7 @@ describe("executeSearch — partial result handling (SCRUM-318)", () => {
         reason: "lead-discovery-search-partial",
         level: "warning",
         tags: { failureKind: "google-places" },
-        extras: expect.objectContaining({ placesStatus: 429, gotResults: 1 }),
+        extras: expect.objectContaining({ placesStatus: 429, gotResults: 1, failedReason: "http-429" }),
       }),
     );
   });
@@ -271,5 +274,29 @@ describe("executeSearch — partial result handling (SCRUM-318)", () => {
     expect(out.partial).toBe(false);
     expect(out.businesses).toEqual([{ id: "1", name: "B" }]);
     expect(searchMultiMock).not.toHaveBeenCalled();
+  });
+
+  it("pages a warning when the discovered_businesses upsert fails, still returns reloaded rows (SCRUM-321)", async () => {
+    searchMultiMock.mockResolvedValueOnce({ places: [place("p1")], partial: false });
+    const { client, calls } = makeExecClient({
+      reloadRows: [{ id: "1", name: "B" }],
+      bizUpsertError: { message: "constraint violation" },
+    });
+
+    const out = await executeSearch(params, client);
+
+    // Non-fatal: the reload still returns whatever IS persisted.
+    expect(out.businesses).toEqual([{ id: "1", name: "B" }]);
+    expect(calls.bizUpsert).toBe(1);
+    // ...but the silent write failure is now paged at warning.
+    expect(pageSentryMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reason: "lead-discovery-upsert-failed",
+        level: "warning",
+        tags: { failureKind: "db-query" },
+      }),
+    );
+    // A complete (non-partial) result still writes the durable cache.
+    expect(calls.cacheUpsert).toBe(1);
   });
 });
