@@ -691,7 +691,7 @@ function generateGreeting(tone, businessName, language) {
  * @param {object} assistant
  * @param {object} organization
  * @param {string} knowledgeBase
- * @param {{ calendarEnabled?: boolean, transferRules?: object[], isAfterHours?: boolean, afterHoursConfig?: object, serviceTypes?: object[], userPhoneNumber?: string, forwardingStatus?: string, sourceType?: string }} [options]
+ * @param {{ calendarEnabled?: boolean, transferRules?: object[], isAfterHours?: boolean, afterHoursConfig?: object, serviceTypes?: object[] }} [options]
  */
 function buildSystemPrompt(assistant, organization, knowledgeBase, options) {
   const calendarEnabled = options?.calendarEnabled ?? false;
