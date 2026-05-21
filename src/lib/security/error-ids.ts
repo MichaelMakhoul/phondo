@@ -106,10 +106,6 @@ export const SENTRY_REASONS = {
    *  truncation at warning level. SCRUM-318. */
   LEAD_DISCOVERY_SEARCH_PARTIAL: "lead-discovery-search-partial",
   LEAD_DISCOVERY_EXPORT_FAILED: "lead-discovery-export-failed",
-  /** SCRUM-323: one-off smoke test of the Next.js → Loki push transport,
-   *  emitted only by the TEMPORARY /api/debug/observability-ping route
-   *  (platform-admin only). No production alert rule should key on this. */
-  OBSERVABILITY_SMOKE_TEST: "observability-smoke-test",
   /** scanBusinessCRMs completed but N per-business CRM updates failed —
    *  the scan still returns 200 with the rows that DID update. Distinct
    *  from LEAD_DISCOVERY_SCAN_FAILED (the whole scan threw → 500) so a
