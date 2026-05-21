@@ -1659,11 +1659,13 @@ wss.on("connection", (twilioWs) => {
             context.organization,
             context.knowledgeBase,
             {
+              // SCRUM-322: userPhoneNumber/forwardingStatus/sourceType used to
+              // be passed here too, but buildSystemPrompt never reads them (only
+              // executeToolCall consumes them, for the forwarded-number transfer
+              // fallback — still wired via the session/context). Dropped the dead
+              // hand-off so the prompt options reflect what's actually used.
               calendarEnabled: effectiveCalendarEnabled,
               transferRules: session.transferRules,
-              userPhoneNumber: session.userPhoneNumber,
-              forwardingStatus: session.forwardingStatus,
-              sourceType: session.sourceType,
               isAfterHours,
               afterHoursConfig,
               serviceTypes: context.serviceTypes,
