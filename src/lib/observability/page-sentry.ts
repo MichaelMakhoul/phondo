@@ -1,6 +1,7 @@
 import * as Sentry from "@sentry/nextjs";
 import type { SentryReason } from "@/lib/security/error-ids";
 import { scrubObject } from "./sentry-scrub";
+import { pushToLoki } from "./loki-push";
 
 /**
  * Emit a structured `[ALERT:<level>] [<service>] <message> | k=v …` line
@@ -46,6 +47,12 @@ function emitStructuredAlert(opts: {
   const line = `[ALERT:${level}] [${service}] ${summary}${pairs.length ? ` | ${pairs.join(" ")}` : ""}`;
   if (level === "error") console.error(line);
   else console.warn(line);
+
+  // SCRUM-323: also ship the line to Grafana Loki (dormant unless the LOKI_*
+  // env vars are set), so it is alertable on Vercel Hobby, which can't use a
+  // log drain. Labels parity the voice-server's {fly_app_name, level} scheme
+  // (low cardinality); reason/extras stay in the line. Fire-and-forget.
+  pushToLoki(line, { service_name: "phondo-next", level });
 }
 
 /**
