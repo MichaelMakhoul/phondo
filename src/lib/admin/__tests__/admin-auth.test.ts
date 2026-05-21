@@ -35,20 +35,23 @@ describe("isPlatformAdmin (SCRUM-308)", () => {
     expect(pageSentryMock).not.toHaveBeenCalled();
   });
 
-  it("PGRST116 (no profile row): returns false, logs a warn breadcrumb, does NOT page", async () => {
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+  it("PGRST116 (no profile row): returns false and pages at WARNING (admin-profile-row-missing) for the volume alert (SCRUM-316)", async () => {
     const res = await isPlatformAdmin(
       "user-1",
       makeClient({ data: null, error: { code: "PGRST116", message: "no rows" } }),
     );
     expect(res).toBe(false);
-    expect(warnSpy).toHaveBeenCalledWith(
-      "[isPlatformAdmin] No user_profiles row — treating as non-admin:",
-      { userId: "user-1" },
+    // SCRUM-316: routed through Loki at WARNING so a volume rule can catch a
+    // signup regression. Warning (not error) → no individual page.
+    expect(pageSentryMock).toHaveBeenCalledTimes(1);
+    expect(pageSentryMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        service: "next-api",
+        reason: "admin-profile-row-missing",
+        level: "warning",
+        extras: expect.objectContaining({ userId: "user-1" }),
+      }),
     );
-    // PGRST116 is benign — must NOT page on-call.
-    expect(pageSentryMock).not.toHaveBeenCalled();
-    warnSpy.mockRestore();
   });
 
   it("real DB error (not PGRST116): returns false AND pages Sentry (ADMIN_AUTH_LOOKUP_FAILED)", async () => {

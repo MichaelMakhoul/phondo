@@ -124,6 +124,12 @@ export const SENTRY_REASONS = {
    *  user as non-admin) but pages so a real admin denied during a
    *  brownout isn't invisible. */
   ADMIN_AUTH_LOOKUP_FAILED: "admin-auth-lookup-failed",
+  /** isPlatformAdmin found NO user_profiles row (PGRST116) for a user
+   *  hitting an admin route — treated as non-admin (fail-closed). Benign
+   *  individually (level=warning, so it does NOT page), but SCRUM-316 routes
+   *  it through Loki so a VOLUME alert can catch a signup-flow regression
+   *  that leaves many users profileless. Measured ~0/hr today. */
+  ADMIN_PROFILE_ROW_MISSING: "admin-profile-row-missing",
 
   // ─── org membership lookup (SCRUM-297) ──────────────────────────────
   /** getUserRoleInOrg's Postgres query failed — fails closed (returns
