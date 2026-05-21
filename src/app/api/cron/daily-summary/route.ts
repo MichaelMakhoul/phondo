@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requireCronAuth } from "@/lib/security/cron-auth";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { sendDailySummaryNotification } from "@/lib/notifications/notification-service";
 
@@ -50,16 +51,8 @@ function tzOffsetMs(date: Date, timezone: string): number {
 }
 
 export async function GET(req: NextRequest) {
-  const cronSecret = process.env.CRON_SECRET;
-  if (!cronSecret) {
-    console.error("[DailySummary] CRON_SECRET not configured");
-    return NextResponse.json({ error: "Server misconfiguration" }, { status: 500 });
-  }
-
-  const authHeader = req.headers.get("authorization");
-  if (authHeader !== `Bearer ${cronSecret}`) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  const authFail = requireCronAuth(req, "daily-summary");
+  if (authFail) return authFail;
 
   const supabase = createAdminClient();
 

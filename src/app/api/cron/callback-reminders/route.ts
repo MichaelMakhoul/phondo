@@ -1,18 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requireCronAuth } from "@/lib/security/cron-auth";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { sendCallbackReminderNotification } from "@/lib/notifications/notification-service";
 
 export async function GET(req: NextRequest) {
-  const cronSecret = process.env.CRON_SECRET;
-  if (!cronSecret) {
-    console.error("[Cron] CRON_SECRET not configured — cron route cannot authenticate");
-    return NextResponse.json({ error: "Server misconfiguration" }, { status: 500 });
-  }
-
-  const authHeader = req.headers.get("authorization");
-  if (authHeader !== `Bearer ${cronSecret}`) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  const authFail = requireCronAuth(req, "callback-reminders");
+  if (authFail) return authFail;
 
   const supabase = createAdminClient();
 

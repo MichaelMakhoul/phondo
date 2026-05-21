@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requireCronAuth } from "@/lib/security/cron-auth";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { SENTRY_REASONS, type SentryReason } from "@/lib/security/error-ids";
 import { pageSentry as sharedPageSentry } from "@/lib/observability/page-sentry";
@@ -51,15 +52,8 @@ function pageSentry(opts: {
 }
 
 export async function GET(req: NextRequest) {
-  const cronSecret = process.env.CRON_SECRET;
-  if (!cronSecret) {
-    return NextResponse.json({ error: "Server misconfiguration" }, { status: 500 });
-  }
-
-  const authHeader = req.headers.get("authorization");
-  if (authHeader !== `Bearer ${cronSecret}`) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  const authFail = requireCronAuth(req, "keep-alive");
+  if (authFail) return authFail;
 
   const results: Record<string, string> = {};
   const supabase = createAdminClient();
