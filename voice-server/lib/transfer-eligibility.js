@@ -13,11 +13,11 @@
  *
  * This predicate is shared by the two registration gates (`buildLLMOptions` +
  * the Gemini transfer prompt) so the tool is offered to the LLM only when the
- * forwarded fallback can fire. The tool-executor synthesises the fallback rule
- * only when `transferRules` is empty (so it never competes with explicit
- * rules); it does NOT itself re-check the opt-in — it relies on this gate
- * being the only path that offers the tool in the no-rules case (a
- * defense-in-depth check there is tracked separately).
+ * forwarded fallback can fire. As defense-in-depth (SCRUM-328) the
+ * tool-executor independently re-checks the same opt-in before synthesising
+ * the fallback rule (which it only does when `transferRules` is empty, so it
+ * never competes with explicit rules) — so the opt-in is enforced at BOTH the
+ * registration gate and the executor.
  *
  * @param {Record<string, any>} session
  * @returns {boolean}
