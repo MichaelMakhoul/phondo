@@ -452,7 +452,7 @@ function resolveAvailabilityFromCache(args, snapshot) {
  *
  * @param {string} functionName
  * @param {object} args - parsed arguments from the LLM
- * @param {{ organizationId: string, assistantId: string, callSid?: string, callId?: string, transferRules?: object[], testMode?: boolean, organization?: { timezone?: string, businessHours?: object }, callerPhone?: string, orgPhoneNumber?: string, userPhoneNumber?: string, forwardingStatus?: string, sourceType?: string, scheduleSnapshot?: object, telephonyProvider?: string }} context
+ * @param {{ organizationId: string, assistantId: string, callSid?: string, callId?: string, transferRules?: object[], testMode?: boolean, organization?: { timezone?: string, businessHours?: object }, callerPhone?: string, orgPhoneNumber?: string, userPhoneNumber?: string, forwardingStatus?: string, sourceType?: string, transferToForwardedNumber?: boolean, scheduleSnapshot?: object, telephonyProvider?: string }} context
  * @returns {Promise<{ message: string, action?: string, transferTo?: string, transferAttempt?: object, __endCall?: boolean } & Record<string, any>>}
  */
 async function executeToolCall(functionName, args, context) {
@@ -587,6 +587,11 @@ async function executeTransferCall(args, context) {
   // business's published line."
   //
   // Guards:
+  //   - transferToForwardedNumber must be the org's explicit opt-in (SCRUM-327,
+  //     default off). SCRUM-328: re-checked HERE too (defense-in-depth), not
+  //     only at the registration gate — so even if a future change offered
+  //     transfer_call in the no-rules case by another path, we never dial the
+  //     forwarded number for an org that never opted in.
   //   - sourceType must be "forwarded" (not a purchased Phondo-pool number)
   //   - forwarding_status must be "active" (not "pending_setup" or "paused")
   //   - userPhoneNumber must not equal orgPhoneNumber (loop prevention — if
@@ -598,6 +603,7 @@ async function executeTransferCall(args, context) {
   // setup UI warns about this and recommends conditional forwarding.
   if (
     transferRules.length === 0 &&
+    context.transferToForwardedNumber === true &&
     context.userPhoneNumber &&
     context.forwardingStatus === "active" &&
     context.sourceType === "forwarded"
