@@ -69,6 +69,40 @@ class CallSession {
   }
 
   /**
+   * Restore session state saved by `saveForTransfer` (pending-transfers.js)
+   * when a failed/no-answer transfer reconnects the caller to the AI. Mirrors
+   * the saveForTransfer payload field-for-field.
+   *
+   * SCRUM-325: this now also restores userPhoneNumber/forwardingStatus/
+   * sourceType — without them a SECOND transfer on the reconnected call
+   * couldn't use the forwarded-number fallback (executeToolCall gates the
+   * fallback on those three fields, so they were silently `undefined`).
+   *
+   * @param {Record<string, any>} savedState
+   */
+  restoreFrom(savedState) {
+    this.messages = savedState.messages;
+    this.organizationId = savedState.organizationId;
+    this.assistantId = savedState.assistantId;
+    this.phoneNumberId = savedState.phoneNumberId;
+    this.callerPhone = savedState.callerPhone;
+    this.callRecordId = savedState.callRecordId;
+    this.calendarEnabled = savedState.calendarEnabled;
+    this.serviceTypes = savedState.serviceTypes || [];
+    this.transferRules = savedState.transferRules;
+    this.userPhoneNumber = savedState.userPhoneNumber;
+    this.forwardingStatus = savedState.forwardingStatus;
+    this.sourceType = savedState.sourceType;
+    this.deepgramVoice = savedState.deepgramVoice;
+    this.holdPreset = savedState.holdPreset;
+    this.organization = savedState.organization;
+    this.orgPhoneNumber = savedState.orgPhoneNumber;
+    this.transferAttempt = savedState.transferAttempt;
+    this.startedAt = savedState.startedAt;
+    this.language = savedState.language || "en";
+  }
+
+  /**
    * Set the system prompt as the first message.
    */
   setSystemPrompt(prompt) {
