@@ -55,7 +55,7 @@ interface OnboardingData {
   transferRuleCreated: boolean;
   // Step 4: Test Call (no data, just completion state)
   testCallCompleted: boolean;
-  // Step 4: Go Live
+  // Step 5: Go Live
   areaCode: string;
   selectedPlan: string;
   selectedPhoneNumber: string;
@@ -553,6 +553,13 @@ export default function OnboardingPage() {
               });
               if (!patchRes.ok) {
                 console.error("Fallback forward number setup failed:", await patchRes.json().catch(() => ({})));
+                // Non-blocking: the number is live and the AI works; the owner
+                // can set the emergency fallback in Settings. Surface it so it
+                // isn't a silent gap on a routing-critical field.
+                toast({
+                  title: "Number is live — one thing to finish",
+                  description: "We couldn't set your emergency fallback number. You can add it any time from Settings → Phone Numbers.",
+                });
               }
             }
           } catch (fbErr) {
@@ -636,7 +643,7 @@ export default function OnboardingPage() {
                 ~{minutesRemaining} min left
               </span>
               <span className="text-sm text-muted-foreground">
-                Step {currentStep} of 4
+                Step {currentStep} of {TOTAL_STEPS}
               </span>
             </div>
           </div>
