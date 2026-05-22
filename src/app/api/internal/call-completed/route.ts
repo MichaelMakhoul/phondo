@@ -5,7 +5,9 @@ import { analyzeCall, type CallMetadata } from "@/lib/spam/spam-detector";
 import {
   sendMissedCallNotification,
   sendFailedCallNotification,
+  sendUnsuccessfulCallNotification,
 } from "@/lib/notifications/notification-service";
+import { classifyCallNotification } from "@/lib/notifications/classify-call";
 import { sendMissedCallTextBack } from "@/lib/sms/caller-sms";
 import { deliverWebhooks } from "@/lib/integrations/webhook-delivery";
 import { withRateLimit } from "@/lib/security/rate-limiter";
@@ -215,10 +217,30 @@ export async function POST(request: Request) {
   }
 
   // 4. Send notifications (skip spam calls)
+  //
+  // Classification (SCRUM-281 + SCRUM-299). Order matters — the most specific
+  // signal wins:
+  //   1. status "failed"                    -> failed-call (technical failure)
+  //   2. AI engaged + rated unsuccessful     -> unsuccessful-call (NEW)
+  //      (has transcript AND successEvaluation in {unsuccessful, partial})
+  //   3. very short, no engagement           -> missed-call
+  //   4. otherwise                           -> no email (successful, or a
+  //      booking/callback that fires its own notification)
+  //
+  // Before SCRUM-299, an AI-engaged-but-unsatisfactory call (e.g. caller asked
+  // for a transfer the AI fumbled, then hung up at 41s) was mislabeled "Missed
+  // Call". It now correctly routes to the unsuccessful-call alert.
+  const hasTranscript = !!(transcript && transcript.trim().length > 0);
+  const notificationKind = classifyCallNotification({
+    status,
+    durationSeconds,
+    hasTranscript,
+    successEvaluation,
+  });
   let notificationStatus = "skipped";
   if (!spamAnalysis?.isSpam) {
     try {
-      if (status === "failed") {
+      if (notificationKind === "failed") {
         await sendFailedCallNotification({
           organizationId,
           callId: callId || "unknown",
@@ -230,8 +252,22 @@ export async function POST(request: Request) {
           endedReason,
         });
         notificationStatus = "sent";
-      } else if (durationSeconds < 10) {
-        // Very short calls are likely missed
+      } else if (notificationKind === "unsuccessful") {
+        // AI answered and engaged but didn't satisfy the caller — a lead the
+        // owner may be losing. Distinct from a truly missed call (SCRUM-281/299).
+        await sendUnsuccessfulCallNotification({
+          organizationId,
+          callId: callId || "unknown",
+          callerPhone: callerPhone || "Unknown",
+          timestamp: new Date(),
+          duration: durationSeconds,
+          transcript,
+          summary,
+          successEvaluation,
+        });
+        notificationStatus = "sent";
+      } else if (notificationKind === "missed") {
+        // Very short AND no transcript = caller hung up before the AI engaged.
         await sendMissedCallNotification({
           organizationId,
           callId: callId || "unknown",
@@ -252,8 +288,16 @@ export async function POST(request: Request) {
       console.warn("[Internal] Notification sent despite spam analysis failure — may be for a spam call:", { callId });
     }
 
-    // 4b. Send text-back SMS to caller for failed calls or short calls (<10s, likely missed)
-    if ((status === "failed" || durationSeconds < 10) && !spamAnalysisFailed && callerPhone && callerPhone !== "Unknown") {
+    // 4b. Send text-back SMS to caller for any call that didn't go well —
+    // failed, missed, OR AI-engaged-but-unsuccessful. The unsuccessful case is
+    // the most valuable to recover (a real lead who reached the AI and left
+    // unsatisfied), so it must get the booking-link text-back too — not just
+    // the short/missed calls. SCRUM-281 review follow-up.
+    const shouldTextBack =
+      notificationKind === "failed" ||
+      notificationKind === "missed" ||
+      notificationKind === "unsuccessful";
+    if (shouldTextBack && !spamAnalysisFailed && callerPhone && callerPhone !== "Unknown") {
       sendMissedCallTextBack(organizationId, callerPhone, spamAnalysis?.isSpam)
         .catch((err) => console.error("[Internal] Caller text-back failed:", { callId, organizationId, error: err }));
     }

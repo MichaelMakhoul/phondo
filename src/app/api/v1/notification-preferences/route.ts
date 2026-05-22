@@ -12,6 +12,7 @@ const ALLOWED_FIELDS = [
   "email_on_missed_call",
   "email_on_voicemail",
   "email_on_appointment_booked",
+  "email_on_unsuccessful_call",
   "email_on_callback_scheduled",
   "email_daily_summary",
   "sms_on_missed_call",

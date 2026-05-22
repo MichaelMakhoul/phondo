@@ -14,6 +14,7 @@ interface NotificationPreferences {
   email_on_missed_call: boolean;
   email_on_voicemail: boolean;
   email_on_appointment_booked: boolean;
+  email_on_unsuccessful_call: boolean;
   email_on_callback_scheduled: boolean;
   email_daily_summary: boolean;
   sms_on_missed_call: boolean;
@@ -42,6 +43,7 @@ export function NotificationSettings({
     email_on_missed_call: initialPreferences?.email_on_missed_call ?? true,
     email_on_voicemail: initialPreferences?.email_on_voicemail ?? true,
     email_on_appointment_booked: initialPreferences?.email_on_appointment_booked ?? true,
+    email_on_unsuccessful_call: initialPreferences?.email_on_unsuccessful_call ?? true,
     email_on_callback_scheduled: initialPreferences?.email_on_callback_scheduled ?? true,
     email_daily_summary: initialPreferences?.email_daily_summary ?? true,
     sms_on_missed_call: initialPreferences?.sms_on_missed_call ?? false,
@@ -202,6 +204,20 @@ export function NotificationSettings({
               checked={preferences.email_on_appointment_booked}
               onCheckedChange={() => handleToggle("email_on_appointment_booked")}
               aria-label="Email notifications for appointment bookings"
+            />
+          </div>
+
+          <div className="flex items-center justify-between">
+            <div className="space-y-0.5">
+              <Label>Unsuccessful Calls</Label>
+              <p className="text-sm text-muted-foreground">
+                Get notified when the AI answered but the caller hung up without a satisfactory outcome — a lead worth following up
+              </p>
+            </div>
+            <Switch
+              checked={preferences.email_on_unsuccessful_call}
+              onCheckedChange={() => handleToggle("email_on_unsuccessful_call")}
+              aria-label="Email notifications for unsuccessful calls"
             />
           </div>
 
