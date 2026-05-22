@@ -330,6 +330,12 @@ export async function sendUnsuccessfulCallNotification(
     const dashboardLink = `${process.env.NEXT_PUBLIC_APP_URL || "https://phondo.ai"}/calls${
       data.callId && data.callId !== "unknown" ? `/${data.callId}` : ""
     }`;
+    // Humanize the analyzer rating — owners shouldn't see jargon like "partial".
+    const evalLower = (data.successEvaluation || "").toLowerCase();
+    const outcomeLabel =
+      evalLower === "partial"
+        ? "The AI partially helped, but the caller's need wasn't fully resolved."
+        : "The AI couldn't resolve the caller's request.";
     channels.push(sendEmail({
       to: email,
       subject: `Unsuccessful Call — ${data.callerName || data.callerPhone}`,
@@ -341,7 +347,7 @@ export async function sendUnsuccessfulCallNotification(
         duration: data.duration,
         summary: data.summary,
         transcriptSnippet,
-        successEvaluation: data.successEvaluation,
+        outcomeLabel,
         dashboardLink,
       },
     }));
@@ -806,6 +812,7 @@ function generateEmailHtml(template: string, data: Record<string, any>): string 
     "unsuccessful-call": (d) => `
       <h2 style="color: #d97706;">Unsuccessful Call — You May Have Lost a Lead</h2>
       <p>Your AI receptionist answered a call but the caller hung up without a satisfactory outcome. This is a potential lead worth following up.</p>
+      ${d.outcomeLabel ? `<p><strong>${d.outcomeLabel}</strong></p>` : ""}
       <table style="width: 100%; border-collapse: collapse; margin: 16px 0;">
         <tr>
           <td style="padding: 8px; border-bottom: 1px solid #ddd; font-weight: bold;">Caller</td>

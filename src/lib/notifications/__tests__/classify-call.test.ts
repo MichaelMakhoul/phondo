@@ -55,14 +55,26 @@ describe("classifyCallNotification", () => {
     ).toBe("missed");
   });
 
-  it("short call WITH a transcript is NOT missed (AI engaged)", () => {
-    // Regression guard for SCRUM-299: don't mislabel an AI-engaged call as missed.
+  it("short engaged call with null eval → unsuccessful, NOT missed (SCRUM-299 + regression #1)", () => {
+    // Don't mislabel an AI-engaged call as missed; and don't go silent just
+    // because post-call analysis returned null (which it does on failure).
     expect(
       classifyCallNotification({
         status: "completed",
         durationSeconds: 7,
         hasTranscript: true,
         successEvaluation: null,
+      })
+    ).toBe("unsuccessful");
+  });
+
+  it("short engaged call rated successful → none (respect the rating)", () => {
+    expect(
+      classifyCallNotification({
+        status: "completed",
+        durationSeconds: 7,
+        hasTranscript: true,
+        successEvaluation: "successful",
       })
     ).toBe("none");
   });
