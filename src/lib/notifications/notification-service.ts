@@ -22,6 +22,7 @@ export interface NotificationPreferences {
   email_on_voicemail: boolean;
   email_on_appointment_booked: boolean;
   email_on_failed_call: boolean;
+  email_on_unsuccessful_call: boolean;
   email_on_callback_scheduled: boolean;
   email_daily_summary: boolean;
   sms_on_missed_call: boolean;
@@ -55,6 +56,12 @@ export interface VoicemailNotificationData extends CallNotificationData {
 export interface FailedCallNotificationData extends CallNotificationData {
   failureReason: string;
   endedReason?: string;
+}
+
+export interface UnsuccessfulCallNotificationData extends CallNotificationData {
+  // Post-call analyzer rating: "unsuccessful" | "partial". Drives the
+  // copy ("the AI couldn't fully help" vs "partially helped").
+  successEvaluation?: string;
 }
 
 export interface AppointmentNotificationData {
@@ -120,6 +127,7 @@ export async function getNotificationPreferences(
     email_on_voicemail: data.email_on_voicemail ?? true,
     email_on_appointment_booked: data.email_on_appointment_booked ?? true,
     email_on_failed_call: data.email_on_failed_call ?? true,
+    email_on_unsuccessful_call: data.email_on_unsuccessful_call ?? true,
     email_on_callback_scheduled: data.email_on_callback_scheduled ?? true,
     email_daily_summary: data.email_daily_summary ?? true,
     sms_on_missed_call: data.sms_on_missed_call ?? false,
@@ -282,6 +290,66 @@ export async function sendFailedCallNotification(
   if (prefs?.webhook_url) {
     channels.push(sendWebhook(prefs.webhook_url, {
       event: "call_failed",
+      data,
+    }));
+  }
+
+  const results = await Promise.allSettled(channels);
+  const failures = results.filter((r) => r.status === "rejected");
+  if (failures.length > 0) {
+    throw new Error(`${failures.length}/${results.length} notification channels failed: ${(failures[0] as PromiseRejectedResult).reason}`);
+  }
+}
+
+/**
+ * Send unsuccessful-call notification — alerts the owner when the AI engaged
+ * but the caller hung up without a satisfactory outcome (successEvaluation
+ * "unsuccessful" or "partial"). SCRUM-281.
+ *
+ * This is the correct destination for calls that SCRUM-299 was previously
+ * mislabeling as "missed" — the AI DID answer, it just didn't resolve the
+ * caller's need, which is a different (and arguably more urgent) signal for
+ * the owner: a real lead they may be losing.
+ */
+export async function sendUnsuccessfulCallNotification(
+  data: UnsuccessfulCallNotificationData
+): Promise<void> {
+  const prefs = await getNotificationPreferences(data.organizationId);
+  const shouldEmail = prefs ? prefs.email_on_unsuccessful_call : true;
+
+  const email = await getOrganizationOwnerEmail(data.organizationId);
+
+  const channels: Promise<void>[] = [];
+
+  if (shouldEmail && email) {
+    // First 200 chars of the transcript so the owner gets the gist without
+    // opening the dashboard. escapeHtml runs in generateEmailHtml.
+    const transcriptSnippet = data.transcript
+      ? data.transcript.slice(0, 200) + (data.transcript.length > 200 ? "…" : "")
+      : "";
+    const dashboardLink = `${process.env.NEXT_PUBLIC_APP_URL || "https://phondo.ai"}/calls${
+      data.callId && data.callId !== "unknown" ? `/${data.callId}` : ""
+    }`;
+    channels.push(sendEmail({
+      to: email,
+      subject: `Unsuccessful Call — ${data.callerName || data.callerPhone}`,
+      template: "unsuccessful-call",
+      data: {
+        callerPhone: data.callerPhone,
+        callerName: data.callerName,
+        timestamp: data.timestamp.toLocaleString(),
+        duration: data.duration,
+        summary: data.summary,
+        transcriptSnippet,
+        successEvaluation: data.successEvaluation,
+        dashboardLink,
+      },
+    }));
+  }
+
+  if (prefs?.webhook_url) {
+    channels.push(sendWebhook(prefs.webhook_url, {
+      event: "call_unsuccessful",
       data,
     }));
   }
@@ -734,6 +802,25 @@ function generateEmailHtml(template: string, data: Record<string, any>): string 
         ${d.summary ? `<tr><td style="padding: 8px; font-weight: bold;">Summary</td><td style="padding: 8px;">${d.summary}</td></tr>` : ""}
       </table>
       <p><strong>Please call them back as soon as possible.</strong></p>
+    `,
+    "unsuccessful-call": (d) => `
+      <h2 style="color: #d97706;">Unsuccessful Call — You May Have Lost a Lead</h2>
+      <p>Your AI receptionist answered a call but the caller hung up without a satisfactory outcome. This is a potential lead worth following up.</p>
+      <table style="width: 100%; border-collapse: collapse; margin: 16px 0;">
+        <tr>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd; font-weight: bold;">Caller</td>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd;">${d.callerName ? `${d.callerName} (${d.callerPhone})` : d.callerPhone}</td>
+        </tr>
+        <tr>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd; font-weight: bold;">Time</td>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd;">${d.timestamp}</td>
+        </tr>
+        ${d.duration ? `<tr><td style="padding: 8px; border-bottom: 1px solid #ddd; font-weight: bold;">Duration</td><td style="padding: 8px; border-bottom: 1px solid #ddd;">${d.duration}s</td></tr>` : ""}
+        ${d.summary ? `<tr><td style="padding: 8px; border-bottom: 1px solid #ddd; font-weight: bold;">Summary</td><td style="padding: 8px; border-bottom: 1px solid #ddd;">${d.summary}</td></tr>` : ""}
+        ${d.transcriptSnippet ? `<tr><td style="padding: 8px; font-weight: bold; vertical-align: top;">Transcript</td><td style="padding: 8px;"><em>${d.transcriptSnippet}</em></td></tr>` : ""}
+      </table>
+      <p><strong>Consider calling them back.</strong></p>
+      <p><a href="${escapeHtml(d.dashboardLink || (process.env.NEXT_PUBLIC_APP_URL || "https://phondo.ai") + "/calls")}">View the full call</a></p>
     `,
     voicemail: (d) => `
       <h2>New Voicemail</h2>
