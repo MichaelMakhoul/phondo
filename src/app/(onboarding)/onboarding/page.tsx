@@ -9,6 +9,8 @@ import { Progress } from "@/components/ui/progress";
 import { useToast } from "@/components/ui/use-toast";
 import { BusinessInfo } from "./steps/BusinessInfo";
 import { AssistantSetup } from "./steps/AssistantSetup";
+import { Forwarding } from "./steps/Forwarding";
+import { validateForwarding } from "./steps/forwarding-save";
 import { TestCall } from "./steps/TestCall";
 import { GoLive } from "./steps/GoLive";
 import { Success } from "./steps/Success";
@@ -42,9 +44,18 @@ interface OnboardingData {
   firstMessage: string;
   voiceId: string;
   promptConfig: Record<string, any> | null;
-  // Step 3: Test Call (no data, just completion state)
+  // Step 3: Forwarding (SCRUM-284)
+  // transferNumber → a transfer_rule created when leaving this step (assistant
+  // exists by then). fallbackForwardNumber → stashed here and applied to the
+  // provisioned phone number at handleComplete (the number doesn't exist until
+  // Go Live, two steps later). transferRuleCreated guards against double-create
+  // if the user navigates back and forward.
+  transferNumber: string;
+  fallbackForwardNumber: string;
+  transferRuleCreated: boolean;
+  // Step 4: Test Call (no data, just completion state)
   testCallCompleted: boolean;
-  // Step 4: Go Live
+  // Step 5: Go Live
   areaCode: string;
   selectedPlan: string;
   selectedPhoneNumber: string;
@@ -68,6 +79,9 @@ const initialData: OnboardingData = {
   firstMessage: "",
   voiceId: "",
   promptConfig: null,
+  transferNumber: "",
+  fallbackForwardNumber: "",
+  transferRuleCreated: false,
   testCallCompleted: false,
   areaCode: "",
   selectedPlan: "",
@@ -79,9 +93,12 @@ const initialData: OnboardingData = {
 const steps = [
   { id: 1, name: "Business Info", description: "Tell us about your business", minutes: 2 },
   { id: 2, name: "AI Setup", description: "Configure your AI receptionist", minutes: 2 },
-  { id: 3, name: "Test Call", description: "Try out your AI", minutes: 1 },
-  { id: 4, name: "Go Live", description: "Choose your plan and phone number", minutes: 1 },
+  { id: 3, name: "Forwarding", description: "Where calls go when the AI can't help", minutes: 1 },
+  { id: 4, name: "Test Call", description: "Try out your AI", minutes: 1 },
+  { id: 5, name: "Go Live", description: "Choose your plan and phone number", minutes: 1 },
 ];
+
+const TOTAL_STEPS = steps.length; // 5 wizard steps; step 6 is the celebration screen
 
 export default function OnboardingPage() {
   const [currentStep, setCurrentStep] = useState(1);
@@ -208,8 +225,10 @@ export default function OnboardingPage() {
           data.voiceId !== ""
         );
       case 3:
+        return true; // Forwarding is optional — both numbers can be skipped
+      case 4:
         return true; // Test call is optional
-      case 4: {
+      case 5: {
         return data.selectedPhoneNumber !== "" && data.selectedPlan !== "";
       }
       default:
@@ -218,7 +237,7 @@ export default function OnboardingPage() {
   };
 
   const handleNext = async () => {
-    if (currentStep >= 4 || !canProceed() || isLoading) return;
+    if (currentStep >= TOTAL_STEPS || !canProceed() || isLoading) return;
 
     // SCRUM-295: block step 1 → 2 if the phone is non-empty but won't
     // normalise to E.164. Without this guard the bad value silently becomes
@@ -362,7 +381,64 @@ export default function OnboardingPage() {
       }
     }
 
-    const stepNames = ["", "Business Info", "Assistant Setup", "Test Call", "Go Live"];
+    // SCRUM-284: leaving the Forwarding step (3) — create the mid-call transfer
+    // rule now (the assistant exists). The emergency fallback number is stashed
+    // in onboarding data (normalised) and applied to the phone number at
+    // handleComplete, since the number isn't provisioned until Go Live. Both
+    // are optional. validateForwarding rejects a half-valid pair up front.
+    if (currentStep === 3) {
+      const country: SupportedCountry = data.country === "US" ? "US" : "AU";
+      const result = validateForwarding(data.transferNumber, data.fallbackForwardNumber, country);
+      if (!result.ok) {
+        const example = country === "US" ? "+14155551234" : "+61412345678";
+        toast({
+          variant: "destructive",
+          title: result.errorField === "fallback" ? "Invalid fallback number" : "Invalid transfer number",
+          description: `That isn't a valid ${country} phone number. Use international format (e.g. ${example}).`,
+        });
+        return;
+      }
+
+      // Persist the normalised values so the transfer rule + the fallback PATCH
+      // at handleComplete both use clean E.164.
+      updateData({
+        transferNumber: result.transfer ?? "",
+        fallbackForwardNumber: result.fallback ?? "",
+      });
+
+      if (result.transfer && data.createdAssistantId && !data.transferRuleCreated) {
+        setIsLoading(true);
+        try {
+          const res = await fetch("/api/v1/transfer/rules", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              assistantId: data.createdAssistantId,
+              name: "Default Transfer",
+              transferToPhone: result.transfer,
+              priority: 100,
+            }),
+          });
+          if (!res.ok) {
+            const body = await res.json().catch(() => ({}));
+            throw new Error(body.error || "Failed to save transfer number");
+          }
+          updateData({ transferRuleCreated: true });
+        } catch (error: any) {
+          toast({
+            variant: "destructive",
+            title: "Couldn't save transfer number",
+            description: error?.message || "Please try again, or skip and set it up later from settings.",
+          });
+          setIsLoading(false);
+          return;
+        } finally {
+          setIsLoading(false);
+        }
+      }
+    }
+
+    const stepNames = ["", "Business Info", "Assistant Setup", "Forwarding", "Test Call", "Go Live"];
     trackOnboardingStepComplete(currentStep, stepNames[currentStep] || `Step ${currentStep}`);
     setCurrentStep((prev) => prev + 1);
   };
@@ -461,6 +537,35 @@ export default function OnboardingPage() {
           setIsCompleting(false);
           return;
         }
+
+        // SCRUM-284: apply the emergency fallback number captured in the
+        // Forwarding step. The number only exists now (just provisioned), so
+        // we PATCH it on. Non-fatal — a failure here shouldn't block go-live;
+        // the owner can set it later from settings.
+        if (data.fallbackForwardNumber.trim()) {
+          try {
+            const phoneRecord = await phoneRes.json();
+            if (phoneRecord?.id) {
+              const patchRes = await fetch(`/api/v1/phone-numbers/${phoneRecord.id}`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ fallbackForwardNumber: data.fallbackForwardNumber.trim() }),
+              });
+              if (!patchRes.ok) {
+                console.error("Fallback forward number setup failed:", await patchRes.json().catch(() => ({})));
+                // Non-blocking: the number is live and the AI works; the owner
+                // can set the emergency fallback in Settings. Surface it so it
+                // isn't a silent gap on a routing-critical field.
+                toast({
+                  title: "Number is live — one thing to finish",
+                  description: "We couldn't set your emergency fallback number. You can add it any time from Settings → Phone Numbers.",
+                });
+              }
+            }
+          } catch (fbErr) {
+            console.error("Failed to apply fallback forward number (non-fatal):", fbErr);
+          }
+        }
       }
 
       // Step 6: Create notification preferences with defaults
@@ -483,11 +588,11 @@ export default function OnboardingPage() {
       // Clear onboarding progress
       localStorage.removeItem("onboarding_progress");
 
-      // Show celebration screen (step 5)
-      trackOnboardingStepComplete(4, "Go Live");
+      // Show celebration screen (one past the last wizard step)
+      trackOnboardingStepComplete(TOTAL_STEPS, "Go Live");
       trackOnboardingPlanSelected(data.selectedPlan || "starter");
       trackOnboardingComplete(data.selectedPlan || "starter", data.industry || "unknown");
-      setCurrentStep(5);
+      setCurrentStep(TOTAL_STEPS + 1);
       setIsCompleting(false);
     } catch (error: any) {
       toast({
@@ -499,13 +604,13 @@ export default function OnboardingPage() {
     }
   };
 
-  const progress = (currentStep / 4) * 100;
+  const progress = (currentStep / TOTAL_STEPS) * 100;
   const minutesRemaining = steps
     .filter((s) => s.id >= currentStep)
     .reduce((sum, s) => sum + s.minutes, 0);
 
-  // Step 5: Celebration screen (after successful completion)
-  if (currentStep === 5) {
+  // Celebration screen (after successful completion) — one past the last wizard step
+  if (currentStep === TOTAL_STEPS + 1) {
     const planLabel =
       data.selectedPlan === "business" ? "Business" :
       data.selectedPlan === "professional" ? "Professional" : "Starter";
@@ -538,7 +643,7 @@ export default function OnboardingPage() {
                 ~{minutesRemaining} min left
               </span>
               <span className="text-sm text-muted-foreground">
-                Step {currentStep} of 4
+                Step {currentStep} of {TOTAL_STEPS}
               </span>
             </div>
           </div>
@@ -622,6 +727,17 @@ export default function OnboardingPage() {
               )}
 
               {currentStep === 3 && (
+                <Forwarding
+                  data={{
+                    transferNumber: data.transferNumber,
+                    fallbackForwardNumber: data.fallbackForwardNumber,
+                  }}
+                  countryCode={data.country || "US"}
+                  onChange={(updates) => updateData(updates)}
+                />
+              )}
+
+              {currentStep === 4 && (
                 <TestCall
                   assistantData={{
                     assistantId: data.createdAssistantId,
@@ -637,7 +753,7 @@ export default function OnboardingPage() {
                 />
               )}
 
-              {currentStep === 4 && (
+              {currentStep === 5 && (
                 <GoLive
                   data={{
                     areaCode: data.areaCode,
@@ -662,8 +778,8 @@ export default function OnboardingPage() {
               Back
             </Button>
 
-            {currentStep < 4 ? (
-              currentStep === 3 ? (
+            {currentStep < TOTAL_STEPS ? (
+              currentStep === 4 ? (
                 // On test call step, show skip button (main continue is in the component)
                 <Button
                   variant="ghost"
