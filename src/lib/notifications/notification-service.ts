@@ -669,6 +669,21 @@ async function sendWebhook(url: string, payload: WebhookPayload): Promise<void> 
 }
 
 /**
+ * Format a duration in seconds into a human-readable string for emails.
+ * 0 → "0s", 45 → "45s", 221 → "3m 41s", 3600 → "1h 0m".
+ * Exported for unit testing.
+ */
+export function formatCallDuration(seconds: number): string {
+  const total = Math.max(0, Math.round(Number(seconds) || 0));
+  if (total < 60) return `${total}s`;
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m ${secs}s`;
+}
+
+/**
  * Generate email HTML from template
  * All user-provided data is HTML-escaped to prevent XSS
  */
@@ -804,7 +819,7 @@ function generateEmailHtml(template: string, data: Record<string, any>): string 
         </tr>
         <tr>
           <td style="padding: 8px;">Avg Call Duration</td>
-          <td style="padding: 8px;"><strong>${d.averageCallDuration}s</strong></td>
+          <td style="padding: 8px;"><strong>${formatCallDuration(d.averageCallDuration)}</strong></td>
         </tr>
       </table>
     `,
