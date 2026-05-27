@@ -34,6 +34,8 @@ describe("formatCallDuration", () => {
   it("clamps negatives and non-finite input to 0s", () => {
     expect(formatCallDuration(-5)).toBe("0s");
     expect(formatCallDuration(NaN)).toBe("0s");
+    expect(formatCallDuration(Infinity)).toBe("0s");
+    expect(formatCallDuration(-Infinity)).toBe("0s");
     // @ts-expect-error — defensive against undefined slipping through
     expect(formatCallDuration(undefined)).toBe("0s");
   });
