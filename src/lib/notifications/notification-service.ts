@@ -622,7 +622,10 @@ export async function sendDailySummaryNotification(
         answeredCalls: data.answeredCalls,
         missedCalls: data.missedCalls,
         appointmentsBooked: data.appointmentsBooked,
-        averageCallDuration: Math.round(data.averageCallDuration),
+        // Pass the raw seconds average; formatCallDuration owns rounding so
+        // there is a single rounding site (email + webhook reference the same
+        // source value).
+        averageCallDuration: data.averageCallDuration,
         answerRate: data.totalCalls > 0
           ? Math.round((data.answeredCalls / data.totalCalls) * 100)
           : 0,
@@ -763,6 +766,24 @@ async function sendWebhook(url: string, payload: WebhookPayload): Promise<void> 
   } finally {
     clearTimeout(timeoutId);
   }
+}
+
+/**
+ * Format a duration in seconds into a human-readable string for emails.
+ * 0 → "0s", 45 → "45s", 221 → "3m 41s", 3600 → "1h 0m".
+ * Exported for unit testing.
+ */
+export function formatCallDuration(seconds: number): string {
+  const n = Number(seconds);
+  // Number.isFinite rejects NaN AND ±Infinity — `Number(x) || 0` only caught
+  // the falsy/NaN low end and let +Infinity through as "Infinityh NaNm".
+  const total = Number.isFinite(n) ? Math.max(0, Math.round(n)) : 0;
+  if (total < 60) return `${total}s`;
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m ${secs}s`;
 }
 
 /**
@@ -921,7 +942,7 @@ function generateEmailHtml(template: string, data: Record<string, any>): string 
         </tr>
         <tr>
           <td style="padding: 8px;">Avg Call Duration</td>
-          <td style="padding: 8px;"><strong>${d.averageCallDuration}s</strong></td>
+          <td style="padding: 8px;"><strong>${formatCallDuration(d.averageCallDuration)}</strong></td>
         </tr>
       </table>
     `,
