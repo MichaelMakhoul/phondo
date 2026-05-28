@@ -43,9 +43,16 @@ describe("isUrlAllowed (synchronous literal-IP/hostname blocklist)", () => {
     ["http://[::1]/", false],
     ["http://[fdaa:0:1::3]/", false], // Fly.io 6PN (fc00::/7)
     ["http://foo.internal/", false],
+    ["http://[::ffff:127.0.0.1]/", false], // IPv4-mapped IPv6, dotted
+    ["http://[::ffff:a9fe:a9fe]/", false], // IPv4-mapped IPv6, hex = 169.254.169.254
+    ["http://metadata.google.internal./", false], // trailing-dot FQDN bypass
+    ["http://foo.internal./", false], // trailing-dot + .internal
+    ["http://2130706433/", false], // decimal IPv4 = 127.0.0.1 (Node normalises)
+    ["http://0x7f000001/", false], // hex IPv4 = 127.0.0.1
     ["ftp://example.com/", false], // non-http(s) scheme
     ["https://example.com/webhook", true],
     ["https://hooks.zapier.com/abc", true],
+    ["http://example.com./", true], // trailing dot on a PUBLIC name still allowed
   ])("%s -> %s", (url, expected) => {
     expect(isUrlAllowed(url)).toBe(expected);
   });
@@ -104,6 +111,15 @@ describe("ssrfSafeFetch (manual redirect re-validation)", () => {
     );
     const res = await ssrfSafeFetch("https://good.example.com/");
     expect(res.status).toBe(200);
+    fetchSpy.mockRestore();
+  });
+
+  it("throws SsrfBlockedError on a malformed redirect Location", async () => {
+    mockResolve4.mockResolvedValue(["93.184.216.34"]);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(null, { status: 302, headers: { location: "http://" } })
+    );
+    await expect(ssrfSafeFetch("https://good.example.com/")).rejects.toBeInstanceOf(SsrfBlockedError);
     fetchSpy.mockRestore();
   });
 });

@@ -74,7 +74,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 
     if (!url) {
       return NextResponse.json(
-        { error: "Webhook URL is blocked by security policy" },
+        { error: "Failed to decrypt webhook URL" },
         { status: 400 }
       );
     }
@@ -136,14 +136,20 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       // A blocked URL (DNS-resolved private/metadata, or a redirect to one) is
       // a security-policy rejection, not a delivery failure — surface it as 400.
       if (fetchError instanceof SsrfBlockedError) {
-        const adminClient = createAdminClient();
-        await (adminClient as any).from("integration_logs").insert({
-          integration_id: id,
-          event_type: "test",
-          payload: samplePayload,
-          response_body: "URL blocked by SSRF policy",
-          success: false,
-        });
+        // Guard the log insert so a DB error here still returns the accurate
+        // 400 (it would otherwise bubble to the outer catch as a 500).
+        try {
+          const adminClient = createAdminClient();
+          await (adminClient as any).from("integration_logs").insert({
+            integration_id: id,
+            event_type: "test",
+            payload: samplePayload,
+            response_body: "URL blocked by SSRF policy",
+            success: false,
+          });
+        } catch (logErr) {
+          console.error("[IntegrationTest] Failed to log SSRF-blocked test:", logErr);
+        }
         return NextResponse.json(
           { error: "Webhook URL is blocked by security policy" },
           { status: 400 }

@@ -3,7 +3,7 @@
  * Zero AI cost — pure regex/string matching against known signatures.
  */
 
-import { isUrlAllowedAsync } from "@/lib/security/validation";
+import { ssrfSafeFetch, SsrfBlockedError } from "@/lib/security/validation";
 
 // ── Signature database ───────────────────────────────────────────────
 
@@ -287,24 +287,24 @@ export async function scanWebsiteForCRM(
   timeoutMs = 8000
 ): Promise<CrmDetectionResult & { error?: string }> {
   try {
-    // SSRF protection
-    if (!(await isUrlAllowedAsync(url))) {
-      return { software: null, confidence: "low", signals: [], error: "URL blocked by SSRF policy" };
-    }
-
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-    const response = await fetch(url, {
-      signal: controller.signal,
-      headers: {
-        "User-Agent": "Phondo-LeadDiscovery-Bot/1.0 (AI Receptionist Platform)",
-        Accept: "text/html,application/xhtml+xml",
-      },
-      redirect: "follow",
-    });
-
-    clearTimeout(timer);
+    // ssrfSafeFetch validates the URL (DNS-resolving) and re-validates every
+    // redirect hop — the previous redirect:"follow" let a scanned site 302 to
+    // an internal address unchecked (SCRUM-338).
+    let response: Response;
+    try {
+      response = await ssrfSafeFetch(url, {
+        signal: controller.signal,
+        headers: {
+          "User-Agent": "Phondo-LeadDiscovery-Bot/1.0 (AI Receptionist Platform)",
+          Accept: "text/html,application/xhtml+xml",
+        },
+      });
+    } finally {
+      clearTimeout(timer);
+    }
 
     if (!response.ok) {
       return {
@@ -329,7 +329,9 @@ export async function scanWebsiteForCRM(
     return detectCRM(html);
   } catch (err: unknown) {
     const message =
-      err instanceof Error
+      err instanceof SsrfBlockedError
+        ? "URL blocked by SSRF policy"
+        : err instanceof Error
         ? err.name === "AbortError"
           ? "Timeout"
           : err.message

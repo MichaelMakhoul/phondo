@@ -43,9 +43,13 @@ export function isUrlAllowed(urlString: string): boolean {
       return false;
     }
 
-    // URL.hostname keeps the brackets on IPv6 literals (e.g. "[::1]"); strip
-    // them so the IPv6 blocklist patterns below actually match.
-    const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+    // Normalise: URL.hostname keeps brackets on IPv6 literals (e.g. "[::1]"),
+    // and a trailing dot ("metadata.google.internal.") otherwise bypasses the
+    // name patterns below. Strip both.
+    const hostname = url.hostname
+      .toLowerCase()
+      .replace(/^\[|\]$/g, "")
+      .replace(/\.$/, "");
 
     // Block private IPs, localhost, and internal hostnames
     const blockedPatterns = [
@@ -90,6 +94,13 @@ export function isUrlAllowed(urlString: string): boolean {
       if (a === 0) return false;
     }
 
+    // IPv6 literal (contains a colon): defer to isPrivateIp, which covers
+    // ::1, fc00::/7, fe80::, and IPv4-mapped forms (incl. the hex spelling
+    // Node normalises to, e.g. ::ffff:a9fe:a9fe = 169.254.169.254).
+    if (hostname.includes(":") && isPrivateIp(hostname)) {
+      return false;
+    }
+
     return true;
   } catch {
     return false;
@@ -120,9 +131,19 @@ function isPrivateIp(ip: string): boolean {
   // the IPv6 cloud-metadata address fd00:ec2::254.
   if (/^f[cd][0-9a-f]{2}:/.test(lower)) return true;
   if (lower.startsWith("fe80:")) return true;
-  // IPv4-mapped IPv6 (::ffff:127.0.0.1)
+  // IPv4-mapped IPv6, dotted form (::ffff:127.0.0.1)
   const mappedMatch = lower.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
   if (mappedMatch) return isPrivateIp(mappedMatch[1]);
+
+  // IPv4-mapped IPv6, hex form (::ffff:a9fe:a9fe) — the spelling Node's URL
+  // parser normalises ::ffff:169.254.169.254 to. Convert back to dotted quad.
+  const mappedHex = lower.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  if (mappedHex) {
+    const hi = parseInt(mappedHex[1], 16);
+    const lo = parseInt(mappedHex[2], 16);
+    const dotted = `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+    return isPrivateIp(dotted);
+  }
 
   return false;
 }
@@ -182,16 +203,24 @@ export class SsrfBlockedError extends Error {
  * or any redirect target resolves to a private/reserved/metadata address.
  *
  * This generalises the proven `fetchPage` pattern in the website scraper so
- * there is one hardened outbound path. Pass an AbortController `signal` in
- * `init` for timeouts. The same `init` (method, body, headers) is re-issued on
- * each validated redirect hop.
+ * there is one hardened outbound path.
+ *
+ * Usage constraints (one shared utility, so document them):
+ * - Pass an AbortController `signal` in `init` for the timeout. The SAME signal
+ *   covers the WHOLE redirect chain cumulatively (not per-hop) — this bounds
+ *   total time and prevents a slow-redirect stall, which is intentional.
+ * - The same `init` (method + body + headers) is re-issued on each validated
+ *   hop. Use a string/Buffer body, NOT a one-shot ReadableStream (it can only
+ *   be consumed once and would fail on the second hop). It does not downgrade
+ *   POST→GET on a 303 the way a browser would; safe here since every hop is
+ *   re-validated against the blocklist before connecting.
  */
 export async function ssrfSafeFetch(
   urlString: string,
   init: RequestInit = {},
   opts: { maxRedirects?: number } = {}
 ): Promise<Response> {
-  const maxRedirects = opts.maxRedirects ?? 3;
+  const maxRedirects = opts.maxRedirects ?? 5;
   let currentUrl = urlString;
 
   for (let i = 0; i <= maxRedirects; i++) {
@@ -205,7 +234,15 @@ export async function ssrfSafeFetch(
     if (response.status >= 300 && response.status < 400) {
       const location = response.headers.get("location");
       if (!location) return response; // 3xx with no Location — return as-is
-      currentUrl = new URL(location, currentUrl).href;
+      // Drain the intermediate response so undici releases the socket back to
+      // the pool instead of holding it until GC.
+      await response.body?.cancel().catch(() => {});
+      try {
+        currentUrl = new URL(location, currentUrl).href;
+      } catch {
+        // A malformed Location is a hostile/broken hop — treat as blocked.
+        throw new SsrfBlockedError(`${currentUrl} -> invalid redirect location`);
+      }
       continue;
     }
 
