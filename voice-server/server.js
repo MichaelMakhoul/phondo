@@ -59,6 +59,7 @@ function getTwilioRestClient() {
 const { lookupPhoneNumber, isAiEnabled, getAnswerMode, getPhoneNumberContext } = require("./lib/answer-mode");
 const { detectAndRedact, redactObject } = require("./lib/pii-detector");
 const { maskPhone } = require("./lib/mask-phone");
+const { getTestClientIp, createTestSessionCaps } = require("./lib/test-session-caps");
 const { buildFallbackDisclosureSay } = require("./lib/fallback-dial-consent");
 const { getPollyVoice } = require("./lib/polly-voice");
 const killSwitch = require("./lib/route-handlers/kill-switch");
@@ -3135,23 +3136,14 @@ const MAX_TEST_CALL_DURATION_MS = 5 * 60 * 1000; // 5 minutes
 // server is a single long-running process (one Fly machine), so in-memory
 // tracking is authoritative — no distributed store needed. Tokens minted before
 // the jti rollout have no jti and skip the single-use check, but are still
-// bounded by the IP + global caps (backward compatible).
+// bounded by the IP + global caps (backward compatible). Logic + IP resolution
+// live in ./lib/test-session-caps so they're unit-tested.
 const MAX_TEST_SESSIONS_GLOBAL = 50;
 const MAX_TEST_SESSIONS_PER_IP = 3;
-const activeTestJtis = new Set();        // jti currently running a session (single-use)
-const testSessionsByIp = new Map();      // ip -> active session count
-let globalTestSessionCount = 0;
-
-/** True client IP. Fly sets Fly-Client-IP and overwrites any client-supplied
- *  value, so it can't be spoofed; fall back to the last XFF hop / socket. */
-function getTestClientIp(req) {
-  return (
-    req.headers["fly-client-ip"] ||
-    (req.headers["x-forwarded-for"] || "").split(",").pop()?.trim() ||
-    req.socket?.remoteAddress ||
-    "unknown"
-  );
-}
+const testSessionCaps = createTestSessionCaps({
+  maxGlobal: MAX_TEST_SESSIONS_GLOBAL,
+  maxPerIp: MAX_TEST_SESSIONS_PER_IP,
+});
 
 /**
  * Verify a test call token (HMAC-SHA256 signed by TEST_CALL_SECRET).
@@ -3198,40 +3190,30 @@ testWss.on("connection", (ws, req) => {
   const { assistantId, organizationId, simulateAfterHours, jti } = tokenData;
 
   // SCRUM-341: enforce concurrency caps BEFORE allocating a (paid) Gemini Live
-  // session. Each layer is independent; a token without a jti (pre-rollout)
-  // skips only the single-use check.
+  // session. tryReserve is a synchronous check-and-reserve (no await → race-free
+  // on Node's single-threaded loop). A token without a jti (pre-rollout) skips
+  // only the single-use check; the IP + global caps still apply.
   const clientIp = getTestClientIp(req);
-  if (globalTestSessionCount >= MAX_TEST_SESSIONS_GLOBAL) {
-    console.warn(`[TestCap] Global concurrent test-session cap reached (${MAX_TEST_SESSIONS_GLOBAL})`);
-    ws.close(4029, "Too many active test sessions, try again shortly");
-    return;
-  }
-  const ipCount = testSessionsByIp.get(clientIp) || 0;
-  if (ipCount >= MAX_TEST_SESSIONS_PER_IP) {
-    console.warn(`[TestCap] Per-IP concurrent test-session cap reached (${MAX_TEST_SESSIONS_PER_IP}/${maskPhone(clientIp)})`);
-    ws.close(4029, "Too many active test sessions from your network");
-    return;
-  }
-  if (jti && activeTestJtis.has(jti)) {
-    console.warn("[TestCap] Token reuse rejected — jti already has an active session");
-    ws.close(4029, "This test token is already in use");
+  const reservation = testSessionCaps.tryReserve(jti, clientIp);
+  if (!reservation.ok) {
+    const msg =
+      reservation.reason === "jti-reuse"
+        ? "This test token is already in use"
+        : reservation.reason === "per-ip"
+          ? "Too many active test sessions from your network"
+          : "Too many active test sessions, try again shortly";
+    console.warn(`[TestCap] Rejected /ws/test (${reservation.reason}, ip=${maskPhone(clientIp)})`);
+    ws.close(4029, msg);
     return;
   }
 
-  // Reserve the slot. Released exactly once in cleanupTestSession (wired to
-  // ws close/error and the max-duration timer below).
-  if (jti) activeTestJtis.add(jti);
-  testSessionsByIp.set(clientIp, ipCount + 1);
-  globalTestSessionCount++;
+  // Release the reserved slot exactly once, on any teardown path. Wired into
+  // cleanupTestSession (ws close/error + the max-duration timer below).
   let testSlotReleased = false;
   function releaseTestSlot() {
     if (testSlotReleased) return;
     testSlotReleased = true;
-    if (jti) activeTestJtis.delete(jti);
-    const remaining = (testSessionsByIp.get(clientIp) || 1) - 1;
-    if (remaining <= 0) testSessionsByIp.delete(clientIp);
-    else testSessionsByIp.set(clientIp, remaining);
-    globalTestSessionCount = Math.max(0, globalTestSessionCount - 1);
+    testSessionCaps.release(jti, clientIp);
   }
 
   let session = null;
