@@ -175,6 +175,14 @@ export const rateLimitConfigs = {
     maxRequests: 3,
     costControl: true,
   },
+  // Global cap on demo calls across ALL IPs - 100 per hour. costControl so a
+  // Supabase brownout fails CLOSED rather than re-opening unbounded Gemini Live
+  // cost to an IP-rotating bot (SCRUM-340). Single shared bucket (key "global").
+  demoCallGlobal: {
+    windowMs: 60 * 60 * 1000,
+    maxRequests: 100,
+    costControl: true,
+  },
 } as const;
 
 export type RateLimitType = keyof typeof rateLimitConfigs;
