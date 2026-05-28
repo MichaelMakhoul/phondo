@@ -9,6 +9,7 @@
 const WebSocket = require("ws");
 const { twilioToGemini, geminiToTwilio } = require("../lib/audio-converter");
 const { Sentry } = require("../lib/sentry");
+const { logTranscript } = require("../lib/log-transcript");
 
 const GEMINI_MODEL = process.env.GEMINI_LIVE_MODEL || "models/gemini-3.1-flash-live-preview";
 const GEMINI_ENDPOINT = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
@@ -404,7 +405,9 @@ function createGeminiSession(config, callbacks) {
       if (ws.readyState !== WebSocket.OPEN) return;
       try {
         ws.send(JSON.stringify({ realtimeInput: { text } }));
-        console.log(`[GeminiLive] Injected text: "${text.slice(0, 100)}..."`);
+        // SCRUM-339: injected text can carry the Tier-2 discrepancy (caller
+        // name / appointment details) — gate behind DEBUG_TRANSCRIPTS.
+        logTranscript("[GeminiLive] Injected text", text);
       } catch (err) {
         console.error("[GeminiLive] sendText failed:", err.message);
       }

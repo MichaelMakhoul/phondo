@@ -12,6 +12,8 @@
  * so no caller-facing latency. Correction is injected into Gemini's next turn.
  */
 
+const { DEBUG_TRANSCRIPTS } = require("../lib/log-transcript");
+
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const VALIDATOR_MODEL = "claude-haiku-4-5-20251001";
 
@@ -84,7 +86,9 @@ OR
       const result = JSON.parse(text);
       if (typeof result.accurate === "boolean") {
         if (!result.accurate) {
-          console.warn(`[TurnValidator] Discrepancy detected for ${toolName}: ${result.discrepancy}`);
+          // SCRUM-339: discrepancy is free text that can quote caller name /
+          // appointment details — redact unless DEBUG_TRANSCRIPTS.
+          console.warn(`[TurnValidator] Discrepancy detected for ${toolName}: ${DEBUG_TRANSCRIPTS ? result.discrepancy : "[redacted]"}`);
         }
         return result;
       }
