@@ -67,20 +67,11 @@ const killSwitch = require("./lib/route-handlers/kill-switch");
 // value introduced via direct SQL or a future bug can't be sent to Twilio.
 const E164_REGEX_VOICE = /^\+[1-9]\d{7,14}$/;
 
-// SCRUM-339: raw caller speech/transcripts must NEVER reach stdout in
-// production — Fly ships stdout to Grafana Loki, which would expose verbatim
-// caller PII (names, DOB, medical/legal detail) to anyone with log access.
-// With DEBUG_TRANSCRIPTS=true (off in prod) the full text is logged for local
-// debugging; otherwise only a character-count breadcrumb so call flow stays
-// traceable without the content.
-const DEBUG_TRANSCRIPTS = process.env.DEBUG_TRANSCRIPTS === "true";
-function logTranscript(label, text) {
-  if (DEBUG_TRANSCRIPTS) {
-    console.log(`${label}: "${text}"`);
-  } else {
-    console.log(`${label}: [${(text || "").length} chars]`);
-  }
-}
+// SCRUM-339: caller PII (transcripts, AI echoes, tool-call args) must never
+// reach stdout in production — Fly ships it to Grafana Loki. Shared helpers
+// gate full content behind DEBUG_TRANSCRIPTS (off in prod) and otherwise log a
+// non-PII breadcrumb. See voice-server/lib/log-transcript.js.
+const { DEBUG_TRANSCRIPTS, logTranscript, logToolCall } = require("./lib/log-transcript");
 
 // Validate required env vars before deriving any constants
 // LLM API key env var depends on provider
@@ -1299,9 +1290,11 @@ wss.on("connection", (twilioWs) => {
       try {
         analysis = await analyzeCallTranscript(transcript);
         if (analysis) {
-          // SCRUM-339: caller name is PII — redact unless DEBUG_TRANSCRIPTS.
+          // SCRUM-339: caller name AND the free-text call reason are PII —
+          // redact both unless DEBUG_TRANSCRIPTS. success is a safe enum.
           const callerForLog = DEBUG_TRANSCRIPTS ? (analysis.callerName || "unknown") : "[redacted]";
-          console.log(`[PostCall] Analysis complete: caller=${callerForLog}, reason=${analysis.callerPhoneReason || "unknown"}, success=${analysis.successEvaluation}`);
+          const reasonForLog = DEBUG_TRANSCRIPTS ? (analysis.callerPhoneReason || "unknown") : "[redacted]";
+          console.log(`[PostCall] Analysis complete: caller=${callerForLog}, reason=${reasonForLog}, success=${analysis.successEvaluation}`);
         }
       } catch (err) {
         console.error("[PostCall] Analysis failed:", err);
@@ -1928,7 +1921,7 @@ wss.on("connection", (twilioWs) => {
                     console.warn(`[GeminiLive] Ignoring tool call ${toolCall.name} — session already cleaned up`);
                     return { message: "" };
                   }
-                  console.log(`[GeminiLive] Tool call: ${toolCall.name}(${JSON.stringify(toolCall.args).slice(0, 80)})`);
+                  logToolCall("[GeminiLive] Tool call", toolCall.name, toolCall.args);
 
                   // SCRUM-227: intercept end_call if the transcript claims a booking
                   // but book_appointment was never successfully called. Return an
@@ -2088,7 +2081,7 @@ wss.on("connection", (twilioWs) => {
                   // Flush any pending AI transcript before interruption
                   if (pendingAiTranscript.trim()) {
                     session.addMessage("assistant", pendingAiTranscript.trim());
-                    console.log(`[GeminiLive] AI: "${pendingAiTranscript.trim().slice(0, 100)}"`);
+                    logTranscript("[GeminiLive] AI", pendingAiTranscript.trim());
                     pendingAiTranscript = "";
                   }
                   if (twilioWs.readyState === WebSocket.OPEN) {
@@ -2111,7 +2104,7 @@ wss.on("connection", (twilioWs) => {
                   if (pendingAiTranscript.trim()) {
                     const aiTurnText = pendingAiTranscript.trim();
                     session.addMessage("assistant", aiTurnText);
-                    console.log(`[GeminiLive] AI (turn): "${aiTurnText.slice(0, 100)}"`);
+                    logTranscript("[GeminiLive] AI (turn)", aiTurnText);
 
                     // SCRUM-258: goodbye-loop detector — runs once per COMPLETE turn,
                     // not per streaming fragment, to count TURNS not fragments.
@@ -2229,7 +2222,7 @@ wss.on("connection", (twilioWs) => {
                           spokenResponse: aiTurnText,
                         }).then((validation) => {
                           if (!validation.accurate && session?.geminiSession?.sendText) {
-                            console.warn(`[Tier2Validator] Discrepancy in ${lastTool.name}: ${validation.discrepancy}. callSid=${session.callSid}`);
+                            console.warn(`[Tier2Validator] Discrepancy in ${lastTool.name}: ${DEBUG_TRANSCRIPTS ? validation.discrepancy : "[redacted]"}. callSid=${session.callSid}`);
                             Sentry.withScope((scope) => {
                               scope.setTag("service", "tier2_validator");
                               scope.setExtras({ callSid: session.callSid, toolName: lastTool.name, discrepancy: validation.discrepancy });
@@ -2755,7 +2748,8 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
           ? Math.round(sentenceQueue.reduce((s, c) => s + c.length, 0) / sentenceQueue.length)
           : 0;
         const shortChunks = sentenceQueue.filter((c) => c.length < 20).length;
-        console.log(`[LLM] (${Date.now() - t0}ms) streamed ${sentenceQueue.length} chunks (avg=${avgChunkLen}ch, short=${shortChunks}): "${reply}"`);
+        console.log(`[LLM] (${Date.now() - t0}ms) streamed ${sentenceQueue.length} chunks (avg=${avgChunkLen}ch, short=${shortChunks})`);
+        logTranscript("[LLM] reply", reply);
         break;
       }
 
@@ -3402,7 +3396,7 @@ testWss.on("connection", (ws, req) => {
                 console.warn(`[TestGeminiLive] Ignoring tool call ${toolCall.name} — session already cleaned up`);
                 return { message: "" };
               }
-              console.log(`[TestGeminiLive] Tool call: ${toolCall.name}(${JSON.stringify(toolCall.args).slice(0, 80)})`);
+              logToolCall("[TestGeminiLive] Tool call", toolCall.name, toolCall.args);
               const result = await executeToolCall(toolCall.name, toolCall.args, {
                 organizationId: session.organizationId,
                 assistantId: session.assistantId,
@@ -3714,7 +3708,8 @@ async function handleTestUserSpeech(session, ws, transcript) {
             isFinal: true,
           }));
         }
-        console.log(`[TestLLM] (${Date.now() - t0}ms) streamed ${sentenceCount} chunks: "${reply}"`);
+        console.log(`[TestLLM] (${Date.now() - t0}ms) streamed ${sentenceCount} chunks`);
+        logTranscript("[TestLLM] reply", reply);
         break;
       }
 

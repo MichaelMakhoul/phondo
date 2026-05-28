@@ -1,5 +1,6 @@
 const { WebSocket } = require("ws");
 const { validateInput, getBufferConfig, extractSpokenDigits } = require("./lib/input-validators");
+const { logTranscript } = require("./lib/log-transcript");
 
 const MAX_MESSAGES = 21; // system prompt + up to 20 messages (user/assistant turns + tool call/result messages)
 
@@ -278,10 +279,11 @@ class CallSession {
     if (combined) {
       const wordCount = combined.split(/\s+/).length;
       if (wordCount <= 2 && fragmentCount === 1) {
-        console.log(`[Metrics] Short utterance flush: "${combined}" (${wordCount} words, type=${this._expectedInputType})`);
+        // SCRUM-339: `combined` is verbatim caller speech — gate behind debug.
+        logTranscript(`[Metrics] Short utterance flush (${wordCount} words, type=${this._expectedInputType})`, combined);
       }
       if (fragmentCount > 1) {
-        console.log(`[Metrics] Multi-fragment utterance: ${fragmentCount} fragments → "${combined}" (type=${this._expectedInputType})`);
+        logTranscript(`[Metrics] Multi-fragment utterance: ${fragmentCount} fragments (type=${this._expectedInputType})`, combined);
       }
     }
 
