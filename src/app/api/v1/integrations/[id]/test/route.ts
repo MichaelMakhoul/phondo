@@ -3,7 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { withRateLimit } from "@/lib/security/rate-limiter";
 import { safeDecrypt } from "@/lib/security/encryption";
-import { isUrlAllowed, isValidUUID } from "@/lib/security/validation";
+import { ssrfSafeFetch, SsrfBlockedError, isValidUUID } from "@/lib/security/validation";
 import { signPayload } from "@/lib/integrations/webhook-delivery";
 import type { OrgMembership } from "@/lib/integrations/types";
 
@@ -72,7 +72,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const url = safeDecrypt(integration.webhook_url);
     const secret = safeDecrypt(integration.signing_secret);
 
-    if (!url || !isUrlAllowed(url)) {
+    if (!url) {
       return NextResponse.json(
         { error: "Webhook URL is blocked by security policy" },
         { status: 400 }
@@ -94,7 +94,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const timeout = setTimeout(() => controller.abort(), 10000);
 
     try {
-      const response = await fetch(url, {
+      // ssrfSafeFetch validates the URL (DNS-resolving) and re-validates every
+      // redirect hop, closing the DNS-rebinding / redirect-to-metadata SSRF
+      // (SCRUM-338). A blocked URL throws SsrfBlockedError (handled below).
+      const response = await ssrfSafeFetch(url, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -129,6 +132,24 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       });
     } catch (fetchError) {
       clearTimeout(timeout);
+
+      // A blocked URL (DNS-resolved private/metadata, or a redirect to one) is
+      // a security-policy rejection, not a delivery failure — surface it as 400.
+      if (fetchError instanceof SsrfBlockedError) {
+        const adminClient = createAdminClient();
+        await (adminClient as any).from("integration_logs").insert({
+          integration_id: id,
+          event_type: "test",
+          payload: samplePayload,
+          response_body: "URL blocked by SSRF policy",
+          success: false,
+        });
+        return NextResponse.json(
+          { error: "Webhook URL is blocked by security policy" },
+          { status: 400 }
+        );
+      }
+
       const message =
         fetchError instanceof Error && fetchError.name === "AbortError"
           ? "Request timed out after 10 seconds"

@@ -43,7 +43,9 @@ export function isUrlAllowed(urlString: string): boolean {
       return false;
     }
 
-    const hostname = url.hostname.toLowerCase();
+    // URL.hostname keeps the brackets on IPv6 literals (e.g. "[::1]"); strip
+    // them so the IPv6 blocklist patterns below actually match.
+    const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
 
     // Block private IPs, localhost, and internal hostnames
     const blockedPatterns = [
@@ -55,9 +57,8 @@ export function isUrlAllowed(urlString: string): boolean {
       /^169\.254\./, // AWS metadata and link-local
       /^0\./, // 0.x.x.x
       /^::1$/, // IPv6 localhost
-      /^fc00:/i, // IPv6 private
+      /^f[cd][0-9a-f]{2}:/i, // IPv6 unique-local fc00::/7 (incl. Fly 6PN fdaa::/16)
       /^fe80:/i, // IPv6 link-local
-      /^fd[0-9a-f]{2}:/i, // IPv6 unique local
       /\.local$/i,
       /\.internal$/i,
       /\.localhost$/i,
@@ -115,7 +116,9 @@ function isPrivateIp(ip: string): boolean {
   // IPv6
   const lower = ip.toLowerCase();
   if (lower === "::1") return true;
-  if (lower.startsWith("fc00:") || /^fd[0-9a-f]{2}:/.test(lower)) return true;
+  // fc00::/7 unique-local (fc00:–fdff:) — covers Fly.io 6PN (fdaa::/16) and
+  // the IPv6 cloud-metadata address fd00:ec2::254.
+  if (/^f[cd][0-9a-f]{2}:/.test(lower)) return true;
   if (lower.startsWith("fe80:")) return true;
   // IPv4-mapped IPv6 (::ffff:127.0.0.1)
   const mappedMatch = lower.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
@@ -157,6 +160,59 @@ export async function isUrlAllowedAsync(urlString: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * Thrown by ssrfSafeFetch when a URL (or any redirect hop) resolves to a
+ * disallowed/internal address. Callers can distinguish this from a normal
+ * network error to return a clean "blocked by security policy" response.
+ */
+export class SsrfBlockedError extends Error {
+  constructor(url: string) {
+    super(`Blocked request to disallowed URL (SSRF policy): ${url}`);
+    this.name = "SsrfBlockedError";
+  }
+}
+
+/**
+ * SSRF-safe fetch for ANY outbound request to a user-supplied URL (webhooks,
+ * integrations). Validates the URL with the DNS-resolving check BEFORE
+ * connecting, and follows redirects MANUALLY — re-validating every hop against
+ * the internal-network blocklist. Throws SsrfBlockedError if the initial URL
+ * or any redirect target resolves to a private/reserved/metadata address.
+ *
+ * This generalises the proven `fetchPage` pattern in the website scraper so
+ * there is one hardened outbound path. Pass an AbortController `signal` in
+ * `init` for timeouts. The same `init` (method, body, headers) is re-issued on
+ * each validated redirect hop.
+ */
+export async function ssrfSafeFetch(
+  urlString: string,
+  init: RequestInit = {},
+  opts: { maxRedirects?: number } = {}
+): Promise<Response> {
+  const maxRedirects = opts.maxRedirects ?? 3;
+  let currentUrl = urlString;
+
+  for (let i = 0; i <= maxRedirects; i++) {
+    if (!(await isUrlAllowedAsync(currentUrl))) {
+      throw new SsrfBlockedError(currentUrl);
+    }
+
+    const response = await fetch(currentUrl, { ...init, redirect: "manual" });
+
+    // Manual redirect handling: re-validate the next hop before following.
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers.get("location");
+      if (!location) return response; // 3xx with no Location — return as-is
+      currentUrl = new URL(location, currentUrl).href;
+      continue;
+    }
+
+    return response;
+  }
+
+  throw new SsrfBlockedError(`${urlString} (exceeded ${maxRedirects} redirects)`);
 }
 
 /**

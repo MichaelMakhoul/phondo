@@ -4,7 +4,7 @@ import { z } from "zod";
 import crypto from "crypto";
 import { withRateLimit } from "@/lib/security/rate-limiter";
 import { safeEncrypt, safeDecrypt } from "@/lib/security/encryption";
-import { isUrlAllowed } from "@/lib/security/validation";
+import { isUrlAllowedAsync } from "@/lib/security/validation";
 import { hasFeatureAccess } from "@/lib/stripe/billing-service";
 import type { OrgMembership } from "@/lib/integrations/types";
 
@@ -127,8 +127,9 @@ export async function POST(request: Request) {
     const body = await request.json();
     const validated = createIntegrationSchema.parse(body);
 
-    // SSRF protection
-    if (!isUrlAllowed(validated.webhook_url)) {
+    // SSRF protection — DNS-resolving check at write time so a private/
+    // metadata/rebinding target is rejected on save, not just at send.
+    if (!(await isUrlAllowedAsync(validated.webhook_url))) {
       return NextResponse.json(
         { error: "Webhook URL points to a private or internal address" },
         { status: 400 }

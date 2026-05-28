@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { hasFeatureAccess } from "@/lib/stripe/billing-service";
 import { getOrgCountry, validatePhone } from "@/lib/phone/validate-for-org";
+import { isUrlAllowedAsync } from "@/lib/security/validation";
 
 interface Membership {
   organization_id: string;
@@ -137,6 +138,22 @@ export async function PUT(request: Request) {
     if (!webhookAllowed && body.webhook_url) {
       webhookDowngraded = true;
       body.webhook_url = null;
+    }
+
+    // SSRF protection (SCRUM-338): reject a private/internal/metadata webhook
+    // target at write time with a DNS-resolving check, so it can never be
+    // stored and later delivered to an internal address.
+    if (
+      "webhook_url" in body &&
+      typeof body.webhook_url === "string" &&
+      body.webhook_url !== ""
+    ) {
+      if (!(await isUrlAllowedAsync(body.webhook_url))) {
+        return NextResponse.json(
+          { error: "Webhook URL points to a private or internal address" },
+          { status: 400 }
+        );
+      }
     }
 
     const admin = createAdminClient();
