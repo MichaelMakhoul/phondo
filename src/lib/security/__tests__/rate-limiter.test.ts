@@ -642,3 +642,18 @@ describe("rateLimit (sync wrapper)", () => {
     }
   });
 });
+
+describe("demoCallGlobal profile (SCRUM-340)", () => {
+  // Locks the profile name + values: the demo-call route references
+  // "demoCallGlobal" by string, and an arg-order/profile-rename slip would
+  // typecheck but silently break the global cost cap.
+  it("is 100 requests per hour with cost-control fail-closed", () => {
+    expect(rateLimitConfigs.demoCallGlobal).toBeDefined();
+    expect(rateLimitConfigs.demoCallGlobal.maxRequests).toBe(100);
+    expect(rateLimitConfigs.demoCallGlobal.windowMs).toBe(60 * 60 * 1000);
+    expect(
+      "costControl" in rateLimitConfigs.demoCallGlobal &&
+        rateLimitConfigs.demoCallGlobal.costControl
+    ).toBe(true);
+  });
+});

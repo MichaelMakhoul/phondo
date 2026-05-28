@@ -6,18 +6,18 @@ import { DEMO_ORG_ID, DEMO_INDUSTRIES, DEMO_RATE_LIMIT_ERROR, isDemoIndustry } f
 import { getClientIp, rateLimitDistributed } from "@/lib/security/rate-limiter";
 import { createAdminClient } from "@/lib/supabase/admin";
 
-// ── Rate limiting: multi-layer abuse protection ──────────────────────
+// ── Rate limiting: multi-layer abuse protection (in execution order) ──
 //
-// Layer 1: Upstash Redis — distributed rate limit (10 calls/hour/IP)
-// Layer 2: Postgres distributed global cap — hard cap on total demo calls per
-//          hour across ALL instances (SCRUM-340: was an in-memory per-instance
-//          counter an IP-rotating bot bypassed by spreading across lambdas)
-// Layer 3: Short token expiry (30s) — tokens can't be stockpiled
-// Layer 4: Per-IP daily cap — even with IP rotation, limits total daily abuse
+// Layer 1: Per-IP daily cap (in-memory, best-effort) — slow persistent abuse
+// Layer 2: Per-IP hourly cap — Upstash Redis distributed (10 calls/hour/IP)
+// Layer 3: Global hourly cap — Postgres distributed (100/hr across ALL
+//          instances; SCRUM-340: was an in-memory per-instance counter an
+//          IP-rotating bot bypassed by spreading across lambdas)
+// Layer 4: Short token expiry (30s) — tokens can't be stockpiled
 //
-// The client IP feeding every layer now comes from the XFF-spoof-hardened
-// getClientIp (SCRUM-340: the local copy trusted the client-supplied first
-// X-Forwarded-For hop, so IP rotation defeated all per-IP caps).
+// The client IP feeding every per-IP layer now comes from the XFF-spoof-
+// hardened getClientIp (SCRUM-340: the local copy trusted the client-supplied
+// first X-Forwarded-For hop, so IP rotation defeated all per-IP caps).
 
 const ratelimit = process.env.UPSTASH_REDIS_REST_URL
   ? new Ratelimit({
@@ -107,6 +107,23 @@ export async function POST(request: Request) {
       );
     }
 
+    // Config check FIRST — free + deterministic. If the demo isn't configured,
+    // 503 immediately without consuming any rate-limit slots (SCRUM-340 review:
+    // the global-cap slot was previously consumed before this check, draining
+    // the 100/hr budget on a misconfigured deploy and masking the real cause).
+    const testCallSecret = process.env.TEST_CALL_SECRET;
+    const voiceServerUrl = process.env.VOICE_SERVER_PUBLIC_URL;
+    if (!testCallSecret || !voiceServerUrl) {
+      console.error("[DemoToken] Missing required env vars:", {
+        hasTestCallSecret: !!testCallSecret,
+        hasVoiceServerUrl: !!voiceServerUrl,
+      });
+      return NextResponse.json(
+        { error: "Demo calls not configured" },
+        { status: 503 }
+      );
+    }
+
     const ip = getClientIp(request.headers);
 
     // Check per-IP limits first (cheap) before consuming the shared global counter.
@@ -129,10 +146,10 @@ export async function POST(request: Request) {
       );
     }
 
-    // Layer 3: Global hourly cap — now a Postgres distributed bucket so it
-    // holds across lambda instances (an IP-rotating bot previously bypassed
-    // the per-instance in-memory counter). Single shared key "global".
-    // Only consume it after the IP passed its own checks.
+    // Layer 3: Global hourly cap — Postgres distributed bucket so it holds
+    // across lambda instances (an IP-rotating bot previously bypassed the
+    // per-instance in-memory counter). Single shared key "global". Only
+    // consumed after the IP passed its own checks.
     const globalCap = await rateLimitDistributed(
       createAdminClient(),
       "global",
@@ -140,24 +157,22 @@ export async function POST(request: Request) {
       "demoCallGlobal"
     );
     if (!globalCap.allowed) {
-      console.warn("[DemoAbuse] Global hourly cap reached (100 calls/hr across all IPs)");
-      return NextResponse.json(
-        { error: "Demo is experiencing high demand. Please try again in a few minutes." },
-        { status: 429, headers: globalCap.headers }
+      // SCRUM-302 pattern: a Supabase brownout fails this costControl profile
+      // CLOSED (failReason="service-degraded") — show an honest availability
+      // message rather than the false "high demand" used for a real cap hit.
+      const degraded = globalCap.failReason === "service-degraded";
+      console.warn(
+        degraded
+          ? "[DemoAbuse] Global cap unavailable (distributed limiter degraded) — failing closed"
+          : "[DemoAbuse] Global hourly cap reached (100 calls/hr across all IPs)"
       );
-    }
-
-    const testCallSecret = process.env.TEST_CALL_SECRET;
-    const voiceServerUrl = process.env.VOICE_SERVER_PUBLIC_URL;
-
-    if (!testCallSecret || !voiceServerUrl) {
-      console.error("[DemoToken] Missing required env vars:", {
-        hasTestCallSecret: !!testCallSecret,
-        hasVoiceServerUrl: !!voiceServerUrl,
-      });
       return NextResponse.json(
-        { error: "Demo calls not configured" },
-        { status: 503 }
+        {
+          error: degraded
+            ? "The demo is temporarily unavailable. Please try again in a moment."
+            : "Demo is experiencing high demand. Please try again in a few minutes.",
+        },
+        { status: 429, headers: globalCap.headers }
       );
     }
 
