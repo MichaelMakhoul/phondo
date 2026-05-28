@@ -67,6 +67,21 @@ const killSwitch = require("./lib/route-handlers/kill-switch");
 // value introduced via direct SQL or a future bug can't be sent to Twilio.
 const E164_REGEX_VOICE = /^\+[1-9]\d{7,14}$/;
 
+// SCRUM-339: raw caller speech/transcripts must NEVER reach stdout in
+// production — Fly ships stdout to Grafana Loki, which would expose verbatim
+// caller PII (names, DOB, medical/legal detail) to anyone with log access.
+// With DEBUG_TRANSCRIPTS=true (off in prod) the full text is logged for local
+// debugging; otherwise only a character-count breadcrumb so call flow stays
+// traceable without the content.
+const DEBUG_TRANSCRIPTS = process.env.DEBUG_TRANSCRIPTS === "true";
+function logTranscript(label, text) {
+  if (DEBUG_TRANSCRIPTS) {
+    console.log(`${label}: "${text}"`);
+  } else {
+    console.log(`${label}: [${(text || "").length} chars]`);
+  }
+}
+
 // Validate required env vars before deriving any constants
 // LLM API key env var depends on provider
 const LLM_KEY_MAP = { openai: "OPENAI_API_KEY", gemini: "GEMINI_API_KEY", anthropic: "ANTHROPIC_API_KEY" };
@@ -1284,7 +1299,9 @@ wss.on("connection", (twilioWs) => {
       try {
         analysis = await analyzeCallTranscript(transcript);
         if (analysis) {
-          console.log(`[PostCall] Analysis complete: caller=${analysis.callerName || "unknown"}, reason=${analysis.callerPhoneReason || "unknown"}, success=${analysis.successEvaluation}`);
+          // SCRUM-339: caller name is PII — redact unless DEBUG_TRANSCRIPTS.
+          const callerForLog = DEBUG_TRANSCRIPTS ? (analysis.callerName || "unknown") : "[redacted]";
+          console.log(`[PostCall] Analysis complete: caller=${callerForLog}, reason=${analysis.callerPhoneReason || "unknown"}, success=${analysis.successEvaluation}`);
         }
       } catch (err) {
         console.error("[PostCall] Analysis failed:", err);
@@ -1434,12 +1451,12 @@ wss.on("connection", (twilioWs) => {
                   if (!isFinal) return;
                   const INTERRUPT_RE_RECONNECT = /^(stop|wait|hold on|no|cancel|nevermind|never mind|excuse me|hello|hey)\b/i;
                   if (session.isSpeaking && transcript.trim().split(/\s+/).length <= 2 && !INTERRUPT_RE_RECONNECT.test(transcript.trim())) {
-                    console.log(`[STT] Dropped (echo suppression while AI speaking): "${transcript}"`);
+                    logTranscript("[STT] Dropped (echo suppression while AI speaking)", transcript);
                     return;
                   }
-                  console.log(`[STT] Final: "${transcript}"`);
+                  logTranscript("[STT] Final", transcript);
                   session.bufferTranscript(transcript, (combined, inputType) => {
-                    console.log(`[STT] Buffered: "${combined}"`);
+                    logTranscript("[STT] Buffered", combined);
                     session.queueOrProcess(combined, (text) => handleUserSpeech(session, twilioWs, text, inputType));
                   });
                 },
@@ -2088,7 +2105,7 @@ wss.on("connection", (twilioWs) => {
                   // Flush accumulated transcripts as complete messages
                   if (pendingUserTranscript.trim()) {
                     session.addMessage("user", pendingUserTranscript.trim());
-                    console.log(`[GeminiLive] User (turn): "${pendingUserTranscript.trim()}"`);
+                    logTranscript("[GeminiLive] User (turn)", pendingUserTranscript.trim());
                     pendingUserTranscript = "";
                   }
                   if (pendingAiTranscript.trim()) {
@@ -2281,12 +2298,12 @@ wss.on("connection", (twilioWs) => {
               // Allow through: substantial speech (>2 words) or known interrupt phrases.
               const INTERRUPT_RE = /^(stop|wait|hold on|no|cancel|nevermind|never mind|excuse me|hello|hey)\b/i;
               if (session.isSpeaking && transcript.trim().split(/\s+/).length <= 2 && !INTERRUPT_RE.test(transcript.trim())) {
-                console.log(`[STT] Dropped (echo suppression while AI speaking): "${transcript}"`);
+                logTranscript("[STT] Dropped (echo suppression while AI speaking)", transcript);
                 return;
               }
-              console.log(`[STT] Final: "${transcript}"`);
+              logTranscript("[STT] Final", transcript);
               session.bufferTranscript(transcript, (combined, inputType) => {
-                console.log(`[STT] Buffered: "${combined}"`);
+                logTranscript("[STT] Buffered", combined);
                 session.queueOrProcess(combined, (text) => handleUserSpeech(session, twilioWs, text, inputType));
               });
             },
@@ -3485,9 +3502,9 @@ testWss.on("connection", (ws, req) => {
             }));
           }
           if (!isFinal) return;
-          console.log(`[TestSTT] Final: "${transcript}"`);
+          logTranscript("[TestSTT] Final", transcript);
           session.bufferTranscript(transcript, (combined, inputType) => {
-            console.log(`[TestSTT] Buffered: "${combined}"`);
+            logTranscript("[TestSTT] Buffered", combined);
             session.queueOrProcess(combined, (text) => handleTestUserSpeech(session, ws, text));
           });
         },
