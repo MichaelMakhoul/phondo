@@ -3130,6 +3130,29 @@ server.on("upgrade", (request, socket, head) => {
 });
 const MAX_TEST_CALL_DURATION_MS = 5 * 60 * 1000; // 5 minutes
 
+// SCRUM-341: concurrency caps on /ws/test. Each session is a PAID Gemini Live
+// call, so bound concurrent sessions globally, per-IP, and per-token. The voice
+// server is a single long-running process (one Fly machine), so in-memory
+// tracking is authoritative — no distributed store needed. Tokens minted before
+// the jti rollout have no jti and skip the single-use check, but are still
+// bounded by the IP + global caps (backward compatible).
+const MAX_TEST_SESSIONS_GLOBAL = 50;
+const MAX_TEST_SESSIONS_PER_IP = 3;
+const activeTestJtis = new Set();        // jti currently running a session (single-use)
+const testSessionsByIp = new Map();      // ip -> active session count
+let globalTestSessionCount = 0;
+
+/** True client IP. Fly sets Fly-Client-IP and overwrites any client-supplied
+ *  value, so it can't be spoofed; fall back to the last XFF hop / socket. */
+function getTestClientIp(req) {
+  return (
+    req.headers["fly-client-ip"] ||
+    (req.headers["x-forwarded-for"] || "").split(",").pop()?.trim() ||
+    req.socket?.remoteAddress ||
+    "unknown"
+  );
+}
+
 /**
  * Verify a test call token (HMAC-SHA256 signed by TEST_CALL_SECRET).
  * Token format: base64url(payload).signature
@@ -3172,7 +3195,45 @@ testWss.on("connection", (ws, req) => {
     return;
   }
 
-  const { assistantId, organizationId, simulateAfterHours } = tokenData;
+  const { assistantId, organizationId, simulateAfterHours, jti } = tokenData;
+
+  // SCRUM-341: enforce concurrency caps BEFORE allocating a (paid) Gemini Live
+  // session. Each layer is independent; a token without a jti (pre-rollout)
+  // skips only the single-use check.
+  const clientIp = getTestClientIp(req);
+  if (globalTestSessionCount >= MAX_TEST_SESSIONS_GLOBAL) {
+    console.warn(`[TestCap] Global concurrent test-session cap reached (${MAX_TEST_SESSIONS_GLOBAL})`);
+    ws.close(4029, "Too many active test sessions, try again shortly");
+    return;
+  }
+  const ipCount = testSessionsByIp.get(clientIp) || 0;
+  if (ipCount >= MAX_TEST_SESSIONS_PER_IP) {
+    console.warn(`[TestCap] Per-IP concurrent test-session cap reached (${MAX_TEST_SESSIONS_PER_IP}/${maskPhone(clientIp)})`);
+    ws.close(4029, "Too many active test sessions from your network");
+    return;
+  }
+  if (jti && activeTestJtis.has(jti)) {
+    console.warn("[TestCap] Token reuse rejected — jti already has an active session");
+    ws.close(4029, "This test token is already in use");
+    return;
+  }
+
+  // Reserve the slot. Released exactly once in cleanupTestSession (wired to
+  // ws close/error and the max-duration timer below).
+  if (jti) activeTestJtis.add(jti);
+  testSessionsByIp.set(clientIp, ipCount + 1);
+  globalTestSessionCount++;
+  let testSlotReleased = false;
+  function releaseTestSlot() {
+    if (testSlotReleased) return;
+    testSlotReleased = true;
+    if (jti) activeTestJtis.delete(jti);
+    const remaining = (testSessionsByIp.get(clientIp) || 1) - 1;
+    if (remaining <= 0) testSessionsByIp.delete(clientIp);
+    else testSessionsByIp.set(clientIp, remaining);
+    globalTestSessionCount = Math.max(0, globalTestSessionCount - 1);
+  }
+
   let session = null;
   let cleaningUp = false;
   let autoEndTimer = null;
@@ -3180,6 +3241,10 @@ testWss.on("connection", (ws, req) => {
   async function cleanupTestSession() {
     if (cleaningUp) return;
     cleaningUp = true;
+
+    // SCRUM-341: free the concurrency slot (jti + per-IP + global) on every
+    // teardown path. Idempotent via testSlotReleased.
+    releaseTestSlot();
 
     if (autoEndTimer) {
       clearTimeout(autoEndTimer);
