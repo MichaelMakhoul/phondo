@@ -1,7 +1,7 @@
 import crypto from "crypto";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { safeDecrypt } from "@/lib/security/encryption";
-import { isUrlAllowed } from "@/lib/security/validation";
+import { ssrfSafeFetch, SsrfBlockedError } from "@/lib/security/validation";
 import { hasFeatureAccess } from "@/lib/stripe/billing-service";
 import type { IntegrationEvent, WebhookPayload } from "./types";
 
@@ -90,10 +90,9 @@ export async function deliverWebhooks(
       const url = safeDecrypt(integration.webhook_url);
       const secret = safeDecrypt(integration.signing_secret);
 
-      // SSRF protection
-      if (!url || !isUrlAllowed(url)) {
-        console.error("[Webhooks] Blocked URL for integration:", integration.id);
-        await logDelivery(supabase, integration.id, event, payload, null, "URL blocked by SSRF policy", false);
+      if (!url) {
+        console.error("[Webhooks] Failed to decrypt webhook URL for integration:", integration.id);
+        await logDelivery(supabase, integration.id, event, payload, null, "Webhook URL decryption failed", false);
         return;
       }
 
@@ -109,19 +108,25 @@ export async function deliverWebhooks(
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), DELIVERY_TIMEOUT_MS);
 
-        const response = await fetch(url, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Phondo-Signature": signature,
-            "X-Phondo-Event": event,
-            "User-Agent": "Phondo-Webhooks/1.0",
-          },
-          body: payloadStr,
-          signal: controller.signal,
-        });
-
-        clearTimeout(timeout);
+        // ssrfSafeFetch validates the URL (DNS-resolving) and re-validates
+        // every redirect hop against the internal-network blocklist, closing
+        // the DNS-rebinding / redirect-to-metadata SSRF (SCRUM-338).
+        let response: Response;
+        try {
+          response = await ssrfSafeFetch(url, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Phondo-Signature": signature,
+              "X-Phondo-Event": event,
+              "User-Agent": "Phondo-Webhooks/1.0",
+            },
+            body: payloadStr,
+            signal: controller.signal,
+          });
+        } finally {
+          clearTimeout(timeout);
+        }
 
         const responseBody = await response.text().catch((err: Error) => `[Failed to read response: ${err.message}]`);
         const success = response.ok;
@@ -136,6 +141,11 @@ export async function deliverWebhooks(
           success
         );
       } catch (err) {
+        if (err instanceof SsrfBlockedError) {
+          console.error("[Webhooks] Blocked URL for integration:", integration.id);
+          await logDelivery(supabase, integration.id, event, payload, null, "URL blocked by SSRF policy", false);
+          return;
+        }
         const message = err instanceof Error ? err.message : "Unknown error";
         await logDelivery(supabase, integration.id, event, payload, null, message, false);
       }

@@ -3,7 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import { z } from "zod";
 import { withRateLimit } from "@/lib/security/rate-limiter";
 import { safeEncrypt, safeDecrypt } from "@/lib/security/encryption";
-import { isUrlAllowed, isValidUUID } from "@/lib/security/validation";
+import { isUrlAllowedAsync, isValidUUID } from "@/lib/security/validation";
 import type { OrgMembership } from "@/lib/integrations/types";
 
 const updateIntegrationSchema = z.object({
@@ -123,7 +123,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     if (validated.metadata !== undefined) update.metadata = validated.metadata;
 
     if (validated.webhook_url !== undefined) {
-      if (!isUrlAllowed(validated.webhook_url)) {
+      if (!(await isUrlAllowedAsync(validated.webhook_url))) {
         return NextResponse.json(
           { error: "Webhook URL points to a private or internal address" },
           { status: 400 }

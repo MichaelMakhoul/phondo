@@ -10,7 +10,7 @@
  */
 
 import { createAdminClient } from "@/lib/supabase/admin";
-import { isUrlAllowed, escapeHtml } from "@/lib/security/validation";
+import { ssrfSafeFetch, escapeHtml } from "@/lib/security/validation";
 import { Resend } from "resend";
 import Twilio from "twilio";
 
@@ -737,16 +737,13 @@ async function sendSMS(params: SMSParams): Promise<void> {
  * Includes SSRF protection to prevent webhooks to internal networks
  */
 async function sendWebhook(url: string, payload: WebhookPayload): Promise<void> {
-  // SSRF Protection: Prevent webhooks to internal/private networks
-  if (!isUrlAllowed(url)) {
-    throw new Error(`Webhook URL blocked - internal or private address: ${url}`);
-  }
-
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 5000);
 
   try {
-    const response = await fetch(url, {
+    // ssrfSafeFetch does the DNS-resolving SSRF check and re-validates every
+    // redirect hop against the internal-network blocklist (SCRUM-338).
+    const response = await ssrfSafeFetch(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -757,7 +754,6 @@ async function sendWebhook(url: string, payload: WebhookPayload): Promise<void> 
         timestamp: new Date().toISOString(),
       }),
       signal: controller.signal,
-      redirect: "manual",
     });
 
     if (!response.ok) {

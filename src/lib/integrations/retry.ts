@@ -1,6 +1,6 @@
 import { createAdminClient } from "@/lib/supabase/admin";
 import { safeDecrypt } from "@/lib/security/encryption";
-import { isUrlAllowed } from "@/lib/security/validation";
+import { ssrfSafeFetch, SsrfBlockedError } from "@/lib/security/validation";
 import { signPayload } from "./webhook-delivery";
 
 const DELIVERY_TIMEOUT_MS = 5000;
@@ -48,8 +48,8 @@ export async function retryFailedWebhook(logId: string, integrationId: string): 
   const url = safeDecrypt(integration.webhook_url);
   const secret = safeDecrypt(integration.signing_secret);
 
-  if (!url || !isUrlAllowed(url)) {
-    return { success: false, error: "URL blocked by security policy" };
+  if (!url) {
+    return { success: false, error: "Webhook URL decryption failed" };
   }
 
   if (!secret) {
@@ -59,11 +59,14 @@ export async function retryFailedWebhook(logId: string, integrationId: string): 
   const payloadStr = JSON.stringify(log.payload);
   const signature = signPayload(payloadStr, secret);
 
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), DELIVERY_TIMEOUT_MS);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), DELIVERY_TIMEOUT_MS);
 
-    const response = await fetch(url, {
+  try {
+    // ssrfSafeFetch does the DNS-resolving SSRF check and re-validates every
+    // redirect hop — closes the DNS-rebinding / redirect-to-metadata SSRF on
+    // the retry path (SCRUM-338; this sibling sender was missed initially).
+    const response = await ssrfSafeFetch(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -101,7 +104,10 @@ export async function retryFailedWebhook(logId: string, integrationId: string): 
       error: response.ok ? undefined : `HTTP ${response.status}`,
     };
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Unknown error";
+    clearTimeout(timeout);
+    const message = err instanceof SsrfBlockedError
+      ? "URL blocked by security policy"
+      : err instanceof Error ? err.message : "Unknown error";
 
     const { error: updateError } = await (supabase as any)
       .from("integration_logs")

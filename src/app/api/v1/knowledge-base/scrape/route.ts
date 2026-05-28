@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { scrapeWebsite, generateKnowledgeBase } from "@/lib/scraper/website-scraper";
-import { isUrlAllowed } from "@/lib/security/validation";
+import { isUrlAllowedAsync } from "@/lib/security/validation";
 import { withRateLimitDistributed } from "@/lib/security/rate-limiter";
 import { resyncOrgAssistants } from "@/lib/knowledge-base";
 import { SENTRY_REASONS } from "@/lib/security/error-ids";
@@ -99,8 +99,10 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // SSRF Protection: Prevent scraping internal/private networks
-    if (!isUrlAllowed(url)) {
+    // SSRF Protection: DNS-resolving pre-check (matches the per-page check in
+    // scrapeWebsite/fetchPage) so a private/metadata/rebinding target is
+    // rejected at the route, consistent with the other webhook/scrape sites.
+    if (!(await isUrlAllowedAsync(url))) {
       return NextResponse.json(
         { error: "URL not allowed - internal or private addresses are blocked" },
         { status: 400 }
