@@ -207,8 +207,14 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody, trackingSource 
         updateStatus("error");
       };
 
-      ws.onclose = () => {
-        if (statusRef.current !== "ended" && statusRef.current !== "error") {
+      ws.onclose = (event) => {
+        // SCRUM-341: the voice server rejects with close code 4029 when a
+        // concurrency cap is hit (token already in use / too many sessions).
+        // Surface the reason instead of silently landing in "ended".
+        if (event.code === 4029 && statusRef.current !== "error") {
+          setError(event.reason || "Too many active test sessions. Please try again shortly.");
+          updateStatus("error");
+        } else if (statusRef.current !== "ended" && statusRef.current !== "error") {
           updateStatus("ended");
         }
         cleanup();

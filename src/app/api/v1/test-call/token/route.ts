@@ -69,6 +69,10 @@ export async function POST(request: Request) {
       assistantId,
       organizationId: membership.organization_id,
       exp: Date.now() + 30_000, // 30 second expiry
+      // SCRUM-341: unique token id so the voice server can enforce single-use
+      // (reject a token already running a /ws/test session). Old voice-server
+      // builds ignore this field — backward compatible.
+      jti: crypto.randomUUID(),
       ...(simulateAfterHours ? { simulateAfterHours: true } : {}),
     };
 

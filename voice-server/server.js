@@ -59,6 +59,7 @@ function getTwilioRestClient() {
 const { lookupPhoneNumber, isAiEnabled, getAnswerMode, getPhoneNumberContext } = require("./lib/answer-mode");
 const { detectAndRedact, redactObject } = require("./lib/pii-detector");
 const { maskPhone } = require("./lib/mask-phone");
+const { getTestClientIp, createTestSessionCaps } = require("./lib/test-session-caps");
 const { buildFallbackDisclosureSay } = require("./lib/fallback-dial-consent");
 const { getPollyVoice } = require("./lib/polly-voice");
 const killSwitch = require("./lib/route-handlers/kill-switch");
@@ -3130,6 +3131,20 @@ server.on("upgrade", (request, socket, head) => {
 });
 const MAX_TEST_CALL_DURATION_MS = 5 * 60 * 1000; // 5 minutes
 
+// SCRUM-341: concurrency caps on /ws/test. Each session is a PAID Gemini Live
+// call, so bound concurrent sessions globally, per-IP, and per-token. The voice
+// server is a single long-running process (one Fly machine), so in-memory
+// tracking is authoritative — no distributed store needed. Tokens minted before
+// the jti rollout have no jti and skip the single-use check, but are still
+// bounded by the IP + global caps (backward compatible). Logic + IP resolution
+// live in ./lib/test-session-caps so they're unit-tested.
+const MAX_TEST_SESSIONS_GLOBAL = 50;
+const MAX_TEST_SESSIONS_PER_IP = 3;
+const testSessionCaps = createTestSessionCaps({
+  maxGlobal: MAX_TEST_SESSIONS_GLOBAL,
+  maxPerIp: MAX_TEST_SESSIONS_PER_IP,
+});
+
 /**
  * Verify a test call token (HMAC-SHA256 signed by TEST_CALL_SECRET).
  * Token format: base64url(payload).signature
@@ -3172,7 +3187,35 @@ testWss.on("connection", (ws, req) => {
     return;
   }
 
-  const { assistantId, organizationId, simulateAfterHours } = tokenData;
+  const { assistantId, organizationId, simulateAfterHours, jti } = tokenData;
+
+  // SCRUM-341: enforce concurrency caps BEFORE allocating a (paid) Gemini Live
+  // session. tryReserve is a synchronous check-and-reserve (no await → race-free
+  // on Node's single-threaded loop). A token without a jti (pre-rollout) skips
+  // only the single-use check; the IP + global caps still apply.
+  const clientIp = getTestClientIp(req);
+  const reservation = testSessionCaps.tryReserve(jti, clientIp);
+  if (!reservation.ok) {
+    const msg =
+      reservation.reason === "jti-reuse"
+        ? "This test token is already in use"
+        : reservation.reason === "per-ip"
+          ? "Too many active test sessions from your network"
+          : "Too many active test sessions, try again shortly";
+    console.warn(`[TestCap] Rejected /ws/test (${reservation.reason}, ip=${maskPhone(clientIp)})`);
+    ws.close(4029, msg);
+    return;
+  }
+
+  // Release the reserved slot exactly once, on any teardown path. Wired into
+  // cleanupTestSession (ws close/error + the max-duration timer below).
+  let testSlotReleased = false;
+  function releaseTestSlot() {
+    if (testSlotReleased) return;
+    testSlotReleased = true;
+    testSessionCaps.release(jti, clientIp);
+  }
+
   let session = null;
   let cleaningUp = false;
   let autoEndTimer = null;
@@ -3180,6 +3223,10 @@ testWss.on("connection", (ws, req) => {
   async function cleanupTestSession() {
     if (cleaningUp) return;
     cleaningUp = true;
+
+    // SCRUM-341: free the concurrency slot (jti + per-IP + global) on every
+    // teardown path. Idempotent via testSlotReleased.
+    releaseTestSlot();
 
     if (autoEndTimer) {
       clearTimeout(autoEndTimer);

@@ -178,11 +178,13 @@ export async function POST(request: Request) {
 
     const demoConfig = DEMO_INDUSTRIES[industry];
 
-    // Layer 3: Short token expiry (30 seconds — can't stockpile tokens)
+    // Layer 4: Short token expiry (30 seconds — can't stockpile tokens)
     const payload = {
       assistantId: demoConfig.assistantId,
       organizationId: DEMO_ORG_ID,
       exp: Date.now() + 30_000,
+      // SCRUM-341: unique token id for single-use enforcement at /ws/test.
+      jti: crypto.randomUUID(),
     };
 
     const payloadB64 = Buffer.from(JSON.stringify(payload)).toString("base64url");
