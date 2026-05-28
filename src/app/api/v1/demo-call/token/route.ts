@@ -3,13 +3,21 @@ import crypto from "crypto";
 import { Ratelimit } from "@upstash/ratelimit";
 import { Redis } from "@upstash/redis";
 import { DEMO_ORG_ID, DEMO_INDUSTRIES, DEMO_RATE_LIMIT_ERROR, isDemoIndustry } from "@/lib/demo/config";
+import { getClientIp, rateLimitDistributed } from "@/lib/security/rate-limiter";
+import { createAdminClient } from "@/lib/supabase/admin";
 
 // ── Rate limiting: multi-layer abuse protection ──────────────────────
 //
 // Layer 1: Upstash Redis — distributed rate limit (10 calls/hour/IP)
-// Layer 2: In-memory global counter — hard cap on total demo calls per hour (prevents bot swarms)
+// Layer 2: Postgres distributed global cap — hard cap on total demo calls per
+//          hour across ALL instances (SCRUM-340: was an in-memory per-instance
+//          counter an IP-rotating bot bypassed by spreading across lambdas)
 // Layer 3: Short token expiry (30s) — tokens can't be stockpiled
 // Layer 4: Per-IP daily cap — even with IP rotation, limits total daily abuse
+//
+// The client IP feeding every layer now comes from the XFF-spoof-hardened
+// getClientIp (SCRUM-340: the local copy trusted the client-supplied first
+// X-Forwarded-For hop, so IP rotation defeated all per-IP caps).
 
 const ratelimit = process.env.UPSTASH_REDIS_REST_URL
   ? new Ratelimit({
@@ -18,24 +26,6 @@ const ratelimit = process.env.UPSTASH_REDIS_REST_URL
       prefix: "demo-call",
     })
   : null;
-
-// Layer 2: Global hourly cap — prevents bot swarms even with different IPs
-const GLOBAL_HOURLY_CAP = 100; // Max 100 demo calls per hour across ALL users
-let globalHourlyCount = 0;
-let globalHourlyReset = Date.now() + 3_600_000;
-
-function checkGlobalCap(): boolean {
-  const now = Date.now();
-  if (now > globalHourlyReset) {
-    globalHourlyCount = 0;
-    globalHourlyReset = now + 3_600_000;
-  }
-  if (globalHourlyCount >= GLOBAL_HOURLY_CAP) {
-    return false;
-  }
-  globalHourlyCount++;
-  return true;
-}
 
 // Layer 4: Per-IP daily cap (stricter than hourly — catches slow abuse)
 const DAILY_PER_IP_CAP = 20;
@@ -72,18 +62,6 @@ function pruneStaleEntries() {
 
 // In-memory hourly fallback (when Upstash is unavailable)
 const localRateLimitMap = new Map<string, { count: number; resetAt: number }>();
-
-function getClientIp(request: Request): string {
-  const forwarded = request.headers.get("x-forwarded-for");
-  if (forwarded) {
-    return forwarded.split(",")[0].trim();
-  }
-  const realIp = request.headers.get("x-real-ip");
-  if (realIp) {
-    return realIp.trim();
-  }
-  return "unknown";
-}
 
 async function checkHourlyRateLimit(ip: string): Promise<boolean> {
   if (ratelimit) {
@@ -129,7 +107,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const ip = getClientIp(request);
+    const ip = getClientIp(request.headers);
 
     // Check per-IP limits first (cheap) before consuming the shared global counter.
     // This prevents a single abusive IP from exhausting the global cap for everyone.
@@ -151,12 +129,21 @@ export async function POST(request: Request) {
       );
     }
 
-    // Layer 3: Global hourly cap — only increment after IP passed its own checks
-    if (!checkGlobalCap()) {
-      console.warn(`[DemoAbuse] Global hourly cap reached (${GLOBAL_HOURLY_CAP} calls/hr)`);
+    // Layer 3: Global hourly cap — now a Postgres distributed bucket so it
+    // holds across lambda instances (an IP-rotating bot previously bypassed
+    // the per-instance in-memory counter). Single shared key "global".
+    // Only consume it after the IP passed its own checks.
+    const globalCap = await rateLimitDistributed(
+      createAdminClient(),
+      "global",
+      "demo-call-global",
+      "demoCallGlobal"
+    );
+    if (!globalCap.allowed) {
+      console.warn("[DemoAbuse] Global hourly cap reached (100 calls/hr across all IPs)");
       return NextResponse.json(
         { error: "Demo is experiencing high demand. Please try again in a few minutes." },
-        { status: 429 }
+        { status: 429, headers: globalCap.headers }
       );
     }
 
