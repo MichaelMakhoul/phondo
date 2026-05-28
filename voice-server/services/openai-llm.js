@@ -1,5 +1,6 @@
 // LLM provider configuration — supports OpenAI, Anthropic, and Gemini
 // Set LLM_PROVIDER env var to switch: "anthropic" (default), "openai", "gemini"
+const { DEBUG_TRANSCRIPTS } = require("../lib/log-transcript");
 const LLM_PROVIDER = process.env.LLM_PROVIDER || "openai";
 
 const PROVIDER_CONFIG = {
@@ -74,7 +75,11 @@ function toAnthropicMessages(messages) {
             ? JSON.parse(tc.function.arguments)
             : tc.function.arguments;
         } catch (parseErr) {
-          console.error(`[LLM] Failed to parse tool arguments for ${tc.function?.name}:`, tc.function?.arguments?.slice?.(0, 200), parseErr.message);
+          // SCRUM-339: tool arguments carry caller PII (name/phone/email) —
+          // only log the raw args under DEBUG_TRANSCRIPTS; always log the safe
+          // function name + parse error.
+          const rawArgs = DEBUG_TRANSCRIPTS ? tc.function?.arguments?.slice?.(0, 200) : "[redacted]";
+          console.error(`[LLM] Failed to parse tool arguments for ${tc.function?.name}:`, rawArgs, parseErr.message);
           args = {};
         }
         content.push({
@@ -365,7 +370,8 @@ async function parseOpenAIStream(res, onSentence) {
       } catch {
         parseFailures++;
         if (parseFailures <= 3) {
-          console.warn(`[LLM] SSE parse failure #${parseFailures}:`, data.slice(0, 200));
+          // SCRUM-339: the raw SSE chunk is LLM output that can echo caller PII.
+          console.warn(`[LLM] SSE parse failure #${parseFailures}:`, DEBUG_TRANSCRIPTS ? data.slice(0, 200) : `[${(data || "").length} chars]`);
         } else if (parseFailures === 4) {
           console.error(`[LLM] Multiple SSE parse failures (${parseFailures}+) — possible stream corruption`);
         }
