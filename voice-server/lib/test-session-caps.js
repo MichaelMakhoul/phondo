@@ -37,8 +37,12 @@ function createTestSessionCaps({ maxGlobal, maxPerIp }) {
 
   /**
    * Try to reserve a session slot. Pure synchronous check-and-reserve (no await),
-   * which is what makes it race-free on Node's single-threaded loop.
-   * @returns {{ok:true}} on success (slot reserved), or {{ok:false, reason}}.
+   * which is what makes it race-free on Node's single-threaded loop. Returns a
+   * uniform shape (reason is null on success) so callers don't depend on
+   * discriminated-union narrowing under the voice-server's non-strict checkJs.
+   * @param {string|undefined|null} jti
+   * @param {string} ip
+   * @returns {{ok:boolean, reason:("global"|"per-ip"|"jti-reuse"|null)}}
    */
   function tryReserve(jti, ip) {
     if (globalCount >= maxGlobal) return { ok: false, reason: "global" };
@@ -49,7 +53,7 @@ function createTestSessionCaps({ maxGlobal, maxPerIp }) {
     if (jti) activeJtis.add(jti);
     byIp.set(ip, ipCount + 1);
     globalCount += 1;
-    return { ok: true };
+    return { ok: true, reason: null };
   }
 
   /**

@@ -26,7 +26,7 @@ test("getTestClientIp falls back to socket then 'unknown'", () => {
 
 test("single-use: a second reserve with the same jti is rejected", () => {
   const caps = createTestSessionCaps({ maxGlobal: 50, maxPerIp: 3 });
-  assert.deepEqual(caps.tryReserve("jti-A", "ip1"), { ok: true });
+  assert.deepEqual(caps.tryReserve("jti-A", "ip1"), { ok: true, reason: null });
   assert.deepEqual(caps.tryReserve("jti-A", "ip2"), { ok: false, reason: "jti-reuse" });
 });
 
