@@ -257,7 +257,12 @@ function createGeminiSession(config, callbacks) {
         functionCalls.map(async (call) => {
           // Validate tool call structure
           if (!call.name || typeof call.name !== "string") {
-            console.error("[GeminiLive] Malformed tool call — missing name:", JSON.stringify(call).slice(0, 200));
+            // SCRUM-357: never JSON.stringify the whole call — call.args carries
+            // caller PII (name/phone/email/dob) and would bypass SCRUM-339's
+            // DEBUG_TRANSCRIPTS gating straight to stdout/Loki. Log a non-PII
+            // breadcrumb (id + arg-key count) instead.
+            const argKeys = call?.args && typeof call.args === "object" ? Object.keys(call.args).length : 0;
+            console.error(`[GeminiLive] Malformed tool call — missing name (id=${call?.id ?? "unknown"}, argKeys=${argKeys})`);
             return { id: call.id || "unknown", name: "unknown", response: { error: "Malformed tool call" } };
           }
           try {
