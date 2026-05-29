@@ -9,6 +9,7 @@ import { getOrgScheduleContext } from "@/lib/supabase/get-org-schedule-context";
 import { getAggregatedKnowledgeBase } from "@/lib/knowledge-base";
 import { z } from "zod";
 import { resolveVoiceId } from "@/lib/voices";
+import { assistantSettingsSchema } from "@/lib/validation/assistant-settings";
 
 interface Membership {
   organization_id: string;
@@ -43,18 +44,10 @@ const updateAssistantSchema = z.object({
   isActive: z.boolean().optional(),
   promptConfig: promptConfigSchema.nullable().optional(),
   afterHoursConfig: afterHoursConfigSchema.nullable().optional(),
-  settings: z.object({
-    recordingEnabled: z.boolean().optional(),
-    recordingDisclosure: z.string().optional(),
-    maxCallDuration: z.number().optional(),
-    spamFilterEnabled: z.boolean().optional(),
-    industry: z.string().optional(),
-    answerMode: z.enum(["ai_first", "ring_first"]).optional(),
-    ringFirstNumber: z.string().regex(/^\+\d{7,15}$/).nullable().optional(),
-    ringFirstTimeout: z.number().min(5).max(60).nullable().optional(),
-    piiRedactionEnabled: z.boolean().optional(),
-    transferToForwardedNumber: z.boolean().optional(),
-  }).passthrough().optional(),
+  // SCRUM-347 (L4): strict, shared settings allow-list (stops mass-assignment
+  // into the settings JSON the prompt builder consumes). Single source of truth
+  // shared with the create route so they can't drift.
+  settings: assistantSettingsSchema.optional(),
 });
 
 // GET /api/v1/assistants/[id] - Get a single assistant
@@ -330,7 +323,9 @@ export async function PATCH(
       .single();
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      // SCRUM-347 (L1): log DB detail server-side, return a generic message.
+      console.error("Error updating assistant (query):", error);
+      return NextResponse.json({ error: "Internal server error" }, { status: 500 });
     }
 
     return NextResponse.json(assistant);
@@ -408,7 +403,9 @@ export async function DELETE(
       .eq("organization_id", membership.organization_id);
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      // SCRUM-347 (L1): log DB detail server-side, return a generic message.
+      console.error("Error deleting assistant (query):", error);
+      return NextResponse.json({ error: "Internal server error" }, { status: 500 });
     }
 
     return NextResponse.json({ success: true });
