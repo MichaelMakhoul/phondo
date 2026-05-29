@@ -9,6 +9,7 @@ import { getOrgScheduleContext } from "@/lib/supabase/get-org-schedule-context";
 import { getAggregatedKnowledgeBase } from "@/lib/knowledge-base";
 import { z } from "zod";
 import { resolveVoiceId, DEFAULT_VOICE_ID } from "@/lib/voices";
+import { assistantSettingsSchema } from "@/lib/validation/assistant-settings";
 import { checkResourceLimit } from "@/lib/stripe/billing-service";
 import { PLANS } from "@/lib/stripe/client";
 
@@ -28,13 +29,9 @@ const createAssistantSchema = z.object({
   knowledgeBase: z.any().optional(),
   tools: z.any().optional(),
   promptConfig: promptConfigSchema.optional(),
-  settings: z.object({
-    recordingEnabled: z.boolean().optional(),
-    recordingDisclosure: z.string().optional(),
-    maxCallDuration: z.number().optional(),
-    spamFilterEnabled: z.boolean().optional(),
-    industry: z.string().optional(),
-  }).passthrough().optional(),
+  // SCRUM-347 (L4): strict, shared settings allow-list (stops mass-assignment).
+  // Shared with the PATCH route so the two schemas can't drift.
+  settings: assistantSettingsSchema.optional(),
 });
 
 // Map common voice provider names to Vapi's expected values
@@ -150,7 +147,9 @@ export async function POST(request: Request) {
       .single();
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      // SCRUM-347 (L1): log DB detail server-side, return a generic message.
+      console.error("Error creating assistant (query):", error);
+      return NextResponse.json({ error: "Internal server error" }, { status: 500 });
     }
 
     // 2. Attempt Vapi creation silently (non-fatal — self-hosted is primary)

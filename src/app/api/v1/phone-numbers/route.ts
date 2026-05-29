@@ -54,7 +54,9 @@ export async function GET() {
       .order("created_at", { ascending: false });
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      // SCRUM-347 (L1): log DB detail server-side, return a generic message.
+      console.error("Error listing phone numbers (query):", error);
+      return NextResponse.json({ error: "Internal server error" }, { status: 500 });
     }
 
     return NextResponse.json(phoneNumbers);
@@ -376,7 +378,10 @@ export async function POST(request: Request) {
           );
         }
       }
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      // SCRUM-347 (L1): log the DB insert detail server-side, return a generic
+      // message — the raw PostgREST error leaks schema to the client.
+      console.error("Error saving phone number record:", error);
+      return NextResponse.json({ error: "Internal server error" }, { status: 500 });
     }
 
     // SCRUM-260: auto-populate the org's alphanumeric SMS sender if not yet set.
@@ -422,10 +427,15 @@ export async function POST(request: Request) {
       );
     }
     if (error?.message) {
-      const statusCode = error?.statusCode || error?.status || 500;
+      const rawStatus = error?.statusCode || error?.status || 500;
+      const statusCode =
+        typeof rawStatus === "number" && rawStatus >= 400 && rawStatus < 600 ? rawStatus : 500;
+      // SCRUM-347 (L1): surface client-actionable provider errors (4xx, e.g.
+      // "number not available", "invalid area code") since those drive the
+      // purchase UX, but never leak raw 5xx/internal detail — it's logged above.
       return NextResponse.json(
-        { error: error.message },
-        { status: typeof statusCode === "number" && statusCode >= 400 && statusCode < 600 ? statusCode : 500 }
+        { error: statusCode < 500 ? error.message : "Internal server error" },
+        { status: statusCode }
       );
     }
     return NextResponse.json(

@@ -64,7 +64,10 @@ export async function GET(request: Request) {
     const { data: calls, error, count } = await query;
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      // SCRUM-347 (L1): log DB detail server-side, return a generic client
+      // message — raw PostgREST error text leaks schema/internal structure.
+      console.error("Error listing calls (query):", error);
+      return NextResponse.json({ error: "Internal server error" }, { status: 500 });
     }
 
     return NextResponse.json({
