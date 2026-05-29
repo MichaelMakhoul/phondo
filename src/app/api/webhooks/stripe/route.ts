@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { constructWebhookEvent, PLANS, PlanType } from "@/lib/stripe";
+import { constructWebhookEvent } from "@/lib/stripe";
 import {
   handleSubscriptionCreated,
   handleSubscriptionUpdated,
@@ -29,7 +29,29 @@ export async function POST(request: Request) {
 
     console.log("Stripe webhook received:", event.type);
 
-    switch (event.type) {
+    // SCRUM-349 (L3): idempotency ledger. Claim this event.id BEFORE mutating any
+    // billing state. Stripe delivers at-least-once and a captured signed payload
+    // can be replayed within the signature tolerance window; without this, a
+    // redelivery could double-apply non-idempotent changes (e.g. resetMonthlyUsage).
+    const ledger = createAdminClient();
+    const { error: claimError } = await (ledger as any)
+      .from("stripe_processed_events")
+      .insert({ event_id: event.id, event_type: event.type });
+
+    if (claimError) {
+      // 23505 = unique_violation → we've already processed this event.id.
+      if (claimError.code === "23505") {
+        console.log("Stripe webhook duplicate event skipped:", event.id, event.type);
+        return NextResponse.json({ received: true, duplicate: true });
+      }
+      // Any other ledger error: fail closed (500 → Stripe retries) rather than
+      // process without a recorded claim, which a later retry would double-apply.
+      console.error("Stripe webhook: failed to record event id; skipping to avoid double-apply:", claimError);
+      return NextResponse.json({ error: "Webhook processing failed" }, { status: 500 });
+    }
+
+    try {
+      switch (event.type) {
       case "checkout.session.completed": {
         const session = event.data.object as Stripe.Checkout.Session;
         const subscriptionId = session.subscription as string;
@@ -103,6 +125,29 @@ export async function POST(request: Request) {
 
       default:
         console.log("Unhandled event type:", event.type);
+      }
+    } catch (handlerErr) {
+      // SCRUM-349: processing failed AFTER we claimed the event.id. Release the
+      // claim so Stripe's retry can re-attempt — otherwise the retry would be
+      // skipped as a duplicate and the event would never be applied. Re-throw to
+      // the outer catch so we return 500 and Stripe knows to retry.
+      const { error: releaseError } = await (ledger as any)
+        .from("stripe_processed_events")
+        .delete()
+        .eq("event_id", event.id);
+      if (releaseError) {
+        // Compound failure: the handler threw AND we couldn't release the claim.
+        // The row is now stranded, so Stripe's retry will be skipped as a
+        // duplicate and this billing event will never apply. Log loudly (not
+        // silently) so it can be reconciled manually.
+        console.error(
+          "Stripe webhook: FAILED to release ledger claim after handler error — event is STRANDED and will not re-apply on retry; reconcile manually:",
+          event.id,
+          event.type,
+          releaseError
+        );
+      }
+      throw handlerErr;
     }
 
     return NextResponse.json({ received: true });
