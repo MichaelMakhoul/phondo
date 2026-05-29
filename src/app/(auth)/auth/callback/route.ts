@@ -1,10 +1,15 @@
 import { createClient } from "@/lib/supabase/server";
+import { safeRedirectPath } from "@/lib/security/safe-redirect";
 import { NextResponse } from "next/server";
 
 export async function GET(request: Request) {
   const requestUrl = new URL(request.url);
   const code = requestUrl.searchParams.get("code");
-  const redirect = requestUrl.searchParams.get("redirect") || "/dashboard";
+  // SCRUM-346 (M5): validate the redirect target — an unvalidated value lets a
+  // phishing link bounce the just-authenticated user to an external origin
+  // (e.g. redirect=@evil.com -> https://app.phondo.ai@evil.com). safeRedirectPath
+  // returns a same-origin path or falls back to /dashboard.
+  const redirect = safeRedirectPath(requestUrl.searchParams.get("redirect"));
   const origin = requestUrl.origin;
 
   if (code) {

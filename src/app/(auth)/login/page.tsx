@@ -11,6 +11,7 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { useToast } from "@/components/ui/use-toast";
 import { Loader2, Phone } from "lucide-react";
 import { trackLogin } from "@/lib/analytics";
+import { safeRedirectPath } from "@/lib/security/safe-redirect";
 
 function LoginForm() {
   const [email, setEmail] = useState("");
@@ -21,7 +22,10 @@ function LoginForm() {
   const { toast } = useToast();
   const supabase = createClient();
 
-  const redirectTo = searchParams.get("redirect") || "/dashboard";
+  // SCRUM-346 (M5): the redirect param is attacker-controllable via a phishing
+  // link, and it feeds both router.push (below) and the OAuth callback URL —
+  // validate it to a same-origin path so neither can bounce to an external host.
+  const redirectTo = safeRedirectPath(searchParams.get("redirect"));
 
   const handleEmailLogin = async (e: React.FormEvent) => {
     e.preventDefault();
