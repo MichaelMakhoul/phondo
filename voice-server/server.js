@@ -60,6 +60,7 @@ const { lookupPhoneNumber, isAiEnabled, getAnswerMode, getPhoneNumberContext } =
 const { detectAndRedact, redactObject } = require("./lib/pii-detector");
 const { maskPhone } = require("./lib/mask-phone");
 const { getTestClientIp, createTestSessionCaps } = require("./lib/test-session-caps");
+const { createAudioSessionGuard } = require("./lib/audio-session-guard");
 const { buildFallbackDisclosureSay } = require("./lib/fallback-dial-consent");
 const { getPollyVoice } = require("./lib/polly-voice");
 const killSwitch = require("./lib/route-handlers/kill-switch");
@@ -881,13 +882,17 @@ app.post("/twiml/ai-disabled-recording-done", async (req, res) => {
 
 // Health check with Supabase connectivity test
 app.get("/health", async (req, res) => {
+  // SCRUM-343: surface the live-call concurrency gauge so the DoS ceiling is
+  // observable — if `activeAudioSessions` approaches MAX_AUDIO_SESSIONS, real
+  // calls are at risk of the 1013 "server busy" rejection.
+  const activeAudioSessions = audioSessionGuard.stats().active;
   try {
     const supabase = getSupabase();
     const { error } = await supabase.from("organizations").select("id").limit(1);
     if (error) throw error;
-    res.json({ status: "ok", db: "connected" });
+    res.json({ status: "ok", db: "connected", activeAudioSessions });
   } catch (err) {
-    res.status(503).json({ status: "degraded", db: "error", message: err.message });
+    res.status(503).json({ status: "degraded", db: "error", message: err.message, activeAudioSessions });
   }
 });
 
@@ -1224,7 +1229,29 @@ app.use((err, req, res, _next) => {
 });
 
 const server = http.createServer(app);
-const wss = new WebSocketServer({ noServer: true });
+// SCRUM-343 (audit M1): bound per-frame memory on the LIVE inbound-call socket.
+// Twilio/Telnyx media-stream frames are tiny (a 20ms mulaw chunk base64s to a
+// few hundred bytes inside a <1KB JSON envelope), so 64KB is ~300x headroom and
+// cannot trip a legitimate frame — it only stops an attacker streaming giant
+// frames to exhaust memory. ws default is 100MB.
+const AUDIO_WS_MAX_PAYLOAD_BYTES = 64 * 1024;
+const wss = new WebSocketServer({ noServer: true, maxPayload: AUDIO_WS_MAX_PAYLOAD_BYTES });
+
+// SCRUM-343 (audit M1): the audio socket authenticates at the Twilio `start`
+// message (single-use stream token), not at the WS upgrade. This guard closes
+// the resulting DoS gaps WITHOUT changing the auth handshake:
+//   - auth deadline: a socket that connects but never sends an authenticated
+//     `start` is terminate()'d after AUTH_DEADLINE_MS. A legit call sends `start`
+//     in ~1s, so the 30s window can't fire on a real call.
+//   - concurrency ceiling: bound total concurrent sockets so a connection flood
+//     can't accumulate unboundedly and OOM the machine (which would drop ALL
+//     in-progress calls). The ceiling is far above realistic single-machine load.
+const AUDIO_AUTH_DEADLINE_MS = 30_000;
+const MAX_AUDIO_SESSIONS = 250;
+const audioSessionGuard = createAudioSessionGuard({
+  maxConcurrent: MAX_AUDIO_SESSIONS,
+  authDeadlineMs: AUDIO_AUTH_DEADLINE_MS,
+});
 
 // Active sessions keyed by streamSid
 const sessions = new Map();
@@ -1232,6 +1259,21 @@ const sessions = new Map();
 wss.on("connection", (twilioWs) => {
   let session = null;
   let cleaningUp = false;
+
+  // SCRUM-343: reserve a concurrency slot + arm the auth-deadline reaper. The
+  // reaper terminate()s the socket if no authenticated `start` arrives in time.
+  const slot = audioSessionGuard.acquire(() => {
+    console.warn("[AudioGuard] Terminating /ws/audio socket — no authenticated start within deadline");
+    try { twilioWs.terminate(); } catch { /* already torn down */ }
+  });
+  if (!slot) {
+    console.warn(`[AudioGuard] Rejected /ws/audio — concurrent session ceiling (${MAX_AUDIO_SESSIONS}) reached`);
+    try { twilioWs.close(1013, "server busy"); } catch { /* noop */ }
+    return;
+  }
+  // Free the slot on every teardown path (idempotent). The 'close' handler is
+  // the catch-all; markAuthenticated below cancels only the auth-deadline timer.
+  twilioWs.on("close", () => slot.release());
 
   async function cleanupSession() {
     if (!session || cleaningUp) return;
@@ -1420,6 +1462,10 @@ wss.on("connection", (twilioWs) => {
             twilioWs.close();
             return;
           }
+
+          // SCRUM-343: token verified — cancel the auth-deadline reaper. Both the
+          // reconnect and the normal start paths below are downstream of here.
+          slot.markAuthenticated();
 
           const { calledNumber, callerPhone, reconnectCallSid, phoneRecord } = tokenData;
 
