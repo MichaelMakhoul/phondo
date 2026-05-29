@@ -1,5 +1,6 @@
 import { createServerClient, type CookieOptions } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
+import { safeRedirectPath } from "@/lib/security/safe-redirect";
 
 type CookieToSet = { name: string; value: string; options?: CookieOptions };
 
@@ -65,7 +66,11 @@ export async function updateSession(request: NextRequest) {
   // Redirect authenticated users from auth pages to dashboard
   if (user && isAuthRoute) {
     const url = request.nextUrl.clone();
-    const redirect = url.searchParams.get("redirect") || "/dashboard";
+    // SCRUM-346 (M5): validate the redirect param here too. The .pathname setter
+    // already pins the host (so this sink isn't cross-origin-exploitable), but
+    // route it through safeRedirectPath so all three redirect sinks behave
+    // consistently and odd "//"-prefixed internal paths fall back to /dashboard.
+    const redirect = safeRedirectPath(url.searchParams.get("redirect"));
     url.pathname = redirect;
     url.searchParams.delete("redirect");
     return NextResponse.redirect(url);
