@@ -11,6 +11,7 @@ import { classifyCallNotification } from "@/lib/notifications/classify-call";
 import { sendMissedCallTextBack } from "@/lib/sms/caller-sms";
 import { deliverWebhooks } from "@/lib/integrations/webhook-delivery";
 import { withRateLimit } from "@/lib/security/rate-limiter";
+import { checkInternalCallToken } from "@/lib/security/internal-call-token";
 
 function verifyInternalSecret(request: Request): boolean {
   const secret = process.env.INTERNAL_API_SECRET;
@@ -88,6 +89,15 @@ export async function POST(request: Request) {
 
   if (!organizationId || typeof organizationId !== "string") {
     return NextResponse.json({ error: "Missing or invalid organizationId" }, { status: 400 });
+  }
+
+  // SCRUM-344 (M2): per-call token binding (defense-in-depth). Backward-compatible
+  // — token-less requests use the legacy secret-only path (unless
+  // REQUIRE_INTERNAL_CALL_TOKEN). A present token's claims must match the body.
+  const tokenCheck = checkInternalCallToken(request, { organizationId, assistantId, callId });
+  if (!tokenCheck.ok) {
+    console.warn(`[CallCompleted] Rejected internal request: ${tokenCheck.reason}`);
+    return NextResponse.json({ error: "Unauthorized" }, { status: tokenCheck.status });
   }
 
   if (typeof durationSeconds !== "number" || durationSeconds < 0) {

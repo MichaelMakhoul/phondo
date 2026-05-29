@@ -10,6 +10,7 @@ import {
 import { handleScheduleCallback } from "@/lib/callbacks/tool-handler";
 import { getActiveServiceTypes } from "@/lib/service-types";
 import { withRateLimit } from "@/lib/security/rate-limiter";
+import { checkInternalCallToken } from "@/lib/security/internal-call-token";
 
 function verifyInternalSecret(request: Request): boolean {
   const secret = process.env.INTERNAL_API_SECRET;
@@ -78,6 +79,20 @@ export async function POST(request: Request) {
       { error: "Missing or invalid functionName" },
       { status: 400 }
     );
+  }
+
+  // SCRUM-344 (M2): per-call token binding (defense-in-depth). Backward-compatible
+  // — if the voice server sent no X-Call-Token, this is the legacy secret-only
+  // path (unless REQUIRE_INTERNAL_CALL_TOKEN is set). When a token IS present, its
+  // org/assistant/call claims must match this request's body.
+  const tokenCheck = checkInternalCallToken(request, {
+    organizationId: payload.organizationId,
+    assistantId: payload.assistantId,
+    callId: payload.callId,
+  });
+  if (!tokenCheck.ok) {
+    console.warn(`[ToolCall] Rejected internal request: ${tokenCheck.reason}`);
+    return NextResponse.json({ error: "Unauthorized" }, { status: tokenCheck.status });
   }
 
   const parsedArgs = (args || {}) as Record<string, string | undefined>;
