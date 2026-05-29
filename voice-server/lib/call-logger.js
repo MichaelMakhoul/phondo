@@ -1,4 +1,5 @@
 const { getSupabase } = require("./supabase");
+const { signInternalCallToken } = require("./internal-call-token");
 
 /**
  * Create a call record when the call starts.
@@ -144,12 +145,19 @@ async function notifyCallCompleted(internalApiUrl, secret, payload) {
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
+      // SCRUM-344 (M2): per-call token binding (defense-in-depth). Signed from the
+      // payload's own call context; verifier cross-checks claims vs the body.
+      const callToken = signInternalCallToken(
+        { organizationId: payload.organizationId, assistantId: payload.assistantId, callId: payload.callId },
+        secret
+      );
       const res = await fetch(`${internalApiUrl}/api/internal/call-completed`, {
         method: "POST",
         signal: AbortSignal.timeout(15_000),
         headers: {
           "Content-Type": "application/json",
           "X-Internal-Secret": secret,
+          ...(callToken && { "X-Call-Token": callToken }),
         },
         body: JSON.stringify(payload),
       });

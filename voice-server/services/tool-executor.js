@@ -25,6 +25,8 @@ const { requiresRecordingDisclosureHybrid, getRecordingDisclosureText } = requir
 const { Sentry } = require("../lib/sentry");
 const { SENTRY_REASONS, setReasonTag } = require("../lib/sentry-reasons");
 
+const { signInternalCallToken } = require("../lib/internal-call-token");
+
 const INTERNAL_API_URL = process.env.INTERNAL_API_URL;
 const INTERNAL_API_SECRET = process.env.INTERNAL_API_SECRET;
 
@@ -520,12 +522,19 @@ async function executeCalendarCall(functionName, args, context) {
   }
 
   try {
+    // SCRUM-344 (M2): bind this request to the specific call with a short-lived
+    // per-call token (defense-in-depth on top of the shared secret).
+    const callToken = signInternalCallToken(
+      { organizationId: context.organizationId, assistantId: context.assistantId, callId: context.callId },
+      INTERNAL_API_SECRET
+    );
     const res = await fetch(`${INTERNAL_API_URL}/api/internal/tool-call`, {
       method: "POST",
       signal: AbortSignal.timeout(15_000),
       headers: {
         "Content-Type": "application/json",
         "X-Internal-Secret": INTERNAL_API_SECRET,
+        ...(callToken && { "X-Call-Token": callToken }),
       },
       body: JSON.stringify({
         organizationId: context.organizationId,
