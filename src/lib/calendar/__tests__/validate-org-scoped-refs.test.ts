@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect } from "vitest";
 import { validateOrgScopedRefs } from "../validate-org-scoped-refs";
 
 // SCRUM-360: refs must belong to the caller's org. Build a tiny supabase stub
