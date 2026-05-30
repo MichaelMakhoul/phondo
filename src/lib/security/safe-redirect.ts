@@ -48,16 +48,34 @@ function isUnsafePrefix(s: string): boolean {
  * single "/", with no scheme/host, no scheme-relative or backslash escape, and
  * no control characters. The returned value is the normalised path+search+hash,
  * so it is always safe to use as `${origin}${result}` or `router.push(result)`.
+ *
+ * SCRUM-354: an optional `onReject(rejected, reason)` fires only when a NON-EMPTY
+ * redirect value is rejected (never for an absent/empty param — that's the normal
+ * "no redirect" case). Server callers pass it to log/alert on probe attempts;
+ * client callers omit it (keeping this module dependency-free).
  */
 export function safeRedirectPath(
   redirect: string | null | undefined,
-  fallback: string = "/dashboard"
+  fallback: string = "/dashboard",
+  onReject?: (rejected: string, reason: string) => void
 ): string {
   if (!redirect || typeof redirect !== "string") return fallback;
+
+  // A non-empty value was supplied but failed a check — notify (best-effort) and
+  // fall back. The callback must never break validation, so swallow its throws.
+  const reject = (reason: string): string => {
+    try {
+      onReject?.(redirect, reason);
+    } catch {
+      /* observability must not affect the security decision */
+    }
+    return fallback;
+  };
+
   // Reject bare tokens ("@evil.com", "https://..."), scheme-relative ("//host"),
   // and backslash variants on the RAW input.
-  if (isUnsafePrefix(redirect)) return fallback;
-  if (hasControlChars(redirect)) return fallback;
+  if (isUnsafePrefix(redirect)) return reject("unsafe-prefix");
+  if (hasControlChars(redirect)) return reject("control-chars");
 
   // Defense-in-depth: resolve against a throwaway base and require the result to
   // stay on that origin. The WHATWG URL parser converts backslashes to slashes
@@ -65,14 +83,14 @@ export function safeRedirectPath(
   try {
     const base = "https://internal.invalid";
     const resolved = new URL(redirect, base);
-    if (resolved.origin !== base) return fallback;
+    if (resolved.origin !== base) return reject("external-origin");
     const candidate = resolved.pathname + resolved.search + resolved.hash;
     // Re-assert the FINAL value: `..` normalisation can collapse a guarded input
     // ("/..//evil.com") into a scheme-relative path ("//evil.com") that
     // router.push() would resolve to an external origin.
-    if (isUnsafePrefix(candidate)) return fallback;
+    if (isUnsafePrefix(candidate)) return reject("normalised-external");
     return candidate;
   } catch {
-    return fallback;
+    return reject("parse-error");
   }
 }

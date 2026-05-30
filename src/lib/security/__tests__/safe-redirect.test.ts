@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { safeRedirectPath } from "../safe-redirect";
 
 // SCRUM-346 (audit M5): open-redirect protection for post-auth redirect targets.
@@ -77,6 +77,44 @@ describe("safeRedirectPath", () => {
     });
     it("ignores the fallback when the path is valid", () => {
       expect(safeRedirectPath("/dashboard", "/login")).toBe("/dashboard");
+    });
+  });
+
+  describe("onReject observability hook (SCRUM-354)", () => {
+    it("fires with the rejected value + a reason for a non-empty rejected input", () => {
+      const onReject = vi.fn();
+      expect(safeRedirectPath("@evil.com", "/dashboard", onReject)).toBe("/dashboard");
+      expect(onReject).toHaveBeenCalledTimes(1);
+      expect(onReject).toHaveBeenCalledWith("@evil.com", "unsafe-prefix");
+    });
+    it("reports the normalised-external reason for the `..`-collapse bypass", () => {
+      const onReject = vi.fn();
+      safeRedirectPath("/..//evil.com", "/dashboard", onReject);
+      expect(onReject).toHaveBeenCalledWith("/..//evil.com", "normalised-external");
+    });
+    it("reports control-chars for a CR/LF smuggling attempt", () => {
+      const onReject = vi.fn();
+      safeRedirectPath("/dashboard\r\nx", "/dashboard", onReject);
+      expect(onReject).toHaveBeenCalledWith("/dashboard\r\nx", "control-chars");
+    });
+    it("does NOT fire for a valid path", () => {
+      const onReject = vi.fn();
+      expect(safeRedirectPath("/settings", "/dashboard", onReject)).toBe("/settings");
+      expect(onReject).not.toHaveBeenCalled();
+    });
+    it("does NOT fire for an absent/empty redirect (the normal no-redirect case)", () => {
+      const onReject = vi.fn();
+      safeRedirectPath(null, "/dashboard", onReject);
+      safeRedirectPath(undefined, "/dashboard", onReject);
+      safeRedirectPath("", "/dashboard", onReject);
+      expect(onReject).not.toHaveBeenCalled();
+    });
+    it("a throwing onReject never affects the validation result", () => {
+      const onReject = vi.fn(() => {
+        throw new Error("logger blew up");
+      });
+      expect(safeRedirectPath("//evil.com", "/dashboard", onReject)).toBe("/dashboard");
+      expect(safeRedirectPath("/ok", "/dashboard", onReject)).toBe("/ok");
     });
   });
 });
