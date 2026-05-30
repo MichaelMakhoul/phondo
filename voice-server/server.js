@@ -61,6 +61,7 @@ const { detectAndRedact, redactObject } = require("./lib/pii-detector");
 const { maskPhone } = require("./lib/mask-phone");
 const { getTestClientIp, createTestSessionCaps } = require("./lib/test-session-caps");
 const { getMaxSessionDurationMs } = require("./lib/session-limits");
+const { timingSafeEqualStr } = require("./lib/timing-safe");
 const { buildFallbackDisclosureSay } = require("./lib/fallback-dial-consent");
 const { getPollyVoice } = require("./lib/polly-voice");
 const killSwitch = require("./lib/route-handlers/kill-switch");
@@ -881,20 +882,37 @@ app.post("/twiml/ai-disabled-recording-done", async (req, res) => {
 });
 
 // Health check with Supabase connectivity test
-app.get("/health", async (req, res) => {
+// SCRUM-355: SHALLOW public liveness probe — no DB round-trip. The previous
+// version ran a Supabase query on every unauthenticated hit, which (a) let an
+// anonymous flood amplify load onto Postgres, and (b) made a Supabase blip fail
+// the liveness check, so Fly would cycle the single machine and drop in-flight
+// calls. Liveness should reflect "process is up", not "Supabase is reachable".
+app.get("/health", (req, res) => {
+  res.json({ status: "ok" });
+});
+
+// Secret-gated READINESS probe — exposes DB connectivity for ops/monitoring
+// (NOT used by Fly's liveness checker, which hits /health). Returns a generic
+// error on failure (no raw err.message to the client).
+app.get("/health/ready", async (req, res) => {
+  if (!timingSafeEqualStr(req.headers["x-internal-secret"], INTERNAL_API_SECRET)) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
   try {
     const supabase = getSupabase();
     const { error } = await supabase.from("organizations").select("id").limit(1);
     if (error) throw error;
     res.json({ status: "ok", db: "connected" });
   } catch (err) {
-    res.status(503).json({ status: "degraded", db: "error", message: err.message });
+    console.error("[Health] DB readiness check failed:", err);
+    res.status(503).json({ status: "degraded", db: "error" });
   }
 });
 
 app.post("/cache/invalidate", (req, res) => {
-  const secret = req.headers["x-internal-secret"];
-  if (!secret || secret !== process.env.INTERNAL_API_SECRET) {
+  // SCRUM-355: constant-time secret comparison (was a plain !== that leaked
+  // length/prefix via timing).
+  if (!timingSafeEqualStr(req.headers["x-internal-secret"], process.env.INTERNAL_API_SECRET)) {
     return res.status(401).json({ error: "Unauthorized" });
   }
   const { organizationId } = req.body;
@@ -992,8 +1010,9 @@ function previewCacheSet(key, buffer) {
 // playback. Results are cached in-memory so subsequent clicks on the same
 // voice are free and can't hit Gemini rate limits.
 app.post("/preview", async (req, res) => {
-  const secret = req.headers["x-internal-secret"];
-  if (!secret || secret !== process.env.INTERNAL_API_SECRET) {
+  // SCRUM-355: constant-time secret comparison (was a plain !== that leaked
+  // length/prefix via timing).
+  if (!timingSafeEqualStr(req.headers["x-internal-secret"], process.env.INTERNAL_API_SECRET)) {
     return res.status(401).json({ error: "Unauthorized" });
   }
 
@@ -1118,8 +1137,8 @@ app.post("/preview", async (req, res) => {
 // session into that WebSocket so the outbound side has a real speaker.
 
 function validateInternalSecret(req) {
-  const secret = req.headers["x-internal-secret"];
-  return secret && INTERNAL_API_SECRET && secret === INTERNAL_API_SECRET;
+  // SCRUM-355: constant-time comparison (was a plain === timing side-channel).
+  return timingSafeEqualStr(req.headers["x-internal-secret"], INTERNAL_API_SECRET);
 }
 
 app.post("/outbound/call", express.json(), async (req, res) => {
@@ -1131,7 +1150,7 @@ app.post("/outbound/call", express.json(), async (req, res) => {
     res.json(result);
   } catch (err) {
     console.error("[Outbound] /outbound/call error:", err.message);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -1150,7 +1169,7 @@ app.post("/outbound/suite", express.json(), async (req, res) => {
     res.json(result);
   } catch (err) {
     console.error("[Outbound] /outbound/suite error:", err.message);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -1164,7 +1183,7 @@ app.post("/outbound/setup-fixtures", express.json(), async (req, res) => {
     res.json({ fixtures });
   } catch (err) {
     console.error("[Outbound] /outbound/setup-fixtures error:", err.message);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 
