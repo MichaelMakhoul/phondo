@@ -2,11 +2,18 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getVapiClient, buildVapiServerConfig } from "@/lib/vapi";
 import { withRateLimit } from "@/lib/security/rate-limiter";
+import { isPlatformAdmin } from "@/lib/admin/admin-auth";
 
 /**
  * POST /api/v1/assistants/sync-server-url
- * Re-syncs the Vapi server URL for all assistants in the user's org.
- * Use this after deploying to production if assistants were created locally.
+ * Re-syncs the Vapi server URL for the caller's org assistants AND all
+ * account-wide Vapi tools. Used after a deploy if assistants/tools were created
+ * with a localhost URL.
+ *
+ * SCRUM-362: PLATFORM-ADMIN ONLY. The tool resync below calls vapi.listTools(),
+ * which is account-wide (single Vapi key per deployment) and would let any
+ * authenticated tenant force a resync touching every org's tools. This is an
+ * operational/maintenance action, not a per-tenant feature, so it's gated.
  */
 export async function POST(request: NextRequest) {
   try {
@@ -23,6 +30,11 @@ export async function POST(request: NextRequest) {
 
     if (!user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    // SCRUM-362: gate this account-wide ops action behind platform-admin.
+    if (!(await isPlatformAdmin(user.id))) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
     const { data: membership, error: membershipError } = await (supabase as any)
