@@ -70,7 +70,12 @@ export async function updateSession(request: NextRequest) {
     // already pins the host (so this sink isn't cross-origin-exploitable), but
     // route it through safeRedirectPath so all three redirect sinks behave
     // consistently and odd "//"-prefixed internal paths fall back to /dashboard.
-    const redirect = safeRedirectPath(url.searchParams.get("redirect"));
+    // SCRUM-354: log a rejected (non-empty) redirect. console.warn (not Sentry)
+    // here — middleware runs in a leaner runtime and this sink is host-pinned
+    // (low-value), but the probe should still be visible in logs.
+    const redirect = safeRedirectPath(url.searchParams.get("redirect"), "/dashboard", (rejected, reason) =>
+      console.warn(`[OpenRedirect] blocked at auth-route middleware (reason=${reason}):`, rejected.slice(0, 200))
+    );
     url.pathname = redirect;
     url.searchParams.delete("redirect");
     return NextResponse.redirect(url);

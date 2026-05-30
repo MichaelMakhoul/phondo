@@ -186,6 +186,12 @@ export const SENTRY_REASONS = {
    *  `undelivered` after `delivered`. We keep the first; this tag lets
    *  on-call investigate whether the carrier or our handler is buggy. */
   TERMINAL_STATE_COLLISION: "terminal_state_collision",
+
+  // ─── open-redirect probe (SCRUM-354) ────────────────────────────────
+  /** safeRedirectPath rejected a NON-EMPTY redirect param at a server sink
+   *  (e.g. /auth/callback). A burst of these is someone probing the auth flow
+   *  for a post-login phishing bounce — worth surfacing, not silently dropping. */
+  OPEN_REDIRECT_BLOCKED: "open-redirect-blocked",
 } as const;
 
 export type SentryReason = (typeof SENTRY_REASONS)[keyof typeof SENTRY_REASONS];

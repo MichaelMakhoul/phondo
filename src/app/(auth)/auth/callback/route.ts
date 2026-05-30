@@ -1,5 +1,7 @@
 import { createClient } from "@/lib/supabase/server";
 import { safeRedirectPath } from "@/lib/security/safe-redirect";
+import { pageSentry } from "@/lib/observability/page-sentry";
+import { SENTRY_REASONS } from "@/lib/security/error-ids";
 import { NextResponse } from "next/server";
 
 export async function GET(request: Request) {
@@ -9,7 +11,20 @@ export async function GET(request: Request) {
   // phishing link bounce the just-authenticated user to an external origin
   // (e.g. redirect=@evil.com -> https://app.phondo.ai@evil.com). safeRedirectPath
   // returns a same-origin path or falls back to /dashboard.
-  const redirect = safeRedirectPath(requestUrl.searchParams.get("redirect"));
+  // SCRUM-354: surface a rejected (non-empty) redirect — a burst signals someone
+  // probing the auth flow for a post-login phishing bounce.
+  const redirect = safeRedirectPath(
+    requestUrl.searchParams.get("redirect"),
+    "/dashboard",
+    (rejected, reason) =>
+      pageSentry({
+        service: "next-api",
+        reason: SENTRY_REASONS.OPEN_REDIRECT_BLOCKED,
+        level: "warning",
+        message: "Blocked an open-redirect attempt at /auth/callback",
+        extras: { rejected: rejected.slice(0, 200), reason },
+      })
+  );
   const origin = requestUrl.origin;
 
   if (code) {
