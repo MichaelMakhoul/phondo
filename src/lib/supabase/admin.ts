@@ -39,9 +39,21 @@ export type ServiceRoleSupabaseClient = SupabaseClient<Database> & {
  * than re-cast.
  */
 export function createAdminClient(): ServiceRoleSupabaseClient {
+  // SCRUM-352: fail LOUD on a misconfig. The bare `!` non-null assertions used to
+  // construct a broken client when a var was missing, whose RPCs then failed
+  // opaquely — and under the demo's old fail-closed global cap that masqueraded
+  // as "high demand" indefinitely (only visible via Sentry). Throw a descriptive
+  // error instead so a missing service-role var is obvious in logs.
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!supabaseUrl || !serviceRoleKey) {
+    throw new Error(
+      "createAdminClient: NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must both be set",
+    );
+  }
   const client = createSupabaseClient<Database>(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    supabaseUrl,
+    serviceRoleKey,
     {
       auth: {
         autoRefreshToken: false,

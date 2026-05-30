@@ -647,13 +647,15 @@ describe("demoCallGlobal profile (SCRUM-340)", () => {
   // Locks the profile name + values: the demo-call route references
   // "demoCallGlobal" by string, and an arg-order/profile-rename slip would
   // typecheck but silently break the global cost cap.
-  it("is 100 requests per hour with cost-control fail-closed", () => {
+  it("is 100 requests per hour and FAILS OPEN (SCRUM-352)", () => {
     expect(rateLimitConfigs.demoCallGlobal).toBeDefined();
     expect(rateLimitConfigs.demoCallGlobal.maxRequests).toBe(100);
     expect(rateLimitConfigs.demoCallGlobal.windowMs).toBe(60 * 60 * 1000);
-    expect(
-      "costControl" in rateLimitConfigs.demoCallGlobal &&
-        rateLimitConfigs.demoCallGlobal.costControl
-    ).toBe(true);
+    // SCRUM-352: NO costControl → a Supabase brownout falls back to the local Map
+    // (funnel-availability) instead of failing closed. The independent per-IP
+    // layers still bound abuse, so this is the deliberate posture for the public
+    // demo funnel. If this regresses to costControl:true, a brownout would 429
+    // every demo visitor — so this assertion guards the decision.
+    expect("costControl" in rateLimitConfigs.demoCallGlobal).toBe(false);
   });
 });

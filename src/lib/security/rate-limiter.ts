@@ -133,6 +133,12 @@ startCleanup();
  * bypass `rateLimitDistributed` exists to close. Everything else (UX-
  * grade limits, webhook spam guards) keeps fail-open semantics so a
  * Supabase blip doesn't lock legitimate users out.
+ *
+ * DELIBERATE EXCEPTION (SCRUM-352): `demoCallGlobal` gates a paid action
+ * (Gemini Live demo minutes) yet intentionally OMITS `costControl` and fails
+ * OPEN. The public demo is a conversion funnel where availability beats a
+ * marginal cost-safety gain, and the per-IP layers in the demo route still bound
+ * abuse during a brownout. Do NOT "fix" it back to fail-closed (a test locks this).
  */
 export const rateLimitConfigs = {
   // Standard API calls - 100 per minute
@@ -175,13 +181,19 @@ export const rateLimitConfigs = {
     maxRequests: 3,
     costControl: true,
   },
-  // Global cap on demo calls across ALL IPs - 100 per hour. costControl so a
-  // Supabase brownout fails CLOSED rather than re-opening unbounded Gemini Live
-  // cost to an IP-rotating bot (SCRUM-340). Single shared bucket (key "global").
+  // Global cap on demo calls across ALL IPs - 100 per hour. Single shared bucket
+  // (key "global"). FAIL-OPEN (no costControl): /demo is a public conversion
+  // funnel, and the independent per-IP layers (10/IP/hr Upstash + 20/IP/day
+  // in-memory) already bound abuse even if this global cap falls back to the
+  // per-instance Map during a Supabase brownout. A brownout is far likelier to
+  // coincide with normal traffic than with an IP-rotating attack, so failing
+  // CLOSED here would take the demo down for everyone for a marginal cost-safety
+  // gain the per-IP layer mostly already provides. (SCRUM-352 — reverses the
+  // SCRUM-340 costControl after the product+security call to favour funnel
+  // availability; worst-case residual is the same ~100 sessions/hr ceiling.)
   demoCallGlobal: {
     windowMs: 60 * 60 * 1000,
     maxRequests: 100,
-    costControl: true,
   },
 } as const;
 

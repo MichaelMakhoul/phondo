@@ -157,21 +157,14 @@ export async function POST(request: Request) {
       "demoCallGlobal"
     );
     if (!globalCap.allowed) {
-      // SCRUM-302 pattern: a Supabase brownout fails this costControl profile
-      // CLOSED (failReason="service-degraded") — show an honest availability
-      // message rather than the false "high demand" used for a real cap hit.
-      const degraded = globalCap.failReason === "service-degraded";
-      console.warn(
-        degraded
-          ? "[DemoAbuse] Global cap unavailable (distributed limiter degraded) — failing closed"
-          : "[DemoAbuse] Global hourly cap reached (100 calls/hr across all IPs)"
-      );
+      // SCRUM-352: demoCallGlobal now fails OPEN, so a Supabase brownout falls
+      // back to the per-instance Map rather than returning
+      // failReason="service-degraded". This branch therefore only fires on a
+      // genuine cap hit (100/hr across all IPs) — the per-IP layers above already
+      // rejected abusive single-IP traffic before we reach here.
+      console.warn("[DemoAbuse] Global hourly cap reached (100 calls/hr across all IPs)");
       return NextResponse.json(
-        {
-          error: degraded
-            ? "The demo is temporarily unavailable. Please try again in a moment."
-            : "Demo is experiencing high demand. Please try again in a few minutes.",
-        },
+        { error: "Demo is experiencing high demand. Please try again in a few minutes." },
         { status: 429, headers: globalCap.headers }
       );
     }
