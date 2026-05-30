@@ -133,6 +133,12 @@ startCleanup();
  * bypass `rateLimitDistributed` exists to close. Everything else (UX-
  * grade limits, webhook spam guards) keeps fail-open semantics so a
  * Supabase blip doesn't lock legitimate users out.
+ *
+ * DELIBERATE EXCEPTION (SCRUM-352): `demoCallGlobal` gates a paid action
+ * (Gemini Live demo minutes) yet intentionally OMITS `costControl` and fails
+ * OPEN. The public demo is a conversion funnel where availability beats a
+ * marginal cost-safety gain, and the per-IP layers in the demo route still bound
+ * abuse during a brownout. Do NOT "fix" it back to fail-closed (a test locks this).
  */
 export const rateLimitConfigs = {
   // Standard API calls - 100 per minute
