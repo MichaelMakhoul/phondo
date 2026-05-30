@@ -519,15 +519,36 @@ export async function POST(request: Request) {
           (!spamAnalysis?.isSpam || spamAnalysis?.recommendation !== "block");
 
         if (shouldTrackUsage && existingCall) {
-          const { success, shouldUpgrade } = await incrementCallUsage(existingCall.organization_id);
-          if (!success) {
-            console.error("Failed to increment call usage:", {
-              organizationId: existingCall.organization_id,
+          // SCRUM-361: count usage at most once per call. Atomically flip the
+          // call's usage_counted false→true; a Vapi at-least-once redelivery of
+          // this end-of-call-report finds it already true and skips, so usage is
+          // never double-billed. Only increment when we win the flip.
+          const { data: claimed, error: claimError } = await (supabase.from("calls") as any)
+            .update({ usage_counted: true })
+            .eq("id", existingCall.id)
+            .eq("usage_counted", false)
+            .select("id");
+          if (claimError) {
+            // Fail CLOSED on the claim error (skip the increment) — a dropped
+            // count on a rare DB blip is recoverable; a double-bill is not.
+            console.error("Failed to claim usage_counted (skipping increment to avoid double-bill):", {
               vapiCallId: call.id,
+              organizationId: existingCall.organization_id,
+              error: claimError,
             });
-          }
-          if (shouldUpgrade) {
-            console.log(`Organization ${existingCall.organization_id} approaching call limit`);
+          } else if (claimed && claimed.length > 0) {
+            const { success, shouldUpgrade } = await incrementCallUsage(existingCall.organization_id);
+            if (!success) {
+              console.error("Failed to increment call usage:", {
+                organizationId: existingCall.organization_id,
+                vapiCallId: call.id,
+              });
+            }
+            if (shouldUpgrade) {
+              console.log(`Organization ${existingCall.organization_id} approaching call limit`);
+            }
+          } else {
+            console.log("Vapi usage already counted for call — skipping (redelivery):", call.id);
           }
         }
 
