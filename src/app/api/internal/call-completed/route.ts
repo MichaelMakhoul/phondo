@@ -183,6 +183,38 @@ export async function POST(request: Request) {
     (!spamAnalysis?.isSpam || spamAnalysis?.recommendation !== "block");
 
   if (shouldTrackUsage) {
+    // SCRUM-361: idempotent usage — atomically claim the call's usage_counted
+    // flag so a notifyCallCompleted RETRY (the voice server retries on 5xx) can't
+    // double-count. Only increment when we win the false→true flip. When callId
+    // is absent (rare kill-switch fallback with no call row) there's nothing to
+    // key on, so fall back to incrementing as before.
+    let shouldIncrement = true;
+    if (callId) {
+      const { data: claimed, error: claimError } = await (supabase as any)
+        .from("calls")
+        .update({ usage_counted: true })
+        .eq("id", callId)
+        .eq("usage_counted", false)
+        .select("id");
+      if (claimError) {
+        // Fail CLOSED (skip) — a dropped count on a rare DB blip is recoverable;
+        // a double-bill is not.
+        console.error("[Internal] Failed to claim usage_counted (skipping increment to avoid double-bill):", { callId, organizationId, error: claimError });
+        shouldIncrement = false;
+      } else {
+        shouldIncrement = !!(claimed && claimed.length > 0);
+        if (!shouldIncrement) {
+          console.log("[Internal] Usage already counted for call — skipping (retry):", callId);
+        }
+      }
+    } else {
+      // SCRUM-361: no callId → no call row to key on (the rare kill-switch
+      // fallback where createCallRecord failed at call start). Increment without
+      // the idempotency guard; warn so this one non-idempotent path is visible
+      // if it ever becomes non-trivial.
+      console.warn("[Internal] Incrementing usage without idempotency guard — callId absent (no call row):", { organizationId });
+    }
+    if (shouldIncrement) {
     try {
       const { error: rpcError } = await (supabase as any).rpc("increment_call_usage", {
         org_id: organizationId,
@@ -214,6 +246,7 @@ export async function POST(request: Request) {
     } catch (err) {
       console.error("[Internal] Billing increment failed:", err);
     }
+    } // end if (shouldIncrement)
   }
 
   // 4. Send notifications (skip spam calls)
