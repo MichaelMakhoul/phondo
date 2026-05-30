@@ -60,6 +60,7 @@ const { lookupPhoneNumber, isAiEnabled, getAnswerMode, getPhoneNumberContext } =
 const { detectAndRedact, redactObject } = require("./lib/pii-detector");
 const { maskPhone } = require("./lib/mask-phone");
 const { getTestClientIp, createTestSessionCaps } = require("./lib/test-session-caps");
+const { getMaxSessionDurationMs } = require("./lib/session-limits");
 const { buildFallbackDisclosureSay } = require("./lib/fallback-dial-consent");
 const { getPollyVoice } = require("./lib/polly-voice");
 const killSwitch = require("./lib/route-handlers/kill-switch");
@@ -3129,7 +3130,8 @@ server.on("upgrade", (request, socket, head) => {
     socket.destroy();
   }
 });
-const MAX_TEST_CALL_DURATION_MS = 5 * 60 * 1000; // 5 minutes
+// SCRUM-363: session-duration caps moved to ./lib/session-limits — the public
+// demo (DEMO_ORG_ID) gets a tighter cap than authed dashboard test calls.
 
 // SCRUM-341: concurrency caps on /ws/test. Each session is a PAID Gemini Live
 // call, so bound concurrent sessions globally, per-IP, and per-token. The voice
@@ -3251,13 +3253,15 @@ testWss.on("connection", (ws, req) => {
     }
   }
 
-  // Auto-disconnect after max duration
+  // Auto-disconnect after max duration. SCRUM-363: the public demo
+  // (organizationId === DEMO_ORG_ID) gets a tighter cap than authed test calls.
+  const maxSessionDurationMs = getMaxSessionDurationMs(organizationId);
   autoEndTimer = setTimeout(() => {
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: "ended", reason: "max-duration" }));
       ws.close(1000, "Max duration reached");
     }
-  }, MAX_TEST_CALL_DURATION_MS);
+  }, maxSessionDurationMs);
 
   // Initialize session
   (async () => {
