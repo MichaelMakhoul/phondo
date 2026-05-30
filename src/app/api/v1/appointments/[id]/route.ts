@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse, after } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { isValidUUID } from "@/lib/security/validation";
+import { validateOrgScopedRefs } from "@/lib/calendar/validate-org-scoped-refs";
 import { getClientHistory } from "@/lib/clients/client-history";
 import { invalidateVoiceScheduleCache } from "@/lib/voice-cache/invalidate";
 import { z } from "zod";
@@ -151,6 +152,16 @@ export async function PATCH(
     if (data.practitioner_id !== undefined) updates.practitioner_id = data.practitioner_id;
     if (data.notes !== undefined) updates.notes = data.notes;
     if (data.status) updates.status = data.status;
+
+    // SCRUM-360: a referenced service_type / practitioner must belong to this org
+    // (skips null, so clearing a field is still allowed).
+    const refError = await validateOrgScopedRefs(supabase, orgId, {
+      serviceTypeId: data.service_type_id,
+      practitionerId: data.practitioner_id,
+    });
+    if (refError) {
+      return NextResponse.json({ error: refError }, { status: 400 });
+    }
 
     if (Object.keys(updates).length === 0) {
       return NextResponse.json({ error: "No fields to update" }, { status: 400 });
