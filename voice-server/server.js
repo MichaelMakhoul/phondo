@@ -1309,7 +1309,7 @@ wss.on("connection", (twilioWs) => {
     let analysis = null;
     if (transcript && durationSeconds > 5) {
       try {
-        analysis = await analyzeCallTranscript(transcript);
+        analysis = await analyzeCallTranscript(transcript, { language: s.language });
         if (analysis) {
           // SCRUM-339: caller name AND the free-text call reason are PII —
           // redact both unless DEBUG_TRANSCRIPTS. success is a safe enum.

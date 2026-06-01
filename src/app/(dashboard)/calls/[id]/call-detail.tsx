@@ -687,8 +687,9 @@ export function CallDetail({ call: initialCall }: { call: Call }) {
                     size="sm"
                     variant={transcriptMode === "raw" ? "default" : "outline"}
                     onClick={() => setTranscriptMode("raw")}
+                    title="The unprocessed speech-to-text output. Garbled or mixed-language text here is a transcription artifact, not what the AI understood."
                   >
-                    Raw
+                    Original (raw STT)
                   </Button>
                 </div>
               )}

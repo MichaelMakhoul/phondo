@@ -12,6 +12,39 @@ const { Sentry } = require("../lib/sentry");
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const ANALYSIS_MODEL = "gpt-4.1-nano";
+// SCRUM-370: when the raw transcript carries the STT mis-detection signature
+// (non-Latin scripts where the caller most likely spoke a Latin-script or
+// Arabic language), recover with a stronger model. Post-call batch step, so the
+// marginal cost is negligible.
+const CLEANUP_MODEL_GARBLED = "gpt-4.1-mini";
+
+// Non-Latin script ranges that signal STT language mis-routing (or a genuinely
+// non-English call that nano recovers poorly). Covers the scripts plausible for
+// AU/US callers: Greek, Cyrillic, Hebrew, Arabic, Devanagari, Bengali, Tamil,
+// Thai, Hiragana/Katakana, CJK, Hangul, and half-width Katakana. Latin
+// (incl. accents/diacritics) and emoji are intentionally excluded so they don't
+// force the pricier model.
+const GARBLE_SIGNATURE = new RegExp(
+  "[" +
+    "\\u0370-\\u03FF" + // Greek
+    "\\u0400-\\u04FF" + // Cyrillic
+    "\\u0590-\\u05FF" + // Hebrew
+    "\\u0600-\\u06FF" + // Arabic
+    "\\u0900-\\u097F" + // Devanagari
+    "\\u0980-\\u09FF" + // Bengali
+    "\\u0B80-\\u0BFF" + // Tamil
+    "\\u0E00-\\u0E7F" + // Thai
+    "\\u3040-\\u30FF" + // Hiragana + Katakana
+    "\\u3400-\\u9FFF" + // CJK (Ext-A + Unified)
+    "\\uAC00-\\uD7AF" + // Hangul syllables
+    "\\uFF61-\\uFF9F" + // Half-width Katakana
+    "]"
+);
+
+/** @returns {boolean} true if the transcript contains non-Latin-script characters. */
+function containsNonLatinScript(text) {
+  return GARBLE_SIGNATURE.test(text || "");
+}
 
 const STRUCTURED_PROMPT = `You are analyzing a phone call transcript between an AI receptionist and a caller.
 The transcript may contain speech-to-text errors. Always produce the output in English regardless of the transcript language.
@@ -23,7 +56,7 @@ Return a JSON object with these fields:
 - caller_phone_reason: The primary reason for the call (string or null)
 - appointment_requested: Whether the caller wanted to schedule an appointment (boolean)
 - summary: A 1-2 sentence summary of the call IN ENGLISH (string)
-- success_evaluation: Rate the call outcome as "successful", "partial", or "unsuccessful" (string)
+- success_evaluation: Rate the call outcome (string): "successful" = the caller's primary goal was completed via a tool (e.g. an appointment was booked, a callback was captured, or the caller was transferred); "partial" = the goal was attempted but not completed (e.g. a booking was started but never confirmed); "unsuccessful" = the AI could not help, or the caller was frustrated / hung up
 - collected_data: Any structured data collected during the call like phone numbers, emails, dates mentioned (object or null)
 - unanswered_questions: Questions the caller asked that the AI could not answer. Translate to English. (array of strings, or null)
 - sentiment: "positive" | "neutral" | "negative" (string)
@@ -48,20 +81,23 @@ Rules:
 
 Return ONLY valid JSON.`;
 
-async function callOpenAI({ system, user, maxTokens }) {
+/**
+ * @param {{ system: string, user: string, maxTokens: number, model?: string, timeoutMs?: number }} opts
+ */
+async function callOpenAI({ system, user, maxTokens, model, timeoutMs }) {
   if (!OPENAI_API_KEY) {
     throw new Error("OPENAI_API_KEY not set");
   }
 
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
-    signal: AbortSignal.timeout(20_000),
+    signal: AbortSignal.timeout(timeoutMs || 20_000),
     headers: {
       Authorization: `Bearer ${OPENAI_API_KEY}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model: ANALYSIS_MODEL,
+      model: model || ANALYSIS_MODEL,
       messages: [
         { role: "system", content: system },
         { role: "user", content: user },
@@ -124,12 +160,27 @@ async function analyzeStructured(transcript) {
   }
 }
 
-async function analyzeCleanup(transcript) {
+async function analyzeCleanup(transcript, language) {
   try {
+    // SCRUM-370: the business's configured language is a DISAMBIGUATION hint
+    // only — never a target to translate INTO (the prompt forbids translation).
+    // Framed as "most likely" so a caller speaking another language isn't forced
+    // wrong, and explicitly reiterates "do not translate" so an English-config
+    // assistant taking an Arabic call doesn't get nudged to anglicise it.
+    const langHint = language
+      ? `\n\nCONTEXT: The business's configured language is "${language}", so "${language}" is the most likely language for callers — use it to disambiguate mis-detected (random CJK/Hindi/Cyrillic/Arabic) characters when the intended text is unclear. This is a recovery hint only: NEVER translate a turn out of the language it was actually spoken in.`
+      : "";
+    // Garbled / non-Latin transcripts route to the stronger model AND get a
+    // longer timeout — they emit more output (recovered text + "original") and
+    // the slower model would otherwise risk silently timing out on exactly the
+    // calls this is meant to help.
+    const garbled = containsNonLatinScript(transcript);
     const parsed = await callOpenAI({
-      system: CLEANUP_PROMPT,
+      system: CLEANUP_PROMPT + langHint,
       user: `Clean up this transcript:\n\n${transcript.slice(0, 6000)}`,
       maxTokens: 2500,
+      model: garbled ? CLEANUP_MODEL_GARBLED : undefined,
+      timeoutMs: garbled ? 35_000 : undefined,
     });
 
     if (!parsed.turns || !Array.isArray(parsed.turns)) return null;
@@ -154,9 +205,11 @@ async function analyzeCleanup(transcript) {
  * the other.
  *
  * @param {string} transcript - The full call transcript
+ * @param {{ language?: string }} [options] - language: the call's configured
+ *   language (BCP-47/ISO 639-1), used as a recovery hint for the cleanup pass.
  * @returns {Promise<object|null>} Extracted data or null if both calls fail
  */
-async function analyzeCallTranscript(transcript) {
+async function analyzeCallTranscript(transcript, options = {}) {
   if (!transcript || transcript.trim().length < 20) {
     return null; // Too short to analyze meaningfully
   }
@@ -172,7 +225,7 @@ async function analyzeCallTranscript(transcript) {
 
   const [structured, cleanedTranscript] = await Promise.all([
     analyzeStructured(transcript),
-    analyzeCleanup(transcript),
+    analyzeCleanup(transcript, options.language),
   ]);
 
   if (!structured && !cleanedTranscript) return null;
@@ -192,4 +245,4 @@ async function analyzeCallTranscript(transcript) {
   };
 }
 
-module.exports = { analyzeCallTranscript };
+module.exports = { analyzeCallTranscript, _test: { containsNonLatinScript } };
