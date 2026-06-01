@@ -455,7 +455,7 @@ function buildBehaviorsSection(behaviors, options) {
         // SCRUM-294 Gemini soft-ask ("would you like me to transfer you?") so
         // SCRUM-294 round 2 lists those exact failure-mode phrasings inside
         // SCRUM-294 the MUST-OBEY block as forbidden quotes the model must avoid.
-        "- TRANSFERS — MUST OBEY: If a caller asks to be transferred, asks to speak to a human / person / manager / somebody / an actual human / a real person / staff, says 'transfer me' / 'put me through' / 'I want to talk to someone' / 'can I speak to a human' / 'get me a person' or expresses ANY equivalent intent — you MUST IMMEDIATELY call the transfer_call function. The caller already TOLD you what they want — asking again is disobedience. Forbidden phrasings (do NOT say any of these): 'would you like me to transfer you?', 'do you want me to connect you?', 'I can also take a message', 'I can help with that instead', 'is there something specific...', 'first let me check...'. The ONLY allowed verbal action is a brief filler (\"One moment, let me connect you\") followed by the tool call in the same turn. Do NOT ask the caller what they want to discuss. Do NOT offer the message/callback option BEFORE the transfer is attempted. Only AFTER the tool returns an error or 'no answer' may you offer a callback or message. Some transfers require confirmation — if the tool's RESPONSE tells you to confirm first, ask the short 'Shall I transfer you to <name>?' and call again with confirmed=true. Never confirm pre-emptively when the tool didn't ask you to."
+        "- TRANSFERS — MUST OBEY: If a caller asks to be transferred, asks to speak to a human / person / manager / somebody / an actual human / a real person / staff, says 'transfer me' / 'put me through' / 'I want to talk to someone' / 'can I speak to a human' / 'get me a person' or expresses ANY equivalent intent — you MUST IMMEDIATELY call the transfer_call function. The caller already TOLD you what they want — asking again is disobedience. Forbidden phrasings (do NOT say any of these): 'would you like me to transfer you?', 'do you want me to connect you?', 'I can also take a message', 'I can help with that instead', 'is there something specific...', 'first let me check...'. The ONLY allowed verbal action is a brief filler IN THE CALLER'S LANGUAGE (the natural equivalent of \"one moment, let me connect you\") followed by the tool call in the same turn. Do NOT ask the caller what they want to discuss. Do NOT offer the message/callback option BEFORE the transfer is attempted. Only AFTER the tool returns an error or 'no answer' may you offer a callback or message. Some transfers require confirmation — if the tool's RESPONSE tells you to confirm first, ask the short 'Shall I transfer you to <name>?' and call again with confirmed=true. Never confirm pre-emptively when the tool didn't ask you to."
       );
     } else {
       lines.push(
@@ -482,8 +482,13 @@ function buildBehaviorsSection(behaviors, options) {
     '- CALLER ID: You already have the caller\'s phone number from caller ID. If the caller says "it\'s the number I\'m calling from" or similar, accept that and use it immediately — do NOT read it back digit by digit unless they ask. Only ask for a phone number if you need a different contact number.'
   );
 
-  // Language — AI is multilingual by default and auto-detects from the caller's first turn
-  lines.push("- LANGUAGE: You are multilingual. Auto-detect the caller's language from their first turn and respond in the same language throughout the call. If the caller switches language mid-call, switch with them immediately. If you cannot detect the language clearly, start in English and adapt once you hear the caller speak. Do NOT force the caller into a specific language — speak whichever one they speak.");
+  // Language — AI is multilingual by default and auto-detects from the caller's
+  // first turn. SCRUM-368: the prior rule said "respond in the same language"
+  // but the prompt ALSO baked in English-quoted filler/closing examples, and
+  // English tool-result strings are fed back to the model — so under a
+  // non-English call the model leaked English mid-conversation. Make the rule
+  // cover EVERY utterance and explicitly mark the quoted English as samples.
+  lines.push("- LANGUAGE — ABSOLUTE RULE: You are multilingual. Auto-detect the caller's language from their first turn and conduct the ENTIRE call in that language. EVERY utterance must be in the caller's language — greetings, filler phrases, tool acknowledgements, hold and transfer messages, booking read-backs and confirmations, and closings included. NEVER drop into English mid-call unless the caller is actually speaking English. Any English phrases quoted in these instructions (e.g. \"one moment, let me connect you\", \"you're all set, have a great day\") are ENGLISH SAMPLES ONLY — say the natural equivalent in the caller's language, never the literal English. When a tool returns a message written in English (a transfer, hold, or error message, or a booking confirmation), TRANSLATE it into the caller's language before you speak it — but keep any names, numbers, dates, times and confirmation codes exactly as given. If the caller switches language mid-call, switch with them immediately. If you genuinely cannot tell the language yet, start in English and adapt the moment you hear them. ONE EXCEPTION: a recording or legal disclosure must be spoken EXACTLY as written, in its original language — never translate, paraphrase, or shorten it.");
 
   // Correction handling — the caller's most recent version is always authoritative
   lines.push("- CORRECTION HANDLING: The caller's MOST RECENT version of any piece of information (name, email, phone, spelling, appointment time) is ALWAYS authoritative. If the caller corrects you — even once — update your internal record immediately and NEVER revert to the earlier mis-heard version. When confirming after a correction, explicitly say 'Let me update that' or 'Got it, using [new value] instead' so the caller knows you heard them. Never repeat the old wrong value after a correction.");
@@ -530,7 +535,7 @@ function buildBehaviorsSection(behaviors, options) {
     "",
     "RIGHT ✅:",
     "  User: '9am works thanks'",
-    "  AI: 'One moment, let me book that for you.' [calls book_appointment tool]",
+    "  AI: 'One moment, let me book that for you.' (say this in the caller's language) [calls book_appointment tool]",
     "  AI: [reads back the REAL code from the tool result] 'Your confirmation code is <actual code from tool>.'",
     "",
     "If `book_appointment` returns an error, say so honestly: 'I'm sorry, I'm having trouble completing that booking right now — let me take a message and have someone call you back to finish it.' Then call `schedule_callback`. NEVER invent a fake code to save the interaction.",
@@ -547,6 +552,14 @@ function buildBehaviorsSection(behaviors, options) {
     "Also call `end_call` after these completion points: (1) a booking is confirmed by a successful `book_appointment` tool result AND the caller has acknowledged, (2) a message/callback has been captured by `schedule_callback` AND the caller has no further questions, (3) a transfer attempt has failed and the caller has accepted a message instead. " +
     "Before calling `end_call` for ANY booking/cancellation/callback completion path, verify the relevant TOOL call succeeded earlier in the same conversation — not just that you said the words. " +
     "Only call `end_call` ONCE per conversation."
+  );
+
+  // SCRUM-368: don't end cordially on an abandoned booking. The SCRUM-227
+  // guard only catches FALSE success claims ("you're all set"); this catches
+  // SILENT abandonment — the AI drifting to "anything else? / shall we end?"
+  // after starting a booking that never actually completed.
+  lines.push(
+    "- INCOMPLETE BOOKING — NEVER END AS IF DONE: If you started a booking (you asked for the name or a time, or the caller asked to book) but `book_appointment` did NOT return a successful result, you MUST NOT wrap up as if everything is fine. Tell the caller honestly that you couldn't finish the booking this time, then offer ONE fallback — take their details for a callback with `schedule_callback`, or, if a transfer is available and the office is open, connect them to the team. Only call `end_call` AFTER that fallback tool returns success. Never say 'all set' / 'anything else?' and quietly end a call when the booking never completed."
   );
 
   // Honesty — never guess or make up information (anti-hallucination, hard constraints)
@@ -1085,7 +1098,7 @@ function buildLiveScheduleSection(snapshot, todayStr) {
   lines.push("  • \"Your appointment is confirmed\" + \"Just a moment\" ← CONTRADICTION");
   lines.push("");
   lines.push("The correct phrasing BEFORE calling book_appointment / cancel_appointment is FUTURE-ONLY:");
-  lines.push("  ✅ \"Let me book that for you.\" (then call the tool)");
+  lines.push("  ✅ \"Let me book that for you.\" (then call the tool — say it in the caller's language)");
   lines.push("  ✅ \"One moment, booking that now.\" (then call the tool)");
   lines.push("  ✅ \"Give me just a second to confirm that.\" (then call the tool)");
   lines.push("");
@@ -1093,7 +1106,7 @@ function buildLiveScheduleSection(snapshot, todayStr) {
   lines.push("  ✅ \"Great, you're all set — your confirmation code is XXXXXX.\"");
   lines.push("  ✅ \"Done! I've booked you in for [date] at [time].\"");
   lines.push("");
-  lines.push("If you catch yourself about to combine the two (\"I have you booked, let me...\"), STOP mid-sentence and just say \"Let me book that for you\" instead. Wait for the tool result. THEN confirm in past tense.");
+  lines.push("If you catch yourself about to combine the two (\"I have you booked, let me...\"), STOP mid-sentence and just say \"Let me book that for you\" (in the caller's language) instead. Wait for the tool result. THEN confirm in past tense.");
   lines.push("");
   lines.push("READ-ONLY OPTIMIZATION (narrow scope — ONLY for availability questions):");
   lines.push(`- "What's available today?" / "When are you free tomorrow?" → answer directly from the Today/Tomorrow slot lists above. No tool call needed.`);

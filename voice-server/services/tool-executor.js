@@ -903,8 +903,10 @@ async function executeTransferCall(args, context) {
  */
 function simulateCalendarWrite(functionName, args) {
   if (functionName === "book_appointment") {
+    // SCRUM-282/368: no confirmation text/email is actually sent — don't promise
+    // one (and don't feed the model an English promise string to translate+speak).
     return {
-      message: `Appointment confirmed for ${[args.first_name, args.last_name].filter(Boolean).join(" ") || args.name || "the caller"} at ${args.datetime}. A confirmation will be sent shortly.`,
+      message: `Appointment confirmed for ${[args.first_name, args.last_name].filter(Boolean).join(" ") || args.name || "the caller"} at ${args.datetime}.`,
     };
   }
   if (functionName === "cancel_appointment") {
