@@ -131,7 +131,7 @@ const calendarToolDefinitions = [
     function: {
       name: "book_appointment",
       description:
-        "Executes the actual booking in the database. You MUST call this function to secure a time slot — it is IMPOSSIBLE to book an appointment without calling this tool. Do NOT verbally confirm a booking to the caller until this tool returns a success response. Collect first name, last name, phone, and datetime BEFORE calling.",
+        "Executes the actual booking in the database. You MUST call this function to secure a time slot — it is IMPOSSIBLE to book an appointment without calling this tool. Do NOT verbally confirm a booking to the caller until this tool returns a success response. Collect first name, last name, and datetime BEFORE calling. The phone number defaults to the number the caller is calling from (caller ID) — do NOT ask the caller for a phone number unless they want to be reached on a DIFFERENT number.",
       parameters: {
         type: "object",
         properties: {
@@ -150,7 +150,8 @@ const calendarToolDefinitions = [
           },
           phone: {
             type: "string",
-            description: "The caller's phone number",
+            description:
+              "Optional. Defaults to the caller's own number from caller ID — leave it out and the system fills it in. Only provide a value if the caller explicitly asks to be reached on a DIFFERENT number.",
           },
           email: {
             type: "string",
@@ -172,7 +173,11 @@ const calendarToolDefinitions = [
               "The ID of the specific practitioner to book with. Only use this when the caller has explicitly requested a specific practitioner by name and you have confirmed their ID from the PRACTITIONERS ON STAFF list in your context. Omit for auto-assignment.",
           },
         },
-        required: ["datetime", "first_name", "last_name", "phone"],
+        // SCRUM-366: `phone` is no longer required — it defaults to caller ID
+        // server-side (see applyCallerIdPhoneFallback). Keeping it required made
+        // the model compulsively ask the caller for a number we already have,
+        // which dead-ended bookings when the model couldn't extract it.
+        required: ["datetime", "first_name", "last_name"],
       },
     },
   },
@@ -500,6 +505,41 @@ async function executeToolCall(functionName, args, context) {
 }
 
 /**
+ * SCRUM-366: default a booking's `phone` from caller ID.
+ *
+ * The caller's number is known from caller ID (`context.callerPhone`) but was
+ * never forwarded to the booking handler, so the model was the only thing that
+ * could populate `phone`. Under language stress it kept asking the caller for a
+ * number we already had, dead-ending the booking. When the model omits `phone`
+ * (or sends an empty one) for `book_appointment`, substitute caller ID.
+ *
+ * Scoped to `book_appointment` ONLY: for cancel/lookup, `phone` is a *match
+ * key*, and silently substituting caller ID there could match the wrong record.
+ *
+ * Only substitutes when caller ID is actually dialable. For a withheld/blocked
+ * caller ID, Twilio sends a non-numeric sentinel ("anonymous", "Restricted",
+ * "unavailable") or a SIP URI — substituting that would just trip the handler's
+ * `isValidPhoneNumber` reject ("I didn't catch that number"), which is more
+ * confusing than letting the model ask for a number. The 8–15 digit window
+ * mirrors `isValidPhoneNumber` (src/lib/security/validation.ts), so anything we
+ * substitute here will pass that downstream check.
+ *
+ * @param {string} functionName
+ * @param {object} args - parsed LLM arguments
+ * @param {string|undefined} callerPhone - caller ID number, if known
+ * @returns {object} args, with `phone` defaulted from caller ID when applicable
+ */
+function applyCallerIdPhoneFallback(functionName, args, callerPhone) {
+  if (functionName !== "book_appointment") return args;
+  const digits = typeof callerPhone === "string" ? callerPhone.replace(/\D/g, "") : "";
+  if (digits.length < 8 || digits.length > 15) return args; // unknown / withheld / SIP
+  const hasPhone =
+    args && typeof args.phone === "string" && args.phone.trim() !== "";
+  if (hasPhone) return args;
+  return { ...(args || {}), phone: callerPhone };
+}
+
+/**
  * Execute a calendar tool call via the Next.js internal API.
  */
 async function executeCalendarCall(functionName, args, context) {
@@ -519,6 +559,8 @@ async function executeCalendarCall(functionName, args, context) {
     };
   }
 
+  const effectiveArgs = applyCallerIdPhoneFallback(functionName, args, context.callerPhone);
+
   try {
     const res = await fetch(`${INTERNAL_API_URL}/api/internal/tool-call`, {
       method: "POST",
@@ -531,7 +573,7 @@ async function executeCalendarCall(functionName, args, context) {
         organizationId: context.organizationId,
         assistantId: context.assistantId,
         functionName,
-        arguments: args,
+        arguments: effectiveArgs,
         ...(context.callId && { callId: context.callId }),
       }),
     });
@@ -886,5 +928,5 @@ module.exports = {
   callbackToolDefinition,
   endCallToolDefinition,
   executeToolCall,
-  _test: { getTransferService, resolveCurrentDatetime, resolveAvailabilityFromCache },
+  _test: { getTransferService, resolveCurrentDatetime, resolveAvailabilityFromCache, applyCallerIdPhoneFallback },
 };
