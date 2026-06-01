@@ -1,0 +1,74 @@
+- generic [active] [ref=e1]:
+  - link "Skip to main content" [ref=e2] [cursor=pointer]:
+    - /url: "#main-content"
+  - generic [ref=e4]:
+    - banner [ref=e5]:
+      - generic [ref=e6]:
+        - button "Open menu" [ref=e7] [cursor=pointer]:
+          - img [ref=e8]
+          - generic [ref=e9]: Open menu
+        - generic [ref=e10]: Smile Hub Dental
+      - generic [ref=e11]:
+        - button "Toggle theme" [disabled]:
+          - generic: Toggle theme
+        - button "Notifications" [ref=e12] [cursor=pointer]:
+          - img [ref=e13]
+          - generic [ref=e16]: Notifications
+        - button "MM" [ref=e17] [cursor=pointer]:
+          - generic [ref=e19]: MM
+    - main [ref=e21]:
+      - generic [ref=e22]:
+        - generic [ref=e23]:
+          - generic [ref=e24]:
+            - generic [ref=e25]:
+              - heading "AI Assistants" [level=1] [ref=e26]
+              - paragraph [ref=e27]: Create and manage your AI receptionists
+            - generic [ref=e28]: 1 of 3
+          - link "New Assistant" [ref=e30] [cursor=pointer]:
+            - /url: /assistants/new
+            - button "New Assistant" [ref=e31]:
+              - img [ref=e32]
+              - text: New Assistant
+        - generic [ref=e34]:
+          - generic [ref=e36]:
+            - generic [ref=e37]:
+              - img [ref=e39]
+              - generic [ref=e42]:
+                - heading "Sophie" [level=3] [ref=e43]
+                - paragraph [ref=e44]: AI Receptionist
+            - button "Assistant options" [ref=e45] [cursor=pointer]:
+              - img [ref=e46]
+          - generic [ref=e50]:
+            - paragraph [ref=e51]: You are a friendly and warm AI receptionist for Sophie. You are warm, approachable, and conversatio...
+            - generic [ref=e52]:
+              - generic [ref=e53]:
+                - generic [ref=e54]: Active
+                - generic [ref=e56]:
+                  - img [ref=e57]
+                  - text: "1"
+              - link "Configure" [ref=e59] [cursor=pointer]:
+                - /url: /assistants/41537e3b-6ff2-40c0-b2ff-2da327467d68
+                - button "Configure" [ref=e60]
+    - navigation [ref=e61]:
+      - generic [ref=e62]:
+        - link "Home" [ref=e63] [cursor=pointer]:
+          - /url: /dashboard
+          - img [ref=e64]
+          - text: Home
+        - link "Assistants" [ref=e69] [cursor=pointer]:
+          - /url: /assistants
+          - img [ref=e70]
+          - text: Assistants
+        - link "Calls" [ref=e73] [cursor=pointer]:
+          - /url: /calls
+          - img [ref=e74]
+          - text: Calls
+        - link "Analytics" [ref=e78] [cursor=pointer]:
+          - /url: /analytics
+          - img [ref=e79]
+          - text: Analytics
+        - button "More" [ref=e81] [cursor=pointer]:
+          - img [ref=e82]
+          - text: More
+  - region "Notifications (F8)":
+    - list

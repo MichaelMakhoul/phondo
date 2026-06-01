@@ -1,0 +1,269 @@
+- generic [active] [ref=e1]:
+  - link "Skip to main content" [ref=e2] [cursor=pointer]:
+    - /url: "#main-content"
+  - generic [ref=e3]:
+    - generic [ref=e4]:
+      - link "Phondo" [ref=e6] [cursor=pointer]:
+        - /url: /dashboard
+        - img [ref=e8]
+        - generic [ref=e10]: Phondo
+      - generic [ref=e12]:
+        - generic [ref=e13]: S
+        - generic [ref=e14]:
+          - paragraph [ref=e15]: Smile Hub Dental
+          - paragraph [ref=e16]: business
+      - generic [ref=e19]:
+        - navigation [ref=e20]:
+          - link "Dashboard" [ref=e21] [cursor=pointer]:
+            - /url: /dashboard
+            - img [ref=e22]
+            - text: Dashboard
+          - link "Assistants" [ref=e27] [cursor=pointer]:
+            - /url: /assistants
+            - img [ref=e28]
+            - text: Assistants
+          - link "Phone Numbers" [ref=e31] [cursor=pointer]:
+            - /url: /phone-numbers
+            - img [ref=e32]
+            - text: Phone Numbers
+          - link "Calls" [ref=e34] [cursor=pointer]:
+            - /url: /calls
+            - img [ref=e35]
+            - text: Calls
+          - link "Callbacks" [ref=e39] [cursor=pointer]:
+            - /url: /callbacks
+            - img [ref=e40]
+            - text: Callbacks
+          - link "Calendar" [ref=e43] [cursor=pointer]:
+            - /url: /calendar
+            - img [ref=e44]
+            - text: Calendar
+          - link "Appointments" [ref=e46] [cursor=pointer]:
+            - /url: /appointments
+            - img [ref=e47]
+            - text: Appointments
+        - navigation [ref=e51]:
+          - link "Knowledge Base" [ref=e52] [cursor=pointer]:
+            - /url: /settings/knowledge
+            - img [ref=e53]
+            - text: Knowledge Base
+          - link "Billing" [ref=e55] [cursor=pointer]:
+            - /url: /billing
+            - img [ref=e56]
+            - text: Billing
+          - link "Settings" [ref=e58] [cursor=pointer]:
+            - /url: /settings
+            - img [ref=e59]
+            - text: Settings
+      - link "Need help? Get support or browse our guides" [ref=e63] [cursor=pointer]:
+        - /url: /support
+        - generic [ref=e64]:
+          - img [ref=e65]
+          - paragraph [ref=e68]: Need help?
+        - paragraph [ref=e69]: Get support or browse our guides
+    - generic [ref=e70]:
+      - banner [ref=e71]:
+        - generic [ref=e72]:
+          - button "Toggle theme" [ref=e73] [cursor=pointer]:
+            - img [ref=e74]
+            - img
+            - generic [ref=e80]: Toggle theme
+          - button "Notifications" [ref=e81] [cursor=pointer]:
+            - img [ref=e82]
+            - generic [ref=e85]: Notifications
+          - button "MM" [ref=e86] [cursor=pointer]:
+            - generic [ref=e88]: MM
+      - main [ref=e90]:
+        - generic [ref=e91]:
+          - generic [ref=e92]:
+            - generic [ref=e93]:
+              - link [ref=e94] [cursor=pointer]:
+                - /url: /assistants
+                - button [ref=e95]:
+                  - img [ref=e96]
+              - generic [ref=e98]:
+                - generic [ref=e99]:
+                  - heading "Sophie" [level=1] [ref=e100]
+                  - generic [ref=e101]: Active
+                - paragraph [ref=e102]: "+61238205672"
+            - generic [ref=e103]:
+              - link "Test Call" [ref=e104] [cursor=pointer]:
+                - /url: /assistants/41537e3b-6ff2-40c0-b2ff-2da327467d68/test
+                - button "Test Call" [ref=e105]:
+                  - img [ref=e106]
+                  - text: Test Call
+              - button "Save Changes" [ref=e108] [cursor=pointer]
+          - generic [ref=e109]:
+            - tablist [ref=e110]:
+              - tab "Basics" [selected] [ref=e111] [cursor=pointer]:
+                - img [ref=e112]
+                - text: Basics
+              - tab "Voice" [ref=e115] [cursor=pointer]:
+                - img [ref=e116]
+                - text: Voice
+              - tab "Transfers" [ref=e119] [cursor=pointer]:
+                - img [ref=e120]
+                - text: Transfers
+              - tab "Settings" [ref=e122] [cursor=pointer]:
+                - img [ref=e123]
+                - text: Settings
+            - tabpanel "Basics" [ref=e126]:
+              - generic [ref=e127]:
+                - generic [ref=e128]:
+                  - heading "Basic Information" [level=3] [ref=e129]
+                  - paragraph [ref=e130]: Configure your assistant's name and how it introduces itself
+                - generic [ref=e131]:
+                  - generic [ref=e132]:
+                    - text: Assistant Name
+                    - textbox "Assistant Name" [ref=e133]:
+                      - /placeholder: e.g., Sarah - Front Desk
+                      - text: Sophie
+                  - generic [ref=e134]:
+                    - text: Greeting Message
+                    - textbox "Greeting Message" [ref=e135]:
+                      - /placeholder: What should the assistant say when answering?
+                      - text: "Hi there! Thanks for calling {business_name}. How can I help you today?"
+                    - paragraph [ref=e136]: This is the first thing callers will hear
+                  - generic [ref=e137]:
+                    - generic [ref=e138]:
+                      - text: Active Status
+                      - paragraph [ref=e139]: When inactive, calls will go to voicemail
+                    - switch [checked] [ref=e140] [cursor=pointer]
+                    - checkbox [checked]
+              - generic [ref=e141]:
+                - generic [ref=e142]:
+                  - heading "Instructions (System Prompt)" [level=3] [ref=e143]
+                  - paragraph [ref=e144]: Tell your AI how to behave and what information to provide
+                - generic [ref=e146]:
+                  - generic [ref=e147]:
+                    - generic [ref=e148]:
+                      - text: Caller Data Collection
+                      - paragraph [ref=e149]: Choose what information your AI should collect from callers
+                    - generic [ref=e150]:
+                      - generic [ref=e151]:
+                        - generic [ref=e152]:
+                          - paragraph [ref=e153]: Basic Info
+                          - generic [ref=e154]: Universal
+                        - generic [ref=e155]:
+                          - generic [ref=e156]:
+                            - generic [ref=e157]: First Name
+                            - generic [ref=e158]:
+                              - generic [ref=e159]:
+                                - switch [checked] [ref=e160] [cursor=pointer]
+                                - checkbox [checked]
+                                - generic [ref=e161]: Required
+                              - combobox [ref=e162] [cursor=pointer]:
+                                - img [ref=e163]
+                              - combobox [ref=e165]
+                          - generic [ref=e166]:
+                            - generic [ref=e167]: Last Name
+                            - generic [ref=e168]:
+                              - generic [ref=e169]:
+                                - switch [checked] [ref=e170] [cursor=pointer]
+                                - checkbox [checked]
+                                - generic [ref=e171]: Required
+                              - combobox [ref=e172] [cursor=pointer]:
+                                - img [ref=e173]
+                              - combobox [ref=e175]
+                          - generic [ref=e176]:
+                            - generic [ref=e177]: Phone Number
+                            - generic [ref=e178]:
+                              - generic [ref=e179]:
+                                - switch [checked] [ref=e180] [cursor=pointer]
+                                - checkbox [checked]
+                                - generic [ref=e181]: Required
+                              - combobox [ref=e182] [cursor=pointer]:
+                                - img [ref=e183]
+                              - combobox [ref=e185]
+                          - generic [ref=e186]:
+                            - generic [ref=e187]: Email Address
+                            - generic [ref=e188]:
+                              - generic [ref=e189]:
+                                - switch [ref=e190] [cursor=pointer]
+                                - checkbox
+                                - generic [ref=e191]: Optional
+                              - combobox [ref=e192] [cursor=pointer]:
+                                - img [ref=e193]
+                              - combobox [ref=e195]
+                      - generic [ref=e196]:
+                        - generic [ref=e197]:
+                          - paragraph [ref=e198]: Industry Fields
+                          - generic [ref=e199]: Recommended
+                        - generic [ref=e201]:
+                          - generic [ref=e202]: Reason for Visit
+                          - generic [ref=e203]:
+                            - generic [ref=e204]:
+                              - switch [checked] [ref=e205] [cursor=pointer]
+                              - checkbox [checked]
+                              - generic [ref=e206]: Required
+                            - combobox [ref=e207] [cursor=pointer]:
+                              - img [ref=e208]
+                            - combobox [ref=e210]
+                            - button [ref=e211] [cursor=pointer]:
+                              - img [ref=e212]
+                      - button "Add Custom Field" [ref=e215] [cursor=pointer]:
+                        - img [ref=e216]
+                        - text: Add Custom Field
+                  - generic [ref=e217]:
+                    - generic [ref=e218]:
+                      - text: Receptionist Behaviors
+                      - paragraph [ref=e219]: What should your AI be able to do?
+                    - generic [ref=e220]:
+                      - generic [ref=e221]:
+                        - generic [ref=e222]:
+                          - text: Schedule Appointments
+                          - paragraph [ref=e223]: Help callers book, reschedule, or cancel appointments
+                        - switch "Schedule Appointments" [checked] [ref=e224] [cursor=pointer]
+                        - checkbox [checked]
+                      - generic [ref=e225]:
+                        - generic [ref=e226]:
+                          - text: Handle Emergencies
+                          - paragraph [ref=e227]: Detect urgent situations and provide appropriate guidance
+                        - switch "Handle Emergencies" [checked] [ref=e228] [cursor=pointer]
+                        - checkbox [checked]
+                      - generic [ref=e229]:
+                        - generic [ref=e230]:
+                          - text: Provide Pricing Info
+                          - paragraph [ref=e231]: Share general pricing when asked by callers
+                        - switch "Provide Pricing Info" [checked] [ref=e232] [cursor=pointer]
+                        - checkbox [checked]
+                      - generic [ref=e233]:
+                        - generic [ref=e234]:
+                          - text: Take Messages
+                          - paragraph [ref=e235]: Record caller details and reason for calling
+                        - switch "Take Messages" [checked] [ref=e236] [cursor=pointer]
+                        - checkbox [checked]
+                      - generic [ref=e237]:
+                        - generic [ref=e238]:
+                          - text: Transfer to Human
+                          - paragraph [ref=e239]: Offer to transfer the call when a person is needed
+                        - switch "Transfer to Human" [checked] [ref=e240] [cursor=pointer]
+                        - checkbox [checked]
+                      - generic [ref=e241]:
+                        - generic [ref=e242]:
+                          - text: After Hours Handling
+                          - paragraph [ref=e243]: Different greeting and behavior when calls arrive outside business hours
+                        - switch "After Hours Handling" [ref=e244] [cursor=pointer]
+                        - checkbox
+                  - generic [ref=e245]:
+                    - generic [ref=e246]:
+                      - text: Tone & Personality
+                      - paragraph [ref=e247]: How should your AI sound to callers?
+                    - generic [ref=e248]:
+                      - button "Professional & Formal Polished, business-like language. Great for law firms and medical offices." [ref=e249] [cursor=pointer]:
+                        - paragraph [ref=e250]: Professional & Formal
+                        - paragraph [ref=e251]: Polished, business-like language. Great for law firms and medical offices.
+                      - button "Friendly & Warm Approachable and conversational while still professional. Works for most businesses." [ref=e252] [cursor=pointer]:
+                        - paragraph [ref=e253]: Friendly & Warm
+                        - paragraph [ref=e254]: Approachable and conversational while still professional. Works for most businesses.
+                      - button "Casual & Approachable Relaxed and easy-going. Great for salons, cafes, and creative businesses." [ref=e255] [cursor=pointer]:
+                        - paragraph [ref=e256]: Casual & Approachable
+                        - paragraph [ref=e257]: Relaxed and easy-going. Great for salons, cafes, and creative businesses.
+                  - 'button "Advanced: View / Edit Prompt" [ref=e259] [cursor=pointer]':
+                    - generic [ref=e260]: "Advanced: View / Edit Prompt"
+                    - img [ref=e261]
+  - region "Notifications (F8)":
+    - list
+  - button "Open Next.js Dev Tools" [ref=e269] [cursor=pointer]:
+    - img [ref=e270]
+  - alert [ref=e263]

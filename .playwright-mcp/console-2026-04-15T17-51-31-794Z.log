@@ -1,0 +1,748 @@
+[   10235ms] [LOG] [Fast Refresh] rebuilding @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/hot-reloader/app/hot-reloader-app.js:196
+[   25687ms] [LOG] [Fast Refresh] done in 15469ms @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/report-hmr-latency.js:13
+[   32023ms] [LOG] [Client Instrumentation Hook] Slow execution detected: 1309ms (Note: Code download overhead is not included in this measurement) @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/lib/require-instrumentation-client.js:18
+[   32118ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/compiled/react-dom/cjs/react-dom-client.development.js:25630
+[   32449ms] [WARNING] [@sentry/nextjs] You are calling `Sentry.init()` more than once on the client. This can happen if you have both a `sentry.client.config.ts` and a `instrumentation-client.ts` file with `Sentry.init()` calls. It is recommended to call `Sentry.init()` once in `instrumentation-client.ts`. @ webpack-internal:///(app-pages-browser)/./node_modules/@sentry/nextjs/build/esm/client/index.js:251
+[   56882ms] [WARNING] [Analytics] NEXT_PUBLIC_GA_MEASUREMENT_ID is not set. Analytics tracking is disabled. @ webpack-internal:///(app-pages-browser)/./src/lib/analytics/gtag.ts:17
+[   60770ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[   60770ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[   63559ms] AbortError: signal is aborted without reason
+    at eval (webpack-internal:///(app-pages-browser)/./node_modules/@supabase/auth-js/dist/module/lib/locks.js:108:29)
+[   63650ms] AbortError: signal is aborted without reason
+    at eval (webpack-internal:///(app-pages-browser)/./node_modules/@supabase/auth-js/dist/module/lib/locks.js:108:29)
+[   94516ms] [ERROR] A tree hydrated but some attributes of the server rendered HTML didn't match the client properties. This won't be patched up. This can happen if a SSR-ed Client Component used:
+
+- A server/client branch `if (typeof window !== 'undefined')`.
+- Variable input such as `Date.now()` or `Math.random()` which changes each time it's called.
+- Date formatting in a user's locale which doesn't match the server.
+- External changing data without sending a snapshot of it along with the HTML.
+- Invalid HTML tag nesting.
+
+It can also happen if the client has a browser extension installed which messes with the HTML before React loaded.
+
+%s%s https://react.dev/link/hydration-mismatch 
+
+  ...
+    <HTTPAccessFallbackBoundary notFound={undefined} forbidden={undefined} unauthorized={undefined}>
+      <RedirectBoundary>
+        <RedirectErrorBoundary router={{...}}>
+          <InnerLayoutRouter url="/settings" tree={[...]} cacheNode={{lazyData:null, ...}} segmentPath={[...]}>
+            <SegmentViewNode type="page" pagePath="(dashboard...">
+              <SegmentTrieNode>
+              <SettingsPage>
+                <BusinessSettingsForm organizationId="35cc7464-e..." initialData={{country:"AU", ...}}>
+                  <_c>
+                    <div ref={null} className="rounded-lg...">
+                      <_c2>
+                      <_c8 className="space-y-6">
+                        <div ref={null} className="p-6 pt-0 s...">
+                          <div>
+                          <div className="grid gap-4...">
+                            <div className="space-y-2">
+                              <_c>
+                              <_c id="businessName" value="Smile Hub ..." onChange={function onChange} ...>
+                                <input
+                                  type={undefined}
+                                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 t..."
+                                  ref={null}
+                                  id="businessName"
+                                  value="Smile Hub Dental"
+                                  onChange={function onChange}
+                                  placeholder="Acme Dental"
+-                                 style={{caret-color:"transparent"}}
+                                >
+                            ...
+                          <div className="grid gap-4...">
+                            <div className="space-y-2">
+                              <_c>
+                              <_c id="websiteUrl" type="url" value="https://ww..." onChange={function onChange} ...>
+                                <input
+                                  type="url"
+                                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 t..."
+                                  ref={null}
+                                  id="websiteUrl"
+                                  value="https://www.sydneyrea.com.au/"
+                                  onChange={function onChange}
+                                  placeholder="https://acmedental.com"
+-                                 style={{caret-color:"transparent"}}
+                                >
+                              ...
+                            <div className="space-y-2">
+                              <_c>
+                              <_c id="phone" type="tel" value="(02) 9555 ..." onChange={function onChange} ...>
+                                <input
+                                  type="tel"
+                                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 t..."
+                                  ref={null}
+                                  id="phone"
+                                  value="(02) 9555 1234"
+                                  onChange={function onChange}
+                                  placeholder="02 9876 5432"
+-                                 style={{caret-color:"transparent"}}
+                                >
+                          <div className="space-y-2">
+                            <_c>
+                            <_c id="address" value="42 George ..." onChange={function onChange} ...>
+                              <input
+                                type={undefined}
+                                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 tex..."
+                                ref={null}
+                                id="address"
+                                value="42 George Street, Sydney NSW 2000"
+                                onChange={function onChange}
+                                placeholder="123 Main St, City, State 12345"
+-                               style={{caret-color:"transparent"}}
+                              >
+                          <_c>
+                          <div>
+                          <_c>
+                          <div className="space-y-4">
+                            <_c>
+                            <p>
+                            <div className="space-y-3">
+                              <div className="flex items...">
+                                ...
+                                  <SwitchProvider scope={undefined} checked={true} disabled={undefined}>
+                                    <Primitive.button>
+                                    <SwitchBubbleInput control={null} bubbles={true} name={undefined} value="on" ...>
+                                      <input
+                                        type="checkbox"
+                                        aria-hidden={true}
+                                        defaultChecked={true}
+                                        name={undefined}
+                                        value="on"
+                                        required={undefined}
+                                        disabled={undefined}
+                                        form={undefined}
+                                        style={{
++                                         transform: "translateX(-100%)"
+-                                         transform: "translateX(-100%)"
++                                         position: "absolute"
+-                                         position: "absolute"
++                                         pointerEvents: "none"
++                                         opacity: 0
+-                                         opacity: "0"
++                                         margin: 0
+-                                         pointer-events: "none"
+-                                         margin-top: "0px"
+-                                         margin-right: "0px"
+-                                         margin-bottom: "0px"
+-                                         margin-left: "0px"
+-                                         caret-color: "transparent"
+                                        }}
+                                        tabIndex={-1}
+                                        ref={function}
+                                      >
+                                <div className="flex items...">
+                                  <_c type="time" value="08:00" onChange={function onChange} className="w-32">
+                                    <input
+                                      type="time"
+                                      className="flex h-10 rounded-md border border-input bg-background px-3 py-2 text..."
+                                      ref={null}
+                                      value="08:00"
+                                      onChange={function onChange}
+-                                     style={{caret-color:"transparent"}}
+                                    >
+                                  <span>
+                                  <_c type="time" value="17:00" onChange={function onChange} className="w-32">
+                                    <input
+                                      type="time"
+                                      className="flex h-10 rounded-md border border-input bg-background px-3 py-2 text..."
+                                      ref={null}
+                                      value="17:00"
+                                      onChange={function onChange}
+-                                     style={{caret-color:"transparent"}}
+                                    >
+                              <div className="flex items...">
+                                ...
+                                  <SwitchProvider scope={undefined} checked={true} disabled={undefined}>
+                                    <Primitive.button>
+                                    <SwitchBubbleInput control={null} bubbles={true} name={undefined} value="on" ...>
+                                      <input
+                                        type="checkbox"
+                                        aria-hidden={true}
+                                        defaultChecked={true}
+                                        name={undefined}
+                                        value="on"
+                                        required={undefined}
+                                        disabled={undefined}
+                                        form={undefined}
+                                        style={{
++                                         transform: "translateX(-100%)"
+-                                         transform: "translateX(-100%)"
++                                         position: "absolute"
+-                                         position: "absolute"
++                                         pointerEvents: "none"
++                                         opacity: 0
+-                                         opacity: "0"
++                                         margin: 0
+-                                         pointer-events: "none"
+-                                         margin-top: "0px"
+-                                         margin-right: "0px"
+-                                         margin-bottom: "0px"
+-                                         margin-left: "0px"
+-                                         caret-color: "transparent"
+                                        }}
+                                        tabIndex={-1}
+                                        ref={function}
+                                      >
+                                <div className="flex items...">
+                                  <_c type="time" value="08:00" onChange={function onChange} className="w-32">
+                                    <input
+                                      type="time"
+                                      className="flex h-10 rounded-md border border-input bg-background px-3 py-2 text..."
+                                      ref={null}
+                                      value="08:00"
+                                      onChange={function onChange}
+-                                     style={{caret-color:"transparent"}}
+                                    >
+                                  <span>
+                                  <_c type="time" value="17:00" onChange={function onChange} className="w-32">
+                                    <input
+                                      type="time"
+                                      className="flex h-10 rounded-md border border-input bg-background px-3 py-2 text..."
+                                      ref={null}
+                                      value="17:00"
+                                      onChange={function onChange}
+-                                     style={{caret-color:"transparent"}}
+                                    >
+                              <div className="flex items...">
+                                ...
+                                  <SwitchProvider scope={undefined} checked={true} disabled={undefined}>
+                                    <Primitive.button>
+                                    <SwitchBubbleInput control={null} bubbles={true} name={undefined} value="on" ...>
+                                      <input
+                                        type="checkbox"
+                                        aria-hidden={true}
+                                        defaultChecked={true}
+                                        name={undefined}
+                                        value="on"
+                                        required={undefined}
+                                        disabled={undefined}
+                                        form={undefined}
+                                        style={{
++                                         transform: "translateX(-100%)"
+-                                         transform: "translateX(-100%)"
++                                         position: "absolute"
+-                                         position: "absolute"
++                                         pointerEvents: "none"
++                                         opacity: 0
+-                                         opacity: "0"
++                                         margin: 0
+-                                         pointer-events: "none"
+-                                         margin-top: "0px"
+-                                         margin-right: "0px"
+-                                         margin-bottom: "0px"
+-                                         margin-left: "0px"
+-                                         caret-color: "transparent"
+                                        }}
+                                        tabIndex={-1}
+                                        ref={function}
+                                      >
+                                <div className="flex items...">
+                                  <_c type="time" value="08:00" onChange={function onChange} className="w-32">
+                                    <input
+                                      type="time"
+                                      className="flex h-10 rounded-md border border-input bg-background px-3 py-2 text..."
+                                      ref={null}
+                                      value="08:00"
+                                      onChange={function onChange}
+-                                     style={{caret-color:"transparent"}}
+                                    >
+                                  <span>
+                                  <_c type="time" value="18:00" onChange={function onChange} className="w-32">
+                                    <input
+                                      type="time"
+                                      className="flex h-10 rounded-md border border-input bg-background px-3 py-2 text..."
+                                      ref={null}
+                                      value="18:00"
+                                      onChange={function onChange}
+-                                     style={{caret-color:"transparent"}}
+                                    >
+                              <div className="flex items...">
+                                ...
+                                  <SwitchProvider scope={undefined} checked={true} disabled={undefined}>
+                                    <Primitive.button>
+                                    <SwitchBubbleInput control={null} bubbles={true} name={undefined} value="on" ...>
+                                      <input
+                                        type="checkbox"
+                                        aria-hidden={true}
+                                        defaultChecked={true}
+                                        name={undefined}
+                                        value="on"
+                                        required={undefined}
+                                        disabled={undefined}
+                                        form={undefined}
+                                        style={{
++                                         transform: "translateX(-100%)"
+-                                         transform: "translateX(-100%)"
++                                         position: "absolute"
+-                                         position: "absolute"
++                                         pointerEvents: "none"
++                                         opacity: 0
+-                                         opacity: "0"
++                                         margin: 0
+-                                         pointer-events: "none"
+-                                         margin-top: "0px"
+-                                         margin-right: "0px"
+-                                         margin-bottom: "0px"
+-                                         margin-left: "0px"
+-                                         caret-color: "transparent"
+                                        }}
+                                        tabIndex={-1}
+                                        ref={function}
+                                      >
+                                <div className="flex items...">
+                                  <_c type="time" value="08:00" onChange={function onChange} className="w-32">
+                                    <input
+                                      type="time"
+                                      className="flex h-10 rounded-md border border-input bg-background px-3 py-2 text..."
+                                      ref={null}
+                                      value="08:00"
+                                      onChange={function onChange}
+-                                     style={{caret-color:"transparent"}}
+                                    >
+                                  <span>
+                                  <_c type="time" value="17:00" onChange={function onChange} className="w-32">
+                                    <input
+                                      type="time"
+                                      className="flex h-10 rounded-md border border-input bg-background px-3 py-2 text..."
+                                      ref={null}
+                                      value="17:00"
+                                      onChange={function onChange}
+-                                     style={{caret-color:"transparent"}}
+                                    >
+                              <div className="flex items...">
+                                ...
+                                  <SwitchProvider scope={undefined} checked={true} disabled={undefined}>
+                                    <Primitive.button>
+                                    <SwitchBubbleInput control={null} bubbles={true} name={undefined} value="on" ...>
+                                      <input
+                                        type="checkbox"
+                                        aria-hidden={true}
+                                        defaultChecked={true}
+                                        name={undefined}
+                                        value="on"
+                                        required={undefined}
+                                        disabled={undefined}
+                                        form={undefined}
+                                        style={{
++                                         transform: "translateX(-100%)"
+-                                         transform: "translateX(-100%)"
++                                         position: "absolute"
+-                                         position: "absolute"
++                                         pointerEvents: "none"
++                                         opacity: 0
+-                                         opacity: "0"
++                                         margin: 0
+-                                         pointer-events: "none"
+-                                         margin-top: "0px"
+-                                         margin-right: "0px"
+-                                         margin-bottom: "0px"
+-                                         margin-left: "0px"
+-                                         caret-color: "transparent"
+                                        }}
+                                        tabIndex={-1}
+                                        ref={function}
+                                      >
+                                <div className="flex items...">
+                                  <_c type="time" value="08:00" onChange={function onChange} className="w-32">
+                                    <input
+                                      type="time"
+                                      className="flex h-10 rounded-md border border-input bg-background px-3 py-2 text..."
+                                      ref={null}
+                                      value="08:00"
+                                      onChange={function onChange}
+-                                     style={{caret-color:"transparent"}}
+                                    >
+                                  <span>
+                                  <_c type="time" value="16:00" onChange={function onChange} className="w-32">
+                                    <input
+                                      type="time"
+                                      className="flex h-10 rounded-md border border-input bg-background px-3 py-2 text..."
+                                      ref={null}
+                                      value="16:00"
+                                      onChange={function onChange}
+-                                     style={{caret-color:"transparent"}}
+                                    >
+                              <div className="flex items...">
+                                ...
+                                  <SwitchProvider scope={undefined} checked={true} disabled={undefined}>
+                                    <Primitive.button>
+                                    <SwitchBubbleInput control={null} bubbles={true} name={undefined} value="on" ...>
+                                      <input
+                                        type="checkbox"
+                                        aria-hidden={true}
+                                        defaultChecked={true}
+                                        name={undefined}
+                                        value="on"
+                                        required={undefined}
+                                        disabled={undefined}
+                                        form={undefined}
+                                        style={{
++                                         transform: "translateX(-100%)"
+-                                         transform: "translateX(-100%)"
++                                         position: "absolute"
+-                                         position: "absolute"
++                                         pointerEvents: "none"
++                                         opacity: 0
+-                                         opacity: "0"
++                                         margin: 0
+-                                         pointer-events: "none"
+-                                         margin-top: "0px"
+-                                         margin-right: "0px"
+-                                         margin-bottom: "0px"
+-                                         margin-left: "0px"
+-                                         caret-color: "transparent"
+                                        }}
+                                        tabIndex={-1}
+                                        ref={function}
+                                      >
+                                <div className="flex items...">
+                                  <_c type="time" value="09:00" onChange={function onChange} className="w-32">
+                                    <input
+                                      type="time"
+                                      className="flex h-10 rounded-md border border-input bg-background px-3 py-2 text..."
+                                      ref={null}
+                                      value="09:00"
+                                      onChange={function onChange}
+-                                     style={{caret-color:"transparent"}}
+                                    >
+                                  <span>
+                                  <_c type="time" value="13:00" onChange={function onChange} className="w-32">
+                                    <input
+                                      type="time"
+                                      className="flex h-10 rounded-md border border-input bg-background px-3 py-2 text..."
+                                      ref={null}
+                                      value="13:00"
+                                      onChange={function onChange}
+-                                     style={{caret-color:"transparent"}}
+                                    >
+                              ...
+                                <SwitchProvider scope={undefined} checked={false} disabled={undefined}>
+                                  <Primitive.button>
+                                  <SwitchBubbleInput control={null} bubbles={true} name={undefined} value="on" ...>
+                                    <input
+                                      type="checkbox"
+                                      aria-hidden={true}
+                                      defaultChecked={false}
+                                      name={undefined}
+                                      value="on"
+                                      required={undefined}
+                                      disabled={undefined}
+                                      form={undefined}
+                                      style={{
++                                       transform: "translateX(-100%)"
+-                                       transform: "translateX(-100%)"
++                                       position: "absolute"
+-                                       position: "absolute"
++                                       pointerEvents: "none"
++                                       opacity: 0
+-                                       opacity: "0"
++                                       margin: 0
+-                                       pointer-events: "none"
+-                                       margin-top: "0px"
+-                                       margin-right: "0px"
+-                                       margin-bottom: "0px"
+-                                       margin-left: "0px"
+-                                       caret-color: "transparent"
+                                      }}
+                                      tabIndex={-1}
+                                      ref={function}
+                                    >
+                          <_c>
+                          <div>
+                          <_c>
+                          <div className="space-y-4">
+                            <_c>
+                            <p>
+                            ...
+                              <div role="radiogroup" aria-required={false} aria-orientation={undefined} ...>
+                                ...
+                                  <Primitive.button>
+                                  <RadioBubbleInput control={null} bubbles={true} name={undefined} value="auto" ...>
+                                    <Primitive.input type="radio" aria-hidden={true} defaultChecked={true} ...>
+                                      <input
+                                        type="radio"
+                                        aria-hidden={true}
+                                        defaultChecked={true}
+                                        name={undefined}
+                                        value="auto"
+                                        required={false}
+                                        disabled={undefined}
+                                        form={undefined}
+                                        style={{
++                                         transform: "translateX(-100%)"
+-                                         transform: "translateX(-100%)"
++                                         position: "absolute"
+-                                         position: "absolute"
++                                         pointerEvents: "none"
++                                         opacity: 0
+-                                         opacity: "0"
++                                         margin: 0
+-                                         pointer-events: "none"
+-                                         margin-top: "0px"
+-                                         margin-right: "0px"
+-                                         margin-bottom: "0px"
+-                                         margin-left: "0px"
+-                                         caret-color: "transparent"
+                                        }}
+                                        tabIndex={-1}
+                                        ref={function}
+                                      >
+                                ...
+                                  <Primitive.button>
+                                  <RadioBubbleInput control={null} bubbles={true} name={undefined} value="always" ...>
+                                    <Primitive.input type="radio" aria-hidden={true} defaultChecked={false} ...>
+                                      <input
+                                        type="radio"
+                                        aria-hidden={true}
+                                        defaultChecked={false}
+                                        name={undefined}
+                                        value="always"
+                                        required={false}
+                                        disabled={undefined}
+                                        form={undefined}
+                                        style={{
++                                         transform: "translateX(-100%)"
+-                                         transform: "translateX(-100%)"
++                                         position: "absolute"
+-                                         position: "absolute"
++                                         pointerEvents: "none"
++                                         opacity: 0
+-                                         opacity: "0"
++                                         margin: 0
+-                                         pointer-events: "none"
+-                                         margin-top: "0px"
+-                                         margin-right: "0px"
+-                                         margin-bottom: "0px"
+-                                         margin-left: "0px"
+-                                         caret-color: "transparent"
+                                        }}
+                                        tabIndex={-1}
+                                        ref={function}
+                                      >
+                                ...
+                                  <Primitive.button>
+                                  <RadioBubbleInput control={null} bubbles={true} name={undefined} value="never" ...>
+                                    <Primitive.input type="radio" aria-hidden={true} defaultChecked={false} ...>
+                                      <input
+                                        type="radio"
+                                        aria-hidden={true}
+                                        defaultChecked={false}
+                                        name={undefined}
+                                        value="never"
+                                        required={false}
+                                        disabled={undefined}
+                                        form={undefined}
+                                        style={{
++                                         transform: "translateX(-100%)"
+-                                         transform: "translateX(-100%)"
++                                         position: "absolute"
+-                                         position: "absolute"
++                                         pointerEvents: "none"
++                                         opacity: 0
+-                                         opacity: "0"
++                                         margin: 0
+-                                         pointer-events: "none"
+-                                         margin-top: "0px"
+-                                         margin-right: "0px"
+-                                         margin-bottom: "0px"
+-                                         margin-left: "0px"
+-                                         caret-color: "transparent"
+                                        }}
+                                        tabIndex={-1}
+                                        ref={function}
+                                      >
+                            <div className="space-y-2">
+                              <_c>
+                              <textarea
+                                value=""
+                                onChange={function onChange}
+                                placeholder="Just so you know, this call may be recorded."
+                                rows={3}
+                                maxLength={500}
+                                className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm ..."
+-                               style={{caret-color:"transparent"}}
+                              >
+                              ...
+                          <_c>
+                          <div className="space-y-4">
+                            <div>
+                            ...
+                              <div role="radiogroup" aria-required={false} aria-orientation={undefined} ...>
+                                ...
+                                  <Primitive.button>
+                                  <RadioBubbleInput control={null} bubbles={true} name={undefined} value="code_and_v..." ...>
+                                    <Primitive.input type="radio" aria-hidden={true} defaultChecked={true} ...>
+                                      <input
+                                        type="radio"
+                                        aria-hidden={true}
+                                        defaultChecked={true}
+                                        name={undefined}
+                                        value="code_and_verify"
+                                        required={false}
+                                        disabled={undefined}
+                                        form={undefined}
+                                        style={{
++                                         transform: "translateX(-100%)"
+-                                         transform: "translateX(-100%)"
++                                         position: "absolute"
+-                                         position: "absolute"
++                                         pointerEvents: "none"
++                                         opacity: 0
+-                                         opacity: "0"
++                                         margin: 0
+-                                         pointer-events: "none"
+-                                         margin-top: "0px"
+-                                         margin-right: "0px"
+-                                         margin-bottom: "0px"
+-                                         margin-left: "0px"
+-                                         caret-color: "transparent"
+                                        }}
+                                        tabIndex={-1}
+                                        ref={function}
+                                      >
+                                ...
+                                  <Primitive.button>
+                                  <RadioBubbleInput control={null} bubbles={true} name={undefined} value="code_only" ...>
+                                    <Primitive.input type="radio" aria-hidden={true} defaultChecked={false} ...>
+                                      <input
+                                        type="radio"
+                                        aria-hidden={true}
+                                        defaultChecked={false}
+                                        name={undefined}
+                                        value="code_only"
+                                        required={false}
+                                        disabled={undefined}
+                                        form={undefined}
+                                        style={{
++                                         transform: "translateX(-100%)"
+-                                         transform: "translateX(-100%)"
++                                         position: "absolute"
+-                                         position: "absolute"
++                                         pointerEvents: "none"
++                                         opacity: 0
+-                                         opacity: "0"
++                                         margin: 0
+-                                         pointer-events: "none"
+-                                         margin-top: "0px"
+-                                         margin-right: "0px"
+-                                         margin-bottom: "0px"
+-                                         margin-left: "0px"
+-                                         caret-color: "transparent"
+                                        }}
+                                        tabIndex={-1}
+                                        ref={function}
+                                      >
+                                ...
+                                  <Primitive.button>
+                                  <RadioBubbleInput control={null} bubbles={true} name={undefined} value="details_only" ...>
+                                    <Primitive.input type="radio" aria-hidden={true} defaultChecked={false} ...>
+                                      <input
+                                        type="radio"
+                                        aria-hidden={true}
+                                        defaultChecked={false}
+                                        name={undefined}
+                                        value="details_only"
+                                        required={false}
+                                        disabled={undefined}
+                                        form={undefined}
+                                        style={{
++                                         transform: "translateX(-100%)"
+-                                         transform: "translateX(-100%)"
++                                         position: "absolute"
+-                                         position: "absolute"
++                                         pointerEvents: "none"
++                                         opacity: 0
+-                                         opacity: "0"
++                                         margin: 0
+-                                         pointer-events: "none"
+-                                         margin-top: "0px"
+-                                         margin-right: "0px"
+-                                         margin-bottom: "0px"
+-                                         margin-left: "0px"
+-                                         caret-color: "transparent"
+                                        }}
+                                        tabIndex={-1}
+                                        ref={function}
+                                      >
+                            <div className="space-y-2">
+                              <_c>
+                              <p>
+                              <label className="flex items...">
+                                <input
+                                  type="checkbox"
+                                  checked={true}
+                                  onChange={function onChange}
+                                  className="h-4 w-4 rounded border-input"
+-                                 style={{caret-color:"transparent"}}
+                                >
+                                ...
+                              <label className="flex items...">
+                                <input
+                                  type="checkbox"
+                                  checked={true}
+                                  onChange={function onChange}
+                                  className="h-4 w-4 rounded border-input"
+-                                 style={{caret-color:"transparent"}}
+                                >
+                                ...
+                              <label className="flex items...">
+                                <input
+                                  type="checkbox"
+                                  checked={false}
+                                  onChange={function onChange}
+                                  className="h-4 w-4 rounded border-input"
+-                                 style={{caret-color:"transparent"}}
+                                >
+                                ...
+                            ...
+                          ...
+                <BrandingForm organizationId="35cc7464-e..." initialLogoUrl="" initialPrimaryColor="#3B82F6">
+                  <_c>
+                    <div ref={null} className="rounded-lg...">
+                      <_c2>
+                      <_c8 className="space-y-4">
+                        <div ref={null} className="p-6 pt-0 s...">
+                          <div className="grid gap-4...">
+                            <div className="space-y-2">
+                              <_c>
+                              <_c id="logoUrl" value="" onChange={function onChange} placeholder="https://ex...">
+                                <input
+                                  type={undefined}
+                                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 t..."
+                                  ref={null}
+                                  id="logoUrl"
+                                  value=""
+                                  onChange={function onChange}
+                                  placeholder="https://example.com/logo.png"
+-                                 style={{caret-color:"transparent"}}
+                                >
+                              ...
+                            <div className="space-y-2">
+                              <_c>
+                              <div className="flex gap-2">
+                                <_c id="primaryColor" value="#3B82F6" onChange={function onChange} placeholder="#3B82F6">
+                                  <input
+                                    type={undefined}
+                                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2..."
+                                    ref={null}
+                                    id="primaryColor"
+                                    value="#3B82F6"
+                                    onChange={function onChange}
+                                    placeholder="#3B82F6"
+-                                   style={{caret-color:"transparent"}}
+                                  >
+                                ...
+                          ...
+                ...
+            ...
+          ...
+ @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[  112413ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[  112413ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56

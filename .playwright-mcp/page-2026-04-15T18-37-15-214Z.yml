@@ -1,0 +1,337 @@
+- generic [active] [ref=e1]:
+  - link "Skip to main content" [ref=e2] [cursor=pointer]:
+    - /url: "#main-content"
+  - generic [ref=e4]:
+    - banner [ref=e5]:
+      - generic [ref=e6]:
+        - button "Open menu" [ref=e7] [cursor=pointer]:
+          - img [ref=e8]
+          - generic [ref=e9]: Open menu
+        - generic [ref=e10]: Smile Hub Dental
+      - generic [ref=e11]:
+        - button "Toggle theme" [ref=e12] [cursor=pointer]:
+          - img [ref=e13]
+          - img
+          - generic [ref=e19]: Toggle theme
+        - button "Notifications" [ref=e20] [cursor=pointer]:
+          - img [ref=e21]
+          - generic [ref=e24]: Notifications
+        - button "MM" [ref=e25] [cursor=pointer]:
+          - generic [ref=e27]: MM
+    - main [ref=e29]:
+      - generic [ref=e30]:
+        - generic [ref=e31]:
+          - heading "Callbacks" [level=1] [ref=e32]
+          - paragraph [ref=e33]: Manage callback requests from your callers
+        - generic [ref=e34]:
+          - generic [ref=e35]:
+            - generic [ref=e36]:
+              - heading "Pending" [level=3] [ref=e37]
+              - img [ref=e39]
+            - generic [ref=e42]: "11"
+          - generic [ref=e43]:
+            - generic [ref=e44]:
+              - heading "Completed" [level=3] [ref=e45]
+              - img [ref=e47]
+            - generic [ref=e50]: "0"
+          - generic [ref=e51]:
+            - generic [ref=e52]:
+              - heading "Urgent Pending" [level=3] [ref=e53]
+              - img [ref=e55]
+            - generic [ref=e58]: "0"
+        - generic [ref=e59]:
+          - tablist [ref=e60]:
+            - tab "Pending (11)" [selected] [ref=e61] [cursor=pointer]:
+              - img [ref=e62]
+              - text: Pending (11)
+            - tab "Completed (0)" [ref=e65] [cursor=pointer]:
+              - img [ref=e66]
+              - text: Completed (0)
+            - tab "Expired (0)" [ref=e69] [cursor=pointer]:
+              - img [ref=e70]
+              - text: Expired (0)
+            - tab "All (11)" [ref=e74] [cursor=pointer]
+          - tabpanel "Pending (11)" [ref=e75]:
+            - generic [ref=e76]:
+              - generic [ref=e77]:
+                - heading "Pending Callbacks" [level=3] [ref=e78]
+                - paragraph [ref=e79]: 11 callbacks awaiting completion — high urgency shown first
+              - generic [ref=e81]:
+                - generic [ref=e82]:
+                  - generic [ref=e83]:
+                    - generic [ref=e84]:
+                      - paragraph [ref=e85]: Oliver Brown
+                      - link "+1 (620) 302-9077" [ref=e86] [cursor=pointer]:
+                        - /url: tel:+16203029077
+                    - generic [ref=e87]:
+                      - generic [ref=e88]: medium
+                      - generic [ref=e89]: pending
+                  - paragraph [ref=e90] [cursor=pointer]: wants to book a checkup but prefers not to give details over the phone
+                  - generic [ref=e91]:
+                    - generic [ref=e92]: Apr 16, 4:13 AM
+                    - generic [ref=e93]:
+                      - link "Call" [ref=e94] [cursor=pointer]:
+                        - /url: tel:+16203029077
+                        - img [ref=e95]
+                        - generic [ref=e97]: Call
+                      - button "Done" [ref=e98] [cursor=pointer]:
+                        - img [ref=e99]
+                        - generic [ref=e102]: Done
+                      - button "Cancel" [ref=e103] [cursor=pointer]:
+                        - img [ref=e104]
+                        - generic [ref=e108]: Cancel
+                - generic [ref=e109]:
+                  - generic [ref=e110]:
+                    - generic [ref=e111]:
+                      - paragraph [ref=e112]: Morgan Brooks
+                      - link "+1 (620) 302-9077" [ref=e113] [cursor=pointer]:
+                        - /url: tel:+16203029077
+                    - generic [ref=e114]:
+                      - generic [ref=e115]: medium
+                      - generic [ref=e116]: pending
+                  - paragraph [ref=e117] [cursor=pointer]: question about a past treatment
+                  - generic [ref=e118]:
+                    - generic [ref=e119]: Apr 16, 3:29 AM
+                    - generic [ref=e120]:
+                      - link "Call" [ref=e121] [cursor=pointer]:
+                        - /url: tel:+16203029077
+                        - img [ref=e122]
+                        - generic [ref=e124]: Call
+                      - button "Done" [ref=e125] [cursor=pointer]:
+                        - img [ref=e126]
+                        - generic [ref=e129]: Done
+                      - button "Cancel" [ref=e130] [cursor=pointer]:
+                        - img [ref=e131]
+                        - generic [ref=e135]: Cancel
+                - generic [ref=e136]:
+                  - generic [ref=e137]:
+                    - generic [ref=e138]:
+                      - paragraph [ref=e139]: Sam Taylor
+                      - link "+1 (620) 302-9077" [ref=e140] [cursor=pointer]:
+                        - /url: tel:+16203029077
+                    - generic [ref=e141]:
+                      - generic [ref=e142]: medium
+                      - generic [ref=e143]: pending
+                  - paragraph [ref=e144] [cursor=pointer]: Caller wants to discuss booking and prefers not to leave details over the phone.
+                  - generic [ref=e145]:
+                    - generic [ref=e146]: Apr 16, 1:46 AM
+                    - generic [ref=e147]:
+                      - link "Call" [ref=e148] [cursor=pointer]:
+                        - /url: tel:+16203029077
+                        - img [ref=e149]
+                        - generic [ref=e151]: Call
+                      - button "Done" [ref=e152] [cursor=pointer]:
+                        - img [ref=e153]
+                        - generic [ref=e156]: Done
+                      - button "Cancel" [ref=e157] [cursor=pointer]:
+                        - img [ref=e158]
+                        - generic [ref=e162]: Cancel
+                - generic [ref=e163]:
+                  - generic [ref=e164]:
+                    - generic [ref=e165]:
+                      - paragraph [ref=e166]: test caller
+                      - link "+1 (620) 302-9077" [ref=e167] [cursor=pointer]:
+                        - /url: tel:+16203029077
+                    - generic [ref=e168]:
+                      - generic [ref=e169]: medium
+                      - generic [ref=e170]: pending
+                  - paragraph [ref=e171] [cursor=pointer]: Caller requested to speak with Michael, who was unavailable.
+                  - generic [ref=e172]:
+                    - generic [ref=e173]: Apr 15, 9:38 PM
+                    - generic [ref=e174]:
+                      - link "Call" [ref=e175] [cursor=pointer]:
+                        - /url: tel:+16203029077
+                        - img [ref=e176]
+                        - generic [ref=e178]: Call
+                      - button "Done" [ref=e179] [cursor=pointer]:
+                        - img [ref=e180]
+                        - generic [ref=e183]: Done
+                      - button "Cancel" [ref=e184] [cursor=pointer]:
+                        - img [ref=e185]
+                        - generic [ref=e189]: Cancel
+                - generic [ref=e190]:
+                  - generic [ref=e191]:
+                    - generic [ref=e192]:
+                      - paragraph [ref=e193]: Silva
+                      - link "+61414141883" [ref=e194] [cursor=pointer]:
+                        - /url: tel:+61414141883
+                    - generic [ref=e195]:
+                      - generic [ref=e196]: medium
+                      - generic [ref=e197]: pending
+                  - paragraph [ref=e198] [cursor=pointer]: Needs to reschedule appointment, but system is unable to cancel old booking.
+                  - generic [ref=e199]:
+                    - generic [ref=e200]: Mar 30, 3:59 AM
+                    - generic [ref=e201]:
+                      - link "Call" [ref=e202] [cursor=pointer]:
+                        - /url: tel:+61414141883
+                        - img [ref=e203]
+                        - generic [ref=e205]: Call
+                      - button "Done" [ref=e206] [cursor=pointer]:
+                        - img [ref=e207]
+                        - generic [ref=e210]: Done
+                      - button "Cancel" [ref=e211] [cursor=pointer]:
+                        - img [ref=e212]
+                        - generic [ref=e216]: Cancel
+                - generic [ref=e217]:
+                  - generic [ref=e218]:
+                    - generic [ref=e219]:
+                      - paragraph [ref=e220]: Silva
+                      - link "+61414141883" [ref=e221] [cursor=pointer]:
+                        - /url: tel:+61414141883
+                    - generic [ref=e222]:
+                      - generic [ref=e223]: medium
+                      - generic [ref=e224]: pending
+                  - paragraph [ref=e225] [cursor=pointer]: Caller wants to confirm the time of their appointment, but it could not be located in the system.
+                  - generic [ref=e226]:
+                    - generic [ref=e227]: Mar 29, 1:21 PM
+                    - generic [ref=e228]:
+                      - link "Call" [ref=e229] [cursor=pointer]:
+                        - /url: tel:+61414141883
+                        - img [ref=e230]
+                        - generic [ref=e232]: Call
+                      - button "Done" [ref=e233] [cursor=pointer]:
+                        - img [ref=e234]
+                        - generic [ref=e237]: Done
+                      - button "Cancel" [ref=e238] [cursor=pointer]:
+                        - img [ref=e239]
+                        - generic [ref=e243]: Cancel
+                - generic [ref=e244]:
+                  - generic [ref=e245]:
+                    - generic [ref=e246]:
+                      - paragraph [ref=e247]: George d d Bush
+                      - link "+61414141883" [ref=e248] [cursor=pointer]:
+                        - /url: tel:+61414141883
+                    - generic [ref=e249]:
+                      - generic [ref=e250]: medium
+                      - generic [ref=e251]: pending
+                  - paragraph [ref=e252] [cursor=pointer]: Follow-up on appointment verification or cancellation
+                  - paragraph [ref=e253]: "Preferred: Preferred callback time: tomorrow between 2 and 3 PM"
+                  - generic [ref=e254]:
+                    - generic [ref=e255]: Mar 27, 2:42 AM
+                    - generic [ref=e256]:
+                      - link "Call" [ref=e257] [cursor=pointer]:
+                        - /url: tel:+61414141883
+                        - img [ref=e258]
+                        - generic [ref=e260]: Call
+                      - button "Done" [ref=e261] [cursor=pointer]:
+                        - img [ref=e262]
+                        - generic [ref=e265]: Done
+                      - button "Cancel" [ref=e266] [cursor=pointer]:
+                        - img [ref=e267]
+                        - generic [ref=e271]: Cancel
+                - generic [ref=e272]:
+                  - generic [ref=e273]:
+                    - generic [ref=e274]:
+                      - paragraph [ref=e275]: George d d Bush
+                      - link "+61414141883" [ref=e276] [cursor=pointer]:
+                        - /url: tel:+61414141883
+                    - generic [ref=e277]:
+                      - generic [ref=e278]: medium
+                      - generic [ref=e279]: pending
+                  - paragraph [ref=e280] [cursor=pointer]: Booking filling appointment for March 27 at 8 AM
+                  - generic [ref=e281]:
+                    - generic [ref=e282]: Mar 27, 2:41 AM
+                    - generic [ref=e283]:
+                      - link "Call" [ref=e284] [cursor=pointer]:
+                        - /url: tel:+61414141883
+                        - img [ref=e285]
+                        - generic [ref=e287]: Call
+                      - button "Done" [ref=e288] [cursor=pointer]:
+                        - img [ref=e289]
+                        - generic [ref=e292]: Done
+                      - button "Cancel" [ref=e293] [cursor=pointer]:
+                        - img [ref=e294]
+                        - generic [ref=e298]: Cancel
+                - generic [ref=e299]:
+                  - generic [ref=e300]:
+                    - generic [ref=e301]:
+                      - paragraph [ref=e302]: Michael McCool
+                      - link "+61414141883" [ref=e303] [cursor=pointer]:
+                        - /url: tel:+61414141883
+                    - generic [ref=e304]:
+                      - generic [ref=e305]: medium
+                      - generic [ref=e306]: pending
+                  - paragraph [ref=e307] [cursor=pointer]: Wants to ask about the previous appointment
+                  - generic [ref=e308]:
+                    - generic [ref=e309]: Mar 27, 2:16 AM
+                    - generic [ref=e310]:
+                      - link "Call" [ref=e311] [cursor=pointer]:
+                        - /url: tel:+61414141883
+                        - img [ref=e312]
+                        - generic [ref=e314]: Call
+                      - button "Done" [ref=e315] [cursor=pointer]:
+                        - img [ref=e316]
+                        - generic [ref=e319]: Done
+                      - button "Cancel" [ref=e320] [cursor=pointer]:
+                        - img [ref=e321]
+                        - generic [ref=e325]: Cancel
+                - generic [ref=e326]:
+                  - generic [ref=e327]:
+                    - generic [ref=e328]:
+                      - paragraph [ref=e329]: K
+                      - link "041414114" [ref=e330] [cursor=pointer]:
+                        - /url: tel:041414114
+                    - generic [ref=e331]:
+                      - generic [ref=e332]: medium
+                      - generic [ref=e333]: pending
+                  - paragraph [ref=e334] [cursor=pointer]: Booking appointment at 10 AM on Monday, March 23
+                  - generic [ref=e335]:
+                    - generic [ref=e336]: Mar 21, 9:49 PM
+                    - generic [ref=e337]:
+                      - link "Call" [ref=e338] [cursor=pointer]:
+                        - /url: tel:041414114
+                        - img [ref=e339]
+                        - generic [ref=e341]: Call
+                      - button "Done" [ref=e342] [cursor=pointer]:
+                        - img [ref=e343]
+                        - generic [ref=e346]: Done
+                      - button "Cancel" [ref=e347] [cursor=pointer]:
+                        - img [ref=e348]
+                        - generic [ref=e352]: Cancel
+                - generic [ref=e353]:
+                  - generic [ref=e354]:
+                    - generic [ref=e355]:
+                      - paragraph [ref=e356]: Morgan Brooks
+                      - link "+1 (620) 302-9077" [ref=e357] [cursor=pointer]:
+                        - /url: tel:+16203029077
+                    - generic [ref=e358]:
+                      - generic [ref=e359]: low
+                      - generic [ref=e360]: pending
+                  - paragraph [ref=e361] [cursor=pointer]: question about a past treatment
+                  - generic [ref=e362]:
+                    - generic [ref=e363]: Apr 16, 2:52 AM
+                    - generic [ref=e364]:
+                      - link "Call" [ref=e365] [cursor=pointer]:
+                        - /url: tel:+16203029077
+                        - img [ref=e366]
+                        - generic [ref=e368]: Call
+                      - button "Done" [ref=e369] [cursor=pointer]:
+                        - img [ref=e370]
+                        - generic [ref=e373]: Done
+                      - button "Cancel" [ref=e374] [cursor=pointer]:
+                        - img [ref=e375]
+                        - generic [ref=e379]: Cancel
+    - navigation [ref=e380]:
+      - generic [ref=e381]:
+        - link "Home" [ref=e382] [cursor=pointer]:
+          - /url: /dashboard
+          - img [ref=e383]
+          - text: Home
+        - link "Assistants" [ref=e388] [cursor=pointer]:
+          - /url: /assistants
+          - img [ref=e389]
+          - text: Assistants
+        - link "Calls" [ref=e392] [cursor=pointer]:
+          - /url: /calls
+          - img [ref=e393]
+          - text: Calls
+        - link "Analytics" [ref=e397] [cursor=pointer]:
+          - /url: /analytics
+          - img [ref=e398]
+          - text: Analytics
+        - button "More" [ref=e400] [cursor=pointer]:
+          - img [ref=e401]
+          - text: More
+  - region "Notifications (F8)":
+    - list
+  - alert [ref=e405]

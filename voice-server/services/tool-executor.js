@@ -597,8 +597,14 @@ async function executeCalendarCall(functionName, args, context) {
       };
     }
 
-    const data = /** @type {{ message?: string }} */ (await res.json());
-    return { message: data.message || "The operation completed but returned no message." };
+    const data = /** @type {{ message?: string, success?: boolean }} */ (await res.json());
+    // SCRUM-367: preserve the handler's authoritative `success` boolean
+    // (additive — other call sites read only `.message`/`.error`) so the
+    // book-loop cap keys off it rather than re-deriving success from prose.
+    return {
+      message: data.message || "The operation completed but returned no message.",
+      ...(typeof data.success === "boolean" && { success: data.success }),
+    };
   } catch (err) {
     console.error(`[ToolExecutor] Failed to execute ${functionName}:`, err.message);
     Sentry.withScope((scope) => {

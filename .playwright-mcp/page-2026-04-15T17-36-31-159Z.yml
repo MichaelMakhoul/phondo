@@ -1,0 +1,81 @@
+- generic:
+  - link:
+    - /url: "#main-content"
+    - text: Skip to main content
+  - generic:
+    - generic:
+      - banner:
+        - generic:
+          - button:
+            - img
+            - generic: Open menu
+          - generic: Smile Hub Dental
+        - generic:
+          - button:
+            - img
+            - generic: Toggle theme
+          - button:
+            - img
+            - generic: Notifications
+          - button:
+            - generic:
+              - generic: MM
+      - main:
+        - generic:
+          - generic:
+            - generic:
+              - generic:
+                - heading [level=1]: Phone Numbers
+                - paragraph: Manage phone numbers for your assistants
+              - generic: 0 of 2
+            - generic:
+              - button:
+                - img
+                - text: Add Number
+                - img
+          - generic:
+            - generic:
+              - generic:
+                - generic:
+                  - generic:
+                    - img
+                  - generic:
+                    - generic:
+                      - img
+              - heading [level=3]: No phone numbers yet
+              - paragraph: Use your existing business number with call forwarding, or buy a new number
+              - generic:
+                - button [expanded]:
+                  - img
+                  - text: Add Number
+                  - img
+      - navigation:
+        - generic:
+          - link:
+            - /url: /dashboard
+            - img
+            - text: Home
+          - link:
+            - /url: /assistants
+            - img
+            - text: Assistants
+          - link:
+            - /url: /calls
+            - img
+            - text: Calls
+          - link:
+            - /url: /analytics
+            - img
+            - text: Analytics
+          - button:
+            - img
+            - text: More
+  - list
+  - alert
+  - menu "Add Number" [active] [ref=e98]:
+    - menuitem "Use My Existing Number" [ref=e99]:
+      - img [ref=e100]
+      - text: Use My Existing Number
+    - menuitem "Buy a New Number" [ref=e103]:
+      - img [ref=e104]
+      - text: Buy a New Number

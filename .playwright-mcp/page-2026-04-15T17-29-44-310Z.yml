@@ -1,0 +1,205 @@
+- generic [ref=e1]:
+  - link "Skip to main content" [ref=e2] [cursor=pointer]:
+    - /url: "#main-content"
+  - generic [ref=e4]:
+    - banner [ref=e5]:
+      - generic [ref=e6]:
+        - button "Open menu" [ref=e7] [cursor=pointer]:
+          - img [ref=e8]
+          - generic [ref=e9]: Open menu
+        - generic [ref=e10]: Smile Hub Dental
+      - generic [ref=e11]:
+        - button "Toggle theme" [ref=e212] [cursor=pointer]:
+          - img [ref=e213]
+          - img
+          - generic [ref=e219]: Toggle theme
+        - button "Notifications" [ref=e12] [cursor=pointer]:
+          - img [ref=e13]
+          - generic [ref=e16]: Notifications
+        - button "MM" [ref=e17] [cursor=pointer]:
+          - generic [ref=e19]: MM
+    - main [ref=e21]:
+      - generic [ref=e22]:
+        - generic [ref=e23]:
+          - generic [ref=e24]:
+            - link [ref=e25] [cursor=pointer]:
+              - /url: /assistants
+              - button [ref=e26]:
+                - img [ref=e27]
+            - generic [ref=e29]:
+              - generic [ref=e30]:
+                - heading "Sophie" [level=1] [ref=e31]
+                - generic [ref=e32]: Active
+              - paragraph [ref=e33]: "+61238205672"
+          - generic [ref=e34]:
+            - link "Test Call" [ref=e35] [cursor=pointer]:
+              - /url: /assistants/41537e3b-6ff2-40c0-b2ff-2da327467d68/test
+              - button "Test Call" [ref=e36]:
+                - img [ref=e37]
+                - text: Test Call
+            - button "Save Changes" [ref=e39] [cursor=pointer]
+        - generic [ref=e40]:
+          - tablist [ref=e41]:
+            - tab "Basics" [ref=e42] [cursor=pointer]:
+              - img [ref=e43]
+              - text: Basics
+            - tab "Voice" [active] [selected] [ref=e46] [cursor=pointer]:
+              - img [ref=e47]
+              - text: Voice
+            - tab "Transfers" [ref=e50] [cursor=pointer]:
+              - img
+              - text: Transfers
+            - tab "Settings" [ref=e52] [cursor=pointer]:
+              - img
+              - text: Settings
+          - tabpanel "Voice" [ref=e235]:
+            - generic [ref=e236]:
+              - generic [ref=e237]:
+                - heading "Voice" [level=3] [ref=e238]
+                - paragraph [ref=e239]: Choose a voice for your assistant. The AI automatically responds in whatever language the caller speaks — no per-language configuration needed.
+              - generic [ref=e241]:
+                - text: Voice
+                - generic [ref=e242]:
+                  - generic [ref=e243]:
+                    - button "All" [ref=e244] [cursor=pointer]
+                    - button "Female" [ref=e245] [cursor=pointer]
+                    - button "Male" [ref=e246] [cursor=pointer]
+                    - button "Australian" [ref=e247] [cursor=pointer]
+                  - generic [ref=e248]:
+                    - button "Charlotte Recommended Preview Charlotte The Sydney Office Manager female · 🇦🇺 AU Warm, friendly Australian female warm friendly" [ref=e249] [cursor=pointer]:
+                      - generic [ref=e250]:
+                        - generic [ref=e251]:
+                          - generic [ref=e252]: Charlotte
+                          - generic [ref=e253]: Recommended
+                        - button "Preview Charlotte" [ref=e254]:
+                          - img [ref=e255]
+                      - paragraph [ref=e257]: The Sydney Office Manager
+                      - generic [ref=e258]:
+                        - generic [ref=e259]: female
+                        - generic [ref=e260]: ·
+                        - generic [ref=e261]: 🇦🇺 AU
+                      - paragraph [ref=e262]: Warm, friendly Australian female
+                      - generic [ref=e263]:
+                        - generic [ref=e264]: warm
+                        - generic [ref=e265]: friendly
+                    - button "James Recommended Preview James The Melbourne Professional male · 🇦🇺 AU Professional Australian male professional calm" [ref=e266] [cursor=pointer]:
+                      - generic [ref=e267]:
+                        - generic [ref=e268]:
+                          - generic [ref=e269]: James
+                          - generic [ref=e270]: Recommended
+                        - button "Preview James" [ref=e271]:
+                          - img [ref=e272]
+                      - paragraph [ref=e274]: The Melbourne Professional
+                      - generic [ref=e275]:
+                        - generic [ref=e276]: male
+                        - generic [ref=e277]: ·
+                        - generic [ref=e278]: 🇦🇺 AU
+                      - paragraph [ref=e279]: Professional Australian male
+                      - generic [ref=e280]:
+                        - generic [ref=e281]: professional
+                        - generic [ref=e282]: calm
+                    - button "Liam Recommended Preview Liam The Brisbane All-Rounder male · 🇦🇺 AU Friendly, laid-back Australian male friendly conversational" [ref=e283] [cursor=pointer]:
+                      - generic [ref=e284]:
+                        - generic [ref=e285]:
+                          - generic [ref=e286]: Liam
+                          - generic [ref=e287]: Recommended
+                        - button "Preview Liam" [ref=e288]:
+                          - img [ref=e289]
+                      - paragraph [ref=e291]: The Brisbane All-Rounder
+                      - generic [ref=e292]:
+                        - generic [ref=e293]: male
+                        - generic [ref=e294]: ·
+                        - generic [ref=e295]: 🇦🇺 AU
+                      - paragraph [ref=e296]: Friendly, laid-back Australian male
+                      - generic [ref=e297]:
+                        - generic [ref=e298]: friendly
+                        - generic [ref=e299]: conversational
+                    - button "Sarah Preview Sarah female · 🇺🇸 US Warm, professional female warm professional" [ref=e300] [cursor=pointer]:
+                      - generic [ref=e301]:
+                        - generic [ref=e303]: Sarah
+                        - button "Preview Sarah" [ref=e304]:
+                          - img [ref=e305]
+                      - generic [ref=e307]:
+                        - generic [ref=e308]: female
+                        - generic [ref=e309]: ·
+                        - generic [ref=e310]: 🇺🇸 US
+                      - paragraph [ref=e311]: Warm, professional female
+                      - generic [ref=e312]:
+                        - generic [ref=e313]: warm
+                        - generic [ref=e314]: professional
+                    - button "Rachel Preview Rachel female · 🇺🇸 US Professional, authoritative female professional authoritative" [ref=e315] [cursor=pointer]:
+                      - generic [ref=e316]:
+                        - generic [ref=e318]: Rachel
+                        - button "Preview Rachel" [ref=e319]:
+                          - img [ref=e320]
+                      - generic [ref=e322]:
+                        - generic [ref=e323]: female
+                        - generic [ref=e324]: ·
+                        - generic [ref=e325]: 🇺🇸 US
+                      - paragraph [ref=e326]: Professional, authoritative female
+                      - generic [ref=e327]:
+                        - generic [ref=e328]: professional
+                        - generic [ref=e329]: authoritative
+                    - button "Emily Preview Emily female · 🇺🇸 US Upbeat, enthusiastic female upbeat friendly" [ref=e330] [cursor=pointer]:
+                      - generic [ref=e331]:
+                        - generic [ref=e333]: Emily
+                        - button "Preview Emily" [ref=e334]:
+                          - img [ref=e335]
+                      - generic [ref=e337]:
+                        - generic [ref=e338]: female
+                        - generic [ref=e339]: ·
+                        - generic [ref=e340]: 🇺🇸 US
+                      - paragraph [ref=e341]: Upbeat, enthusiastic female
+                      - generic [ref=e342]:
+                        - generic [ref=e343]: upbeat
+                        - generic [ref=e344]: friendly
+                    - button "Adam Preview Adam male · 🇺🇸 US Friendly, trustworthy male friendly" [ref=e345] [cursor=pointer]:
+                      - generic [ref=e346]:
+                        - generic [ref=e348]: Adam
+                        - button "Preview Adam" [ref=e349]:
+                          - img [ref=e350]
+                      - generic [ref=e352]:
+                        - generic [ref=e353]: male
+                        - generic [ref=e354]: ·
+                        - generic [ref=e355]: 🇺🇸 US
+                      - paragraph [ref=e356]: Friendly, trustworthy male
+                      - generic [ref=e358]: friendly
+                    - button "Sam Preview Sam male · 🇺🇸 US Calm, professional male calm professional" [ref=e359] [cursor=pointer]:
+                      - generic [ref=e360]:
+                        - generic [ref=e362]: Sam
+                        - button "Preview Sam" [ref=e363]:
+                          - img [ref=e364]
+                      - generic [ref=e366]:
+                        - generic [ref=e367]: male
+                        - generic [ref=e368]: ·
+                        - generic [ref=e369]: 🇺🇸 US
+                      - paragraph [ref=e370]: Calm, professional male
+                      - generic [ref=e371]:
+                        - generic [ref=e372]: calm
+                        - generic [ref=e373]: professional
+    - navigation [ref=e187]:
+      - generic [ref=e188]:
+        - link "Home" [ref=e189] [cursor=pointer]:
+          - /url: /dashboard
+          - img [ref=e190]
+          - text: Home
+        - link "Assistants" [ref=e195] [cursor=pointer]:
+          - /url: /assistants
+          - img [ref=e196]
+          - text: Assistants
+        - link "Calls" [ref=e199] [cursor=pointer]:
+          - /url: /calls
+          - img [ref=e200]
+          - text: Calls
+        - link "Analytics" [ref=e204] [cursor=pointer]:
+          - /url: /analytics
+          - img [ref=e205]
+          - text: Analytics
+        - button "More" [ref=e207] [cursor=pointer]:
+          - img [ref=e208]
+          - text: More
+  - region "Notifications (F8)":
+    - list
+  - button "Open Next.js Dev Tools" [ref=e225] [cursor=pointer]:
+    - img [ref=e226]
+  - alert [ref=e229]

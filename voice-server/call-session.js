@@ -68,6 +68,50 @@ class CallSession {
     // Sophie claims "I've booked you" in the transcript but never got a
     // successful `book_appointment` tool result, flag the call.
     this.toolCallAudit = [];
+
+    // SCRUM-367: count book_appointment rejections in this call. After a few,
+    // registerBookOutcome() escalates the tool-result instruction so the model
+    // stops re-asking the caller to repeat the same detail (the prose-only
+    // "3 strikes" guidance fails under re-STT churn). Reset to 0 on success.
+    this.bookRejectionCount = 0;
+    // Set true once a booking completes under escalation — its name/phone were
+    // AI-supplied, so post-call review may want to verify the spelling.
+    this.bookNameEscalated = false;
+  }
+
+  /**
+   * SCRUM-367: record a book_appointment outcome and return an escalation
+   * directive to append to the tool result once the same-detail loop repeats.
+   *
+   * The model's STT re-hears a hard name differently each turn, so each
+   * rejection looks like a NEW value and the prose-only "3 strikes" guard never
+   * self-triggers. This counts rejections deterministically and, from the 2nd,
+   * tells the model to stop re-asking and proceed (transliterate the name to
+   * English itself, use the caller-ID phone).
+   *
+   * Availability/conflict rejections are legitimate "offer another time" turns,
+   * NOT a same-detail loop — they reset the counter so they never escalate.
+   *
+   * @param {{ successful: boolean, isAvailabilityReject: boolean }} outcome
+   * @returns {string} directive to append to the tool-result message ("" = none)
+   */
+  registerBookOutcome({ successful, isAvailabilityReject }) {
+    if (successful || isAvailabilityReject) {
+      this.bookRejectionCount = 0;
+      return "";
+    }
+    this.bookRejectionCount += 1;
+    if (this.bookRejectionCount < 2) return "";
+    // A booking that completes after this point used an AI-supplied name/phone
+    // under escalation — flag it so post-call review can surface "name may need
+    // verification" (dashboard surfacing tracked as a follow-up).
+    this.bookNameEscalated = true;
+    return (
+      ` (SYSTEM — booking attempt ${this.bookRejectionCount}: you keep re-collecting the same detail. ` +
+      `Stop asking the caller to repeat it. If a name is not in English/Latin letters, transliterate it into ` +
+      `English letters YOURSELF and use that. Use the caller's phone from caller ID. Then complete the booking. ` +
+      `If instead a requested time is unavailable, offer the caller an alternative time.)`
+    );
   }
 
   /**

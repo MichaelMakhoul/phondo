@@ -1,0 +1,63 @@
+- generic [active] [ref=e1]:
+  - link "Skip to main content" [ref=e2] [cursor=pointer]:
+    - /url: "#main-content"
+  - generic [ref=e4]:
+    - banner [ref=e5]:
+      - generic [ref=e6]:
+        - button "Open menu" [ref=e7] [cursor=pointer]:
+          - img [ref=e8]
+          - generic [ref=e9]: Open menu
+        - generic [ref=e10]: Smile Hub Dental
+      - generic [ref=e11]:
+        - button "Toggle theme" [ref=e77] [cursor=pointer]:
+          - img [ref=e78]
+          - img
+          - generic [ref=e84]: Toggle theme
+        - button "Notifications" [ref=e12] [cursor=pointer]:
+          - img [ref=e13]
+          - generic [ref=e16]: Notifications
+        - button "MM" [ref=e17] [cursor=pointer]:
+          - generic [ref=e19]: MM
+    - main [ref=e21]:
+      - generic [ref=e22]:
+        - generic [ref=e23]:
+          - generic [ref=e24]:
+            - heading "Team" [level=1] [ref=e25]
+            - paragraph [ref=e26]: Manage your team members and their access
+          - button "Invite Member" [ref=e27] [cursor=pointer]:
+            - img [ref=e28]
+            - text: Invite Member
+        - generic [ref=e29]:
+          - generic [ref=e30]:
+            - heading "Team Members" [level=3] [ref=e31]
+            - paragraph [ref=e32]: People with access to this organization
+          - generic [ref=e34]:
+            - generic [ref=e36]:
+              - img [ref=e40]
+              - img [ref=e47]
+            - paragraph [ref=e50]: No team members yet
+            - paragraph [ref=e51]: Invite team members to help manage your AI receptionist
+    - navigation [ref=e52]:
+      - generic [ref=e53]:
+        - link "Home" [ref=e54] [cursor=pointer]:
+          - /url: /dashboard
+          - img [ref=e55]
+          - text: Home
+        - link "Assistants" [ref=e60] [cursor=pointer]:
+          - /url: /assistants
+          - img [ref=e61]
+          - text: Assistants
+        - link "Calls" [ref=e64] [cursor=pointer]:
+          - /url: /calls
+          - img [ref=e65]
+          - text: Calls
+        - link "Analytics" [ref=e69] [cursor=pointer]:
+          - /url: /analytics
+          - img [ref=e70]
+          - text: Analytics
+        - button "More" [ref=e72] [cursor=pointer]:
+          - img [ref=e73]
+          - text: More
+  - region "Notifications (F8)":
+    - list
+  - alert [ref=e85]

@@ -1,0 +1,66 @@
+- generic [active] [ref=e1]:
+  - link "Skip to main content" [ref=e2] [cursor=pointer]:
+    - /url: "#main-content"
+  - generic [ref=e4]:
+    - banner [ref=e5]:
+      - generic [ref=e6]:
+        - button "Open menu" [ref=e7] [cursor=pointer]:
+          - img [ref=e8]
+          - generic [ref=e9]: Open menu
+        - generic [ref=e10]: Smile Hub Dental
+      - generic [ref=e11]:
+        - button "Toggle theme" [ref=e12] [cursor=pointer]:
+          - img [ref=e13]
+          - img
+          - generic [ref=e19]: Toggle theme
+        - button "Notifications" [ref=e20] [cursor=pointer]:
+          - img [ref=e21]
+          - generic [ref=e24]: Notifications
+        - button "MM" [ref=e25] [cursor=pointer]:
+          - generic [ref=e27]: MM
+    - main [ref=e29]:
+      - generic [ref=e30]:
+        - generic [ref=e31]:
+          - generic [ref=e32]:
+            - generic [ref=e33]:
+              - heading "Phone Numbers" [level=1] [ref=e34]
+              - paragraph [ref=e35]: Manage phone numbers for your assistants
+            - generic [ref=e36]: 0 of 2
+          - button "Add Number" [ref=e38] [cursor=pointer]:
+            - img [ref=e39]
+            - text: Add Number
+            - img [ref=e40]
+        - generic [ref=e43]:
+          - generic [ref=e45]:
+            - img [ref=e49]
+            - img [ref=e53]
+          - heading "No phone numbers yet" [level=3] [ref=e55]
+          - paragraph [ref=e56]: Use your existing business number with call forwarding, or buy a new number
+          - button "Add Number" [ref=e58] [cursor=pointer]:
+            - img [ref=e59]
+            - text: Add Number
+            - img [ref=e60]
+    - navigation [ref=e62]:
+      - generic [ref=e63]:
+        - link "Home" [ref=e64] [cursor=pointer]:
+          - /url: /dashboard
+          - img [ref=e65]
+          - text: Home
+        - link "Assistants" [ref=e70] [cursor=pointer]:
+          - /url: /assistants
+          - img [ref=e71]
+          - text: Assistants
+        - link "Calls" [ref=e74] [cursor=pointer]:
+          - /url: /calls
+          - img [ref=e75]
+          - text: Calls
+        - link "Analytics" [ref=e79] [cursor=pointer]:
+          - /url: /analytics
+          - img [ref=e80]
+          - text: Analytics
+        - button "More" [ref=e82] [cursor=pointer]:
+          - img [ref=e83]
+          - text: More
+  - region "Notifications (F8)":
+    - list
+  - alert [ref=e87]

@@ -1,0 +1,174 @@
+[
+  {
+    "page": "dashboard",
+    "url": "/dashboard",
+    "theme": "light",
+    "violations": []
+  },
+  {
+    "page": "dashboard",
+    "url": "/dashboard",
+    "theme": "dark",
+    "violations": []
+  },
+  {
+    "page": "assistants",
+    "url": "/assistants",
+    "theme": "light",
+    "violations": []
+  },
+  {
+    "page": "assistants",
+    "url": "/assistants",
+    "theme": "dark",
+    "violations": []
+  },
+  {
+    "page": "phone-numbers",
+    "url": "/phone-numbers",
+    "theme": "light",
+    "violations": []
+  },
+  {
+    "page": "phone-numbers",
+    "url": "/phone-numbers",
+    "theme": "dark",
+    "violations": []
+  },
+  {
+    "page": "calls",
+    "url": "/calls",
+    "theme": "light",
+    "violations": []
+  },
+  {
+    "page": "calls",
+    "url": "/calls",
+    "theme": "dark",
+    "violations": []
+  },
+  {
+    "page": "callbacks",
+    "url": "/callbacks",
+    "theme": "light",
+    "violations": []
+  },
+  {
+    "page": "callbacks",
+    "url": "/callbacks",
+    "theme": "dark",
+    "violations": []
+  },
+  {
+    "page": "calendar",
+    "url": "/calendar",
+    "theme": "light",
+    "violations": []
+  },
+  {
+    "page": "calendar",
+    "url": "/calendar",
+    "theme": "dark",
+    "violations": []
+  },
+  {
+    "page": "appointments",
+    "url": "/appointments",
+    "theme": "light",
+    "violations": []
+  },
+  {
+    "page": "appointments",
+    "url": "/appointments",
+    "theme": "dark",
+    "violations": []
+  },
+  {
+    "page": "analytics",
+    "url": "/analytics",
+    "theme": "light",
+    "error": "page.goto: Timeout 60000ms exceeded.\nCall log:\n\u001b[2m  - navigating to \"http://localhost:3001/analytics\", waiting until \"domcontentloaded\"\u001b[22m\n",
+    "stack": "page.goto: Timeout 60000ms exceeded.\nCall log:\n\u001b[2m  - navigating to \"http://localhost:3001/analytics\", waiting until \"domcontentloaded\"\u001b[22m\n\n    at scanPage (/Users/michaelmakhoul/projects/phondo/scripts/a11y-scan.mjs:95:14)\n    at main (/Users/michaelmakhoul/projects/phondo/scripts/a11y-scan.mjs:162:27)"
+  },
+  {
+    "page": "analytics",
+    "url": "/analytics",
+    "theme": "dark",
+    "violations": []
+  },
+  {
+    "page": "settings-general",
+    "url": "/settings",
+    "theme": "light",
+    "error": "page.goto: Timeout 60000ms exceeded.\nCall log:\n\u001b[2m  - navigating to \"http://localhost:3001/settings\", waiting until \"domcontentloaded\"\u001b[22m\n",
+    "stack": "page.goto: Timeout 60000ms exceeded.\nCall log:\n\u001b[2m  - navigating to \"http://localhost:3001/settings\", waiting until \"domcontentloaded\"\u001b[22m\n\n    at scanPage (/Users/michaelmakhoul/projects/phondo/scripts/a11y-scan.mjs:95:14)\n    at main (/Users/michaelmakhoul/projects/phondo/scripts/a11y-scan.mjs:162:27)"
+  },
+  {
+    "page": "settings-general",
+    "url": "/settings",
+    "theme": "dark",
+    "violations": []
+  },
+  {
+    "page": "settings-notifications",
+    "url": "/settings/notifications",
+    "theme": "light",
+    "violations": []
+  },
+  {
+    "page": "settings-notifications",
+    "url": "/settings/notifications",
+    "theme": "dark",
+    "violations": []
+  },
+  {
+    "page": "settings-scheduling",
+    "url": "/settings/scheduling",
+    "theme": "light",
+    "violations": []
+  },
+  {
+    "page": "settings-scheduling",
+    "url": "/settings/scheduling",
+    "theme": "dark",
+    "violations": []
+  },
+  {
+    "page": "settings-profile",
+    "url": "/settings/profile",
+    "theme": "light",
+    "violations": []
+  },
+  {
+    "page": "settings-profile",
+    "url": "/settings/profile",
+    "theme": "dark",
+    "violations": []
+  },
+  {
+    "page": "settings-knowledge",
+    "url": "/settings/knowledge",
+    "theme": "light",
+    "violations": []
+  },
+  {
+    "page": "settings-knowledge",
+    "url": "/settings/knowledge",
+    "theme": "dark",
+    "violations": []
+  },
+  {
+    "page": "billing",
+    "url": "/billing",
+    "theme": "light",
+    "error": "page.goto: Timeout 60000ms exceeded.\nCall log:\n\u001b[2m  - navigating to \"http://localhost:3001/billing\", waiting until \"domcontentloaded\"\u001b[22m\n",
+    "stack": "page.goto: Timeout 60000ms exceeded.\nCall log:\n\u001b[2m  - navigating to \"http://localhost:3001/billing\", waiting until \"domcontentloaded\"\u001b[22m\n\n    at scanPage (/Users/michaelmakhoul/projects/phondo/scripts/a11y-scan.mjs:95:14)\n    at main (/Users/michaelmakhoul/projects/phondo/scripts/a11y-scan.mjs:162:27)"
+  },
+  {
+    "page": "billing",
+    "url": "/billing",
+    "theme": "dark",
+    "error": "page.goto: Timeout 60000ms exceeded.\nCall log:\n\u001b[2m  - navigating to \"http://localhost:3001/billing\", waiting until \"domcontentloaded\"\u001b[22m\n",
+    "stack": "page.goto: Timeout 60000ms exceeded.\nCall log:\n\u001b[2m  - navigating to \"http://localhost:3001/billing\", waiting until \"domcontentloaded\"\u001b[22m\n\n    at scanPage (/Users/michaelmakhoul/projects/phondo/scripts/a11y-scan.mjs:95:14)\n    at main (/Users/michaelmakhoul/projects/phondo/scripts/a11y-scan.mjs:162:27)"
+  }
+]

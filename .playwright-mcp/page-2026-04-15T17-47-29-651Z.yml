@@ -1,0 +1,57 @@
+- generic [active] [ref=e1]:
+  - link "Skip to main content" [ref=e2] [cursor=pointer]:
+    - /url: "#main-content"
+  - generic [ref=e4]:
+    - banner [ref=e5]:
+      - generic [ref=e6]:
+        - button "Open menu" [ref=e7] [cursor=pointer]:
+          - img [ref=e8]
+          - generic [ref=e9]: Open menu
+        - generic [ref=e10]: Smile Hub Dental
+      - generic [ref=e11]:
+        - button "Toggle theme" [disabled]:
+          - generic: Toggle theme
+        - button "Notifications" [ref=e12] [cursor=pointer]:
+          - img [ref=e13]
+          - generic [ref=e16]: Notifications
+        - button "MM" [ref=e17] [cursor=pointer]:
+          - generic [ref=e19]: MM
+    - main [ref=e21]:
+      - generic [ref=e22]:
+        - generic [ref=e23]:
+          - heading "Appointments" [level=1] [ref=e24]
+          - paragraph [ref=e25]: View, edit, and manage all appointments.
+        - generic [ref=e26]:
+          - generic [ref=e27]:
+            - img [ref=e28]
+            - textbox "Search by name, phone, or code..." [ref=e31]
+          - combobox [ref=e32] [cursor=pointer]:
+            - img [ref=e33]
+          - combobox [ref=e35]
+          - button "New Appointment" [ref=e36] [cursor=pointer]:
+            - img [ref=e37]
+            - text: New Appointment
+        - img [ref=e41]
+    - navigation [ref=e43]:
+      - generic [ref=e44]:
+        - link "Home" [ref=e45] [cursor=pointer]:
+          - /url: /dashboard
+          - img [ref=e46]
+          - text: Home
+        - link "Assistants" [ref=e51] [cursor=pointer]:
+          - /url: /assistants
+          - img [ref=e52]
+          - text: Assistants
+        - link "Calls" [ref=e55] [cursor=pointer]:
+          - /url: /calls
+          - img [ref=e56]
+          - text: Calls
+        - link "Analytics" [ref=e60] [cursor=pointer]:
+          - /url: /analytics
+          - img [ref=e61]
+          - text: Analytics
+        - button "More" [ref=e63] [cursor=pointer]:
+          - img [ref=e64]
+          - text: More
+  - region "Notifications (F8)":
+    - list

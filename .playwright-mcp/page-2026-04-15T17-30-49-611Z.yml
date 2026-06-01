@@ -1,0 +1,131 @@
+- generic [ref=e1]:
+  - link "Skip to main content" [ref=e2] [cursor=pointer]:
+    - /url: "#main-content"
+  - generic [ref=e4]:
+    - banner [ref=e5]:
+      - generic [ref=e6]:
+        - button "Open menu" [ref=e7] [cursor=pointer]:
+          - img [ref=e8]
+          - generic [ref=e9]: Open menu
+        - generic [ref=e10]: Smile Hub Dental
+      - generic [ref=e11]:
+        - button "Toggle theme" [ref=e212] [cursor=pointer]:
+          - img [ref=e213]
+          - img
+          - generic [ref=e219]: Toggle theme
+        - button "Notifications" [ref=e12] [cursor=pointer]:
+          - img [ref=e13]
+          - generic [ref=e16]: Notifications
+        - button "MM" [ref=e17] [cursor=pointer]:
+          - generic [ref=e19]: MM
+    - main [ref=e21]:
+      - generic [ref=e22]:
+        - generic [ref=e23]:
+          - generic [ref=e24]:
+            - link [ref=e25] [cursor=pointer]:
+              - /url: /assistants
+              - button [ref=e26]:
+                - img [ref=e27]
+            - generic [ref=e29]:
+              - generic [ref=e30]:
+                - heading "Sophie" [level=1] [ref=e31]
+                - generic [ref=e32]: Active
+              - paragraph [ref=e33]: "+61238205672"
+          - generic [ref=e34]:
+            - link "Test Call" [ref=e35] [cursor=pointer]:
+              - /url: /assistants/41537e3b-6ff2-40c0-b2ff-2da327467d68/test
+              - button "Test Call" [ref=e36]:
+                - img [ref=e37]
+                - text: Test Call
+            - button "Save Changes" [ref=e39] [cursor=pointer]
+        - generic [ref=e40]:
+          - tablist [ref=e41]:
+            - tab "Basics" [ref=e42] [cursor=pointer]:
+              - img [ref=e43]
+              - text: Basics
+            - tab "Voice" [ref=e46] [cursor=pointer]:
+              - img [ref=e47]
+              - text: Voice
+            - tab "Transfers" [active] [selected] [ref=e50] [cursor=pointer]:
+              - img
+              - text: Transfers
+            - tab "Settings" [ref=e52] [cursor=pointer]:
+              - img
+              - text: Settings
+          - tabpanel "Transfers" [ref=e222]:
+            - generic [ref=e223]:
+              - generic [ref=e224]:
+                - heading "Call Transfers" [level=3] [ref=e225]:
+                  - img [ref=e226]
+                  - text: Call Transfers
+                - paragraph [ref=e228]: Configure when and where calls should be transferred to a human
+              - generic [ref=e229]:
+                - generic [ref=e230]:
+                  - generic [ref=e231]:
+                    - text: Enable Call Transfers
+                    - paragraph [ref=e232]: Allow callers to be transferred to a human when needed
+                  - switch [checked] [ref=e233] [cursor=pointer]
+                - generic [ref=e234]:
+                  - generic [ref=e235]: Add Transfer Destination
+                  - generic [ref=e236]:
+                    - textbox "Phone number" [ref=e237]
+                    - textbox "Name (optional)" [ref=e238]
+                    - button [ref=e239] [cursor=pointer]:
+                      - img [ref=e240]
+                  - generic [ref=e241]:
+                    - generic [ref=e242]:
+                      - textbox "Trigger keywords (comma-separated)" [ref=e243]
+                      - paragraph [ref=e244]: When the AI determines the caller needs help with these topics, it will transfer. Defaults to general phrases if empty.
+                    - generic [ref=e245]:
+                      - textbox "Category (optional)" [ref=e246]
+                      - paragraph [ref=e247]: e.g. billing_inquiry, emergency
+                  - generic [ref=e248]:
+                    - generic [ref=e249]:
+                      - textbox "Announcement message (optional)" [ref=e250]
+                      - paragraph [ref=e251]: What the AI says before transferring. Uses a default if empty.
+                    - generic [ref=e252]:
+                      - spinbutton [ref=e253]
+                      - paragraph [ref=e254]: Higher = checked first
+                  - generic [ref=e255]:
+                    - switch [ref=e256] [cursor=pointer]
+                    - generic [ref=e257]: Ask caller to confirm before transferring
+                - generic [ref=e259]:
+                  - generic [ref=e260]:
+                    - paragraph [ref=e261]: Michael
+                    - paragraph [ref=e262]: "041414141883"
+                    - generic [ref=e263]:
+                      - generic [ref=e264]: speak to a human
+                      - generic [ref=e265]: talk to someone
+                      - generic [ref=e266]: representative
+                    - generic [ref=e268]: Confirmation required
+                  - generic [ref=e269]:
+                    - button [ref=e270] [cursor=pointer]:
+                      - img [ref=e271]
+                    - button [ref=e274] [cursor=pointer]:
+                      - img [ref=e275]
+    - navigation [ref=e187]:
+      - generic [ref=e188]:
+        - link "Home" [ref=e189] [cursor=pointer]:
+          - /url: /dashboard
+          - img [ref=e190]
+          - text: Home
+        - link "Assistants" [ref=e195] [cursor=pointer]:
+          - /url: /assistants
+          - img [ref=e196]
+          - text: Assistants
+        - link "Calls" [ref=e199] [cursor=pointer]:
+          - /url: /calls
+          - img [ref=e200]
+          - text: Calls
+        - link "Analytics" [ref=e204] [cursor=pointer]:
+          - /url: /analytics
+          - img [ref=e205]
+          - text: Analytics
+        - button "More" [ref=e207] [cursor=pointer]:
+          - img [ref=e208]
+          - text: More
+  - region "Notifications (F8)":
+    - list
+  - button "Open Next.js Dev Tools" [ref=e283] [cursor=pointer]:
+    - img [ref=e284]
+  - alert [ref=e220]

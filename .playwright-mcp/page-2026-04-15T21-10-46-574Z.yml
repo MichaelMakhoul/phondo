@@ -1,0 +1,491 @@
+- generic [active] [ref=e1]:
+  - link "Skip to main content" [ref=e2] [cursor=pointer]:
+    - /url: "#main-content"
+  - generic [ref=e4]:
+    - banner [ref=e5]:
+      - generic [ref=e6]:
+        - button "Open menu" [ref=e7] [cursor=pointer]:
+          - img [ref=e8]
+          - generic [ref=e9]: Open menu
+        - generic [ref=e10]: Smile Hub Dental
+      - generic [ref=e11]:
+        - button "Toggle theme" [ref=e12] [cursor=pointer]:
+          - img
+          - img [ref=e515]
+          - generic [ref=e19]: Toggle theme
+        - button "Notifications" [ref=e20] [cursor=pointer]:
+          - img [ref=e21]
+          - generic [ref=e24]: Notifications
+        - button "MM" [ref=e25] [cursor=pointer]:
+          - generic [ref=e27]: MM
+    - main [ref=e29]:
+      - generic [ref=e30]:
+        - generic [ref=e31]:
+          - generic [ref=e32]:
+            - heading "Analytics" [level=1] [ref=e33]
+            - paragraph [ref=e34]: Track your AI receptionist's performance and ROI (Last 30 days)
+          - button "Export CSV" [ref=e35] [cursor=pointer]:
+            - img [ref=e36]
+            - text: Export CSV
+        - generic [ref=e39]:
+          - generic [ref=e40]:
+            - generic [ref=e41]:
+              - heading "Total Calls" [level=3] [ref=e42]
+              - img [ref=e43]
+            - generic [ref=e47]:
+              - text: "135"
+              - paragraph [ref=e48]: 0 spam filtered
+          - generic [ref=e49]:
+            - generic [ref=e50]:
+              - heading "Answered" [level=3] [ref=e51]
+              - img [ref=e52]
+            - generic [ref=e56]:
+              - text: "117"
+              - paragraph [ref=e57]: 87% answer rate
+          - generic [ref=e58]:
+            - generic [ref=e59]:
+              - heading "Appointments" [level=3] [ref=e60]
+              - img [ref=e61]
+            - generic [ref=e63]:
+              - text: "49"
+              - paragraph [ref=e64]: Booked by AI
+          - generic [ref=e65]:
+            - generic [ref=e66]:
+              - heading "Avg Duration" [level=3] [ref=e67]
+              - img [ref=e68]
+            - generic [ref=e71]:
+              - text: 2:44
+              - paragraph [ref=e72]: Per call
+        - generic [ref=e73]:
+          - generic [ref=e74]:
+            - heading "Estimated Value" [level=3] [ref=e75]:
+              - img [ref=e76]
+              - text: Estimated Value
+            - paragraph [ref=e78]: Revenue protected by your AI receptionist
+          - generic [ref=e80]:
+            - generic [ref=e81]:
+              - paragraph [ref=e82]: Calls Answered
+              - paragraph [ref=e83]: "117"
+              - paragraph [ref=e84]: That might have been missed
+            - generic [ref=e85]:
+              - paragraph [ref=e86]: Avg. dental Call Value
+              - paragraph [ref=e87]: $850
+              - paragraph [ref=e88]: Industry average
+            - generic [ref=e89]:
+              - paragraph [ref=e90]: Est. Revenue Protected
+              - paragraph [ref=e91]: $59,500
+              - paragraph [ref=e92]: Based on ~60% missed call prevention
+        - generic [ref=e93]:
+          - generic [ref=e94]:
+            - generic [ref=e95]:
+              - heading "Call Volume (30 Days)" [level=3] [ref=e96]
+              - paragraph [ref=e97]: Daily call trends
+            - generic [ref=e517]:
+              - list [ref=e519]:
+                - listitem [ref=e520]:
+                  - img "Answered legend icon" [ref=e521]
+                  - text: Answered
+                - listitem [ref=e523]:
+                  - img "Missed legend icon" [ref=e524]
+                  - text: Missed
+              - application [ref=e526]:
+                - generic [ref=e561]:
+                  - generic [ref=e562]:
+                    - generic [ref=e564]: Apr 4
+                    - generic [ref=e566]: Apr 7
+                    - generic [ref=e568]: Apr 10
+                    - generic [ref=e570]: Apr 13
+                    - generic [ref=e572]: Apr 16
+                  - generic [ref=e573]:
+                    - generic [ref=e575]: "0"
+                    - generic [ref=e577]: "8"
+                    - generic [ref=e579]: "16"
+                    - generic [ref=e581]: "24"
+                    - generic [ref=e583]: "32"
+          - generic [ref=e101]:
+            - generic [ref=e102]:
+              - heading "Call Outcomes" [level=3] [ref=e103]
+              - paragraph [ref=e104]: How calls were handled
+            - generic [ref=e584]:
+              - list [ref=e586]:
+                - listitem [ref=e587]:
+                  - img "[object Object] legend icon" [ref=e588]
+                  - generic [ref=e590]: Answered
+                - listitem [ref=e591]:
+                  - img "[object Object] legend icon" [ref=e592]
+                  - generic [ref=e594]: Voicemail
+              - application [ref=e595]
+        - generic [ref=e108]:
+          - generic [ref=e109]:
+            - generic [ref=e110]:
+              - heading "Avg Call Duration" [level=3] [ref=e111]
+              - paragraph [ref=e112]: Daily average over the last 30 days
+            - application [ref=e604]:
+              - generic [ref=e639]:
+                - generic [ref=e640]:
+                  - generic [ref=e642]: Mar 25
+                  - generic [ref=e644]: Mar 29
+                  - generic [ref=e646]: Apr 1
+                  - generic [ref=e648]: Apr 12
+                  - generic [ref=e650]: Apr 16
+                - generic [ref=e651]:
+                  - generic [ref=e653]: 0:00
+                  - generic [ref=e655]: 1:05
+                  - generic [ref=e657]: 2:10
+                  - generic [ref=e659]: 3:15
+                  - generic [ref=e661]: 4:20
+          - generic [ref=e116]:
+            - generic [ref=e117]:
+              - heading "Conversion Rate" [level=3] [ref=e118]:
+                - img [ref=e119]
+                - text: Conversion Rate
+              - paragraph [ref=e122]: Calls that led to appointments
+            - generic [ref=e124]:
+              - generic [ref=e125]: 42%
+              - paragraph [ref=e126]: 49 appointments from 117 answered calls
+        - generic [ref=e127]:
+          - generic [ref=e128]:
+            - heading "Peak Call Hours" [level=3] [ref=e129]
+            - paragraph [ref=e130]: Call distribution by day of week and hour
+          - generic [ref=e132]:
+            - generic [ref=e133]:
+              - generic [ref=e134]:
+                - generic [ref=e136]: "0"
+                - generic [ref=e139]: "3"
+                - generic [ref=e142]: "6"
+                - generic [ref=e145]: "9"
+                - generic [ref=e148]: "12"
+                - generic [ref=e151]: "15"
+                - generic [ref=e154]: "18"
+                - generic [ref=e157]: "21"
+              - generic [ref=e160]:
+                - generic [ref=e161]: Mon
+                - generic "Mon 0:00 — 0 calls" [ref=e162]
+                - generic "Mon 1:00 — 1 call" [ref=e163]
+                - generic "Mon 2:00 — 0 calls" [ref=e164]
+                - generic "Mon 3:00 — 6 calls" [ref=e165]
+                - generic "Mon 4:00 — 0 calls" [ref=e166]
+                - generic "Mon 5:00 — 1 call" [ref=e167]
+                - generic "Mon 6:00 — 0 calls" [ref=e168]
+                - generic "Mon 7:00 — 0 calls" [ref=e169]
+                - generic "Mon 8:00 — 0 calls" [ref=e170]
+                - generic "Mon 9:00 — 0 calls" [ref=e171]
+                - generic "Mon 10:00 — 0 calls" [ref=e172]
+                - generic "Mon 11:00 — 0 calls" [ref=e173]
+                - generic "Mon 12:00 — 0 calls" [ref=e174]
+                - generic "Mon 13:00 — 2 calls" [ref=e175]
+                - generic "Mon 14:00 — 7 calls" [ref=e176]
+                - generic "Mon 15:00 — 0 calls" [ref=e177]
+                - generic "Mon 16:00 — 0 calls" [ref=e178]
+                - generic "Mon 17:00 — 0 calls" [ref=e179]
+                - generic "Mon 18:00 — 0 calls" [ref=e180]
+                - generic "Mon 19:00 — 0 calls" [ref=e181]
+                - generic "Mon 20:00 — 0 calls" [ref=e182]
+                - generic "Mon 21:00 — 0 calls" [ref=e183]
+                - generic "Mon 22:00 — 1 call" [ref=e184]
+                - generic "Mon 23:00 — 1 call" [ref=e185]
+              - generic [ref=e186]:
+                - generic [ref=e187]: Tue
+                - generic "Tue 0:00 — 0 calls" [ref=e188]
+                - generic "Tue 1:00 — 0 calls" [ref=e189]
+                - generic "Tue 2:00 — 0 calls" [ref=e190]
+                - generic "Tue 3:00 — 0 calls" [ref=e191]
+                - generic "Tue 4:00 — 0 calls" [ref=e192]
+                - generic "Tue 5:00 — 0 calls" [ref=e193]
+                - generic "Tue 6:00 — 0 calls" [ref=e194]
+                - generic "Tue 7:00 — 0 calls" [ref=e195]
+                - generic "Tue 8:00 — 0 calls" [ref=e196]
+                - generic "Tue 9:00 — 0 calls" [ref=e197]
+                - generic "Tue 10:00 — 0 calls" [ref=e198]
+                - generic "Tue 11:00 — 0 calls" [ref=e199]
+                - generic "Tue 12:00 — 0 calls" [ref=e200]
+                - generic "Tue 13:00 — 0 calls" [ref=e201]
+                - generic "Tue 14:00 — 0 calls" [ref=e202]
+                - generic "Tue 15:00 — 0 calls" [ref=e203]
+                - generic "Tue 16:00 — 0 calls" [ref=e204]
+                - generic "Tue 17:00 — 1 call" [ref=e205]
+                - generic "Tue 18:00 — 0 calls" [ref=e206]
+                - generic "Tue 19:00 — 0 calls" [ref=e207]
+                - generic "Tue 20:00 — 1 call" [ref=e208]
+                - generic "Tue 21:00 — 4 calls" [ref=e209]
+                - generic "Tue 22:00 — 0 calls" [ref=e210]
+                - generic "Tue 23:00 — 0 calls" [ref=e211]
+              - generic [ref=e212]:
+                - generic [ref=e213]: Wed
+                - generic "Wed 0:00 — 5 calls" [ref=e214]
+                - generic "Wed 1:00 — 0 calls" [ref=e215]
+                - generic "Wed 2:00 — 0 calls" [ref=e216]
+                - generic "Wed 3:00 — 0 calls" [ref=e217]
+                - generic "Wed 4:00 — 0 calls" [ref=e218]
+                - generic "Wed 5:00 — 1 call" [ref=e219]
+                - generic "Wed 6:00 — 1 call" [ref=e220]
+                - generic "Wed 7:00 — 1 call" [ref=e221]
+                - generic "Wed 8:00 — 0 calls" [ref=e222]
+                - generic "Wed 9:00 — 0 calls" [ref=e223]
+                - generic "Wed 10:00 — 0 calls" [ref=e224]
+                - generic "Wed 11:00 — 0 calls" [ref=e225]
+                - generic "Wed 12:00 — 0 calls" [ref=e226]
+                - generic "Wed 13:00 — 0 calls" [ref=e227]
+                - generic "Wed 14:00 — 0 calls" [ref=e228]
+                - generic "Wed 15:00 — 0 calls" [ref=e229]
+                - generic "Wed 16:00 — 2 calls" [ref=e230]
+                - generic "Wed 17:00 — 0 calls" [ref=e231]
+                - generic "Wed 18:00 — 4 calls" [ref=e232]
+                - generic "Wed 19:00 — 0 calls" [ref=e233]
+                - generic "Wed 20:00 — 0 calls" [ref=e234]
+                - generic "Wed 21:00 — 7 calls" [ref=e235]
+                - generic "Wed 22:00 — 12 calls" [ref=e236]
+                - generic "Wed 23:00 — 5 calls" [ref=e237]
+              - generic [ref=e238]:
+                - generic [ref=e239]: Thu
+                - generic "Thu 0:00 — 5 calls" [ref=e240]
+                - generic "Thu 1:00 — 7 calls" [ref=e241]
+                - generic "Thu 2:00 — 6 calls" [ref=e242]
+                - generic "Thu 3:00 — 5 calls" [ref=e243]
+                - generic "Thu 4:00 — 4 calls" [ref=e244]
+                - generic "Thu 5:00 — 2 calls" [ref=e245]
+                - generic "Thu 6:00 — 3 calls" [ref=e246]
+                - generic "Thu 7:00 — 1 call" [ref=e247]
+                - generic "Thu 8:00 — 0 calls" [ref=e248]
+                - generic "Thu 9:00 — 0 calls" [ref=e249]
+                - generic "Thu 10:00 — 0 calls" [ref=e250]
+                - generic "Thu 11:00 — 0 calls" [ref=e251]
+                - generic "Thu 12:00 — 0 calls" [ref=e252]
+                - generic "Thu 13:00 — 0 calls" [ref=e253]
+                - generic "Thu 14:00 — 0 calls" [ref=e254]
+                - generic "Thu 15:00 — 0 calls" [ref=e255]
+                - generic "Thu 16:00 — 0 calls" [ref=e256]
+                - generic "Thu 17:00 — 0 calls" [ref=e257]
+                - generic "Thu 18:00 — 0 calls" [ref=e258]
+                - generic "Thu 19:00 — 0 calls" [ref=e259]
+                - generic "Thu 20:00 — 1 call" [ref=e260]
+                - generic "Thu 21:00 — 1 call" [ref=e261]
+                - generic "Thu 22:00 — 0 calls" [ref=e262]
+                - generic "Thu 23:00 — 0 calls" [ref=e263]
+              - generic [ref=e264]:
+                - generic [ref=e265]: Fri
+                - generic "Fri 0:00 — 0 calls" [ref=e266]
+                - generic "Fri 1:00 — 0 calls" [ref=e267]
+                - generic "Fri 2:00 — 2 calls" [ref=e268]
+                - generic "Fri 3:00 — 0 calls" [ref=e269]
+                - generic "Fri 4:00 — 0 calls" [ref=e270]
+                - generic "Fri 5:00 — 0 calls" [ref=e271]
+                - generic "Fri 6:00 — 0 calls" [ref=e272]
+                - generic "Fri 7:00 — 0 calls" [ref=e273]
+                - generic "Fri 8:00 — 0 calls" [ref=e274]
+                - generic "Fri 9:00 — 0 calls" [ref=e275]
+                - generic "Fri 10:00 — 0 calls" [ref=e276]
+                - generic "Fri 11:00 — 0 calls" [ref=e277]
+                - generic "Fri 12:00 — 0 calls" [ref=e278]
+                - generic "Fri 13:00 — 0 calls" [ref=e279]
+                - generic "Fri 14:00 — 0 calls" [ref=e280]
+                - generic "Fri 15:00 — 0 calls" [ref=e281]
+                - generic "Fri 16:00 — 0 calls" [ref=e282]
+                - generic "Fri 17:00 — 0 calls" [ref=e283]
+                - generic "Fri 18:00 — 0 calls" [ref=e284]
+                - generic "Fri 19:00 — 0 calls" [ref=e285]
+                - generic "Fri 20:00 — 0 calls" [ref=e286]
+                - generic "Fri 21:00 — 1 call" [ref=e287]
+                - generic "Fri 22:00 — 1 call" [ref=e288]
+                - generic "Fri 23:00 — 0 calls" [ref=e289]
+              - generic [ref=e290]:
+                - generic [ref=e291]: Sat
+                - generic "Sat 0:00 — 0 calls" [ref=e292]
+                - generic "Sat 1:00 — 0 calls" [ref=e293]
+                - generic "Sat 2:00 — 0 calls" [ref=e294]
+                - generic "Sat 3:00 — 0 calls" [ref=e295]
+                - generic "Sat 4:00 — 0 calls" [ref=e296]
+                - generic "Sat 5:00 — 0 calls" [ref=e297]
+                - generic "Sat 6:00 — 0 calls" [ref=e298]
+                - generic "Sat 7:00 — 0 calls" [ref=e299]
+                - generic "Sat 8:00 — 0 calls" [ref=e300]
+                - generic "Sat 9:00 — 0 calls" [ref=e301]
+                - generic "Sat 10:00 — 0 calls" [ref=e302]
+                - generic "Sat 11:00 — 0 calls" [ref=e303]
+                - generic "Sat 12:00 — 0 calls" [ref=e304]
+                - generic "Sat 13:00 — 0 calls" [ref=e305]
+                - generic "Sat 14:00 — 0 calls" [ref=e306]
+                - generic "Sat 15:00 — 0 calls" [ref=e307]
+                - generic "Sat 16:00 — 3 calls" [ref=e308]
+                - generic "Sat 17:00 — 0 calls" [ref=e309]
+                - generic "Sat 18:00 — 5 calls" [ref=e310]
+                - generic "Sat 19:00 — 4 calls" [ref=e311]
+                - generic "Sat 20:00 — 6 calls" [ref=e312]
+                - generic "Sat 21:00 — 5 calls" [ref=e313]
+                - generic "Sat 22:00 — 1 call" [ref=e314]
+                - generic "Sat 23:00 — 3 calls" [ref=e315]
+              - generic [ref=e316]:
+                - generic [ref=e317]: Sun
+                - generic "Sun 0:00 — 0 calls" [ref=e318]
+                - generic "Sun 1:00 — 0 calls" [ref=e319]
+                - generic "Sun 2:00 — 0 calls" [ref=e320]
+                - generic "Sun 3:00 — 0 calls" [ref=e321]
+                - generic "Sun 4:00 — 0 calls" [ref=e322]
+                - generic "Sun 5:00 — 0 calls" [ref=e323]
+                - generic "Sun 6:00 — 0 calls" [ref=e324]
+                - generic "Sun 7:00 — 0 calls" [ref=e325]
+                - generic "Sun 8:00 — 0 calls" [ref=e326]
+                - generic "Sun 9:00 — 0 calls" [ref=e327]
+                - generic "Sun 10:00 — 0 calls" [ref=e328]
+                - generic "Sun 11:00 — 0 calls" [ref=e329]
+                - generic "Sun 12:00 — 0 calls" [ref=e330]
+                - generic "Sun 13:00 — 2 calls" [ref=e331]
+                - generic "Sun 14:00 — 0 calls" [ref=e332]
+                - generic "Sun 15:00 — 0 calls" [ref=e333]
+                - generic "Sun 16:00 — 0 calls" [ref=e334]
+                - generic "Sun 17:00 — 4 calls" [ref=e335]
+                - generic "Sun 18:00 — 0 calls" [ref=e336]
+                - generic "Sun 19:00 — 0 calls" [ref=e337]
+                - generic "Sun 20:00 — 0 calls" [ref=e338]
+                - generic "Sun 21:00 — 0 calls" [ref=e339]
+                - generic "Sun 22:00 — 0 calls" [ref=e340]
+                - generic "Sun 23:00 — 0 calls" [ref=e341]
+            - generic [ref=e342]:
+              - generic [ref=e343]: Less
+              - generic [ref=e349]: More
+        - generic [ref=e350]:
+          - generic [ref=e351]:
+            - heading "Recent Calls" [level=3] [ref=e352]
+            - paragraph [ref=e353]: Quick overview of the latest calls
+          - generic [ref=e355]:
+            - link "Apr 16, 7:04 AM completed 3:21" [ref=e356] [cursor=pointer]:
+              - /url: /calls/86d57cea-a875-40c9-a944-44881493ebe2
+              - generic [ref=e357]:
+                - img [ref=e358]
+                - generic [ref=e362]:
+                  - generic [ref=e363]:
+                    - generic [ref=e364]: Apr 16, 7:04 AM
+                    - generic [ref=e365]: completed
+                  - paragraph [ref=e366]: 3:21
+              - img [ref=e367]
+            - link "Apr 16, 6:56 AM completed 5:02" [ref=e369] [cursor=pointer]:
+              - /url: /calls/395189df-f3e6-40e7-a325-e284151c0358
+              - generic [ref=e370]:
+                - img [ref=e371]
+                - generic [ref=e375]:
+                  - generic [ref=e376]:
+                    - generic [ref=e377]: Apr 16, 6:56 AM
+                    - generic [ref=e378]: completed
+                  - paragraph [ref=e379]: 5:02
+              - img [ref=e380]
+            - link "Apr 16, 6:50 AM failed 5:01" [ref=e382] [cursor=pointer]:
+              - /url: /calls/81da68f2-3c11-4e16-8d1b-554949c4e07e
+              - generic [ref=e383]:
+                - img [ref=e384]
+                - generic [ref=e388]:
+                  - generic [ref=e389]:
+                    - generic [ref=e390]: Apr 16, 6:50 AM
+                    - generic [ref=e391]: failed
+                  - paragraph [ref=e392]: 5:01
+              - img [ref=e393]
+            - link "Apr 16, 6:44 AM completed 5:01" [ref=e395] [cursor=pointer]:
+              - /url: /calls/1264d53e-4cc4-446b-a266-1dd80e8f52d5
+              - generic [ref=e396]:
+                - img [ref=e397]
+                - generic [ref=e401]:
+                  - generic [ref=e402]:
+                    - generic [ref=e403]: Apr 16, 6:44 AM
+                    - generic [ref=e404]: completed
+                  - paragraph [ref=e405]: 5:01
+              - img [ref=e406]
+            - link "Apr 16, 5:28 AM completed 3:01" [ref=e408] [cursor=pointer]:
+              - /url: /calls/7c60e7b3-e969-42be-b34e-96e667d87ff8
+              - generic [ref=e409]:
+                - img [ref=e410]
+                - generic [ref=e414]:
+                  - generic [ref=e415]:
+                    - generic [ref=e416]: Apr 16, 5:28 AM
+                    - generic [ref=e417]: completed
+                  - paragraph [ref=e418]: 3:01
+              - img [ref=e419]
+            - link "Apr 16, 5:03 AM completed 3:31" [ref=e421] [cursor=pointer]:
+              - /url: /calls/d11c6983-f3a1-4937-82c0-6029a4735d4c
+              - generic [ref=e422]:
+                - img [ref=e423]
+                - generic [ref=e427]:
+                  - generic [ref=e428]:
+                    - generic [ref=e429]: Apr 16, 5:03 AM
+                    - generic [ref=e430]: completed
+                  - paragraph [ref=e431]: 3:31
+              - img [ref=e432]
+            - link "Apr 16, 4:59 AM completed 3:32" [ref=e434] [cursor=pointer]:
+              - /url: /calls/a86a4ec2-7dbc-426d-a5ab-f39ca9d71a7c
+              - generic [ref=e435]:
+                - img [ref=e436]
+                - generic [ref=e440]:
+                  - generic [ref=e441]:
+                    - generic [ref=e442]: Apr 16, 4:59 AM
+                    - generic [ref=e443]: completed
+                  - paragraph [ref=e444]: 3:32
+              - img [ref=e445]
+            - link "Apr 16, 4:12 AM completed 3:31" [ref=e447] [cursor=pointer]:
+              - /url: /calls/5c2b7bfe-bae4-4792-acc0-de3c74f90813
+              - generic [ref=e448]:
+                - img [ref=e449]
+                - generic [ref=e453]:
+                  - generic [ref=e454]:
+                    - generic [ref=e455]: Apr 16, 4:12 AM
+                    - generic [ref=e456]: completed
+                  - paragraph [ref=e457]: 3:31
+              - img [ref=e458]
+            - link "Apr 16, 4:08 AM completed 3:31" [ref=e460] [cursor=pointer]:
+              - /url: /calls/523ec21e-834a-41c7-b976-9c9be1a10308
+              - generic [ref=e461]:
+                - img [ref=e462]
+                - generic [ref=e466]:
+                  - generic [ref=e467]:
+                    - generic [ref=e468]: Apr 16, 4:08 AM
+                    - generic [ref=e469]: completed
+                  - paragraph [ref=e470]: 3:31
+              - img [ref=e471]
+            - link "Apr 16, 4:05 AM completed 3:31" [ref=e473] [cursor=pointer]:
+              - /url: /calls/20ac76b5-aae1-470e-92d6-52023c60699e
+              - generic [ref=e474]:
+                - img [ref=e475]
+                - generic [ref=e479]:
+                  - generic [ref=e480]:
+                    - generic [ref=e481]: Apr 16, 4:05 AM
+                    - generic [ref=e482]: completed
+                  - paragraph [ref=e483]: 3:31
+              - img [ref=e484]
+            - link "View All Calls" [ref=e487] [cursor=pointer]:
+              - /url: /calls
+              - button "View All Calls" [ref=e488]
+    - navigation [ref=e489]:
+      - generic [ref=e490]:
+        - link "Home" [ref=e491] [cursor=pointer]:
+          - /url: /dashboard
+          - img [ref=e492]
+          - text: Home
+        - link "Assistants" [ref=e497] [cursor=pointer]:
+          - /url: /assistants
+          - img [ref=e498]
+          - text: Assistants
+        - link "Calls" [ref=e501] [cursor=pointer]:
+          - /url: /calls
+          - img [ref=e502]
+          - text: Calls
+        - link "Analytics" [ref=e506] [cursor=pointer]:
+          - /url: /analytics
+          - img [ref=e507]
+          - text: Analytics
+        - button "More" [ref=e509] [cursor=pointer]:
+          - img [ref=e510]
+          - text: More
+  - region "Notifications (F8)":
+    - list
+  - generic [ref=e666] [cursor=pointer]:
+    - button "Open Next.js Dev Tools" [ref=e667]:
+      - img [ref=e668]
+    - generic [ref=e671]:
+      - button "Open issues overlay" [ref=e672]:
+        - generic [ref=e673]:
+          - generic [ref=e674]: "2"
+          - generic [ref=e675]: "3"
+        - generic [ref=e676]:
+          - text: Issue
+          - generic [ref=e677]: s
+      - button "Collapse issues badge" [ref=e678]:
+        - img [ref=e679]
+  - alert [ref=e514]
+  - generic [ref=e681]: 0:00

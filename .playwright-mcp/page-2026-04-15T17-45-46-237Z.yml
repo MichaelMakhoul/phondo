@@ -1,0 +1,311 @@
+- generic [active] [ref=e1]:
+  - link "Skip to main content" [ref=e2] [cursor=pointer]:
+    - /url: "#main-content"
+  - generic [ref=e4]:
+    - banner [ref=e5]:
+      - generic [ref=e6]:
+        - button "Open menu" [ref=e7] [cursor=pointer]:
+          - img [ref=e8]
+          - generic [ref=e9]: Open menu
+        - generic [ref=e10]: Smile Hub Dental
+      - generic [ref=e11]:
+        - button "Toggle theme" [ref=e356] [cursor=pointer]:
+          - img [ref=e357]
+          - img
+          - generic [ref=e363]: Toggle theme
+        - button "Notifications" [ref=e12] [cursor=pointer]:
+          - img [ref=e13]
+          - generic [ref=e16]: Notifications
+        - button "MM" [ref=e17] [cursor=pointer]:
+          - generic [ref=e19]: MM
+    - main [ref=e21]:
+      - generic [ref=e22]:
+        - generic [ref=e23]:
+          - heading "Calendar" [level=1] [ref=e24]
+          - paragraph [ref=e25]: View your appointment schedule and business hours
+        - generic [ref=e26]:
+          - generic [ref=e27]:
+            - generic [ref=e28]:
+              - heading "Today's Appointments" [level=3] [ref=e29]
+              - img [ref=e30]
+            - generic [ref=e33]: "3"
+          - generic [ref=e34]:
+            - generic [ref=e35]:
+              - heading "This Week" [level=3] [ref=e36]
+              - img [ref=e37]
+            - generic [ref=e40]: "5"
+          - generic [ref=e41]:
+            - generic [ref=e42]:
+              - heading "This Month" [level=3] [ref=e43]
+              - img [ref=e44]
+            - generic [ref=e48]: "19"
+        - generic [ref=e50]:
+          - img [ref=e51]
+          - generic [ref=e53]:
+            - paragraph [ref=e54]: Calendar not connected
+            - paragraph [ref=e55]: Connect your Cal.com calendar to enable appointment booking.
+          - link "Connect Calendar" [ref=e56] [cursor=pointer]:
+            - /url: /settings/calendar
+        - generic [ref=e57]:
+          - generic [ref=e58]:
+            - generic [ref=e59]:
+              - generic [ref=e60]:
+                - button [ref=e61] [cursor=pointer]:
+                  - img [ref=e62]
+                - button "April 2026" [ref=e64] [cursor=pointer]
+                - button [ref=e65] [cursor=pointer]:
+                  - img [ref=e66]
+              - button "Today" [ref=e68] [cursor=pointer]
+            - generic [ref=e70]:
+              - generic [ref=e71]:
+                - generic [ref=e72]: Mo
+                - generic [ref=e73]: Tu
+                - generic [ref=e74]: We
+                - generic [ref=e75]: Th
+                - generic [ref=e76]: Fr
+                - generic [ref=e77]: Sa
+                - generic [ref=e78]: Su
+              - generic [ref=e79]:
+                - button "30" [ref=e80] [cursor=pointer]:
+                  - generic [ref=e81]: "30"
+                - button "31" [ref=e82] [cursor=pointer]:
+                  - generic [ref=e83]: "31"
+                - button "1 3" [ref=e84] [cursor=pointer]:
+                  - generic [ref=e85]: "1"
+                  - generic [ref=e88]: "3"
+                - button "2 2" [ref=e89] [cursor=pointer]:
+                  - generic [ref=e90]: "2"
+                  - generic [ref=e93]: "2"
+                - button "3" [ref=e94] [cursor=pointer]:
+                  - generic [ref=e95]: "3"
+                - button "4" [ref=e98] [cursor=pointer]:
+                  - generic [ref=e99]: "4"
+                - button "5" [ref=e100] [cursor=pointer]:
+                  - generic [ref=e101]: "5"
+                - button "6" [ref=e102] [cursor=pointer]:
+                  - generic [ref=e103]: "6"
+                - button "7" [ref=e104] [cursor=pointer]:
+                  - generic [ref=e105]: "7"
+                - button "8" [ref=e106] [cursor=pointer]:
+                  - generic [ref=e107]: "8"
+                - button "9" [ref=e108] [cursor=pointer]:
+                  - generic [ref=e109]: "9"
+                - button "10" [ref=e110] [cursor=pointer]:
+                  - generic [ref=e111]: "10"
+                - button "11" [ref=e112] [cursor=pointer]:
+                  - generic [ref=e113]: "11"
+                - button "12" [ref=e114] [cursor=pointer]:
+                  - generic [ref=e115]: "12"
+                - button "13" [ref=e116] [cursor=pointer]:
+                  - generic [ref=e117]: "13"
+                - button "14" [ref=e118] [cursor=pointer]:
+                  - generic [ref=e119]: "14"
+                - button "15" [ref=e120] [cursor=pointer]:
+                  - generic [ref=e121]: "15"
+                - button "16 3" [ref=e122] [cursor=pointer]:
+                  - generic [ref=e123]: "16"
+                  - generic [ref=e126]: "3"
+                - button "17 2" [ref=e127] [cursor=pointer]:
+                  - generic [ref=e128]: "17"
+                  - generic [ref=e131]: "2"
+                - button "18" [ref=e132] [cursor=pointer]:
+                  - generic [ref=e133]: "18"
+                - button "19" [ref=e134] [cursor=pointer]:
+                  - generic [ref=e135]: "19"
+                - button "20 4" [ref=e136] [cursor=pointer]:
+                  - generic [ref=e137]: "20"
+                  - generic [ref=e140]: "4"
+                - button "21 2" [ref=e141] [cursor=pointer]:
+                  - generic [ref=e142]: "21"
+                  - generic [ref=e145]: "2"
+                - button "22" [ref=e146] [cursor=pointer]:
+                  - generic [ref=e147]: "22"
+                - button "23" [ref=e150] [cursor=pointer]:
+                  - generic [ref=e151]: "23"
+                - button "24" [ref=e152] [cursor=pointer]:
+                  - generic [ref=e153]: "24"
+                - button "25" [ref=e156] [cursor=pointer]:
+                  - generic [ref=e157]: "25"
+                - button "26" [ref=e158] [cursor=pointer]:
+                  - generic [ref=e159]: "26"
+                - button "27" [ref=e160] [cursor=pointer]:
+                  - generic [ref=e161]: "27"
+                - button "28" [ref=e162] [cursor=pointer]:
+                  - generic [ref=e163]: "28"
+                - button "29" [ref=e164] [cursor=pointer]:
+                  - generic [ref=e165]: "29"
+                - button "30" [ref=e166] [cursor=pointer]:
+                  - generic [ref=e167]: "30"
+                - button "1" [ref=e168] [cursor=pointer]:
+                  - generic [ref=e169]: "1"
+                - button "2" [ref=e170] [cursor=pointer]:
+                  - generic [ref=e171]: "2"
+                - button "3" [ref=e172] [cursor=pointer]:
+                  - generic [ref=e173]: "3"
+          - generic [ref=e174]:
+            - generic [ref=e175]:
+              - heading "Thursday, April 16, 2026" [level=3] [ref=e176]
+              - generic [ref=e178]:
+                - img [ref=e179]
+                - text: Open 8:00 AM – 5:00 PM
+            - generic [ref=e186]:
+              - button "8:00 AM - 8:30 AM confirmed Jamie Lee Lee +1 (620) 302-9077" [ref=e187] [cursor=pointer]:
+                - generic [ref=e188]:
+                  - generic [ref=e189]: 8:00 AM - 8:30 AM
+                  - generic [ref=e190]: confirmed
+                - generic [ref=e191]:
+                  - generic [ref=e192]:
+                    - img [ref=e193]
+                    - generic [ref=e196]: Jamie Lee Lee
+                  - generic [ref=e197]:
+                    - img [ref=e198]
+                    - generic [ref=e200]: +1 (620) 302-9077
+              - button "9:00 AM - 9:45 AM confirmed Margaret Wilson +1 (620) 302-9077" [ref=e201] [cursor=pointer]:
+                - generic [ref=e202]:
+                  - generic [ref=e203]: 9:00 AM - 9:45 AM
+                  - generic [ref=e204]: confirmed
+                - generic [ref=e205]:
+                  - generic [ref=e206]:
+                    - img [ref=e207]
+                    - generic [ref=e210]: Margaret Wilson
+                  - generic [ref=e211]:
+                    - img [ref=e212]
+                    - generic [ref=e214]: +1 (620) 302-9077
+              - button "9:00 AM - 9:45 AM confirmed Ahmad Muhammad (050) 123-4567" [ref=e215] [cursor=pointer]:
+                - generic [ref=e216]:
+                  - generic [ref=e217]: 9:00 AM - 9:45 AM
+                  - generic [ref=e218]: confirmed
+                - generic [ref=e219]:
+                  - generic [ref=e220]:
+                    - img [ref=e221]
+                    - generic [ref=e224]: Ahmad Muhammad
+                  - generic [ref=e225]:
+                    - img [ref=e226]
+                    - generic [ref=e228]: (050) 123-4567
+        - generic [ref=e229]:
+          - generic [ref=e230]:
+            - heading "Upcoming Appointments" [level=3] [ref=e231]
+            - paragraph [ref=e232]: Next 7 days
+          - generic [ref=e234]:
+            - button "Thu 16 Jamie Lee Lee 8:00 AM - 8:30 AM confirmed" [ref=e235] [cursor=pointer]:
+              - generic [ref=e236]:
+                - generic [ref=e237]: Thu
+                - generic [ref=e238]: "16"
+              - generic [ref=e239]:
+                - paragraph [ref=e240]: Jamie Lee Lee
+                - paragraph [ref=e241]: 8:00 AM - 8:30 AM
+              - generic [ref=e242]: confirmed
+            - button "Thu 16 Margaret Wilson 9:00 AM - 9:45 AM confirmed" [ref=e243] [cursor=pointer]:
+              - generic [ref=e244]:
+                - generic [ref=e245]: Thu
+                - generic [ref=e246]: "16"
+              - generic [ref=e247]:
+                - paragraph [ref=e248]: Margaret Wilson
+                - paragraph [ref=e249]: 9:00 AM - 9:45 AM
+              - generic [ref=e250]: confirmed
+            - button "Thu 16 Ahmad Muhammad 9:00 AM - 9:45 AM confirmed" [ref=e251] [cursor=pointer]:
+              - generic [ref=e252]:
+                - generic [ref=e253]: Thu
+                - generic [ref=e254]: "16"
+              - generic [ref=e255]:
+                - paragraph [ref=e256]: Ahmad Muhammad
+                - paragraph [ref=e257]: 9:00 AM - 9:45 AM
+              - generic [ref=e258]: confirmed
+            - button "Fri 17 Pat Nguyen 9:00 AM - 9:45 AM confirmed" [ref=e259] [cursor=pointer]:
+              - generic [ref=e260]:
+                - generic [ref=e261]: Fri
+                - generic [ref=e262]: "17"
+              - generic [ref=e263]:
+                - paragraph [ref=e264]: Pat Nguyen
+                - paragraph [ref=e265]: 9:00 AM - 9:45 AM
+              - generic [ref=e266]: confirmed
+            - button "Fri 17 Pat Nguyen 9:00 AM - 9:45 AM confirmed" [ref=e267] [cursor=pointer]:
+              - generic [ref=e268]:
+                - generic [ref=e269]: Fri
+                - generic [ref=e270]: "17"
+              - generic [ref=e271]:
+                - paragraph [ref=e272]: Pat Nguyen
+                - paragraph [ref=e273]: 9:00 AM - 9:45 AM
+              - generic [ref=e274]: confirmed
+            - button "Mon 20 Michael Makoul 9:00 AM - 9:45 AM confirmed" [ref=e275] [cursor=pointer]:
+              - generic [ref=e276]:
+                - generic [ref=e277]: Mon
+                - generic [ref=e278]: "20"
+              - generic [ref=e279]:
+                - paragraph [ref=e280]: Michael Makoul
+                - paragraph [ref=e281]: 9:00 AM - 9:45 AM
+              - generic [ref=e282]: confirmed
+            - button "Mon 20 Kate Morrison 11:00 AM - 11:45 AM confirmed" [ref=e283] [cursor=pointer]:
+              - generic [ref=e284]:
+                - generic [ref=e285]: Mon
+                - generic [ref=e286]: "20"
+              - generic [ref=e287]:
+                - paragraph [ref=e288]: Kate Morrison
+                - paragraph [ref=e289]: 11:00 AM - 11:45 AM
+              - generic [ref=e290]: confirmed
+            - button "Mon 20 Muhammad Al Rashid Ibn Khalid 12:30 PM - 1:15 PM confirmed" [ref=e291] [cursor=pointer]:
+              - generic [ref=e292]:
+                - generic [ref=e293]: Mon
+                - generic [ref=e294]: "20"
+              - generic [ref=e295]:
+                - paragraph [ref=e296]: Muhammad Al Rashid Ibn Khalid
+                - paragraph [ref=e297]: 12:30 PM - 1:15 PM
+              - generic [ref=e298]: confirmed
+            - button "Mon 20 Tommy Nguyen 3:00 PM - 3:45 PM confirmed" [ref=e299] [cursor=pointer]:
+              - generic [ref=e300]:
+                - generic [ref=e301]: Mon
+                - generic [ref=e302]: "20"
+              - generic [ref=e303]:
+                - paragraph [ref=e304]: Tommy Nguyen
+                - paragraph [ref=e305]: 3:00 PM - 3:45 PM
+              - generic [ref=e306]: confirmed
+            - button "Tue 21 Sam Taylor 9:00 AM - 9:45 AM confirmed" [ref=e307] [cursor=pointer]:
+              - generic [ref=e308]:
+                - generic [ref=e309]: Tue
+                - generic [ref=e310]: "21"
+              - generic [ref=e311]:
+                - paragraph [ref=e312]: Sam Taylor
+                - paragraph [ref=e313]: 9:00 AM - 9:45 AM
+              - generic [ref=e314]: confirmed
+            - button "Tue 21 Jordan Mitchell 9:00 AM - 9:45 AM confirmed" [ref=e315] [cursor=pointer]:
+              - generic [ref=e316]:
+                - generic [ref=e317]: Tue
+                - generic [ref=e318]: "21"
+              - generic [ref=e319]:
+                - paragraph [ref=e320]: Jordan Mitchell
+                - paragraph [ref=e321]: 9:00 AM - 9:45 AM
+              - generic [ref=e322]: confirmed
+            - button "Wed 22 Emma Wilson 2:00 PM - 2:45 PM confirmed" [ref=e323] [cursor=pointer]:
+              - generic [ref=e324]:
+                - generic [ref=e325]: Wed
+                - generic [ref=e326]: "22"
+              - generic [ref=e327]:
+                - paragraph [ref=e328]: Emma Wilson
+                - paragraph [ref=e329]: 2:00 PM - 2:45 PM
+              - generic [ref=e330]: confirmed
+    - navigation [ref=e331]:
+      - generic [ref=e332]:
+        - link "Home" [ref=e333] [cursor=pointer]:
+          - /url: /dashboard
+          - img [ref=e334]
+          - text: Home
+        - link "Assistants" [ref=e339] [cursor=pointer]:
+          - /url: /assistants
+          - img [ref=e340]
+          - text: Assistants
+        - link "Calls" [ref=e343] [cursor=pointer]:
+          - /url: /calls
+          - img [ref=e344]
+          - text: Calls
+        - link "Analytics" [ref=e348] [cursor=pointer]:
+          - /url: /analytics
+          - img [ref=e349]
+          - text: Analytics
+        - button "More" [ref=e351] [cursor=pointer]:
+          - img [ref=e352]
+          - text: More
+  - region "Notifications (F8)":
+    - list
+  - button "Open Next.js Dev Tools" [ref=e369] [cursor=pointer]:
+    - img [ref=e370]
+  - alert [ref=e373]

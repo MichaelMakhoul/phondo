@@ -1,0 +1,638 @@
+- generic [active] [ref=e1]:
+  - link "Skip to main content" [ref=e2] [cursor=pointer]:
+    - /url: "#main-content"
+  - generic [ref=e4]:
+    - banner [ref=e5]:
+      - generic [ref=e6]:
+        - button "Open menu" [ref=e7] [cursor=pointer]:
+          - img [ref=e8]
+          - generic [ref=e9]: Open menu
+        - generic [ref=e10]: Smile Hub Dental
+      - generic [ref=e11]:
+        - button "Toggle theme" [ref=e12] [cursor=pointer]:
+          - img [ref=e13]
+          - img
+          - generic [ref=e19]: Toggle theme
+        - button "Notifications" [ref=e20] [cursor=pointer]:
+          - img [ref=e21]
+          - generic [ref=e24]: Notifications
+        - button "MM" [ref=e25] [cursor=pointer]:
+          - generic [ref=e27]: MM
+    - main [ref=e29]:
+      - generic [ref=e30]:
+        - generic [ref=e31]:
+          - heading "Call History" [level=1] [ref=e32]
+          - paragraph [ref=e33]: View and analyze all your AI receptionist calls
+        - generic [ref=e34]:
+          - generic [ref=e35]:
+            - heading "Total Calls" [level=3] [ref=e37]
+            - generic [ref=e38]: "123"
+          - generic [ref=e39]:
+            - heading "Completed" [level=3] [ref=e41]
+            - generic [ref=e42]: "107"
+          - generic [ref=e43]:
+            - heading "Total Minutes" [level=3] [ref=e45]
+            - generic [ref=e46]: "273"
+          - generic [ref=e47]:
+            - heading "Spam Blocked" [level=3] [ref=e49]:
+              - img [ref=e50]
+              - text: Spam Blocked
+            - generic [ref=e52]: "0"
+        - generic [ref=e53]:
+          - tablist [ref=e54]:
+            - tab "All Calls (50)" [selected] [ref=e55] [cursor=pointer]:
+              - img [ref=e56]
+              - text: All Calls (50)
+            - tab "Spam (0)" [ref=e59] [cursor=pointer]:
+              - img [ref=e60]
+              - text: Spam (0)
+          - tabpanel "All Calls (50)" [ref=e62]:
+            - generic [ref=e63]:
+              - generic [ref=e64]:
+                - heading "Recent Calls" [level=3] [ref=e65]
+                - paragraph [ref=e66]: 50 legitimate calls
+              - generic [ref=e68]:
+                - link "Morgan Brooks Apr 16, 3:28 AM · 3:01 completed" [ref=e69] [cursor=pointer]:
+                  - /url: /calls/fc4bd7b0-5387-40ff-a822-aef7c9dd8b0e
+                  - generic [ref=e70]:
+                    - img [ref=e71]
+                    - generic [ref=e75]:
+                      - paragraph [ref=e76]: Morgan Brooks
+                      - paragraph [ref=e77]: Apr 16, 3:28 AM · 3:01
+                  - generic [ref=e78]:
+                    - generic [ref=e79]: completed
+                    - img [ref=e80]
+                    - img [ref=e82]
+                - link "Kate Morrison Apr 16, 3:25 AM · 3:32 completed" [ref=e84] [cursor=pointer]:
+                  - /url: /calls/286cb547-9bd4-4ef3-a6c3-15b50ebfc545
+                  - generic [ref=e85]:
+                    - img [ref=e86]
+                    - generic [ref=e90]:
+                      - paragraph [ref=e91]: Kate Morrison
+                      - paragraph [ref=e92]: Apr 16, 3:25 AM · 3:32
+                  - generic [ref=e93]:
+                    - generic [ref=e94]: completed
+                    - img [ref=e95]
+                    - img [ref=e97]
+                - link "+1 (620) 302-9077 Apr 16, 2:52 AM · 1:00 completed" [ref=e99] [cursor=pointer]:
+                  - /url: /calls/2544a1f0-5d9f-4a7e-86df-24e585f3210c
+                  - generic [ref=e100]:
+                    - img [ref=e101]
+                    - generic [ref=e105]:
+                      - paragraph [ref=e106]: +1 (620) 302-9077
+                      - paragraph [ref=e107]: Apr 16, 2:52 AM · 1:00
+                  - generic [ref=e108]:
+                    - generic [ref=e109]: completed
+                    - img [ref=e110]
+                    - img [ref=e112]
+                - link "Paten Nguyen Apr 16, 2:47 AM · 2:54 completed" [ref=e114] [cursor=pointer]:
+                  - /url: /calls/e08cab72-c146-42e8-950b-f0659ae17d42
+                  - generic [ref=e115]:
+                    - img [ref=e116]
+                    - generic [ref=e120]:
+                      - paragraph [ref=e121]: Paten Nguyen
+                      - paragraph [ref=e122]: Apr 16, 2:47 AM · 2:54
+                  - generic [ref=e123]:
+                    - generic [ref=e124]: completed
+                    - img [ref=e125]
+                    - img [ref=e127]
+                - link "Kate Morrison Apr 16, 2:45 AM · 1:49 failed" [ref=e129] [cursor=pointer]:
+                  - /url: /calls/e3932492-df13-462a-9d2e-ed5aae762a45
+                  - generic [ref=e130]:
+                    - img [ref=e131]
+                    - generic [ref=e135]:
+                      - paragraph [ref=e136]: Kate Morrison
+                      - paragraph [ref=e137]: Apr 16, 2:45 AM · 1:49
+                  - generic [ref=e138]:
+                    - generic [ref=e139]: failed
+                    - img [ref=e140]
+                    - img [ref=e142]
+                - link "Emma Wilson Apr 16, 2:22 AM · 1:40 completed" [ref=e144] [cursor=pointer]:
+                  - /url: /calls/48dc00e4-5d2f-473e-b00b-85e91d8565cb
+                  - generic [ref=e145]:
+                    - img [ref=e146]
+                    - generic [ref=e150]:
+                      - paragraph [ref=e151]: Emma Wilson
+                      - paragraph [ref=e152]: Apr 16, 2:22 AM · 1:40
+                  - generic [ref=e153]:
+                    - generic [ref=e154]: completed
+                    - img [ref=e155]
+                    - img [ref=e157]
+                - link "Mohammed Abdullah Al Rashid Ibn Khalid Apr 16, 1:53 AM · 2:06 completed" [ref=e159] [cursor=pointer]:
+                  - /url: /calls/73f79765-28d2-40d4-9c3e-6628b95268da
+                  - generic [ref=e160]:
+                    - img [ref=e161]
+                    - generic [ref=e165]:
+                      - paragraph [ref=e166]: Mohammed Abdullah Al Rashid Ibn Khalid
+                      - paragraph [ref=e167]: Apr 16, 1:53 AM · 2:06
+                  - generic [ref=e168]:
+                    - generic [ref=e169]: completed
+                    - img [ref=e170]
+                    - img [ref=e172]
+                - link "Sam Apr 16, 1:48 AM · 4:02 completed" [ref=e174] [cursor=pointer]:
+                  - /url: /calls/f52059ba-0f8d-4e3f-a979-63cb3d06bc36
+                  - generic [ref=e175]:
+                    - img [ref=e176]
+                    - generic [ref=e180]:
+                      - paragraph [ref=e181]: Sam
+                      - paragraph [ref=e182]: Apr 16, 1:48 AM · 4:02
+                  - generic [ref=e183]:
+                    - generic [ref=e184]: completed
+                    - img [ref=e185]
+                    - img [ref=e187]
+                - link "Jordan Mitchell Apr 16, 1:47 AM · 1:47 completed" [ref=e189] [cursor=pointer]:
+                  - /url: /calls/84deea9b-1491-44cd-b191-56f63063f88f
+                  - generic [ref=e190]:
+                    - img [ref=e191]
+                    - generic [ref=e195]:
+                      - paragraph [ref=e196]: Jordan Mitchell
+                      - paragraph [ref=e197]: Apr 16, 1:47 AM · 1:47
+                  - generic [ref=e198]:
+                    - generic [ref=e199]: completed
+                    - img [ref=e200]
+                    - img [ref=e202]
+                - link "+1 (620) 302-9077 Apr 16, 1:45 AM · 1:34 completed" [ref=e204] [cursor=pointer]:
+                  - /url: /calls/253d2dcb-f67f-486a-a542-016a1ab6f84e
+                  - generic [ref=e205]:
+                    - img [ref=e206]
+                    - generic [ref=e210]:
+                      - paragraph [ref=e211]: +1 (620) 302-9077
+                      - paragraph [ref=e212]: Apr 16, 1:45 AM · 1:34
+                  - generic [ref=e213]:
+                    - generic [ref=e214]: completed
+                    - img [ref=e215]
+                    - img [ref=e217]
+                - link "Emma Wilson Apr 16, 1:43 AM · 1:58 completed" [ref=e219] [cursor=pointer]:
+                  - /url: /calls/3cc7477a-73a2-417a-87c6-5de150f85a36
+                  - generic [ref=e220]:
+                    - img [ref=e221]
+                    - generic [ref=e225]:
+                      - paragraph [ref=e226]: Emma Wilson
+                      - paragraph [ref=e227]: Apr 16, 1:43 AM · 1:58
+                  - generic [ref=e228]:
+                    - generic [ref=e229]: completed
+                    - img [ref=e230]
+                    - img [ref=e232]
+                - link "test user Apr 16, 1:42 AM · 1:01 completed" [ref=e234] [cursor=pointer]:
+                  - /url: /calls/f1120d50-e037-421f-8b95-a44500eb4001
+                  - generic [ref=e235]:
+                    - img [ref=e236]
+                    - generic [ref=e240]:
+                      - paragraph [ref=e241]: test user
+                      - paragraph [ref=e242]: Apr 16, 1:42 AM · 1:01
+                  - generic [ref=e243]:
+                    - generic [ref=e244]: completed
+                    - img [ref=e245]
+                    - img [ref=e247]
+                - link "Alex Apr 16, 1:40 AM · 0:53 completed" [ref=e249] [cursor=pointer]:
+                  - /url: /calls/8d3c3741-acd9-4b28-ac21-4127cea1bf7b
+                  - generic [ref=e250]:
+                    - img [ref=e251]
+                    - generic [ref=e255]:
+                      - paragraph [ref=e256]: Alex
+                      - paragraph [ref=e257]: Apr 16, 1:40 AM · 0:53
+                  - generic [ref=e258]:
+                    - generic [ref=e259]: completed
+                    - img [ref=e260]
+                    - img [ref=e262]
+                - link "+1 (620) 302-9077 Apr 16, 12:35 AM · 0:45 completed" [ref=e264] [cursor=pointer]:
+                  - /url: /calls/8984c9e4-ffe2-4d47-9112-faaa858e7dea
+                  - generic [ref=e265]:
+                    - img [ref=e266]
+                    - generic [ref=e270]:
+                      - paragraph [ref=e271]: +1 (620) 302-9077
+                      - paragraph [ref=e272]: Apr 16, 12:35 AM · 0:45
+                  - generic [ref=e273]:
+                    - generic [ref=e274]: completed
+                    - img [ref=e275]
+                    - img [ref=e277]
+                - link "+1 (620) 302-9077 Apr 16, 12:35 AM · 0:22 completed" [ref=e279] [cursor=pointer]:
+                  - /url: /calls/82b8c122-a0ad-40df-8300-df99289d4d1f
+                  - generic [ref=e280]:
+                    - img [ref=e281]
+                    - generic [ref=e285]:
+                      - paragraph [ref=e286]: +1 (620) 302-9077
+                      - paragraph [ref=e287]: Apr 16, 12:35 AM · 0:22
+                  - generic [ref=e288]:
+                    - generic [ref=e289]: completed
+                    - img [ref=e290]
+                    - img [ref=e292]
+                - link "+1 (620) 302-9077 Apr 16, 12:34 AM · 0:27 completed" [ref=e294] [cursor=pointer]:
+                  - /url: /calls/4c13e6d0-6b20-4d14-afa9-ceb6dac6c1a6
+                  - generic [ref=e295]:
+                    - img [ref=e296]
+                    - generic [ref=e300]:
+                      - paragraph [ref=e301]: +1 (620) 302-9077
+                      - paragraph [ref=e302]: Apr 16, 12:34 AM · 0:27
+                  - generic [ref=e303]:
+                    - generic [ref=e304]: completed
+                    - img [ref=e305]
+                    - img [ref=e307]
+                - link "+1 (620) 302-9077 Apr 16, 12:33 AM · 0:26 completed" [ref=e309] [cursor=pointer]:
+                  - /url: /calls/3f5eb06a-64cd-45b4-ae86-92700ec36a78
+                  - generic [ref=e310]:
+                    - img [ref=e311]
+                    - generic [ref=e315]:
+                      - paragraph [ref=e316]: +1 (620) 302-9077
+                      - paragraph [ref=e317]: Apr 16, 12:33 AM · 0:26
+                  - generic [ref=e318]:
+                    - generic [ref=e319]: completed
+                    - img [ref=e320]
+                    - img [ref=e322]
+                - link "+1 (620) 302-9077 Apr 16, 12:33 AM · 0:28 completed" [ref=e324] [cursor=pointer]:
+                  - /url: /calls/2069f846-670e-4413-b07b-3039b4f40e29
+                  - generic [ref=e325]:
+                    - img [ref=e326]
+                    - generic [ref=e330]:
+                      - paragraph [ref=e331]: +1 (620) 302-9077
+                      - paragraph [ref=e332]: Apr 16, 12:33 AM · 0:28
+                  - generic [ref=e333]:
+                    - generic [ref=e334]: completed
+                    - img [ref=e335]
+                    - img [ref=e337]
+                - link "Linda Nguyen Apr 15, 11:38 PM · 2:15 completed" [ref=e339] [cursor=pointer]:
+                  - /url: /calls/830f3044-b1de-45af-a544-7700b9c6d377
+                  - generic [ref=e340]:
+                    - img [ref=e341]
+                    - generic [ref=e345]:
+                      - paragraph [ref=e346]: Linda Nguyen
+                      - paragraph [ref=e347]: Apr 15, 11:38 PM · 2:15
+                  - generic [ref=e348]:
+                    - generic [ref=e349]: completed
+                    - img [ref=e350]
+                    - img [ref=e352]
+                - link "Margaret Wilson Apr 15, 11:35 PM · 3:02 completed" [ref=e354] [cursor=pointer]:
+                  - /url: /calls/df37e3ca-26ea-4080-a1d6-60bdb54618bd
+                  - generic [ref=e355]:
+                    - img [ref=e356]
+                    - generic [ref=e360]:
+                      - paragraph [ref=e361]: Margaret Wilson
+                      - paragraph [ref=e362]: Apr 15, 11:35 PM · 3:02
+                  - generic [ref=e363]:
+                    - generic [ref=e364]: completed
+                    - img [ref=e365]
+                    - img [ref=e367]
+                - link "Alex Apr 15, 11:33 PM · 1:35 completed" [ref=e369] [cursor=pointer]:
+                  - /url: /calls/ccefe954-fcd8-40bf-b230-3fe2b091b032
+                  - generic [ref=e370]:
+                    - img [ref=e371]
+                    - generic [ref=e375]:
+                      - paragraph [ref=e376]: Alex
+                      - paragraph [ref=e377]: Apr 15, 11:33 PM · 1:35
+                  - generic [ref=e378]:
+                    - generic [ref=e379]: completed
+                    - img [ref=e380]
+                    - img [ref=e382]
+                - link "+1 (620) 302-9077 Apr 15, 11:05 PM · 1:09 completed" [ref=e384] [cursor=pointer]:
+                  - /url: /calls/89fff222-9e18-4c04-b66d-9deb3f5e6b25
+                  - generic [ref=e385]:
+                    - img [ref=e386]
+                    - generic [ref=e390]:
+                      - paragraph [ref=e391]: +1 (620) 302-9077
+                      - paragraph [ref=e392]: Apr 15, 11:05 PM · 1:09
+                  - generic [ref=e393]:
+                    - generic [ref=e394]: completed
+                    - img [ref=e395]
+                    - img [ref=e397]
+                - link "Jamie Lee Apr 15, 11:02 PM · 2:24 completed" [ref=e399] [cursor=pointer]:
+                  - /url: /calls/3ae15167-6f71-43c3-b0b7-2157b57f731e
+                  - generic [ref=e400]:
+                    - img [ref=e401]
+                    - generic [ref=e405]:
+                      - paragraph [ref=e406]: Jamie Lee
+                      - paragraph [ref=e407]: Apr 15, 11:02 PM · 2:24
+                  - generic [ref=e408]:
+                    - generic [ref=e409]: completed
+                    - img [ref=e410]
+                    - img [ref=e412]
+                - link "Ahmad Mohamed Apr 15, 10:56 PM · 2:33 completed" [ref=e414] [cursor=pointer]:
+                  - /url: /calls/31b50618-91f0-44e9-b5d7-458e3d21128e
+                  - generic [ref=e415]:
+                    - img [ref=e416]
+                    - generic [ref=e420]:
+                      - paragraph [ref=e421]: Ahmad Mohamed
+                      - paragraph [ref=e422]: Apr 15, 10:56 PM · 2:33
+                  - generic [ref=e423]:
+                    - generic [ref=e424]: completed
+                    - img [ref=e425]
+                    - img [ref=e427]
+                - link "+1 (620) 302-9077 Apr 15, 10:55 PM · 1:19 completed" [ref=e429] [cursor=pointer]:
+                  - /url: /calls/10080c01-b258-4b0d-8614-ca0826af17dc
+                  - generic [ref=e430]:
+                    - img [ref=e431]
+                    - generic [ref=e435]:
+                      - paragraph [ref=e436]: +1 (620) 302-9077
+                      - paragraph [ref=e437]: Apr 15, 10:55 PM · 1:19
+                  - generic [ref=e438]:
+                    - generic [ref=e439]: completed
+                    - img [ref=e440]
+                    - img [ref=e442]
+                - link "Linda Nguyen Apr 15, 10:52 PM · 2:03 completed" [ref=e444] [cursor=pointer]:
+                  - /url: /calls/8a20ff9e-6705-41c1-86d1-63428a805613
+                  - generic [ref=e445]:
+                    - img [ref=e446]
+                    - generic [ref=e450]:
+                      - paragraph [ref=e451]: Linda Nguyen
+                      - paragraph [ref=e452]: Apr 15, 10:52 PM · 2:03
+                  - generic [ref=e453]:
+                    - generic [ref=e454]: completed
+                    - img [ref=e455]
+                    - img [ref=e457]
+                - link "+1 (620) 302-9077 Apr 15, 10:52 PM · 0:17 completed" [ref=e459] [cursor=pointer]:
+                  - /url: /calls/a65b4606-d3aa-47bb-83fb-e82f3fd7fe8d
+                  - generic [ref=e460]:
+                    - img [ref=e461]
+                    - generic [ref=e465]:
+                      - paragraph [ref=e466]: +1 (620) 302-9077
+                      - paragraph [ref=e467]: Apr 15, 10:52 PM · 0:17
+                  - generic [ref=e468]:
+                    - generic [ref=e469]: completed
+                    - img [ref=e470]
+                    - img [ref=e472]
+                - link "+1 (620) 302-9077 Apr 15, 10:51 PM · 0:29 completed" [ref=e474] [cursor=pointer]:
+                  - /url: /calls/27aafec0-9910-4dbe-8490-48eb51cee9b3
+                  - generic [ref=e475]:
+                    - img [ref=e476]
+                    - generic [ref=e480]:
+                      - paragraph [ref=e481]: +1 (620) 302-9077
+                      - paragraph [ref=e482]: Apr 15, 10:51 PM · 0:29
+                  - generic [ref=e483]:
+                    - generic [ref=e484]: completed
+                    - img [ref=e485]
+                    - img [ref=e487]
+                - link "+1 (620) 302-9077 Apr 15, 10:50 PM · 0:47 completed" [ref=e489] [cursor=pointer]:
+                  - /url: /calls/3c5c1320-3eac-4eb8-af6d-bcf482146ed5
+                  - generic [ref=e490]:
+                    - img [ref=e491]
+                    - generic [ref=e495]:
+                      - paragraph [ref=e496]: +1 (620) 302-9077
+                      - paragraph [ref=e497]: Apr 15, 10:50 PM · 0:47
+                  - generic [ref=e498]:
+                    - generic [ref=e499]: completed
+                    - img [ref=e500]
+                    - img [ref=e502]
+                - link "Jamie Lee Apr 15, 10:49 PM · 1:22 completed" [ref=e504] [cursor=pointer]:
+                  - /url: /calls/c9a69af3-8432-4796-9bc6-c37b685d9933
+                  - generic [ref=e505]:
+                    - img [ref=e506]
+                    - generic [ref=e510]:
+                      - paragraph [ref=e511]: Jamie Lee
+                      - paragraph [ref=e512]: Apr 15, 10:49 PM · 1:22
+                  - generic [ref=e513]:
+                    - generic [ref=e514]: completed
+                    - img [ref=e515]
+                    - img [ref=e517]
+                - link "Sam Taylor Apr 15, 10:46 PM · 2:20 completed" [ref=e519] [cursor=pointer]:
+                  - /url: /calls/327f3549-f2f0-4a8b-bf2a-9c394dc2af6c
+                  - generic [ref=e520]:
+                    - img [ref=e521]
+                    - generic [ref=e525]:
+                      - paragraph [ref=e526]: Sam Taylor
+                      - paragraph [ref=e527]: Apr 15, 10:46 PM · 2:20
+                  - generic [ref=e528]:
+                    - generic [ref=e529]: completed
+                    - img [ref=e530]
+                    - img [ref=e532]
+                - link "Ahmed Apr 15, 10:17 PM · 1:59 completed" [ref=e534] [cursor=pointer]:
+                  - /url: /calls/201c6182-2c5f-4e7a-84cd-98b47d9b7701
+                  - generic [ref=e535]:
+                    - img [ref=e536]
+                    - generic [ref=e540]:
+                      - paragraph [ref=e541]: Ahmed
+                      - paragraph [ref=e542]: Apr 15, 10:17 PM · 1:59
+                  - generic [ref=e543]:
+                    - generic [ref=e544]: completed
+                    - img [ref=e545]
+                    - img [ref=e547]
+                - link "Michael McCool Apr 15, 10:14 PM · 2:49 completed" [ref=e549] [cursor=pointer]:
+                  - /url: /calls/a3efec49-6ee7-4d30-a1d8-1c9741038398
+                  - generic [ref=e550]:
+                    - img [ref=e551]
+                    - generic [ref=e555]:
+                      - paragraph [ref=e556]: Michael McCool
+                      - paragraph [ref=e557]: Apr 15, 10:14 PM · 2:49
+                  - generic [ref=e558]:
+                    - generic [ref=e559]: completed
+                    - img [ref=e560]
+                    - img [ref=e562]
+                - link "Sam Taylor Apr 15, 10:12 PM · 1:49 completed" [ref=e564] [cursor=pointer]:
+                  - /url: /calls/87d1f7fe-190a-4a72-a504-09a29aef0c8e
+                  - generic [ref=e565]:
+                    - img [ref=e566]
+                    - generic [ref=e570]:
+                      - paragraph [ref=e571]: Sam Taylor
+                      - paragraph [ref=e572]: Apr 15, 10:12 PM · 1:49
+                  - generic [ref=e573]:
+                    - generic [ref=e574]: completed
+                    - img [ref=e575]
+                    - img [ref=e577]
+                - link "Alex Apr 15, 10:11 PM · 1:19 completed" [ref=e579] [cursor=pointer]:
+                  - /url: /calls/d17e7f69-1a53-4350-9799-57ef5dc9ee18
+                  - generic [ref=e580]:
+                    - img [ref=e581]
+                    - generic [ref=e585]:
+                      - paragraph [ref=e586]: Alex
+                      - paragraph [ref=e587]: Apr 15, 10:11 PM · 1:19
+                  - generic [ref=e588]:
+                    - generic [ref=e589]: completed
+                    - img [ref=e590]
+                    - img [ref=e592]
+                - link "Ahmed Apr 15, 9:40 PM · 4:01 completed" [ref=e594] [cursor=pointer]:
+                  - /url: /calls/ebeb1311-a2bd-4a6c-bb78-beac1bb737e7
+                  - generic [ref=e595]:
+                    - img [ref=e596]
+                    - generic [ref=e600]:
+                      - paragraph [ref=e601]: Ahmed
+                      - paragraph [ref=e602]: Apr 15, 9:40 PM · 4:01
+                  - generic [ref=e603]:
+                    - generic [ref=e604]: completed
+                    - img [ref=e605]
+                    - img [ref=e607]
+                - link "test caller Apr 15, 9:37 PM · 3:02 completed" [ref=e609] [cursor=pointer]:
+                  - /url: /calls/3a68f009-a684-44fa-9112-7a1b77265065
+                  - generic [ref=e610]:
+                    - img [ref=e611]
+                    - generic [ref=e615]:
+                      - paragraph [ref=e616]: test caller
+                      - paragraph [ref=e617]: Apr 15, 9:37 PM · 3:02
+                  - generic [ref=e618]:
+                    - generic [ref=e619]: completed
+                    - img [ref=e620]
+                    - img [ref=e622]
+                - link "Michael McCool Apr 15, 9:33 PM · 4:01 completed" [ref=e624] [cursor=pointer]:
+                  - /url: /calls/e7baa824-80dd-498a-b939-155bc64749ef
+                  - generic [ref=e625]:
+                    - img [ref=e626]
+                    - generic [ref=e630]:
+                      - paragraph [ref=e631]: Michael McCool
+                      - paragraph [ref=e632]: Apr 15, 9:33 PM · 4:01
+                  - generic [ref=e633]:
+                    - generic [ref=e634]: completed
+                    - img [ref=e635]
+                    - img [ref=e637]
+                - link "+1 (620) 302-9077 Apr 15, 9:30 PM · 3:01 completed" [ref=e639] [cursor=pointer]:
+                  - /url: /calls/58d816fd-3a11-42fa-878b-7e56aac3cea1
+                  - generic [ref=e640]:
+                    - img [ref=e641]
+                    - generic [ref=e645]:
+                      - paragraph [ref=e646]: +1 (620) 302-9077
+                      - paragraph [ref=e647]: Apr 15, 9:30 PM · 3:01
+                  - generic [ref=e648]:
+                    - generic [ref=e649]: completed
+                    - img [ref=e650]
+                    - img [ref=e652]
+                - link "Sam Taylor Apr 15, 9:26 PM · 4:01 completed" [ref=e654] [cursor=pointer]:
+                  - /url: /calls/31f627eb-8494-410c-bcae-36acbd68fa5b
+                  - generic [ref=e655]:
+                    - img [ref=e656]
+                    - generic [ref=e660]:
+                      - paragraph [ref=e661]: Sam Taylor
+                      - paragraph [ref=e662]: Apr 15, 9:26 PM · 4:01
+                  - generic [ref=e663]:
+                    - generic [ref=e664]: completed
+                    - img [ref=e665]
+                    - img [ref=e667]
+                - link "Alex Parker Apr 15, 9:20 PM · 3:02 completed" [ref=e669] [cursor=pointer]:
+                  - /url: /calls/3833d7ed-6de0-48ef-b8da-5f67021a172d
+                  - generic [ref=e670]:
+                    - img [ref=e671]
+                    - generic [ref=e675]:
+                      - paragraph [ref=e676]: Alex Parker
+                      - paragraph [ref=e677]: Apr 15, 9:20 PM · 3:02
+                  - generic [ref=e678]:
+                    - generic [ref=e679]: completed
+                    - img [ref=e680]
+                    - img [ref=e682]
+                - link "+1 (620) 302-9077 Apr 15, 9:09 PM · 0:02 completed" [ref=e684] [cursor=pointer]:
+                  - /url: /calls/11fc57af-cd3c-4425-8456-46f85ef2e6ce
+                  - generic [ref=e685]:
+                    - img [ref=e686]
+                    - generic [ref=e690]:
+                      - paragraph [ref=e691]: +1 (620) 302-9077
+                      - paragraph [ref=e692]: Apr 15, 9:09 PM · 0:02
+                  - generic [ref=e693]:
+                    - generic [ref=e694]: completed
+                    - img [ref=e695]
+                    - img [ref=e697]
+                - link "+61414141883 Apr 15, 7:00 AM · 0:23 completed" [ref=e699] [cursor=pointer]:
+                  - /url: /calls/5bd8fe60-729f-44e9-8685-f2e389376ace
+                  - generic [ref=e700]:
+                    - img [ref=e701]
+                    - generic [ref=e705]:
+                      - paragraph [ref=e706]: "+61414141883"
+                      - paragraph [ref=e707]: Apr 15, 7:00 AM · 0:23
+                  - generic [ref=e708]:
+                    - generic [ref=e709]: completed
+                    - img [ref=e710]
+                    - img [ref=e712]
+                - link "+61414141883 Apr 15, 6:59 AM in-progress" [ref=e714] [cursor=pointer]:
+                  - /url: /calls/67a4c6a4-9f1a-4dd6-994d-9b39e1ee5342
+                  - generic [ref=e715]:
+                    - img [ref=e716]
+                    - generic [ref=e720]:
+                      - paragraph [ref=e721]: "+61414141883"
+                      - paragraph [ref=e722]: Apr 15, 6:59 AM
+                  - generic [ref=e723]:
+                    - generic [ref=e724]: in-progress
+                    - img [ref=e725]
+                    - img [ref=e727]
+                - link "Michael Makhouli Apr 14, 9:37 PM · 7:34 completed" [ref=e729] [cursor=pointer]:
+                  - /url: /calls/3afe9dfd-c14a-47c2-bc49-ddcecde87832
+                  - generic [ref=e730]:
+                    - img [ref=e731]
+                    - generic [ref=e735]:
+                      - paragraph [ref=e736]: Michael Makhouli
+                      - paragraph [ref=e737]: Apr 14, 9:37 PM · 7:34
+                  - generic [ref=e738]:
+                    - generic [ref=e739]: completed
+                    - img [ref=e740]
+                    - img [ref=e742]
+                - link "Michael Apr 14, 5:43 PM · 0:45 completed" [ref=e744] [cursor=pointer]:
+                  - /url: /calls/447801b9-5fe3-4a61-b717-31b0aa327916
+                  - generic [ref=e745]:
+                    - img [ref=e746]
+                    - generic [ref=e750]:
+                      - paragraph [ref=e751]: Michael
+                      - paragraph [ref=e752]: Apr 14, 5:43 PM · 0:45
+                  - generic [ref=e753]:
+                    - generic [ref=e754]: completed
+                    - img [ref=e755]
+                    - img [ref=e757]
+                - link "Michael Makhoul Apr 13, 5:35 AM · 3:39 completed" [ref=e759] [cursor=pointer]:
+                  - /url: /calls/dcf26c57-1ddf-4057-83c8-ec77971cbcbd
+                  - generic [ref=e760]:
+                    - img [ref=e761]
+                    - generic [ref=e765]:
+                      - paragraph [ref=e766]: Michael Makhoul
+                      - paragraph [ref=e767]: Apr 13, 5:35 AM · 3:39
+                  - generic [ref=e768]:
+                    - generic [ref=e769]: completed
+                    - img [ref=e770]
+                    - img [ref=e772]
+                - link "Michael Makhoul Apr 13, 1:18 AM · 4:01 completed" [ref=e774] [cursor=pointer]:
+                  - /url: /calls/f1d93ac0-11d2-4fd2-9ad7-81940a4db6ef
+                  - generic [ref=e775]:
+                    - img [ref=e776]
+                    - generic [ref=e780]:
+                      - paragraph [ref=e781]: Michael Makhoul
+                      - paragraph [ref=e782]: Apr 13, 1:18 AM · 4:01
+                  - generic [ref=e783]:
+                    - generic [ref=e784]: completed
+                    - img [ref=e785]
+                - link "Michael Apr 12, 5:16 PM · 4:04 completed" [ref=e787] [cursor=pointer]:
+                  - /url: /calls/80db9d1b-170f-467c-a274-f313a0b1a576
+                  - generic [ref=e788]:
+                    - img [ref=e789]
+                    - generic [ref=e793]:
+                      - paragraph [ref=e794]: Michael
+                      - paragraph [ref=e795]: Apr 12, 5:16 PM · 4:04
+                  - generic [ref=e796]:
+                    - generic [ref=e797]: completed
+                    - img [ref=e798]
+                - link "Michael Makhoul Apr 12, 5:05 PM · 2:36 completed" [ref=e800] [cursor=pointer]:
+                  - /url: /calls/823a1bae-ab02-4f58-8e3d-1139d4447099
+                  - generic [ref=e801]:
+                    - img [ref=e802]
+                    - generic [ref=e806]:
+                      - paragraph [ref=e807]: Michael Makhoul
+                      - paragraph [ref=e808]: Apr 12, 5:05 PM · 2:36
+                  - generic [ref=e809]:
+                    - generic [ref=e810]: completed
+                    - img [ref=e811]
+    - navigation [ref=e813]:
+      - generic [ref=e814]:
+        - link "Home" [ref=e815] [cursor=pointer]:
+          - /url: /dashboard
+          - img [ref=e816]
+          - text: Home
+        - link "Assistants" [ref=e821] [cursor=pointer]:
+          - /url: /assistants
+          - img [ref=e822]
+          - text: Assistants
+        - link "Calls" [ref=e825] [cursor=pointer]:
+          - /url: /calls
+          - img [ref=e826]
+          - text: Calls
+        - link "Analytics" [ref=e830] [cursor=pointer]:
+          - /url: /analytics
+          - img [ref=e831]
+          - text: Analytics
+        - button "More" [ref=e833] [cursor=pointer]:
+          - img [ref=e834]
+          - text: More
+  - region "Notifications (F8)":
+    - list
+  - generic [ref=e843] [cursor=pointer]:
+    - button "Open Next.js Dev Tools" [ref=e844]:
+      - img [ref=e845]
+    - generic [ref=e848]:
+      - button "Open issues overlay" [ref=e849]:
+        - generic [ref=e850]:
+          - generic [ref=e851]: "1"
+          - generic [ref=e852]: "2"
+        - generic [ref=e853]:
+          - text: Issue
+          - generic [ref=e854]: s
+      - button "Collapse issues badge" [ref=e855]:
+        - img [ref=e856]
+  - alert [ref=e838]
