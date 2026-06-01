@@ -1,0 +1,74 @@
+[    3753ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[    3755ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[   18436ms] [LOG] [Fast Refresh] rebuilding @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/hot-reloader/app/hot-reloader-app.js:196
+[   64258ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[   64300ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[   90385ms] [LOG] [Fast Refresh] done in 71951ms @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/report-hmr-latency.js:13
+[  123727ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[  123737ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[  160915ms] [LOG] [Client Instrumentation Hook] Slow execution detected: 1224ms (Note: Code download overhead is not included in this measurement) @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/lib/require-instrumentation-client.js:18
+[  161088ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/compiled/react-dom/cjs/react-dom-client.development.js:25630
+[  161737ms] [WARNING] [@sentry/nextjs] You are calling `Sentry.init()` more than once on the client. This can happen if you have both a `sentry.client.config.ts` and a `instrumentation-client.ts` file with `Sentry.init()` calls. It is recommended to call `Sentry.init()` once in `instrumentation-client.ts`. @ webpack-internal:///(app-pages-browser)/./node_modules/@sentry/nextjs/build/esm/client/index.js:251
+[  186280ms] [ERROR] A tree hydrated but some attributes of the server rendered HTML didn't match the client properties. This won't be patched up. This can happen if a SSR-ed Client Component used:
+
+- A server/client branch `if (typeof window !== 'undefined')`.
+- Variable input such as `Date.now()` or `Math.random()` which changes each time it's called.
+- Date formatting in a user's locale which doesn't match the server.
+- External changing data without sending a snapshot of it along with the HTML.
+- Invalid HTML tag nesting.
+
+It can also happen if the client has a browser extension installed which messes with the HTML before React loaded.
+
+%s%s https://react.dev/link/hydration-mismatch 
+
+  ...
+    <RenderFromTemplateContext>
+      <ScrollAndFocusHandler segmentPath={[...]}>
+        <InnerScrollAndFocusHandler segmentPath={[...]} focusAndScrollRef={{apply:false, ...}}>
+          <ErrorBoundary errorComponent={undefined} errorStyles={undefined} errorScripts={undefined}>
+            <LoadingBoundary loading={null}>
+              <HTTPAccessFallbackBoundary notFound={<SegmentViewNode>} forbidden={undefined} unauthorized={undefined}>
+                <HTTPAccessFallbackErrorBoundary pathname="/settings/..." notFound={<SegmentViewNode>} ...>
+                  <RedirectBoundary>
+                    <RedirectErrorBoundary router={{...}}>
+                      <InnerLayoutRouter url="/settings/..." tree={[...]} cacheNode={{lazyData:null, ...}} ...>
+                        <SegmentViewNode type="layout" pagePath="(dashboard...">
+                          <SegmentTrieNode>
+                          <DashboardLayout>
+                            <div
+                              className="flex h-screen"
+-                             style={{overflow-x:"visible",overflow-y:"visible",height:"auto",max-height:"none"}}
+                            >
+                              <DashboardSidebar>
+                              <div
+                                className="flex flex-1 flex-col overflow-hidden"
+-                               style={{overflow-x:"visible",overflow-y:"visible",height:"auto",max-height:"none"}}
+                              >
+                                <DashboardHeader>
+                                <div>
+                                <main
+                                  id="main-content"
+                                  className="flex-1 overflow-y-auto bg-muted/30 p-4 pb-20 md:p-6 md:pb-6"
+-                                 style={{overflow-x:"visible",overflow-y:"visible",height:"auto"}}
+                                >
+                                ...
+                              ...
+                      ...
+          ...
+    ...
+ @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[  192329ms] [WARNING] [Analytics] NEXT_PUBLIC_GA_MEASUREMENT_ID is not set. Analytics tracking is disabled. @ webpack-internal:///(app-pages-browser)/./src/lib/analytics/gtag.ts:17
+[  193505ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[  193506ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[  194209ms] AbortError: signal is aborted without reason
+    at eval (webpack-internal:///(app-pages-browser)/./node_modules/@supabase/auth-js/dist/module/lib/locks.js:108:29)
+[  194283ms] AbortError: signal is aborted without reason
+    at eval (webpack-internal:///(app-pages-browser)/./node_modules/@supabase/auth-js/dist/module/lib/locks.js:108:29)

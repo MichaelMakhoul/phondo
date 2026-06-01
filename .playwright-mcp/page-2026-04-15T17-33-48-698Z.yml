@@ -1,0 +1,162 @@
+- generic [ref=e1]:
+  - link "Skip to main content" [ref=e2] [cursor=pointer]:
+    - /url: "#main-content"
+  - generic [ref=e4]:
+    - banner [ref=e5]:
+      - generic [ref=e6]:
+        - button "Open menu" [ref=e7] [cursor=pointer]:
+          - img [ref=e8]
+          - generic [ref=e9]: Open menu
+        - generic [ref=e10]: Smile Hub Dental
+      - generic [ref=e11]:
+        - button "Toggle theme" [ref=e211] [cursor=pointer]:
+          - img [ref=e212]
+          - img
+          - generic [ref=e218]: Toggle theme
+        - button "Notifications" [ref=e12] [cursor=pointer]:
+          - img [ref=e13]
+          - generic [ref=e16]: Notifications
+        - button "MM" [ref=e17] [cursor=pointer]:
+          - generic [ref=e19]: MM
+    - main [ref=e21]:
+      - generic [ref=e22]:
+        - generic [ref=e23]:
+          - generic [ref=e24]:
+            - link [ref=e25] [cursor=pointer]:
+              - /url: /assistants
+              - button [ref=e26]:
+                - img [ref=e27]
+            - generic [ref=e30]:
+              - heading "Sophie" [level=1] [ref=e31]
+              - generic [ref=e32]: Active
+          - generic [ref=e33]:
+            - link "Test Call" [ref=e34] [cursor=pointer]:
+              - /url: /assistants/41537e3b-6ff2-40c0-b2ff-2da327467d68/test
+              - button "Test Call" [ref=e35]:
+                - img [ref=e36]
+                - text: Test Call
+            - button "Save Changes" [ref=e38] [cursor=pointer]
+        - generic [ref=e39]:
+          - tablist [ref=e40]:
+            - tab "Basics" [ref=e41] [cursor=pointer]:
+              - img [ref=e42]
+              - text: Basics
+            - tab "Voice" [ref=e45] [cursor=pointer]:
+              - img [ref=e46]
+              - text: Voice
+            - tab "Transfers" [ref=e49] [cursor=pointer]:
+              - img
+              - text: Transfers
+            - tab "Settings" [active] [selected] [ref=e51] [cursor=pointer]:
+              - img
+              - text: Settings
+          - tabpanel "Settings" [ref=e243]:
+            - generic [ref=e244]:
+              - generic [ref=e245]:
+                - heading "Call Settings" [level=3] [ref=e246]:
+                  - img [ref=e247]
+                  - text: Call Settings
+                - paragraph [ref=e250]: Configure call handling behavior
+              - generic [ref=e251]:
+                - generic [ref=e252]:
+                  - text: Maximum Call Duration (seconds)
+                  - spinbutton [ref=e253]: "600"
+                  - paragraph [ref=e254]: "Calls will automatically end after this duration (default: 10 minutes)"
+                - generic [ref=e255]:
+                  - generic [ref=e256]:
+                    - generic [ref=e257]:
+                      - img [ref=e258]
+                      - text: Spam Call Filtering
+                    - paragraph [ref=e260]: Automatically detect and filter spam calls
+                  - switch [checked] [ref=e261] [cursor=pointer]
+                - generic [ref=e262]:
+                  - generic [ref=e263]:
+                    - generic [ref=e264]:
+                      - img [ref=e265]
+                      - text: Flexible Booking
+                    - paragraph [ref=e268]: When a caller insists on a time between slots, book the nearest available slot instead of taking a message
+                  - switch [ref=e269] [cursor=pointer]
+                - paragraph [ref=e271]: Your AI automatically detects the caller's language and responds in the same language. No configuration needed.
+                - paragraph [ref=e273]:
+                  - text: Call recording and disclosure settings apply to all assistants and are configured in
+                  - link "Business Settings" [ref=e274] [cursor=pointer]:
+                    - /url: /settings
+                  - text: .
+            - generic [ref=e275]:
+              - generic [ref=e276]:
+                - heading "Call Answering Mode" [level=3] [ref=e277]:
+                  - img [ref=e278]
+                  - text: Call Answering Mode
+                - paragraph [ref=e281]: Choose how incoming calls are handled — let AI answer immediately, or ring your phone first
+              - generic [ref=e282]:
+                - radiogroup [ref=e283]:
+                  - generic [ref=e284]:
+                    - radio "AI answers all calls" [checked] [ref=e285] [cursor=pointer]:
+                      - img [ref=e287]
+                    - generic [ref=e289]:
+                      - text: AI answers all calls
+                      - paragraph [ref=e290]: Your AI receptionist answers every call immediately. Best for businesses that want 24/7 coverage.
+                  - generic [ref=e291]:
+                    - radio "Ring my phone first" [ref=e292] [cursor=pointer]
+                    - generic [ref=e293]:
+                      - text: Ring my phone first
+                      - paragraph [ref=e294]: Calls ring your phone first. If you don't answer, the AI picks up automatically. Best for solo operators who prefer to answer their own calls.
+                - button "Save Answering Mode" [ref=e296] [cursor=pointer]
+            - generic [ref=e297]:
+              - generic [ref=e298]:
+                - heading "PII Redaction" [level=3] [ref=e299]:
+                  - img [ref=e300]
+                  - text: PII Redaction
+                - paragraph [ref=e302]: Automatically detect and redact personally identifiable information (Medicare numbers, tax file numbers, bank details, etc.) from call transcripts and summaries before they are stored. Names and free-form conversational text are not redacted. Applies to future calls only — existing transcripts are not affected. Recommended for medical and legal practices.
+              - generic [ref=e303]:
+                - generic [ref=e304]:
+                  - generic [ref=e305]: Disabled
+                  - switch "Disabled" [ref=e306] [cursor=pointer]
+                - generic [ref=e307]:
+                  - img [ref=e308]
+                  - paragraph [ref=e310]: "Recommended: Enable PII redaction for dental practices to protect patient confidentiality."
+            - generic [ref=e311]:
+              - generic [ref=e312]:
+                - heading "Knowledge Base" [level=3] [ref=e313]:
+                  - img [ref=e314]
+                  - text: Knowledge Base
+                - paragraph [ref=e316]: Manage the business information your AI uses to answer questions
+              - link "Manage Knowledge Sources" [ref=e318] [cursor=pointer]:
+                - /url: /settings/knowledge
+                - button "Manage Knowledge Sources" [ref=e319]
+            - generic [ref=e320]:
+              - heading "Technical Details" [level=3] [ref=e322]
+              - generic [ref=e324]:
+                - generic [ref=e325]: Assistant ID
+                - code [ref=e326]: 41537e3b-6ff2-40c0-b2ff-2da327467d68
+            - generic [ref=e327]:
+              - generic [ref=e328]:
+                - heading "Danger Zone" [level=3] [ref=e329]
+                - paragraph [ref=e330]: Permanently delete this assistant and all its settings.
+              - button "Delete Assistant" [ref=e332] [cursor=pointer]:
+                - img [ref=e333]
+                - text: Delete Assistant
+    - navigation [ref=e186]:
+      - generic [ref=e187]:
+        - link "Home" [ref=e188] [cursor=pointer]:
+          - /url: /dashboard
+          - img [ref=e189]
+          - text: Home
+        - link "Assistants" [ref=e194] [cursor=pointer]:
+          - /url: /assistants
+          - img [ref=e195]
+          - text: Assistants
+        - link "Calls" [ref=e198] [cursor=pointer]:
+          - /url: /calls
+          - img [ref=e199]
+          - text: Calls
+        - link "Analytics" [ref=e203] [cursor=pointer]:
+          - /url: /analytics
+          - img [ref=e204]
+          - text: Analytics
+        - button "More" [ref=e206] [cursor=pointer]:
+          - img [ref=e207]
+          - text: More
+  - region "Notifications (F8)":
+    - list
+  - alert [ref=e219]

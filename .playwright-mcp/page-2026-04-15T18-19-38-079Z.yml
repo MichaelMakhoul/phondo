@@ -1,0 +1,59 @@
+- generic [active] [ref=e1]:
+  - link "Skip to main content" [ref=e2] [cursor=pointer]:
+    - /url: "#main-content"
+  - generic [ref=e4]:
+    - banner [ref=e5]:
+      - generic [ref=e6]:
+        - button "Open menu" [ref=e7] [cursor=pointer]:
+          - img [ref=e8]
+          - generic [ref=e9]: Open menu
+        - generic [ref=e10]: Smile Hub Dental
+      - generic [ref=e11]:
+        - button "Toggle theme" [ref=e12] [cursor=pointer]:
+          - img [ref=e13]
+          - img
+          - generic [ref=e19]: Toggle theme
+        - button "Notifications" [ref=e20] [cursor=pointer]:
+          - img [ref=e21]
+          - generic [ref=e24]: Notifications
+        - button "MM" [ref=e25] [cursor=pointer]:
+          - generic [ref=e27]: MM
+    - main [ref=e29]:
+      - img [ref=e31]
+    - navigation [ref=e33]:
+      - generic [ref=e34]:
+        - link "Home" [ref=e35] [cursor=pointer]:
+          - /url: /dashboard
+          - img [ref=e36]
+          - text: Home
+        - link "Assistants" [ref=e41] [cursor=pointer]:
+          - /url: /assistants
+          - img [ref=e42]
+          - text: Assistants
+        - link "Calls" [ref=e45] [cursor=pointer]:
+          - /url: /calls
+          - img [ref=e46]
+          - text: Calls
+        - link "Analytics" [ref=e50] [cursor=pointer]:
+          - /url: /analytics
+          - img [ref=e51]
+          - text: Analytics
+        - button "More" [ref=e53] [cursor=pointer]:
+          - img [ref=e54]
+          - text: More
+  - region "Notifications (F8)":
+    - list
+  - generic [ref=e63] [cursor=pointer]:
+    - button "Open Next.js Dev Tools" [ref=e64]:
+      - img [ref=e65]
+    - generic [ref=e68]:
+      - button "Open issues overlay" [ref=e69]:
+        - generic [ref=e70]:
+          - generic [ref=e71]: "2"
+          - generic [ref=e72]: "3"
+        - generic [ref=e73]:
+          - text: Issue
+          - generic [ref=e74]: s
+      - button "Collapse issues badge" [ref=e75]:
+        - img [ref=e76]
+  - alert [ref=e58]

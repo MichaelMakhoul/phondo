@@ -1,0 +1,80 @@
+- generic [active] [ref=e1]:
+  - link "Skip to main content" [ref=e2] [cursor=pointer]:
+    - /url: "#main-content"
+  - generic [ref=e3]:
+    - generic [ref=e4]:
+      - link "Phondo" [ref=e6] [cursor=pointer]:
+        - /url: /dashboard
+        - img [ref=e8]
+        - generic [ref=e10]: Phondo
+      - generic [ref=e12]:
+        - generic [ref=e13]: S
+        - generic [ref=e14]:
+          - paragraph [ref=e15]: Smile Hub Dental
+          - paragraph [ref=e16]: business
+      - generic [ref=e19]:
+        - navigation [ref=e20]:
+          - link "Dashboard" [ref=e21] [cursor=pointer]:
+            - /url: /dashboard
+            - img [ref=e22]
+            - text: Dashboard
+          - link "Assistants" [ref=e27] [cursor=pointer]:
+            - /url: /assistants
+            - img [ref=e28]
+            - text: Assistants
+          - link "Phone Numbers" [ref=e31] [cursor=pointer]:
+            - /url: /phone-numbers
+            - img [ref=e32]
+            - text: Phone Numbers
+          - link "Calls" [ref=e34] [cursor=pointer]:
+            - /url: /calls
+            - img [ref=e35]
+            - text: Calls
+          - link "Callbacks" [ref=e39] [cursor=pointer]:
+            - /url: /callbacks
+            - img [ref=e40]
+            - text: Callbacks
+          - link "Calendar" [ref=e43] [cursor=pointer]:
+            - /url: /calendar
+            - img [ref=e44]
+            - text: Calendar
+          - link "Appointments" [ref=e46] [cursor=pointer]:
+            - /url: /appointments
+            - img [ref=e47]
+            - text: Appointments
+        - navigation [ref=e51]:
+          - link "Knowledge Base" [ref=e52] [cursor=pointer]:
+            - /url: /settings/knowledge
+            - img [ref=e53]
+            - text: Knowledge Base
+          - link "Billing" [ref=e55] [cursor=pointer]:
+            - /url: /billing
+            - img [ref=e56]
+            - text: Billing
+          - link "Settings" [ref=e58] [cursor=pointer]:
+            - /url: /settings
+            - img [ref=e59]
+            - text: Settings
+      - link "Need help? Get support or browse our guides" [ref=e63] [cursor=pointer]:
+        - /url: /support
+        - generic [ref=e64]:
+          - img [ref=e65]
+          - paragraph [ref=e68]: Need help?
+        - paragraph [ref=e69]: Get support or browse our guides
+    - generic [ref=e70]:
+      - banner [ref=e71]:
+        - generic [ref=e72]:
+          - button "Toggle theme" [ref=e73] [cursor=pointer]:
+            - img [ref=e74]
+            - img
+            - generic [ref=e80]: Toggle theme
+          - button "Notifications" [ref=e81] [cursor=pointer]:
+            - img [ref=e82]
+            - generic [ref=e85]: Notifications
+          - button "MM" [ref=e86] [cursor=pointer]:
+            - generic [ref=e88]: MM
+      - main [ref=e90]:
+        - img [ref=e92]
+  - region "Notifications (F8)":
+    - list
+  - alert [ref=e94]

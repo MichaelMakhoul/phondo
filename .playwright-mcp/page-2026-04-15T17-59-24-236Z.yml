@@ -1,0 +1,192 @@
+- generic [active] [ref=e1]:
+  - link "Skip to main content" [ref=e2] [cursor=pointer]:
+    - /url: "#main-content"
+  - generic [ref=e4]:
+    - banner [ref=e5]:
+      - generic [ref=e6]:
+        - button "Open menu" [ref=e7] [cursor=pointer]:
+          - img [ref=e8]
+          - generic [ref=e9]: Open menu
+        - generic [ref=e10]: Smile Hub Dental
+      - generic [ref=e11]:
+        - button "Toggle theme" [ref=e242] [cursor=pointer]:
+          - img [ref=e243]
+          - img
+          - generic [ref=e249]: Toggle theme
+        - button "Notifications" [ref=e12] [cursor=pointer]:
+          - img [ref=e13]
+          - generic [ref=e16]: Notifications
+        - button "MM" [ref=e17] [cursor=pointer]:
+          - generic [ref=e19]: MM
+    - main [ref=e21]:
+      - generic [ref=e22]:
+        - generic [ref=e23]:
+          - heading "Settings" [level=1] [ref=e24]
+          - paragraph [ref=e25]: Manage your business and account settings
+        - navigation [ref=e26]:
+          - link "General" [ref=e27] [cursor=pointer]:
+            - /url: /settings
+          - link "Notifications" [ref=e28] [cursor=pointer]:
+            - /url: /settings/notifications
+          - link "Scheduling" [ref=e29] [cursor=pointer]:
+            - /url: /settings/calendar
+          - link "Profile" [ref=e30] [cursor=pointer]:
+            - /url: /settings/profile
+        - generic [ref=e31]:
+          - generic [ref=e32]:
+            - heading "Scheduling" [level=1] [ref=e33]
+            - paragraph [ref=e34]: Manage your appointment types and calendar integrations.
+          - generic [ref=e35]:
+            - generic [ref=e36]:
+              - generic [ref=e37]:
+                - generic [ref=e38]:
+                  - img [ref=e39]
+                  - heading "Appointment Types" [level=3] [ref=e43]
+                - button "Add Service Type" [ref=e44] [cursor=pointer]:
+                  - img [ref=e45]
+                  - text: Add Service Type
+              - paragraph [ref=e46]: Define the types of appointments your AI can book. Each type has a name and default duration.
+            - generic [ref=e47]:
+              - generic [ref=e48]:
+                - generic [ref=e50]:
+                  - paragraph [ref=e51]: Check-up & Clean
+                  - paragraph [ref=e52]: Routine dental examination and cleaning
+                - generic [ref=e53]:
+                  - generic [ref=e54]: 45 min
+                  - button [ref=e55] [cursor=pointer]:
+                    - img [ref=e56]
+                  - button [ref=e59] [cursor=pointer]:
+                    - img [ref=e60]
+              - generic [ref=e63]:
+                - generic [ref=e65]:
+                  - paragraph [ref=e66]: Consultation
+                  - paragraph [ref=e67]: General dental consultation
+                - generic [ref=e68]:
+                  - generic [ref=e69]: 30 min
+                  - button [ref=e70] [cursor=pointer]:
+                    - img [ref=e71]
+                  - button [ref=e74] [cursor=pointer]:
+                    - img [ref=e75]
+              - generic [ref=e78]:
+                - generic [ref=e80]:
+                  - paragraph [ref=e81]: Emergency
+                  - paragraph [ref=e82]: Urgent dental issue
+                - generic [ref=e83]:
+                  - generic [ref=e84]: 30 min
+                  - button [ref=e85] [cursor=pointer]:
+                    - img [ref=e86]
+                  - button [ref=e89] [cursor=pointer]:
+                    - img [ref=e90]
+              - generic [ref=e93]:
+                - generic [ref=e95]:
+                  - paragraph [ref=e96]: Filling
+                  - paragraph [ref=e97]: Dental filling procedure
+                - generic [ref=e98]:
+                  - generic [ref=e99]: 45 min
+                  - button [ref=e100] [cursor=pointer]:
+                    - img [ref=e101]
+                  - button [ref=e104] [cursor=pointer]:
+                    - img [ref=e105]
+              - generic [ref=e108]:
+                - generic [ref=e110]:
+                  - paragraph [ref=e111]: Root Canal
+                  - paragraph [ref=e112]: Root canal treatment
+                - generic [ref=e113]:
+                  - generic [ref=e114]: 1h 30m
+                  - button [ref=e115] [cursor=pointer]:
+                    - img [ref=e116]
+                  - button [ref=e119] [cursor=pointer]:
+                    - img [ref=e120]
+          - generic [ref=e123]:
+            - generic [ref=e124]:
+              - generic [ref=e125]:
+                - generic [ref=e126]:
+                  - img [ref=e127]
+                  - heading "Staff Members" [level=3] [ref=e132]
+                - button "Add Staff Member" [ref=e133] [cursor=pointer]:
+                  - img [ref=e134]
+                  - text: Add Staff Member
+              - paragraph [ref=e135]: Manage your team members. Assign them to services for automatic round-robin scheduling.
+            - generic [ref=e136]:
+              - generic [ref=e137]:
+                - generic [ref=e139]:
+                  - paragraph [ref=e140]:
+                    - text: Dr. James Wilson
+                    - generic [ref=e141]: "- Oral Surgeon"
+                  - generic [ref=e142]:
+                    - generic [ref=e143]: Root Canal
+                    - generic [ref=e144]: Emergency
+                    - generic [ref=e145]: Consultation
+                - generic [ref=e146]:
+                  - button [ref=e147] [cursor=pointer]:
+                    - img [ref=e148]
+                  - button [ref=e151] [cursor=pointer]:
+                    - img [ref=e152]
+              - generic [ref=e155]:
+                - generic [ref=e157]:
+                  - paragraph [ref=e158]:
+                    - text: Dr. Sarah Chen
+                    - generic [ref=e159]: "- General & Cosmetic Dentist"
+                  - generic [ref=e160]:
+                    - generic [ref=e161]: Check-up & Clean
+                    - generic [ref=e162]: Filling
+                    - generic [ref=e163]: Consultation
+                - generic [ref=e164]:
+                  - button [ref=e165] [cursor=pointer]:
+                    - img [ref=e166]
+                  - button [ref=e169] [cursor=pointer]:
+                    - img [ref=e170]
+              - generic [ref=e173]:
+                - generic [ref=e175]:
+                  - paragraph [ref=e176]:
+                    - text: Lisa Thompson
+                    - generic [ref=e177]: "- Dental Hygienist"
+                  - generic [ref=e179]: Check-up & Clean
+                - generic [ref=e180]:
+                  - button [ref=e181] [cursor=pointer]:
+                    - img [ref=e182]
+                  - button [ref=e185] [cursor=pointer]:
+                    - img [ref=e186]
+          - generic [ref=e189]:
+            - generic [ref=e191]:
+              - generic [ref=e192]:
+                - heading "Blocked Times" [level=3] [ref=e193]:
+                  - img [ref=e194]
+                  - text: Blocked Times
+                - paragraph [ref=e197]: Block times when no appointments should be booked (holidays, breaks, meetings).
+              - button "Block Time" [ref=e198] [cursor=pointer]:
+                - img [ref=e199]
+                - text: Block Time
+            - img [ref=e202]
+          - button "Calendar Integrations (Advanced) Optionally connect an external calendar for two-way sync." [ref=e206] [cursor=pointer]:
+            - generic [ref=e207]:
+              - generic [ref=e208]:
+                - generic [ref=e209]:
+                  - img [ref=e210]
+                  - heading "Calendar Integrations (Advanced)" [level=3] [ref=e213]
+                - img [ref=e214]
+              - paragraph [ref=e216]: Optionally connect an external calendar for two-way sync.
+    - navigation [ref=e217]:
+      - generic [ref=e218]:
+        - link "Home" [ref=e219] [cursor=pointer]:
+          - /url: /dashboard
+          - img [ref=e220]
+          - text: Home
+        - link "Assistants" [ref=e225] [cursor=pointer]:
+          - /url: /assistants
+          - img [ref=e226]
+          - text: Assistants
+        - link "Calls" [ref=e229] [cursor=pointer]:
+          - /url: /calls
+          - img [ref=e230]
+          - text: Calls
+        - link "Analytics" [ref=e234] [cursor=pointer]:
+          - /url: /analytics
+          - img [ref=e235]
+          - text: Analytics
+        - button "More" [ref=e237] [cursor=pointer]:
+          - img [ref=e238]
+          - text: More
+  - region "Notifications (F8)":
+    - list
+  - alert [ref=e250]

@@ -1,0 +1,233 @@
+- generic:
+  - link:
+    - /url: "#main-content"
+    - text: Skip to main content
+  - generic:
+    - generic:
+      - banner:
+        - generic:
+          - button:
+            - img
+            - generic: Open menu
+          - generic: Smile Hub Dental
+        - generic:
+          - button:
+            - img
+            - generic: Toggle theme
+          - button:
+            - img
+            - generic: Notifications
+          - button:
+            - generic:
+              - generic: MM
+      - main:
+        - generic:
+          - generic:
+            - generic:
+              - heading [level=1]: Good morning, Michael
+              - paragraph: Here's how your AI receptionist is performing
+            - link:
+              - /url: /assistants/new
+              - button:
+                - img
+                - text: New Assistant
+          - generic:
+            - generic:
+              - generic:
+                - heading [level=3]: Total Calls
+                - generic:
+                  - img
+              - generic: "128"
+            - generic:
+              - generic:
+                - heading [level=3]: You Answered
+                - generic:
+                  - img
+              - generic: "0"
+            - generic:
+              - generic:
+                - heading [level=3]: Active Assistants
+                - generic:
+                  - img
+              - generic: "1"
+            - generic:
+              - generic:
+                - heading [level=3]: Phone Numbers
+                - generic:
+                  - img
+              - generic: "1"
+            - generic:
+              - generic:
+                - heading [level=3]: Total Talk Time
+                - generic:
+                  - img
+              - generic: 290:33
+          - generic:
+            - generic:
+              - generic:
+                - heading [level=3]: Quick Actions
+                - paragraph: Get started with common tasks
+              - generic:
+                - link:
+                  - /url: /assistants/new
+                  - generic:
+                    - generic:
+                      - img
+                    - generic:
+                      - paragraph: Create AI Assistant
+                      - paragraph: Set up a new AI receptionist
+                - link:
+                  - /url: /phone-numbers
+                  - generic:
+                    - generic:
+                      - img
+                    - generic:
+                      - paragraph: Get Phone Number
+                      - paragraph: Purchase a phone number for your assistant
+            - generic:
+              - generic:
+                - generic:
+                  - heading [level=3]: Recent Calls
+                  - paragraph: Your latest call activity
+                - link:
+                  - /url: /calls
+                  - button: View all
+              - generic:
+                - generic:
+                  - generic:
+                    - generic:
+                      - generic:
+                        - img
+                      - generic:
+                        - paragraph: "+16203029077"
+                        - paragraph: Sophie
+                    - generic:
+                      - generic: completed
+                      - paragraph: 3:31
+                  - generic:
+                    - generic:
+                      - generic:
+                        - img
+                      - generic:
+                        - paragraph: "+16203029077"
+                        - paragraph: Sophie
+                    - generic:
+                      - generic: completed
+                      - paragraph: 3:31
+                  - generic:
+                    - generic:
+                      - generic:
+                        - img
+                      - generic:
+                        - paragraph: "+16203029077"
+                        - paragraph: Sophie
+                    - generic:
+                      - generic: completed
+                      - paragraph: 3:31
+                  - generic:
+                    - generic:
+                      - generic:
+                        - img
+                      - generic:
+                        - paragraph: "+16203029077"
+                        - paragraph: Sophie
+                    - generic:
+                      - generic: failed
+                      - paragraph: 3:31
+                  - generic:
+                    - generic:
+                      - generic:
+                        - img
+                      - generic:
+                        - paragraph: "+16203029077"
+                        - paragraph: Sophie
+                    - generic:
+                      - generic: completed
+                      - paragraph: 3:31
+      - navigation:
+        - generic:
+          - link:
+            - /url: /dashboard
+            - img
+            - text: Home
+          - link:
+            - /url: /assistants
+            - img
+            - text: Assistants
+          - link:
+            - /url: /calls
+            - img
+            - text: Calls
+          - link:
+            - /url: /analytics
+            - img
+            - text: Analytics
+          - button:
+            - img
+            - text: More
+  - list
+  - alert
+  - dialog "Navigation" [ref=e277]:
+    - heading "Navigation" [level=2] [ref=e278]
+    - generic [ref=e279]:
+      - link "Phondo" [ref=e281] [cursor=pointer]:
+        - /url: /dashboard
+        - img [ref=e283]
+        - generic [ref=e285]: Phondo
+      - generic [ref=e287]:
+        - generic [ref=e288]: S
+        - generic [ref=e289]:
+          - paragraph [ref=e290]: Smile Hub Dental
+          - paragraph [ref=e291]: business
+      - generic [ref=e294]:
+        - navigation [ref=e295]:
+          - link "Dashboard" [ref=e296] [cursor=pointer]:
+            - /url: /dashboard
+            - img [ref=e297]
+            - text: Dashboard
+          - link "Assistants" [ref=e302] [cursor=pointer]:
+            - /url: /assistants
+            - img [ref=e303]
+            - text: Assistants
+          - link "Phone Numbers" [ref=e306] [cursor=pointer]:
+            - /url: /phone-numbers
+            - img [ref=e307]
+            - text: Phone Numbers
+          - link "Calls" [ref=e309] [cursor=pointer]:
+            - /url: /calls
+            - img [ref=e310]
+            - text: Calls
+          - link "Callbacks" [ref=e314] [cursor=pointer]:
+            - /url: /callbacks
+            - img [ref=e315]
+            - text: Callbacks
+          - link "Calendar" [ref=e318] [cursor=pointer]:
+            - /url: /calendar
+            - img [ref=e319]
+            - text: Calendar
+          - link "Appointments" [ref=e321] [cursor=pointer]:
+            - /url: /appointments
+            - img [ref=e322]
+            - text: Appointments
+        - navigation [ref=e326]:
+          - link "Knowledge Base" [ref=e327] [cursor=pointer]:
+            - /url: /settings/knowledge
+            - img [ref=e328]
+            - text: Knowledge Base
+          - link "Billing" [ref=e330] [cursor=pointer]:
+            - /url: /billing
+            - img [ref=e331]
+            - text: Billing
+          - link "Settings" [ref=e333] [cursor=pointer]:
+            - /url: /settings
+            - img [ref=e334]
+            - text: Settings
+      - link "Need help? Get support or browse our guides" [ref=e338] [cursor=pointer]:
+        - /url: /support
+        - generic [ref=e339]:
+          - img [ref=e340]
+          - paragraph [ref=e343]: Need help?
+        - paragraph [ref=e344]: Get support or browse our guides
+    - button "Close" [active] [ref=e345] [cursor=pointer]:
+      - img [ref=e346]
+      - generic [ref=e349]: Close

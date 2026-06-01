@@ -1,0 +1,446 @@
+[    1576ms] [ERROR] A tree hydrated but some attributes of the server rendered HTML didn't match the client properties. This won't be patched up. This can happen if a SSR-ed Client Component used:
+
+- A server/client branch `if (typeof window !== 'undefined')`.
+- Variable input such as `Date.now()` or `Math.random()` which changes each time it's called.
+- Date formatting in a user's locale which doesn't match the server.
+- External changing data without sending a snapshot of it along with the HTML.
+- Invalid HTML tag nesting.
+
+It can also happen if the client has a browser extension installed which messes with the HTML before React loaded.
+
+%s%s https://react.dev/link/hydration-mismatch 
+
+  ...
+    <TabsProvider scope={undefined} baseId="radix-_R_2..." value="basics" onValueChange={function} ...>
+      <Primitive.div dir="ltr" data-orientation="horizontal" className="space-y-6" ref={null}>
+        <div dir="ltr" data-orientation="horizontal" className="space-y-6" ref={null}>
+          <_c>
+          <_c4 value="basics" className="space-y-6">
+            <TabsContent ref={null} className="mt-2 ring-..." value="basics">
+              <Presence present={true}>
+                <Primitive.div data-state="active" data-orientation="horizontal" role="tabpanel" ...>
+                  <div data-state="active" data-orientation="horizontal" role="tabpanel" aria-labelledby="radix-_R_2..." ...>
+                    <_c>
+                      <div ref={null} className="rounded-lg...">
+                        <_c2>
+                        <_c8 className="space-y-4">
+                          <div ref={null} className="p-6 pt-0 s...">
+                            <div className="space-y-2">
+                              <_c>
+                              <_c id="name" value="Sophie" onChange={function onChange} placeholder="e.g., Sara...">
+                                <input
+                                  type={undefined}
+                                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 t..."
+                                  ref={null}
+                                  id="name"
+                                  value="Sophie"
+                                  onChange={function onChange}
+                                  placeholder="e.g., Sarah - Front Desk"
+-                                 style={{}}
+                                >
+                            <div className="space-y-2">
+                              <_c>
+                              <_c id="firstMessage" value="Hi there! ..." onChange={function onChange} rows={2} ...>
+                                <textarea
+                                  className="flex min-h-[80px] w-full rounded-md border border-input bg-background px-..."
+                                  ref={null}
+                                  id="firstMessage"
+                                  value="Hi there! Thanks for calling {business_name}. How can I help you today?"
+                                  onChange={function onChange}
+                                  rows={2}
+                                  placeholder="What should the assistant say when answering?"
+-                                 style={{}}
+                                >
+                              ...
+                            ...
+                              <SwitchProvider scope={undefined} checked={true} disabled={undefined}>
+                                <Primitive.button>
+                                <SwitchBubbleInput control={null} bubbles={true} name={undefined} value="on" ...>
+                                  <input
+                                    type="checkbox"
+                                    aria-hidden={true}
+                                    defaultChecked={true}
+                                    name={undefined}
+                                    value="on"
+                                    required={undefined}
+                                    disabled={undefined}
+                                    form={undefined}
+                                    style={{
++                                     transform: "translateX(-100%)"
+-                                     transform: "translateX(-100%)"
++                                     position: "absolute"
+-                                     position: "absolute"
++                                     pointerEvents: "none"
++                                     opacity: 0
+-                                     opacity: "0"
++                                     margin: 0
+-                                     pointer-events: "none"
+-                                     margin-top: "0px"
+-                                     margin-right: "0px"
+-                                     margin-bottom: "0px"
+-                                     margin-left: "0px"
+                                    }}
+                                    tabIndex={-1}
+                                    ref={function}
+                                  >
+                    ...
+                      <div className="space-y-6">
+                        ...
+                          <div className="space-y-4">
+                            <div className="space-y-2">
+                              <div>
+                              <div className="space-y-1.5">
+                                ...
+                                  <SwitchProvider scope={undefined} checked={true} disabled={undefined}>
+                                    <Primitive.button>
+                                    <SwitchBubbleInput control={null} bubbles={true} name={undefined} value="on" ...>
+                                      <input
+                                        type="checkbox"
+                                        aria-hidden={true}
+                                        defaultChecked={true}
+                                        name={undefined}
+                                        value="on"
+                                        required={undefined}
+                                        disabled={undefined}
+                                        form={undefined}
+                                        style={{
++                                         transform: "translateX(-100%)"
+-                                         transform: "translateX(-100%)"
++                                         position: "absolute"
+-                                         position: "absolute"
++                                         pointerEvents: "none"
++                                         opacity: 0
+-                                         opacity: "0"
++                                         margin: 0
+-                                         pointer-events: "none"
+-                                         margin-top: "0px"
+-                                         margin-right: "0px"
+-                                         margin-bottom: "0px"
+-                                         margin-left: "0px"
+                                        }}
+                                        tabIndex={-1}
+                                        ref={function}
+                                      >
+                                ...
+                                  <SwitchProvider scope={undefined} checked={true} disabled={undefined}>
+                                    <Primitive.button>
+                                    <SwitchBubbleInput control={null} bubbles={true} name={undefined} value="on" ...>
+                                      <input
+                                        type="checkbox"
+                                        aria-hidden={true}
+                                        defaultChecked={true}
+                                        name={undefined}
+                                        value="on"
+                                        required={undefined}
+                                        disabled={undefined}
+                                        form={undefined}
+                                        style={{
++                                         transform: "translateX(-100%)"
+-                                         transform: "translateX(-100%)"
++                                         position: "absolute"
+-                                         position: "absolute"
++                                         pointerEvents: "none"
++                                         opacity: 0
+-                                         opacity: "0"
++                                         margin: 0
+-                                         pointer-events: "none"
+-                                         margin-top: "0px"
+-                                         margin-right: "0px"
+-                                         margin-bottom: "0px"
+-                                         margin-left: "0px"
+                                        }}
+                                        tabIndex={-1}
+                                        ref={function}
+                                      >
+                                ...
+                                  <SwitchProvider scope={undefined} checked={true} disabled={undefined}>
+                                    <Primitive.button>
+                                    <SwitchBubbleInput control={null} bubbles={true} name={undefined} value="on" ...>
+                                      <input
+                                        type="checkbox"
+                                        aria-hidden={true}
+                                        defaultChecked={true}
+                                        name={undefined}
+                                        value="on"
+                                        required={undefined}
+                                        disabled={undefined}
+                                        form={undefined}
+                                        style={{
++                                         transform: "translateX(-100%)"
+-                                         transform: "translateX(-100%)"
++                                         position: "absolute"
+-                                         position: "absolute"
++                                         pointerEvents: "none"
++                                         opacity: 0
+-                                         opacity: "0"
++                                         margin: 0
+-                                         pointer-events: "none"
+-                                         margin-top: "0px"
+-                                         margin-right: "0px"
+-                                         margin-bottom: "0px"
+-                                         margin-left: "0px"
+                                        }}
+                                        tabIndex={-1}
+                                        ref={function}
+                                      >
+                                ...
+                                  <SwitchProvider scope={undefined} checked={false} disabled={undefined}>
+                                    <Primitive.button>
+                                    <SwitchBubbleInput control={null} bubbles={true} name={undefined} value="on" ...>
+                                      <input
+                                        type="checkbox"
+                                        aria-hidden={true}
+                                        defaultChecked={false}
+                                        name={undefined}
+                                        value="on"
+                                        required={undefined}
+                                        disabled={undefined}
+                                        form={undefined}
+                                        style={{
++                                         transform: "translateX(-100%)"
+-                                         transform: "translateX(-100%)"
++                                         position: "absolute"
+-                                         position: "absolute"
++                                         pointerEvents: "none"
++                                         opacity: 0
+-                                         opacity: "0"
++                                         margin: 0
+-                                         pointer-events: "none"
+-                                         margin-top: "0px"
+-                                         margin-right: "0px"
+-                                         margin-bottom: "0px"
+-                                         margin-left: "0px"
+                                        }}
+                                        tabIndex={-1}
+                                        ref={function}
+                                      >
+                            ...
+                              <SwitchProvider scope={undefined} checked={true} disabled={undefined}>
+                                <Primitive.button>
+                                <SwitchBubbleInput control={null} bubbles={true} name={undefined} value="on" ...>
+                                  <input
+                                    type="checkbox"
+                                    aria-hidden={true}
+                                    defaultChecked={true}
+                                    name={undefined}
+                                    value="on"
+                                    required={undefined}
+                                    disabled={undefined}
+                                    form={undefined}
+                                    style={{
++                                     transform: "translateX(-100%)"
+-                                     transform: "translateX(-100%)"
++                                     position: "absolute"
+-                                     position: "absolute"
++                                     pointerEvents: "none"
++                                     opacity: 0
+-                                     opacity: "0"
++                                     margin: 0
+-                                     pointer-events: "none"
+-                                     margin-top: "0px"
+-                                     margin-right: "0px"
+-                                     margin-bottom: "0px"
+-                                     margin-left: "0px"
+                                    }}
+                                    tabIndex={-1}
+                                    ref={function}
+                                  >
+                            ...
+                        <_c>
+                        ...
+                          <div className="grid gap-4...">
+                            ...
+                              <SwitchProvider scope={undefined} checked={true} disabled={undefined}>
+                                <Primitive.button>
+                                <SwitchBubbleInput control={null} bubbles={true} name={undefined} value="on" ...>
+                                  <input
+                                    type="checkbox"
+                                    aria-hidden={true}
+                                    defaultChecked={true}
+                                    name={undefined}
+                                    value="on"
+                                    required={undefined}
+                                    disabled={undefined}
+                                    form={undefined}
+                                    style={{
++                                     transform: "translateX(-100%)"
+-                                     transform: "translateX(-100%)"
++                                     position: "absolute"
+-                                     position: "absolute"
++                                     pointerEvents: "none"
++                                     opacity: 0
+-                                     opacity: "0"
++                                     margin: 0
+-                                     pointer-events: "none"
+-                                     margin-top: "0px"
+-                                     margin-right: "0px"
+-                                     margin-bottom: "0px"
+-                                     margin-left: "0px"
+                                    }}
+                                    tabIndex={-1}
+                                    ref={function}
+                                  >
+                            ...
+                              <SwitchProvider scope={undefined} checked={true} disabled={undefined}>
+                                <Primitive.button>
+                                <SwitchBubbleInput control={null} bubbles={true} name={undefined} value="on" ...>
+                                  <input
+                                    type="checkbox"
+                                    aria-hidden={true}
+                                    defaultChecked={true}
+                                    name={undefined}
+                                    value="on"
+                                    required={undefined}
+                                    disabled={undefined}
+                                    form={undefined}
+                                    style={{
++                                     transform: "translateX(-100%)"
+-                                     transform: "translateX(-100%)"
++                                     position: "absolute"
+-                                     position: "absolute"
++                                     pointerEvents: "none"
++                                     opacity: 0
+-                                     opacity: "0"
++                                     margin: 0
+-                                     pointer-events: "none"
+-                                     margin-top: "0px"
+-                                     margin-right: "0px"
+-                                     margin-bottom: "0px"
+-                                     margin-left: "0px"
+                                    }}
+                                    tabIndex={-1}
+                                    ref={function}
+                                  >
+                            ...
+                              <SwitchProvider scope={undefined} checked={true} disabled={undefined}>
+                                <Primitive.button>
+                                <SwitchBubbleInput control={null} bubbles={true} name={undefined} value="on" ...>
+                                  <input
+                                    type="checkbox"
+                                    aria-hidden={true}
+                                    defaultChecked={true}
+                                    name={undefined}
+                                    value="on"
+                                    required={undefined}
+                                    disabled={undefined}
+                                    form={undefined}
+                                    style={{
++                                     transform: "translateX(-100%)"
+-                                     transform: "translateX(-100%)"
++                                     position: "absolute"
+-                                     position: "absolute"
++                                     pointerEvents: "none"
++                                     opacity: 0
+-                                     opacity: "0"
++                                     margin: 0
+-                                     pointer-events: "none"
+-                                     margin-top: "0px"
+-                                     margin-right: "0px"
+-                                     margin-bottom: "0px"
+-                                     margin-left: "0px"
+                                    }}
+                                    tabIndex={-1}
+                                    ref={function}
+                                  >
+                            ...
+                              <SwitchProvider scope={undefined} checked={true} disabled={undefined}>
+                                <Primitive.button>
+                                <SwitchBubbleInput control={null} bubbles={true} name={undefined} value="on" ...>
+                                  <input
+                                    type="checkbox"
+                                    aria-hidden={true}
+                                    defaultChecked={true}
+                                    name={undefined}
+                                    value="on"
+                                    required={undefined}
+                                    disabled={undefined}
+                                    form={undefined}
+                                    style={{
++                                     transform: "translateX(-100%)"
+-                                     transform: "translateX(-100%)"
++                                     position: "absolute"
+-                                     position: "absolute"
++                                     pointerEvents: "none"
++                                     opacity: 0
+-                                     opacity: "0"
++                                     margin: 0
+-                                     pointer-events: "none"
+-                                     margin-top: "0px"
+-                                     margin-right: "0px"
+-                                     margin-bottom: "0px"
+-                                     margin-left: "0px"
+                                    }}
+                                    tabIndex={-1}
+                                    ref={function}
+                                  >
+                            ...
+                              <SwitchProvider scope={undefined} checked={false} disabled={undefined}>
+                                <Primitive.button>
+                                <SwitchBubbleInput control={null} bubbles={true} name={undefined} value="on" ...>
+                                  <input
+                                    type="checkbox"
+                                    aria-hidden={true}
+                                    defaultChecked={false}
+                                    name={undefined}
+                                    value="on"
+                                    required={undefined}
+                                    disabled={undefined}
+                                    form={undefined}
+                                    style={{
++                                     transform: "translateX(-100%)"
+-                                     transform: "translateX(-100%)"
++                                     position: "absolute"
+-                                     position: "absolute"
++                                     pointerEvents: "none"
++                                     opacity: 0
+-                                     opacity: "0"
++                                     margin: 0
+-                                     pointer-events: "none"
+-                                     margin-top: "0px"
+-                                     margin-right: "0px"
+-                                     margin-bottom: "0px"
+-                                     margin-left: "0px"
+                                    }}
+                                    tabIndex={-1}
+                                    ref={function}
+                                  >
+                            ...
+                              <SwitchProvider scope={undefined} checked={false} disabled={undefined}>
+                                <Primitive.button>
+                                <SwitchBubbleInput control={null} bubbles={true} name={undefined} value="on" ...>
+                                  <input
+                                    type="checkbox"
+                                    aria-hidden={true}
+                                    defaultChecked={false}
+                                    name={undefined}
+                                    value="on"
+                                    required={undefined}
+                                    disabled={undefined}
+                                    form={undefined}
+                                    style={{
++                                     transform: "translateX(-100%)"
+-                                     transform: "translateX(-100%)"
++                                     position: "absolute"
+-                                     position: "absolute"
++                                     pointerEvents: "none"
++                                     opacity: 0
+-                                     opacity: "0"
++                                     margin: 0
+-                                     pointer-events: "none"
+-                                     margin-top: "0px"
+-                                     margin-right: "0px"
+-                                     margin-bottom: "0px"
+-                                     margin-left: "0px"
+                                    }}
+                                    tabIndex={-1}
+                                    ref={function}
+                                  >
+                        ...
+          ...
+ @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[   13554ms] [LOG] [Client Instrumentation Hook] Slow execution detected: 553ms (Note: Code download overhead is not included in this measurement) @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/lib/require-instrumentation-client.js:18
+[   13645ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/compiled/react-dom/cjs/react-dom-client.development.js:25630
+[   13989ms] [WARNING] [@sentry/nextjs] You are calling `Sentry.init()` more than once on the client. This can happen if you have both a `sentry.client.config.ts` and a `instrumentation-client.ts` file with `Sentry.init()` calls. It is recommended to call `Sentry.init()` once in `instrumentation-client.ts`. @ webpack-internal:///(app-pages-browser)/./node_modules/@sentry/nextjs/build/esm/client/index.js:251
+[   31811ms] [WARNING] [Analytics] NEXT_PUBLIC_GA_MEASUREMENT_ID is not set. Analytics tracking is disabled. @ webpack-internal:///(app-pages-browser)/./src/lib/analytics/gtag.ts:17
+[   44058ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56

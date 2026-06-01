@@ -1,0 +1,12 @@
+[    5887ms] [LOG] [Client Instrumentation Hook] Slow execution detected: 999ms (Note: Code download overhead is not included in this measurement) @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/lib/require-instrumentation-client.js:18
+[    6126ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/compiled/react-dom/cjs/react-dom-client.development.js:25630
+[    6519ms] [WARNING] [@sentry/nextjs] You are calling `Sentry.init()` more than once on the client. This can happen if you have both a `sentry.client.config.ts` and a `instrumentation-client.ts` file with `Sentry.init()` calls. It is recommended to call `Sentry.init()` once in `instrumentation-client.ts`. @ webpack-internal:///(app-pages-browser)/./node_modules/@sentry/nextjs/build/esm/client/index.js:251
+[   27724ms] [WARNING] [Analytics] NEXT_PUBLIC_GA_MEASUREMENT_ID is not set. Analytics tracking is disabled. @ webpack-internal:///(app-pages-browser)/./src/lib/analytics/gtag.ts:17
+[   30704ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[   30756ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[   34698ms] AbortError: signal is aborted without reason
+    at eval (webpack-internal:///(app-pages-browser)/./node_modules/@supabase/auth-js/dist/module/lib/locks.js:108:29)
+[   34803ms] AbortError: signal is aborted without reason
+    at eval (webpack-internal:///(app-pages-browser)/./node_modules/@supabase/auth-js/dist/module/lib/locks.js:108:29)

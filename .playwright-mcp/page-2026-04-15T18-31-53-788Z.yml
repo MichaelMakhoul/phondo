@@ -1,0 +1,213 @@
+- generic [active] [ref=e1]:
+  - link "Skip to main content" [ref=e2] [cursor=pointer]:
+    - /url: "#main-content"
+  - generic [ref=e4]:
+    - banner [ref=e5]:
+      - generic [ref=e6]:
+        - button "Open menu" [ref=e7] [cursor=pointer]:
+          - img [ref=e8]
+          - generic [ref=e9]: Open menu
+        - generic [ref=e10]: Smile Hub Dental
+      - generic [ref=e11]:
+        - button "Toggle theme" [disabled]:
+          - generic: Toggle theme
+        - button "Notifications" [ref=e12] [cursor=pointer]:
+          - img [ref=e13]
+          - generic [ref=e16]: Notifications
+        - button "MM" [ref=e17] [cursor=pointer]:
+          - generic [ref=e19]: MM
+    - main [ref=e21]:
+      - generic [ref=e22]:
+        - generic [ref=e23]:
+          - link [ref=e24] [cursor=pointer]:
+            - /url: /assistants
+            - button [ref=e25]:
+              - img [ref=e26]
+          - generic [ref=e28]:
+            - heading "Create Assistant" [level=1] [ref=e29]
+            - paragraph [ref=e30]: Set up a new AI receptionist for your business
+        - generic [ref=e31]:
+          - generic [ref=e32]:
+            - generic [ref=e33]:
+              - heading "Basic Information" [level=3] [ref=e34]:
+                - img [ref=e35]
+                - text: Basic Information
+              - paragraph [ref=e38]: Give your assistant a name and configure its personality
+            - generic [ref=e39]:
+              - generic [ref=e40]:
+                - text: Assistant Name
+                - textbox "Assistant Name" [ref=e41]:
+                  - /placeholder: e.g., Sarah - Front Desk
+              - generic [ref=e42]:
+                - text: Greeting Message
+                - textbox "Greeting Message" [ref=e43]:
+                  - /placeholder: What should the assistant say when answering?
+                  - text: Hello! Thank you for calling. How can I help you today?
+                - paragraph [ref=e44]: This is the first thing callers will hear
+              - generic [ref=e45]:
+                - text: Instructions (System Prompt)
+                - textbox "Instructions (System Prompt)" [ref=e46]:
+                  - /placeholder: Describe how the assistant should behave...
+                  - text: "You are a friendly and professional AI receptionist for {{business_name}}. Your role is to: 1. Greet callers warmly and professionally 2. Answer questions about the business 3. Schedule appointments when requested 4. Take messages for the team 5. Handle common inquiries Always be helpful, courteous, and efficient. If you don't know something, offer to take a message or suggest calling back during business hours. Business hours: Monday-Friday, 9 AM - 5 PM Address: [Your address here]"
+                - paragraph [ref=e47]: Tell the AI how to behave, what information to provide, and how to handle different scenarios
+          - generic [ref=e48]:
+            - generic [ref=e49]:
+              - heading "Voice" [level=3] [ref=e50]
+              - paragraph [ref=e51]: Choose the voice for your assistant
+            - generic [ref=e53]:
+              - text: Voice
+              - generic [ref=e54]:
+                - generic [ref=e55]:
+                  - button "All" [ref=e56] [cursor=pointer]
+                  - button "Female" [ref=e57] [cursor=pointer]
+                  - button "Male" [ref=e58] [cursor=pointer]
+                  - button "Australian" [ref=e59] [cursor=pointer]
+                - generic [ref=e60]:
+                  - button "Charlotte Recommended Preview Charlotte The Sydney Office Manager female · 🇦🇺 AU Warm, friendly Australian female warm friendly" [ref=e61] [cursor=pointer]:
+                    - generic [ref=e62]:
+                      - generic [ref=e63]:
+                        - generic [ref=e64]: Charlotte
+                        - generic [ref=e65]: Recommended
+                      - button "Preview Charlotte" [ref=e66]:
+                        - img [ref=e67]
+                    - paragraph [ref=e69]: The Sydney Office Manager
+                    - generic [ref=e70]:
+                      - generic [ref=e71]: female
+                      - generic [ref=e72]: ·
+                      - generic [ref=e73]: 🇦🇺 AU
+                    - paragraph [ref=e74]: Warm, friendly Australian female
+                    - generic [ref=e75]:
+                      - generic [ref=e76]: warm
+                      - generic [ref=e77]: friendly
+                  - button "James Recommended Preview James The Melbourne Professional male · 🇦🇺 AU Professional Australian male professional calm" [ref=e78] [cursor=pointer]:
+                    - generic [ref=e79]:
+                      - generic [ref=e80]:
+                        - generic [ref=e81]: James
+                        - generic [ref=e82]: Recommended
+                      - button "Preview James" [ref=e83]:
+                        - img [ref=e84]
+                    - paragraph [ref=e86]: The Melbourne Professional
+                    - generic [ref=e87]:
+                      - generic [ref=e88]: male
+                      - generic [ref=e89]: ·
+                      - generic [ref=e90]: 🇦🇺 AU
+                    - paragraph [ref=e91]: Professional Australian male
+                    - generic [ref=e92]:
+                      - generic [ref=e93]: professional
+                      - generic [ref=e94]: calm
+                  - button "Liam Recommended Preview Liam The Brisbane All-Rounder male · 🇦🇺 AU Friendly, laid-back Australian male friendly conversational" [ref=e95] [cursor=pointer]:
+                    - generic [ref=e96]:
+                      - generic [ref=e97]:
+                        - generic [ref=e98]: Liam
+                        - generic [ref=e99]: Recommended
+                      - button "Preview Liam" [ref=e100]:
+                        - img [ref=e101]
+                    - paragraph [ref=e103]: The Brisbane All-Rounder
+                    - generic [ref=e104]:
+                      - generic [ref=e105]: male
+                      - generic [ref=e106]: ·
+                      - generic [ref=e107]: 🇦🇺 AU
+                    - paragraph [ref=e108]: Friendly, laid-back Australian male
+                    - generic [ref=e109]:
+                      - generic [ref=e110]: friendly
+                      - generic [ref=e111]: conversational
+                  - button "Sarah Preview Sarah female · 🇺🇸 US Warm, professional female warm professional" [ref=e112] [cursor=pointer]:
+                    - generic [ref=e113]:
+                      - generic [ref=e115]: Sarah
+                      - button "Preview Sarah" [ref=e116]:
+                        - img [ref=e117]
+                    - generic [ref=e119]:
+                      - generic [ref=e120]: female
+                      - generic [ref=e121]: ·
+                      - generic [ref=e122]: 🇺🇸 US
+                    - paragraph [ref=e123]: Warm, professional female
+                    - generic [ref=e124]:
+                      - generic [ref=e125]: warm
+                      - generic [ref=e126]: professional
+                  - button "Rachel Preview Rachel female · 🇺🇸 US Professional, authoritative female professional authoritative" [ref=e127] [cursor=pointer]:
+                    - generic [ref=e128]:
+                      - generic [ref=e130]: Rachel
+                      - button "Preview Rachel" [ref=e131]:
+                        - img [ref=e132]
+                    - generic [ref=e134]:
+                      - generic [ref=e135]: female
+                      - generic [ref=e136]: ·
+                      - generic [ref=e137]: 🇺🇸 US
+                    - paragraph [ref=e138]: Professional, authoritative female
+                    - generic [ref=e139]:
+                      - generic [ref=e140]: professional
+                      - generic [ref=e141]: authoritative
+                  - button "Emily Preview Emily female · 🇺🇸 US Upbeat, enthusiastic female upbeat friendly" [ref=e142] [cursor=pointer]:
+                    - generic [ref=e143]:
+                      - generic [ref=e145]: Emily
+                      - button "Preview Emily" [ref=e146]:
+                        - img [ref=e147]
+                    - generic [ref=e149]:
+                      - generic [ref=e150]: female
+                      - generic [ref=e151]: ·
+                      - generic [ref=e152]: 🇺🇸 US
+                    - paragraph [ref=e153]: Upbeat, enthusiastic female
+                    - generic [ref=e154]:
+                      - generic [ref=e155]: upbeat
+                      - generic [ref=e156]: friendly
+                  - button "Adam Preview Adam male · 🇺🇸 US Friendly, trustworthy male friendly" [ref=e157] [cursor=pointer]:
+                    - generic [ref=e158]:
+                      - generic [ref=e160]: Adam
+                      - button "Preview Adam" [ref=e161]:
+                        - img [ref=e162]
+                    - generic [ref=e164]:
+                      - generic [ref=e165]: male
+                      - generic [ref=e166]: ·
+                      - generic [ref=e167]: 🇺🇸 US
+                    - paragraph [ref=e168]: Friendly, trustworthy male
+                    - generic [ref=e170]: friendly
+                  - button "Sam Preview Sam male · 🇺🇸 US Calm, professional male calm professional" [ref=e171] [cursor=pointer]:
+                    - generic [ref=e172]:
+                      - generic [ref=e174]: Sam
+                      - button "Preview Sam" [ref=e175]:
+                        - img [ref=e176]
+                    - generic [ref=e178]:
+                      - generic [ref=e179]: male
+                      - generic [ref=e180]: ·
+                      - generic [ref=e181]: 🇺🇸 US
+                    - paragraph [ref=e182]: Calm, professional male
+                    - generic [ref=e183]:
+                      - generic [ref=e184]: calm
+                      - generic [ref=e185]: professional
+          - generic [ref=e186]:
+            - generic [ref=e187]:
+              - heading "Call Recording" [level=3] [ref=e188]
+              - paragraph [ref=e189]: Recording disclosure is managed in your business settings
+            - paragraph [ref=e191]:
+              - text: Call recording and disclosure settings apply to all assistants and are configured in
+              - link "Settings" [ref=e192] [cursor=pointer]:
+                - /url: /settings
+              - text: .
+          - generic [ref=e193]:
+            - link "Cancel" [ref=e194] [cursor=pointer]:
+              - /url: /assistants
+              - button "Cancel" [ref=e195]
+            - button "Create Assistant" [ref=e196] [cursor=pointer]
+    - navigation [ref=e197]:
+      - generic [ref=e198]:
+        - link "Home" [ref=e199] [cursor=pointer]:
+          - /url: /dashboard
+          - img [ref=e200]
+          - text: Home
+        - link "Assistants" [ref=e205] [cursor=pointer]:
+          - /url: /assistants
+          - img [ref=e206]
+          - text: Assistants
+        - link "Calls" [ref=e209] [cursor=pointer]:
+          - /url: /calls
+          - img [ref=e210]
+          - text: Calls
+        - link "Analytics" [ref=e214] [cursor=pointer]:
+          - /url: /analytics
+          - img [ref=e215]
+          - text: Analytics
+        - button "More" [ref=e217] [cursor=pointer]:
+          - img [ref=e218]
+          - text: More
+  - region "Notifications (F8)":
+    - list

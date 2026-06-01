@@ -1,0 +1,55 @@
+[   23189ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[   23190ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[   49086ms] [LOG] [Client Instrumentation Hook] Slow execution detected: 1116ms (Note: Code download overhead is not included in this measurement) @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/lib/require-instrumentation-client.js:18
+[   49256ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/compiled/react-dom/cjs/react-dom-client.development.js:25630
+[   50445ms] [WARNING] [@sentry/nextjs] You are calling `Sentry.init()` more than once on the client. This can happen if you have both a `sentry.client.config.ts` and a `instrumentation-client.ts` file with `Sentry.init()` calls. It is recommended to call `Sentry.init()` once in `instrumentation-client.ts`. @ webpack-internal:///(app-pages-browser)/./node_modules/@sentry/nextjs/build/esm/client/index.js:251
+[   76103ms] [WARNING] [Analytics] NEXT_PUBLIC_GA_MEASUREMENT_ID is not set. Analytics tracking is disabled. @ webpack-internal:///(app-pages-browser)/./src/lib/analytics/gtag.ts:17
+[   80523ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[   80523ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[   88983ms] AbortError: signal is aborted without reason
+    at eval (webpack-internal:///(app-pages-browser)/./node_modules/@supabase/auth-js/dist/module/lib/locks.js:108:29)
+[   89095ms] AbortError: signal is aborted without reason
+    at eval (webpack-internal:///(app-pages-browser)/./node_modules/@supabase/auth-js/dist/module/lib/locks.js:108:29)
+[  109216ms] [WARNING] The width(-1) and height(-1) of chart should be greater than 0,
+       please check the style of container, or the props width(100%) and height(100%),
+       or add a minWidth(0) or minHeight(undefined) or use aspect(undefined) to control the
+       height and width. @ webpack-internal:///(app-pages-browser)/./node_modules/recharts/es6/util/LogUtils.js:18
+[  109251ms] [WARNING] The width(-1) and height(-1) of chart should be greater than 0,
+       please check the style of container, or the props width(100%) and height(100%),
+       or add a minWidth(0) or minHeight(undefined) or use aspect(undefined) to control the
+       height and width. @ webpack-internal:///(app-pages-browser)/./node_modules/recharts/es6/util/LogUtils.js:18
+[  109530ms] [WARNING] The width(-1) and height(-1) of chart should be greater than 0,
+       please check the style of container, or the props width(100%) and height(100%),
+       or add a minWidth(0) or minHeight(undefined) or use aspect(undefined) to control the
+       height and width. @ webpack-internal:///(app-pages-browser)/./node_modules/recharts/es6/util/LogUtils.js:18
+[  109562ms] [WARNING] The width(-1) and height(-1) of chart should be greater than 0,
+       please check the style of container, or the props width(100%) and height(100%),
+       or add a minWidth(0) or minHeight(undefined) or use aspect(undefined) to control the
+       height and width. @ webpack-internal:///(app-pages-browser)/./node_modules/recharts/es6/util/LogUtils.js:18
+[  109678ms] [WARNING] The width(-1) and height(-1) of chart should be greater than 0,
+       please check the style of container, or the props width(100%) and height(100%),
+       or add a minWidth(0) or minHeight(undefined) or use aspect(undefined) to control the
+       height and width. @ webpack-internal:///(app-pages-browser)/./node_modules/recharts/es6/util/LogUtils.js:18
+[  109678ms] [WARNING] The width(-1) and height(-1) of chart should be greater than 0,
+       please check the style of container, or the props width(100%) and height(100%),
+       or add a minWidth(0) or minHeight(undefined) or use aspect(undefined) to control the
+       height and width. @ webpack-internal:///(app-pages-browser)/./node_modules/recharts/es6/util/LogUtils.js:18
+[  162809ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[  162810ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[  190428ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[  190429ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[  208861ms] [ERROR] Loading the script 'https://cdnjs.cloudflare.com/ajax/libs/axe-core/4.10.0/axe.min.js' violates the following Content Security Policy directive: "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://js.stripe.com https://cdn.jsdelivr.net https://www.googletagmanager.com". Note that 'script-src-elem' was not explicitly set, so 'script-src' is used as a fallback. The action has been blocked. @ :8
+[  218185ms] [ERROR] Connecting to 'https://cdnjs.cloudflare.com/ajax/libs/axe-core/4.10.0/axe.min.js' violates the following Content Security Policy directive: "connect-src 'self' https://*.supabase.co wss://*.supabase.co https://api.stripe.com https://api.vapi.ai https://api.elevenlabs.io https://api.cal.com wss://*.fly.dev https://www.google-analytics.com https://analytics.google.com https://region1.google-analytics.com ws://localhost:* wss://localhost:*". The action has been blocked. @ :3
+[  218188ms] [ERROR] Fetch API cannot load https://cdnjs.cloudflare.com/ajax/libs/axe-core/4.10.0/axe.min.js. Refused to connect because it violates the document's Content Security Policy. @ :3
+[  250348ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[  250475ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56

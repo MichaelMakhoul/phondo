@@ -1,0 +1,688 @@
+[   27137ms] [LOG] [Client Instrumentation Hook] Slow execution detected: 811ms (Note: Code download overhead is not included in this measurement) @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/lib/require-instrumentation-client.js:18
+[   27206ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/compiled/react-dom/cjs/react-dom-client.development.js:25630
+[   27458ms] [WARNING] [@sentry/nextjs] You are calling `Sentry.init()` more than once on the client. This can happen if you have both a `sentry.client.config.ts` and a `instrumentation-client.ts` file with `Sentry.init()` calls. It is recommended to call `Sentry.init()` once in `instrumentation-client.ts`. @ webpack-internal:///(app-pages-browser)/./node_modules/@sentry/nextjs/build/esm/client/index.js:251
+[   54963ms] [WARNING] [Analytics] NEXT_PUBLIC_GA_MEASUREMENT_ID is not set. Analytics tracking is disabled. @ webpack-internal:///(app-pages-browser)/./src/lib/analytics/gtag.ts:17
+[   55449ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[   55494ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[   71979ms] AbortError: signal is aborted without reason
+    at eval (webpack-internal:///(app-pages-browser)/./node_modules/@supabase/auth-js/dist/module/lib/locks.js:108:29)
+[   71981ms] AbortError: signal is aborted without reason
+    at eval (webpack-internal:///(app-pages-browser)/./node_modules/@supabase/auth-js/dist/module/lib/locks.js:108:29)
+[  109522ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[  109522ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[  169539ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[  169543ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[  229463ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[  229585ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[  289744ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[  289747ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[  349939ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[  349940ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[  409495ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[  409495ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[  469406ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[  469406ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[  529653ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[  529656ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[  589675ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[  589691ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[  649472ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[  649473ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[  709421ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[  709423ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[  769409ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[  769410ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[  829413ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[  829415ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[  889413ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[  889415ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[  949417ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[  949418ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 1009413ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 1009415ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 1069419ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 1069420ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 1129412ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 1129414ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 1153799ms] [LOG] [Fast Refresh] rebuilding @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/hot-reloader/app/hot-reloader-app.js:196
+[ 1166097ms] [LOG] [Fast Refresh] rebuilding @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/hot-reloader/app/hot-reloader-app.js:196
+[ 1167721ms] [LOG] [Fast Refresh] done in 1620ms @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/report-hmr-latency.js:13
+[ 1170517ms] [LOG] [Fast Refresh] done in 4421ms @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/report-hmr-latency.js:13
+[ 1175968ms] [LOG] [Fast Refresh] rebuilding @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/hot-reloader/app/hot-reloader-app.js:196
+[ 1178185ms] [LOG] [Fast Refresh] done in 2236ms @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/report-hmr-latency.js:13
+[ 1186150ms] [LOG] [Fast Refresh] rebuilding @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/hot-reloader/app/hot-reloader-app.js:196
+[ 1188420ms] [LOG] [Fast Refresh] done in 2270ms @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/report-hmr-latency.js:13
+[ 1189879ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 1189895ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 1195374ms] [LOG] [Fast Refresh] rebuilding @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/hot-reloader/app/hot-reloader-app.js:196
+[ 1197796ms] [LOG] [Fast Refresh] done in 2423ms @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/report-hmr-latency.js:13
+[ 1249644ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 1249645ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 1309634ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 1309634ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 1369636ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 1369637ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 1429625ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 1429625ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 1489625ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 1489626ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 1549620ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 1549621ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 1609636ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 1609637ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 1669627ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 1669627ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 1729675ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 1729676ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 1789689ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 1789689ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 1849668ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 1849668ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 1909698ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 1909698ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 1969712ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 1969713ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 2029689ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 2029690ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 2088833ms] [LOG] [Fast Refresh] rebuilding @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/hot-reloader/app/hot-reloader-app.js:196
+[ 2089942ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 2089942ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 2098711ms] [LOG] [Fast Refresh] rebuilding @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/hot-reloader/app/hot-reloader-app.js:196
+[ 2099944ms] [LOG] [Fast Refresh] done in 1233ms @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/report-hmr-latency.js:13
+[ 2128768ms] [WARNING] [Fast Refresh] performing full reload
+
+Fast Refresh will perform a full reload when you edit a file that's imported by modules outside of the React rendering tree.
+You might have a file which exports a React component but also exports a value that is imported by a non-React component file.
+Consider migrating the non-React component export to a separate file and importing it into both files.
+
+It is also possible the parent component of the component you edited is a class component, which disables Fast Refresh.
+Fast Refresh requires at least one parent function component in your React tree. @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/hot-reloader/app/hot-reloader-app.js:111
+[ 2142665ms] [LOG] [Client Instrumentation Hook] Slow execution detected: 3242ms (Note: Code download overhead is not included in this measurement) @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/lib/require-instrumentation-client.js:18
+[ 2142779ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/compiled/react-dom/cjs/react-dom-client.development.js:25630
+[ 2143319ms] [WARNING] [@sentry/nextjs] You are calling `Sentry.init()` more than once on the client. This can happen if you have both a `sentry.client.config.ts` and a `instrumentation-client.ts` file with `Sentry.init()` calls. It is recommended to call `Sentry.init()` once in `instrumentation-client.ts`. @ webpack-internal:///(app-pages-browser)/./node_modules/@sentry/nextjs/build/esm/client/index.js:251
+[ 2170778ms] [WARNING] [Analytics] NEXT_PUBLIC_GA_MEASUREMENT_ID is not set. Analytics tracking is disabled. @ webpack-internal:///(app-pages-browser)/./src/lib/analytics/gtag.ts:17
+[ 2171255ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 2171298ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 2171930ms] AbortError: signal is aborted without reason
+    at eval (webpack-internal:///(app-pages-browser)/./node_modules/@supabase/auth-js/dist/module/lib/locks.js:108:29)
+[ 2171931ms] AbortError: signal is aborted without reason
+    at eval (webpack-internal:///(app-pages-browser)/./node_modules/@supabase/auth-js/dist/module/lib/locks.js:108:29)
+[ 2225015ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 2225019ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 2284999ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 2285000ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 2297122ms] [LOG] [Fast Refresh] rebuilding @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/hot-reloader/app/hot-reloader-app.js:196
+[ 2310690ms] [LOG] [Fast Refresh] done in 13570ms @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/report-hmr-latency.js:13
+[ 2316723ms] [WARNING] The resource http://localhost:3001/_next/static/css/app/layout.css?v=1776280466561 was preloaded using link preload but not used within a few seconds from the window's load event. Please make sure it has an appropriate `as` value and it is preloaded intentionally. @ http://localhost:3001/callbacks:0
+[ 2345025ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 2345027ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 2405122ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 2405125ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 2465621ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 2465622ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 2519830ms] [LOG] [Fast Refresh] rebuilding @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/hot-reloader/app/hot-reloader-app.js:196
+[ 2524880ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 2524881ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 2530298ms] [LOG] [Fast Refresh] rebuilding @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/hot-reloader/app/hot-reloader-app.js:196
+[ 2530586ms] [LOG] [Fast Refresh] done in 309ms @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/report-hmr-latency.js:13
+[ 2533024ms] [LOG] [Fast Refresh] done in 2746ms @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/report-hmr-latency.js:13
+[ 2538067ms] [LOG] [Fast Refresh] rebuilding @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/hot-reloader/app/hot-reloader-app.js:196
+[ 2541091ms] [LOG] [Fast Refresh] done in 3025ms @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/report-hmr-latency.js:13
+[ 2558030ms] [LOG] [Fast Refresh] rebuilding @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/hot-reloader/app/hot-reloader-app.js:196
+[ 2560132ms] [LOG] [Fast Refresh] done in 2103ms @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/report-hmr-latency.js:13
+[ 2583116ms] [LOG] [Fast Refresh] rebuilding @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/hot-reloader/app/hot-reloader-app.js:196
+[ 2586988ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 2586989ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 2590435ms] [LOG] [Fast Refresh] done in 7319ms @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/report-hmr-latency.js:13
+[ 2590967ms] [LOG] [Fast Refresh] rebuilding @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/hot-reloader/app/hot-reloader-app.js:196
+[ 2592351ms] [LOG] [Fast Refresh] done in 1385ms @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/report-hmr-latency.js:13
+[ 2600085ms] [LOG] [Fast Refresh] rebuilding @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/hot-reloader/app/hot-reloader-app.js:196
+[ 2601281ms] [LOG] [Fast Refresh] done in 1196ms @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/report-hmr-latency.js:13
+[ 2645172ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 2645176ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 2705307ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 2705329ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 2765098ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 2765099ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 2825100ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 2825101ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 2885093ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 2885093ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 2945113ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 2945114ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 3005100ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 3005100ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 3065102ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 3065102ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 3125094ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 3125094ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 3185133ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 3185133ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 3245104ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 3245104ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 3305161ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 3305162ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 3365142ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 3365143ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 3425158ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 3425158ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 3485154ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 3485155ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 3545114ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 3545114ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 3605108ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 3605109ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 3665110ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 3665110ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 3725100ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 3725101ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 3785121ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 3785121ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 3845124ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 3845124ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 3905107ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 3905107ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 3964903ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 3964905ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 4025131ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 4025131ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 4085129ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 4085129ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 4145117ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 4145118ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 4205150ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 4205151ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 4265138ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 4265138ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 4325162ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 4325163ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 4385129ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 4385130ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 4445119ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 4445120ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 4505122ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 4505122ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 4564911ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 4564912ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 4625154ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 4625154ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 4685210ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 4685210ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 4745192ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 4745193ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 4805165ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 4805166ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 4865138ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 4865139ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 4925137ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 4925137ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 4977384ms] [LOG] [Fast Refresh] rebuilding @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/hot-reloader/app/hot-reloader-app.js:196
+[ 4985367ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 4985371ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 4987854ms] [LOG] [Fast Refresh] done in 10474ms @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/report-hmr-latency.js:13
+[ 4988216ms] [LOG] [Fast Refresh] rebuilding @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/hot-reloader/app/hot-reloader-app.js:196
+[ 4990001ms] [LOG] [Fast Refresh] done in 1786ms @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/report-hmr-latency.js:13
+[ 4997276ms] [LOG] [Fast Refresh] rebuilding @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/hot-reloader/app/hot-reloader-app.js:196
+[ 4998439ms] [LOG] [Fast Refresh] done in 1163ms @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/report-hmr-latency.js:13
+[ 5010312ms] [LOG] [Fast Refresh] rebuilding @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/hot-reloader/app/hot-reloader-app.js:196
+[ 5012065ms] [LOG] [Fast Refresh] done in 1753ms @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/report-hmr-latency.js:13
+[ 5017463ms] [LOG] [Fast Refresh] rebuilding @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/hot-reloader/app/hot-reloader-app.js:196
+[ 5018413ms] [LOG] [Fast Refresh] done in 949ms @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/report-hmr-latency.js:13
+[ 5027654ms] [LOG] [Fast Refresh] rebuilding @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/hot-reloader/app/hot-reloader-app.js:196
+[ 5028665ms] [LOG] [Fast Refresh] done in 1011ms @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/report-hmr-latency.js:13
+[ 5045177ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 5045178ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 5105138ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 5105139ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 5165261ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 5165262ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 5225141ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 5225141ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 5285173ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 5285174ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 5345137ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 5345137ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 5405155ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 5405155ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 5465144ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 5465144ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 5525149ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 5525150ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 5585172ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 5585173ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 5645147ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 5645148ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 5705154ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 5705155ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 5765154ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 5765154ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 5825168ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 5825169ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 5856668ms] [LOG] [Fast Refresh] rebuilding @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/hot-reloader/app/hot-reloader-app.js:196
+[ 5867090ms] [LOG] [Fast Refresh] rebuilding @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/hot-reloader/app/hot-reloader-app.js:196
+[ 5867526ms] [LOG] [Fast Refresh] done in 435ms @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/report-hmr-latency.js:13
+[ 5868898ms] [LOG] [Fast Refresh] done in 1807ms @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/report-hmr-latency.js:13
+[ 5872311ms] [LOG] [Fast Refresh] rebuilding @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/hot-reloader/app/hot-reloader-app.js:196
+[ 5873247ms] [LOG] [Fast Refresh] done in 937ms @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/report-hmr-latency.js:13
+[ 5878906ms] [LOG] [Fast Refresh] rebuilding @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/hot-reloader/app/hot-reloader-app.js:196
+[ 5880052ms] [LOG] [Fast Refresh] done in 1146ms @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/report-hmr-latency.js:13
+[ 5885200ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 5885201ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 5886139ms] [LOG] [Fast Refresh] rebuilding @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/hot-reloader/app/hot-reloader-app.js:196
+[ 5887002ms] [LOG] [Fast Refresh] done in 862ms @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/report-hmr-latency.js:13
+[ 5919552ms] [LOG] [Fast Refresh] rebuilding @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/hot-reloader/app/hot-reloader-app.js:196
+[ 5921649ms] [LOG] [Fast Refresh] done in 2097ms @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/report-hmr-latency.js:13
+[ 5935231ms] [LOG] [Fast Refresh] rebuilding @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/hot-reloader/app/hot-reloader-app.js:196
+[ 5936381ms] [LOG] [Fast Refresh] done in 1149ms @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/report-hmr-latency.js:13
+[ 5945201ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 5945202ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 6005123ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 6005124ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 6048724ms] [LOG] [Fast Refresh] rebuilding @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/hot-reloader/app/hot-reloader-app.js:196
+[ 6056801ms] [LOG] [Fast Refresh] done in 8078ms @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/report-hmr-latency.js:13
+[ 6065144ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 6065144ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 6125179ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 6125180ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 6185158ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 6185158ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 6245117ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 6245117ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 6305090ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 6305090ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 6365082ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 6365083ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 6425085ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 6425085ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 6485081ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 6485081ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 6545081ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 6545082ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 6605082ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 6605083ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 6665079ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 6665079ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 6725082ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 6725083ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 6785084ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 6785084ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 6845084ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 6845084ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 6905087ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 6905087ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 6965093ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 6965093ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 7025133ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 7025134ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 7085136ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 7085136ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 7145138ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 7145139ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 7205139ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 7205140ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 7265149ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 7265149ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 7325087ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 7325088ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 7385139ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 7385139ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 7445104ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 7445104ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 7505087ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 7505088ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 7544814ms] [LOG] [Fast Refresh] rebuilding @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/hot-reloader/app/hot-reloader-app.js:196
+[ 7557749ms] [LOG] [Fast Refresh] done in 12944ms @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/dev/report-hmr-latency.js:13
+[ 7565099ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 7565099ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 7625136ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 7625136ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 7684870ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 7684871ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 7745125ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 7745126ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 7805124ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 7805124ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 7865133ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 7865134ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 7925172ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 7925201ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 7985103ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 7985104ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 8045145ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 8045146ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 8105096ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 8105097ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 8165117ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 8165118ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 8225085ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 8225086ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 8284873ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 8284874ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 8345119ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 8345119ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 8405097ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 8405097ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 8465084ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 8465084ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 8525072ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 8525073ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 8585134ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 8585134ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 8645076ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 8645076ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 8705085ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 8705086ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 8765272ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 8765303ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 8825169ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 8825336ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 8885149ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 8885149ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 8945099ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 8945099ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 9005118ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 9005119ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 9065080ms] [ERROR] Failed to fetch call notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[ 9065081ms] [ERROR] Failed to fetch appointment notifications: {message: AbortError: signal is aborted without reason, details: AbortError: signal is aborted without reason
+    a…supabase/auth-js/dist/module/lib/locks.js:108:29), hint: , code: } @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56

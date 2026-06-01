@@ -1,0 +1,95 @@
+- generic:
+  - link:
+    - /url: "#main-content"
+    - text: Skip to main content
+  - generic:
+    - generic:
+      - banner:
+        - generic:
+          - button:
+            - img
+            - generic: Open menu
+          - generic: Smile Hub Dental
+        - generic:
+          - button:
+            - img
+            - generic: Toggle theme
+          - button:
+            - img
+            - generic: Notifications
+          - button:
+            - generic:
+              - generic: MM
+      - main:
+        - generic:
+          - generic:
+            - generic:
+              - generic:
+                - heading [level=1]: Phone Numbers
+                - paragraph: Manage phone numbers for your assistants
+              - generic: 0 of 2
+            - generic:
+              - button:
+                - img
+                - text: Add Number
+                - img
+          - generic:
+            - generic:
+              - generic:
+                - generic:
+                  - generic:
+                    - img
+                  - generic:
+                    - generic:
+                      - img
+              - heading [level=3]: No phone numbers yet
+              - paragraph: Use your existing business number with call forwarding, or buy a new number
+              - generic:
+                - button:
+                  - img
+                  - text: Add Number
+                  - img
+      - navigation:
+        - generic:
+          - link:
+            - /url: /dashboard
+            - img
+            - text: Home
+          - link:
+            - /url: /assistants
+            - img
+            - text: Assistants
+          - link:
+            - /url: /calls
+            - img
+            - text: Calls
+          - link:
+            - /url: /analytics
+            - img
+            - text: Analytics
+          - button:
+            - img
+            - text: More
+  - list
+  - alert
+  - generic:
+    - menu:
+      - menuitem:
+        - img
+        - text: Use My Existing Number
+      - menuitem:
+        - img
+        - text: Buy a New Number
+  - dialog "Enter Your Phone Number" [ref=e107]:
+    - generic [ref=e108]:
+      - heading "Enter Your Phone Number" [level=2] [ref=e109]
+      - paragraph [ref=e110]: Enter the business phone number you want to forward to your AI assistant
+    - generic [ref=e112]:
+      - text: Your Business Phone Number
+      - textbox "Your Business Phone Number" [active] [ref=e113]:
+        - /placeholder: 02 9876 5432
+    - generic [ref=e114]:
+      - button "Continue" [disabled]
+    - button "Close" [ref=e115] [cursor=pointer]:
+      - img [ref=e116]
+      - generic [ref=e119]: Close

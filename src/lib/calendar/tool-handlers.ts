@@ -17,6 +17,7 @@ import {
   getServiceType,
 } from "@/lib/service-types";
 import { invalidateVoiceScheduleCache } from "@/lib/voice-cache/invalidate";
+import { hasNonLatinLetters } from "@/lib/calendar/latin-name";
 
 interface ToolResult {
   success: boolean;
@@ -812,6 +813,19 @@ export async function handleBookAppointment(
       success: false,
       message:
         "I need your name to complete the booking. Could you tell me your first name and last name please?",
+    };
+  }
+
+  // SCRUM-367: gate non-Latin names server-side. Gemini Live in a non-English
+  // call passes the caller's name in their own script (e.g. Arabic) straight
+  // through; nothing else stops it reaching the DB. Reject so the model
+  // transliterates into English letters first (it does this well). Accented
+  // Latin (José, Müller) is allowed — only non-Latin scripts are rejected.
+  if (hasNonLatinLetters(name)) {
+    return {
+      success: false,
+      message:
+        "To book this I need the name written with English letters. Could you give me the English spelling of the first and last name?",
     };
   }
 

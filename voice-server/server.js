@@ -2036,6 +2036,28 @@ wss.on("connection", (twilioWs) => {
                     session.toolCallAudit.push({ name: toolCall.name, successful, at: Date.now() });
                   }
 
+                  // SCRUM-367 (B): break the name/detail re-confirm loop
+                  // deterministically (see CallSession.registerBookOutcome).
+                  // Keyed off the handler's authoritative `success` boolean
+                  // (threaded through executeCalendarCall), falling back to the
+                  // SCRUM-227 audit signal. Availability/conflict rejections are
+                  // legitimate "offer another time" turns and reset the counter
+                  // rather than escalating. The directive is appended to the
+                  // RETURNED message only — the audit/dedupe/cache checks above
+                  // key off the unmodified `message` const.
+                  let bookLoopDirective = "";
+                  if (session && toolCall.name === "book_appointment") {
+                    const lastAudit = session.toolCallAudit[session.toolCallAudit.length - 1] || {};
+                    const succeeded = (typeof result === "object" && typeof result.success === "boolean")
+                      ? result.success
+                      : lastAudit.successful === true;
+                    const isAvailabilityReject = /no longer available|already booked|currently blocked|not available for this service|fully booked|no available slot/i.test(message);
+                    bookLoopDirective = session.registerBookOutcome({ successful: succeeded, isAvailabilityReject });
+                    if (bookLoopDirective) {
+                      console.warn(`[BookLoopCap] Escalation injected (attempt ${session.bookRejectionCount}). callSid=${session.callSid}`);
+                    }
+                  }
+
                   // SCRUM-257: track confirmed bookings to prevent duplicates.
                   // Key = `datetime|first_name|last_name` (lowered) so the same
                   // attendee+time can't be booked twice but a family booking
@@ -2079,7 +2101,7 @@ wss.on("connection", (twilioWs) => {
                   // Preserve __endCall flag so gemini-live.js can detect end_call
                   // and close the WebSocket. Without this, the session stays open
                   // indefinitely after end_call.
-                  const ret = { message };
+                  const ret = { message: message + bookLoopDirective };
                   if (typeof result === "object" && result?.__endCall) ret.__endCall = true;
                   return ret;
                 },

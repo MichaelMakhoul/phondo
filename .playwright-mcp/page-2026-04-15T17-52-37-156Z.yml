@@ -1,0 +1,299 @@
+- generic [active] [ref=e1]:
+  - link "Skip to main content" [ref=e2] [cursor=pointer]:
+    - /url: "#main-content"
+  - generic [ref=e4]:
+    - banner [ref=e5]:
+      - generic [ref=e6]:
+        - button "Open menu" [ref=e7] [cursor=pointer]:
+          - img [ref=e8]
+          - generic [ref=e9]: Open menu
+        - generic [ref=e10]: Smile Hub Dental
+      - generic [ref=e11]:
+        - button "Toggle theme" [ref=e12] [cursor=pointer]:
+          - img [ref=e13]
+          - img
+          - generic [ref=e19]: Toggle theme
+        - button "Notifications" [ref=e20] [cursor=pointer]:
+          - img [ref=e21]
+          - generic [ref=e24]: Notifications
+        - button "MM" [ref=e25] [cursor=pointer]:
+          - generic [ref=e27]: MM
+    - main [ref=e29]:
+      - generic [ref=e30]:
+        - generic [ref=e31]:
+          - heading "Settings" [level=1] [ref=e32]
+          - paragraph [ref=e33]: Manage your business and account settings
+        - navigation [ref=e34]:
+          - link "General" [ref=e35] [cursor=pointer]:
+            - /url: /settings
+          - link "Notifications" [ref=e36] [cursor=pointer]:
+            - /url: /settings/notifications
+          - link "Scheduling" [ref=e37] [cursor=pointer]:
+            - /url: /settings/calendar
+          - link "Profile" [ref=e38] [cursor=pointer]:
+            - /url: /settings/profile
+        - generic [ref=e39]:
+          - generic [ref=e40]:
+            - heading "Business Information" [level=3] [ref=e41]:
+              - img [ref=e42]
+              - text: Business Information
+            - paragraph [ref=e45]: Tell us about your business so your AI receptionist can serve your customers better
+          - generic [ref=e46]:
+            - generic [ref=e47]:
+              - generic [ref=e48]:
+                - img [ref=e49]
+                - text: Country
+              - combobox [ref=e52] [cursor=pointer]:
+                - img [ref=e53]
+              - combobox [ref=e55]
+              - paragraph [ref=e56]: Changing your country affects timezone options and new phone number provisioning. Existing phone numbers will continue to work.
+            - generic [ref=e57]:
+              - generic [ref=e58]:
+                - text: Business Name
+                - textbox "Business Name" [ref=e59]:
+                  - /placeholder: Acme Dental
+                  - text: Smile Hub Dental
+              - generic [ref=e60]:
+                - text: Industry
+                - combobox [ref=e61] [cursor=pointer]:
+                  - img [ref=e62]
+                - combobox [ref=e64]
+            - generic [ref=e65]:
+              - generic [ref=e66]:
+                - text: Website URL
+                - textbox "Website URL" [ref=e67]:
+                  - /placeholder: https://acmedental.com
+                  - text: https://www.sydneyrea.com.au/
+                - paragraph [ref=e68]: We can import information from your website to train your AI
+              - generic [ref=e69]:
+                - text: Business Phone
+                - textbox "Business Phone" [ref=e70]:
+                  - /placeholder: 02 9876 5432
+                  - text: (02) 9555 1234
+            - generic [ref=e71]:
+              - text: Business Address
+              - textbox "Business Address" [ref=e72]:
+                - /placeholder: 123 Main St, City, State 12345
+                - text: 42 George Street, Sydney NSW 2000
+            - generic [ref=e73]:
+              - generic [ref=e74]:
+                - img [ref=e75]
+                - text: Timezone
+              - combobox [ref=e78] [cursor=pointer]:
+                - img [ref=e79]
+              - combobox [ref=e81]
+            - generic [ref=e82]:
+              - generic [ref=e83]:
+                - img [ref=e84]
+                - text: Business Hours
+              - paragraph [ref=e87]: Your AI will know when you're open and can inform callers accordingly
+              - generic [ref=e88]:
+                - generic [ref=e89]:
+                  - generic [ref=e90]:
+                    - switch [checked] [ref=e91] [cursor=pointer]
+                    - checkbox [checked]
+                    - generic [ref=e92]: Monday
+                  - generic [ref=e93]:
+                    - textbox [ref=e94]: 08:00
+                    - generic [ref=e95]: to
+                    - textbox [ref=e96]: 17:00
+                - generic [ref=e97]:
+                  - generic [ref=e98]:
+                    - switch [checked] [ref=e99] [cursor=pointer]
+                    - checkbox [checked]
+                    - generic [ref=e100]: Tuesday
+                  - generic [ref=e101]:
+                    - textbox [ref=e102]: 08:00
+                    - generic [ref=e103]: to
+                    - textbox [ref=e104]: 17:00
+                - generic [ref=e105]:
+                  - generic [ref=e106]:
+                    - switch [checked] [ref=e107] [cursor=pointer]
+                    - checkbox [checked]
+                    - generic [ref=e108]: Wednesday
+                  - generic [ref=e109]:
+                    - textbox [ref=e110]: 08:00
+                    - generic [ref=e111]: to
+                    - textbox [ref=e112]: 18:00
+                - generic [ref=e113]:
+                  - generic [ref=e114]:
+                    - switch [checked] [ref=e115] [cursor=pointer]
+                    - checkbox [checked]
+                    - generic [ref=e116]: Thursday
+                  - generic [ref=e117]:
+                    - textbox [ref=e118]: 08:00
+                    - generic [ref=e119]: to
+                    - textbox [ref=e120]: 17:00
+                - generic [ref=e121]:
+                  - generic [ref=e122]:
+                    - switch [checked] [ref=e123] [cursor=pointer]
+                    - checkbox [checked]
+                    - generic [ref=e124]: Friday
+                  - generic [ref=e125]:
+                    - textbox [ref=e126]: 08:00
+                    - generic [ref=e127]: to
+                    - textbox [ref=e128]: 16:00
+                - generic [ref=e129]:
+                  - generic [ref=e130]:
+                    - switch [checked] [ref=e131] [cursor=pointer]
+                    - checkbox [checked]
+                    - generic [ref=e132]: Saturday
+                  - generic [ref=e133]:
+                    - textbox [ref=e134]: 09:00
+                    - generic [ref=e135]: to
+                    - textbox [ref=e136]: 13:00
+                - generic [ref=e137]:
+                  - generic [ref=e138]:
+                    - switch [ref=e139] [cursor=pointer]
+                    - checkbox
+                    - generic [ref=e140]: Sunday
+                  - generic [ref=e141]: Closed
+            - generic [ref=e142]:
+              - generic [ref=e143]:
+                - img [ref=e144]
+                - text: Default Appointment Duration
+              - combobox [ref=e146] [cursor=pointer]:
+                - img [ref=e147]
+              - combobox [ref=e149]
+              - paragraph [ref=e150]: "How long each appointment slot should be when using built-in booking. Cal.com users: duration comes from your event type instead."
+            - generic [ref=e151]:
+              - generic [ref=e152]:
+                - img [ref=e153]
+                - text: Call Recording Disclosure
+              - paragraph [ref=e155]: When enabled, a brief recording disclosure is played to the caller before your AI receptionist greets them. Required by law in some jurisdictions.
+              - radiogroup [ref=e156]:
+                - generic [ref=e157]:
+                  - radio "Automatic (recommended)" [checked] [ref=e158] [cursor=pointer]:
+                    - img [ref=e160]
+                  - radio [checked]
+                  - generic [ref=e162]:
+                    - text: Automatic (recommended)
+                    - paragraph [ref=e163]: Disclosure is played when required by your business location — always required in Australia
+                - generic [ref=e164]:
+                  - radio "Always disclose" [ref=e165] [cursor=pointer]
+                  - radio
+                  - generic [ref=e166]:
+                    - text: Always disclose
+                    - paragraph [ref=e167]: Play the recording disclosure on every call regardless of location
+                - generic [ref=e168]:
+                  - radio "Never disclose" [ref=e169] [cursor=pointer]
+                  - radio
+                  - generic [ref=e170]:
+                    - text: Never disclose
+                    - paragraph [ref=e171]: Do not play a recording disclosure. Only use this if you do not record calls or handle consent separately.
+              - generic [ref=e172]:
+                - text: Custom Disclosure Message (optional)
+                - textbox "Just so you know, this call may be recorded." [ref=e173]
+                - paragraph [ref=e174]:
+                  - text: "Leave blank for the default: \"Just so you know, this call may be recorded.\" Use"
+                  - code [ref=e175]: "{business_name}"
+                  - text: to insert your business name. This short message plays before the AI greets the caller.
+            - generic [ref=e176]:
+              - generic [ref=e177]:
+                - img [ref=e178]
+                - generic [ref=e180]:
+                  - text: Appointment Lookup Verification
+                  - paragraph [ref=e181]: How callers verify their identity when checking, rescheduling, or cancelling appointments.
+              - radiogroup [ref=e182]:
+                - generic [ref=e183] [cursor=pointer]:
+                  - radio "Code + Identity Check Caller provides their confirmation code AND answers a verification question. Most secure." [checked] [ref=e184]:
+                    - img [ref=e186]
+                  - radio [checked]
+                  - generic [ref=e188]:
+                    - text: Code + Identity Check
+                    - paragraph [ref=e189]: Caller provides their confirmation code AND answers a verification question. Most secure.
+                - generic [ref=e190] [cursor=pointer]:
+                  - radio "Code Only Confirmation code alone is enough. Faster but less secure." [ref=e191]
+                  - radio
+                  - generic [ref=e192]:
+                    - text: Code Only
+                    - paragraph [ref=e193]: Confirmation code alone is enough. Faster but less secure.
+                - generic [ref=e194] [cursor=pointer]:
+                  - radio "No Code — Verify by Details No confirmation codes. Caller verifies with name, phone, etc. Simplest for the caller." [ref=e195]
+                  - radio
+                  - generic [ref=e196]:
+                    - text: No Code — Verify by Details
+                    - paragraph [ref=e197]: No confirmation codes. Caller verifies with name, phone, etc. Simplest for the caller.
+              - generic [ref=e198]:
+                - text: Additional identity check (after code)
+                - paragraph [ref=e199]: "After the caller provides their code, the AI will also ask for:"
+                - generic [ref=e200] [cursor=pointer]:
+                  - checkbox "Full Name Caller must state their name as it was booked" [checked] [ref=e201]
+                  - generic [ref=e202]:
+                    - text: Full Name
+                    - paragraph [ref=e203]: Caller must state their name as it was booked
+                - generic [ref=e204] [cursor=pointer]:
+                  - checkbox "Phone Number Caller must confirm the phone number used when booking" [checked] [ref=e205]
+                  - generic [ref=e206]:
+                    - text: Phone Number
+                    - paragraph [ref=e207]: Caller must confirm the phone number used when booking
+                - generic [ref=e208] [cursor=pointer]:
+                  - checkbox "Email Address Caller must provide the email used when booking" [ref=e209]
+                  - generic [ref=e210]:
+                    - text: Email Address
+                    - paragraph [ref=e211]: Caller must provide the email used when booking
+              - paragraph [ref=e213]: "How it works: AI asks for confirmation code + name + phone before sharing appointment details."
+            - button "Save Business Info" [ref=e215] [cursor=pointer]
+        - generic [ref=e216]:
+          - generic [ref=e217]:
+            - heading "Branding" [level=3] [ref=e218]
+            - paragraph [ref=e219]: Customize how your AI receptionist appears
+          - generic [ref=e220]:
+            - generic [ref=e221]:
+              - generic [ref=e222]:
+                - text: Logo URL
+                - textbox "Logo URL" [ref=e223]:
+                  - /placeholder: https://example.com/logo.png
+                - paragraph [ref=e224]: Used for email notifications and reports
+              - generic [ref=e225]:
+                - text: Brand Color
+                - textbox "Brand Color" [ref=e227]:
+                  - /placeholder: "#3B82F6"
+                  - text: "#3B82F6"
+            - button "Save Branding" [ref=e230] [cursor=pointer]
+        - generic [ref=e231]:
+          - generic [ref=e232]:
+            - heading "Danger Zone" [level=3] [ref=e233]
+            - paragraph [ref=e234]: Irreversible actions for your account
+          - generic [ref=e236]:
+            - generic [ref=e237]:
+              - paragraph [ref=e238]: Delete Account
+              - paragraph [ref=e239]: Permanently delete your business and all its data. This cannot be undone.
+            - button "Delete Account" [ref=e240] [cursor=pointer]
+    - navigation [ref=e241]:
+      - generic [ref=e242]:
+        - link "Home" [ref=e243] [cursor=pointer]:
+          - /url: /dashboard
+          - img [ref=e244]
+          - text: Home
+        - link "Assistants" [ref=e249] [cursor=pointer]:
+          - /url: /assistants
+          - img [ref=e250]
+          - text: Assistants
+        - link "Calls" [ref=e253] [cursor=pointer]:
+          - /url: /calls
+          - img [ref=e254]
+          - text: Calls
+        - link "Analytics" [ref=e258] [cursor=pointer]:
+          - /url: /analytics
+          - img [ref=e259]
+          - text: Analytics
+        - button "More" [ref=e261] [cursor=pointer]:
+          - img [ref=e262]
+          - text: More
+  - region "Notifications (F8)":
+    - list
+  - generic [ref=e271] [cursor=pointer]:
+    - button "Open Next.js Dev Tools" [ref=e272]:
+      - img [ref=e273]
+    - generic [ref=e276]:
+      - button "Open issues overlay" [ref=e277]:
+        - generic [ref=e278]:
+          - generic [ref=e279]: "1"
+          - generic [ref=e280]: "2"
+        - generic [ref=e281]:
+          - text: Issue
+          - generic [ref=e282]: s
+      - button "Collapse issues badge" [ref=e283]:
+        - img [ref=e284]
+  - alert [ref=e266]
