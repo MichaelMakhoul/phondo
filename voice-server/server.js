@@ -1288,6 +1288,11 @@ wss.on("connection", (twilioWs) => {
     const hadSuccessfulBookTool = (s.toolCallAudit || []).some(
       (t) => t.name === "book_appointment" && t.successful
     );
+    // NOTE: this post-call flag stays claim-based (English). The *live* SCRUM-373
+    // end_call guard is the real language-agnostic fix; broadening this post-call
+    // detector to any unfinished booking would mislabel legitimate non-completions
+    // (slot taken, caller declined) and classic-pipeline bookings as
+    // "hallucinated_booking". Non-English post-call flagging is tracked separately.
     if (claimsBooking && !hadSuccessfulBookTool) {
       console.error(`[HallucinatedBooking] callSid=${s.callSid} claimed a booking in transcript but book_appointment tool was NOT called successfully. toolCallAudit=${JSON.stringify(s.toolCallAudit || [])}`);
       Sentry.withScope((scope) => {
@@ -1956,23 +1961,53 @@ wss.on("connection", (twilioWs) => {
                   }
                   logToolCall("[GeminiLive] Tool call", toolCall.name, toolCall.args);
 
-                  // SCRUM-227: intercept end_call if the transcript claims a booking
-                  // but book_appointment was never successfully called. Return an
-                  // error result instead of actually ending the call, which forces
-                  // Gemini to recover (usually by then calling book_appointment).
-                  if (toolCall.name === "end_call") {
-                    const transcriptSoFar = session.getTranscript?.() || "";
-                    const bookingClaimRe = /\b(i've booked|you'?re all set|your appointment (?:is|has been) (?:booked|confirmed))\b/i;
-                    const claimsBooking = bookingClaimRe.test(transcriptSoFar);
-                    const hadBookTool = (session.toolCallAudit || []).some((t) => t.name === "book_appointment" && t.successful);
-                    if (claimsBooking && !hadBookTool) {
-                      console.error(`[HallucinationGuard] Blocking end_call — transcript claims booking but book_appointment never called successfully. callSid=${session.callSid}`);
+                  // SCRUM-373: block end_call when a booking was started but never
+                  // completed — LANGUAGE-AGNOSTIC. The old guard matched English
+                  // transcript phrases only, so an Arabic "you're all set" + hangup
+                  // with no real booking slipped through. Now keys off tool state +
+                  // the end_call reason (see CallSession.hasUnfinishedBooking). Nudges
+                  // ONCE so a caller who genuinely wants to leave isn't trapped.
+                  if (toolCall.name === "end_call" && session.hasUnfinishedBooking(toolCall.args?.reason)) {
+                    const alreadyNudged = (session.toolCallAudit || []).some((t) => t.name === "end_call_blocked");
+                    if (!alreadyNudged) {
+                      console.error(`[HallucinationGuard] Blocking end_call — booking started but no successful book_appointment. callSid=${session.callSid} reason="${toolCall.args?.reason || ""}"`);
                       session.toolCallAudit.push({ name: "end_call_blocked", successful: false, at: Date.now() });
+                      Sentry.withScope((scope) => {
+                        scope.setTag("service", "hallucination_guard");
+                        scope.setExtras({ callSid: session.callSid, endCallReason: toolCall.args?.reason || "" });
+                        Sentry.captureMessage("end_call blocked — unfinished booking (language-agnostic)", "warning");
+                      });
                       return {
                         message:
-                          "CANNOT END CALL YET: The transcript shows you told the caller they are booked, but you have NOT actually called the book_appointment tool yet. This is a critical error. You MUST: (1) apologise to the caller for the confusion, (2) call book_appointment NOW with the correct details (first_name, last_name, phone, datetime, service_type_id), (3) read back the booking details from the tool result, (4) then call end_call.",
+                          "CANNOT END CALL YET: a booking was started but book_appointment never returned success, so the caller has NO appointment. Do NOT say it is booked or 'all set'. Either (1) call book_appointment now with the collected details, OR (2) if you cannot complete it, tell the caller — in their language — that you could not finish the booking and call schedule_callback to take a message. Only call end_call AFTER one of those succeeds.",
                       };
                     }
+                    // Already nudged once — allow end_call so a caller who genuinely
+                    // wants to leave isn't trapped, but alert at error level: the call
+                    // is ending on an unfinished booking (caller may be misinformed).
+                    console.error(`[HallucinationGuard] Allowing end_call on unfinished booking AFTER a prior nudge. callSid=${session.callSid}`);
+                    Sentry.withScope((scope) => {
+                      scope.setTag("service", "hallucination_guard");
+                      scope.setExtras({ callSid: session.callSid, endCallReason: toolCall.args?.reason || "" });
+                      Sentry.captureMessage("end_call allowed on unfinished booking after nudge", "error");
+                    });
+                  }
+
+                  // SCRUM-372: cancel-confirmation gate — NEVER cancel on the first
+                  // (possibly misheard) request. The first attempt is held pending an
+                  // explicit caller confirmation; only a second matching attempt
+                  // within 5 minutes executes. Prevents an irreversible cancel from a
+                  // single garbled turn.
+                  if (toolCall.name === "cancel_appointment") {
+                    if (!session.confirmCancel(toolCall.args || {}, Date.now())) {
+                      console.warn(`[CancelGate] Holding cancel_appointment pending confirmation. callSid=${session.callSid}`);
+                      session.toolCallAudit.push({ name: "cancel_appointment_held", successful: false, at: Date.now() });
+                      return {
+                        message:
+                          "DO NOT CANCEL YET. Before cancelling, confirm with the caller: read back which appointment would be cancelled (its date and time) and ask them — in their language — to clearly confirm (yes/no). ONLY if they clearly say yes, call cancel_appointment again with the same details. If they say no or you are unsure, do NOT cancel — never cancel from an unclear or mis-heard request.",
+                      };
+                    }
+                    console.log(`[CancelGate] Confirmed — proceeding with cancel_appointment. callSid=${session.callSid}`);
                   }
 
                   // SCRUM-257: intercept duplicate book_appointment calls.
@@ -2836,6 +2871,18 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
           const fnName = toolCall.function.name;
           const fnArgs = parseToolArgs(toolCall, "ToolCall");
 
+          // SCRUM-372: cancel-confirmation gate (classic pipeline — mirrors Gemini path)
+          if (fnName === "cancel_appointment" && !session.confirmCancel(fnArgs || {}, Date.now())) {
+            console.warn(`[CancelGate] Holding cancel_appointment pending confirmation (classic). callSid=${session.callSid}`);
+            session.toolCallAudit.push({ name: "cancel_appointment_held", successful: false, at: Date.now() });
+            session.messages.push({
+              role: "tool",
+              tool_call_id: toolCall.id,
+              content: "DO NOT CANCEL YET. Before cancelling, confirm with the caller: read back which appointment would be cancelled (its date and time) and ask them — in their language — to clearly confirm (yes/no). ONLY if they clearly say yes, call cancel_appointment again with the same details. If they say no or you are unsure, do NOT cancel.",
+            });
+            continue;
+          }
+
           // SCRUM-257: rebook intercept (classic pipeline — mirrors Gemini path)
           if (fnName === "book_appointment" && session.confirmedBookings?.size > 0) {
             const reqKey = `${fnArgs.datetime}|${(fnArgs.first_name || "").toLowerCase()}|${(fnArgs.last_name || "").toLowerCase()}`;
@@ -3502,6 +3549,14 @@ testWss.on("connection", (ws, req) => {
                 return { message: "" };
               }
               logToolCall("[TestGeminiLive] Tool call", toolCall.name, toolCall.args);
+              // SCRUM-372: cancel-confirmation gate (test/demo path — parity with production)
+              if (toolCall.name === "cancel_appointment" && !session.confirmCancel(toolCall.args || {}, Date.now())) {
+                console.warn(`[CancelGate] Holding cancel_appointment pending confirmation (test). callSid=${session.callSid}`);
+                return {
+                  message:
+                    "DO NOT CANCEL YET. Before cancelling, confirm with the caller: read back which appointment would be cancelled (its date and time) and ask them — in their language — to clearly confirm (yes/no). ONLY if they clearly say yes, call cancel_appointment again with the same details. If they say no or you are unsure, do NOT cancel.",
+                };
+              }
               const result = await executeToolCall(toolCall.name, toolCall.args, {
                 organizationId: session.organizationId,
                 assistantId: session.assistantId,
@@ -3825,6 +3880,17 @@ async function handleTestUserSpeech(session, ws, transcript) {
         for (const toolCall of result.toolCalls) {
           const fnName = toolCall.function.name;
           const fnArgs = parseToolArgs(toolCall, "TestToolCall");
+
+          // SCRUM-372: cancel-confirmation gate (test/demo classic path — parity)
+          if (fnName === "cancel_appointment" && !session.confirmCancel(fnArgs || {}, Date.now())) {
+            console.warn(`[CancelGate] Holding cancel_appointment pending confirmation (test classic). callSid=${session.callSid}`);
+            session.messages.push({
+              role: "tool",
+              tool_call_id: toolCall.id,
+              content: "DO NOT CANCEL YET. Before cancelling, confirm with the caller: read back which appointment would be cancelled (its date and time) and ask them — in their language — to clearly confirm (yes/no). ONLY if they clearly say yes, call cancel_appointment again with the same details. If they say no or you are unsure, do NOT cancel.",
+            });
+            continue;
+          }
 
           const toolResult = await executeToolCall(fnName, fnArgs, {
             organizationId: session.organizationId,

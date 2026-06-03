@@ -77,6 +77,12 @@ class CallSession {
     // Set true once a booking completes under escalation — its name/phone were
     // AI-supplied, so post-call review may want to verify the spelling.
     this.bookNameEscalated = false;
+
+    // SCRUM-372: deterministic cancel-confirmation gate. The FIRST
+    // cancel_appointment call in a call is held pending an explicit caller
+    // confirmation; only a SECOND call with a matching fingerprint executes.
+    // Prevents an irreversible cancel from a single misheard/garbled turn.
+    this._pendingCancel = null; // { fp: string, at: number } | null
   }
 
   /**
@@ -112,6 +118,74 @@ class CallSession {
       `English letters YOURSELF and use that. Use the caller's phone from caller ID. Then complete the booking. ` +
       `If instead a requested time is unavailable, offer the caller an alternative time.)`
     );
+  }
+
+  /**
+   * SCRUM-372: two-phase, language-agnostic cancel-confirmation gate.
+   *
+   * cancel_appointment is destructive and irreversible, and Gemini will call it
+   * from a single misheard/garbled turn (a low-volume Arabic call was mis-heard
+   * as Spanish and an appointment was wrongly cancelled). This holds the FIRST
+   * attempt and only lets a SECOND attempt through when it SHARES a stable
+   * identifier with the held one, within a 5-minute window.
+   *
+   * Stable keys = normalized phone digits and the date (datetime collapsed to
+   * YYYY-MM-DD to survive STT churn). Matching on a shared key (not an exact
+   * fingerprint) means adding `phone` on the confirm turn — or re-hearing the
+   * time within the same day — still confirms. An attempt with NO usable
+   * identifier (arg-less / garbled — the noisiest, most dangerous case) is
+   * ALWAYS held and can NEVER auto-confirm.
+   *
+   * @param {{phone?: string, date?: string, datetime?: string}} args
+   * @param {number} nowMs - current epoch ms (passed in; Date.now is fine here)
+   * @returns {boolean} true to PROCEED with the cancel, false to hold + confirm first
+   */
+  confirmCancel(args, nowMs) {
+    const keys = [];
+    const phone = String(args?.phone || "").replace(/\D/g, "");
+    if (phone.length >= 6) keys.push("p:" + phone);
+    const datePart = String(args?.datetime || args?.date || "").slice(0, 10);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(datePart)) keys.push("d:" + datePart);
+
+    // No usable identifier — always hold, never auto-confirm (clears any pending
+    // so two arg-less garbled cancels can't accidentally match each other).
+    if (keys.length === 0) {
+      this._pendingCancel = null;
+      return false;
+    }
+
+    const pending = this._pendingCancel;
+    if (pending && nowMs - pending.at < 5 * 60 * 1000 && pending.keys.some((k) => keys.includes(k))) {
+      this._pendingCancel = null; // shares an identifier with the held attempt — proceed
+      return true;
+    }
+    this._pendingCancel = { keys, at: nowMs };
+    return false; // first attempt (or a different/expired one) — hold and confirm
+  }
+
+  /**
+   * SCRUM-373: language-agnostic "did a booking start but never complete?" check.
+   *
+   * The English-only transcript regexes let an Arabic "you're all set" + end_call
+   * with no real booking slip through. This keys off TOOL STATE instead: a
+   * successful book_appointment (or a legit terminal action — callback/cancel)
+   * clears it; otherwise, if a booking was attempted/intended (a book_appointment
+   * call — even rejected — a rejection count, or an end_call whose `reason` claims
+   * a booking), the booking is unfinished regardless of spoken language.
+   *
+   * @param {string} [endCallReason] - the reason arg from an end_call tool call
+   * @returns {boolean}
+   */
+  hasUnfinishedBooking(endCallReason = "") {
+    const audit = this.toolCallAudit || [];
+    if (audit.some((t) => t.name === "book_appointment" && t.successful)) return false;
+    // A successful callback or cancellation is a legitimate terminal outcome.
+    if (audit.some((t) => (t.name === "schedule_callback" || t.name === "cancel_appointment") && t.successful)) return false;
+    const attemptedBooking =
+      audit.some((t) => t.name === "book_appointment" || t.name === "book_appointment_blocked") ||
+      (this.bookRejectionCount || 0) > 0;
+    const reasonClaimsBooking = /book|appoint|schedul|reserv/i.test(endCallReason || "");
+    return attemptedBooking || reasonClaimsBooking;
   }
 
   /**
