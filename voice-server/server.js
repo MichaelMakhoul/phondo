@@ -48,6 +48,44 @@ const { getSupabase } = require("./lib/supabase");
 const { saveForTransfer, getTransfer, consumeTransfer, finishTransferredCall } = require("./lib/pending-transfers");
 const { forwardingFallbackEligible } = require("./lib/transfer-eligibility");
 
+// SCRUM-375: human-readable name for the assistant's configured language, used
+// to bias Gemini's (native-audio, per-turn) language auto-detection toward the
+// expected language + English and away from spurious detections on poor audio.
+const LANG_DISPLAY = {
+  en: "English", ar: "Arabic", es: "Spanish", fr: "French", de: "German",
+  it: "Italian", pt: "Portuguese", zh: "Chinese", ja: "Japanese", ko: "Korean",
+  hi: "Hindi", vi: "Vietnamese", th: "Thai", id: "Indonesian", nl: "Dutch",
+  pl: "Polish", tr: "Turkish", ru: "Russian", el: "Greek", he: "Hebrew",
+};
+function languageName(code) {
+  return LANG_DISPLAY[String(code || "en").toLowerCase().slice(0, 2)] || "the configured language";
+}
+
+/**
+ * SCRUM-375: per-call LANGUAGE LOCK + take-a-message fail-safe directive.
+ * Native-audio Gemini cannot pin input language via config, so this soft prior
+ * is the lever: bias toward the configured language + English, refuse to drift
+ * to a language the caller hasn't actually used (the low-volume Arabic call was
+ * mis-heard as Spanish and locked there), and — the user-chosen safe failure
+ * mode — take a message rather than guess/transact when audio can't be
+ * understood.
+ * @param {string} langCode
+ */
+function buildLanguageLockDirective(langCode) {
+  const lang = languageName(langCode);
+  const langsPhrase = lang === "English" ? "English" : `${lang} and English`;
+  const langOrEnglish = lang === "English" ? "English" : `${lang} or English`;
+  return (
+    `\n\n🌐 LANGUAGE LOCK (read carefully): This business serves callers in ${langsPhrase}. ` +
+    `Detect the caller's language from their first clear turn and stay in it for the WHOLE call. ` +
+    `Do NOT assume an unrelated language (e.g. Spanish, German, Portuguese) from unclear, quiet, or noisy audio — ` +
+    `if a turn sounds like a language the caller has not clearly used, treat it as ${langOrEnglish} mis-heard on a noisy line and continue in the language they have been using; never switch to it. ` +
+    `If you genuinely cannot understand a turn, ask them to repeat — in the language they are using. ` +
+    `If after ONE repeat the turn is still COMPLETELY unintelligible (not merely a strong accent or one unclear word), do NOT guess and do NOT book, cancel, or change anything: ` +
+    `tell the caller you're having trouble hearing them and use schedule_callback to take their name and number so a person can call them back.`
+  );
+}
+
 // Cached Twilio REST client for recording and transfer operations
 let _twilioRestClient = null;
 function getTwilioRestClient() {
@@ -1932,6 +1970,7 @@ wss.on("connection", (twilioWs) => {
               `\nINCOMPLETE BOOKING: If you started taking booking details but book_appointment NEVER returned a successful result, do NOT end the call as if it worked. Tell the caller honestly you couldn't finish it this time, then take a callback with schedule_callback (or connect them to the team if a transfer is available and the office is open). Only call end_call AFTER that fallback returns success.\n` +
               `\n🌐 LANGUAGE — conduct the ENTIRE call in the caller's language: fillers, tool acknowledgements, transfer/hold messages, booking confirmations and closings included. Every English phrase quoted above is an ENGLISH SAMPLE — say its equivalent in the caller's language, never the literal English unless the caller is speaking English. When a tool returns an English message, translate it before speaking, keeping names, numbers, dates, times and confirmation codes exactly as given.\n` +
               `══════════════════════════════════════════════════════`;
+            geminiSystemPrompt += buildLanguageLockDirective(session.language);
 
             // Transcript buffering — accumulate fragments, flush on turn complete
             let pendingUserTranscript = "";
@@ -3515,6 +3554,7 @@ testWss.on("connection", (ws, req) => {
         geminiSystemPrompt += `\n- ALWAYS COLLECT REAL NAME: Before calling book_appointment or schedule_callback, you MUST ask for and receive the caller's actual name. NEVER use placeholder names like "Caller Name", "Unknown", or "Guest".`;
         geminiSystemPrompt += `\n- ALWAYS SAY FILLER BEFORE EVERY TOOL CALL: Before EVERY tool call, you MUST say a short filler phrase in the caller's language (the equivalent of "one moment" / "let me check" / "just a sec"). NEVER go silent during a tool call.`;
         geminiSystemPrompt += `\n- LANGUAGE — conduct the ENTIRE call in the caller's language: fillers, tool acknowledgements, transfer/hold messages, confirmations and closings included. Any English phrase quoted in these instructions is an ENGLISH SAMPLE — say its equivalent in the caller's language, never the literal English unless the caller is speaking English. When a tool returns an English message, translate it before speaking, keeping names, numbers, dates, times and codes exactly as given.`;
+        geminiSystemPrompt += buildLanguageLockDirective(session.language);
         geminiSystemPrompt += `\n- RESCHEDULING: When a caller asks to reschedule, you MUST: (1) look up their existing appointment with lookup_appointment, (2) cancel the old appointment with cancel_appointment, (3) then book the new one with book_appointment.`;
         // SCRUM-294: test/demo calls never have transfer rules (transferRules: []
         // is passed to executeToolCall a few lines below), so transfer_call is

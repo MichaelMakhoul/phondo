@@ -126,9 +126,13 @@ function createGeminiSession(config, callbacks) {
         },
         realtimeInputConfig: {
           automaticActivityDetection: {
+            // SCRUM-375: keep onset sensitivity HIGH (trigger readily on a quiet
+            // caller) but soften end-of-speech so quiet/slow turns aren't cut off
+            // mid-word — truncated turns starved the language detector and were a
+            // contributor to mis-detecting a low-volume Arabic caller as Spanish.
             startOfSpeechSensitivity: "START_SENSITIVITY_HIGH",
-            endOfSpeechSensitivity: "END_SENSITIVITY_HIGH",
-            silenceDurationMs: 800,
+            endOfSpeechSensitivity: "END_SENSITIVITY_LOW",
+            silenceDurationMs: 1000,
           },
           activityHandling: "START_OF_ACTIVITY_INTERRUPTS",
         },

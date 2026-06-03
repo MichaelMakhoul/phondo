@@ -37,6 +37,16 @@ describe("SCRUM-368 — stay in the caller's language + don't end on an incomple
     assert.ok(langOccurrences >= 2, `expected the language guardrail in both Gemini sites (got ${langOccurrences})`);
   });
 
+  test("SCRUM-375: per-call LANGUAGE LOCK + take-a-message fail-safe is wired into BOTH Gemini sites", () => {
+    assert.ok(serverSrc.includes("buildLanguageLockDirective"), "buildLanguageLockDirective helper missing");
+    // wired at both prompt-build sites (inbound + demo/test)
+    const wired = (serverSrc.match(/geminiSystemPrompt \+= buildLanguageLockDirective\(session\.language\)/g) || []).length;
+    assert.ok(wired >= 2, `expected the language lock wired at both Gemini sites (got ${wired})`);
+    // the directive forbids drifting to an unused language and takes a message instead of guessing
+    assert.ok(/do NOT assume an unrelated language/i.test(serverSrc), "spurious-language guard text missing");
+    assert.ok(/schedule_callback to take their name/i.test(serverSrc), "take-a-message fail-safe text missing");
+  });
+
   test("no bare English filler example survives without an 'in the caller's language' qualifier", () => {
     // The known parroted phrases must always be presented as samples to
     // translate, never as the literal phrase to speak. Each occurrence of the

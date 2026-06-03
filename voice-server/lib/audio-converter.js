@@ -68,6 +68,47 @@ function encodeMulawSample(sample) {
   return ~(sign | (exponent << 4) | mantissa) & 0xff;
 }
 
+// ── Gain normalization ───────────────────────────────────────────────────────
+
+/**
+ * SCRUM-375: boost quiet input audio toward a target level so Gemini's
+ * native-audio STT can detect language + words reliably. A low-volume caller
+ * was mis-detected as a different language and garbled; the upsampler did no
+ * gain control, so quiet stayed quiet.
+ *
+ * Per-frame RMS-targeted gain: silence/near-silence (below the noise floor) is
+ * left untouched (so we don't amplify line noise between words), and frames
+ * already at/above target are left untouched (so normal-volume callers are
+ * unaffected). Only genuinely quiet speech frames are boosted, with a clip
+ * guard. Defaults are conservative starting points — tune against call
+ * recordings.
+ *
+ * @param {Buffer} pcm - PCM16 little-endian
+ * @param {{targetRms?: number, maxGain?: number, noiseFloor?: number}} [opts]
+ * @returns {Buffer} PCM16 (same buffer when no boost is applied)
+ */
+function normalizeGainPcm16(pcm, { targetRms = 2000, maxGain = 6, noiseFloor = 150 } = {}) {
+  const n = pcm.length >> 1;
+  if (n === 0) return pcm;
+  let sumSq = 0;
+  for (let i = 0; i < n; i++) {
+    const s = pcm.readInt16LE(i * 2);
+    sumSq += s * s;
+  }
+  const rms = Math.sqrt(sumSq / n);
+  if (rms < noiseFloor) return pcm; // silence / background noise — don't amplify
+  const gain = Math.min(maxGain, targetRms / rms);
+  if (gain <= 1.05) return pcm; // already loud enough
+  const out = Buffer.alloc(pcm.length);
+  for (let i = 0; i < n; i++) {
+    let v = Math.round(pcm.readInt16LE(i * 2) * gain);
+    if (v > 32767) v = 32767;
+    else if (v < -32768) v = -32768;
+    out.writeInt16LE(v, i * 2);
+  }
+  return out;
+}
+
 // ── Resampling ───────────────────────────────────────────────────────────────
 
 /**
@@ -118,7 +159,7 @@ function downsample24kTo8k(pcm24k) {
  */
 function twilioToGemini(twilioBase64) {
   const mulaw = Buffer.from(twilioBase64, "base64");
-  const pcm8k = mulawToPcm16(mulaw);
+  const pcm8k = normalizeGainPcm16(mulawToPcm16(mulaw)); // SCRUM-375: boost quiet callers
   const pcm16k = upsample8kTo16k(pcm8k);
   return pcm16k.toString("base64");
 }
@@ -140,6 +181,7 @@ module.exports = {
   pcm16ToMulaw,
   upsample8kTo16k,
   downsample24kTo8k,
+  normalizeGainPcm16,
   twilioToGemini,
   geminiToTwilio,
 };
