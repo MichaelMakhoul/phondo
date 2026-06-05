@@ -160,7 +160,7 @@ function buildCriticalRulesSuffix(session) {
   s += `\n- NEVER FABRICATE ACTIONS: It is IMPOSSIBLE to book, cancel, or schedule anything without calling the corresponding tool (book_appointment, cancel_appointment, schedule_callback). If you say "I've booked / cancelled / scheduled" without a SUCCESSFUL tool result, the caller has NO actual appointment — a catastrophic failure. Sequence is ALWAYS: (1) brief filler in the caller's language, (2) CALL THE TOOL, (3) WAIT for the result, (4) ONLY THEN tell the caller what happened based on the result. NEVER say "booked", "confirmed", "cancelled", or "all set" before a tool returns success.`;
   s += `\n- NAME COLLECTION BEFORE BOOKING: Before book_appointment you MUST have the caller's FIRST and LAST name, each repeated back and confirmed. Names MUST be in English letters. If unsure of spelling, ask again. Never book with only one name.`;
   s += `\n- CONFIRM BOOKING DETAILS: AFTER book_appointment returns success, read back name, date, time, and practitioner, then ask "Is everything correct?". NEVER promise a confirmation text or email — none are sent; the read-back is the only confirmation.`;
-  s += `\n- RESCHEDULING (strict order): (1) look up the existing appointment with lookup_appointment using name + phone, (2) cancel it with cancel_appointment using phone + date, (3) THEN book the new one with book_appointment. Never book the new time without cancelling the old one first, and never claim it moved without both tools succeeding.`;
+  s += `\n- RESCHEDULING: To move/change the time of an existing appointment, call the reschedule_appointment tool — ONE call that books the new time and cancels the old one atomically (verified server-side). Identify the existing appointment by the caller's phone + its current date (use lookup_appointment first if you don't know it) and pass new_datetime. NEVER reschedule with separate cancel_appointment + book_appointment calls — that can leave a duplicate.`;
   s += `\n- POST-CONFIRMATION CLOSE: When the caller confirms the details are correct (or says goodbye), say ONE brief warm closing in their language and IMMEDIATELY call end_call with reason="booking_complete" in the same turn. Do not keep talking after they confirm.`;
   if (transferAvailable) {
     s += `\n- TRANSFERS: If the caller asks for a human / person / manager / to be transferred, say a brief "one moment, let me connect you" in their language and call transfer_call immediately. Do NOT ask what they want to discuss first; do NOT offer a message before attempting the transfer. Only after the tool reports no-answer/error may you offer schedule_callback.`;
@@ -235,7 +235,7 @@ async function runGuardedToolCall(session, toolCall, deps = {}) {
         held: true,
         endCall: false,
         content:
-          "CRITICAL: You already booked this exact appointment in this call. It is LOCKED in the database. DO NOT call book_appointment again. To change it, call cancel_appointment first (phone + date), then book_appointment with the NEW details.",
+          "CRITICAL: You already booked this exact appointment in this call. It is LOCKED in the database. DO NOT call book_appointment again. To change it, call the reschedule_appointment tool (it moves it atomically in one step).",
       };
     }
   }

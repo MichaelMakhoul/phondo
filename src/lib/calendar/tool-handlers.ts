@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import * as Sentry from "@sentry/nextjs";
 import { createAdminClient } from "@/lib/supabase/admin";
 import {
   getCalComClient,
@@ -1262,6 +1263,212 @@ async function cancelSingleAppointment(
       success: false,
       message:
         "I'm having trouble cancelling the appointment right now. Would you like me to have someone call you back to help with this?",
+    };
+  }
+}
+
+/**
+ * SCRUM-377: ATOMIC reschedule — move an existing appointment to a new time in
+ * ONE verified server-side operation.
+ *
+ * Why this exists: the LLM was rescheduling by emitting cancel_appointment +
+ * book_appointment in one turn. The SCRUM-372 cancel-confirmation gate (rightly)
+ * holds the cancel, the book succeeds, and the model never completes the held
+ * cancel — leaving the OLD appointment in place (a duplicate, observed on real
+ * calls 2026-06-05). Doing it server-side removes the two-tool race entirely.
+ *
+ * Ordering is deliberate: we BOOK THE NEW SLOT FIRST and only cancel the old one
+ * after the new is secured. If the new slot is unavailable, the caller keeps
+ * their original appointment (we never strand them). If the new books but the old
+ * cancel fails, we report the new booking honestly AND flag that the old wasn't
+ * removed — never a silent duplicate.
+ */
+export async function handleRescheduleAppointment(
+  organizationId: string,
+  args: {
+    phone?: string;
+    confirmation_code?: string;
+    current_date?: string;
+    current_datetime?: string;
+    new_datetime?: string;
+    first_name?: string;
+    last_name?: string;
+    name?: string;
+    email?: string;
+    notes?: string;
+    service_type_id?: string;
+    practitioner_id?: string;
+  }
+): Promise<ToolResult> {
+  const { phone, confirmation_code, new_datetime } = args;
+
+  if (!new_datetime) {
+    return { success: false, message: "What date and time would you like to move the appointment to?" };
+  }
+  if (!phone && !confirmation_code) {
+    return { success: false, message: "I need the phone number on the booking to find the appointment you'd like to reschedule." };
+  }
+
+  try {
+    const supabase = createAdminClient();
+    const schedule = await getOrgSchedule(organizationId).catch(() => null);
+    const tz = schedule?.timezone || "Australia/Sydney";
+
+    const selectCols =
+      "id, start_time, attendee_name, attendee_phone, service_type_id, external_id, provider, metadata, confirmation_code, status, created_at";
+    const fmtWhen = (iso: string) => {
+      const d = new Date(iso);
+      const dateStr = d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: tz });
+      const timeStr = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true, timeZone: tz });
+      return `${dateStr} at ${timeStr}`;
+    };
+
+    // ── 1. Find the EXISTING appointment (do NOT cancel yet) ──
+    let existing: any = null;
+
+    // (a) Confirmation code — most precise. Handle 0/1/many explicitly: a code
+    // that matches multiple rows must NOT silently fall through to a fuzzy phone
+    // match (it would discard the precise identifier the caller gave).
+    if (confirmation_code) {
+      const { data: codeRows, error: codeErr } = await (supabase as any)
+        .from("appointments")
+        .select(selectCols)
+        .eq("organization_id", organizationId)
+        .eq("confirmation_code", confirmation_code.trim())
+        .in("status", ["confirmed", "pending"])
+        .limit(2);
+      if (codeErr) {
+        console.error("Reschedule: confirmation code lookup error:", { organizationId, error: codeErr });
+        return { success: false, message: "I'm having trouble looking up that appointment right now. Would you like me to have someone call you back?" };
+      }
+      if (codeRows && codeRows.length === 1) {
+        existing = codeRows[0];
+      } else if (codeRows && codeRows.length > 1) {
+        console.warn("Reschedule: confirmation code matched multiple appointments:", { organizationId });
+        return { success: false, message: "That confirmation code matches more than one appointment. Could you tell me the date and time of the one you'd like to move?" };
+      }
+      // 0 rows → fall through to phone lookup.
+    }
+
+    // (b) Phone lookup. This tool cancels the old appointment WITHOUT the
+    // SCRUM-372 cancel-confirmation gate, so precision is the only safeguard:
+    // auto-select ONLY when an exact current_datetime matches a single row, OR
+    // the caller has exactly ONE upcoming appointment. With multiple upcoming and
+    // no exact time, never guess which to cancel — ask for the exact time.
+    if (!existing) {
+      if (!phone) {
+        return { success: false, message: "I couldn't find an appointment with that code. Could you give me the phone number on the booking instead?" };
+      }
+      const variants = phoneVariants(phone);
+      const { data: upcoming, error: qErr } = await (supabase as any)
+        .from("appointments")
+        .select(selectCols)
+        .eq("organization_id", organizationId)
+        .in("attendee_phone", variants)
+        .in("status", ["confirmed", "pending"])
+        .gte("start_time", new Date().toISOString())
+        .order("start_time", { ascending: true })
+        .limit(5);
+      if (qErr) {
+        console.error("Reschedule: appointment lookup error:", { organizationId, error: qErr });
+        return { success: false, message: "I'm having trouble finding your appointment right now. Would you like me to have someone call you back?" };
+      }
+      if (!upcoming?.length) {
+        return { success: false, message: "I couldn't find an upcoming appointment with that phone number. Could you double-check the number, or tell me the date and time of your current appointment?" };
+      }
+
+      const currentDatetime = args.current_datetime && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(args.current_datetime) ? args.current_datetime : undefined;
+      const date = args.current_date && /^\d{4}-\d{2}-\d{2}$/.test(args.current_date) ? args.current_date : undefined;
+
+      if (currentDatetime) {
+        let dtMs = NaN;
+        try { dtMs = new Date(ensureTimezoneOffset(currentDatetime, tz)).getTime(); } catch { dtMs = NaN; }
+        const matches = isNaN(dtMs) ? [] : upcoming.filter((a: any) => Math.abs(new Date(a.start_time).getTime() - dtMs) <= 15 * 60 * 1000);
+        if (matches.length === 1) {
+          existing = matches[0];
+        } else {
+          return { success: false, message: "I couldn't find an appointment at that exact time. Could you tell me the day and time of the appointment you'd like to move?" };
+        }
+      } else if (upcoming.length === 1) {
+        existing = upcoming[0]; // unambiguous — only one upcoming appointment
+      } else {
+        // Multiple upcoming, no exact time — never guess. Ask for the exact time,
+        // narrowing the list to the given date when one was provided.
+        let list = upcoming;
+        if (date) {
+          try {
+            const dayStart = new Date(ensureTimezoneOffset(`${date}T00:00:00`, tz)).getTime();
+            const dayEnd = new Date(ensureTimezoneOffset(`${date}T23:59:59`, tz)).getTime();
+            const onDate = upcoming.filter((a: any) => { const t = new Date(a.start_time).getTime(); return t >= dayStart && t <= dayEnd; });
+            if (onDate.length) list = onDate;
+          } catch { /* keep full list */ }
+        }
+        const options = list.map((a: any) => fmtWhen(a.start_time)).join("; ");
+        return { success: false, message: `I found more than one upcoming appointment for this caller: ${options}. Which one would you like to move? Please call reschedule_appointment again with the current_datetime of that appointment.` };
+      }
+    }
+
+    // ── 2. Book the NEW appointment FIRST (never cancel before the new slot is
+    // secured — a failed book then leaves the caller's original intact).
+    // NOTE (SCRUM-377 follow-up): because the old appointment is still live here,
+    // the DB no-overlap constraint rejects a move INTO the old appointment's own
+    // slot (same time, or a sub-slot shift). That case currently fails SAFE
+    // ("that time isn't available", original kept) rather than duplicating; an
+    // in-place UPDATE would handle it and is tracked as a follow-up.
+    const bookResult = await handleBookAppointment(organizationId, {
+      datetime: new_datetime,
+      first_name: args.first_name,
+      last_name: args.last_name,
+      // Default identity to the existing booking so a reschedule doesn't require
+      // the caller to re-state their name/phone/service.
+      name: args.first_name || args.last_name ? undefined : (args.name || existing.attendee_name),
+      phone: args.phone || existing.attendee_phone,
+      email: args.email,
+      notes: args.notes,
+      service_type_id: args.service_type_id || existing.service_type_id || undefined,
+      practitioner_id: args.practitioner_id,
+    });
+
+    if (!bookResult.success) {
+      return { success: false, message: bookResult.message };
+    }
+
+    // ── 3. New is secured — now cancel the OLD one ──
+    const oldWhen = fmtWhen(existing.start_time);
+    const cancelResult = await cancelSingleAppointment(supabase, organizationId, existing, "Rescheduled by caller");
+    if (!cancelResult.success) {
+      // New booked but old NOT cancelled — a real duplicate now exists. This is
+      // the exact event SCRUM-377 exists to prevent, so it must page on-call, not
+      // just hit the logs. We still return success:true (a real new appointment
+      // exists) and tell the caller honestly the old one wasn't removed.
+      const newAppointmentId = (bookResult.data as any)?.appointmentId;
+      const newConfirmationCode = (bookResult.data as any)?.confirmationCode;
+      console.error("[Reschedule] New appointment booked but failed to cancel the old one — duplicate created", {
+        organizationId, oldAppointmentId: existing.id, newAppointmentId, newDatetime: new_datetime,
+      });
+      Sentry.withScope((scope) => {
+        scope.setLevel("error");
+        scope.setTag("bug", "reschedule_orphan_old_appointment");
+        scope.setExtras({ organizationId, oldAppointmentId: existing.id, newAppointmentId, newConfirmationCode, newDatetime: new_datetime });
+        Sentry.captureMessage("Reschedule left an un-cancelled old appointment (duplicate risk)");
+      });
+      return {
+        success: true, // a new appointment genuinely exists
+        message: `${bookResult.message} I couldn't automatically remove your earlier appointment on ${oldWhen} — I've flagged it for the team to clear, so please disregard that one.`,
+        data: { ...(bookResult.data || {}), oldCancelled: false, oldAppointmentId: existing.id },
+      };
+    }
+
+    return {
+      success: true,
+      message: `Done — I've moved your appointment from ${oldWhen}. ${bookResult.message}`,
+      data: { ...(bookResult.data || {}), oldCancelled: true, oldAppointmentId: existing.id },
+    };
+  } catch (err: any) {
+    console.error("Reschedule appointment error:", { organizationId, message: err?.message, stack: err?.stack });
+    return {
+      success: false,
+      message: "I'm having trouble rescheduling that right now. Would you like me to have someone call you back to help with this?",
     };
   }
 }

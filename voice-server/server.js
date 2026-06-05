@@ -1949,7 +1949,7 @@ wss.on("connection", (twilioWs) => {
             geminiSystemPrompt += `\n- CONFIRM BOOKING DETAILS: AFTER book_appointment returns a successful result, read back ALL details to the caller: name, date, time, and practitioner. Then ask "Is everything correct?" If the caller says something is wrong, fix it (cancel and rebook with the correct details). Do NOT end the booking conversation without confirmation. NEVER promise a confirmation text, email, or any other follow-up notification — none are sent automatically. The read-back is the only confirmation the caller receives.`;
             geminiSystemPrompt += `\n- FILLER WORDS — SPEAK FIRST, THEN CALL TOOL: When you need to call a tool, you MUST speak a filler phrase FIRST as a separate response BEFORE making the tool call. Say a brief filler in the caller's language (the equivalent of "one moment, let me check that") and WAIT for the audio to play. THEN make the tool call in the next step. NEVER bundle the filler and tool result into one response. The caller must hear the filler DURING the silence, not after. Example flow: (1) caller asks for availability → (2) you say "Let me check that for you" → (3) you call check_availability → (4) you say "We have slots on Wednesday...". Steps 2 and 4 must be SEPARATE speech outputs.`;
             geminiSystemPrompt += `\n- POST-CONFIRMATION CLOSE — MANDATORY: When the caller responds to "Is everything correct?" with ANY positive answer (yes, sounds right, sounds good, thanks, perfect, great, looks good, sure, yep, absolutely) or says goodbye, you MUST follow this exact sequence in ONE response: (1) Say ONE brief warm closing phrase IN THE CALLER'S LANGUAGE (the equivalent of "Perfect! You're all set. Have a great day!") (2) IMMEDIATELY call end_call with reason="booking_complete" in the SAME response. NEVER say "goodbye" without calling end_call. NEVER mirror the caller's goodbye. NEVER continue the conversation after the caller confirms. The closing phrase and the end_call MUST happen together, without waiting for another turn.`;
-            geminiSystemPrompt += `\n- RESCHEDULING: When a caller asks to reschedule, you MUST: (1) look up their existing appointment with lookup_appointment using their name and phone, (2) cancel the old appointment with cancel_appointment using phone + date, (3) then book the new one with book_appointment. Do NOT book a new appointment without cancelling the old one first.`;
+            geminiSystemPrompt += `\n- RESCHEDULING: When a caller wants to move or change the time of an existing appointment, you MUST call the reschedule_appointment tool — ONE call that books the new time and removes the old one atomically (verified server-side). Identify the existing appointment by the caller's phone plus its current date (look it up first with lookup_appointment if you don't already know it) and pass new_datetime. NEVER reschedule by calling cancel_appointment and book_appointment separately — that can leave a duplicate appointment.`;
             // SCRUM-294: imperative transfer instruction. Two variants because
             // the transfer_call tool is only REGISTERED when both
             // session.behaviors.transferToHuman !== false AND there's at least
@@ -2093,7 +2093,7 @@ wss.on("connection", (twilioWs) => {
                         Sentry.captureMessage("Duplicate book_appointment intercepted", "warning");
                       });
                       return {
-                        message: `CRITICAL: You already booked this exact appointment in this call. The booking is LOCKED in the database. DO NOT call book_appointment again. If the caller wants to change the appointment, you MUST call cancel_appointment first (use phone + date), then book_appointment with the NEW details.`,
+                        message: `CRITICAL: You already booked this exact appointment in this call. The booking is LOCKED in the database. DO NOT call book_appointment again. If the caller wants to change the appointment, call the reschedule_appointment tool (it moves it atomically in one step) — do NOT call book_appointment again.`,
                       };
                     }
                   }
@@ -2139,7 +2139,11 @@ wss.on("connection", (twilioWs) => {
                   // "Dr X isn't available" doesn't count as a successful booking
                   // even if it doesn't have an `error` field.
                   if (session) {
-                    let successful = !(typeof result === "object" && result?.error);
+                    // Trust an explicit success:false (e.g. a failed
+                    // reschedule_appointment that returns no `error` field) —
+                    // otherwise a failed write would be audited as successful and
+                    // let end_call through on an unfinished booking (SCRUM-377).
+                    let successful = !(typeof result === "object" && (result?.error || result?.success === false));
                     if (successful && toolCall.name === "book_appointment") {
                       // Require actual success signal: "confirmation code", "booked", "confirmed"
                       const msg = typeof result === "string" ? result : (result?.message || "");
@@ -3595,7 +3599,7 @@ testWss.on("connection", (ws, req) => {
         geminiSystemPrompt += `\n- ALWAYS SAY FILLER BEFORE EVERY TOOL CALL: Before EVERY tool call, you MUST say a short filler phrase in the caller's language (the equivalent of "one moment" / "let me check" / "just a sec"). NEVER go silent during a tool call.`;
         geminiSystemPrompt += `\n- LANGUAGE — conduct the ENTIRE call in the caller's language: fillers, tool acknowledgements, transfer/hold messages, confirmations and closings included. Any English phrase quoted in these instructions is an ENGLISH SAMPLE — say its equivalent in the caller's language, never the literal English unless the caller is speaking English. When a tool returns an English message, translate it before speaking, keeping names, numbers, dates, times and codes exactly as given.`;
         geminiSystemPrompt += buildLanguageLockDirective(session.language);
-        geminiSystemPrompt += `\n- RESCHEDULING: When a caller asks to reschedule, you MUST: (1) look up their existing appointment with lookup_appointment, (2) cancel the old appointment with cancel_appointment, (3) then book the new one with book_appointment.`;
+        geminiSystemPrompt += `\n- RESCHEDULING: When a caller wants to move or change the time of an existing appointment, you MUST call the reschedule_appointment tool — ONE call that books the new time and removes the old one atomically. Identify it by the caller's phone plus its current date (look it up first with lookup_appointment if needed) and pass new_datetime. NEVER reschedule by calling cancel_appointment and book_appointment separately — that can leave a duplicate.`;
         // SCRUM-294: test/demo calls never have transfer rules (transferRules: []
         // is passed to executeToolCall a few lines below), so transfer_call is
         // never in the tool list. If we told the model to call it, Gemini would

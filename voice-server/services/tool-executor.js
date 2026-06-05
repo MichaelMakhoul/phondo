@@ -33,6 +33,7 @@ const CALENDAR_FUNCTIONS = [
   "check_availability",
   "book_appointment",
   "cancel_appointment",
+  "reschedule_appointment",
   "list_service_types",
   "lookup_appointment",
 ];
@@ -234,6 +235,56 @@ const calendarToolDefinitions = [
           },
         },
         required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "reschedule_appointment",
+      description:
+        "Atomically MOVE an existing appointment to a new date/time in ONE step — it books the new slot and cancels the old one together, verified server-side. ALWAYS use this for a reschedule / change-of-time request. NEVER reschedule by calling cancel_appointment and book_appointment separately — that can leave a duplicate. Identify the existing appointment by the caller's phone plus its current date (or the confirmation code), and provide the new_datetime.",
+      parameters: {
+        type: "object",
+        properties: {
+          phone: {
+            type: "string",
+            description: "The phone number on the existing booking (use the caller-ID number if they say 'the same number').",
+          },
+          confirmation_code: {
+            type: "string",
+            description: "The existing appointment's confirmation code, if the caller has it (optional when phone + current date are given).",
+          },
+          current_datetime: {
+            type: "string",
+            description: "The EXACT current date+time of the existing appointment in ISO format, e.g. '2026-06-18T10:00:00'. Preferred when you know it (e.g. you just looked it up).",
+          },
+          current_date: {
+            type: "string",
+            description: "The current appointment's date only (YYYY-MM-DD), if the exact time isn't known. Less precise — use current_datetime when possible.",
+          },
+          new_datetime: {
+            type: "string",
+            description: "REQUIRED. The NEW date+time to move the appointment to, in ISO format, e.g. '2026-06-17T10:15:00'.",
+          },
+          first_name: {
+            type: "string",
+            description: "Caller's first name in English letters (optional — defaults to the name on the existing booking).",
+          },
+          last_name: {
+            type: "string",
+            description: "Caller's last name in English letters (optional — defaults to the name on the existing booking).",
+          },
+          service_type_id: {
+            type: "string",
+            description: "Service type for the new appointment (optional — defaults to the existing appointment's service type).",
+          },
+          practitioner_id: {
+            type: "string",
+            description: "Preferred practitioner for the new appointment (optional).",
+          },
+        },
+        required: ["new_datetime"],
       },
     },
   },
@@ -513,8 +564,13 @@ async function executeToolCall(functionName, args, context) {
  * number we already had, dead-ending the booking. When the model omits `phone`
  * (or sends an empty one) for `book_appointment`, substitute caller ID.
  *
- * Scoped to `book_appointment` ONLY: for cancel/lookup, `phone` is a *match
- * key*, and silently substituting caller ID there could match the wrong record.
+ * Scoped to `book_appointment` and `reschedule_appointment`. For raw
+ * cancel/lookup, `phone` is a *match key* and silently substituting caller ID
+ * could match the wrong record, so it's intentionally excluded. reschedule IS
+ * included because the prompts tell the model to identify the appointment by the
+ * caller's phone ("the same number"), and the reschedule handler narrows by exact
+ * datetime / sole-upcoming before cancelling — so caller-ID substitution there
+ * resolves to the caller's OWN appointment, the same safe semantics as booking.
  *
  * Only substitutes when caller ID is actually dialable. For a withheld/blocked
  * caller ID, Twilio sends a non-numeric sentinel ("anonymous", "Restricted",
@@ -530,7 +586,7 @@ async function executeToolCall(functionName, args, context) {
  * @returns {object} args, with `phone` defaulted from caller ID when applicable
  */
 function applyCallerIdPhoneFallback(functionName, args, callerPhone) {
-  if (functionName !== "book_appointment") return args;
+  if (functionName !== "book_appointment" && functionName !== "reschedule_appointment") return args;
   const digits = typeof callerPhone === "string" ? callerPhone.replace(/\D/g, "") : "";
   if (digits.length < 8 || digits.length > 15) return args; // unknown / withheld / SIP
   const hasPhone =

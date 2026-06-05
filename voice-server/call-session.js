@@ -190,10 +190,15 @@ class CallSession {
     // only emitted by the SCRUM-257 duplicate-rebook guard, which fires AFTER a
     // booking already succeeded, so it must not re-flag a completed booking. A
     // genuine failed attempt always logs a `book_appointment` (successful:false).
+    // SCRUM-377: reschedule_appointment is BOTH booking intent (a failed move
+    // with no resolution is an unfinished booking) AND, when successful, a
+    // resolution in its own right (it books the new slot atomically).
     const isFunnel = (t) =>
-      t.name === "book_appointment" || t.name === "check_availability";
+      t.name === "book_appointment" || t.name === "check_availability" || t.name === "reschedule_appointment";
     const isResolve = (t) =>
-      (t.name === "book_appointment" && t.successful) || (t.name === "schedule_callback" && t.successful);
+      (t.name === "book_appointment" && t.successful) ||
+      (t.name === "reschedule_appointment" && t.successful) ||
+      (t.name === "schedule_callback" && t.successful);
     const lastFunnelAt = audit.reduce((m, t) => (isFunnel(t) ? Math.max(m, at(t)) : m), 0);
     const lastResolveAt = audit.reduce((m, t) => (isResolve(t) ? Math.max(m, at(t)) : m), 0);
     if (lastFunnelAt > 0) {

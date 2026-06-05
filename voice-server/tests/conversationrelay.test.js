@@ -95,6 +95,7 @@ describe("buildCrTools gating (SCRUM-378)", () => {
   it("calendar + callback + end_call when scheduling on, no transfer/listServiceTypes", () => {
     const tools = names(buildCrTools(fakeSession({ calendarEnabled: true })));
     assert.ok(tools.includes("book_appointment"));
+    assert.ok(tools.includes("reschedule_appointment")); // SCRUM-377 atomic move
     assert.ok(tools.includes("schedule_callback"));
     assert.ok(tools.includes("end_call"));
     assert.ok(!tools.includes("transfer_call"));
