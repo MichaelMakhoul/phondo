@@ -540,6 +540,11 @@ function processSentenceBuffer(textBuffer, onSentence) {
 
 module.exports = {
   getChatResponse, streamChatResponse, LLM_PROVIDER, DEFAULT_MODEL,
+  // SCRUM-378: the OpenAI→Anthropic format converters are pure and provider-
+  // independent. Exported so the ConversationRelay eval pipeline (claude-chat.js)
+  // can talk to Claude REGARDLESS of the global LLM_PROVIDER, without duplicating
+  // the message/tool shaping logic. These do not read module-level `config`.
+  toAnthropicMessages, toAnthropicTools,
   // Exported for testing only
   _test: { toAnthropicMessages, toAnthropicTools, parseAnthropicResponse, processSentenceBuffer },
 };

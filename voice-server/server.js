@@ -26,6 +26,7 @@ const { calendarToolDefinitions, listServiceTypesToolDefinition, transferToolDef
 const { createGeminiSession } = require("./services/gemini-live");
 const { createOpenAIRealtimeSession } = require("./services/openai-realtime"); // SCRUM-378 eval spike
 const { resolveTestPipeline } = require("./lib/pipeline-routing"); // SCRUM-378 per-number test override
+const { handleConversationRelayConnection, buildConversationRelayTwiml } = require("./services/conversationrelay"); // SCRUM-378 eval spike (ConversationRelay + Claude)
 const { validateToolResponse } = require("./services/turn-validator");
 // SCRUM-166 outbound calling service (cherry-picked to main for smoke testing)
 const {
@@ -150,6 +151,10 @@ const PUBLIC_URL = process.env.PUBLIC_URL;
 const APP_PUBLIC_URL = process.env.APP_PUBLIC_URL;
 const WS_SECRET = process.env.TWILIO_AUTH_TOKEN;
 const WS_URL = PUBLIC_URL.replace(/^http/, "ws") + "/ws/audio";
+// SCRUM-378 eval spike: ConversationRelay connects to its own WS path (JSON
+// protocol, not the μ-law media stream). Only reached for a TEST number listed
+// in TEST_PIPELINE_OVERRIDES as "<number>:conversationrelay".
+const CR_WS_URL = PUBLIC_URL.replace(/^http/, "ws") + "/ws/conversationrelay";
 const INTERNAL_API_URL = process.env.INTERNAL_API_URL;
 const INTERNAL_API_SECRET = process.env.INTERNAL_API_SECRET;
 
@@ -411,6 +416,17 @@ app.post("/twiml", async (req, res) => {
 
   // Recording is started via Twilio REST API in the WebSocket handler (not TwiML)
   // because <Connect record="record-from-answer"> doesn't work with <Stream>.
+
+  // SCRUM-378: non-destructive eval override. A TEST number listed in
+  // TEST_PIPELINE_OVERRIDES as "<number>:conversationrelay" gets a
+  // <Connect><ConversationRelay> (Twilio-side Deepgram STT + ElevenLabs TTS,
+  // Claude on our WS) instead of the μ-law <Stream> below. The kill-switch and
+  // ring-first checks above already ran, and the same server-side token is
+  // issued, so only the transport changes. Unset env → unchanged <Stream>.
+  if (resolveTestPipeline(called) === "conversationrelay") {
+    console.log(`[Pipeline] TEST override → conversationrelay for called=${called}`);
+    return res.type("text/xml").send(buildConversationRelayTwiml({ wsUrl: CR_WS_URL, token, escapeXml }));
+  }
 
   // Gemini Live: NO TwiML <Say> — Gemini speaks everything in one voice.
   // The clientContent trigger (sent after setupComplete) makes Gemini speak
@@ -3258,6 +3274,15 @@ outboundWss.on("connection", (ws, req) => {
   handleOutboundConnection(ws, tokenData);
 });
 
+// SCRUM-378 eval spike: ConversationRelay + Claude WebSocket (/ws/conversationrelay).
+// JSON protocol (Twilio does Deepgram STT + ElevenLabs TTS), NOT the μ-law media
+// stream. Reached only for a TEST number routed to "conversationrelay" via
+// TEST_PIPELINE_OVERRIDES. consumeStreamToken is passed for /ws/audio auth parity.
+const crWss = new WebSocketServer({ noServer: true });
+crWss.on("connection", (ws, req) => {
+  handleConversationRelayConnection(ws, req, { consumeStreamToken });
+});
+
 // Route WebSocket upgrades by path — ws library doesn't support multiple
 // WebSocketServer instances with { server, path } on the same HTTP server.
 server.on("upgrade", (request, socket, head) => {
@@ -3275,6 +3300,10 @@ server.on("upgrade", (request, socket, head) => {
   } else if (pathname.startsWith("/ws/outbound")) {
     outboundWss.handleUpgrade(request, socket, head, (ws) => {
       outboundWss.emit("connection", ws, request);
+    });
+  } else if (pathname === "/ws/conversationrelay") {
+    crWss.handleUpgrade(request, socket, head, (ws) => {
+      crWss.emit("connection", ws, request);
     });
   } else {
     socket.destroy();
