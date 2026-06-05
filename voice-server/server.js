@@ -2220,6 +2220,10 @@ wss.on("connection", (twilioWs) => {
                   // indefinitely after end_call.
                   const ret = { message: message + bookLoopDirective };
                   if (typeof result === "object" && result?.__endCall) ret.__endCall = true;
+                  // SCRUM-378: forward `action` (e.g. "transfer") so the OpenAI
+                  // Realtime adapter can suppress its follow-up response.create on a
+                  // call that the tool already redirected. Gemini ignores this field.
+                  if (typeof result === "object" && result?.action) ret.action = result.action;
                   return ret;
                 },
                 onTranscriptIn: (text) => {
@@ -2423,6 +2427,16 @@ wss.on("connection", (twilioWs) => {
                     if (session) session.endedReason = "end_call_tool";
                     if (twilioWs.readyState === WebSocket.OPEN) {
                       setTimeout(() => twilioWs.close(1000, "end_call"), 1000);
+                    }
+                    return;
+                  }
+                  // SCRUM-378: planned close after a transfer (OpenAI Realtime path).
+                  // The call was already redirected via Twilio REST inside the tool,
+                  // so this is a SUCCESS, not a failed call — don't set callFailed.
+                  if (reason === "transfer") {
+                    if (session) session.endedReason = "transferred";
+                    if (twilioWs.readyState === WebSocket.OPEN) {
+                      setTimeout(() => twilioWs.close(1000, "transferred"), 1000);
                     }
                     return;
                   }
