@@ -1441,15 +1441,18 @@ export async function handleRescheduleAppointment(
       // the exact event SCRUM-377 exists to prevent, so it must page on-call, not
       // just hit the logs. We still return success:true (a real new appointment
       // exists) and tell the caller honestly the old one wasn't removed.
+      // Telemetry carries only opaque DB ids (org + appointment UUIDs) — NOT the
+      // confirmation code, which is a usable token a caller could cancel/look up
+      // with, so it must not land in Sentry/logs (SCRUM-339). The team finds the
+      // orphan by org + appointment id.
       const newAppointmentId = (bookResult.data as any)?.appointmentId;
-      const newConfirmationCode = (bookResult.data as any)?.confirmationCode;
       console.error("[Reschedule] New appointment booked but failed to cancel the old one — duplicate created", {
         organizationId, oldAppointmentId: existing.id, newAppointmentId, newDatetime: new_datetime,
       });
       Sentry.withScope((scope) => {
         scope.setLevel("error");
         scope.setTag("bug", "reschedule_orphan_old_appointment");
-        scope.setExtras({ organizationId, oldAppointmentId: existing.id, newAppointmentId, newConfirmationCode, newDatetime: new_datetime });
+        scope.setExtras({ organizationId, oldAppointmentId: existing.id, newAppointmentId, newDatetime: new_datetime });
         Sentry.captureMessage("Reschedule left an un-cancelled old appointment (duplicate risk)");
       });
       return {
