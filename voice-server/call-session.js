@@ -164,28 +164,51 @@ class CallSession {
   }
 
   /**
-   * SCRUM-373: language-agnostic "did a booking start but never complete?" check.
+   * SCRUM-373/377: language-agnostic "did a booking start but never complete?"
+   * check, keyed off TOOL STATE (not transcript language).
    *
-   * The English-only transcript regexes let an Arabic "you're all set" + end_call
-   * with no real booking slip through. This keys off TOOL STATE instead: a
-   * successful book_appointment (or a legit terminal action — callback/cancel)
-   * clears it; otherwise, if a booking was attempted/intended (a book_appointment
-   * call — even rejected — a rejection count, or an end_call whose `reason` claims
-   * a booking), the booking is unfinished regardless of spoken language.
+   * SCRUM-377 fix: it is keyed by TIMESTAMP ORDER, not "any successful cancel
+   * clears it." A real reschedule call cancels appointment X (success) and then
+   * books appointment Y — the earlier successful cancel must NOT mask the later
+   * unfinished booking. So: a booking is unfinished iff there is booking INTENT
+   * (a book_appointment attempt — even rejected — or entering the booking funnel
+   * via check_availability) that occurred AFTER the most recent SUCCESSFUL
+   * book_appointment with no later resolution, OR an end_call whose reason claims
+   * a booking/reschedule while NOTHING was booked in the call. A pure
+   * cancel/callback call (no booking intent) is still a clean exit.
    *
    * @param {string} [endCallReason] - the reason arg from an end_call tool call
    * @returns {boolean}
    */
   hasUnfinishedBooking(endCallReason = "") {
     const audit = this.toolCallAudit || [];
-    if (audit.some((t) => t.name === "book_appointment" && t.successful)) return false;
-    // A successful callback or cancellation is a legitimate terminal outcome.
-    if (audit.some((t) => (t.name === "schedule_callback" || t.name === "cancel_appointment") && t.successful)) return false;
-    const attemptedBooking =
-      audit.some((t) => t.name === "book_appointment" || t.name === "book_appointment_blocked") ||
-      (this.bookRejectionCount || 0) > 0;
-    const reasonClaimsBooking = /book|appoint|schedul|reserv/i.test(endCallReason || "");
-    return attemptedBooking || reasonClaimsBooking;
+    const at = (t) => (typeof t.at === "number" ? t.at : 0);
+    // The "booking funnel": entering availability or attempting/being-blocked on
+    // a booking. A booking/reschedule "resolves" via a SUCCESSFUL book, or via a
+    // SUCCESSFUL schedule_callback (the take-a-message fallback).
+    // NOTE: book_appointment_blocked is intentionally NOT a funnel step — it is
+    // only emitted by the SCRUM-257 duplicate-rebook guard, which fires AFTER a
+    // booking already succeeded, so it must not re-flag a completed booking. A
+    // genuine failed attempt always logs a `book_appointment` (successful:false).
+    const isFunnel = (t) =>
+      t.name === "book_appointment" || t.name === "check_availability";
+    const isResolve = (t) =>
+      (t.name === "book_appointment" && t.successful) || (t.name === "schedule_callback" && t.successful);
+    const lastFunnelAt = audit.reduce((m, t) => (isFunnel(t) ? Math.max(m, at(t)) : m), 0);
+    const lastResolveAt = audit.reduce((m, t) => (isResolve(t) ? Math.max(m, at(t)) : m), 0);
+    if (lastFunnelAt > 0) {
+      // A booking/reschedule flow was entered. It is unfinished unless a
+      // successful booking or a take-a-message callback came AFTER the most
+      // recent funnel step — so an earlier cancel (or an earlier completed
+      // booking) cannot mask a LATER unfinished reschedule.
+      return lastFunnelAt > lastResolveAt;
+    }
+    // No booking-funnel tool calls at all — only flag if the end_call reason
+    // explicitly claims a booking/reschedule while nothing was ever booked.
+    const everBooked = audit.some((t) => t.name === "book_appointment" && t.successful);
+    // Substring match (not \b-anchored) so snake_case reasons like
+    // "booking_complete" / "reschedule_done" match; "cancelled" does not.
+    return /(book|reschedul|reserv)/i.test(endCallReason || "") && !everBooked;
   }
 
   /**

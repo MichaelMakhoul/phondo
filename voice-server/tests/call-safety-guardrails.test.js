@@ -52,40 +52,76 @@ describe("CallSession.confirmCancel (SCRUM-372)", () => {
   });
 });
 
-// SCRUM-373: language-agnostic unfinished-booking detection.
-describe("CallSession.hasUnfinishedBooking (SCRUM-373)", () => {
-  const withAudit = (audit, bookRejectionCount = 0) => {
+// SCRUM-373/377: language-agnostic, order-aware unfinished-booking detection.
+describe("CallSession.hasUnfinishedBooking (SCRUM-373/377)", () => {
+  const withAudit = (audit) => {
     const s = new CallSession("x");
     s.toolCallAudit = audit;
-    s.bookRejectionCount = bookRejectionCount;
     return s;
   };
 
-  it("false when a book_appointment succeeded", () => {
-    const s = withAudit([{ name: "book_appointment", successful: true }]);
+  it("false when a booking completed (check → book success)", () => {
+    const s = withAudit([
+      { name: "check_availability", successful: true, at: 100 },
+      { name: "book_appointment", successful: true, at: 200 },
+    ]);
     assert.equal(s.hasUnfinishedBooking("booking_complete"), false);
   });
 
   it("true when a book_appointment was attempted but never succeeded", () => {
-    assert.equal(withAudit([{ name: "book_appointment", successful: false }]).hasUnfinishedBooking(), true);
-    assert.equal(withAudit([{ name: "book_appointment_blocked", successful: false }]).hasUnfinishedBooking(), true);
+    assert.equal(withAudit([{ name: "book_appointment", successful: false, at: 100 }]).hasUnfinishedBooking(), true);
   });
 
-  it("true when there were rejections but no success", () => {
-    assert.equal(withAudit([], 2).hasUnfinishedBooking(), true);
+  it("false when a duplicate rebook was blocked AFTER a successful booking (booking exists)", () => {
+    // SCRUM-257 rebook guard fires only after a success — must not re-flag as unfinished.
+    const s = withAudit([
+      { name: "book_appointment", successful: true, at: 100 },
+      { name: "book_appointment_blocked", successful: false, at: 200 },
+    ]);
+    assert.equal(s.hasUnfinishedBooking("booking_complete"), false);
   });
 
-  it("true (language-agnostic) when the end_call reason claims a booking but none succeeded", () => {
-    assert.equal(withAudit([{ name: "check_availability", successful: true }]).hasUnfinishedBooking("booking_complete"), true);
+  it("true when the end_call reason claims a booking but no funnel/no booking happened", () => {
+    assert.equal(withAudit([]).hasUnfinishedBooking("booking_complete"), true);
+    assert.equal(withAudit([]).hasUnfinishedBooking("reschedule_done"), true);
   });
 
-  it("false for an info-only call ending normally (no booking signals)", () => {
-    assert.equal(withAudit([{ name: "check_availability", successful: true }]).hasUnfinishedBooking("caller finished"), false);
+  // SCRUM-377: the regression that motivated this — a reschedule where an EARLIER
+  // successful cancel must NOT mask the LATER unfinished booking.
+  it("true for a reschedule: cancel X succeeds, then check availability for Y, but Y never booked", () => {
+    const s = withAudit([
+      { name: "cancel_appointment", successful: true, at: 100 },
+      { name: "check_availability", successful: true, at: 200 },
+    ]);
+    assert.equal(s.hasUnfinishedBooking("reschedule_complete"), true);
   });
 
-  it("false when a callback or cancellation legitimately completed", () => {
-    assert.equal(withAudit([{ name: "schedule_callback", successful: true }], 1).hasUnfinishedBooking("booking_complete"), false);
-    assert.equal(withAudit([{ name: "cancel_appointment", successful: true }]).hasUnfinishedBooking("cancelled"), false);
+  it("false for a reschedule that actually completed (cancel X, check Y, book Y)", () => {
+    const s = withAudit([
+      { name: "cancel_appointment", successful: true, at: 100 },
+      { name: "check_availability", successful: true, at: 200 },
+      { name: "book_appointment", successful: true, at: 300 },
+    ]);
+    assert.equal(s.hasUnfinishedBooking("reschedule_complete"), false);
+  });
+
+  it("false when a failed booking was resolved by a take-a-message callback", () => {
+    const s = withAudit([
+      { name: "book_appointment", successful: false, at: 100 },
+      { name: "schedule_callback", successful: true, at: 200 },
+    ]);
+    assert.equal(s.hasUnfinishedBooking("message_taken"), false);
+  });
+
+  it("false for a pure cancel call (no booking funnel)", () => {
+    assert.equal(withAudit([{ name: "cancel_appointment", successful: true, at: 100 }]).hasUnfinishedBooking("cancelled"), false);
+    assert.equal(withAudit([{ name: "cancel_appointment", successful: true, at: 100 }]).hasUnfinishedBooking("appointment_cancelled"), false);
+  });
+
+  it("true for an availability-only call that ends without booking (nudged once, then allowed)", () => {
+    // Intentional: entering the booking funnel and leaving without booking is
+    // treated as unfinished so the AI offers to book / take a message once.
+    assert.equal(withAudit([{ name: "check_availability", successful: true, at: 100 }]).hasUnfinishedBooking("caller finished"), true);
   });
 
   it("false on an empty call", () => {
