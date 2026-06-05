@@ -105,6 +105,23 @@ describe("CallSession.hasUnfinishedBooking (SCRUM-373/377)", () => {
     assert.equal(s.hasUnfinishedBooking("reschedule_complete"), false);
   });
 
+  // SCRUM-377: the atomic reschedule_appointment tool resolves the funnel itself.
+  it("false for a reschedule via the atomic reschedule_appointment tool (check Y, then reschedule success)", () => {
+    const s = withAudit([
+      { name: "check_availability", successful: true, at: 100 },
+      { name: "reschedule_appointment", successful: true, at: 200 },
+    ]);
+    assert.equal(s.hasUnfinishedBooking("reschedule_complete"), false);
+  });
+
+  it("false for a standalone successful reschedule_appointment (no prior funnel)", () => {
+    assert.equal(withAudit([{ name: "reschedule_appointment", successful: true, at: 100 }]).hasUnfinishedBooking("reschedule_complete"), false);
+  });
+
+  it("true for a FAILED reschedule_appointment with no resolution (don't let end_call pretend it moved)", () => {
+    assert.equal(withAudit([{ name: "reschedule_appointment", successful: false, at: 100 }]).hasUnfinishedBooking("reschedule_complete"), true);
+  });
+
   it("false when a failed booking was resolved by a take-a-message callback", () => {
     const s = withAudit([
       { name: "book_appointment", successful: false, at: 100 },

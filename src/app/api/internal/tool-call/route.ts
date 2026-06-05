@@ -5,6 +5,7 @@ import {
   handleCheckAvailability,
   handleBookAppointment,
   handleCancelAppointment,
+  handleRescheduleAppointment,
   handleLookupAppointment,
 } from "@/lib/calendar/tool-handlers";
 import { handleScheduleCallback } from "@/lib/callbacks/tool-handler";
@@ -132,6 +133,25 @@ export async function POST(request: Request) {
           reason: parsedArgs.reason,
           confirmation_code: parsedArgs.confirmation_code,
           date: parsedArgs.date,
+        });
+        break;
+
+      case "reschedule_appointment":
+        // SCRUM-377: atomic move (book new + cancel old, server-verified) so a
+        // reschedule can never leave a duplicate the way cancel+book did.
+        result = await handleRescheduleAppointment(organizationId, {
+          phone: parsedArgs.phone,
+          confirmation_code: parsedArgs.confirmation_code,
+          current_date: parsedArgs.current_date,
+          current_datetime: parsedArgs.current_datetime,
+          new_datetime: parsedArgs.new_datetime,
+          first_name: parsedArgs.first_name,
+          last_name: parsedArgs.last_name,
+          name: parsedArgs.name,
+          email: parsedArgs.email,
+          notes: parsedArgs.notes,
+          service_type_id: parsedArgs.service_type_id,
+          practitioner_id: parsedArgs.practitioner_id,
         });
         break;
 

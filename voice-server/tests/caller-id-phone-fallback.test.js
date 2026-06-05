@@ -37,6 +37,11 @@ describe("applyCallerIdPhoneFallback (SCRUM-366)", () => {
     assert.equal("phone" in applyCallerIdPhoneFallback("lookup_appointment", { name: "x" }, CALLER), false);
   });
 
+  it("DOES default phone for reschedule_appointment (SCRUM-377 — prompts identify by 'the same number')", () => {
+    const out = applyCallerIdPhoneFallback("reschedule_appointment", { new_datetime: "2026-06-17T10:15:00" }, CALLER);
+    assert.equal(out.phone, CALLER);
+  });
+
   it("is a no-op when caller ID is unknown (blocked/withheld caller ID)", () => {
     const args = { datetime: "x", first_name: "A" };
     assert.equal(applyCallerIdPhoneFallback("book_appointment", args, undefined), args);
