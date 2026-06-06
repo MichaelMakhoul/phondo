@@ -3,7 +3,14 @@ const assert = require("node:assert/strict");
 
 process.env.OPENAI_API_KEY = "test-key";
 const { _test } = require("../services/openai-realtime");
-const { toRealtimeTools, buildSessionConfig, createResponseGate, isBenignError } = _test;
+const { toRealtimeTools, buildSessionConfig, createResponseGate, isBenignError, boostMulawBase64 } = _test;
+const { mulawToPcm16, pcm16ToMulaw } = require("../lib/audio-converter");
+
+function rmsOfPcm16(pcm) {
+  let sum = 0;
+  for (let i = 0; i + 1 < pcm.length; i += 2) { const v = pcm.readInt16LE(i); sum += v * v; }
+  return Math.sqrt(sum / Math.max(1, pcm.length / 2));
+}
 
 // SCRUM-378: pure-config + state-machine tests for the OpenAI Realtime adapter (no network).
 describe("toRealtimeTools (SCRUM-378)", () => {
@@ -57,6 +64,23 @@ describe("isBenignError (SCRUM-378)", () => {
     assert.equal(isBenignError("server_error"), false);
     assert.equal(isBenignError(""), false);
     assert.equal(isBenignError(undefined), false);
+  });
+});
+
+describe("boostMulawBase64 (SCRUM-378) — gain quiet callers before STT", () => {
+  it("amplifies a quiet μ-law frame and preserves the sample count", () => {
+    const n = 160; // 20 ms @ 8 kHz
+    const pcm = Buffer.alloc(n * 2);
+    for (let i = 0; i < n; i++) pcm.writeInt16LE(Math.round(400 * Math.sin(i / 4)), i * 2); // quiet tone
+    const inB64 = pcm16ToMulaw(pcm).toString("base64");
+    const outPcm = mulawToPcm16(Buffer.from(boostMulawBase64(inB64), "base64"));
+    assert.equal(outPcm.length, pcm.length); // gain never changes the number of samples
+    const inRms = rmsOfPcm16(mulawToPcm16(Buffer.from(inB64, "base64")));
+    assert.ok(rmsOfPcm16(outPcm) > inRms * 1.5, `expected boost: in=${inRms.toFixed(0)} out=${rmsOfPcm16(outPcm).toFixed(0)}`);
+  });
+
+  it("returns the input unchanged on garbage (never drops audio)", () => {
+    assert.equal(boostMulawBase64(""), "");
   });
 });
 
