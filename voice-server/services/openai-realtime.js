@@ -59,6 +59,11 @@ const KNOWN_IGNORED = new Set([
   "response.content_part.added", "response.content_part.done",
   "response.output_audio.done", "response.output_audio_transcript.done",
   "response.audio.done", "response.audio_transcript.done",
+  // Streaming tool-arg chunks — many per tool call. We act on the terminal
+  // ".done" (captured into pendingTools); the per-chunk ".delta" needs no
+  // handling and would otherwise flood the logs (hundreds/call) and rotate the
+  // real lines out of the buffer.
+  "response.function_call_arguments.delta",
   "rate_limits.updated",
   "input_audio_buffer.speech_stopped", "input_audio_buffer.committed", "input_audio_buffer.cleared",
   "conversation.item.created", "conversation.item.added", "conversation.item.done",
