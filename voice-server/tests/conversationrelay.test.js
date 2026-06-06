@@ -117,6 +117,7 @@ describe("buildCriticalRulesSuffix (SCRUM-378)", () => {
   it("includes the no-fabrication invariant + language lock for the caller language", () => {
     const s = buildCriticalRulesSuffix(fakeSession({ language: "ar" }));
     assert.match(s, /NEVER FABRICATE ACTIONS/);
+    assert.match(s, /UNDERSTAND BEFORE YOU ACT/); // SCRUM-380: confirm/ask-to-repeat on unclear input
     assert.match(s, /LANGUAGE LOCK/);
     assert.match(s, /Arabic and English/);
     assert.match(s, /not configured a transfer destination/); // no rules + not eligible
