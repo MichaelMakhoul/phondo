@@ -40,6 +40,7 @@
 
 const WebSocket = require("ws");
 const { Sentry } = require("../lib/sentry");
+const { mulawToPcm16, pcm16ToMulaw, normalizeGainPcm16 } = require("../lib/audio-converter");
 
 const OPENAI_REALTIME_MODEL = process.env.OPENAI_REALTIME_MODEL || "gpt-realtime-2";
 const OPENAI_REALTIME_URL = `wss://api.openai.com/v1/realtime?model=${OPENAI_REALTIME_MODEL}`;
@@ -80,6 +81,26 @@ const BENIGN_ERROR_CODES = new Set([
 
 function isBenignError(code) {
   return BENIGN_ERROR_CODES.has(String(code || ""));
+}
+
+/**
+ * SCRUM-378: boost a quiet caller's audio BEFORE OpenAI's STT hears it — the same
+ * +gain the Gemini path applies (normalizeGainPcm16). The OpenAI path was
+ * forwarding Twilio's raw μ-law untouched, so low-volume callers were transcribed
+ * as poorly as raw (offline tests showed gain is what makes the audio legible).
+ * In/out are both μ-law 8 kHz (audio/pcmu) — no resample. Never drop audio: on any
+ * processing hiccup, fall back to the original frame.
+ * @param {string} b64 - base64 Twilio μ-law frame
+ * @returns {string} base64 μ-law frame, gain-normalized
+ */
+function boostMulawBase64(b64) {
+  try {
+    const mulaw = Buffer.from(b64, "base64");
+    const pcm = normalizeGainPcm16(mulawToPcm16(mulaw));
+    return pcm16ToMulaw(pcm).toString("base64");
+  } catch {
+    return b64;
+  }
 }
 
 /**
@@ -439,10 +460,10 @@ function createOpenAIRealtimeSession(config, callbacks) {
   });
 
   return {
-    /** Forward Twilio μ-law base64 straight to the input buffer (no resample). */
+    /** Forward Twilio μ-law to the input buffer, GAIN-NORMALIZED first (no resample). */
     sendAudio(twilioBase64) {
       if (ws.readyState !== WebSocket.OPEN || !ready) return;
-      send({ type: "input_audio_buffer.append", audio: twilioBase64 });
+      send({ type: "input_audio_buffer.append", audio: boostMulawBase64(twilioBase64) });
     },
     getTranscripts() { return { input: transcriptIn, output: transcriptOut }; },
     /** Inject a text instruction mid-call (parity with gemini-live sendText). */
@@ -457,5 +478,5 @@ function createOpenAIRealtimeSession(config, callbacks) {
 
 module.exports = {
   createOpenAIRealtimeSession,
-  _test: { toRealtimeTools, buildSessionConfig, createResponseGate, isBenignError, KNOWN_IGNORED, BENIGN_ERROR_CODES },
+  _test: { toRealtimeTools, buildSessionConfig, createResponseGate, isBenignError, boostMulawBase64, KNOWN_IGNORED, BENIGN_ERROR_CODES },
 };
