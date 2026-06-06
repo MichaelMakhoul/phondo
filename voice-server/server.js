@@ -28,6 +28,7 @@ const { createOpenAIRealtimeSession } = require("./services/openai-realtime"); /
 const { resolveTestPipeline } = require("./lib/pipeline-routing"); // SCRUM-378 per-number test override
 const { handleConversationRelayConnection, buildConversationRelayTwiml } = require("./services/conversationrelay"); // SCRUM-378 eval spike (ConversationRelay + Claude)
 const { validateToolResponse } = require("./services/turn-validator");
+const { detectPhantomAction, BOOKING_BACKING_TOOLS } = require("./lib/action-claim-detector"); // SCRUM-381 reschedule-aware phantom-action detection
 // SCRUM-166 outbound calling service (cherry-picked to main for smoke testing)
 const {
   makeOutboundCall,
@@ -1341,8 +1342,11 @@ wss.on("connection", (twilioWs) => {
     // the call loudly so we catch it before a customer shows up to nothing.
     const bookingClaimRe = /\b(i've booked|you'?re all set|your appointment (?:is|has been) (?:booked|confirmed)|confirmation code (?:is )?\d{3,8})\b/i;
     const claimsBooking = bookingClaimRe.test(transcript || "");
+    // SCRUM-381: an atomic reschedule books the new slot, so it backs a
+    // "you're all set" claim too — otherwise a legitimate reschedule gets
+    // mislabelled hallucinated_booking and the call wrongly marked failed.
     const hadSuccessfulBookTool = (s.toolCallAudit || []).some(
-      (t) => t.name === "book_appointment" && t.successful
+      (t) => BOOKING_BACKING_TOOLS.includes(t.name) && t.successful
     );
     // NOTE: this post-call flag stays claim-based (English). The *live* SCRUM-373
     // end_call guard is the real language-agnostic fix; broadening this post-call
@@ -2310,63 +2314,56 @@ wss.on("connection", (twilioWs) => {
                     }
 
                     // ── TIER 1: Phantom action detector ──────────────────────
-                    // If Sophie claimed an action (booking, cancel, callback)
-                    // but the corresponding tool was never called successfully,
-                    // inject a correction into Gemini's context so it actually
-                    // calls the tool on the next turn.
-                    const actionClaims = {
-                      booking: /\b(i've booked|you'?re all set|your appointment (?:is|has been) (?:booked|confirmed)|booked you in)\b/i,
-                      cancellation: /\b(i've cancel|that'?s cancel|appointment (?:is|has been) cancel|cancel.*for you)\b/i,
-                      callback: /\b(i've scheduled.*callback|callback (?:is|has been) scheduled|someone will call you back)\b/i,
-                    };
+                    // If Sophie claimed an action (booking, reschedule, cancel,
+                    // callback) but no tool that would accomplish it was called
+                    // successfully, inject a correction so she actually calls the
+                    // tool on the next turn. SCRUM-381: reschedule-aware — an
+                    // atomic reschedule_appointment now backs booking/cancel
+                    // claims too, so a legit reschedule no longer false-positives
+                    // into a re-book thrash, and a phantom "I rebooked you" is
+                    // finally caught.
+                    const phantom = detectPhantomAction(aiTurnText, session.toolCallAudit);
+                    if (phantom) {
+                      const { action, primaryTool } = phantom;
+                      const notDone =
+                        action === "booking" ? "the caller has NO appointment booked"
+                        : action === "reschedule" ? "the caller's appointment was NOT moved — it is still at the original time"
+                        : action === "cancellation" ? "the caller's appointment is NOT cancelled — it is still on the calendar"
+                        : "no callback was scheduled";
 
-                    for (const [action, regex] of Object.entries(actionClaims)) {
-                      if (!regex.test(aiTurnText)) continue;
-
-                      const toolName = action === "booking" ? "book_appointment"
-                                     : action === "cancellation" ? "cancel_appointment"
-                                     : "schedule_callback";
-
-                      const hadTool = (session.toolCallAudit || []).some(
-                        (t) => t.name === toolName && t.successful
+                      session._phantomActionCount = (session._phantomActionCount || 0) + 1;
+                      console.error(
+                        `[PhantomAction] Sophie claimed ${action} but ${primaryTool} (or an equivalent tool) was never called successfully ` +
+                        `(attempt ${session._phantomActionCount}). callSid=${session.callSid}`
                       );
+                      Sentry.withScope((scope) => {
+                        scope.setTag("service", "phantom_action_detector");
+                        scope.setTag("action", action);
+                        scope.setExtras({ callSid: session.callSid, toolName: primaryTool, attempt: session._phantomActionCount });
+                        Sentry.captureMessage(`Phantom ${action} detected — tool never called`, "error");
+                      });
 
-                      if (!hadTool) {
-                        session._phantomActionCount = (session._phantomActionCount || 0) + 1;
-                        console.error(
-                          `[PhantomAction] Sophie claimed ${action} but ${toolName} was never called successfully ` +
-                          `(attempt ${session._phantomActionCount}). callSid=${session.callSid}`
+                      // Inject correction — but limit to 2 attempts to avoid an
+                      // infinite correction loop if Gemini keeps ignoring us.
+                      if (session._phantomActionCount <= 2 && session.geminiSession?.sendText) {
+                        session.geminiSession.sendText(
+                          `CRITICAL ERROR: You just told the caller the ${action} was done, but you did NOT call ${primaryTool}. ` +
+                          `The action did NOT happen — ${notDone}. ` +
+                          `You MUST now: (1) apologize briefly ("I'm sorry, let me actually do that for you now"), ` +
+                          `(2) call ${primaryTool} NOW with the correct details, ` +
+                          `(3) then confirm the REAL result to the caller. Do NOT end the call until ${primaryTool} has been called.`
                         );
-                        Sentry.withScope((scope) => {
-                          scope.setTag("service", "phantom_action_detector");
-                          scope.setTag("action", action);
-                          scope.setExtras({ callSid: session.callSid, toolName, attempt: session._phantomActionCount });
-                          Sentry.captureMessage(`Phantom ${action} detected — tool never called`, "error");
-                        });
-
-                        // Inject correction — but limit to 2 attempts to avoid an
-                        // infinite correction loop if Gemini keeps ignoring us.
-                        if (session._phantomActionCount <= 2 && session.geminiSession?.sendText) {
+                      } else if (session._phantomActionCount > 2) {
+                        // Gemini is ignoring corrections — fall back to schedule_callback
+                        console.error(`[PhantomAction] ${session._phantomActionCount} phantom attempts — falling back to callback. callSid=${session.callSid}`);
+                        if (session.geminiSession?.sendText) {
                           session.geminiSession.sendText(
-                            `CRITICAL ERROR: You just told the caller the ${action} was done, but you did NOT call ${toolName}. ` +
-                            `The action did NOT happen — the caller has NO ${action === "booking" ? "appointment" : action}. ` +
-                            `You MUST now: (1) apologize briefly ("I'm sorry, let me actually do that for you now"), ` +
-                            `(2) call ${toolName} NOW with the correct details, ` +
-                            `(3) then confirm the REAL result to the caller. Do NOT end the call until ${toolName} has been called.`
+                            `STOP: You have failed to call ${primaryTool} after multiple attempts. ` +
+                            `Apologize to the caller and say: "I'm having some technical difficulties — ` +
+                            `let me take your details and have someone call you back to confirm." ` +
+                            `Then call schedule_callback with the caller's details.`
                           );
-                        } else if (session._phantomActionCount > 2) {
-                          // Gemini is ignoring corrections — fall back to schedule_callback
-                          console.error(`[PhantomAction] ${session._phantomActionCount} phantom attempts — falling back to callback. callSid=${session.callSid}`);
-                          if (session.geminiSession?.sendText) {
-                            session.geminiSession.sendText(
-                              `STOP: You have failed to call ${toolName} after multiple attempts. ` +
-                              `Apologize to the caller and say: "I'm having some technical difficulties — ` +
-                              `let me take your details and have someone call you back to confirm." ` +
-                              `Then call schedule_callback with the caller's details.`
-                            );
-                          }
                         }
-                        break; // Only handle the first matching claim per turn
                       }
                     }
 

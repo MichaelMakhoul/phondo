@@ -36,6 +36,7 @@ const { createCallRecord, completeCallRecord, notifyCallCompleted } = require(".
 const { analyzeCallTranscript } = require("./post-call-analysis");
 const { streamClaudeResponse } = require("./claude-chat");
 const { requiresRecordingDisclosureHybrid, getRecordingDisclosureText } = require("../lib/recording-consent");
+const { BOOKING_BACKING_TOOLS } = require("../lib/action-claim-detector"); // SCRUM-381 reschedule-aware booking-claim backing
 const {
   calendarToolDefinitions,
   listServiceTypesToolDefinition,
@@ -353,7 +354,8 @@ function handleConversationRelayConnection(ws, req, injected = {}) {
 
     // SCRUM-227: flag a transcript that CLAIMS a booking with no successful tool call.
     const bookingClaimRe = /\b(i've booked|you'?re all set|your appointment (?:is|has been) (?:booked|confirmed)|confirmation code (?:is )?\d{3,8})\b/i;
-    const hadSuccessfulBook = (s.toolCallAudit || []).some((t) => t.name === "book_appointment" && t.successful);
+    // SCRUM-381: an atomic reschedule books the new slot, so it backs a booking claim too.
+    const hadSuccessfulBook = (s.toolCallAudit || []).some((t) => BOOKING_BACKING_TOOLS.includes(t.name) && t.successful);
     if (bookingClaimRe.test(transcript || "") && !hadSuccessfulBook) {
       console.error(`[CR][HallucinatedBooking] callSid=${s.callSid} claimed a booking with no successful book_appointment. audit=${JSON.stringify(s.toolCallAudit || [])}`);
       try {

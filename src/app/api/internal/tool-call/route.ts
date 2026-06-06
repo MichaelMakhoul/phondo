@@ -133,6 +133,11 @@ export async function POST(request: Request) {
           reason: parsedArgs.reason,
           confirmation_code: parsedArgs.confirmation_code,
           date: parsedArgs.date,
+          // SCRUM-381: forward the exact datetime so the handler's ±15-min match
+          // can pin ONE appointment when a caller has several. Without this the
+          // disambiguation reply ("call again with the exact datetime") can never
+          // be satisfied — the model loops and may fabricate a cancellation.
+          datetime: parsedArgs.datetime,
         });
         break;
 

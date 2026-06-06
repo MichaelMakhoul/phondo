@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { ensureTimezoneOffset } from "../tool-handlers";
+import { ensureTimezoneOffset, toLocalIsoMinute, pickClosestAppointment } from "../tool-handlers";
 
 describe("ensureTimezoneOffset", () => {
   // ── Already-offset datetimes should be returned unchanged ──────────────
@@ -107,5 +107,98 @@ describe("ensureTimezoneOffset", () => {
     expect(() =>
       ensureTimezoneOffset("2026-02-18T10:00:00", "Invalid/Timezone")
     ).toThrow(RangeError);
+  });
+});
+
+describe("toLocalIsoMinute (SCRUM-381 cancel disambiguation)", () => {
+  // ── Renders the local wall-clock time, not UTC ─────────────────────────
+
+  it("renders a 12:00 PM Sydney appointment (stored as UTC) as local noon", () => {
+    // 2026-02-18 12:00 Sydney AEDT (+11) is stored as 01:00 UTC.
+    const stored = new Date("2026-02-18T01:00:00Z");
+    expect(toLocalIsoMinute(stored, "Australia/Sydney")).toBe("2026-02-18T12:00");
+  });
+
+  it("renders a 9:00 AM Sydney appointment distinctly from the 12:00 PM one", () => {
+    // The exact bug scenario: a 9am and a 12pm same-day appointment must yield
+    // two DIFFERENT datetime strings so the model can pin the right one.
+    const nineAm = new Date("2026-02-17T22:00:00Z"); // 09:00 Sydney AEDT
+    const twelvePm = new Date("2026-02-18T01:00:00Z"); // 12:00 Sydney AEDT
+    expect(toLocalIsoMinute(nineAm, "Australia/Sydney")).toBe("2026-02-18T09:00");
+    expect(toLocalIsoMinute(twelvePm, "Australia/Sydney")).toBe("2026-02-18T12:00");
+    expect(toLocalIsoMinute(nineAm, "Australia/Sydney")).not.toBe(
+      toLocalIsoMinute(twelvePm, "Australia/Sydney")
+    );
+  });
+
+  it("normalises midnight to 00 (not 24) under 24-hour formatting", () => {
+    // 2026-02-18 00:00 Sydney AEDT (+11) is stored as 2026-02-17 13:00 UTC.
+    const midnight = new Date("2026-02-17T13:00:00Z");
+    expect(toLocalIsoMinute(midnight, "Australia/Sydney")).toBe("2026-02-18T00:00");
+  });
+
+  it("handles a half-hour-offset timezone (India UTC+5:30)", () => {
+    // 14:00 IST is 08:30 UTC.
+    const stored = new Date("2026-06-15T08:30:00Z");
+    expect(toLocalIsoMinute(stored, "Asia/Kolkata")).toBe("2026-06-15T14:00");
+  });
+
+  // ── Round-trip invariant: the value handed to the model re-pins the row ──
+
+  it("round-trips with ensureTimezoneOffset (Sydney summer)", () => {
+    // This is the property the fix relies on: the disambiguation message hands
+    // the model toLocalIsoMinute(start_time); the model passes it back; the
+    // cancel handler runs ensureTimezoneOffset on it and lands on the SAME
+    // instant (within the ±15-min match window) — pinning exactly that row.
+    const naive = "2026-02-18T12:00";
+    const withOffset = ensureTimezoneOffset(`${naive}:00`, "Australia/Sydney");
+    const instant = new Date(withOffset);
+    expect(toLocalIsoMinute(instant, "Australia/Sydney")).toBe(naive);
+  });
+
+  it("round-trips with ensureTimezoneOffset (New York winter / DST-off)", () => {
+    const naive = "2026-01-15T10:00";
+    const withOffset = ensureTimezoneOffset(`${naive}:00`, "America/New_York");
+    const instant = new Date(withOffset);
+    expect(toLocalIsoMinute(instant, "America/New_York")).toBe(naive);
+  });
+
+  it("produces a string the cancel/reschedule datetime regex accepts", () => {
+    // Tools gate datetime on /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/ — the output must match.
+    const out = toLocalIsoMinute(new Date("2026-02-18T01:00:00Z"), "Australia/Sydney");
+    expect(out).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/);
+  });
+});
+
+describe("pickClosestAppointment (SCRUM-381 disambiguation convergence)", () => {
+  const a9 = { id: "a9", start_time: "2026-02-17T22:00:00Z" }; // 09:00 Sydney
+  const a12 = { id: "a12", start_time: "2026-02-18T01:00:00Z" }; // 12:00 Sydney
+  const a1210 = { id: "a1210", start_time: "2026-02-18T01:10:00Z" }; // 12:10 Sydney (10 min later)
+
+  it("returns null for an empty list", () => {
+    expect(pickClosestAppointment([], Date.now())).toBeNull();
+  });
+
+  it("picks the appointment nearest the target instant", () => {
+    const target = new Date("2026-02-18T01:00:00Z").getTime();
+    expect(pickClosestAppointment([a9, a12], target)?.id).toBe("a12");
+  });
+
+  it("resolves two appointments <15 min apart (the loop-forever case)", () => {
+    const target = new Date("2026-02-18T01:09:00Z").getTime(); // closest to 12:10
+    expect(pickClosestAppointment([a12, a1210], target)?.id).toBe("a1210");
+  });
+
+  it("end-to-end: each disambiguation option re-pins ITSELF (no cross-pinning)", () => {
+    // The property guaranteeing convergence: the disambiguation message lists
+    // toLocalIsoMinute(start_time) per appointment; whichever the model echoes
+    // back, parsed via ensureTimezoneOffset, must select that SAME appointment.
+    const tz = "Australia/Sydney";
+    const set = [a9, a12, a1210];
+    for (const appt of set) {
+      const echoed = toLocalIsoMinute(new Date(appt.start_time), tz); // what the AI sends back
+      const targetMs = new Date(ensureTimezoneOffset(echoed, tz)).getTime(); // handler parse
+      expect(pickClosestAppointment(set, targetMs)?.id).toBe(appt.id);
+    }
   });
 });

@@ -1054,6 +1054,58 @@ export async function handleCheckAvailability(
   }
 }
 
+/**
+ * Render an instant as its local wall-clock time in the given IANA timezone,
+ * formatted as `YYYY-MM-DDTHH:mm` (minute precision, 24-hour, no offset).
+ *
+ * This is the inverse of {@link ensureTimezoneOffset}: it produces exactly the
+ * naive datetime string the cancel/reschedule tools accept back. Used to hand
+ * the model each disambiguation option's exact datetime so it can re-call
+ * cancel_appointment with a value that pins one specific row (±15-min match).
+ *
+ * e.g., a 12:00 PM Sydney appointment stored as "2026-02-18T01:00:00Z"
+ *       → toLocalIsoMinute(date, "Australia/Sydney") → "2026-02-18T12:00"
+ */
+export function toLocalIsoMinute(date: Date, timeZone: string): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  })
+    .formatToParts(date)
+    .reduce((acc: Record<string, string>, p) => {
+      acc[p.type] = p.value;
+      return acc;
+    }, {});
+  // Some engines emit "24" for midnight under hour12:false — normalise to "00".
+  const hour = parts.hour === "24" ? "00" : parts.hour;
+  return `${parts.year}-${parts.month}-${parts.day}T${hour}:${parts.minute}`;
+}
+
+/**
+ * From a list of appointments, return the one whose `start_time` is closest to
+ * `targetMs` (epoch ms). Used to pin a single appointment when the caller gave a
+ * datetime that lands several rows inside the cancel/reschedule ±15-min match
+ * window (e.g. two appointments less than 15 minutes apart) — so disambiguation
+ * always converges instead of looping. Returns null for an empty list.
+ */
+export function pickClosestAppointment<T extends { start_time: string }>(
+  appointments: T[],
+  targetMs: number
+): T | null {
+  if (!appointments?.length) return null;
+  return appointments.reduce((best, a) =>
+    Math.abs(new Date(a.start_time).getTime() - targetMs) <
+    Math.abs(new Date(best.start_time).getTime() - targetMs)
+      ? a
+      : best
+  );
+}
+
 export async function handleCancelAppointment(
   organizationId: string,
   args: { phone?: string; reason?: string; confirmation_code?: string; date?: string; datetime?: string }
@@ -1167,27 +1219,44 @@ export async function handleCancelAppointment(
     return cancelSingleAppointment(supabase, organizationId, appointments[0], reason);
   }
 
-  // Multiple matches — but if exactly ONE was created in the last 5 minutes,
-  // it's almost certainly the one just booked in this call. Auto-cancel it
-  // instead of asking the caller to disambiguate (they'll say "the one you
-  // just booked" which Gemini can't reliably relay as a tool parameter).
-  const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
-  const recentlyCreated = appointments.filter((a: any) => a.created_at > fiveMinAgo);
-  if (recentlyCreated.length === 1) {
-    return cancelSingleAppointment(supabase, organizationId, recentlyCreated[0], reason);
+  // SCRUM-381: the model passed an exact datetime but several rows fall inside
+  // the ±15-min window (e.g. two appointments less than 15 min apart). Pin the
+  // CLOSEST one rather than looping on disambiguation forever. The disambiguation
+  // reply hands the model each option's exact stored time, so the value it sends
+  // back lands nearest the intended row.
+  if (datetime) {
+    let dtMs = NaN;
+    try {
+      dtMs = new Date(ensureTimezoneOffset(datetime, tz)).getTime();
+    } catch {
+      dtMs = NaN;
+    }
+    if (!Number.isNaN(dtMs)) {
+      const closest = pickClosestAppointment(appointments as any[], dtMs);
+      if (closest) {
+        return cancelSingleAppointment(supabase, organizationId, closest, reason);
+      }
+    }
   }
 
-  // Still multiple matches and none uniquely recent — ask Sophie to
-  // disambiguate. Format times in the org's timezone.
+  // SCRUM-381: multiple matches and no exact datetime to pin one — NEVER guess
+  // which to cancel. A previous "auto-cancel the most recently-created match"
+  // heuristic mis-fired badly: after the caller rescheduled appointment A
+  // (creating a fresh row), then asked to cancel a DIFFERENT appointment B, it
+  // cancelled the just-rescheduled A and thrashed in a rebook/cancel loop. Always
+  // disambiguate, and hand the model each option's EXACT datetime to pass back.
+  // ("Cancel the one I just booked" still works: the model knows that
+  // appointment's datetime and passes it → exact ±15-min match → the single-match
+  // branch above cancels it directly, no disambiguation needed.)
   const options = appointments.map((a: any) => {
     const d = new Date(a.start_time);
     const dateStr = d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: tz });
     const timeStr = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true, timeZone: tz });
-    return `${dateStr} at ${timeStr}`;
+    return `${dateStr} at ${timeStr} (datetime: ${toLocalIsoMinute(d, tz)})`;
   }).join("; ");
   return {
     success: false,
-    message: `I found ${appointments.length} upcoming appointments for this caller: ${options}. Which one would you like to cancel? Please call cancel_appointment again with the exact datetime parameter.`,
+    message: `This caller has ${appointments.length} upcoming appointments: ${options}. Confirm with the caller which ONE they mean, then call cancel_appointment again with that appointment's exact datetime — do NOT cancel without it.`,
   };
 }
 
