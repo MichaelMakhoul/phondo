@@ -36,7 +36,7 @@ const { createCallRecord, completeCallRecord, notifyCallCompleted } = require(".
 const { analyzeCallTranscript } = require("./post-call-analysis");
 const { streamClaudeResponse } = require("./claude-chat");
 const { requiresRecordingDisclosureHybrid, getRecordingDisclosureText } = require("../lib/recording-consent");
-const { BOOKING_BACKING_TOOLS } = require("../lib/action-claim-detector"); // SCRUM-381 reschedule-aware booking-claim backing
+const { detectPostCallPhantoms, summarizePhantoms } = require("../lib/action-claim-detector"); // SCRUM-383 post-call phantom-action detection
 const {
   calendarToolDefinitions,
   listServiceTypesToolDefinition,
@@ -352,23 +352,25 @@ function handleConversationRelayConnection(ws, req, injected = {}) {
     let callStatus = s.callFailed ? "failed" : "completed";
     let reason = s.endedReason || endedReason || "caller-hangup";
 
-    // SCRUM-227: flag a transcript that CLAIMS a booking with no successful tool call.
-    const bookingClaimRe = /\b(i've booked|you'?re all set|your appointment (?:is|has been) (?:booked|confirmed)|confirmation code (?:is )?\d{3,8})\b/i;
-    // SCRUM-381: an atomic reschedule books the new slot, so it backs a booking claim too.
-    const hadSuccessfulBook = (s.toolCallAudit || []).some((t) => BOOKING_BACKING_TOOLS.includes(t.name) && t.successful);
-    if (bookingClaimRe.test(transcript || "") && !hadSuccessfulBook) {
-      console.error(`[CR][HallucinatedBooking] callSid=${s.callSid} claimed a booking with no successful book_appointment. audit=${JSON.stringify(s.toolCallAudit || [])}`);
+    // SCRUM-227/383: flag a call that CLAIMS an action (booking, reschedule,
+    // cancellation, callback) with no successful backing tool. Claim-based +
+    // completion-only over ASSISTANT turns only, so legitimate non-completions and
+    // caller narration aren't flagged.
+    const phantomActions = detectPostCallPhantoms(s.fullTranscriptMessages, s.toolCallAudit);
+    if (phantomActions.length) {
+      const { bugTag, reason: phantomReason } = summarizePhantoms(phantomActions);
+      console.error(`[CR][HallucinatedAction] callSid=${s.callSid} claimed [${phantomActions.join(", ")}] with no successful backing tool. audit=${JSON.stringify(s.toolCallAudit || [])}`);
       try {
         Sentry.withScope((scope) => {
           scope.setTag("service", "voice-server");
           scope.setTag("pipeline", "conversationrelay");
-          scope.setTag("bug", "hallucinated_booking");
-          scope.setExtras({ callSid: s.callSid, organizationId: s.organizationId, toolCallAudit: s.toolCallAudit || [] });
-          Sentry.captureMessage("Hallucinated booking detected (CR/Claude eval)", "error");
+          scope.setTag("bug", bugTag);
+          scope.setExtras({ callSid: s.callSid, organizationId: s.organizationId, phantomActions, toolCallAudit: s.toolCallAudit || [] });
+          Sentry.captureMessage(`Hallucinated action detected: ${phantomActions.join(", ")} (CR/Claude eval)`, "error");
         });
       } catch { /* Sentry best-effort */ }
       callStatus = "failed";
-      reason = "hallucinated_booking";
+      reason = phantomReason;
     }
 
     let analysis = null;

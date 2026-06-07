@@ -136,21 +136,113 @@ function detectPhantomAction(aiTurnText, toolCallAudit) {
   return null;
 }
 
+// ── Post-call phantom detection (SCRUM-383) ──────────────────────────────────
+// The live detector (detectPhantomAction) runs per turn and self-corrects mid-
+// call. The post-call check runs ONCE over the whole call and marks it failed for
+// human review, so it must be HIGHER precision — a false positive corrupts a good
+// call's status. Two deliberate differences from the live patterns:
+//   - cancellation drops the loose "cancel.*for you" alternative: an OFFER like
+//     "I can cancel that for you" (caller then declines) must NOT fail the call;
+//     only past-tense completions count.
+//   - the fabricated-confirmation-code tell is handled separately (see below),
+//     not folded into the booking phrase pattern, so it can be gated.
+// Actions without an override reuse ACTION_CLAIM_PATTERNS.
+const POST_CALL_PATTERN_OVERRIDES = {
+  booking:
+    /\b(i've booked|you'?re all set|your appointment (?:is|has been) (?:booked|confirmed)|booked you in)\b/i,
+  // Past-tense ONLY ("cancelled"/"canceled") — base "cancel" is an offer/future
+  // ("I can cancel that for you", "I'll cancel that"), which must NOT fail a call.
+  cancellation:
+    /\b(i'?ve cancell?ed|that'?s cancell?ed|(?:your |the )?appointment (?:is|has been) cancell?ed|cancell?ed (?:your|the|that) appointment)\b/i,
+};
+
+// A spoken confirmation code is a fabricated-BOOKING tell ONLY when no appointment
+// operation happened at all — codes are also legitimately read back during a
+// lookup, cancellation, or reschedule, so those reads must not be mislabelled a
+// phantom booking. Gated on APPOINTMENT_TOOLS below.
+const CONFIRMATION_CODE_TELL = /\bconfirmation code (?:is )?\d{3,8}\b/i;
+const APPOINTMENT_TOOLS = ["book_appointment", "reschedule_appointment", "cancel_appointment", "lookup_appointment"];
+
+// Untimed backing for a post-call claim: any successful tool that could have
+// accomplished the action (primary or cross) ANYWHERE in the call. Post-call has
+// no per-claim timing, so the question is simply "did this action ever happen?".
+function postCallBackingTools(action) {
+  return [...new Set([...(PRIMARY_TOOLS[action] || []), ...(CROSS_TOOLS[action] || [])])];
+}
+
 /**
- * Tools whose successful execution backs a booking-completion claim in the
- * post-call hallucinated-booking check. Includes the atomic reschedule so a
- * legitimate reschedule that ends with "you're all set" is not mislabelled a
- * hallucinated booking and the call wrongly marked failed.
+ * Detect phantom actions over a whole call: which actions the AI CLAIMED to the
+ * caller but no successful tool actually performed. Used by post-call analysis to
+ * flag a call (status=failed) when the AI said it did something the tools never
+ * did. Claim-based — only fires on an explicit completion claim, so it does not
+ * flag legitimate non-completions (slot taken, caller declined), only fabrications.
+ *
+ * Scans ASSISTANT turns ONLY. A hallucinated claim is by definition something the
+ * AI said; scanning caller turns would false-positive on a caller reciting their
+ * confirmation code or narrating a past appointment ("I cancelled that last
+ * week"). Taking the structured messages (not a pre-joined string) makes that
+ * scoping structural — the function cannot be handed caller text by mistake.
+ *
+ * Callback note: "someone will call you back" is a forward-looking promise, not a
+ * past-tense completion like the other patterns — intentionally so. That phrasing
+ * IS how a scheduled callback is conveyed, and saying it without a successful
+ * schedule_callback means the caller is owed a callback that won't happen, which is
+ * exactly the phantom worth flagging.
+ *
+ * @param {Array<{role?: string, content?: string}>} transcriptMessages - full transcript messages
+ * @param {Array<{name?: string, successful?: boolean}>} [toolCallAudit]
+ * @returns {string[]} phantom action names (subset of booking/reschedule/cancellation/callback)
  */
-const BOOKING_BACKING_TOOLS = ["book_appointment", "reschedule_appointment"];
+function detectPostCallPhantoms(transcriptMessages, toolCallAudit) {
+  const aiText = (Array.isArray(transcriptMessages) ? transcriptMessages : [])
+    .filter((m) => m && m.role === "assistant" && typeof m.content === "string")
+    .map((m) => m.content)
+    .join("\n");
+  if (!aiText) return [];
+  const audit = Array.isArray(toolCallAudit) ? toolCallAudit : [];
+  const succeeded = (names) => audit.some((t) => t && t.successful && names.includes(t.name));
+
+  const phantoms = [];
+  for (const action of Object.keys(ACTION_CLAIM_PATTERNS)) {
+    const pattern = POST_CALL_PATTERN_OVERRIDES[action] || ACTION_CLAIM_PATTERNS[action];
+    if (pattern.test(aiText) && !succeeded(postCallBackingTools(action))) {
+      phantoms.push(action);
+    }
+  }
+  // A cited confirmation code with NO appointment operation at all = fabricated
+  // booking. With any appointment op it's a legit read-back, so don't double-flag.
+  if (!phantoms.includes("booking") && CONFIRMATION_CODE_TELL.test(aiText) && !succeeded(APPOINTMENT_TOOLS)) {
+    phantoms.push("booking");
+  }
+  return phantoms;
+}
+
+/**
+ * Collapse a phantom-action list into the values both post-call pipelines need,
+ * keeping them in lockstep. Preserves the SCRUM-227 "hallucinated_booking"
+ * reason/tag when booking is among the phantoms (dashboards key on it); otherwise
+ * names the first action.
+ * @param {string[]} phantomActions - non-empty
+ * @returns {{ primaryPhantom: string, bugTag: string, reason: string }}
+ */
+function summarizePhantoms(phantomActions) {
+  const primaryPhantom = phantomActions.includes("booking") ? "booking" : phantomActions[0];
+  return {
+    primaryPhantom,
+    bugTag: primaryPhantom === "booking" ? "hallucinated_booking" : "hallucinated_action",
+    reason: `hallucinated_${primaryPhantom}`,
+  };
+}
 
 module.exports = {
   detectPhantomAction,
+  detectPostCallPhantoms,
+  summarizePhantoms,
   mostRecentWrite,
   ACTION_CLAIM_PATTERNS,
+  POST_CALL_PATTERN_OVERRIDES,
   PRIMARY_TOOLS,
   CROSS_TOOLS,
   SCHEDULING_WRITE_TOOLS,
   PRIMARY_TOOL,
-  BOOKING_BACKING_TOOLS,
 };
