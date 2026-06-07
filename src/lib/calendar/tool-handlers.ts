@@ -1091,19 +1091,53 @@ export function toLocalIsoMinute(date: Date, timeZone: string): string {
  * `targetMs` (epoch ms). Used to pin a single appointment when the caller gave a
  * datetime that lands several rows inside the cancel/reschedule ±15-min match
  * window (e.g. two appointments less than 15 minutes apart) — so disambiguation
- * always converges instead of looping. Returns null for an empty list.
+ * converges instead of looping.
+ *
+ * Returns null when the result would be a GUESS — an empty list, or a tie where
+ * two rows are equidistant from the target (e.g. two appointments in the same
+ * wall-clock minute, which `toLocalIsoMinute` can't tell apart — possible for one
+ * caller across two practitioners, since the no-overlap constraint is per
+ * practitioner). Callers MUST treat null as "cannot safely pick — disambiguate"
+ * and never fall back to array order: this function gates a destructive
+ * cancel/cancel-and-move, so a non-deterministic tiebreak could cancel the wrong
+ * appointment. Rows with an unparseable `start_time` are ignored.
  */
 export function pickClosestAppointment<T extends { start_time: string }>(
   appointments: T[],
   targetMs: number
 ): T | null {
-  if (!appointments?.length) return null;
-  return appointments.reduce((best, a) =>
-    Math.abs(new Date(a.start_time).getTime() - targetMs) <
-    Math.abs(new Date(best.start_time).getTime() - targetMs)
-      ? a
-      : best
-  );
+  let best: T | null = null;
+  let bestDist = Infinity;
+  let tied = false;
+  for (const a of appointments ?? []) {
+    const dist = Math.abs(new Date(a.start_time).getTime() - targetMs);
+    if (Number.isNaN(dist)) continue; // skip rows with an unparseable start_time
+    if (dist < bestDist) {
+      best = a;
+      bestDist = dist;
+      tied = false;
+    } else if (dist === bestDist) {
+      tied = true;
+    }
+  }
+  return tied ? null : best;
+}
+
+/**
+ * Format one appointment as a disambiguation option line, shared by the cancel and
+ * reschedule "which one did you mean?" replies so they stay structurally in lock-
+ * step. Carries the human date/time the caller recognises PLUS the exact datetime
+ * and confirmation_code the model needs to pin this specific row — the code is what
+ * lets the model resolve two appointments in the same wall-clock minute (which the
+ * minute-precision datetime alone can't separate). See SCRUM-381/382/384.
+ */
+function formatDisambigOption(appt: any, tz: string): string {
+  const d = new Date(appt.start_time);
+  const dateStr = d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: tz });
+  const timeStr = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true, timeZone: tz });
+  const who = appt.attendee_name ? ` for ${appt.attendee_name}` : "";
+  const code = appt.confirmation_code ? `, code ${appt.confirmation_code}` : "";
+  return `${dateStr} at ${timeStr}${who} (datetime: ${toLocalIsoMinute(d, tz)}${code})`;
 }
 
 export async function handleCancelAppointment(
@@ -1159,7 +1193,7 @@ export async function handleCancelAppointment(
 
   let query = (supabase as any)
     .from("appointments")
-    .select("id, start_time, external_id, provider, metadata, confirmation_code, status, created_at")
+    .select("id, start_time, attendee_name, external_id, provider, metadata, confirmation_code, status, created_at")
     .eq("organization_id", organizationId)
     .in("attendee_phone", variants)
     .in("status", ["confirmed", "pending"])
@@ -1248,15 +1282,14 @@ export async function handleCancelAppointment(
   // ("Cancel the one I just booked" still works: the model knows that
   // appointment's datetime and passes it → exact ±15-min match → the single-match
   // branch above cancels it directly, no disambiguation needed.)
-  const options = appointments.map((a: any) => {
-    const d = new Date(a.start_time);
-    const dateStr = d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: tz });
-    const timeStr = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true, timeZone: tz });
-    return `${dateStr} at ${timeStr} (datetime: ${toLocalIsoMinute(d, tz)})`;
-  }).join("; ");
+  // SCRUM-384: each option carries its confirmation_code too, so two appointments
+  // in the SAME minute (which datetime alone can't separate — possible for one
+  // caller across two practitioners) are still resolvable: the model passes the
+  // code for an exact single-row cancel.
+  const options = appointments.map((a: any) => formatDisambigOption(a, tz)).join("; ");
   return {
     success: false,
-    message: `This caller has ${appointments.length} upcoming appointments: ${options}. Confirm with the caller which ONE they mean, then call cancel_appointment again with that appointment's exact datetime — do NOT cancel without it.`,
+    message: `This caller has ${appointments.length} upcoming appointments: ${options}. Confirm with the caller which ONE they mean, then call cancel_appointment again with that appointment's confirmation_code (most precise), or its exact datetime — do NOT cancel without one of them.`,
   };
 }
 
@@ -1391,6 +1424,24 @@ export async function handleRescheduleAppointment(
       const timeStr = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true, timeZone: tz });
       return `${dateStr} at ${timeStr}`;
     };
+    // SCRUM-382/384: build a disambiguation reply that the model can actually
+    // resolve. Each option carries its exact datetime AND its confirmation_code,
+    // so even two appointments in the SAME minute (which `toLocalIsoMinute` can't
+    // separate) are distinguishable — the model passes the code for an exact
+    // single-row match. attendee_name gives the caller a human way to choose.
+    const buildRescheduleDisambig = (rows: any[]): ToolResult => {
+      const options = rows
+        .map((a: any) => {
+          const who = a.attendee_name ? ` for ${a.attendee_name}` : "";
+          const code = a.confirmation_code ? `, code ${a.confirmation_code}` : "";
+          return `${fmtWhen(a.start_time)}${who} (datetime: ${toLocalIsoMinute(new Date(a.start_time), tz)}${code})`;
+        })
+        .join("; ");
+      return {
+        success: false,
+        message: `I found more than one upcoming appointment for this caller: ${options}. Which one would you like to move? Call reschedule_appointment again with that appointment's confirmation_code (most precise), or its current_datetime.`,
+      };
+    };
 
     // ── 1. Find the EXISTING appointment (do NOT cancel yet) ──
     let existing: any = null;
@@ -1455,6 +1506,20 @@ export async function handleRescheduleAppointment(
         const matches = isNaN(dtMs) ? [] : upcoming.filter((a: any) => Math.abs(new Date(a.start_time).getTime() - dtMs) <= 15 * 60 * 1000);
         if (matches.length === 1) {
           existing = matches[0];
+        } else if (matches.length > 1) {
+          // SCRUM-382: two appointments <15 min apart both fall in the window —
+          // pin the CLOSEST to the exact time the model passed (it echoed the
+          // option's exact datetime from the disambiguation message) instead of
+          // bailing, which would loop forever. Mirrors the cancel path (SCRUM-381).
+          const closest = pickClosestAppointment(matches, dtMs);
+          if (closest) {
+            existing = closest;
+          } else {
+            // SCRUM-384: equidistant tie (e.g. two same-minute appointments across
+            // two practitioners) — pinning would cancel-and-move a NON-DETERMINISTIC
+            // guess. Disambiguate by confirmation_code instead of guessing.
+            return buildRescheduleDisambig(matches);
+          }
         } else {
           return { success: false, message: "I couldn't find an appointment at that exact time. Could you tell me the day and time of the appointment you'd like to move?" };
         }
@@ -1472,8 +1537,9 @@ export async function handleRescheduleAppointment(
             if (onDate.length) list = onDate;
           } catch { /* keep full list */ }
         }
-        const options = list.map((a: any) => fmtWhen(a.start_time)).join("; ");
-        return { success: false, message: `I found more than one upcoming appointment for this caller: ${options}. Which one would you like to move? Please call reschedule_appointment again with the current_datetime of that appointment.` };
+        // SCRUM-382/384: hand the model each option's exact datetime AND code so it
+        // can pin one row (code resolves even same-minute ties) instead of looping.
+        return buildRescheduleDisambig(list);
       }
     }
 

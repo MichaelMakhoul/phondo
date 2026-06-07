@@ -190,7 +190,8 @@ describe("pickClosestAppointment (SCRUM-381 disambiguation convergence)", () => 
   });
 
   it("end-to-end: each disambiguation option re-pins ITSELF (no cross-pinning)", () => {
-    // The property guaranteeing convergence: the disambiguation message lists
+    // The property guaranteeing convergence for BOTH the cancel (SCRUM-381) and
+    // reschedule (SCRUM-382) disambiguation paths: the message lists
     // toLocalIsoMinute(start_time) per appointment; whichever the model echoes
     // back, parsed via ensureTimezoneOffset, must select that SAME appointment.
     const tz = "Australia/Sydney";
@@ -200,5 +201,54 @@ describe("pickClosestAppointment (SCRUM-381 disambiguation convergence)", () => 
       const targetMs = new Date(ensureTimezoneOffset(echoed, tz)).getTime(); // handler parse
       expect(pickClosestAppointment(set, targetMs)?.id).toBe(appt.id);
     }
+  });
+
+  it("reschedule matcher flow: ±15-min filter then closest still converges, incl. sub-minute drift", () => {
+    // Mirrors handleRescheduleAppointment's current_datetime matcher: filter
+    // `upcoming` to ±15 min of the echoed datetime, then pin the closest. Includes
+    // a row stored with seconds (12:00:30) that toLocalIsoMinute truncates to
+    // "12:00" — the echo must still pin it over the 12:10 sibling.
+    const tz = "Australia/Sydney";
+    const drift = { id: "drift", start_time: "2026-02-18T01:00:30Z" }; // 12:00:30 Sydney
+    const upcoming = [drift, a1210, a9];
+    const matcher = (echoed: string) => {
+      const dtMs = new Date(ensureTimezoneOffset(echoed, tz)).getTime();
+      const within = upcoming.filter(
+        (a) => Math.abs(new Date(a.start_time).getTime() - dtMs) <= 15 * 60 * 1000
+      );
+      return pickClosestAppointment(within, dtMs);
+    };
+    expect(matcher(toLocalIsoMinute(new Date(drift.start_time), tz))?.id).toBe("drift");
+    expect(matcher(toLocalIsoMinute(new Date(a1210.start_time), tz))?.id).toBe("a1210");
+    expect(matcher(toLocalIsoMinute(new Date(a9.start_time), tz))?.id).toBe("a9");
+  });
+
+  // ── SCRUM-384: never GUESS on a tie (would cancel/move the wrong appointment) ──
+
+  it("returns null on an exact same-instant tie (two practitioners, same start_time)", () => {
+    const p1 = { id: "p1", start_time: "2026-02-18T01:00:00Z" };
+    const p2 = { id: "p2", start_time: "2026-02-18T01:00:00Z" }; // identical instant
+    const target = new Date("2026-02-18T01:00:00Z").getTime();
+    expect(pickClosestAppointment([p1, p2], target)).toBeNull();
+  });
+
+  it("returns null when two rows are equidistant from the target", () => {
+    // target 12:05 is exactly 5 min from both 12:00 and 12:10.
+    const target = new Date("2026-02-18T01:05:00Z").getTime();
+    expect(pickClosestAppointment([a12, a1210], target)).toBeNull();
+  });
+
+  it("still pins a UNIQUE closest even when two others tie further out", () => {
+    // a9 is uniquely closest; the 12:00/12:10 pair tie for second — must NOT block.
+    const target = new Date("2026-02-17T22:00:00Z").getTime(); // exactly a9
+    expect(pickClosestAppointment([a12, a1210, a9], target)?.id).toBe("a9");
+  });
+
+  it("a later strictly-closer row clears an earlier tie", () => {
+    // Order matters: two far ties first, then the exact match — must return exact.
+    const target = new Date("2026-02-18T01:00:00Z").getTime();
+    const far1 = { id: "f1", start_time: "2026-02-18T05:00:00Z" };
+    const far2 = { id: "f2", start_time: "2026-02-17T21:00:00Z" }; // both far, may tie-ish
+    expect(pickClosestAppointment([far1, far2, a12], target)?.id).toBe("a12");
   });
 });
