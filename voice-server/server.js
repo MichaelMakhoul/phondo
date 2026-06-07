@@ -28,7 +28,7 @@ const { createOpenAIRealtimeSession } = require("./services/openai-realtime"); /
 const { resolveTestPipeline } = require("./lib/pipeline-routing"); // SCRUM-378 per-number test override
 const { handleConversationRelayConnection, buildConversationRelayTwiml } = require("./services/conversationrelay"); // SCRUM-378 eval spike (ConversationRelay + Claude)
 const { validateToolResponse } = require("./services/turn-validator");
-const { detectPhantomAction, BOOKING_BACKING_TOOLS } = require("./lib/action-claim-detector"); // SCRUM-381 reschedule-aware phantom-action detection
+const { detectPhantomAction, detectPostCallPhantoms, summarizePhantoms } = require("./lib/action-claim-detector"); // SCRUM-381 live + SCRUM-383 post-call phantom-action detection
 // SCRUM-166 outbound calling service (cherry-picked to main for smoke testing)
 const {
   makeOutboundCall,
@@ -1336,38 +1336,36 @@ wss.on("connection", (twilioWs) => {
     let callStatus = s.callFailed ? "failed" : "completed";
     let endedReason = s.endedReason || "caller-hangup";
 
-    // SCRUM-227: detect hallucinated bookings. If the transcript contains
-    // language like "I've booked" or a fabricated 6-digit confirmation code
-    // but the call never made a successful book_appointment tool call, flag
-    // the call loudly so we catch it before a customer shows up to nothing.
-    const bookingClaimRe = /\b(i've booked|you'?re all set|your appointment (?:is|has been) (?:booked|confirmed)|confirmation code (?:is )?\d{3,8})\b/i;
-    const claimsBooking = bookingClaimRe.test(transcript || "");
-    // SCRUM-381: an atomic reschedule books the new slot, so it backs a
-    // "you're all set" claim too — otherwise a legitimate reschedule gets
-    // mislabelled hallucinated_booking and the call wrongly marked failed.
-    const hadSuccessfulBookTool = (s.toolCallAudit || []).some(
-      (t) => BOOKING_BACKING_TOOLS.includes(t.name) && t.successful
-    );
-    // NOTE: this post-call flag stays claim-based (English). The *live* SCRUM-373
-    // end_call guard is the real language-agnostic fix; broadening this post-call
-    // detector to any unfinished booking would mislabel legitimate non-completions
-    // (slot taken, caller declined) and classic-pipeline bookings as
-    // "hallucinated_booking". Non-English post-call flagging is tracked separately.
-    if (claimsBooking && !hadSuccessfulBookTool) {
-      console.error(`[HallucinatedBooking] callSid=${s.callSid} claimed a booking in transcript but book_appointment tool was NOT called successfully. toolCallAudit=${JSON.stringify(s.toolCallAudit || [])}`);
+    // SCRUM-227/383: detect hallucinated ACTIONS. If the transcript claims an
+    // action (booking, reschedule, cancellation, callback) the call never actually
+    // performed with a successful tool, flag the call loudly so we catch it before
+    // a customer is told something that didn't happen. Claim-based + completion-
+    // only (see detectPostCallPhantoms), so legitimate non-completions (slot taken,
+    // caller declined) are NOT flagged. SCRUM-381: an atomic reschedule backs a
+    // "you're all set" booking claim, so a real reschedule isn't mislabelled.
+    // NOTE: English claim-based; the *live* SCRUM-373 end_call guard is the real
+    // language-agnostic safeguard. Non-English post-call flagging tracked separately.
+    // Scans assistant turns only (detectPostCallPhantoms filters internally) — a
+    // hallucinated claim is something the AI said, so a caller reciting a code or
+    // narrating a past appointment must not trip it.
+    const phantomActions = detectPostCallPhantoms(s.fullTranscriptMessages, s.toolCallAudit);
+    if (phantomActions.length) {
+      const { bugTag, reason } = summarizePhantoms(phantomActions);
+      console.error(`[HallucinatedAction] callSid=${s.callSid} claimed [${phantomActions.join(", ")}] but no backing tool succeeded. toolCallAudit=${JSON.stringify(s.toolCallAudit || [])}`);
       Sentry.withScope((scope) => {
         scope.setTag("service", "voice-server");
-        scope.setTag("bug", "hallucinated_booking");
+        scope.setTag("bug", bugTag);
         scope.setExtras({
           callSid: s.callSid,
           organizationId: s.organizationId,
+          phantomActions,
           toolCallAudit: s.toolCallAudit || [],
           transcriptHead: (transcript || "").slice(0, 500),
         });
-        Sentry.captureMessage("Hallucinated booking detected (SCRUM-227)", "error");
+        Sentry.captureMessage(`Hallucinated action detected: ${phantomActions.join(", ")} (SCRUM-227/383)`, "error");
       });
       callStatus = "failed";
-      endedReason = "hallucinated_booking";
+      endedReason = reason;
     }
 
     // Run post-call analysis (best-effort, awaited because results feed into the call record)

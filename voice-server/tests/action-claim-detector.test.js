@@ -2,12 +2,13 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const {
   detectPhantomAction,
+  detectPostCallPhantoms,
+  summarizePhantoms,
   mostRecentWrite,
   PRIMARY_TOOLS,
   CROSS_TOOLS,
   SCHEDULING_WRITE_TOOLS,
   PRIMARY_TOOL,
-  BOOKING_BACKING_TOOLS,
 } = require("../lib/action-claim-detector");
 
 const ok = (name) => [{ name, successful: true }];
@@ -234,9 +235,134 @@ describe("invariants", () => {
       }
     }
   });
+});
 
-  it("BOOKING_BACKING_TOOLS includes both book and reschedule", () => {
-    assert.ok(BOOKING_BACKING_TOOLS.includes("book_appointment"));
-    assert.ok(BOOKING_BACKING_TOOLS.includes("reschedule_appointment"));
+describe("detectPostCallPhantoms (SCRUM-383)", () => {
+  const audit = (...names) => names.map((name) => ({ name, successful: true }));
+  const ai = (...lines) => lines.map((content) => ({ role: "assistant", content })); // AI turns
+  const user = (...lines) => lines.map((content) => ({ role: "user", content })); // caller turns
+
+  it("returns [] for empty/invalid message input", () => {
+    assert.deepEqual(detectPostCallPhantoms([], audit()), []);
+    assert.deepEqual(detectPostCallPhantoms(null, audit()), []);
+    assert.deepEqual(detectPostCallPhantoms(undefined, audit()), []);
+  });
+
+  it("returns [] for plain conversation with no completion claims", () => {
+    assert.deepEqual(detectPostCallPhantoms([...user("what days are you open?"), ...ai("We're open weekdays.")], audit()), []);
+  });
+
+  // ── Scans ASSISTANT turns only (SCRUM-383 P1: no caller-narration false positives) ──
+  it("does NOT flag a CALLER reciting a confirmation code on a cancel call", () => {
+    const msgs = [...user("my confirmation code is 384726"), ...ai("Okay, that's cancelled.")];
+    assert.deepEqual(detectPostCallPhantoms(msgs, audit("cancel_appointment")), []);
+  });
+
+  it("does NOT flag CALLER narration of a past cancellation/reschedule", () => {
+    assert.deepEqual(detectPostCallPhantoms(user("I cancelled the appointment last week"), audit()), []);
+    assert.deepEqual(detectPostCallPhantoms(user("I've rescheduled this twice and moved the appointment online"), audit()), []);
+    assert.deepEqual(detectPostCallPhantoms(user("you're all set right? my confirmation code is 1234"), audit()), []);
+  });
+
+  // ── Booking ──
+  it("flags a booking claim with no book/reschedule tool", () => {
+    assert.deepEqual(detectPostCallPhantoms(ai("You're all set for Tuesday at 2."), audit()), ["booking"]);
+  });
+
+  it("flags an AI-fabricated confirmation code with NO appointment operation", () => {
+    assert.deepEqual(detectPostCallPhantoms(ai("Your confirmation code is 4821."), audit()), ["booking"]);
+  });
+
+  it("does NOT flag the AI reading back a code during a lookup/cancel (legit read-back)", () => {
+    // Code-tell is gated on "no appointment op" — a lookup/cancel that reads an
+    // existing code must not be mislabelled a phantom booking.
+    assert.deepEqual(detectPostCallPhantoms(ai("I found it — confirmation code 4821, on Tuesday."), audit("lookup_appointment")), []);
+    assert.deepEqual(detectPostCallPhantoms(ai("Confirmation code 4821 — that's cancelled."), audit("cancel_appointment")), []);
+  });
+
+  it("clears a booking claim backed by book_appointment", () => {
+    assert.deepEqual(detectPostCallPhantoms(ai("You're all set!"), audit("book_appointment")), []);
+  });
+
+  it("clears a booking claim backed by a reschedule (atomic reschedule books the slot)", () => {
+    assert.deepEqual(detectPostCallPhantoms(ai("You're all set for the new time!"), audit("reschedule_appointment")), []);
+  });
+
+  // ── Reschedule ──
+  it("flags a reschedule claim with no tool", () => {
+    assert.deepEqual(detectPostCallPhantoms(ai("I've moved your appointment to Friday."), audit()), ["reschedule"]);
+  });
+
+  it("clears a reschedule claim backed by reschedule_appointment", () => {
+    assert.deepEqual(detectPostCallPhantoms(ai("I've rescheduled your appointment."), audit("reschedule_appointment")), []);
+  });
+
+  // ── Cancellation: completion-only (no offer false positives) ──
+  it("flags a completed cancellation claim with no tool", () => {
+    assert.deepEqual(detectPostCallPhantoms(ai("That's cancelled for you."), audit()), ["cancellation"]);
+  });
+
+  it("does NOT flag a cancellation OFFER that the caller declined (precision vs the live pattern)", () => {
+    // "I can cancel that for you" is an OFFER (present tense), not a completion —
+    // the past-tense-only override must not fail a good call.
+    assert.deepEqual(detectPostCallPhantoms(ai("I can cancel that for you if you'd like."), audit()), []);
+    assert.deepEqual(detectPostCallPhantoms(ai("I'll cancel that for you in a moment."), audit()), []);
+  });
+
+  it("clears a cancellation backed by cancel_appointment", () => {
+    assert.deepEqual(detectPostCallPhantoms(ai("That's cancelled."), audit("cancel_appointment")), []);
+  });
+
+  it("clears a cancellation backed by a reschedule (atomic reschedule cancels the old slot)", () => {
+    assert.deepEqual(detectPostCallPhantoms(ai("I've cancelled the old one."), audit("reschedule_appointment")), []);
+  });
+
+  // ── Callback ──
+  it("flags a callback claim with no schedule_callback", () => {
+    assert.deepEqual(detectPostCallPhantoms(ai("Someone will call you back shortly."), audit()), ["callback"]);
+  });
+
+  it("clears a callback backed by schedule_callback", () => {
+    assert.deepEqual(detectPostCallPhantoms(ai("Someone will call you back."), audit("schedule_callback")), []);
+  });
+
+  // ── Multiple ──
+  it("reports every unbacked action the AI claimed", () => {
+    const msgs = ai("You're all set for Tuesday.", "Also someone will call you back about the other thing.");
+    assert.deepEqual(detectPostCallPhantoms(msgs, audit()).sort(), ["booking", "callback"]);
+  });
+
+  it("only reports the UNBACKED ones when some are backed", () => {
+    const msgs = ai("You're all set, and someone will call you back.");
+    // booking backed by book_appointment; callback has no tool → only callback.
+    assert.deepEqual(detectPostCallPhantoms(msgs, audit("book_appointment")), ["callback"]);
+  });
+
+  it("is null-safe on a missing audit", () => {
+    assert.deepEqual(detectPostCallPhantoms(ai("You're all set."), null), ["booking"]);
+    assert.deepEqual(detectPostCallPhantoms(ai("You're all set."), undefined), ["booking"]);
+  });
+});
+
+describe("summarizePhantoms (SCRUM-383)", () => {
+  it("prefers booking and preserves the SCRUM-227 reason/tag when booking is present", () => {
+    assert.deepEqual(summarizePhantoms(["callback", "booking"]), {
+      primaryPhantom: "booking",
+      bugTag: "hallucinated_booking",
+      reason: "hallucinated_booking",
+    });
+  });
+
+  it("names the first action and uses the generic tag when booking is absent", () => {
+    assert.deepEqual(summarizePhantoms(["reschedule"]), {
+      primaryPhantom: "reschedule",
+      bugTag: "hallucinated_action",
+      reason: "hallucinated_reschedule",
+    });
+    assert.deepEqual(summarizePhantoms(["cancellation", "callback"]), {
+      primaryPhantom: "cancellation",
+      bugTag: "hallucinated_action",
+      reason: "hallucinated_cancellation",
+    });
   });
 });
