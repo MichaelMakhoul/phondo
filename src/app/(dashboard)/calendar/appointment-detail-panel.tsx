@@ -407,8 +407,10 @@ export function AppointmentDetailPanel({
               </>
             )}
 
-            {/* Undo — revert to confirmed for non-active statuses */}
-            {!isActive && !editing && appt.status !== "confirmed" && (
+            {/* Undo — revert to confirmed for non-active statuses. SCRUM-388: NOT for
+                a `rescheduled` row — its slot was moved to a separate live row, so
+                reverting it would re-create a duplicate booking. */}
+            {!isActive && !editing && appt.status !== "confirmed" && appt.status !== "rescheduled" && (
               <>
                 <Separator />
                 <div className="space-y-2">

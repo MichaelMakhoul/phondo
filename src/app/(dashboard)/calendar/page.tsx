@@ -61,12 +61,13 @@ export default async function CalendarPage() {
     weekCount,
     monthCount,
   ] = await Promise.all([
-    // Appointments for visible grid range (exclude cancelled)
+    // Appointments for visible grid range (exclude cancelled + rescheduled — SCRUM-388)
     (supabase as any)
       .from("appointments")
       .select("*")
       .eq("organization_id", organizationId)
       .neq("status", "cancelled")
+      .neq("status", "rescheduled")
       .gte("start_time", gridStart.toISOString())
       .lte("start_time", gridEnd.toISOString())
       .order("start_time", { ascending: true }),
@@ -92,6 +93,7 @@ export default async function CalendarPage() {
       .select("id", { count: "exact", head: true })
       .eq("organization_id", organizationId)
       .neq("status", "cancelled")
+      .neq("status", "rescheduled")
       .gte("start_time", todayStart.toISOString())
       .lte("start_time", todayEnd.toISOString()),
 
@@ -101,6 +103,7 @@ export default async function CalendarPage() {
       .select("id", { count: "exact", head: true })
       .eq("organization_id", organizationId)
       .neq("status", "cancelled")
+      .neq("status", "rescheduled")
       .gte("start_time", thisWeekStart.toISOString())
       .lte("start_time", thisWeekEnd.toISOString()),
 
@@ -110,6 +113,7 @@ export default async function CalendarPage() {
       .select("id", { count: "exact", head: true })
       .eq("organization_id", organizationId)
       .neq("status", "cancelled")
+      .neq("status", "rescheduled")
       .gte("start_time", monthStart.toISOString())
       .lte("start_time", monthEnd.toISOString()),
   ]);

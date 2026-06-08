@@ -82,7 +82,7 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Compute stats (today / this week / this month), excluding cancelled
+    // Compute stats (today / this week / this month), excluding cancelled + rescheduled (SCRUM-388)
     const now = new Date();
     const todayStart = startOfDay(now);
     const todayEnd = endOfDay(now);
@@ -97,6 +97,7 @@ export async function GET(request: NextRequest) {
         .select("id", { count: "exact", head: true })
         .eq("organization_id", organizationId)
         .neq("status", "cancelled")
+        .neq("status", "rescheduled")
         .gte("start_time", todayStart.toISOString())
         .lte("start_time", todayEnd.toISOString()),
       (supabase as any)
@@ -104,6 +105,7 @@ export async function GET(request: NextRequest) {
         .select("id", { count: "exact", head: true })
         .eq("organization_id", organizationId)
         .neq("status", "cancelled")
+        .neq("status", "rescheduled")
         .gte("start_time", weekStart.toISOString())
         .lte("start_time", weekEnd.toISOString()),
       (supabase as any)
@@ -111,6 +113,7 @@ export async function GET(request: NextRequest) {
         .select("id", { count: "exact", head: true })
         .eq("organization_id", organizationId)
         .neq("status", "cancelled")
+        .neq("status", "rescheduled")
         .gte("start_time", thisMonthStart.toISOString())
         .lte("start_time", thisMonthEnd.toISOString()),
     ]);
