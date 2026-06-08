@@ -18,6 +18,7 @@ import {
   Edit2, X, Check, Ban, CheckCircle, AlertTriangle,
   Loader2, ExternalLink, History,
 } from "lucide-react";
+import { describeChange } from "@/lib/calendar/appointment-lifecycle";
 
 interface AppointmentDetailPanelProps {
   appointmentId: string | null;
@@ -42,6 +43,8 @@ interface LifecycleLeg {
   bookedAt: string;
   supersededAt: string | null;
   channel: string;
+  practitioner: string | null; // SCRUM-391
+  serviceType: string | null;
   isCurrent: boolean;
 }
 
@@ -372,11 +375,10 @@ export function AppointmentDetailPanel({
                   <ol className="space-y-3 pl-3">
                     {lifecycle.map((leg, i) => {
                       const isLast = i === lifecycle.length - 1;
-                      // The badge always shows the leg's real status; the opened leg is
-                      // marked "Viewing" (it can be a superseded leg, opened via the
-                      // "Moved" filter — so it must not be labelled "Current"). The
-                      // secondary line uses the supersede date for moved/cancelled legs.
-                      const changedLabel = leg.status === "cancelled" ? "Cancelled" : "Moved";
+                      // SCRUM-391: describe WHAT changed vs the previous leg (time /
+                      // doctor / service), so a same-time doctor change reads "Doctor
+                      // changed" instead of a confusing duplicate "Moved to <same time>".
+                      const change = describeChange(leg, i > 0 ? lifecycle[i - 1] : null);
                       return (
                         <li key={leg.id} className="relative pl-4">
                           {/* connector + dot */}
@@ -391,13 +393,15 @@ export function AppointmentDetailPanel({
                           />
                           <div className="flex items-center justify-between gap-2">
                             <span className="text-sm">
-                              {i === 0 ? "Booked for " : "Moved to "}
                               <span className="font-medium">
                                 {new Date(leg.startTime).toLocaleString("en-AU", {
                                   weekday: "short", day: "numeric", month: "short",
                                   hour: "numeric", minute: "2-digit", hour12: true,
                                 })}
                               </span>
+                              {leg.practitioner && (
+                                <span className="text-muted-foreground"> · {leg.practitioner}</span>
+                              )}
                             </span>
                             <div className="flex items-center gap-1 shrink-0">
                               {leg.isCurrent && (
@@ -409,9 +413,9 @@ export function AppointmentDetailPanel({
                             </div>
                           </div>
                           <p className="text-xs text-muted-foreground">
-                            {leg.supersededAt
-                              ? `${changedLabel} ${new Date(leg.supersededAt).toLocaleDateString("en-AU", { month: "short", day: "numeric" })}`
-                              : `Booked ${new Date(leg.bookedAt).toLocaleDateString("en-AU", { month: "short", day: "numeric" })}`}
+                            {change.label}
+                            {" · "}
+                            {new Date(change.at).toLocaleDateString("en-AU", { month: "short", day: "numeric" })}
                             {" · via "}
                             {CHANNEL_LABELS[leg.channel] || leg.channel}
                           </p>

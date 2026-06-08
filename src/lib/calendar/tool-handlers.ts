@@ -1449,8 +1449,10 @@ export async function handleRescheduleAppointment(
     const schedule = await getOrgSchedule(organizationId).catch(() => null);
     const tz = schedule?.timezone || "Australia/Sydney";
 
+    // SCRUM-390: include practitioner_id / attendee_email / notes so a reschedule
+    // can carry them over — a move must only change what the caller asked for.
     const selectCols =
-      "id, start_time, attendee_name, attendee_phone, service_type_id, external_id, provider, metadata, confirmation_code, status, created_at";
+      "id, start_time, attendee_name, attendee_phone, attendee_email, service_type_id, practitioner_id, notes, external_id, provider, metadata, confirmation_code, status, created_at";
     const fmtWhen = (iso: string) => {
       const d = new Date(iso);
       const dateStr = d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: tz });
@@ -1583,9 +1585,12 @@ export async function handleRescheduleAppointment(
     // slot (same time, or a sub-slot shift). That case currently fails SAFE
     // ("that time isn't available", original kept) rather than duplicating; an
     // in-place UPDATE would handle it and is tracked as a follow-up.
-    // SCRUM-386: reuse the existing appointment's identity (split into first/last)
-    // unless the caller gave a complete new name — a reschedule moves a known
-    // booking and must not re-demand the caller's name/phone/service.
+    // SCRUM-386/390: a reschedule MOVES a known booking — it must change ONLY what
+    // the caller asked for. Every field of the new booking defaults to the existing
+    // appointment unless the caller explicitly supplied a new value. So a time-only
+    // move keeps the same practitioner/service/name/email/notes; a "change my dentist"
+    // request changes only the practitioner; etc. (`new_datetime` is the one field
+    // the reschedule always sets.)
     const identity = resolveRescheduleIdentity(args, existing.attendee_name);
     const bookResult = await handleBookAppointment(organizationId, {
       datetime: new_datetime,
@@ -1593,10 +1598,10 @@ export async function handleRescheduleAppointment(
       last_name: identity.last_name,
       name: identity.name,
       phone: args.phone || existing.attendee_phone,
-      email: args.email,
-      notes: args.notes,
+      email: args.email ?? existing.attendee_email ?? undefined,
+      notes: args.notes ?? existing.notes ?? undefined,
       service_type_id: args.service_type_id || existing.service_type_id || undefined,
-      practitioner_id: args.practitioner_id,
+      practitioner_id: args.practitioner_id ?? existing.practitioner_id ?? undefined,
     });
 
     if (!bookResult.success) {
