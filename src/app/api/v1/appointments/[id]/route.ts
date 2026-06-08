@@ -4,6 +4,11 @@ import { isValidUUID } from "@/lib/security/validation";
 import { validateOrgScopedRefs } from "@/lib/calendar/validate-org-scoped-refs";
 import { getClientHistory } from "@/lib/clients/client-history";
 import { invalidateVoiceScheduleCache } from "@/lib/voice-cache/invalidate";
+import {
+  assembleLifecycle,
+  LIFECYCLE_COLS,
+  type LifecycleLeg,
+} from "@/lib/calendar/appointment-lifecycle";
 import { z } from "zod";
 
 interface Membership {
@@ -22,31 +27,12 @@ async function getOrgId(supabase: any, userId: string): Promise<string | null> {
   return data?.organization_id || null;
 }
 
-// SCRUM-389: appointment lifecycle (history) reconstruction from the supersede chain.
+// SCRUM-389: reconstruct the reschedule lifecycle by walking the supersede chain
+// (back to the root via rescheduled_from_id, then forward to the tip via the reverse
+// FK). Org-scoped on every hop, bounded against cycles; the pure order-assembly +
+// projection lives in lib/calendar/appointment-lifecycle (unit-tested). Best-effort.
 const LIFECYCLE_CAP = 20; // defensive bound on chain length (cycles shouldn't occur)
-const LIFECYCLE_COLS =
-  "id, status, start_time, created_at, updated_at, provider, metadata, rescheduled_from_id";
 
-interface LifecycleLeg {
-  id: string;
-  status: string;
-  startTime: string;
-  bookedAt: string;             // created_at — when this leg was booked
-  supersededAt: string | null;  // updated_at when it became terminal (moved/cancelled)
-  channel: string;              // voice | dashboard | cal_com | calendly | google_calendar
-  isCurrent: boolean;           // the leg the user opened
-}
-
-function deriveChannel(row: { provider?: string | null }): string {
-  const p = row.provider;
-  if (p === "manual") return "dashboard";
-  if (p && p !== "internal") return p; // external calendar provider (cal_com, …)
-  return "voice"; // internal / ai_receptionist
-}
-
-// Walk the rescheduled_from_id chain (back to the root, then forward to the tip) and
-// return the full lifecycle oldest→newest, or null when there's no chain (a booking
-// that was never moved). Org-scoped on every hop; best-effort (callers tolerate null).
 async function buildAppointmentLifecycle(
   supabase: any,
   orgId: string,
@@ -83,18 +69,7 @@ async function buildAppointmentLifecycle(
     cur = next;
   }
 
-  const chain = [...ancestors.reverse(), opened, ...descendants];
-  if (chain.length <= 1) return null; // never moved — the status badge already says it all
-
-  return chain.map((r) => ({
-    id: r.id,
-    status: r.status,
-    startTime: r.start_time,
-    bookedAt: r.created_at,
-    supersededAt: r.status === "rescheduled" || r.status === "cancelled" ? r.updated_at : null,
-    channel: deriveChannel(r),
-    isCurrent: r.id === opened.id,
-  }));
+  return assembleLifecycle(ancestors, opened, descendants);
 }
 
 const updateSchema = z.object({

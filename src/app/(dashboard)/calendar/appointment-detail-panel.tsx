@@ -372,7 +372,11 @@ export function AppointmentDetailPanel({
                   <ol className="space-y-3 pl-3">
                     {lifecycle.map((leg, i) => {
                       const isLast = i === lifecycle.length - 1;
-                      const changedOn = leg.supersededAt && !leg.isCurrent ? leg.supersededAt : leg.bookedAt;
+                      // The badge always shows the leg's real status; the opened leg is
+                      // marked "Viewing" (it can be a superseded leg, opened via the
+                      // "Moved" filter — so it must not be labelled "Current"). The
+                      // secondary line uses the supersede date for moved/cancelled legs.
+                      const changedLabel = leg.status === "cancelled" ? "Cancelled" : "Moved";
                       return (
                         <li key={leg.id} className="relative pl-4">
                           {/* connector + dot */}
@@ -395,15 +399,19 @@ export function AppointmentDetailPanel({
                                 })}
                               </span>
                             </span>
-                            <Badge className={`text-[10px] h-5 shrink-0 ${STATUS_COLORS[leg.status] || ""}`}>
-                              {leg.isCurrent ? "Current" : formatStatus(leg.status)}
-                            </Badge>
+                            <div className="flex items-center gap-1 shrink-0">
+                              {leg.isCurrent && (
+                                <span className="text-[10px] text-muted-foreground">Viewing</span>
+                              )}
+                              <Badge className={`text-[10px] h-5 ${STATUS_COLORS[leg.status] || ""}`}>
+                                {formatStatus(leg.status)}
+                              </Badge>
+                            </div>
                           </div>
                           <p className="text-xs text-muted-foreground">
-                            {leg.isCurrent
-                              ? formatStatus(leg.status)
-                              : leg.status === "cancelled" ? "Cancelled" : "Changed"}{" "}
-                            {new Date(changedOn).toLocaleDateString("en-AU", { month: "short", day: "numeric" })}
+                            {leg.supersededAt
+                              ? `${changedLabel} ${new Date(leg.supersededAt).toLocaleDateString("en-AU", { month: "short", day: "numeric" })}`
+                              : `Booked ${new Date(leg.bookedAt).toLocaleDateString("en-AU", { month: "short", day: "numeric" })}`}
                             {" · via "}
                             {CHANNEL_LABELS[leg.channel] || leg.channel}
                           </p>
