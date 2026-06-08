@@ -38,6 +38,9 @@ export async function getClientHistory(
       .select("id, start_time, status, service_type_id, practitioner_id, service_types(name), practitioners(name)")
       .eq("organization_id", organizationId)
       .ilike("attendee_phone", `%${phoneSuffix}%`)
+      // SCRUM-388: exclude superseded (rescheduled) legs so a single moved booking
+      // counts as one interaction, not two — the lifecycle view shows the full chain.
+      .neq("status", "rescheduled")
       .order("start_time", { ascending: false })
       .limit(20),
     (supabase as any)

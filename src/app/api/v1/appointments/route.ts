@@ -71,7 +71,9 @@ export async function GET(request: NextRequest) {
     if (status && status !== "all") {
       query = query.eq("status", status);
     } else {
-      query = query.neq("status", "cancelled");
+      // SCRUM-388: "active" excludes both terminal states — a `rescheduled` row is
+      // the superseded (moved-away) leg, not a live appointment.
+      query = query.neq("status", "cancelled").neq("status", "rescheduled");
     }
     if (from) query = query.gte("start_time", from);
     if (to) query = query.lte("start_time", to);

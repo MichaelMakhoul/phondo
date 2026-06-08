@@ -205,25 +205,24 @@ export function CalendarDashboard({
   const appointmentCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const appt of appointments) {
-      if (appt.status === "cancelled") continue;
+      // SCRUM-388: both terminal states are non-active — don't count them on the grid.
+      if (appt.status === "cancelled" || appt.status === "rescheduled") continue;
       const key = format(new Date(appt.start_time), "yyyy-MM-dd");
       counts.set(key, (counts.get(key) || 0) + 1);
     }
     return counts;
   }, [appointments]);
 
-  // Upcoming appointments (next 7 days, confirmed/rescheduled)
+  // Upcoming appointments (next 7 days). SCRUM-388: a `rescheduled` row is the
+  // superseded (moved-away) leg — its successor is a separate `confirmed` row, so
+  // only `confirmed` is "upcoming" (including rescheduled here double-listed the move).
   const upcomingAppointments = useMemo(() => {
     const now = new Date();
     const end = addDays(now, 7);
     return appointments
       .filter((a) => {
         const start = new Date(a.start_time);
-        return (
-          start >= now &&
-          start <= end &&
-          (a.status === "confirmed" || a.status === "rescheduled")
-        );
+        return start >= now && start <= end && a.status === "confirmed";
       })
       .sort(
         (a, b) =>

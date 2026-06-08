@@ -1297,7 +1297,12 @@ async function cancelSingleAppointment(
   supabase: any,
   organizationId: string,
   appointment: any,
-  reason?: string
+  reason?: string,
+  // SCRUM-388: a reschedule frees the OLD row through this same path but wants it
+  // marked `rescheduled` (a distinct lifecycle state, not a cancellation) and must
+  // NOT send the caller a "your appointment is cancelled" SMS for what is a move —
+  // the new booking's confirmation already covers it.
+  opts?: { terminalStatus?: "cancelled" | "rescheduled"; suppressSms?: boolean }
 ): Promise<ToolResult> {
   try {
     // For Cal.com appointments, try external cancellation first
@@ -1316,10 +1321,11 @@ async function cancelSingleAppointment(
       }
     }
 
-    // Always update DB status to cancelled
+    // Update DB status to the requested terminal state (default: cancelled). Either
+    // way the row leaves the confirmed/pending allowlist, so its slot frees.
     const { error: cancelDbError } = await (supabase as any)
       .from("appointments")
-      .update({ status: "cancelled" })
+      .update({ status: opts?.terminalStatus ?? "cancelled" })
       .eq("id", appointment.id);
 
     if (cancelDbError) {
@@ -1342,8 +1348,9 @@ async function cancelSingleAppointment(
     );
 
     // SCRUM-240 Phase 1: send cancellation SMS to the caller (fire-and-forget).
-    // User explicitly decided we should send one.
-    if (appointment.attendee_phone) {
+    // User explicitly decided we should send one. SCRUM-388: skipped on a reschedule
+    // (suppressSms) — a "cancelled" text for a move is misleading.
+    if (appointment.attendee_phone && !opts?.suppressSms) {
       sendCancellationSMS(
         organizationId,
         appointment.attendee_phone,
@@ -1596,20 +1603,29 @@ export async function handleRescheduleAppointment(
       return { success: false, message: bookResult.message };
     }
 
-    // ── 3. New is secured — now cancel the OLD one ──
+    // ── 3. New is secured — now free the OLD one. SCRUM-388: mark it `rescheduled`
+    // (a distinct lifecycle state, not a cancellation) and suppress the misleading
+    // "your appointment is cancelled" SMS — this was a move, and the new booking's
+    // confirmation already covers it. Either status frees the slot (allowlist). ──
     const oldWhen = fmtWhen(existing.start_time);
-    const cancelResult = await cancelSingleAppointment(supabase, organizationId, existing, "Rescheduled by caller");
+    const newAppointmentId = (bookResult.data as any)?.appointmentId;
+    const cancelResult = await cancelSingleAppointment(
+      supabase,
+      organizationId,
+      existing,
+      "Rescheduled by caller",
+      { terminalStatus: "rescheduled", suppressSms: true }
+    );
     if (!cancelResult.success) {
-      // New booked but old NOT cancelled — a real duplicate now exists. This is
-      // the exact event SCRUM-377 exists to prevent, so it must page on-call, not
-      // just hit the logs. We still return success:true (a real new appointment
-      // exists) and tell the caller honestly the old one wasn't removed.
+      // New booked but old NOT freed — a real duplicate now exists. This is the
+      // exact event SCRUM-377 exists to prevent, so it must page on-call, not just
+      // hit the logs. We still return success:true (a real new appointment exists)
+      // and tell the caller honestly the old one wasn't removed.
       // Telemetry carries only opaque DB ids (org + appointment UUIDs) — NOT the
       // confirmation code, which is a usable token a caller could cancel/look up
       // with, so it must not land in Sentry/logs (SCRUM-339). The team finds the
       // orphan by org + appointment id.
-      const newAppointmentId = (bookResult.data as any)?.appointmentId;
-      console.error("[Reschedule] New appointment booked but failed to cancel the old one — duplicate created", {
+      console.error("[Reschedule] New appointment booked but failed to free the old one — duplicate created", {
         organizationId, oldAppointmentId: existing.id, newAppointmentId, newDatetime: new_datetime,
       });
       Sentry.withScope((scope) => {
@@ -1625,10 +1641,26 @@ export async function handleRescheduleAppointment(
       };
     }
 
+    // SCRUM-388: link the new row to the one it superseded — the chain that drives
+    // the appointment-history view. Best-effort: the reschedule already succeeded, so
+    // a failed link is metadata only; log and continue, never fail the move.
+    if (newAppointmentId) {
+      const { error: linkErr } = await (supabase as any)
+        .from("appointments")
+        .update({ rescheduled_from_id: existing.id })
+        .eq("id", newAppointmentId)
+        .eq("organization_id", organizationId);
+      if (linkErr) {
+        console.warn("[Reschedule] Failed to set rescheduled_from_id link (non-fatal)", {
+          organizationId, newAppointmentId, oldAppointmentId: existing.id, error: linkErr.message ?? linkErr,
+        });
+      }
+    }
+
     return {
       success: true,
       message: `Done — I've moved your appointment from ${oldWhen}. ${bookResult.message}`,
-      data: { ...(bookResult.data || {}), oldCancelled: true, oldAppointmentId: existing.id },
+      data: { ...(bookResult.data || {}), oldCancelled: true, oldAppointmentId: existing.id, newAppointmentId },
     };
   } catch (err: any) {
     console.error("Reschedule appointment error:", { organizationId, message: err?.message, stack: err?.stack });
