@@ -66,11 +66,16 @@ export async function GET(request: NextRequest) {
     const gridStart = startOfWeek(monthStart, weekOptions);
     const gridEnd = endOfWeek(monthEnd, weekOptions);
 
-    // Fetch appointments in range
+    // Fetch active appointments in range. SCRUM-388: exclude both terminal states
+    // (cancelled + the superseded `rescheduled` leg) so a month-nav refetch matches
+    // the server's initial load (calendar/page.tsx) — the day-detail list and grid
+    // must not show moved-away/cancelled rows as if they were live.
     const { data: appointments, error: apptError } = await (supabase as any)
       .from("appointments")
       .select("*")
       .eq("organization_id", organizationId)
+      .neq("status", "cancelled")
+      .neq("status", "rescheduled")
       .gte("start_time", gridStart.toISOString())
       .lte("start_time", gridEnd.toISOString())
       .order("start_time", { ascending: true });

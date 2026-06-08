@@ -50,6 +50,13 @@ CREATE INDEX IF NOT EXISTS idx_appointments_rescheduled_from_id
 -- The reason text ("Rescheduled by caller") is not persisted to our DB, hence the
 -- timing+phone heuristic; going forward the handler sets the link explicitly, so this
 -- only ever runs on history.
+--
+-- RE-RUN SAFETY: the heuristic cannot tell a true reschedule from "cancel A then book
+-- an unrelated B in the same call". For HISTORICAL rows that's an accepted best-effort
+-- label, but if this file ever re-runs on a DB that has accumulated genuine post-launch
+-- cancellations (fresh env / branch DB / DR), it must NOT relabel those. The
+-- `nw.created_at < '2026-06-08'` cutoff (the feature's ship date) bounds the backfill to
+-- the pre-feature era only; every reschedule after it is linked explicitly by the handler.
 WITH ranked AS (
   SELECT old.id AS old_id, nw.id AS new_id,
          row_number() OVER (
@@ -64,6 +71,7 @@ WITH ranked AS (
     AND nw.id          <> old.id
     AND nw.start_time  <> old.start_time
     AND nw.created_at   > old.created_at
+    AND nw.created_at   < '2026-06-08'::timestamptz   -- pre-feature only (re-run safety)
     AND abs(extract(epoch FROM (nw.created_at - old.updated_at))) <= 120
   WHERE old.status = 'cancelled'
 )
