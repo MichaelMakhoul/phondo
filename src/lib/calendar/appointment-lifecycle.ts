@@ -3,6 +3,8 @@
 // the order-assembly + projection is extracted here so the correctness-sensitive
 // ordering is unit-tested independently of Supabase.
 
+import type { FieldChange } from "@/lib/appointments/events";
+
 export interface LifecycleLeg {
   id: string;
   status: string;
@@ -109,4 +111,87 @@ export function assembleLifecycle(
     serviceType: pickName(r.service_types),
     isCurrent: r.id === opened.id,
   }));
+}
+
+// SCRUM-398: an audit event (appointment_events row), camelCased for the UI.
+export interface TimelineEvent {
+  id: string;
+  eventType: string; // edited | status_changed | created | rescheduled | cancelled | restored
+  actorType: string; // ai | staff | system
+  channel: string;
+  changedFields: FieldChange[];
+  createdAt: string; // ISO
+}
+
+// One row in the merged history timeline — either a structural reschedule leg or an
+// in-place edit event.
+export interface TimelineItem {
+  key: string;
+  kind: "leg" | "event";
+  at: string; // ISO, for ordering
+  // leg-only:
+  leg?: LifecycleLeg;
+  changeLabel?: string; // describeChange label
+  // event-only:
+  eventType?: string;
+  actorType?: string;
+  channel?: string;
+  changes?: FieldChange[];
+}
+
+/**
+ * SCRUM-398: merge the structural reschedule legs and the in-place edit events into
+ * one chronological timeline, so manual edits show next to AI changes ("Name:
+ * Michael → Mena · by staff" alongside "Time & Dentist changed · via AI call").
+ *
+ * Only `edited`/`status_changed` events render standalone — the structural events
+ * (`created`/`rescheduled`/`cancelled`) are already represented by the legs (or the
+ * Source section), so rendering them too would duplicate the leg lines. Returns null
+ * when there's nothing to show (a single, never-edited appointment).
+ */
+export function mergeTimeline(
+  legs: LifecycleLeg[] | null,
+  events: TimelineEvent[],
+  labels?: ChangeLabels
+): TimelineItem[] | null {
+  const items: TimelineItem[] = [];
+  if (legs) {
+    legs.forEach((leg, i) => {
+      const change = describeChange(leg, i > 0 ? legs[i - 1] : null, labels);
+      items.push({ key: `leg:${leg.id}:${i}`, kind: "leg", at: change.at, leg, changeLabel: change.label });
+    });
+  }
+  // A cancellation on a multi-leg appointment is already shown by the cancelled leg,
+  // so drop the redundant status→cancelled event to avoid a duplicate line.
+  const hasCancelledLeg = (legs ?? []).some((l) => l.status === "cancelled");
+  for (const e of events) {
+    if (e.eventType !== "edited" && e.eventType !== "status_changed" && e.eventType !== "restored") continue;
+    if (!e.changedFields || e.changedFields.length === 0) continue;
+    if (
+      hasCancelledLeg &&
+      e.eventType === "status_changed" &&
+      e.changedFields.every((c) => c.field === "status" && c.to === "cancelled")
+    ) {
+      continue;
+    }
+    items.push({
+      key: `event:${e.id}`,
+      kind: "event",
+      at: e.createdAt,
+      eventType: e.eventType,
+      actorType: e.actorType,
+      channel: e.channel,
+      changes: e.changedFields,
+    });
+  }
+  if (items.length === 0) return null;
+  // Chronological; on a tie, legs before events (deterministic ordering).
+  items.sort((x, y) => {
+    const dx = new Date(x.at).getTime();
+    const dy = new Date(y.at).getTime();
+    if (dx !== dy) return dx - dy;
+    if (x.kind !== y.kind) return x.kind === "leg" ? -1 : 1;
+    return 0;
+  });
+  return items;
 }

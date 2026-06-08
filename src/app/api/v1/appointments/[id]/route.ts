@@ -7,10 +7,33 @@ import { invalidateVoiceScheduleCache } from "@/lib/voice-cache/invalidate";
 import {
   assembleLifecycle,
   LIFECYCLE_COLS,
+  pickName,
   type LifecycleLeg,
 } from "@/lib/calendar/appointment-lifecycle";
 import { getAppointmentLabels } from "@/lib/calendar/industry-labels";
+import { createAdminClient } from "@/lib/supabase/admin";
+import {
+  diffAppointmentFields,
+  classifyEditEvent,
+  recordAppointmentEvent,
+  type AppointmentSnapshot,
+} from "@/lib/appointments/events";
 import { z } from "zod";
+
+// SCRUM-398: project an appointment row (with embedded practitioner/service names)
+// into the normalized snapshot the audit diff compares.
+function toSnapshot(row: any): AppointmentSnapshot {
+  return {
+    name: row.attendee_name ?? null,
+    phone: row.attendee_phone ?? null,
+    email: row.attendee_email ?? null,
+    notes: row.notes ?? null,
+    startTime: row.start_time ?? null,
+    status: row.status ?? null,
+    practitioner: pickName(row.practitioners),
+    service: pickName(row.service_types),
+  };
+}
 
 interface Membership {
   organization_id: string;
@@ -151,6 +174,33 @@ export async function GET(
       console.error("Appointment lifecycle reconstruction failed (non-fatal):", err);
     }
 
+    // SCRUM-398: in-place edit events for the merged history timeline (manual edits
+    // shown next to AI changes). Cover every leg in the chain so an edit on any leg
+    // surfaces. Best-effort — a failure must not break the detail fetch.
+    let events: Array<Record<string, unknown>> = [];
+    try {
+      const ids = lifecycle ? lifecycle.map((l) => l.id) : [appointment.id];
+      const { data: evRows, error: evErr } = await (supabase as any)
+        .from("appointment_events")
+        .select("id, event_type, actor_type, channel, changed_fields, created_at")
+        .in("appointment_id", ids)
+        .eq("organization_id", orgId)
+        .order("created_at", { ascending: true });
+      // supabase-js resolves query failures as { data: null, error } WITHOUT throwing,
+      // so surface it — otherwise the history silently renders without edit events.
+      if (evErr) console.error("Appointment events fetch failed (non-fatal):", evErr.message);
+      events = (evRows || []).map((e: any) => ({
+        id: e.id,
+        eventType: e.event_type,
+        actorType: e.actor_type,
+        channel: e.channel,
+        changedFields: Array.isArray(e.changed_fields) ? e.changed_fields : [],
+        createdAt: e.created_at,
+      }));
+    } catch (err: unknown) {
+      console.error("Appointment events fetch failed (non-fatal):", err);
+    }
+
     // SCRUM-397: industry-generic field labels (Dentist / Attorney / Technician …)
     // so the edit form and history aren't hardcoded to dental. Best-effort.
     let labels = getAppointmentLabels(null);
@@ -170,6 +220,7 @@ export async function GET(
       clientHistory,
       linkedCall,
       lifecycle,
+      events,
       labels,
     });
   } catch (err: unknown) {
@@ -243,12 +294,20 @@ export async function PATCH(
       return NextResponse.json({ error: "No fields to update" }, { status: 400 });
     }
 
+    // SCRUM-398: capture the before-image (resolved names) to diff for the audit log.
+    const { data: before } = await (supabase as any)
+      .from("appointments")
+      .select("attendee_name, attendee_phone, attendee_email, notes, start_time, status, service_types(name), practitioners(name)")
+      .eq("id", id)
+      .eq("organization_id", orgId)
+      .single();
+
     const { data: updated, error } = await (supabase as any)
       .from("appointments")
       .update(updates)
       .eq("id", id)
       .eq("organization_id", orgId)
-      .select("*")
+      .select("*, service_types(name), practitioners(name)")
       .single();
 
     if (error) {
@@ -256,6 +315,30 @@ export async function PATCH(
         return NextResponse.json({ error: "This time conflicts with another appointment" }, { status: 409 });
       }
       throw error;
+    }
+
+    // SCRUM-398: record the in-place edit as an audit event. Best-effort, via the
+    // admin client (the table is service-role-write-only), in after() so it never
+    // delays or breaks the response. The diff compares resolved (name) values.
+    if (before) {
+      const changes = diffAppointmentFields(toSnapshot(before), toSnapshot(updated));
+      if (changes.length > 0) {
+        after(async () => {
+          try {
+            await recordAppointmentEvent(createAdminClient(), {
+              appointmentId: id,
+              organizationId: orgId,
+              eventType: classifyEditEvent(changes),
+              actorType: "staff",
+              actorId: user.id,
+              channel: "dashboard",
+              changedFields: changes,
+            });
+          } catch (e) {
+            console.error("[appointments PATCH] audit emit failed (non-fatal):", e);
+          }
+        });
+      }
     }
 
     // SCRUM-245: invalidate voice-server schedule cache so reschedules and
@@ -295,6 +378,14 @@ export async function DELETE(
     const orgId = await getOrgId(supabase, user.id);
     if (!orgId) return NextResponse.json({ error: "No organization" }, { status: 404 });
 
+    // SCRUM-398: capture the prior status so the audit event records the transition.
+    const { data: beforeDel } = await (supabase as any)
+      .from("appointments")
+      .select("status")
+      .eq("id", id)
+      .eq("organization_id", orgId)
+      .single();
+
     const { error } = await (supabase as any)
       .from("appointments")
       .update({ status: "cancelled" })
@@ -312,6 +403,23 @@ export async function DELETE(
         await invalidateVoiceScheduleCache(orgId);
       } catch (err) {
         console.error("[appointments DELETE] cache invalidation failed (non-fatal):", err);
+      }
+      // SCRUM-398: audit the cancellation (the dashboard cancels via PATCH-status,
+      // but DELETE is auth-reachable too, so keep the trail complete). Best-effort.
+      if (beforeDel && beforeDel.status !== "cancelled") {
+        try {
+          await recordAppointmentEvent(createAdminClient(), {
+            appointmentId: id,
+            organizationId: orgId,
+            eventType: "status_changed",
+            actorType: "staff",
+            actorId: user.id,
+            channel: "dashboard",
+            changedFields: [{ field: "status", from: beforeDel.status ?? null, to: "cancelled" }],
+          });
+        } catch (e) {
+          console.error("[appointments DELETE] audit emit failed (non-fatal):", e);
+        }
       }
     });
 
