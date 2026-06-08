@@ -4,6 +4,11 @@ import { isValidUUID } from "@/lib/security/validation";
 import { validateOrgScopedRefs } from "@/lib/calendar/validate-org-scoped-refs";
 import { getClientHistory } from "@/lib/clients/client-history";
 import { invalidateVoiceScheduleCache } from "@/lib/voice-cache/invalidate";
+import {
+  assembleLifecycle,
+  LIFECYCLE_COLS,
+  type LifecycleLeg,
+} from "@/lib/calendar/appointment-lifecycle";
 import { z } from "zod";
 
 interface Membership {
@@ -20,6 +25,51 @@ async function getOrgId(supabase: any, userId: string): Promise<string | null> {
     console.error("getOrgId error:", error.message);
   }
   return data?.organization_id || null;
+}
+
+// SCRUM-389: reconstruct the reschedule lifecycle by walking the supersede chain
+// (back to the root via rescheduled_from_id, then forward to the tip via the reverse
+// FK). Org-scoped on every hop, bounded against cycles; the pure order-assembly +
+// projection lives in lib/calendar/appointment-lifecycle (unit-tested). Best-effort.
+const LIFECYCLE_CAP = 20; // defensive bound on chain length (cycles shouldn't occur)
+
+async function buildAppointmentLifecycle(
+  supabase: any,
+  orgId: string,
+  opened: any
+): Promise<LifecycleLeg[] | null> {
+  // Back-walk: opened → … → root, following rescheduled_from_id (unique parent).
+  const ancestors: any[] = [];
+  let cur = opened;
+  for (let i = 0; i < LIFECYCLE_CAP && cur?.rescheduled_from_id; i++) {
+    const { data: prev } = await supabase
+      .from("appointments")
+      .select(LIFECYCLE_COLS)
+      .eq("id", cur.rescheduled_from_id)
+      .eq("organization_id", orgId)
+      .maybeSingle();
+    if (!prev) break;
+    ancestors.push(prev);
+    cur = prev;
+  }
+  // Forward-walk: opened → … → tip, following the reverse FK (earliest successor).
+  const descendants: any[] = [];
+  cur = opened;
+  for (let i = 0; i < LIFECYCLE_CAP; i++) {
+    const { data: nextRows } = await supabase
+      .from("appointments")
+      .select(LIFECYCLE_COLS)
+      .eq("rescheduled_from_id", cur.id)
+      .eq("organization_id", orgId)
+      .order("created_at", { ascending: true })
+      .limit(1);
+    const next = nextRows?.[0];
+    if (!next) break;
+    descendants.push(next);
+    cur = next;
+  }
+
+  return assembleLifecycle(ancestors, opened, descendants);
 }
 
 const updateSchema = z.object({
@@ -91,10 +141,20 @@ export async function GET(
       linkedCall = call;
     }
 
+    // SCRUM-389: reconstruct the reschedule lifecycle (booked → moved → … → current/
+    // cancelled). Best-effort — a failure here must not break the detail fetch.
+    let lifecycle: LifecycleLeg[] | null = null;
+    try {
+      lifecycle = await buildAppointmentLifecycle(supabase, orgId, appointment);
+    } catch (err: unknown) {
+      console.error("Appointment lifecycle reconstruction failed (non-fatal):", err);
+    }
+
     return NextResponse.json({
       appointment,
       clientHistory,
       linkedCall,
+      lifecycle,
     });
   } catch (err: unknown) {
     console.error("GET /appointments/[id] error:", err);
