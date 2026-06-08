@@ -1370,6 +1370,32 @@ async function cancelSingleAppointment(
 }
 
 /**
+ * SCRUM-386: resolve the attendee identity to carry into a reschedule's new
+ * booking. A reschedule MOVES an already-identified appointment, so it must reuse
+ * that appointment's name rather than re-demand it — only a COMPLETE new name
+ * (both parts, or a full `name`) from the caller overrides. The stored name is
+ * split into first/last because the booking validation checks the `last_name`
+ * field specifically (a combined `name` alone does NOT satisfy a required-last-
+ * name org), which otherwise traps a known caller in a "what's your last name?"
+ * loop when the model only relays a partial name from garbled speech.
+ */
+export function resolveRescheduleIdentity(
+  args: { first_name?: string; last_name?: string; name?: string },
+  existingName?: string | null
+): { first_name?: string; last_name?: string; name?: string } {
+  const first = args.first_name?.trim();
+  const last = args.last_name?.trim();
+  // Explicit, complete new name → caller is renaming the booking; honour it.
+  if (first && last) return { first_name: first, last_name: last };
+  // Otherwise reuse a full caller-supplied name, else the existing appointment's.
+  const full = (args.name?.trim() || existingName || "").trim();
+  if (!full) return {};
+  const parts = full.split(/\s+/);
+  if (parts.length === 1) return { name: parts[0] };
+  return { first_name: parts[0], last_name: parts.slice(1).join(" ") };
+}
+
+/**
  * SCRUM-377: ATOMIC reschedule — move an existing appointment to a new time in
  * ONE verified server-side operation.
  *
@@ -1550,13 +1576,15 @@ export async function handleRescheduleAppointment(
     // slot (same time, or a sub-slot shift). That case currently fails SAFE
     // ("that time isn't available", original kept) rather than duplicating; an
     // in-place UPDATE would handle it and is tracked as a follow-up.
+    // SCRUM-386: reuse the existing appointment's identity (split into first/last)
+    // unless the caller gave a complete new name — a reschedule moves a known
+    // booking and must not re-demand the caller's name/phone/service.
+    const identity = resolveRescheduleIdentity(args, existing.attendee_name);
     const bookResult = await handleBookAppointment(organizationId, {
       datetime: new_datetime,
-      first_name: args.first_name,
-      last_name: args.last_name,
-      // Default identity to the existing booking so a reschedule doesn't require
-      // the caller to re-state their name/phone/service.
-      name: args.first_name || args.last_name ? undefined : (args.name || existing.attendee_name),
+      first_name: identity.first_name,
+      last_name: identity.last_name,
+      name: identity.name,
       phone: args.phone || existing.attendee_phone,
       email: args.email,
       notes: args.notes,
