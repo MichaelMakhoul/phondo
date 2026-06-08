@@ -38,7 +38,7 @@ describe("formatCollectedValue (SCRUM-392)", () => {
 
 describe("isNonAnswer (SCRUM-392)", () => {
   it("is true for non-answers (filtered from the panel)", () => {
-    for (const v of ["", "  ", "not provided", "Not Provided", "unknown", "N/A", "none", null, undefined]) {
+    for (const v of ["", "  ", "not provided", "Not Provided", "unknown", "N/A", "na", null, undefined]) {
       expect(isNonAnswer(v)).toBe(true);
     }
   });
@@ -48,5 +48,8 @@ describe("isNonAnswer (SCRUM-392)", () => {
     expect(isNonAnswer("+61414141883")).toBe(false);
     expect(isNonAnswer([{ date: "Wed", time: "9 AM" }])).toBe(false);
     expect(isNonAnswer(0)).toBe(false); // "0" is a real value, not a non-answer
+    // "none" is a real clinical answer (allergies: none), NOT filtered.
+    expect(isNonAnswer("none")).toBe(false);
+    expect(isNonAnswer("None")).toBe(false);
   });
 });

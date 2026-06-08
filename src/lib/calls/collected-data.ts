@@ -3,8 +3,10 @@
 // array of {date,time,doctor}). A naive `String(value)` yields "[object Object]"; this
 // formats them readably and lets the UI hide non-answer fields ("not provided" etc.).
 
+// Deliberately excludes "none": for a dental/medical assistant "none" is a real
+// clinical answer (allergies: none, medications: none), not a non-answer.
 const NON_ANSWERS = new Set([
-  "", "not provided", "not specified", "unknown", "n/a", "na", "none", "null", "undefined",
+  "", "not provided", "not specified", "unknown", "n/a", "na", "null", "undefined",
 ]);
 
 /**

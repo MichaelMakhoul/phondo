@@ -607,12 +607,18 @@ export function CallDetail({ call: initialCall }: { call: Call }) {
               <CardTitle className="flex items-center gap-2">
                 <Info className="h-5 w-5" />
                 Collected Information
-                {collectedEntries.length > 0 && (
-                  <Badge variant="secondary" className="ml-auto">
-                    {collectedEntries.length} field
-                    {collectedEntries.length !== 1 ? "s" : ""}
-                  </Badge>
-                )}
+                {/* Count matches what's actually shown in each mode: the edit grid
+                    lists every field; the read-only view hides non-answers. */}
+                {(() => {
+                  const shownCount = isEditing
+                    ? Object.keys(editCollectedData).length
+                    : collectedEntries.length;
+                  return shownCount > 0 ? (
+                    <Badge variant="secondary" className="ml-auto">
+                      {shownCount} field{shownCount !== 1 ? "s" : ""}
+                    </Badge>
+                  ) : null;
+                })()}
               </CardTitle>
             </CardHeader>
             <CardContent>
