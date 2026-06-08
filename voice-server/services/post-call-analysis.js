@@ -58,7 +58,7 @@ Return a JSON object with these fields:
 - summary: A 1-2 sentence summary of the call IN ENGLISH (string)
 - success_evaluation: Rate the call outcome (string): "successful" = the caller's primary goal was completed via a tool (e.g. an appointment was booked, a callback was captured, or the caller was transferred); "partial" = the goal was attempted but not completed (e.g. a booking was started but never confirmed); "unsuccessful" = the AI could not help, or the caller was frustrated / hung up
 - collected_data: Any structured data collected during the call like phone numbers, emails, dates mentioned (object or null)
-- unanswered_questions: Questions the caller asked that the AI could not answer. Translate to English. (array of strings, or null)
+- unanswered_questions: ONLY questions the caller explicitly asked that the AI clearly FAILED to answer or address — e.g. the AI said it didn't know, gave no relevant response, or deflected without helping. Do NOT include a question the AI handled in any way, including via a tool/lookup (checking the calendar, availability, existing appointments, or pricing) or by answering after a clarifying question. Speech-to-text can garble a question (e.g. "next appointment" misheard as "next payment"); judge by what the AI actually DID in response, not the literal (possibly misheard) wording. When in doubt, treat it as answered and exclude it. Translate to English. (array of strings, or null)
 - sentiment: "positive" | "neutral" | "negative" (string)
 
 Return ONLY valid JSON, no other text.`;
