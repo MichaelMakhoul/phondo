@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { z } from "zod";
+import { mergeEditableCollectedData } from "@/lib/calls/collected-data";
 
 // Type for org_members query result
 interface Membership {
@@ -109,7 +110,39 @@ export async function PATCH(
     const updates: Record<string, unknown> = {};
     if (callerName !== undefined) updates.caller_name = callerName;
     if (summary !== undefined) updates.summary = summary;
-    if (collectedData !== undefined) updates.collected_data = collectedData;
+    if (collectedData !== undefined) {
+      // SCRUM-394: the client sends only the EDITABLE primitive fields (as strings).
+      // Merge them over the stored collected_data so structured fields (e.g. an
+      // `appointments` array of objects) are preserved instead of being flattened
+      // to a string. The merge guard never lets an edited string clobber a
+      // structured field.
+      //
+      // CRITICAL: never merge over `null` on a read failure — that would drop the
+      // structured fields and persist a stripped object (the exact data loss this
+      // ticket fixes). So we must check the SELECT error before writing: a
+      // genuinely-missing row (wrong id/org → PGRST116) is a 404; any other read
+      // error is a 500. We never blind-write a merge built on a failed read.
+      const { data: existing, error: readError } = await (supabase
+        .from("calls") as any)
+        .select("collected_data")
+        .eq("id", id)
+        .eq("organization_id", membership.organization_id)
+        .single();
+      if (readError || !existing) {
+        const notFound = (readError as { code?: string } | null)?.code === "PGRST116";
+        if (!notFound) {
+          console.error("Error reading collected_data before merge:", readError);
+        }
+        return NextResponse.json(
+          { error: notFound ? "Call not found" : "Internal server error" },
+          { status: notFound ? 404 : 500 }
+        );
+      }
+      updates.collected_data = mergeEditableCollectedData(
+        existing.collected_data ?? null,
+        collectedData
+      );
+    }
 
     if (Object.keys(updates).length === 0) {
       return NextResponse.json({ error: "No fields to update" }, { status: 400 });

@@ -4,7 +4,12 @@ import { useState, useEffect, useMemo } from "react";
 import Link from "next/link";
 import { format } from "date-fns";
 import { parseCleanedTranscript } from "@/lib/call-recordings/cleaned-transcript";
-import { formatCollectedValue, isNonAnswer } from "@/lib/calls/collected-data";
+import {
+  formatCollectedValue,
+  isNonAnswer,
+  isPrimitiveCollectedValue,
+  toEditablePrimitives,
+} from "@/lib/calls/collected-data";
 import {
   ArrowLeft,
   PhoneIncoming,
@@ -162,21 +167,17 @@ export function CallDetail({ call: initialCall }: { call: Call }) {
   );
   const [editCallerName, setEditCallerName] = useState(call.caller_name || "");
   const [editSummary, setEditSummary] = useState(call.summary || "");
+  // SCRUM-394: only PRIMITIVE fields are editable; structured fields (arrays/objects)
+  // are shown read-only and preserved verbatim on save.
   const [editCollectedData, setEditCollectedData] = useState<Record<string, string>>(
-    Object.fromEntries(
-      Object.entries(call.collected_data || {}).map(([k, v]) => [k, formatCollectedValue(v)])
-    )
+    toEditablePrimitives(call.collected_data)
   );
   const { toast } = useToast();
 
   function startEditing() {
     setEditCallerName(call.caller_name || "");
     setEditSummary(call.summary || "");
-    setEditCollectedData(
-      Object.fromEntries(
-        Object.entries(call.collected_data || {}).map(([k, v]) => [k, formatCollectedValue(v)])
-      )
-    );
+    setEditCollectedData(toEditablePrimitives(call.collected_data));
     setIsEditing(true);
   }
 
@@ -194,10 +195,10 @@ export function CallDetail({ call: initialCall }: { call: Call }) {
       if (editSummary !== (call.summary || "")) {
         body.summary = editSummary;
       }
-      const currentCollected = Object.fromEntries(
-        Object.entries(call.collected_data || {}).map(([k, v]) => [k, formatCollectedValue(v)])
-      );
-      if (JSON.stringify(editCollectedData) !== JSON.stringify(currentCollected)) {
+      // SCRUM-394: compare/send only the editable primitives. The server merges
+      // them over the stored collected_data, preserving structured fields.
+      const currentPrimitives = toEditablePrimitives(call.collected_data);
+      if (JSON.stringify(editCollectedData) !== JSON.stringify(currentPrimitives)) {
         body.collectedData = editCollectedData;
       }
 
@@ -265,6 +266,11 @@ export function CallDetail({ call: initialCall }: { call: Call }) {
   // real phone etc. is shown in the contact section).
   const collectedEntries = Object.entries(call.collected_data || {}).filter(
     ([, v]) => !isNonAnswer(v)
+  );
+  // SCRUM-394: structured fields (arrays/objects) shown read-only in edit mode —
+  // they can't be safely edited as flat text without flattening their structure.
+  const structuredEntries = Object.entries(call.collected_data || {}).filter(
+    ([, v]) => !isPrimitiveCollectedValue(v) && !isNonAnswer(v)
   );
   const transferAttempt = call.metadata?.transferAttempt as {
     ruleId?: string;
@@ -607,11 +613,12 @@ export function CallDetail({ call: initialCall }: { call: Call }) {
               <CardTitle className="flex items-center gap-2">
                 <Info className="h-5 w-5" />
                 Collected Information
-                {/* Count matches what's actually shown in each mode: the edit grid
-                    lists every field; the read-only view hides non-answers. */}
+                {/* Count matches what's actually shown in each mode: edit mode lists
+                    editable primitives + read-only structured fields; the read-only
+                    view hides non-answers. */}
                 {(() => {
                   const shownCount = isEditing
-                    ? Object.keys(editCollectedData).length
+                    ? Object.keys(editCollectedData).length + structuredEntries.length
                     : collectedEntries.length;
                   return shownCount > 0 ? (
                     <Badge variant="secondary" className="ml-auto">
@@ -641,13 +648,32 @@ export function CallDetail({ call: initialCall }: { call: Call }) {
                       />
                     </div>
                   ))}
-                  {Object.keys(editCollectedData).length === 0 && (
-                    <div className="col-span-2 py-4 text-center">
-                      <p className="text-sm text-muted-foreground">
-                        No collected data fields to edit.
+                  {/* SCRUM-394: structured fields (e.g. an appointments array) are
+                      read-only — editing them as flat text would destroy their
+                      structure. They're preserved verbatim on save. */}
+                  {structuredEntries.map(([key, value]) => (
+                    <div key={key} className="rounded-md border border-dashed p-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                          {formatFieldLabel(key)}
+                        </span>
+                        <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                          Read-only
+                        </span>
+                      </div>
+                      <p className="mt-1 text-sm font-medium">
+                        {formatCollectedValue(value) || "-"}
                       </p>
                     </div>
-                  )}
+                  ))}
+                  {Object.keys(editCollectedData).length === 0 &&
+                    structuredEntries.length === 0 && (
+                      <div className="col-span-2 py-4 text-center">
+                        <p className="text-sm text-muted-foreground">
+                          No collected data fields to edit.
+                        </p>
+                      </div>
+                    )}
                 </div>
               ) : collectedEntries.length > 0 ? (
                 <div className="grid gap-3 sm:grid-cols-2">
