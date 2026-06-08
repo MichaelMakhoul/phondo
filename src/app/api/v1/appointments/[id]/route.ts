@@ -9,6 +9,7 @@ import {
   LIFECYCLE_COLS,
   type LifecycleLeg,
 } from "@/lib/calendar/appointment-lifecycle";
+import { getAppointmentLabels } from "@/lib/calendar/industry-labels";
 import { z } from "zod";
 
 interface Membership {
@@ -150,11 +151,26 @@ export async function GET(
       console.error("Appointment lifecycle reconstruction failed (non-fatal):", err);
     }
 
+    // SCRUM-397: industry-generic field labels (Dentist / Attorney / Technician …)
+    // so the edit form and history aren't hardcoded to dental. Best-effort.
+    let labels = getAppointmentLabels(null);
+    try {
+      const { data: org } = await (supabase as any)
+        .from("organizations")
+        .select("industry")
+        .eq("id", orgId)
+        .single();
+      labels = getAppointmentLabels(org?.industry ?? null);
+    } catch (err: unknown) {
+      console.error("Org industry fetch for labels failed (non-fatal):", err);
+    }
+
     return NextResponse.json({
       appointment,
       clientHistory,
       linkedCall,
       lifecycle,
+      labels,
     });
   } catch (err: unknown) {
     console.error("GET /appointments/[id] error:", err);

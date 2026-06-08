@@ -110,10 +110,23 @@ describe("describeChange (SCRUM-391)", () => {
     expect(describeChange(cur, prev)).toEqual({ label: "Time changed", at: "2026-06-08T10:00:00Z" });
   });
 
-  it("detects a doctor-only change at the same time (the reported case)", () => {
+  it("detects a practitioner-only change at the same time (the reported case)", () => {
     const prev = leg({ practitioner: "Dr Sarah Chen" });
     const cur = leg({ practitioner: "Lisa Thompson" }); // same startTime
-    expect(describeChange(cur, prev).label).toBe("Doctor changed");
+    // SCRUM-397: default label is the neutral "Practitioner", not dental-specific "Doctor".
+    expect(describeChange(cur, prev).label).toBe("Practitioner changed");
+  });
+
+  it("uses industry-generic labels when provided (SCRUM-397)", () => {
+    const prev = leg({ practitioner: "Dr Sarah Chen", serviceType: "Check-up" });
+    const cur = leg({ practitioner: "Lisa Thompson", serviceType: "Filling" });
+    expect(
+      describeChange(cur, prev, { practitioner: "Dentist", service: "Treatment" }).label
+    ).toBe("Dentist & Treatment changed");
+    // legal vocabulary on the same diff
+    expect(
+      describeChange(cur, prev, { practitioner: "Attorney", service: "Matter type" }).label
+    ).toBe("Attorney & Matter type changed");
   });
 
   it("detects a service-only change", () => {
@@ -125,7 +138,7 @@ describe("describeChange (SCRUM-391)", () => {
   it("combines multiple changes", () => {
     const prev = leg({ startTime: "2026-06-18T01:00:00Z", practitioner: "Dr Chen" });
     const cur = leg({ startTime: "2026-06-18T02:30:00Z", practitioner: "Lisa Thompson" });
-    expect(describeChange(cur, prev).label).toBe("Time & Doctor changed");
+    expect(describeChange(cur, prev).label).toBe("Time & Practitioner changed");
   });
 
   it("labels a cancelled leg 'Cancelled', dated by supersededAt", () => {
