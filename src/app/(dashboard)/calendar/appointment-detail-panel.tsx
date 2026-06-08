@@ -12,13 +12,51 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from "@/components/ui/select";
 import { useToast } from "@/components/ui/use-toast";
 import {
   User, Phone, Mail, Clock, Calendar, FileText,
-  Edit2, X, Check, Ban, CheckCircle, AlertTriangle,
+  Edit2, Check, Ban, CheckCircle, AlertTriangle,
   Loader2, ExternalLink, History,
 } from "lucide-react";
 import { describeChange } from "@/lib/calendar/appointment-lifecycle";
+import type { AppointmentLabels } from "@/lib/calendar/industry-labels";
+
+// SCRUM-397: bookings without a collected email get a synthetic placeholder
+// (`booking-<uuid>@noreply.phondo.ai`). Never show it as if it were a real address.
+const SYNTHETIC_EMAIL_DOMAIN = "@noreply.phondo.ai";
+function isSyntheticEmail(email: string | null | undefined): boolean {
+  return !!email && email.includes(SYNTHETIC_EMAIL_DOMAIN);
+}
+
+// SCRUM-397: neutral fallback until the API's industry-resolved labels arrive.
+const DEFAULT_LABELS: AppointmentLabels = { practitioner: "Practitioner", service: "Service" };
+
+// Statuses a user can set manually from the edit form. `rescheduled` is excluded —
+// it's system-managed (set by the reschedule flow), not a manual choice.
+const EDITABLE_STATUSES: { value: string; label: string }[] = [
+  { value: "confirmed", label: "Confirmed" },
+  { value: "pending", label: "Pending" },
+  { value: "completed", label: "Completed" },
+  { value: "no_show", label: "No Show" },
+  { value: "cancelled", label: "Cancelled" },
+];
+
+// Radix Select can't use "" as a value; sentinel for "no practitioner/service".
+const NONE_VALUE = "__none__";
+
+// datetime-local <-> ISO helpers (browser-local, matching the panel's other times).
+function isoToLocalInput(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "";
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+}
+function localInputToIso(local: string): string {
+  return new Date(local).toISOString();
+}
 
 interface AppointmentDetailPanelProps {
   appointmentId: string | null;
@@ -82,9 +120,16 @@ export function AppointmentDetailPanel({
   const [clientHistory, setClientHistory] = useState<ClientHistory | null>(null);
   const [linkedCall, setLinkedCall] = useState<any>(null);
   const [lifecycle, setLifecycle] = useState<LifecycleLeg[] | null>(null);
+  const [labels, setLabels] = useState<AppointmentLabels>(DEFAULT_LABELS);
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [editData, setEditData] = useState<Record<string, any>>({});
+  // SCRUM-397: snapshot of the values at edit-start, so save sends only what changed
+  // (critical: re-sending an unchanged past start_time would 400 on the past-time guard).
+  const [editInitial, setEditInitial] = useState<Record<string, any>>({});
+  const [practitioners, setPractitioners] = useState<{ id: string; name: string }[]>([]);
+  const [serviceTypes, setServiceTypes] = useState<{ id: string; name: string; duration_minutes: number }[]>([]);
+  const [optionsLoading, setOptionsLoading] = useState(false);
   const { toast } = useToast();
 
   const fetchAppointment = useCallback(async () => {
@@ -98,6 +143,7 @@ export function AppointmentDetailPanel({
       setClientHistory(data.clientHistory);
       setLinkedCall(data.linkedCall);
       setLifecycle(data.lifecycle ?? null);
+      if (data.labels) setLabels(data.labels);
     } catch {
       toast({ title: "Error", description: "Failed to load appointment details", variant: "destructive" });
     } finally {
@@ -111,6 +157,71 @@ export function AppointmentDetailPanel({
       setEditing(false);
     }
   }, [open, appointmentId, fetchAppointment]);
+
+  // SCRUM-397: enter full edit mode — load the practitioner/service options and seed
+  // the form (and the diff snapshot) from the current appointment. The synthetic
+  // placeholder email is shown blank so the user isn't confused by it.
+  const openEditor = async () => {
+    if (!appt) return;
+    const seed = {
+      attendee_first_name: appt.attendee_first_name || appt.attendee_name?.split(" ")[0] || "",
+      attendee_last_name: appt.attendee_last_name || appt.attendee_name?.split(" ").slice(1).join(" ") || "",
+      attendee_phone: appt.attendee_phone || "",
+      attendee_email: isSyntheticEmail(appt.attendee_email) ? "" : (appt.attendee_email || ""),
+      notes: appt.notes || "",
+      start_time: appt.start_time || "",
+      service_type_id: appt.service_type_id ?? null,
+      practitioner_id: appt.practitioner_id ?? null,
+      status: appt.status || "confirmed",
+    };
+    setEditData(seed);
+    setEditInitial(seed);
+    setEditing(true);
+    setOptionsLoading(true);
+    // A non-OK response (401/500) does NOT throw — so track failure explicitly and
+    // surface it, otherwise the dropdowns silently render empty and a user could
+    // "tidy up" a blank Select into nulling a real practitioner/service assignment.
+    let failed = false;
+    try {
+      const [pRes, sRes] = await Promise.all([
+        fetch("/api/v1/practitioners"),
+        fetch("/api/v1/service-types"),
+      ]);
+      if (pRes.ok) {
+        const p = await pRes.json();
+        setPractitioners(Array.isArray(p) ? p.map((x: any) => ({ id: x.id, name: x.name })) : []);
+      } else {
+        failed = true;
+      }
+      if (sRes.ok) {
+        const s = await sRes.json();
+        setServiceTypes(
+          Array.isArray(s)
+            ? s.map((x: any) => ({ id: x.id, name: x.name, duration_minutes: x.duration_minutes }))
+            : []
+        );
+      } else {
+        failed = true;
+      }
+    } catch {
+      failed = true;
+    } finally {
+      setOptionsLoading(false);
+    }
+    if (failed) {
+      toast({
+        title: "Couldn't load practitioner/service options",
+        description: "Reopen the editor to try again before changing them.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const closeEditor = () => {
+    setEditing(false);
+    setEditData({});
+    setEditInitial({});
+  };
 
   const handleStatusChange = async (newStatus: string) => {
     if (!appointmentId) return;
@@ -134,21 +245,74 @@ export function AppointmentDetailPanel({
   };
 
   const handleSaveEdit = async () => {
-    if (!appointmentId || Object.keys(editData).length === 0) return;
+    if (!appointmentId) return;
+
+    // SCRUM-397: send ONLY changed fields. Re-sending an unchanged value is at best
+    // wasteful and at worst breaks (the route 400s if you PATCH a start_time in the
+    // past, which an untouched older appointment would have).
+    const payload: Record<string, any> = {};
+    const keys = ["attendee_phone", "notes", "status"] as const;
+    for (const k of keys) {
+      if ((editData[k] ?? "") !== (editInitial[k] ?? "")) payload[k] = editData[k];
+    }
+    // Name is denormalized server-side into `attendee_name`, rebuilt from the PATCH
+    // payload — so sending only one part drops the other from the display name. Send
+    // BOTH parts together whenever either changes.
+    const nameChanged =
+      (editData.attendee_first_name ?? "") !== (editInitial.attendee_first_name ?? "") ||
+      (editData.attendee_last_name ?? "") !== (editInitial.attendee_last_name ?? "");
+    if (nameChanged) {
+      payload.attendee_first_name = editData.attendee_first_name;
+      payload.attendee_last_name = editData.attendee_last_name;
+    }
+    // Email: a cleared field saves as null (schema allows .email().nullable()).
+    if ((editData.attendee_email ?? "") !== (editInitial.attendee_email ?? "")) {
+      payload.attendee_email = editData.attendee_email?.trim() ? editData.attendee_email.trim() : null;
+    }
+    if ((editData.practitioner_id ?? null) !== (editInitial.practitioner_id ?? null)) {
+      payload.practitioner_id = editData.practitioner_id ?? null;
+    }
+    if ((editData.service_type_id ?? null) !== (editInitial.service_type_id ?? null)) {
+      payload.service_type_id = editData.service_type_id ?? null;
+    }
+    // Compare by instant, not raw string: the picker round-trips the timestamp format
+    // ("…+00:00" → "…Z", minute precision), so a string compare would flag an untouched
+    // time as changed and could trip the server's past-time guard on a re-save.
+    const startChanged =
+      !!editData.start_time &&
+      new Date(editData.start_time).getTime() !== new Date(editInitial.start_time).getTime();
+    if (startChanged) payload.start_time = editData.start_time;
+
+    // Recompute end_time when the start or the service (hence duration) changed.
+    if (startChanged || payload.service_type_id !== undefined) {
+      const startIso = payload.start_time || appt.start_time;
+      const svcId = editData.service_type_id ?? appt.service_type_id;
+      const duration =
+        serviceTypes.find((s) => s.id === svcId)?.duration_minutes ?? appt.duration_minutes ?? 30;
+      if (startIso) {
+        payload.end_time = new Date(new Date(startIso).getTime() + duration * 60000).toISOString();
+        payload.duration_minutes = duration;
+      }
+    }
+
+    if (Object.keys(payload).length === 0) {
+      closeEditor();
+      return;
+    }
+
     setSaving(true);
     try {
       const res = await fetch(`/api/v1/appointments/${appointmentId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(editData),
+        body: JSON.stringify(payload),
       });
       if (!res.ok) {
-        const err = await res.json();
+        const err = await res.json().catch(() => ({}));
         throw new Error(err.error || "Failed to save");
       }
       toast({ title: "Appointment updated" });
-      setEditing(false);
-      setEditData({});
+      closeEditor();
       onUpdated();
       fetchAppointment();
     } catch (err: any) {
@@ -244,16 +408,7 @@ export function AppointmentDetailPanel({
                     </Badge>
                   )}
                   {!editing && isActive && (
-                    <Button variant="ghost" size="sm" onClick={() => {
-                      setEditing(true);
-                      setEditData({
-                        attendee_first_name: appt.attendee_first_name || appt.attendee_name?.split(" ")[0] || "",
-                        attendee_last_name: appt.attendee_last_name || appt.attendee_name?.split(" ").slice(1).join(" ") || "",
-                        attendee_phone: appt.attendee_phone || "",
-                        attendee_email: appt.attendee_email || "",
-                        notes: appt.notes || "",
-                      });
-                    }}>
+                    <Button variant="ghost" size="sm" onClick={openEditor}>
                       <Edit2 className="h-3.5 w-3.5 mr-1" /> Edit
                     </Button>
                   )}
@@ -262,6 +417,79 @@ export function AppointmentDetailPanel({
 
               {editing ? (
                 <div className="space-y-3">
+                  {/* Appointment details — SCRUM-397: correct what the AI got wrong */}
+                  <div>
+                    <Label className="text-xs">Date &amp; Time</Label>
+                    <Input
+                      type="datetime-local"
+                      value={isoToLocalInput(editData.start_time)}
+                      onChange={(e) =>
+                        setEditData({
+                          ...editData,
+                          start_time: e.target.value ? localInputToIso(e.target.value) : editInitial.start_time,
+                        })
+                      }
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <Label className="text-xs">{labels.service}</Label>
+                      <Select
+                        value={editData.service_type_id ?? NONE_VALUE}
+                        onValueChange={(v) =>
+                          setEditData({ ...editData, service_type_id: v === NONE_VALUE ? null : v })
+                        }
+                        disabled={optionsLoading}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder={optionsLoading ? "Loading…" : `Select ${labels.service.toLowerCase()}`} />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value={NONE_VALUE}>Unspecified</SelectItem>
+                          {serviceTypes.map((s) => (
+                            <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div>
+                      <Label className="text-xs">{labels.practitioner}</Label>
+                      <Select
+                        value={editData.practitioner_id ?? NONE_VALUE}
+                        onValueChange={(v) =>
+                          setEditData({ ...editData, practitioner_id: v === NONE_VALUE ? null : v })
+                        }
+                        disabled={optionsLoading}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder={optionsLoading ? "Loading…" : `Any ${labels.practitioner.toLowerCase()}`} />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value={NONE_VALUE}>Any {labels.practitioner.toLowerCase()}</SelectItem>
+                          {practitioners.map((p) => (
+                            <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                  <div>
+                    <Label className="text-xs">Status</Label>
+                    <Select value={editData.status} onValueChange={(v) => setEditData({ ...editData, status: v })}>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {EDITABLE_STATUSES.map((s) => (
+                          <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <Separator />
+
+                  {/* Client details */}
                   <div className="grid grid-cols-2 gap-2">
                     <div>
                       <Label className="text-xs">First Name</Label>
@@ -288,6 +516,8 @@ export function AppointmentDetailPanel({
                   <div>
                     <Label className="text-xs">Email</Label>
                     <Input
+                      type="email"
+                      placeholder="No email on file"
                       value={editData.attendee_email || ""}
                       onChange={(e) => setEditData({ ...editData, attendee_email: e.target.value })}
                     />
@@ -302,7 +532,7 @@ export function AppointmentDetailPanel({
                     />
                   </div>
                   <div className="flex gap-2 justify-end">
-                    <Button variant="outline" size="sm" onClick={() => { setEditing(false); setEditData({}); }}>
+                    <Button variant="outline" size="sm" onClick={closeEditor}>
                       Cancel
                     </Button>
                     <Button size="sm" onClick={handleSaveEdit} disabled={saving}>
@@ -325,7 +555,7 @@ export function AppointmentDetailPanel({
                       </a>
                     </div>
                   )}
-                  {appt.attendee_email && !appt.attendee_email.includes("@noreply.phondo.ai") && (
+                  {appt.attendee_email && !isSyntheticEmail(appt.attendee_email) && (
                     <div className="flex items-center gap-2">
                       <Mail className="h-4 w-4 text-muted-foreground" />
                       <span className="text-sm text-muted-foreground truncate">{appt.attendee_email}</span>
@@ -378,7 +608,7 @@ export function AppointmentDetailPanel({
                       // SCRUM-391: describe WHAT changed vs the previous leg (time /
                       // doctor / service), so a same-time doctor change reads "Doctor
                       // changed" instead of a confusing duplicate "Moved to <same time>".
-                      const change = describeChange(leg, i > 0 ? lifecycle[i - 1] : null);
+                      const change = describeChange(leg, i > 0 ? lifecycle[i - 1] : null, labels);
                       return (
                         <li key={leg.id} className="relative pl-4">
                           {/* connector + dot */}
