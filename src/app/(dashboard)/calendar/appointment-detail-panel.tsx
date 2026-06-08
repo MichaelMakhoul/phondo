@@ -21,7 +21,11 @@ import {
   Edit2, Check, Ban, CheckCircle, AlertTriangle,
   Loader2, ExternalLink, History,
 } from "lucide-react";
-import { describeChange } from "@/lib/calendar/appointment-lifecycle";
+import {
+  mergeTimeline,
+  type LifecycleLeg,
+  type TimelineEvent,
+} from "@/lib/calendar/appointment-lifecycle";
 import type { AppointmentLabels } from "@/lib/calendar/industry-labels";
 
 // SCRUM-397: bookings without a collected email get a synthetic placeholder
@@ -73,18 +77,8 @@ interface ClientHistory {
   previousAppointments: { id: string; start_time: string; status: string; service_type_name: string | null }[];
 }
 
-// SCRUM-389: one leg of an appointment's reschedule lifecycle (booked → moved → …).
-interface LifecycleLeg {
-  id: string;
-  status: string;
-  startTime: string;
-  bookedAt: string;
-  supersededAt: string | null;
-  channel: string;
-  practitioner: string | null; // SCRUM-391
-  serviceType: string | null;
-  isCurrent: boolean;
-}
+// SCRUM-389/391: LifecycleLeg + SCRUM-398: TimelineEvent are imported from the
+// lifecycle lib (single source of truth, unit-tested).
 
 const CHANNEL_LABELS: Record<string, string> = {
   voice: "AI Call",
@@ -92,6 +86,14 @@ const CHANNEL_LABELS: Record<string, string> = {
   cal_com: "Cal.com",
   calendly: "Calendly",
   google_calendar: "Google Calendar",
+  system: "System",
+};
+
+// SCRUM-398: how an audit event's actor reads on a standalone timeline line.
+const ACTOR_LABELS: Record<string, string> = {
+  ai: "AI",
+  staff: "staff",
+  system: "system",
 };
 
 const STATUS_COLORS: Record<string, string> = {
@@ -120,6 +122,7 @@ export function AppointmentDetailPanel({
   const [clientHistory, setClientHistory] = useState<ClientHistory | null>(null);
   const [linkedCall, setLinkedCall] = useState<any>(null);
   const [lifecycle, setLifecycle] = useState<LifecycleLeg[] | null>(null);
+  const [events, setEvents] = useState<TimelineEvent[]>([]);
   const [labels, setLabels] = useState<AppointmentLabels>(DEFAULT_LABELS);
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -143,6 +146,7 @@ export function AppointmentDetailPanel({
       setClientHistory(data.clientHistory);
       setLinkedCall(data.linkedCall);
       setLifecycle(data.lifecycle ?? null);
+      setEvents(Array.isArray(data.events) ? data.events : []);
       if (data.labels) setLabels(data.labels);
     } catch {
       toast({ title: "Error", description: "Failed to load appointment details", variant: "destructive" });
@@ -346,6 +350,38 @@ export function AppointmentDetailPanel({
 
   const appt = appointment;
   const isActive = appt?.status === "confirmed" || appt?.status === "pending";
+
+  // SCRUM-398: merged history — reschedule legs (AI/structural) interleaved with
+  // in-place edit events (manual + AI), chronological, labeled by who made each.
+  const timeline = mergeTimeline(lifecycle, events, labels);
+
+  // Display label for an audit field key (practitioner/service are industry-generic).
+  const fieldLabel = (field: string): string => {
+    switch (field) {
+      case "name": return "Name";
+      case "phone": return "Phone";
+      case "email": return "Email";
+      case "notes": return "Notes";
+      case "time": return "Time";
+      case "status": return "Status";
+      case "practitioner": return labels.practitioner;
+      case "service": return labels.service;
+      default: return field;
+    }
+  };
+
+  // Render a from/to value: times get a compact date, status is title-cased, else raw.
+  const formatChangeValue = (field: string, v: string | null): string => {
+    if (v === null || v.trim() === "") return "—";
+    if (field === "time") {
+      const d = new Date(v);
+      return isNaN(d.getTime())
+        ? v
+        : d.toLocaleString("en-AU", { day: "numeric", month: "short", hour: "numeric", minute: "2-digit", hour12: true });
+    }
+    if (field === "status") return formatStatus(v);
+    return v;
+  };
 
   return (
     <Sheet open={open} onOpenChange={(o) => !o && onClose()}>
@@ -593,8 +629,9 @@ export function AppointmentDetailPanel({
               </>
             )}
 
-            {/* Appointment History (reschedule lifecycle) — SCRUM-389 */}
-            {lifecycle && lifecycle.length > 1 && (
+            {/* Appointment History — SCRUM-389/391 reschedule legs interleaved with
+                SCRUM-398 in-place edit events (manual edits next to AI changes). */}
+            {timeline && timeline.length > 0 && (
               <>
                 <Separator />
                 <div className="space-y-2">
@@ -603,52 +640,74 @@ export function AppointmentDetailPanel({
                     <h3 className="text-sm font-semibold">Appointment History</h3>
                   </div>
                   <ol className="space-y-3 pl-3">
-                    {lifecycle.map((leg, i) => {
-                      const isLast = i === lifecycle.length - 1;
-                      // SCRUM-391: describe WHAT changed vs the previous leg (time /
-                      // doctor / service), so a same-time doctor change reads "Doctor
-                      // changed" instead of a confusing duplicate "Moved to <same time>".
-                      const change = describeChange(leg, i > 0 ? lifecycle[i - 1] : null, labels);
+                    {timeline.map((item, i) => {
+                      const isLast = i === timeline.length - 1;
+                      const leg = item.leg;
                       return (
-                        <li key={leg.id} className="relative pl-4">
+                        <li key={item.key} className="relative pl-4">
                           {/* connector + dot */}
                           {!isLast && (
                             <span className="absolute left-0 top-3 h-full w-px bg-border" aria-hidden />
                           )}
                           <span
                             className={`absolute left-[-3px] top-1.5 h-2 w-2 rounded-full ring-2 ring-background ${
-                              leg.isCurrent ? "bg-primary" : "bg-muted-foreground/40"
+                              leg?.isCurrent ? "bg-primary" : "bg-muted-foreground/40"
                             }`}
                             aria-hidden
                           />
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="text-sm">
-                              <span className="font-medium">
-                                {new Date(leg.startTime).toLocaleString("en-AU", {
-                                  weekday: "short", day: "numeric", month: "short",
-                                  hour: "numeric", minute: "2-digit", hour12: true,
-                                })}
-                              </span>
-                              {leg.practitioner && (
-                                <span className="text-muted-foreground"> · {leg.practitioner}</span>
-                              )}
-                            </span>
-                            <div className="flex items-center gap-1 shrink-0">
-                              {leg.isCurrent && (
-                                <span className="text-[10px] text-muted-foreground">Viewing</span>
-                              )}
-                              <Badge className={`text-[10px] h-5 ${STATUS_COLORS[leg.status] || ""}`}>
-                                {formatStatus(leg.status)}
-                              </Badge>
-                            </div>
-                          </div>
-                          <p className="text-xs text-muted-foreground">
-                            {change.label}
-                            {" · "}
-                            {new Date(change.at).toLocaleDateString("en-AU", { month: "short", day: "numeric" })}
-                            {" · via "}
-                            {CHANNEL_LABELS[leg.channel] || leg.channel}
-                          </p>
+                          {item.kind === "leg" && leg ? (
+                            <>
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="text-sm">
+                                  <span className="font-medium">
+                                    {new Date(leg.startTime).toLocaleString("en-AU", {
+                                      weekday: "short", day: "numeric", month: "short",
+                                      hour: "numeric", minute: "2-digit", hour12: true,
+                                    })}
+                                  </span>
+                                  {leg.practitioner && (
+                                    <span className="text-muted-foreground"> · {leg.practitioner}</span>
+                                  )}
+                                </span>
+                                <div className="flex items-center gap-1 shrink-0">
+                                  {leg.isCurrent && (
+                                    <span className="text-[10px] text-muted-foreground">Viewing</span>
+                                  )}
+                                  <Badge className={`text-[10px] h-5 ${STATUS_COLORS[leg.status] || ""}`}>
+                                    {formatStatus(leg.status)}
+                                  </Badge>
+                                </div>
+                              </div>
+                              <p className="text-xs text-muted-foreground">
+                                {item.changeLabel}
+                                {" · "}
+                                {new Date(item.at).toLocaleDateString("en-AU", { month: "short", day: "numeric" })}
+                                {" · via "}
+                                {CHANNEL_LABELS[leg.channel] || leg.channel}
+                              </p>
+                            </>
+                          ) : (
+                            <>
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="text-sm font-medium">
+                                  {item.eventType === "status_changed" ? "Status updated" : "Details edited"}
+                                </span>
+                                <span className="text-[10px] text-muted-foreground shrink-0">
+                                  {new Date(item.at).toLocaleDateString("en-AU", { month: "short", day: "numeric" })}
+                                  {" · by "}
+                                  {ACTOR_LABELS[item.actorType || ""] || item.actorType}
+                                </span>
+                              </div>
+                              <ul className="mt-0.5 space-y-0.5">
+                                {(item.changes || []).map((c, ci) => (
+                                  <li key={ci} className="text-xs text-muted-foreground">
+                                    <span className="font-medium text-foreground/80">{fieldLabel(c.field)}:</span>{" "}
+                                    {formatChangeValue(c.field, c.from)} → {formatChangeValue(c.field, c.to)}
+                                  </li>
+                                ))}
+                              </ul>
+                            </>
+                          )}
                         </li>
                       );
                     })}

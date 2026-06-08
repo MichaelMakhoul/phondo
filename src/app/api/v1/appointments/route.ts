@@ -3,6 +3,8 @@ import { createClient } from "@/lib/supabase/server";
 import { isValidPhoneNumber } from "@/lib/security/validation";
 import { validateOrgScopedRefs } from "@/lib/calendar/validate-org-scoped-refs";
 import { invalidateVoiceScheduleCache } from "@/lib/voice-cache/invalidate";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { recordAppointmentEvent } from "@/lib/appointments/events";
 import { z } from "zod";
 import crypto from "crypto";
 
@@ -187,6 +189,19 @@ export async function POST(request: NextRequest) {
         await invalidateVoiceScheduleCache(orgId);
       } catch (err) {
         console.error("[appointments POST] cache invalidation failed (non-fatal):", err);
+      }
+      // SCRUM-398: audit the manual creation (best-effort, service-role client).
+      try {
+        await recordAppointmentEvent(createAdminClient(), {
+          appointmentId: appointment.id,
+          organizationId: orgId,
+          eventType: "created",
+          actorType: "staff",
+          actorId: user.id,
+          channel: "dashboard",
+        });
+      } catch (e) {
+        console.error("[appointments POST] audit emit failed (non-fatal):", e);
       }
     });
 

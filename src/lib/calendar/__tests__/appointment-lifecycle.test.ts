@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { assembleLifecycle, deriveChannel, pickName, describeChange } from "../appointment-lifecycle";
-import type { LifecycleLeg } from "../appointment-lifecycle";
+import { assembleLifecycle, deriveChannel, pickName, describeChange, mergeTimeline } from "../appointment-lifecycle";
+import type { LifecycleLeg, TimelineEvent } from "../appointment-lifecycle";
 
 // LifecycleLeg factory for describeChange tests.
 const leg = (over: Partial<LifecycleLeg> = {}): LifecycleLeg => ({
@@ -172,5 +172,73 @@ describe("deriveChannel (SCRUM-389)", () => {
     expect(deriveChannel({ provider: "google_calendar" })).toBe("google_calendar");
     expect(deriveChannel({ provider: null })).toBe("voice");
     expect(deriveChannel({})).toBe("voice");
+  });
+});
+
+describe("mergeTimeline (SCRUM-398)", () => {
+  const evt = (over: Partial<TimelineEvent> = {}): TimelineEvent => ({
+    id: "e1", eventType: "edited", actorType: "staff", channel: "dashboard",
+    changedFields: [{ field: "name", from: "Michael", to: "Mena" }],
+    createdAt: "2026-06-09T00:00:00Z", ...over,
+  });
+
+  it("returns null when there are no legs and no events", () => {
+    expect(mergeTimeline(null, [])).toBeNull();
+  });
+
+  it("renders edit events standalone when there are no legs (single appointment edited)", () => {
+    const items = mergeTimeline(null, [evt()]);
+    expect(items).toHaveLength(1);
+    expect(items![0]).toMatchObject({ kind: "event", eventType: "edited", actorType: "staff" });
+    expect(items![0].changes).toEqual([{ field: "name", from: "Michael", to: "Mena" }]);
+  });
+
+  it("interleaves legs and events chronologically", () => {
+    const legs = [
+      leg({ id: "L1", bookedAt: "2026-06-05T00:00:00Z", startTime: "2026-06-17T01:00:00Z" }),
+      leg({ id: "L2", bookedAt: "2026-06-08T00:00:00Z", startTime: "2026-06-18T02:30:00Z", isCurrent: true }),
+    ];
+    const items = mergeTimeline(legs, [evt({ createdAt: "2026-06-09T00:00:00Z" })])!;
+    expect(items.map((i) => i.kind)).toEqual(["leg", "leg", "event"]); // L1(5th) → L2(8th) → edit(9th)
+    expect(items[0].changeLabel).toBe("Booked");
+  });
+
+  it("does NOT render structural events (created/rescheduled/cancelled) standalone", () => {
+    const events: TimelineEvent[] = [
+      evt({ id: "c", eventType: "created", changedFields: [] }),
+      evt({ id: "r", eventType: "rescheduled", changedFields: [{ field: "time", from: "a", to: "b" }] }),
+      evt({ id: "x", eventType: "cancelled", changedFields: [] }),
+    ];
+    expect(mergeTimeline(null, events)).toBeNull(); // none are edited/status_changed → nothing to show
+  });
+
+  it("skips edit events with no changed fields", () => {
+    expect(mergeTimeline(null, [evt({ changedFields: [] })])).toBeNull();
+  });
+
+  it("dedupes a status→cancelled event against a cancelled leg (no double line)", () => {
+    const legs = [
+      leg({ id: "L1", status: "rescheduled", bookedAt: "2026-06-05T00:00:00Z" }),
+      leg({ id: "L2", status: "cancelled", supersededAt: "2026-06-09T00:00:00Z", bookedAt: "2026-06-08T00:00:00Z", isCurrent: true }),
+    ];
+    const cancelEvt = evt({ id: "s", eventType: "status_changed", changedFields: [{ field: "status", from: "confirmed", to: "cancelled" }], createdAt: "2026-06-09T00:00:00Z" });
+    const items = mergeTimeline(legs, [cancelEvt])!;
+    expect(items.every((i) => i.kind === "leg")).toBe(true); // redundant cancel event dropped
+  });
+
+  it("keeps a status→cancelled event when there is no cancelled leg (single appointment)", () => {
+    const cancelEvt = evt({ id: "s", eventType: "status_changed", changedFields: [{ field: "status", from: "confirmed", to: "cancelled" }] });
+    const items = mergeTimeline(null, [cancelEvt])!;
+    expect(items).toHaveLength(1);
+    expect(items![0].kind).toBe("event");
+  });
+
+  it("passes industry labels through to leg change descriptions", () => {
+    const legs = [
+      leg({ id: "L1", practitioner: "Dr Chen", bookedAt: "2026-06-05T00:00:00Z" }),
+      leg({ id: "L2", practitioner: "Lisa", bookedAt: "2026-06-08T00:00:00Z", isCurrent: true }),
+    ];
+    const items = mergeTimeline(legs, [], { practitioner: "Dentist", service: "Treatment" })!;
+    expect(items[1].changeLabel).toBe("Dentist changed");
   });
 });
