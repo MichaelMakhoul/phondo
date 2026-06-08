@@ -34,6 +34,25 @@ interface ClientHistory {
   previousAppointments: { id: string; start_time: string; status: string; service_type_name: string | null }[];
 }
 
+// SCRUM-389: one leg of an appointment's reschedule lifecycle (booked → moved → …).
+interface LifecycleLeg {
+  id: string;
+  status: string;
+  startTime: string;
+  bookedAt: string;
+  supersededAt: string | null;
+  channel: string;
+  isCurrent: boolean;
+}
+
+const CHANNEL_LABELS: Record<string, string> = {
+  voice: "AI Call",
+  dashboard: "Dashboard",
+  cal_com: "Cal.com",
+  calendly: "Calendly",
+  google_calendar: "Google Calendar",
+};
+
 const STATUS_COLORS: Record<string, string> = {
   confirmed: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400",
   pending: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400",
@@ -59,6 +78,7 @@ export function AppointmentDetailPanel({
   const [appointment, setAppointment] = useState<any>(null);
   const [clientHistory, setClientHistory] = useState<ClientHistory | null>(null);
   const [linkedCall, setLinkedCall] = useState<any>(null);
+  const [lifecycle, setLifecycle] = useState<LifecycleLeg[] | null>(null);
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [editData, setEditData] = useState<Record<string, any>>({});
@@ -74,6 +94,7 @@ export function AppointmentDetailPanel({
       setAppointment(data.appointment);
       setClientHistory(data.clientHistory);
       setLinkedCall(data.linkedCall);
+      setLifecycle(data.lifecycle ?? null);
     } catch {
       toast({ title: "Error", description: "Failed to load appointment details", variant: "destructive" });
     } finally {
@@ -335,6 +356,61 @@ export function AppointmentDetailPanel({
                       View call transcript
                     </a>
                   )}
+                </div>
+              </>
+            )}
+
+            {/* Appointment History (reschedule lifecycle) — SCRUM-389 */}
+            {lifecycle && lifecycle.length > 1 && (
+              <>
+                <Separator />
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <History className="h-4 w-4 text-muted-foreground" />
+                    <h3 className="text-sm font-semibold">Appointment History</h3>
+                  </div>
+                  <ol className="space-y-3 pl-3">
+                    {lifecycle.map((leg, i) => {
+                      const isLast = i === lifecycle.length - 1;
+                      const changedOn = leg.supersededAt && !leg.isCurrent ? leg.supersededAt : leg.bookedAt;
+                      return (
+                        <li key={leg.id} className="relative pl-4">
+                          {/* connector + dot */}
+                          {!isLast && (
+                            <span className="absolute left-0 top-3 h-full w-px bg-border" aria-hidden />
+                          )}
+                          <span
+                            className={`absolute left-[-3px] top-1.5 h-2 w-2 rounded-full ring-2 ring-background ${
+                              leg.isCurrent ? "bg-primary" : "bg-muted-foreground/40"
+                            }`}
+                            aria-hidden
+                          />
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-sm">
+                              {i === 0 ? "Booked for " : "Moved to "}
+                              <span className="font-medium">
+                                {new Date(leg.startTime).toLocaleString("en-AU", {
+                                  weekday: "short", day: "numeric", month: "short",
+                                  hour: "numeric", minute: "2-digit", hour12: true,
+                                })}
+                              </span>
+                            </span>
+                            <Badge className={`text-[10px] h-5 shrink-0 ${STATUS_COLORS[leg.status] || ""}`}>
+                              {leg.isCurrent ? "Current" : formatStatus(leg.status)}
+                            </Badge>
+                          </div>
+                          <p className="text-xs text-muted-foreground">
+                            {leg.isCurrent
+                              ? formatStatus(leg.status)
+                              : leg.status === "cancelled" ? "Cancelled" : "Changed"}{" "}
+                            {new Date(changedOn).toLocaleDateString("en-AU", { month: "short", day: "numeric" })}
+                            {" · via "}
+                            {CHANNEL_LABELS[leg.channel] || leg.channel}
+                          </p>
+                        </li>
+                      );
+                    })}
+                  </ol>
                 </div>
               </>
             )}
