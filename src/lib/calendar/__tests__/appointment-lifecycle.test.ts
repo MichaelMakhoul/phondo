@@ -1,5 +1,14 @@
 import { describe, it, expect } from "vitest";
-import { assembleLifecycle, deriveChannel, pickName } from "../appointment-lifecycle";
+import { assembleLifecycle, deriveChannel, pickName, describeChange } from "../appointment-lifecycle";
+import type { LifecycleLeg } from "../appointment-lifecycle";
+
+// LifecycleLeg factory for describeChange tests.
+const leg = (over: Partial<LifecycleLeg> = {}): LifecycleLeg => ({
+  id: "x", status: "confirmed",
+  startTime: "2026-06-17T09:00:00Z", bookedAt: "2026-06-08T00:00:00Z",
+  supersededAt: null, channel: "voice", practitioner: "Dr Chen",
+  serviceType: "Check-up", isCurrent: false, ...over,
+});
 
 // Minimal appointment row factory (only the fields assembleLifecycle reads).
 const row = (
@@ -86,6 +95,49 @@ describe("assembleLifecycle (SCRUM-389)", () => {
     const B = row("B", "confirmed");
     const legs = assembleLifecycle([], A, [B])!;
     expect(legs.every((l) => l.practitioner === null)).toBe(true);
+  });
+});
+
+describe("describeChange (SCRUM-391)", () => {
+  it("labels the root leg 'Booked', dated by bookedAt", () => {
+    const l = leg({ bookedAt: "2026-06-01T00:00:00Z" });
+    expect(describeChange(l, null)).toEqual({ label: "Booked", at: "2026-06-01T00:00:00Z" });
+  });
+
+  it("detects a time-only change", () => {
+    const prev = leg({ startTime: "2026-06-18T01:00:00Z" });
+    const cur = leg({ startTime: "2026-06-18T02:30:00Z", bookedAt: "2026-06-08T10:00:00Z" });
+    expect(describeChange(cur, prev)).toEqual({ label: "Time changed", at: "2026-06-08T10:00:00Z" });
+  });
+
+  it("detects a doctor-only change at the same time (the reported case)", () => {
+    const prev = leg({ practitioner: "Dr Sarah Chen" });
+    const cur = leg({ practitioner: "Lisa Thompson" }); // same startTime
+    expect(describeChange(cur, prev).label).toBe("Doctor changed");
+  });
+
+  it("detects a service-only change", () => {
+    const prev = leg({ serviceType: "Check-up" });
+    const cur = leg({ serviceType: "Filling" });
+    expect(describeChange(cur, prev).label).toBe("Service changed");
+  });
+
+  it("combines multiple changes", () => {
+    const prev = leg({ startTime: "2026-06-18T01:00:00Z", practitioner: "Dr Chen" });
+    const cur = leg({ startTime: "2026-06-18T02:30:00Z", practitioner: "Lisa Thompson" });
+    expect(describeChange(cur, prev).label).toBe("Time & Doctor changed");
+  });
+
+  it("labels a cancelled leg 'Cancelled', dated by supersededAt", () => {
+    const prev = leg();
+    const cur = leg({ status: "cancelled", supersededAt: "2026-06-09T00:00:00Z" });
+    expect(describeChange(cur, prev)).toEqual({ label: "Cancelled", at: "2026-06-09T00:00:00Z" });
+  });
+
+  it("falls back to 'Updated' when nothing tracked changed", () => {
+    const prev = leg();
+    const cur = leg(); // identical time/doctor/service
+    expect(describeChange(cur, prev).label).toBe("Updated");
   });
 });
 

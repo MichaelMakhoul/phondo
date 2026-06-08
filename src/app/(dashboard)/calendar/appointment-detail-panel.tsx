@@ -18,6 +18,7 @@ import {
   Edit2, X, Check, Ban, CheckCircle, AlertTriangle,
   Loader2, ExternalLink, History,
 } from "lucide-react";
+import { describeChange } from "@/lib/calendar/appointment-lifecycle";
 
 interface AppointmentDetailPanelProps {
   appointmentId: string | null;
@@ -374,28 +375,10 @@ export function AppointmentDetailPanel({
                   <ol className="space-y-3 pl-3">
                     {lifecycle.map((leg, i) => {
                       const isLast = i === lifecycle.length - 1;
-                      const prev = i > 0 ? lifecycle[i - 1] : null;
-                      // SCRUM-391: describe WHAT changed from the previous leg (time
-                      // and/or doctor), so a same-time doctor change reads "Doctor
+                      // SCRUM-391: describe WHAT changed vs the previous leg (time /
+                      // doctor / service), so a same-time doctor change reads "Doctor
                       // changed" instead of a confusing duplicate "Moved to <same time>".
-                      const timeChanged = !!prev && prev.startTime !== leg.startTime;
-                      const doctorChanged = !!prev && prev.practitioner !== leg.practitioner;
-                      const changeLabel = !prev
-                        ? "Booked"
-                        : leg.status === "cancelled"
-                          ? "Cancelled"
-                          : timeChanged && doctorChanged
-                            ? "Time & doctor changed"
-                            : timeChanged
-                              ? "Time changed"
-                              : doctorChanged
-                                ? "Doctor changed"
-                                : "Updated";
-                      // Date the change happened: this leg's booking time, except a
-                      // cancellation which happened at its supersede time.
-                      const changeDate = leg.status === "cancelled" && leg.supersededAt
-                        ? leg.supersededAt
-                        : leg.bookedAt;
+                      const change = describeChange(leg, i > 0 ? lifecycle[i - 1] : null);
                       return (
                         <li key={leg.id} className="relative pl-4">
                           {/* connector + dot */}
@@ -430,9 +413,9 @@ export function AppointmentDetailPanel({
                             </div>
                           </div>
                           <p className="text-xs text-muted-foreground">
-                            {changeLabel}
+                            {change.label}
                             {" · "}
-                            {new Date(changeDate).toLocaleDateString("en-AU", { month: "short", day: "numeric" })}
+                            {new Date(change.at).toLocaleDateString("en-AU", { month: "short", day: "numeric" })}
                             {" · via "}
                             {CHANNEL_LABELS[leg.channel] || leg.channel}
                           </p>

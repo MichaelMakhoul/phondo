@@ -38,6 +38,32 @@ export function deriveChannel(row: { provider?: string | null }): string {
   return "voice"; // internal / ai_receptionist
 }
 
+export interface LifecycleChange {
+  label: string; // "Booked" | "Time changed" | "Doctor changed" | "Service changed" | "Time & Doctor changed" | "Cancelled" | "Updated"
+  at: string;    // ISO date the change happened
+}
+
+/**
+ * SCRUM-391: describe WHAT changed to arrive at `leg` versus the previous (older)
+ * leg, for the history timeline — so a same-time doctor change reads "Doctor changed"
+ * rather than a confusing duplicate "Moved to <same time>".
+ *
+ * `at` is dated by the destination leg's booking time (when the move into it
+ * happened), except a cancellation — which has no successor leg, so it uses its own
+ * supersede time.
+ */
+export function describeChange(leg: LifecycleLeg, prev: LifecycleLeg | null): LifecycleChange {
+  const at = leg.status === "cancelled" && leg.supersededAt ? leg.supersededAt : leg.bookedAt;
+  if (!prev) return { label: "Booked", at };
+  if (leg.status === "cancelled") return { label: "Cancelled", at };
+  const parts: string[] = [];
+  if (prev.startTime !== leg.startTime) parts.push("Time");
+  if (prev.practitioner !== leg.practitioner) parts.push("Doctor");
+  if (prev.serviceType !== leg.serviceType) parts.push("Service");
+  if (parts.length === 0) return { label: "Updated", at };
+  return { label: `${parts.join(" & ")} changed`, at };
+}
+
 /**
  * Assemble the ordered lifecycle (oldest → newest) from a back-walk and forward-walk.
  *
