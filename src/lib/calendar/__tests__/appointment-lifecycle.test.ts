@@ -1,11 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { assembleLifecycle, deriveChannel } from "../appointment-lifecycle";
+import { assembleLifecycle, deriveChannel, pickName } from "../appointment-lifecycle";
 
 // Minimal appointment row factory (only the fields assembleLifecycle reads).
 const row = (
   id: string,
   status: string,
-  opts: { start?: string; created?: string; updated?: string; provider?: string } = {}
+  opts: { start?: string; created?: string; updated?: string; provider?: string; practitioner?: string } = {}
 ) => ({
   id,
   status,
@@ -13,6 +13,8 @@ const row = (
   created_at: opts.created ?? "2026-06-01T00:00:00Z",
   updated_at: opts.updated ?? "2026-06-02T00:00:00Z",
   provider: opts.provider ?? "internal",
+  practitioners: opts.practitioner ? { name: opts.practitioner } : null,
+  service_types: null,
 });
 
 describe("assembleLifecycle (SCRUM-389)", () => {
@@ -68,6 +70,32 @@ describe("assembleLifecycle (SCRUM-389)", () => {
     const C = row("C", "confirmed", { provider: "cal_com" });
     const legs = assembleLifecycle([], A, [B, C])!;
     expect(legs.map((l) => l.channel)).toEqual(["voice", "dashboard", "cal_com"]);
+  });
+
+  it("projects practitioner per leg (so the UI can show a doctor change)", () => {
+    // Same time, different doctor — the case the timeline must distinguish.
+    const A = row("A", "rescheduled", { start: "2026-06-17T09:00:00Z", practitioner: "Dr Sarah Chen" });
+    const B = row("B", "confirmed", { start: "2026-06-17T09:00:00Z", practitioner: "Lisa Thompson" });
+    const legs = assembleLifecycle([], A, [B])!;
+    expect(legs.map((l) => l.practitioner)).toEqual(["Dr Sarah Chen", "Lisa Thompson"]);
+    expect(legs[0].startTime).toBe(legs[1].startTime); // same time, doctor differs
+  });
+
+  it("handles a missing practitioner relation as null", () => {
+    const A = row("A", "rescheduled");
+    const B = row("B", "confirmed");
+    const legs = assembleLifecycle([], A, [B])!;
+    expect(legs.every((l) => l.practitioner === null)).toBe(true);
+  });
+});
+
+describe("pickName (SCRUM-391)", () => {
+  it("reads .name from an object, a one-element array, or null", () => {
+    expect(pickName({ name: "Dr Chen" })).toBe("Dr Chen");
+    expect(pickName([{ name: "Lisa Thompson" }])).toBe("Lisa Thompson");
+    expect(pickName(null)).toBeNull();
+    expect(pickName(undefined)).toBeNull();
+    expect(pickName([])).toBeNull();
   });
 });
 

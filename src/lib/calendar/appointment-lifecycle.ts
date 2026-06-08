@@ -10,16 +10,25 @@ export interface LifecycleLeg {
   bookedAt: string;             // created_at — when this leg was booked
   supersededAt: string | null;  // updated_at when it became terminal (moved/cancelled)
   channel: string;              // voice | dashboard | cal_com | calendly | google_calendar
+  practitioner: string | null;  // SCRUM-391 — so the UI can show a doctor change
+  serviceType: string | null;
   isCurrent: boolean;           // the leg the user opened
 }
 
-// Columns the walk must select for assembly.
+// Columns the walk must select for assembly (embeds practitioner/service names).
 export const LIFECYCLE_COLS =
-  "id, status, start_time, created_at, updated_at, provider, metadata, rescheduled_from_id";
+  "id, status, start_time, created_at, updated_at, provider, metadata, rescheduled_from_id, practitioners(name), service_types(name)";
 
 // A leg is "superseded" (no longer live) when it was moved or cancelled.
 export function isSupersededStatus(status: string): boolean {
   return status === "rescheduled" || status === "cancelled";
+}
+
+// A Supabase embedded to-one relation can come back as an object or a one-element
+// array depending on the query; normalise to its `name` (or null).
+export function pickName(rel: any): string | null {
+  const r = Array.isArray(rel) ? rel[0] : rel;
+  return r?.name ?? null;
 }
 
 export function deriveChannel(row: { provider?: string | null }): string {
@@ -54,6 +63,9 @@ export function assembleLifecycle(
     bookedAt: r.created_at,
     supersededAt: isSupersededStatus(r.status) ? r.updated_at : null,
     channel: deriveChannel(r),
+    // Supabase embeds may resolve to an object or a single-element array.
+    practitioner: pickName(r.practitioners),
+    serviceType: pickName(r.service_types),
     isCurrent: r.id === opened.id,
   }));
 }
