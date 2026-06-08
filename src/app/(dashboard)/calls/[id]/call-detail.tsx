@@ -4,6 +4,7 @@ import { useState, useEffect, useMemo } from "react";
 import Link from "next/link";
 import { format } from "date-fns";
 import { parseCleanedTranscript } from "@/lib/call-recordings/cleaned-transcript";
+import { formatCollectedValue, isNonAnswer } from "@/lib/calls/collected-data";
 import {
   ArrowLeft,
   PhoneIncoming,
@@ -163,7 +164,7 @@ export function CallDetail({ call: initialCall }: { call: Call }) {
   const [editSummary, setEditSummary] = useState(call.summary || "");
   const [editCollectedData, setEditCollectedData] = useState<Record<string, string>>(
     Object.fromEntries(
-      Object.entries(call.collected_data || {}).map(([k, v]) => [k, String(v ?? "")])
+      Object.entries(call.collected_data || {}).map(([k, v]) => [k, formatCollectedValue(v)])
     )
   );
   const { toast } = useToast();
@@ -173,7 +174,7 @@ export function CallDetail({ call: initialCall }: { call: Call }) {
     setEditSummary(call.summary || "");
     setEditCollectedData(
       Object.fromEntries(
-        Object.entries(call.collected_data || {}).map(([k, v]) => [k, String(v ?? "")])
+        Object.entries(call.collected_data || {}).map(([k, v]) => [k, formatCollectedValue(v)])
       )
     );
     setIsEditing(true);
@@ -194,7 +195,7 @@ export function CallDetail({ call: initialCall }: { call: Call }) {
         body.summary = editSummary;
       }
       const currentCollected = Object.fromEntries(
-        Object.entries(call.collected_data || {}).map(([k, v]) => [k, String(v ?? "")])
+        Object.entries(call.collected_data || {}).map(([k, v]) => [k, formatCollectedValue(v)])
       );
       if (JSON.stringify(editCollectedData) !== JSON.stringify(currentCollected)) {
         body.collectedData = editCollectedData;
@@ -260,7 +261,11 @@ export function CallDetail({ call: initialCall }: { call: Call }) {
   const unansweredQuestions = Array.isArray(call.metadata?.unansweredQuestions)
     ? (call.metadata.unansweredQuestions as string[])
     : [];
-  const collectedEntries = Object.entries(call.collected_data || {});
+  // SCRUM-392: hide non-answer fields ("not provided"/empty) — they're noise (the
+  // real phone etc. is shown in the contact section).
+  const collectedEntries = Object.entries(call.collected_data || {}).filter(
+    ([, v]) => !isNonAnswer(v)
+  );
   const transferAttempt = call.metadata?.transferAttempt as {
     ruleId?: string;
     ruleName?: string;
@@ -649,7 +654,7 @@ export function CallDetail({ call: initialCall }: { call: Call }) {
                         {formatFieldLabel(key)}
                       </p>
                       <p className="mt-1 text-sm font-medium">
-                        {String(value ?? "-")}
+                        {formatCollectedValue(value) || "-"}
                       </p>
                     </div>
                   ))}
