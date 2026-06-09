@@ -52,6 +52,12 @@ const EDITABLE_STATUSES: { value: string; label: string }[] = [
 // Radix Select can't use "" as a value; sentinel for "no practitioner/service".
 const NONE_VALUE = "__none__";
 
+// SCRUM-399: the customer-SMS opt-in ("Text the customer their new time") is hidden
+// until an SMS provider is wired up — there's no service to send through yet. The
+// backend `send_sms` support stays in place; flip this to true to re-expose the
+// checkbox once SMS is live.
+const CUSTOMER_SMS_ENABLED = false;
+
 // datetime-local <-> ISO helpers (browser-local, matching the panel's other times).
 function isoToLocalInput(iso: string | null | undefined): string {
   if (!iso) return "";
@@ -316,7 +322,7 @@ export function AppointmentDetailPanel({
       startChanged ||
       payload.practitioner_id !== undefined ||
       payload.service_type_id !== undefined;
-    if (isReschedule && notifyCustomer) payload.send_sms = true;
+    if (CUSTOMER_SMS_ENABLED && isReschedule && notifyCustomer) payload.send_sms = true;
 
     // Recompute end_time when the start or the service (hence duration) changed.
     if (startChanged || payload.service_type_id !== undefined) {
@@ -614,8 +620,9 @@ export function AppointmentDetailPanel({
                     />
                   </div>
                   {/* SCRUM-399: moving the time/service/practitioner reschedules the
-                      appointment — offer to text the customer the new time. Off by default. */}
-                  {willReschedule && (
+                      appointment — offer to text the customer the new time. Off by default.
+                      Hidden until an SMS provider is live (CUSTOMER_SMS_ENABLED). */}
+                  {willReschedule && CUSTOMER_SMS_ENABLED && (
                     <div className="flex items-start gap-2 rounded-md border border-border bg-muted/40 p-2.5">
                       <Checkbox
                         id="notify-customer"
