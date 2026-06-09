@@ -1,15 +1,23 @@
 import { NextRequest, NextResponse, after } from "next/server";
+import * as Sentry from "@sentry/nextjs";
+import crypto from "crypto";
 import { createClient } from "@/lib/supabase/server";
 import { isValidUUID } from "@/lib/security/validation";
 import { validateOrgScopedRefs } from "@/lib/calendar/validate-org-scoped-refs";
 import { getClientHistory } from "@/lib/clients/client-history";
 import { invalidateVoiceScheduleCache } from "@/lib/voice-cache/invalidate";
+import { sendAppointmentConfirmationSMS } from "@/lib/sms/caller-sms";
 import {
   assembleLifecycle,
   LIFECYCLE_COLS,
   pickName,
   type LifecycleLeg,
 } from "@/lib/calendar/appointment-lifecycle";
+import {
+  decideRescheduleLeg,
+  buildRescheduleLegFields,
+  partitionRescheduleChanges,
+} from "@/lib/calendar/reschedule-core";
 import { getAppointmentLabels } from "@/lib/calendar/industry-labels";
 import { createAdminClient } from "@/lib/supabase/admin";
 import {
@@ -19,6 +27,13 @@ import {
   type AppointmentSnapshot,
 } from "@/lib/appointments/events";
 import { z } from "zod";
+
+// SCRUM-398/399: columns the before-image needs — resolved names for the audit diff
+// PLUS the raw fields/FKs a reschedule leg carries over to its new row.
+const BEFORE_COLS =
+  "id, attendee_name, attendee_first_name, attendee_last_name, attendee_phone, attendee_email, " +
+  "notes, start_time, end_time, duration_minutes, status, service_type_id, practitioner_id, " +
+  "service_types(name), practitioners(name)";
 
 // SCRUM-398: project an appointment row (with embedded practitioner/service names)
 // into the normalized snapshot the audit diff compares.
@@ -108,6 +123,10 @@ const updateSchema = z.object({
   practitioner_id: z.string().uuid().optional().nullable(),
   notes: z.string().max(2000).optional().nullable(),
   status: z.enum(["pending", "confirmed", "cancelled", "rescheduled", "completed", "no_show"]).optional(),
+  // SCRUM-399: opt-in — when a dashboard edit moves the time/practitioner/service
+  // (a reschedule leg), text the customer the new time. Default off; ignored on a
+  // plain in-place edit. Never a DB column — read separately, not added to `updates`.
+  send_sms: z.boolean().optional(),
 });
 
 // GET /api/v1/appointments/[id] — full details + client history
@@ -229,6 +248,181 @@ export async function GET(
   }
 }
 
+/**
+ * SCRUM-399: perform a dashboard reschedule as a lifecycle LEG. Free the OLD row
+ * FIRST (mark `rescheduled`) — a row never conflicts with itself, but the NEW row
+ * would conflict with the still-live old one on the GiST no-overlap constraint, so
+ * freeing first is what lets a move into the appointment's own/overlapping slot
+ * succeed. Then insert the new leg; if that fails, ROLL BACK the old row to its
+ * prior status so the customer keeps their appointment. Links rescheduled_from_id,
+ * records audit events, and (opt-in) texts the customer the new time.
+ */
+async function rescheduleViaLeg(
+  supabase: any,
+  orgId: string,
+  userId: string,
+  oldId: string,
+  before: any,
+  updates: Record<string, any>,
+  sendSms: boolean
+): Promise<NextResponse> {
+  // 1. Free the old leg — guarded on it still being active so we don't race a
+  //    concurrent cancel/move (and never "revive" an already-terminal row).
+  const { data: freed, error: freeErr } = await supabase
+    .from("appointments")
+    .update({ status: "rescheduled" })
+    .eq("id", oldId)
+    .eq("organization_id", orgId)
+    .in("status", ["confirmed", "pending"])
+    .select("id");
+
+  if (freeErr) {
+    console.error("[appointments PATCH] failed to free old leg for reschedule:", freeErr);
+    return NextResponse.json({ error: "Failed to reschedule appointment" }, { status: 500 });
+  }
+  if (!freed || freed.length === 0) {
+    return NextResponse.json(
+      { error: "This appointment can no longer be edited (it may have been cancelled or moved)." },
+      { status: 409 }
+    );
+  }
+
+  // 2. Insert the new leg — the old row's fields with the staff edits applied. A
+  //    fresh confirmation_code (the column is UNIQUE; the old code stays on the old
+  //    row, which is now the inactive `rescheduled` leg).
+  const legFields = buildRescheduleLegFields(before, updates);
+  const { data: inserted, error: insErr } = await supabase
+    .from("appointments")
+    .insert({
+      ...legFields,
+      organization_id: orgId,
+      provider: "manual",
+      confirmation_code: crypto.randomInt(100000, 999999).toString(),
+      rescheduled_from_id: oldId,
+      metadata: { source: "dashboard_reschedule", created_by: userId, rescheduled_from: oldId },
+    })
+    .select("*, service_types(name), practitioners(name)")
+    .single();
+
+  if (insErr) {
+    // The move failed — restore the old row so the customer keeps their slot. Guard
+    // on the status we ourselves set (`rescheduled`) so we only revive a row WE froze,
+    // and `.select` the result so a 0-row rollback (row concurrently changed/deleted)
+    // is treated as a failure rather than a false success.
+    const { data: restored, error: rbErr } = await supabase
+      .from("appointments")
+      .update({ status: before.status })
+      .eq("id", oldId)
+      .eq("organization_id", orgId)
+      .eq("status", "rescheduled")
+      .select("id");
+    const rolledBack = !rbErr && Array.isArray(restored) && restored.length > 0;
+
+    if (!rolledBack) {
+      // Old freed, new not created, AND rollback didn't restore it → the customer is
+      // stranded with a superseded-but-not-replaced appointment. Page on-call, and
+      // return a DISTINCT error so staff know the appointment needs manual review
+      // (never the look-alike "time conflicts" 409, which would mask data loss).
+      console.error("[appointments PATCH] reschedule rollback FAILED — orphaned old leg", {
+        orgId, oldId, insErr: insErr.message, rbErr: rbErr?.message ?? "0 rows restored",
+      });
+      Sentry.withScope((scope) => {
+        scope.setLevel("error");
+        scope.setTag("bug", "dashboard_reschedule_rollback_failed");
+        scope.setExtras({ orgId, oldId });
+        Sentry.captureMessage("Dashboard reschedule rollback failed (orphaned old leg)");
+      });
+      return NextResponse.json(
+        { error: "We couldn't complete the move and couldn't restore the original appointment — it needs manual review." },
+        { status: 500 }
+      );
+    }
+
+    // Rollback succeeded — the customer keeps their original appointment.
+    if (insErr.code === "23P01") {
+      return NextResponse.json({ error: "This time conflicts with another appointment" }, { status: 409 });
+    }
+    console.error("[appointments PATCH] failed to insert reschedule leg (original kept):", insErr);
+    return NextResponse.json({ error: "Failed to reschedule appointment" }, { status: 500 });
+  }
+
+  after(async () => {
+    try {
+      await invalidateVoiceScheduleCache(orgId);
+    } catch (err) {
+      console.error("[appointments PATCH] cache invalidation failed (non-fatal):", err);
+    }
+    // Audit: the structural `rescheduled` event (not rendered standalone — the leg
+    // already shows the move) plus, if a name/phone/email/notes was corrected in the
+    // same save, an `edited` event ON the new leg so that detail change still shows.
+    try {
+      const admin = createAdminClient();
+      const allChanges = diffAppointmentFields(toSnapshot(before), toSnapshot(inserted));
+      const { legWorthy, inPlace } = partitionRescheduleChanges(allChanges);
+      await recordAppointmentEvent(admin, {
+        appointmentId: inserted.id,
+        organizationId: orgId,
+        eventType: "rescheduled",
+        actorType: "staff",
+        actorId: userId,
+        channel: "dashboard",
+        changedFields: legWorthy,
+      });
+      if (inPlace.length > 0) {
+        await recordAppointmentEvent(admin, {
+          appointmentId: inserted.id,
+          organizationId: orgId,
+          eventType: "edited",
+          actorType: "staff",
+          actorId: userId,
+          channel: "dashboard",
+          changedFields: inPlace,
+        });
+      }
+    } catch (e) {
+      console.error("[appointments PATCH] reschedule audit emit failed (non-fatal):", e);
+    }
+    // SCRUM-399: opt-in customer SMS for the new time. The old-slot cancellation SMS
+    // is never sent — this is a move. sendAppointmentConfirmationSMS already honors
+    // opt-outs, rate limits, and the org's customer-confirmation setting (it resolves
+    // the org timezone itself when none is passed), so we pass undefined for timezone.
+    if (sendSms) {
+      if (!inserted.attendee_phone || !inserted.start_time) {
+        // Staff explicitly requested a text but we can't send one — log it so the
+        // unmet request is visible (the panel optimistically said "moved").
+        console.warn("[appointments PATCH] reschedule SMS requested but skipped — missing phone/time", {
+          orgId, appointmentId: inserted.id, hasPhone: !!inserted.attendee_phone,
+        });
+      } else {
+        try {
+          // The send can be REFUSED without throwing (opt-out, rate limit, plan/feature
+          // gating, no org number…) — it returns { sent:false, reason }. Inspect it so a
+          // staff-requested-but-undelivered text isn't a silent no-op.
+          const smsResult = await sendAppointmentConfirmationSMS(
+            orgId,
+            inserted.attendee_phone,
+            new Date(inserted.start_time),
+            undefined,
+            undefined,
+            inserted.id
+          );
+          if (smsResult && smsResult.sent === false) {
+            console.warn("[appointments PATCH] reschedule SMS not delivered", {
+              orgId, appointmentId: inserted.id, status: smsResult.status, reason: smsResult.reason,
+            });
+          }
+        } catch (e) {
+          console.error("[appointments PATCH] reschedule SMS threw (non-fatal):", e);
+        }
+      }
+    }
+  });
+
+  // Return the new leg + a marker so the panel re-points its view to it (the edited
+  // id is now a superseded `rescheduled` row).
+  return NextResponse.json({ ...inserted, rescheduled: { fromId: oldId, toId: inserted.id } });
+}
+
 // PATCH /api/v1/appointments/[id] — edit appointment fields
 export async function PATCH(
   request: NextRequest,
@@ -294,14 +488,35 @@ export async function PATCH(
       return NextResponse.json({ error: "No fields to update" }, { status: 400 });
     }
 
-    // SCRUM-398: capture the before-image (resolved names) to diff for the audit log.
-    const { data: before } = await (supabase as any)
+    // SCRUM-398/399: capture the before-image (resolved names + raw FKs/fields). It's
+    // needed BEFORE writing — to decide leg-vs-in-place, to diff for the audit log,
+    // and to carry fields onto a reschedule leg. A read failure must NOT fall through
+    // to a blind write (the SCRUM-394 lesson), so check the error explicitly.
+    const { data: before, error: beforeErr } = await (supabase as any)
       .from("appointments")
-      .select("attendee_name, attendee_phone, attendee_email, notes, start_time, status, service_types(name), practitioners(name)")
+      .select(BEFORE_COLS)
       .eq("id", id)
       .eq("organization_id", orgId)
       .single();
 
+    if (beforeErr || !before) {
+      if (beforeErr && beforeErr.code !== "PGRST116") {
+        console.error("[appointments PATCH] before-image read failed:", beforeErr);
+        return NextResponse.json({ error: "Failed to update appointment" }, { status: 500 });
+      }
+      return NextResponse.json({ error: "Appointment not found" }, { status: 404 });
+    }
+
+    // SCRUM-399: a change to the time, practitioner, or service is a structural MOVE
+    // — model it as a reschedule LEG (new row + old row marked `rescheduled` + link),
+    // exactly like the AI path, rather than mutating the row in place. This keeps the
+    // history attribution honest (the AI's original leg is preserved; the staff move
+    // is its own leg) and resolves the Stage-2 multi-leg double-show.
+    if (decideRescheduleLeg(before, updates).isLeg) {
+      return await rescheduleViaLeg(supabase, orgId, user.id, id, before, updates, data.send_sms === true);
+    }
+
+    // ── In-place edit (name/phone/email/notes/status only) ──────────────────────
     const { data: updated, error } = await (supabase as any)
       .from("appointments")
       .update(updates)
@@ -320,25 +535,23 @@ export async function PATCH(
     // SCRUM-398: record the in-place edit as an audit event. Best-effort, via the
     // admin client (the table is service-role-write-only), in after() so it never
     // delays or breaks the response. The diff compares resolved (name) values.
-    if (before) {
-      const changes = diffAppointmentFields(toSnapshot(before), toSnapshot(updated));
-      if (changes.length > 0) {
-        after(async () => {
-          try {
-            await recordAppointmentEvent(createAdminClient(), {
-              appointmentId: id,
-              organizationId: orgId,
-              eventType: classifyEditEvent(changes),
-              actorType: "staff",
-              actorId: user.id,
-              channel: "dashboard",
-              changedFields: changes,
-            });
-          } catch (e) {
-            console.error("[appointments PATCH] audit emit failed (non-fatal):", e);
-          }
-        });
-      }
+    const changes = diffAppointmentFields(toSnapshot(before), toSnapshot(updated));
+    if (changes.length > 0) {
+      after(async () => {
+        try {
+          await recordAppointmentEvent(createAdminClient(), {
+            appointmentId: id,
+            organizationId: orgId,
+            eventType: classifyEditEvent(changes),
+            actorType: "staff",
+            actorId: user.id,
+            channel: "dashboard",
+            changedFields: changes,
+          });
+        } catch (e) {
+          console.error("[appointments PATCH] audit emit failed (non-fatal):", e);
+        }
+      });
     }
 
     // SCRUM-245: invalidate voice-server schedule cache so reschedules and

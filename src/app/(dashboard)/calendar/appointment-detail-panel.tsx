@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
   Sheet,
   SheetContent,
@@ -9,6 +9,7 @@ import {
 } from "@/components/ui/sheet";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
@@ -118,6 +119,10 @@ export function AppointmentDetailPanel({
   onUpdated,
 }: AppointmentDetailPanelProps) {
   const [loading, setLoading] = useState(true);
+  // SCRUM-399: the id currently displayed. Seeded from the prop, but a reschedule
+  // creates a NEW row (the edited id becomes a superseded `rescheduled` leg), so we
+  // re-point the view to the new leg after a successful move.
+  const [viewId, setViewId] = useState<string | null>(appointmentId);
   const [appointment, setAppointment] = useState<any>(null);
   const [clientHistory, setClientHistory] = useState<ClientHistory | null>(null);
   const [linkedCall, setLinkedCall] = useState<any>(null);
@@ -133,15 +138,24 @@ export function AppointmentDetailPanel({
   const [practitioners, setPractitioners] = useState<{ id: string; name: string }[]>([]);
   const [serviceTypes, setServiceTypes] = useState<{ id: string; name: string; duration_minutes: number }[]>([]);
   const [optionsLoading, setOptionsLoading] = useState(false);
+  // SCRUM-399: opt-in — when this edit moves the time/practitioner/service, text the
+  // customer the new time. Off by default; only shown when a move is actually staged.
+  const [notifyCustomer, setNotifyCustomer] = useState(false);
+  // SCRUM-399: drop stale fetch results — a reschedule re-point (setViewId) can fire a
+  // newer fetch while an earlier one is in flight; only the latest should render.
+  const fetchSeq = useRef(0);
   const { toast } = useToast();
 
   const fetchAppointment = useCallback(async () => {
-    if (!appointmentId) return;
+    if (!viewId) return;
+    const seq = ++fetchSeq.current;
+    const isStale = () => seq !== fetchSeq.current;
     setLoading(true);
     try {
-      const res = await fetch(`/api/v1/appointments/${appointmentId}`);
+      const res = await fetch(`/api/v1/appointments/${viewId}`);
       if (!res.ok) throw new Error("Failed to fetch");
       const data = await res.json();
+      if (isStale()) return; // a newer fetch superseded this one
       setAppointment(data.appointment);
       setClientHistory(data.clientHistory);
       setLinkedCall(data.linkedCall);
@@ -149,18 +163,25 @@ export function AppointmentDetailPanel({
       setEvents(Array.isArray(data.events) ? data.events : []);
       if (data.labels) setLabels(data.labels);
     } catch {
+      if (isStale()) return;
       toast({ title: "Error", description: "Failed to load appointment details", variant: "destructive" });
     } finally {
-      setLoading(false);
+      if (!isStale()) setLoading(false);
     }
-  }, [appointmentId, toast]);
+  }, [viewId, toast]);
 
+  // Opening (or switching to a different) appointment resets the view to that id.
   useEffect(() => {
     if (open && appointmentId) {
-      fetchAppointment();
+      setViewId(appointmentId);
       setEditing(false);
     }
-  }, [open, appointmentId, fetchAppointment]);
+  }, [open, appointmentId]);
+
+  // Fetch whenever the displayed id changes (initial open, or a reschedule re-point).
+  useEffect(() => {
+    if (open && viewId) fetchAppointment();
+  }, [open, viewId, fetchAppointment]);
 
   // SCRUM-397: enter full edit mode — load the practitioner/service options and seed
   // the form (and the diff snapshot) from the current appointment. The synthetic
@@ -180,6 +201,7 @@ export function AppointmentDetailPanel({
     };
     setEditData(seed);
     setEditInitial(seed);
+    setNotifyCustomer(false);
     setEditing(true);
     setOptionsLoading(true);
     // A non-OK response (401/500) does NOT throw — so track failure explicitly and
@@ -225,13 +247,14 @@ export function AppointmentDetailPanel({
     setEditing(false);
     setEditData({});
     setEditInitial({});
+    setNotifyCustomer(false);
   };
 
   const handleStatusChange = async (newStatus: string) => {
-    if (!appointmentId) return;
+    if (!viewId) return;
     setSaving(true);
     try {
-      const res = await fetch(`/api/v1/appointments/${appointmentId}`, {
+      const res = await fetch(`/api/v1/appointments/${viewId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status: newStatus }),
@@ -249,7 +272,7 @@ export function AppointmentDetailPanel({
   };
 
   const handleSaveEdit = async () => {
-    if (!appointmentId) return;
+    if (!viewId) return;
 
     // SCRUM-397: send ONLY changed fields. Re-sending an unchanged value is at best
     // wasteful and at worst breaks (the route 400s if you PATCH a start_time in the
@@ -287,6 +310,14 @@ export function AppointmentDetailPanel({
       new Date(editData.start_time).getTime() !== new Date(editInitial.start_time).getTime();
     if (startChanged) payload.start_time = editData.start_time;
 
+    // SCRUM-399: a time/practitioner/service change is a reschedule (server creates a
+    // new leg). Only then is the customer-SMS opt-in meaningful — attach it.
+    const isReschedule =
+      startChanged ||
+      payload.practitioner_id !== undefined ||
+      payload.service_type_id !== undefined;
+    if (isReschedule && notifyCustomer) payload.send_sms = true;
+
     // Recompute end_time when the start or the service (hence duration) changed.
     if (startChanged || payload.service_type_id !== undefined) {
       const startIso = payload.start_time || appt.start_time;
@@ -306,7 +337,7 @@ export function AppointmentDetailPanel({
 
     setSaving(true);
     try {
-      const res = await fetch(`/api/v1/appointments/${appointmentId}`, {
+      const res = await fetch(`/api/v1/appointments/${viewId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -315,10 +346,15 @@ export function AppointmentDetailPanel({
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error || "Failed to save");
       }
-      toast({ title: "Appointment updated" });
+      const result = await res.json().catch(() => ({}));
+      toast({ title: result?.rescheduled ? "Appointment moved" : "Appointment updated" });
       closeEditor();
       onUpdated();
-      fetchAppointment();
+      // SCRUM-399: a reschedule returns the NEW leg's id — re-point the panel to it
+      // (setViewId triggers the fetch effect). Otherwise just refresh in place.
+      const newId = result?.rescheduled?.toId;
+      if (newId && newId !== viewId) setViewId(newId);
+      else fetchAppointment();
     } catch (err: any) {
       toast({ title: "Error", description: err.message, variant: "destructive" });
     } finally {
@@ -354,6 +390,16 @@ export function AppointmentDetailPanel({
   // SCRUM-398: merged history — reschedule legs (AI/structural) interleaved with
   // in-place edit events (manual + AI), chronological, labeled by who made each.
   const timeline = mergeTimeline(lifecycle, events, labels);
+
+  // SCRUM-399: is the staged edit a MOVE (time/practitioner/service)? Only then does
+  // the server create a reschedule leg, so only then is the customer-SMS toggle shown.
+  const willReschedule =
+    editing &&
+    ((!!editData.start_time &&
+      !!editInitial.start_time &&
+      new Date(editData.start_time).getTime() !== new Date(editInitial.start_time).getTime()) ||
+      (editData.practitioner_id ?? null) !== (editInitial.practitioner_id ?? null) ||
+      (editData.service_type_id ?? null) !== (editInitial.service_type_id ?? null));
 
   // Display label for an audit field key (practitioner/service are industry-generic).
   const fieldLabel = (field: string): string => {
@@ -567,6 +613,24 @@ export function AppointmentDetailPanel({
                       className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                     />
                   </div>
+                  {/* SCRUM-399: moving the time/service/practitioner reschedules the
+                      appointment — offer to text the customer the new time. Off by default. */}
+                  {willReschedule && (
+                    <div className="flex items-start gap-2 rounded-md border border-border bg-muted/40 p-2.5">
+                      <Checkbox
+                        id="notify-customer"
+                        checked={notifyCustomer}
+                        onCheckedChange={(v) => setNotifyCustomer(v === true)}
+                        className="mt-0.5"
+                      />
+                      <Label htmlFor="notify-customer" className="text-xs font-normal leading-snug cursor-pointer">
+                        Text the customer their new appointment time
+                        <span className="block text-muted-foreground">
+                          They won&apos;t be notified unless you tick this.
+                        </span>
+                      </Label>
+                    </div>
+                  )}
                   <div className="flex gap-2 justify-end">
                     <Button variant="outline" size="sm" onClick={closeEditor}>
                       Cancel
