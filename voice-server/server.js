@@ -3397,7 +3397,15 @@ outboundWss.on("connection", (ws, req) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   // /ws/outbound/<token> — strip prefix, decode.
   const rawToken = url.pathname.replace(/^\/ws\/outbound\/?/, "");
-  const token = rawToken ? decodeURIComponent(rawToken) : null;
+  // Malformed percent-encoding makes decodeURIComponent throw URIError — an
+  // unhandled throw in the upgrade path. Leave token null so it falls through
+  // to the same invalid-token rejection below (verifyOutboundToken(null) → null).
+  let token = null;
+  try {
+    token = rawToken ? decodeURIComponent(rawToken) : null;
+  } catch {
+    // rejected below with tokenLen=0 — never log the raw token
+  }
   // SCRUM-449: this verify CONSUMES the token's single-use jti — a replayed
   // token (e.g. a second WS connect while the pendingCall is live) returns
   // null and hits the same rejection path below.

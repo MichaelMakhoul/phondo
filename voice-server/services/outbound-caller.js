@@ -29,7 +29,12 @@ const TOKEN_TTL_MS = 300_000; // 5 minutes — Twilio trial accounts add delays 
 // /ws/outbound connection could open a second (paid) Gemini session and hijack
 // the call result. Tokens are minted and consumed by this same process, so an
 // in-memory consumed set is authoritative (same single-process reasoning as
-// the /ws/test jti caps in lib/test-session-caps.js).
+// the /ws/test jti caps in lib/test-session-caps.js). A process restart wipes
+// consumedJtis AND pendingCalls together, so a post-restart replay cannot
+// hijack anything (no pending call exists to attach to). The single-use set is
+// per-process — the outbound smoke-test flow assumes a single Fly machine
+// (cross-machine replay is harmless today only because pendingCalls is also
+// per-process).
 const consumedJtis = new Map(); // jti → token exp (ms epoch), for expiry-based sweep
 
 /**
