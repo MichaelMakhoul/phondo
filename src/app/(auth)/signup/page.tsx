@@ -79,6 +79,21 @@ export default function SignupPage() {
     });
 
     if (error) {
+      // SCRUM-412: never reveal whether an email already has an account. Treat
+      // "already registered" exactly like a fresh signup (same neutral message);
+      // surface only input-level errors (e.g. weak password), which do not leak
+      // account existence.
+      const alreadyRegistered =
+        (error as { code?: string }).code === "user_already_exists" ||
+        /already registered/i.test(error.message);
+      if (alreadyRegistered) {
+        toast({
+          title: "Check your email",
+          description: "We sent you a confirmation link to complete your signup.",
+        });
+        setIsLoading(false);
+        return;
+      }
       toast({
         variant: "destructive",
         title: "Signup failed",

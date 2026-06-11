@@ -271,6 +271,14 @@ export default function OnboardingPage() {
         ) as { data: any[] | null; error: any };
 
         if (orgError || !orgResult || orgResult.length === 0) {
+          // SCRUM-412: the per-user owned-org cap RAISEs if this user already
+          // owns an org — which can happen on a mid-onboarding retry after a
+          // partial failure (proper idempotent resume is tracked as SCRUM-426).
+          // Recover gracefully to the dashboard instead of a raw DB error.
+          if (/already owns an organization/i.test(orgError?.message || "")) {
+            router.push("/dashboard");
+            return;
+          }
           throw new Error(orgError?.message || "Failed to create organization");
         }
 
