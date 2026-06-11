@@ -24,9 +24,11 @@ const MAX_DECLARED_UNCOMPRESSED_SIZE = 10 * 1024 * 1024; // 10MB
 
 /**
  * SCRUM-446: PDF analogue — a small PDF can declare tens of thousands of
- * (near-empty or object-reusing) pages; cap how many pdf-parse walks. 200
- * pages of normal text already lands well past MAX_TEXT_LENGTH, so the cap
- * doesn't cost legitimate documents anything after truncation.
+ * (near-empty or object-reusing) pages; cap how many pdf-parse extracts text
+ * from. (The cap bounds extraction work, not page iteration — pdf-parse
+ * still walks the page tree.) 200 pages of normal text already lands well
+ * past MAX_TEXT_LENGTH, so the cap doesn't cost legitimate documents
+ * anything after truncation.
  */
 const MAX_PDF_PAGES = 200;
 
@@ -127,17 +129,32 @@ export async function POST(request: NextRequest) {
     if (kind === "pdf") {
       const { PDFParse } = await import("pdf-parse");
       const parser = new PDFParse({ data: new Uint8Array(buffer) });
-      // Page cap (SCRUM-446) — see MAX_PDF_PAGES. Extra pages would be
-      // dropped by the MAX_TEXT_LENGTH truncation anyway.
-      const textResult = await parser.getText({ first: MAX_PDF_PAGES });
-      extractedText = textResult.text;
-      await parser.destroy();
+      try {
+        // Page cap (SCRUM-446) — see MAX_PDF_PAGES. Note `first` bounds which
+        // pages get TEXT-EXTRACTED, not page iteration — pdf-parse still
+        // walks the document's page tree. Extra pages would be dropped by
+        // the MAX_TEXT_LENGTH truncation anyway.
+        const textResult = await parser.getText({ first: MAX_PDF_PAGES });
+        extractedText = textResult.text;
+      } finally {
+        // Release the worker even when getText() throws on a malformed PDF;
+        // swallow destroy() errors so they can't mask the parse error.
+        await parser.destroy().catch(() => {});
+      }
     } else if (kind === "docx-zip") {
       // Parse-bomb check (SCRUM-446) — see MAX_DECLARED_UNCOMPRESSED_SIZE.
-      // `null` means the central directory is unreadable; let mammoth throw
-      // its own corrupted-zip error below for that case.
+      // `null` means WE could not locate the central directory — but JSZip
+      // (inside mammoth) is more permissive than our parser and may still
+      // find one and inflate the entries. FAIL CLOSED: never hand a zip we
+      // can't account for to mammoth.
       const declaredSize = totalDeclaredUncompressedSize(buffer);
-      if (declaredSize !== null && declaredSize > MAX_DECLARED_UNCOMPRESSED_SIZE) {
+      if (declaredSize === null) {
+        return NextResponse.json(
+          { error: "This file appears corrupted or unreadable. Please upload a valid DOCX file." },
+          { status: 400 }
+        );
+      }
+      if (declaredSize > MAX_DECLARED_UNCOMPRESSED_SIZE) {
         return NextResponse.json(
           { error: "Document content is too large to process. Please upload a smaller file." },
           { status: 400 }

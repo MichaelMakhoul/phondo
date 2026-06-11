@@ -56,6 +56,18 @@ describe("totalDeclaredUncompressedSize", () => {
     expect(totalDeclaredUncompressedSize(buf)).toBe(750);
   });
 
+  it("finds the EOCD behind >64KB of trailing junk (whole-buffer scan, reviewer repro)", async () => {
+    // mammoth's JSZip scans the ENTIRE buffer for the last EOCD signature
+    // (`lastIndexOfSignature`), so an honest-header bomb with more than
+    // 65557 bytes of appended junk still inflates. The guard must scan the
+    // whole buffer too and report the declared size instead of returning
+    // null and letting the bomb fall through.
+    const declared = 11 * 1024 * 1024;
+    const zip = await makeZip({ "word/document.xml": "0".repeat(declared) });
+    const buf = Buffer.concat([zip, Buffer.alloc(70 * 1024, 0x41)]);
+    expect(totalDeclaredUncompressedSize(buf)).toBe(declared);
+  });
+
   it("returns Infinity for a ZIP64 size marker (entry declares >= 4GB)", async () => {
     const buf = await makeZip({ "word/document.xml": "z".repeat(100) });
     // Patch the single entry's uncompressed-size field (offset 24 in the

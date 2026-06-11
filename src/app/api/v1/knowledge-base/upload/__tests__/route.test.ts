@@ -112,6 +112,34 @@ describe("POST /api/v1/knowledge-base/upload (SCRUM-446 parse-bomb guard)", () =
     expect(mocks.extractRawText).not.toHaveBeenCalled();
   });
 
+  it("rejects a zip bomb hidden behind >64KB of trailing junk (whole-buffer EOCD scan)", async () => {
+    // Reviewer repro: JSZip scans the WHOLE buffer for the EOCD, so a tiny
+    // honest-header bomb plus >65557 bytes of trailing junk used to make the
+    // guard return null and fall through to mammoth, which inflated the bomb.
+    const bomb = await makeDocxZip("0".repeat(11 * 1024 * 1024));
+    const padded = Buffer.concat([bomb, Buffer.alloc(70 * 1024, 0x41)]);
+
+    const res = await POST(makeRequest(padded, "bomb.docx", DOCX_MIME));
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/too large to process/i);
+    expect(mocks.extractRawText).not.toHaveBeenCalled();
+  });
+
+  it("400s a PK-prefixed buffer with no readable central directory (fail closed, mammoth never runs)", async () => {
+    // Starts with the DOCX local-header magic so it routes to the zip branch,
+    // but contains no EOCD — the guard returns null and the route must NOT
+    // fall through to mammoth (JSZip is more permissive than the guard).
+    const corrupt = Buffer.concat([
+      Buffer.from([0x50, 0x4b, 0x03, 0x04]),
+      Buffer.alloc(512, 0xab),
+    ]);
+
+    const res = await POST(makeRequest(corrupt, "corrupt.docx", DOCX_MIME));
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/corrupted or unreadable/i);
+    expect(mocks.extractRawText).not.toHaveBeenCalled();
+  });
+
   it("still accepts a normal small docx", async () => {
     const docx = await makeDocxZip("<w:document>hello</w:document>");
 

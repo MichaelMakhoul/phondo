@@ -13,10 +13,11 @@
  */
 
 // End of Central Directory record: "PK\x05\x06". 22 fixed bytes plus a
-// variable-length comment (max 65535), so it lives in the last ~64KB.
+// variable-length comment (nominally max 65535 — but JSZip never enforces
+// that bound, so the EOCD can sit ANYWHERE in the buffer; see the scan note
+// in totalDeclaredUncompressedSize).
 const EOCD_SIGNATURE = 0x06054b50;
 const EOCD_MIN_SIZE = 22;
-const MAX_COMMENT_LENGTH = 0xffff;
 
 // Central directory file header: "PK\x01\x02". 46 fixed bytes plus three
 // variable-length fields (file name, extra field, comment).
@@ -36,18 +37,23 @@ const ZIP64_MARKER = 0xffffffff;
  * - the declared total in bytes for a readable central directory;
  * - `Infinity` when any size field carries the ZIP64 marker (>= 4GB);
  * - `null` when no central directory can be located (not a zip / truncated /
- *   corrupted) — callers should fall through to the real parser, whose own
- *   error handling already covers malformed files.
+ *   corrupted) — callers MUST FAIL CLOSED on null. JSZip is more permissive
+ *   than this parser, so "we can't read it" does NOT imply "mammoth can't
+ *   inflate it".
  *
  * Note: declared sizes are attacker-controlled metadata. This blocks the
  * standard bomb construction (honest headers, huge compression ratio); it is
  * a cheap pre-filter, not a substitute for the upstream request-size cap.
  */
 export function totalDeclaredUncompressedSize(buffer: Buffer): number | null {
-  // Locate the EOCD by scanning backwards across the comment region.
+  // Locate the EOCD the way JSZip does (`lastIndexOfSignature`): scan the
+  // ENTIRE buffer backwards for the LAST signature occurrence. The zip spec
+  // caps the trailing comment at 65535 bytes, but JSZip ignores that and
+  // tolerates ANY amount of trailing junk — a 64KB scan window here would let
+  // an honest-header bomb with >64KB of appended junk slip past the guard
+  // while mammoth still inflates it.
   let eocdPos = -1;
-  const scanFloor = Math.max(0, buffer.length - EOCD_MIN_SIZE - MAX_COMMENT_LENGTH);
-  for (let pos = buffer.length - EOCD_MIN_SIZE; pos >= scanFloor; pos--) {
+  for (let pos = buffer.length - EOCD_MIN_SIZE; pos >= 0; pos--) {
     if (buffer.readUInt32LE(pos) === EOCD_SIGNATURE) {
       eocdPos = pos;
       break;

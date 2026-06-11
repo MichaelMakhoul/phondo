@@ -1,7 +1,7 @@
 import { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
-import { isOrgAdminRole } from "@/lib/auth/membership";
+import { getPrimaryMembership, isOrgAdminRole } from "@/lib/auth/membership";
 import { KnowledgeSettings } from "./knowledge-settings";
 
 export const metadata: Metadata = {
@@ -19,17 +19,16 @@ export default async function KnowledgePage() {
     redirect("/login");
   }
 
-  const { data: membership } = await (supabase as any)
-    .from("org_members")
-    .select("organization_id, role")
-    .eq("user_id", user.id)
-    .single();
+  // Same membership source as the KB write routes — `.single()` errors for
+  // multi-org users (more than one row), which would bounce them to
+  // onboarding here while the routes still serve them.
+  const membership = await getPrimaryMembership(supabase as any, user.id);
 
   if (!membership) {
     redirect("/onboarding");
   }
 
-  const organizationId = membership.organization_id as string;
+  const organizationId = membership.organization_id;
   // KB writes are owner/admin-gated server-side (SCRUM-428) — pass the role
   // down so the UI disables write controls instead of 403ing on click
   // (SCRUM-446, same pattern as billing's SCRUM-422 gate).
