@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireCronAuth } from "@/lib/security/cron-auth";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { sendCallbackReminderNotification } from "@/lib/notifications/notification-service";
+import * as Sentry from "@sentry/nextjs";
 
 export async function GET(req: NextRequest) {
   const authFail = requireCronAuth(req, "callback-reminders");
@@ -39,6 +40,27 @@ export async function GET(req: NextRequest) {
   let sent = 0;
 
   for (const cb of dueCallbacks) {
+    // SCRUM-429 (finding #55): CLAIM the reminder atomically BEFORE sending —
+    // a conditional update that only wins while reminder_sent_at is still
+    // NULL. An overlapping run loses the claim and skips; the old
+    // send-then-mark order double-texted on overlap/crash. A transient send
+    // failure releases the claim below so the next run retries.
+    const { data: claimed, error: claimError } = await (supabase as any)
+      .from("callback_requests")
+      .update({ reminder_sent_at: new Date().toISOString() })
+      .eq("id", cb.id)
+      .eq("status", "pending") // re-verify atomically — it may have been completed/cancelled since the SELECT
+      .is("reminder_sent_at", null)
+      .select("id");
+    if (claimError) {
+      console.error(`[Cron] Failed to claim reminder ${cb.id} — skipping this run:`, claimError);
+      continue;
+    }
+    if (!claimed || claimed.length === 0) {
+      console.log(`[Cron] Reminder ${cb.id} already claimed by another run — skipping`);
+      continue;
+    }
+
     try {
       await sendCallbackReminderNotification({
         organizationId: cb.organization_id,
@@ -58,30 +80,29 @@ export async function GET(req: NextRequest) {
       const isPermanentChannelFailure =
         notifyErr instanceof Error && notifyErr.message.includes("0 notification channels delivered");
       if (isPermanentChannelFailure) {
+        // Keep the claim (reminder_sent_at already set) — retrying an org
+        // with no working channels can't succeed (SCRUM-419 semantics).
         console.error(`[Cron] Abandoning reminder for callback ${cb.id} — org has no working notification channels:`, notifyErr.message);
-        const { error: abandonError } = await (supabase as any)
-          .from("callback_requests")
-          .update({ reminder_sent_at: new Date().toISOString() })
-          .eq("id", cb.id);
-        if (abandonError) {
-          console.error(`[Cron] Failed to mark abandoned reminder ${cb.id} — it will retry next run:`, abandonError);
-        }
       } else {
-        console.error(`[Cron] Failed to send reminder for callback ${cb.id} (will retry next run):`, notifyErr);
+        // Transient failure: RELEASE the claim so the next run retries.
+        // Sentry so a fleet-wide send outage (e.g. mis-set EMAIL_API_KEY,
+        // which presents as "1/1 channels failed", not the permanent marker)
+        // alerts before the 48h expire-callbacks cron silently discards
+        // every queued reminder.
+        console.error(`[Cron] Failed to send reminder for callback ${cb.id} — releasing claim for retry:`, notifyErr);
+        Sentry.captureMessage(`Callback reminder send failed — claim released for retry (callback ${cb.id})`, "warning");
+        const { error: releaseError } = await (supabase as any)
+          .from("callback_requests")
+          .update({ reminder_sent_at: null })
+          .eq("id", cb.id);
+        if (releaseError) {
+          console.error(`[Cron] Failed to release claim for ${cb.id} — reminder will NOT retry:`, releaseError);
+        }
       }
       continue;
     }
 
-    // Mark reminder as sent — check for DB errors to prevent duplicate sends
-    const { error: updateError } = await (supabase as any)
-      .from("callback_requests")
-      .update({ reminder_sent_at: new Date().toISOString() })
-      .eq("id", cb.id);
-
-    if (updateError) {
-      console.error(`[Cron] Reminder sent but failed to mark callback ${cb.id} — may re-send next run:`, updateError);
-    }
-
+    // Already marked by the atomic claim above — nothing further to write.
     sent++;
   }
 

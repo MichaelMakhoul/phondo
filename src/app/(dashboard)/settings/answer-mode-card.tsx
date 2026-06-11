@@ -67,10 +67,16 @@ export function AnswerModeCard({ assistantId, initialSettings }: AnswerModeCardP
           },
         }),
       });
-      if (!res.ok) throw new Error("Failed to save");
+      if (!res.ok) {
+        // Surface the route's message — e.g. the SCRUM-429 concurrent-edit
+        // 409 tells the user to reload, which generic copy hides.
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Failed to save");
+      }
       toast({ title: "Settings saved", description: "Call answering mode has been updated." });
-    } catch {
-      toast({ variant: "destructive", title: "Error", description: "Failed to save settings. Please try again." });
+    } catch (err) {
+      const msg = err instanceof Error && err.message !== "Failed to save" ? err.message : "Failed to save settings. Please try again.";
+      toast({ variant: "destructive", title: "Error", description: msg });
     } finally {
       setIsLoading(false);
     }
