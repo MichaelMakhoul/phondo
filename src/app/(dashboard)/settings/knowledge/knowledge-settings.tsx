@@ -34,6 +34,7 @@ import {
   Plus,
   Trash2,
   Pencil,
+  Eye,
   Loader2,
   ArrowLeft,
   BookOpen,
@@ -63,7 +64,13 @@ interface KBEntry {
 interface KnowledgeSettingsProps {
   entries: KBEntry[];
   organizationId: string;
+  /** KB writes are owner/admin-only (SCRUM-428); members get read-only UI. */
+  canEdit: boolean;
 }
+
+// Mirrors the 403 message the KB write routes return for non-admin members.
+const READ_ONLY_NOTE =
+  "Only organization owners and admins can edit the knowledge base";
 
 const SOURCE_TYPE_ICONS: Record<string, typeof Globe> = {
   website: Globe,
@@ -82,6 +89,7 @@ const SOURCE_TYPE_LABELS: Record<string, string> = {
 export function KnowledgeSettings({
   entries: initialEntries,
   organizationId,
+  canEdit,
 }: KnowledgeSettingsProps) {
   const { toast } = useToast();
   const [entries, setEntries] = useState(initialEntries);
@@ -468,12 +476,20 @@ export function KnowledgeSettings({
             <p className="text-muted-foreground">
               Shared across all your assistants
             </p>
+            {!canEdit && (
+              <p className="text-xs text-muted-foreground mt-1">
+                You have read-only access — {READ_ONLY_NOTE.toLowerCase()}.
+              </p>
+            )}
           </div>
         </div>
 
         <Dialog open={addDialogOpen} onOpenChange={setAddDialogOpen}>
           <DialogTrigger asChild>
-            <Button>
+            <Button
+              disabled={!canEdit}
+              title={canEdit ? undefined : READ_ONLY_NOTE}
+            >
               <Plus className="h-4 w-4 mr-2" />
               Add Source
             </Button>
@@ -725,7 +741,11 @@ export function KnowledgeSettings({
               description="Add business information so your AI assistants can answer caller questions accurately."
               illustration={<KnowledgeScene />}
               action={
-                <Button onClick={() => setAddDialogOpen(true)}>
+                <Button
+                  onClick={() => setAddDialogOpen(true)}
+                  disabled={!canEdit}
+                  title={canEdit ? undefined : READ_ONLY_NOTE}
+                >
                   <Plus className="h-4 w-4 mr-2" />
                   Add Your First Source
                 </Button>
@@ -760,29 +780,46 @@ export function KnowledgeSettings({
                     </p>
                   </div>
 
+                  {/* Write actions are owner/admin-only (SCRUM-446), but the
+                      GET API allows member reads — so members keep an enabled
+                      menu with a single read-only View action (the dialog is
+                      their only path to full entry content). */}
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
-                      <Button variant="ghost" size="icon" className="shrink-0 h-8 w-8">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="shrink-0 h-8 w-8"
+                      >
                         <MoreVertical className="h-4 w-4" />
                         <span className="sr-only">Actions</span>
                       </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
-                      <DropdownMenuItem onClick={() => openEdit(entry)}>
-                        <Pencil className="mr-2 h-4 w-4" />
-                        Edit
-                      </DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => handleToggle(entry)}>
-                        <Power className="mr-2 h-4 w-4" />
-                        {entry.is_active ? "Deactivate" : "Activate"}
-                      </DropdownMenuItem>
-                      <DropdownMenuItem
-                        className="text-destructive"
-                        onClick={() => confirmDelete(entry)}
-                      >
-                        <Trash2 className="mr-2 h-4 w-4" />
-                        Delete
-                      </DropdownMenuItem>
+                      {canEdit ? (
+                        <>
+                          <DropdownMenuItem onClick={() => openEdit(entry)}>
+                            <Pencil className="mr-2 h-4 w-4" />
+                            Edit
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => handleToggle(entry)}>
+                            <Power className="mr-2 h-4 w-4" />
+                            {entry.is_active ? "Deactivate" : "Activate"}
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            className="text-destructive"
+                            onClick={() => confirmDelete(entry)}
+                          >
+                            <Trash2 className="mr-2 h-4 w-4" />
+                            Delete
+                          </DropdownMenuItem>
+                        </>
+                      ) : (
+                        <DropdownMenuItem onClick={() => openEdit(entry)}>
+                          <Eye className="mr-2 h-4 w-4" />
+                          View
+                        </DropdownMenuItem>
+                      )}
                     </DropdownMenuContent>
                   </DropdownMenu>
                 </CardContent>
@@ -792,11 +829,11 @@ export function KnowledgeSettings({
         </div>
       )}
 
-      {/* Edit Dialog */}
+      {/* Edit Dialog — read-only "View entry" mode for members (SCRUM-446) */}
       <Dialog open={editDialogOpen} onOpenChange={setEditDialogOpen}>
         <DialogContent className="sm:max-w-[600px]">
           <DialogHeader>
-            <DialogTitle>Edit Source</DialogTitle>
+            <DialogTitle>{canEdit ? "Edit Source" : "View entry"}</DialogTitle>
           </DialogHeader>
 
           {isLoadingEdit ? (
@@ -810,6 +847,7 @@ export function KnowledgeSettings({
                 <Input
                   value={editTitle}
                   onChange={(e) => setEditTitle(e.target.value)}
+                  disabled={!canEdit}
                 />
               </div>
 
@@ -825,7 +863,7 @@ export function KnowledgeSettings({
                           <Label className="text-xs text-muted-foreground">
                             Q&A #{index + 1}
                           </Label>
-                          {editFaqPairs.length > 1 && (
+                          {canEdit && editFaqPairs.length > 1 && (
                             <Button
                               variant="ghost"
                               size="icon"
@@ -844,6 +882,7 @@ export function KnowledgeSettings({
                         <Input
                           placeholder="Question"
                           value={pair.question}
+                          disabled={!canEdit}
                           onChange={(e) => {
                             const updated = [...editFaqPairs];
                             updated[index] = {
@@ -857,6 +896,7 @@ export function KnowledgeSettings({
                           placeholder="Answer"
                           value={pair.answer}
                           rows={2}
+                          disabled={!canEdit}
                           onChange={(e) => {
                             const updated = [...editFaqPairs];
                             updated[index] = {
@@ -869,19 +909,21 @@ export function KnowledgeSettings({
                       </div>
                     ))}
                   </div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() =>
-                      setEditFaqPairs([
-                        ...editFaqPairs,
-                        { question: "", answer: "" },
-                      ])
-                    }
-                  >
-                    <Plus className="h-4 w-4 mr-1" />
-                    Add Question
-                  </Button>
+                  {canEdit && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() =>
+                        setEditFaqPairs([
+                          ...editFaqPairs,
+                          { question: "", answer: "" },
+                        ])
+                      }
+                    >
+                      <Plus className="h-4 w-4 mr-1" />
+                      Add Question
+                    </Button>
+                  )}
                 </>
               ) : (
                 <div className="space-y-2">
@@ -891,13 +933,16 @@ export function KnowledgeSettings({
                     onChange={(e) => setEditContent(e.target.value)}
                     rows={12}
                     className="font-mono text-sm"
+                    disabled={!canEdit}
                   />
                 </div>
               )}
 
-              <Button onClick={handleSaveEdit} className="w-full">
-                Save Changes
-              </Button>
+              {canEdit && (
+                <Button onClick={handleSaveEdit} className="w-full">
+                  Save Changes
+                </Button>
+              )}
             </div>
           )}
         </DialogContent>
