@@ -184,6 +184,44 @@ describe("PUT /api/v1/notification-preferences SMS cross-field validation (SCRUM
     expect(captured.payload).toBeUndefined();
   });
 
+  it("names the stored toggle(s) when an inherited inconsistent state blocks the patch", async () => {
+    // Nothing in THIS patch enables a toggle or clears the number — the
+    // stored row is what is inconsistent, so the message must say which
+    // stored alerts are still on rather than "add a number to enable".
+    vi.mocked(createAdminClient).mockReturnValue(
+      adminClient(captured, {
+        sms_on_missed_call: true,
+        sms_on_voicemail: true,
+        sms_phone_number: null,
+      }) as never,
+    );
+
+    const res = await PUT(putRequest({ sms_on_callback_scheduled: false }));
+
+    expect(res.status).toBe(400);
+    const json = await res.json();
+    expect(json.error).toMatch(/missed calls, voicemails.*still enabled/i);
+    expect(captured.payload).toBeUndefined();
+  });
+
+  it("ignores legacy stored toggles for a downgraded org (no false 400)", async () => {
+    // Starter org with an owner-SMS toggle left over from a higher plan:
+    // the stored toggle can never deliver, so it must not block unrelated
+    // patches like clearing the number.
+    vi.mocked(hasFeatureAccess).mockResolvedValue(false);
+    vi.mocked(createAdminClient).mockReturnValue(
+      adminClient(captured, {
+        sms_on_voicemail: true,
+        sms_phone_number: "+61400111222",
+      }) as never,
+    );
+
+    const res = await PUT(putRequest({ sms_phone_number: null }));
+
+    expect(res.status).toBe(200);
+    expect(captured.payload).toMatchObject({ sms_phone_number: null });
+  });
+
   it("accepts enabling a toggle when the same patch supplies the number", async () => {
     vi.mocked(createAdminClient).mockReturnValue(adminClient(captured, null) as never);
 
@@ -217,13 +255,15 @@ describe("PUT /api/v1/notification-preferences SMS cross-field validation (SCRUM
       }) as never,
     );
 
+    // "" in the request body must be stored as null — migration 00137's
+    // CHECK constraint (NULL or E.164) rejects the empty string.
     const res = await PUT(
       putRequest({ sms_phone_number: "", sms_on_missed_call: false }),
     );
 
     expect(res.status).toBe(200);
     expect(captured.payload).toMatchObject({
-      sms_phone_number: "",
+      sms_phone_number: null,
       sms_on_missed_call: false,
     });
   });
