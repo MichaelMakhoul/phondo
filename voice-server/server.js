@@ -42,6 +42,7 @@ const {
   outboundSmokeTestEnabled,
   validateOutboundTarget,
 } = require("./lib/outbound-guard");
+const { buildReturningCallerHint } = require("./lib/caller-history");
 
 const VOICE_PIPELINE = process.env.VOICE_PIPELINE || "classic"; // "classic" or "gemini-live"
 
@@ -1791,33 +1792,44 @@ wss.on("connection", (twilioWs) => {
           if (callerPhone) {
             callerContext = `\n\nCALLER CONTEXT:\nThe caller's phone number is ${phoneForPrompt}. If they say "use the number I'm calling from" or "it's the same number", use this number. Do NOT ask them to repeat it.`;
 
-            // Client history — check if this is a returning caller
-            try {
-              const supabaseClient = require("./lib/supabase").getSupabase();
-              const phoneSuffix = callerPhone.replace(/\D/g, "").slice(-9);
-              const [apptResult, callResult] = await Promise.all([
-                supabaseClient.from("appointments").select("attendee_name, start_time, status", { count: "exact", head: false })
-                  .eq("organization_id", context.organizationId).ilike("attendee_phone", `%${phoneSuffix}%`).in("status", ["confirmed", "completed"]).order("start_time", { ascending: false }).limit(3),
-                supabaseClient.from("calls").select("id", { count: "exact", head: true })
-                  .eq("organization_id", context.organizationId).ilike("caller_phone", `%${phoneSuffix}%`),
-              ]);
-              const pastAppts = apptResult.data || [];
-              const totalCalls = callResult.count || 0;
-              if (pastAppts.length > 0 || totalCalls > 1) {
-                const clientName = pastAppts[0]?.attendee_name || null;
-                const visitCount = pastAppts.length;
-                callerContext += `\nCLIENT HISTORY: This is a RETURNING client.`;
-                if (clientName) callerContext += ` Their name on file is "${clientName}".`;
-                callerContext += ` They have ${visitCount} previous appointment${visitCount !== 1 ? "s" : ""} and ${totalCalls} previous call${totalCalls !== 1 ? "s" : ""}.`;
-                if (pastAppts[0]) {
-                  const lastDate = new Date(pastAppts[0].start_time).toLocaleDateString("en-AU", { month: "long", day: "numeric" });
-                  callerContext += ` Their most recent appointment was on ${lastDate}.`;
+            // SCRUM-414: returning-caller signal ONLY — never inject the name or
+            // appointment history into the prompt (caller ID is spoofable, so
+            // that would disclose PII to a spoofer, and the verbatim name was a
+            // stored-prompt-injection vector). Use EXACT phone equality (not a
+            // %suffix% ilike that over-matches) and HEAD counts only — no name,
+            // no dates are fetched. Identity is verified by the lookup tool
+            // before any on-file detail is referenced.
+            //
+            // Only run for a plausible phone number: a withheld/anonymous caller
+            // ID is a placeholder ("anonymous", "Restricted", ...) that would
+            // spuriously .eq-match prior placeholder rows from unrelated callers.
+            // (calls.caller_phone is E.164-normalised per SCRUM-295;
+            // appointments.attendee_phone may not be — migration 00137 left it
+            // out — so the appointments side may under-match, which is the safe
+            // direction.)
+            if (/^\+?\d{7,}$/.test(callerPhone)) {
+              try {
+                const supabaseClient = require("./lib/supabase").getSupabase();
+                const [apptResult, callResult] = await Promise.all([
+                  supabaseClient.from("appointments").select("id", { count: "exact", head: true })
+                    .eq("organization_id", context.organizationId).eq("attendee_phone", callerPhone).in("status", ["confirmed", "completed"]),
+                  supabaseClient.from("calls").select("id", { count: "exact", head: true })
+                    .eq("organization_id", context.organizationId).eq("caller_phone", callerPhone),
+                ]);
+                if (apptResult.error || callResult.error) {
+                  console.warn(
+                    "[ClientHistory] query error (non-fatal):",
+                    (apptResult.error && apptResult.error.message) || (callResult.error && callResult.error.message),
+                  );
                 }
-                callerContext += ` Greet them warmly — e.g. "Welcome back!" and do not ask for details already on file.`;
+                callerContext += buildReturningCallerHint({
+                  pastApptCount: apptResult.count || 0,
+                  totalCalls: callResult.count || 0,
+                });
+              } catch (histErr) {
+                // Non-fatal — continue without the returning-caller hint
+                console.warn("[ClientHistory] Failed to fetch (non-fatal):", histErr.message);
               }
-            } catch (histErr) {
-              // Non-fatal — continue without history
-              console.warn("[ClientHistory] Failed to fetch (non-fatal):", histErr.message);
             }
           }
           session.setSystemPrompt(systemPrompt + callerContext);
