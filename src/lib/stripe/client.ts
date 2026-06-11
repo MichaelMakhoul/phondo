@@ -198,23 +198,35 @@ export async function createCheckoutSession(
   priceId: string,
   successUrl: string,
   cancelUrl: string,
-  metadata?: Record<string, string>
+  metadata?: Record<string, string>,
+  options?: { idempotencyKey?: string }
 ): Promise<Stripe.Checkout.Session> {
   const stripe = getStripeClient();
-  return stripe.checkout.sessions.create({
-    customer: customerId,
-    payment_method_types: ["card"],
-    line_items: [
-      {
-        price: priceId,
-        quantity: 1,
-      },
-    ],
-    mode: "subscription",
-    success_url: successUrl,
-    cancel_url: cancelUrl,
-    metadata,
-  });
+  return stripe.checkout.sessions.create(
+    {
+      customer: customerId,
+      payment_method_types: ["card"],
+      line_items: [
+        {
+          price: priceId,
+          quantity: 1,
+        },
+      ],
+      mode: "subscription",
+      success_url: successUrl,
+      cancel_url: cancelUrl,
+      metadata,
+      // Stripe does NOT copy session-level metadata onto the subscription it
+      // creates. Without this the webhook's handleSubscriptionCreated finds no
+      // organizationId and silently drops the event (org stays on the trial
+      // placeholder while Stripe bills the customer). Mirror it onto the sub.
+      subscription_data: metadata ? { metadata } : undefined,
+    },
+    // Per-attempt idempotency key (set by the caller, bucketed by org+plan+time)
+    // so a double-click / two-tabs of the same plan returns one session instead
+    // of creating two concurrent live subscriptions.
+    options?.idempotencyKey ? { idempotencyKey: options.idempotencyKey } : undefined
+  );
 }
 
 export async function createBillingPortalSession(

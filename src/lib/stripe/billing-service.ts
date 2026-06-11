@@ -51,6 +51,24 @@ function resolvePlanType(raw: string, throwOnUnknown = false): PlanType {
   return resolved;
 }
 
+/**
+ * Whether an existing subscription row must block a NEW paid checkout.
+ *
+ * A real (non-placeholder) Stripe subscription in a live state means the org is
+ * already paying, so a second checkout would create a duplicate concurrent
+ * subscription (double charge, only one visible in our DB). The `trial_<orgId>`
+ * placeholder created by the trial route must NOT block — converting a free
+ * trial to paid is exactly what checkout is for.
+ */
+export function blocksNewCheckout(
+  sub: { stripe_subscription_id?: string | null; status?: string | null } | null
+): boolean {
+  if (!sub) return false;
+  const id = sub.stripe_subscription_id ?? "";
+  if (id === "" || id.startsWith("trial_")) return false;
+  return ["active", "trialing", "past_due"].includes(sub.status ?? "");
+}
+
 export type SubscriptionStatus =
   | "active"
   | "canceled"
@@ -418,18 +436,34 @@ export async function createSubscriptionCheckout(
  * Handle successful subscription from Stripe webhook
  */
 export async function handleSubscriptionCreated(
-  subscription: Stripe.Subscription
+  subscription: Stripe.Subscription,
+  fallback?: { organizationId?: string | null; plan?: string | null }
 ): Promise<void> {
   const supabase = createAdminClient();
 
-  const organizationId = subscription.metadata?.organizationId;
+  // Prefer the subscription metadata (set via subscription_data.metadata at
+  // checkout); fall back to the Checkout Session metadata for any session
+  // created before that fix shipped.
+  const organizationId =
+    subscription.metadata?.organizationId || fallback?.organizationId;
 
   if (!organizationId) {
-    console.error("No organizationId in subscription metadata");
+    // After the subscription_data.metadata fix + the session-metadata fallback,
+    // every subscription created through our checkout carries an org. Reaching
+    // here means an out-of-band subscription (e.g. created directly in the Stripe
+    // dashboard) with no org to link — retrying can never resolve it, so log
+    // loudly and ack rather than throw (which would retry-storm for ~3 days).
+    console.error(
+      "handleSubscriptionCreated: no organizationId on subscription (subscription + session metadata both empty) — likely out-of-band; not linking",
+      { stripeSubscriptionId: subscription.id, status: subscription.status }
+    );
     return;
   }
 
-  const plan = resolvePlanType(subscription.metadata?.plan || "starter", true);
+  const plan = resolvePlanType(
+    subscription.metadata?.plan || fallback?.plan || "starter",
+    true
+  );
   const planConfig = PLANS[plan];
 
   // Upsert subscription record
