@@ -11,6 +11,7 @@
 
 import { createAdminClient } from "@/lib/supabase/admin";
 import { ssrfSafeFetch, escapeHtml } from "@/lib/security/validation";
+import { hasFeatureAccess } from "@/lib/stripe/billing-service";
 import * as Sentry from "@sentry/nextjs";
 import { Resend } from "resend";
 import Twilio from "twilio";
@@ -177,6 +178,76 @@ export async function getNotificationPreferences(
 }
 
 /**
+ * Strip plan-gated channels from prefs at SEND time (SCRUM-423, finding #13).
+ *
+ * Owner-alert SMS toggles require the smsNotifications plan flag and the
+ * legacy prefs webhook_url requires webhookIntegrations. The PUT route gates
+ * these at write time, but rows written BEFORE that gate (or while the org
+ * was on a higher plan) would otherwise keep Professional features after a
+ * downgrade — send time is the enforcement point that can't be bypassed.
+ *
+ * hasFeatureAccess fails OPEN on DB errors (its existing contract), so a
+ * billing-lookup blip never drops a notification. Caller-facing SMS
+ * (textback/confirmation) is gated separately in caller-sms.ts; integration
+ * webhooks in webhook-delivery.ts.
+ */
+async function applyPlanGates(
+  organizationId: string,
+  prefs: NotificationPreferences | null,
+  options: { smsCapable?: boolean } = {}
+): Promise<NotificationPreferences | null> {
+  if (!prefs) return prefs;
+
+  // Senders without an SMS channel (unsuccessful-call, appointment, daily
+  // summary) skip the SMS entitlement lookup — no wasted billing query and
+  // no misleading "SMS channel skipped" log on paths that never send SMS.
+  const { smsCapable = true } = options;
+
+  let gated = prefs;
+
+  const wantsOwnerSms =
+    prefs.sms_on_missed_call ||
+    prefs.sms_on_voicemail ||
+    prefs.sms_on_failed_call ||
+    prefs.sms_on_callback_scheduled;
+  if (smsCapable && wantsOwnerSms && !(await hasFeatureAccess(organizationId, "smsNotifications"))) {
+    reportPlanGateStrip(organizationId, "owner-sms");
+    gated = {
+      ...gated,
+      sms_on_missed_call: false,
+      sms_on_voicemail: false,
+      sms_on_failed_call: false,
+      sms_on_callback_scheduled: false,
+    };
+  }
+
+  if (prefs.webhook_url && !(await hasFeatureAccess(organizationId, "webhookIntegrations"))) {
+    reportPlanGateStrip(organizationId, "webhook");
+    gated = { ...gated, webhook_url: null };
+  }
+
+  return gated;
+}
+
+/**
+ * A plan-gate strip means the org has a channel CONFIGURED that its plan no
+ * longer covers (downgrade / past_due / pre-gating row). The owner thinks
+ * the channel works; it silently doesn't. Console for local grepping plus a
+ * grouped Sentry warning so support sees it — and the set of affected orgs
+ * doubles as an upsell list (SCRUM-423 review).
+ */
+function reportPlanGateStrip(organizationId: string, channel: "owner-sms" | "webhook"): void {
+  console.warn(`[Notifications] ${channel} configured but not covered by plan — channel skipped:`, { organizationId });
+  Sentry.withScope((scope) => {
+    scope.setLevel("warning");
+    scope.setTag("bug", "notification_channel_plan_stripped");
+    scope.setTag("channel", channel);
+    scope.setExtras({ organizationId, channel });
+    Sentry.captureMessage("Notification channel stripped by plan gate");
+  });
+}
+
+/**
  * Surface an owner-email lookup failure to Sentry. The owner's email is the
  * DEFAULT (often only) notification channel, so a lookup failure here usually
  * means the org silently stops hearing about missed/failed calls — it must be
@@ -314,7 +385,10 @@ async function settleChannels(
 export async function sendMissedCallNotification(
   data: CallNotificationData
 ): Promise<void> {
-  const prefs = await getNotificationPreferences(data.organizationId);
+  const prefs = await applyPlanGates(
+    data.organizationId,
+    await getNotificationPreferences(data.organizationId)
+  );
   const shouldEmail = prefs ? prefs.email_on_missed_call : true;
   const shouldSms = prefs ? prefs.sms_on_missed_call && prefs.sms_phone_number : false;
 
@@ -365,7 +439,10 @@ export async function sendMissedCallNotification(
 export async function sendFailedCallNotification(
   data: FailedCallNotificationData
 ): Promise<void> {
-  const prefs = await getNotificationPreferences(data.organizationId);
+  const prefs = await applyPlanGates(
+    data.organizationId,
+    await getNotificationPreferences(data.organizationId)
+  );
   // Failed calls always notify even without prefs — default to email-on
   const shouldEmail = prefs ? prefs.email_on_failed_call : true;
   const shouldSms = prefs ? prefs.sms_on_failed_call && prefs.sms_phone_number : false;
@@ -425,7 +502,11 @@ export async function sendFailedCallNotification(
 export async function sendUnsuccessfulCallNotification(
   data: UnsuccessfulCallNotificationData
 ): Promise<void> {
-  const prefs = await getNotificationPreferences(data.organizationId);
+  const prefs = await applyPlanGates(
+    data.organizationId,
+    await getNotificationPreferences(data.organizationId),
+    { smsCapable: false }
+  );
   const shouldEmail = prefs ? prefs.email_on_unsuccessful_call : true;
 
   const email = shouldEmail ? await getOrganizationOwnerEmail(data.organizationId) : null;
@@ -482,7 +563,10 @@ export async function sendUnsuccessfulCallNotification(
 export async function sendVoicemailNotification(
   data: VoicemailNotificationData
 ): Promise<void> {
-  const prefs = await getNotificationPreferences(data.organizationId);
+  const prefs = await applyPlanGates(
+    data.organizationId,
+    await getNotificationPreferences(data.organizationId)
+  );
   const shouldEmail = prefs ? prefs.email_on_voicemail : true;
   const shouldSms = prefs ? prefs.sms_on_voicemail && prefs.sms_phone_number : false;
 
@@ -550,7 +634,11 @@ export function formatAppointmentDate(date: Date, timezone?: string): string {
 export async function sendAppointmentNotification(
   data: AppointmentNotificationData
 ): Promise<void> {
-  const prefs = await getNotificationPreferences(data.organizationId);
+  const prefs = await applyPlanGates(
+    data.organizationId,
+    await getNotificationPreferences(data.organizationId),
+    { smsCapable: false }
+  );
   if (!prefs) return; // genuinely no prefs row — DB errors fail open to defaults upstream
 
   const email = prefs.email_on_appointment_booked
@@ -594,7 +682,10 @@ export async function sendAppointmentNotification(
 export async function sendCallbackNotification(
   data: CallbackNotificationData
 ): Promise<void> {
-  const prefs = await getNotificationPreferences(data.organizationId);
+  const prefs = await applyPlanGates(
+    data.organizationId,
+    await getNotificationPreferences(data.organizationId)
+  );
   const shouldEmail = prefs ? prefs.email_on_callback_scheduled : true;
   const shouldSms = prefs ? prefs.sms_on_callback_scheduled && prefs.sms_phone_number : false;
 
@@ -652,7 +743,10 @@ export async function sendCallbackNotification(
 export async function sendCallbackReminderNotification(
   data: CallbackNotificationData
 ): Promise<void> {
-  const prefs = await getNotificationPreferences(data.organizationId);
+  const prefs = await applyPlanGates(
+    data.organizationId,
+    await getNotificationPreferences(data.organizationId)
+  );
   const shouldEmail = prefs ? prefs.email_on_callback_scheduled : true;
   const shouldSms = prefs ? prefs.sms_on_callback_scheduled && prefs.sms_phone_number : false;
 
@@ -710,7 +804,11 @@ export async function sendCallbackReminderNotification(
 export async function sendDailySummaryNotification(
   data: DailySummaryData
 ): Promise<void> {
-  const prefs = await getNotificationPreferences(data.organizationId);
+  const prefs = await applyPlanGates(
+    data.organizationId,
+    await getNotificationPreferences(data.organizationId),
+    { smsCapable: false }
+  );
   if (!prefs) return; // genuinely no prefs row — DB errors fail open to defaults upstream
 
   const email = prefs.email_daily_summary

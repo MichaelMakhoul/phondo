@@ -120,16 +120,22 @@ export function NotificationSettings({
 
       const result = await response.json();
 
-      // If fields were downgraded due to plan, update local state to reflect reality
-      if (result.smsFieldsDowngraded) {
+      // If fields were downgraded due to plan, sync local state from the
+      // upserted row the route returns — it carries the zeroed values for
+      // EVERY gated field (owner-alert + caller SMS, webhook), so the
+      // toggles can't drift from the DB when the server's gated set grows
+      // (SCRUM-423: this previously hardcoded only the two caller fields,
+      // leaving owner-alert switches ON while the row said false).
+      if (result.smsFieldsDowngraded || result.webhookDowngraded) {
         setPreferences((prev) => ({
           ...prev,
-          sms_textback_on_missed_call: false,
-          sms_appointment_confirmation: false,
+          sms_on_missed_call: result.sms_on_missed_call ?? prev.sms_on_missed_call,
+          sms_on_voicemail: result.sms_on_voicemail ?? prev.sms_on_voicemail,
+          sms_on_callback_scheduled: result.sms_on_callback_scheduled ?? prev.sms_on_callback_scheduled,
+          sms_textback_on_missed_call: result.sms_textback_on_missed_call ?? prev.sms_textback_on_missed_call,
+          sms_appointment_confirmation: result.sms_appointment_confirmation ?? prev.sms_appointment_confirmation,
+          webhook_url: result.webhookDowngraded ? null : prev.webhook_url,
         }));
-      }
-      if (result.webhookDowngraded) {
-        setPreferences((prev) => ({ ...prev, webhook_url: null }));
       }
 
       const downgraded = result.smsFieldsDowngraded || result.webhookDowngraded;
@@ -263,6 +269,17 @@ export function NotificationSettings({
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
+          {!smsCallerEnabled && (
+            <div className="rounded-md border border-blue-200 bg-blue-50 p-3 dark:border-blue-800 dark:bg-blue-950">
+              <p className="text-sm text-blue-800 dark:text-blue-200">
+                SMS notifications are available on Professional and Business plans.{" "}
+                <a href="/billing" className="inline-flex items-center font-medium underline underline-offset-2">
+                  Upgrade <ArrowUpRight className="ml-0.5 h-3 w-3" />
+                </a>
+              </p>
+            </div>
+          )}
+
           <div className="space-y-2">
             <Label htmlFor="smsPhone">Phone Number for SMS</Label>
             <Input
@@ -284,7 +301,7 @@ export function NotificationSettings({
 
           <div className="flex items-center justify-between">
             <div className="space-y-0.5">
-              <Label>Missed Calls</Label>
+              <Label className={!smsCallerEnabled ? "text-muted-foreground" : ""}>Missed Calls</Label>
               <p className="text-sm text-muted-foreground">
                 Get a text when you miss a call
               </p>
@@ -292,14 +309,14 @@ export function NotificationSettings({
             <Switch
               checked={preferences.sms_on_missed_call}
               onCheckedChange={() => handleToggle("sms_on_missed_call")}
-              disabled={!preferences.sms_phone_number}
+              disabled={!smsCallerEnabled || !preferences.sms_phone_number}
               aria-label="SMS notifications for missed calls"
             />
           </div>
 
           <div className="flex items-center justify-between">
             <div className="space-y-0.5">
-              <Label>Voicemails</Label>
+              <Label className={!smsCallerEnabled ? "text-muted-foreground" : ""}>Voicemails</Label>
               <p className="text-sm text-muted-foreground">
                 Receive text alerts for new voicemails
               </p>
@@ -307,14 +324,14 @@ export function NotificationSettings({
             <Switch
               checked={preferences.sms_on_voicemail}
               onCheckedChange={() => handleToggle("sms_on_voicemail")}
-              disabled={!preferences.sms_phone_number}
+              disabled={!smsCallerEnabled || !preferences.sms_phone_number}
               aria-label="SMS notifications for voicemails"
             />
           </div>
 
           <div className="flex items-center justify-between">
             <div className="space-y-0.5">
-              <Label>Callback Requests</Label>
+              <Label className={!smsCallerEnabled ? "text-muted-foreground" : ""}>Callback Requests</Label>
               <p className="text-sm text-muted-foreground">
                 Get a text when a caller requests a callback
               </p>
@@ -322,7 +339,7 @@ export function NotificationSettings({
             <Switch
               checked={preferences.sms_on_callback_scheduled}
               onCheckedChange={() => handleToggle("sms_on_callback_scheduled")}
-              disabled={!preferences.sms_phone_number}
+              disabled={!smsCallerEnabled || !preferences.sms_phone_number}
               aria-label="SMS notifications for callback requests"
             />
           </div>
