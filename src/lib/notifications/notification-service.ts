@@ -11,6 +11,7 @@
 
 import { createAdminClient } from "@/lib/supabase/admin";
 import { ssrfSafeFetch, escapeHtml } from "@/lib/security/validation";
+import * as Sentry from "@sentry/nextjs";
 import { Resend } from "resend";
 import Twilio from "twilio";
 
@@ -99,7 +100,39 @@ export interface DailySummaryData {
 }
 
 /**
- * Get notification preferences for an organization
+ * Conservative fallback used when the preferences row cannot be READ (real DB
+ * error, not "no row"): email alerts on (the default channel — losing it
+ * silently is audit finding #21), SMS/webhook off (we don't know the number /
+ * URL, so there is nothing to send to anyway).
+ */
+function defaultNotificationPreferences(): NotificationPreferences {
+  return {
+    email_on_missed_call: true,
+    email_on_voicemail: true,
+    email_on_appointment_booked: true,
+    email_on_failed_call: true,
+    email_on_unsuccessful_call: true,
+    email_on_callback_scheduled: true,
+    email_daily_summary: true,
+    sms_on_missed_call: false,
+    sms_on_voicemail: false,
+    sms_on_failed_call: false,
+    sms_on_callback_scheduled: false,
+    sms_phone_number: null,
+    webhook_url: null,
+    sms_textback_on_missed_call: false,
+    sms_appointment_confirmation: false,
+  };
+}
+
+/**
+ * Get notification preferences for an organization.
+ *
+ * Returns null ONLY when the org genuinely has no preferences row (PGRST116).
+ * A real DB error fails OPEN to the email-on defaults — previously it also
+ * returned null, which `if (!prefs) return;` callers (appointment-booked,
+ * daily-summary) treated as "nothing wanted", silently skipping the org's
+ * only notification channel on a transient DB blip (SCRUM-419 / finding #21).
  */
 export async function getNotificationPreferences(
   organizationId: string
@@ -112,14 +145,16 @@ export async function getNotificationPreferences(
     .eq("organization_id", organizationId)
     .single();
 
+  if (error && error.code !== "PGRST116") {
+    console.error("[Notifications] Failed to load preferences — failing open to email-on defaults:", {
+      organizationId,
+      error: error.message || error.code,
+    });
+    return defaultNotificationPreferences();
+  }
+
   if (error || !data) {
-    if (error && error.code !== "PGRST116") {
-      console.error("[Notifications] Failed to load preferences:", {
-        organizationId,
-        error: error.message || error.code,
-      });
-    }
-    return null;
+    return null; // no preferences row — callers decide their own defaults
   }
 
   return {
@@ -139,6 +174,25 @@ export async function getNotificationPreferences(
     sms_textback_on_missed_call: data.sms_textback_on_missed_call ?? false,
     sms_appointment_confirmation: data.sms_appointment_confirmation ?? false,
   };
+}
+
+/**
+ * Surface an owner-email lookup failure to Sentry. The owner's email is the
+ * DEFAULT (often only) notification channel, so a lookup failure here usually
+ * means the org silently stops hearing about missed/failed calls — it must be
+ * observable in production, not just in console logs (SCRUM-419).
+ */
+function reportOwnerEmailLookupFailure(
+  level: "error" | "warning",
+  reason: string,
+  extras: Record<string, unknown>
+): void {
+  Sentry.withScope((scope) => {
+    scope.setLevel(level);
+    scope.setTag("bug", "owner_email_lookup_failed");
+    scope.setExtras(extras);
+    Sentry.captureMessage(`Owner-email lookup failed: ${reason}`);
+  });
 }
 
 /**
@@ -162,11 +216,16 @@ export async function getOrganizationOwnerEmail(
       organizationId,
       error: memberError.message || memberError.code,
     });
+    reportOwnerEmailLookupFailure("error", "org owner query failed", {
+      organizationId,
+      error: memberError.message || memberError.code,
+    });
     return null;
   }
 
   if (!member) {
     console.warn("[Notifications] No owner found for organization:", organizationId);
+    reportOwnerEmailLookupFailure("warning", "organization has no owner member", { organizationId });
     return null;
   }
 
@@ -183,6 +242,11 @@ export async function getOrganizationOwnerEmail(
       userId: member.user_id,
       error: profileError.message || profileError.code,
     });
+    reportOwnerEmailLookupFailure("error", "owner profile query failed", {
+      organizationId,
+      userId: member.user_id,
+      error: profileError.message || profileError.code,
+    });
     return null;
   }
 
@@ -191,10 +255,57 @@ export async function getOrganizationOwnerEmail(
       organizationId,
       userId: member.user_id,
     });
+    reportOwnerEmailLookupFailure("warning", "owner profile has no email", {
+      organizationId,
+      userId: member.user_id,
+    });
     return null;
   }
 
   return profile.email;
+}
+
+/**
+ * Await all channel sends and enforce honest delivery reporting (SCRUM-419):
+ *
+ * - `droppedChannels` lists channels that were WANTED (per preferences) but
+ *   could not even be attempted — e.g. the owner-email lookup failed. If that
+ *   leaves ZERO channels to attempt, this throws so the caller records a
+ *   failure instead of "sent" with nothing delivered.
+ * - Zero channels with nothing dropped is a legitimate no-op (the org turned
+ *   this notification off) and resolves silently.
+ * - Otherwise: settle all channels and throw if any failed (degrade
+ *   per-channel — one failure doesn't stop the others, but it is reported).
+ */
+async function settleChannels(
+  notification: string,
+  organizationId: string,
+  channels: Promise<void>[],
+  droppedChannels: string[]
+): Promise<void> {
+  if (droppedChannels.length > 0) {
+    console.error(`[Notifications] ${notification}: wanted channel(s) unavailable — ${droppedChannels.join(", ")}:`, {
+      organizationId,
+      attemptedChannels: channels.length,
+    });
+  }
+
+  if (channels.length === 0) {
+    if (droppedChannels.length > 0) {
+      // A channel was wanted but unavailable and nothing else delivered —
+      // reporting success here would be a false positive (audit finding #21).
+      throw new Error(
+        `${notification}: 0 notification channels delivered — wanted channel(s) unavailable: ${droppedChannels.join(", ")}`
+      );
+    }
+    return; // all channels disabled by preference — legitimate no-op
+  }
+
+  const results = await Promise.allSettled(channels);
+  const failures = results.filter((r) => r.status === "rejected");
+  if (failures.length > 0) {
+    throw new Error(`${failures.length}/${results.length} notification channels failed: ${(failures[0] as PromiseRejectedResult).reason}`);
+  }
 }
 
 /**
@@ -207,9 +318,14 @@ export async function sendMissedCallNotification(
   const shouldEmail = prefs ? prefs.email_on_missed_call : true;
   const shouldSms = prefs ? prefs.sms_on_missed_call && prefs.sms_phone_number : false;
 
-  const email = await getOrganizationOwnerEmail(data.organizationId);
+  // Only look the owner up when the email channel is wanted — the lookup
+  // Sentry-reports failures, so running it for email-off orgs is pure noise.
+  const email = shouldEmail ? await getOrganizationOwnerEmail(data.organizationId) : null;
 
   const channels: Promise<void>[] = [];
+  const droppedChannels: string[] = [];
+  if (shouldEmail && !email) droppedChannels.push("owner-email");
+  if (prefs?.sms_on_missed_call && !prefs.sms_phone_number) droppedChannels.push("sms");
 
   if (shouldEmail && email) {
     channels.push(sendEmail({
@@ -239,11 +355,7 @@ export async function sendMissedCallNotification(
     }));
   }
 
-  const results = await Promise.allSettled(channels);
-  const failures = results.filter((r) => r.status === "rejected");
-  if (failures.length > 0) {
-    throw new Error(`${failures.length}/${results.length} notification channels failed: ${(failures[0] as PromiseRejectedResult).reason}`);
-  }
+  await settleChannels("missed-call", data.organizationId, channels, droppedChannels);
 }
 
 /**
@@ -258,9 +370,12 @@ export async function sendFailedCallNotification(
   const shouldEmail = prefs ? prefs.email_on_failed_call : true;
   const shouldSms = prefs ? prefs.sms_on_failed_call && prefs.sms_phone_number : false;
 
-  const email = await getOrganizationOwnerEmail(data.organizationId);
+  const email = shouldEmail ? await getOrganizationOwnerEmail(data.organizationId) : null;
 
   const channels: Promise<void>[] = [];
+  const droppedChannels: string[] = [];
+  if (shouldEmail && !email) droppedChannels.push("owner-email");
+  if (prefs?.sms_on_failed_call && !prefs.sms_phone_number) droppedChannels.push("sms");
 
   if (shouldEmail && email) {
     channels.push(sendEmail({
@@ -294,11 +409,7 @@ export async function sendFailedCallNotification(
     }));
   }
 
-  const results = await Promise.allSettled(channels);
-  const failures = results.filter((r) => r.status === "rejected");
-  if (failures.length > 0) {
-    throw new Error(`${failures.length}/${results.length} notification channels failed: ${(failures[0] as PromiseRejectedResult).reason}`);
-  }
+  await settleChannels("failed-call", data.organizationId, channels, droppedChannels);
 }
 
 /**
@@ -317,9 +428,11 @@ export async function sendUnsuccessfulCallNotification(
   const prefs = await getNotificationPreferences(data.organizationId);
   const shouldEmail = prefs ? prefs.email_on_unsuccessful_call : true;
 
-  const email = await getOrganizationOwnerEmail(data.organizationId);
+  const email = shouldEmail ? await getOrganizationOwnerEmail(data.organizationId) : null;
 
   const channels: Promise<void>[] = [];
+  const droppedChannels: string[] = [];
+  if (shouldEmail && !email) droppedChannels.push("owner-email");
 
   if (shouldEmail && email) {
     // First 200 chars of the transcript so the owner gets the gist without
@@ -360,11 +473,7 @@ export async function sendUnsuccessfulCallNotification(
     }));
   }
 
-  const results = await Promise.allSettled(channels);
-  const failures = results.filter((r) => r.status === "rejected");
-  if (failures.length > 0) {
-    throw new Error(`${failures.length}/${results.length} notification channels failed: ${(failures[0] as PromiseRejectedResult).reason}`);
-  }
+  await settleChannels("unsuccessful-call", data.organizationId, channels, droppedChannels);
 }
 
 /**
@@ -377,9 +486,12 @@ export async function sendVoicemailNotification(
   const shouldEmail = prefs ? prefs.email_on_voicemail : true;
   const shouldSms = prefs ? prefs.sms_on_voicemail && prefs.sms_phone_number : false;
 
-  const email = await getOrganizationOwnerEmail(data.organizationId);
+  const email = shouldEmail ? await getOrganizationOwnerEmail(data.organizationId) : null;
 
   const channels: Promise<void>[] = [];
+  const droppedChannels: string[] = [];
+  if (shouldEmail && !email) droppedChannels.push("owner-email");
+  if (prefs?.sms_on_voicemail && !prefs.sms_phone_number) droppedChannels.push("sms");
 
   if (shouldEmail && email) {
     channels.push(sendEmail({
@@ -411,11 +523,7 @@ export async function sendVoicemailNotification(
     }));
   }
 
-  const results = await Promise.allSettled(channels);
-  const failures = results.filter((r) => r.status === "rejected");
-  if (failures.length > 0) {
-    throw new Error(`${failures.length}/${results.length} notification channels failed: ${(failures[0] as PromiseRejectedResult).reason}`);
-  }
+  await settleChannels("voicemail", data.organizationId, channels, droppedChannels);
 }
 
 /**
@@ -443,11 +551,15 @@ export async function sendAppointmentNotification(
   data: AppointmentNotificationData
 ): Promise<void> {
   const prefs = await getNotificationPreferences(data.organizationId);
-  if (!prefs) return;
+  if (!prefs) return; // genuinely no prefs row — DB errors fail open to defaults upstream
 
-  const email = await getOrganizationOwnerEmail(data.organizationId);
+  const email = prefs.email_on_appointment_booked
+    ? await getOrganizationOwnerEmail(data.organizationId)
+    : null;
 
   const channels: Promise<void>[] = [];
+  const droppedChannels: string[] = [];
+  if (prefs.email_on_appointment_booked && !email) droppedChannels.push("owner-email");
 
   if (prefs.email_on_appointment_booked && email) {
     const formattedDate = formatAppointmentDate(data.appointmentDate, data.timezone);
@@ -473,11 +585,7 @@ export async function sendAppointmentNotification(
     }));
   }
 
-  const results = await Promise.allSettled(channels);
-  const failures = results.filter((r) => r.status === "rejected");
-  if (failures.length > 0) {
-    throw new Error(`${failures.length}/${results.length} notification channels failed: ${(failures[0] as PromiseRejectedResult).reason}`);
-  }
+  await settleChannels("appointment-booked", data.organizationId, channels, droppedChannels);
 }
 
 /**
@@ -490,9 +598,12 @@ export async function sendCallbackNotification(
   const shouldEmail = prefs ? prefs.email_on_callback_scheduled : true;
   const shouldSms = prefs ? prefs.sms_on_callback_scheduled && prefs.sms_phone_number : false;
 
-  const email = await getOrganizationOwnerEmail(data.organizationId);
+  const email = shouldEmail ? await getOrganizationOwnerEmail(data.organizationId) : null;
 
   const channels: Promise<void>[] = [];
+  const droppedChannels: string[] = [];
+  if (shouldEmail && !email) droppedChannels.push("owner-email");
+  if (prefs?.sms_on_callback_scheduled && !prefs.sms_phone_number) droppedChannels.push("sms");
 
   if (shouldEmail && email) {
     channels.push(sendEmail({
@@ -532,11 +643,7 @@ export async function sendCallbackNotification(
     });
   }
 
-  const results = await Promise.allSettled(channels);
-  const failures = results.filter((r) => r.status === "rejected");
-  if (failures.length > 0) {
-    throw new Error(`${failures.length}/${results.length} notification channels failed: ${(failures[0] as PromiseRejectedResult).reason}`);
-  }
+  await settleChannels("callback-scheduled", data.organizationId, channels, droppedChannels);
 }
 
 /**
@@ -549,9 +656,12 @@ export async function sendCallbackReminderNotification(
   const shouldEmail = prefs ? prefs.email_on_callback_scheduled : true;
   const shouldSms = prefs ? prefs.sms_on_callback_scheduled && prefs.sms_phone_number : false;
 
-  const email = await getOrganizationOwnerEmail(data.organizationId);
+  const email = shouldEmail ? await getOrganizationOwnerEmail(data.organizationId) : null;
 
   const channels: Promise<void>[] = [];
+  const droppedChannels: string[] = [];
+  if (shouldEmail && !email) droppedChannels.push("owner-email");
+  if (prefs?.sms_on_callback_scheduled && !prefs.sms_phone_number) droppedChannels.push("sms");
 
   if (shouldEmail && email) {
     channels.push(sendEmail({
@@ -591,11 +701,7 @@ export async function sendCallbackReminderNotification(
     });
   }
 
-  const results = await Promise.allSettled(channels);
-  const failures = results.filter((r) => r.status === "rejected");
-  if (failures.length > 0) {
-    throw new Error(`${failures.length}/${results.length} notification channels failed: ${(failures[0] as PromiseRejectedResult).reason}`);
-  }
+  await settleChannels("callback-reminder", data.organizationId, channels, droppedChannels);
 }
 
 /**
@@ -605,11 +711,15 @@ export async function sendDailySummaryNotification(
   data: DailySummaryData
 ): Promise<void> {
   const prefs = await getNotificationPreferences(data.organizationId);
-  if (!prefs) return;
+  if (!prefs) return; // genuinely no prefs row — DB errors fail open to defaults upstream
 
-  const email = await getOrganizationOwnerEmail(data.organizationId);
+  const email = prefs.email_daily_summary
+    ? await getOrganizationOwnerEmail(data.organizationId)
+    : null;
 
   const channels: Promise<void>[] = [];
+  const droppedChannels: string[] = [];
+  if (prefs.email_daily_summary && !email) droppedChannels.push("owner-email");
 
   if (prefs.email_daily_summary && email) {
     channels.push(sendEmail({
@@ -640,11 +750,7 @@ export async function sendDailySummaryNotification(
     }));
   }
 
-  const results = await Promise.allSettled(channels);
-  const failures = results.filter((r) => r.status === "rejected");
-  if (failures.length > 0) {
-    throw new Error(`${failures.length}/${results.length} notification channels failed: ${(failures[0] as PromiseRejectedResult).reason}`);
-  }
+  await settleChannels("daily-summary", data.organizationId, channels, droppedChannels);
 }
 
 // ============================================================
