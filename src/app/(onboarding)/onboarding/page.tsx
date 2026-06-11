@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+import { createOrResumeOrganization } from "@/lib/onboarding/create-org";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
@@ -206,13 +207,6 @@ export default function OnboardingPage() {
     }
   };
 
-  const generateSlug = (name: string) => {
-    return name
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/(^-|-$)/g, "");
-  };
-
   const canProceed = () => {
     switch (currentStep) {
       case 1:
@@ -256,33 +250,61 @@ export default function OnboardingPage() {
       }
     }
 
-    // When moving from step 2 → 3, create org + assistant so test call works
+    // When moving from step 2 → 3, create org + assistant so test call works.
+    // SCRUM-426: idempotent resume — if a previous attempt failed AFTER org
+    // creation, data.createdOrgId (persisted immediately below) lets the
+    // retry reuse the org instead of creating a second one / hitting the
+    // owned-org cap. Slug collisions retry with a suffix inside
+    // createOrResumeOrganization.
     if (currentStep === 2 && !data.createdAssistantId) {
       setIsLoading(true);
       try {
         const { data: { user } } = await supabase.auth.getUser();
         if (!user) throw new Error("You must be logged in.");
 
-        // Create organization
-        const slug = generateSlug(data.businessName);
-        const { data: orgResult, error: orgError } = await (supabase.rpc as any)(
-          "create_organization_with_owner",
-          { org_name: data.businessName, org_slug: slug, org_type: "business" }
-        ) as { data: any[] | null; error: any };
+        let orgId = data.createdOrgId;
+        let resumedExisting = false;
 
-        if (orgError || !orgResult || orgResult.length === 0) {
-          // SCRUM-412: the per-user owned-org cap RAISEs if this user already
-          // owns an org — which can happen on a mid-onboarding retry after a
-          // partial failure (proper idempotent resume is tracked as SCRUM-426).
-          // Recover gracefully to the dashboard instead of a raw DB error.
-          if (/already owns an organization/i.test(orgError?.message || "")) {
+        // SCRUM-426 review: a persisted id can be STALE — localStorage isn't
+        // keyed by user (shared browser / logout), and support may delete a
+        // half-org to free the owned-org cap. Trust it only if THIS user is a
+        // member; otherwise clear it and fall through to create/resume —
+        // never wedge onboarding on an id that no longer resolves.
+        if (orgId) {
+          const { data: membership } = await (supabase as any)
+            .from("org_members")
+            .select("organization_id")
+            .eq("organization_id", orgId)
+            .eq("user_id", user.id)
+            .maybeSingle();
+          if (membership) {
+            resumedExisting = true;
+          } else {
+            console.warn("[Onboarding] Persisted createdOrgId is stale — creating fresh:", orgId);
+            orgId = "";
+            updateData({ createdOrgId: "" });
+          }
+        }
+
+        if (!orgId) {
+          const created = await createOrResumeOrganization(supabase as any, user.id, data.businessName);
+          if (!created.ok) {
+            // User owns an org we couldn't locate — the pre-existing fallback.
             router.push("/dashboard");
             return;
           }
-          throw new Error(orgError?.message || "Failed to create organization");
+          orgId = created.orgId;
+          resumedExisting = created.resumed;
+          // Persist BEFORE the fallible steps below — this is what makes a
+          // retry resume instead of re-creating (audit finding #24). Written
+          // synchronously too: the React save-effect flushes a render later,
+          // and a tab close in that window would lose the id.
+          updateData({ createdOrgId: orgId });
+          localStorage.setItem(
+            "onboarding_progress",
+            JSON.stringify({ data: { ...data, createdOrgId: orgId }, step: currentStep })
+          );
         }
-
-        const orgId = orgResult[0].id;
 
         // Update org with business info
         const countryConfig = data.country ? getCountryConfig(data.country) : null;
@@ -302,6 +324,11 @@ export default function OnboardingPage() {
         const { error: orgUpdateError } = await (supabase as any)
           .from("organizations")
           .update({
+            // name: a resumed org keeps the FIRST attempt's name otherwise —
+            // the user may have fixed a typo between attempts (SCRUM-426
+            // review). slug intentionally stays as created (cosmetic, and
+            // locked to service-role by migration 00150 anyway).
+            name: data.businessName,
             industry: data.industry,
             business_phone: normalisedBusinessPhone,
             business_website: data.businessWebsite || null,
@@ -314,8 +341,25 @@ export default function OnboardingPage() {
           throw new Error(`Failed to save business details: ${orgUpdateError.message}`);
         }
 
-        // Save scraped KB content (if user imported from website)
-        if (data.scrapedKBContent) {
+        // SCRUM-426: when resuming into an existing org, adopt an existing
+        // assistant rather than creating a duplicate (a prior attempt — or a
+        // second tab — may have gotten further than the persisted state knew).
+        let adoptedAssistantId: string | null = null;
+        if (resumedExisting) {
+          const { data: existingAssistants } = await (supabase as any)
+            .from("assistants")
+            .select("id")
+            .eq("organization_id", orgId)
+            .limit(1);
+          if (existingAssistants && existingAssistants.length > 0) {
+            adoptedAssistantId = existingAssistants[0].id;
+            console.log("[Onboarding] Resumed — adopting existing assistant:", adoptedAssistantId);
+          }
+        }
+
+        // Save scraped KB content (if user imported from website; skipped
+        // when adopting — the prior attempt already imported it)
+        if (!adoptedAssistantId && data.scrapedKBContent) {
           const kbTitle = (() => {
             try { return new URL(data.scrapedSourceUrl).hostname.replace(/^www\./, ""); }
             catch { return "Website Import"; }
@@ -342,48 +386,53 @@ export default function OnboardingPage() {
           }
         }
 
-        // Create assistant
-        const piiIndustries = ["medical", "dental", "legal"];
-        const assistantSettings: Record<string, any> = {};
-        if (piiIndustries.includes(data.industry)) {
-          assistantSettings.piiRedactionEnabled = true;
-        }
-        const assistantResponse = await fetch("/api/v1/assistants", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            name: data.assistantName,
-            systemPrompt: data.systemPrompt,
-            firstMessage: data.firstMessage,
-            voiceId: data.voiceId || "EXAVITQu4vr4xnSDxMaL",
-            voiceProvider: "11labs",
-            promptConfig: data.promptConfig || undefined,
-            settings: Object.keys(assistantSettings).length > 0 ? assistantSettings : undefined,
-          }),
-        });
-
-        if (!assistantResponse.ok) {
-          const errorData = await assistantResponse.json().catch(() => ({}));
-          throw new Error(errorData.error || "Failed to create assistant");
-        }
-
-        const assistant = await assistantResponse.json();
-
-        // Seed industry-default service types (non-fatal)
-        try {
-          const seedRes = await fetch("/api/v1/service-types/seed", {
+        // Create assistant (unless one was adopted on resume)
+        if (!adoptedAssistantId) {
+          const piiIndustries = ["medical", "dental", "legal"];
+          const assistantSettings: Record<string, any> = {};
+          if (piiIndustries.includes(data.industry)) {
+            assistantSettings.piiRedactionEnabled = true;
+          }
+          const assistantResponse = await fetch("/api/v1/assistants", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ organizationId: orgId, industry: data.industry }),
+            body: JSON.stringify({
+              name: data.assistantName,
+              systemPrompt: data.systemPrompt,
+              firstMessage: data.firstMessage,
+              voiceId: data.voiceId || "EXAVITQu4vr4xnSDxMaL",
+              voiceProvider: "11labs",
+              promptConfig: data.promptConfig || undefined,
+              settings: Object.keys(assistantSettings).length > 0 ? assistantSettings : undefined,
+            }),
           });
-          if (!seedRes.ok) {
-            console.warn("Service type seeding returned non-OK status:", seedRes.status);
+
+          if (!assistantResponse.ok) {
+            const errorData = await assistantResponse.json().catch(() => ({}));
+            throw new Error(errorData.error || "Failed to create assistant");
           }
-        } catch (seedErr) {
-          console.warn("Service type seeding failed (non-fatal):", seedErr);
+
+          const assistant = await assistantResponse.json();
+          adoptedAssistantId = assistant.id;
+
+          // Seed industry-default service types (non-fatal)
+          try {
+            const seedRes = await fetch("/api/v1/service-types/seed", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ organizationId: orgId, industry: data.industry }),
+            });
+            if (!seedRes.ok) {
+              console.warn("Service type seeding returned non-OK status:", seedRes.status);
+            }
+          } catch (seedErr) {
+            console.warn("Service type seeding failed (non-fatal):", seedErr);
+          }
         }
 
-        updateData({ createdOrgId: orgId, createdAssistantId: assistant.id });
+        // adoptedAssistantId is always set by here (adopted on resume, or
+        // assigned from the create response above) — ?? "" is for the type.
+        updateData({ createdOrgId: orgId, createdAssistantId: adoptedAssistantId ?? "" });
       } catch (error: any) {
         toast({
           variant: "destructive",
