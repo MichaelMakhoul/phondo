@@ -119,7 +119,7 @@ UPDATE organizations SET send_customer_confirmations = false WHERE id = '<test-o
 ```
 
 **Steps:**
-1. Trigger a booking (voice or via the manual POST to `/api/v1/calendar/book-appointment`).
+1. Trigger a booking via a voice/test call (the old manual POST route `/api/v1/calendar/book-appointment` was a dead Vapi-era endpoint, deleted in SCRUM-422; the voice server books through `/api/internal/tool-call` with the `X-Internal-Secret` header).
 
 **Expected:**
 - [ ] Booking succeeds, returns confirmation_code as normal

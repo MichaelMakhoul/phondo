@@ -334,30 +334,3 @@ export function isValidVoiceId(voiceId: string): boolean {
   return VOICE_ID_REGEX.test(voiceId);
 }
 
-/**
- * Verify a webhook request with secret
- * Always requires the secret to be configured
- */
-export function verifyWebhookSecret(
-  requestSecret: string | null,
-  expectedSecret: string | undefined,
-  requireSecret: boolean = true
-): { valid: boolean; error?: string } {
-  if (!expectedSecret) {
-    if (requireSecret) {
-      return { valid: false, error: "Webhook secret not configured" };
-    }
-    // In development, allow without secret if explicitly disabled
-    return { valid: true };
-  }
-
-  if (!requestSecret) {
-    return { valid: false, error: "Missing secret header" };
-  }
-
-  if (!timingSafeCompare(requestSecret, expectedSecret)) {
-    return { valid: false, error: "Invalid secret" };
-  }
-
-  return { valid: true };
-}

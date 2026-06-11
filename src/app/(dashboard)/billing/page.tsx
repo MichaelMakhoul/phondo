@@ -89,6 +89,9 @@ function BillingContent() {
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loadingPlan, setLoadingPlan] = useState<string | null>(null);
+  // Billing actions are owner/admin-only server-side (SCRUM-422) — mirror
+  // that here so members aren't shown buttons that always 403.
+  const [isBillingAdmin, setIsBillingAdmin] = useState(false);
   const searchParams = useSearchParams();
   const { toast } = useToast();
   const supabase = createClient();
@@ -123,14 +126,16 @@ function BillingContent() {
 
       const { data: membership } = (await supabase
         .from("org_members")
-        .select("organization_id")
+        .select("organization_id, role")
         .eq("user_id", user.id)
-        .single()) as { data: { organization_id: string } | null };
+        .single()) as { data: { organization_id: string; role: string } | null };
 
       if (!membership) {
         setLoadError("We couldn't find your organization. Please contact support.");
         return;
       }
+
+      setIsBillingAdmin(membership.role === "owner" || membership.role === "admin");
 
       const orgId = membership.organization_id;
 
@@ -207,7 +212,9 @@ function BillingContent() {
 
       if (!response.ok) {
         const error = await response.json();
-        throw new Error(error.message || "Failed to open billing portal");
+        // The portal route returns { error } (e.g. the owner/admin-only 403
+        // from SCRUM-422) — surface it instead of the generic fallback.
+        throw new Error(error.error || error.message || "Failed to open billing portal");
       }
 
       const { url } = await response.json();
@@ -271,7 +278,7 @@ function BillingContent() {
             Manage your subscription and usage
           </p>
         </div>
-        {subscription && (
+        {subscription && isBillingAdmin && (
           <Button onClick={handleManageBilling} variant="outline">
             <CreditCard className="mr-2 h-4 w-4" />
             Manage Billing
@@ -456,6 +463,8 @@ function BillingContent() {
                     <Button
                       className="w-full"
                       variant="outline"
+                      disabled={!isBillingAdmin}
+                      title={isBillingAdmin ? undefined : "Only organization owners and admins can manage billing"}
                       onClick={() => {
                         if (currentPlan) trackPlanDowngradeClicked(currentPlan, plan.id);
                         handleManageBilling();
@@ -468,7 +477,8 @@ function BillingContent() {
                       className="w-full"
                       variant={plan.highlighted ? "default" : "outline"}
                       onClick={() => handleSubscribe(plan.id)}
-                      disabled={loadingPlan === plan.id}
+                      disabled={loadingPlan === plan.id || !isBillingAdmin}
+                      title={isBillingAdmin ? undefined : "Only organization owners and admins can manage billing"}
                     >
                       {loadingPlan === plan.id && (
                         <Loader2 className="mr-2 h-4 w-4 animate-spin" />

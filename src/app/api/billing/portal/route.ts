@@ -4,6 +4,7 @@ import { createBillingPortalSession } from "@/lib/stripe";
 
 interface Membership {
   organization_id: string;
+  role: string;
   organizations: { stripe_customer_id: string | null };
 }
 
@@ -21,6 +22,7 @@ export async function POST(request: Request) {
       .from("org_members")
       .select(`
         organization_id,
+        role,
         organizations (stripe_customer_id)
       `)
       .eq("user_id", user.id)
@@ -28,6 +30,15 @@ export async function POST(request: Request) {
 
     if (!membership) {
       return NextResponse.json({ error: "No organization found" }, { status: 404 });
+    }
+
+    // The Stripe billing portal exposes invoices, payment methods, and plan
+    // changes — owner/admin only, not every org member (SCRUM-422, finding #6).
+    if (membership.role !== "owner" && membership.role !== "admin") {
+      return NextResponse.json(
+        { error: "Only organization owners and admins can manage billing" },
+        { status: 403 }
+      );
     }
 
     const organization = membership.organizations;
