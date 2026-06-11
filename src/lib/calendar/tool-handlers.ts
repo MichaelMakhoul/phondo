@@ -655,83 +655,83 @@ function formatBuiltInAvailabilityForVoice(
 
 // ─── Timezone helpers ────────────────────────────────────────────────────────
 
+// Fixed Intl options for offset computation; formatters are memoised per zone
+// because ensureTimezoneOffset runs per-slot in the live availability hot path
+// and Intl.DateTimeFormat construction (ICU load) is comparatively expensive.
+const _OFFSET_FMT_OPTS: Intl.DateTimeFormatOptions = {
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  // hourCycle h23 (not hour12:false) so midnight is "00", never "24" — some ICU
+  // builds (e.g. CI) emit "24" for hour12:false, which would roll Date.UTC to
+  // the next day and throw the offset off by 24h when we read parts at midnight.
+  hourCycle: "h23",
+};
+const _offsetFmtCache = new Map<string, Intl.DateTimeFormat>();
+function offsetFormatter(timeZone: string): Intl.DateTimeFormat {
+  let f = _offsetFmtCache.get(timeZone);
+  if (!f) {
+    f = new Intl.DateTimeFormat("en-US", { timeZone, ..._OFFSET_FMT_OPTS });
+    _offsetFmtCache.set(timeZone, f);
+  }
+  return f;
+}
+
 /**
- * If the datetime string lacks a timezone offset (Z or +HH:MM), compute the
- * UTC offset for the given IANA timezone and append it. This prevents naive
- * datetimes from being interpreted as UTC on the server.
+ * The UTC offset (in minutes) for `timezone` AT a specific UTC `instant`.
+ * Computed by formatting the instant in the zone vs UTC and differencing — no
+ * dependency on the server's local timezone. (Math.round only guards historical
+ * sub-minute LMT offsets, which never occur for booking dates.)
+ */
+function zoneOffsetMinutesAt(instant: Date, timezone: string): number {
+  const get = (parts: Intl.DateTimeFormatPart[], type: string) =>
+    parseInt(parts.find((p) => p.type === type)?.value || "0", 10);
+  const tz = offsetFormatter(timezone).formatToParts(instant);
+  const utc = offsetFormatter("UTC").formatToParts(instant);
+  // Defensive `% 24`: belt-and-suspenders against an ICU build emitting hour 24.
+  const tzMs = Date.UTC(get(tz, "year"), get(tz, "month") - 1, get(tz, "day"), get(tz, "hour") % 24, get(tz, "minute"), get(tz, "second"));
+  const utcMs = Date.UTC(get(utc, "year"), get(utc, "month") - 1, get(utc, "day"), get(utc, "hour") % 24, get(utc, "minute"), get(utc, "second"));
+  return Math.round((tzMs - utcMs) / 60_000);
+}
+
+/**
+ * If the datetime string lacks a timezone offset (Z or +/-HH:MM), compute the
+ * UTC offset for the given IANA timezone and append it, so a naive wall-time is
+ * not interpreted as UTC on the server. Correct across DST transitions.
  *
- * e.g., "2026-02-18T10:00:00" + "Australia/Sydney" → "2026-02-18T10:00:00+11:00"
+ * e.g. "2026-02-18T10:00:00" + "Australia/Sydney" → "2026-02-18T10:00:00+11:00"
  */
 export function ensureTimezoneOffset(datetime: string, timezone: string): string {
-  // Already has offset — leave it alone
+  // Already has an offset (Z or +/-HH:MM) — leave it alone.
   if (/[Zz]$/.test(datetime) || /[+-]\d{2}:\d{2}$/.test(datetime)) {
     return datetime;
   }
+  // Read the naive wall-time as if it were UTC. This is NOT the real instant —
+  // it is ~offset hours away — but it's the starting point for the iteration.
+  const naiveUtcMs = new Date(`${datetime}Z`).getTime();
+  if (isNaN(naiveUtcMs)) return datetime; // unparseable — let the caller handle it.
 
-  // Quick sanity check: if the datetime string is not parseable at all, bail out.
-  // NOTE: `new Date(datetime)` without "Z" is implementation-dependent (may be
-  // treated as local or UTC). We only use it for the isNaN guard — the actual
-  // offset calculation below uses `new Date(\`${datetime}Z\`)` which is always UTC.
-  const naiveDate = new Date(datetime);
-  if (isNaN(naiveDate.getTime())) return datetime; // unparseable — let caller handle
-
-  // Use Intl to get the timezone offset parts
-  const formatter = new Intl.DateTimeFormat("en-US", {
-    timeZone: timezone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  });
-
-  // Format the same instant in both UTC and target TZ, then compute difference
-  const utcFormatter = new Intl.DateTimeFormat("en-US", {
-    timeZone: "UTC",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  });
-
-  // Create a reference date at the naive datetime value to determine offset
-  // We use a known UTC instant and compare its local representation
-  const refDate = new Date(`${datetime}Z`); // treat as UTC temporarily
-  const tzParts = formatter.formatToParts(refDate);
-  const utcParts = utcFormatter.formatToParts(refDate);
-
-  const getPart = (parts: Intl.DateTimeFormatPart[], type: string) =>
-    parts.find((p) => p.type === type)?.value || "0";
-
-  const tzHour = parseInt(getPart(tzParts, "hour"), 10);
-  const tzMin = parseInt(getPart(tzParts, "minute"), 10);
-  const tzDay = parseInt(getPart(tzParts, "day"), 10);
-  const utcHour = parseInt(getPart(utcParts, "hour"), 10);
-  const utcMin = parseInt(getPart(utcParts, "minute"), 10);
-  const utcDay = parseInt(getPart(utcParts, "day"), 10);
-
-  // Compare full date representations to handle month/year boundaries correctly
-  const tzMonth = parseInt(getPart(tzParts, "month"), 10);
-  const utcMonth = parseInt(getPart(utcParts, "month"), 10);
-  const tzYear = parseInt(getPart(tzParts, "year"), 10);
-  const utcYear = parseInt(getPart(utcParts, "year"), 10);
-
-  // Both Date constructors below use the server's local timezone, but since we
-  // only care about the *difference*, the server's TZ offset cancels out.
-  const tzTotal = new Date(tzYear, tzMonth - 1, tzDay, tzHour, tzMin).getTime();
-  const utcTotal = new Date(utcYear, utcMonth - 1, utcDay, utcHour, utcMin).getTime();
-  const offsetMinutes = (tzTotal - utcTotal) / 60_000;
+  // SCRUM-416: the zone offset depends on the true local instant, but the local
+  // instant depends on the offset. Solve by fixed-point iteration: take the
+  // offset at the naive-as-UTC instant, refine the UTC guess (naive - offset),
+  // re-read the offset there, and repeat until stable. The previous code read
+  // the offset at the naive-as-UTC instant ONLY, so a DST transition falling in
+  // that ~offset-hour gap produced a +/-1h error (e.g. Sydney spring-forward).
+  let offsetMinutes = zoneOffsetMinutesAt(new Date(naiveUtcMs), timezone);
+  for (let i = 0; i < 4; i++) {
+    const utcGuessMs = naiveUtcMs - offsetMinutes * 60_000;
+    const next = zoneOffsetMinutesAt(new Date(utcGuessMs), timezone);
+    if (next === offsetMinutes) break;
+    offsetMinutes = next;
+  }
 
   const sign = offsetMinutes >= 0 ? "+" : "-";
-  const absOffset = Math.abs(offsetMinutes);
-  const offH = String(Math.floor(absOffset / 60)).padStart(2, "0");
-  const offM = String(absOffset % 60).padStart(2, "0");
-
+  const abs = Math.abs(offsetMinutes);
+  const offH = String(Math.floor(abs / 60)).padStart(2, "0");
+  const offM = String(abs % 60).padStart(2, "0");
   return `${datetime}${sign}${offH}:${offM}`;
 }
 

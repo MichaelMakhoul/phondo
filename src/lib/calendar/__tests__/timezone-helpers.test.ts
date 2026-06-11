@@ -91,6 +91,73 @@ describe("ensureTimezoneOffset", () => {
     expect(result).toBe("2025-12-31T20:00:00+11:00");
   });
 
+  // ── DST transitions (SCRUM-416) ────────────────────────────────────────
+  // The offset must reflect the TRUE local instant, not the naive-as-UTC instant
+  // (which sits ~offset hours away and can fall on the wrong side of a DST jump).
+
+  it("Sydney spring-forward: the day BEFORE the jump is still +10:00 (the audit example)", () => {
+    // Sydney DST starts 02:00 local Sun 4 Oct 2026 (+10 → +11). A naive 8 PM the
+    // night before is pre-DST. The old code read the offset at 2026-10-03T20:00Z
+    // (after the 16:00 UTC jump) and wrongly returned +11:00.
+    expect(ensureTimezoneOffset("2026-10-03T20:00:00", "Australia/Sydney")).toBe(
+      "2026-10-03T20:00:00+10:00"
+    );
+  });
+
+  it("Sydney spring-forward: a time clearly AFTER the jump is +11:00", () => {
+    expect(ensureTimezoneOffset("2026-10-05T20:00:00", "Australia/Sydney")).toBe(
+      "2026-10-05T20:00:00+11:00"
+    );
+  });
+
+  it("Sydney fall-back: before the transition is +11:00, after is +10:00", () => {
+    // DST ends 03:00 local Sun 5 Apr 2026 (+11 → +10).
+    expect(ensureTimezoneOffset("2026-04-04T20:00:00", "Australia/Sydney")).toBe(
+      "2026-04-04T20:00:00+11:00"
+    );
+    expect(ensureTimezoneOffset("2026-04-06T20:00:00", "Australia/Sydney")).toBe(
+      "2026-04-06T20:00:00+10:00"
+    );
+  });
+
+  it("US spring-forward (New York): a time just AFTER the jump is -04:00 (genuine west-of-UTC near-transition guard)", () => {
+    // DST starts 02:00 local Sun 8 Mar 2026 (-5 → -4). 03:30 is just after the
+    // jump. The old code read the offset at 2026-03-08T03:30Z (before the 07:00Z
+    // transition) and wrongly returned -05:00 — this case actually exercises the
+    // bug for a negative offset, unlike a time a full day away.
+    expect(ensureTimezoneOffset("2026-03-08T03:30:00", "America/New_York")).toBe(
+      "2026-03-08T03:30:00-04:00"
+    );
+    expect(ensureTimezoneOffset("2026-03-07T20:00:00", "America/New_York")).toBe(
+      "2026-03-07T20:00:00-05:00"
+    );
+  });
+
+  it("Lord Howe (the only half-hour DST): day before is +10:30, after is +11:00", () => {
+    // Australia/Lord_Howe shifts +10:30 → +11:00 (spring-forward 02:00 Sun 4 Oct
+    // 2026). Exercises the half-hour offset AND the DST iteration at once; the
+    // day-before case is a genuine regression guard (old code returned +11:00).
+    expect(ensureTimezoneOffset("2026-10-03T20:00:00", "Australia/Lord_Howe")).toBe(
+      "2026-10-03T20:00:00+10:30"
+    );
+    expect(ensureTimezoneOffset("2026-10-05T20:00:00", "Australia/Lord_Howe")).toBe(
+      "2026-10-05T20:00:00+11:00"
+    );
+  });
+
+  it("degenerate DST inputs resolve deterministically (gap → +11:00, overlap → +10:00)", () => {
+    // Non-existent wall time (spring-forward GAP 02:00–03:00 Sydney): the
+    // iteration oscillates and the 4-iteration cap lands on the post-jump offset.
+    expect(ensureTimezoneOffset("2026-10-04T02:30:00", "Australia/Sydney")).toBe(
+      "2026-10-04T02:30:00+11:00"
+    );
+    // Ambiguous wall time (fall-back OVERLAP 02:00–03:00 Sydney, occurs twice):
+    // converges to the second (DST-off, +10:00) occurrence.
+    expect(ensureTimezoneOffset("2026-04-05T02:30:00", "Australia/Sydney")).toBe(
+      "2026-04-05T02:30:00+10:00"
+    );
+  });
+
   // ── Unparseable input ──────────────────────────────────────────────────
 
   it("returns unparseable datetime as-is", () => {
