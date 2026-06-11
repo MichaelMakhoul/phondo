@@ -47,42 +47,6 @@ export interface TransferResult {
 }
 
 /**
- * Vapi tool definitions for call transfer
- */
-export const transferTools = {
-  transferCall: {
-    type: "function" as const,
-    function: {
-      name: "transfer_call",
-      description:
-        "Transfer the call to a human when the AI cannot adequately help. Use this when the caller asks to speak to a person, has a complex issue, or when there's an emergency.",
-      parameters: {
-        type: "object" as const,
-        properties: {
-          reason: {
-            type: "string",
-            description:
-              "The reason for the transfer (e.g., 'caller requested human', 'emergency', 'complex question')",
-          },
-          urgency: {
-            type: "string",
-            enum: ["low", "medium", "high"],
-            description:
-              "The urgency level: low (general inquiry), medium (needs attention soon), high (emergency/urgent)",
-          },
-          summary: {
-            type: "string",
-            description:
-              "A brief summary of the conversation and what the caller needs, to help the human taking over",
-          },
-        },
-        required: ["reason"],
-      },
-    },
-  },
-};
-
-/**
  * Get transfer rules for an assistant
  */
 export async function getTransferRules(

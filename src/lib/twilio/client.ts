@@ -105,13 +105,3 @@ export async function configureSmsWebhook(
     smsMethod: "POST",
   });
 }
-
-/** Returns Twilio credentials for Vapi import. Kept narrow to avoid broad token exposure. */
-export function getTwilioCredentials(): { accountSid: string; authToken: string } {
-  const accountSid = process.env.TWILIO_ACCOUNT_SID;
-  const authToken = process.env.TWILIO_AUTH_TOKEN;
-  if (!accountSid || !authToken) {
-    throw new Error("TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN are required");
-  }
-  return { accountSid, authToken };
-}

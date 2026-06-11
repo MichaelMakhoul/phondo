@@ -63,7 +63,7 @@ export default function NewAssistantPage() {
       if (!membership) throw new Error("No organization found");
 
       // Create assistant via API route
-      const vapiResponse = await fetch("/api/v1/assistants", {
+      const response = await fetch("/api/v1/assistants", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -79,12 +79,12 @@ export default function NewAssistantPage() {
         }),
       });
 
-      if (!vapiResponse.ok) {
-        const error = await vapiResponse.json();
+      if (!response.ok) {
+        const error = await response.json();
         throw new Error(error.error || error.message || "Failed to create assistant");
       }
 
-      const assistant = await vapiResponse.json();
+      const assistant = await response.json();
 
       toast({
         title: "Assistant created!",
