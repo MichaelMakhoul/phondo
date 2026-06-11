@@ -127,7 +127,7 @@ describe("owner-email channel drop honesty (SCRUM-419)", () => {
         callerPhone: "+61400000000",
         timestamp: new Date("2026-06-15T00:00:00Z"),
       }),
-    ).resolves.toBeUndefined();
+    ).resolves.toBe("skipped"); // honest no-op reporting (SCRUM-442)
     // Email wasn't wanted, so the owner lookup must not even run — no Sentry noise.
     expect(Sentry.captureMessage).not.toHaveBeenCalled();
   });
@@ -204,7 +204,7 @@ describe("owner-email channel drop honesty (SCRUM-419)", () => {
         callerPhone: "+61400000000",
         timestamp: new Date("2026-06-15T00:00:00Z"),
       }),
-    ).resolves.toBeUndefined();
+    ).resolves.toBe("sent"); // something was attempted and delivered
     expect(ssrfSafeFetch).toHaveBeenCalledTimes(1); // the webhook actually went out
   });
 

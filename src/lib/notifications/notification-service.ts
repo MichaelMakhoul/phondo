@@ -4,12 +4,12 @@
  * Handles sending email and SMS notifications for various events:
  * - Missed calls
  * - Failed calls
- * - Voicemails
  * - Appointment bookings
  * - Daily summaries
  */
 
 import { createAdminClient } from "@/lib/supabase/admin";
+import { DEMO_ORG_ID } from "@/lib/demo/config";
 import { ssrfSafeFetch, escapeHtml } from "@/lib/security/validation";
 import { hasFeatureAccess } from "@/lib/stripe/billing-service";
 import * as Sentry from "@sentry/nextjs";
@@ -50,11 +50,6 @@ export interface CallNotificationData {
   timestamp: Date;
 }
 
-export interface VoicemailNotificationData extends CallNotificationData {
-  voicemailUrl: string;
-  voicemailTranscript?: string;
-}
-
 export interface FailedCallNotificationData extends CallNotificationData {
   failureReason: string;
   endedReason?: string;
@@ -88,6 +83,17 @@ export interface CallbackNotificationData {
   preferredTime?: string;
   urgency: string;
 }
+
+/**
+ * Outcome of a notification dispatch (SCRUM-442):
+ * - "sent"    — at least one channel was attempted and none failed
+ * - "skipped" — legitimate no-op: every channel was disabled by preference
+ *               (or the org is the public demo org), so nothing was wanted
+ *               and nothing was dropped
+ * Wanted-but-undeliverable states still THROW (settleChannels contract) so
+ * callers record a failure, never a false "sent".
+ */
+export type NotificationSendResult = "sent" | "skipped";
 
 export interface DailySummaryData {
   organizationId: string;
@@ -248,6 +254,21 @@ function reportPlanGateStrip(organizationId: string, channel: "owner-sms" | "web
 }
 
 /**
+ * The public live-demo org (seed migration 00105, /demo browser calls)
+ * intentionally has NO org_members — there is no owner to notify. Without
+ * this guard, every notification-worthy demo outcome fails the owner-email
+ * lookup (Sentry warning) and then throws "0 channels delivered" (recorded
+ * as a failed notification) — pure noise with nobody behind it. Demo calls
+ * are a marketing surface: skip owner notifications outright instead of
+ * fingerprinting the resulting Sentry events. (SCRUM-442)
+ */
+function skipDemoOrg(notification: string, organizationId: string): boolean {
+  if (organizationId !== DEMO_ORG_ID) return false;
+  console.log(`[Notifications] ${notification}: demo org — skipping (no members to notify)`);
+  return true;
+}
+
+/**
  * Surface an owner-email lookup failure to Sentry. The owner's email is the
  * DEFAULT (often only) notification channel, so a lookup failure here usually
  * means the org silently stops hearing about missed/failed calls — it must be
@@ -344,16 +365,18 @@ export async function getOrganizationOwnerEmail(
  *   leaves ZERO channels to attempt, this throws so the caller records a
  *   failure instead of "sent" with nothing delivered.
  * - Zero channels with nothing dropped is a legitimate no-op (the org turned
- *   this notification off) and resolves silently.
+ *   this notification off) and resolves "skipped" so callers can report the
+ *   no-op honestly instead of "sent" (SCRUM-442).
  * - Otherwise: settle all channels and throw if any failed (degrade
- *   per-channel — one failure doesn't stop the others, but it is reported).
+ *   per-channel — one failure doesn't stop the others, but it is reported);
+ *   resolves "sent" when every attempted channel succeeded.
  */
 async function settleChannels(
   notification: string,
   organizationId: string,
   channels: Promise<void>[],
   droppedChannels: string[]
-): Promise<void> {
+): Promise<NotificationSendResult> {
   if (droppedChannels.length > 0) {
     console.error(`[Notifications] ${notification}: wanted channel(s) unavailable — ${droppedChannels.join(", ")}:`, {
       organizationId,
@@ -369,7 +392,7 @@ async function settleChannels(
         `${notification}: 0 notification channels delivered — wanted channel(s) unavailable: ${droppedChannels.join(", ")}`
       );
     }
-    return; // all channels disabled by preference — legitimate no-op
+    return "skipped"; // all channels disabled by preference — legitimate no-op
   }
 
   const results = await Promise.allSettled(channels);
@@ -377,6 +400,7 @@ async function settleChannels(
   if (failures.length > 0) {
     throw new Error(`${failures.length}/${results.length} notification channels failed: ${(failures[0] as PromiseRejectedResult).reason}`);
   }
+  return "sent";
 }
 
 /**
@@ -384,7 +408,8 @@ async function settleChannels(
  */
 export async function sendMissedCallNotification(
   data: CallNotificationData
-): Promise<void> {
+): Promise<NotificationSendResult> {
+  if (skipDemoOrg("missed-call", data.organizationId)) return "skipped";
   const prefs = await applyPlanGates(
     data.organizationId,
     await getNotificationPreferences(data.organizationId)
@@ -429,7 +454,7 @@ export async function sendMissedCallNotification(
     }));
   }
 
-  await settleChannels("missed-call", data.organizationId, channels, droppedChannels);
+  return settleChannels("missed-call", data.organizationId, channels, droppedChannels);
 }
 
 /**
@@ -438,7 +463,8 @@ export async function sendMissedCallNotification(
  */
 export async function sendFailedCallNotification(
   data: FailedCallNotificationData
-): Promise<void> {
+): Promise<NotificationSendResult> {
+  if (skipDemoOrg("failed-call", data.organizationId)) return "skipped";
   const prefs = await applyPlanGates(
     data.organizationId,
     await getNotificationPreferences(data.organizationId)
@@ -486,7 +512,7 @@ export async function sendFailedCallNotification(
     }));
   }
 
-  await settleChannels("failed-call", data.organizationId, channels, droppedChannels);
+  return settleChannels("failed-call", data.organizationId, channels, droppedChannels);
 }
 
 /**
@@ -501,7 +527,8 @@ export async function sendFailedCallNotification(
  */
 export async function sendUnsuccessfulCallNotification(
   data: UnsuccessfulCallNotificationData
-): Promise<void> {
+): Promise<NotificationSendResult> {
+  if (skipDemoOrg("unsuccessful-call", data.organizationId)) return "skipped";
   const prefs = await applyPlanGates(
     data.organizationId,
     await getNotificationPreferences(data.organizationId),
@@ -554,60 +581,7 @@ export async function sendUnsuccessfulCallNotification(
     }));
   }
 
-  await settleChannels("unsuccessful-call", data.organizationId, channels, droppedChannels);
-}
-
-/**
- * Send voicemail notification
- */
-export async function sendVoicemailNotification(
-  data: VoicemailNotificationData
-): Promise<void> {
-  const prefs = await applyPlanGates(
-    data.organizationId,
-    await getNotificationPreferences(data.organizationId)
-  );
-  const shouldEmail = prefs ? prefs.email_on_voicemail : true;
-  const shouldSms = prefs ? prefs.sms_on_voicemail && prefs.sms_phone_number : false;
-
-  const email = shouldEmail ? await getOrganizationOwnerEmail(data.organizationId) : null;
-
-  const channels: Promise<void>[] = [];
-  const droppedChannels: string[] = [];
-  if (shouldEmail && !email) droppedChannels.push("owner-email");
-  if (prefs?.sms_on_voicemail && !prefs.sms_phone_number) droppedChannels.push("sms");
-
-  if (shouldEmail && email) {
-    channels.push(sendEmail({
-      to: email,
-      subject: `New Voicemail from ${data.callerName || data.callerPhone}`,
-      template: "voicemail",
-      data: {
-        callerPhone: data.callerPhone,
-        callerName: data.callerName,
-        timestamp: data.timestamp.toLocaleString(),
-        voicemailUrl: data.voicemailUrl,
-        transcript: data.voicemailTranscript,
-        duration: data.duration,
-      },
-    }));
-  }
-
-  if (shouldSms && prefs?.sms_phone_number) {
-    channels.push(sendSMS({
-      to: prefs.sms_phone_number,
-      message: `New voicemail from ${data.callerName || data.callerPhone}. ${data.voicemailTranscript ? `"${data.voicemailTranscript.substring(0, 100)}..."` : ""}`,
-    }));
-  }
-
-  if (prefs?.webhook_url) {
-    channels.push(sendWebhook(prefs.webhook_url, {
-      event: "voicemail",
-      data,
-    }));
-  }
-
-  await settleChannels("voicemail", data.organizationId, channels, droppedChannels);
+  return settleChannels("unsuccessful-call", data.organizationId, channels, droppedChannels);
 }
 
 /**
@@ -633,13 +607,14 @@ export function formatAppointmentDate(date: Date, timezone?: string): string {
  */
 export async function sendAppointmentNotification(
   data: AppointmentNotificationData
-): Promise<void> {
+): Promise<NotificationSendResult> {
+  if (skipDemoOrg("appointment-booked", data.organizationId)) return "skipped";
   const prefs = await applyPlanGates(
     data.organizationId,
     await getNotificationPreferences(data.organizationId),
     { smsCapable: false }
   );
-  if (!prefs) return; // genuinely no prefs row — DB errors fail open to defaults upstream
+  if (!prefs) return "skipped"; // genuinely no prefs row — DB errors fail open to defaults upstream
 
   const email = prefs.email_on_appointment_booked
     ? await getOrganizationOwnerEmail(data.organizationId)
@@ -673,7 +648,7 @@ export async function sendAppointmentNotification(
     }));
   }
 
-  await settleChannels("appointment-booked", data.organizationId, channels, droppedChannels);
+  return settleChannels("appointment-booked", data.organizationId, channels, droppedChannels);
 }
 
 /**
@@ -681,7 +656,8 @@ export async function sendAppointmentNotification(
  */
 export async function sendCallbackNotification(
   data: CallbackNotificationData
-): Promise<void> {
+): Promise<NotificationSendResult> {
+  if (skipDemoOrg("callback-scheduled", data.organizationId)) return "skipped";
   const prefs = await applyPlanGates(
     data.organizationId,
     await getNotificationPreferences(data.organizationId)
@@ -734,7 +710,7 @@ export async function sendCallbackNotification(
     });
   }
 
-  await settleChannels("callback-scheduled", data.organizationId, channels, droppedChannels);
+  return settleChannels("callback-scheduled", data.organizationId, channels, droppedChannels);
 }
 
 /**
@@ -742,7 +718,8 @@ export async function sendCallbackNotification(
  */
 export async function sendCallbackReminderNotification(
   data: CallbackNotificationData
-): Promise<void> {
+): Promise<NotificationSendResult> {
+  if (skipDemoOrg("callback-reminder", data.organizationId)) return "skipped";
   const prefs = await applyPlanGates(
     data.organizationId,
     await getNotificationPreferences(data.organizationId)
@@ -795,7 +772,7 @@ export async function sendCallbackReminderNotification(
     });
   }
 
-  await settleChannels("callback-reminder", data.organizationId, channels, droppedChannels);
+  return settleChannels("callback-reminder", data.organizationId, channels, droppedChannels);
 }
 
 /**
@@ -803,13 +780,14 @@ export async function sendCallbackReminderNotification(
  */
 export async function sendDailySummaryNotification(
   data: DailySummaryData
-): Promise<void> {
+): Promise<NotificationSendResult> {
+  if (skipDemoOrg("daily-summary", data.organizationId)) return "skipped";
   const prefs = await applyPlanGates(
     data.organizationId,
     await getNotificationPreferences(data.organizationId),
     { smsCapable: false }
   );
-  if (!prefs) return; // genuinely no prefs row — DB errors fail open to defaults upstream
+  if (!prefs) return "skipped"; // genuinely no prefs row — DB errors fail open to defaults upstream
 
   const email = prefs.email_daily_summary
     ? await getOrganizationOwnerEmail(data.organizationId)
@@ -848,7 +826,7 @@ export async function sendDailySummaryNotification(
     }));
   }
 
-  await settleChannels("daily-summary", data.organizationId, channels, droppedChannels);
+  return settleChannels("daily-summary", data.organizationId, channels, droppedChannels);
 }
 
 // ============================================================
@@ -1049,14 +1027,6 @@ function generateEmailHtml(template: string, data: Record<string, any>): string 
       </table>
       <p><strong>Consider calling them back.</strong></p>
       <p><a href="${escapeHtml(d.dashboardLink || (process.env.NEXT_PUBLIC_APP_URL || "https://phondo.ai") + "/calls")}">View the full call</a></p>
-    `,
-    voicemail: (d) => `
-      <h2>New Voicemail</h2>
-      <p>You have a new voicemail from <strong>${d.callerName || d.callerPhone}</strong>.</p>
-      <p>Received at: ${d.timestamp}</p>
-      ${d.duration ? `<p>Duration: ${d.duration} seconds</p>` : ""}
-      ${d.transcript ? `<p><strong>Transcript:</strong><br/>${d.transcript}</p>` : ""}
-      ${d.voicemailUrl ? `<p><a href="${escapeHtml(d.voicemailUrl)}">Listen to voicemail</a></p>` : ""}
     `,
     "appointment-booked": (d) => `
       <h2>New Appointment Booked</h2>

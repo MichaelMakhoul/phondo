@@ -37,6 +37,17 @@ const SMS_GATED_FIELDS = [
   "sms_appointment_confirmation",
 ] as const;
 
+// Owner-alert SMS toggles deliver to sms_phone_number — without a number the
+// channel is wanted-but-undeliverable and settleChannels records a failed
+// notification on every matching call (SCRUM-442). The caller-facing SMS
+// fields (textback/confirmation) go to the CALLER's number and are
+// intentionally excluded.
+const OWNER_SMS_TOGGLES = [
+  "sms_on_missed_call",
+  "sms_on_voicemail",
+  "sms_on_callback_scheduled",
+] as const;
+
 // GET /api/v1/notification-preferences
 export async function GET() {
   try {
@@ -164,6 +175,53 @@ export async function PUT(request: Request) {
     }
 
     const admin = createAdminClient();
+
+    // SCRUM-442: cross-field validation. The allowlist alone permits
+    // sms_on_* = true with no sms_phone_number (and clearing the number while
+    // a toggle stays on). Validate the MERGED state (existing row + this
+    // patch) — a partial PATCH that looks fine in isolation can still leave
+    // the stored row undeliverable.
+    const touchesSmsState =
+      "sms_phone_number" in body || OWNER_SMS_TOGGLES.some((f) => f in body);
+    if (touchesSmsState) {
+      const { data: existing, error: existingError } = await (admin as any)
+        .from("notification_preferences")
+        .select("*")
+        .eq("organization_id", membership.organization_id)
+        .single();
+
+      if (existingError && existingError.code !== "PGRST116") {
+        // Without the current row we can't trust merged-state validation:
+        // failing open could store an undeliverable state, validating the
+        // patch alone could falsely reject a valid one. Surface the failure.
+        console.error("Failed to load notification preferences for validation:", {
+          organizationId: membership.organization_id,
+          errorCode: existingError.code,
+          errorMessage: existingError.message,
+        });
+        return NextResponse.json({ error: "Failed to save notification preferences" }, { status: 500 });
+      }
+
+      const merged: Record<string, any> = { ...(existing || {}), ...body };
+      const wantsOwnerSms = OWNER_SMS_TOGGLES.some((f) => merged[f]);
+      const hasSmsNumber =
+        typeof merged.sms_phone_number === "string" && merged.sms_phone_number !== "";
+
+      if (wantsOwnerSms && !hasSmsNumber) {
+        const clearingNumber =
+          "sms_phone_number" in body &&
+          (body.sms_phone_number === null || body.sms_phone_number === "");
+        return NextResponse.json(
+          {
+            error: clearingNumber
+              ? "Turn off SMS alerts before removing the SMS phone number — alerts cannot be delivered without it."
+              : "Add an SMS phone number before turning on SMS alerts — there is no number to send them to.",
+          },
+          { status: 400 }
+        );
+      }
+    }
+
     const { data, error } = await (admin as any)
       .from("notification_preferences")
       .upsert({

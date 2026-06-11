@@ -69,7 +69,7 @@ describe("send-time plan gating (SCRUM-423)", () => {
 
     // Entitlement strip → nothing wanted → clean no-op. If the SMS channel
     // were attempted it would REJECT (no Twilio creds in test env).
-    await expect(sendMissedCallNotification(CALL)).resolves.toBeUndefined();
+    await expect(sendMissedCallNotification(CALL)).resolves.toBe("skipped");
     expect(hasFeatureAccess).toHaveBeenCalledWith("org-1", "smsNotifications");
   });
 
@@ -110,7 +110,7 @@ describe("send-time plan gating (SCRUM-423)", () => {
     );
     vi.mocked(hasFeatureAccess).mockResolvedValue(false);
 
-    await expect(sendMissedCallNotification(CALL)).resolves.toBeUndefined();
+    await expect(sendMissedCallNotification(CALL)).resolves.toBe("skipped");
     expect(ssrfSafeFetch).not.toHaveBeenCalled(); // webhook never fired
     expect(hasFeatureAccess).toHaveBeenCalledWith("org-1", "webhookIntegrations");
   });
@@ -131,7 +131,7 @@ describe("send-time plan gating (SCRUM-423)", () => {
     );
     vi.mocked(hasFeatureAccess).mockResolvedValue(true);
 
-    await expect(sendMissedCallNotification(CALL)).resolves.toBeUndefined();
+    await expect(sendMissedCallNotification(CALL)).resolves.toBe("sent");
     expect(ssrfSafeFetch).toHaveBeenCalledTimes(1);
   });
 
@@ -150,7 +150,7 @@ describe("send-time plan gating (SCRUM-423)", () => {
       }) as never,
     );
 
-    await expect(sendMissedCallNotification(CALL)).resolves.toBeUndefined();
+    await expect(sendMissedCallNotification(CALL)).resolves.toBe("skipped");
     expect(hasFeatureAccess).not.toHaveBeenCalled();
   });
 });

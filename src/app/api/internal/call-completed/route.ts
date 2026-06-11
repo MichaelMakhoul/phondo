@@ -275,11 +275,14 @@ export async function POST(request: Request) {
     hasTranscript,
     successEvaluation,
   });
-  let notificationStatus = "skipped";
+  // The senders report their real outcome (SCRUM-442): "sent" when at least
+  // one channel was attempted and succeeded, "skipped" when every channel was
+  // disabled by preference (previously misreported here as "sent").
+  let notificationStatus: "sent" | "skipped" | "failed" = "skipped";
   if (!spamAnalysis?.isSpam) {
     try {
       if (notificationKind === "failed") {
-        await sendFailedCallNotification({
+        notificationStatus = await sendFailedCallNotification({
           organizationId,
           callId: callId || "unknown",
           callerPhone: callerPhone || "Unknown",
@@ -289,11 +292,10 @@ export async function POST(request: Request) {
           failureReason: humanizeEndedReason(endedReason),
           endedReason,
         });
-        notificationStatus = "sent";
       } else if (notificationKind === "unsuccessful") {
         // AI answered and engaged but didn't satisfy the caller — a lead the
         // owner may be losing. Distinct from a truly missed call (SCRUM-281/299).
-        await sendUnsuccessfulCallNotification({
+        notificationStatus = await sendUnsuccessfulCallNotification({
           organizationId,
           callId: callId || "unknown",
           callerPhone: callerPhone || "Unknown",
@@ -303,17 +305,15 @@ export async function POST(request: Request) {
           summary,
           successEvaluation,
         });
-        notificationStatus = "sent";
       } else if (notificationKind === "missed") {
         // Very short AND no transcript = caller hung up before the AI engaged.
-        await sendMissedCallNotification({
+        notificationStatus = await sendMissedCallNotification({
           organizationId,
           callId: callId || "unknown",
           callerPhone: callerPhone || "Unknown",
           timestamp: new Date(),
           duration: durationSeconds,
         });
-        notificationStatus = "sent";
       }
     } catch (err) {
       console.error("[Internal] Failed to send notification — business owner will NOT be alerted:", {
