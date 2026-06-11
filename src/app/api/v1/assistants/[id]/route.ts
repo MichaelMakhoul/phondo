@@ -163,13 +163,19 @@ export async function PATCH(
     if (validatedData.settings !== undefined) updateData.settings = mergedSettings;
     if (validatedData.language !== undefined) updateData.language = validatedData.language;
 
-    const { data: assistant, error } = await (supabase
+    // SCRUM-429 (finding #56): optimistic concurrency — the read-merge-write
+    // above silently lost fields when two edits raced (last write clobbered
+    // the first's merged settings). The update only applies if the row is
+    // still at the version we read; the BEFORE UPDATE trigger bumps
+    // updated_at on every write, so a concurrent edit makes this match 0
+    // rows and the caller gets a 409 to reload + retry.
+    const { data: updatedRows, error } = await (supabase
       .from("assistants") as any)
       .update(updateData)
       .eq("id", id)
       .eq("organization_id", membership.organization_id)
-      .select()
-      .single();
+      .eq("updated_at", (currentAssistant as any).updated_at)
+      .select();
 
     if (error) {
       // SCRUM-347 (L1): log DB detail server-side, return a generic message.
@@ -177,7 +183,14 @@ export async function PATCH(
       return NextResponse.json({ error: "Internal server error" }, { status: 500 });
     }
 
-    return NextResponse.json(assistant);
+    if (!updatedRows || updatedRows.length === 0) {
+      return NextResponse.json(
+        { error: "This assistant was modified by someone else while you were editing. Please reload and try again." },
+        { status: 409 }
+      );
+    }
+
+    return NextResponse.json(updatedRows[0]);
   } catch (error) {
     console.error("Error updating assistant:", error);
     if (error instanceof z.ZodError) {

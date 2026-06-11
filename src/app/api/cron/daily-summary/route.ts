@@ -2,10 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireCronAuth } from "@/lib/security/cron-auth";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { sendDailySummaryNotification } from "@/lib/notifications/notification-service";
+import * as Sentry from "@sentry/nextjs";
 
 const DEFAULT_TIMEZONE = "Australia/Sydney";
 
-function getYesterdayRange(timezone: string): { start: string; end: string } {
+function getYesterdayRange(timezone: string): { start: string; end: string; periodKey: string } {
   const now = new Date();
   const todayStr = new Intl.DateTimeFormat("en-CA", {
     timeZone: timezone,
@@ -27,6 +28,7 @@ function getYesterdayRange(timezone: string): { start: string; end: string } {
   return {
     start: toUtcMidnight(yesterdayStr, timezone),
     end: toUtcMidnight(todayStr, timezone),
+    periodKey: yesterdayStr, // the local date being summarized — idempotency key
   };
 }
 
@@ -67,7 +69,8 @@ export async function GET(req: NextRequest) {
   }
 
   let sent = 0;
-  let skipped = 0;
+  let skipped = 0; // zero-call orgs
+  let deduped = 0; // idempotent skips (claim already held)
   let failed = 0;
 
   for (const org of orgs ?? []) {
@@ -79,7 +82,7 @@ export async function GET(req: NextRequest) {
         console.error(`[DailySummary] Invalid timezone "${timezone}" for org ${org.id} — falling back to ${DEFAULT_TIMEZONE}`);
         timezone = DEFAULT_TIMEZONE;
       }
-      const { start, end } = getYesterdayRange(timezone);
+      const { start, end, periodKey } = getYesterdayRange(timezone);
 
       // Query calls for yesterday in the org's timezone
       const { data: calls, error: callsError } = await (supabase as any)
@@ -121,19 +124,65 @@ export async function GET(req: NextRequest) {
             completedWithDuration.length
           : 0;
 
+      // SCRUM-429 (finding #53): atomically CLAIM this org+day before
+      // sending — a 23505 means another (overlapping/re-triggered) run owns
+      // it, so we skip instead of double-emailing. Crash-after-claim drops
+      // one summary instead of doubling it ("skip > double").
+      const { error: claimError } = await (supabase as any)
+        .from("cron_send_ledger")
+        .insert({ job_name: "daily-summary", period_key: periodKey, organization_id: org.id });
+      if (claimError) {
+        if (claimError.code === "23505") {
+          console.log(`[DailySummary] Already sent for org ${org.id} on ${periodKey} — skipping (idempotent)`);
+          deduped++;
+          continue;
+        }
+        console.error(`[DailySummary] Failed to claim send for org ${org.id} — skipping to avoid a possible double:`, claimError);
+        Sentry.captureMessage(`Daily summary claim failed for org ${org.id} — summary skipped`, "warning");
+        failed++;
+        continue;
+      }
+
       // Build yesterday's date for display
       const yesterdayDate = new Date(start);
 
-      await sendDailySummaryNotification({
-        organizationId: org.id,
-        date: yesterdayDate,
-        totalCalls,
-        answeredCalls,
-        missedCalls,
-        appointmentsBooked,
-        averageCallDuration,
-        topCallerIntents: [],
-      });
+      try {
+        await sendDailySummaryNotification({
+          organizationId: org.id,
+          date: yesterdayDate,
+          totalCalls,
+          answeredCalls,
+          missedCalls,
+          appointmentsBooked,
+          averageCallDuration,
+          topCallerIntents: [],
+        });
+      } catch (sendErr) {
+        // PARTIAL delivery ("1/2 notification channels failed") means the
+        // email may already be in an inbox — releasing the claim would
+        // re-enable the exact double this ledger prevents. Only release when
+        // NOTHING was delivered, so a same-day manual re-run or overlapping
+        // run can retry. (The next *scheduled* run summarizes a different
+        // day — automatic recovery of a lost day is follow-up scope.)
+        const msg = sendErr instanceof Error ? sendErr.message : "";
+        const partial = /^(\d+)\/(\d+) notification channels failed/.exec(msg);
+        const somethingDelivered = !!partial && partial[1] !== partial[2];
+        if (!somethingDelivered) {
+          await (supabase as any)
+            .from("cron_send_ledger")
+            .delete()
+            .match({ job_name: "daily-summary", period_key: periodKey, organization_id: org.id })
+            .then(({ error }: { error: unknown }) => {
+              if (error) {
+                console.error(`[DailySummary] Failed to release claim for org ${org.id} — this day's summary is lost:`, error);
+                Sentry.captureMessage(`Daily summary claim release failed for org ${org.id} — day lost (ledger row lies)`, "error");
+              }
+            });
+        } else {
+          console.warn(`[DailySummary] Partial delivery for org ${org.id} — keeping the claim (no re-send):`, msg);
+        }
+        throw sendErr; // outer catch counts it as failed
+      }
 
       sent++;
     } catch (err) {
@@ -143,8 +192,8 @@ export async function GET(req: NextRequest) {
   }
 
   console.log(
-    `[DailySummary] Sent ${sent} summaries, ${skipped} skipped (no calls), ${failed} failed`
+    `[DailySummary] Sent ${sent} summaries, ${skipped} skipped (no calls), ${deduped} deduped (already sent), ${failed} failed`
   );
 
-  return NextResponse.json({ sent, skipped, failed });
+  return NextResponse.json({ sent, skipped, deduped, failed });
 }
