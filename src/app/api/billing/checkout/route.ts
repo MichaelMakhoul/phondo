@@ -1,4 +1,6 @@
+import crypto from "crypto";
 import { NextResponse } from "next/server";
+import Stripe from "stripe";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { blocksNewCheckout } from "@/lib/stripe/billing-service";
@@ -6,6 +8,7 @@ import {
   createCustomer,
   createCheckoutSession,
   createBillingPortalSession,
+  retrieveCheckoutSession,
   PLANS,
   PlanType,
 } from "@/lib/stripe";
@@ -147,14 +150,61 @@ export async function POST(request: Request) {
     // reads metadata.plan), and the idempotency key — bucketed by org+plan+hour —
     // collapses an accidental double-submit of the same plan into one session.
     const hourBucket = Math.floor(Date.now() / 3_600_000);
-    const session = await createCheckoutSession(
-      customerId,
-      plan.stripePriceId,
-      `${baseUrl}/billing?success=true`,
-      `${baseUrl}/billing?canceled=true`,
-      { organizationId: organization.id, plan: planType },
-      { idempotencyKey: `checkout:${organization.id}:${planType}:${hourBucket}` }
-    );
+    const idempotencyKey = `checkout:${organization.id}:${planType}:${hourBucket}`;
+    const successUrl = `${baseUrl}/billing?success=true`;
+    const cancelUrl = `${baseUrl}/billing?canceled=true`;
+    const metadata = { organizationId: organization.id, plan: planType };
+
+    let session: Stripe.Checkout.Session;
+    try {
+      session = await createCheckoutSession(
+        customerId,
+        plan.stripePriceId,
+        successUrl,
+        cancelUrl,
+        metadata,
+        { idempotencyKey }
+      );
+
+      // Stripe's idempotency layer replays the ORIGINAL create response for a
+      // reused key, which reports the session's status AT CREATION ("open") —
+      // even if the caller already completed it (subscribe → cancel →
+      // re-subscribe to the same plan within one hour bucket). Retrieve the
+      // LIVE session; if it is no longer usable, mint a fresh single-use key so
+      // the customer gets a working checkout page instead of a dead one.
+      const liveSession = await retrieveCheckoutSession(session.id);
+      if (liveSession.status === "complete" || liveSession.status === "expired") {
+        console.warn("Checkout: idempotency key replayed a stale session; minting a fresh one", {
+          organizationId: organization.id,
+          planType,
+          staleSessionId: session.id,
+          staleStatus: liveSession.status,
+        });
+        session = await createCheckoutSession(
+          customerId,
+          plan.stripePriceId,
+          successUrl,
+          cancelUrl,
+          metadata,
+          { idempotencyKey: `${idempotencyKey}:${crypto.randomUUID()}` }
+        );
+      }
+    } catch (err) {
+      if (err instanceof Stripe.errors.StripeIdempotencyError) {
+        // A concurrent request with the same key is still in flight — the
+        // double-submit race on a first-ever checkout. Not a server fault:
+        // return a retry-friendly conflict instead of a generic 500.
+        return NextResponse.json(
+          {
+            error:
+              "A checkout is already in progress — use that tab or retry in a moment.",
+            code: "checkout_in_progress",
+          },
+          { status: 409 }
+        );
+      }
+      throw err;
+    }
 
     return NextResponse.json({ url: session.url });
   } catch (error) {
