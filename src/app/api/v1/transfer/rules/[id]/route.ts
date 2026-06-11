@@ -156,9 +156,9 @@ export async function PATCH(
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error("Update transfer rule error:", error);
-    const message = error instanceof Error ? error.message : "Failed to update transfer rule";
+    // SCRUM-430 (finding #40): raw error text leaks schema/internal detail.
     return NextResponse.json(
-      { error: message },
+      { error: "Failed to update transfer rule" },
       { status: 500 }
     );
   }
@@ -218,9 +218,9 @@ export async function DELETE(
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error("Delete transfer rule error:", error);
-    const message = error instanceof Error ? error.message : "Failed to delete transfer rule";
+    // SCRUM-430 (finding #40): raw error text leaks schema/internal detail.
     return NextResponse.json(
-      { error: message },
+      { error: "Failed to delete transfer rule" },
       { status: 500 }
     );
   }

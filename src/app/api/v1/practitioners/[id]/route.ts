@@ -64,7 +64,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       .select()
       .single();
 
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    if (error) {
+      // SCRUM-430 (finding #40): log detail server-side, return generic.
+      console.error("Practitioner DB error:", error);
+      return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+    }
     if (!data) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
     // Update service associations if provided
@@ -192,7 +196,11 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
       .select("id")
       .single();
 
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    if (error) {
+      // SCRUM-430 (finding #40): log detail server-side, return generic.
+      console.error("Practitioner DB error:", error);
+      return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+    }
     if (!updated) return NextResponse.json({ error: "Not found" }, { status: 404 });
     return NextResponse.json({ deleted: true });
   } catch (err) {

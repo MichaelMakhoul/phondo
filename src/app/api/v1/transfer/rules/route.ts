@@ -88,9 +88,9 @@ export async function GET(request: NextRequest) {
     });
   } catch (error) {
     console.error("Get transfer rules error:", error);
-    const message = error instanceof Error ? error.message : "Failed to get transfer rules";
+    // SCRUM-430 (finding #40): raw error text leaks schema/internal detail.
     return NextResponse.json(
-      { error: message },
+      { error: "Failed to get transfer rules" },
       { status: 500 }
     );
   }
@@ -273,9 +273,9 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     console.error("Create transfer rule error:", error);
-    const message = error instanceof Error ? error.message : "Failed to create transfer rule";
+    // SCRUM-430 (finding #40): raw error text leaks schema/internal detail.
     return NextResponse.json(
-      { error: message },
+      { error: "Failed to create transfer rule" },
       { status: 500 }
     );
   }

@@ -153,7 +153,9 @@ export async function PATCH(
       .single();
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      // SCRUM-430 (finding #40): log detail server-side, return generic.
+      console.error("Phone number fetch DB error:", error);
+      return NextResponse.json({ error: "Internal server error" }, { status: 500 });
     }
 
     return NextResponse.json(phoneNumber);
@@ -243,7 +245,9 @@ export async function DELETE(
       .eq("organization_id", phoneNumber.organization_id);
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      // SCRUM-430 (finding #40): log detail server-side, return generic.
+      console.error("Phone number update DB error:", error);
+      return NextResponse.json({ error: "Internal server error" }, { status: 500 });
     }
 
     return NextResponse.json({ success: true });

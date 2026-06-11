@@ -56,7 +56,9 @@ export async function GET() {
       .order("created_at", { ascending: false });
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      // SCRUM-430 (finding #40): log detail server-side, return generic.
+      console.error("Assistants list DB error:", error);
+      return NextResponse.json({ error: "Internal server error" }, { status: 500 });
     }
 
     return NextResponse.json(assistants);

@@ -131,8 +131,9 @@ export async function POST(request: Request) {
         { status: 503 }
       );
     }
+    // SCRUM-430 (finding #40): anything else is internal detail — generic.
     return NextResponse.json(
-      { error: message },
+      { error: "Failed to search phone numbers" },
       { status: 500 }
     );
   }

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { timingSafeCompare } from "@/lib/security/validation";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 export const dynamic = "force-dynamic";
@@ -40,9 +41,10 @@ export async function GET(request: Request) {
 
   // Detailed response only for authenticated callers
   const authHeader = request.headers.get("authorization");
+  // SCRUM-430: timing-safe comparison (see cron-auth).
   const isAuthorized =
-    process.env.HEALTH_CHECK_SECRET &&
-    authHeader === `Bearer ${process.env.HEALTH_CHECK_SECRET}`;
+    !!process.env.HEALTH_CHECK_SECRET &&
+    timingSafeCompare(authHeader ?? "", `Bearer ${process.env.HEALTH_CHECK_SECRET}`);
 
   if (isAuthorized) {
     return NextResponse.json(

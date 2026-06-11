@@ -1,4 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { timingSafeCompare } from "@/lib/security/validation";
 import { pageSentry } from "@/lib/observability/page-sentry";
 import { SENTRY_REASONS } from "@/lib/security/error-ids";
 
@@ -36,7 +37,10 @@ export function requireCronAuth(
     return NextResponse.json({ error: "Server misconfiguration" }, { status: 500 });
   }
 
-  if (req.headers.get("authorization") !== `Bearer ${cronSecret}`) {
+  // SCRUM-430: timing-safe — a plain !== leaks prefix-match timing, letting
+  // an attacker confirm secret bytes incrementally (parity with the
+  // INTERNAL_API_SECRET checks).
+  if (!timingSafeCompare(req.headers.get("authorization") ?? "", `Bearer ${cronSecret}`)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
