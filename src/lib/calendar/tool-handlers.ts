@@ -22,6 +22,7 @@ import { runAfterResponse } from "@/lib/utils/after-response";
 import { rateLimitDistributed } from "@/lib/security/rate-limiter";
 import { hasNonLatinLetters } from "@/lib/calendar/latin-name";
 import { resolveRescheduleIdentity, resolveRescheduledBooking } from "@/lib/calendar/reschedule-core";
+import { validateOrgScopedRefs } from "@/lib/calendar/validate-org-scoped-refs";
 
 // SCRUM-399: `resolveRescheduleIdentity` moved to reschedule-core (shared with the
 // dashboard reschedule path). Re-exported here so existing imports/tests are stable.
@@ -941,6 +942,15 @@ export async function handleBookAppointment(
     return {
       success: false,
       message: "That appointment type doesn't seem right. Could you tell me which type of appointment you'd like?",
+    };
+  }
+
+  // ── Validate practitioner_id format too (SCRUM-425 — parity with
+  // service_type_id; org ownership is enforced in bookInternal) ───────────
+  if (args.practitioner_id && !isValidUUID(args.practitioner_id)) {
+    return {
+      success: false,
+      message: "I didn't catch which practitioner you'd like. Could you tell me their name again?",
     };
   }
 
@@ -2009,6 +2019,51 @@ async function bookInternal(
 ): Promise<ToolResult> {
   const supabase = createAdminClient();
 
+  // 0. SCRUM-425 (finding #43): service_type_id / practitioner_id are
+  // LLM/caller-supplied — verify both belong to THIS organization before any
+  // use. This is the single choke point in front of the appointments INSERT
+  // (direct booking AND reschedule route through here), reusing the same
+  // validator as the dashboard routes. Previously a cross-org id flowed
+  // straight into the insert (getServiceType's null result was ignored, and
+  // a requested practitioner was only checked when a service-type
+  // practitioner list happened to resolve).
+  if (serviceTypeId || requestedPractitionerId) {
+    try {
+      const refError = await validateOrgScopedRefs(supabase, organizationId, {
+        serviceTypeId,
+        practitionerId: requestedPractitionerId,
+      });
+      if (refError) {
+        console.error("[Booking] Rejected cross-org/unknown reference:", {
+          organizationId, serviceTypeId, requestedPractitionerId, refError,
+        });
+        return {
+          success: false,
+          message:
+            "I couldn't match that appointment type or practitioner to this business. Could you tell me again what you'd like to book?",
+        };
+      }
+    } catch (error) {
+      // Fail CLOSED: an unverified reference must never reach the insert.
+      // The caller gets the graceful callback offer, same as other DB-error
+      // paths in this flow. Sentry because this gate actively refuses
+      // BOOKINGS (revenue events) — a systematic validator failure must page,
+      // not hide in function logs (SCRUM-425 review).
+      console.error("[Booking] Org-ref validation failed — refusing to book:", { organizationId, error });
+      Sentry.withScope((scope) => {
+        scope.setLevel("error");
+        scope.setTag("bug", "org_ref_validation_db_error");
+        scope.setExtras({ organizationId });
+        Sentry.captureMessage("Booking org-ref validation failed — booking refused (fail-closed)");
+      });
+      return {
+        success: false,
+        message:
+          "I'm having trouble verifying those appointment details right now. Let me take your information and have someone call you back.",
+      };
+    }
+  }
+
   // 1. Validate against business hours (fetch schedule first so we can apply TZ offset)
   let schedule: OrgSchedule | null;
   try {
@@ -2120,7 +2175,10 @@ async function bookInternal(
       }
     }
 
-    // When no service type, validate practitioner belongs to this org
+    // When no service type, check the practitioner is ACTIVE. Org ownership
+    // is already guaranteed by the step-0 validateOrgScopedRefs gate
+    // (SCRUM-425) — this query exists for the is_active business rule, which
+    // the shared validator deliberately doesn't enforce (see SCRUM-444).
     if (!resolvedServiceTypeId) {
       const { data: practitioner } = await (supabase as any)
         .from("practitioners")
