@@ -116,11 +116,31 @@ export async function POST(request: Request) {
       );
       customerId = customer.id;
 
-      // Save customer ID to organization
-      await (supabase
+      // Save customer ID to organization. Must use the service-role client:
+      // stripe_customer_id is locked to service-role by the column-level
+      // UPDATE allowlist (migration 00150 / SCRUM-421) — the user-scoped
+      // client would get "permission denied for column".
+      //
+      // Fail BEFORE creating the checkout session: an unsaved customer id +
+      // a completed payment leaves a live subscription with no linked Stripe
+      // customer on the org (billing portal 400s, retried checkout 409s — a
+      // circular dead-end needing manual reconciliation). Failing here only
+      // orphans an empty Stripe customer, which is recoverable.
+      const { error: customerSaveError } = await (admin
         .from("organizations") as any)
         .update({ stripe_customer_id: customerId })
         .eq("id", organization.id);
+      if (customerSaveError) {
+        console.error("Checkout: failed to persist stripe_customer_id", {
+          organizationId: organization.id,
+          customerId,
+          error: customerSaveError,
+        });
+        return NextResponse.json(
+          { error: "Failed to set up billing. Please try again." },
+          { status: 500 }
+        );
+      }
     }
 
     // Create checkout session. Metadata uses the `plan` key (handleSubscriptionCreated

@@ -297,10 +297,20 @@ export function BusinessSettingsForm({
         description: "Your business settings have been updated.",
       });
     } catch (error) {
+      // Surface the underlying message — a column-permission error (42501,
+      // names the denied column) needs a code fix, not a retry, and the log
+      // line is what support has to go on (SCRUM-421 review).
+      console.error("[BusinessSettings] Failed to save organization settings:", error);
+      // Supabase/PostgREST errors are plain objects (not Error instances) —
+      // read .message off either shape.
+      const message =
+        (error as { message?: string } | null)?.message?.trim() || "";
       toast({
         variant: "destructive",
         title: "Error",
-        description: "Failed to save settings. Please try again.",
+        description: message
+          ? `Failed to save settings: ${message}`
+          : "Failed to save settings. Please try again.",
       });
     } finally {
       setIsLoading(false);

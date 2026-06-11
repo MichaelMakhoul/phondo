@@ -467,10 +467,21 @@ export async function createSubscriptionCheckout(
     });
     customerId = customer.id;
 
-    await (supabase as any)
+    // Fail before creating the session — a paid subscription with no linked
+    // Stripe customer on the org is a manual-reconciliation dead-end, while
+    // an orphaned empty Stripe customer is recoverable (SCRUM-421 review).
+    const { error: customerSaveError } = await (supabase as any)
       .from("organizations")
       .update({ stripe_customer_id: customerId })
       .eq("id", organizationId);
+    if (customerSaveError) {
+      console.error("[Billing] Failed to persist stripe_customer_id:", {
+        organizationId,
+        customerId,
+        error: customerSaveError,
+      });
+      return null;
+    }
   }
 
   // Get price ID for plan
