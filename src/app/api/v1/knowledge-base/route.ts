@@ -1,11 +1,18 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { z } from "zod";
+import { getPrimaryMembership, isOrgAdminRole } from "@/lib/auth/membership";
+import { withRateLimit } from "@/lib/security/rate-limiter";
+
+// SCRUM-428 (finding #36): content was unbounded — cap to the same 50k the
+// upload route enforces (the KB feeds the live AI prompt; megabyte entries
+// blow out context and storage).
+const MAX_KB_CONTENT_LENGTH = 50_000;
 
 const createKBSchema = z.object({
   title: z.string().min(1).max(200),
   sourceType: z.enum(["website", "manual", "faq", "document"]),
-  content: z.string().min(1),
+  content: z.string().min(1).max(MAX_KB_CONTENT_LENGTH),
   sourceUrl: z.string().url().optional(),
   metadata: z.record(z.any()).optional(),
 });
@@ -22,11 +29,7 @@ export async function GET() {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { data: membership } = await (supabase as any)
-      .from("org_members")
-      .select("organization_id")
-      .eq("user_id", user.id)
-      .single();
+    const membership = await getPrimaryMembership(supabase as any, user.id);
 
     if (!membership) {
       return NextResponse.json(
@@ -63,6 +66,13 @@ export async function GET() {
 // POST /api/v1/knowledge-base — create a new org-level KB entry
 export async function POST(request: Request) {
   try {
+    // SCRUM-428 (finding #35): KB writes feed the live AI prompt — bound the
+    // write rate per IP.
+    const { allowed } = withRateLimit(request, "/api/v1/knowledge-base", "auth");
+    if (!allowed) {
+      return NextResponse.json({ error: "Too many requests" }, { status: 429 });
+    }
+
     const supabase = await createClient();
     const {
       data: { user },
@@ -72,16 +82,21 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { data: membership } = await (supabase as any)
-      .from("org_members")
-      .select("organization_id")
-      .eq("user_id", user.id)
-      .single();
+    const membership = await getPrimaryMembership(supabase as any, user.id);
 
     if (!membership) {
       return NextResponse.json(
         { error: "No organization found" },
         { status: 404 }
+      );
+    }
+
+    // SCRUM-428 (finding #35): only owner/admin may rewrite what the live AI
+    // tells callers.
+    if (!isOrgAdminRole(membership.role)) {
+      return NextResponse.json(
+        { error: "Only organization owners and admins can edit the knowledge base" },
+        { status: 403 }
       );
     }
 

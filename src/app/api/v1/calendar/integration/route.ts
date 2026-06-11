@@ -35,10 +35,12 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Verify user belongs to this organization
+    // Verify user belongs to this organization — and may administer it
+    // (SCRUM-428 finding #32: the integration controls where the AI books;
+    // member-level users could previously rewrite it).
     const { data: membership } = await (supabase as any)
       .from("org_members")
-      .select("organization_id")
+      .select("organization_id, role")
       .eq("user_id", user.id)
       .eq("organization_id", organizationId)
       .single();
@@ -48,6 +50,30 @@ export async function POST(request: NextRequest) {
         { error: "Access denied to this organization" },
         { status: 403 }
       );
+    }
+    if (membership.role !== "owner" && membership.role !== "admin") {
+      return NextResponse.json(
+        { error: "Only organization owners and admins can manage calendar integrations" },
+        { status: 403 }
+      );
+    }
+
+    // SCRUM-428 (finding #32): assistantId was stored unvalidated — verify it
+    // belongs to THIS organization before persisting (user-scoped client:
+    // RLS only returns the org's own assistants).
+    if (assistantId) {
+      const { data: assistant } = await (supabase as any)
+        .from("assistants")
+        .select("id")
+        .eq("id", assistantId)
+        .eq("organization_id", organizationId)
+        .maybeSingle();
+      if (!assistant) {
+        return NextResponse.json(
+          { error: "Assistant not found in this organization" },
+          { status: 400 }
+        );
+      }
     }
 
     if (!eventTypeId) {
@@ -128,10 +154,11 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
-    // Verify user belongs to this organization
+    // Verify user belongs to this organization — owner/admin only, matching
+    // the POST gate (SCRUM-428 finding #32).
     const { data: membership } = await (supabase as any)
       .from("org_members")
-      .select("organization_id")
+      .select("organization_id, role")
       .eq("user_id", user.id)
       .eq("organization_id", organizationId)
       .single();
@@ -139,6 +166,12 @@ export async function DELETE(request: NextRequest) {
     if (!membership) {
       return NextResponse.json(
         { error: "Access denied to this organization" },
+        { status: 403 }
+      );
+    }
+    if (membership.role !== "owner" && membership.role !== "admin") {
+      return NextResponse.json(
+        { error: "Only organization owners and admins can manage calendar integrations" },
         { status: 403 }
       );
     }

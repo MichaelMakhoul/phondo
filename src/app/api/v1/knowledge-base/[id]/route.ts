@@ -1,10 +1,12 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { z } from "zod";
+import { getPrimaryMembership, isOrgAdminRole } from "@/lib/auth/membership";
 
 const updateKBSchema = z.object({
   title: z.string().min(1).max(200).optional(),
-  content: z.string().min(1).optional(),
+  // SCRUM-428 (finding #36): same 50k cap as create/upload.
+  content: z.string().min(1).max(50_000).optional(),
   isActive: z.boolean().optional(),
 });
 
@@ -24,11 +26,7 @@ export async function GET(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { data: membership } = await (supabase as any)
-      .from("org_members")
-      .select("organization_id")
-      .eq("user_id", user.id)
-      .single();
+    const membership = await getPrimaryMembership(supabase as any, user.id);
 
     if (!membership) {
       return NextResponse.json(
@@ -77,16 +75,22 @@ export async function PATCH(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { data: membership } = await (supabase as any)
-      .from("org_members")
-      .select("organization_id")
-      .eq("user_id", user.id)
-      .single();
+    const membership = await getPrimaryMembership(supabase as any, user.id);
 
     if (!membership) {
       return NextResponse.json(
         { error: "No organization found" },
         { status: 404 }
+      );
+    }
+
+
+    // SCRUM-428 (finding #35): only owner/admin may rewrite what the live AI
+    // tells callers.
+    if (!isOrgAdminRole(membership.role)) {
+      return NextResponse.json(
+        { error: "Only organization owners and admins can edit the knowledge base" },
+        { status: 403 }
       );
     }
 
@@ -147,16 +151,22 @@ export async function DELETE(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { data: membership } = await (supabase as any)
-      .from("org_members")
-      .select("organization_id")
-      .eq("user_id", user.id)
-      .single();
+    const membership = await getPrimaryMembership(supabase as any, user.id);
 
     if (!membership) {
       return NextResponse.json(
         { error: "No organization found" },
         { status: 404 }
+      );
+    }
+
+
+    // SCRUM-428 (finding #35): only owner/admin may rewrite what the live AI
+    // tells callers.
+    if (!isOrgAdminRole(membership.role)) {
+      return NextResponse.json(
+        { error: "Only organization owners and admins can edit the knowledge base" },
+        { status: 403 }
       );
     }
 

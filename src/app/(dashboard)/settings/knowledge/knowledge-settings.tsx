@@ -317,7 +317,10 @@ export function KnowledgeSettings({
         body: JSON.stringify({ isActive: !entry.is_active }),
       });
 
-      if (!response.ok) throw new Error("Failed to update");
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || "Failed to update");
+      }
 
       setEntries(
         entries.map((e) =>
@@ -328,11 +331,13 @@ export function KnowledgeSettings({
         title: entry.is_active ? "Deactivated" : "Activated",
         description: `Source "${entry.title}" is now ${entry.is_active ? "inactive" : "active"}.`,
       });
-    } catch {
+    } catch (err) {
       toast({
         variant: "destructive",
         title: "Error",
-        description: "Failed to update source.",
+        description: err instanceof Error && err.message !== "Failed to update"
+          ? err.message
+          : "Failed to update source.",
       });
     }
   };
@@ -351,7 +356,10 @@ export function KnowledgeSettings({
         method: "DELETE",
       });
 
-      if (!response.ok) throw new Error("Failed to delete");
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || "Failed to delete");
+      }
 
       setEntries(entries.filter((e) => e.id !== deleteTarget.id));
       trackKnowledgeEntryDeleted();
@@ -422,7 +430,10 @@ export function KnowledgeSettings({
         }
       );
 
-      if (!response.ok) throw new Error("Failed to save");
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || "Failed to save");
+      }
 
       setEntries(
         entries.map((e) =>
@@ -431,11 +442,13 @@ export function KnowledgeSettings({
       );
       setEditDialogOpen(false);
       toast({ title: "Saved", description: "Source updated." });
-    } catch {
+    } catch (err) {
       toast({
         variant: "destructive",
         title: "Error",
-        description: "Failed to save changes.",
+        description: err instanceof Error && err.message !== "Failed to save"
+          ? err.message
+          : "Failed to save changes.",
       });
     }
   };

@@ -55,7 +55,11 @@ export default async function DashboardLayout({
         country
       )
     `)
-    .eq("user_id", user.id) as { data: Membership[] | null };
+    .eq("user_id", user.id)
+    // SCRUM-428 (finding #38): deterministic order so memberships[0] (the
+    // header org) provably matches getPrimaryMembership()'s choice in API
+    // routes — unordered results could show org B while routes act on org A.
+    .order("created_at", { ascending: true }) as unknown as { data: Membership[] | null };
 
   // Get user profile
   const { data: profile } = await supabase

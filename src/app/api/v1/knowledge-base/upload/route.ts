@@ -1,12 +1,47 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { getPrimaryMembership, isOrgAdminRole } from "@/lib/auth/membership";
+import { withRateLimitDistributed } from "@/lib/security/rate-limiter";
+import { createAdminClient } from "@/lib/supabase/admin";
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 const MAX_TEXT_LENGTH = 50_000;
 
+/**
+ * SCRUM-428 (finding #34): route by the file's MAGIC BYTES, not the
+ * client-controlled MIME type / extension. PDFs start with "%PDF-"; DOCX is
+ * an OOXML zip ("PK\x03\x04"). A mislabeled payload goes to the parser its
+ * BYTES say it is — or is rejected — never the parser its name claims.
+ */
+function sniffFileKind(buffer: Buffer): "pdf" | "docx-zip" | "unknown" {
+  if (buffer.length >= 5 && buffer.subarray(0, 5).toString("latin1") === "%PDF-") {
+    return "pdf";
+  }
+  if (
+    buffer.length >= 4 &&
+    buffer[0] === 0x50 && buffer[1] === 0x4b && buffer[2] === 0x03 && buffer[3] === 0x04
+  ) {
+    return "docx-zip";
+  }
+  return "unknown";
+}
+
 // POST /api/v1/knowledge-base/upload — upload a PDF or DOCX file
 export async function POST(request: NextRequest) {
   try {
+    // SCRUM-428 (finding #34): parsing PDFs/DOCX is CPU-heavy — bound per IP
+    // with the DISTRIBUTED limiter (per-instance memory is reset by cold
+    // starts and multiplied by lambda concurrency).
+    const rl = await withRateLimitDistributed(
+      createAdminClient(),
+      request,
+      "/api/v1/knowledge-base/upload",
+      "expensive",
+    );
+    if (!rl.allowed) {
+      return NextResponse.json({ error: "Too many requests" }, { status: 429, headers: rl.headers });
+    }
+
     const supabase = await createClient();
     const {
       data: { user },
@@ -16,11 +51,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { data: membership } = await (supabase as any)
-      .from("org_members")
-      .select("organization_id")
-      .eq("user_id", user.id)
-      .single();
+    const membership = await getPrimaryMembership(supabase as any, user.id);
 
     if (!membership) {
       return NextResponse.json(
@@ -29,9 +60,19 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Same gate as the other KB write routes (finding #35).
+    if (!isOrgAdminRole(membership.role)) {
+      return NextResponse.json(
+        { error: "Only organization owners and admins can edit the knowledge base" },
+        { status: 403 }
+      );
+    }
+
     const formData = await request.formData();
     const file = formData.get("file") as File | null;
-    const title = (formData.get("title") as string) || "";
+    // Cap to match createKBSchema's 200-char title (finding #36 — an
+    // unbounded form field stored verbatim defeats the content cap).
+    const title = ((formData.get("title") as string) || "").slice(0, 200);
 
     if (!file) {
       return NextResponse.json({ error: "File is required" }, { status: 400 });
@@ -48,23 +89,28 @@ export async function POST(request: NextRequest) {
     const fileName = file.name;
     let extractedText = "";
 
-    if (
-      fileType === "application/pdf" ||
-      fileName.toLowerCase().endsWith(".pdf")
-    ) {
+    // Buffer once (size already bounded above), then dispatch on the bytes.
+    const buffer = Buffer.from(await file.arrayBuffer());
+    if (buffer.length > MAX_FILE_SIZE) {
+      // Defense-in-depth: file.size is normally accurate, but the buffer is
+      // the ground truth.
+      return NextResponse.json(
+        { error: "File too large. Maximum size is 10MB." },
+        { status: 400 }
+      );
+    }
+
+    const kind = sniffFileKind(buffer);
+    if (kind === "pdf") {
       const { PDFParse } = await import("pdf-parse");
-      const buffer = Buffer.from(await file.arrayBuffer());
       const parser = new PDFParse({ data: new Uint8Array(buffer) });
       const textResult = await parser.getText();
       extractedText = textResult.text;
       await parser.destroy();
-    } else if (
-      fileType ===
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
-      fileName.toLowerCase().endsWith(".docx")
-    ) {
+    } else if (kind === "docx-zip") {
+      // A zip that isn't a real DOCX makes mammoth throw — caught below and
+      // returned as the generic invalid-file message.
       const mammoth = await import("mammoth");
-      const buffer = Buffer.from(await file.arrayBuffer());
       const result = await mammoth.extractRawText({ buffer });
       extractedText = result.value;
     } else {
@@ -100,9 +146,10 @@ export async function POST(request: NextRequest) {
         source_type: "document",
         content: extractedText,
         metadata: {
-          fileName,
+          // Client-controlled strings — cap before storing.
+          fileName: fileName.slice(0, 255),
           fileSize: file.size,
-          fileType,
+          fileType: fileType.slice(0, 255),
         },
         is_active: true,
       })

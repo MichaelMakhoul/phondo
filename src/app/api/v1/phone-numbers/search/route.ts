@@ -1,10 +1,17 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getCountryConfig } from "@/lib/country-config";
+import { z } from "zod";
+import { getPrimaryMembership, isOrgAdminRole } from "@/lib/auth/membership";
+import { withRateLimitDistributed } from "@/lib/security/rate-limiter";
+import { createAdminClient } from "@/lib/supabase/admin";
 
-interface Membership {
-  organization_id: string;
-}
+// SCRUM-428 (finding #37): this route drives PAID carrier search APIs —
+// bound the inputs (bad values fall back to defaults).
+const searchSchema = z.object({
+  areaCode: z.string().regex(/^\d{2,6}$/).optional().catch(undefined),
+  limit: z.coerce.number().int().min(1).max(20).catch(10),
+});
 
 // POST /api/v1/phone-numbers/search - Search available phone numbers
 export async function POST(request: Request) {
@@ -21,6 +28,19 @@ export async function POST(request: Request) {
       );
     }
 
+    // SCRUM-428 (finding #37): each search hits a paid carrier API — bound
+    // per IP with the DISTRIBUTED limiter (per-instance memory resets on
+    // every cold start; cost-control profiles use the Postgres bucket).
+    const rl = await withRateLimitDistributed(
+      createAdminClient(),
+      request,
+      "/api/v1/phone-numbers/search",
+      "expensive",
+    );
+    if (!rl.allowed) {
+      return NextResponse.json({ error: "Too many requests" }, { status: 429, headers: rl.headers });
+    }
+
     const supabase = await createClient();
     const { data: { user } } = await supabase.auth.getUser();
 
@@ -29,14 +49,18 @@ export async function POST(request: Request) {
     }
 
     // Look up org's country
-    const { data: membership } = await supabase
-      .from("org_members")
-      .select("organization_id")
-      .eq("user_id", user.id)
-      .single() as { data: Membership | null };
+    const membership = await getPrimaryMembership(supabase, user.id);
 
     if (!membership) {
       return NextResponse.json({ error: "No organization found" }, { status: 404 });
+    }
+
+    // Provisioning is an owner/admin action — match the buy route's intent.
+    if (!isOrgAdminRole(membership.role)) {
+      return NextResponse.json(
+        { error: "Only organization owners and admins can search phone numbers" },
+        { status: 403 }
+      );
     }
 
     const { data: org, error: orgError } = await (supabase as any)
@@ -52,8 +76,12 @@ export async function POST(request: Request) {
     const countryCode = org.country || "US";
 
     const config = getCountryConfig(countryCode);
-    const body = await request.json();
-    const { areaCode, limit = 10 } = body;
+    const rawBody = await request.json().catch(() => ({}));
+    // Object-level catch: a non-object body (e.g. a bare string) falls back
+    // to defaults instead of throwing a ZodError into the 500 path.
+    const { areaCode, limit } = searchSchema
+      .catch({ areaCode: undefined, limit: 10 })
+      .parse(rawBody);
 
     if (config.phoneProvider === "telnyx") {
       const { searchAvailableNumbers, validateTelnyxConfig } = await import("@/lib/telnyx/client");
