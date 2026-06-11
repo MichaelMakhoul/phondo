@@ -1,8 +1,16 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
+import { TurnstileWidget, type TurnstileHandle } from "@/components/auth/turnstile-widget";
+import {
+  CAPTCHA_PENDING_MESSAGE,
+  captchaFailedUserMessage,
+  isCaptchaConfigured,
+  isCaptchaFailedError,
+} from "@/lib/captcha";
+import { cn } from "@/lib/utils/cn";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -13,15 +21,48 @@ export default function ForgotPasswordPage() {
   const [email, setEmail] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isSubmitted, setIsSubmitted] = useState(false);
+  const [captchaToken, setCaptchaToken] = useState<string | null>(null);
+  const [captchaLoadFailed, setCaptchaLoadFailed] = useState(false);
+  const [captchaNotice, setCaptchaNotice] = useState<{
+    message: string;
+    tone: "pending" | "error";
+  } | null>(null);
+  const captchaRef = useRef<TurnstileHandle>(null);
   const supabase = createClient();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    // SCRUM-436: Managed-mode Turnstile usually completes silently within a
+    // second of page load — only block while it is genuinely still loading.
+    // If the widget terminally failed (script blocked), let the submit reach
+    // Supabase: its server-side captcha_failed rejection carries real guidance,
+    // and if CAPTCHA happens to be off server-side the user isn't blocked at all.
+    if (isCaptchaConfigured() && !captchaToken && !captchaLoadFailed) {
+      setCaptchaNotice({ message: CAPTCHA_PENDING_MESSAGE, tone: "pending" });
+      return;
+    }
+    setCaptchaNotice(null);
     setIsLoading(true);
 
     const { error } = await supabase.auth.resetPasswordForEmail(email, {
       redirectTo: `${window.location.origin}/auth/callback?redirect=/settings`,
+      captchaToken: captchaToken ?? undefined,
     });
+
+    // Turnstile tokens are single-use — get a fresh one for any retry.
+    captchaRef.current?.reset();
+
+    // SCRUM-436: a captcha rejection happens BEFORE any identity lookup, so
+    // surfacing it leaks nothing about account existence — and suppressing it
+    // would show "check your email" when no email was sent.
+    if (error && isCaptchaFailedError(error)) {
+      setCaptchaNotice({
+        message: captchaFailedUserMessage({ widgetLoadFailed: captchaLoadFailed }),
+        tone: "error",
+      });
+      setIsLoading(false);
+      return;
+    }
 
     // SCRUM-412: never reveal whether an account exists for this email — show the
     // same neutral "check your email" screen regardless of the result. (Supabase
@@ -110,6 +151,29 @@ export default function ForgotPasswordPage() {
                   disabled={isLoading}
                 />
               </div>
+              <TurnstileWidget
+                ref={captchaRef}
+                onToken={(token) => {
+                  setCaptchaToken(token);
+                  // A fresh token makes any "please wait" notice stale.
+                  if (token) setCaptchaNotice(null);
+                }}
+                onError={() => setCaptchaLoadFailed(true)}
+                className="flex justify-center"
+              />
+              {captchaNotice && (
+                <p
+                  role="alert"
+                  className={cn(
+                    "text-center text-sm",
+                    captchaNotice.tone === "error"
+                      ? "text-destructive"
+                      : "text-muted-foreground"
+                  )}
+                >
+                  {captchaNotice.message}
+                </p>
+              )}
               <Button type="submit" className="w-full bg-orange-500 text-white hover:bg-orange-600" disabled={isLoading}>
                 {isLoading ? "Sending..." : "Send reset link"}
               </Button>

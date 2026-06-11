@@ -1,9 +1,16 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+import { TurnstileWidget, type TurnstileHandle } from "@/components/auth/turnstile-widget";
+import {
+  CAPTCHA_PENDING_MESSAGE,
+  captchaFailedUserMessage,
+  isCaptchaConfigured,
+  isCaptchaFailedError,
+} from "@/lib/captcha";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -19,6 +26,9 @@ export default function SignupPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [captchaToken, setCaptchaToken] = useState<string | null>(null);
+  const [captchaLoadFailed, setCaptchaLoadFailed] = useState(false);
+  const captchaRef = useRef<TurnstileHandle>(null);
   const router = useRouter();
   const { toast } = useToast();
   const supabase = createClient();
@@ -65,6 +75,15 @@ export default function SignupPage() {
 
   const handleEmailSignup = async (e: React.FormEvent) => {
     e.preventDefault();
+    // SCRUM-436: Managed-mode Turnstile usually completes silently within a
+    // second of page load — only block while it is genuinely still loading.
+    // If the widget terminally failed (script blocked), let the submit reach
+    // Supabase: its server-side captcha_failed rejection carries real guidance,
+    // and if CAPTCHA happens to be off server-side the user isn't blocked at all.
+    if (isCaptchaConfigured() && !captchaToken && !captchaLoadFailed) {
+      toast({ title: "Almost there", description: CAPTCHA_PENDING_MESSAGE });
+      return;
+    }
     setIsLoading(true);
 
     const { error } = await supabase.auth.signUp({
@@ -75,8 +94,12 @@ export default function SignupPage() {
           full_name: fullName,
         },
         emailRedirectTo: `${window.location.origin}/auth/callback`,
+        captchaToken: captchaToken ?? undefined,
       },
     });
+
+    // Turnstile tokens are single-use — get a fresh one for any retry.
+    captchaRef.current?.reset();
 
     if (error) {
       // SCRUM-412: never reveal whether an email already has an account. Treat
@@ -97,7 +120,9 @@ export default function SignupPage() {
       toast({
         variant: "destructive",
         title: "Signup failed",
-        description: error.message,
+        description: isCaptchaFailedError(error)
+          ? captchaFailedUserMessage({ widgetLoadFailed: captchaLoadFailed })
+          : error.message,
       });
       setIsLoading(false);
       return;
@@ -224,6 +249,12 @@ export default function SignupPage() {
                   Must be at least 8 characters
                 </p>
               </div>
+              <TurnstileWidget
+                ref={captchaRef}
+                onToken={setCaptchaToken}
+                onError={() => setCaptchaLoadFailed(true)}
+                className="flex justify-center"
+              />
               <Button type="submit" className="w-full bg-orange-500 text-white hover:bg-orange-600" disabled={isLoading}>
                 {isLoading ? "Creating account..." : "Create account"}
               </Button>
