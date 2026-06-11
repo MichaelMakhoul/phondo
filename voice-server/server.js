@@ -38,6 +38,10 @@ const {
   pendingCalls: outboundPendingCalls,
 } = require("./services/outbound-caller");
 const { createAllFixtures } = require("./lib/outbound-fixtures");
+const {
+  outboundSmokeTestEnabled,
+  validateOutboundTarget,
+} = require("./lib/outbound-guard");
 
 const VOICE_PIPELINE = process.env.VOICE_PIPELINE || "classic"; // "classic" or "gemini-live"
 
@@ -1199,8 +1203,17 @@ function validateInternalSecret(req) {
 }
 
 app.post("/outbound/call", express.json(), async (req, res) => {
+  // SCRUM-413: 404 first when the dialer is disabled, so the endpoint is
+  // indistinguishable from a non-existent route in production.
+  if (!outboundSmokeTestEnabled()) {
+    return res.status(404).json({ error: "Not found" });
+  }
   if (!validateInternalSecret(req)) {
     return res.status(403).json({ error: "Forbidden" });
+  }
+  const targetCheck = validateOutboundTarget(req.body && req.body.targetNumber);
+  if (!targetCheck.ok) {
+    return res.status(400).json({ error: targetCheck.error });
   }
   try {
     const result = await makeOutboundCall(req.body);
@@ -1212,8 +1225,18 @@ app.post("/outbound/call", express.json(), async (req, res) => {
 });
 
 app.post("/outbound/suite", express.json(), async (req, res) => {
+  // SCRUM-413: 404 first when disabled (see /outbound/call). Every scenario
+  // dials this same target, so validate it once up front (the per-call
+  // allowlist + E.164 + rate-limit backstop lives in makeOutboundCall).
+  if (!outboundSmokeTestEnabled()) {
+    return res.status(404).json({ error: "Not found" });
+  }
   if (!validateInternalSecret(req)) {
     return res.status(403).json({ error: "Forbidden" });
+  }
+  const targetCheck = validateOutboundTarget(req.body && req.body.targetNumber);
+  if (!targetCheck.ok) {
+    return res.status(400).json({ error: targetCheck.error });
   }
   const scenarios = req.body.scenarios || [];
   const maxDuration = req.body.maxDurationSeconds || 180;
@@ -1231,6 +1254,9 @@ app.post("/outbound/suite", express.json(), async (req, res) => {
 });
 
 app.post("/outbound/setup-fixtures", express.json(), async (req, res) => {
+  if (!outboundSmokeTestEnabled()) {
+    return res.status(404).json({ error: "Not found" });
+  }
   if (!validateInternalSecret(req)) {
     return res.status(403).json({ error: "Forbidden" });
   }
