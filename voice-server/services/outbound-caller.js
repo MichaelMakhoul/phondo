@@ -9,6 +9,7 @@ const { Sentry } = require("../lib/sentry");
 const { createGeminiSession } = require("./gemini-live");
 const { getScenario, getScenarioForIndustry } = require("../lib/outbound-scenarios");
 const { swapAssistant, restoreAssistant, getTestAssistantId } = require("../lib/outbound-fixtures");
+const { validateOutboundTarget, checkOutboundRateLimit } = require("../lib/outbound-guard");
 
 const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
 const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
@@ -168,6 +169,13 @@ async function makeOutboundCall(config) {
   } = config;
 
   if (!targetNumber) throw new Error("targetNumber is required");
+  // SCRUM-413: this is the universal dialer choke point — enforce ALL three
+  // guards here (E.164 + fail-closed allowlist + rate limit) so a direct caller
+  // can never dial an arbitrary number, not just the HTTP endpoints.
+  const targetCheck = validateOutboundTarget(targetNumber);
+  if (!targetCheck.ok) throw new Error(targetCheck.error);
+  const rl = checkOutboundRateLimit();
+  if (!rl.ok) throw new Error(rl.error);
   if (!OUTBOUND_CALLER_NUMBER) throw new Error("OUTBOUND_CALLER_NUMBER env var not set — buy a dedicated outbound number");
 
   // Resolve scenario
