@@ -294,7 +294,12 @@ export default function OnboardingPage() {
         const normalisedBusinessPhone = data.businessPhone?.trim()
           ? parsePhoneToE164(data.businessPhone, targetCountry)
           : null;
-        await (supabase as any)
+        // supabase-js resolves with { error } instead of throwing — without
+        // this check a failed write (e.g. a future column missing from the
+        // 00150 UPDATE allowlist → 42501) would let the user finish
+        // onboarding with default country/timezone and no industry, silently
+        // (SCRUM-421 review). Throwing routes it to the catch + toast below.
+        const { error: orgUpdateError } = await (supabase as any)
           .from("organizations")
           .update({
             industry: data.industry,
@@ -305,6 +310,9 @@ export default function OnboardingPage() {
             timezone: countryConfig?.defaultTimezone || "America/New_York",
           })
           .eq("id", orgId);
+        if (orgUpdateError) {
+          throw new Error(`Failed to save business details: ${orgUpdateError.message}`);
+        }
 
         // Save scraped KB content (if user imported from website)
         if (data.scrapedKBContent) {
