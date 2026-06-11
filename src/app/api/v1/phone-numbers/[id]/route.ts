@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { getVapiClient } from "@/lib/vapi";
 import { z } from "zod";
 import { updatePhoneNumberSchema, SENSITIVE_FIELDS } from "./schema";
 import { getUserRoleInOrg, isOrgAdmin } from "@/lib/auth/org-membership";
@@ -97,42 +96,6 @@ export async function PATCH(
       );
     }
 
-    // Get Vapi assistant ID if assigning to an assistant. Scope to the
-    // phone number's own org so a multi-org user can't accidentally cross-link
-    // an assistant from a different org they happen to belong to.
-    let vapiAssistantId: string | undefined;
-    if (validatedData.assistantId) {
-      const { data: assistant } = await (supabase
-        .from("assistants") as any)
-        .select("vapi_assistant_id")
-        .eq("id", validatedData.assistantId)
-        .eq("organization_id", currentPhoneNumber.organization_id)
-        .single();
-
-      if (assistant?.vapi_assistant_id) {
-        vapiAssistantId = assistant.vapi_assistant_id;
-      }
-    }
-
-    // Sync to Vapi only if assistant or friendly name actually changed.
-    // Calling Vapi with undefined assistantId/name can clobber the existing
-    // mapping depending on SDK semantics; skip the call entirely when this
-    // PATCH only touches local fields (ai_enabled, fallback_forward_number).
-    const vapiFieldsChanged =
-      validatedData.assistantId !== undefined ||
-      validatedData.friendlyName !== undefined;
-    if (vapiFieldsChanged && currentPhoneNumber.vapi_phone_number_id) {
-      try {
-        const vapi = getVapiClient();
-        await vapi.updatePhoneNumber(currentPhoneNumber.vapi_phone_number_id, {
-          assistantId: vapiAssistantId,
-          name: validatedData.friendlyName,
-        });
-      } catch (vapiErr) {
-        console.warn("[PhoneNumbers] Vapi sync failed on PATCH (non-fatal):", vapiErr);
-      }
-    }
-
     // Update in database
     const updateData: Record<string, unknown> = {};
     if (validatedData.assistantId !== undefined) {
@@ -227,7 +190,7 @@ export async function DELETE(
     // Load phone number first (RLS scopes to user's accessible orgs).
     const { data: phoneNumber } = await (supabase
       .from("phone_numbers") as any)
-      .select("organization_id, vapi_phone_number_id, twilio_sid, telnyx_connection_id")
+      .select("organization_id, twilio_sid, telnyx_connection_id")
       .eq("id", id)
       .single();
 
@@ -268,18 +231,6 @@ export async function DELETE(
           { error: "Failed to release number from Twilio. Please try again or contact support." },
           { status: 502 }
         );
-      }
-    }
-
-    // Delete from Vapi
-    if (phoneNumber.vapi_phone_number_id) {
-      const vapi = getVapiClient();
-      try {
-        await vapi.deletePhoneNumber(phoneNumber.vapi_phone_number_id);
-      } catch (e) {
-        console.error("Failed to delete from Vapi:", e);
-        // Twilio already released — Vapi deletion failure is non-critical
-        // since the paid Twilio resource is already freed
       }
     }
 

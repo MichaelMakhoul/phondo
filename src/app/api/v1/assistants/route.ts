@@ -1,12 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { getVapiClient, ensureCalendarTools, buildVapiServerConfig } from "@/lib/vapi";
-import { buildAnalysisPlan, buildPromptFromConfig, buildSchedulingSection, promptConfigSchema } from "@/lib/prompt-builder";
-import type { PromptContext } from "@/lib/prompt-builder";
-import { RECORDING_DECLINE_SYSTEM_INSTRUCTION, buildFirstMessageWithDisclosure, resolveRecordingSettings } from "@/lib/templates";
-import type { PromptConfig } from "@/lib/prompt-builder/types";
-import { getOrgScheduleContext } from "@/lib/supabase/get-org-schedule-context";
-import { getAggregatedKnowledgeBase } from "@/lib/knowledge-base";
+import { promptConfigSchema } from "@/lib/prompt-builder";
 import { z } from "zod";
 import { resolveVoiceId, DEFAULT_VOICE_ID } from "@/lib/voices";
 import { assistantSettingsSchema } from "@/lib/validation/assistant-settings";
@@ -33,15 +27,6 @@ const createAssistantSchema = z.object({
   // Shared with the PATCH route so the two schemas can't drift.
   settings: assistantSettingsSchema.optional(),
 });
-
-// Map common voice provider names to Vapi's expected values
-function normalizeVoiceProvider(provider: string): string {
-  const providerMap: Record<string, string> = {
-    elevenlabs: "11labs",
-    "eleven-labs": "11labs",
-  };
-  return providerMap[provider.toLowerCase()] || provider;
-}
 
 // GET /api/v1/assistants - List all assistants
 export async function GET() {
@@ -129,7 +114,7 @@ export async function POST(request: Request) {
       .insert({
         organization_id: membership.organization_id,
         name: validatedData.name,
-        vapi_assistant_id: null, // Will be updated if Vapi creation succeeds
+        vapi_assistant_id: null, // legacy column, kept; no longer written (Vapi removed, SCRUM-411)
         system_prompt: validatedData.systemPrompt,
         first_message: validatedData.firstMessage,
         voice_id: validatedData.voiceId,
@@ -152,97 +137,8 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Internal server error" }, { status: 500 });
     }
 
-    // 2. Attempt Vapi creation silently (non-fatal — self-hosted is primary)
-    try {
-      const serverConfig = buildVapiServerConfig();
-      const analysisPlan = validatedData.promptConfig
-        ? buildAnalysisPlan(validatedData.promptConfig)
-        : null;
+    // SCRUM-411: Vapi backup/dual-write removed — self-hosted voice server is the sole pipeline (reads the assistant from the DB).
 
-      const { timezone: orgTimezone, businessHours: orgBusinessHours, defaultAppointmentDuration } =
-        await getOrgScheduleContext(supabase, membership.organization_id, "assistant creation");
-
-      const aggregatedKB = await getAggregatedKnowledgeBase(
-        supabase,
-        membership.organization_id
-      );
-
-      let vapiSystemPrompt = validatedData.systemPrompt;
-      if (validatedData.promptConfig) {
-        const config = validatedData.promptConfig as PromptConfig;
-        const industry = validatedData.settings?.industry || "other";
-        const promptContext: PromptContext = {
-          businessName: validatedData.name,
-          industry,
-          knowledgeBase: aggregatedKB || undefined,
-          timezone: orgTimezone,
-          businessHours: orgBusinessHours,
-          defaultAppointmentDuration,
-        };
-        vapiSystemPrompt = buildPromptFromConfig(config, promptContext);
-      } else if (aggregatedKB) {
-        if (validatedData.systemPrompt.includes("{knowledge_base}")) {
-          vapiSystemPrompt = validatedData.systemPrompt.replace(
-            /{knowledge_base}/g,
-            aggregatedKB
-          );
-        } else {
-          vapiSystemPrompt = `${validatedData.systemPrompt}\n\nBusiness Information:\n${aggregatedKB}`;
-        }
-      }
-
-      if (!validatedData.promptConfig) {
-        vapiSystemPrompt += `\n\n${buildSchedulingSection(orgTimezone, orgBusinessHours, defaultAppointmentDuration)}`;
-      }
-
-      const toolIds = await ensureCalendarTools();
-
-      const { recordingEnabled, recordingDisclosure } = resolveRecordingSettings(validatedData.settings);
-      const vapiFirstMessage = buildFirstMessageWithDisclosure(
-        validatedData.firstMessage,
-        recordingDisclosure,
-        validatedData.name
-      );
-      if (recordingEnabled) {
-        vapiSystemPrompt = `${vapiSystemPrompt}\n\n${RECORDING_DECLINE_SYSTEM_INSTRUCTION}`;
-      }
-
-      const vapi = getVapiClient();
-      const vapiAssistant = await vapi.createAssistant({
-        name: validatedData.name,
-        model: {
-          provider: "openai",
-          model: "gpt-4o-mini",
-          messages: [{ role: "system", content: vapiSystemPrompt }],
-          toolIds,
-        },
-        voice: {
-          provider: normalizeVoiceProvider(validatedData.voiceProvider),
-          voiceId: validatedData.voiceId,
-        },
-        firstMessage: vapiFirstMessage,
-        transcriber: {
-          provider: "deepgram",
-          model: validatedData.language === "es" ? "nova-3" : "nova-2",
-          language: validatedData.language,
-        },
-        server: serverConfig,
-        recordingEnabled,
-        ...(analysisPlan && { analysisPlan }),
-        metadata: {
-          organizationId: membership.organization_id,
-        },
-      });
-
-      // 3. Update DB with Vapi assistant ID
-      await (supabase as any)
-        .from("assistants")
-        .update({ vapi_assistant_id: vapiAssistant.id })
-        .eq("id", assistant.id);
-    } catch (vapiErr) {
-      // Vapi creation failed — not a blocker, self-hosted works from DB
-      console.warn("[Assistants] Vapi backup creation failed (non-fatal):", vapiErr);
-    }
 
     return NextResponse.json(assistant, { status: 201 });
   } catch (error) {

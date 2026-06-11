@@ -1,1 +1,1 @@
-export { getAggregatedKnowledgeBase, resyncOrgAssistants } from "./aggregate";
+export { getAggregatedKnowledgeBase } from "./aggregate";

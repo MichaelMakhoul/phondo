@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { resyncOrgAssistants } from "@/lib/knowledge-base";
 import { z } from "zod";
 
 const updateKBSchema = z.object({
@@ -114,17 +113,8 @@ export async function PATCH(
       );
     }
 
-    let resyncWarning: string | undefined;
-    try {
-      await resyncOrgAssistants(supabase, membership.organization_id);
-    } catch (err) {
-      console.error("Failed to resync assistants:", err);
-      resyncWarning = "Knowledge base updated, but assistants may take a moment to reflect changes.";
-    }
-
     return NextResponse.json({
       ...entry,
-      ...(resyncWarning && { warning: resyncWarning }),
     });
   } catch (error) {
     console.error("Error updating knowledge base:", error);
@@ -184,17 +174,8 @@ export async function DELETE(
       );
     }
 
-    let resyncWarning: string | undefined;
-    try {
-      await resyncOrgAssistants(supabase, membership.organization_id);
-    } catch (err) {
-      console.error("Failed to resync assistants:", err);
-      resyncWarning = "Entry deleted, but assistants may take a moment to reflect changes.";
-    }
-
     return NextResponse.json({
       success: true,
-      ...(resyncWarning && { warning: resyncWarning }),
     });
   } catch (error) {
     console.error("Error deleting knowledge base:", error);

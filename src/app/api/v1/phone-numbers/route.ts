@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { getVapiClient } from "@/lib/vapi";
 import { getCountryConfig, formatPhoneForCountry } from "@/lib/country-config";
 import { z } from "zod";
 import { checkResourceLimit } from "@/lib/stripe/billing-service";
@@ -151,21 +150,6 @@ export async function POST(request: Request) {
       }
     }
 
-    // Get assistant's Vapi ID if provided
-    let vapiAssistantId: string | undefined;
-    if (validatedData.assistantId) {
-      const { data: assistant } = await (supabase
-        .from("assistants") as any)
-        .select("vapi_assistant_id")
-        .eq("id", validatedData.assistantId)
-        .eq("organization_id", membership.organization_id)
-        .single();
-
-      if (assistant?.vapi_assistant_id) {
-        vapiAssistantId = assistant.vapi_assistant_id;
-      }
-    }
-
     // Determine area code
     let areaCode = validatedData.areaCode;
     if (!areaCode && validatedData.sourceType === "forwarded" && validatedData.userPhoneNumber) {
@@ -173,8 +157,6 @@ export async function POST(request: Request) {
       areaCode = config.phone.extractAreaCode(digits) || undefined;
     }
 
-    const vapi = getVapiClient();
-    let vapiPhoneNumberId: string;
     let phoneNumber: string;
     let twilioSid: string | null = null;
     let telnyxConnectionId: string | null = null;
@@ -226,11 +208,9 @@ export async function POST(request: Request) {
         // Non-fatal
       }
 
-      // 4. No Vapi import for Telnyx numbers
-      vapiPhoneNumberId = "";
     } else if (config.phoneProvider === "twilio") {
-      // ── Twilio flow: buy from Twilio, configure voice webhook, silently import into Vapi ──
-      const { searchAvailableNumbers, purchaseNumber, releaseNumber, configureVoiceWebhook, configureSmsWebhook, getTwilioCredentials } =
+      // ── Twilio flow: buy from Twilio, configure voice webhook ──
+      const { searchAvailableNumbers, purchaseNumber, configureVoiceWebhook, configureSmsWebhook } =
         await import("@/lib/twilio/client");
 
       // 1. Search Twilio for a number matching area code
@@ -278,32 +258,13 @@ export async function POST(request: Request) {
         console.warn("[PhoneNumbers] NEXT_PUBLIC_APP_URL not set — SMS opt-out webhook not configured");
       }
 
-      // 4. Silently import into Vapi as backup (non-fatal)
-      try {
-        const twilioCreds = getTwilioCredentials();
-        const vapiResult = await vapi.importTwilioNumber({
-          number: phoneNumber,
-          twilioAccountSid: twilioCreds.accountSid,
-          twilioAuthToken: twilioCreds.authToken,
-          assistantId: vapiAssistantId,
-          name: validatedData.friendlyName,
-        });
-        vapiPhoneNumberId = vapiResult.id;
-      } catch (vapiError) {
-        // Vapi import failure is non-fatal — self-hosted is primary
-        console.warn(`[PhoneNumbers] Vapi import failed for ${phoneNumber} (non-fatal):`, vapiError);
-        vapiPhoneNumberId = ""; // Will be stored as empty string
-      }
     } else {
-      // ── Vapi flow: buy directly from Vapi (free SIP numbers) ──
-      const vapiPhoneNumber = await vapi.buyPhoneNumber({
-        provider: "vapi",
-        numberDesiredAreaCode: areaCode,
-        assistantId: vapiAssistantId,
-        name: validatedData.friendlyName,
-      });
-      vapiPhoneNumberId = vapiPhoneNumber.id;
-      phoneNumber = vapiPhoneNumber.number;
+      // SCRUM-411: only Twilio/Telnyx are supported now that the Vapi
+      // direct-buy (SIP) path is removed.
+      return NextResponse.json(
+        { error: `Unsupported phone provider: ${config.phoneProvider}` },
+        { status: 400 }
+      );
     }
 
     // Build insert data
@@ -320,15 +281,15 @@ export async function POST(request: Request) {
       organization_id: membership.organization_id,
       assistant_id: validatedData.assistantId,
       phone_number: phoneNumber,
-      vapi_phone_number_id: vapiPhoneNumberId || null,
+      vapi_phone_number_id: null,
       twilio_sid: twilioSid,
       telnyx_connection_id: telnyxConnectionId,
       telephony_provider: telephonyProvider,
       friendly_name: resolvedFriendlyName,
       is_active: true,
       source_type: validatedData.sourceType,
-      // Both Twilio and Telnyx numbers use self-hosted voice server
-      voice_provider: (config.phoneProvider === "twilio" || config.phoneProvider === "telnyx") ? "self_hosted" : "vapi",
+      // Both Twilio and Telnyx numbers use the self-hosted voice server.
+      voice_provider: "self_hosted",
     };
 
     if (validatedData.sourceType === "forwarded") {
@@ -348,14 +309,7 @@ export async function POST(request: Request) {
       .single();
 
     if (error) {
-      // Rollback: delete from Vapi + release from carrier
-      if (vapiPhoneNumberId) {
-        try {
-          await vapi.deletePhoneNumber(vapiPhoneNumberId);
-        } catch (e) {
-          console.error(`Failed to rollback Vapi phone number (ID=${vapiPhoneNumberId}):`, e);
-        }
-      }
+      // Rollback: release from carrier
       if (twilioSid) {
         try {
           const { releaseNumber } = await import("@/lib/twilio/client");

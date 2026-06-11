@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { getVapiClient } from "@/lib/vapi";
 import { getCountryConfig } from "@/lib/country-config";
 
 interface Membership {
@@ -83,15 +82,11 @@ export async function POST(request: Request) {
       );
     }
 
-    // Vapi has no search endpoint — returns placeholder; actual number provisioned at purchase
-    const vapi = getVapiClient();
-    const availableNumbers = await vapi.searchPhoneNumbers({
-      areaCode,
-      country: countryCode,
-      limit,
-    });
-
-    return NextResponse.json(availableNumbers);
+    // SCRUM-411: only Twilio/Telnyx are supported now that Vapi is removed.
+    return NextResponse.json(
+      { error: `Unsupported phone provider: ${config.phoneProvider}` },
+      { status: 400 }
+    );
   } catch (error: any) {
     console.error("Error searching phone numbers:", error);
     const message = error?.message || "Internal server error";

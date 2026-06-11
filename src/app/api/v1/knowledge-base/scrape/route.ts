@@ -4,7 +4,6 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { scrapeWebsite, generateKnowledgeBase } from "@/lib/scraper/website-scraper";
 import { isUrlAllowedAsync } from "@/lib/security/validation";
 import { withRateLimitDistributed } from "@/lib/security/rate-limiter";
-import { resyncOrgAssistants } from "@/lib/knowledge-base";
 import { SENTRY_REASONS } from "@/lib/security/error-ids";
 import { pageSentry } from "@/lib/observability/page-sentry";
 
@@ -165,28 +164,8 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Resync all org assistants with updated KB
-    let resyncWarning: string | undefined;
-    try {
-      await resyncOrgAssistants(supabase, organizationId);
-    } catch (err) {
-      console.error("Failed to resync assistants:", err);
-      // SCRUM-300: KB is saved but the assistant prompt didn't refresh.
-      // User sees the `resyncWarning` in the response, but without
-      // Sentry on-call wouldn't know a systemic regression in
-      // resyncOrgAssistants is happening across orgs.
-      pageSentry({
-        service: "next-api",
-        reason: SENTRY_REASONS.KB_SCRAPE_RESYNC_FAILED,
-        err,
-        extras: { organizationId },
-      });
-      resyncWarning = "Knowledge base saved, but assistants may take a moment to reflect changes.";
-    }
-
     return NextResponse.json({
       success: true,
-      ...(resyncWarning && { warning: resyncWarning }),
       data: {
         url: scrapedData.baseUrl,
         totalPages: scrapedData.totalPages,

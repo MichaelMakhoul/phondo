@@ -1,9 +1,3 @@
-import { getVapiClient, ensureCalendarTools } from "@/lib/vapi";
-import { buildPromptFromConfig, buildSchedulingSection, buildAnalysisPlan } from "@/lib/prompt-builder";
-import type { PromptContext } from "@/lib/prompt-builder";
-import type { PromptConfig } from "@/lib/prompt-builder/types";
-import { getOrgScheduleContext } from "@/lib/supabase/get-org-schedule-context";
-
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type SupabaseAny = any;
 
@@ -12,18 +6,6 @@ interface KnowledgeBaseEntry {
   title: string | null;
   source_type: string;
   content: string;
-  is_active: boolean;
-}
-
-interface AssistantRow {
-  id: string;
-  vapi_assistant_id: string | null;
-  system_prompt: string;
-  prompt_config: Record<string, any> | null;
-  settings: Record<string, any> | null;
-  model_provider: string;
-  model: string;
-  name: string;
   is_active: boolean;
 }
 
@@ -81,99 +63,3 @@ export async function getAggregatedKnowledgeBase(
   return sections.join("\n\n");
 }
 
-/**
- * After any KB mutation, rebuild the system prompt for every active assistant
- * in the org and push the updated prompt to Vapi.
- */
-export async function resyncOrgAssistants(
-  supabase: SupabaseAny,
-  organizationId: string
-): Promise<void> {
-  const aggregatedKB = await getAggregatedKnowledgeBase(supabase, organizationId);
-
-  // Fetch org timezone, business hours, and appointment duration for prompt context
-  const { timezone: orgTimezone, businessHours: orgBusinessHours, defaultAppointmentDuration } =
-    await getOrgScheduleContext(supabase, organizationId, "KB resync");
-
-  const { data: assistants, error } = await (supabase as any)
-    .from("assistants")
-    .select(
-      "id, vapi_assistant_id, system_prompt, prompt_config, settings, model_provider, model, name, is_active"
-    )
-    .eq("organization_id", organizationId)
-    .eq("is_active", true);
-
-  if (error) {
-    console.error("Failed to fetch assistants for KB resync:", { organizationId, error });
-    return;
-  }
-  if (!assistants || assistants.length === 0) {
-    return;
-  }
-
-  // Ensure calendar tools (including get_current_datetime) exist and get their IDs
-  let toolIds: string[] | undefined;
-  try {
-    toolIds = await ensureCalendarTools();
-  } catch (toolError) {
-    console.error("Failed to provision calendar tools during resync:", toolError);
-    // Continue without toolIds — prompt update is still valuable
-  }
-
-  const vapi = getVapiClient();
-
-  for (const assistant of assistants as AssistantRow[]) {
-    if (!assistant.vapi_assistant_id) continue;
-
-    let systemPrompt: string;
-
-    let analysisPlan: ReturnType<typeof buildAnalysisPlan> = null;
-
-    if (assistant.prompt_config) {
-      // Guided prompt builder — rebuild with KB + timezone context
-      const config = assistant.prompt_config as unknown as PromptConfig;
-      const industry = assistant.settings?.industry || "other";
-      const promptContext: PromptContext = {
-        businessName: assistant.name,
-        industry,
-        knowledgeBase: aggregatedKB || undefined,
-        timezone: orgTimezone,
-        businessHours: orgBusinessHours,
-        defaultAppointmentDuration,
-      };
-      systemPrompt = buildPromptFromConfig(config, promptContext);
-      analysisPlan = buildAnalysisPlan(config);
-    } else {
-      // Legacy prompt — replace placeholder or append
-      if (assistant.system_prompt.includes("{knowledge_base}")) {
-        systemPrompt = assistant.system_prompt.replace(
-          /{knowledge_base}/g,
-          aggregatedKB || "No additional business information provided yet."
-        );
-      } else if (aggregatedKB) {
-        systemPrompt = `${assistant.system_prompt}\n\nBusiness Information:\n${aggregatedKB}`;
-      } else {
-        systemPrompt = assistant.system_prompt;
-      }
-      // For legacy prompts, append scheduling context
-      systemPrompt += `\n\n${buildSchedulingSection(orgTimezone, orgBusinessHours, defaultAppointmentDuration)}`;
-    }
-
-    try {
-      await vapi.updateAssistant(assistant.vapi_assistant_id, {
-        model: {
-          provider: assistant.model_provider,
-          model: assistant.model,
-          messages: [{ role: "system", content: systemPrompt }],
-          ...(toolIds && { toolIds }),
-        },
-        ...(analysisPlan && { analysisPlan }),
-      });
-    } catch (err) {
-      console.error(
-        `Failed to resync assistant ${assistant.id} to Vapi:`,
-        err
-      );
-    }
-  }
-}

@@ -96,10 +96,6 @@ export const SENTRY_REASONS = {
    *  route.test.ts (SCRUM-307). */
   SCRAPE_PREVIEW_LLM_EXTRACT_BUG: "scrape-preview-llm-extract-bug",
   KB_SCRAPE_FAILED: "kb-scrape-failed",
-  /** resyncOrgAssistants failure after a successful knowledge-base
-   *  scrape — user already got their KB content, but the assistant
-   *  prompt didn't refresh. Surfaces in UI as a `resyncWarning` field. */
-  KB_SCRAPE_RESYNC_FAILED: "kb-scrape-resync-failed",
   LEAD_DISCOVERY_SCAN_FAILED: "lead-discovery-scan-failed",
   LEAD_DISCOVERY_SEARCH_FAILED: "lead-discovery-search-failed",
   /** searchMultipleProfessions returned PARTIAL results — a profession (or
