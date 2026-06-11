@@ -2640,9 +2640,21 @@ export async function handleLookupAppointment(
   // when a name/email filter applies. A phone-only lookup still confirms
   // logistics (date/time/service/practitioner) but the stored name never
   // leaves the database for a potential number-spoofer to extract.
-  const matchesByName = verificationFields.includes("name") && !!args.name;
-  const matchesByEmail = verificationFields.includes("email") && !!args.email;
+  const matchesByName = verificationFields.includes("name") && !!args.name?.trim();
+  const matchesByEmail = verificationFields.includes("email") && !!args.email?.trim();
   const includeIdentity = matchesByName || matchesByEmail;
+
+  // SCRUM-437 (review): a digit-less or too-short phone ("anonymous", "n/a",
+  // "8") must never reach the query — an empty suffix degenerates the ilike
+  // filter to '%', which matches EVERY upcoming appointment, and a 1-2 digit
+  // suffix barely narrows it. Reuse the booking-path validator (8-15 digits).
+  if (verificationFields.includes("phone") && args.phone && !isValidPhoneNumber(args.phone)) {
+    return {
+      success: false,
+      message:
+        "That phone number doesn't look complete. Could you please give me the full phone number the appointment was booked under?",
+    };
+  }
 
   // 3. Build the query — match ALL required fields
   let query = (supabase as any)

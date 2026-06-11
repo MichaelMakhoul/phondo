@@ -171,6 +171,59 @@ describe("handleLookupAppointment verification strength (SCRUM-437)", () => {
     expect(captured.appointmentSelects).toHaveLength(0); // no appointments query at all
   });
 
+  it("phone-only org: a digit-less phone ('anonymous') never reaches the query — the filter would degenerate to match-all", async () => {
+    vi.mocked(createAdminClient).mockReturnValue(
+      fakeAdmin(
+        {
+          organizations: [orgResult({ method: "details_only", fields: ["phone"] })],
+        },
+        captured,
+      ) as never,
+    );
+
+    const result = await handleLookupAppointment(ORG, { phone: "anonymous" });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toMatch(/full phone number/i);
+    expect(captured.appointmentSelects).toHaveLength(0); // no appointments query at all
+  });
+
+  it("phone-only org: a too-short phone ('8') is rejected before querying", async () => {
+    vi.mocked(createAdminClient).mockReturnValue(
+      fakeAdmin(
+        {
+          organizations: [orgResult({ method: "details_only", fields: ["phone"] })],
+        },
+        captured,
+      ) as never,
+    );
+
+    const result = await handleLookupAppointment(ORG, { phone: "8" });
+
+    expect(result.success).toBe(false);
+    expect(captured.appointmentSelects).toHaveLength(0);
+  });
+
+  it("email-only org: email factor counts as identity — attendee_name stays in the SELECT and the email filter applies", async () => {
+    vi.mocked(createAdminClient).mockReturnValue(
+      fakeAdmin(
+        {
+          organizations: [orgResult({ method: "details_only", fields: ["email"] })],
+          appointments: [{ data: [APPOINTMENT_ROW], error: null }],
+        },
+        captured,
+      ) as never,
+    );
+
+    const result = await handleLookupAppointment(ORG, { email: "jane@example.com" });
+
+    expect(result.success).toBe(true);
+    expect(captured.appointmentSelects[0]).toContain("attendee_name");
+    expect(captured.ilikes).toEqual([
+      { column: "attendee_email", pattern: "%jane@example.com%" },
+    ]);
+  });
+
   it("code_and_verify org: code + matching name still verifies and succeeds (stronger config untouched)", async () => {
     vi.mocked(createAdminClient).mockReturnValue(
       fakeAdmin(
