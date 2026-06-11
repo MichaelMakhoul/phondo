@@ -1,11 +1,20 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { z } from "zod";
+import { getPrimaryMembership } from "@/lib/auth/membership";
 
-// Type for org_members query result
-interface Membership {
-  organization_id: string;
-  role?: string;
-}
+// SCRUM-428 (finding #33): limit/offset were parseInt'd raw from the query
+// string — NaN propagated into .range() and an arbitrary limit let one
+// request page the whole table. Bounded + defaulted here; bad values fall
+// back to the defaults rather than 400ing the dashboard.
+const listQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).catch(50),
+  offset: z.coerce.number().int().min(0).max(100_000).catch(0),
+  // Mirrors the DB call_status enum exactly — "missed" is NOT a call_status
+  // (missed-call semantics live in notification classification).
+  status: z.enum(["queued", "ringing", "in-progress", "completed", "failed", "no-answer", "busy"]).optional().catch(undefined),
+  direction: z.enum(["inbound", "outbound"]).optional().catch(undefined),
+});
 
 // GET /api/v1/calls - List all calls
 export async function GET(request: Request) {
@@ -17,11 +26,9 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { data: membership } = await supabase
-      .from("org_members")
-      .select("organization_id")
-      .eq("user_id", user.id)
-      .single() as { data: Membership | null };
+    // SCRUM-428 (finding #38): first membership instead of .single(),
+    // which errors (→ misleading 404) for multi-org users.
+    const membership = await getPrimaryMembership(supabase, user.id);
 
     if (!membership) {
       return NextResponse.json({ error: "No organization found" }, { status: 404 });
@@ -31,10 +38,12 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const assistantId = searchParams.get("assistantId");
     const phoneNumberId = searchParams.get("phoneNumberId");
-    const status = searchParams.get("status");
-    const direction = searchParams.get("direction");
-    const limit = parseInt(searchParams.get("limit") || "50", 10);
-    const offset = parseInt(searchParams.get("offset") || "0", 10);
+    const { limit, offset, status, direction } = listQuerySchema.parse({
+      limit: searchParams.get("limit") ?? undefined,
+      offset: searchParams.get("offset") ?? undefined,
+      status: searchParams.get("status") ?? undefined,
+      direction: searchParams.get("direction") ?? undefined,
+    });
 
     // Build query
     let query = (supabase
