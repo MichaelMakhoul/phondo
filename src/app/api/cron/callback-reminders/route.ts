@@ -1,8 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireCronAuth } from "@/lib/security/cron-auth";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { sendCallbackReminderNotification } from "@/lib/notifications/notification-service";
+import {
+  sendCallbackReminderNotification,
+  NotificationDeliveryError,
+} from "@/lib/notifications/notification-service";
 import * as Sentry from "@sentry/nextjs";
+
+// SCRUM-447: up to 50 sequential email+SMS sends per run. Vercel's default
+// function duration can cut the loop mid-send (a claim-without-confirm crash
+// for whichever reminder was in flight). 60s is the Hobby plan ceiling
+// (vercel.json has no overrides).
+export const maxDuration = 60;
 
 export async function GET(req: NextRequest) {
   const authFail = requireCronAuth(req, "callback-reminders");
@@ -71,24 +80,32 @@ export async function GET(req: NextRequest) {
         urgency: cb.urgency,
       });
     } catch (notifyErr) {
-      // "0 notification channels delivered" (SCRUM-419) is a PERMANENT org
-      // configuration problem (e.g. owner-email lookup failing with email the
-      // only wanted channel) — retrying next run can't succeed and would loop
-      // this row forever, crowding the 50-row window. Mark it abandoned so it
-      // leaves the queue; the failure is already logged + Sentry-reported by
-      // the notification service. Transient send failures still retry.
-      const isPermanentChannelFailure =
-        notifyErr instanceof Error && notifyErr.message.includes("0 notification channels delivered");
-      if (isPermanentChannelFailure) {
-        // Keep the claim (reminder_sent_at already set) — retrying an org
-        // with no working channels can't succeed (SCRUM-419 semantics).
-        console.error(`[Cron] Abandoning reminder for callback ${cb.id} — org has no working notification channels:`, notifyErr.message);
+      // SCRUM-447: branch on the typed error's fields instead of regex-
+      // matching the message (the old string contract broke on any wording
+      // tweak). The message text is unchanged and still goes to logs.
+      const delivery = notifyErr instanceof NotificationDeliveryError ? notifyErr : null;
+      if (delivery?.permanent) {
+        // PERMANENT (SCRUM-419 semantics): either the org has no working
+        // channels (owner-email lookup failed with email the only wanted
+        // channel) or provider credentials are ABSENT from the deployment
+        // (Sentry-paged at error level inside the notification service).
+        // Retrying next run can't succeed and would loop this row forever,
+        // crowding the 50-row window — keep the claim (reminder_sent_at
+        // already set) so it leaves the queue.
+        console.error(`[Cron] Abandoning reminder for callback ${cb.id} — permanent delivery failure (${delivery.deliveredCount}/${delivery.wantedCount} channels delivered):`, delivery.message);
+      } else if (delivery && delivery.deliveredCount > 0) {
+        // PARTIAL delivery: something already reached the owner — releasing
+        // the claim would double-deliver that channel next run (the same
+        // "keep the claim on partial" call daily-summary makes). Confirm
+        // delivery so reconciliation doesn't flag this as a crashed send.
+        console.warn(`[Cron] Partial delivery for callback ${cb.id} (${delivery.deliveredCount}/${delivery.wantedCount} channels) — keeping the claim (no re-send):`, delivery.message);
+        await confirmReminderDelivery(supabase, cb.id);
       } else {
-        // Transient failure: RELEASE the claim so the next run retries.
-        // Sentry so a fleet-wide send outage (e.g. mis-set EMAIL_API_KEY,
-        // which presents as "1/1 channels failed", not the permanent marker)
-        // alerts before the 48h expire-callbacks cron silently discards
-        // every queued reminder.
+        // Transient nothing-delivered failure: RELEASE the claim so the next
+        // run retries. Sentry so a fleet-wide send outage (e.g. a mis-SET
+        // EMAIL_API_KEY — wrong value, present in env — still classifies as
+        // transient) alerts before the 48h expire-callbacks cron silently
+        // discards every queued reminder.
         console.error(`[Cron] Failed to send reminder for callback ${cb.id} — releasing claim for retry:`, notifyErr);
         Sentry.captureMessage(`Callback reminder send failed — claim released for retry (callback ${cb.id})`, "warning");
         const { error: releaseError } = await (supabase as any)
@@ -102,11 +119,31 @@ export async function GET(req: NextRequest) {
       continue;
     }
 
-    // Already marked by the atomic claim above — nothing further to write.
+    // SCRUM-447 (claim-vs-confirm): the claim (reminder_sent_at) was written
+    // BEFORE the send — confirm the send actually happened so a crash between
+    // the two is detectable (reminder_delivered_at NULL — see migration 00155).
+    await confirmReminderDelivery(supabase, cb.id);
     sent++;
   }
 
   console.log(`[Cron] Sent ${sent}/${dueCallbacks.length} callback reminders`);
 
   return NextResponse.json({ reminders_sent: sent });
+}
+
+/**
+ * Set reminder_delivered_at after the send call returned (fully or partially
+ * delivered). Never throws — the send DID happen, so a confirmation failure
+ * must not flip the reminder into the failed/release path; it just means the
+ * reconciliation query (migration 00155) will show a false positive, which
+ * the log line here explains.
+ */
+async function confirmReminderDelivery(supabase: any, callbackId: string): Promise<void> {
+  const { error } = await supabase
+    .from("callback_requests")
+    .update({ reminder_delivered_at: new Date().toISOString() })
+    .eq("id", callbackId);
+  if (error) {
+    console.error(`[Cron] Failed to confirm reminder delivery for ${callbackId} — reconciliation will flag a delivered send:`, error);
+  }
 }
