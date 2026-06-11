@@ -454,6 +454,13 @@ app.post("/twiml", async (req, res) => {
  * WebSocket media stream protocol. The only difference is webhook signature
  * validation and the endpoint URL used in action callbacks.
  */
+// SCRUM-432: make the fail-closed posture visible at boot — if Telnyx is
+// ever activated without keys, /texml rejecting everything should not be a
+// silent mystery.
+if (!process.env.TELNYX_PUBLIC_KEY && !process.env.TELNYX_WEBHOOK_SECRET) {
+  console.warn("[TeXML] No TELNYX_PUBLIC_KEY / TELNYX_WEBHOOK_SECRET configured — all /texml webhooks will be REJECTED (fail-closed). Fine while Telnyx is dormant.");
+}
+
 /**
  * Validate Telnyx webhook signature (ed25519).
  * Uses Node.js built-in crypto.verify with ed25519 algorithm.
@@ -468,12 +475,12 @@ function validateTelnyxSignature(req) {
       if (!headerSecret || headerSecret.length !== secret.length) return false;
       return crypto.timingSafeEqual(Buffer.from(headerSecret), Buffer.from(secret));
     }
-    // No verification configured — reject in production, allow in dev
-    if (process.env.NODE_ENV === "production") {
-      console.error("[TeXML] No TELNYX_PUBLIC_KEY or TELNYX_WEBHOOK_SECRET configured — rejecting");
-      return false;
-    }
-    return true;
+    // SCRUM-432: no verification configured — fail CLOSED regardless of
+    // NODE_ENV. The old dev-allow meant a misconfigured staging/dev box
+    // accepted unsigned Telnyx webhooks; local testing can set
+    // TELNYX_WEBHOOK_SECRET instead.
+    console.error("[TeXML] No TELNYX_PUBLIC_KEY or TELNYX_WEBHOOK_SECRET configured — rejecting unsigned webhook");
+    return false;
   }
 
   try {
@@ -4207,11 +4214,14 @@ async function gracefulShutdown(signal) {
   }, SHUTDOWN_GRACE_MS);
   hardCutoff.unref();
 
-  // Mark every active session as shutting down; the Gemini/classic pipelines
-  // check this flag and stop generating new tool calls / new sentences.
+  // SCRUM-432 (finding #47): record why these calls ended. NOTE: nothing
+  // consults a per-session "shutting down" flag (a previous comment claimed
+  // the pipelines did — they don't). The drain works by (1) server.close()
+  // refusing new connections, (2) the poll below waiting for live sessions
+  // to end naturally, (3) the hard cutoff forcing exit after the grace
+  // period. In-flight calls run to completion or cutoff, unmodified.
   for (const [, sess] of activeSessionEntries) {
     if (sess) {
-      sess.shuttingDown = true;
       sess.endedReason = sess.endedReason || "server-shutdown";
     }
   }

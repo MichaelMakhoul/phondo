@@ -212,70 +212,46 @@ export async function POST(request: Request) {
     (!spamAnalysis?.isSpam || spamAnalysis?.recommendation !== "block");
 
   if (shouldTrackUsage) {
-    // SCRUM-361: idempotent usage — atomically claim the call's usage_counted
-    // flag so a notifyCallCompleted RETRY (the voice server retries on 5xx) can't
-    // double-count. Only increment when we win the false→true flip. When callId
-    // is absent (rare kill-switch fallback with no call row) there's nothing to
-    // key on, so fall back to incrementing as before.
-    let shouldIncrement = true;
-    if (callId) {
-      const { data: claimed, error: claimError } = await (supabase as any)
-        .from("calls")
-        .update({ usage_counted: true })
-        .eq("id", callId)
-        .eq("usage_counted", false)
-        .select("id");
-      if (claimError) {
-        // Fail CLOSED (skip) — a dropped count on a rare DB blip is recoverable;
-        // a double-bill is not.
-        console.error("[Internal] Failed to claim usage_counted (skipping increment to avoid double-bill):", { callId, organizationId, error: claimError });
-        shouldIncrement = false;
-      } else {
-        shouldIncrement = !!(claimed && claimed.length > 0);
-        if (!shouldIncrement) {
-          console.log("[Internal] Usage already counted for call — skipping (retry):", callId);
-        }
-      }
-    } else {
-      // SCRUM-361: no callId → no call row to key on (the rare kill-switch
-      // fallback where createCallRecord failed at call start). Increment without
-      // the idempotency guard; warn so this one non-idempotent path is visible
-      // if it ever becomes non-trivial.
-      console.warn("[Internal] Incrementing usage without idempotency guard — callId absent (no call row):", { organizationId });
-    }
-    if (shouldIncrement) {
+    // SCRUM-432 (finding #48): claim + increment in ONE transaction via the
+    // claim_and_increment_call_usage RPC (migration 00154) — the old
+    // two-round-trip claim→increment lost the count if the function died in
+    // the gap. Idempotency (SCRUM-361) is inside the RPC: only the first
+    // caller wins the usage_counted flip; retries return false and skip.
     try {
-      const { error: rpcError } = await (supabase as any).rpc("increment_call_usage", {
-        org_id: organizationId,
-      });
-
-      // Fallback if RPC doesn't exist
-      if (rpcError && (rpcError.code === "42883" || rpcError.code === "PGRST202")) {
-        console.warn("[Internal] increment_call_usage RPC not found, using fallback");
-        const { data: subscription } = await (supabase as any)
-          .from("subscriptions")
-          .select("id, calls_used")
-          .eq("organization_id", organizationId)
-          .single();
-
-        if (subscription) {
-          const { error: updateError } = await (supabase as any)
-            .from("subscriptions")
-            .update({ calls_used: (subscription.calls_used || 0) + 1 })
-            .eq("id", subscription.id);
-          if (updateError) {
-            console.error("[Internal] Failed to update subscription usage:", { organizationId, error: updateError });
-          }
-        } else {
-          console.error("[Internal] No subscription found for organization — billing skipped:", { organizationId });
+      if (callId) {
+        const { data: counted, error: rpcError } = await (supabase as any).rpc(
+          "claim_and_increment_call_usage",
+          { p_call_id: callId, p_org_id: organizationId }
+        );
+        if (rpcError) {
+          // Fail CLOSED (skip) — a dropped count on a rare DB blip is
+          // recoverable; a double-bill is not.
+          console.error("[Internal] claim_and_increment_call_usage failed (skipping to avoid double-bill):", { callId, organizationId, error: rpcError });
+        } else if (counted === false) {
+          // FALSE covers three states: already counted (benign retry), no
+          // matching call row, or a callId/org mismatch — the RPC can't
+          // distinguish them yet (tri-state return tracked in SCRUM-451).
+          console.log("[Internal] Usage claim not won — already counted, call row missing, or org mismatch; skipping:", { callId, organizationId });
         }
-      } else if (rpcError) {
-        console.error("[Internal] Failed to increment usage:", { organizationId, error: rpcError });
+      } else {
+        // No callId → no call row to key on (the rare kill-switch fallback
+        // where createCallRecord failed at call start). Use the plain atomic
+        // increment without the idempotency guard; warn so this one
+        // non-idempotent path stays visible. The old racy read-modify-write
+        // fallback (for a missing RPC) is gone — the RPC has existed since
+        // migration 00011 and a missing function is a deploy fault to
+        // surface, not to paper over with a non-atomic write.
+        console.warn("[Internal] Incrementing usage without idempotency guard — callId absent (no call row):", { organizationId });
+        const { error: rpcError } = await (supabase as any).rpc("increment_call_usage", {
+          org_id: organizationId,
+        });
+        if (rpcError) {
+          console.error("[Internal] Failed to increment usage:", { organizationId, error: rpcError });
+        }
       }
     } catch (err) {
       console.error("[Internal] Billing increment failed:", err);
     }
-    } // end if (shouldIncrement)
   }
 
   // 4. Send notifications (skip spam calls)
