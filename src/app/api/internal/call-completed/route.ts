@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { runAfterResponse } from "@/lib/utils/after-response";
 import crypto from "crypto";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { analyzeCall, type CallMetadata } from "@/lib/spam/spam-detector";
@@ -331,8 +332,15 @@ export async function POST(request: Request) {
       notificationKind === "missed" ||
       notificationKind === "unsuccessful";
     if (shouldTextBack && !spamAnalysisFailed && callerPhone && callerPhone !== "Unknown") {
-      sendMissedCallTextBack(organizationId, callerPhone, spamAnalysis?.isSpam)
-        .catch((err) => console.error("[Internal] Caller text-back failed:", { callId, organizationId, error: err }));
+      // after() (not bare fire-and-forget) so the text-back survives Vercel's
+      // post-response function freeze (SCRUM-410).
+      runAfterResponse(async () => {
+        try {
+          await sendMissedCallTextBack(organizationId, callerPhone, spamAnalysis?.isSpam);
+        } catch (err) {
+          console.error("[Internal] Caller text-back failed:", { callId, organizationId, error: err });
+        }
+      });
     }
   }
 
@@ -357,16 +365,23 @@ export async function POST(request: Request) {
     ? "call.missed" as const
     : "call.completed" as const;
 
-  deliverWebhooks(organizationId, webhookEvent, {
-    callId: callId || "unknown",
-    caller: callerPhone || "Unknown",
-    transcript,
-    duration: durationSeconds,
-    assistantName,
-    outcome: status,
-  }).catch((err) => console.error("[Internal] Webhook delivery failed:", {
-    organizationId, callId: callId || "unknown", webhookEvent, error: err,
-  }));
+  // after() so webhook delivery survives Vercel's post-response freeze (SCRUM-410).
+  runAfterResponse(async () => {
+    try {
+      await deliverWebhooks(organizationId, webhookEvent, {
+        callId: callId || "unknown",
+        caller: callerPhone || "Unknown",
+        transcript,
+        duration: durationSeconds,
+        assistantName,
+        outcome: status,
+      });
+    } catch (err) {
+      console.error("[Internal] Webhook delivery failed:", {
+        organizationId, callId: callId || "unknown", webhookEvent, error: err,
+      });
+    }
+  });
 
   return NextResponse.json({ received: true, notificationStatus });
 }

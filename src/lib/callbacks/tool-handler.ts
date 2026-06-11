@@ -4,6 +4,7 @@ import {
   isValidPhoneNumber,
 } from "@/lib/security/validation";
 import { sendCallbackNotification } from "@/lib/notifications/notification-service";
+import { runAfterResponse } from "@/lib/utils/after-response";
 
 interface ToolResult {
   success: boolean;
@@ -112,16 +113,22 @@ export async function handleScheduleCallback(
     };
   }
 
-  // Send notification (fire-and-forget)
-  sendCallbackNotification({
-    organizationId,
-    callerName: sanitizedName,
-    callerPhone: sanitizedPhone,
-    reason: sanitizedReason,
-    preferredTime: preferred_time,
-    urgency: validUrgency,
-  }).catch((err) => {
-    console.error("[Callback] Notification failed (non-fatal):", err);
+  // Send notification after the response (SCRUM-410: bare fire-and-forget can be
+  // dropped when Vercel freezes the function after we tell the caller someone
+  // will call back).
+  runAfterResponse(async () => {
+    try {
+      await sendCallbackNotification({
+        organizationId,
+        callerName: sanitizedName,
+        callerPhone: sanitizedPhone,
+        reason: sanitizedReason,
+        preferredTime: preferred_time,
+        urgency: validUrgency,
+      });
+    } catch (err) {
+      console.error("[Callback] Notification failed (non-fatal):", err);
+    }
   });
 
   const timeNote = preferred_time

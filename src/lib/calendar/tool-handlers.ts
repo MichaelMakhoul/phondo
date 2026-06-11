@@ -18,6 +18,7 @@ import {
   getServiceType,
 } from "@/lib/service-types";
 import { invalidateVoiceScheduleCache } from "@/lib/voice-cache/invalidate";
+import { runAfterResponse } from "@/lib/utils/after-response";
 import { hasNonLatinLetters } from "@/lib/calendar/latin-name";
 import { resolveRescheduleIdentity, resolveRescheduledBooking } from "@/lib/calendar/reschedule-core";
 
@@ -1342,8 +1343,15 @@ async function cancelSingleAppointment(
       };
     }
 
-    // Invalidate voice server schedule cache (fire-and-forget)
-    invalidateVoiceScheduleCache(organizationId).catch((err) => console.warn("[VoiceCacheInvalidate] fire-and-forget failed:", err instanceof Error ? err.message : err));
+    // Invalidate voice server schedule cache after the response (SCRUM-410: bare
+    // fire-and-forget can be dropped when Vercel freezes the function).
+    runAfterResponse(async () => {
+      try {
+        await invalidateVoiceScheduleCache(organizationId);
+      } catch (err) {
+        console.warn("[VoiceCacheInvalidate] after-response failed:", err instanceof Error ? err.message : err);
+      }
+    });
 
     const schedule = await getOrgSchedule(organizationId).catch(() => null);
     const timezone = schedule?.timezone || "Australia/Sydney";
@@ -1356,15 +1364,20 @@ async function cancelSingleAppointment(
     // User explicitly decided we should send one. SCRUM-388: skipped on a reschedule
     // (suppressSms) — a "cancelled" text for a move is misleading.
     if (appointment.attendee_phone && !opts?.suppressSms) {
-      sendCancellationSMS(
-        organizationId,
-        appointment.attendee_phone,
-        new Date(appointment.start_time),
-        timezone,
-        appointment.id
-      ).catch((err) =>
-        console.error("Cancellation SMS failed:", { organizationId, error: err })
-      );
+      // after() so the cancellation SMS survives Vercel's post-response freeze (SCRUM-410).
+      runAfterResponse(async () => {
+        try {
+          await sendCancellationSMS(
+            organizationId,
+            appointment.attendee_phone,
+            new Date(appointment.start_time),
+            timezone,
+            appointment.id
+          );
+        } catch (err) {
+          console.error("Cancellation SMS failed:", { organizationId, error: err });
+        }
+      });
     }
 
     return {
@@ -2118,8 +2131,15 @@ async function bookInternal(
     ? ` with ${assignedPractitionerName}`
     : "";
 
-  // Invalidate voice server schedule cache (fire-and-forget)
-  invalidateVoiceScheduleCache(organizationId).catch((err) => console.warn("[VoiceCacheInvalidate] fire-and-forget failed:", err instanceof Error ? err.message : err));
+  // Invalidate voice server schedule cache after the response (SCRUM-410: bare
+  // fire-and-forget can be dropped when Vercel freezes the function).
+  runAfterResponse(async () => {
+    try {
+      await invalidateVoiceScheduleCache(organizationId);
+    } catch (err) {
+      console.warn("[VoiceCacheInvalidate] after-response failed:", err instanceof Error ? err.message : err);
+    }
+  });
 
   return {
     success: true,
@@ -2148,26 +2168,40 @@ function sendNotification(
   // tracked in the new appointment_confirmations table.
   appointmentId?: string
 ) {
-  sendAppointmentNotification({
-    organizationId,
-    callerPhone: phone,
-    callerName: name,
-    appointmentDate,
-    appointmentTime: appointmentDate.toLocaleTimeString("en-US", {
-      hour: "numeric",
-      minute: "2-digit",
-      hour12: true,
-      ...(timezone && { timeZone: timezone }),
-    }),
-    timezone,
-    confirmationCode,
-  }).catch((err) => {
-    console.error("Failed to send appointment notification:", err);
+  // SCRUM-410: sendNotification is invoked un-awaited from bookInternal and the
+  // Cal.com path, so these were bare fire-and-forget and could be dropped when
+  // Vercel freezes the function after the response. Schedule both via after()
+  // (independently, so one failing doesn't skip the other). The customer-facing
+  // confirmation SMS in particular is a flagship feature — it must not vanish.
+  runAfterResponse(async () => {
+    try {
+      await sendAppointmentNotification({
+        organizationId,
+        callerPhone: phone,
+        callerName: name,
+        appointmentDate,
+        appointmentTime: appointmentDate.toLocaleTimeString("en-US", {
+          hour: "numeric",
+          minute: "2-digit",
+          hour12: true,
+          ...(timezone && { timeZone: timezone }),
+        }),
+        timezone,
+        confirmationCode,
+      });
+    } catch (err) {
+      console.error("Failed to send appointment notification:", err);
+    }
   });
 
   // SMS confirmation to the caller (include confirmation code)
-  sendAppointmentConfirmationSMS(organizationId, phone, appointmentDate, timezone, confirmationCode, appointmentId)
-    .catch((err) => console.error("Appointment confirmation SMS failed:", { organizationId, error: err }));
+  runAfterResponse(async () => {
+    try {
+      await sendAppointmentConfirmationSMS(organizationId, phone, appointmentDate, timezone, confirmationCode, appointmentId);
+    } catch (err) {
+      console.error("Appointment confirmation SMS failed:", { organizationId, error: err });
+    }
+  });
 }
 
 // ─── Appointment result formatter ───────────────────────────────────────────
