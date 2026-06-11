@@ -11,6 +11,12 @@
  * when all provided refs are valid (or none were provided). THROWS on a DB error
  * so the caller's try/catch surfaces a 500 — we never silently allow an
  * unvalidated reference (fail closed).
+ *
+ * SCRUM-444: `requireActive` additionally rejects refs whose row is deactivated
+ * (`is_active = false`). Paths that ATTACH a ref (voice booking, dashboard
+ * create, dashboard explicit change) enable it; it stays off by default so
+ * callers validating rows that may legitimately carry a since-deactivated ref
+ * aren't broken.
  */
 
 // The Supabase client is intentionally loosely typed (`from` returns `any`) to
@@ -24,6 +30,7 @@ export async function validateOrgScopedRefs(
   supabase: SupabaseLike,
   orgId: string,
   refs: { serviceTypeId?: string | null; practitionerId?: string | null },
+  options: { requireActive?: boolean } = {},
 ): Promise<string | null> {
   const checks: Array<{ table: string; id: string; label: string }> = [];
   if (refs.serviceTypeId) {
@@ -37,16 +44,23 @@ export async function validateOrgScopedRefs(
   // booking path as well as the dashboard routes; SCRUM-425 review).
   const results = await Promise.all(
     checks.map(async ({ table, id, label }) => {
-      const { data, error } = await supabase
+      let query = supabase
         .from(table)
         .select("id")
         .eq("id", id)
-        .eq("organization_id", orgId)
-        .maybeSingle();
+        .eq("organization_id", orgId);
+      if (options.requireActive) {
+        query = query.eq("is_active", true);
+      }
+      const { data, error } = await query.maybeSingle();
       if (error) {
         throw new Error(`Failed to validate ${label}: ${error.message}`);
       }
-      return data ? null : `Invalid ${label}: does not belong to this organization`;
+      if (data) return null;
+      // One query can't distinguish cross-org from deactivated — say both.
+      return options.requireActive
+        ? `Invalid ${label}: does not belong to this organization or is inactive`
+        : `Invalid ${label}: does not belong to this organization`;
     }),
   );
 

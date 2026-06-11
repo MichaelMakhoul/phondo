@@ -499,10 +499,17 @@ export async function PATCH(
 
     // SCRUM-360: a referenced service_type / practitioner must belong to this org
     // (skips null, so clearing a field is still allowed).
-    const refError = await validateOrgScopedRefs(supabase, orgId, {
-      serviceTypeId: data.service_type_id,
-      practitionerId: data.practitioner_id,
-    });
+    // SCRUM-444: `requireActive` — assigning a deactivated practitioner/service is
+    // rejected. This only bites when the ref is being CHANGED: the validator sees
+    // just the PATCH payload (never the stored row), and both dashboard callers
+    // send only dirty fields (SCRUM-397), so time-only edits / status changes on
+    // an appointment that carries a since-deactivated ref keep working.
+    const refError = await validateOrgScopedRefs(
+      supabase,
+      orgId,
+      { serviceTypeId: data.service_type_id, practitionerId: data.practitioner_id },
+      { requireActive: true },
+    );
     if (refError) {
       return NextResponse.json({ error: refError }, { status: 400 });
     }

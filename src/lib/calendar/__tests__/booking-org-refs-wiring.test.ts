@@ -230,3 +230,133 @@ describe("voice booking org-ref enforcement (SCRUM-425)", () => {
     expect(calls.mutated).toBeUndefined();  // old appointment never cancelled/updated
   });
 });
+
+// ─── SCRUM-444: inactive refs + null service type ───────────────────────────
+//
+// A filter-AWARE fake: results depend on which .eq() filters the code applied,
+// so a regression that drops `requireActive` (the is_active filter) makes the
+// "deactivated" practitioner resolvable again and the test fails on the
+// downstream canary (organizations errors → a different message). Touches are
+// logged per (table, method) so early rejection can be proven, not assumed.
+
+type Touch = { table: string; method: string; eqs: Array<[string, unknown]> };
+
+function activeAwareAdmin(
+  handlers: Record<string, (method: string, eqs: Array<[string, unknown]>) => Result>,
+  log: { touches: Touch[]; inserted?: boolean },
+) {
+  return {
+    from: (table: string) => {
+      const eqs: Array<[string, unknown]> = [];
+      const b: Record<string, unknown> = {};
+      const chain = () => b;
+      const resolve = (method: string): Result => {
+        log.touches.push({ table, method, eqs });
+        return handlers[table]?.(method, eqs) ?? { data: null, error: null };
+      };
+      Object.assign(b, {
+        select: chain, in: chain, is: chain, not: chain, gte: chain, lte: chain,
+        lt: chain, gt: chain, order: chain, limit: chain,
+        eq: (col: string, val: unknown) => {
+          eqs.push([col, val]);
+          return b;
+        },
+        insert: () => {
+          if (table === "appointments") log.inserted = true;
+          return b;
+        },
+        single: async () => resolve("single"),
+        maybeSingle: async () => resolve("maybeSingle"),
+        then: (onF: (v: Result) => unknown, onR?: (e: unknown) => unknown) =>
+          Promise.resolve(resolve("then")).then(onF, onR),
+      });
+      return b;
+    },
+  };
+}
+
+describe("voice booking inactive-ref enforcement (SCRUM-444)", () => {
+  const SERVICE = "22222222-3333-4444-8555-666666666666";
+  const INACTIVE_PRAC = "33333333-4444-4555-8666-777777777777";
+  const log: { touches: Touch[]; inserted?: boolean } = { touches: [] };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    log.touches = [];
+    log.inserted = undefined;
+  });
+
+  it("rejects an org-owned but DEACTIVATED practitioner on the empty-practitioner-list branch", async () => {
+    // Service type is valid+active but has NO practitioner associations, so the
+    // per-service membership check is skipped — before SCRUM-444 nothing on
+    // this branch verified is_active and the deactivated practitioner booked.
+    vi.mocked(createAdminClient).mockReturnValue(
+      activeAwareAdmin(
+        {
+          service_types: (method) => {
+            if (method === "single") return { data: { id: SERVICE, name: "Checkup", duration_minutes: 30 }, error: null }; // getServiceType
+            if (method === "maybeSingle") return { data: { id: SERVICE }, error: null }; // validator (service is active)
+            return { data: [{ id: SERVICE, name: "Checkup", duration_minutes: 30 }], error: null }; // getActiveServiceTypes
+          },
+          practitioners: (method, eqs) => {
+            if (method === "maybeSingle") {
+              // The row EXISTS and is org-owned, but is_active=false — found
+              // only when the validator does NOT filter on is_active.
+              const activeFiltered = eqs.some(([c, v]) => c === "is_active" && v === true);
+              return activeFiltered ? { data: null, error: null } : { data: { id: INACTIVE_PRAC }, error: null };
+            }
+            return { data: [], error: null }; // getPractitionersForService → empty list
+          },
+          // Canary: if the gate wrongly passes, getOrgSchedule errors and the
+          // caller sees "trouble accessing our schedule" — failing the message
+          // assertion below instead of silently passing.
+          organizations: () => ({ data: null, error: { message: "should never get here" } }),
+        },
+        log,
+      ) as never,
+    );
+
+    const result = await handleBookAppointment(ORG, {
+      ...BOOK_ARGS,
+      service_type_id: SERVICE,
+      practitioner_id: INACTIVE_PRAC,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toMatch(/couldn't match/i);
+    expect(log.inserted).toBeUndefined();
+    // The rejection came from the is_active-filtered validator lookup.
+    const validatorLookup = log.touches.find((t) => t.table === "practitioners" && t.method === "maybeSingle");
+    expect(validatorLookup).toBeDefined();
+    expect(validatorLookup!.eqs).toContainEqual(["is_active", true]);
+  });
+
+  it("rejects EARLY with a clean message when getServiceType resolves null (unknown/cross-org id)", async () => {
+    vi.mocked(createAdminClient).mockReturnValue(
+      activeAwareAdmin(
+        {
+          service_types: (method) => {
+            if (method === "single") return { data: null, error: { message: "no rows", code: "PGRST116" } }; // getServiceType → null
+            if (method === "maybeSingle") return { data: { id: SERVICE }, error: null }; // validator (must NOT be reached)
+            return { data: [{ id: "st-other", name: "Cleaning", duration_minutes: 30 }], error: null };
+          },
+          organizations: () => ({ data: null, error: { message: "should never get here" } }),
+        },
+        log,
+      ) as never,
+    );
+
+    const result = await handleBookAppointment(ORG, {
+      ...BOOK_ARGS,
+      service_type_id: SERVICE,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toMatch(/couldn't match that appointment type/i);
+    expect(log.inserted).toBeUndefined();
+    // EARLY: rejected in handleBookAppointment — bookInternal's validator
+    // (service_types maybeSingle) and schedule lookup were never reached.
+    expect(log.touches.filter((t) => t.table === "service_types" && t.method === "maybeSingle")).toHaveLength(0);
+    expect(log.touches.filter((t) => t.table === "organizations")).toHaveLength(0);
+  });
+});

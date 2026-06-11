@@ -964,9 +964,17 @@ export async function handleBookAppointment(
 
   if (service_type_id) {
     const st = await getServiceType(service_type_id, organizationId);
-    if (st) {
-      serviceTypeDuration = st.duration_minutes;
+    // SCRUM-444: a null here means the id is unknown/cross-org (or the lookup
+    // failed) — reject NOW instead of falling through with a default duration
+    // and relying on bookInternal's validator as a backstop.
+    if (!st) {
+      return {
+        success: false,
+        message:
+          "I couldn't match that appointment type to this business. Could you tell me again what type of appointment you'd like to book?",
+      };
     }
+    serviceTypeDuration = st.duration_minutes;
   }
 
   const useBuiltIn = service_type_id || serviceTypes.length > 0;
@@ -2060,12 +2068,18 @@ async function bookInternal(
   // straight into the insert (getServiceType's null result was ignored, and
   // a requested practitioner was only checked when a service-type
   // practitioner list happened to resolve).
+  // SCRUM-444: `requireActive` — a caller must never be booked with a
+  // deactivated practitioner or service. This closes the empty-practitioner-
+  // list gap below, where neither per-service nor standalone is_active
+  // checks used to run.
   if (serviceTypeId || requestedPractitionerId) {
     try {
-      const refError = await validateOrgScopedRefs(supabase, organizationId, {
-        serviceTypeId,
-        practitionerId: requestedPractitionerId,
-      });
+      const refError = await validateOrgScopedRefs(
+        supabase,
+        organizationId,
+        { serviceTypeId, practitionerId: requestedPractitionerId },
+        { requireActive: true },
+      );
       if (refError) {
         console.error("[Booking] Rejected cross-org/unknown reference:", {
           organizationId, serviceTypeId, requestedPractitionerId, refError,
@@ -2073,7 +2087,7 @@ async function bookInternal(
         return {
           success: false,
           message:
-            "I couldn't match that appointment type or practitioner to this business. Could you tell me again what you'd like to book?",
+            "I couldn't match that appointment type or practitioner to what this business currently offers. Could you tell me again what you'd like to book?",
         };
       }
     } catch (error) {
@@ -2217,23 +2231,9 @@ async function bookInternal(
       }
     }
 
-    // When no service type, check the practitioner is ACTIVE. Org ownership
-    // is already guaranteed by the step-0 validateOrgScopedRefs gate
-    // (SCRUM-425) — this query exists for the is_active business rule, which
-    // the shared validator deliberately doesn't enforce (see SCRUM-444).
-    if (!resolvedServiceTypeId) {
-      const { data: practitioner } = await (supabase as any)
-        .from("practitioners")
-        .select("id")
-        .eq("id", requestedPractitionerId)
-        .eq("organization_id", organizationId)
-        .eq("is_active", true)
-        .single();
-
-      if (!practitioner) {
-        return { success: false, message: "The requested practitioner was not found or is not available." };
-      }
-    }
+    // Org ownership AND is_active are both guaranteed by the step-0
+    // validateOrgScopedRefs gate (SCRUM-425 + SCRUM-444 requireActive), so
+    // the standalone is_active re-query that used to live here is gone.
 
     // Check if this practitioner is free at the requested time
     const supabaseAdmin = createAdminClient();
