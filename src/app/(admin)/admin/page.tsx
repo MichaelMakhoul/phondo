@@ -1,4 +1,5 @@
 import { createAdminClient } from "@/lib/supabase/admin";
+import { requirePlatformAdmin } from "@/lib/admin/require-admin";
 import { PLANS } from "@/lib/stripe/client";
 import { StatCard } from "@/components/admin/stat-card";
 import { formatAdminDate, formatAdminDateShort } from "@/lib/admin/format";
@@ -51,6 +52,9 @@ interface SystemHealthRow {
 }
 
 export default async function AdminOverviewPage() {
+  // Per-page admin gate — layouts don't re-run on soft navigation (SCRUM-420).
+  await requirePlatformAdmin();
+
   const supabase = createAdminClient();
 
   // Fetch all stats in parallel

@@ -1,7 +1,11 @@
 import { Search } from "lucide-react";
+import { requirePlatformAdmin } from "@/lib/admin/require-admin";
 import { LeadDiscoveryPanel } from "./lead-discovery-panel";
 
-export default function LeadDiscoveryPage() {
+export default async function LeadDiscoveryPage() {
+  // Per-page admin gate — layouts don't re-run on soft navigation (SCRUM-420).
+  await requirePlatformAdmin();
+
   return (
     <div className="space-y-6">
       <div>

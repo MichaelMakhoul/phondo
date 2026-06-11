@@ -1,24 +1,34 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
+import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { isPlatformAdmin } from "@/lib/admin/admin-auth";
 import { configureVoiceWebhook } from "@/lib/twilio/client";
 
 /**
  * POST /api/admin/update-fallback-urls
  *
  * One-time admin endpoint to backfill fallback URLs on all existing Twilio numbers.
- * Protected by INTERNAL_API_SECRET header.
+ *
+ * SCRUM-420 (audit findings #31/#60): previously gated by the shared
+ * INTERNAL_API_SECRET — the voice-server's machine-to-machine secret, which a
+ * compromised voice server could replay against this operator endpoint. Now
+ * requires a logged-in platform admin, matching every other /api/admin route.
+ *
+ * CSRF: mitigated by Supabase SSR's SameSite=Lax auth cookies (cross-site
+ * POSTs don't carry them), and the handler reads zero request input — its
+ * only effect derives from server env vars. Invocation (no UI caller): run a
+ * fetch from a logged-in admin browser session, e.g.
+ *   fetch("/api/admin/update-fallback-urls", { method: "POST" })
  */
-export async function POST(req: NextRequest) {
-  const secret = process.env.INTERNAL_API_SECRET;
-  if (!secret) {
-    console.error("[Admin] INTERNAL_API_SECRET not configured");
-    return NextResponse.json({ error: "Server misconfiguration" }, { status: 500 });
-  }
+export async function POST() {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const authHeader = req.headers.get("authorization");
-  if (authHeader !== `Bearer ${secret}`) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  const admin = await isPlatformAdmin(user.id);
+  if (!admin) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
   const appUrl = process.env.NEXT_PUBLIC_APP_URL;
   const voiceServerUrl = process.env.VOICE_SERVER_PUBLIC_URL;
@@ -31,8 +41,8 @@ export async function POST(req: NextRequest) {
 
   const fallbackUrl = `${appUrl}/api/twilio/voice-fallback`;
 
-  const supabase = createAdminClient();
-  const { data: numbers, error } = await (supabase as any)
+  const adminSupabase = createAdminClient();
+  const { data: numbers, error } = await (adminSupabase as any)
     .from("phone_numbers")
     .select("id, twilio_sid, phone_number")
     .not("twilio_sid", "is", null)
