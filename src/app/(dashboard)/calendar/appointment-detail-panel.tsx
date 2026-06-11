@@ -265,13 +265,19 @@ export function AppointmentDetailPanel({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status: newStatus }),
       });
-      if (!res.ok) throw new Error("Failed to update");
+      if (!res.ok) {
+        // Surface the server's message — the SCRUM-431 state-machine 409
+        // explains exactly which transition was refused.
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Failed to update");
+      }
       const label = newStatus === "no_show" ? "No Show" : newStatus.charAt(0).toUpperCase() + newStatus.slice(1);
       toast({ title: `Appointment marked as ${label}` });
       onUpdated();
       fetchAppointment();
-    } catch {
-      toast({ title: "Error", description: "Failed to update status", variant: "destructive" });
+    } catch (err) {
+      const msg = err instanceof Error && err.message !== "Failed to update" ? err.message : "Failed to update status";
+      toast({ title: "Error", description: msg, variant: "destructive" });
     } finally {
       setSaving(false);
     }

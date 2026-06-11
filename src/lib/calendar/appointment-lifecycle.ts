@@ -195,3 +195,38 @@ export function mergeTimeline(
   });
   return items;
 }
+
+// ─── SCRUM-431 (audit finding #52): dashboard status state-machine ──────────
+//
+// Legal transitions for MANUAL dashboard edits. System-managed transitions
+// (the reschedule leg sets `rescheduled`; SCRUM-399 revival restores a frozen
+// leg) bypass this — it guards only the PATCH status field.
+//
+// Semantics match the shipped dashboard affordances (Complete / No Show /
+// Cancel buttons, the "Revert to Confirmed" undo): human corrections are
+// allowed in both directions, and a mis-cancel can be undone — the partial
+// exclusion constraint (00149, WHERE status IN confirmed/pending) re-checks
+// the slot on the way back in and 23P01s if it was re-booked (the PATCH maps
+// that to a clean 409). The ONLY hard-terminal status is `rescheduled`:
+// its slot lives on in a successor row (SCRUM-388), so reviving it would
+// duplicate the booking and corrupt the supersede chain. completed→pending
+// "time travel" stays blocked (the audit's scenario).
+const DASHBOARD_STATUS_TRANSITIONS: Record<string, readonly string[]> = {
+  pending: ["confirmed", "cancelled", "completed", "no_show"],
+  confirmed: ["pending", "completed", "cancelled", "no_show"],
+  completed: ["confirmed", "no_show"],
+  no_show: ["completed", "confirmed"],
+  cancelled: ["confirmed"],
+  rescheduled: [],
+};
+
+export function isAllowedStatusTransition(from: string, to: string): boolean {
+  if (from === to) return true; // no-op writes are fine
+  return (DASHBOARD_STATUS_TRANSITIONS[from] ?? []).includes(to);
+}
+
+// SCRUM-431 (finding #51): shared booking horizon. 366 days, not 365 — the
+// cap is anti-abuse, not business policy, and a strict 365×24h rejects
+// "exactly one year from today" across leap years or later times of day,
+// contradicting the user-facing message.
+export const MAX_BOOKING_HORIZON_MS = 366 * 24 * 60 * 60 * 1000;
