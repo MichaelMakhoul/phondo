@@ -615,7 +615,11 @@ async function loadScheduleSnapshot(organizationId, orgConfig, serviceTypes) {
   const [appointmentsResult, blockedResult, practitionersResult] = await Promise.all([
     supabase
       .from("appointments")
-      .select("id, start_time, end_time, duration_minutes, status, practitioner_id, attendee_name, service_type_id, confirmation_code")
+      // SCRUM-437 data minimization: attendee_name deliberately NOT selected —
+      // no snapshot consumer reads it (slot math here, buildLiveScheduleSection,
+      // schedule-cache deltas all use times/practitioner_id only), so PII never
+      // needs to sit in the in-process cache.
+      .select("id, start_time, end_time, duration_minutes, status, practitioner_id, service_type_id, confirmation_code")
       .eq("organization_id", organizationId)
       .in("status", ["confirmed", "pending"])
       .gte("start_time", rangeStartUtc)
