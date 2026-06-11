@@ -7,14 +7,12 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
-import { useToast } from "@/components/ui/use-toast";
 import { ArrowLeft, CheckCircle2, Phone } from "lucide-react";
 
 export default function ForgotPasswordPage() {
   const [email, setEmail] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isSubmitted, setIsSubmitted] = useState(false);
-  const { toast } = useToast();
   const supabase = createClient();
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -25,14 +23,14 @@ export default function ForgotPasswordPage() {
       redirectTo: `${window.location.origin}/auth/callback?redirect=/settings`,
     });
 
+    // SCRUM-412: never reveal whether an account exists for this email — show the
+    // same neutral "check your email" screen regardless of the result. (Supabase
+    // already avoids enumerating; surfacing the error could leak. Email-send
+    // throttling is enforced by Supabase Auth via dashboard config.)
     if (error) {
-      toast({
-        variant: "destructive",
-        title: "Error",
-        description: error.message,
-      });
-      setIsLoading(false);
-      return;
+      // Log generically (not error.message) so nothing existence-differentiating
+      // ever lands in the requester's own console.
+      console.warn("[forgot-password] reset request returned an error (suppressed for anti-enumeration)");
     }
 
     setIsSubmitted(true);

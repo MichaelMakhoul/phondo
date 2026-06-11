@@ -4,6 +4,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { PLANS, getDisplayPlans } from "@/lib/stripe/client";
 import type { PlanType } from "@/lib/stripe/client";
 import { isValidUUID } from "@/lib/security/validation";
+import { getClientIp, rateLimitDistributed } from "@/lib/security/rate-limiter";
 
 // Restrict to SMB plans only — prevents self-service creation of agency-tier trials
 const ALLOWED_TRIAL_PLANS = new Set(getDisplayPlans().map((p) => p.id));
@@ -19,6 +20,28 @@ export async function POST(request: Request) {
 
     if (!user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    // SCRUM-412: gate trial creation on a verified email (anti-abuse — stops
+    // throwaway / plus-addressed emails from claiming no-card trials at scale).
+    if (!user.email_confirmed_at) {
+      return NextResponse.json(
+        { error: "Please verify your email before starting a trial." },
+        { status: 403 }
+      );
+    }
+
+    // SCRUM-412: per-IP rate limit (fail-open) as defense-in-depth against
+    // scripted trial creation. The per-user owned-org cap (migration 00148) is
+    // the primary guard; this just bounds rapid retries from one source.
+    const admin = createAdminClient();
+    const ip = getClientIp(request.headers);
+    const rl = await rateLimitDistributed(admin, ip, "subscriptions-trial", "auth");
+    if (!rl.allowed) {
+      return NextResponse.json(
+        { error: "Too many requests. Please try again shortly." },
+        { status: 429 }
+      );
     }
 
     let body: { organizationId?: string; planType?: string };
@@ -70,9 +93,7 @@ export async function POST(request: Request) {
       );
     }
 
-    // Use admin client (service_role) to bypass RLS — only server can write subscriptions
-    const admin = createAdminClient();
-
+    // `admin` (service_role) created above — bypasses RLS for the subscriptions write.
     // Check for existing subscription (idempotent — double-clicks return success)
     const { data: existing, error: existingError } = await (admin as any)
       .from("subscriptions")
