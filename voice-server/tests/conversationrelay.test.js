@@ -9,7 +9,7 @@ process.env.SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY ||
 process.env.OPENAI_API_KEY = process.env.OPENAI_API_KEY || "test";
 process.env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "test";
 
-const { _test } = require("../services/conversationrelay");
+const { _test, handleConversationRelayConnection } = require("../services/conversationrelay");
 const {
   crTextFrame, crEndFrame, buildCrTools, parseSetup,
   buildConversationRelayTwiml, buildCriticalRulesSuffix, runGuardedToolCall,
@@ -223,5 +223,90 @@ describe("runGuardedToolCall (SCRUM-378)", () => {
       { executeToolCall: async () => ({ __endCall: true, message: "Ending the call. Goodbye." }), now: () => 1 });
     assert.equal(out.endCall, true);
     assert.equal(out.held, false);
+  });
+});
+
+// ── SCRUM-443: disclosure marked played only when actually SENT ──────────────
+
+/** Minimal ws double — captures frames; open=false simulates a dead socket. */
+function fakeWs({ open = true } = {}) {
+  const handlers = {};
+  return {
+    readyState: open ? 1 : 3, // WebSocket.OPEN : WebSocket.CLOSED
+    sent: [],
+    send(data) { this.sent.push(JSON.parse(data)); },
+    close() {},
+    on(event, fn) { handlers[event] = fn; },
+    _handlers: handlers,
+  };
+}
+
+/** Injected deps for a disclosure-required call; consumeStreamToken stays null
+ *  (the unit-test fallback path) so setup.to/from are used directly. */
+function disclosureDeps(overrides = {}) {
+  return {
+    loadCallContext: async () => ({
+      organizationId: "org1", assistantId: "a1", phoneNumberId: "p1",
+      transferRules: [], userPhoneNumber: null, forwardingStatus: null, sourceType: null,
+      calendarEnabled: false, serviceTypes: [], telephonyProvider: "twilio",
+      isAfterHours: false, afterHoursConfig: null, knowledgeBase: [],
+      assistant: { language: "en", promptConfig: {}, settings: {} },
+      organization: { name: "Acme Dental", country: "US", businessState: "CA", recordingConsentMode: "auto", recording_disclosure_text: null, timezone: "UTC" },
+    }),
+    buildSystemPrompt: () => "SYSTEM PROMPT",
+    getGreeting: () => "Thanks for calling Acme Dental!",
+    createCallRecord: async () => "rec-1",
+    requiresRecordingDisclosureHybrid: () => ({ required: true }),
+    getRecordingDisclosureText: () => "This call may be recorded for quality purposes.",
+    analyzeCallTranscript: async () => null,
+    notifyCallCompleted: async () => {},
+    internalApiUrl: null,
+    internalApiSecret: null,
+    ...overrides,
+  };
+}
+
+/** Runs setup → hangup against the real handler; resolves with the
+ *  completeCallRecord fields the pipeline persisted. */
+async function runDisclosureCall({ open, deps: depOverrides = {} }) {
+  const ws = fakeWs({ open });
+  let persisted = null;
+  let resolvePersisted;
+  const persistedP = new Promise((r) => { resolvePersisted = r; });
+  const deps = disclosureDeps({
+    completeCallRecord: async (id, fields) => { persisted = { id, fields }; resolvePersisted(); },
+    ...depOverrides,
+  });
+  handleConversationRelayConnection(/** @type {any} */ (ws), {}, deps);
+  await ws._handlers.message(JSON.stringify({ type: "setup", callSid: "CA443", from: "+15550001", to: "+15550002" }));
+  ws._handlers.close(); // caller hangs up → finalize
+  await persistedP;
+  return { ws, persisted };
+}
+
+describe("CR recording-disclosure timing (SCRUM-443)", () => {
+  it("disclosure required + speak succeeds → played=true, failed=false", async () => {
+    const { ws, persisted } = await runDisclosureCall({ open: true });
+    const textFrames = ws.sent.filter((f) => f.type === "text");
+    assert.equal(textFrames.length, 1);
+    assert.match(textFrames[0].token, /^This call may be recorded/); // disclosure leads the first message
+    assert.equal(persisted.fields.recordingDisclosurePlayed, true);
+    assert.equal(persisted.fields.recordingDisclosureFailed, false);
+  });
+
+  it("disclosure required but the ws send never happens → played=false, cleanup marks failed", async () => {
+    const { ws, persisted } = await runDisclosureCall({ open: false });
+    assert.equal(ws.sent.length, 0); // nothing reached Twilio
+    assert.equal(persisted.fields.recordingDisclosurePlayed, false);
+    assert.equal(persisted.fields.recordingDisclosureFailed, true);
+  });
+
+  it("disclosure NOT required → neither flag is set (no false 'failed')", async () => {
+    const { persisted } = await runDisclosureCall({
+      open: true,
+      deps: { requiresRecordingDisclosureHybrid: () => ({ required: false }) },
+    });
+    assert.equal(persisted.fields.recordingDisclosurePlayed, false);
+    assert.equal(persisted.fields.recordingDisclosureFailed, false);
   });
 });

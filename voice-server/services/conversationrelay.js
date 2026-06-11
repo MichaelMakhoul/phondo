@@ -334,11 +334,14 @@ function handleConversationRelayConnection(ws, req, injected = {}) {
   let finished = false;
   let currentAbort = null;
 
+  /** @returns {boolean} true iff the frame was actually written to the socket */
   function send(obj) {
-    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+    if (ws.readyState !== WebSocket.OPEN) return false;
+    ws.send(JSON.stringify(obj));
+    return true;
   }
   function speak(token, last) {
-    send(crTextFrame(token, last));
+    return send(crTextFrame(token, last));
   }
 
   async function finalize(endedReason) {
@@ -373,6 +376,16 @@ function handleConversationRelayConnection(ws, req, injected = {}) {
       reason = phantomReason;
     }
 
+    // SCRUM-443 (mirrors SCRUM-424 cleanup in server.js): a disclosure that
+    // was REQUIRED (woven into the first message) but never written to the
+    // websocket must be recorded as failed — played=false + failed=true means
+    // "required but not delivered", which is what a two-party-consent audit
+    // needs to find (vs. silently indistinguishable from "never required").
+    if (s.pendingDisclosureInFirstMessage && !s.recordingDisclosurePlayed) {
+      console.warn(`[CR][Cleanup] Required recording disclosure never reached the caller — marking failed. callSid=${s.callSid}`);
+      s.recordingDisclosureFailed = true;
+    }
+
     let analysis = null;
     if (transcript && durationSeconds > 5) {
       try {
@@ -397,6 +410,7 @@ function handleConversationRelayConnection(ws, req, injected = {}) {
           collectedData: analysis?.collectedData || null,
           successEvaluation: analysis?.successEvaluation || null,
           recordingDisclosurePlayed: s.recordingDisclosurePlayed || false,
+          recordingDisclosureFailed: s.recordingDisclosureFailed || false,
           sentiment: analysis?.sentiment || null,
           cleanedTranscript: analysis?.cleanedTranscript ?? null,
         });
@@ -543,7 +557,11 @@ function handleConversationRelayConnection(ws, req, injected = {}) {
           context.organization.name,
         );
         firstMessage = `${disclosure} ${firstMessage}`;
-        session.recordingDisclosurePlayed = true;
+        // SCRUM-443 (mirrors the SCRUM-424 Gemini fix): do NOT mark the
+        // disclosure played yet — at this point it is only woven into the
+        // text. The flag flips below, only after the first-message frame is
+        // actually written to the ConversationRelay websocket.
+        session.pendingDisclosureInFirstMessage = true;
       }
     } catch (err) {
       console.warn("[CR] recording-disclosure check failed (non-fatal):", err.message);
@@ -552,7 +570,16 @@ function handleConversationRelayConnection(ws, req, injected = {}) {
       firstMessage = "Hello, thanks for calling. How can I help you today?";
       console.warn(`[CR] Empty greeting from getGreeting — using fallback. callSid=${session.callSid}`);
     }
-    speak(firstMessage, true);
+    const firstMessageSent = speak(firstMessage, true);
+    // SCRUM-443: the disclosure is the mandated start of the first message —
+    // the text frame reaching Twilio's ConversationRelay websocket is the
+    // earliest faithful "delivered to the caller" signal this pipeline has
+    // (Twilio does TTS server-side; there is no audio callback to hook, so
+    // this mirrors the Gemini path's first-audio-chunk signal in server.js).
+    if (firstMessageSent && session.pendingDisclosureInFirstMessage) {
+      session.recordingDisclosurePlayed = true;
+      session.pendingDisclosureInFirstMessage = false;
+    }
     session.addMessage("assistant", firstMessage);
     logTranscript("[CR] greeting", firstMessage);
   }
