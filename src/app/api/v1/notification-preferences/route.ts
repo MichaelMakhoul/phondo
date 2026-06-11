@@ -25,7 +25,14 @@ const ALLOWED_FIELDS = [
   "sms_appointment_confirmation",
 ] as const;
 
-const SMS_CALLER_FIELDS = [
+// ALL SMS toggles are Professional+ (smsNotifications plan flag) — both the
+// caller-facing ones and the owner-alert ones. Previously only the caller
+// fields were gated, letting a Starter org enable owner-alert SMS
+// (SCRUM-423, audit finding #13).
+const SMS_GATED_FIELDS = [
+  "sms_on_missed_call",
+  "sms_on_voicemail",
+  "sms_on_callback_scheduled",
   "sms_textback_on_missed_call",
   "sms_appointment_confirmation",
 ] as const;
@@ -119,12 +126,12 @@ export async function PUT(request: Request) {
       body.sms_phone_number = result.value;
     }
 
-    // Gate SMS caller fields behind plan access.
+    // Gate ALL SMS toggles behind plan access.
     // Capture downgrade flag *before* mutating — then silently set to false.
     const smsAllowed = await hasFeatureAccess(membership.organization_id, "smsNotifications");
     let smsFieldsDowngraded = false;
     if (!smsAllowed) {
-      for (const field of SMS_CALLER_FIELDS) {
+      for (const field of SMS_GATED_FIELDS) {
         if (body[field]) {
           smsFieldsDowngraded = true;
           body[field] = false;

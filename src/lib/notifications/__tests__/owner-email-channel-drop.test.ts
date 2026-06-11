@@ -9,6 +9,11 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 //   email dropped but another channel ok  => resolve (degrade per-channel)
 
 vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: vi.fn() }));
+// These tests assume a fully ENTITLED org — send-time plan gating (SCRUM-423)
+// is exercised separately in plan-gating.test.ts.
+vi.mock("@/lib/stripe/billing-service", () => ({
+  hasFeatureAccess: vi.fn(async () => true),
+}));
 vi.mock("@sentry/nextjs", () => ({
   withScope: vi.fn((fn: (scope: unknown) => void) =>
     fn({ setLevel: vi.fn(), setTag: vi.fn(), setExtras: vi.fn() })
