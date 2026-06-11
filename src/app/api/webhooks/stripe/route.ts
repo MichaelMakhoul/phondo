@@ -64,8 +64,14 @@ export async function POST(request: Request) {
           });
           const subscription = await stripeClient.subscriptions.retrieve(subscriptionId);
 
-          // Use billing service to handle subscription creation
-          await handleSubscriptionCreated(subscription);
+          // Pass the Checkout Session metadata as a fallback for any session
+          // created before subscription_data.metadata shipped (older sessions
+          // carry the org only at the session level). `planType` is the legacy
+          // key the checkout route used before standardising on `plan`.
+          await handleSubscriptionCreated(subscription, {
+            organizationId: session.metadata?.organizationId,
+            plan: session.metadata?.plan ?? session.metadata?.planType,
+          });
         }
         break;
       }
