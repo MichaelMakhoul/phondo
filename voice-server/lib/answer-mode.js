@@ -41,6 +41,63 @@ function captureFailOpen(err, reason, calledNumber, level = "warning", extras = 
 }
 
 /**
+ * SCRUM-408: whether the subscription gate is active. Read at CALL time (not
+ * module load) so the Fly secret can be flipped without a restart and tests can
+ * toggle it. Default OFF — deploying this code is a no-op until it is "true".
+ */
+function subscriptionGateEnabled() {
+  return process.env.ENFORCE_SUBSCRIPTION_GATE === "true";
+}
+
+/**
+ * SCRUM-408: whether an org's subscription permits AI call answering.
+ *
+ * Mirrors the intent of canMakeCall (src/lib/stripe/billing-service.ts) but is
+ * intentionally NARROWER on the live inbound-call path: it blocks only an
+ * expired trial and clearly non-recoverable states (canceled /
+ * incomplete_expired / unpaid), and ALLOWS active, in-progress trialing,
+ * past_due, incomplete and missing/unknown. Rationale: never cut off a customer
+ * in Stripe dunning or an org whose row we could not read; the audited exploit
+ * (post-trial freeloading) is the expired trial, which IS blocked.
+ *
+ * FAIL-OPEN: null/undefined subscription → callable. Dormant unless the gate
+ * flag is on.
+ *
+ * @param {{ status?: string, trial_end?: string | null } | null} [subscription]
+ * @returns {boolean}
+ */
+function isSubscriptionCallable(subscription) {
+  if (!subscriptionGateEnabled()) return true; // dormant unless explicitly enabled
+  if (!subscription) return true; // unknown / no row → allow (fail-open)
+  const status = subscription.status;
+  if (status === "trialing") {
+    if (subscription.trial_end && Date.now() > new Date(subscription.trial_end).getTime()) {
+      return false; // expired trial — the audited exploit
+    }
+    return true;
+  }
+  if (status === "canceled" || status === "incomplete_expired" || status === "unpaid") {
+    return false;
+  }
+  // active, past_due, incomplete, paused, or any unrecognised status → allow
+  return true;
+}
+
+/**
+ * Extract the single subscription row embedded under `organizations` by
+ * lookupPhoneNumber. PostgREST may return it as an object or a one-element
+ * array depending on relationship detection; tolerate both and undefined.
+ *
+ * @param {{ organizations?: { subscriptions?: any } } | null} [phoneRecord]
+ * @returns {{ status?: string, trial_end?: string | null } | null}
+ */
+function getEmbeddedSubscription(phoneRecord) {
+  const subs = phoneRecord && phoneRecord.organizations && phoneRecord.organizations.subscriptions;
+  if (!subs) return null;
+  return Array.isArray(subs) ? (subs[0] || null) : subs;
+}
+
+/**
  * Single phone_numbers lookup used by /twiml to avoid redundant DB queries.
  * Returns the combined data needed by isAiEnabled, getAnswerMode, getPhoneNumberContext,
  * and loadCallContext — or null if not found.
@@ -52,9 +109,14 @@ function captureFailOpen(err, reason, calledNumber, level = "warning", extras = 
 async function lookupPhoneNumber(calledNumber, opts = {}) {
   try {
     const supabase = getSupabase();
+    // Only embed the subscription when the gate is on, so the hot-path query is
+    // byte-identical to before when ENFORCE_SUBSCRIPTION_GATE is unset.
+    const orgEmbed = subscriptionGateEnabled()
+      ? "organizations(name, country, recording_consent_mode, business_state, recording_disclosure_text, subscriptions(status, trial_end))"
+      : "organizations(name, country, recording_consent_mode, business_state, recording_disclosure_text)";
     const { data: phone, error } = await supabase
       .from("phone_numbers")
-      .select("id, organization_id, assistant_id, ai_enabled, fallback_forward_number, user_phone_number, forwarding_status, source_type, organizations(name, country, recording_consent_mode, business_state, recording_disclosure_text)")
+      .select(`id, organization_id, assistant_id, ai_enabled, fallback_forward_number, user_phone_number, forwarding_status, source_type, ${orgEmbed}`)
       .eq("phone_number", calledNumber)
       .eq("is_active", true)
       .single();
@@ -93,10 +155,32 @@ async function isAiEnabled(calledNumber, prefetchedPhone, opts = {}) {
     // If pre-fetched data provided, use it directly
     if (prefetchedPhone !== undefined) {
       if (!prefetchedPhone) return true; // fail-open: no record found
-      return prefetchedPhone.ai_enabled !== false;
+      if (prefetchedPhone.ai_enabled === false) return false;
+      // SCRUM-408: also gate on subscription status. Dormant unless
+      // ENFORCE_SUBSCRIPTION_GATE=true; fail-open for missing/unknown/in-grace
+      // subs. A blocked org returns false here and falls through the existing
+      // kill-switch path to forwarding/voicemail (never a dropped call).
+      const sub = getEmbeddedSubscription(prefetchedPhone);
+      if (!isSubscriptionCallable(sub)) {
+        // Distinct, greppable marker so a billing-gate diversion is
+        // distinguishable from an owner-paused (ai_enabled=false) call in Loki
+        // during and after the flag rollout. Includes the status so a wrong
+        // block (bad Stripe mapping) is diagnosable.
+        console.log("[AnswerMode] subscription-gate block — routing call to fallback/voicemail:", {
+          organizationId: prefetchedPhone.organization_id,
+          subscriptionStatus: sub && sub.status ? sub.status : null,
+        });
+        return false;
+      }
+      return true;
     }
 
-    // Original standalone behavior (for backwards compat)
+    // Original standalone behavior (for backwards compat).
+    // NOTE (SCRUM-408): the subscription gate is applied only in the prefetched
+    // path above — this standalone query intentionally does not fetch the
+    // subscription embed. The sole production caller (kill-switch) always
+    // prefetches, so this branch is effectively legacy; a future direct caller
+    // would bypass the billing gate (acceptable: fail-open) and should prefetch.
     const supabase = getSupabase();
     const { data, error } = await supabase
       .from("phone_numbers")
@@ -231,4 +315,13 @@ async function getPhoneNumberContext(calledNumber, prefetchedPhone, opts = {}) {
   };
 }
 
-module.exports = { lookupPhoneNumber, isAiEnabled, getAnswerMode, getPhoneNumberContext };
+module.exports = {
+  lookupPhoneNumber,
+  isAiEnabled,
+  getAnswerMode,
+  getPhoneNumberContext,
+  // SCRUM-408 — exported for unit tests / reuse.
+  isSubscriptionCallable,
+  getEmbeddedSubscription,
+  subscriptionGateEnabled,
+};
