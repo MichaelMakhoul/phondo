@@ -31,6 +31,13 @@ export interface CallMetadata {
   organizationId: string;
   countryCode?: string;
   timestamp: Date;
+  /**
+   * IANA timezone of the organization (organizations.timezone). The timing
+   * heuristic scores "unusual hours" in THIS zone; without it the signal is
+   * dropped entirely — scoring in server-local/UTC time penalized every
+   * legitimate AU business-hours call (SCRUM-418).
+   */
+  timezone?: string;
   duration?: number;
   transcript?: string;
 }
@@ -218,17 +225,65 @@ function analyzeTranscript(transcript: string): {
 }
 
 /**
- * Analyze call timing for suspicious patterns
+ * Hour-of-day (0-23) of an instant in a given IANA timezone.
+ * Returns a null hour (plus the underlying error message) for an
+ * invalid/unknown timezone identifier.
  */
-function analyzeCallTiming(timestamp: Date): {
+function hourInTimezone(
+  timestamp: Date,
+  timezone: string
+): { hour: number | null; error?: string } {
+  try {
+    const hourStr = new Intl.DateTimeFormat("en-US", {
+      timeZone: timezone,
+      hour: "2-digit",
+      hourCycle: "h23", // not hour12:false — some ICU builds emit "24" at midnight
+    }).format(timestamp);
+    const hour = parseInt(hourStr, 10);
+    // % 24 defends against the ICU "24:00" midnight quirk slipping through.
+    return { hour: Number.isNaN(hour) ? null : hour % 24 };
+  } catch (e) {
+    // Realistically a RangeError for a bad IANA identifier — but surface the
+    // actual message so an unexpected Intl failure isn't mislabeled.
+    return { hour: null, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/**
+ * Analyze call timing for suspicious patterns.
+ *
+ * "Unusual hours" only makes sense in the ORG's local time — on Vercel the
+ * server runs in UTC, so scoring server-local hours flagged 9am Sydney as a
+ * late-night call (SCRUM-418). Without a usable timezone, the timing signal
+ * is dropped (score 0) rather than scored in the wrong zone.
+ *
+ * Exported for unit testing (see __tests__/spam-timing-timezone.test.ts).
+ */
+export function analyzeCallTiming(
+  timestamp: Date,
+  timezone?: string,
+  organizationId?: string
+): {
   score: number;
   reasons: string[];
 } {
+  if (!timezone) {
+    return { score: 0, reasons: [] };
+  }
+
+  const { hour, error } = hourInTimezone(timestamp, timezone);
+  if (hour === null) {
+    // Log shape matches the daily-summary cron's invalid-timezone warning so
+    // one grep finds both, and carries the org id so the bad row is findable.
+    console.warn(
+      `[SpamDetector] Invalid timezone "${timezone}" for org ${organizationId ?? "unknown"} — dropping timing signal:`,
+      { error }
+    );
+    return { score: 0, reasons: [] };
+  }
+
   let score = 0;
   const reasons: string[] = [];
-
-  const hour = timestamp.getHours();
-  const dayOfWeek = timestamp.getDay(); // 0 = Sunday
 
   // Very early or late calls are suspicious for businesses
   if (hour >= 0 && hour < 7) {
@@ -240,9 +295,6 @@ function analyzeCallTiming(timestamp: Date): {
   }
 
   // Weekend calls — not penalized, many businesses operate on weekends
-  // if (dayOfWeek === 0 || dayOfWeek === 6) {
-  //   score += 0;
-  // }
 
   return { score, reasons };
 }
@@ -338,8 +390,8 @@ export async function analyzeCall(metadata: CallMetadata): Promise<SpamAnalysisR
     allReasons.push(...transcriptAnalysis.reasons);
   }
 
-  // Analyze call timing
-  const timingAnalysis = analyzeCallTiming(metadata.timestamp);
+  // Analyze call timing (in the org's timezone; dropped if unknown)
+  const timingAnalysis = analyzeCallTiming(metadata.timestamp, metadata.timezone, metadata.organizationId);
   totalScore += timingAnalysis.score;
   allReasons.push(...timingAnalysis.reasons);
 
