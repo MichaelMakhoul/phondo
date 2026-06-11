@@ -1437,6 +1437,17 @@ wss.on("connection", (twilioWs) => {
       }
     }
 
+    // SCRUM-424: a disclosure that was REQUIRED (woven into the first
+    // message) but whose audio never reached the caller must be recorded as
+    // failed — not silently indistinguishable from "never required". Same
+    // semantics as the classic path's pre-synthesis failure: played=false +
+    // failed=true means "required but not delivered", which is what a
+    // two-party-consent audit needs to find.
+    if (s.pendingDisclosureInFirstMessage && !s.recordingDisclosurePlayed) {
+      console.warn(`[Cleanup] Required recording disclosure never reached the caller — marking failed. callSid=${s.callSid}`);
+      s.recordingDisclosureFailed = true;
+    }
+
     // Complete call record if we have one
     if (s.callRecordId) {
       try {
@@ -1942,7 +1953,13 @@ wss.on("connection", (twilioWs) => {
               );
               // Weave disclosure naturally into the greeting
               firstMessage = `${disclosureText} ${greeting}`;
-              session.recordingDisclosurePlayed = true;
+              // SCRUM-424 (finding #11): do NOT mark the disclosure played
+              // yet — at this point it is only woven into the prompt. The
+              // flag is set in onAudio when the first utterance's audio
+              // actually reaches Twilio (the disclosure is the mandated
+              // start of that utterance). Marking here recorded "disclosed"
+              // even when Gemini never spoke (setup stall, instant hangup).
+              session.pendingDisclosureInFirstMessage = true;
             }
             // Don't add greeting to transcript manually — Gemini's outputTranscription
             // captures it when it actually speaks. Adding it here causes duplicates.
@@ -2058,6 +2075,16 @@ wss.on("connection", (twilioWs) => {
                       streamSid: session.streamSid,
                       media: { payload: twilioBase64 },
                     }));
+                    // SCRUM-424 (finding #11): the disclosure is the mandated
+                    // start of Gemini's first utterance — the first audio
+                    // chunk actually sent to Twilio is the earliest faithful
+                    // "spoken to the caller" signal. (A caller hanging up
+                    // mid-sentence is unavoidable residual; the prior
+                    // behavior marked it played before Gemini even connected.)
+                    if (session?.pendingDisclosureInFirstMessage && !session.recordingDisclosurePlayed) {
+                      session.recordingDisclosurePlayed = true;
+                      session.pendingDisclosureInFirstMessage = false;
+                    }
                   }
                 },
                 onToolCall: async (toolCall) => {
@@ -2444,6 +2471,10 @@ wss.on("connection", (twilioWs) => {
                   }
                 },
                 onError: (err) => {
+                  // A failure was already recorded (e.g. the setup watchdog) —
+                  // a close is in flight; don't overwrite endedReason or race
+                  // the apology with a faster close (SCRUM-424 review).
+                  if (session?.callFailed) return;
                   console.error("[GeminiLive] Session error:", err.message);
                   if (session) {
                     session.callFailed = true;
@@ -2453,6 +2484,37 @@ wss.on("connection", (twilioWs) => {
                   if (twilioWs.readyState === WebSocket.OPEN) {
                     setTimeout(() => twilioWs.close(1000, "Gemini session error"), 1000);
                   }
+                },
+                // SCRUM-424 (finding #10): Gemini setup never completed — the
+                // caller has heard NOTHING yet. Speak a brief apology via
+                // Deepgram TTS (independent of Gemini) so they aren't dropped
+                // from dead silence, then end the call. Every step is
+                // fail-safe: if TTS also fails we still close, which is
+                // exactly what the plain onError path would have done.
+                onSetupTimeout: (err) => {
+                  // Null session = cleanup already started (caller hung up) —
+                  // nobody left to apologize to; cleanup owns the teardown.
+                  if (!session) return;
+                  console.error(`[GeminiLive] Setup timeout — apologizing and ending call. callSid=${session.callSid}:`, err.message);
+                  session.callFailed = true;
+                  session.endedReason = "gemini-setup-timeout";
+                  if (twilioWs.readyState !== WebSocket.OPEN) return;
+                  // Close only after the apology has had time to PLAY —
+                  // sendTTS resolves once chunks are pushed, but Twilio plays
+                  // them in real time; an early close discards its buffer.
+                  let closeDelayMs = 2000; // fallback when TTS fails
+                  sendTTS(session, twilioWs, getErrorMsg(session.language, "technicalDifficulty"))
+                    .then((durationMs) => {
+                      closeDelayMs = Math.min((durationMs || 0) + 500, 8000);
+                    })
+                    .catch((ttsErr) => {
+                      console.error("[GeminiLive] Setup-timeout apology TTS failed:", ttsErr.message || ttsErr);
+                    })
+                    .finally(() => {
+                      setTimeout(() => {
+                        if (twilioWs.readyState === WebSocket.OPEN) twilioWs.close(1000, "Gemini setup timeout");
+                      }, closeDelayMs);
+                    });
                 },
                 onClose: (code, reason) => {
                   console.log(`[GeminiLive] Session closed (code=${code}, reason="${reason}")`);
@@ -2922,7 +2984,7 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
           holdStopped = true;
           const msgs = FILLER_MESSAGES[session.language] || FILLER_MESSAGES.en;
           console.log(`[Filler] "${msgs.waiting}"`);
-          ttsChain = ttsChain.then(() => sendTTS(session, twilioWs, msgs.waiting)).catch((err) => {
+          ttsChain = ttsChain.then(async () => { await sendTTS(session, twilioWs, msgs.waiting); }).catch((err) => {
             console.error("[Filler] TTS error:", err.message);
           });
         }
@@ -2939,7 +3001,7 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
             holdStopped = true;
           }
           // Chain TTS calls so they play in order
-          ttsChain = ttsChain.then(() => sendTTS(session, twilioWs, sentence)).catch((err) => {
+          ttsChain = ttsChain.then(async () => { await sendTTS(session, twilioWs, sentence); }).catch((err) => {
             session.isSpeaking = false;
             console.error("[StreamTTS] Error sending sentence:", err.message);
           });
@@ -2979,7 +3041,8 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
           const toolNames = toolCalls.map(tc => tc.function.name);
           const toolFiller = getToolFiller(session.language || "en", toolNames);
           console.log(`[Filler] "${toolFiller}" (tools: ${toolNames.join(", ")})`);
-          ttsChain = ttsChain.then(() => sendTTS(session, twilioWs, toolFiller)).catch((err) => {
+          // (async wrapper discards sendTTS's duration return — ttsChain is Promise<void>)
+          ttsChain = ttsChain.then(async () => { await sendTTS(session, twilioWs, toolFiller); }).catch((err) => {
             console.error("[Filler] TTS error:", err.message);
           });
         }
@@ -3222,6 +3285,13 @@ async function sendTTS(session, twilioWs, text) {
       })
     );
   }
+
+  // Playback duration in ms (8kHz mulaw = 8 bytes/ms). Chunks are pushed
+  // into the WS immediately, but Twilio plays them in real time — callers
+  // that close the stream early must wait this long or the tail is cut off
+  // (SCRUM-424: the setup-timeout apology was truncated mid-sentence by a
+  // fixed 2s close).
+  return audioBuffer.length / 8;
 }
 
 /**
