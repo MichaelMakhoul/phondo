@@ -61,6 +61,10 @@ function convertSchemaToGemini(schema) {
  * @param {function} callbacks.onInterrupted - () => void — user barged in
  * @param {function} callbacks.onTurnComplete - () => void — AI finished speaking
  * @param {function} callbacks.onError - (err: Error) => void
+ * @param {function} [callbacks.onSetupTimeout] - (err: Error) => void — setup
+ *   handshake never completed within the deadline (caller stranded in
+ *   silence). Optional: when absent, the timeout is routed to onError so
+ *   existing call sites are covered without changes (SCRUM-424).
  * @param {function} callbacks.onClose - (code: number, reason: string) => void — reason is "end_call" when closed via end_call tool, empty otherwise
  * @returns {{
  *   sendAudio: (twilioBase64: string) => void,
@@ -71,6 +75,48 @@ function convertSchemaToGemini(schema) {
  * }} Session handle. Note `ws` is intentionally NOT exposed (its URL
  *   carries the API key) — use `readyState` instead.
  */
+/**
+ * Default deadline for the Gemini setup handshake (WS connect + setup →
+ * setupComplete). Normal setup completes in well under 2s; 10s means
+ * something is genuinely stuck, not slow.
+ */
+const DEFAULT_SETUP_TIMEOUT_MS = 10_000;
+
+/**
+ * Arm a one-shot watchdog for the setup handshake (SCRUM-424, finding #10).
+ * Without it, a stalled Gemini connect/setup strands the caller in silence
+ * indefinitely — Twilio just keeps streaming into a session that never
+ * answers. Pure helper so the timing logic is unit-testable.
+ *
+ * @param {object} opts
+ * @param {number} opts.timeoutMs
+ * @param {() => boolean} opts.isSetupComplete
+ * @param {() => void} opts.onTimeout - invoked once iff setup never completed
+ * @returns {{ clear: () => void }}
+ */
+function armSetupWatchdog({ timeoutMs, isSetupComplete, onTimeout }) {
+  const timer = setTimeout(() => {
+    if (!isSetupComplete()) onTimeout();
+  }, timeoutMs);
+  // Never keep the process alive just for a watchdog.
+  if (typeof timer.unref === "function") timer.unref();
+  return { clear: () => clearTimeout(timer) };
+}
+
+/**
+ * Resolve the setup deadline from config/env with a sanity floor. A negative
+ * or sub-second override (env typo, seconds-instead-of-ms) would otherwise
+ * arm a watchdog that fires before any setup could complete — turning ONE
+ * misconfigured Fly secret into a 100% inbound-call outage (SCRUM-424
+ * review). Out-of-range values fall back to the default, loudly.
+ */
+function resolveSetupTimeoutMs(configValue, envValue) {
+  const raw = Number(configValue) || Number(envValue) || DEFAULT_SETUP_TIMEOUT_MS;
+  if (raw >= 1000) return raw;
+  console.warn(`[GeminiLive] Ignoring out-of-range setup timeout ${raw}ms — using default ${DEFAULT_SETUP_TIMEOUT_MS}ms`);
+  return DEFAULT_SETUP_TIMEOUT_MS;
+}
+
 function createGeminiSession(config, callbacks) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
@@ -84,6 +130,42 @@ function createGeminiSession(config, callbacks) {
   const sessionStartTime = Date.now();
 
   let setupComplete = false;
+
+  // Setup watchdog: armed from creation (covers a stalled TCP/WS connect as
+  // well as a stalled setup exchange). Cleared on setupComplete / error /
+  // close. On fire: surface via onSetupTimeout when provided, else onError —
+  // every existing call site already implements onError, so this is
+  // backward-compatible — then close the socket. The server-side handler is
+  // responsible for ending the Twilio call (it already does for onError).
+  //
+  // watchdogFired makes the timeout ONE-SHOT end-to-end: closing a still-
+  // CONNECTING socket makes ws emit a synthetic 'error' ("closed before the
+  // connection was established") on the next tick, which would otherwise
+  // re-enter callbacks.onError — overwriting the recorded endedReason and
+  // racing the in-flight apology (SCRUM-424 review P1). After the watchdog
+  // fires, the self-inflicted error/close events are swallowed.
+  let watchdogFired = false;
+  const setupTimeoutMs = resolveSetupTimeoutMs(config.setupTimeoutMs, process.env.GEMINI_SETUP_TIMEOUT_MS);
+  const setupWatchdog = armSetupWatchdog({
+    timeoutMs: setupTimeoutMs,
+    isSetupComplete: () => setupComplete,
+    onTimeout: () => {
+      watchdogFired = true;
+      const err = new Error(`Gemini Live setup timed out after ${setupTimeoutMs}ms (caller would be stranded in silence)`);
+      console.error(`[GeminiLive] ${err.message}`);
+      Sentry.captureException(err);
+      try {
+        if (callbacks.onSetupTimeout) callbacks.onSetupTimeout(err);
+        else callbacks.onError?.(err);
+      } finally {
+        try {
+          ws.close(1000, "setup-timeout");
+        } catch {
+          /* socket may already be dead — nothing else to do */
+        }
+      }
+    },
+  });
   let sessionHandle = null;
   let transcriptIn = "";
   let transcriptOut = "";
@@ -161,6 +243,7 @@ function createGeminiSession(config, callbacks) {
     // Setup complete
     if (msg.setupComplete) {
       setupComplete = true;
+      setupWatchdog.clear();
       console.log(`[GeminiLive] Session ready in ${Date.now() - sessionStartTime}ms (${preSetupBuffer.length} buffered chunks)`);
 
       // Trigger Gemini to speak the greeting immediately.
@@ -352,12 +435,25 @@ function createGeminiSession(config, callbacks) {
   });
 
   ws.on("error", (err) => {
+    setupWatchdog.clear(); // error path takes over — don't double-fire
+    if (watchdogFired) {
+      // Self-inflicted: our own close of a CONNECTING socket emits a
+      // synthetic error. The timeout was already surfaced — swallow it.
+      console.log("[GeminiLive] Ignoring post-watchdog socket error:", err.message);
+      return;
+    }
     console.error("[GeminiLive] WebSocket error:", err.message);
     Sentry.captureException(err);
     callbacks.onError?.(err);
   });
 
   ws.on("close", (code, reason) => {
+    setupWatchdog.clear();
+    if (watchdogFired) {
+      // The watchdog handler owns call teardown — don't double-report.
+      console.log(`[GeminiLive] Post-watchdog socket close (code=${code}) — already handled`);
+      return;
+    }
     const wireReason = reason ? reason.toString() : "";
     const effectiveReason = intentionalCloseReason || wireReason;
     console.log(`[GeminiLive] WebSocket closed (code=${code}, reason="${effectiveReason}")`);
@@ -434,4 +530,9 @@ function createGeminiSession(config, callbacks) {
   };
 }
 
-module.exports = { createGeminiSession, convertToolsToGemini };
+module.exports = {
+  createGeminiSession,
+  convertToolsToGemini,
+  // Exposed for unit tests only (no network needed).
+  _test: { armSetupWatchdog, resolveSetupTimeoutMs, DEFAULT_SETUP_TIMEOUT_MS },
+};

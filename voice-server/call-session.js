@@ -31,6 +31,10 @@ class CallSession {
     this.endedReason = null;
     this.recordingDisclosurePlayed = false;
     this.recordingDisclosureFailed = false;
+    // SCRUM-424: the disclosure was woven into Gemini's first message but its
+    // audio hasn't reached the caller yet. recordingDisclosurePlayed flips
+    // true on the first audio chunk actually sent to Twilio — never before.
+    this.pendingDisclosureInFirstMessage = false;
     this.pendingTransfer = false;
     this.piiRedactionEnabled = false;
 
