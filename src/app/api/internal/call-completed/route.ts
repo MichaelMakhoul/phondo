@@ -106,10 +106,38 @@ export async function POST(request: Request) {
   let spamAnalysis = null;
   let spamAnalysisFailed = false;
   if (callerPhone) {
+    // The timing heuristic needs the ORG's timezone (scoring "unusual hours"
+    // in server-UTC penalized every AU business-hours call — SCRUM-418), and
+    // phone-format analysis needs the org's country (defaulting to US rules
+    // mis-scored AU numbers). Fail-soft: on lookup error both stay undefined —
+    // the timing signal is dropped and country falls back to US.
+    let orgTimezone: string | undefined;
+    let orgCountry: string | undefined;
+    const { data: orgRow, error: orgError } = await (supabase as any)
+      .from("organizations")
+      .select("timezone, country")
+      .eq("id", organizationId)
+      .single();
+    if (orgError) {
+      console.error("[Internal] Failed to fetch org timezone/country for spam analysis — timing signal will be dropped:", {
+        organizationId, error: orgError,
+      });
+    } else {
+      orgTimezone = orgRow?.timezone || undefined;
+      orgCountry = orgRow?.country || undefined;
+      if (!orgTimezone) {
+        // Third drop flavor (lookup OK, column NULL/empty) — keep it as
+        // observable as the lookup-error and invalid-identifier paths.
+        console.warn("[Internal] Org has no timezone — spam timing signal dropped:", { organizationId });
+      }
+    }
+
     const spamMetadata: CallMetadata = {
       callerPhone,
       organizationId,
+      countryCode: orgCountry,
       timestamp: new Date(),
+      timezone: orgTimezone,
       duration: durationSeconds,
       transcript,
     };
