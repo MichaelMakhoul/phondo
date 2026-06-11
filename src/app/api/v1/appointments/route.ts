@@ -2,6 +2,7 @@ import { NextRequest, NextResponse, after } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { isValidPhoneNumber } from "@/lib/security/validation";
 import { validateOrgScopedRefs } from "@/lib/calendar/validate-org-scoped-refs";
+import { MAX_BOOKING_HORIZON_MS } from "@/lib/calendar/appointment-lifecycle";
 import { invalidateVoiceScheduleCache } from "@/lib/voice-cache/invalidate";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { recordAppointmentEvent } from "@/lib/appointments/events";
@@ -131,6 +132,10 @@ export async function POST(request: NextRequest) {
 
     if (new Date(d.start_time).getTime() < Date.now()) {
       return NextResponse.json({ error: "Cannot book in the past" }, { status: 400 });
+    }
+    // SCRUM-431 (finding #51): same horizon as the voice paths.
+    if (new Date(d.start_time).getTime() > Date.now() + MAX_BOOKING_HORIZON_MS) {
+      return NextResponse.json({ error: "Cannot book more than a year in advance" }, { status: 400 });
     }
 
     // SCRUM-360: a referenced service_type / practitioner must belong to this org.

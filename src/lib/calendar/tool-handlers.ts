@@ -23,6 +23,7 @@ import { rateLimitDistributed } from "@/lib/security/rate-limiter";
 import { hasNonLatinLetters } from "@/lib/calendar/latin-name";
 import { resolveRescheduleIdentity, resolveRescheduledBooking } from "@/lib/calendar/reschedule-core";
 import { validateOrgScopedRefs } from "@/lib/calendar/validate-org-scoped-refs";
+import { MAX_BOOKING_HORIZON_MS } from "@/lib/calendar/appointment-lifecycle";
 
 // SCRUM-399: `resolveRescheduleIdentity` moved to reschedule-core (shared with the
 // dashboard reschedule path). Re-exported here so existing imports/tests are stable.
@@ -47,6 +48,9 @@ interface OrgSchedule {
 
 // Fallback slot duration when no org-level default is configured
 const DEFAULT_SLOT_DURATION_MINUTES = 30;
+
+// SCRUM-431 (finding #51): MAX_BOOKING_HORIZON_MS is shared from
+// appointment-lifecycle so the dashboard routes enforce the same horizon.
 
 /** Generate a 6-digit confirmation code (crypto-secure, digits only) */
 function generateConfirmationCode(): string {
@@ -1855,6 +1859,15 @@ async function bookViaCal(
       };
     }
 
+    // Reject bookings too far in the future (finding #51)
+    if (new Date(tzAwareDatetime).getTime() > Date.now() + MAX_BOOKING_HORIZON_MS) {
+      return {
+        success: false,
+        message:
+          "I can only book appointments up to a year in advance. Would you like to pick a closer date?",
+      };
+    }
+
     const bookingEmail =
       email || `booking-${crypto.randomUUID()}@noreply.phondo.ai`;
 
@@ -1871,27 +1884,39 @@ async function bookViaCal(
       },
     });
 
-    // Record in our database — rollback Cal.com booking if this fails
-    const calConfirmationCode = generateConfirmationCode();
-    const { error: dbError } = await (supabase as any)
-      .from("appointments")
-      .insert({
-        organization_id: organizationId,
-        external_id: booking.uid,
-        provider: "cal_com",
-        attendee_name: sanitizedName,
-        attendee_phone: phone,
-        attendee_email: bookingEmail,
-        start_time: tzAwareDatetime,
-        end_time: booking.endTime,
-        status: "confirmed",
-        notes: sanitizedNotes,
-        confirmation_code: calConfirmationCode,
-        metadata: {
-          calComBookingId: booking.id,
-          eventTypeId,
-        },
-      });
+    // Record in our database — rollback Cal.com booking if this fails.
+    // SCRUM-431 (finding #49): retry confirmation-code collisions here too.
+    let calConfirmationCode = generateConfirmationCode();
+    let dbError: { code?: string; message?: string } | null = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const { error } = await (supabase as any)
+        .from("appointments")
+        .insert({
+          organization_id: organizationId,
+          external_id: booking.uid,
+          provider: "cal_com",
+          attendee_name: sanitizedName,
+          attendee_phone: phone,
+          attendee_email: bookingEmail,
+          start_time: tzAwareDatetime,
+          end_time: booking.endTime,
+          status: "confirmed",
+          notes: sanitizedNotes,
+          confirmation_code: calConfirmationCode,
+          metadata: {
+            calComBookingId: booking.id,
+            eventTypeId,
+          },
+        });
+      dbError = error;
+      if (!dbError) break;
+      if (dbError.code === "23505" && /confirmation_code/i.test(dbError.message || "")) {
+        console.warn(`[Booking] Cal.com record code collision (attempt ${attempt + 1}) — regenerating`);
+        calConfirmationCode = generateConfirmationCode();
+        continue;
+      }
+      break; // non-collision error → rollback below
+    }
 
     if (dbError) {
       console.error("Failed to record appointment locally, rolling back Cal.com booking:", dbError);
@@ -2091,6 +2116,15 @@ async function bookInternal(
     };
   }
 
+  // Reject bookings too far in the future (finding #51)
+  if (startDate.getTime() > Date.now() + MAX_BOOKING_HORIZON_MS) {
+    return {
+      success: false,
+      message:
+        "I can only book appointments up to a year in advance. Would you like to pick a closer date?",
+    };
+  }
+
   // Reject bookings in the past
   if (startDate.getTime() < Date.now()) {
     return {
@@ -2260,32 +2294,47 @@ async function bookInternal(
   const bookingEmail =
     email || `booking-${crypto.randomUUID()}@noreply.phondo.ai`;
 
-  const confirmationCode = generateConfirmationCode();
+  // SCRUM-431 (finding #49): the 6-digit confirmation code is UNIQUE
+  // TABLE-WIDE (appointments_confirmation_code_key) and codes never recycle,
+  // so collision odds grow with lifetime rows (N/900k per attempt) — a
+  // collision previously failed the whole booking. Retry with a fresh code;
+  // only 23505s naming the code constraint retry. Per-org uniqueness is the
+  // long-term fix (SCRUM-450).
+  let appointment: { id: string; confirmation_code: string } | null = null;
+  let confirmationCode = generateConfirmationCode();
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const { data, error: dbError } = await (supabase as any)
+      .from("appointments")
+      .insert({
+        organization_id: organizationId,
+        provider: "internal",
+        attendee_name: sanitizedName,
+        attendee_first_name: firstNameOverride || sanitizedName.split(" ")[0] || null,
+        attendee_last_name: lastNameOverride || (sanitizedName.includes(" ") ? sanitizedName.split(" ").slice(1).join(" ") : null),
+        attendee_phone: phone,
+        attendee_email: bookingEmail,
+        start_time: startDate.toISOString(),
+        end_time: endDate.toISOString(),
+        duration_minutes: durationMinutes,
+        status: "confirmed",
+        notes: sanitizedNotes,
+        confirmation_code: confirmationCode,
+        metadata: { source: "ai_receptionist" },
+        ...(serviceTypeId && { service_type_id: serviceTypeId }),
+        ...(assignedPractitionerId && { practitioner_id: assignedPractitionerId }),
+      })
+      .select("id, confirmation_code")
+      .single();
 
-  const { data: appointment, error: dbError } = await (supabase as any)
-    .from("appointments")
-    .insert({
-      organization_id: organizationId,
-      provider: "internal",
-      attendee_name: sanitizedName,
-      attendee_first_name: firstNameOverride || sanitizedName.split(" ")[0] || null,
-      attendee_last_name: lastNameOverride || (sanitizedName.includes(" ") ? sanitizedName.split(" ").slice(1).join(" ") : null),
-      attendee_phone: phone,
-      attendee_email: bookingEmail,
-      start_time: startDate.toISOString(),
-      end_time: endDate.toISOString(),
-      duration_minutes: durationMinutes,
-      status: "confirmed",
-      notes: sanitizedNotes,
-      confirmation_code: confirmationCode,
-      metadata: { source: "ai_receptionist" },
-      ...(serviceTypeId && { service_type_id: serviceTypeId }),
-      ...(assignedPractitionerId && { practitioner_id: assignedPractitionerId }),
-    })
-    .select("id, confirmation_code")
-    .single();
-
-  if (dbError) {
+    if (!dbError) {
+      appointment = data;
+      break;
+    }
+    if (dbError.code === "23505" && /confirmation_code/i.test(dbError.message || "")) {
+      console.warn(`[Booking] Confirmation-code collision (attempt ${attempt + 1}) — regenerating`);
+      confirmationCode = generateConfirmationCode();
+      continue;
+    }
     // Exclusion constraint violation = overlapping appointment
     if (dbError.code === "23P01") {
       return {
@@ -2295,6 +2344,15 @@ async function bookInternal(
       };
     }
     console.error("Failed to insert internal appointment:", dbError);
+    return {
+      success: false,
+      message:
+        "I'm having trouble completing the booking right now. Let me take your information and have someone call you back to confirm the appointment.",
+    };
+  }
+
+  if (!appointment) {
+    console.error("[Booking] Confirmation-code collision retries exhausted");
     return {
       success: false,
       message:

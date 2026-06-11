@@ -4,6 +4,7 @@ import crypto from "crypto";
 import { createClient } from "@/lib/supabase/server";
 import { isValidUUID } from "@/lib/security/validation";
 import { validateOrgScopedRefs } from "@/lib/calendar/validate-org-scoped-refs";
+import { isAllowedStatusTransition, MAX_BOOKING_HORIZON_MS } from "@/lib/calendar/appointment-lifecycle";
 import { getClientHistory } from "@/lib/clients/client-history";
 import { invalidateVoiceScheduleCache } from "@/lib/voice-cache/invalidate";
 import { sendAppointmentConfirmationSMS } from "@/lib/sms/caller-sms";
@@ -291,7 +292,7 @@ async function rescheduleViaLeg(
   //    fresh confirmation_code (the column is UNIQUE; the old code stays on the old
   //    row, which is now the inactive `rescheduled` leg).
   const legFields = buildRescheduleLegFields(before, updates);
-  const { data: inserted, error: insErr } = await supabase
+  let { data: inserted, error: insErr } = await supabase
     .from("appointments")
     .insert({
       ...legFields,
@@ -303,6 +304,24 @@ async function rescheduleViaLeg(
     })
     .select("*, service_types(name), practitioners(name)")
     .single();
+
+  // SCRUM-431 (finding #49): one retry on a confirmation-code collision —
+  // same classification discipline as bookInternal.
+  if (insErr && insErr.code === "23505" && /confirmation_code/i.test(insErr.message || "")) {
+    console.warn("[Reschedule] Confirmation-code collision on leg insert — retrying once");
+    ({ data: inserted, error: insErr } = await (supabase as any)
+      .from("appointments")
+      .insert({
+        ...legFields,
+        organization_id: orgId,
+        provider: "manual",
+        confirmation_code: crypto.randomInt(100000, 999999).toString(),
+        rescheduled_from_id: oldId,
+        metadata: { source: "dashboard_reschedule", created_by: userId, rescheduled_from: oldId },
+      })
+      .select("*, service_types(name), practitioners(name)")
+      .single());
+  }
 
   if (insErr) {
     // The move failed — restore the old row so the customer keeps their slot. Guard
@@ -465,6 +484,10 @@ export async function PATCH(
       if (new Date(data.start_time).getTime() < Date.now()) {
         return NextResponse.json({ error: "Cannot reschedule to a past time" }, { status: 400 });
       }
+      // SCRUM-431 (finding #51): same horizon as creation.
+      if (new Date(data.start_time).getTime() > Date.now() + MAX_BOOKING_HORIZON_MS) {
+        return NextResponse.json({ error: "Cannot reschedule more than a year in advance" }, { status: 400 });
+      }
       updates.start_time = data.start_time;
     }
     if (data.end_time) updates.end_time = data.end_time;
@@ -512,6 +535,16 @@ export async function PATCH(
     // exactly like the AI path, rather than mutating the row in place. This keeps the
     // history attribution honest (the AI's original leg is preserved; the staff move
     // is its own leg) and resolves the Stage-2 multi-leg double-show.
+    // SCRUM-431 (finding #52): block illegal manual status transitions —
+    // e.g. completed→pending or reviving a cancelled/rescheduled leg (which
+    // would resurrect a freed slot and corrupt the supersede chain).
+    if (updates.status && !isAllowedStatusTransition(before.status, updates.status)) {
+      return NextResponse.json(
+        { error: `Cannot change a ${before.status} appointment to ${updates.status}.` },
+        { status: 409 }
+      );
+    }
+
     if (decideRescheduleLeg(before, updates).isLeg) {
       return await rescheduleViaLeg(supabase, orgId, user.id, id, before, updates, data.send_sms === true);
     }
@@ -598,6 +631,16 @@ export async function DELETE(
       .eq("id", id)
       .eq("organization_id", orgId)
       .single();
+
+    // SCRUM-431 (finding #52): cancel is a status transition too — a
+    // rescheduled (superseded) or completed leg must not be flipped to
+    // cancelled (corrupts the chain / falsifies attendance history).
+    if (beforeDel && !isAllowedStatusTransition(beforeDel.status, "cancelled")) {
+      return NextResponse.json(
+        { error: `Cannot cancel a ${beforeDel.status} appointment.` },
+        { status: 409 }
+      );
+    }
 
     const { error } = await (supabase as any)
       .from("appointments")
