@@ -3,12 +3,16 @@ import { NextResponse } from "next/server";
 import Stripe from "stripe";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { blocksNewCheckout } from "@/lib/stripe/billing-service";
+import {
+  blocksNewCheckout,
+  LIVE_SUBSCRIPTION_STATUSES,
+} from "@/lib/stripe/billing-service";
 import {
   createCustomer,
   createCheckoutSession,
   createBillingPortalSession,
   retrieveCheckoutSession,
+  getSubscription,
   PLANS,
   PlanType,
 } from "@/lib/stripe";
@@ -23,6 +27,33 @@ interface Membership {
   organization_id: string;
   role: string;
   organizations: Organization;
+}
+
+// Shared "already subscribed" response. Creating another checkout would
+// produce a duplicate live subscription, so route the customer to the Stripe
+// billing portal to change/manage their plan instead — the same destination
+// as the dashboard "Downgrade" button. The "Upgrade" button POSTs here, so
+// returning a portal URL (the client just redirects to `url`) keeps that CTA
+// working for existing subscribers rather than dead-ending on an error.
+async function respondAlreadySubscribed(
+  stripeCustomerId: string | null,
+  baseUrl: string
+): Promise<NextResponse> {
+  if (stripeCustomerId) {
+    const portal = await createBillingPortalSession(
+      stripeCustomerId,
+      `${baseUrl}/billing`
+    );
+    return NextResponse.json({ url: portal.url });
+  }
+  return NextResponse.json(
+    {
+      error:
+        "Your organization already has an active subscription. Manage it from the billing portal.",
+      code: "already_subscribed",
+    },
+    { status: 409 }
+  );
 }
 
 // POST /api/billing/checkout - Create a checkout session
@@ -86,27 +117,8 @@ export async function POST(request: Request) {
     const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
 
     if (blocksNewCheckout(existingSub)) {
-      // Org is already paying. Creating a second checkout would produce a
-      // duplicate live subscription, so route them to the Stripe billing portal
-      // to change/manage their plan instead — the same destination as the
-      // dashboard "Downgrade" button. The "Upgrade" button POSTs here, so
-      // returning a portal URL (the client just redirects to `url`) keeps that
-      // CTA working for existing subscribers rather than dead-ending on an error.
-      if (organization.stripe_customer_id) {
-        const portal = await createBillingPortalSession(
-          organization.stripe_customer_id,
-          `${baseUrl}/billing`
-        );
-        return NextResponse.json({ url: portal.url });
-      }
-      return NextResponse.json(
-        {
-          error:
-            "Your organization already has an active subscription. Manage it from the billing portal.",
-          code: "already_subscribed",
-        },
-        { status: 409 }
-      );
+      // Org is already paying — see respondAlreadySubscribed.
+      return respondAlreadySubscribed(organization.stripe_customer_id, baseUrl);
     }
 
     // Get or create Stripe customer
@@ -170,10 +182,60 @@ export async function POST(request: Request) {
       // reused key, which reports the session's status AT CREATION ("open") —
       // even if the caller already completed it (subscribe → cancel →
       // re-subscribe to the same plan within one hour bucket). Retrieve the
-      // LIVE session; if it is no longer usable, mint a fresh single-use key so
-      // the customer gets a working checkout page instead of a dead one.
-      const liveSession = await retrieveCheckoutSession(session.id);
-      if (liveSession.status === "complete" || liveSession.status === "expired") {
+      // LIVE session to find out. The create above already succeeded, so a
+      // transient retrieve failure must NOT fail the whole checkout — fall
+      // back to the created session's URL (a stale replay is rarer and less
+      // harmful than 500ing a healthy checkout).
+      let liveSession: Stripe.Checkout.Session | null = null;
+      try {
+        liveSession = await retrieveCheckoutSession(session.id);
+      } catch (retrieveErr) {
+        console.warn(
+          "Checkout: live-session retrieve failed — returning the created session as-is",
+          {
+            organizationId: organization.id,
+            planType,
+            sessionId: session.id,
+            error: retrieveErr,
+          }
+        );
+      }
+
+      if (
+        liveSession &&
+        (liveSession.status === "complete" || liveSession.status === "expired")
+      ) {
+        if (liveSession.status === "complete") {
+          // The replayed session was already PAID. If the subscription it
+          // created is still live, the org IS subscribed and the DB guard
+          // above just hasn't caught up yet (webhook lag) — minting a fresh
+          // payable session here would re-open the same-plan double-subscribe
+          // window. Respond exactly like the already-subscribed path instead.
+          const completedSubId =
+            typeof liveSession.subscription === "string"
+              ? liveSession.subscription
+              : liveSession.subscription?.id ?? null;
+          if (completedSubId) {
+            const completedSub = await getSubscription(completedSubId);
+            if (LIVE_SUBSCRIPTION_STATUSES.includes(completedSub.status)) {
+              console.warn(
+                "Checkout: replayed session already completed with a live subscription — routing to billing portal",
+                {
+                  organizationId: organization.id,
+                  planType,
+                  sessionId: session.id,
+                  subscriptionId: completedSubId,
+                }
+              );
+              return respondAlreadySubscribed(customerId, baseUrl);
+            }
+          }
+        }
+
+        // Session expired, or completed but its subscription is no longer
+        // live (subscribe → cancel → re-subscribe within one hour bucket) —
+        // mint a fresh single-use key so the customer gets a working checkout
+        // page instead of a dead one.
         console.warn("Checkout: idempotency key replayed a stale session; minting a fresh one", {
           organizationId: organization.id,
           planType,
@@ -190,10 +252,14 @@ export async function POST(request: Request) {
         );
       }
     } catch (err) {
-      if (err instanceof Stripe.errors.StripeIdempotencyError) {
-        // A concurrent request with the same key is still in flight — the
-        // double-submit race on a first-ever checkout. Not a server fault:
-        // return a retry-friendly conflict instead of a generic 500.
+      if (!(err instanceof Stripe.errors.StripeIdempotencyError)) {
+        throw err;
+      }
+      if (err.statusCode === 409) {
+        // HTTP 409: a concurrent request with the same key is still in
+        // flight — the double-submit race on a first-ever checkout. Not a
+        // server fault: return a retry-friendly conflict instead of a
+        // generic 500.
         return NextResponse.json(
           {
             error:
@@ -203,7 +269,27 @@ export async function POST(request: Request) {
           { status: 409 }
         );
       }
-      throw err;
+      // Any other idempotency failure is key-reuse-with-DIFFERENT-params
+      // (Stripe returns HTTP 400 — e.g. the plan's price id changed inside
+      // one hour bucket). The bucketed key is poisoned for this request
+      // shape, so retry ONCE with a fresh nonce-suffixed key; if the retry
+      // also fails, let it propagate to the outer handler.
+      console.warn(
+        "Checkout: idempotency key reused with different params — retrying once with a fresh key",
+        {
+          organizationId: organization.id,
+          planType,
+          statusCode: err.statusCode,
+        }
+      );
+      session = await createCheckoutSession(
+        customerId,
+        plan.stripePriceId,
+        successUrl,
+        cancelUrl,
+        metadata,
+        { idempotencyKey: `${idempotencyKey}:${crypto.randomUUID()}` }
+      );
     }
 
     return NextResponse.json({ url: session.url });

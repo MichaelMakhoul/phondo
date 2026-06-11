@@ -188,7 +188,10 @@ function BillingContent() {
 
       if (!response.ok) {
         const error = await response.json();
-        throw new Error(error.message || "Failed to create checkout session");
+        // The checkout route's 409 bodies (already_subscribed /
+        // checkout_in_progress) put their copy in `error`, not `message` —
+        // surface it (mirrors handleManageBilling below).
+        throw new Error(error.error || error.message || "Failed to create checkout session");
       }
 
       const { url } = await response.json();

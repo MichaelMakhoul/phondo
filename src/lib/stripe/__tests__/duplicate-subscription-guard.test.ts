@@ -133,7 +133,7 @@ describe("handleSubscriptionCreated duplicate-subscription guard (SCRUM-433)", (
     expect(stripe.subscriptions.cancel).toHaveBeenCalledWith("sub_old");
     expect(Sentry.captureMessage).toHaveBeenCalledWith(
       expect.stringContaining("duplicate subscription"),
-      "error"
+      "warning"
     );
     expect(upsertCalls).toHaveLength(1);
     expect(upsertCalls[0].row.stripe_subscription_id).toBe("sub_new");
@@ -214,6 +214,12 @@ describe("handleSubscriptionCreated duplicate-subscription guard (SCRUM-433)", (
 
     await expect(handleSubscriptionCreated(sub())).rejects.toThrow("cancel failed");
     expect(upsertCalls).toHaveLength(0);
+    // The Sentry alert fires BEFORE the cancel attempt: a persistently failing
+    // cancel means active double-billing — that must never go unalerted.
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      expect.stringContaining("duplicate subscription"),
+      "warning"
+    );
   });
 
   it("THROWS (→ webhook retries) when the existing-row lookup errors", async () => {
