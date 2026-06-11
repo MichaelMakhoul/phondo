@@ -63,7 +63,13 @@ interface KBEntry {
 interface KnowledgeSettingsProps {
   entries: KBEntry[];
   organizationId: string;
+  /** KB writes are owner/admin-only (SCRUM-428); members get read-only UI. */
+  canEdit: boolean;
 }
+
+// Mirrors the 403 message the KB write routes return for non-admin members.
+const READ_ONLY_NOTE =
+  "Only organization owners and admins can edit the knowledge base";
 
 const SOURCE_TYPE_ICONS: Record<string, typeof Globe> = {
   website: Globe,
@@ -82,6 +88,7 @@ const SOURCE_TYPE_LABELS: Record<string, string> = {
 export function KnowledgeSettings({
   entries: initialEntries,
   organizationId,
+  canEdit,
 }: KnowledgeSettingsProps) {
   const { toast } = useToast();
   const [entries, setEntries] = useState(initialEntries);
@@ -468,12 +475,20 @@ export function KnowledgeSettings({
             <p className="text-muted-foreground">
               Shared across all your assistants
             </p>
+            {!canEdit && (
+              <p className="text-xs text-muted-foreground mt-1">
+                You have read-only access — {READ_ONLY_NOTE.toLowerCase()}.
+              </p>
+            )}
           </div>
         </div>
 
         <Dialog open={addDialogOpen} onOpenChange={setAddDialogOpen}>
           <DialogTrigger asChild>
-            <Button>
+            <Button
+              disabled={!canEdit}
+              title={canEdit ? undefined : READ_ONLY_NOTE}
+            >
               <Plus className="h-4 w-4 mr-2" />
               Add Source
             </Button>
@@ -725,7 +740,11 @@ export function KnowledgeSettings({
               description="Add business information so your AI assistants can answer caller questions accurately."
               illustration={<KnowledgeScene />}
               action={
-                <Button onClick={() => setAddDialogOpen(true)}>
+                <Button
+                  onClick={() => setAddDialogOpen(true)}
+                  disabled={!canEdit}
+                  title={canEdit ? undefined : READ_ONLY_NOTE}
+                >
                   <Plus className="h-4 w-4 mr-2" />
                   Add Your First Source
                 </Button>
@@ -760,9 +779,17 @@ export function KnowledgeSettings({
                     </p>
                   </div>
 
+                  {/* Every action in this menu is a write — disable the whole
+                      trigger for read-only members (SCRUM-446). */}
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
-                      <Button variant="ghost" size="icon" className="shrink-0 h-8 w-8">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="shrink-0 h-8 w-8"
+                        disabled={!canEdit}
+                        title={canEdit ? undefined : READ_ONLY_NOTE}
+                      >
                         <MoreVertical className="h-4 w-4" />
                         <span className="sr-only">Actions</span>
                       </Button>

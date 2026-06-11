@@ -1,6 +1,7 @@
 import { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
+import { isOrgAdminRole } from "@/lib/auth/membership";
 import { KnowledgeSettings } from "./knowledge-settings";
 
 export const metadata: Metadata = {
@@ -20,7 +21,7 @@ export default async function KnowledgePage() {
 
   const { data: membership } = await (supabase as any)
     .from("org_members")
-    .select("organization_id")
+    .select("organization_id, role")
     .eq("user_id", user.id)
     .single();
 
@@ -29,6 +30,10 @@ export default async function KnowledgePage() {
   }
 
   const organizationId = membership.organization_id as string;
+  // KB writes are owner/admin-gated server-side (SCRUM-428) — pass the role
+  // down so the UI disables write controls instead of 403ing on click
+  // (SCRUM-446, same pattern as billing's SCRUM-422 gate).
+  const canEdit = isOrgAdminRole(membership.role);
 
   // Fetch KB entries (metadata only, no full content)
   const { data: entries } = await (supabase as any)
@@ -42,6 +47,7 @@ export default async function KnowledgePage() {
     <KnowledgeSettings
       entries={entries || []}
       organizationId={organizationId}
+      canEdit={canEdit}
     />
   );
 }
