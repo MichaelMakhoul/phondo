@@ -37,6 +37,28 @@ const SMS_GATED_FIELDS = [
   "sms_appointment_confirmation",
 ] as const;
 
+// Owner-alert SMS toggles deliver to sms_phone_number — without a number the
+// channel is wanted-but-undeliverable and settleChannels records a failed
+// notification on every matching call (SCRUM-442). The caller-facing SMS
+// fields (textback/confirmation) go to the CALLER's number and are
+// intentionally excluded. sms_on_failed_call is also absent: it is not
+// API-settable (not in ALLOWED_FIELDS), so including it here would make a
+// stored-true value an un-clearable 400 loop — the user could never turn it
+// off through this route to satisfy the validation.
+const OWNER_SMS_TOGGLES = [
+  "sms_on_missed_call",
+  "sms_on_voicemail",
+  "sms_on_callback_scheduled",
+] as const;
+
+// Human-readable names for the 400 message when a STORED toggle (not one in
+// the current patch) is what still requires an SMS phone number.
+const OWNER_SMS_TOGGLE_LABELS: Record<(typeof OWNER_SMS_TOGGLES)[number], string> = {
+  sms_on_missed_call: "missed calls",
+  sms_on_voicemail: "voicemails",
+  sms_on_callback_scheduled: "scheduled callbacks",
+};
+
 // GET /api/v1/notification-preferences
 export async function GET() {
   try {
@@ -110,6 +132,11 @@ export async function PUT(request: Request) {
       }
     }
 
+    // Migration 00137's CHECK constraint requires sms_phone_number to be NULL
+    // or E.164 — the empty string would violate it. "" and null both mean
+    // "clear the field", so normalize "" → null before any further handling.
+    if (body.sms_phone_number === "") body.sms_phone_number = null;
+
     // SCRUM-295: sms_phone_number must be E.164 (otherwise Twilio refuses
     // to send and the business gets no missed-call alerts). Empty string
     // and null both mean "clear the field" — allow those through.
@@ -164,6 +191,81 @@ export async function PUT(request: Request) {
     }
 
     const admin = createAdminClient();
+
+    // SCRUM-442: cross-field validation. The allowlist alone permits
+    // sms_on_* = true with no sms_phone_number (and clearing the number while
+    // a toggle stays on). Validate the MERGED state (existing row + this
+    // patch) — a partial PATCH that looks fine in isolation can still leave
+    // the stored row undeliverable.
+    //
+    // Known limitation (TOCTOU): the read below and the upsert are not
+    // atomic — two concurrent PUTs (one enabling a toggle, one clearing the
+    // number) can each pass validation against the pre-write row and jointly
+    // store toggle-on + no-number. A DB-level CHECK constraint or an RPC that
+    // validates and writes in one statement is the eventual fix.
+    const touchesSmsState =
+      "sms_phone_number" in body || OWNER_SMS_TOGGLES.some((f) => f in body);
+    if (touchesSmsState) {
+      const { data: existing, error: existingError } = await (admin as any)
+        .from("notification_preferences")
+        .select("*")
+        .eq("organization_id", membership.organization_id)
+        .single();
+
+      if (existingError && existingError.code !== "PGRST116") {
+        // Without the current row we can't trust merged-state validation:
+        // failing open could store an undeliverable state, validating the
+        // patch alone could falsely reject a valid one. Surface the failure.
+        console.error("Failed to load notification preferences for validation:", {
+          organizationId: membership.organization_id,
+          errorCode: existingError.code,
+          errorMessage: existingError.message,
+        });
+        return NextResponse.json({ error: "Failed to save notification preferences" }, { status: 500 });
+      }
+
+      // Plan-gate the EXISTING row the same way the patch was gated above: a
+      // downgraded org may still have legacy owner-SMS toggles stored, and
+      // those would otherwise trip false 400s on unrelated patches even
+      // though the toggles can never deliver on the current plan.
+      const existingRow: Record<string, any> = { ...(existing || {}) };
+      if (!smsAllowed) {
+        for (const field of OWNER_SMS_TOGGLES) {
+          existingRow[field] = false;
+        }
+      }
+
+      const merged: Record<string, any> = { ...existingRow, ...body };
+      const wantsOwnerSms = OWNER_SMS_TOGGLES.some((f) => merged[f]);
+      const hasSmsNumber =
+        typeof merged.sms_phone_number === "string" && merged.sms_phone_number !== "";
+
+      if (wantsOwnerSms && !hasSmsNumber) {
+        // "" was normalized to null after the allowlist copy above.
+        const clearingNumber =
+          "sms_phone_number" in body && body.sms_phone_number === null;
+        const enablingToggle = OWNER_SMS_TOGGLES.some((f) => f in body && body[f]);
+        let error: string;
+        if (clearingNumber) {
+          error =
+            "Turn off SMS alerts before removing the SMS phone number — alerts cannot be delivered without it.";
+        } else if (enablingToggle) {
+          error =
+            "Add an SMS phone number before turning on SMS alerts — there is no number to send them to.";
+        } else {
+          // Inherited inconsistent state: nothing in THIS patch turned a
+          // toggle on or cleared the number — a previously stored toggle is
+          // still on with no number. Name the stored toggle(s) so the user
+          // knows what to turn off.
+          const stillEnabled = OWNER_SMS_TOGGLES.filter((f) => merged[f])
+            .map((f) => OWNER_SMS_TOGGLE_LABELS[f])
+            .join(", ");
+          error = `SMS alerts for ${stillEnabled} are still enabled — turn them off or add an SMS phone number.`;
+        }
+        return NextResponse.json({ error }, { status: 400 });
+      }
+    }
+
     const { data, error } = await (admin as any)
       .from("notification_preferences")
       .upsert({
