@@ -11,6 +11,7 @@ import {
 import { handleScheduleCallback } from "@/lib/callbacks/tool-handler";
 import { getActiveServiceTypes } from "@/lib/service-types";
 import { withRateLimit } from "@/lib/security/rate-limiter";
+import { isValidPhoneNumber } from "@/lib/security/validation";
 
 function verifyInternalSecret(request: Request): boolean {
   const secret = process.env.INTERNAL_API_SECRET;
@@ -35,6 +36,14 @@ interface ToolCallPayload {
   functionName: string;
   arguments: Record<string, unknown>;
   callId?: string;
+  /**
+   * SCRUM-438: the call's VERIFIED inbound caller ID, set by the voice server
+   * from its session state (the Twilio/Telnyx From) — a top-level payload
+   * field the MODEL can never reach (its output only populates `arguments`).
+   * Possession factor for cancel/reschedule ownership. Absent for browser
+   * test calls and withheld caller IDs.
+   */
+  callerPhone?: string;
 }
 
 /**
@@ -83,6 +92,14 @@ export async function POST(request: Request) {
 
   const parsedArgs = (args || {}) as Record<string, string | undefined>;
 
+  // SCRUM-438: validate the trusted caller ID before threading it into the
+  // mutation handlers — sentinels ("anonymous") or junk never become a
+  // possession factor. NEVER read this from `arguments` (model-controllable).
+  const verifiedCallerPhone =
+    typeof payload.callerPhone === "string" && isValidPhoneNumber(payload.callerPhone)
+      ? payload.callerPhone
+      : undefined;
+
   try {
     let result;
 
@@ -128,36 +145,48 @@ export async function POST(request: Request) {
       }
 
       case "cancel_appointment":
-        result = await handleCancelAppointment(organizationId, {
-          phone: parsedArgs.phone,
-          reason: parsedArgs.reason,
-          confirmation_code: parsedArgs.confirmation_code,
-          date: parsedArgs.date,
-          // SCRUM-381: forward the exact datetime so the handler's ±15-min match
-          // can pin ONE appointment when a caller has several. Without this the
-          // disambiguation reply ("call again with the exact datetime") can never
-          // be satisfied — the model loops and may fabricate a cancellation.
-          datetime: parsedArgs.datetime,
-        });
+        result = await handleCancelAppointment(
+          organizationId,
+          {
+            phone: parsedArgs.phone,
+            reason: parsedArgs.reason,
+            confirmation_code: parsedArgs.confirmation_code,
+            date: parsedArgs.date,
+            // SCRUM-381: forward the exact datetime so the handler's ±15-min match
+            // can pin ONE appointment when a caller has several. Without this the
+            // disambiguation reply ("call again with the exact datetime") can never
+            // be satisfied — the model loops and may fabricate a cancellation.
+            datetime: parsedArgs.datetime,
+            // SCRUM-438: knowledge factors for orgs with configured
+            // appointment_verification_fields.
+            name: parsedArgs.name,
+            email: parsedArgs.email,
+          },
+          { verifiedCallerPhone }
+        );
         break;
 
       case "reschedule_appointment":
         // SCRUM-377: atomic move (book new + cancel old, server-verified) so a
         // reschedule can never leave a duplicate the way cancel+book did.
-        result = await handleRescheduleAppointment(organizationId, {
-          phone: parsedArgs.phone,
-          confirmation_code: parsedArgs.confirmation_code,
-          current_date: parsedArgs.current_date,
-          current_datetime: parsedArgs.current_datetime,
-          new_datetime: parsedArgs.new_datetime,
-          first_name: parsedArgs.first_name,
-          last_name: parsedArgs.last_name,
-          name: parsedArgs.name,
-          email: parsedArgs.email,
-          notes: parsedArgs.notes,
-          service_type_id: parsedArgs.service_type_id,
-          practitioner_id: parsedArgs.practitioner_id,
-        });
+        result = await handleRescheduleAppointment(
+          organizationId,
+          {
+            phone: parsedArgs.phone,
+            confirmation_code: parsedArgs.confirmation_code,
+            current_date: parsedArgs.current_date,
+            current_datetime: parsedArgs.current_datetime,
+            new_datetime: parsedArgs.new_datetime,
+            first_name: parsedArgs.first_name,
+            last_name: parsedArgs.last_name,
+            name: parsedArgs.name,
+            email: parsedArgs.email,
+            notes: parsedArgs.notes,
+            service_type_id: parsedArgs.service_type_id,
+            practitioner_id: parsedArgs.practitioner_id,
+          },
+          { verifiedCallerPhone }
+        );
         break;
 
       case "lookup_appointment":
