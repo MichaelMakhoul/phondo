@@ -1,6 +1,7 @@
 /**
- * Plain JS port of src/lib/prompt-builder/generate-prompt.ts
- * and legacy prompt handling from src/lib/knowledge-base/aggregate.ts.
+ * Plain JS port of src/lib/prompt-builder/generate-prompt.ts.
+ * Also the sole/canonical home of legacy prompt + KB-aggregation handling
+ * (the TS mirror src/lib/knowledge-base/aggregate.ts was removed in SCRUM-435).
  *
  * Only includes functions needed at runtime (no Zod, no UI presets, no analysis plan).
  *
@@ -704,7 +705,8 @@ function generateGreeting(tone, businessName, language) {
 
 /**
  * Build system prompt for an assistant — handles both guided (prompt_config) and legacy prompts.
- * Mirrors the KB aggregation and placeholder replacement logic in src/lib/knowledge-base/aggregate.ts.
+ * Sole/canonical implementation of the KB aggregation and placeholder replacement logic
+ * (formerly mirrored in src/lib/knowledge-base/aggregate.ts, removed in SCRUM-435).
  *
  * @param {object} assistant
  * @param {object} organization

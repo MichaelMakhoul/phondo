@@ -165,7 +165,8 @@ async function loadCallContext(calledNumber, prefetchedPhone) {
     serviceTypes = stData;
   }
 
-  // Aggregate KB content (mirrors src/lib/knowledge-base/aggregate.ts)
+  // Aggregate KB content — this is the sole KB-aggregation implementation
+  // (the TS mirror src/lib/knowledge-base/aggregate.ts was removed in SCRUM-435)
   let knowledgeBase = "";
   if (kbEntries && kbEntries.length > 0) {
     const sections = [];
