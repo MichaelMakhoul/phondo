@@ -332,8 +332,10 @@ async function getPractitionersForService(
 /**
  * Pick the practitioner with the fewest upcoming appointments (round-robin).
  * Falls back to first practitioner if counts are equal.
+ *
+ * Exported for unit testing (see __tests__/round-robin-blocked-times.test.ts).
  */
-async function pickPractitionerRoundRobin(
+export async function pickPractitionerRoundRobin(
   organizationId: string,
   practitionerIds: string[],
   slotStart?: Date,
@@ -344,26 +346,68 @@ async function pickPractitionerRoundRobin(
   const supabase = createAdminClient();
   const now = new Date().toISOString();
 
-  // ── Step 1: Filter out practitioners already booked at the requested time ──
+  // ── Step 1: Filter out practitioners busy at the requested time ──
+  // "Busy" = an overlapping appointment OR an overlapping practitioner-specific
+  // blocked time (time off). The DB only enforces appointment overlaps, so the
+  // blocked_times check has to happen here or round-robin will book a
+  // practitioner on top of their time off (audit finding #16).
   let availableIds = [...practitionerIds];
 
   if (slotStart && slotEnd) {
+    const slotStartIso = slotStart.toISOString();
+    const slotEndIso = slotEnd.toISOString();
+    const busyIds = new Set<string>();
+
     const { data: conflicting, error: conflictErr } = await (supabase as any)
       .from("appointments")
       .select("practitioner_id, start_time, end_time, duration_minutes")
       .eq("organization_id", organizationId)
       .in("practitioner_id", practitionerIds)
       .in("status", ["confirmed", "pending"])
-      .lt("start_time", slotEnd.toISOString())
-      .gt("end_time", slotStart.toISOString());
+      .lt("start_time", slotEndIso)
+      .gt("end_time", slotStartIso);
 
     if (conflictErr) {
-      console.error("Failed to check practitioner slot conflicts:", { organizationId, practitionerIds, error: conflictErr });
-      // Fall through — better to attempt the booking and let the DB constraint catch it
+      // Fail OPEN here is safe: the per-practitioner EXCLUDE constraint
+      // (no_overlapping_practitioner_appointments) rejects the insert if we
+      // mis-pick, so a missed appointment conflict can never double-book.
+      console.error("Failed to check practitioner slot conflicts:", { organizationId, practitionerIds, slotStartIso, slotEndIso, error: conflictErr });
     } else if (conflicting) {
-      const busyIds = new Set(
-        (conflicting as { practitioner_id: string }[]).map((a) => a.practitioner_id)
-      );
+      for (const a of conflicting as { practitioner_id: string | null }[]) {
+        if (a.practitioner_id) busyIds.add(a.practitioner_id);
+      }
+    }
+
+    // Practitioner-specific time off overlapping the slot (mirrors getBuiltInAvailability).
+    const { data: blocks, error: blockErr } = await (supabase as any)
+      .from("blocked_times")
+      .select("practitioner_id, start_time, end_time")
+      .eq("organization_id", organizationId)
+      .not("practitioner_id", "is", null)
+      .in("practitioner_id", practitionerIds)
+      .lt("start_time", slotEndIso)
+      .gt("end_time", slotStartIso);
+
+    if (blockErr) {
+      // Fail CLOSED — unlike the appointment check above, blocked_times has NO
+      // DB backstop, so a missed block would silently book a practitioner on top
+      // of their time off (the exact bug #16 this guards against). When we can't
+      // verify time off for any candidate, decline to auto-assign and let the
+      // caller hit the graceful "pick another time" path instead of over-booking.
+      console.error("Failed to check practitioner blocked times — declining auto-assign for this slot:", { organizationId, practitionerIds, slotStartIso, slotEndIso, error: blockErr });
+      Sentry.withScope((scope) => {
+        scope.setLevel("error");
+        scope.setTag("bug", "round_robin_blocked_times_check_failed");
+        scope.setExtras({ organizationId, practitionerIds, slotStartIso, slotEndIso });
+        Sentry.captureMessage("Round-robin blocked_times check failed — skipped auto-assign to avoid booking over time off");
+      });
+      return null;
+    }
+    for (const b of (blocks || []) as { practitioner_id: string | null }[]) {
+      if (b.practitioner_id) busyIds.add(b.practitioner_id);
+    }
+
+    if (busyIds.size > 0) {
       availableIds = practitionerIds.filter((id) => !busyIds.has(id));
     }
   }
