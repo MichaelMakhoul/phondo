@@ -82,7 +82,12 @@ function verifyOutboundToken(token, secret, options) {
     if (!crypto.timingSafeEqual(sigBuf, expectedBuf)) return null;
 
     const payload = JSON.parse(Buffer.from(payloadB64, "base64url").toString());
-    if (payload.exp && Date.now() > payload.exp) return null;
+    // SCRUM-449 (review): exp is REQUIRED, not optional — a signed token
+    // without it would never expire AND its consumedJtis entry would be swept
+    // ~5 min after consumption, silently re-enabling replay. Failing closed
+    // here makes the sweep-safety invariant (entries outlive their token's
+    // validity) unconditional.
+    if (typeof payload.exp !== "number" || Date.now() > payload.exp) return null;
 
     // SCRUM-449: single-use guard. Tokens without a jti (pre-rollout format)
     // are NOT accepted — mint and verify run in the same process, so there is
@@ -90,7 +95,7 @@ function verifyOutboundToken(token, secret, options) {
     if (typeof payload.jti !== "string" || !payload.jti) return null;
     if (consumedJtis.has(payload.jti)) return null;
     if (!options || options.consume !== false) {
-      consumedJtis.set(payload.jti, payload.exp || Date.now() + TOKEN_TTL_MS);
+      consumedJtis.set(payload.jti, payload.exp);
     }
 
     return payload;

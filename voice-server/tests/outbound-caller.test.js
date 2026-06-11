@@ -88,6 +88,13 @@ describe("outbound-caller", () => {
       assert.equal(verifyOutboundToken(token, secret, { consume: false }), null);
     });
 
+    it("rejects signed tokens with missing or non-numeric exp (would never expire and outlive the jti sweep)", () => {
+      const noExp = signPayload({ jti: crypto.randomUUID(), test: true }, secret);
+      assert.equal(verifyOutboundToken(noExp, secret), null);
+      const stringExp = signPayload({ jti: crypto.randomUUID(), exp: "9999999999999" }, secret);
+      assert.equal(verifyOutboundToken(stringExp, secret), null);
+    });
+
     it("rejects tokens with a malformed (non-string) jti", () => {
       const token = signPayload({ jti: 12345, exp: Date.now() + 60_000 }, secret);
       assert.equal(verifyOutboundToken(token, secret), null);

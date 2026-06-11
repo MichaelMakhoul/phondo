@@ -3428,8 +3428,9 @@ crWss.on("connection", (ws, req) => {
 server.on("upgrade", (request, socket, head) => {
   const { pathname } = new URL(request.url, `http://${request.headers.host}`);
   // SCRUM-430 (finding #42): NEVER log request.url here — /ws/outbound carries
-  // the (replayable, 5-min TTL) HMAC token in the PATH and /ws/test carries
-  // its token in the QUERY. Log only a redacted route name.
+  // the (single-use since SCRUM-449, 5-min TTL) HMAC token in the PATH and
+  // /ws/test carries its token in the QUERY. A pre-consumption token in logs
+  // is still usable once, so log only a redacted route name.
   const redactedPath = pathname.startsWith("/ws/outbound") ? "/ws/outbound/<redacted>" : pathname;
   console.log(`[Upgrade] path=${redactedPath}`);
 
