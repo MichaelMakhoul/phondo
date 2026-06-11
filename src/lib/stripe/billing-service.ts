@@ -11,6 +11,7 @@ import {
   getStripeClient,
   PLANS,
   PlanType,
+  planTypeFromPriceId,
   CALL_THRESHOLD_WARNING,
   CALL_THRESHOLD_LIMIT,
   CALL_THRESHOLD_OVER,
@@ -460,11 +461,29 @@ export async function handleSubscriptionCreated(
     return;
   }
 
-  const plan = resolvePlanType(
-    subscription.metadata?.plan || fallback?.plan || "starter",
-    true
-  );
+  // Resolve the plan from the subscription's actual price id first (the only
+  // source that stays correct across Stripe-portal plan switches); fall back to
+  // metadata (subscription, then session) and finally to starter.
+  const priceId = subscription.items.data[0]?.price.id;
+  const planFromPrice = planTypeFromPriceId(priceId);
+  const plan =
+    planFromPrice ??
+    resolvePlanType(
+      subscription.metadata?.plan || fallback?.plan || "starter",
+      true
+    );
   const planConfig = PLANS[plan];
+
+  if (priceId && !planFromPrice) {
+    // The price id isn't wired into PLANS (STRIPE_*_PRICE_ID drift, or a new
+    // Stripe price). We fell back to metadata/starter, which goes stale across
+    // portal switches — log it so the misconfig is visible, not silent.
+    console.error("handleSubscriptionCreated: price id did not map to a known plan; used fallback", {
+      stripeSubscriptionId: subscription.id,
+      priceId,
+      resolvedPlan: plan,
+    });
+  }
 
   // Upsert subscription record
   // Note: stripe_customer_id lives on the organizations table, not subscriptions
@@ -473,7 +492,7 @@ export async function handleSubscriptionCreated(
     .upsert({
       organization_id: organizationId,
       stripe_subscription_id: subscription.id,
-      stripe_price_id: subscription.items.data[0]?.price.id ?? planConfig?.stripePriceId ?? "unknown",
+      stripe_price_id: priceId ?? planConfig?.stripePriceId ?? "unknown",
       plan_type: plan,
       status: subscription.status,
       calls_limit: planConfig?.callsLimit ?? 150,
@@ -512,7 +531,7 @@ export async function handleSubscriptionUpdated(
   // Verify subscription exists
   const { data: existingSub, error: lookupError } = await (supabase as any)
     .from("subscriptions")
-    .select("organization_id")
+    .select("organization_id, plan_type")
     .eq("stripe_subscription_id", subscription.id)
     .single();
 
@@ -529,11 +548,30 @@ export async function handleSubscriptionUpdated(
     return;
   }
 
-  // Resolve plan from Stripe metadata (handles upgrades/downgrades via Stripe portal)
-  const plan = subscription.metadata?.plan
-    ? resolvePlanType(subscription.metadata.plan, true)
-    : undefined;
+  // Resolve the plan from the subscription's current price id — this is what a
+  // Stripe Billing Portal upgrade/downgrade actually changes. Metadata is only a
+  // fallback (portal switches do NOT rewrite it, so it goes stale immediately).
+  const priceId = subscription.items.data[0]?.price.id;
+  const planFromPrice = planTypeFromPriceId(priceId);
+  const plan =
+    planFromPrice ??
+    (subscription.metadata?.plan
+      ? resolvePlanType(subscription.metadata.plan, true)
+      : undefined);
   const planConfig = plan ? PLANS[plan] : undefined;
+
+  if (priceId && !planFromPrice) {
+    // Price id didn't map to a known plan (STRIPE_*_PRICE_ID drift or a new
+    // Stripe price). If metadata still resolved a plan we'd otherwise sync a
+    // STALE value silently; if nothing resolved, plan_type/limits stay stale.
+    // Either way, surface it — this is the only signal that the price→plan map
+    // is misconfigured for a real subscription.
+    console.error("handleSubscriptionUpdated: price id did not map to a known plan", {
+      stripeSubscriptionId: subscription.id,
+      priceId,
+      resolvedFromMetadata: plan ?? null,
+    });
+  }
 
   // Build update payload — always sync status & period, optionally sync plan
   const updatePayload: Record<string, any> = {
@@ -541,7 +579,7 @@ export async function handleSubscriptionUpdated(
     current_period_start: new Date(subscription.current_period_start * 1000).toISOString(),
     current_period_end: new Date(subscription.current_period_end * 1000).toISOString(),
     cancel_at_period_end: subscription.cancel_at_period_end,
-    stripe_price_id: subscription.items.data[0]?.price.id,
+    stripe_price_id: priceId,
   };
 
   if (plan && planConfig) {
@@ -549,6 +587,20 @@ export async function handleSubscriptionUpdated(
     updatePayload.calls_limit = planConfig.callsLimit;
     updatePayload.assistants_limit = planConfig.assistants;
     updatePayload.phone_numbers_limit = planConfig.phoneNumbers;
+
+    // Downgrade policy: the new (lower) limits take effect immediately, so
+    // checkResourceLimit blocks creating NEW assistants/numbers over the cap.
+    // Existing over-limit resources are grandfathered (we never auto-delete a
+    // customer's data from a webhook). Log the transition so a downgrade that
+    // leaves an org over its new limits is visible rather than silent.
+    if (existingSub.plan_type && existingSub.plan_type !== plan) {
+      console.log("Subscription plan changed:", {
+        stripeSubscriptionId: subscription.id,
+        organizationId: existingSub.organization_id,
+        from: existingSub.plan_type,
+        to: plan,
+      });
+    }
   }
 
   // Note: We don't reset calls_used here — that's handled by invoice.payment_succeeded
