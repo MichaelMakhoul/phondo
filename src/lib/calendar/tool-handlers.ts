@@ -19,6 +19,7 @@ import {
 } from "@/lib/service-types";
 import { invalidateVoiceScheduleCache } from "@/lib/voice-cache/invalidate";
 import { runAfterResponse } from "@/lib/utils/after-response";
+import { rateLimitDistributed } from "@/lib/security/rate-limiter";
 import { hasNonLatinLetters } from "@/lib/calendar/latin-name";
 import { resolveRescheduleIdentity, resolveRescheduledBooking } from "@/lib/calendar/reschedule-core";
 
@@ -1146,6 +1147,71 @@ function formatDisambigOption(appt: any, tz: string): string {
   return `${dateStr} at ${timeStr}${who} (datetime: ${toLocalIsoMinute(d, tz)}${code})`;
 }
 
+/**
+ * SCRUM-415: when an appointment is located by confirmation_code, verify the
+ * caller actually owns it before mutating — their phone must match the booking's
+ * attendee_phone (last-9-digit comparison, matching the lookup tool's phone
+ * check). A 6-digit code alone (leaked / overheard / guessed) must NOT let a
+ * caller cancel or move a stranger's appointment. The phone-lookup paths already
+ * match attendee_phone, so this only guards the code path.
+ *
+ * Returns null when ownership is verified, or a ToolResult message to return.
+ */
+export function verifyCodeCallerOwnership(
+  appointment: { attendee_phone?: string | null },
+  callerPhone: string | undefined
+): ToolResult | null {
+  const storedDigits = (appointment.attendee_phone || "").replace(/\D/g, "").slice(-9);
+  const providedDigits = (callerPhone || "").replace(/\D/g, "").slice(-9);
+  if (!storedDigits || !providedDigits) {
+    // Can't confirm ownership by phone (no phone on file, or caller gave none).
+    return {
+      success: false,
+      message:
+        "For security, can you confirm the phone number on the booking before I make that change?",
+    };
+  }
+  if (providedDigits !== storedDigits) {
+    return {
+      success: false,
+      message:
+        "That phone number doesn't match the one on the appointment, so I can't change it for security reasons. If it's your appointment, please call from the number on the booking, or I can arrange a callback.",
+    };
+  }
+  return null;
+}
+
+/**
+ * SCRUM-415: bound repeated cancel/reschedule attempts (per org + caller phone)
+ * so a confirmation code can't be brute-forced at scale. Fail-open — never block
+ * a legitimate change on a rate-limiter hiccup. Returns a ToolResult when over
+ * the limit, or null to proceed.
+ */
+async function enforceApptMutationRateLimit(
+  supabase: ReturnType<typeof createAdminClient>,
+  organizationId: string,
+  phone: string | undefined
+): Promise<ToolResult | null> {
+  try {
+    // Keyed per org + caller phone. Phone-less attempts share an "anon" bucket,
+    // which is fine: a phone-less caller can never complete a code mutation
+    // anyway (verifyCodeCallerOwnership blocks an empty caller phone), so the
+    // shared bucket only ever holds already-doomed attempts.
+    const digits = (phone || "").replace(/\D/g, "").slice(-9) || "anon";
+    const rl = await rateLimitDistributed(supabase, `${organizationId}:${digits}`, "appt-mutate", "auth");
+    if (!rl.allowed) {
+      return {
+        success: false,
+        message:
+          "There have been several attempts to change appointments from this number just now — please try again in a minute, or I can arrange a callback.",
+      };
+    }
+  } catch {
+    // Fail-open.
+  }
+  return null;
+}
+
 export async function handleCancelAppointment(
   organizationId: string,
   args: { phone?: string; reason?: string; confirmation_code?: string; date?: string; datetime?: string }
@@ -1167,12 +1233,15 @@ export async function handleCancelAppointment(
 
   const supabase = createAdminClient();
 
+  const rlResult = await enforceApptMutationRateLimit(supabase, organizationId, phone);
+  if (rlResult) return rlResult;
+
   // Try confirmation code first (exact match)
   if (confirmation_code) {
     const code = confirmation_code.trim();
     const { data: codeMatch, error: codeErr } = await (supabase as any)
       .from("appointments")
-      .select("id, start_time, external_id, provider, metadata, confirmation_code, status")
+      .select("id, start_time, attendee_phone, external_id, provider, metadata, confirmation_code, status")
       .eq("organization_id", organizationId)
       .eq("confirmation_code", code)
       .in("status", ["confirmed", "pending"])
@@ -1183,6 +1252,9 @@ export async function handleCancelAppointment(
       return { success: false, message: "I'm having trouble looking up that code right now. Would you like me to have someone call you back?" };
     }
     if (codeMatch) {
+      // SCRUM-415: a code match is not enough — verify the caller owns it.
+      const ownershipError = verifyCodeCallerOwnership(codeMatch, phone);
+      if (ownershipError) return ownershipError;
       return cancelSingleAppointment(supabase, organizationId, codeMatch, reason);
     }
   }
@@ -1438,6 +1510,10 @@ export async function handleRescheduleAppointment(
 
   try {
     const supabase = createAdminClient();
+
+    const rlResult = await enforceApptMutationRateLimit(supabase, organizationId, phone);
+    if (rlResult) return rlResult;
+
     const schedule = await getOrgSchedule(organizationId).catch(() => null);
     const tz = schedule?.timezone || "Australia/Sydney";
 
@@ -1489,6 +1565,10 @@ export async function handleRescheduleAppointment(
         return { success: false, message: "I'm having trouble looking up that appointment right now. Would you like me to have someone call you back?" };
       }
       if (codeRows && codeRows.length === 1) {
+        // SCRUM-415: a code match is not enough — verify the caller owns it
+        // before moving the appointment (selectCols includes attendee_phone).
+        const ownershipError = verifyCodeCallerOwnership(codeRows[0], phone);
+        if (ownershipError) return ownershipError;
         existing = codeRows[0];
       } else if (codeRows && codeRows.length > 1) {
         console.warn("Reschedule: confirmation code matched multiple appointments:", { organizationId });
