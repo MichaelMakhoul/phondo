@@ -24,14 +24,57 @@ const pendingCalls = new Map();
 
 const TOKEN_TTL_MS = 300_000; // 5 minutes — Twilio trial accounts add delays before TwiML fetch
 
+// SCRUM-449: single-use jti guard. A captured token was previously replayable
+// for its full 5-minute TTL while the pendingCall was live — a replayed
+// /ws/outbound connection could open a second (paid) Gemini session and hijack
+// the call result. Tokens are minted and consumed by this same process, so an
+// in-memory consumed set is authoritative (same single-process reasoning as
+// the /ws/test jti caps in lib/test-session-caps.js). A process restart wipes
+// consumedJtis AND pendingCalls together, so a post-restart replay cannot
+// hijack anything (no pending call exists to attach to). The single-use set is
+// per-process — the outbound smoke-test flow assumes a single Fly machine
+// (cross-machine replay is harmless today only because pendingCalls is also
+// per-process).
+const consumedJtis = new Map(); // jti → token exp (ms epoch), for expiry-based sweep
+
+/**
+ * Drop consumed-jti entries whose token exp has passed — once expired, the
+ * exp check rejects the token anyway, so the entry is dead weight. Keeps the
+ * set bounded. Exported for tests; the interval below runs it in production.
+ */
+function cleanupConsumedJtis(now = Date.now()) {
+  for (const [jti, exp] of consumedJtis) {
+    if (now > exp) consumedJtis.delete(jti);
+  }
+}
+
+// Sweep cadence mirrors the pendingTokens sweep in server.js. unref() so the
+// interval never keeps the process (or test runs) alive.
+setInterval(cleanupConsumedJtis, 60_000).unref();
+
 function generateOutboundToken(data, secret) {
-  const payload = { ...data, exp: Date.now() + TOKEN_TTL_MS };
+  // SCRUM-449: jti makes each token single-use — consumed in verifyOutboundToken.
+  const payload = { ...data, jti: crypto.randomUUID(), exp: Date.now() + TOKEN_TTL_MS };
   const payloadB64 = Buffer.from(JSON.stringify(payload)).toString("base64url");
   const sig = crypto.createHmac("sha256", secret || INTERNAL_API_SECRET).update(payloadB64).digest("hex");
   return `${payloadB64}.${sig}`;
 }
 
-function verifyOutboundToken(token, secret) {
+/**
+ * Verify an outbound call token. Fail-closed: malformed, tampered, expired,
+ * jti-less, or already-consumed tokens all return null.
+ *
+ * SCRUM-449: tokens are single-use per jti. A successful verify consumes the
+ * jti by default; pass { consume: false } for pre-flight checks that must not
+ * burn the token (the /outbound/twiml fetch precedes the /ws/outbound connect
+ * in the same legitimate call flow — only the ws stage consumes). Pre-flight
+ * mode still rejects a jti that was consumed elsewhere.
+ *
+ * @param {string|null|undefined} token
+ * @param {string} [secret]
+ * @param {{consume?: boolean}} [options]
+ */
+function verifyOutboundToken(token, secret, options) {
   if (!token) return null;
   try {
     const [payloadB64, sig] = token.split(".");
@@ -44,7 +87,21 @@ function verifyOutboundToken(token, secret) {
     if (!crypto.timingSafeEqual(sigBuf, expectedBuf)) return null;
 
     const payload = JSON.parse(Buffer.from(payloadB64, "base64url").toString());
-    if (payload.exp && Date.now() > payload.exp) return null;
+    // SCRUM-449 (review): exp is REQUIRED, not optional — a signed token
+    // without it would never expire AND its consumedJtis entry would be swept
+    // ~5 min after consumption, silently re-enabling replay. Failing closed
+    // here makes the sweep-safety invariant (entries outlive their token's
+    // validity) unconditional.
+    if (typeof payload.exp !== "number" || Date.now() > payload.exp) return null;
+
+    // SCRUM-449: single-use guard. Tokens without a jti (pre-rollout format)
+    // are NOT accepted — mint and verify run in the same process, so there is
+    // no mixed-version window to stay compatible with.
+    if (typeof payload.jti !== "string" || !payload.jti) return null;
+    if (consumedJtis.has(payload.jti)) return null;
+    if (!options || options.consume !== false) {
+      consumedJtis.set(payload.jti, payload.exp);
+    }
 
     return payload;
   } catch {
@@ -610,6 +667,8 @@ function handleOutboundConnection(twilioWs, tokenData) {
 module.exports = {
   generateOutboundToken,
   verifyOutboundToken,
+  cleanupConsumedJtis,
+  consumedJtis,
   buildCallerPrompt,
   makeOutboundCall,
   runOutboundSuite,

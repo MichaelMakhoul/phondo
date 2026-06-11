@@ -1279,7 +1279,10 @@ app.post("/outbound/setup-fixtures", express.json(), async (req, res) => {
 });
 
 app.post("/outbound/twiml/:token", (req, res) => {
-  const tokenData = verifyOutboundToken(req.params.token, INTERNAL_API_SECRET);
+  // SCRUM-449: pre-flight verify only ({ consume: false }) — the same token is
+  // presented again at the /ws/outbound connect (the stage that consumes the
+  // single-use jti). Consuming here would reject Twilio's own WebSocket.
+  const tokenData = verifyOutboundToken(req.params.token, INTERNAL_API_SECRET, { consume: false });
   if (!tokenData) {
     console.warn("[Outbound] Rejected TwiML request — invalid token");
     return res.status(403).send("Forbidden");
@@ -1299,6 +1302,9 @@ app.post("/outbound/twiml/:token", (req, res) => {
 app.post("/outbound/status/:token", (req, res) => {
   const callStatus = req.body.CallStatus;
   if (callStatus === "no-answer" || callStatus === "busy" || callStatus === "failed") {
+    // SCRUM-449: consuming verify. These statuses only fire when the call never
+    // connected, so the twiml/ws path never ran — the jti is still unconsumed
+    // on the legitimate flow, and a replayed status callback is rejected.
     const tokenData = verifyOutboundToken(req.params.token, INTERNAL_API_SECRET);
     if (tokenData) {
       const pending = outboundPendingCalls.get(req.params.token);
@@ -3391,7 +3397,18 @@ outboundWss.on("connection", (ws, req) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   // /ws/outbound/<token> — strip prefix, decode.
   const rawToken = url.pathname.replace(/^\/ws\/outbound\/?/, "");
-  const token = rawToken ? decodeURIComponent(rawToken) : null;
+  // Malformed percent-encoding makes decodeURIComponent throw URIError — an
+  // unhandled throw in the upgrade path. Leave token null so it falls through
+  // to the same invalid-token rejection below (verifyOutboundToken(null) → null).
+  let token = null;
+  try {
+    token = rawToken ? decodeURIComponent(rawToken) : null;
+  } catch {
+    // rejected below with tokenLen=0 — never log the raw token
+  }
+  // SCRUM-449: this verify CONSUMES the token's single-use jti — a replayed
+  // token (e.g. a second WS connect while the pendingCall is live) returns
+  // null and hits the same rejection path below.
   const tokenData = verifyOutboundToken(token, INTERNAL_API_SECRET);
   if (!tokenData) {
     // SCRUM-430 (finding #42): req.url carries the full presented token in
@@ -3419,8 +3436,9 @@ crWss.on("connection", (ws, req) => {
 server.on("upgrade", (request, socket, head) => {
   const { pathname } = new URL(request.url, `http://${request.headers.host}`);
   // SCRUM-430 (finding #42): NEVER log request.url here — /ws/outbound carries
-  // the (replayable, 5-min TTL) HMAC token in the PATH and /ws/test carries
-  // its token in the QUERY. Log only a redacted route name.
+  // the (single-use since SCRUM-449, 5-min TTL) HMAC token in the PATH and
+  // /ws/test carries its token in the QUERY. A pre-consumption token in logs
+  // is still usable once, so log only a redacted route name.
   const redactedPath = pathname.startsWith("/ws/outbound") ? "/ws/outbound/<redacted>" : pathname;
   console.log(`[Upgrade] path=${redactedPath}`);
 
