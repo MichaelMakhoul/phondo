@@ -38,6 +38,17 @@ const CALENDAR_FUNCTIONS = [
   "lookup_appointment",
 ];
 
+// SCRUM-452: calendar tools that MUTATE appointment rows. Test/demo calls run
+// against the user's REAL organization, so in test mode every one of these must
+// be simulated — a fall-through to the internal API would alter real bookings
+// (reschedule_appointment previously did exactly that). Reads stay real so the
+// LLM gets realistic data.
+const CALENDAR_WRITE_FUNCTIONS = [
+  "book_appointment",
+  "cancel_appointment",
+  "reschedule_appointment",
+];
+
 /**
  * OpenAI-compatible tool definition for scheduling a callback.
  * Always available — callbacks are a universal fallback.
@@ -544,10 +555,10 @@ async function executeToolCall(functionName, args, context) {
 
   if (CALENDAR_FUNCTIONS.includes(functionName)) {
     // In test mode, simulate write operations instead of hitting the real API
-    if (context.testMode && (functionName === "book_appointment" || functionName === "cancel_appointment")) {
+    if (context.testMode && CALENDAR_WRITE_FUNCTIONS.includes(functionName)) {
       return simulateCalendarWrite(functionName, args);
     }
-    // list_service_types is always a read — no simulation needed
+    // list_service_types / lookup_appointment are always reads — no simulation needed
     return executeCalendarCall(functionName, args, context);
   }
 
@@ -953,9 +964,9 @@ async function executeTransferCall(args, context) {
 }
 
 /**
- * Return a simulated response for booking/cancellation during test calls.
- * Reads (get_current_datetime, check_availability) still hit the real API
- * so the LLM gets realistic data, but writes are faked.
+ * Return a simulated response for booking/cancellation/reschedule during test
+ * calls. Reads (get_current_datetime, check_availability) still hit the real
+ * API so the LLM gets realistic data, but writes are faked.
  */
 function simulateCalendarWrite(functionName, args) {
   if (functionName === "book_appointment") {
@@ -968,6 +979,17 @@ function simulateCalendarWrite(functionName, args) {
   if (functionName === "cancel_appointment") {
     return {
       message: `The appointment associated with ${args.phone} has been cancelled successfully.`,
+    };
+  }
+  if (functionName === "reschedule_appointment") {
+    // SCRUM-452: reschedule previously fell through to the REAL internal API —
+    // a test caller saying "move my appointment" created a real reschedule leg
+    // and freed the real slot. Mirror the real handler's confirmation wording
+    // ("Done — I've moved your appointment from X. …" in tool-handlers.ts) so
+    // the model speaks a plausible confirmation of the new time.
+    const oldRef = args.current_datetime || args.current_date;
+    return {
+      message: `Done — I've moved your appointment${oldRef ? ` from ${oldRef}` : ""} to ${args.new_datetime}.`,
     };
   }
   return { message: "Done." };
