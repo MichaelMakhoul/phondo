@@ -17,6 +17,10 @@ export async function GET(req: NextRequest) {
     .not("requested_time", "is", null)
     .lte("requested_time", new Date().toISOString())
     .is("reminder_sent_at", null)
+    // Oldest first — without an explicit order, retried failures at the head
+    // of an unspecified ordering could starve newly-due reminders behind the
+    // 50-row limit (SCRUM-419 review).
+    .order("requested_time", { ascending: true })
     .limit(50);
 
   if (error) {
@@ -45,7 +49,26 @@ export async function GET(req: NextRequest) {
         urgency: cb.urgency,
       });
     } catch (notifyErr) {
-      console.error(`[Cron] Failed to send reminder for callback ${cb.id}:`, notifyErr);
+      // "0 notification channels delivered" (SCRUM-419) is a PERMANENT org
+      // configuration problem (e.g. owner-email lookup failing with email the
+      // only wanted channel) — retrying next run can't succeed and would loop
+      // this row forever, crowding the 50-row window. Mark it abandoned so it
+      // leaves the queue; the failure is already logged + Sentry-reported by
+      // the notification service. Transient send failures still retry.
+      const isPermanentChannelFailure =
+        notifyErr instanceof Error && notifyErr.message.includes("0 notification channels delivered");
+      if (isPermanentChannelFailure) {
+        console.error(`[Cron] Abandoning reminder for callback ${cb.id} — org has no working notification channels:`, notifyErr.message);
+        const { error: abandonError } = await (supabase as any)
+          .from("callback_requests")
+          .update({ reminder_sent_at: new Date().toISOString() })
+          .eq("id", cb.id);
+        if (abandonError) {
+          console.error(`[Cron] Failed to mark abandoned reminder ${cb.id} — it will retry next run:`, abandonError);
+        }
+      } else {
+        console.error(`[Cron] Failed to send reminder for callback ${cb.id} (will retry next run):`, notifyErr);
+      }
       continue;
     }
 
