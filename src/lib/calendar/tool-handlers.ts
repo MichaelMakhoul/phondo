@@ -1955,6 +1955,14 @@ async function bookViaCal(
       };
     }
 
+    if (error.message?.includes("timed out after 10s")) {
+      // SCRUM-432 review: a timed-out createBooking may have COMPLETED on
+      // Cal.com's side — there may be an orphaned booking on the business's
+      // calendar with no local record (findable: metadata.source =
+      // "ai_receptionist" + organizationId). Flag loudly for reconciliation.
+      console.error("[Booking] Cal.com timeout — POSSIBLE ORPHANED Cal.com booking needing manual reconciliation:", { organizationId });
+    }
+
     console.error("Book appointment error:", { organizationId, message: error.message, stack: error.stack });
     return {
       success: false,

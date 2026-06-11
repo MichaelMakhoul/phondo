@@ -204,18 +204,43 @@ export class CalComClient {
           "Content-Type": "application/json",
           ...options.headers,
         },
+        // SCRUM-432 (finding #54): this client is awaited inside the live
+        // voice tool path — without a timeout a hung Cal.com connection
+        // strands the caller indefinitely. 10s is far beyond Cal.com's
+        // normal latency; the voice filler covers the wait.
+        signal: AbortSignal.timeout(10_000),
       });
     } catch (err) {
+      if (err instanceof Error && err.name === "TimeoutError") {
+        throw new Error("Cal.com API timed out after 10s");
+      }
       // Strip URL (contains API key) from network-level errors
       throw new Error(`Cal.com API network error: ${err instanceof Error ? err.message : "fetch failed"}`);
     }
 
     if (!response.ok) {
-      const errorText = await response.text();
+      // Body reads can ALSO stall past the abort (headers arrived, body
+      // didn't) — translate those timeouts the same way (SCRUM-432 review).
+      let errorText = "";
+      try {
+        errorText = await response.text();
+      } catch (err) {
+        if (err instanceof Error && err.name === "TimeoutError") {
+          throw new Error("Cal.com API timed out after 10s");
+        }
+        throw err;
+      }
       throw new Error(`Cal.com API error: ${response.status} - ${errorText}`);
     }
 
-    return response.json();
+    try {
+      return await response.json();
+    } catch (err) {
+      if (err instanceof Error && err.name === "TimeoutError") {
+        throw new Error("Cal.com API timed out after 10s");
+      }
+      throw err;
+    }
   }
 
   /**

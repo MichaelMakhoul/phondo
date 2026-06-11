@@ -50,6 +50,7 @@ interface ConflictingAppointment {
 export function BlockedTimesCard() {
   const [blocks, setBlocks] = useState<BlockedTime[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [adding, setAdding] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [conflicts, setConflicts] = useState<ConflictingAppointment[]>([]);
@@ -69,9 +70,15 @@ export function BlockedTimesCard() {
   const fetchBlocks = async () => {
     try {
       const res = await fetch("/api/v1/blocked-times");
-      if (res.ok) setBlocks(await res.json());
-    } catch {
-      // Silent fail on load
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setBlocks(await res.json());
+      setLoadError(false);
+    } catch (err) {
+      // SCRUM-432 (finding #57): a swallowed load error rendered an empty
+      // list — indistinguishable from "no blocks", inviting double-booking
+      // over invisible time off. Surface it.
+      console.error("[BlockedTimes] Failed to load:", err);
+      setLoadError(true);
     } finally {
       setLoading(false);
     }
@@ -301,6 +308,16 @@ export function BlockedTimesCard() {
         {loading ? (
           <div className="flex justify-center py-4">
             <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+          </div>
+        ) : loadError ? (
+          <div className="text-sm text-destructive space-y-2">
+            <p>Couldn&apos;t load blocked times — existing blocks may not be shown.</p>
+            <Button
+              variant="outline" size="sm"
+              onClick={() => { setLoading(true); fetchBlocks(); }}
+            >
+              Retry
+            </Button>
           </div>
         ) : blocks.length === 0 ? (
           <p className="text-sm text-muted-foreground text-center py-4">
