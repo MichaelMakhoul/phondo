@@ -28,7 +28,14 @@ vi.mock("@/lib/stripe/billing-service", () => ({
     if (h.handlerError) throw h.handlerError;
   }),
   handleSubscriptionCanceled: vi.fn(async () => {}),
-  resetMonthlyUsage: vi.fn(async () => {}),
+  // SCRUM-409: the invoice handlers throw on a real DB error so the ledger claim
+  // is released and Stripe retries (asserted below).
+  handleInvoicePaymentSucceeded: vi.fn(async () => {
+    if (h.handlerError) throw h.handlerError;
+  }),
+  handleInvoicePaymentFailed: vi.fn(async () => {
+    if (h.handlerError) throw h.handlerError;
+  }),
 }));
 
 vi.mock("@/lib/supabase/admin", () => ({
@@ -110,6 +117,20 @@ describe("POST /api/webhooks/stripe — idempotency ledger (SCRUM-349)", () => {
     // claim must be deleted so the redelivery isn't skipped as a duplicate
     expect(h.deletes).toEqual([
       { table: "stripe_processed_events", col: "event_id", val: "evt_test_1" },
+    ]);
+  });
+
+  it("releases the claim and 500s when an invoice handler throws (SCRUM-409)", async () => {
+    // Directly covers the seam this fix is about: a DB fault inside the invoice
+    // handler must release the ledger row so Stripe's redelivery re-applies the
+    // usage reset / past_due write rather than being skipped as a duplicate.
+    h.event = { id: "evt_inv_1", type: "invoice.payment_succeeded", data: { object: {} } };
+    h.handlerError = new Error("db down");
+    const res = await POST(makeReq());
+    expect(res.status).toBe(500);
+    expect(billing.handleInvoicePaymentSucceeded).toHaveBeenCalledTimes(1);
+    expect(h.deletes).toEqual([
+      { table: "stripe_processed_events", col: "event_id", val: "evt_inv_1" },
     ]);
   });
 

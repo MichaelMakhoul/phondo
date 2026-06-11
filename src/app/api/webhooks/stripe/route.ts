@@ -4,7 +4,8 @@ import {
   handleSubscriptionCreated,
   handleSubscriptionUpdated,
   handleSubscriptionCanceled,
-  resetMonthlyUsage,
+  handleInvoicePaymentSucceeded,
+  handleInvoicePaymentFailed,
 } from "@/lib/stripe/billing-service";
 import { createAdminClient } from "@/lib/supabase/admin";
 import type Stripe from "stripe";
@@ -95,37 +96,16 @@ export async function POST(request: Request) {
       }
 
       case "invoice.payment_succeeded": {
-        const invoice = event.data.object as Stripe.Invoice;
-        const subscriptionId = invoice.subscription as string;
-
-        // Reset call usage at the start of new billing period
-        if (subscriptionId && invoice.billing_reason === "subscription_cycle") {
-          const supabase = createAdminClient();
-          const { data: sub } = await (supabase as any)
-            .from("subscriptions")
-            .select("organization_id")
-            .eq("stripe_subscription_id", subscriptionId)
-            .single();
-
-          if (sub) {
-            await resetMonthlyUsage(sub.organization_id);
-          }
-        }
+        // Resets call usage on a new billing cycle. Throws on a real DB error so
+        // the ledger claim is released below and Stripe retries (SCRUM-409).
+        await handleInvoicePaymentSucceeded(event.data.object as Stripe.Invoice);
         break;
       }
 
       case "invoice.payment_failed": {
-        const invoice = event.data.object as Stripe.Invoice;
-        const subscriptionId = invoice.subscription as string;
-
-        if (subscriptionId) {
-          const supabase = createAdminClient();
-          // Update subscription status to past_due
-          await (supabase as any)
-            .from("subscriptions")
-            .update({ status: "past_due" })
-            .eq("stripe_subscription_id", subscriptionId);
-        }
+        // Marks the subscription past_due. Throws on a DB error so Stripe retries
+        // rather than the row silently staying "active" (SCRUM-409).
+        await handleInvoicePaymentFailed(event.data.object as Stripe.Invoice);
         break;
       }
 

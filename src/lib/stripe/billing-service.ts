@@ -325,7 +325,8 @@ export async function canMakeCall(organizationId: string): Promise<boolean> {
 }
 
 /**
- * Reset monthly usage (called by cron job at billing period reset)
+ * Reset monthly usage at a billing-period reset. Invoked from the
+ * invoice.payment_succeeded webhook handler (handleInvoicePaymentSucceeded).
  */
 export async function resetMonthlyUsage(organizationId: string): Promise<void> {
   const supabase = createAdminClient();
@@ -338,6 +339,81 @@ export async function resetMonthlyUsage(organizationId: string): Promise<void> {
   if (error) {
     console.error("Failed to reset monthly usage:", { organizationId, error });
     throw new Error(`Failed to reset monthly usage for org ${organizationId}: ${error.message}`);
+  }
+}
+
+/**
+ * Handle invoice.payment_succeeded — reset call usage at the start of a new
+ * billing cycle. THROWS on a real DB error so the webhook's idempotency ledger
+ * releases the claim and Stripe retries, rather than silently ACKing a usage
+ * reset that never happened (SCRUM-409). A missing local subscription row is
+ * acked (a retry can't conjure it).
+ */
+export async function handleInvoicePaymentSucceeded(invoice: Stripe.Invoice): Promise<void> {
+  // Webhook invoices never expand `subscription`, so it is the string id here
+  // (the type also allows an expanded Stripe.Subscription). If a future change
+  // ever passes an expanded invoice, this cast would put [object Object] into
+  // the .eq() filter — revisit then.
+  const subscriptionId = invoice.subscription as string | null;
+  if (!subscriptionId || invoice.billing_reason !== "subscription_cycle") return;
+
+  const supabase = createAdminClient();
+  const { data: sub, error } = await (supabase as any)
+    .from("subscriptions")
+    .select("organization_id")
+    .eq("stripe_subscription_id", subscriptionId)
+    .maybeSingle();
+
+  if (error) {
+    console.error("invoice.payment_succeeded: subscription lookup failed:", {
+      stripeSubscriptionId: subscriptionId,
+      error,
+    });
+    throw new Error(
+      `invoice.payment_succeeded lookup failed for ${subscriptionId}: ${error.message}`
+    );
+  }
+
+  if (!sub) {
+    console.warn(
+      "invoice.payment_succeeded: no local subscription for",
+      subscriptionId,
+      "— skipping usage reset",
+    );
+    return;
+  }
+
+  // resetMonthlyUsage throws on DB error → propagates so the webhook retries.
+  await resetMonthlyUsage(sub.organization_id);
+}
+
+/**
+ * Handle invoice.payment_failed — mark the subscription past_due. THROWS on a DB
+ * error so the webhook retries instead of silently leaving the row "active"
+ * (SCRUM-409).
+ */
+export async function handleInvoicePaymentFailed(invoice: Stripe.Invoice): Promise<void> {
+  // Webhook invoices never expand `subscription`, so it is the string id here
+  // (the type also allows an expanded Stripe.Subscription). If a future change
+  // ever passes an expanded invoice, this cast would put [object Object] into
+  // the .eq() filter — revisit then.
+  const subscriptionId = invoice.subscription as string | null;
+  if (!subscriptionId) return;
+
+  const supabase = createAdminClient();
+  const { error } = await (supabase as any)
+    .from("subscriptions")
+    .update({ status: "past_due" })
+    .eq("stripe_subscription_id", subscriptionId);
+
+  if (error) {
+    console.error("invoice.payment_failed: failed to mark past_due:", {
+      stripeSubscriptionId: subscriptionId,
+      error,
+    });
+    throw new Error(
+      `invoice.payment_failed update failed for ${subscriptionId}: ${error.message}`
+    );
   }
 }
 
