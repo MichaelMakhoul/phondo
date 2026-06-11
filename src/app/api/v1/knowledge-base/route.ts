@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { resyncOrgAssistants } from "@/lib/knowledge-base";
 import { z } from "zod";
 
 const createKBSchema = z.object({
@@ -112,18 +111,8 @@ export async function POST(request: Request) {
       );
     }
 
-    // Resync all org assistants with updated KB
-    let resyncWarning: string | undefined;
-    try {
-      await resyncOrgAssistants(supabase, membership.organization_id);
-    } catch (err) {
-      console.error("Failed to resync assistants:", err);
-      resyncWarning = "Knowledge base saved, but assistants may take a moment to reflect changes.";
-    }
-
     return NextResponse.json({
       ...entry,
-      ...(resyncWarning && { warning: resyncWarning }),
     }, { status: 201 });
   } catch (error) {
     console.error("Error creating knowledge base:", error);

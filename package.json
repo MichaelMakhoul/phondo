@@ -35,7 +35,6 @@
     "@supabase/supabase-js": "^2.47.15",
     "@upstash/ratelimit": "^2.0.8",
     "@upstash/redis": "^1.36.2",
-    "@vapi-ai/web": "^2.5.2",
     "canvas-confetti": "^1.9.4",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

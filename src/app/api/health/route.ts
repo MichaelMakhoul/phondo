@@ -29,7 +29,6 @@ export async function GET(request: Request) {
     "NEXT_PUBLIC_SUPABASE_URL",
     "NEXT_PUBLIC_SUPABASE_ANON_KEY",
     "SUPABASE_SERVICE_ROLE_KEY",
-    "VAPI_API_KEY",
   ];
   const missingCount = requiredEnvVars.filter((key) => !process.env[key]).length;
   if (missingCount > 0) {
