@@ -6,6 +6,7 @@
  * (never block revenue), hard caps for expired trials (enforce conversion).
  */
 
+import * as Sentry from "@sentry/nextjs";
 import { createAdminClient } from "@/lib/supabase/admin";
 import {
   getStripeClient,
@@ -52,6 +53,17 @@ function resolvePlanType(raw: string, throwOnUnknown = false): PlanType {
   return resolved;
 }
 
+// Subscription states in which Stripe is (or will resume) billing the customer.
+// Shared by the checkout guard and the duplicate-subscription reconciliation.
+//
+// 'unpaid' is deliberately EXCLUDED: with Stripe's default dunning settings
+// (ours) a subscription whose retries are exhausted is CANCELED, not marked
+// unpaid, so the status is unreachable in practice. Accepted residual: if an
+// existing row ever does read 'unpaid', the reconciliation below overwrites
+// it without canceling — revisit if dunning is ever reconfigured to
+// "mark as unpaid".
+export const LIVE_SUBSCRIPTION_STATUSES = ["active", "trialing", "past_due"];
+
 /**
  * Whether an existing subscription row must block a NEW paid checkout.
  *
@@ -67,7 +79,7 @@ export function blocksNewCheckout(
   if (!sub) return false;
   const id = sub.stripe_subscription_id ?? "";
   if (id === "" || id.startsWith("trial_")) return false;
-  return ["active", "trialing", "past_due"].includes(sub.status ?? "");
+  return LIVE_SUBSCRIPTION_STATUSES.includes(sub.status ?? "");
 }
 
 export type SubscriptionStatus =
@@ -546,6 +558,114 @@ export async function handleSubscriptionCreated(
       { stripeSubscriptionId: subscription.id, status: subscription.status }
     );
     return;
+  }
+
+  // SCRUM-433: the upsert below is keyed on organization_id, so if the org's
+  // row already points at a DIFFERENT live Stripe subscription, blindly
+  // overwriting would ORPHAN that subscription — Stripe keeps billing it while
+  // our DB no longer knows it exists. This can only be the duplicate-checkout
+  // race (two tabs with different plans → different idempotency keys → two real
+  // subs): legitimate plan changes never arrive here as a NEW subscription
+  // (subscribed orgs are routed to the Billing Portal, which swaps the price on
+  // the EXISTING subscription → customer.subscription.updated), and out-of-band
+  // dashboard subs carry no organizationId metadata so they bail above. Resolve
+  // by letting the incoming subscription win (matching the upsert) and
+  // canceling the orphan so the customer is never double-billed.
+  const { data: existingRow, error: existingLookupError } = await (supabase as any)
+    .from("subscriptions")
+    .select("stripe_subscription_id, status")
+    .eq("organization_id", organizationId)
+    .maybeSingle();
+
+  if (existingLookupError) {
+    // Can't tell whether an orphan exists — throw so the webhook's idempotency
+    // ledger releases the claim and Stripe retries, rather than guessing.
+    console.error("handleSubscriptionCreated: existing-subscription lookup failed:", {
+      stripeSubscriptionId: subscription.id,
+      organizationId,
+      error: existingLookupError,
+    });
+    throw new Error(
+      `Existing subscription lookup failed for org ${organizationId}: ${existingLookupError.message}`
+    );
+  }
+
+  const existingId: string = existingRow?.stripe_subscription_id ?? "";
+  const conflictsWithLiveSub =
+    existingId !== "" &&
+    !existingId.startsWith("trial_") &&
+    existingId !== subscription.id &&
+    LIVE_SUBSCRIPTION_STATUSES.includes(existingRow?.status ?? "");
+
+  if (conflictsWithLiveSub) {
+    const stripe = getStripeClient();
+
+    // Each subscription funnels through here twice (checkout.session.completed
+    // AND customer.subscription.created), and the created-event payload is a
+    // creation-time snapshot — so re-retrieve the incoming sub first. If it is
+    // no longer live, it LOST this race in an earlier pass (we already canceled
+    // it); writing it now would cancel the survivor and leave the org with no
+    // live subscription at all.
+    //
+    // NOTE: equating "not live" with "lost an earlier race" assumes card-only
+    // checkout, where a just-created subscription can never be 'incomplete'
+    // (cards settle synchronously at checkout). If delayed payment methods
+    // (e.g. bank debits) are ever enabled, an incoming sub could legitimately
+    // sit at 'incomplete' here and this branch must be revisited.
+    const incomingFresh = await stripe.subscriptions.retrieve(subscription.id);
+    if (!LIVE_SUBSCRIPTION_STATUSES.includes(incomingFresh.status)) {
+      console.warn(
+        "handleSubscriptionCreated: incoming subscription no longer live (lost the duplicate-checkout race) — keeping existing row:",
+        { incoming: subscription.id, existing: existingId, organizationId }
+      );
+      return;
+    }
+
+    // Re-retrieve the existing sub too: the DB status may be stale (e.g. its
+    // cancellation webhook hasn't landed yet). Only cancel when it is REALLY
+    // still live at Stripe.
+    let existingLive = false;
+    try {
+      const existingFresh = await stripe.subscriptions.retrieve(existingId);
+      existingLive = LIVE_SUBSCRIPTION_STATUSES.includes(existingFresh.status);
+    } catch (err) {
+      if ((err as { code?: string })?.code !== "resource_missing") {
+        throw err; // transient Stripe error → webhook retries
+      }
+      // resource_missing: nothing live to orphan — safe to overwrite.
+    }
+
+    if (existingLive) {
+      // Both subscriptions are live: the customer is being double-billed RIGHT
+      // NOW. Cancel the orphaned (previous) one — the incoming sub wins, which
+      // matches what the upsert records. Cancellation stops future billing but
+      // does NOT refund an already-paid invoice, so flag it for follow-up.
+      //
+      // Capture to Sentry BEFORE attempting the cancel: if the cancel keeps
+      // failing (webhook retries eventually exhaust), the customer stays
+      // actively double-billed and a post-cancel capture would never fire.
+      Sentry.withScope((scope) => {
+        scope.setExtras({
+          organizationId,
+          canceledSubscriptionId: existingId,
+          keptSubscriptionId: subscription.id,
+        });
+        Sentry.captureMessage(
+          "Stripe duplicate subscription detected: canceling orphaned subscription — verify no refund is owed",
+          "warning"
+        );
+      });
+      await stripe.subscriptions.cancel(existingId);
+      console.error(
+        "handleSubscriptionCreated: duplicate live subscriptions for org — canceled the orphaned one (verify no refund is owed):",
+        { canceled: existingId, kept: subscription.id, organizationId }
+      );
+    } else {
+      console.warn(
+        "handleSubscriptionCreated: DB row pointed at a non-live subscription (stale status) — overwriting without cancel:",
+        { previous: existingId, incoming: subscription.id, organizationId }
+      );
+    }
   }
 
   // Resolve the plan from the subscription's actual price id first (the only

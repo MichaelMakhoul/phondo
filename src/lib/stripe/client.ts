@@ -245,6 +245,19 @@ export async function createCheckoutSession(
   );
 }
 
+/**
+ * Fetch a checkout session's LIVE state. Needed because Stripe's idempotency
+ * layer replays the ORIGINAL create response (status at creation, i.e. "open"),
+ * so the create call alone can't reveal that a key-reused session has since
+ * been completed or expired (SCRUM-433).
+ */
+export async function retrieveCheckoutSession(
+  sessionId: string
+): Promise<Stripe.Checkout.Session> {
+  const stripe = getStripeClient();
+  return stripe.checkout.sessions.retrieve(sessionId);
+}
+
 export async function createBillingPortalSession(
   customerId: string,
   returnUrl: string
