@@ -1,1 +1,0 @@
-export { getAggregatedKnowledgeBase } from "./aggregate";

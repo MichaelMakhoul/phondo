@@ -44,7 +44,7 @@ export interface CountryConfig {
   suggestedAreaCodes: AreaCodeSuggestion[];
   suspiciousAreaCodes: string[];
   locale: string;
-  phoneProvider: "vapi" | "twilio" | "telnyx";
+  phoneProvider: "twilio" | "telnyx";
   twilioCountryCode: string; // ISO country code — used by both Twilio and Telnyx
 }
 
