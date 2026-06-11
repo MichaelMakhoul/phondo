@@ -33,7 +33,11 @@ export async function GET() {
       .order("sort_order", { ascending: true });
 
     // TODO: Surface error state in UI — currently the frontend doesn't show an error banner on query failure
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    if (error) {
+      // SCRUM-430 (finding #40): log detail server-side, return generic.
+      console.error("ServiceTypes DB error:", error);
+      return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+    }
     return NextResponse.json(data);
   } catch (err) {
     console.error("[ServiceTypes] GET error:", err);
@@ -86,7 +90,11 @@ export async function POST(request: NextRequest) {
       .select()
       .single();
 
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    if (error) {
+      // SCRUM-430 (finding #40): log detail server-side, return generic.
+      console.error("ServiceTypes DB error:", error);
+      return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+    }
     return NextResponse.json(data, { status: 201 });
   } catch (err) {
     console.error("[ServiceTypes] POST error:", err);

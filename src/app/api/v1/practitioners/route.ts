@@ -42,7 +42,11 @@ export async function GET() {
       .eq("is_active", true)
       .order("name", { ascending: true });
 
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    if (error) {
+      // SCRUM-430 (finding #40): log detail server-side, return generic.
+      console.error("Practitioners DB error:", error);
+      return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+    }
 
     // Flatten the nested service data for easier consumption
     const result = (practitioners || []).map((p: any) => ({
@@ -141,7 +145,11 @@ export async function POST(request: NextRequest) {
       .select()
       .single();
 
-    if (insertError) return NextResponse.json({ error: insertError.message }, { status: 500 });
+    if (insertError) {
+      // SCRUM-430 (finding #40): log detail server-side, return generic.
+      console.error("Practitioner insert DB error:", insertError);
+      return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+    }
 
     // Validate and insert service associations
     let serviceWarning: string | undefined;

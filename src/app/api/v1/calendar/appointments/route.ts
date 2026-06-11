@@ -81,8 +81,10 @@ export async function GET(request: NextRequest) {
       .order("start_time", { ascending: true });
 
     if (apptError) {
+      // SCRUM-430 (finding #40): log detail server-side, return generic.
+      console.error("Calendar appointments DB error:", apptError);
       return NextResponse.json(
-        { error: apptError.message },
+        { error: "Internal server error" },
         { status: 500 }
       );
     }

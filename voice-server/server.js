@@ -3387,7 +3387,9 @@ outboundWss.on("connection", (ws, req) => {
   const token = rawToken ? decodeURIComponent(rawToken) : null;
   const tokenData = verifyOutboundToken(token, INTERNAL_API_SECRET);
   if (!tokenData) {
-    console.warn(`[Outbound] Rejected /ws/outbound — invalid token (url=${req.url}, tokenLen=${token?.length || 0})`);
+    // SCRUM-430 (finding #42): req.url carries the full presented token in
+    // the path — never write it to Fly/Loki. Length is enough to triage.
+    console.warn(`[Outbound] Rejected /ws/outbound — invalid token (tokenLen=${token?.length || 0})`);
     ws.close(1008, "invalid token");
     return;
   }
@@ -3408,8 +3410,12 @@ crWss.on("connection", (ws, req) => {
 // Route WebSocket upgrades by path — ws library doesn't support multiple
 // WebSocketServer instances with { server, path } on the same HTTP server.
 server.on("upgrade", (request, socket, head) => {
-  console.log(`[Upgrade] url=${request.url}`);
   const { pathname } = new URL(request.url, `http://${request.headers.host}`);
+  // SCRUM-430 (finding #42): NEVER log request.url here — /ws/outbound carries
+  // the (replayable, 5-min TTL) HMAC token in the PATH and /ws/test carries
+  // its token in the QUERY. Log only a redacted route name.
+  const redactedPath = pathname.startsWith("/ws/outbound") ? "/ws/outbound/<redacted>" : pathname;
+  console.log(`[Upgrade] path=${redactedPath}`);
 
   if (pathname === "/ws/audio") {
     wss.handleUpgrade(request, socket, head, (ws) => {
