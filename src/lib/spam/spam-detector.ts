@@ -11,7 +11,7 @@
  */
 
 import { createAdminClient } from "@/lib/supabase/admin";
-import { getCountryConfig } from "@/lib/country-config";
+import { getCountryConfig, getCountryForCallingCode } from "@/lib/country-config";
 
 export interface SpamAnalysisResult {
   readonly isSpam: boolean;
@@ -93,9 +93,11 @@ const SPAM_INDICATORS = {
 };
 
 /**
- * Analyze a phone number for spam indicators
+ * Analyze a phone number for spam indicators.
+ *
+ * Exported for unit testing (see __tests__/spam-phone-country.test.ts).
  */
-function analyzePhoneNumber(phone: string, countryCode: string = "US"): {
+export function analyzePhoneNumber(phone: string, countryCode: string = "US"): {
   score: number;
   reasons: string[];
 } {
@@ -105,8 +107,16 @@ function analyzePhoneNumber(phone: string, countryCode: string = "US"): {
   // Normalize phone number
   const normalized = phone.replace(/\D/g, "");
 
-  // Country-aware validation
-  const config = getCountryConfig(countryCode);
+  // Country-aware validation. An E.164 caller (leading "+") carries its own
+  // country — a legitimate +1 US caller dialing an AU org must be validated
+  // (and area-code-scored) under US rules, not fail AU validateNational and
+  // eat the invalid-format penalty (SCRUM-441). National-format numbers have
+  // no calling code, so they fall back to the org's country; so does an
+  // E.164 number from a country we don't support yet.
+  const validationCountry = phone.trim().startsWith("+")
+    ? getCountryForCallingCode(normalized) ?? countryCode
+    : countryCode;
+  const config = getCountryConfig(validationCountry);
 
   if (!config.phone.validateNational(normalized)) {
     score += 5;
