@@ -2632,10 +2632,36 @@ export async function handleLookupAppointment(
     };
   }
 
+  // SCRUM-437: caller ID is trivially spoofable on the PSTN, so a match
+  // anchored ONLY by the phone number must never hand the stored identity back
+  // to the model. Of the verification fields, only name/email actually
+  // constrain the DB match (date_of_birth is collected above but has no
+  // appointments column to verify against), so attendee_name is selected ONLY
+  // when a name/email filter applies. A phone-only lookup still confirms
+  // logistics (date/time/service/practitioner) but the stored name never
+  // leaves the database for a potential number-spoofer to extract.
+  const matchesByName = verificationFields.includes("name") && !!args.name?.trim();
+  const matchesByEmail = verificationFields.includes("email") && !!args.email?.trim();
+  const includeIdentity = matchesByName || matchesByEmail;
+
+  // SCRUM-437 (review): a digit-less or too-short phone ("anonymous", "n/a",
+  // "8") must never reach the query — an empty suffix degenerates the ilike
+  // filter to '%', which matches EVERY upcoming appointment, and a 1-2 digit
+  // suffix barely narrows it. Reuse the booking-path validator (8-15 digits).
+  if (verificationFields.includes("phone") && args.phone && !isValidPhoneNumber(args.phone)) {
+    return {
+      success: false,
+      message:
+        "That phone number doesn't look complete. Could you please give me the full phone number the appointment was booked under?",
+    };
+  }
+
   // 3. Build the query — match ALL required fields
   let query = (supabase as any)
     .from("appointments")
-    .select("id, attendee_name, attendee_phone, attendee_email, start_time, end_time, duration_minutes, status, service_type_id, practitioner_id")
+    .select(
+      `id, ${includeIdentity ? "attendee_name, " : ""}attendee_phone, attendee_email, start_time, end_time, duration_minutes, status, service_type_id, practitioner_id`
+    )
     .eq("organization_id", organizationId)
     .in("status", ["confirmed", "pending"])
     .gte("start_time", new Date().toISOString()) // Only future appointments
@@ -2643,16 +2669,18 @@ export async function handleLookupAppointment(
     .limit(5);
 
   // Apply verification filters
-  if (verificationFields.includes("name") && args.name) {
+  if (matchesByName && args.name) {
     query = query.ilike("attendee_name", `%${escapeLike(args.name.trim())}%`);
   }
   if (verificationFields.includes("phone") && args.phone) {
     const cleanPhone = args.phone.replace(/\D/g, "");
-    // Match last 9 digits to handle different country code formats
+    // Match last 9 digits to handle different country code formats.
+    // SCRUM-437: anchored ends-with (no trailing %) — a floating `%suffix%`
+    // would also match the digits buried anywhere inside a longer stored value.
     const phoneSuffix = cleanPhone.length > 9 ? cleanPhone.slice(-9) : cleanPhone;
-    query = query.ilike("attendee_phone", `%${phoneSuffix}%`);
+    query = query.ilike("attendee_phone", `%${phoneSuffix}`);
   }
-  if (verificationFields.includes("email") && args.email) {
+  if (matchesByEmail && args.email) {
     query = query.ilike("attendee_email", `%${escapeLike(args.email.trim())}%`);
   }
 
