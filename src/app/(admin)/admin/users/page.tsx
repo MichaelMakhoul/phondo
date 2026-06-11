@@ -1,4 +1,5 @@
 import { createAdminClient } from "@/lib/supabase/admin";
+import { requirePlatformAdmin } from "@/lib/admin/require-admin";
 import { Badge } from "@/components/ui/badge";
 import { formatAdminDateShort } from "@/lib/admin/format";
 import {
@@ -37,6 +38,9 @@ interface OrgNameRow {
 }
 
 export default async function AdminUsersPage() {
+  // Per-page admin gate — layouts don't re-run on soft navigation (SCRUM-420).
+  await requirePlatformAdmin();
+
   const supabase = createAdminClient();
 
   const [profilesResult, membersResult] = await Promise.all([

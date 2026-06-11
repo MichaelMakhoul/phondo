@@ -1,4 +1,5 @@
 import { createAdminClient } from "@/lib/supabase/admin";
+import { requirePlatformAdmin } from "@/lib/admin/require-admin";
 import { StatCard } from "@/components/admin/stat-card";
 import { formatAdminDateShort } from "@/lib/admin/format";
 import {
@@ -31,6 +32,9 @@ interface PhoneNumberRow {
 }
 
 export default async function AdminNumbersPage() {
+  // Per-page admin gate — layouts don't re-run on soft navigation (SCRUM-420).
+  await requirePlatformAdmin();
+
   const supabase = createAdminClient();
 
   const { data: numbersData, error: numbersError } = await (supabase as any)

@@ -1,4 +1,5 @@
 import { createAdminClient } from "@/lib/supabase/admin";
+import { requirePlatformAdmin } from "@/lib/admin/require-admin";
 import { PLANS } from "@/lib/stripe/client";
 import { Badge } from "@/components/ui/badge";
 import { StatCard } from "@/components/admin/stat-card";
@@ -39,6 +40,9 @@ interface SubscriptionRow {
 }
 
 export default async function AdminBillingPage() {
+  // Per-page admin gate — layouts don't re-run on soft navigation (SCRUM-420).
+  await requirePlatformAdmin();
+
   const supabase = createAdminClient();
 
   const { data: subs, error: subsError } = await (supabase as any)

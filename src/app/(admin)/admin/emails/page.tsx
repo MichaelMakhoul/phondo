@@ -1,4 +1,5 @@
 import { createAdminClient } from "@/lib/supabase/admin";
+import { requirePlatformAdmin } from "@/lib/admin/require-admin";
 import { StatCard } from "@/components/admin/stat-card";
 import { formatAdminDate } from "@/lib/admin/format";
 import { Mail, AlertTriangle } from "lucide-react";
@@ -30,6 +31,9 @@ interface EmailLogRow {
 }
 
 export default async function AdminEmailsPage() {
+  // Per-page admin gate — layouts don't re-run on soft navigation (SCRUM-420).
+  await requirePlatformAdmin();
+
   const supabase = createAdminClient();
 
   const todayStart = new Date();

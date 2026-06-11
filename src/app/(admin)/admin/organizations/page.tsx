@@ -1,4 +1,5 @@
 import { createAdminClient } from "@/lib/supabase/admin";
+import { requirePlatformAdmin } from "@/lib/admin/require-admin";
 import { Badge } from "@/components/ui/badge";
 import { formatAdminDateShort } from "@/lib/admin/format";
 import Link from "next/link";
@@ -32,6 +33,9 @@ interface OrgRow {
 }
 
 export default async function AdminOrganizationsPage() {
+  // Per-page admin gate — layouts don't re-run on soft navigation (SCRUM-420).
+  await requirePlatformAdmin();
+
   const supabase = createAdminClient();
 
   const { data: orgs, error: orgsError } = await (supabase as any)

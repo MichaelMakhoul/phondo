@@ -1,4 +1,5 @@
 import { createAdminClient } from "@/lib/supabase/admin";
+import { requirePlatformAdmin } from "@/lib/admin/require-admin";
 import { Badge } from "@/components/ui/badge";
 import { StatCard } from "@/components/admin/stat-card";
 import { formatAdminDate } from "@/lib/admin/format";
@@ -37,6 +38,9 @@ interface CallRow {
 }
 
 export default async function AdminCallsPage() {
+  // Per-page admin gate — layouts don't re-run on soft navigation (SCRUM-420).
+  await requirePlatformAdmin();
+
   const supabase = createAdminClient();
 
   const [callsResult, totalResult, spamResult] = await Promise.all([

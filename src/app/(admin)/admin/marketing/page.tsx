@@ -1,4 +1,5 @@
 import { createAdminClient } from "@/lib/supabase/admin";
+import { requirePlatformAdmin } from "@/lib/admin/require-admin";
 import {
   Card,
   CardContent,
@@ -46,6 +47,9 @@ function getCampaignStatusVariant(status: string) {
 }
 
 export default async function AdminMarketingPage() {
+  // Per-page admin gate — layouts don't re-run on soft navigation (SCRUM-420).
+  await requirePlatformAdmin();
+
   const supabase = createAdminClient();
 
   const [contactsResult, campaignsResult] = await Promise.all([

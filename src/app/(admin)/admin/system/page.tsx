@@ -1,4 +1,5 @@
 import { createAdminClient } from "@/lib/supabase/admin";
+import { requirePlatformAdmin } from "@/lib/admin/require-admin";
 import { StatCard } from "@/components/admin/stat-card";
 import {
   Card,
@@ -20,6 +21,9 @@ interface HealthRow {
 }
 
 export default async function AdminSystemPage() {
+  // Per-page admin gate — layouts don't re-run on soft navigation (SCRUM-420).
+  await requirePlatformAdmin();
+
   const supabase = createAdminClient();
 
   // Fetch system health records
