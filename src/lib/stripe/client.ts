@@ -169,6 +169,22 @@ export const CALL_THRESHOLD_WARNING = 0.8; // Warn at 80% usage
 export const CALL_THRESHOLD_LIMIT = 1.0; // At 100% — send upgrade nudge
 export const CALL_THRESHOLD_OVER = 1.2; // At 120% — strong upgrade nudge
 
+/**
+ * Reverse lookup: Stripe price id -> PlanType, built from the env-configured
+ * price ids on PLANS. Stripe Billing Portal plan switches change the
+ * subscription item's price but do NOT rewrite subscription metadata, so the
+ * price id is the only reliable source of the current plan on webhooks.
+ */
+export function planTypeFromPriceId(
+  priceId: string | null | undefined
+): PlanType | undefined {
+  if (!priceId) return undefined;
+  for (const key of Object.keys(PLANS) as PlanType[]) {
+    if (PLANS[key].stripePriceId === priceId) return key;
+  }
+  return undefined;
+}
+
 /** Returns SMB plans for display in UI (excludes agency tiers). */
 export function getDisplayPlans() {
   return [
