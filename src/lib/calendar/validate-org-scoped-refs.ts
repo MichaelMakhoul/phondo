@@ -33,19 +33,22 @@ export async function validateOrgScopedRefs(
     checks.push({ table: "practitioners", id: refs.practitionerId, label: "practitioner_id" });
   }
 
-  for (const { table, id, label } of checks) {
-    const { data, error } = await supabase
-      .from(table)
-      .select("id")
-      .eq("id", id)
-      .eq("organization_id", orgId)
-      .maybeSingle();
-    if (error) {
-      throw new Error(`Failed to validate ${label}: ${error.message}`);
-    }
-    if (!data) {
-      return `Invalid ${label}: does not belong to this organization`;
-    }
-  }
-  return null;
+  // Independent lookups — run in parallel (this sits on the live voice
+  // booking path as well as the dashboard routes; SCRUM-425 review).
+  const results = await Promise.all(
+    checks.map(async ({ table, id, label }) => {
+      const { data, error } = await supabase
+        .from(table)
+        .select("id")
+        .eq("id", id)
+        .eq("organization_id", orgId)
+        .maybeSingle();
+      if (error) {
+        throw new Error(`Failed to validate ${label}: ${error.message}`);
+      }
+      return data ? null : `Invalid ${label}: does not belong to this organization`;
+    }),
+  );
+
+  return results.find((r) => r !== null) ?? null;
 }
