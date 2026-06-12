@@ -429,6 +429,33 @@ async function loadTestCallContext(assistantId, organizationId) {
 
 // ─── Schedule Snapshot helpers ──────────────────────────────────────────────
 
+// Memoised per-zone hour/minute formatters — getTimeComponents runs once per
+// appointment/blocked-time row when building snapshots, and Intl.DateTimeFormat
+// construction (ICU load) is comparatively expensive. Same idiom as
+// offsetFormatter below.
+/** @type {Map<string, Intl.DateTimeFormat>} */
+const timeComponentsFmtCache = new Map();
+
+/**
+ * @param {string} timeZone
+ * @returns {Intl.DateTimeFormat}
+ */
+function timeComponentsFormatter(timeZone) {
+  let f = timeComponentsFmtCache.get(timeZone);
+  if (!f) {
+    f = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      // hourCycle h23 (not hour12:false) so midnight is "00", never "24" —
+      // same ICU quirk guarded against in OFFSET_FMT_OPTS below.
+      hourCycle: "h23",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    timeComponentsFmtCache.set(timeZone, f);
+  }
+  return f;
+}
+
 /**
  * Extract hour and minute from a Date in a specific timezone.
  * Uses Intl.DateTimeFormat for correct DST-aware conversion.
@@ -438,17 +465,12 @@ async function loadTestCallContext(assistantId, organizationId) {
  * @returns {{ hours: number, minutes: number }}
  */
 function getTimeComponents(date, timezone) {
-  const formatter = new Intl.DateTimeFormat("en-US", {
-    timeZone: timezone,
-    hour12: false,
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-  const parts = formatter.formatToParts(date);
+  const parts = timeComponentsFormatter(timezone).formatToParts(date);
   const hourPart = parts.find((p) => p.type === "hour");
   const minutePart = parts.find((p) => p.type === "minute");
   return {
-    hours: parseInt(hourPart?.value || "0", 10),
+    // Defensive `% 24`: belt-and-suspenders against an ICU build emitting hour 24.
+    hours: parseInt(hourPart?.value || "0", 10) % 24,
     minutes: parseInt(minutePart?.value || "0", 10),
   };
 }
@@ -586,7 +608,12 @@ function localToUtcIso(localDatetime, timezone) {
   // Read the naive wall-time as if it were UTC. This is NOT the real instant —
   // it is ~offset hours away — but it's the starting point for the iteration.
   const naiveUtcMs = new Date(`${localDatetime}Z`).getTime();
-  if (isNaN(naiveUtcMs)) return new Date().toISOString();
+  if (isNaN(naiveUtcMs)) {
+    // Inputs are internally generated ("YYYY-MM-DDThh:mm:ss") — landing here
+    // means a bug upstream, so make the fallback loud instead of silent.
+    console.warn("[localToUtcIso] Unparseable local datetime — falling back to now()", { localDatetime });
+    return new Date().toISOString();
+  }
 
   // SCRUM-439 (port of SCRUM-416): the zone offset depends on the true local
   // instant, but the local instant depends on the offset. Solve by fixed-point
