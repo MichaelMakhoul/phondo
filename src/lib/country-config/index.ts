@@ -70,6 +70,12 @@ export function getCountryConfig(code: CountryCode | string): CountryConfig {
   return config;
 }
 
+// Sorted once at module load — getCountryForCallingCode runs on every
+// analyzed call and the registry is static.
+const CONFIGS_BY_LONGEST_CALLING_CODE: CountryConfig[] = Object.values(COUNTRY_CONFIGS).sort(
+  (a, b) => b.phone.countryCallingCode.length - a.phone.countryCallingCode.length
+);
+
 /**
  * Map the digits of an E.164 number (no "+", non-digits stripped) to the
  * supported country owning its calling code. Longest prefix wins so a
@@ -79,10 +85,7 @@ export function getCountryConfig(code: CountryCode | string): CountryConfig {
  * org's country).
  */
 export function getCountryForCallingCode(digits: string): CountryCode | null {
-  const byLongestCode = Object.values(COUNTRY_CONFIGS).sort(
-    (a, b) => b.phone.countryCallingCode.length - a.phone.countryCallingCode.length
-  );
-  for (const config of byLongestCode) {
+  for (const config of CONFIGS_BY_LONGEST_CALLING_CODE) {
     if (digits.startsWith(config.phone.countryCallingCode)) return config.code;
   }
   return null;

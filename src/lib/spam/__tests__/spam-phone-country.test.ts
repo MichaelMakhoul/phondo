@@ -63,12 +63,19 @@ describe("analyzePhoneNumber cross-border E.164 scoring (SCRUM-441)", () => {
     expect(r.reasons).toEqual([]);
   });
 
-  it("falls back to the org country for E.164 numbers from unsupported countries (+44 under AU org)", () => {
-    // Documented current behavior: no supported config owns "44", so the org's
-    // AU rules apply and the format penalty stands. A small penalty on a
-    // genuinely foreign caller is acceptable until the country is supported.
-    const r = analyzePhoneNumber("+442079460958", "AU");
-    expect(r.score).toBe(5);
-    expect(r.reasons).toContain("Invalid phone number format");
+  it("caps E.164 numbers from unsupported countries at the +5 format penalty (no area-code scoring)", () => {
+    // No supported config owns "44" or "7", so the org country's format
+    // check applies (+5) but area-code scoring is SKIPPED — running the org
+    // country's extractAreaCode against foreign digits is meaningless and
+    // used to stack +15 on coincidental matches (see +7 case below).
+    const uk = analyzePhoneNumber("+442079460958", "AU");
+    expect(uk.score).toBe(5);
+    expect(uk.reasons).toEqual(["Invalid phone number format"]);
+
+    // The corrected-ceiling pin: "+7201…" reads as US-suspicious area code
+    // "720" under US extraction — pre-fix this ate +5 +15 = 20 for a US org.
+    const ru = analyzePhoneNumber("+72015550100", "US");
+    expect(ru.score).toBe(5);
+    expect(ru.reasons).toEqual(["Invalid phone number format"]);
   });
 });

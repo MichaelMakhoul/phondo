@@ -129,7 +129,7 @@ export async function POST(request: Request) {
         // Third drop flavor (lookup OK, column NULL/empty) — keep it as
         // observable as the lookup-error and invalid-identifier paths.
         console.warn("[Internal] Org has no timezone — spam timing signal dropped:", { organizationId });
-      } else if (orgCountry === "AU" && !orgTimezone.startsWith("Australia/")) {
+      } else if ((orgCountry || "").toUpperCase() === "AU" && !orgTimezone.startsWith("Australia/")) {
         // organizations.timezone has DB default 'America/New_York' — an AU
         // org stuck on the default gets its calls timing-scored in NY time
         // (9am Sydney = ~7pm New York). Cheap drift guard so the bad row is

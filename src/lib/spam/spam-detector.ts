@@ -112,25 +112,33 @@ export function analyzePhoneNumber(phone: string, countryCode: string = "US"): {
   // (and area-code-scored) under US rules, not fail AU validateNational and
   // eat the invalid-format penalty (SCRUM-441). National-format numbers have
   // no calling code, so they fall back to the org's country; so does an
-  // E.164 number from a country we don't support yet.
-  const validationCountry = phone.trim().startsWith("+")
-    ? getCountryForCallingCode(normalized) ?? countryCode
-    : countryCode;
-  const config = getCountryConfig(validationCountry);
+  // E.164 number from a country we don't support yet — but only for the
+  // format penalty (see below).
+  const isE164 = phone.trim().startsWith("+");
+  const derivedCountry = isE164 ? getCountryForCallingCode(normalized) : null;
+  const config = getCountryConfig(derivedCountry ?? countryCode);
 
   if (!config.phone.validateNational(normalized)) {
     score += 5;
     reasons.push("Invalid phone number format");
   }
 
-  // Extract area code using country config
-  const areaCode = config.phone.extractAreaCode(normalized);
+  // Suspicious-area-code scoring only makes sense when the digits actually
+  // belong to the country whose list we're checking. An E.164 caller from an
+  // UNSUPPORTED calling code (+44, +7) would have the org country's
+  // extractAreaCode run against foreign digits — e.g. +7201… reads as US
+  // area code "720" and eats +15 on top of the +5 format penalty. Skip it;
+  // the capped +5 format penalty is the documented foreign-caller cost.
+  if (!(isE164 && derivedCountry === null)) {
+    // Extract area code using country config
+    const areaCode = config.phone.extractAreaCode(normalized);
 
-  // Check against suspicious area codes for this country
-  const suspiciousAreaCodes = config.suspiciousAreaCodes;
-  if (areaCode && suspiciousAreaCodes.includes(areaCode)) {
-    score += 15;
-    reasons.push(`Area code ${areaCode} associated with high spam volume`);
+    // Check against suspicious area codes for this country
+    const suspiciousAreaCodes = config.suspiciousAreaCodes;
+    if (areaCode && suspiciousAreaCodes.includes(areaCode)) {
+      score += 15;
+      reasons.push(`Area code ${areaCode} associated with high spam volume`);
+    }
   }
 
   // Check for sequential or repetitive numbers (often spoofed)
