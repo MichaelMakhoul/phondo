@@ -18,6 +18,11 @@ process.env.OPENAI_API_KEY = "test-key";
 process.env.TELNYX_API_KEY = "test-key";
 process.env.INTERNAL_API_URL = "http://localhost:3000";
 process.env.INTERNAL_API_SECRET = "test-secret";
+// conversationrelay.js (imported for the real PROSE_FAIL_SIGNAL detector)
+// transitively needs these — same defaults as tests/conversationrelay.test.js.
+process.env.SUPABASE_URL = process.env.SUPABASE_URL || "http://localhost";
+process.env.SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "test";
+process.env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "test";
 
 // Count fetch calls (internal-API round-trip indicator)
 let fetchCalls = 0;
@@ -29,7 +34,11 @@ global.fetch = async () => {
   };
 };
 
-const { executeToolCall } = require("../services/tool-executor");
+const { executeToolCall, _test } = require("../services/tool-executor");
+const { CALENDAR_FUNCTIONS, CALENDAR_WRITE_FUNCTIONS } = _test;
+// The REAL prose fail-signal detector (conversationrelay.js) — imported so the
+// pin below tracks the production regex instead of a hand-copied duplicate.
+const { _test: { PROSE_FAIL_SIGNAL } } = require("../services/conversationrelay");
 
 // Mirrors the context built for /ws/test sessions in server.js
 function makeTestContext(overrides = {}) {
@@ -96,6 +105,19 @@ describe("test mode — mutating tools never hit the internal API (SCRUM-452)", 
     assert.ok(!/undefined/.test(result.message), `no "undefined" leaking into speech, got: ${result.message}`);
   });
 
+  it("reschedule_appointment simulation works without a new_datetime", async () => {
+    // The model can omit new_datetime too — the fallback ("the new time") must
+    // keep "undefined" out of the spoken confirmation.
+    const result = await executeToolCall(
+      "reschedule_appointment",
+      { phone: "+61400000001", current_datetime: "2026-06-18T10:00:00" },
+      makeTestContext()
+    );
+    assert.equal(fetchCalls, 0, "fetch must NOT be called in test mode");
+    assert.match(result.message, /moved your appointment/i);
+    assert.ok(!/undefined/.test(result.message), `no "undefined" leaking into speech, got: ${result.message}`);
+  });
+
   it("schedule_callback is simulated (zero fetches)", async () => {
     const result = await executeToolCall(
       "schedule_callback",
@@ -110,7 +132,7 @@ describe("test mode — mutating tools never hit the internal API (SCRUM-452)", 
     // conversationrelay.js derives success from prose when the result has no
     // structured `success` boolean — a simulated message that matched its
     // fail-signal regex would make the model retry/apologize in test calls.
-    const failSignal = /\b(error|not found|couldn'?t|could not|unable|failed|no longer available|already booked|fully booked|no available slot|not configured)\b/i;
+    // PROSE_FAIL_SIGNAL is the real detector, imported from conversationrelay.
     const calls = [
       ["book_appointment", { datetime: "2026-06-18T10:00:00", first_name: "Jane", phone: "+61400000001" }],
       ["cancel_appointment", { phone: "+61400000001" }],
@@ -119,7 +141,7 @@ describe("test mode — mutating tools never hit the internal API (SCRUM-452)", 
     ];
     for (const [name, args] of calls) {
       const result = await executeToolCall(name, args, makeTestContext());
-      assert.ok(!failSignal.test(result.message), `${name} simulation reads as failure: ${result.message}`);
+      assert.ok(!PROSE_FAIL_SIGNAL.test(result.message), `${name} simulation reads as failure: ${result.message}`);
     }
     assert.equal(fetchCalls, 0, "no mutating tool may reach the internal API in test mode");
   });
@@ -146,6 +168,49 @@ describe("production mode — mutating tools still route to the internal API", (
       makeTestContext({ testMode: false, callerPhone: "+61400000001" })
     );
     assert.equal(fetchCalls, 1, "fetch MUST be called in production mode");
+  });
+
+  it("cancel_appointment calls the API when testMode is false", async () => {
+    await executeToolCall(
+      "cancel_appointment",
+      { phone: "+61400000001", date: "2026-06-18" },
+      makeTestContext({ testMode: false, callerPhone: "+61400000001" })
+    );
+    assert.equal(fetchCalls, 1, "fetch MUST be called in production mode");
+  });
+
+  it("schedule_callback calls the API when testMode is false", async () => {
+    await executeToolCall(
+      "schedule_callback",
+      { caller_name: "Jane Doe", caller_phone: "+61400000001", reason: "billing question" },
+      makeTestContext({ testMode: false, callerPhone: "+61400000001" })
+    );
+    assert.equal(fetchCalls, 1, "fetch MUST be called in production mode");
+  });
+});
+
+describe("structural — write-function set stays consistent", () => {
+  it("every CALENDAR_WRITE_FUNCTIONS entry is a known calendar function", () => {
+    // A typo here would silently disable simulation for that tool (the
+    // includes() check in executeToolCall would never match), letting test
+    // calls mutate real appointments again.
+    for (const fn of CALENDAR_WRITE_FUNCTIONS) {
+      assert.ok(
+        CALENDAR_FUNCTIONS.includes(fn),
+        `CALENDAR_WRITE_FUNCTIONS entry "${fn}" is not in CALENDAR_FUNCTIONS — simulation would never trigger for it`
+      );
+    }
+  });
+
+  it("every mutating calendar function is covered by the test-mode simulation suite above", () => {
+    // If a future write tool is added to CALENDAR_WRITE_FUNCTIONS without a
+    // matching zero-fetch test here, this pin fails so the gap is noticed.
+    const simulatedHere = ["book_appointment", "cancel_appointment", "reschedule_appointment"];
+    assert.deepEqual(
+      [...CALENDAR_WRITE_FUNCTIONS].sort(),
+      [...simulatedHere].sort(),
+      "CALENDAR_WRITE_FUNCTIONS changed — add a zero-fetch simulation test for the new write tool in this file"
+    );
   });
 });
 

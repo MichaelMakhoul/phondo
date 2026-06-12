@@ -989,7 +989,7 @@ function simulateCalendarWrite(functionName, args) {
     // the model speaks a plausible confirmation of the new time.
     const oldRef = args.current_datetime || args.current_date;
     return {
-      message: `Done — I've moved your appointment${oldRef ? ` from ${oldRef}` : ""} to ${args.new_datetime}.`,
+      message: `Done — I've moved your appointment${oldRef ? ` from ${oldRef}` : ""} to ${args.new_datetime || "the new time"}.`,
     };
   }
   return { message: "Done." };
@@ -1014,5 +1014,8 @@ module.exports = {
   callbackToolDefinition,
   endCallToolDefinition,
   executeToolCall,
-  _test: { getTransferService, resolveCurrentDatetime, resolveAvailabilityFromCache, applyCallerIdPhoneFallback },
+  _test: {
+    getTransferService, resolveCurrentDatetime, resolveAvailabilityFromCache, applyCallerIdPhoneFallback,
+    CALENDAR_FUNCTIONS, CALENDAR_WRITE_FUNCTIONS,
+  },
 };
