@@ -108,26 +108,39 @@ export type NotificationSendResult = "sent" | "skipped";
  *   can be released and retried; >0 means a retry would double-deliver.
  * - wantedCount — channels the org's preferences asked for (attempted +
  *   wanted-but-unavailable); diagnostic context for logs.
- * - permanent — retrying CANNOT succeed: either an org-config problem (a
- *   wanted channel is unavailable, e.g. owner-email lookup failed — the
- *   SCRUM-419 "0 channels delivered" case) or provider credentials are
- *   ABSENT from the deployment (Sentry-paged at error level). Callers keep
- *   their claim instead of retry-churning.
+ * - permanent — retrying CANNOT succeed right now; permanentCause says why,
+ *   because the two causes call for opposite claim handling:
+ *   - "org-config" — a wanted channel is unavailable for THIS org (e.g.
+ *     owner-email lookup failed — the SCRUM-419 "0 channels delivered"
+ *     case). No retry can conjure the channel; claim-holders abandon
+ *     instead of retry-churning.
+ *   - "credential-absence" — provider credentials are ABSENT from the
+ *     deployment (Sentry-paged at error level). An operator fixing the env
+ *     makes a retry succeed, so claim-holders should RELEASE and retry —
+ *     one cron run during a deploy window must not permanently abandon
+ *     queued sends.
  */
 export class NotificationDeliveryError extends Error {
   readonly deliveredCount: number;
   readonly wantedCount: number;
   readonly permanent: boolean;
+  readonly permanentCause: "org-config" | "credential-absence" | null;
 
   constructor(
     message: string,
-    facts: { deliveredCount: number; wantedCount: number; permanent: boolean }
+    facts: {
+      deliveredCount: number;
+      wantedCount: number;
+      permanent: boolean;
+      permanentCause?: "org-config" | "credential-absence";
+    }
   ) {
     super(message);
     this.name = "NotificationDeliveryError";
     this.deliveredCount = facts.deliveredCount;
     this.wantedCount = facts.wantedCount;
     this.permanent = facts.permanent;
+    this.permanentCause = facts.permanentCause ?? null;
   }
 }
 
@@ -441,7 +454,7 @@ async function settleChannels(
       // Permanent: retrying can't conjure the missing channel (SCRUM-419).
       throw new NotificationDeliveryError(
         `${notification}: 0 notification channels delivered — wanted channel(s) unavailable: ${droppedChannels.join(", ")}`,
-        { deliveredCount: 0, wantedCount: droppedChannels.length, permanent: true }
+        { deliveredCount: 0, wantedCount: droppedChannels.length, permanent: true, permanentCause: "org-config" }
       );
     }
     return "skipped"; // all channels disabled by preference — legitimate no-op
@@ -457,12 +470,14 @@ async function settleChannels(
     // Permanent only when EVERY failed channel failed on credential absence —
     // a mixed bag still contains a transiently-failed channel a retry could
     // deliver.
+    const allConfigAbsence = configFailures.length === failures.length;
     throw new NotificationDeliveryError(
       `${failures.length}/${results.length} notification channels failed: ${failures[0].reason}`,
       {
         deliveredCount: results.length - failures.length,
         wantedCount: results.length + droppedChannels.length,
-        permanent: configFailures.length === failures.length,
+        permanent: allConfigAbsence,
+        ...(allConfigAbsence && { permanentCause: "credential-absence" as const }),
       }
     );
   }

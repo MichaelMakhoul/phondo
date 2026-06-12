@@ -127,6 +127,7 @@ describe("NotificationDeliveryError typed contract (SCRUM-447)", () => {
 
     const err = await rejection(sendMissedCallNotification(CALL));
     expect(err.permanent).toBe(true);
+    expect(err.permanentCause).toBe("org-config"); // claim-holders abandon — no env fix can help
     expect(err.deliveredCount).toBe(0);
     expect(err.wantedCount).toBe(1);
     // The crons used to regex this exact text — keep it stable for logs.
@@ -141,6 +142,7 @@ describe("NotificationDeliveryError typed contract (SCRUM-447)", () => {
 
     const err = await rejection(sendMissedCallNotification(CALL));
     expect(err.permanent).toBe(true);
+    expect(err.permanentCause).toBe("credential-absence"); // claim-holders release — env fix makes retries succeed
     expect(err.deliveredCount).toBe(0);
     expect(err.wantedCount).toBe(1);
     expect(err.message).toMatch(/1\/1 notification channels failed/);
@@ -162,6 +164,7 @@ describe("NotificationDeliveryError typed contract (SCRUM-447)", () => {
     // Email can never go out until env is fixed, but the webhook DID deliver
     // — a claim-holder must not release/retry (would double the webhook).
     expect(err.permanent).toBe(true);
+    expect(err.permanentCause).toBe("credential-absence");
     expect(err.deliveredCount).toBe(1);
     expect(err.wantedCount).toBe(2);
     expect(ssrfSafeFetch).toHaveBeenCalledTimes(1);
@@ -175,6 +178,7 @@ describe("NotificationDeliveryError typed contract (SCRUM-447)", () => {
 
     const err = await rejection(sendMissedCallNotification(CALL));
     expect(err.permanent).toBe(false); // mis-SET key stays retryable
+    expect(err.permanentCause).toBeNull();
     expect(err.deliveredCount).toBe(0);
     expect(err.message).toMatch(/1\/1 notification channels failed/);
     // No config-absence page — the env var IS present.
@@ -213,6 +217,7 @@ describe("NotificationDeliveryError typed contract (SCRUM-447)", () => {
 
     const err = await rejection(sendMissedCallNotification(CALL));
     expect(err.permanent).toBe(false);
+    expect(err.permanentCause).toBeNull();
     expect(err.deliveredCount).toBe(0);
     // The config absence still pages even though the overall error is transient.
     expect(Sentry.captureMessage).toHaveBeenCalledWith(

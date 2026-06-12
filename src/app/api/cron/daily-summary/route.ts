@@ -4,6 +4,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import {
   sendDailySummaryNotification,
   NotificationDeliveryError,
+  type NotificationSendResult,
 } from "@/lib/notifications/notification-service";
 import * as Sentry from "@sentry/nextjs";
 
@@ -95,7 +96,7 @@ export async function GET(req: NextRequest) {
   // send yesterday + recover day-3 in one run).
   let sent = 0; // yesterday's summaries
   let recovered = 0; // older lookback days whose summary finally went out
-  let skipped = 0; // zero-call org-days
+  let skipped = 0; // zero-call org-days + sends skipped by preference (every channel off)
   let deduped = 0; // idempotent skips (yesterday's claim already held)
   let failed = 0;
 
@@ -205,8 +206,9 @@ export async function GET(req: NextRequest) {
         // Build the summarized date for display
         const summaryDate = new Date(start);
 
+        let sendResult: NotificationSendResult;
         try {
-          await sendDailySummaryNotification({
+          sendResult = await sendDailySummaryNotification({
             organizationId: org.id,
             date: summaryDate,
             totalCalls,
@@ -223,6 +225,16 @@ export async function GET(req: NextRequest) {
           // delivered, so the lookback loop (or a same-day re-run) retries.
           // SCRUM-447: typed fields replace the old "N/M channels failed"
           // regex; the message text is unchanged for logs.
+          //
+          // DELIBERATE ASYMMETRY with callback-reminders: this cron never
+          // consults `permanent`. Permanent failures (org-config or
+          // credential-absence) release the claim like any other zero-
+          // delivery failure and re-fail on each lookback retry — but the
+          // 3-day lookback BOUNDS that to 3 attempts total, after which the
+          // day falls out of the window. Callback-reminders has no such
+          // bound (a released reminder retries forever, crowding its 50-row
+          // window), so it must classify. Here, the bounded retry trades a
+          // little Sentry noise for two extra recovery chances.
           const somethingDelivered =
             sendErr instanceof NotificationDeliveryError && sendErr.deliveredCount > 0;
           if (!somethingDelivered) {
@@ -243,6 +255,17 @@ export async function GET(req: NextRequest) {
             await confirmDelivery(supabase, org.id, periodKey);
           }
           throw sendErr; // counted as failed below
+        }
+
+        if (sendResult === "skipped") {
+          // Every channel disabled by preference — a legitimate no-op. Keep
+          // the claim (a retry would skip identically; without it the
+          // lookback would re-query this day every run) but DON'T confirm
+          // delivered_at: nothing reached an inbox, so recording a delivery
+          // would be a false positive.
+          console.log(`[DailySummary] Summary for org ${org.id} (${periodKey}) skipped — all notification channels disabled by preference`);
+          skipped++;
+          continue;
         }
 
         // SCRUM-447 (claim-vs-confirm): mark the claim as actually delivered.

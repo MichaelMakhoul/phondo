@@ -246,6 +246,17 @@ describe("GET /api/cron/daily-summary — steady state (claim + confirm)", () =>
     expect(sendDailySummaryNotification).not.toHaveBeenCalled();
     expect(db.ops("cron_send_ledger", "update")).toHaveLength(0);
   });
+
+  it("a 'skipped' send (all channels off by preference) keeps the claim, skips delivered_at, counts as skipped", async () => {
+    state.claimedOffsets = new Set([2, 3]);
+    state.callsByOffset = { 1: [COMPLETED_CALL] };
+    vi.mocked(sendDailySummaryNotification).mockResolvedValue("skipped");
+
+    const res = await callRoute();
+    expect(await res.json()).toEqual({ sent: 0, recovered: 0, skipped: 1, deduped: 0, failed: 0 });
+    expect(db.ops("cron_send_ledger", "delete")).toHaveLength(0); // claim kept — retry would skip identically
+    expect(db.ops("cron_send_ledger", "update")).toHaveLength(0); // nothing reached an inbox
+  });
 });
 
 describe("GET /api/cron/daily-summary — missed-day recovery (SCRUM-447)", () => {

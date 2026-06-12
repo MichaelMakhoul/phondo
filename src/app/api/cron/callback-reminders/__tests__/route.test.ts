@@ -171,7 +171,7 @@ describe("GET /api/cron/callback-reminders — sizing & auth", () => {
 describe("GET /api/cron/callback-reminders — claim/confirm flow", () => {
   it("claims first, sends, then confirms reminder_delivered_at (SCRUM-447)", async () => {
     const res = await callRoute();
-    expect(await res.json()).toEqual({ reminders_sent: 1 });
+    expect(await res.json()).toEqual({ reminders_sent: 1, reminders_skipped: 0 });
 
     expect(updatesOfKind("claim")).toHaveLength(1);
     expect(sendCallbackReminderNotification).toHaveBeenCalledTimes(1);
@@ -186,39 +186,79 @@ describe("GET /api/cron/callback-reminders — claim/confirm flow", () => {
   it("a lost claim (another run owns the reminder) skips the send entirely", async () => {
     state.claimWon = false;
     const res = await callRoute();
-    expect(await res.json()).toEqual({ reminders_sent: 0 });
+    expect(await res.json()).toEqual({ reminders_sent: 0, reminders_skipped: 0 });
     expect(sendCallbackReminderNotification).not.toHaveBeenCalled();
     expect(updatesOfKind("confirm")).toHaveLength(0);
   });
 
-  it("confirmation failure does not flip the reminder into the release path", async () => {
+  it("confirmation failure does not flip the reminder into the release path — Sentry-flagged instead", async () => {
     state.confirmError = { message: "update timeout" };
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const res = await callRoute();
-    expect(await res.json()).toEqual({ reminders_sent: 1 });
+    expect(await res.json()).toEqual({ reminders_sent: 1, reminders_skipped: 0 });
     expect(updatesOfKind("release")).toHaveLength(0);
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      expect.stringMatching(/reminder_delivered_at confirmation failed/),
+      "warning",
+    );
     errSpy.mockRestore();
+  });
+
+  it("a 'skipped' send (all channels off by preference) keeps the claim, skips confirmation, counts as skipped", async () => {
+    vi.mocked(sendCallbackReminderNotification).mockResolvedValue("skipped");
+    const res = await callRoute();
+    expect(await res.json()).toEqual({ reminders_sent: 0, reminders_skipped: 1 });
+    expect(updatesOfKind("release")).toHaveLength(0); // claim kept — must leave the queue
+    expect(updatesOfKind("confirm")).toHaveLength(0); // nothing reached an inbox
   });
 });
 
 describe("GET /api/cron/callback-reminders — typed send-error branching (SCRUM-447)", () => {
-  it("PERMANENT failure keeps the claim (abandoned — no retry churn) and never confirms", async () => {
+  it("PERMANENT org-config failure keeps the claim (abandoned — no retry churn) and never confirms", async () => {
     vi.mocked(sendCallbackReminderNotification).mockRejectedValue(
       new NotificationDeliveryError("callback-reminder: 0 notification channels delivered — wanted channel(s) unavailable: owner-email", {
         deliveredCount: 0,
         wantedCount: 1,
         permanent: true,
+        permanentCause: "org-config",
       }),
     );
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const res = await callRoute();
-    expect(await res.json()).toEqual({ reminders_sent: 0 });
+    expect(await res.json()).toEqual({ reminders_sent: 0, reminders_skipped: 0 });
     expect(updatesOfKind("release")).toHaveLength(0); // claim kept
     expect(updatesOfKind("confirm")).toHaveLength(0); // nothing was delivered
     expect(
       errSpy.mock.calls.some((c) => String(c[0]).includes("Abandoning reminder")),
     ).toBe(true);
+    errSpy.mockRestore();
+  });
+
+  it("credential-ABSENCE permanent failure RELEASES the claim (retries once the env is fixed)", async () => {
+    // One cron run during a deploy window with EMAIL_API_KEY missing must not
+    // permanently abandon up to 50 reminders — the env fix makes a retry
+    // succeed, unlike the org-config case above.
+    vi.mocked(sendCallbackReminderNotification).mockRejectedValue(
+      new NotificationDeliveryError("1/1 notification channels failed: [Email] EMAIL_API_KEY is not configured", {
+        deliveredCount: 0,
+        wantedCount: 1,
+        permanent: true,
+        permanentCause: "credential-absence",
+      }),
+    );
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const res = await callRoute();
+    expect(await res.json()).toEqual({ reminders_sent: 0, reminders_skipped: 0 });
+    expect(updatesOfKind("release")).toHaveLength(1); // claim released for the post-fix retry
+    expect(updatesOfKind("confirm")).toHaveLength(0);
+    // The notification service already pages Sentry at error level for
+    // credential absence — the route adds no per-reminder retry warning.
+    expect(Sentry.captureMessage).not.toHaveBeenCalledWith(
+      expect.stringMatching(/claim released for retry/),
+      "warning",
+    );
     errSpy.mockRestore();
   });
 
@@ -233,11 +273,32 @@ describe("GET /api/cron/callback-reminders — typed send-error branching (SCRUM
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     const res = await callRoute();
-    expect(await res.json()).toEqual({ reminders_sent: 0 });
+    expect(await res.json()).toEqual({ reminders_sent: 0, reminders_skipped: 0 });
     expect(updatesOfKind("release")).toHaveLength(0);
     expect(updatesOfKind("confirm")).toHaveLength(1);
     // Not Sentry-paged as a transient outage — nothing here needs a retry.
     expect(Sentry.captureMessage).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it("PERMANENT failure with partial delivery still confirms (the delivered channel is recorded)", async () => {
+    // e.g. webhook delivered but EMAIL_API_KEY is absent: a release would
+    // double the webhook AND the email can't go out until env is fixed —
+    // keep the claim and record that something reached the owner.
+    vi.mocked(sendCallbackReminderNotification).mockRejectedValue(
+      new NotificationDeliveryError("1/2 notification channels failed: [Email] EMAIL_API_KEY is not configured", {
+        deliveredCount: 1,
+        wantedCount: 2,
+        permanent: true,
+        permanentCause: "credential-absence",
+      }),
+    );
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const res = await callRoute();
+    expect(await res.json()).toEqual({ reminders_sent: 0, reminders_skipped: 0 });
+    expect(updatesOfKind("release")).toHaveLength(0); // claim kept
+    expect(updatesOfKind("confirm")).toHaveLength(1); // partial delivery recorded
     warnSpy.mockRestore();
   });
 
@@ -252,7 +313,7 @@ describe("GET /api/cron/callback-reminders — typed send-error branching (SCRUM
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const res = await callRoute();
-    expect(await res.json()).toEqual({ reminders_sent: 0 });
+    expect(await res.json()).toEqual({ reminders_sent: 0, reminders_skipped: 0 });
     expect(updatesOfKind("release")).toHaveLength(1);
     expect(updatesOfKind("confirm")).toHaveLength(0);
     expect(Sentry.captureMessage).toHaveBeenCalledWith(
@@ -262,12 +323,26 @@ describe("GET /api/cron/callback-reminders — typed send-error branching (SCRUM
     errSpy.mockRestore();
   });
 
+  it("claim-release failure is Sentry-paged at error level (the reminder will not retry)", async () => {
+    vi.mocked(sendCallbackReminderNotification).mockRejectedValue(new Error("kaboom"));
+    state.releaseError = { message: "update timeout" };
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const res = await callRoute();
+    expect(await res.json()).toEqual({ reminders_sent: 0, reminders_skipped: 0 });
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      expect.stringMatching(/claim release failed/),
+      "error",
+    );
+    errSpy.mockRestore();
+  });
+
   it("a non-typed (unexpected) error is treated as transient — release + retry", async () => {
     vi.mocked(sendCallbackReminderNotification).mockRejectedValue(new Error("kaboom"));
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const res = await callRoute();
-    expect(await res.json()).toEqual({ reminders_sent: 0 });
+    expect(await res.json()).toEqual({ reminders_sent: 0, reminders_skipped: 0 });
     expect(updatesOfKind("release")).toHaveLength(1);
     errSpy.mockRestore();
   });
