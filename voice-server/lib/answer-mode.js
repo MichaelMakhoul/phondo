@@ -2,6 +2,7 @@ const { getSupabase } = require("./supabase");
 const { Sentry } = require("./sentry");
 const { maskPhone } = require("./mask-phone");
 const { SENTRY_REASONS, setReasonTag } = require("./sentry-reasons");
+const { computeLapseState } = require("./lapse-state");
 
 /**
  * Emit a Sentry event for a fail-open path in the AI-enabled check.
@@ -50,37 +51,70 @@ function subscriptionGateEnabled() {
 }
 
 /**
- * SCRUM-408: whether an org's subscription permits AI call answering.
+ * SCRUM-476: optional grace / reclaim window overrides for the lapse machine,
+ * read at CALL time (not module load) so a Fly secret can be flipped without a
+ * restart — same rationale as subscriptionGateEnabled(). Returns a config for
+ * computeLapseState; when neither override is set/valid the helper falls back to
+ * its own DEFAULT_GRACE_DAYS / DEFAULT_RECLAIM_DAYS.
  *
- * Mirrors the intent of canMakeCall (src/lib/stripe/billing-service.ts) but is
- * intentionally NARROWER on the live inbound-call path: it blocks only an
- * expired trial and clearly non-recoverable states (canceled /
- * incomplete_expired / unpaid), and ALLOWS active, in-progress trialing,
- * past_due, incomplete and missing/unknown. Rationale: never cut off a customer
- * in Stripe dunning or an org whose row we could not read; the audited exploit
- * (post-trial freeloading) is the expired trial, which IS blocked.
+ * Defensive parse: only a finite, strictly-positive number is honoured. This
+ * deliberately ignores empty-string (Number("") === 0), NaN and non-positive
+ * values so a fat-fingered secret cannot silently zero out the grace window and
+ * cut customers off the instant they lapse — the opposite of this ticket's intent.
  *
- * FAIL-OPEN: null/undefined subscription → callable. Dormant unless the gate
- * flag is on.
+ * @returns {{ graceDays?: number, reclaimDays?: number }}
+ */
+function readLapseConfig() {
+  /** @type {{ graceDays?: number, reclaimDays?: number }} */
+  const cfg = {};
+  const grace = Number(process.env.GRACE_WINDOW_DAYS);
+  if (Number.isFinite(grace) && grace > 0) cfg.graceDays = grace;
+  const reclaim = Number(process.env.RECLAIM_WINDOW_DAYS);
+  if (Number.isFinite(reclaim) && reclaim > 0) cfg.reclaimDays = reclaim;
+  return cfg;
+}
+
+/**
+ * SCRUM-408 / SCRUM-476: whether an org's subscription permits AI call answering
+ * on the live inbound-call path.
  *
- * @param {{ status?: string, trial_end?: string | null } | null} [subscription]
+ * Delegates to the shared lapse-state machine (computeLapseState, JS port in
+ * ./lapse-state) so the call gate, the lapse-sweep cron and the dashboard banner
+ * all read ONE timeline: active → in_grace → lapsed → release_pending. `callable`
+ * is true for `active` and `in_grace` only.
+ *
+ * SCRUM-476 behavior change (DELIBERATE — pinned by answer-mode-grace.test.js):
+ * canceled / incomplete_expired / unpaid / expired-trial now stay CALLABLE for
+ * the grace window (DEFAULT_GRACE_DAYS, override GRACE_WINDOW_DAYS) and only
+ * divert AFTER it. Previously canceled / incomplete_expired / unpaid were blocked
+ * the instant they lapsed and an expired trial was blocked immediately; the grace
+ * window now gives a lapsed customer a few days to recover before calls fall
+ * through to the existing kill-switch ladder (fallback_forward_number → Dial →
+ * voicemail). past_due is STILL always callable — it is Stripe's own dunning
+ * grace and never enters this machine.
+ *
+ * FAIL-OPEN: gate off, null/undefined subscription, a terminal status with no
+ * usable anchor, or ANY throw from the lapse machine → callable. We never cut a
+ * customer off on missing/malformed data or a helper defect; the audited exploit
+ * (post-grace freeloading) is still blocked once the window elapses.
+ *
+ * @param {{ status?: string, trial_end?: string | null, service_ended_at?: string | null, current_period_end?: string | null } | null} [subscription]
  * @returns {boolean}
  */
 function isSubscriptionCallable(subscription) {
   if (!subscriptionGateEnabled()) return true; // dormant unless explicitly enabled
   if (!subscription) return true; // unknown / no row → allow (fail-open)
-  const status = subscription.status;
-  if (status === "trialing") {
-    if (subscription.trial_end && Date.now() > new Date(subscription.trial_end).getTime()) {
-      return false; // expired trial — the audited exploit
-    }
+  try {
+    // Pure helper: pass the clock in (Date.now) so the gate, cron and banner
+    // share one notion of "now". Returns callable=true for active + in_grace.
+    return computeLapseState(subscription, Date.now(), readLapseConfig()).callable;
+  } catch (err) {
+    // The lapse machine is pure and parity-tested and is fed a plain DB row, so a
+    // throw here is effectively unreachable in production — but if it ever does,
+    // fail OPEN rather than drop a paying customer's call, matching this file's ethos.
+    console.error("[AnswerMode] computeLapseState failed (fail-open, callable):", err.message);
     return true;
   }
-  if (status === "canceled" || status === "incomplete_expired" || status === "unpaid") {
-    return false;
-  }
-  // active, past_due, incomplete, paused, or any unrecognised status → allow
-  return true;
 }
 
 /**
@@ -89,7 +123,7 @@ function isSubscriptionCallable(subscription) {
  * array depending on relationship detection; tolerate both and undefined.
  *
  * @param {{ organizations?: { subscriptions?: any } } | null} [phoneRecord]
- * @returns {{ status?: string, trial_end?: string | null } | null}
+ * @returns {{ status?: string, trial_end?: string | null, service_ended_at?: string | null, current_period_end?: string | null } | null}
  */
 function getEmbeddedSubscription(phoneRecord) {
   const subs = phoneRecord && phoneRecord.organizations && phoneRecord.organizations.subscriptions;
@@ -112,7 +146,7 @@ async function lookupPhoneNumber(calledNumber, opts = {}) {
     // Only embed the subscription when the gate is on, so the hot-path query is
     // byte-identical to before when ENFORCE_SUBSCRIPTION_GATE is unset.
     const orgEmbed = subscriptionGateEnabled()
-      ? "organizations(name, country, recording_consent_mode, business_state, recording_disclosure_text, subscriptions(status, trial_end))"
+      ? "organizations(name, country, recording_consent_mode, business_state, recording_disclosure_text, subscriptions(status, trial_end, service_ended_at, current_period_end))"
       : "organizations(name, country, recording_consent_mode, business_state, recording_disclosure_text)";
     const { data: phone, error } = await supabase
       .from("phone_numbers")

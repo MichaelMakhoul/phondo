@@ -42,15 +42,49 @@ test("isSubscriptionCallable with the gate ON", (t) => {
   );
   assert.equal(isSubscriptionCallable({ status: "trialing", trial_end: null }), true, "trial, no end set");
 
-  // Blocked
+  // SCRUM-476: lapsed states now keep a grace window (DEFAULT_GRACE_DAYS) before
+  // they divert. WITHIN grace → still callable. (A bare terminal status with no
+  // anchor fails open — exhaustively covered in answer-mode-grace.test.js.)
+  const inGrace = new Date(Date.now() - DAY).toISOString(); // 1d past anchor → inside 7d grace
   assert.equal(
-    isSubscriptionCallable({ status: "trialing", trial_end: new Date(Date.now() - DAY).toISOString() }),
-    false,
-    "expired trial (the audited exploit)",
+    isSubscriptionCallable({ status: "trialing", trial_end: inGrace }),
+    true,
+    "trial expired 1d ago → still in grace",
   );
-  assert.equal(isSubscriptionCallable({ status: "canceled" }), false);
-  assert.equal(isSubscriptionCallable({ status: "incomplete_expired" }), false);
-  assert.equal(isSubscriptionCallable({ status: "unpaid" }), false);
+  assert.equal(
+    isSubscriptionCallable({ status: "canceled", service_ended_at: inGrace }),
+    true,
+    "canceled 1d ago → still in grace",
+  );
+  assert.equal(
+    isSubscriptionCallable({ status: "unpaid", current_period_end: inGrace }),
+    true,
+    "unpaid 1d ago → still in grace",
+  );
+
+  // Blocked — only AFTER the grace window. The anchor (trial_end / service_ended_at
+  // / current_period_end) must be older than DEFAULT_GRACE_DAYS.
+  const pastGrace = new Date(Date.now() - 8 * DAY).toISOString();
+  assert.equal(
+    isSubscriptionCallable({ status: "trialing", trial_end: pastGrace }),
+    false,
+    "expired trial past grace (the audited exploit)",
+  );
+  assert.equal(
+    isSubscriptionCallable({ status: "canceled", service_ended_at: pastGrace }),
+    false,
+    "canceled past grace",
+  );
+  assert.equal(
+    isSubscriptionCallable({ status: "incomplete_expired", current_period_end: pastGrace }),
+    false,
+    "incomplete_expired past grace",
+  );
+  assert.equal(
+    isSubscriptionCallable({ status: "unpaid", current_period_end: pastGrace }),
+    false,
+    "unpaid past grace",
+  );
 });
 
 // Exercise the actual load-bearing wiring inside isAiEnabled (the line that
@@ -62,17 +96,20 @@ test("isAiEnabled applies the gate on the prefetched path (gate ON)", async (t) 
     delete process.env.ENFORCE_SUBSCRIPTION_GATE;
   });
 
-  const mk = (status, trial_end) => ({
+  const mk = (status, trial_end, extra = {}) => ({
     ai_enabled: true,
     organization_id: "org-1",
-    organizations: { subscriptions: [{ status, trial_end }] },
+    organizations: { subscriptions: [{ status, trial_end, ...extra }] },
   });
-  const past = new Date(Date.now() - DAY).toISOString();
+  const inGrace = new Date(Date.now() - DAY).toISOString(); // within the grace window
+  const pastGrace = new Date(Date.now() - 8 * DAY).toISOString(); // past the grace window
   const future = new Date(Date.now() + DAY).toISOString();
 
-  assert.equal(await isAiEnabled("+1", mk("trialing", past)), false, "expired trial → AI off");
+  // SCRUM-476: within grace → still answers; only past grace diverts to kill-switch.
+  assert.equal(await isAiEnabled("+1", mk("trialing", inGrace)), true, "trial within grace → AI on");
+  assert.equal(await isAiEnabled("+1", mk("trialing", pastGrace)), false, "trial past grace → AI off");
   assert.equal(await isAiEnabled("+1", mk("trialing", future)), true, "in-progress trial → AI on");
-  assert.equal(await isAiEnabled("+1", mk("canceled", null)), false, "canceled → AI off");
+  assert.equal(await isAiEnabled("+1", mk("canceled", null, { service_ended_at: pastGrace })), false, "canceled past grace → AI off");
   assert.equal(await isAiEnabled("+1", mk("active", null)), true, "active → AI on");
   assert.equal(await isAiEnabled("+1", { ai_enabled: true, organization_id: "o", organizations: {} }), true, "no sub embed → fail-open AI on");
 
