@@ -497,16 +497,6 @@ export async function PATCH(
     if (data.notes !== undefined) updates.notes = data.notes;
     if (data.status) updates.status = data.status;
 
-    // SCRUM-360: a referenced service_type / practitioner must belong to this org
-    // (skips null, so clearing a field is still allowed).
-    const refError = await validateOrgScopedRefs(supabase, orgId, {
-      serviceTypeId: data.service_type_id,
-      practitionerId: data.practitioner_id,
-    });
-    if (refError) {
-      return NextResponse.json({ error: refError }, { status: 400 });
-    }
-
     if (Object.keys(updates).length === 0) {
       return NextResponse.json({ error: "No fields to update" }, { status: 400 });
     }
@@ -528,6 +518,29 @@ export async function PATCH(
         return NextResponse.json({ error: "Failed to update appointment" }, { status: 500 });
       }
       return NextResponse.json({ error: "Appointment not found" }, { status: 404 });
+    }
+
+    // SCRUM-360: a referenced service_type / practitioner must belong to this org
+    // (skips null, so clearing a field is still allowed).
+    // SCRUM-444: `requireActive` — assigning a deactivated practitioner/service is
+    // rejected, but ONLY for a payload ref that actually DIFFERS from the
+    // before-image (i.e. is being newly set or changed). A re-sent unchanged ref
+    // is validated org-scope-only, so even a client that re-sends the full record
+    // (rather than just dirty fields) can still time-edit / status-change an
+    // appointment carrying a since-deactivated ref.
+    const refError = await validateOrgScopedRefs(
+      supabase,
+      orgId,
+      { serviceTypeId: data.service_type_id, practitionerId: data.practitioner_id },
+      {
+        requireActive: {
+          serviceType: data.service_type_id !== before.service_type_id,
+          practitioner: data.practitioner_id !== before.practitioner_id,
+        },
+      },
+    );
+    if (refError) {
+      return NextResponse.json({ error: refError }, { status: 400 });
     }
 
     // SCRUM-399: a change to the time, practitioner, or service is a structural MOVE

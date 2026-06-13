@@ -139,10 +139,16 @@ export async function POST(request: NextRequest) {
     }
 
     // SCRUM-360: a referenced service_type / practitioner must belong to this org.
-    const refError = await validateOrgScopedRefs(supabase, orgId, {
-      serviceTypeId: d.service_type_id,
-      practitionerId: d.practitioner_id,
-    });
+    // SCRUM-444: `requireActive` — a NEW appointment always attaches its refs
+    // fresh, so a deactivated practitioner/service is rejected (the dashboard
+    // pickers only list active rows; an inactive id here is a stale client or
+    // a crafted request).
+    const refError = await validateOrgScopedRefs(
+      supabase,
+      orgId,
+      { serviceTypeId: d.service_type_id, practitionerId: d.practitioner_id },
+      { requireActive: true },
+    );
     if (refError) {
       return NextResponse.json({ error: refError }, { status: 400 });
     }
