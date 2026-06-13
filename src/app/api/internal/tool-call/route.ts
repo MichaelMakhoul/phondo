@@ -7,10 +7,12 @@ import {
   handleCancelAppointment,
   handleRescheduleAppointment,
   handleLookupAppointment,
+  type TrustedCallContext,
 } from "@/lib/calendar/tool-handlers";
 import { handleScheduleCallback } from "@/lib/callbacks/tool-handler";
 import { getActiveServiceTypes } from "@/lib/service-types";
 import { withRateLimit } from "@/lib/security/rate-limiter";
+import { resolveCallerId } from "@/lib/calendar/appointment-verification";
 
 function verifyInternalSecret(request: Request): boolean {
   const secret = process.env.INTERNAL_API_SECRET;
@@ -35,6 +37,23 @@ interface ToolCallPayload {
   functionName: string;
   arguments: Record<string, unknown>;
   callId?: string;
+  /**
+   * SCRUM-438: the call's VERIFIED inbound caller ID, set by the voice server
+   * from its session state (the Twilio/Telnyx From) — a top-level payload
+   * field the MODEL can never reach (its output only populates `arguments`).
+   * Possession factor for cancel/reschedule ownership. Present only when
+   * `callerIdState` is "verified".
+   */
+  callerPhone?: string;
+  /**
+   * SCRUM-438 (review fix): explicit caller-ID state from the voice server:
+   *  - "verified" (with callerPhone): production call with a dialable From
+   *  - "withheld": production call with no usable caller ID (withheld/
+   *    sentinel/SIP From) — mutations must refuse, never fall back to the
+   *    model-controlled phone argument
+   *  - absent (and no callerPhone): browser/test sessions only
+   */
+  callerIdState?: string;
 }
 
 /**
@@ -83,6 +102,35 @@ export async function POST(request: Request) {
 
   const parsedArgs = (args || {}) as Record<string, string | undefined>;
 
+  // SCRUM-438: validate the trusted caller-ID fields before threading them
+  // into the mutation handlers — sentinels ("anonymous", +266696687) or junk
+  // never become a possession factor, and a production call with a withheld
+  // caller ID stays EXPLICITLY 'withheld' so mutations refuse instead of
+  // falling back to the model-controlled phone argument. NEVER read these
+  // from `arguments` (model-controllable). The handlers re-validate through
+  // the same resolver (they are the security boundary).
+  // A PRODUCTION call always carries `callId` (the voice server's call record);
+  // genuine browser/test sessions never do (verified in the codebase — test-mode
+  // contexts omit callId). It is the only reliable test-vs-production
+  // discriminator the caller-ID fields alone can't give us.
+  const isProductionCall = typeof payload.callId === "string" && payload.callId.length > 0;
+  const trusted: TrustedCallContext = (() => {
+    const resolved = resolveCallerId({
+      // A present-but-malformed state fails secure to 'withheld' in the resolver.
+      callerIdState: payload.callerIdState === undefined ? undefined : String(payload.callerIdState),
+      verifiedCallerPhone: typeof payload.callerPhone === "string" ? payload.callerPhone : undefined,
+    });
+    if (resolved.state === "verified") {
+      return { callerIdState: "verified", verifiedCallerPhone: resolved.phone };
+    }
+    if (resolved.state === "withheld") return { callerIdState: "withheld" };
+    // No caller-ID fields at all. Only a genuine browser/test session (no callId)
+    // may use the model-phone fallback downstream. A PRODUCTION call that arrives
+    // without caller-ID fields — an older voice server mid-rolling-deploy, or a
+    // tampered body — must fail secure to 'withheld', never the model phone.
+    return isProductionCall ? { callerIdState: "withheld" } : {};
+  })();
+
   try {
     let result;
 
@@ -128,36 +176,48 @@ export async function POST(request: Request) {
       }
 
       case "cancel_appointment":
-        result = await handleCancelAppointment(organizationId, {
-          phone: parsedArgs.phone,
-          reason: parsedArgs.reason,
-          confirmation_code: parsedArgs.confirmation_code,
-          date: parsedArgs.date,
-          // SCRUM-381: forward the exact datetime so the handler's ±15-min match
-          // can pin ONE appointment when a caller has several. Without this the
-          // disambiguation reply ("call again with the exact datetime") can never
-          // be satisfied — the model loops and may fabricate a cancellation.
-          datetime: parsedArgs.datetime,
-        });
+        result = await handleCancelAppointment(
+          organizationId,
+          {
+            phone: parsedArgs.phone,
+            reason: parsedArgs.reason,
+            confirmation_code: parsedArgs.confirmation_code,
+            date: parsedArgs.date,
+            // SCRUM-381: forward the exact datetime so the handler's ±15-min match
+            // can pin ONE appointment when a caller has several. Without this the
+            // disambiguation reply ("call again with the exact datetime") can never
+            // be satisfied — the model loops and may fabricate a cancellation.
+            datetime: parsedArgs.datetime,
+            // SCRUM-438: knowledge factors for orgs with configured
+            // appointment_verification_fields.
+            name: parsedArgs.name,
+            email: parsedArgs.email,
+          },
+          trusted
+        );
         break;
 
       case "reschedule_appointment":
         // SCRUM-377: atomic move (book new + cancel old, server-verified) so a
         // reschedule can never leave a duplicate the way cancel+book did.
-        result = await handleRescheduleAppointment(organizationId, {
-          phone: parsedArgs.phone,
-          confirmation_code: parsedArgs.confirmation_code,
-          current_date: parsedArgs.current_date,
-          current_datetime: parsedArgs.current_datetime,
-          new_datetime: parsedArgs.new_datetime,
-          first_name: parsedArgs.first_name,
-          last_name: parsedArgs.last_name,
-          name: parsedArgs.name,
-          email: parsedArgs.email,
-          notes: parsedArgs.notes,
-          service_type_id: parsedArgs.service_type_id,
-          practitioner_id: parsedArgs.practitioner_id,
-        });
+        result = await handleRescheduleAppointment(
+          organizationId,
+          {
+            phone: parsedArgs.phone,
+            confirmation_code: parsedArgs.confirmation_code,
+            current_date: parsedArgs.current_date,
+            current_datetime: parsedArgs.current_datetime,
+            new_datetime: parsedArgs.new_datetime,
+            first_name: parsedArgs.first_name,
+            last_name: parsedArgs.last_name,
+            name: parsedArgs.name,
+            email: parsedArgs.email,
+            notes: parsedArgs.notes,
+            service_type_id: parsedArgs.service_type_id,
+            practitioner_id: parsedArgs.practitioner_id,
+          },
+          trusted
+        );
         break;
 
       case "lookup_appointment":

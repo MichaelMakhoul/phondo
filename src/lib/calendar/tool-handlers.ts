@@ -25,6 +25,33 @@ import { hasNonLatinLetters } from "@/lib/calendar/latin-name";
 import { resolveRescheduleIdentity, resolveRescheduledBooking } from "@/lib/calendar/reschedule-core";
 import { validateOrgScopedRefs } from "@/lib/calendar/validate-org-scoped-refs";
 import { MAX_BOOKING_HORIZON_MS } from "@/lib/calendar/appointment-lifecycle";
+import {
+  parseVerificationSettings,
+  getVerificationSettings,
+  resolveCallerId,
+  verifyPhonePossession,
+  verifyKnowledgeFactors,
+  type CallerIdState,
+  type VerificationSettings,
+} from "@/lib/calendar/appointment-verification";
+
+/**
+ * SCRUM-438: fields the MODEL can never supply. The internal tool-call route
+ * populates them from the voice server's session state (top-level payload
+ * fields) — NEVER from the LLM tool arguments. They carry the possession
+ * factor for cancel/reschedule ownership:
+ *  - `callerIdState: "verified"` + `verifiedCallerPhone`: production call
+ *    with a real dialable From — possession is compared against THAT only.
+ *  - `callerIdState: "withheld"`: production call with no usable caller ID
+ *    (withheld/sentinel/SIP From) — possession is unverifiable; mutations
+ *    refuse rather than fall back to the model-controlled phone argument.
+ *  - both fields absent: browser/test sessions only — the model-supplied
+ *    phone is the fallback there (no caller ID can exist).
+ */
+export interface TrustedCallContext {
+  verifiedCallerPhone?: string;
+  callerIdState?: CallerIdState;
+}
 
 // SCRUM-399: `resolveRescheduleIdentity` moved to reschedule-core (shared with the
 // dashboard reschedule path). Re-exported here so existing imports/tests are stable.
@@ -204,63 +231,20 @@ function formatTime(h: number, m: number): string {
   return `${hour12}${mins} ${period}`;
 }
 
-// ─── Phone normalization helpers ─────────────────────────────────────────────
+// ─── Phone matching helpers ──────────────────────────────────────────────────
 
 /**
- * Generate all plausible phone number format variants for a given input,
- * so we can match regardless of how the number was stored.
- *
- * For example, +61414141883 yields:
- *   ["+61414141883", "61414141883", "0414141883"]
- * And 0414141883 yields:
- *   ["0414141883", "414141883"]
- * (We can't infer the country code from a local number alone, so we don't
- *  synthesize +61 from 04... — but the reverse direction works.)
+ * SCRUM-438: the end-anchored ilike suffix for a phone lookup (same form PR
+ * #346 gave handleLookupAppointment) — last 9 digits, digits-only, so it
+ * matches the stored number regardless of formatting (E.164 vs national vs
+ * spaced) without a floating `%...%` contains. Callers MUST validate the
+ * phone with isValidPhoneNumber first (≥8 digits) so the suffix can never
+ * degenerate toward a match-everything '%'.
  */
-function phoneVariants(phone: string): string[] {
-  const variants = new Set<string>();
-
-  // Original input (trimmed)
-  const trimmed = phone.trim();
-  variants.add(trimmed);
-
-  // Digits-only version
-  const digits = trimmed.replace(/\D/g, "");
-  if (digits) variants.add(digits);
-
-  // With leading "+" if it had one
-  if (trimmed.startsWith("+")) {
-    variants.add(`+${digits}`);
-  }
-
-  // If E.164-ish (+CC...), also produce the local variant
-  // Australia: +61 4xx → 04xx  (replace country code 61 with leading 0)
-  if (digits.startsWith("61") && digits.length === 11) {
-    variants.add(`0${digits.slice(2)}`);       // 0414141883
-    variants.add(digits.slice(2));             // 414141883
-    variants.add(`+61${digits.slice(2)}`);     // +61414141883
-  }
-  // US/CA: +1 xxx → xxx  (10-digit national)
-  if (digits.startsWith("1") && digits.length === 11) {
-    variants.add(digits.slice(1));             // 4145551234
-    variants.add(`+1${digits.slice(1)}`);      // +14145551234
-  }
-
-  // If local AU format (starts with 0, 10 digits), produce E.164
-  if (digits.startsWith("0") && digits.length === 10) {
-    const national = digits.slice(1);
-    variants.add(national);                    // 414141883
-    variants.add(`61${national}`);             // 61414141883
-    variants.add(`+61${national}`);            // +61414141883
-  }
-
-  // If local US format (10 digits, no leading 0 or 1)
-  if (digits.length === 10 && !digits.startsWith("0") && !digits.startsWith("1")) {
-    variants.add(`1${digits}`);                // 14145551234
-    variants.add(`+1${digits}`);               // +14145551234
-  }
-
-  return Array.from(variants);
+function phoneSuffixPattern(phone: string): string {
+  const digits = phone.replace(/\D/g, "");
+  const suffix = digits.length > 9 ? digits.slice(-9) : digits;
+  return `%${suffix}`;
 }
 
 // ─── Pure slot helpers (exported for testing) ────────────────────────────────
@@ -1231,54 +1215,51 @@ export function pickClosestAppointment<T extends { start_time: string }>(
 }
 
 /**
- * Format one appointment as a disambiguation option line, shared by the cancel and
- * reschedule "which one did you mean?" replies so they stay structurally in lock-
- * step. Carries the human date/time the caller recognises PLUS the exact datetime
- * and confirmation_code the model needs to pin this specific row — the code is what
- * lets the model resolve two appointments in the same wall-clock minute (which the
- * minute-precision datetime alone can't separate). See SCRUM-381/382/384.
- */
-function formatDisambigOption(appt: any, tz: string): string {
-  const d = new Date(appt.start_time);
-  const dateStr = d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: tz });
-  const timeStr = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true, timeZone: tz });
-  const who = appt.attendee_name ? ` for ${appt.attendee_name}` : "";
-  const code = appt.confirmation_code ? `, code ${appt.confirmation_code}` : "";
-  return `${dateStr} at ${timeStr}${who} (datetime: ${toLocalIsoMinute(d, tz)}${code})`;
-}
-
-/**
- * SCRUM-415: when an appointment is located by confirmation_code, verify the
- * caller actually owns it before mutating — their phone must match the booking's
- * attendee_phone (last-9-digit comparison, matching the lookup tool's phone
- * check). A 6-digit code alone (leaked / overheard / guessed) must NOT let a
- * caller cancel or move a stranger's appointment. The phone-lookup paths already
- * match attendee_phone, so this only guards the code path.
+ * Format the cancel/reschedule "which one did you mean?" option lines, shared
+ * so the two replies stay structurally in lock-step. Each option carries the
+ * human date/time (+ service when resolvable) PLUS the exact datetime the
+ * model needs to pin a specific row (SCRUM-381/382).
  *
- * Returns null when ownership is verified, or a ToolResult message to return.
+ * SCRUM-438: these rows were matched by PHONE alone, and caller ID is
+ * spoofable on the PSTN — so the lines deliberately carry NO attendee_name and
+ * NO confirmation_code (both previously echoed). A number-spoofer must not be
+ * able to extract the victim's identity or a code that doubles as a lookup/
+ * mutation key. Same-minute ties (which only a code can separate — SCRUM-384)
+ * are resolved by asking the CALLER for the code from their confirmation SMS,
+ * not by reading codes out to them.
  */
-export function verifyCodeCallerOwnership(
-  appointment: { attendee_phone?: string | null },
-  callerPhone: string | undefined
-): ToolResult | null {
-  const storedDigits = (appointment.attendee_phone || "").replace(/\D/g, "").slice(-9);
-  const providedDigits = (callerPhone || "").replace(/\D/g, "").slice(-9);
-  if (!storedDigits || !providedDigits) {
-    // Can't confirm ownership by phone (no phone on file, or caller gave none).
-    return {
-      success: false,
-      message:
-        "For security, can you confirm the phone number on the booking before I make that change?",
-    };
+async function describeDisambigOptions(
+  rows: any[],
+  tz: string,
+  supabase: any,
+  organizationId: string
+): Promise<string> {
+  const serviceIds = Array.from(
+    new Set(rows.map((r: any) => r.service_type_id).filter(Boolean))
+  );
+  const serviceNames: Record<string, string> = {};
+  if (serviceIds.length > 0) {
+    const { data: serviceRows, error } = await supabase
+      .from("service_types")
+      .select("id, name")
+      .eq("organization_id", organizationId)
+      .in("id", serviceIds);
+    if (error) {
+      // Non-fatal — options fall back to date/time only.
+      console.warn("Disambiguation service-name lookup failed:", { organizationId, error: error.message ?? error });
+    }
+    for (const st of serviceRows || []) serviceNames[st.id] = st.name;
   }
-  if (providedDigits !== storedDigits) {
-    return {
-      success: false,
-      message:
-        "That phone number doesn't match the one on the appointment, so I can't change it for security reasons. If it's your appointment, please call from the number on the booking, or I can arrange a callback.",
-    };
-  }
-  return null;
+
+  return rows
+    .map((a: any) => {
+      const d = new Date(a.start_time);
+      const dateStr = d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: tz });
+      const timeStr = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true, timeZone: tz });
+      const svc = a.service_type_id && serviceNames[a.service_type_id] ? ` for a ${serviceNames[a.service_type_id]}` : "";
+      return `${dateStr} at ${timeStr}${svc} (datetime: ${toLocalIsoMinute(d, tz)})`;
+    })
+    .join("; ");
 }
 
 /**
@@ -1295,8 +1276,9 @@ async function enforceApptMutationRateLimit(
   try {
     // Keyed per org + caller phone. Phone-less attempts share an "anon" bucket,
     // which is fine: a phone-less caller can never complete a code mutation
-    // anyway (verifyCodeCallerOwnership blocks an empty caller phone), so the
-    // shared bucket only ever holds already-doomed attempts.
+    // anyway (verifyPhonePossession treats an empty caller phone as
+    // unverifiable), so the shared bucket only ever holds already-doomed
+    // attempts.
     const digits = (phone || "").replace(/\D/g, "").slice(-9) || "anon";
     const rl = await rateLimitDistributed(supabase, `${organizationId}:${digits}`, "appt-mutate", "auth");
     if (!rl.allowed) {
@@ -1312,9 +1294,27 @@ async function enforceApptMutationRateLimit(
   return null;
 }
 
+// SCRUM-438: identical wording whether a confirmation code matched or not — a
+// voice attacker enumerating 6-digit codes must not get a different reply for
+// "code exists but I can't verify the phone" vs "code doesn't exist" (oracle).
+const CANCEL_NEEDS_BOOKING_PHONE_MSG =
+  "For security, I need the phone number on the booking before I can change an appointment. Could you confirm that number?";
+
+// SCRUM-438 (review fix): a production caller who withheld their caller ID
+// cannot prove possession at all on this call — and the model-phone fallback
+// must never apply outside test sessions (an attacker dials with #31# and
+// echoes the victim's number). Generic refusal + the callback path, shared by
+// cancel and reschedule, returned BEFORE any lookup so nothing is enumerable.
+const WITHHELD_CALLER_ID_REFUSAL: ToolResult = {
+  success: false,
+  message:
+    "For security, I can't make changes to appointments when the call comes from a private or blocked number. If you call back with your number showing, I can help right away — or I can arrange a callback from the team.",
+};
+
 export async function handleCancelAppointment(
   organizationId: string,
-  args: { phone?: string; reason?: string; confirmation_code?: string; date?: string; datetime?: string }
+  args: { phone?: string; reason?: string; confirmation_code?: string; date?: string; datetime?: string; name?: string; email?: string },
+  trusted?: TrustedCallContext
 ): Promise<ToolResult> {
   const { phone, confirmation_code } = args;
   const reason = args.reason ? sanitizeString(args.reason, 500) : undefined;
@@ -1322,6 +1322,14 @@ export async function handleCancelAppointment(
   // SCRUM-259: accept exact datetime for precise cancel ("cancel the 10:15 AM one").
   // Sophie knows the exact time from the booking she just made.
   const datetime = args.datetime && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(args.datetime) ? args.datetime : undefined;
+
+  // SCRUM-438: the trusted caller-ID state — re-validated here even though
+  // the route checks it too (the handler is the security boundary).
+  const callerId = resolveCallerId(trusted);
+
+  // Withheld caller ID on a production call: possession is unverifiable and
+  // the model-phone fallback must not apply — refuse before any lookup.
+  if (callerId.state === "withheld") return WITHHELD_CALLER_ID_REFUSAL;
 
   if (!phone && !confirmation_code) {
     return {
@@ -1333,47 +1341,84 @@ export async function handleCancelAppointment(
 
   const supabase = createAdminClient();
 
-  const rlResult = await enforceApptMutationRateLimit(supabase, organizationId, phone);
+  // Key the rate limit by the verified caller ID when present — the model
+  // can rotate its phone argument, but not the call's real From.
+  const rlResult = await enforceApptMutationRateLimit(
+    supabase,
+    organizationId,
+    callerId.state === "verified" ? callerId.phone : phone
+  );
   if (rlResult) return rlResult;
+
+  // SCRUM-438: the org's configured verification fields apply to mutations too.
+  const verification = await getVerificationSettings(supabase, organizationId);
 
   // Try confirmation code first (exact match)
   if (confirmation_code) {
     const code = confirmation_code.trim();
     const { data: codeMatch, error: codeErr } = await (supabase as any)
       .from("appointments")
-      .select("id, start_time, attendee_phone, external_id, provider, metadata, confirmation_code, status")
+      .select("id, start_time, attendee_name, attendee_phone, attendee_email, service_type_id, external_id, provider, metadata, confirmation_code, status")
       .eq("organization_id", organizationId)
       .eq("confirmation_code", code)
       .in("status", ["confirmed", "pending"])
       .single();
 
     if (codeErr && codeErr.code !== "PGRST116") {
-      console.error("Cancel: confirmation code lookup error:", { organizationId, code, error: codeErr });
+      // SCRUM-339: log the code's presence/length only — the value is a usable
+      // mutation token and must never land in logs.
+      console.error("Cancel: confirmation code lookup error:", { organizationId, codeLength: code.length, error: codeErr });
       return { success: false, message: "I'm having trouble looking up that code right now. Would you like me to have someone call you back?" };
     }
     if (codeMatch) {
-      // SCRUM-415: a code match is not enough — verify the caller owns it.
-      const ownershipError = verifyCodeCallerOwnership(codeMatch, phone);
-      if (ownershipError) return ownershipError;
-      return cancelSingleAppointment(supabase, organizationId, codeMatch, reason);
+      // SCRUM-415/438: a code match is not enough — the caller must hold the
+      // booking's phone number (verified caller ID only on production calls;
+      // the model-supplied argument only on test sessions).
+      const possession = verifyPhonePossession(codeMatch, phone, callerId);
+      if (possession === "match") {
+        const factorFail = verifyKnowledgeFactors(codeMatch, { name: args.name, email: args.email }, verification);
+        if (factorFail) return factorFail;
+        return cancelSingleAppointment(supabase, organizationId, codeMatch, reason);
+      }
+      const hasCandidatePhone = callerId.state === "verified" || Boolean(phone?.trim());
+      if (possession === "unverifiable" && !hasCandidatePhone) {
+        // No phone available on the call at all — ask for it. Same reply the
+        // no-code branch below gives, so a code hit stays indistinguishable.
+        return { success: false, message: CANCEL_NEEDS_BOOKING_PHONE_MSG };
+      }
+      // "mismatch", or "unverifiable" because the BOOKING has no phone on file
+      // while the caller supplied one: fall through EXACTLY like a wrong code —
+      // any distinct reply (including NEEDS_BOOKING_PHONE for the phone-less
+      // booking) would be a code-enumeration oracle. Logged for ops visibility
+      // (no code/phone in the log — they're usable tokens, SCRUM-339).
+      console.warn("[Cancel] Confirmation code matched but caller failed phone possession — treating as not found", { organizationId });
     }
   }
 
   if (!phone) {
+    return { success: false, message: CANCEL_NEEDS_BOOKING_PHONE_MSG };
+  }
+
+  // SCRUM-438: reject degenerate phones ("anonymous", "8") before they reach
+  // the DB — parity with the lookup guard PR #346 added. Required for the
+  // anchored suffix match below to never degenerate toward '%'.
+  if (!isValidPhoneNumber(phone)) {
     return {
       success: false,
-      message: "I couldn't find an appointment with that code. Could you provide your phone number instead?",
+      message:
+        "That phone number doesn't look complete. Could you give me the full phone number the appointment was booked under?",
     };
   }
 
-  // Fall back to phone lookup — only future appointments
-  const variants = phoneVariants(phone);
-
+  // Fall back to phone lookup — only future appointments. SCRUM-438: end-
+  // anchored last-9-digit suffix match (the form PR #346 gave lookup) instead
+  // of an exact IN over synthesized format variants — it tolerates any stored
+  // formatting, and the possession gate below re-verifies each row anyway.
   let query = (supabase as any)
     .from("appointments")
-    .select("id, start_time, attendee_name, external_id, provider, metadata, confirmation_code, status, created_at")
+    .select("id, start_time, attendee_name, attendee_phone, attendee_email, service_type_id, external_id, provider, metadata, confirmation_code, status, created_at")
     .eq("organization_id", organizationId)
-    .in("attendee_phone", variants)
+    .ilike("attendee_phone", phoneSuffixPattern(phone))
     .in("status", ["confirmed", "pending"])
     .gte("start_time", new Date().toISOString())
     .order("start_time", { ascending: true });
@@ -1418,7 +1463,18 @@ export async function handleCancelAppointment(
     };
   }
 
-  if (!appointments?.length) {
+  // SCRUM-438: possession gate BEFORE anything is listed or cancelled. Each
+  // candidate row's attendee_phone must match the verified caller ID (or the
+  // model phone when there is no caller ID — browser test calls). This blocks
+  // a model echoing a victim's number from cancelling — or even ENUMERATING —
+  // a stranger's appointments, and weeds out NANP last-9 suffix collisions.
+  const owned = ((appointments || []) as any[]).filter(
+    (a) => verifyPhonePossession(a, phone, callerId) === "match"
+  );
+
+  if (!owned.length) {
+    // Same message whether nothing matched or matches failed possession —
+    // a non-owner learns nothing about the victim's schedule.
     return {
       success: false,
       message:
@@ -1426,9 +1482,17 @@ export async function handleCancelAppointment(
     };
   }
 
+  // SCRUM-438: org-configured knowledge factors (name/email) on the SPECIFIC
+  // row about to be cancelled — rows sharing a phone can carry different
+  // names (e.g. family members on one number).
+  const knowledgeGate = (appt: any): ToolResult | null =>
+    verifyKnowledgeFactors(appt, { name: args.name, email: args.email }, verification);
+
   // Single match — cancel directly.
-  if (appointments.length === 1) {
-    return cancelSingleAppointment(supabase, organizationId, appointments[0], reason);
+  if (owned.length === 1) {
+    const factorFail = knowledgeGate(owned[0]);
+    if (factorFail) return factorFail;
+    return cancelSingleAppointment(supabase, organizationId, owned[0], reason);
   }
 
   // SCRUM-381: the model passed an exact datetime but several rows fall inside
@@ -1444,8 +1508,10 @@ export async function handleCancelAppointment(
       dtMs = NaN;
     }
     if (!Number.isNaN(dtMs)) {
-      const closest = pickClosestAppointment(appointments as any[], dtMs);
+      const closest = pickClosestAppointment(owned, dtMs);
       if (closest) {
+        const factorFail = knowledgeGate(closest);
+        if (factorFail) return factorFail;
         return cancelSingleAppointment(supabase, organizationId, closest, reason);
       }
     }
@@ -1460,14 +1526,13 @@ export async function handleCancelAppointment(
   // ("Cancel the one I just booked" still works: the model knows that
   // appointment's datetime and passes it → exact ±15-min match → the single-match
   // branch above cancels it directly, no disambiguation needed.)
-  // SCRUM-384: each option carries its confirmation_code too, so two appointments
-  // in the SAME minute (which datetime alone can't separate — possible for one
-  // caller across two practitioners) are still resolvable: the model passes the
-  // code for an exact single-row cancel.
-  const options = appointments.map((a: any) => formatDisambigOption(a, tz)).join("; ");
+  // SCRUM-438: the options deliberately carry NO names and NO confirmation
+  // codes (see describeDisambigOptions) — same-minute ties (SCRUM-384) are
+  // resolved by asking the CALLER for the code from their confirmation SMS.
+  const options = await describeDisambigOptions(owned, tz, supabase, organizationId);
   return {
     success: false,
-    message: `This caller has ${appointments.length} upcoming appointments: ${options}. Confirm with the caller which ONE they mean, then call cancel_appointment again with that appointment's confirmation_code (most precise), or its exact datetime — do NOT cancel without one of them.`,
+    message: `This caller has ${owned.length} upcoming appointments: ${options}. Confirm with the caller which ONE they mean, then call cancel_appointment again with that appointment's exact datetime. If two are at the same time, ask the caller for the 6-digit confirmation code from their booking confirmation and pass it as confirmation_code — do NOT cancel without pinning exactly one appointment.`,
   };
 }
 
@@ -1582,6 +1647,11 @@ async function cancelSingleAppointment(
  * cancel fails, we report the new booking honestly AND flag that the old wasn't
  * removed — never a silent duplicate.
  */
+// SCRUM-438: identical wording whether a confirmation code matched or not
+// (code-enumeration oracle — see CANCEL_NEEDS_BOOKING_PHONE_MSG).
+const RESCHEDULE_NEEDS_BOOKING_PHONE_MSG =
+  "For security, I need the phone number on the booking before I can move an appointment. Could you confirm that number?";
+
 export async function handleRescheduleAppointment(
   organizationId: string,
   args: {
@@ -1597,9 +1667,18 @@ export async function handleRescheduleAppointment(
     notes?: string;
     service_type_id?: string;
     practitioner_id?: string;
-  }
+  },
+  trusted?: TrustedCallContext
 ): Promise<ToolResult> {
   const { phone, confirmation_code, new_datetime } = args;
+
+  // SCRUM-438: the trusted caller-ID state — re-validated here even though
+  // the route checks it too (the handler is the security boundary).
+  const callerId = resolveCallerId(trusted);
+
+  // Withheld caller ID on a production call: possession is unverifiable and
+  // the model-phone fallback must not apply — refuse before any lookup.
+  if (callerId.state === "withheld") return WITHHELD_CALLER_ID_REFUSAL;
 
   if (!new_datetime) {
     return { success: false, message: "What date and time would you like to move the appointment to?" };
@@ -1611,8 +1690,15 @@ export async function handleRescheduleAppointment(
   try {
     const supabase = createAdminClient();
 
-    const rlResult = await enforceApptMutationRateLimit(supabase, organizationId, phone);
+    const rlResult = await enforceApptMutationRateLimit(
+      supabase,
+      organizationId,
+      callerId.state === "verified" ? callerId.phone : phone
+    );
     if (rlResult) return rlResult;
+
+    // SCRUM-438: the org's configured verification fields apply to mutations too.
+    const verification = await getVerificationSettings(supabase, organizationId);
 
     const schedule = await getOrgSchedule(organizationId).catch(() => null);
     const tz = schedule?.timezone || "Australia/Sydney";
@@ -1627,22 +1713,17 @@ export async function handleRescheduleAppointment(
       const timeStr = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true, timeZone: tz });
       return `${dateStr} at ${timeStr}`;
     };
-    // SCRUM-382/384: build a disambiguation reply that the model can actually
-    // resolve. Each option carries its exact datetime AND its confirmation_code,
-    // so even two appointments in the SAME minute (which `toLocalIsoMinute` can't
-    // separate) are distinguishable — the model passes the code for an exact
-    // single-row match. attendee_name gives the caller a human way to choose.
-    const buildRescheduleDisambig = (rows: any[]): ToolResult => {
-      const options = rows
-        .map((a: any) => {
-          const who = a.attendee_name ? ` for ${a.attendee_name}` : "";
-          const code = a.confirmation_code ? `, code ${a.confirmation_code}` : "";
-          return `${fmtWhen(a.start_time)}${who} (datetime: ${toLocalIsoMinute(new Date(a.start_time), tz)}${code})`;
-        })
-        .join("; ");
+    // SCRUM-382: build a disambiguation reply that the model can actually
+    // resolve — each option carries its exact datetime to pass back as
+    // current_datetime. SCRUM-438: the options deliberately carry NO
+    // attendee_name and NO confirmation_code (these rows were matched by a
+    // spoofable phone — see describeDisambigOptions); same-minute ties
+    // (SCRUM-384) are resolved by asking the CALLER for their code.
+    const buildRescheduleDisambig = async (rows: any[]): Promise<ToolResult> => {
+      const options = await describeDisambigOptions(rows, tz, supabase, organizationId);
       return {
         success: false,
-        message: `I found more than one upcoming appointment for this caller: ${options}. Which one would you like to move? Call reschedule_appointment again with that appointment's confirmation_code (most precise), or its current_datetime.`,
+        message: `I found more than one upcoming appointment for this caller: ${options}. Which one would you like to move? Confirm with the caller, then call reschedule_appointment again with that appointment's exact current_datetime. If two are at the same time, ask the caller for the 6-digit confirmation code from their booking confirmation and pass it as confirmation_code.`,
       };
     };
 
@@ -1665,11 +1746,25 @@ export async function handleRescheduleAppointment(
         return { success: false, message: "I'm having trouble looking up that appointment right now. Would you like me to have someone call you back?" };
       }
       if (codeRows && codeRows.length === 1) {
-        // SCRUM-415: a code match is not enough — verify the caller owns it
-        // before moving the appointment (selectCols includes attendee_phone).
-        const ownershipError = verifyCodeCallerOwnership(codeRows[0], phone);
-        if (ownershipError) return ownershipError;
-        existing = codeRows[0];
+        // SCRUM-415/438: a code match is not enough — the caller must hold the
+        // booking's phone number (verified caller ID only on production calls;
+        // selectCols includes attendee_phone).
+        const possession = verifyPhonePossession(codeRows[0], phone, callerId);
+        const hasCandidatePhone = callerId.state === "verified" || Boolean(phone?.trim());
+        if (possession === "match") {
+          existing = codeRows[0];
+        } else if (possession === "unverifiable" && !hasCandidatePhone) {
+          // No phone available on the call at all — ask for it. Same reply the
+          // phone-less branch below gives, so a code hit stays indistinguishable.
+          return { success: false, message: RESCHEDULE_NEEDS_BOOKING_PHONE_MSG };
+        } else {
+          // "mismatch", or "unverifiable" because the BOOKING has no phone on
+          // file while the caller supplied one: fall through EXACTLY like a
+          // wrong code (no enumeration oracle) — the phone lookup below
+          // proceeds with the caller's own number. Logged without the
+          // code/phone (usable tokens, SCRUM-339).
+          console.warn("[Reschedule] Confirmation code matched but caller failed phone possession — treating as not found", { organizationId });
+        }
       } else if (codeRows && codeRows.length > 1) {
         console.warn("Reschedule: confirmation code matched multiple appointments:", { organizationId });
         return { success: false, message: "That confirmation code matches more than one appointment. Could you tell me the date and time of the one you'd like to move?" };
@@ -1684,14 +1779,22 @@ export async function handleRescheduleAppointment(
     // no exact time, never guess which to cancel — ask for the exact time.
     if (!existing) {
       if (!phone) {
-        return { success: false, message: "I couldn't find an appointment with that code. Could you give me the phone number on the booking instead?" };
+        return { success: false, message: RESCHEDULE_NEEDS_BOOKING_PHONE_MSG };
       }
-      const variants = phoneVariants(phone);
+      // SCRUM-438: degenerate-phone guard + end-anchored suffix match —
+      // parity with the cancel path and lookup (PR #346).
+      if (!isValidPhoneNumber(phone)) {
+        return {
+          success: false,
+          message:
+            "That phone number doesn't look complete. Could you give me the full phone number the appointment was booked under?",
+        };
+      }
       const { data: upcoming, error: qErr } = await (supabase as any)
         .from("appointments")
         .select(selectCols)
         .eq("organization_id", organizationId)
-        .in("attendee_phone", variants)
+        .ilike("attendee_phone", phoneSuffixPattern(phone))
         .in("status", ["confirmed", "pending"])
         .gte("start_time", new Date().toISOString())
         .order("start_time", { ascending: true })
@@ -1700,7 +1803,15 @@ export async function handleRescheduleAppointment(
         console.error("Reschedule: appointment lookup error:", { organizationId, error: qErr });
         return { success: false, message: "I'm having trouble finding your appointment right now. Would you like me to have someone call you back?" };
       }
-      if (!upcoming?.length) {
+      // SCRUM-438: possession gate BEFORE anything is listed or moved — each
+      // row's attendee_phone must match the verified caller ID (or the model
+      // phone when there is no caller ID). A model echoing a victim's number
+      // can no longer move or enumerate a stranger's appointments.
+      const upcomingOwned = ((upcoming || []) as any[]).filter(
+        (a) => verifyPhonePossession(a, phone, callerId) === "match"
+      );
+      if (!upcomingOwned.length) {
+        // Same message whether nothing matched or matches failed possession.
         return { success: false, message: "I couldn't find an upcoming appointment with that phone number. Could you double-check the number, or tell me the date and time of your current appointment?" };
       }
 
@@ -1710,7 +1821,7 @@ export async function handleRescheduleAppointment(
       if (currentDatetime) {
         let dtMs = NaN;
         try { dtMs = new Date(ensureTimezoneOffset(currentDatetime, tz)).getTime(); } catch { dtMs = NaN; }
-        const matches = isNaN(dtMs) ? [] : upcoming.filter((a: any) => Math.abs(new Date(a.start_time).getTime() - dtMs) <= 15 * 60 * 1000);
+        const matches = isNaN(dtMs) ? [] : upcomingOwned.filter((a: any) => Math.abs(new Date(a.start_time).getTime() - dtMs) <= 15 * 60 * 1000);
         if (matches.length === 1) {
           existing = matches[0];
         } else if (matches.length > 1) {
@@ -1730,25 +1841,32 @@ export async function handleRescheduleAppointment(
         } else {
           return { success: false, message: "I couldn't find an appointment at that exact time. Could you tell me the day and time of the appointment you'd like to move?" };
         }
-      } else if (upcoming.length === 1) {
-        existing = upcoming[0]; // unambiguous — only one upcoming appointment
+      } else if (upcomingOwned.length === 1) {
+        existing = upcomingOwned[0]; // unambiguous — only one upcoming appointment
       } else {
         // Multiple upcoming, no exact time — never guess. Ask for the exact time,
         // narrowing the list to the given date when one was provided.
-        let list = upcoming;
+        let list = upcomingOwned;
         if (date) {
           try {
             const dayStart = new Date(ensureTimezoneOffset(`${date}T00:00:00`, tz)).getTime();
             const dayEnd = new Date(ensureTimezoneOffset(`${date}T23:59:59`, tz)).getTime();
-            const onDate = upcoming.filter((a: any) => { const t = new Date(a.start_time).getTime(); return t >= dayStart && t <= dayEnd; });
+            const onDate = upcomingOwned.filter((a: any) => { const t = new Date(a.start_time).getTime(); return t >= dayStart && t <= dayEnd; });
             if (onDate.length) list = onDate;
           } catch { /* keep full list */ }
         }
-        // SCRUM-382/384: hand the model each option's exact datetime AND code so it
-        // can pin one row (code resolves even same-minute ties) instead of looping.
+        // SCRUM-382: hand the model each option's exact datetime so it can pin
+        // one row instead of looping (same-minute ties → ask the caller for
+        // their code, per SCRUM-438).
         return buildRescheduleDisambig(list);
       }
     }
+
+    // SCRUM-438: org-configured knowledge factors (name/email) on the pinned
+    // appointment — single choke point for both the code and phone paths,
+    // BEFORE anything is booked or freed.
+    const factorFail = verifyKnowledgeFactors(existing, { name: args.name, email: args.email }, verification);
+    if (factorFail) return factorFail;
 
     // ── 2. Book the NEW appointment FIRST (never cancel before the new slot is
     // secured — a failed book then leaves the caller's original intact).
@@ -1763,9 +1881,20 @@ export async function handleRescheduleAppointment(
     // move keeps the same practitioner/service/name/email/notes; a "change my dentist"
     // request changes only the practitioner; etc. (`new_datetime` is the one field
     // the reschedule always sets.)
-    // Split carried_refs OUT of the booking args and into the internal-only
-    // parameter — it must never travel inside `args` (the LLM-populated shape).
-    const { carried_refs, ...rescheduledBooking } = resolveRescheduledBooking(args, existing);
+    // SCRUM-438: `args.name` and `args.email` are now VERIFICATION slots (the
+    // details on the existing booking — see the tool schema), not edits.
+    // Passing them through would let a partial verification name ("Jane"
+    // passing a contains-check against "Jane Smith") or a model-collected
+    // verification email silently overwrite the carried-over contact details.
+    // Renames still work via a complete first_name + last_name.
+    // SCRUM-444: also split carried_refs OUT of the booking args into the
+    // internal-only parameter — it must never travel inside `args` (the
+    // LLM-populated shape) or a model could mark a freshly-supplied deactivated
+    // ref as "carried" to bypass the is_active gate.
+    const { carried_refs, ...rescheduledBooking } = resolveRescheduledBooking(
+      { ...args, name: undefined, email: undefined },
+      existing
+    );
     const bookResult = await handleBookAppointment(
       organizationId,
       { datetime: new_datetime, ...rescheduledBooking },
@@ -2567,21 +2696,11 @@ export async function handleLookupAppointment(
     return { success: false, message: "I'm having trouble accessing the system right now. Would you like me to arrange a callback instead?" };
   }
 
-  // Parse verification settings (structured object or legacy array)
-  const rawSettings = org.appointment_verification_fields;
-  let verificationMethod: string;
-  let verificationFields: string[];
-  if (rawSettings && typeof rawSettings === "object" && !Array.isArray(rawSettings) && rawSettings.method) {
-    verificationMethod = rawSettings.method; // "code_and_verify" | "code_only" | "details_only"
-    verificationFields = Array.isArray(rawSettings.fields) ? rawSettings.fields : ["name"];
-  } else if (Array.isArray(rawSettings)) {
-    // Legacy: plain array of fields → treat as code_and_verify
-    verificationMethod = "code_and_verify";
-    verificationFields = rawSettings;
-  } else {
-    verificationMethod = "code_and_verify";
-    verificationFields = ["name"];
-  }
+  // Parse verification settings (structured object or legacy array) — shared
+  // with the mutation handlers since SCRUM-438.
+  const settings: VerificationSettings = parseVerificationSettings(org.appointment_verification_fields);
+  const verificationMethod = settings.method;
+  const verificationFields = settings.fields;
   const timezone = org.timezone || "Australia/Sydney";
   const usesCode = verificationMethod !== "details_only";
 
