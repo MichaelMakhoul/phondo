@@ -4,6 +4,8 @@ import { DashboardSidebar } from "@/components/dashboard/sidebar";
 import { DashboardHeader } from "@/components/dashboard/header";
 import { MobileBottomNav } from "@/components/dashboard/mobile-nav";
 import { AnalyticsIdentifier } from "@/components/analytics/analytics-identifier";
+import { SubscriptionLapseBanner } from "@/components/dashboard/subscription-lapse-banner";
+import type { LapseSubscription } from "@/lib/subscriptions/lapse-state";
 
 interface Organization {
   id: string;
@@ -76,11 +78,14 @@ export default async function DashboardLayout({
   // Use first organization as current (later we can add org switching)
   const currentOrg = memberships[0].organizations;
 
-  // Get subscription for analytics user properties
+  // Get subscription for analytics user properties (plan_type) and the
+  // SCRUM-477 lapse banner (status + the timestamps computeLapseState reads).
   const { data: subscription, error: subError } = currentOrg
     ? await supabase
         .from("subscriptions")
-        .select("plan_type")
+        .select(
+          "plan_type, status, cancel_at_period_end, current_period_end, trial_end, service_ended_at"
+        )
         .eq("organization_id", currentOrg.id)
         .single()
     : { data: null, error: null };
@@ -111,6 +116,10 @@ export default async function DashboardLayout({
         />
         <div className="h-[2px] bg-gradient-to-r from-primary/60 via-primary/20 to-transparent" />
         <main id="main-content" className="flex-1 overflow-y-auto bg-muted/30 p-4 pb-24 md:p-6 md:pb-6">
+          <SubscriptionLapseBanner
+            subscription={(subscription as LapseSubscription | null) ?? null}
+            now={Date.now()}
+          />
           {children}
         </main>
         <MobileBottomNav currentOrg={currentOrg ? { name: currentOrg.name, type: currentOrg.type || "business" } : null} />
