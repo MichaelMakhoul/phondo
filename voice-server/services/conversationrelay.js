@@ -48,6 +48,13 @@ const {
 
 const MAX_TOOL_ITERATIONS = 5;
 
+// Prose fail-signal detector: when a tool result carries no structured
+// `success` boolean, success is inferred from the message text via this regex.
+// Exported through _test so the test-mode simulation pins (SCRUM-452) track
+// the REAL detector instead of a hand-copied duplicate.
+const PROSE_FAIL_SIGNAL =
+  /\b(error|not found|couldn'?t|could not|unable|failed|no longer available|already booked|fully booked|no available slot|not configured)\b/i;
+
 // ── Pure helpers (unit-tested via _test) ────────────────────────────────────
 
 /** A ConversationRelay text frame. `last:true` finalizes the speaking turn. */
@@ -274,7 +281,7 @@ async function runGuardedToolCall(session, toolCall, deps = {}) {
   } else if (typeof result === "object" && result?.error) {
     successful = false;
   } else {
-    const failSignal = /\b(error|not found|couldn'?t|could not|unable|failed|no longer available|already booked|fully booked|no available slot|not configured)\b/i.test(message);
+    const failSignal = PROSE_FAIL_SIGNAL.test(message);
     successful = !failSignal;
     if (name === "book_appointment") {
       const ok = /\b(confirmation code \d{3,8}|i'?ve booked|you'?re all set|appointment (?:is|has been) (?:booked|confirmed))\b/i.test(message);
@@ -734,5 +741,6 @@ module.exports = {
   _test: {
     crTextFrame, crEndFrame, buildCrTools, parseSetup, buildConversationRelayTwiml,
     buildLanguageLockDirective, buildCriticalRulesSuffix, runGuardedToolCall,
+    PROSE_FAIL_SIGNAL,
   },
 };
