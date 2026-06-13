@@ -609,17 +609,51 @@ function applyCallerIdPhoneFallback(functionName, args, callerPhone) {
 }
 
 /**
+ * Twilio's NUMERIC sentinel for a withheld caller ID — "+266696687" spells
+ * "ANONYMOUS" on a phone keypad. It is 9 digits, so without an explicit check
+ * it would pass the dialable window and become a never-matching "verified"
+ * phone downstream, hard-blocking the caller's mutations. Both sentinel forms
+ * (textual "anonymous" and this numeric one) must behave identically.
+ */
+const ANONYMOUS_CALLER_SENTINEL_DIGITS = "266696687";
+
+/**
  * True when the caller ID looks like a real dialable number rather than a
- * withheld-ID sentinel ("anonymous", "Restricted") or SIP URI. The 8–15 digit
- * window mirrors `isValidPhoneNumber` (src/lib/security/validation.ts), so
- * anything that passes here also passes that downstream check.
+ * withheld-ID sentinel ("anonymous", "Restricted", Twilio's numeric
+ * "+266696687") or SIP URI. The 8–15 digit window mirrors
+ * `isValidPhoneNumber` (src/lib/security/validation.ts), so anything that
+ * passes here also passes that downstream check.
  *
  * @param {string|undefined} callerPhone
  * @returns {boolean}
  */
 function isDialableCallerId(callerPhone) {
   const digits = typeof callerPhone === "string" ? callerPhone.replace(/\D/g, "") : "";
+  if (digits === ANONYMOUS_CALLER_SENTINEL_DIGITS) return false;
   return digits.length >= 8 && digits.length <= 15;
+}
+
+/**
+ * SCRUM-438 (review fix): the trusted caller-ID fields for the internal API,
+ * sent as TOP-LEVEL payload fields the model can never reach. Tri-state:
+ *  - `{ callerIdState: "verified", callerPhone }` — production call with a
+ *    dialable From; possession is verified against THAT number only.
+ *  - `{ callerIdState: "withheld" }` — production call whose From is a
+ *    withheld-ID sentinel ("anonymous", "Restricted", "unavailable",
+ *    "+266696687") or SIP URI. Sent EXPLICITLY so the Next.js handlers refuse
+ *    mutations instead of silently falling back to the model-controlled phone
+ *    argument (which would re-open the #31# caller-ID-withheld spoof).
+ *  - `{}` — genuine test/browser sessions only (no caller ID can exist).
+ *
+ * @param {{ testMode?: boolean, callerPhone?: string }} context
+ * @returns {{ callerIdState?: string, callerPhone?: string }}
+ */
+function resolveCallerIdFields(context) {
+  if (context.testMode) return {};
+  if (isDialableCallerId(context.callerPhone)) {
+    return { callerIdState: "verified", callerPhone: context.callerPhone };
+  }
+  return { callerIdState: "withheld" };
 }
 
 /**
@@ -658,11 +692,13 @@ async function executeCalendarCall(functionName, args, context) {
         functionName,
         arguments: effectiveArgs,
         ...(context.callId && { callId: context.callId }),
-        // SCRUM-438: the session's VERIFIED inbound caller ID (the call's real
-        // From) as a TOP-LEVEL trusted field — never inside `arguments`, which
-        // the model controls. Cancel/reschedule ownership is verified against
-        // this. Omitted for test calls / withheld caller IDs.
-        ...(isDialableCallerId(context.callerPhone) && { callerPhone: context.callerPhone }),
+        // SCRUM-438: the session's caller-ID state (+ the VERIFIED inbound
+        // caller ID, the call's real From) as TOP-LEVEL trusted fields — never
+        // inside `arguments`, which the model controls. Cancel/reschedule
+        // ownership is verified against these. 'withheld' is sent explicitly
+        // for production calls with no usable caller ID; both fields are
+        // omitted only for test/browser sessions.
+        ...resolveCallerIdFields(context),
       }),
     });
 
@@ -1024,5 +1060,5 @@ module.exports = {
   callbackToolDefinition,
   endCallToolDefinition,
   executeToolCall,
-  _test: { getTransferService, resolveCurrentDatetime, resolveAvailabilityFromCache, applyCallerIdPhoneFallback, isDialableCallerId },
+  _test: { getTransferService, resolveCurrentDatetime, resolveAvailabilityFromCache, applyCallerIdPhoneFallback, isDialableCallerId, resolveCallerIdFields },
 };

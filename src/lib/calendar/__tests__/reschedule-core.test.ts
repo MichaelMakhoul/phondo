@@ -52,6 +52,28 @@ describe("resolveRescheduledBooking (SCRUM-390/399 carry-over)", () => {
     expect(resolveRescheduledBooking({ phone: "+61411111111" }, existing).phone).toBe("+61411111111");
   });
 
+  it("a reschedule that supplied a VERIFICATION email keeps the booking's existing email (SCRUM-438 review fix)", () => {
+    // `name`/`email` on a reschedule are verification slots (the details on the
+    // existing booking), not edits — so tool-handlers strips both to `undefined`
+    // before carry-over. A model-collected verification email must NOT clobber
+    // the contact email already on the booking.
+    const argsWithVerificationEmail = {
+      email: "verifier@attacker.test",
+      name: "Jane",
+    };
+    const carried = resolveRescheduledBooking(
+      { ...argsWithVerificationEmail, name: undefined, email: undefined },
+      existing,
+    );
+    expect(carried.email).toBe("mike@example.com");
+    expect(carried.name ?? `${carried.first_name} ${carried.last_name}`).toContain("Makhoul");
+  });
+
+  it("WITHOUT the strip, a supplied email WOULD clobber — documents why tool-handlers strips it", () => {
+    const carried = resolveRescheduledBooking({ email: "verifier@attacker.test" }, existing);
+    expect(carried.email).toBe("verifier@attacker.test");
+  });
+
   it("normalizes a missing existing optional field to undefined (not null)", () => {
     const sparse = {
       attendee_name: "Cher",

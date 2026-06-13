@@ -4,13 +4,19 @@
 // (cancel/reschedule):
 //
 //  1. POSSESSION (phone): does the caller hold the number on the booking?
-//     For real calls the voice server threads the call's VERIFIED inbound
-//     caller ID through the internal API as a trusted, model-inaccessible
-//     field — ownership is compared against THAT when present, and only falls
-//     back to the model-supplied phone argument when there is no caller ID
-//     (browser test calls). Caller ID is still spoofable on the PSTN, which is
-//     why identity is never echoed back on phone-only matches (SCRUM-437) and
-//     why orgs can layer knowledge factors on top.
+//     For real calls the voice server threads the call's caller-ID STATE
+//     through the internal API as trusted, model-inaccessible fields:
+//       'verified' + the inbound caller ID → ownership is compared against
+//         THAT, never the model-supplied phone argument;
+//       'withheld' (production call, From withheld/sentinel/SIP) → possession
+//         is UNVERIFIABLE — mutations refuse outright, because falling back to
+//         the model phone would let an attacker dial with #31# and echo the
+//         victim's number;
+//       absent → genuine browser/test sessions only, where no caller ID can
+//         exist; the model-supplied phone is the fallback there.
+//     Caller ID is still spoofable on the PSTN, which is why identity is never
+//     echoed back on phone-only matches (SCRUM-437) and why orgs can layer
+//     knowledge factors on top.
 //
 //  2. KNOWLEDGE (name/email): the org's `appointment_verification_fields`
 //     config, previously honored only by handleLookupAppointment. Mutations
@@ -21,6 +27,8 @@
 //  3. RATE LIMITING / oracle hygiene live in tool-handlers (the messages for
 //     "code not found" vs "code found but wrong phone" are kept identical so
 //     a voice attacker can't enumerate confirmation codes).
+
+import { isValidPhoneNumber } from "@/lib/security/validation";
 
 interface VerificationResult {
   success: boolean;
@@ -41,17 +49,28 @@ export interface VerificationSettings {
   explicit: boolean;
 }
 
+const KNOWN_VERIFICATION_METHODS: ReadonlyArray<VerificationSettings["method"]> = [
+  "code_and_verify",
+  "code_only",
+  "details_only",
+];
+
 /**
  * Parse the org's `appointment_verification_fields` column. Accepts the
  * structured `{ method, fields }` object, the legacy plain array of fields
  * (treated as code_and_verify), or null/garbage (platform defaults).
  * Extracted from handleLookupAppointment so mutations share the exact parse.
+ * The method string is allowlisted — an unknown value (bad migration, manual
+ * DB edit) falls back to the `code_and_verify` default instead of flowing
+ * through an unchecked cast (`explicit` stays true: the org DID configure).
  */
 export function parseVerificationSettings(raw: unknown): VerificationSettings {
   if (raw && typeof raw === "object" && !Array.isArray(raw) && (raw as { method?: unknown }).method) {
     const r = raw as { method: string; fields?: unknown };
     return {
-      method: r.method as VerificationSettings["method"],
+      method: (KNOWN_VERIFICATION_METHODS as readonly string[]).includes(r.method)
+        ? (r.method as VerificationSettings["method"])
+        : "code_and_verify",
       fields: Array.isArray(r.fields) ? r.fields : ["name"],
       explicit: true,
     };
@@ -115,24 +134,86 @@ export function phonesMatchForOwnership(
 
 export type PossessionCheck = "match" | "mismatch" | "unverifiable";
 
+/** Wire states the voice server can claim for a call's caller ID. */
+export type CallerIdState = "verified" | "withheld";
+
+/**
+ * Twilio's numeric sentinel for a withheld caller ID — "+266696687" spells
+ * ANONYMOUS on a keypad. It is 9 digits, so it passes isValidPhoneNumber and
+ * would otherwise become a never-matching "verified" phone that hard-blocks
+ * the caller's mutations. Normalized to 'withheld' here as well as in the
+ * voice server, so both sentinel forms behave identically at every boundary.
+ */
+const ANONYMOUS_CALLER_SENTINEL_DIGITS = "266696687";
+
+/**
+ * SCRUM-438: the validated, tri-state caller-ID for a tool call.
+ *  - 'verified': a production call with a real dialable From — `phone` is the
+ *    ONLY number possession may be compared against.
+ *  - 'withheld': a production call with no usable caller ID (withheld/sentinel
+ *    /SIP From). Possession is unverifiable; mutations must refuse rather than
+ *    fall back to the model-controlled phone argument.
+ *  - 'test': a browser/test session, where no caller ID can exist — the
+ *    model-supplied phone is the only possible possession factor.
+ */
+export type ResolvedCallerId =
+  | { state: "verified"; phone: string }
+  | { state: "withheld" }
+  | { state: "test" };
+
+/**
+ * Validate the trusted caller-ID fields (top-level payload fields the model
+ * can never reach) into a ResolvedCallerId. Shared by the internal tool-call
+ * route AND the mutation handlers (the handlers are the security boundary, so
+ * they re-validate).
+ *
+ * Fail-secure: an unrecognized state string, a 'verified' claim without a
+ * usable phone, or the +266696687 anonymous sentinel all resolve to
+ * 'withheld'. Only the complete ABSENCE of both fields means a test session.
+ * A valid phone WITHOUT a state resolves 'verified' — keeps a voice server
+ * that predates the state field working during a rolling deploy.
+ */
+export function resolveCallerId(trusted?: {
+  verifiedCallerPhone?: string;
+  callerIdState?: string;
+}): ResolvedCallerId {
+  if (!trusted || (trusted.callerIdState === undefined && trusted.verifiedCallerPhone === undefined)) {
+    return { state: "test" };
+  }
+  const phone = trusted.verifiedCallerPhone;
+  if (
+    (trusted.callerIdState === undefined || trusted.callerIdState === "verified") &&
+    typeof phone === "string" &&
+    isValidPhoneNumber(phone) &&
+    phone.replace(/\D/g, "") !== ANONYMOUS_CALLER_SENTINEL_DIGITS
+  ) {
+    return { state: "verified", phone };
+  }
+  return { state: "withheld" };
+}
+
 /**
  * SCRUM-438 possession factor: does the caller hold the booking's number?
  *
- * The verified inbound caller ID (threaded by the voice server, never
- * model-supplied) takes PRIORITY over the model-controllable phone argument —
- * a model echoing the victim's number can no longer pass ownership on a real
- * call. The model phone is only the fallback when there is no caller ID
- * (browser test calls have none).
+ * For 'verified' calls the inbound caller ID (threaded by the voice server,
+ * never model-supplied) is the ONLY candidate — a model echoing the victim's
+ * number can no longer pass ownership on a real call. For 'withheld' calls
+ * possession is always unverifiable: the model phone must never substitute
+ * for a caller ID the caller deliberately hid (#31# + echoing the victim's
+ * number would otherwise re-open the spoof). The model phone applies only to
+ * 'test' sessions, where no caller ID can exist.
  *
- * "unverifiable" = no phone on file, or no phone available to compare —
- * callers must treat it as NOT verified.
+ * "unverifiable" = no phone on file, no phone available to compare, or a
+ * withheld caller ID — callers must treat it as NOT verified.
  */
 export function verifyPhonePossession(
   appointment: { attendee_phone?: string | null },
   modelPhone: string | undefined,
-  verifiedCallerPhone: string | undefined
+  callerId: ResolvedCallerId
 ): PossessionCheck {
-  const candidate = verifiedCallerPhone?.trim() || modelPhone?.trim() || "";
+  if (callerId.state === "withheld") return "unverifiable";
+  const candidate =
+    callerId.state === "verified" ? callerId.phone.trim() : modelPhone?.trim() || "";
   if (!appointment.attendee_phone || !candidate) return "unverifiable";
   return phonesMatchForOwnership(appointment.attendee_phone, candidate)
     ? "match"

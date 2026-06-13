@@ -165,7 +165,9 @@ describe("handleCancelAppointment ownership (SCRUM-438)", () => {
     expect(captured.updated).toBe(true);
   });
 
-  it("phone path: with NO caller ID (browser test call) the model phone fallback still works", async () => {
+  it("phone path: a GENUINE test call (no callId, no caller-ID state) still falls back to the model phone", async () => {
+    // The route forwards NO trusted context for a browser/test session, so the
+    // model-supplied phone is the only possession candidate — and it works.
     vi.mocked(createAdminClient).mockReturnValue(
       fakeAdmin(
         {
@@ -183,6 +185,27 @@ describe("handleCancelAppointment ownership (SCRUM-438)", () => {
 
     expect(result.success).toBe(true);
     expect(captured.updated).toBe(true);
+  });
+
+  it("phone path: a PRODUCTION call with a WITHHELD caller ID refuses outright — the model phone is NEVER a fallback", async () => {
+    // The attacker dials with caller ID suppressed (#31#) and the model echoes
+    // the victim's own number. The route forwards { callerIdState: 'withheld' };
+    // possession is unverifiable and the handler must refuse BEFORE any lookup —
+    // never substituting the model-controlled phone for the hidden caller ID.
+    vi.mocked(createAdminClient).mockReturnValue(
+      fakeAdmin({ organizations: [orgVerification(null)] }, captured) as never,
+    );
+
+    const result = await handleCancelAppointment(
+      ORG,
+      { phone: VICTIM_PHONE },
+      { callerIdState: "withheld" },
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.message).toMatch(/private or blocked number/i);
+    expect(captured.updated).toBe(false);
+    expect(captured.ilikes).toHaveLength(0); // refused before any appointments query
   });
 
   it("phone path: the lookup is an END-anchored last-9 suffix (PR #346 form)", async () => {
@@ -505,6 +528,24 @@ describe("handleRescheduleAppointment ownership (SCRUM-438)", () => {
     expect(result.message).not.toContain("Jane");
     expect(captured.updated).toBe(false);
     expect(captured.inserted).toBe(false);
+  });
+
+  it("a PRODUCTION call with a WITHHELD caller ID refuses outright — never books/frees and never trusts the model phone", async () => {
+    vi.mocked(createAdminClient).mockReturnValue(
+      fakeAdmin({ organizations: [orgVerification(null)] }, captured) as never,
+    );
+
+    const result = await handleRescheduleAppointment(
+      ORG,
+      { phone: VICTIM_PHONE, new_datetime: "2027-07-02T10:00:00" },
+      { callerIdState: "withheld" },
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.message).toMatch(/private or blocked number/i);
+    expect(captured.updated).toBe(false);
+    expect(captured.inserted).toBe(false);
+    expect(captured.ilikes).toHaveLength(0); // refused before any appointments query
   });
 
   it("phone path: a degenerate phone is rejected before any appointments query", async () => {

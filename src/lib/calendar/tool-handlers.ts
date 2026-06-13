@@ -27,21 +27,29 @@ import { MAX_BOOKING_HORIZON_MS } from "@/lib/calendar/appointment-lifecycle";
 import {
   parseVerificationSettings,
   getVerificationSettings,
+  resolveCallerId,
   verifyPhonePossession,
   verifyKnowledgeFactors,
+  type CallerIdState,
   type VerificationSettings,
 } from "@/lib/calendar/appointment-verification";
 
 /**
  * SCRUM-438: fields the MODEL can never supply. The internal tool-call route
- * populates `verifiedCallerPhone` from the voice server's session caller ID
- * (the call's real From, sent as a top-level payload field) — NEVER from the
- * LLM tool arguments. It is the possession factor for cancel/reschedule
- * ownership; the model-supplied phone is only the fallback when there is no
- * caller ID (browser test calls).
+ * populates them from the voice server's session state (top-level payload
+ * fields) — NEVER from the LLM tool arguments. They carry the possession
+ * factor for cancel/reschedule ownership:
+ *  - `callerIdState: "verified"` + `verifiedCallerPhone`: production call
+ *    with a real dialable From — possession is compared against THAT only.
+ *  - `callerIdState: "withheld"`: production call with no usable caller ID
+ *    (withheld/sentinel/SIP From) — possession is unverifiable; mutations
+ *    refuse rather than fall back to the model-controlled phone argument.
+ *  - both fields absent: browser/test sessions only — the model-supplied
+ *    phone is the fallback there (no caller ID can exist).
  */
 export interface TrustedCallContext {
   verifiedCallerPhone?: string;
+  callerIdState?: CallerIdState;
 }
 
 // SCRUM-399: `resolveRescheduleIdentity` moved to reschedule-core (shared with the
@@ -1250,6 +1258,17 @@ async function enforceApptMutationRateLimit(
 const CANCEL_NEEDS_BOOKING_PHONE_MSG =
   "For security, I need the phone number on the booking before I can change an appointment. Could you confirm that number?";
 
+// SCRUM-438 (review fix): a production caller who withheld their caller ID
+// cannot prove possession at all on this call — and the model-phone fallback
+// must never apply outside test sessions (an attacker dials with #31# and
+// echoes the victim's number). Generic refusal + the callback path, shared by
+// cancel and reschedule, returned BEFORE any lookup so nothing is enumerable.
+const WITHHELD_CALLER_ID_REFUSAL: ToolResult = {
+  success: false,
+  message:
+    "For security, I can't make changes to appointments when the call comes from a private or blocked number. If you call back with your number showing, I can help right away — or I can arrange a callback from the team.",
+};
+
 export async function handleCancelAppointment(
   organizationId: string,
   args: { phone?: string; reason?: string; confirmation_code?: string; date?: string; datetime?: string; name?: string; email?: string },
@@ -1262,12 +1281,13 @@ export async function handleCancelAppointment(
   // Sophie knows the exact time from the booking she just made.
   const datetime = args.datetime && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(args.datetime) ? args.datetime : undefined;
 
-  // SCRUM-438: the verified inbound caller ID — re-validated here even though
+  // SCRUM-438: the trusted caller-ID state — re-validated here even though
   // the route checks it too (the handler is the security boundary).
-  const verifiedCallerPhone =
-    trusted?.verifiedCallerPhone && isValidPhoneNumber(trusted.verifiedCallerPhone)
-      ? trusted.verifiedCallerPhone
-      : undefined;
+  const callerId = resolveCallerId(trusted);
+
+  // Withheld caller ID on a production call: possession is unverifiable and
+  // the model-phone fallback must not apply — refuse before any lookup.
+  if (callerId.state === "withheld") return WITHHELD_CALLER_ID_REFUSAL;
 
   if (!phone && !confirmation_code) {
     return {
@@ -1281,7 +1301,11 @@ export async function handleCancelAppointment(
 
   // Key the rate limit by the verified caller ID when present — the model
   // can rotate its phone argument, but not the call's real From.
-  const rlResult = await enforceApptMutationRateLimit(supabase, organizationId, verifiedCallerPhone || phone);
+  const rlResult = await enforceApptMutationRateLimit(
+    supabase,
+    organizationId,
+    callerId.state === "verified" ? callerId.phone : phone
+  );
   if (rlResult) return rlResult;
 
   // SCRUM-438: the org's configured verification fields apply to mutations too.
@@ -1299,25 +1323,31 @@ export async function handleCancelAppointment(
       .single();
 
     if (codeErr && codeErr.code !== "PGRST116") {
-      console.error("Cancel: confirmation code lookup error:", { organizationId, code, error: codeErr });
+      // SCRUM-339: log the code's presence/length only — the value is a usable
+      // mutation token and must never land in logs.
+      console.error("Cancel: confirmation code lookup error:", { organizationId, codeLength: code.length, error: codeErr });
       return { success: false, message: "I'm having trouble looking up that code right now. Would you like me to have someone call you back?" };
     }
     if (codeMatch) {
       // SCRUM-415/438: a code match is not enough — the caller must hold the
-      // booking's phone number (verified caller ID preferred over the
-      // model-supplied argument).
-      const possession = verifyPhonePossession(codeMatch, phone, verifiedCallerPhone);
+      // booking's phone number (verified caller ID only on production calls;
+      // the model-supplied argument only on test sessions).
+      const possession = verifyPhonePossession(codeMatch, phone, callerId);
       if (possession === "match") {
         const factorFail = verifyKnowledgeFactors(codeMatch, { name: args.name, email: args.email }, verification);
         if (factorFail) return factorFail;
         return cancelSingleAppointment(supabase, organizationId, codeMatch, reason);
       }
-      if (possession === "unverifiable") {
+      const hasCandidatePhone = callerId.state === "verified" || Boolean(phone?.trim());
+      if (possession === "unverifiable" && !hasCandidatePhone) {
+        // No phone available on the call at all — ask for it. Same reply the
+        // no-code branch below gives, so a code hit stays indistinguishable.
         return { success: false, message: CANCEL_NEEDS_BOOKING_PHONE_MSG };
       }
-      // "mismatch": the code is real but the caller doesn't hold the booking's
-      // number. Fall through EXACTLY like a wrong code — returning a distinct
-      // message would be a code-enumeration oracle. Logged for ops visibility
+      // "mismatch", or "unverifiable" because the BOOKING has no phone on file
+      // while the caller supplied one: fall through EXACTLY like a wrong code —
+      // any distinct reply (including NEEDS_BOOKING_PHONE for the phone-less
+      // booking) would be a code-enumeration oracle. Logged for ops visibility
       // (no code/phone in the log — they're usable tokens, SCRUM-339).
       console.warn("[Cancel] Confirmation code matched but caller failed phone possession — treating as not found", { organizationId });
     }
@@ -1397,7 +1427,7 @@ export async function handleCancelAppointment(
   // a model echoing a victim's number from cancelling — or even ENUMERATING —
   // a stranger's appointments, and weeds out NANP last-9 suffix collisions.
   const owned = ((appointments || []) as any[]).filter(
-    (a) => verifyPhonePossession(a, phone, verifiedCallerPhone) === "match"
+    (a) => verifyPhonePossession(a, phone, callerId) === "match"
   );
 
   if (!owned.length) {
@@ -1600,12 +1630,13 @@ export async function handleRescheduleAppointment(
 ): Promise<ToolResult> {
   const { phone, confirmation_code, new_datetime } = args;
 
-  // SCRUM-438: the verified inbound caller ID — re-validated here even though
+  // SCRUM-438: the trusted caller-ID state — re-validated here even though
   // the route checks it too (the handler is the security boundary).
-  const verifiedCallerPhone =
-    trusted?.verifiedCallerPhone && isValidPhoneNumber(trusted.verifiedCallerPhone)
-      ? trusted.verifiedCallerPhone
-      : undefined;
+  const callerId = resolveCallerId(trusted);
+
+  // Withheld caller ID on a production call: possession is unverifiable and
+  // the model-phone fallback must not apply — refuse before any lookup.
+  if (callerId.state === "withheld") return WITHHELD_CALLER_ID_REFUSAL;
 
   if (!new_datetime) {
     return { success: false, message: "What date and time would you like to move the appointment to?" };
@@ -1617,7 +1648,11 @@ export async function handleRescheduleAppointment(
   try {
     const supabase = createAdminClient();
 
-    const rlResult = await enforceApptMutationRateLimit(supabase, organizationId, verifiedCallerPhone || phone);
+    const rlResult = await enforceApptMutationRateLimit(
+      supabase,
+      organizationId,
+      callerId.state === "verified" ? callerId.phone : phone
+    );
     if (rlResult) return rlResult;
 
     // SCRUM-438: the org's configured verification fields apply to mutations too.
@@ -1670,17 +1705,22 @@ export async function handleRescheduleAppointment(
       }
       if (codeRows && codeRows.length === 1) {
         // SCRUM-415/438: a code match is not enough — the caller must hold the
-        // booking's phone number (verified caller ID preferred; selectCols
-        // includes attendee_phone).
-        const possession = verifyPhonePossession(codeRows[0], phone, verifiedCallerPhone);
+        // booking's phone number (verified caller ID only on production calls;
+        // selectCols includes attendee_phone).
+        const possession = verifyPhonePossession(codeRows[0], phone, callerId);
+        const hasCandidatePhone = callerId.state === "verified" || Boolean(phone?.trim());
         if (possession === "match") {
           existing = codeRows[0];
-        } else if (possession === "unverifiable") {
+        } else if (possession === "unverifiable" && !hasCandidatePhone) {
+          // No phone available on the call at all — ask for it. Same reply the
+          // phone-less branch below gives, so a code hit stays indistinguishable.
           return { success: false, message: RESCHEDULE_NEEDS_BOOKING_PHONE_MSG };
         } else {
-          // "mismatch": fall through EXACTLY like a wrong code (no enumeration
-          // oracle) — the phone lookup below proceeds with the caller's own
-          // number. Logged without the code/phone (usable tokens, SCRUM-339).
+          // "mismatch", or "unverifiable" because the BOOKING has no phone on
+          // file while the caller supplied one: fall through EXACTLY like a
+          // wrong code (no enumeration oracle) — the phone lookup below
+          // proceeds with the caller's own number. Logged without the
+          // code/phone (usable tokens, SCRUM-339).
           console.warn("[Reschedule] Confirmation code matched but caller failed phone possession — treating as not found", { organizationId });
         }
       } else if (codeRows && codeRows.length > 1) {
@@ -1726,7 +1766,7 @@ export async function handleRescheduleAppointment(
       // phone when there is no caller ID). A model echoing a victim's number
       // can no longer move or enumerate a stranger's appointments.
       const upcomingOwned = ((upcoming || []) as any[]).filter(
-        (a) => verifyPhonePossession(a, phone, verifiedCallerPhone) === "match"
+        (a) => verifyPhonePossession(a, phone, callerId) === "match"
       );
       if (!upcomingOwned.length) {
         // Same message whether nothing matched or matches failed possession.
@@ -1799,14 +1839,15 @@ export async function handleRescheduleAppointment(
     // move keeps the same practitioner/service/name/email/notes; a "change my dentist"
     // request changes only the practitioner; etc. (`new_datetime` is the one field
     // the reschedule always sets.)
-    // SCRUM-438: `args.name` is now the VERIFICATION slot (the name on the
-    // existing booking — see the tool schema), not a rename. Passing it
-    // through would let a partial verification name ("Jane" passing a
-    // contains-check against "Jane Smith") silently overwrite the carried-over
-    // full name. Renames still work via a complete first_name + last_name.
+    // SCRUM-438: `args.name` and `args.email` are now VERIFICATION slots (the
+    // details on the existing booking — see the tool schema), not edits.
+    // Passing them through would let a partial verification name ("Jane"
+    // passing a contains-check against "Jane Smith") or a model-collected
+    // verification email silently overwrite the carried-over contact details.
+    // Renames still work via a complete first_name + last_name.
     const bookResult = await handleBookAppointment(organizationId, {
       datetime: new_datetime,
-      ...resolveRescheduledBooking({ ...args, name: undefined }, existing),
+      ...resolveRescheduledBooking({ ...args, name: undefined, email: undefined }, existing),
     });
 
     if (!bookResult.success) {
