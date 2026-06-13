@@ -23,6 +23,15 @@ export async function getActiveServiceTypes(organizationId: string): Promise<Ser
   return data || [];
 }
 
+/**
+ * Fetch one org-scoped service type.
+ *
+ * SCRUM-444 review: not-found and DB errors must NOT be conflated. Returns null
+ * ONLY for a true not-found (PGRST116 — unknown or cross-org id), so callers can
+ * safely tell the caller "that appointment type doesn't exist here". A real DB
+ * error THROWS instead — a transient blip must surface as "having trouble", not
+ * as the service not existing.
+ */
 export async function getServiceType(serviceTypeId: string, organizationId: string): Promise<ServiceType | null> {
   const supabase = createAdminClient();
   const { data, error } = await (supabase as any)
@@ -33,8 +42,9 @@ export async function getServiceType(serviceTypeId: string, organizationId: stri
     .single();
 
   if (error) {
+    if (error.code === "PGRST116") return null; // no rows — genuine not-found
     console.error("[ServiceTypes] Failed to fetch service type:", { serviceTypeId, organizationId, error });
-    return null;
+    throw new Error(`Failed to fetch service type: ${error.message}`);
   }
   return data;
 }

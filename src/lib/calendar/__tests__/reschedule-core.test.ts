@@ -30,7 +30,23 @@ describe("resolveRescheduledBooking (SCRUM-390/399 carry-over)", () => {
       notes: "Prefers morning",
       service_type_id: "svc-1",
       practitioner_id: "prac-1",
+      carried_refs: { service_type: true, practitioner: true },
     });
+  });
+
+  it("flags caller-supplied vs carried refs (SCRUM-444: carried refs skip the active check)", () => {
+    // Time-only move: both refs carried.
+    expect(resolveRescheduledBooking({}, existing).carried_refs)
+      .toEqual({ service_type: true, practitioner: true });
+    // Caller explicitly picks a service → that ref must pass the active check.
+    expect(resolveRescheduledBooking({ service_type_id: "svc-2" }, existing).carried_refs)
+      .toEqual({ service_type: false, practitioner: true });
+    // Caller explicitly picks a practitioner.
+    expect(resolveRescheduledBooking({ practitioner_id: "prac-2" }, existing).carried_refs)
+      .toEqual({ service_type: true, practitioner: false });
+    // Nothing to carry when the existing booking has no refs.
+    expect(resolveRescheduledBooking({}, { ...existing, service_type_id: null, practitioner_id: null }).carried_refs)
+      .toEqual({ service_type: false, practitioner: false });
   });
 
   it("lets an explicit complete new name override the existing name", () => {

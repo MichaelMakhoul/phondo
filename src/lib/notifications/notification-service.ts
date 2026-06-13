@@ -95,6 +95,69 @@ export interface CallbackNotificationData {
  */
 export type NotificationSendResult = "sent" | "skipped";
 
+/**
+ * Channel-send failure carrying structured delivery facts (SCRUM-447).
+ *
+ * The crons previously string-matched settleChannels' messages ("0
+ * notification channels delivered" = permanent; "N/M channels failed" parsed
+ * for partial delivery) — a wording tweak would have silently broken their
+ * claim/release decisions. These fields ARE the contract now; the message
+ * text is kept human-readable for logs only.
+ *
+ * - deliveredCount — channels that actually went out. 0 means a send claim
+ *   can be released and retried; >0 means a retry would double-deliver.
+ * - wantedCount — channels the org's preferences asked for (attempted +
+ *   wanted-but-unavailable); diagnostic context for logs.
+ * - permanent — retrying CANNOT succeed right now; permanentCause says why,
+ *   because the two causes call for opposite claim handling:
+ *   - "org-config" — a wanted channel is unavailable for THIS org (e.g.
+ *     owner-email lookup failed — the SCRUM-419 "0 channels delivered"
+ *     case). No retry can conjure the channel; claim-holders abandon
+ *     instead of retry-churning.
+ *   - "credential-absence" — provider credentials are ABSENT from the
+ *     deployment (Sentry-paged at error level). An operator fixing the env
+ *     makes a retry succeed, so claim-holders should RELEASE and retry —
+ *     one cron run during a deploy window must not permanently abandon
+ *     queued sends.
+ */
+export class NotificationDeliveryError extends Error {
+  readonly deliveredCount: number;
+  readonly wantedCount: number;
+  readonly permanent: boolean;
+  readonly permanentCause: "org-config" | "credential-absence" | null;
+
+  constructor(
+    message: string,
+    facts: {
+      deliveredCount: number;
+      wantedCount: number;
+      permanent: boolean;
+      permanentCause?: "org-config" | "credential-absence";
+    }
+  ) {
+    super(message);
+    this.name = "NotificationDeliveryError";
+    this.deliveredCount = facts.deliveredCount;
+    this.wantedCount = facts.wantedCount;
+    this.permanent = facts.permanent;
+    this.permanentCause = facts.permanentCause ?? null;
+  }
+}
+
+/**
+ * A channel send failed because a provider credential is ABSENT — not
+ * invalid (a mis-set key fails at the provider and stays transient/retryable;
+ * an unset one fails identically on every retry until an operator fixes the
+ * deployment). settleChannels classifies absence as permanent and pages
+ * Sentry instead of letting the crons retry-churn (SCRUM-447).
+ */
+class NotificationConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NotificationConfigError";
+  }
+}
+
 export interface DailySummaryData {
   organizationId: string;
   date: Date;
@@ -388,19 +451,57 @@ async function settleChannels(
     if (droppedChannels.length > 0) {
       // A channel was wanted but unavailable and nothing else delivered —
       // reporting success here would be a false positive (audit finding #21).
-      throw new Error(
-        `${notification}: 0 notification channels delivered — wanted channel(s) unavailable: ${droppedChannels.join(", ")}`
+      // Permanent: retrying can't conjure the missing channel (SCRUM-419).
+      throw new NotificationDeliveryError(
+        `${notification}: 0 notification channels delivered — wanted channel(s) unavailable: ${droppedChannels.join(", ")}`,
+        { deliveredCount: 0, wantedCount: droppedChannels.length, permanent: true, permanentCause: "org-config" }
       );
     }
     return "skipped"; // all channels disabled by preference — legitimate no-op
   }
 
   const results = await Promise.allSettled(channels);
-  const failures = results.filter((r) => r.status === "rejected");
+  const failures = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
   if (failures.length > 0) {
-    throw new Error(`${failures.length}/${results.length} notification channels failed: ${(failures[0] as PromiseRejectedResult).reason}`);
+    const configFailures = failures.filter((f) => f.reason instanceof NotificationConfigError);
+    if (configFailures.length > 0) {
+      reportConfigAbsence(notification, organizationId, configFailures[0].reason as Error);
+    }
+    // Permanent only when EVERY failed channel failed on credential absence —
+    // a mixed bag still contains a transiently-failed channel a retry could
+    // deliver.
+    const allConfigAbsence = configFailures.length === failures.length;
+    throw new NotificationDeliveryError(
+      `${failures.length}/${results.length} notification channels failed: ${failures[0].reason}`,
+      {
+        deliveredCount: results.length - failures.length,
+        wantedCount: results.length + droppedChannels.length,
+        permanent: allConfigAbsence,
+        ...(allConfigAbsence && { permanentCause: "credential-absence" as const }),
+      }
+    );
   }
   return "sent";
+}
+
+/**
+ * Provider credentials missing from the deployment — every send of this
+ * channel fails identically until an operator sets the env var. Error level
+ * (not warning): this is fleet-wide, not one org's misconfiguration. Sentry
+ * groups by message, so a burst of failing sends collapses into one alert
+ * (SCRUM-447).
+ */
+function reportConfigAbsence(notification: string, organizationId: string, err: Error): void {
+  console.error(`[Notifications] ${notification}: provider credentials ABSENT — sends cannot succeed until env is fixed:`, {
+    organizationId,
+    error: err.message,
+  });
+  Sentry.withScope((scope) => {
+    scope.setLevel("error");
+    scope.setTag("bug", "notification_provider_config_absent");
+    scope.setExtras({ notification, organizationId, error: err.message });
+    Sentry.captureMessage("Notification provider credentials absent — permanent send failure");
+  });
 }
 
 /**
@@ -861,7 +962,7 @@ async function sendEmail(params: EmailParams): Promise<void> {
   const fromEmail = process.env.EMAIL_FROM || "notifications@phondo.ai";
 
   if (!apiKey) {
-    throw new Error(
+    throw new NotificationConfigError(
       `[Email] EMAIL_API_KEY is not configured. Cannot send "${template}" email to ${to} (subject: "${subject}")`
     );
   }
@@ -897,7 +998,7 @@ async function sendSMS(params: SMSParams): Promise<void> {
   const twilioFromNumber = process.env.TWILIO_FROM_NUMBER;
 
   if (!twilioAccountSid || !twilioAuthToken || !twilioFromNumber) {
-    throw new Error(
+    throw new NotificationConfigError(
       `[SMS] Twilio credentials not configured (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER). Cannot send SMS to ${to}`
     );
   }
