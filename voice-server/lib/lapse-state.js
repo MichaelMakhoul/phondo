@@ -36,7 +36,8 @@ const DAY_MS = 86_400_000;
  * @property {string | null} [status]
  * @property {string | null} [trial_end]
  * @property {string | null} [current_period_end]
- * @property {string | null} [canceled_at]
+ * @property {string | null} [service_ended_at] - service-END anchor: when paid
+ *   access actually ended (Stripe ended_at), NOT the cancel-request time.
  */
 
 /**
@@ -126,9 +127,10 @@ function computeLapseState(sub, now, cfg = {}) {
   }
 
   if (status === "canceled") {
-    // canceled_at is the precise cancellation anchor; legacy rows (predating the
-    // canceled_at column) fall back to the period they last paid through.
-    const anchor = parseTs(sub.canceled_at) ?? parseTs(sub.current_period_end);
+    // service_ended_at is the precise service-END anchor (when paid access
+    // actually ended); legacy rows (predating the service_ended_at column) fall
+    // back to the period they last paid through.
+    const anchor = parseTs(sub.service_ended_at) ?? parseTs(sub.current_period_end);
     if (anchor === null) return activeFallback(); // no usable anchor → fail-open
     /** @type {LapseState} */
     let state;

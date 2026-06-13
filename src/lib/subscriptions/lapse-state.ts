@@ -57,8 +57,14 @@ export interface LapseSubscription {
   status?: string | null;
   trial_end?: string | null;
   current_period_end?: string | null;
-  /** SCRUM-475: cancellation anchor captured from Stripe on customer.subscription.deleted. */
-  canceled_at?: string | null;
+  /**
+   * SCRUM-475: service-END anchor — the instant paid access actually ENDED
+   * (Stripe ended_at), captured from customer.subscription.deleted. This is the
+   * access-end time, NOT the cancel-request time; it is correct for both
+   * immediate and cancel-at-period-end cancellations. Falls back to
+   * current_period_end below for legacy rows that predate this column.
+   */
+  service_ended_at?: string | null;
 }
 
 /** Optional overrides for the grace / reclaim windows (defaults above). */
@@ -124,10 +130,12 @@ function activeFallback(): LapseResult {
  *  • `trialing`            — anchor = trial_end. No trial_end → active (fail-open).
  *                            now <= trial_end → active; <= +grace → in_grace;
  *                            else lapsed. Never reaches release_pending.
- *  • `canceled`            — anchor = canceled_at ?? current_period_end. The ONLY
- *                            status that can reach release_pending.
- *                            now <= anchor+grace → in_grace (covers "period not
- *                            yet ended", since grace >= 0); <= anchor+reclaim →
+ *  • `canceled`            — anchor = service_ended_at ?? current_period_end (the
+ *                            instant paid access ENDED, not the cancel-request
+ *                            time). The ONLY status that can reach
+ *                            release_pending. A canceled row's paid period is by
+ *                            definition already over, so it never returns active:
+ *                            now <= anchor+grace → in_grace; <= anchor+reclaim →
  *                            lapsed; else release_pending.
  *  • `unpaid` /
  *    `incomplete_expired`  — anchor = current_period_end. <= anchor+grace →
@@ -164,9 +172,10 @@ export function computeLapseState(
   }
 
   if (status === "canceled") {
-    // canceled_at is the precise cancellation anchor; legacy rows (predating the
-    // canceled_at column) fall back to the period they last paid through.
-    const anchor = parseTs(sub.canceled_at) ?? parseTs(sub.current_period_end);
+    // service_ended_at is the precise service-END anchor (when paid access
+    // actually ended); legacy rows (predating the service_ended_at column) fall
+    // back to the period they last paid through.
+    const anchor = parseTs(sub.service_ended_at) ?? parseTs(sub.current_period_end);
     if (anchor === null) return activeFallback(); // no usable anchor → fail-open
     let state: LapseState;
     if (now <= anchor + graceMs) state = "in_grace";

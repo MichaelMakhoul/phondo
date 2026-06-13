@@ -61,7 +61,7 @@ describe("computeLapseState — active-family statuses are always callable", () 
         status,
         trial_end: ANCHOR_ISO,
         current_period_end: ANCHOR_ISO,
-        canceled_at: ANCHOR_ISO,
+        service_ended_at: ANCHOR_ISO,
       };
       // Far in the future — proves these statuses never lapse.
       expect(computeLapseState(sub, ANCHOR + 10 * RECLAIM_MS)).toEqual({
@@ -146,9 +146,9 @@ describe("computeLapseState — trialing", () => {
 });
 
 describe("computeLapseState — canceled (the only path to release_pending)", () => {
-  const sub: LapseSubscription = { status: "canceled", canceled_at: ANCHOR_ISO };
+  const sub: LapseSubscription = { status: "canceled", service_ended_at: ANCHOR_ISO };
 
-  it("now == anchor (period not yet ended) → in_grace, full shape incl. releaseEligibleAt", () => {
+  it("now == anchor (the instant service ended) → in_grace, full shape incl. releaseEligibleAt", () => {
     expect(computeLapseState(sub, ANCHOR)).toEqual({
       state: "in_grace",
       anchorAt: ANCHOR_ISO,
@@ -186,9 +186,9 @@ describe("computeLapseState — canceled (the only path to release_pending)", ()
     });
   });
 
-  it("canceled_at null → falls back to current_period_end as the anchor", () => {
+  it("service_ended_at null → falls back to current_period_end as the anchor", () => {
     const r = computeLapseState(
-      { status: "canceled", canceled_at: null, current_period_end: ANCHOR_ISO },
+      { status: "canceled", service_ended_at: null, current_period_end: ANCHOR_ISO },
       ANCHOR + GRACE_MS + 1
     );
     expect(r).toEqual({
@@ -200,9 +200,9 @@ describe("computeLapseState — canceled (the only path to release_pending)", ()
     });
   });
 
-  it("canceled_at present takes precedence over current_period_end", () => {
+  it("service_ended_at present takes precedence over current_period_end", () => {
     const r = computeLapseState(
-      { status: "canceled", canceled_at: ANCHOR_ISO, current_period_end: "2099-01-01T00:00:00.000Z" },
+      { status: "canceled", service_ended_at: ANCHOR_ISO, current_period_end: "2099-01-01T00:00:00.000Z" },
       ANCHOR
     );
     expect(r.anchorAt).toBe(ANCHOR_ISO);
@@ -220,7 +220,7 @@ describe("computeLapseState — canceled (the only path to release_pending)", ()
 
   it("both timestamps null → active (fail-open)", () => {
     const r = computeLapseState(
-      { status: "canceled", canceled_at: null, current_period_end: null },
+      { status: "canceled", service_ended_at: null, current_period_end: null },
       ANCHOR + 10 * RECLAIM_MS
     );
     expect(r.state).toBe("active");
@@ -272,7 +272,7 @@ describe("computeLapseState — unpaid / incomplete_expired (never release_pendi
 
 describe("computeLapseState — custom config windows", () => {
   it("honours overridden graceDays / reclaimDays", () => {
-    const sub: LapseSubscription = { status: "canceled", canceled_at: ANCHOR_ISO };
+    const sub: LapseSubscription = { status: "canceled", service_ended_at: ANCHOR_ISO };
     const cfg = { graceDays: 1, reclaimDays: 2 };
     // Day 0.5 → within 1-day grace
     expect(computeLapseState(sub, ANCHOR + DAY / 2, cfg).state).toBe("in_grace");

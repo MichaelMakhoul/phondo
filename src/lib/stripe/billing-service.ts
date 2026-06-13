@@ -833,15 +833,20 @@ export async function handleSubscriptionCanceled(
 ): Promise<void> {
   const supabase = createAdminClient();
 
-  // SCRUM-475: persist the cancellation instant as the lapse anchor. Stripe sets
-  // canceled_at when the cancellation is requested; ended_at when it actually
-  // terminated — prefer canceled_at, fall back to ended_at. Both are epoch
-  // SECONDS, so ×1000 (same convention as current_period_end/trial_end above).
-  // If neither is present (shouldn't happen on a deletion event) we write null,
-  // and the lapse-state helper falls back to current_period_end.
-  const canceledAtUnix = subscription.canceled_at ?? subscription.ended_at;
-  const canceledAt = canceledAtUnix
-    ? new Date(canceledAtUnix * 1000).toISOString()
+  // SCRUM-475: persist when paid access actually ENDED as the lapse anchor —
+  // NOT when cancellation was requested. Stripe sets ended_at to the access-end
+  // instant for BOTH immediate cancels (= now) AND cancel_at_period_end (= the
+  // period end); canceled_at is the REQUEST time and is correct only for
+  // immediate cancels. For a period-end cancellation the deletion event fires at
+  // period end carrying canceled_at = the earlier request time, so anchoring on
+  // canceled_at would zero the grace window and back-date the 90-day reclaim.
+  // Prefer ended_at, fall back to canceled_at. Both are epoch SECONDS, so ×1000
+  // (same convention as current_period_end/trial_end above). If neither is
+  // present (shouldn't happen on a deletion event) we write null, and the
+  // lapse-state helper falls back to current_period_end.
+  const serviceEndedAtUnix = subscription.ended_at ?? subscription.canceled_at;
+  const serviceEndedAt = serviceEndedAtUnix
+    ? new Date(serviceEndedAtUnix * 1000).toISOString()
     : null;
 
   const { error } = await (supabase as any)
@@ -849,7 +854,7 @@ export async function handleSubscriptionCanceled(
     .update({
       status: "canceled",
       cancel_at_period_end: true,
-      canceled_at: canceledAt,
+      service_ended_at: serviceEndedAt,
     })
     .eq("stripe_subscription_id", subscription.id);
 
