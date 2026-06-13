@@ -108,6 +108,37 @@ describe("validateOrgScopedRefs", () => {
     expect(res).toMatch(/inactive/);
   });
 
+  it("per-ref requireActive filters ONLY the flagged ref (carried refs stay org-scope-only)", async () => {
+    const { supabase, calls } = makeSupabase({
+      service_types: { data: { id: "st1" }, error: null },
+      practitioners: { data: { id: "p1" }, error: null },
+    });
+    const res = await validateOrgScopedRefs(
+      supabase as any,
+      ORG,
+      { serviceTypeId: "st1", practitionerId: "p1" },
+      { requireActive: { practitioner: true } }, // serviceType carried → org-scope-only
+    );
+    expect(res).toBeNull();
+    expect(calls).toEqual([
+      { table: "service_types", id: "st1", orgId: ORG },
+      { table: "practitioners", id: "p1", orgId: ORG, activeOnly: true },
+    ]);
+  });
+
+  it("per-ref requireActive: only the flagged ref's failure message mentions inactivity", async () => {
+    const { supabase } = makeSupabase({ service_types: { data: null, error: null } });
+    // serviceType NOT flagged (carried) → plain org-scope failure message.
+    const res = await validateOrgScopedRefs(
+      supabase as any,
+      ORG,
+      { serviceTypeId: "st-gone" },
+      { requireActive: { practitioner: true } },
+    );
+    expect(res).toMatch(/service_type_id/);
+    expect(res).not.toMatch(/inactive/);
+  });
+
   it("default (no options) does NOT filter on is_active — rows carrying a since-deactivated ref stay valid", async () => {
     // Pins the dashboard semantic: a validator call WITHOUT requireActive must
     // not silently start excluding deactivated rows.

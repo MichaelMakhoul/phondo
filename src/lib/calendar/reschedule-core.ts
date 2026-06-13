@@ -45,6 +45,15 @@ export interface RescheduleCarryover {
   notes?: string;
   service_type_id?: string;
   practitioner_id?: string;
+  /**
+   * SCRUM-444 review: which refs were CARRIED from the existing appointment
+   * (the caller did not supply them). A carried ref must be validated
+   * org-scope-only — NOT `requireActive` — otherwise a time-only reschedule of
+   * an appointment whose service type/practitioner was since deactivated
+   * dead-ends unrecoverably (every retry re-carries the same ref). A ref the
+   * caller explicitly supplied still has to be active.
+   */
+  carried_refs: { service_type: boolean; practitioner: boolean };
 }
 
 interface ExistingForCarryover {
@@ -84,6 +93,12 @@ export function resolveRescheduledBooking(
     notes: args.notes ?? existing.notes ?? undefined,
     service_type_id: args.service_type_id || existing.service_type_id || undefined,
     practitioner_id: args.practitioner_id ?? existing.practitioner_id ?? undefined,
+    // Mirrors the fallbacks above: a ref is "carried" exactly when the value
+    // came from `existing`, not from the caller's args.
+    carried_refs: {
+      service_type: !args.service_type_id && !!existing.service_type_id,
+      practitioner: args.practitioner_id == null && existing.practitioner_id != null,
+    },
   };
 }
 

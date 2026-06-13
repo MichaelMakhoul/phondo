@@ -3,11 +3,13 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // SCRUM-444: pin the dashboard semantics for deactivated (is_active=false)
 // practitioner/service refs:
 //
-//   - PATCH validates ONLY the refs present in the payload (and the UI sends
-//     only dirty fields — SCRUM-397), so a time-only edit / status change on an
-//     appointment that CARRIES a since-deactivated practitioner must succeed
-//     without the practitioners table ever being consulted.
-//   - Explicitly CHANGING a ref to a deactivated row (PATCH) or attaching one
+//   - PATCH applies requireActive ONLY to a payload ref that DIFFERS from the
+//     stored before-image. A time-only edit / status change on an appointment
+//     that CARRIES a since-deactivated practitioner succeeds, and (SCRUM-444
+//     review) so does a client that re-sends the unchanged ref alongside the
+//     change — the carve-out no longer relies on clients sending only dirty
+//     fields. Re-sent unchanged refs are still validated org-scope-only.
+//   - Genuinely CHANGING a ref to a deactivated row (PATCH) or attaching one
 //     on manual creation (POST) is rejected with requireActive's 400.
 //
 // The supabase fake is filter-AWARE: the practitioner row exists and is
@@ -193,17 +195,44 @@ describe("PATCH /appointments/[id] — deactivated refs (SCRUM-444)", () => {
     expect(state.touches.filter((t) => t.table === "practitioners")).toHaveLength(0);
   });
 
-  it("explicitly CHANGING to a deactivated practitioner is rejected with 400", async () => {
+  it("re-sending the unchanged deactivated practitioner alongside a time change succeeds (org-scope-only validation)", async () => {
+    // SCRUM-444 review: a client that re-sends the full record (not just dirty
+    // fields) must not dead-end the time edit — the unchanged ref matches the
+    // before-image, so requireActive does not apply to it.
+    state.insertedRow = makeBeforeRow({
+      id: NEW_LEG_ID,
+      start_time: NEW_TIME,
+      end_time: new Date(new Date(NEW_TIME).getTime() + 30 * 60_000).toISOString(),
+    });
+
+    const res = await callPatch({ start_time: NEW_TIME, practitioner_id: INACTIVE_PRAC });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.rescheduled).toEqual({ fromId: APPT_ID, toId: NEW_LEG_ID });
+    expect(body.practitioner_id).toBe(INACTIVE_PRAC);
+    // The re-sent unchanged ref WAS validated — but org-scope-only, without the
+    // is_active filter (which would have excluded the deactivated row).
+    const validatorLookup = state.touches.find((t) => t.table === "practitioners");
+    expect(validatorLookup).toBeDefined();
+    expect(validatorLookup!.eqs).not.toContainEqual(["is_active", true]);
+  });
+
+  it("genuinely CHANGING to a deactivated practitioner is rejected with 400", async () => {
+    // The appointment currently has NO practitioner, so the payload ref differs
+    // from the before-image → requireActive applies. (SCRUM-444 review: with an
+    // unchanged re-send now allowed, the fixture must be a real change.)
+    state.beforeRow = makeBeforeRow({ practitioner_id: null, practitioners: null });
+
     const res = await callPatch({ practitioner_id: INACTIVE_PRAC });
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.error).toMatch(/practitioner_id/);
     expect(body.error).toMatch(/inactive/);
     // Rejected by the is_active-filtered validator lookup, before any write —
-    // the appointments table was never touched.
+    // the appointments table was only read for the before-image, never written.
     const validatorLookup = state.touches.find((t) => t.table === "practitioners");
     expect(validatorLookup?.eqs).toContainEqual(["is_active", true]);
-    expect(state.touches.filter((t) => t.table === "appointments")).toHaveLength(0);
+    expect(state.touches.filter((t) => t.table === "appointments" && t.op !== "select")).toHaveLength(0);
   });
 });
 

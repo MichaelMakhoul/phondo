@@ -16,6 +16,7 @@ import {
 import {
   getActiveServiceTypes,
   getServiceType,
+  type ServiceType,
 } from "@/lib/service-types";
 import { invalidateVoiceScheduleCache } from "@/lib/voice-cache/invalidate";
 import { runAfterResponse } from "@/lib/utils/after-response";
@@ -843,6 +844,13 @@ export async function handleBookAppointment(
     notes?: string;
     service_type_id?: string;
     practitioner_id?: string;
+    // SCRUM-444 review: INTERNAL-ONLY — set by handleRescheduleAppointment (via
+    // resolveRescheduledBooking) for refs carried over from the existing booking
+    // rather than supplied by the caller. Carried refs are validated org-scope-
+    // only (a since-deactivated service/practitioner must not dead-end a
+    // time-only move); caller-supplied refs still must be active. The internal
+    // tool-call route allowlists forwarded args, so an LLM can never set this.
+    carried_refs?: { service_type?: boolean; practitioner?: boolean };
   }
 ): Promise<ToolResult> {
   const { datetime, phone, email, notes, service_type_id } = args;
@@ -963,10 +971,24 @@ export async function handleBookAppointment(
   const serviceTypes = await getActiveServiceTypes(organizationId);
 
   if (service_type_id) {
-    const st = await getServiceType(service_type_id, organizationId);
-    // SCRUM-444: a null here means the id is unknown/cross-org (or the lookup
-    // failed) — reject NOW instead of falling through with a default duration
-    // and relying on bookInternal's validator as a backstop.
+    // SCRUM-444 review: getServiceType returns null ONLY for a true not-found
+    // (unknown/cross-org id) and THROWS on a real DB error — a transient blip
+    // must offer the callback path, not tell the caller their appointment type
+    // doesn't exist.
+    let st: ServiceType | null;
+    try {
+      st = await getServiceType(service_type_id, organizationId);
+    } catch {
+      // Already logged with full context inside getServiceType.
+      return {
+        success: false,
+        message:
+          "I'm having trouble verifying those appointment details right now. Let me take your information and have someone call you back.",
+      };
+    }
+    // SCRUM-444: a null here means the id is unknown/cross-org — reject NOW
+    // instead of falling through with a default duration and relying on
+    // bookInternal's validator as a backstop.
     if (!st) {
       return {
         success: false,
@@ -992,7 +1014,8 @@ export async function handleBookAppointment(
       service_type_id,
       firstName,
       lastName,
-      args.practitioner_id || undefined
+      args.practitioner_id || undefined,
+      args.carried_refs
     );
   }
 
@@ -1024,7 +1047,8 @@ export async function handleBookAppointment(
     undefined, // serviceTypeId
     firstName,
     lastName,
-    args.practitioner_id || undefined
+    args.practitioner_id || undefined,
+    args.carried_refs
   );
 }
 
@@ -1048,7 +1072,15 @@ export async function handleCheckAvailability(
   const cachedServiceTypes = service_type_id ? [] : await getActiveServiceTypes(organizationId);
 
   if (service_type_id) {
-    const st = await getServiceType(service_type_id, organizationId);
+    // SCRUM-444 review: getServiceType now THROWS on a real DB error (instead of
+    // returning null). Availability can still answer using the org default
+    // duration — the same fallback the old null-on-error behavior produced.
+    let st: ServiceType | null = null;
+    try {
+      st = await getServiceType(service_type_id, organizationId);
+    } catch {
+      // Already logged inside getServiceType; proceed with the default duration.
+    }
     if (st) {
       serviceTypeDuration = st.duration_minutes;
     }
@@ -2056,7 +2088,10 @@ async function bookInternal(
   serviceTypeId?: string,
   firstNameOverride?: string,
   lastNameOverride?: string,
-  requestedPractitionerId?: string
+  requestedPractitionerId?: string,
+  // SCRUM-444 review: refs carried over from an existing booking by a reschedule
+  // (vs supplied by the caller) — see handleBookAppointment's args.carried_refs.
+  carriedRefs?: { service_type?: boolean; practitioner?: boolean }
 ): Promise<ToolResult> {
   const supabase = createAdminClient();
 
@@ -2072,13 +2107,23 @@ async function bookInternal(
   // deactivated practitioner or service. This closes the empty-practitioner-
   // list gap below, where neither per-service nor standalone is_active
   // checks used to run.
+  // SCRUM-444 review: per-ref — a ref CARRIED from the appointment being
+  // rescheduled (not supplied by the caller) is validated org-scope-only,
+  // matching the dashboard's carried-ref semantics. Otherwise a time-only
+  // reschedule of a booking whose service/practitioner was since deactivated
+  // dead-ends unrecoverably (every retry re-carries the ref).
   if (serviceTypeId || requestedPractitionerId) {
     try {
       const refError = await validateOrgScopedRefs(
         supabase,
         organizationId,
         { serviceTypeId, practitionerId: requestedPractitionerId },
-        { requireActive: true },
+        {
+          requireActive: {
+            serviceType: !carriedRefs?.service_type,
+            practitioner: !carriedRefs?.practitioner,
+          },
+        },
       );
       if (refError) {
         console.error("[Booking] Rejected cross-org/unknown reference:", {

@@ -16,7 +16,11 @@
  * (`is_active = false`). Paths that ATTACH a ref (voice booking, dashboard
  * create, dashboard explicit change) enable it; it stays off by default so
  * callers validating rows that may legitimately carry a since-deactivated ref
- * aren't broken.
+ * aren't broken. It also accepts a PER-REF form ({ serviceType, practitioner })
+ * for callers where one ref is being newly attached (must be active) while the
+ * other is carried over from an existing booking (org-scope-only) — e.g. a
+ * reschedule that changes only the time of an appointment whose service type
+ * was since deactivated must not dead-end.
  */
 
 // The Supabase client is intentionally loosely typed (`from` returns `any`) to
@@ -26,30 +30,49 @@ interface SupabaseLike {
   from: (table: string) => any;
 }
 
+export interface RequireActiveByRef {
+  serviceType?: boolean;
+  practitioner?: boolean;
+}
+
 export async function validateOrgScopedRefs(
   supabase: SupabaseLike,
   orgId: string,
   refs: { serviceTypeId?: string | null; practitionerId?: string | null },
-  options: { requireActive?: boolean } = {},
+  options: { requireActive?: boolean | RequireActiveByRef } = {},
 ): Promise<string | null> {
-  const checks: Array<{ table: string; id: string; label: string }> = [];
+  const ra = options.requireActive ?? false;
+  const requireActiveFor = (ref: keyof RequireActiveByRef): boolean =>
+    typeof ra === "boolean" ? ra : ra[ref] === true;
+
+  const checks: Array<{ table: string; id: string; label: string; requireActive: boolean }> = [];
   if (refs.serviceTypeId) {
-    checks.push({ table: "service_types", id: refs.serviceTypeId, label: "service_type_id" });
+    checks.push({
+      table: "service_types",
+      id: refs.serviceTypeId,
+      label: "service_type_id",
+      requireActive: requireActiveFor("serviceType"),
+    });
   }
   if (refs.practitionerId) {
-    checks.push({ table: "practitioners", id: refs.practitionerId, label: "practitioner_id" });
+    checks.push({
+      table: "practitioners",
+      id: refs.practitionerId,
+      label: "practitioner_id",
+      requireActive: requireActiveFor("practitioner"),
+    });
   }
 
   // Independent lookups — run in parallel (this sits on the live voice
   // booking path as well as the dashboard routes; SCRUM-425 review).
   const results = await Promise.all(
-    checks.map(async ({ table, id, label }) => {
+    checks.map(async ({ table, id, label, requireActive }) => {
       let query = supabase
         .from(table)
         .select("id")
         .eq("id", id)
         .eq("organization_id", orgId);
-      if (options.requireActive) {
+      if (requireActive) {
         query = query.eq("is_active", true);
       }
       const { data, error } = await query.maybeSingle();
@@ -58,7 +81,7 @@ export async function validateOrgScopedRefs(
       }
       if (data) return null;
       // One query can't distinguish cross-org from deactivated — say both.
-      return options.requireActive
+      return requireActive
         ? `Invalid ${label}: does not belong to this organization or is inactive`
         : `Invalid ${label}: does not belong to this organization`;
     }),
