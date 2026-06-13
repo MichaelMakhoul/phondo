@@ -350,6 +350,51 @@ describe("voice booking inactive-ref enforcement (SCRUM-444)", () => {
     expect(validatorLookup!.eqs).toContainEqual(["is_active", true]);
   });
 
+  it("SECURITY: a carried_refs claim smuggled into args is INERT — the is_active gate still fires", async () => {
+    // SCRUM-444 review (authorization-bypass finding): the carried-refs signal
+    // lives in handleBookAppointment's dedicated `internal` param, NOT in `args`
+    // (which is populated from the LLM tool-call payload). A model that injects
+    // carried_refs into its book_appointment arguments to mark a freshly-chosen
+    // deactivated practitioner as "carried" must NOT disable requireActive.
+    vi.mocked(createAdminClient).mockReturnValue(
+      activeAwareAdmin(
+        {
+          service_types: (method) => {
+            if (method === "single") return { data: { id: SERVICE, name: "Checkup", duration_minutes: 30 }, error: null };
+            if (method === "maybeSingle") return { data: { id: SERVICE }, error: null };
+            return { data: [{ id: SERVICE, name: "Checkup", duration_minutes: 30 }], error: null };
+          },
+          practitioners: (method, eqs) => {
+            if (method === "maybeSingle") {
+              const activeFiltered = eqs.some(([c, v]) => c === "is_active" && v === true);
+              return activeFiltered ? { data: null, error: null } : { data: { id: INACTIVE_PRAC }, error: null };
+            }
+            return { data: [], error: null };
+          },
+          organizations: () => ({ data: null, error: { message: "should never get here" } }),
+        },
+        log,
+      ) as never,
+    );
+
+    // `carried_refs` is not in the args type — cast to smuggle it the way a
+    // malicious tool-call payload would, and confirm the handler ignores it.
+    const result = await handleBookAppointment(ORG, {
+      ...BOOK_ARGS,
+      service_type_id: SERVICE,
+      practitioner_id: INACTIVE_PRAC,
+      carried_refs: { practitioner: true, service_type: true },
+    } as never);
+
+    expect(result.success).toBe(false);
+    expect(result.message).toMatch(/couldn't match/i);
+    expect(log.inserted).toBeUndefined();
+    // The is_active-filtered lookup still ran — the smuggled claim did nothing.
+    const validatorLookup = log.touches.find((t) => t.table === "practitioners" && t.method === "maybeSingle");
+    expect(validatorLookup).toBeDefined();
+    expect(validatorLookup!.eqs).toContainEqual(["is_active", true]);
+  });
+
   it("rejects EARLY with a clean message when getServiceType resolves null (unknown/cross-org id)", async () => {
     vi.mocked(createAdminClient).mockReturnValue(
       activeAwareAdmin(

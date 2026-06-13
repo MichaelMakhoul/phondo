@@ -844,14 +844,16 @@ export async function handleBookAppointment(
     notes?: string;
     service_type_id?: string;
     practitioner_id?: string;
-    // SCRUM-444 review: INTERNAL-ONLY — set by handleRescheduleAppointment (via
-    // resolveRescheduledBooking) for refs carried over from the existing booking
-    // rather than supplied by the caller. Carried refs are validated org-scope-
-    // only (a since-deactivated service/practitioner must not dead-end a
-    // time-only move); caller-supplied refs still must be active. The internal
-    // tool-call route allowlists forwarded args, so an LLM can never set this.
-    carried_refs?: { service_type?: boolean; practitioner?: boolean };
-  }
+  },
+  // SCRUM-444 review: INTERNAL-ONLY, never sourced from request/tool-call input.
+  // Set ONLY by handleRescheduleAppointment for refs carried over from the
+  // existing booking (the caller did not supply them). Carried refs are
+  // validated org-scope-only — a since-deactivated service/practitioner must
+  // not dead-end a time-only move; caller-supplied refs still must be active.
+  // Kept OUT of `args` (which is populated from the LLM tool-call payload) so
+  // the model can never claim a freshly-supplied ref is "carried" to bypass the
+  // is_active gate — the isolation is structural, not comment-enforced.
+  internal?: { carriedRefs?: { service_type?: boolean; practitioner?: boolean } }
 ): Promise<ToolResult> {
   const { datetime, phone, email, notes, service_type_id } = args;
 
@@ -1015,7 +1017,7 @@ export async function handleBookAppointment(
       firstName,
       lastName,
       args.practitioner_id || undefined,
-      args.carried_refs
+      internal?.carriedRefs
     );
   }
 
@@ -1048,7 +1050,7 @@ export async function handleBookAppointment(
     firstName,
     lastName,
     args.practitioner_id || undefined,
-    args.carried_refs
+    internal?.carriedRefs
   );
 }
 
@@ -1761,10 +1763,14 @@ export async function handleRescheduleAppointment(
     // move keeps the same practitioner/service/name/email/notes; a "change my dentist"
     // request changes only the practitioner; etc. (`new_datetime` is the one field
     // the reschedule always sets.)
-    const bookResult = await handleBookAppointment(organizationId, {
-      datetime: new_datetime,
-      ...resolveRescheduledBooking(args, existing),
-    });
+    // Split carried_refs OUT of the booking args and into the internal-only
+    // parameter — it must never travel inside `args` (the LLM-populated shape).
+    const { carried_refs, ...rescheduledBooking } = resolveRescheduledBooking(args, existing);
+    const bookResult = await handleBookAppointment(
+      organizationId,
+      { datetime: new_datetime, ...rescheduledBooking },
+      { carriedRefs: carried_refs }
+    );
 
     if (!bookResult.success) {
       return { success: false, message: bookResult.message };
@@ -2090,7 +2096,7 @@ async function bookInternal(
   lastNameOverride?: string,
   requestedPractitionerId?: string,
   // SCRUM-444 review: refs carried over from an existing booking by a reschedule
-  // (vs supplied by the caller) — see handleBookAppointment's args.carried_refs.
+  // (vs supplied by the caller) — see handleBookAppointment's internal param.
   carriedRefs?: { service_type?: boolean; practitioner?: boolean }
 ): Promise<ToolResult> {
   const supabase = createAdminClient();
