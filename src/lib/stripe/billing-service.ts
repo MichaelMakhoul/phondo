@@ -833,11 +833,23 @@ export async function handleSubscriptionCanceled(
 ): Promise<void> {
   const supabase = createAdminClient();
 
+  // SCRUM-475: persist the cancellation instant as the lapse anchor. Stripe sets
+  // canceled_at when the cancellation is requested; ended_at when it actually
+  // terminated — prefer canceled_at, fall back to ended_at. Both are epoch
+  // SECONDS, so ×1000 (same convention as current_period_end/trial_end above).
+  // If neither is present (shouldn't happen on a deletion event) we write null,
+  // and the lapse-state helper falls back to current_period_end.
+  const canceledAtUnix = subscription.canceled_at ?? subscription.ended_at;
+  const canceledAt = canceledAtUnix
+    ? new Date(canceledAtUnix * 1000).toISOString()
+    : null;
+
   const { error } = await (supabase as any)
     .from("subscriptions")
     .update({
       status: "canceled",
       cancel_at_period_end: true,
+      canceled_at: canceledAt,
     })
     .eq("stripe_subscription_id", subscription.id);
 
