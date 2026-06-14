@@ -317,8 +317,46 @@ describe("GET /api/cron/number-release-sweep — each guard INDIVIDUALLY blocks 
     await callRoute();
     expect(releaseNumber).not.toHaveBeenCalled();
     expect(db.ops("phone_numbers", "update")).toHaveLength(0);
-    // Never even loads phone rows when the warning gate fails.
-    expect(db.ops("phone_numbers", "select")).toHaveLength(0);
+    // The per-org phone load never runs when the warning gate fails. (The only
+    // phone_numbers.select in armed mode is the migration-00158 preflight, which
+    // carries no organization_id filter — assert no per-ORG load specifically.)
+    const perOrgPhoneLoads = db
+      .ops("phone_numbers", "select")
+      .filter((o) => o.filters.some((f) => f.name === "eq" && f.args[0] === "organization_id"));
+    expect(perOrgPhoneLoads).toHaveLength(0);
+  });
+
+  it("GUARD 3 cycle-binding — a delivered release_warning for a PRIOR anchor does NOT satisfy the guard for the current cycle", async () => {
+    // The current release_pending cycle's anchor is ~100d ago.
+    const sub = canceledSub("org-1", 100);
+    state.subs = [sub];
+    const currentAnchorKey = (sub.service_ended_at as string).slice(0, 10).replace(/-/g, "");
+    // A leftover delivered warning from a PRIOR cancel cycle (different anchor),
+    // e.g. a cancel→resubscribe→re-cancel earlier on. It must NOT unlock release.
+    const priorAnchorKey = at(-400).slice(0, 10).replace(/-/g, "");
+    expect(priorAnchorKey).not.toBe(currentAnchorKey);
+    state.warningRows = [{ period_key: `release_warning:${priorAnchorKey}`, delivered_at: at(-399) }];
+    // Filter-aware ledger handler: mirror the real DB `.eq('period_key', …)` so
+    // the prior-anchor row is only returned for its OWN key, not the current one.
+    db.handlers["cron_send_ledger.select"] = (op) => {
+      const wanted = op.filters.find((f) => f.name === "eq" && f.args[0] === "period_key")?.args[1];
+      const rows = state.warningRows.filter((r) => r.period_key === wanted);
+      return { data: rows, error: null };
+    };
+
+    await callRoute();
+
+    // Prior-cycle warning must not satisfy the current cycle → nothing released.
+    expect(releaseNumber).not.toHaveBeenCalled();
+    expect(db.ops("phone_numbers", "update")).toHaveLength(0);
+    // The guard queried the CURRENT cycle's exact key (eq), and used NO LIKE
+    // wildcard (proving the cross-cycle hole is closed).
+    const ledgerSelect = db.ops("cron_send_ledger", "select")[0];
+    expect(ledgerSelect.filters).toContainEqual({
+      name: "eq",
+      args: ["period_key", `release_warning:${currentAnchorKey}`],
+    });
+    expect(ledgerSelect.filters.some((f) => f.name === "like")).toBe(false);
   });
 
   it("GUARD 4 — an inbound call within 30 days vetoes release (still a live line)", async () => {
@@ -364,6 +402,29 @@ describe("GET /api/cron/number-release-sweep — resilience", () => {
     expect(body).toMatchObject({ released: 1, failed: 1 });
   });
 
+  it("self-heal: a 404 from releaseNumber on re-run soft-releases the lying row and is NOT a hard failure", async () => {
+    // The SID was released at the carrier on a PRIOR run, but that run's
+    // soft-release UPDATE failed, so the row still lies (is_active=true). Twilio's
+    // bare .remove() now throws a 404 (RestException status 404 / code 20404).
+    const notFound = Object.assign(new Error("The requested resource was not found"), {
+      status: 404,
+      code: 20404,
+    });
+    releaseState.releaseNumber.mockRejectedValueOnce(notFound);
+
+    const body = await (await callRoute()).json();
+
+    expect(releaseNumber).toHaveBeenCalledTimes(1);
+    // The lying row IS healed (soft-released), not re-failed.
+    const updates = db.ops("phone_numbers", "update");
+    expect(updates).toHaveLength(1);
+    expect(updates[0].payload).toMatchObject({ is_active: false });
+    expect(updates[0].payload).toHaveProperty("released_at");
+    expect(updates[0].filters).toContainEqual({ name: "eq", args: ["id", "phone-1"] });
+    // Reconciled → counted as released, NOT a hard failure.
+    expect(body).toMatchObject({ released: 1, failed: 0 });
+  });
+
   it("a soft-release DB update failure after a successful carrier release is counted as failed (not a double-release)", async () => {
     state.updateError = { message: "update boom" };
     const body = await (await callRoute()).json();
@@ -376,5 +437,27 @@ describe("GET /api/cron/number-release-sweep — resilience", () => {
     const res = await callRoute();
     expect(res.status).toBe(500);
     expect(releaseNumber).not.toHaveBeenCalled();
+  });
+
+  it("preflight: armed + the released_at column probe fails (migration 00158 not applied) → aborts (500), releases nothing", async () => {
+    // Simulate migration 00158 NOT applied: any select touching released_at
+    // errors (column does not exist). The per-org load (which selects other
+    // columns) would be fine — but the preflight must abort before we get there.
+    db.handlers["phone_numbers.select"] = (op) => {
+      const probesReleasedAt = op.filters.some(
+        (f) => f.name === "select" && String(f.args[0]).includes("released_at")
+      );
+      if (probesReleasedAt) {
+        return { data: null, error: { code: "42703", message: 'column "released_at" does not exist' } };
+      }
+      return { data: state.phones, error: null };
+    };
+
+    const res = await callRoute();
+
+    // Aborts the WHOLE run: no carrier release (irreversible), no DB mutation.
+    expect(res.status).toBe(500);
+    expect(releaseNumber).not.toHaveBeenCalled();
+    expect(db.ops("phone_numbers", "update")).toHaveLength(0);
   });
 });

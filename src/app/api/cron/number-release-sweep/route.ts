@@ -85,19 +85,31 @@ function maskNumber(raw: string | null | undefined): string {
 
 /**
  * Guard 3: true when a release_warning dunning email is CONFIRMED delivered for
- * the org. Returns null on a query error so the caller can fail CLOSED (skip)
- * rather than treat an unverifiable warning as present.
+ * the org FOR THE CURRENT LAPSE CYCLE.
+ *
+ * The dunning cron mints a cycle-specific ledger key
+ * `release_warning:<anchorYYYYMMDD>` (one per cancellation anchor). We bind the
+ * guard to the CURRENT cycle's anchor with an exact `.eq(period_key, …)` rather
+ * than a `LIKE 'release_warning:%'`. A wildcard would let a STALE warning from a
+ * PRIOR cancel→resubscribe→re-cancel cycle (a different anchor) satisfy the
+ * guard for a new cycle whose warning was never delivered — and release a number
+ * we never warned about. `anchorKey` is derived from the SAME computeLapseState
+ * anchor the dunning cron uses, so the keys line up exactly.
+ *
+ * Returns null on a query error so the caller can fail CLOSED (skip) rather than
+ * treat an unverifiable warning as present.
  */
 async function releaseWarningDelivered(
   supabase: any,
-  organizationId: string
+  organizationId: string,
+  anchorKey: string
 ): Promise<boolean | null> {
   const { data, error } = await supabase
     .from("cron_send_ledger")
     .select("period_key")
     .eq("job_name", DUNNING_JOB_NAME)
     .eq("organization_id", organizationId)
-    .like("period_key", "release_warning:%")
+    .eq("period_key", `release_warning:${anchorKey}`)
     .not("delivered_at", "is", null)
     .limit(1);
   if (error) return null;
@@ -135,6 +147,38 @@ export async function GET(req: NextRequest) {
   const now = Date.now();
   const cfg = readLapseConfig();
   const enabled = releaseSweepEnabled();
+
+  // ARMING FOOT-GUN PREFLIGHT (armed path only). The soft-release UPDATE writes
+  // `released_at`, which only exists after migration 00158. If the owner flips
+  // ENABLE_NUMBER_RELEASE_SWEEP=true BEFORE applying 00158, every carrier
+  // release would still succeed (IRREVERSIBLE) but the follow-up soft-release
+  // UPDATE would error — stranding "lying" rows (released at carrier, still
+  // is_active). So before touching a single number, prove the column exists with
+  // a cheap probe; if it is missing (the probe errors), abort the WHOLE run
+  // loudly without releasing anything. Dry-run never writes, so it skips this.
+  if (enabled) {
+    const { error: preflightError } = await (supabase as any)
+      .from("phone_numbers")
+      .select("released_at")
+      .limit(1);
+    if (preflightError) {
+      console.error(
+        "[release-sweep] aborting: migration 00158 not applied — released_at column missing",
+        preflightError
+      );
+      Sentry.captureMessage(
+        "[release-sweep] aborting: migration 00158 not applied — released_at column missing",
+        "error"
+      );
+      return NextResponse.json(
+        {
+          error:
+            "released_at column missing — migration 00158 not applied; sweep aborted before any release",
+        },
+        { status: 500 }
+      );
+    }
+  }
 
   // Only `canceled` subscriptions ever reach release_pending (computeLapseState
   // contract) — scan just those, longest-overdue first.
@@ -177,10 +221,28 @@ export async function GET(req: NextRequest) {
         continue;
       }
 
-      // GUARD 3 (per-org) — a release_warning email was CONFIRMED delivered.
-      // Checked before loading phone rows: no confirmed warning → never
-      // release, whatever the number's state. Fail closed on a query error.
-      const warned = await releaseWarningDelivered(supabase, organizationId);
+      // Bind GUARD 3 to THIS lapse cycle. The dunning cron mints a
+      // cycle-specific ledger key release_warning:<anchorYYYYMMDD> from the SAME
+      // computeLapseState anchor, so derive the identical key here and match it
+      // exactly. release_pending always carries a non-null anchor
+      // (computeLapseState fails open to `active` when the anchor is missing);
+      // if it is somehow null we cannot cycle-bind the guard → skip
+      // (fail-closed) rather than risk matching a stale warning.
+      const anchorKey = lapse.anchorAt
+        ? lapse.anchorAt.slice(0, 10).replace(/-/g, "")
+        : null;
+      if (!anchorKey) {
+        console.error(
+          `[release-sweep] release_pending org=${organizationId} but lapse anchor is missing — skipping (cannot cycle-bind the warning guard)`
+        );
+        skipped++;
+        continue;
+      }
+
+      // GUARD 3 (per-org) — a release_warning email was CONFIRMED delivered FOR
+      // THIS CYCLE. Checked before loading phone rows: no confirmed warning →
+      // never release, whatever the number's state. Fail closed on a query error.
+      const warned = await releaseWarningDelivered(supabase, organizationId, anchorKey);
       if (warned === null) {
         console.error(
           `[release-sweep] Could not verify release_warning delivery for org=${organizationId} — skipping (fail-closed)`
@@ -259,32 +321,51 @@ export async function GET(req: NextRequest) {
         // LIVE — carrier release FIRST, then soft-release the row. A Twilio
         // failure on one number is logged and the sweep CONTINUES to the next
         // (the whole cron never throws on a single number).
+        let reconciledAlreadyGone = false;
         try {
           await releaseNumber(twilioSid);
         } catch (carrierErr) {
-          console.error(
-            `[release-sweep] Twilio release FAILED for ${masked} org=${organizationId} — continuing to next number:`,
-            carrierErr
+          // SELF-HEAL on a 404. releaseNumber does a bare .remove() that THROWS
+          // a 404 (RestException status 404 / code 20404) when the SID is
+          // already released. That happens when a PRIOR run released the number
+          // at the carrier but its soft-release UPDATE failed — leaving a row
+          // that "lies" (is_active still true). Re-attempting would 404 every
+          // day and be counted failed forever. On THAT specific error, fall
+          // through to the soft-release UPDATE and count it RECONCILED, turning
+          // the daily re-attempt into a real heal. Any OTHER error stays
+          // failed + continue (the cron never throws on a single number).
+          const e = carrierErr as { status?: number; code?: number } | null;
+          const alreadyGone = e?.status === 404 || e?.code === 20404;
+          if (!alreadyGone) {
+            console.error(
+              `[release-sweep] Twilio release FAILED for ${masked} org=${organizationId} — continuing to next number:`,
+              carrierErr
+            );
+            Sentry.captureMessage(
+              `Number release sweep: Twilio release failed for org ${organizationId}`,
+              "error"
+            );
+            failed++;
+            continue;
+          }
+          reconciledAlreadyGone = true;
+          console.warn(
+            `[release-sweep] ${masked} org=${organizationId} already released at carrier (404) — reconciling the soft-release row`
           );
-          Sentry.captureMessage(
-            `Number release sweep: Twilio release failed for org ${organizationId}`,
-            "error"
-          );
-          failed++;
-          continue;
         }
 
         // SOFT-release: keep the row (calls FK + audit), mark it inactive +
-        // stamp released_at. Do NOT delete.
+        // stamp released_at. Do NOT delete. Reached both after a fresh carrier
+        // release AND on the 404 self-heal path above.
         const { error: updateError } = await (supabase as any)
           .from("phone_numbers")
           .update({ is_active: false, released_at: new Date().toISOString() })
           .eq("id", phone.id);
         if (updateError) {
           // Carrier already released but the row still says active — it now
-          // lies. A later run will re-attempt release (Twilio 404 → caught
-          // above, no double charge), but the row must be reconciled, so this
-          // is loud.
+          // lies. A later run re-attempts release; the carrier 404 is detected
+          // above and RECONCILED (heals this row), so this is loud but
+          // self-correcting (never a double charge, never a permanent failure).
           console.error(
             `[release-sweep] Released ${masked} at carrier but FAILED to soft-release the row for org=${organizationId} — row now lies (is_active still true):`,
             updateError
@@ -297,7 +378,11 @@ export async function GET(req: NextRequest) {
           continue;
         }
 
-        console.log(`[release-sweep] RELEASED ${masked} org=${organizationId}`);
+        console.log(
+          reconciledAlreadyGone
+            ? `[release-sweep] RECONCILED ${masked} org=${organizationId} (already released at carrier; row healed)`
+            : `[release-sweep] RELEASED ${masked} org=${organizationId}`
+        );
         released++;
       }
     } catch (err) {
