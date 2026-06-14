@@ -143,8 +143,37 @@ export async function GET(req: NextRequest) {
       // period_key = `${milestone}:${anchorYYYYMMDD}` — the anchor (UTC date)
       // pins the key to THIS lapse cycle, so a re-lapse (new cancellation →
       // new anchor) starts a fresh cycle and re-sends every milestone.
-      const anchorKey = (result.anchorAt ?? new Date(now).toISOString()).slice(0, 10).replace(/-/g, "");
+      //
+      // The anchor is what makes the key STABLE across runs. A now-based
+      // fallback would mint a fresh key every day, so an anchorless milestone
+      // would re-email the org on EVERY run (idempotency defeated). Every
+      // sending state has an anchor in practice (current_period_end is NOT
+      // NULL, and computeLapseState fails open to `active` when no anchor
+      // parses), so an anchorless-but-due result is a data anomaly: skip it (no
+      // claim, no send) and let a later run handle it once the data is sane.
+      if (!result.anchorAt) {
+        console.warn(`[SubscriptionDunning] ${milestone} due for org ${organizationId} but lapse anchor is missing — skipping (cannot mint a stable period_key)`);
+        continue;
+      }
+      const anchorKey = result.anchorAt.slice(0, 10).replace(/-/g, "");
       const periodKey = `${milestone}:${anchorKey}`;
+
+      // Build the milestone's display context BEFORE claiming the ledger
+      // (mirrors daily-summary). loadMaskedNumber is a DB read that CAN throw;
+      // doing it pre-claim means any display-data failure aborts this org with
+      // NO claim row, so a later run retries cleanly. Done post-claim, a throw
+      // here would orphan a claim whose delivered_at stays NULL — which the
+      // reconciliation query (migration 00155) cannot tell apart from a crashed
+      // send, i.e. a false 'delivered'. The cost is that a later dedup pays for
+      // the (indexed) phone lookup — a fair trade for never faking a delivery.
+      const ctx: SubscriptionLapseContext = {};
+      if (milestone === "grace_started" || milestone === "grace_ending_soon") {
+        ctx.daysRemaining = daysUntil(result.graceEndsAt, now, 1);
+      } else if (milestone === "release_warning") {
+        ctx.reclaimDays = DEFAULT_RECLAIM_DAYS;
+        ctx.releaseInDays = daysUntil(result.releaseEligibleAt, now, 0);
+        ctx.maskedNumber = await loadMaskedNumber(supabase, organizationId);
+      }
 
       // Claim BEFORE sending — a 23505 means another (overlapping/re-triggered)
       // run already owns this milestone, so skip instead of double-emailing.
@@ -162,17 +191,6 @@ export async function GET(req: NextRequest) {
         Sentry.captureMessage(`Subscription dunning claim failed for org ${organizationId} — milestone skipped`, "warning");
         failed++;
         continue;
-      }
-
-      // Build the milestone's display context AFTER the claim (so a dedup never
-      // pays for the phone-number lookup).
-      const ctx: SubscriptionLapseContext = {};
-      if (milestone === "grace_started" || milestone === "grace_ending_soon") {
-        ctx.daysRemaining = daysUntil(result.graceEndsAt, now, 1);
-      } else if (milestone === "release_warning") {
-        ctx.reclaimDays = DEFAULT_RECLAIM_DAYS;
-        ctx.releaseInDays = daysUntil(result.releaseEligibleAt, now, 0);
-        ctx.maskedNumber = await loadMaskedNumber(supabase, organizationId);
       }
 
       let sendResult: NotificationSendResult;

@@ -77,6 +77,24 @@ vi.mock("@/lib/stripe/billing-service", () => ({
   hasFeatureAccess: vi.fn(async () => true),
 }));
 
+// computeLapseState runs REAL by default; a test can install `lapse.override`
+// to force a specific LapseResult. The real fn fails open to `active` whenever
+// no anchor parses, so it can never return a due milestone with a NULL anchor —
+// the override is the only way to exercise that defensive skip branch.
+const lapse = vi.hoisted(() => ({ override: null as null | (() => unknown) }));
+vi.mock("@/lib/subscriptions/lapse-state", async (importActual) => {
+  const actual = await importActual<typeof import("@/lib/subscriptions/lapse-state")>();
+  return {
+    ...actual,
+    computeLapseState: (
+      ...args: Parameters<typeof actual.computeLapseState>
+    ): ReturnType<typeof actual.computeLapseState> =>
+      (lapse.override ? lapse.override() : actual.computeLapseState(...args)) as ReturnType<
+        typeof actual.computeLapseState
+      >,
+  };
+});
+
 vi.mock("@sentry/nextjs", () => ({
   captureMessage: vi.fn(),
   captureException: vi.fn(),
@@ -130,6 +148,7 @@ const state = {
   prefs: {} as Record<string, unknown>,
   ownerEmail: "owner@biz.com.au" as string | null,
   phoneRows: [{ phone_number: "+61412345678" }] as Array<Record<string, unknown>>,
+  phoneThrows: false,
   claimInsertError: null as unknown,
   confirmError: null as unknown,
 };
@@ -144,7 +163,10 @@ function installHandlers() {
   db.handlers["org_members.select"] = () => ({ data: { user_id: "user-1" }, error: null });
   db.handlers["user_profiles.select"] = () => ({ data: { email: state.ownerEmail }, error: null });
   db.handlers["notification_preferences.select"] = () => ({ data: state.prefs, error: null });
-  db.handlers["phone_numbers.select"] = () => ({ data: state.phoneRows, error: null });
+  db.handlers["phone_numbers.select"] = () => {
+    if (state.phoneThrows) throw new Error("phone_numbers lookup boom");
+    return { data: state.phoneRows, error: null };
+  };
 }
 
 async function callRoute(headers: Record<string, string> = { authorization: `Bearer ${CRON_SECRET}` }) {
@@ -167,8 +189,10 @@ beforeEach(() => {
   state.prefs = { email_on_subscription_dunning: true, sms_on_subscription_dunning: false, sms_phone_number: null };
   state.ownerEmail = "owner@biz.com.au";
   state.phoneRows = [{ phone_number: "+61412345678" }];
+  state.phoneThrows = false;
   state.claimInsertError = null;
   state.confirmError = null;
+  lapse.override = null;
   installHandlers();
 });
 
@@ -278,6 +302,45 @@ describe("GET /api/cron/subscription-dunning — claim/confirm orchestration", (
 
     expect(db.ops("cron_send_ledger", "delete")).toHaveLength(1); // claim released
     expect(db.ops("cron_send_ledger", "update")).toHaveLength(0); // never confirmed
+  });
+
+  it("milestone due but anchor missing → skipped: no claim, no send (idempotency guard)", async () => {
+    // The real computeLapseState never yields a due milestone with a null
+    // anchor (it fails open to `active`), so force the anomaly to prove the
+    // route SKIPS it rather than minting a now-based period_key that would
+    // re-send every run.
+    state.subs = [canceledSub("org-no-anchor", 10)];
+    lapse.override = () => ({
+      state: "lapsed",
+      anchorAt: null,
+      graceEndsAt: null,
+      releaseEligibleAt: null,
+      callable: false,
+    });
+
+    const res = await callRoute();
+    expect(await res.json()).toMatchObject({ sent: 0, skipped: 0, deduped: 0, failed: 0 });
+
+    expect(db.ops("cron_send_ledger", "insert")).toHaveLength(0); // no claim
+    expect(db.ops("cron_send_ledger", "update")).toHaveLength(0); // no confirm
+    expect(resendState.send).not.toHaveBeenCalled(); // no send
+  });
+
+  it("display-data load failure (loadMaskedNumber throws) on release_warning → no claim, no send, no confirm", async () => {
+    // FIX 2: display data is built BEFORE the claim, so a phone-lookup throw
+    // aborts the org with NO ledger row — next-day recovery retries cleanly
+    // (a post-claim throw would orphan a claim with delivered_at NULL, a false
+    // 'delivered' to reconciliation).
+    state.subs = [canceledSub("org-release", 85)]; // release_warning → loadMaskedNumber runs
+    state.phoneThrows = true;
+
+    const res = await callRoute();
+    expect(await res.json()).toMatchObject({ sent: 0, failed: 1 });
+
+    expect(db.ops("cron_send_ledger", "insert")).toHaveLength(0); // no claim
+    expect(db.ops("cron_send_ledger", "update")).toHaveLength(0); // no confirm
+    expect(db.ops("cron_send_ledger", "delete")).toHaveLength(0); // nothing to release
+    expect(resendState.send).not.toHaveBeenCalled(); // no send
   });
 });
 
