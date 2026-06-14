@@ -23,6 +23,10 @@
     {
       "path": "/api/cron/keep-alive",
       "schedule": "0 0 * * *"
+    },
+    {
+      "path": "/api/cron/subscription-dunning",
+      "schedule": "0 9 * * *"
     }
   ]
 }

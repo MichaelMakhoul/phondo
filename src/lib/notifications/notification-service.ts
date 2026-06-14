@@ -27,10 +27,12 @@ export interface NotificationPreferences {
   email_on_unsuccessful_call: boolean;
   email_on_callback_scheduled: boolean;
   email_daily_summary: boolean;
+  email_on_subscription_dunning: boolean;
   sms_on_missed_call: boolean;
   sms_on_voicemail: boolean;
   sms_on_failed_call: boolean;
   sms_on_callback_scheduled: boolean;
+  sms_on_subscription_dunning: boolean;
   sms_phone_number: string | null;
   webhook_url: string | null;
   sms_textback_on_missed_call: boolean;
@@ -170,6 +172,40 @@ export interface DailySummaryData {
 }
 
 /**
+ * Subscription-lapse (dunning) milestones the daily cron emails the owner about
+ * as a lapsed subscription walks the active → in_grace → lapsed →
+ * release_pending timeline (SCRUM-478, epic SCRUM-474). One milestone per
+ * cron run per subscription; the cron's cron_send_ledger keeps each idempotent.
+ *
+ * - grace_started      — just entered in_grace: AI still answers for N more days.
+ * - grace_ending_soon  — grace ends within the lead window: calls about to divert.
+ * - ai_diverting       — entered lapsed: AI has stopped; calls divert now.
+ * - release_warning    — a canceled org nearing the 90-day reclaim cutoff: the
+ *                        phone number will be released unless they resubscribe.
+ */
+export type SubscriptionDunningMilestone =
+  | "grace_started"
+  | "grace_ending_soon"
+  | "ai_diverting"
+  | "release_warning";
+
+/**
+ * Display values the cron computes from the lapse-state result and passes to
+ * the owner email / SMS. Each field is only meaningful for some milestones; the
+ * templates read the ones they need and ignore the rest.
+ */
+export interface SubscriptionLapseContext {
+  /** Whole days the AI keeps answering before grace ends (grace_started, grace_ending_soon). */
+  daysRemaining?: number;
+  /** Whole days until the number becomes release-eligible (release_warning). */
+  releaseInDays?: number;
+  /** The reclaim window in days (90) — quoted in the release warning. */
+  reclaimDays?: number;
+  /** Masked phone number for the release warning (e.g. "+•••••••5678"), or null when none is on file. */
+  maskedNumber?: string | null;
+}
+
+/**
  * Conservative fallback used when the preferences row cannot be READ (real DB
  * error, not "no row"): email alerts on (the default channel — losing it
  * silently is audit finding #21), SMS/webhook off (we don't know the number /
@@ -184,10 +220,12 @@ function defaultNotificationPreferences(): NotificationPreferences {
     email_on_unsuccessful_call: true,
     email_on_callback_scheduled: true,
     email_daily_summary: true,
+    email_on_subscription_dunning: true,
     sms_on_missed_call: false,
     sms_on_voicemail: false,
     sms_on_failed_call: false,
     sms_on_callback_scheduled: false,
+    sms_on_subscription_dunning: false,
     sms_phone_number: null,
     webhook_url: null,
     sms_textback_on_missed_call: false,
@@ -235,10 +273,12 @@ export async function getNotificationPreferences(
     email_on_unsuccessful_call: data.email_on_unsuccessful_call ?? true,
     email_on_callback_scheduled: data.email_on_callback_scheduled ?? true,
     email_daily_summary: data.email_daily_summary ?? true,
+    email_on_subscription_dunning: data.email_on_subscription_dunning ?? true,
     sms_on_missed_call: data.sms_on_missed_call ?? false,
     sms_on_voicemail: data.sms_on_voicemail ?? false,
     sms_on_failed_call: data.sms_on_failed_call ?? false,
     sms_on_callback_scheduled: data.sms_on_callback_scheduled ?? false,
+    sms_on_subscription_dunning: data.sms_on_subscription_dunning ?? false,
     sms_phone_number: data.sms_phone_number,
     webhook_url: data.webhook_url,
     sms_textback_on_missed_call: data.sms_textback_on_missed_call ?? false,
@@ -930,6 +970,123 @@ export async function sendDailySummaryNotification(
   return settleChannels("daily-summary", data.organizationId, channels, droppedChannels);
 }
 
+/** Per-milestone email subject + template id for the dunning notification. */
+const SUBSCRIPTION_DUNNING_EMAILS: Record<
+  SubscriptionDunningMilestone,
+  { subject: string; template: string }
+> = {
+  grace_started: {
+    subject: "Your Phondo subscription has lapsed — action needed",
+    template: "subscription-grace-started",
+  },
+  grace_ending_soon: {
+    subject: "Your Phondo grace period ends soon",
+    template: "subscription-grace-ending",
+  },
+  ai_diverting: {
+    subject: "Your AI receptionist has stopped answering",
+    template: "subscription-ai-diverting",
+  },
+  release_warning: {
+    subject: "Final notice: your Phondo number may be released",
+    template: "subscription-release-warning",
+  },
+};
+
+/**
+ * The SMS variant ships behind a GLOBAL kill switch on top of its per-org pref
+ * and plan gate (SCRUM-478). Default OFF — no dunning SMS goes out until an
+ * operator sets DUNNING_SMS_ENABLED=true. Read at call time (not module load)
+ * so the cron and tests see env changes without a re-import.
+ */
+function isDunningSmsEnabled(): boolean {
+  return process.env.DUNNING_SMS_ENABLED === "true";
+}
+
+/** Short, link-bearing SMS copy per milestone (sent only when triple-gate passes). */
+function subscriptionDunningSms(
+  milestone: SubscriptionDunningMilestone,
+  ctx: SubscriptionLapseContext
+): string {
+  const appUrl = (process.env.NEXT_PUBLIC_APP_URL || "https://phondo.ai").replace(/\/$/, "");
+  const billing = `${appUrl}/billing`;
+  const days = (n: number | undefined) => `${n ?? 0} day${n === 1 ? "" : "s"}`;
+  switch (milestone) {
+    case "grace_started":
+      return `[Phondo] Your subscription lapsed — your AI keeps answering for ${days(ctx.daysRemaining)} more. Update billing: ${billing}`;
+    case "grace_ending_soon":
+      return `[Phondo] Grace ends in ${days(ctx.daysRemaining)}, then calls divert to your fallback/voicemail. Update billing: ${billing}`;
+    case "ai_diverting":
+      return `[Phondo] Your AI receptionist has stopped answering — calls now go to your fallback/voicemail. Resubscribe: ${billing}`;
+    case "release_warning":
+      return `[Phondo] Final notice: your number ${ctx.maskedNumber || "on file"} will be released after ${ctx.reclaimDays ?? 90} days inactive. Resubscribe to keep it: ${billing}`;
+  }
+}
+
+/**
+ * Send a subscription-lapse (dunning) notification to the org OWNER for one
+ * milestone (SCRUM-478). Mirrors the other owner-alert senders: demo-org skip,
+ * owner-email resolution, Resend send, settleChannels' honest delivery contract
+ * and NotificationSendResult.
+ *
+ * EMAIL is the live channel (gated only by email_on_subscription_dunning).
+ * SMS is written but DOUBLE-GATED OFF: it requires ALL of
+ *   1. DUNNING_SMS_ENABLED=true       (global kill switch — default off)
+ *   2. sms_on_subscription_dunning     (per-org pref — default off)
+ *   3. the smsNotifications plan flag   (entitlement)
+ * plus a configured sms_phone_number. With the kill switch off (the default),
+ * SMS is never even a wanted channel, so a missing number can't strip email.
+ */
+export async function sendSubscriptionLapseNotification(
+  organizationId: string,
+  milestone: SubscriptionDunningMilestone,
+  ctx: SubscriptionLapseContext = {}
+): Promise<NotificationSendResult> {
+  if (skipDemoOrg(`subscription-dunning:${milestone}`, organizationId)) return "skipped";
+
+  // No applyPlanGates here: the only plan-gated channel is SMS, which is
+  // checked explicitly below together with its env + pref double-gate.
+  const prefs = await getNotificationPreferences(organizationId);
+  const shouldEmail = prefs ? prefs.email_on_subscription_dunning : true;
+
+  const email = shouldEmail ? await getOrganizationOwnerEmail(organizationId) : null;
+
+  const channels: Promise<void>[] = [];
+  const droppedChannels: string[] = [];
+  if (shouldEmail && !email) droppedChannels.push("owner-email");
+
+  if (shouldEmail && email) {
+    const { subject, template } = SUBSCRIPTION_DUNNING_EMAILS[milestone];
+    channels.push(sendEmail({
+      to: email,
+      subject,
+      template,
+      data: {
+        daysRemaining: ctx.daysRemaining,
+        releaseInDays: ctx.releaseInDays,
+        reclaimDays: ctx.reclaimDays ?? 90,
+        maskedNumber: ctx.maskedNumber ?? undefined,
+      },
+    }));
+  }
+
+  // SMS — only ever WANTED when the global kill switch AND the per-org pref are
+  // both on, so the default-off feature contributes nothing (no channel, no
+  // drop). The plan entitlement is consulted only once SMS is genuinely wanted.
+  const wantsSms = isDunningSmsEnabled() && !!prefs?.sms_on_subscription_dunning;
+  const smsEntitled = wantsSms && (await hasFeatureAccess(organizationId, "smsNotifications"));
+  if (smsEntitled && prefs?.sms_phone_number) {
+    channels.push(sendSMS({
+      to: prefs.sms_phone_number,
+      message: subscriptionDunningSms(milestone, ctx),
+    }));
+  } else if (smsEntitled && !prefs?.sms_phone_number) {
+    droppedChannels.push("sms");
+  }
+
+  return settleChannels("subscription-dunning", organizationId, channels, droppedChannels);
+}
+
 // ============================================================
 // Email, SMS, and Webhook sending functions
 // These are abstractions that can be replaced with actual providers
@@ -1216,6 +1373,34 @@ function generateEmailHtml(template: string, data: Record<string, any>): string 
           <td style="padding: 8px;"><strong>${formatCallDuration(d.averageCallDuration)}</strong></td>
         </tr>
       </table>
+    `,
+    // SCRUM-478 — subscription-lapse (dunning) milestones. appUrl is read from
+    // the trusted env (like the callback templates), so it isn't double-escaped.
+    "subscription-grace-started": (d) => `
+      <h2 style="color: #d97706;">Your subscription has lapsed</h2>
+      <p>We couldn't renew your Phondo subscription, so your account has entered a grace period.</p>
+      <p><strong>Good news:</strong> your AI receptionist is still answering every call for the next <strong>${d.daysRemaining} day${d.daysRemaining === 1 ? "" : "s"}</strong>. Update your billing details now to avoid any interruption.</p>
+      <p><a href="${process.env.NEXT_PUBLIC_APP_URL || "https://phondo.ai"}/billing">Update billing</a></p>
+    `,
+    "subscription-grace-ending": (d) => `
+      <h2 style="color: #dc2626;">Your grace period ends soon</h2>
+      <p>Your Phondo grace period ends in <strong>${d.daysRemaining} day${d.daysRemaining === 1 ? "" : "s"}</strong>.</p>
+      <p>After that, incoming calls will no longer be answered by your AI receptionist — they will divert to your fallback number or voicemail.</p>
+      <p>Update your billing now to keep your AI answering.</p>
+      <p><a href="${process.env.NEXT_PUBLIC_APP_URL || "https://phondo.ai"}/billing">Update billing</a></p>
+    `,
+    "subscription-ai-diverting": () => `
+      <h2 style="color: #dc2626;">Your AI receptionist has stopped answering</h2>
+      <p>Your Phondo grace period has ended. Incoming calls are no longer answered by your AI receptionist — they now divert to your fallback number or voicemail.</p>
+      <p>Resubscribe to switch your AI receptionist back on.</p>
+      <p><a href="${process.env.NEXT_PUBLIC_APP_URL || "https://phondo.ai"}/billing">Resubscribe</a></p>
+    `,
+    "subscription-release-warning": (d) => `
+      <h2 style="color: #dc2626;">Final notice — your number may be released</h2>
+      <p>Your Phondo subscription has been inactive for nearly ${d.reclaimDays || 90} days.</p>
+      <p>${d.maskedNumber ? `Your phone number <strong>${d.maskedNumber}</strong>` : "Your phone number"} will be released after ${d.reclaimDays || 90} days of inactivity${d.releaseInDays ? ` — about ${d.releaseInDays} day${d.releaseInDays === 1 ? "" : "s"} from now` : ""}. Once released, it cannot be recovered.</p>
+      <p>Resubscribe now to keep your number.</p>
+      <p><a href="${process.env.NEXT_PUBLIC_APP_URL || "https://phondo.ai"}/billing">Resubscribe to keep it</a></p>
     `,
   };
 
