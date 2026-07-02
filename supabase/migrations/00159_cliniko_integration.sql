@@ -11,15 +11,15 @@ ALTER TABLE appointments ADD CONSTRAINT appointments_provider_check
 -- 2) External refs on the local catalog (imported from the CRM)
 ALTER TABLE practitioners ADD COLUMN IF NOT EXISTS external_provider TEXT;
 ALTER TABLE practitioners ADD COLUMN IF NOT EXISTS external_id TEXT;
+-- Full (non-partial) unique index: PostgREST upsert onConflict cannot target
+-- partial indexes; NULL external_provider rows never conflict (NULLs distinct).
 CREATE UNIQUE INDEX IF NOT EXISTS idx_practitioners_external_ref
-  ON practitioners(organization_id, external_provider, external_id)
-  WHERE external_provider IS NOT NULL;
+  ON practitioners(organization_id, external_provider, external_id);
 
 ALTER TABLE service_types ADD COLUMN IF NOT EXISTS external_provider TEXT;
 ALTER TABLE service_types ADD COLUMN IF NOT EXISTS external_id TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_service_types_external_ref
-  ON service_types(organization_id, external_provider, external_id)
-  WHERE external_provider IS NOT NULL;
+  ON service_types(organization_id, external_provider, external_id);
 
 -- 3) Phone -> CRM patient link cache (backend-only; service role)
 CREATE TABLE IF NOT EXISTS crm_patient_links (
