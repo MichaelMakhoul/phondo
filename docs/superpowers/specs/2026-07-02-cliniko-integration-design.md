@@ -42,9 +42,9 @@ When an org connects their Cliniko account, the AI receptionist books real appoi
 2. `appointments.provider` CHECK: add `'cliniko'`.
 3. `practitioners`: add `external_provider TEXT`, `external_id TEXT`; partial unique index `(organization_id, external_provider, external_id) WHERE external_provider IS NOT NULL`.
 4. `service_types`: same two columns + same index.
-5. **New table `crm_credentials`** — `id`, `organization_id` FK, `provider TEXT` (`'cliniko'`), `secret TEXT NOT NULL`, `created_at`, `updated_at`; UNIQUE `(organization_id, provider)`. **RLS enabled with NO policies** → service-role only (same posture as `subscriptions`). Rationale: Cliniko API keys grant full access to a medical records system. The existing `calendar_integrations` RLS policy (`FOR ALL` to org members) makes `access_token` readable from any org member's browser session — acceptable-ish for Cal.com, not for Cliniko. (Cal.com exposure → Jira finding, see Follow-ups.)
-6. **New table `crm_patient_links`** — `id`, `organization_id` FK, `provider TEXT`, `phone_e164 TEXT`, `external_patient_id TEXT`, `patient_name TEXT`, `last_seen_at`, timestamps; UNIQUE `(organization_id, provider, phone_e164)`. RLS enabled, no policies (backend cache only; upsert-on-write).
-7. `calendar_integrations` row for Cliniko stores **no secret**: `access_token` NULL; `settings` JSONB = `{ shard, businessId, businessName, lastSyncedAt, errorState }`; `is_active` as the on/off switch.
+5. **Credential storage — REVISED at planning time:** the codebase already encrypts integration secrets at rest (`safeEncrypt` in `src/lib/security/encryption.ts`; Cal.com stores `safeEncrypt(apiKey)` in `calendar_integrations.access_token`). Cliniko follows the same pattern: encrypted key in `calendar_integrations.access_token`. No separate `crm_credentials` table (original draft's motivation — plaintext exposure via RLS — doesn't hold; RLS exposure leaks ciphertext only). API routes never return the token, masked or otherwise; UI gets `last4` from `settings`.
+6. **New table `crm_patient_links`** — `id`, `organization_id` FK, `provider TEXT`, `phone_e164 TEXT`, `external_patient_id TEXT`, `patient_name TEXT`, `last_seen_at`, timestamps; UNIQUE `(organization_id, provider, phone_e164)`. RLS enabled, no policies (backend cache only; upsert-on-write via service role).
+7. `calendar_integrations` row for Cliniko: `access_token` = encrypted key; `settings` JSONB = `{ shard, businessId, businessName, keyLast4, lastSyncedAt, errorState }`; `is_active` as the on/off switch.
 
 ## Components
 
@@ -132,7 +132,7 @@ Inherently opt-in (an org must paste a key); no env flag. Ships enabled for Prof
 
 ## Follow-ups (Jira tickets to create at PR time)
 
-1. Cal.com `access_token` readable by org members via `calendar_integrations` RLS — migrate to `crm_credentials` posture (P2, security).
+1. `calendar_integrations` rows (incl. encrypted `access_token` ciphertext) are SELECTable from org members' browsers via RLS — defense-in-depth would restrict the token column to service role (P3, security hardening; encryption already prevents key disclosure).
 2. Inbound Cliniko webhooks → live mirror updates when the practice moves/cancels appointments in Cliniko (P2).
 3. Post-call patient notes/communications sync — the deferred half of SCRUM-12 (P3, needs pilot validation).
 4. CalendarProvider interface refactor when ServiceM8 lands (P3, tech debt).
