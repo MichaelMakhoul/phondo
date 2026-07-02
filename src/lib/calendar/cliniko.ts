@@ -1,0 +1,364 @@
+/**
+ * Cliniko API client (SCRUM-12).
+ *
+ * Facts verified against docs.api.cliniko.com (2026-07-02):
+ * - HTTP Basic auth, API key as username, empty password.
+ * - The key carries its region shard as a suffix (e.g. "...-au2") and the
+ *   base URL is shard-specific: https://api.{shard}.cliniko.com/v1
+ * - A `User-Agent: Name (email)` header is REQUIRED — requests without it
+ *   may be blocked by Cliniko.
+ * - Rate limit: 200 requests/min per user; 429 carries X-RateLimit-Reset.
+ * - Patients canNOT be filtered by phone number (see cliniko-patients.ts).
+ */
+
+const DEFAULT_TIMEOUT_MS = 3500;
+const MAX_PAGES = 20;
+
+// Shard is interpolated into a hostname — this allowlist is the SSRF guard.
+const SHARD_PATTERN = /^[a-z]{2,3}\d{1,2}$/;
+const KEY_CHARSET = /^[A-Za-z0-9+/=._-]+$/;
+
+export class ClinikoApiKeyError extends Error {}
+export class ClinikoAuthError extends Error {}
+export class ClinikoRateLimitError extends Error {
+  resetAtMs?: number;
+  constructor(message: string, resetAtMs?: number) {
+    super(message);
+    this.resetAtMs = resetAtMs;
+  }
+}
+export class ClinikoValidationError extends Error {
+  detail?: unknown;
+  constructor(message: string, detail?: unknown) {
+    super(message);
+    this.detail = detail;
+  }
+}
+export class ClinikoUnavailableError extends Error {}
+
+export function parseClinikoApiKey(raw: string): { key: string; shard: string } {
+  const key = (raw || "").trim();
+  if (!key || !KEY_CHARSET.test(key)) {
+    throw new ClinikoApiKeyError(
+      "That doesn't look like a Cliniko API key. Copy the full key from Cliniko → My Info → Manage API keys."
+    );
+  }
+  const match = key.match(/-([a-z]{2,3}\d{1,2})$/);
+  if (!match || !SHARD_PATTERN.test(match[1])) {
+    throw new ClinikoApiKeyError(
+      "The key is missing its region suffix (e.g. \"-au1\"). Copy the full key from Cliniko, including everything after the last dash."
+    );
+  }
+  return { key, shard: match[1] };
+}
+
+export interface ClinikoBusiness {
+  id: string;
+  business_name: string;
+}
+export interface ClinikoPractitioner {
+  id: string;
+  first_name: string;
+  last_name: string;
+  active: boolean;
+}
+export interface ClinikoAppointmentType {
+  id: string;
+  name: string;
+  duration_in_minutes: number;
+  archived_at: string | null;
+}
+export interface ClinikoPatient {
+  id: string;
+  first_name: string;
+  last_name: string;
+  archived_at?: string | null;
+  patient_phone_numbers?: Array<{ phone_type: string; number: string }>;
+}
+export interface ClinikoAppointment {
+  id: string;
+  starts_at: string;
+  ends_at: string;
+  cancelled_at: string | null;
+  patient_id?: string;
+  practitioner_id?: string;
+  appointment_type_id?: string;
+  business_id?: string;
+  notes?: string | null;
+}
+
+interface RequestResult {
+  status: number;
+  data: Record<string, unknown> | null;
+}
+
+function userAgent(): string {
+  return `Phondo (${process.env.CLINIKO_CONTACT_EMAIL || "michaelmakhoul0@gmail.com"})`;
+}
+
+function asId(value: unknown): string {
+  return String(value);
+}
+
+export class ClinikoClient {
+  private readonly apiKey: string;
+  private readonly baseUrl: string;
+  private readonly timeoutMs: number;
+
+  constructor(opts: { apiKey: string; shard: string; timeoutMs?: number }) {
+    if (!SHARD_PATTERN.test(opts.shard)) {
+      throw new ClinikoApiKeyError("Invalid Cliniko region shard.");
+    }
+    this.apiKey = opts.apiKey;
+    this.baseUrl = `https://api.${opts.shard}.cliniko.com/v1`;
+    this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  }
+
+  /**
+   * Perform one request. 2xx and 404 resolve ({status, data}); everything else
+   * throws the mapped error. GETs retry once on 5xx/network; writes never do
+   * (a retried create can double-book).
+   */
+  private async request(method: string, pathOrUrl: string, opts: { query?: Record<string, string | string[]>; body?: unknown } = {}): Promise<RequestResult> {
+    let url: string;
+    if (pathOrUrl.startsWith("http")) {
+      // Pagination links come from the response body — only ever follow our own host.
+      if (!pathOrUrl.startsWith(this.baseUrl)) {
+        throw new ClinikoUnavailableError("cliniko returned an unexpected pagination link");
+      }
+      url = pathOrUrl;
+    } else {
+      const u = new URL(this.baseUrl + pathOrUrl);
+      for (const [k, v] of Object.entries(opts.query || {})) {
+        if (Array.isArray(v)) v.forEach((item) => u.searchParams.append(k, item));
+        else u.searchParams.set(k, v);
+      }
+      url = u.toString();
+    }
+
+    const isGet = method === "GET";
+    const attempts = isGet ? 2 : 1;
+    let lastFailure: RequestResult | "network" | null = null;
+
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+      let res: { status: number; ok: boolean; headers: { get(k: string): string | null }; json(): Promise<unknown> };
+      try {
+        res = (await fetch(url, {
+          method,
+          headers: {
+            Authorization: `Basic ${Buffer.from(`${this.apiKey}:`).toString("base64")}`,
+            "User-Agent": userAgent(),
+            Accept: "application/json",
+            ...(opts.body !== undefined && { "Content-Type": "application/json" }),
+          },
+          ...(opts.body !== undefined && { body: JSON.stringify(opts.body) }),
+          signal: controller.signal,
+        })) as typeof res;
+      } catch {
+        // Abort/timeout/network — retryable for GETs only. Never echo the
+        // underlying error (it can embed the request URL/credentials).
+        lastFailure = "network";
+        continue;
+      } finally {
+        clearTimeout(timer);
+      }
+
+      if (res.ok || res.status === 404) {
+        let data: Record<string, unknown> | null = null;
+        if (res.status !== 204) {
+          try {
+            data = (await res.json()) as Record<string, unknown>;
+          } catch {
+            data = null;
+          }
+        }
+        return { status: res.status, data };
+      }
+
+      if (res.status === 401 || res.status === 403) {
+        throw new ClinikoAuthError(`cliniko rejected the API key (HTTP ${res.status})`);
+      }
+      if (res.status === 429) {
+        const reset = Number(res.headers.get("x-ratelimit-reset"));
+        throw new ClinikoRateLimitError(
+          "cliniko rate limit reached",
+          Number.isFinite(reset) && reset > 0 ? reset * 1000 : undefined
+        );
+      }
+      if (res.status === 422) {
+        let detail: unknown;
+        try {
+          detail = await res.json();
+        } catch {
+          detail = undefined;
+        }
+        throw new ClinikoValidationError("cliniko rejected the request (HTTP 422)", detail);
+      }
+
+      // 5xx (and anything unexpected): retry GETs once, then give up.
+      lastFailure = { status: res.status, data: null };
+    }
+
+    if (lastFailure === "network") {
+      throw new ClinikoUnavailableError("cliniko request failed (network/timeout)");
+    }
+    throw new ClinikoUnavailableError(`cliniko request failed (HTTP ${(lastFailure as RequestResult)?.status ?? "?"})`);
+  }
+
+  /** Fetch every page of a list endpoint, extracting `collectionKey` from each page. */
+  private async listAll<T>(path: string, collectionKey: string, query?: Record<string, string | string[]>): Promise<T[]> {
+    const items: T[] = [];
+    let next: string | null = null;
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const { data } = next
+        ? await this.request("GET", next)
+        : await this.request("GET", path, { query: { per_page: "100", ...(query || {}) } });
+      if (!data) break;
+      const pageItems = data[collectionKey];
+      if (Array.isArray(pageItems)) items.push(...(pageItems as T[]));
+      const links = data.links as { next?: string } | undefined;
+      next = links?.next || null;
+      if (!next) break;
+    }
+    return items;
+  }
+
+  async listBusinesses(): Promise<ClinikoBusiness[]> {
+    const raw = await this.listAll<Record<string, unknown>>("/businesses", "businesses");
+    return raw.map((b) => ({ id: asId(b.id), business_name: String(b.business_name ?? "") }));
+  }
+
+  async listPractitioners(): Promise<ClinikoPractitioner[]> {
+    const raw = await this.listAll<Record<string, unknown>>("/practitioners", "practitioners");
+    return raw.map((p) => ({
+      id: asId(p.id),
+      first_name: String(p.first_name ?? ""),
+      last_name: String(p.last_name ?? ""),
+      active: p.active !== false,
+    }));
+  }
+
+  async listAppointmentTypes(): Promise<ClinikoAppointmentType[]> {
+    const raw = await this.listAll<Record<string, unknown>>("/appointment_types", "appointment_types");
+    return raw.map((t) => ({
+      id: asId(t.id),
+      name: String(t.name ?? ""),
+      duration_in_minutes: Number(t.duration_in_minutes) || 30,
+      archived_at: (t.archived_at as string | null) ?? null,
+    }));
+  }
+
+  async availableTimes(businessId: string, practitionerId: string, appointmentTypeId: string, fromDate: string, toDate: string): Promise<string[]> {
+    const path = `/businesses/${encodeURIComponent(businessId)}/practitioners/${encodeURIComponent(practitionerId)}/appointment_types/${encodeURIComponent(appointmentTypeId)}/available_times`;
+    const raw = await this.listAll<Record<string, unknown>>(path, "available_times", { from: fromDate, to: toDate });
+    return raw.map((t) => String(t.appointment_start)).filter((t) => t && t !== "undefined");
+  }
+
+  async findPatientsByName(firstName: string, lastName: string, opts: { contains?: boolean } = {}): Promise<ClinikoPatient[]> {
+    const op = opts.contains ? ":~" : ":=";
+    const q: string[] = [];
+    if (firstName) q.push(`first_name${op}${firstName}`);
+    if (lastName) q.push(`last_name${op}${lastName}`);
+    if (q.length === 0) return [];
+    const raw = await this.listAll<Record<string, unknown>>("/patients", "patients", { "q[]": q });
+    return raw.map((p) => this.mapPatient(p));
+  }
+
+  async getPatient(id: string): Promise<ClinikoPatient | null> {
+    const { status, data } = await this.request("GET", `/patients/${encodeURIComponent(id)}`);
+    if (status === 404 || !data) return null;
+    return this.mapPatient(data);
+  }
+
+  async createPatient(p: { firstName: string; lastName: string; phone?: string }): Promise<ClinikoPatient> {
+    const { status, data } = await this.request("POST", "/patients", {
+      body: {
+        first_name: p.firstName,
+        last_name: p.lastName,
+        ...(p.phone && { patient_phone_numbers: [{ phone_type: "Mobile", number: p.phone }] }),
+      },
+    });
+    if (status === 404 || !data) {
+      throw new ClinikoUnavailableError("cliniko createPatient returned no data");
+    }
+    return this.mapPatient(data);
+  }
+
+  async createAppointment(a: {
+    businessId: string;
+    practitionerId: string;
+    appointmentTypeId: string;
+    patientId: string;
+    startsAtIso: string;
+    notes?: string;
+  }): Promise<ClinikoAppointment> {
+    const { status, data } = await this.request("POST", "/individual_appointments", {
+      body: {
+        business_id: a.businessId,
+        practitioner_id: a.practitionerId,
+        appointment_type_id: a.appointmentTypeId,
+        patient_id: a.patientId,
+        starts_at: a.startsAtIso,
+        ...(a.notes && { notes: a.notes }),
+      },
+    });
+    if (status === 404 || !data) {
+      throw new ClinikoUnavailableError("cliniko createAppointment returned no data");
+    }
+    return this.mapAppointment(data);
+  }
+
+  /** PATCH …/cancel with the generic "Other" reason. 404 (already gone) resolves. */
+  async cancelAppointment(id: string, note?: string): Promise<void> {
+    await this.request("PATCH", `/individual_appointments/${encodeURIComponent(id)}/cancel`, {
+      body: { cancellation_reason: 50, ...(note && { cancellation_note: note }) },
+    });
+  }
+
+  async updateAppointmentTime(id: string, startsAtIso: string): Promise<ClinikoAppointment> {
+    const { status, data } = await this.request("PUT", `/individual_appointments/${encodeURIComponent(id)}`, {
+      body: { starts_at: startsAtIso },
+    });
+    if (status === 404 || !data) {
+      throw new ClinikoValidationError("cliniko appointment no longer exists");
+    }
+    return this.mapAppointment(data);
+  }
+
+  async getAppointment(id: string): Promise<ClinikoAppointment | null> {
+    const { status, data } = await this.request("GET", `/individual_appointments/${encodeURIComponent(id)}`);
+    if (status === 404 || !data) return null;
+    return this.mapAppointment(data);
+  }
+
+  private mapPatient(p: Record<string, unknown>): ClinikoPatient {
+    return {
+      id: asId(p.id),
+      first_name: String(p.first_name ?? ""),
+      last_name: String(p.last_name ?? ""),
+      archived_at: (p.archived_at as string | null) ?? null,
+      patient_phone_numbers: Array.isArray(p.patient_phone_numbers)
+        ? (p.patient_phone_numbers as Array<{ phone_type: string; number: string }>).map((n) => ({
+            phone_type: String(n.phone_type ?? ""),
+            number: String(n.number ?? ""),
+          }))
+        : [],
+    };
+  }
+
+  private mapAppointment(a: Record<string, unknown>): ClinikoAppointment {
+    return {
+      id: asId(a.id),
+      starts_at: String(a.starts_at ?? ""),
+      ends_at: String(a.ends_at ?? ""),
+      cancelled_at: (a.cancelled_at as string | null) ?? null,
+      patient_id: a.patient_id != null ? asId(a.patient_id) : undefined,
+      practitioner_id: a.practitioner_id != null ? asId(a.practitioner_id) : undefined,
+      appointment_type_id: a.appointment_type_id != null ? asId(a.appointment_type_id) : undefined,
+      business_id: a.business_id != null ? asId(a.business_id) : undefined,
+      notes: (a.notes as string | null) ?? null,
+    };
+  }
+}
