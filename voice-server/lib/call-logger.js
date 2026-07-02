@@ -67,6 +67,7 @@ async function createCallRecord({ orgId, assistantId, phoneNumberId, callerPhone
  * @param {*} [fields.answeredBy]
  * @param {*} [fields.outcome]
  * @param {*} [fields.cleanedTranscript]
+ * @param {*} [fields.actionTaken]
  */
 async function completeCallRecord(callId, {
   status,
@@ -86,6 +87,7 @@ async function completeCallRecord(callId, {
   answeredBy,
   outcome,
   cleanedTranscript,
+  actionTaken,
 }) {
   const supabase = getSupabase();
 
@@ -130,6 +132,22 @@ async function completeCallRecord(callId, {
 
   if (error) {
     throw new Error(`Failed to complete call record ${callId}: ${error.message}`);
+  }
+
+  // SCRUM-498: separate GUARDED write — only fills action_taken when it's
+  // still empty, so a mid-call "transferred" (written by the transfer
+  // service) is never clobbered by the end-of-call booking label.
+  if (actionTaken) {
+    const { error: actionError } = await supabase
+      .from("calls")
+      .update({ action_taken: actionTaken })
+      .eq("id", callId)
+      .is("action_taken", null);
+    if (actionError) {
+      // Non-fatal: the record itself completed — losing the label only
+      // undercounts the booking metric for this one call, but say so loudly.
+      console.error(`[CallLogger] Failed to set action_taken="${actionTaken}" for call ${callId}:`, actionError.message);
+    }
   }
 }
 

@@ -9,6 +9,7 @@ import {
   sendUnsuccessfulCallNotification,
 } from "@/lib/notifications/notification-service";
 import { classifyCallNotification } from "@/lib/notifications/classify-call";
+import { humanizeEndedReason } from "@/lib/notifications/humanize-ended-reason";
 import { sendMissedCallTextBack } from "@/lib/sms/caller-sms";
 import { deliverWebhooks } from "@/lib/integrations/webhook-delivery";
 import { withRateLimit } from "@/lib/security/rate-limiter";
@@ -396,22 +397,4 @@ export async function POST(request: Request) {
   });
 
   return NextResponse.json({ received: true, notificationStatus });
-}
-
-function humanizeEndedReason(endedReason: string | undefined): string {
-  switch (endedReason) {
-    case "stt-error":
-      return "The speech recognition system failed during the call.";
-    case "llm-error":
-      return "The AI assistant encountered a technical error and couldn't respond.";
-    case "tts-error":
-      return "The voice system failed during the call.";
-    case "server-error":
-      return "The voice server encountered an error processing the call.";
-    default:
-      if (!endedReason) return "The call ended unexpectedly for an unknown reason.";
-      // Only use known safe characters in the reason string
-      const safeReason = endedReason.substring(0, 100).replace(/[<>&"']/g, "");
-      return `The call ended unexpectedly (${safeReason}).`;
-  }
 }
