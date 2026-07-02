@@ -1109,15 +1109,21 @@ export async function handleBookAppointment(
 
 export async function handleCheckAvailability(
   organizationId: string,
-  args: { date?: string; service_type_id?: string }
+  args: { date?: string; service_type_id?: string; practitioner_id?: string }
 ): Promise<ToolResult> {
-  const { date, service_type_id } = args;
+  const { date, service_type_id, practitioner_id } = args;
 
   // ── Validate service_type_id format before DB query ────────────────────
   if (service_type_id && !isValidUUID(service_type_id)) {
     return {
       success: false,
       message: "That appointment type doesn't seem right. Could you tell me which type of appointment you'd like?",
+    };
+  }
+  if (practitioner_id && !isValidUUID(practitioner_id)) {
+    return {
+      success: false,
+      message: "I didn't catch which practitioner you'd like. Could you tell me their name again?",
     };
   }
 
@@ -1134,7 +1140,7 @@ export async function handleCheckAvailability(
     };
   }
   if (clinikoAvailResolution.kind === "ok") {
-    return clinikoCheckAvailability(clinikoAvailResolution.ctx, organizationId, { date, service_type_id });
+    return clinikoCheckAvailability(clinikoAvailResolution.ctx, organizationId, { date, service_type_id, practitioner_id });
   }
 
   // ── Resolve service type duration if provided ─────────────────────────

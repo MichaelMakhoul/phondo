@@ -1859,8 +1859,17 @@ wss.on("connection", (twilioWs) => {
           session.setSystemPrompt(systemPrompt + callerContext);
 
           // ── Schedule cache: pre-fetch availability snapshot ──
+          // SCRUM-12: skip entirely for a Cliniko-connected org — the snapshot
+          // is built from LOCAL appointments only, so it would quote a near-empty
+          // diary as available and the AI would offer slots that fail at booking.
+          // With no snapshot set, check_availability falls through to the internal
+          // API (clinikoCheckAvailability), which reads the real Cliniko diary.
           let scheduleSnapshot = null;
-          if (session.calendarEnabled || session.serviceTypes?.length > 0) {
+          const clinikoOwnsAvailability = context.calendarProvider === "cliniko";
+          if (clinikoOwnsAvailability) {
+            console.log(`[ScheduleCache] Skipped — Cliniko owns availability for org=${context.organizationId} (live diary)`);
+          }
+          if (!clinikoOwnsAvailability && (session.calendarEnabled || session.serviceTypes?.length > 0)) {
             try {
               scheduleSnapshot = scheduleCache.getSchedule(context.organizationId);
               if (!scheduleSnapshot) {

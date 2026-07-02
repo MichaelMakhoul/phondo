@@ -408,7 +408,7 @@ function serviceTypePrompt(types: LinkedServiceType[]): ToolResult {
 export async function clinikoCheckAvailability(
   ctx: ClinikoContext,
   organizationId: string,
-  args: { date?: string; service_type_id?: string }
+  args: { date?: string; service_type_id?: string; practitioner_id?: string }
 ): Promise<ToolResult> {
   try {
     if (!args.service_type_id) {
@@ -426,7 +426,20 @@ export async function clinikoCheckAvailability(
     }
 
     const timezone = await getOrgTimezone(organizationId);
-    const practitioners = await getLinkedPractitionersForService(organizationId, serviceType.id);
+    let practitioners = await getLinkedPractitionersForService(organizationId, serviceType.id);
+    // A specific practitioner request must return only THEIR times — otherwise
+    // the AI offers a merged clinic view and then fails to book that slot with
+    // the requested practitioner.
+    if (args.practitioner_id) {
+      practitioners = practitioners.filter((p) => p.id === args.practitioner_id);
+      if (practitioners.length === 0) {
+        return {
+          success: false,
+          message:
+            "That practitioner isn't available for that appointment type. Would you like to hear the other available options?",
+        };
+      }
+    }
     if (practitioners.length === 0) {
       return {
         success: false,

@@ -246,6 +246,35 @@ describe("clinikoCheckAvailability", () => {
     expect(res.message).toContain("which type");
   });
 
+  it("returns only the requested practitioner's times when practitioner_id is given", async () => {
+    const db = mockDb(baseHandler);
+    vi.mocked(createAdminClient).mockReturnValue(db.client as never);
+    const availableTimes = vi.fn(async () => [SLOT_9AM]);
+    const res = await clinikoCheckAvailability(ctxWith({ availableTimes }), ORG, {
+      date: "2026-07-07",
+      service_type_id: "st-1",
+      practitioner_id: "lp-2",
+    });
+    expect(res.success).toBe(true);
+    // Only ONE practitioner queried (lp-2 → external 11), not the whole clinic.
+    expect(availableTimes).toHaveBeenCalledTimes(1);
+    expect(availableTimes).toHaveBeenCalledWith("b-1", "11", "20", "2026-07-07", "2026-07-07");
+  });
+
+  it("offers alternatives when the requested practitioner doesn't do that service", async () => {
+    const db = mockDb(baseHandler);
+    vi.mocked(createAdminClient).mockReturnValue(db.client as never);
+    const availableTimes = vi.fn(async () => [SLOT_9AM]);
+    const res = await clinikoCheckAvailability(ctxWith({ availableTimes }), ORG, {
+      date: "2026-07-07",
+      service_type_id: "st-1",
+      practitioner_id: "lp-does-not-do-this",
+    });
+    expect(res.success).toBe(false);
+    expect(res.message).toContain("other available options");
+    expect(availableTimes).not.toHaveBeenCalled();
+  });
+
   it("returns the take-a-message copy and marks the integration on auth failure", async () => {
     const db = mockDb(baseHandler);
     vi.mocked(createAdminClient).mockReturnValue(db.client as never);
