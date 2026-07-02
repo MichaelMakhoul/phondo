@@ -1,12 +1,13 @@
 /**
  * SCRUM-378: non-destructive per-number voice-pipeline override for the
  * evaluation spike. Lets a DEDICATED test number run an alternate pipeline
- * (openai-realtime / conversationrelay) while every production number keeps the
- * global VOICE_PIPELINE (gemini-live). Env-based, so there's no DB change and
- * it's fully reversible — unset the env and behavior is exactly as before.
+ * (openai-realtime / conversationrelay / grok-realtime) while every production
+ * number keeps the global VOICE_PIPELINE (gemini-live). Env-based, so there's
+ * no DB change and it's fully reversible — unset the env and behavior is
+ * exactly as before.
  *
  * TEST_PIPELINE_OVERRIDES = comma-separated "number:pipeline" pairs, e.g.
- *   "+61400000000:openai-realtime,+61400000001:conversationrelay"
+ *   "+61400000000:openai-realtime,+61400000001:conversationrelay,+61400000002:grok-realtime"
  */
 
 /** Digits-only, so "+61400000000" / "61400000000" / formatted all compare equal. */

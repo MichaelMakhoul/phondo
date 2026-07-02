@@ -1,12 +1,19 @@
 /**
- * OpenAI Realtime — WebSocket client for real-time voice AI (SCRUM-378).
+ * Realtime voice adapter — WebSocket client for real-time voice AI (SCRUM-378).
  *
- * A drop-in alternative to gemini-live.js for the EVALUATION test path. Exposes
- * the SAME session interface as createGeminiSession (sendAudio, getTranscripts,
- * sendText, close, readyState + the same callbacks), so the server's media-stream
- * handler branches with a one-line swap. Ingests/emits G.711 μ-law 8 kHz natively
- * (audio/pcmu) — no resampling — with far-field noise reduction + an input
- * transcription language hint. Tools route through the SAME executeToolCall as
+ * Serves TWO OpenAI-Realtime-protocol providers for the EVALUATION test path:
+ *   - OpenAI gpt-realtime (the original adapter, unchanged behavior)
+ *   - xAI Grok (grok-voice-think-fast-1.0) — wire-compatible with the OpenAI
+ *     Realtime API (same client events, session.update handshake, response
+ *     lifecycle), so it reuses this battle-tested state machine instead of
+ *     forking it. Provider differences are isolated in PROVIDERS + the
+ *     provider-specific buildSessionConfig (see buildGrokSessionConfig).
+ *
+ * A drop-in alternative to gemini-live.js. Exposes the SAME session interface
+ * as createGeminiSession (sendAudio, getTranscripts, sendText, close,
+ * readyState + the same callbacks), so the server's media-stream handler
+ * branches with a one-line swap. Ingests/emits G.711 μ-law 8 kHz natively
+ * (audio/pcmu) — no resampling. Tools route through the SAME executeToolCall as
  * Gemini (SCRUM-372/373/377 guardrails apply unchanged).
  *
  * ─────────────────────────────────────────────────────────────────────────────
@@ -30,20 +37,24 @@
  *      call inside the tool); server.js forwards result.action so we can see it.
  *   4. Barge-in (WebSocket = client's job): response.cancel + conversation.item.
  *      truncate, drop any not-yet-executed tool calls (never run a write on an
- *      interrupted turn), then flush Twilio via onInterrupted.
+ *      interrupted turn), then flush Twilio via onInterrupted. Grok documents no
+ *      discrete speech_started event (its server VAD interrupts silently), so a
+ *      response.done with status "cancelled" ALSO drops captured tools + flushes
+ *      Twilio — the same invariant from the other end.
  *   5. end_call closes only after the GOODBYE response's own response.done.
  *   6. Benign error codes are logged, not propagated (they used to drop the call);
  *      real errors go to Sentry.
  *   7. A watchdog force-resets the gate if a response.done never arrives, so the
  *      call can never hang in silence.
+ *   8. Caller transcripts: OpenAI sends a terminal `input_audio_transcription.completed`
+ *      per utterance; Grok sends CUMULATIVE `...transcription.updated` snapshots
+ *      with no documented terminal event. createInputTranscriptTracker handles
+ *      both without double-committing an utterance.
  */
 
 const WebSocket = require("ws");
 const { Sentry } = require("../lib/sentry");
 const { mulawToPcm16, pcm16ToMulaw, normalizeGainPcm16 } = require("../lib/audio-converter");
-
-const OPENAI_REALTIME_MODEL = process.env.OPENAI_REALTIME_MODEL || "gpt-realtime-2";
-const OPENAI_REALTIME_URL = `wss://api.openai.com/v1/realtime?model=${OPENAI_REALTIME_MODEL}`;
 
 // BCP-47 hint for the input transcription side. session.language is "en"/"ar".
 const LANG_TO_BCP47 = { en: "en", ar: "ar", es: "es", fr: "fr", de: "de" };
@@ -56,6 +67,7 @@ const RESPONSE_WATCHDOG_MS = 15000;
 // Anything NOT handled AND not in this set logs once at debug level (no flood).
 const KNOWN_IGNORED = new Set([
   "session.created",
+  "conversation.created", // xAI: carries the resumable conversation id (resumption unused here)
   "response.output_item.done",
   "response.content_part.added", "response.content_part.done",
   "response.output_audio.done", "response.output_audio_transcript.done",
@@ -84,12 +96,12 @@ function isBenignError(code) {
 }
 
 /**
- * SCRUM-378: boost a quiet caller's audio BEFORE OpenAI's STT hears it — the same
- * +gain the Gemini path applies (normalizeGainPcm16). The OpenAI path was
- * forwarding Twilio's raw μ-law untouched, so low-volume callers were transcribed
- * as poorly as raw (offline tests showed gain is what makes the audio legible).
- * In/out are both μ-law 8 kHz (audio/pcmu) — no resample. Never drop audio: on any
- * processing hiccup, fall back to the original frame.
+ * SCRUM-378: boost a quiet caller's audio BEFORE the provider's STT hears it —
+ * the same +gain the Gemini path applies (normalizeGainPcm16). The OpenAI path
+ * was forwarding Twilio's raw μ-law untouched, so low-volume callers were
+ * transcribed as poorly as raw (offline tests showed gain is what makes the
+ * audio legible). In/out are both μ-law 8 kHz (audio/pcmu) — no resample. Never
+ * drop audio: on any processing hiccup, fall back to the original frame.
  * @param {string} b64 - base64 Twilio μ-law frame
  * @returns {string} base64 μ-law frame, gain-normalized
  */
@@ -121,7 +133,7 @@ function toRealtimeTools(tools) {
 }
 
 /**
- * Build the session.update payload.
+ * Build the OpenAI session.update payload.
  * @param {{systemPrompt:string, tools?:object[], voiceName?:string, language?:string}} opts
  */
 function buildSessionConfig({ systemPrompt, tools, voiceName, language }) {
@@ -157,6 +169,66 @@ function buildSessionConfig({ systemPrompt, tools, voiceName, language }) {
     },
   };
 }
+
+/**
+ * Build the Grok (xAI) session.update payload — the xAI-DOCUMENTED schema, not
+ * a clone of the OpenAI one:
+ *   - `voice` sits at the session top level (API voices: ara/eve/leo/rex/sal)
+ *   - transcription takes a BCP-47 `language_hint` (no model field)
+ *   - no noise_reduction option
+ *   - `turn_detection` sits at the session top level; create_response /
+ *     interrupt_response are not documented fields, so they're omitted — xAI's
+ *     server VAD drives turns by default, which is what the response gate assumes
+ *   - audio formats take an explicit `rate` (pcmu is 8000-only)
+ * @param {{systemPrompt:string, tools?:object[], voiceName?:string, language?:string}} opts
+ */
+function buildGrokSessionConfig({ systemPrompt, tools, voiceName, language }) {
+  const langCode = LANG_TO_BCP47[String(language || "en").toLowerCase().slice(0, 2)] || "en";
+  return {
+    type: "session.update",
+    session: {
+      instructions: systemPrompt,
+      voice: voiceName || "eve",
+      tools: toRealtimeTools(tools),
+      tool_choice: "auto",
+      turn_detection: {
+        type: "server_vad",
+        threshold: 0.5,
+        prefix_padding_ms: 300,
+        silence_duration_ms: 600,
+      },
+      audio: {
+        input: {
+          format: { type: "audio/pcmu", rate: 8000 }, // G.711 μ-law — Twilio-native, no resample
+          transcription: { language_hint: langCode },
+        },
+        output: {
+          format: { type: "audio/pcmu", rate: 8000 },
+        },
+      },
+    },
+  };
+}
+
+/**
+ * The two OpenAI-Realtime-protocol providers this adapter can drive. URLs are
+ * resolved at session-creation time so a model env change doesn't need a
+ * process restart (the eval workflow flips these between test calls).
+ */
+const PROVIDERS = {
+  openai: {
+    tag: "OpenAIRealtime",
+    apiKeyEnv: "OPENAI_API_KEY",
+    url: () => `wss://api.openai.com/v1/realtime?model=${process.env.OPENAI_REALTIME_MODEL || "gpt-realtime-2"}`,
+    buildSessionConfig,
+  },
+  grok: {
+    tag: "GrokRealtime",
+    apiKeyEnv: "XAI_API_KEY",
+    url: () => `wss://api.x.ai/v1/realtime?model=${process.env.GROK_REALTIME_MODEL || "grok-voice-think-fast-1.0"}`,
+    buildSessionConfig: buildGrokSessionConfig,
+  },
+};
 
 /**
  * Response gate — enforces the Realtime API's ONE-active-response-at-a-time rule.
@@ -202,15 +274,66 @@ function createResponseGate(sendCreate) {
 }
 
 /**
- * Create an OpenAI Realtime session. Mirrors createGeminiSession.
+ * Caller-transcript accumulator that supports BOTH transcription event styles
+ * without double-committing an utterance:
+ *   - OpenAI: one terminal `input_audio_transcription.completed` per utterance.
+ *   - Grok (xAI): CUMULATIVE `input_audio_transcription.updated` snapshots per
+ *     utterance, with no documented terminal event.
+ * `.updated` text is held as provisional and committed by flush() when the model
+ * starts answering (response.created — the utterance is over) or at session
+ * close. A `.completed` arriving for an utterance that was already flushed is
+ * skipped: by item id when the events carry one, by exact-text as a fallback.
+ * @param {(text: string) => void} commit - receives each finalized utterance once
+ */
+function createInputTranscriptTracker(commit) {
+  let provisionalId = null; // item id of the utterance currently held provisionally
+  let provisionalText = ""; // latest cumulative snapshot for that utterance
+  let lastCommitted = ""; // text-equality dedup fallback for id-less events
+  const flushedIds = new Set(); // utterances committed via flush(), awaiting a possible late `.completed`
+
+  return {
+    /** Cumulative snapshot (Grok) — hold as provisional, newest wins. */
+    updated(itemId, transcript) {
+      if (typeof transcript !== "string" || !transcript) return;
+      if (itemId && flushedIds.has(itemId)) return; // this utterance was already committed
+      provisionalId = itemId || null;
+      provisionalText = transcript;
+    },
+    /** Terminal transcript for one utterance (OpenAI always; Grok if compat-mode sends it). */
+    completed(itemId, transcript) {
+      const dupOfFlushed = itemId
+        ? flushedIds.delete(itemId)
+        : (!!transcript && transcript === lastCommitted);
+      // The terminal event supersedes any provisional snapshot of the same utterance.
+      if (!itemId || itemId === provisionalId) { provisionalId = null; provisionalText = ""; }
+      if (dupOfFlushed || !transcript) return;
+      lastCommitted = transcript;
+      commit(transcript);
+    },
+    /** Commit a held provisional — call when the turn is over (response.created) or on close. */
+    flush() {
+      if (!provisionalText) return;
+      if (provisionalId) flushedIds.add(provisionalId);
+      lastCommitted = provisionalText;
+      commit(provisionalText);
+      provisionalText = "";
+      provisionalId = null;
+    },
+  };
+}
+
+/**
+ * Create a Realtime session against one of PROVIDERS. Mirrors createGeminiSession.
  * @param {{systemPrompt:string, tools:object[], voiceName?:string, language?:string, triggerGreeting?:boolean}} config
  * @param {object} callbacks - onAudio, onToolCall, onTranscriptIn, onTranscriptOut, onInterrupted, onTurnComplete, onError, onClose
+ * @param {{tag: string, apiKeyEnv: string, url: () => string, buildSessionConfig: (config: object) => object}} [provider] - one of PROVIDERS
  */
-function createOpenAIRealtimeSession(config, callbacks) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) throw new Error("OPENAI_API_KEY is required for OpenAI Realtime");
+function createRealtimeSession(config, callbacks, provider = PROVIDERS.openai) {
+  const P = provider;
+  const apiKey = process.env[P.apiKeyEnv];
+  if (!apiKey) throw new Error(`${P.apiKeyEnv} is required for ${P.tag}`);
 
-  const ws = new WebSocket(OPENAI_REALTIME_URL, {
+  const ws = new WebSocket(P.url(), {
     headers: { Authorization: `Bearer ${apiKey}` },
   });
   const startedAt = Date.now();
@@ -237,6 +360,11 @@ function createOpenAIRealtimeSession(config, callbacks) {
   let armEndOnNextCreate = false;
   let endAfterResponseId = null;
 
+  const inputTranscripts = createInputTranscriptTracker((text) => {
+    transcriptIn += text + " ";
+    callbacks.onTranscriptIn?.(text);
+  });
+
   function send(obj) {
     if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
   }
@@ -249,8 +377,8 @@ function createOpenAIRealtimeSession(config, callbacks) {
     clearWatchdog();
     watchdogTimer = setTimeout(() => {
       watchdogTimer = null;
-      console.error("[OpenAIRealtime] response watchdog fired — no response.done in time; forcing gate reset");
-      try { Sentry.captureMessage("OpenAIRealtime response gate stuck — forced reset", "warning"); } catch { /* best-effort */ }
+      console.error(`[${P.tag}] response watchdog fired — no response.done in time; forcing gate reset`);
+      try { Sentry.captureMessage(`${P.tag} response gate stuck — forced reset`, "warning"); } catch { /* best-effort */ }
       gate.done();
       gate.flushQueued();
     }, RESPONSE_WATCHDOG_MS);
@@ -270,8 +398,8 @@ function createOpenAIRealtimeSession(config, callbacks) {
   function resetTurnAudio() { currentItemId = null; audioStartMs = 0; generatedMs = 0; }
 
   ws.on("open", () => {
-    console.log("[OpenAIRealtime] WS connected, sending session.update…");
-    send(buildSessionConfig(config));
+    console.log(`[${P.tag}] WS connected, sending session.update…`);
+    send(P.buildSessionConfig(config));
   });
 
   ws.on("message", async (data) => {
@@ -286,12 +414,15 @@ function createOpenAIRealtimeSession(config, callbacks) {
       case "session.updated":
         if (!ready) {
           ready = true;
-          console.log(`[OpenAIRealtime] Session ready in ${Date.now() - startedAt}ms`);
+          console.log(`[${P.tag}] Session ready in ${Date.now() - startedAt}ms`);
           if (config.triggerGreeting !== false) gate.request(); // gated greeting
         }
         return;
 
       case "response.created":
+        // The model is answering — the caller's utterance is over. Commit any
+        // provisional Grok transcript so transcriptIn stays in spoken order.
+        inputTranscripts.flush();
         gate.created();
         armWatchdog();
         if (armEndOnNextCreate) { endAfterResponseId = msg.response?.id || null; armEndOnNextCreate = false; }
@@ -303,6 +434,16 @@ function createOpenAIRealtimeSession(config, callbacks) {
         gate.done();
         clearWatchdog();
         resetTurnAudio();
+        // A cancelled response's tool calls belong to an interrupted turn (never
+        // execute a write the caller talked over) and its buffered audio is
+        // stale — flush Twilio. After our own barge-in these are harmless
+        // repeats; on a server-initiated cancel (Grok VAD) they're the only
+        // cleanup this turn gets.
+        if (pendingTools.length) {
+          console.log(`[${P.tag}] cancelled response — dropped ${pendingTools.length} un-executed tool call(s)`);
+          pendingTools = [];
+        }
+        callbacks.onInterrupted?.();
         gate.flushQueued();
         return;
 
@@ -329,13 +470,20 @@ function createOpenAIRealtimeSession(config, callbacks) {
         if (msg.delta) { transcriptOut += msg.delta; callbacks.onTranscriptOut?.(msg.delta); }
         return;
 
-      // Caller speech transcript (input transcription)
+      // Caller speech transcript — terminal event per utterance (OpenAI).
       case "conversation.item.input_audio_transcription.completed":
-        if (msg.transcript) { transcriptIn += msg.transcript + " "; callbacks.onTranscriptIn?.(msg.transcript); }
+        inputTranscripts.completed(msg.item_id, msg.transcript);
+        return;
+
+      // Caller speech transcript — CUMULATIVE snapshot (Grok/xAI extension).
+      case "conversation.item.input_audio_transcription.updated":
+        inputTranscripts.updated(msg.item_id, msg.transcript);
         return;
 
       // BARGE-IN. On a WebSocket the client must stop generation AND trim the
       // model's memory of audio the caller never heard, THEN flush Twilio's buffer.
+      // (Grok documents server-VAD interruption without this event — that path is
+      // covered by the cancelled-response handling above/below.)
       case "input_audio_buffer.speech_started":
         if (gate.active) {
           send({ type: "response.cancel" });
@@ -349,7 +497,7 @@ function createOpenAIRealtimeSession(config, callbacks) {
         }
         // Never execute a tool the caller interrupted (esp. a write like book/cancel).
         if (pendingTools.length) {
-          console.log(`[OpenAIRealtime] barge-in — dropped ${pendingTools.length} un-executed tool call(s)`);
+          console.log(`[${P.tag}] barge-in — dropped ${pendingTools.length} un-executed tool call(s)`);
           pendingTools = [];
         }
         callbacks.onInterrupted?.(); // media-stream handler sends Twilio `clear`
@@ -362,7 +510,7 @@ function createOpenAIRealtimeSession(config, callbacks) {
         try {
           args = msg.arguments ? JSON.parse(msg.arguments) : {};
         } catch (e) {
-          console.error(`[OpenAIRealtime] tool args JSON.parse failed for ${msg.name}: ${e.message}`);
+          console.error(`[${P.tag}] tool args JSON.parse failed for ${msg.name}: ${e.message}`);
           try { Sentry.captureException(e); } catch { /* best-effort */ }
         }
         pendingTools.push({ call_id: msg.call_id, name: msg.name, args });
@@ -382,6 +530,20 @@ function createOpenAIRealtimeSession(config, callbacks) {
           return;
         }
 
+        // A response the server cancelled mid-generation (Grok's silent VAD
+        // interruption, or the ack of our own barge-in cancel): its captured
+        // tool calls belong to an interrupted turn — never execute a write the
+        // caller talked over — and its buffered audio is stale.
+        if (msg.response?.status === "cancelled") {
+          if (pendingTools.length) {
+            console.log(`[${P.tag}] cancelled response — dropped ${pendingTools.length} un-executed tool call(s)`);
+            pendingTools = [];
+          }
+          callbacks.onInterrupted?.();
+          gate.flushQueued();
+          return;
+        }
+
         if (pendingTools.length) {
           const tools = pendingTools;
           pendingTools = [];
@@ -395,10 +557,10 @@ function createOpenAIRealtimeSession(config, callbacks) {
               result = await callbacks.onToolCall?.({ id: t.call_id, name: t.name, args: t.args });
             } catch (err) {
               result = { message: "I had trouble with that just now." };
-              console.error(`[OpenAIRealtime] tool ${t.name} error:`, err.message);
+              console.error(`[${P.tag}] tool ${t.name} error:`, err.message);
             }
             let out = typeof result === "string" ? result : (result?.message || "");
-            if (!out) { console.warn(`[OpenAIRealtime] empty tool output for ${t.name}`); out = "(no result)"; }
+            if (!out) { console.warn(`[${P.tag}] empty tool output for ${t.name}`); out = "(no result)"; }
             // Submitting the output never collides; only response.create does.
             send({ type: "conversation.item.create", item: { type: "function_call_output", call_id: t.call_id, output: out } });
             if (result && typeof result === "object") {
@@ -431,31 +593,34 @@ function createOpenAIRealtimeSession(config, callbacks) {
       case "error": {
         const code = msg.error?.code || "";
         if (code === "conversation_already_has_active_response") {
-          console.warn("[OpenAIRealtime] benign:", code);
+          console.warn(`[${P.tag}] benign:`, code);
           gate.resync(); // state desync — a response really is active; re-queue our create
           return;
         }
-        if (isBenignError(code)) { console.warn("[OpenAIRealtime] benign:", code); return; }
-        // Genuinely fatal — surface to Sentry HERE (the GA error detail) before the
-        // downstream onError loses it, then propagate.
-        console.error("[OpenAIRealtime] server error event:", JSON.stringify(msg.error || msg).slice(0, 500));
-        try { Sentry.captureMessage(`OpenAIRealtime error: ${code || "unknown"} — ${msg.error?.message || ""}`.slice(0, 300), "error"); } catch { /* best-effort */ }
-        callbacks.onError?.(new Error(msg.error?.message || "OpenAI Realtime error"));
+        if (isBenignError(code)) { console.warn(`[${P.tag}] benign:`, code); return; }
+        // Genuinely fatal — surface to Sentry HERE (the provider's error detail)
+        // before the downstream onError loses it, then propagate.
+        console.error(`[${P.tag}] server error event:`, JSON.stringify(msg.error || msg).slice(0, 500));
+        try { Sentry.captureMessage(`${P.tag} error: ${code || "unknown"} — ${msg.error?.message || ""}`.slice(0, 300), "error"); } catch { /* best-effort */ }
+        callbacks.onError?.(new Error(msg.error?.message || `${P.tag} error`));
         return;
       }
 
       default:
-        if (!KNOWN_IGNORED.has(type)) console.debug("[OpenAIRealtime] unhandled event:", type);
+        if (!KNOWN_IGNORED.has(type)) console.debug(`[${P.tag}] unhandled event:`, type);
         return;
     }
   });
 
-  ws.on("error", (err) => { console.error("[OpenAIRealtime] WS error:", err.message); Sentry.captureException(err); callbacks.onError?.(err); });
+  ws.on("error", (err) => { console.error(`[${P.tag}] WS error:`, err.message); Sentry.captureException(err); callbacks.onError?.(err); });
   ws.on("close", (code, reason) => {
     clearWatchdog();
     if (closeTimer) { clearTimeout(closeTimer); closeTimer = null; }
+    // A caller utterance still held provisionally (Grok) must reach the
+    // transcript before onClose hands it to post-call analysis.
+    inputTranscripts.flush();
     const r = intentionalClose || (reason ? reason.toString() : "");
-    console.log(`[OpenAIRealtime] WS closed (code=${code}, reason="${r}")`);
+    console.log(`[${P.tag}] WS closed (code=${code}, reason="${r}")`);
     callbacks.onClose?.(code, r);
   });
 
@@ -476,7 +641,29 @@ function createOpenAIRealtimeSession(config, callbacks) {
   };
 }
 
+/** OpenAI Realtime session (original SCRUM-378 test path — unchanged interface). */
+function createOpenAIRealtimeSession(config, callbacks) {
+  return createRealtimeSession(config, callbacks, PROVIDERS.openai);
+}
+
+/** Grok (xAI) Realtime session — grok-voice-think-fast-1.0 via the same adapter. */
+function createGrokRealtimeSession(config, callbacks) {
+  return createRealtimeSession(config, callbacks, PROVIDERS.grok);
+}
+
 module.exports = {
   createOpenAIRealtimeSession,
-  _test: { toRealtimeTools, buildSessionConfig, createResponseGate, isBenignError, boostMulawBase64, KNOWN_IGNORED, BENIGN_ERROR_CODES },
+  createGrokRealtimeSession,
+  _test: {
+    toRealtimeTools,
+    buildSessionConfig,
+    buildGrokSessionConfig,
+    createResponseGate,
+    createInputTranscriptTracker,
+    isBenignError,
+    boostMulawBase64,
+    KNOWN_IGNORED,
+    BENIGN_ERROR_CODES,
+    PROVIDERS,
+  },
 };
