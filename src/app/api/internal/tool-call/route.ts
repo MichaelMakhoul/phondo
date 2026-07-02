@@ -143,6 +143,10 @@ export async function POST(request: Request) {
         result = await handleCheckAvailability(organizationId, {
           date: parsedArgs.date,
           service_type_id: parsedArgs.service_type_id,
+          // SCRUM-12: honored by the Cliniko path so "when can Dr. X see me?"
+          // returns only that practitioner's real times (not a merged clinic
+          // view the AI would then fail to book).
+          practitioner_id: parsedArgs.practitioner_id,
         });
         break;
 

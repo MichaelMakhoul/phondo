@@ -105,18 +105,24 @@ async function loadCallContext(calledNumber, prefetchedPhone) {
 
   // 5. Check if org has a calendar integration (determines whether to enable calendar tools)
   let hasCalendarIntegration = false;
+  // SCRUM-12: a Cliniko provider owns availability live — the local schedule
+  // snapshot must NOT be built for it (it holds only Phondo-originated bookings,
+  // so it would quote a near-empty diary as available). Capture the provider(s).
+  let calendarProvider = null;
   const { data: calIntegration, error: calError } = await supabase
     .from("calendar_integrations")
-    .select("id")
+    .select("id, provider")
     .eq("organization_id", phone.organization_id)
-    .eq("is_active", true)
-    .limit(1);
+    .eq("is_active", true);
 
   if (calError) {
     console.error("[CallContext] Calendar integration lookup error:", calError);
     // Non-fatal — proceed without calendar tools
   } else {
     hasCalendarIntegration = (calIntegration && calIntegration.length > 0);
+    if (calIntegration?.some((row) => row.provider === "cliniko")) {
+      calendarProvider = "cliniko";
+    }
   }
 
   // 6. Check if org has business hours configured (built-in scheduling works without Cal.com)
@@ -243,6 +249,7 @@ async function loadCallContext(calledNumber, prefetchedPhone) {
     },
     knowledgeBase,
     calendarEnabled,
+    calendarProvider,
     transferRules,
     isAfterHours,
     afterHoursConfig,
@@ -296,18 +303,21 @@ async function loadTestCallContext(assistantId, organizationId) {
 
   // 4. Check calendar integration
   let calendarEnabled = false;
+  let calendarProvider = null;
   const { data: calIntegration, error: calError } = await supabase
     .from("calendar_integrations")
-    .select("id")
+    .select("id, provider")
     .eq("organization_id", organizationId)
-    .eq("is_active", true)
-    .limit(1);
+    .eq("is_active", true);
 
   if (calError) {
     console.error("[TestCallContext] Calendar integration lookup error:", { organizationId, error: calError });
   }
 
   const hasCalendarIntegration = (calIntegration && calIntegration.length > 0);
+  if (calIntegration?.some((row) => row.provider === "cliniko")) {
+    calendarProvider = "cliniko";
+  }
   const hasBusinessHours = !!(org.business_hours && Object.keys(org.business_hours).length > 0);
   calendarEnabled = hasCalendarIntegration || hasBusinessHours;
 
@@ -420,6 +430,7 @@ async function loadTestCallContext(assistantId, organizationId) {
     },
     knowledgeBase,
     calendarEnabled,
+    calendarProvider,
     transferRules,
     isAfterHours,
     afterHoursConfig,
