@@ -15,7 +15,7 @@ vi.mock("@/lib/calendar/cliniko", async (importOriginal) => {
   };
 });
 vi.mock("@/lib/calendar/cliniko-reconcile", () => ({
-  reconcileClinikoOrg: vi.fn(async () => ({ ran: true, cancelled: 0, moved: 0, scanned: 0 })),
+  reconcileClinikoOrg: vi.fn(async () => ({ ran: true, cancelled: 0, moved: 0, scanned: 0, failed: 0 })),
 }));
 vi.mock("@sentry/nextjs", () => ({ captureException: vi.fn() }));
 
@@ -82,9 +82,13 @@ describe("GET /api/cron/cliniko-reconcile-sync", () => {
     const res = await GET(req());
     expect(res.status).toBe(200);
     expect(vi.mocked(reconcileClinikoOrg)).toHaveBeenCalledTimes(2);
-    expect(vi.mocked(reconcileClinikoOrg).mock.calls[0][2]).toMatchObject({ force: true });
-    // ctx carries the integration id + business
-    expect(vi.mocked(reconcileClinikoOrg).mock.calls[0][0]).toMatchObject({ integrationId: "int-org-1", businessId: "b-1" });
+    expect(vi.mocked(reconcileClinikoOrg).mock.calls[0][1]).toMatchObject({ force: true });
+    // ctx carries the integration id + business + owning org (single source of truth)
+    expect(vi.mocked(reconcileClinikoOrg).mock.calls[0][0]).toMatchObject({
+      integrationId: "int-org-1",
+      businessId: "b-1",
+      organizationId: "org-1",
+    });
   });
 
   it("one org's setup failure does not block the rest", async () => {
@@ -102,7 +106,7 @@ describe("GET /api/cron/cliniko-reconcile-sync", () => {
   it("reports ok:false when reconcile aborts internally (ran:false)", async () => {
     const { client } = adminMock([integrationRow("org-1")]);
     vi.mocked(createAdminClient).mockReturnValue(client as never);
-    vi.mocked(reconcileClinikoOrg).mockResolvedValueOnce({ ran: false, cancelled: 0, moved: 0, scanned: 0 });
+    vi.mocked(reconcileClinikoOrg).mockResolvedValueOnce({ ran: false, cancelled: 0, moved: 0, scanned: 0, failed: 0 });
     const res = await GET(req());
     const body = await res.json();
     expect(body.results[0]).toMatchObject({ organizationId: "org-1", ok: false });

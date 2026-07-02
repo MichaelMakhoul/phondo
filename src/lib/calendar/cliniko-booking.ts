@@ -149,7 +149,7 @@ export async function getActiveClinikoIntegration(organizationId: string): Promi
 
   try {
     const client = new ClinikoClient({ apiKey, shard: settings.shard });
-    return { kind: "ok", ctx: { client, businessId: settings.businessId, integrationId: data.id } };
+    return { kind: "ok", ctx: { client, businessId: settings.businessId, integrationId: data.id, organizationId } };
   } catch (err) {
     console.error("[Cliniko] invalid stored shard", { organizationId, error: err instanceof Error ? err.message : err });
     return { kind: "error" };
@@ -404,7 +404,7 @@ export async function clinikoCheckAvailability(
     // SCRUM-482: pull practice-side cancels/moves into the mirror before we read
     // or reserve slots. Freshness-gated (no-op if done in the last 60s), so only
     // the first scheduling tool of a call pays the ~300-500ms; never fatal.
-    await reconcileClinikoOrg(ctx, organizationId).catch(() => {});
+    await reconcileClinikoOrg(ctx).catch(() => {});
     if (!args.service_type_id) {
       return serviceTypePrompt(await listLinkedServiceTypes(organizationId));
     }
@@ -463,7 +463,7 @@ export async function clinikoBookAppointment(
     // SCRUM-482: reconcile the mirror first so a slot the practice freed in
     // Cliniko is no longer blocked locally by a stale row (23P01 loop). Freshness-
     // gated — usually a no-op because availability already reconciled this call.
-    await reconcileClinikoOrg(ctx, organizationId).catch(() => {});
+    await reconcileClinikoOrg(ctx).catch(() => {});
     if (!args.serviceTypeId) {
       return serviceTypePrompt(await listLinkedServiceTypes(organizationId));
     }
@@ -766,7 +766,7 @@ export async function clinikoCancelExternal(
 ): Promise<void> {
   // SCRUM-482: reconcile first — if the practice already cancelled this in Cliniko,
   // the mirror row is voided here and the cancel below no-ops harmlessly. Never fatal.
-  await reconcileClinikoOrg(ctx, organizationId).catch(() => {});
+  await reconcileClinikoOrg(ctx).catch(() => {});
   if (!appointment.external_id) {
     console.error("[Cliniko] cliniko row has no external_id — cannot reach the Cliniko appointment to cancel", {
       appointmentId: appointment.id,

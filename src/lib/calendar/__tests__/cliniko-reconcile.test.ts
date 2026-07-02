@@ -90,6 +90,7 @@ function ctxWith(client: {
     },
     businessId: "b-1",
     integrationId: "int-1",
+    organizationId: ORG,
   };
 }
 
@@ -121,7 +122,7 @@ describe("reconcileClinikoOrg", () => {
         },
       ])),
     });
-    const res = await reconcileClinikoOrg(ctx as never, ORG, { nowMs: NOW });
+    const res = await reconcileClinikoOrg(ctx as never, { nowMs: NOW });
     expect(res).toMatchObject({ ran: true, cancelled: 1, moved: 0 });
     const mirrorUpdate = updates.find((u) => u.table === "appointments");
     expect(mirrorUpdate?.payload).toMatchObject({ status: "cancelled" });
@@ -146,7 +147,7 @@ describe("reconcileClinikoOrg", () => {
         },
       ])),
     });
-    const res = await reconcileClinikoOrg(ctx as never, ORG, { nowMs: NOW });
+    const res = await reconcileClinikoOrg(ctx as never, { nowMs: NOW });
     expect(res).toMatchObject({ ran: true, cancelled: 0, moved: 1 });
     const mirrorUpdate = updates.find((u) => u.table === "appointments");
     expect(mirrorUpdate?.payload).toMatchObject({ start_time: "2026-07-10T05:00:00Z", end_time: "2026-07-10T05:30:00Z" });
@@ -170,7 +171,7 @@ describe("reconcileClinikoOrg", () => {
         },
       ])),
     });
-    const res = await reconcileClinikoOrg(ctx as never, ORG, { nowMs: NOW });
+    const res = await reconcileClinikoOrg(ctx as never, { nowMs: NOW });
     expect(res.cancelled).toBe(1);
     expect(updates.find((u) => u.table === "appointments")?.payload).toMatchObject({ status: "cancelled" });
   });
@@ -193,7 +194,7 @@ describe("reconcileClinikoOrg", () => {
         },
       ])),
     });
-    const res = await reconcileClinikoOrg(ctx as never, ORG, { nowMs: NOW });
+    const res = await reconcileClinikoOrg(ctx as never, { nowMs: NOW });
     expect(res.cancelled).toBe(0);
     expect(updates.find((u) => u.table === "appointments")).toBeUndefined();
   });
@@ -204,7 +205,7 @@ describe("reconcileClinikoOrg", () => {
     });
     vi.mocked(createAdminClient).mockReturnValue(client as never);
     const ctx = ctxWith({});
-    const res = await reconcileClinikoOrg(ctx as never, ORG, { nowMs: NOW });
+    const res = await reconcileClinikoOrg(ctx as never, { nowMs: NOW });
     expect(res.ran).toBe(false);
     expect(ctx.client.listChangedAppointments).not.toHaveBeenCalled();
   });
@@ -215,7 +216,7 @@ describe("reconcileClinikoOrg", () => {
     });
     vi.mocked(createAdminClient).mockReturnValue(client as never);
     const ctx = ctxWith({});
-    const res = await reconcileClinikoOrg(ctx as never, ORG, { nowMs: NOW, force: true });
+    const res = await reconcileClinikoOrg(ctx as never, { nowMs: NOW, force: true });
     expect(res.ran).toBe(true);
     expect(ctx.client.listChangedAppointments).toHaveBeenCalled();
   });
@@ -226,7 +227,7 @@ describe("reconcileClinikoOrg", () => {
     });
     vi.mocked(createAdminClient).mockReturnValue(client as never);
     const ctx = ctxWith({});
-    await reconcileClinikoOrg(ctx as never, ORG, { nowMs: NOW });
+    await reconcileClinikoOrg(ctx as never, { nowMs: NOW });
     const settingsWrite = updates.find((u) => u.table === "calendar_integrations");
     expect(settingsWrite).toBeDefined();
     const written = settingsWrite!.payload.settings as Record<string, unknown>;
@@ -244,7 +245,7 @@ describe("reconcileClinikoOrg", () => {
         throw new Error("cliniko down");
       }),
     });
-    const res = await reconcileClinikoOrg(ctx as never, ORG, { nowMs: NOW });
+    const res = await reconcileClinikoOrg(ctx as never, { nowMs: NOW });
     expect(res.ran).toBe(false);
     expect(updates.find((u) => u.table === "calendar_integrations")).toBeUndefined();
   });
@@ -255,7 +256,7 @@ describe("reconcileClinikoOrg", () => {
     const ctx = ctxWith({
       listChangedAppointments: vi.fn(async () => page([], true)), // truncated
     });
-    const res = await reconcileClinikoOrg(ctx as never, ORG, { nowMs: NOW });
+    const res = await reconcileClinikoOrg(ctx as never, { nowMs: NOW });
     // The run completed but the read was incomplete — hold the cursor so the
     // window is re-polled next run rather than silently skipping the tail.
     expect(res.ran).toBe(true);
@@ -267,7 +268,7 @@ describe("reconcileClinikoOrg", () => {
       settings: { ...BASE_SETTINGS, errorState: "auth_failed" },
     });
     vi.mocked(createAdminClient).mockReturnValue(client as never);
-    await reconcileClinikoOrg(ctxWith({}) as never, ORG, { nowMs: NOW });
+    await reconcileClinikoOrg(ctxWith({}) as never, { nowMs: NOW });
     const written = updates.find((u) => u.table === "calendar_integrations")!.payload.settings as Record<string, unknown>;
     expect(written.errorState).toBeNull();
   });
@@ -277,7 +278,7 @@ describe("reconcileClinikoOrg", () => {
       settings: { ...BASE_SETTINGS, errorState: "sync_failed" },
     });
     vi.mocked(createAdminClient).mockReturnValue(client as never);
-    await reconcileClinikoOrg(ctxWith({}) as never, ORG, { nowMs: NOW });
+    await reconcileClinikoOrg(ctxWith({}) as never, { nowMs: NOW });
     const written = updates.find((u) => u.table === "calendar_integrations")!.payload.settings as Record<string, unknown>;
     expect(written.errorState).toBe("sync_failed");
   });

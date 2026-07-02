@@ -58,8 +58,7 @@ export async function GET(request: NextRequest) {
       // ran=false here (force bypasses the freshness gate) means it aborted on a
       // Cliniko/DB failure it already logged, so surface that as not-ok.
       const result = await reconcileClinikoOrg(
-        { client, businessId: String(settings.businessId), integrationId: row.id },
-        row.organization_id,
+        { client, businessId: String(settings.businessId), integrationId: row.id, organizationId: row.organization_id },
         { force: true }
       );
       results.push({ organizationId: row.organization_id, ok: result.ran });

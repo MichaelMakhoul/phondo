@@ -27,7 +27,7 @@ vi.mock("../cliniko-patients", () => ({
   findOrCreateClinikoPatient: vi.fn(async () => ({ patientId: "42", created: false })),
 }));
 vi.mock("../cliniko-reconcile", () => ({
-  reconcileClinikoOrg: vi.fn(async () => ({ ran: true, cancelled: 0, moved: 0, scanned: 0 })),
+  reconcileClinikoOrg: vi.fn(async () => ({ ran: true, cancelled: 0, moved: 0, scanned: 0, failed: 0 })),
 }));
 
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -131,6 +131,7 @@ function ctxWith(client: Partial<Record<keyof ClinikoClient, unknown>>): Cliniko
     client: client as unknown as ClinikoClient,
     businessId: "b-1",
     integrationId: "int-1",
+    organizationId: ORG,
   };
 }
 
@@ -270,7 +271,7 @@ describe("clinikoCheckAvailability", () => {
     vi.mocked(createAdminClient).mockReturnValue(db.client as never);
     const availableTimes = vi.fn(async () => [SLOT_9AM]);
     await clinikoCheckAvailability(ctxWith({ availableTimes }), ORG, { date: "2026-07-07", service_type_id: "st-1" });
-    expect(vi.mocked(reconcileClinikoOrg)).toHaveBeenCalledWith(expect.anything(), ORG);
+    expect(vi.mocked(reconcileClinikoOrg)).toHaveBeenCalledWith(expect.objectContaining({ organizationId: ORG }));
   });
 
   it("a reconcile failure never breaks availability (SCRUM-482)", async () => {

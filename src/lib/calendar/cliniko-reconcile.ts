@@ -8,13 +8,15 @@ export interface ReconcileResult {
   cancelled: number;
   moved: number;
   scanned: number;
+  /** mirror rows that failed to update mid-batch (each Sentry'd individually). */
+  failed: number;
 }
 
 const RECONCILE_FRESHNESS_MS = 60_000;
 const SKEW_OVERLAP_MS = 5 * 60_000;
 const COLD_START_LOOKBACK_MS = 62 * 24 * 60 * 60_000;
 
-const SKIP: ReconcileResult = { ran: false, cancelled: 0, moved: 0, scanned: 0 };
+const SKIP: ReconcileResult = { ran: false, cancelled: 0, moved: 0, scanned: 0, failed: 0 };
 
 interface MirrorRow {
   id: string;
@@ -43,9 +45,9 @@ function isoDate(ms: number): string {
  */
 export async function reconcileClinikoOrg(
   ctx: ClinikoContext,
-  organizationId: string,
   opts: { force?: boolean; nowMs?: number } = {}
 ): Promise<ReconcileResult> {
+  const { organizationId } = ctx;
   const nowMs = opts.nowMs ?? Date.now();
   const nowIso = new Date(nowMs).toISOString();
   const admin = createAdminClient();
@@ -159,7 +161,7 @@ export async function reconcileClinikoOrg(
       }
     }
 
-    return { ran: true, cancelled, moved, scanned };
+    return { ran: true, cancelled, moved, scanned, failed };
   } catch (err) {
     // Includes ClinikoAuthError — intentionally NOT flagged here (see the header
     // comment); the caller's own 401 handling owns the flag + owner email.

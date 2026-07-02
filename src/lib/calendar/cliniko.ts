@@ -136,6 +136,10 @@ export interface ClinikoContext {
   readonly client: ClinikoClient;
   readonly businessId: string;
   readonly integrationId: string;
+  // The owning org. Carried here so tenant identity has a single source of
+  // truth: reconciliation reads the cursor by integrationId and the mirror set
+  // by organizationId, and both must belong to the same integration (SCRUM-491).
+  readonly organizationId: string;
 }
 
 /**
