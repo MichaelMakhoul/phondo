@@ -26,8 +26,12 @@ vi.mock("resend", () => ({
 vi.mock("../cliniko-patients", () => ({
   findOrCreateClinikoPatient: vi.fn(async () => ({ patientId: "42", created: false })),
 }));
+vi.mock("../cliniko-reconcile", () => ({
+  reconcileClinikoOrg: vi.fn(async () => ({ ran: true, cancelled: 0, moved: 0, scanned: 0 })),
+}));
 
 import { createAdminClient } from "@/lib/supabase/admin";
+import { reconcileClinikoOrg } from "../cliniko-reconcile";
 import { runAfterResponse } from "@/lib/utils/after-response";
 import { safeDecrypt } from "@/lib/security/encryption";
 import { hasFeatureAccess } from "@/lib/stripe/billing-service";
@@ -259,6 +263,23 @@ describe("clinikoCheckAvailability", () => {
     // Only ONE practitioner queried (lp-2 → external 11), not the whole clinic.
     expect(availableTimes).toHaveBeenCalledTimes(1);
     expect(availableTimes).toHaveBeenCalledWith("b-1", "11", "20", "2026-07-07", "2026-07-07");
+  });
+
+  it("reconciles the org before reading availability (SCRUM-482)", async () => {
+    const db = mockDb(baseHandler);
+    vi.mocked(createAdminClient).mockReturnValue(db.client as never);
+    const availableTimes = vi.fn(async () => [SLOT_9AM]);
+    await clinikoCheckAvailability(ctxWith({ availableTimes }), ORG, { date: "2026-07-07", service_type_id: "st-1" });
+    expect(vi.mocked(reconcileClinikoOrg)).toHaveBeenCalledWith(expect.anything(), ORG);
+  });
+
+  it("a reconcile failure never breaks availability (SCRUM-482)", async () => {
+    vi.mocked(reconcileClinikoOrg).mockRejectedValueOnce(new Error("boom"));
+    const db = mockDb(baseHandler);
+    vi.mocked(createAdminClient).mockReturnValue(db.client as never);
+    const availableTimes = vi.fn(async () => [SLOT_9AM]);
+    const res = await clinikoCheckAvailability(ctxWith({ availableTimes }), ORG, { date: "2026-07-07", service_type_id: "st-1" });
+    expect(res.success).toBe(true);
   });
 
   it("offers alternatives when the requested practitioner doesn't do that service", async () => {

@@ -42,6 +42,7 @@ import {
 } from "./cliniko";
 import { findOrCreateClinikoPatient } from "./cliniko-patients";
 import { generateConfirmationCode } from "./confirmation-code";
+import { reconcileClinikoOrg } from "./cliniko-reconcile";
 
 export interface ClinikoContext {
   readonly client: ClinikoClient;
@@ -411,6 +412,10 @@ export async function clinikoCheckAvailability(
   args: { date?: string; service_type_id?: string; practitioner_id?: string }
 ): Promise<ToolResult> {
   try {
+    // SCRUM-482: pull practice-side cancels/moves into the mirror before we read
+    // or reserve slots. Freshness-gated (no-op if done in the last 60s), so only
+    // the first scheduling tool of a call pays the ~300-500ms; never fatal.
+    await reconcileClinikoOrg(ctx, organizationId).catch(() => {});
     if (!args.service_type_id) {
       return serviceTypePrompt(await listLinkedServiceTypes(organizationId));
     }
@@ -466,6 +471,10 @@ export async function clinikoBookAppointment(
 ): Promise<ToolResult> {
   const supabase = createAdminClient();
   try {
+    // SCRUM-482: reconcile the mirror first so a slot the practice freed in
+    // Cliniko is no longer blocked locally by a stale row (23P01 loop). Freshness-
+    // gated — usually a no-op because availability already reconciled this call.
+    await reconcileClinikoOrg(ctx, organizationId).catch(() => {});
     if (!args.serviceTypeId) {
       return serviceTypePrompt(await listLinkedServiceTypes(organizationId));
     }
@@ -766,6 +775,9 @@ export async function clinikoCancelExternal(
   appointment: { id: string; external_id?: string | null },
   reason: string
 ): Promise<void> {
+  // SCRUM-482: reconcile first — if the practice already cancelled this in Cliniko,
+  // the mirror row is voided here and the cancel below no-ops harmlessly. Never fatal.
+  await reconcileClinikoOrg(ctx, organizationId).catch(() => {});
   if (!appointment.external_id) {
     console.error("[Cliniko] cliniko row has no external_id — cannot reach the Cliniko appointment to cancel", {
       appointmentId: appointment.id,
