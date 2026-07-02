@@ -61,6 +61,9 @@ export interface ClinikoIntegrationSettings {
   keyLast4?: string;
   errorState?: ClinikoErrorState | null;
   lastSyncedAt?: string | null;
+  // SCRUM-482: reconciliation cursor — the poll-start time of the last successful
+  // change-reconciliation run. Doubles as the freshness marker for the at-call gate.
+  lastReconciledAt?: string | null;
 }
 
 export function parseClinikoApiKey(raw: string): { key: string; shard: string } {
@@ -112,6 +115,8 @@ export interface ClinikoAppointment {
   starts_at: string;
   ends_at: string;
   cancelled_at: string | null;
+  deleted_at: string | null;
+  updated_at: string;
   patient_id?: string;
   practitioner_id?: string;
   appointment_type_id?: string;
@@ -393,6 +398,36 @@ export class ClinikoClient {
     return this.mapAppointment(data);
   }
 
+  /**
+   * SCRUM-482: appointments changed since `since` (ISO) that start on/after
+   * `today` (YYYY-MM-DD), scoped to the connected business/location. Reconciliation
+   * uses this to catch practice-side cancels (cancelled_at set) and moves
+   * (starts_at changed) without polling the whole diary.
+   */
+  async listChangedAppointments(params: { since: string; today: string; businessId: string }): Promise<ClinikoAppointment[]> {
+    const q = [`updated_at:>${params.since}`, `starts_at:>=${params.today}`];
+    const path = `/businesses/${encodeURIComponent(params.businessId)}/individual_appointments`;
+    const raw = await this.listAll<Record<string, unknown>>(path, "individual_appointments", { "q[]": q });
+    return raw.map((a) => this.mapAppointment(a));
+  }
+
+  /**
+   * Hard-deleted appointments changed since `since`. Cliniko soft-cancels keep
+   * cancelled_at and list normally; only true deletes move here. The q[] filter
+   * is applied server-side where supported and re-checked client-side so a stale
+   * row is never missed.
+   */
+  async listDeletedAppointments(params: { since: string }): Promise<ClinikoAppointment[]> {
+    const raw = await this.listAll<Record<string, unknown>>(
+      "/individual_appointments/deleted",
+      "individual_appointments",
+      { "q[]": [`deleted_at:>${params.since}`] }
+    );
+    return raw
+      .map((a) => this.mapAppointment(a))
+      .filter((a) => a.deleted_at != null && a.deleted_at > params.since);
+  }
+
   private mapPatient(p: Record<string, unknown>): ClinikoPatient {
     return {
       id: requireId(p.id, "patient"),
@@ -414,6 +449,8 @@ export class ClinikoClient {
       starts_at: String(a.starts_at ?? ""),
       ends_at: String(a.ends_at ?? ""),
       cancelled_at: (a.cancelled_at as string | null) ?? null,
+      deleted_at: (a.deleted_at as string | null) ?? null,
+      updated_at: String(a.updated_at ?? ""),
       patient_id: a.patient_id != null ? String(a.patient_id) : undefined,
       practitioner_id: a.practitioner_id != null ? String(a.practitioner_id) : undefined,
       appointment_type_id: a.appointment_type_id != null ? String(a.appointment_type_id) : undefined,
