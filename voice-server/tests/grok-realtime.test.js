@@ -4,7 +4,7 @@ const assert = require("node:assert/strict");
 process.env.OPENAI_API_KEY = "test-key"; // keep parity with openai-realtime.test.js require-time env
 const { createGrokRealtimeSession, _test } = require("../services/openai-realtime");
 const { buildGrokSessionConfig, buildSessionConfig, createInputTranscriptTracker, PROVIDERS } = _test;
-const { resolveTestPipeline } = require("../lib/pipeline-routing");
+const { resolveTestPipeline, KNOWN_TEST_PIPELINES } = require("../lib/pipeline-routing");
 
 // SCRUM-378: Grok (xAI) rides the same battle-tested Realtime adapter as OpenAI.
 // These tests pin down the Grok-SPECIFIC surface: the xAI session.update schema,
@@ -92,6 +92,10 @@ describe("resolveTestPipeline accepts grok-realtime (SCRUM-378)", () => {
     assert.equal(resolveTestPipeline("+61400000000", overrides), "openai-realtime");
     assert.equal(resolveTestPipeline("+61499999999", overrides), null);
   });
+
+  it("KNOWN_TEST_PIPELINES lists exactly the pipelines server.js implements", () => {
+    assert.deepEqual([...KNOWN_TEST_PIPELINES].sort(), ["conversationrelay", "grok-realtime", "openai-realtime"]);
+  });
 });
 
 describe("createInputTranscriptTracker (SCRUM-378) — one commit per utterance", () => {
@@ -163,5 +167,30 @@ describe("createInputTranscriptTracker (SCRUM-378) — one commit per utterance"
     t.completed(null, "hi"); // same utterance, no id to match on — text dedup catches it
     t.completed(null, "a different thing"); // genuinely new text still commits
     assert.deepEqual(commits, ["hi", "a different thing"]);
+  });
+
+  it("a terminal .completed with an EMPTY transcript commits the snapshot instead of wiping it (review F3)", () => {
+    const { t, commits } = mkTracker();
+    t.updated("item_1", "book me in for Tuesday");
+    t.completed("item_1", ""); // blank/failed terminal transcription
+    assert.deepEqual(commits, ["book me in for Tuesday"]); // best record survives
+    t.flush(); // nothing left to double-commit
+    assert.deepEqual(commits, ["book me in for Tuesday"]);
+  });
+
+  it("an id-less .completed never wipes a DIFFERENT (id'd) utterance's snapshot (review F3)", () => {
+    const { t, commits } = mkTracker();
+    t.updated("item_1", "first utterance");
+    t.completed(null, "other utterance"); // cannot claim item_1's provisional
+    t.flush();
+    assert.deepEqual(commits, ["other utterance", "first utterance"]);
+  });
+
+  it("an empty id-less .completed is a no-op against an id'd provisional", () => {
+    const { t, commits } = mkTracker();
+    t.updated("item_1", "still talking");
+    t.completed(null, "");
+    t.flush();
+    assert.deepEqual(commits, ["still talking"]);
   });
 });

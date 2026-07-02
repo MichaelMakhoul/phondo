@@ -15,6 +15,11 @@ function normNumber(s) {
   return String(s || "").replace(/\D/g, "");
 }
 
+/** Pipelines the server actually implements. Anything else in the env is a
+ *  typo — server.js warns so a mis-typed override can't silently run Gemini
+ *  and corrupt the A/B comparison. */
+const KNOWN_TEST_PIPELINES = new Set(["openai-realtime", "conversationrelay", "grok-realtime"]);
+
 /**
  * @param {string} calledNumber - the number the caller dialed (the business line)
  * @param {string} [overridesRaw] - defaults to process.env.TEST_PIPELINE_OVERRIDES
@@ -35,4 +40,4 @@ function resolveTestPipeline(calledNumber, overridesRaw = process.env.TEST_PIPEL
   return null;
 }
 
-module.exports = { resolveTestPipeline, normNumber };
+module.exports = { resolveTestPipeline, normNumber, KNOWN_TEST_PIPELINES };

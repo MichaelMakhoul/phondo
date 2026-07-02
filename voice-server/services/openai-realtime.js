@@ -63,6 +63,14 @@ const LANG_TO_BCP47 = { en: "en", ar: "ar", es: "es", fr: "fr", de: "de" };
 // force-reset it so the call can't hang silently (see watchdog below).
 const RESPONSE_WATCHDOG_MS = 15000;
 
+// If session.updated never arrives after we send session.update (provider
+// silently rejecting a field, acking under an unknown event name, …), `ready`
+// would stay false forever: every caller frame discarded, no greeting, and the
+// response watchdog never armed — an indefinite dead-air call recorded as
+// "completed". Same failure class the Gemini path guards with its setup
+// watchdog (SCRUM-424); Grok's unproven handshake makes it load-bearing here.
+const SETUP_WATCHDOG_MS = 10000;
+
 // GA server events that are part of the normal turn lifecycle but need no action.
 // Anything NOT handled AND not in this set logs once at debug level (no flood).
 const KNOWN_IGNORED = new Set([
@@ -78,7 +86,8 @@ const KNOWN_IGNORED = new Set([
   // real lines out of the buffer.
   "response.function_call_arguments.delta",
   "rate_limits.updated",
-  "input_audio_buffer.speech_stopped", "input_audio_buffer.committed", "input_audio_buffer.cleared",
+  // speech_stopped/committed are HANDLED (end-of-utterance transcript flush).
+  "input_audio_buffer.cleared",
   "conversation.item.created", "conversation.item.added", "conversation.item.done",
   "conversation.item.truncated", "conversation.item.input_audio_transcription.delta",
 ]);
@@ -105,12 +114,20 @@ function isBenignError(code) {
  * @param {string} b64 - base64 Twilio μ-law frame
  * @returns {string} base64 μ-law frame, gain-normalized
  */
+let boostFailureWarned = false; // once per process — a converter failure is systematic, not per-frame noise
 function boostMulawBase64(b64) {
   try {
     const mulaw = Buffer.from(b64, "base64");
     const pcm = normalizeGainPcm16(mulawToPcm16(mulaw));
     return pcm16ToMulaw(pcm).toString("base64");
-  } catch {
+  } catch (e) {
+    // Never drop audio — but a converter that's failing means quiet callers are
+    // back to raw (mis-transcribed) frames, which must not stay invisible.
+    if (!boostFailureWarned) {
+      boostFailureWarned = true;
+      console.warn("[RealtimeAdapter] gain-boost failed — forwarding raw μ-law from now on:", e.message);
+      try { Sentry.captureException(e); } catch { /* best-effort */ }
+    }
     return b64;
   }
 }
@@ -182,13 +199,22 @@ function buildSessionConfig({ systemPrompt, tools, voiceName, language }) {
  *   - audio formats take an explicit `rate` (pcmu is 8000-only)
  * @param {{systemPrompt:string, tools?:object[], voiceName?:string, language?:string}} opts
  */
+const GROK_API_VOICES = new Set(["ara", "eve", "leo", "rex", "sal"]);
+
 function buildGrokSessionConfig({ systemPrompt, tools, voiceName, language }) {
   const langCode = LANG_TO_BCP47[String(language || "en").toLowerCase().slice(0, 2)] || "en";
+  const voice = voiceName || "eve";
+  if (!GROK_API_VOICES.has(voice)) {
+    // Could be a legit custom voice id, so pass it through — but a typo'd
+    // GROK_REALTIME_VOICE would otherwise only surface as a rejected
+    // session.update at call time (dead air, then the setup watchdog).
+    console.warn(`[GrokRealtime] voice "${voice}" is not a documented xAI API voice (${[...GROK_API_VOICES].join("/")}) — passing through as a custom id`);
+  }
   return {
     type: "session.update",
     session: {
       instructions: systemPrompt,
-      voice: voiceName || "eve",
+      voice,
       tools: toRealtimeTools(tools),
       tool_choice: "auto",
       turn_detection: {
@@ -291,6 +317,15 @@ function createInputTranscriptTracker(commit) {
   let lastCommitted = ""; // text-equality dedup fallback for id-less events
   const flushedIds = new Set(); // utterances committed via flush(), awaiting a possible late `.completed`
 
+  function flushProvisional() {
+    if (!provisionalText) return;
+    if (provisionalId) flushedIds.add(provisionalId);
+    lastCommitted = provisionalText;
+    commit(provisionalText);
+    provisionalText = "";
+    provisionalId = null;
+  }
+
   return {
     /** Cumulative snapshot (Grok) — hold as provisional, newest wins. */
     updated(itemId, transcript) {
@@ -301,24 +336,29 @@ function createInputTranscriptTracker(commit) {
     },
     /** Terminal transcript for one utterance (OpenAI always; Grok if compat-mode sends it). */
     completed(itemId, transcript) {
-      const dupOfFlushed = itemId
-        ? flushedIds.delete(itemId)
-        : (!!transcript && transcript === lastCommitted);
-      // The terminal event supersedes any provisional snapshot of the same utterance.
-      if (!itemId || itemId === provisionalId) { provisionalId = null; provisionalText = ""; }
-      if (dupOfFlushed || !transcript) return;
-      lastCommitted = transcript;
-      commit(transcript);
+      // One-shot skip: this utterance was already committed via flush().
+      if (itemId && flushedIds.delete(itemId)) {
+        if (itemId === provisionalId) { provisionalId = null; provisionalText = ""; }
+        return;
+      }
+      if (!itemId && !!transcript && transcript === lastCommitted) return; // id-less dedup fallback
+      // Attribution: an id-less terminal can only claim an id-less provisional —
+      // never wipe a DIFFERENT utterance's snapshot (review F3).
+      const sameUtterance = itemId ? itemId === provisionalId : provisionalId === null;
+      if (transcript) {
+        if (sameUtterance) { provisionalId = null; provisionalText = ""; }
+        lastCommitted = transcript;
+        commit(transcript);
+        return;
+      }
+      // Terminal event with an EMPTY transcript (blank/failed transcription): the
+      // cumulative snapshot is the best record of the utterance — commit it
+      // instead of wiping it (review F3).
+      if (sameUtterance) flushProvisional();
     },
-    /** Commit a held provisional — call when the turn is over (response.created) or on close. */
-    flush() {
-      if (!provisionalText) return;
-      if (provisionalId) flushedIds.add(provisionalId);
-      lastCommitted = provisionalText;
-      commit(provisionalText);
-      provisionalText = "";
-      provisionalId = null;
-    },
+    /** Commit a held provisional — at end-of-utterance (speech_stopped/committed),
+     *  on a server-initiated response.created (fallback), or at session close. */
+    flush: flushProvisional,
   };
 }
 
@@ -344,6 +384,16 @@ function createRealtimeSession(config, callbacks, provider = PROVIDERS.openai) {
   let intentionalClose = null;
   let closeTimer = null;
   let watchdogTimer = null;
+  let setupTimer = null;
+  let parseFailures = 0;
+  let transcriptionFailureReported = false;
+
+  // True between input_audio_buffer.speech_started and the next response —
+  // i.e. "the interruption cleanup (tool drop + Twilio flush) already ran".
+  // Keeps the cancel-ACK paths from double-cleaning on providers that DO send
+  // speech_started (OpenAI), while providers that cancel silently (Grok VAD)
+  // still get their only cleanup there.
+  let bargedIn = false;
 
   // Barge-in / truncation tracking: the assistant audio item currently playing,
   // a wall-clock estimate of how long the caller has heard it, and the actual
@@ -378,6 +428,12 @@ function createRealtimeSession(config, callbacks, provider = PROVIDERS.openai) {
     watchdogTimer = setTimeout(() => {
       watchdogTimer = null;
       console.error(`[${P.tag}] response watchdog fired — no response.done in time; forcing gate reset`);
+      // The response.done that would have executed these never came — never run
+      // them a turn late, out of conversational context (esp. booking writes).
+      if (pendingTools.length) {
+        console.error(`[${P.tag}] watchdog — dropped ${pendingTools.length} captured tool call(s) from the stuck response`);
+        pendingTools = [];
+      }
       try { Sentry.captureMessage(`${P.tag} response gate stuck — forced reset`, "warning"); } catch { /* best-effort */ }
       gate.done();
       gate.flushQueued();
@@ -400,11 +456,33 @@ function createRealtimeSession(config, callbacks, provider = PROVIDERS.openai) {
   ws.on("open", () => {
     console.log(`[${P.tag}] WS connected, sending session.update…`);
     send(P.buildSessionConfig(config));
+    // Setup watchdog: if the provider never acks with session.updated, fail the
+    // call LOUDLY instead of leaving the caller in unrecorded dead air.
+    setupTimer = setTimeout(() => {
+      setupTimer = null;
+      if (ready) return;
+      console.error(`[${P.tag}] no session.updated within ${SETUP_WATCHDOG_MS}ms — treating as setup failure`);
+      try { Sentry.captureMessage(`${P.tag} session setup timeout — session.update never acked`, "error"); } catch { /* best-effort */ }
+      callbacks.onError?.(new Error(`${P.tag} session setup timeout`));
+    }, SETUP_WATCHDOG_MS);
   });
 
   ws.on("message", async (data) => {
     let msg;
-    try { msg = JSON.parse(data.toString()); } catch { return; }
+    try {
+      msg = JSON.parse(data.toString());
+    } catch (e) {
+      // A dropped frame here can be a swallowed response.done (15s dead air +
+      // stale tools) or session.updated (silent hang) — never discard invisibly.
+      parseFailures += 1;
+      if (parseFailures === 1) {
+        console.warn(`[${P.tag}] dropped unparseable WS frame: ${e.message}`);
+        try { Sentry.captureMessage(`${P.tag} unparseable WS frame`, "warning"); } catch { /* best-effort */ }
+      } else if (parseFailures % 50 === 0) {
+        console.warn(`[${P.tag}] ${parseFailures} unparseable WS frames so far`);
+      }
+      return;
+    }
     const type = msg.type || "";
 
     switch (type) {
@@ -414,18 +492,32 @@ function createRealtimeSession(config, callbacks, provider = PROVIDERS.openai) {
       case "session.updated":
         if (!ready) {
           ready = true;
+          if (setupTimer) { clearTimeout(setupTimer); setupTimer = null; }
           console.log(`[${P.tag}] Session ready in ${Date.now() - startedAt}ms`);
           if (config.triggerGreeting !== false) gate.request(); // gated greeting
         }
         return;
 
       case "response.created":
-        // The model is answering — the caller's utterance is over. Commit any
-        // provisional Grok transcript so transcriptIn stays in spoken order.
-        inputTranscripts.flush();
+        // A create we did NOT request (gate not pending) is the server's VAD
+        // answering the caller — that utterance is over; commit its provisional
+        // transcript (fallback boundary — speech_stopped/committed is the
+        // primary one). Our OWN creates (greeting / tool-followup / sendText)
+        // say nothing about the caller's speech, which may still be in flight —
+        // flushing there would truncate a mid-air utterance (review F4).
+        if (!gate.snapshot.pending) inputTranscripts.flush();
+        bargedIn = false; // a new response starts fresh interruption bookkeeping
         gate.created();
         armWatchdog();
         if (armEndOnNextCreate) { endAfterResponseId = msg.response?.id || null; armEndOnNextCreate = false; }
+        return;
+
+      // End-of-utterance signals (VAD boundary / buffer commit): the definitive
+      // moment to commit a provisional Grok transcript. No-op on OpenAI, whose
+      // transcripts arrive via the terminal `.completed` event instead.
+      case "input_audio_buffer.speech_stopped":
+      case "input_audio_buffer.committed":
+        inputTranscripts.flush();
         return;
 
       // The server acknowledges a barge-in cancel with response.done(status=cancelled)
@@ -433,17 +525,19 @@ function createRealtimeSession(config, callbacks, provider = PROVIDERS.openai) {
       case "response.cancelled":
         gate.done();
         clearWatchdog();
+        callbacks.onTurnComplete?.(); // flush partial transcripts of the interrupted turn (parity with response.done)
         resetTurnAudio();
-        // A cancelled response's tool calls belong to an interrupted turn (never
-        // execute a write the caller talked over) and its buffered audio is
-        // stale — flush Twilio. After our own barge-in these are harmless
-        // repeats; on a server-initiated cancel (Grok VAD) they're the only
-        // cleanup this turn gets.
+        // A cancelled response's tool calls belong to an interrupted turn —
+        // never execute a write the caller talked over. Its buffered audio is
+        // stale too, BUT only flush Twilio if speech_started didn't already
+        // (keeps the OpenAI barge-in path behavior-identical); on a silent
+        // server-side cancel (Grok VAD) this is the only cleanup the turn gets.
         if (pendingTools.length) {
           console.log(`[${P.tag}] cancelled response — dropped ${pendingTools.length} un-executed tool call(s)`);
           pendingTools = [];
         }
-        callbacks.onInterrupted?.();
+        if (!bargedIn) callbacks.onInterrupted?.();
+        bargedIn = false;
         gate.flushQueued();
         return;
 
@@ -480,11 +574,22 @@ function createRealtimeSession(config, callbacks, provider = PROVIDERS.openai) {
         inputTranscripts.updated(msg.item_id, msg.transcript);
         return;
 
+      // The provider could NOT transcribe an utterance — the transcript feeding
+      // post-call analysis just lost a turn. This must not hide in debug logs.
+      case "conversation.item.input_audio_transcription.failed":
+        console.warn(`[${P.tag}] input transcription FAILED for item=${msg.item_id || "?"} — utterance missing from transcript`);
+        if (!transcriptionFailureReported) {
+          transcriptionFailureReported = true;
+          try { Sentry.captureMessage(`${P.tag} input transcription failed`, "warning"); } catch { /* best-effort */ }
+        }
+        return;
+
       // BARGE-IN. On a WebSocket the client must stop generation AND trim the
       // model's memory of audio the caller never heard, THEN flush Twilio's buffer.
       // (Grok documents server-VAD interruption without this event — that path is
       // covered by the cancelled-response handling above/below.)
       case "input_audio_buffer.speech_started":
+        bargedIn = true; // interruption cleanup happens HERE — cancel-ACKs must not repeat it
         if (gate.active) {
           send({ type: "response.cancel" });
           if (currentItemId) {
@@ -532,14 +637,17 @@ function createRealtimeSession(config, callbacks, provider = PROVIDERS.openai) {
 
         // A response the server cancelled mid-generation (Grok's silent VAD
         // interruption, or the ack of our own barge-in cancel): its captured
-        // tool calls belong to an interrupted turn — never execute a write the
-        // caller talked over — and its buffered audio is stale.
+        // tool calls belong to an interrupted turn — ALWAYS drop them (a
+        // function_call_arguments.done can land after speech_started's drop and
+        // would otherwise execute below) — and only flush Twilio if
+        // speech_started didn't already handle this interruption.
         if (msg.response?.status === "cancelled") {
           if (pendingTools.length) {
             console.log(`[${P.tag}] cancelled response — dropped ${pendingTools.length} un-executed tool call(s)`);
             pendingTools = [];
           }
-          callbacks.onInterrupted?.();
+          if (!bargedIn) callbacks.onInterrupted?.();
+          bargedIn = false;
           gate.flushQueued();
           return;
         }
@@ -615,9 +723,13 @@ function createRealtimeSession(config, callbacks, provider = PROVIDERS.openai) {
   ws.on("error", (err) => { console.error(`[${P.tag}] WS error:`, err.message); Sentry.captureException(err); callbacks.onError?.(err); });
   ws.on("close", (code, reason) => {
     clearWatchdog();
+    if (setupTimer) { clearTimeout(setupTimer); setupTimer = null; }
     if (closeTimer) { clearTimeout(closeTimer); closeTimer = null; }
-    // A caller utterance still held provisionally (Grok) must reach the
-    // transcript before onClose hands it to post-call analysis.
+    // Best-effort: a caller utterance still held provisionally (Grok) is
+    // committed via onTranscriptIn; reaching the STORED transcript relies on
+    // the server's onClose flushing its pending buffer (server.js does). On
+    // caller hang-up, cleanup runs before this event fires — that residual gap
+    // is pre-existing and shared with the Gemini/OpenAI paths.
     inputTranscripts.flush();
     const r = intentionalClose || (reason ? reason.toString() : "");
     console.log(`[${P.tag}] WS closed (code=${code}, reason="${r}")`);
