@@ -3,8 +3,9 @@ import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { withRateLimit } from "@/lib/security/rate-limiter";
 import { hasFeatureAccess } from "@/lib/stripe/billing-service";
-import { ClinikoAuthError, type ClinikoIntegrationSettings } from "@/lib/calendar/cliniko";
+import { ClinikoAuthError } from "@/lib/calendar/cliniko";
 import { getActiveClinikoIntegration } from "@/lib/calendar/cliniko-booking";
+import { mergeIntegrationSettings } from "@/lib/calendar/cliniko-settings";
 import { syncClinikoCatalog } from "@/lib/calendar/cliniko-sync";
 
 /** POST — manual "Sync now" for the connected Cliniko catalog (SCRUM-12). */
@@ -53,45 +54,21 @@ export async function POST(request: Request) {
     const ctx = resolution.ctx;
 
     const admin = createAdminClient();
-    // Read returns the current settings, or null when the read FAILED — callers
-    // must skip the write-back rather than spread `{}` and wipe shard/businessId.
-    const readSettings = async (): Promise<ClinikoIntegrationSettings | null> => {
-      const { data, error } = await (admin as any)
-        .from("calendar_integrations")
-        .select("settings")
-        .eq("id", ctx.integrationId)
-        .maybeSingle();
-      if (error) {
-        console.error("[ClinikoSyncRoute] settings read failed, skipping write-back:", error.message || error.code);
-        return null;
-      }
-      return { ...((data?.settings as ClinikoIntegrationSettings) || {}) };
-    };
 
     try {
       const sync = await syncClinikoCatalog(membership.organization_id, ctx.client, ctx.businessId);
-      const settings = await readSettings();
-      if (settings) {
-        await (admin as any)
-          .from("calendar_integrations")
-          .update({
-            settings: { ...settings, lastSyncedAt: new Date().toISOString(), errorState: null },
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", ctx.integrationId);
+      // SCRUM-489: atomic merge patches only these markers, so a concurrent
+      // at-call reconcile's lastReconciledAt survives (no read-before-write).
+      const { error: markErr } = await mergeIntegrationSettings(admin, ctx.integrationId, { lastSyncedAt: new Date().toISOString(), errorState: null });
+      if (markErr) {
+        console.error("[ClinikoSyncRoute] success-marker merge failed (stale banner may persist):", markErr.message || markErr.code);
       }
       return NextResponse.json({ sync });
     } catch (err) {
-      const settings = await readSettings();
       const errorState = err instanceof ClinikoAuthError ? "auth_failed" : "sync_failed";
-      if (settings) {
-        await (admin as any)
-          .from("calendar_integrations")
-          .update({
-            settings: { ...settings, errorState },
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", ctx.integrationId);
+      const { error: flagErr } = await mergeIntegrationSettings(admin, ctx.integrationId, { errorState }).catch((e) => ({ error: e as { message?: string; code?: string } }));
+      if (flagErr) {
+        console.error("[ClinikoSyncRoute] errorState flag did not persist:", flagErr.message || flagErr.code);
       }
       if (err instanceof ClinikoAuthError) {
         return NextResponse.json(

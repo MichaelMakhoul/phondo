@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { reconcileClinikoOrg } from "../cliniko-reconcile";
 import { createAdminClient } from "@/lib/supabase/admin";
+import * as Sentry from "@sentry/nextjs";
 
 vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: vi.fn() }));
 vi.mock("@sentry/nextjs", () => ({
@@ -302,6 +303,30 @@ describe("reconcileClinikoOrg", () => {
     // Cursor moves forward to the newest record we fetched — NOT to NOW (dropped
     // tail is newer) and NOT held (that would re-read the same 2000 forever).
     expect(settingsPatch(rpcCalls)).toEqual({ lastReconciledAt: new Date(NEWEST).toISOString() });
+  });
+
+  it("reports 'held' (not 'advanced') when the cursor write itself fails on a truncated poll", async () => {
+    const { client, rpcCalls } = mockAdmin({
+      settings: { ...BASE_SETTINGS },
+      settingsWriteError: { message: "deadlock" }, // the merge RPC fails
+      mirrors: [{ id: "m-1", external_id: "900", start_time: "2026-07-10T02:00:00Z", status: "confirmed" }],
+    });
+    vi.mocked(createAdminClient).mockReturnValue(client as never);
+    const ctx = ctxWith({
+      listChangedAppointments: vi.fn(async () =>
+        page(
+          [{ id: "900", starts_at: "2026-07-10T02:00:00Z", ends_at: "2026-07-10T02:30:00Z", cancelled_at: "2026-07-02T11:40:00Z", deleted_at: null, updated_at: "2026-07-02T11:45:00Z" }],
+          true
+        )
+      ),
+    });
+    await reconcileClinikoOrg(ctx as never, { nowMs: NOW });
+    // The write was attempted (patch present) but failed, so monitoring must say
+    // "held", never "advanced" — the cursor did not actually move.
+    expect(settingsPatch(rpcCalls)).toBeTruthy();
+    expect(vi.mocked(Sentry.captureMessage)).toHaveBeenCalledWith(expect.stringContaining("cursor write failed"));
+    expect(vi.mocked(Sentry.captureMessage)).toHaveBeenCalledWith(expect.stringContaining("cursor held"));
+    expect(vi.mocked(Sentry.captureMessage)).not.toHaveBeenCalledWith(expect.stringContaining("cursor advanced"));
   });
 
   it("holds the cursor on a per-row failure even if not truncated (retry next run)", async () => {

@@ -105,7 +105,13 @@ function adminClient(handler: AdminHandler) {
     };
     return qb;
   });
-  return { client: { from }, calls };
+  // SCRUM-489: settings writes go through the merge RPC — record it as a
+  // calendar_integrations "merge" call with the patch as the payload.
+  const rpc = vi.fn(async (_fn: string, args: { p_id: unknown; p_patch: unknown }) => {
+    calls.push({ table: "calendar_integrations", op: "merge", payload: args.p_patch, filters: { id: args.p_id } });
+    return { error: null };
+  });
+  return { client: { from, rpc }, calls };
 }
 
 const noIntegration: AdminHandler = () => ({ data: null });
@@ -224,10 +230,12 @@ describe("PATCH /api/v1/integrations/cliniko (select business)", () => {
 
     const res = await PATCH(req("PATCH", { businessId: "b-2" }));
     expect(res.status).toBe(200);
+    // is_active flips in its own column update; the chosen business is merged
+    // into settings via the RPC (SCRUM-489), not written in the same .update().
     const update = db.calls.find((c) => c.table === "calendar_integrations" && c.op === "update");
-    const payload = update!.payload as Record<string, unknown>;
-    expect(payload.is_active).toBe(true);
-    expect((payload.settings as Record<string, unknown>).businessId).toBe("b-2");
+    expect((update!.payload as Record<string, unknown>).is_active).toBe(true);
+    const merge = db.calls.find((c) => c.table === "calendar_integrations" && c.op === "merge");
+    expect((merge!.payload as Record<string, unknown>).businessId).toBe("b-2");
     expect(vi.mocked(syncClinikoCatalog)).toHaveBeenCalledTimes(1);
   });
 

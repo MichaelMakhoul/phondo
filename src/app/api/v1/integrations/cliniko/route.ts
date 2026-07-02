@@ -12,6 +12,7 @@ import {
   parseClinikoApiKey,
 } from "@/lib/calendar/cliniko";
 import { syncClinikoCatalog } from "@/lib/calendar/cliniko-sync";
+import { mergeIntegrationSettings } from "@/lib/calendar/cliniko-settings";
 
 /**
  * Cliniko CRM integration management (SCRUM-12). Professional+ only.
@@ -125,23 +126,19 @@ async function runInitialSync(
   const admin = createAdminClient();
   try {
     const sync = await syncClinikoCatalog(organizationId, client, settings.businessId as string | undefined);
-    await (admin as any)
-      .from("calendar_integrations")
-      .update({
-        settings: { ...settings, lastSyncedAt: new Date().toISOString(), errorState: null },
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", integrationId);
+    // SCRUM-489: atomic single-key merge — never clobbers a concurrent at-call
+    // reconcile's cursor when this runs on an already-live integration (PATCH).
+    const { error: markErr } = await mergeIntegrationSettings(admin, integrationId, { lastSyncedAt: new Date().toISOString(), errorState: null });
+    if (markErr) {
+      console.error("[ClinikoRoute] initial-sync success-marker merge failed:", markErr.message || markErr.code);
+    }
     return { sync };
   } catch (err) {
     console.error("[ClinikoRoute] initial catalog sync failed:", err instanceof Error ? err.message : err);
-    await (admin as any)
-      .from("calendar_integrations")
-      .update({
-        settings: { ...settings, errorState: "sync_failed" },
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", integrationId);
+    const { error: flagErr } = await mergeIntegrationSettings(admin, integrationId, { errorState: "sync_failed" }).catch((e) => ({ error: e as { message?: string; code?: string } }));
+    if (flagErr) {
+      console.error("[ClinikoRoute] initial-sync errorState flag did not persist:", flagErr.message || flagErr.code);
+    }
     return { sync: null, syncError: "Connected, but the first catalog sync failed — use Sync now to retry." };
   }
 }
@@ -292,11 +289,20 @@ export async function PATCH(request: Request) {
       settings.businessName = chosen.business_name;
       settings.errorState = null;
 
+      // SCRUM-489: merge only the settings keys we own (never clobber a
+      // concurrent at-call reconcile's cursor when changing location on a live
+      // integration); flip is_active in its own column update.
+      const { error: mergeErr } = await mergeIntegrationSettings(admin, row.id, {
+        businessId: chosen.id,
+        businessName: chosen.business_name,
+        errorState: null,
+      });
+      if (mergeErr) throw new Error(`integration settings merge failed: ${mergeErr.message || mergeErr.code}`);
       const { error } = await (admin as any)
         .from("calendar_integrations")
-        .update({ settings, is_active: true, updated_at: new Date().toISOString() })
+        .update({ is_active: true, updated_at: new Date().toISOString() })
         .eq("id", row.id);
-      if (error) throw new Error(`integration update failed: ${error.message || error.code}`);
+      if (error) throw new Error(`integration activate failed: ${error.message || error.code}`);
 
       const syncResult = await runInitialSync(auth.organizationId, row.id, client, settings);
       return NextResponse.json({

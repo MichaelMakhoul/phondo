@@ -144,11 +144,12 @@ export async function reconcileClinikoOrg(
     if (failed > 0) {
       reportIncomplete(ctx, organizationId, changed, deleted, failed, "held");
     } else if (truncatedFloorMs !== null) {
+      // Report AFTER the write so the disposition reflects reality: if the cursor
+      // write itself fails, the cursor is really "held", not "advanced", and the
+      // monitoring must not claim progress that didn't persist.
       const advanceMs = Math.max(truncatedFloorMs, lastMs);
-      reportIncomplete(ctx, organizationId, changed, deleted, failed, advanceMs > lastMs ? "advanced" : "held");
-      if (advanceMs > lastMs) {
-        await writeCursor(admin, ctx.integrationId, new Date(advanceMs).toISOString(), settings);
-      }
+      const advanced = advanceMs > lastMs && (await writeCursor(admin, ctx.integrationId, new Date(advanceMs).toISOString(), settings));
+      reportIncomplete(ctx, organizationId, changed, deleted, failed, advanced ? "advanced" : "held");
     } else {
       await writeCursor(admin, ctx.integrationId, nowIso, settings);
     }
@@ -230,13 +231,24 @@ async function writeCursor(
   integrationId: string,
   iso: string,
   settings: ClinikoIntegrationSettings
-): Promise<void> {
+): Promise<boolean> {
   const patch: Record<string, unknown> = { lastReconciledAt: iso };
   if (settings.errorState === "auth_failed") patch.errorState = null;
   const { error } = await mergeIntegrationSettings(admin, integrationId, patch);
   if (error) {
+    // Not data loss — the window is idempotently re-polled next run — but a
+    // PERSISTENT write failure means the org re-reads its whole window forever
+    // (frozen cursor, wasted Cliniko budget), so alert, don't just console.
     console.error("[ClinikoReconcile] cursor write failed:", error.message || error.code);
+    Sentry.withScope((scope) => {
+      scope.setLevel("warning");
+      scope.setTag("bug", "cliniko_reconcile_cursor_write_failed");
+      scope.setExtras({ integrationId, error: error.message || error.code });
+      Sentry.captureMessage("Cliniko reconcile cursor write failed — org will re-poll the full window until it succeeds");
+    });
+    return false;
   }
+  return true;
 }
 
 async function applyMirrorUpdate(admin: unknown, id: string, patch: Record<string, unknown>): Promise<void> {

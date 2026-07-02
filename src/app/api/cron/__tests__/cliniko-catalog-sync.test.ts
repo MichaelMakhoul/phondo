@@ -16,12 +16,13 @@ vi.mock("@/lib/calendar/cliniko", async (importOriginal) => {
   };
 });
 vi.mock("@/lib/calendar/cliniko-sync", () => ({ syncClinikoCatalog: vi.fn() }));
-vi.mock("@sentry/nextjs", () => ({ captureException: vi.fn() }));
+vi.mock("@sentry/nextjs", () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
 
 import { requireCronAuth } from "@/lib/security/cron-auth";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { syncClinikoCatalog } from "@/lib/calendar/cliniko-sync";
 import { ClinikoAuthError } from "@/lib/calendar/cliniko";
+import * as Sentry from "@sentry/nextjs";
 import { GET } from "../cliniko-catalog-sync/route";
 
 function integrationRow(org: string, overrides: Record<string, unknown> = {}) {
@@ -38,6 +39,7 @@ function adminMock(rows: Array<Record<string, unknown>>) {
   // SCRUM-489: settings writes are now the merge RPC; capture each patch as
   // { id, patch } so assertions can read the merged keys directly.
   const merges: Array<{ id: unknown; patch: Record<string, unknown> }> = [];
+  let rpcError: { message: string } | null = null;
   const from = () => {
     const chain: Record<string, unknown> = {
       select: () => chain,
@@ -50,9 +52,9 @@ function adminMock(rows: Array<Record<string, unknown>>) {
   };
   const rpc = vi.fn(async (_fn: string, args: { p_id: unknown; p_patch: Record<string, unknown> }) => {
     merges.push({ id: args.p_id, patch: args.p_patch });
-    return { error: null };
+    return { error: rpcError };
   });
-  return { client: { from, rpc }, merges };
+  return { client: { from, rpc }, merges, setRpcError: (e: { message: string } | null) => (rpcError = e) };
 }
 
 function req() {
@@ -84,6 +86,18 @@ describe("GET /api/cron/cliniko-catalog-sync", () => {
     expect(vi.mocked(syncClinikoCatalog)).toHaveBeenCalledTimes(2);
     // lastSyncedAt stamped on both
     expect(admin.merges.filter((u) => u.patch.lastSyncedAt)).toHaveLength(2);
+  });
+
+  it("surfaces a success-path merge failure instead of silently keeping a stale banner (SCRUM-489/silent-failure)", async () => {
+    const admin = adminMock([integrationRow("org-1")]);
+    admin.setRpcError({ message: "deadlock detected" });
+    vi.mocked(createAdminClient).mockReturnValue(admin.client as never);
+    vi.mocked(syncClinikoCatalog).mockResolvedValue({ practitionersUpserted: 1, serviceTypesUpserted: 1, deactivated: 0 });
+
+    const res = await GET(req());
+    // The sync itself still succeeded; the marker just didn't persist.
+    expect((await res.json()).succeeded).toBe(1);
+    expect(vi.mocked(Sentry.captureMessage)).toHaveBeenCalledWith(expect.stringContaining("settings merge failed"));
   });
 
   it("one org's failure doesn't stop the rest; auth failures flag auth_failed", async () => {

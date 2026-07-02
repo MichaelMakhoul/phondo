@@ -11,8 +11,12 @@
 CREATE OR REPLACE FUNCTION merge_calendar_integration_settings(p_id uuid, p_patch jsonb)
 RETURNS void
 LANGUAGE sql
+-- Pin search_path (schema-qualify the table) so the function can't be hijacked
+-- by a mutable path — matches migrations 00147/00154 and clears the Supabase
+-- function_search_path_mutable advisor.
+SET search_path = ''
 AS $$
-  UPDATE calendar_integrations
+  UPDATE public.calendar_integrations
   SET settings = COALESCE(settings, '{}'::jsonb) || p_patch,
       updated_at = now()
   WHERE id = p_id;

@@ -38,21 +38,23 @@ function userClient() {
 }
 
 function adminCapture() {
-  const updates: Array<Record<string, unknown>> = [];
+  // SCRUM-489: settings writes go through the merge RPC; capture each patch.
+  const merges: Array<{ id: unknown; patch: Record<string, unknown> }> = [];
   const from = () => {
     const chain: Record<string, unknown> = {
       select: () => chain,
-      update: (p: Record<string, unknown>) => {
-        updates.push(p);
-        return chain;
-      },
+      update: () => chain,
       eq: () => chain,
       maybeSingle: async () => ({ data: { settings: { shard: "au2" } } }),
       then: (resolve: (v: unknown) => void) => resolve({ data: null, error: null }),
     };
     return chain;
   };
-  return { client: { from }, updates };
+  const rpc = vi.fn(async (_fn: string, args: { p_id: unknown; p_patch: Record<string, unknown> }) => {
+    merges.push({ id: args.p_id, patch: args.p_patch });
+    return { error: null };
+  });
+  return { client: { from, rpc }, merges };
 }
 
 function req() {
@@ -90,9 +92,9 @@ describe("POST /api/v1/integrations/cliniko/sync", () => {
     const res = await POST(req());
     expect(res.status).toBe(200);
     expect((await res.json()).sync.serviceTypesUpserted).toBe(2);
-    const settingsUpdate = admin.updates.find((u) => u.settings) as { settings: Record<string, unknown> };
-    expect(settingsUpdate.settings.errorState).toBeNull();
-    expect(settingsUpdate.settings.lastSyncedAt).toBeTruthy();
+    const patch = admin.merges.find((m) => "lastSyncedAt" in m.patch)?.patch as Record<string, unknown>;
+    expect(patch.errorState).toBeNull();
+    expect(patch.lastSyncedAt).toBeTruthy();
   });
 
   it("maps an auth failure to 401 and errorState auth_failed", async () => {
@@ -103,7 +105,7 @@ describe("POST /api/v1/integrations/cliniko/sync", () => {
 
     const res = await POST(req());
     expect(res.status).toBe(401);
-    const settingsUpdate = admin.updates.find((u) => u.settings) as { settings: Record<string, unknown> };
-    expect(settingsUpdate.settings.errorState).toBe("auth_failed");
+    const patch = admin.merges.find((m) => m.patch.errorState)?.patch as Record<string, unknown>;
+    expect(patch.errorState).toBe("auth_failed");
   });
 });
