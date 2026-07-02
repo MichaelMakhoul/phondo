@@ -105,7 +105,7 @@ export interface SubscriptionInfo {
 
 export type WarningLevel = "none" | "approaching" | "at_limit" | "over_limit";
 
-export type GatedFeature = "smsNotifications" | "webhookIntegrations" | "advancedAnalytics" | "prioritySupport" | "practitioners";
+export type GatedFeature = "smsNotifications" | "webhookIntegrations" | "advancedAnalytics" | "prioritySupport" | "practitioners" | "crmIntegrations";
 
 export type LimitedResource = "assistants" | "phoneNumbers";
 
