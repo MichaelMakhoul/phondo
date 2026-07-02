@@ -4,6 +4,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { safeDecrypt } from "@/lib/security/encryption";
 import { ClinikoClient, ClinikoAuthError } from "@/lib/calendar/cliniko";
 import { syncClinikoCatalog } from "@/lib/calendar/cliniko-sync";
+import { mergeIntegrationSettings } from "@/lib/calendar/cliniko-settings";
 import * as Sentry from "@sentry/nextjs";
 
 /**
@@ -57,27 +58,25 @@ export async function GET(request: NextRequest) {
       }
       const client = new ClinikoClient({ apiKey, shard: String(settings.shard), timeoutMs: 10_000 });
       await syncClinikoCatalog(row.organization_id, client, String(settings.businessId));
-      await (admin as any)
-        .from("calendar_integrations")
-        .update({
-          settings: { ...settings, lastSyncedAt: new Date().toISOString(), errorState: null },
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", row.id);
+      // SCRUM-489: atomic merge — patch only the markers this cron owns so a
+      // concurrent at-call reconcile's lastReconciledAt isn't clobbered.
+      const { error: markErr } = await mergeIntegrationSettings(admin, row.id, { lastSyncedAt: new Date().toISOString(), errorState: null });
+      if (markErr) {
+        // The sync succeeded but the marker didn't persist: a just-healed
+        // integration keeps a stale banner and re-syncs next run. Surface it.
+        console.error("[ClinikoCron] success-marker merge failed (stale banner may persist):", { organizationId: row.organization_id, error: markErr.message || markErr.code });
+        Sentry.captureMessage("Cliniko catalog sync succeeded but settings merge failed — errorState not cleared");
+      }
       results.push({ organizationId: row.organization_id, ok: true });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const errorState = err instanceof ClinikoAuthError ? "auth_failed" : "sync_failed";
-      try {
-        await (admin as any)
-          .from("calendar_integrations")
-          .update({
-            settings: { ...settings, errorState },
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", row.id);
-      } catch (flagErr) {
-        console.error("[ClinikoCron] failed to flag errorState:", flagErr instanceof Error ? flagErr.message : flagErr);
+      // mergeIntegrationSettings returns { error } for DB/PostgREST failures (it
+      // only throws on a raw network fault), so check the return — else a failed
+      // sync is silently NOT flagged and the broken integration looks healthy.
+      const { error: flagErr } = await mergeIntegrationSettings(admin, row.id, { errorState }).catch((e) => ({ error: e as { message?: string; code?: string } }));
+      if (flagErr) {
+        console.error("[ClinikoCron] errorState flag did not persist (integration will look healthy despite sync failure):", { organizationId: row.organization_id, error: flagErr.message || flagErr.code });
       }
       console.error("[ClinikoCron] org sync failed:", { organizationId: row.organization_id, message });
       Sentry.captureException(err);

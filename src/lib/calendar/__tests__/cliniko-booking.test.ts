@@ -27,7 +27,7 @@ vi.mock("../cliniko-patients", () => ({
   findOrCreateClinikoPatient: vi.fn(async () => ({ patientId: "42", created: false })),
 }));
 vi.mock("../cliniko-reconcile", () => ({
-  reconcileClinikoOrg: vi.fn(async () => ({ ran: true, cancelled: 0, moved: 0, scanned: 0 })),
+  reconcileClinikoOrg: vi.fn(async () => ({ ran: true, cancelled: 0, moved: 0, scanned: 0, failed: 0 })),
 }));
 
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -102,7 +102,23 @@ function mockDb(handler: Handler) {
     };
     return qb;
   });
-  return { client: { from }, calls };
+  // SCRUM-489: settings writes go through the merge RPC. Surface it as a
+  // calendar_integrations "merge" call so handlers/assertions can react, with
+  // the sent patch as the payload.
+  const rpc = vi.fn(async (fn: string, args: Record<string, unknown>) => {
+    const call: DbCall = {
+      table: "calendar_integrations",
+      op: "merge",
+      payload: (args as { p_patch?: unknown }).p_patch ?? null,
+      filters: { id: (args as { p_id?: unknown }).p_id },
+      inArgs: {},
+    };
+    calls.push(call);
+    const res = handler(call, calls) || {};
+    void fn;
+    return { data: res.data ?? null, error: res.error ?? null };
+  });
+  return { client: { from, rpc }, calls };
 }
 
 const SERVICE = { id: "st-1", name: "Check-up", duration_minutes: 30, external_id: "20", is_active: true };
@@ -131,6 +147,7 @@ function ctxWith(client: Partial<Record<keyof ClinikoClient, unknown>>): Cliniko
     client: client as unknown as ClinikoClient,
     businessId: "b-1",
     integrationId: "int-1",
+    organizationId: ORG,
   };
 }
 
@@ -270,7 +287,7 @@ describe("clinikoCheckAvailability", () => {
     vi.mocked(createAdminClient).mockReturnValue(db.client as never);
     const availableTimes = vi.fn(async () => [SLOT_9AM]);
     await clinikoCheckAvailability(ctxWith({ availableTimes }), ORG, { date: "2026-07-07", service_type_id: "st-1" });
-    expect(vi.mocked(reconcileClinikoOrg)).toHaveBeenCalledWith(expect.anything(), ORG);
+    expect(vi.mocked(reconcileClinikoOrg)).toHaveBeenCalledWith(expect.objectContaining({ organizationId: ORG }));
   });
 
   it("a reconcile failure never breaks availability (SCRUM-482)", async () => {
@@ -306,9 +323,9 @@ describe("clinikoCheckAvailability", () => {
     });
     expect(res.success).toBe(false);
     expect(res.message).toContain("take your information");
-    const settingsUpdate = db.calls.find((c) => c.table === "calendar_integrations" && c.op === "update");
-    expect(settingsUpdate).toBeTruthy();
-    expect((settingsUpdate!.payload as Record<string, Record<string, unknown>>).settings.errorState).toBe("auth_failed");
+    const settingsMerge = db.calls.find((c) => c.table === "calendar_integrations" && c.op === "merge");
+    expect(settingsMerge).toBeTruthy();
+    expect((settingsMerge!.payload as Record<string, unknown>).errorState).toBe("auth_failed");
   });
 });
 
@@ -470,7 +487,7 @@ describe("clinikoBookAppointment", () => {
       if (call.table === "calendar_integrations" && call.op === "select") {
         return { data: { settings: errorState ? { errorState } : {} } };
       }
-      if (call.table === "calendar_integrations" && call.op === "update") {
+      if (call.table === "calendar_integrations" && call.op === "merge") {
         errorState = "auth_failed";
         return { data: null };
       }

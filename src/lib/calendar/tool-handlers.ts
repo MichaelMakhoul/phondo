@@ -2825,7 +2825,7 @@ export async function handleLookupAppointment(
   try {
     const clinikoLookupResolution = await getActiveClinikoIntegration(organizationId);
     if (clinikoLookupResolution.kind === "ok") {
-      await reconcileClinikoOrg(clinikoLookupResolution.ctx, organizationId).catch(() => {});
+      await reconcileClinikoOrg(clinikoLookupResolution.ctx).catch(() => {});
     }
   } catch {
     // ignore — never let mirror-reconciliation break a lookup

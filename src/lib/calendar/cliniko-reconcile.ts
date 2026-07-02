@@ -1,6 +1,7 @@
 import * as Sentry from "@sentry/nextjs";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { type ClinikoAppointment, type ClinikoContext, type ClinikoIntegrationSettings } from "./cliniko";
+import { type ClinikoAppointment, type ClinikoContext, type ClinikoIntegrationSettings, type PagedResult } from "./cliniko";
+import { mergeIntegrationSettings } from "./cliniko-settings";
 
 export interface ReconcileResult {
   /** false when the freshness gate skipped the run or a failure aborted it. */
@@ -8,13 +9,15 @@ export interface ReconcileResult {
   cancelled: number;
   moved: number;
   scanned: number;
+  /** mirror rows that failed to update mid-batch (each Sentry'd individually). */
+  failed: number;
 }
 
 const RECONCILE_FRESHNESS_MS = 60_000;
 const SKEW_OVERLAP_MS = 5 * 60_000;
 const COLD_START_LOOKBACK_MS = 62 * 24 * 60 * 60_000;
 
-const SKIP: ReconcileResult = { ran: false, cancelled: 0, moved: 0, scanned: 0 };
+const SKIP: ReconcileResult = { ran: false, cancelled: 0, moved: 0, scanned: 0, failed: 0 };
 
 interface MirrorRow {
   id: string;
@@ -43,9 +46,9 @@ function isoDate(ms: number): string {
  */
 export async function reconcileClinikoOrg(
   ctx: ClinikoContext,
-  organizationId: string,
   opts: { force?: boolean; nowMs?: number } = {}
 ): Promise<ReconcileResult> {
+  const { organizationId } = ctx;
   const nowMs = opts.nowMs ?? Date.now();
   const nowIso = new Date(nowMs).toISOString();
   const admin = createAdminClient();
@@ -127,39 +130,31 @@ export async function reconcileClinikoOrg(
       }
     }
 
-    // A truncated poll (page cap hit) or any per-row failure means the read was
-    // incomplete — do NOT advance the cursor past what we could not process, or
-    // those cancels/moves are lost forever. Re-poll the same window next run
-    // (reconcile is idempotent, so re-processing the rows we did handle is free).
-    const incomplete = changed.truncated || deleted.truncated || failed > 0;
-    if (incomplete) {
-      Sentry.withScope((scope) => {
-        scope.setLevel("warning");
-        scope.setTag("bug", "cliniko_reconcile_incomplete");
-        scope.setExtras({ organizationId, integrationId: ctx.integrationId, changedTruncated: changed.truncated, deletedTruncated: deleted.truncated, failed });
-        Sentry.captureMessage("Cliniko reconcile poll was incomplete — cursor held so the window is re-polled");
-      });
+    // Decide how far the cursor may safely advance.
+    // - A per-row update failure (transient DB error) must be retried, so HOLD
+    //   the cursor entirely and re-poll the whole window next run.
+    // - A truncated poll (page cap hit) with no row failures made forward
+    //   progress: because the polls are sorted oldest-change-first, everything up
+    //   to the NEWEST record we fetched is fully resolved, and the dropped tail
+    //   is strictly newer. Advance to that watermark (never backward) so the next
+    //   run continues from there instead of re-reading the same 2000 forever
+    //   (SCRUM-490). Still surface it — a truncating org needs attention.
+    // - A complete, successful poll advances to poll-start.
+    const truncatedFloorMs = truncatedWatermarkMs(changed, deleted);
+    if (failed > 0) {
+      reportIncomplete(ctx, organizationId, changed, deleted, failed, "held");
+    } else if (truncatedFloorMs !== null) {
+      // Report AFTER the write so the disposition reflects reality: if the cursor
+      // write itself fails, the cursor is really "held", not "advanced", and the
+      // monitoring must not claim progress that didn't persist.
+      const advanceMs = Math.max(truncatedFloorMs, lastMs);
+      const advanced = advanceMs > lastMs && (await writeCursor(admin, ctx.integrationId, new Date(advanceMs).toISOString(), settings));
+      reportIncomplete(ctx, organizationId, changed, deleted, failed, advanced ? "advanced" : "held");
     } else {
-      // Advance the cursor to poll-start — only on a complete, successful poll,
-      // with a read-before-write spread so shard/businessId aren't clobbered. A
-      // successful poll proves auth works, so a stale auth_failed flag is cleared.
-      const { error: writeError } = await (admin as any)
-        .from("calendar_integrations")
-        .update({
-          settings: {
-            ...settings,
-            lastReconciledAt: nowIso,
-            errorState: settings.errorState === "auth_failed" ? null : settings.errorState ?? null,
-          },
-          updated_at: nowIso,
-        })
-        .eq("id", ctx.integrationId);
-      if (writeError) {
-        console.error("[ClinikoReconcile] cursor write failed:", writeError.message || writeError.code);
-      }
+      await writeCursor(admin, ctx.integrationId, nowIso, settings);
     }
 
-    return { ran: true, cancelled, moved, scanned };
+    return { ran: true, cancelled, moved, scanned, failed };
   } catch (err) {
     // Includes ClinikoAuthError — intentionally NOT flagged here (see the header
     // comment); the caller's own 401 handling owns the flag + owner email.
@@ -172,6 +167,88 @@ export async function reconcileClinikoOrg(
     });
     return SKIP;
   }
+}
+
+function maxTs(items: ClinikoAppointment[], key: "updated_at" | "deleted_at"): number {
+  let max = 0;
+  for (const a of items) {
+    const raw = a[key];
+    const t = raw ? Date.parse(raw) : 0;
+    if (t > max) max = t;
+  }
+  return max;
+}
+
+/**
+ * The newest timestamp we can safely advance the cursor to given truncation.
+ * For each truncated (incomplete) list, everything up to its newest FETCHED
+ * record is resolved and the dropped tail is strictly newer (lists are sorted
+ * ascending). The safe watermark is the MIN across truncated lists — advancing
+ * past a non-truncated list's later records is fine (they were fully read), but
+ * never past a truncated list's fetched window. Null when nothing truncated.
+ */
+function truncatedWatermarkMs(
+  changed: PagedResult<ClinikoAppointment>,
+  deleted: PagedResult<ClinikoAppointment>
+): number | null {
+  const bounds: number[] = [];
+  if (changed.truncated) bounds.push(maxTs(changed.items, "updated_at"));
+  if (deleted.truncated) bounds.push(maxTs(deleted.items, "deleted_at"));
+  return bounds.length ? Math.min(...bounds) : null;
+}
+
+function reportIncomplete(
+  ctx: ClinikoContext,
+  organizationId: string,
+  changed: PagedResult<ClinikoAppointment>,
+  deleted: PagedResult<ClinikoAppointment>,
+  failed: number,
+  cursor: "advanced" | "held"
+): void {
+  Sentry.withScope((scope) => {
+    scope.setLevel("warning");
+    scope.setTag("bug", "cliniko_reconcile_incomplete");
+    scope.setExtras({
+      organizationId,
+      integrationId: ctx.integrationId,
+      changedTruncated: changed.truncated,
+      deletedTruncated: deleted.truncated,
+      failed,
+      cursor,
+    });
+    Sentry.captureMessage(`Cliniko reconcile poll incomplete — cursor ${cursor}`);
+  });
+}
+
+/**
+ * Advance the cursor via an atomic single-key merge (SCRUM-489) so a concurrent
+ * writer's shard/businessId/lastSyncedAt is never clobbered. A successful poll
+ * proves auth works, so clear a stale auth_failed too (its own single-key patch,
+ * never reverting a concurrent sync_failed).
+ */
+async function writeCursor(
+  admin: unknown,
+  integrationId: string,
+  iso: string,
+  settings: ClinikoIntegrationSettings
+): Promise<boolean> {
+  const patch: Record<string, unknown> = { lastReconciledAt: iso };
+  if (settings.errorState === "auth_failed") patch.errorState = null;
+  const { error } = await mergeIntegrationSettings(admin, integrationId, patch);
+  if (error) {
+    // Not data loss — the window is idempotently re-polled next run — but a
+    // PERSISTENT write failure means the org re-reads its whole window forever
+    // (frozen cursor, wasted Cliniko budget), so alert, don't just console.
+    console.error("[ClinikoReconcile] cursor write failed:", error.message || error.code);
+    Sentry.withScope((scope) => {
+      scope.setLevel("warning");
+      scope.setTag("bug", "cliniko_reconcile_cursor_write_failed");
+      scope.setExtras({ integrationId, error: error.message || error.code });
+      Sentry.captureMessage("Cliniko reconcile cursor write failed — org will re-poll the full window until it succeeds");
+    });
+    return false;
+  }
+  return true;
 }
 
 async function applyMirrorUpdate(admin: unknown, id: string, patch: Record<string, unknown>): Promise<void> {
