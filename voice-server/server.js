@@ -24,8 +24,8 @@ const scheduleCache = require("./lib/schedule-cache");
 const { createCallRecord, completeCallRecord, notifyCallCompleted } = require("./lib/call-logger");
 const { calendarToolDefinitions, listServiceTypesToolDefinition, transferToolDefinition, callbackToolDefinition, endCallToolDefinition, executeToolCall } = require("./services/tool-executor");
 const { createGeminiSession } = require("./services/gemini-live");
-const { createOpenAIRealtimeSession } = require("./services/openai-realtime"); // SCRUM-378 eval spike
-const { resolveTestPipeline } = require("./lib/pipeline-routing"); // SCRUM-378 per-number test override
+const { createOpenAIRealtimeSession, createGrokRealtimeSession } = require("./services/openai-realtime"); // SCRUM-378 eval spike (OpenAI + Grok share the adapter)
+const { resolveTestPipeline, KNOWN_TEST_PIPELINES } = require("./lib/pipeline-routing"); // SCRUM-378 per-number test override
 const { handleConversationRelayConnection, buildConversationRelayTwiml } = require("./services/conversationrelay"); // SCRUM-378 eval spike (ConversationRelay + Claude)
 const { validateToolResponse } = require("./services/turn-validator");
 const { detectPhantomAction, detectPostCallPhantoms, summarizePhantoms } = require("./lib/action-claim-detector"); // SCRUM-381 live + SCRUM-383 post-call phantom-action detection
@@ -2075,14 +2075,32 @@ wss.on("connection", (twilioWs) => {
             let pendingAiTranscript = "";
 
             // SCRUM-378: non-destructive eval override — a dedicated TEST number
-            // can run OpenAI Realtime instead of Gemini (same session interface,
-            // same callbacks/tools/guards). Unset env → null → unchanged Gemini.
+            // can run OpenAI Realtime or Grok Realtime instead of Gemini (same
+            // session interface, same callbacks/tools/guards). Unset env → null
+            // → unchanged Gemini.
             const _testPipeline = resolveTestPipeline(session.orgPhoneNumber);
+            if (_testPipeline && !KNOWN_TEST_PIPELINES.has(_testPipeline)) {
+              // A typo'd pipeline name would silently run Gemini and corrupt
+              // the A/B comparison — never let that stay invisible.
+              console.warn(`[Pipeline] TEST override "${_testPipeline}" for callSid=${callSid} is not a known pipeline (${[...KNOWN_TEST_PIPELINES].join(", ")}) — using Gemini`);
+            }
             const _useOpenAIRealtime = _testPipeline === "openai-realtime" && !!process.env.OPENAI_API_KEY;
+            const _useGrokRealtime = _testPipeline === "grok-realtime" && !!process.env.XAI_API_KEY;
+            // Don't fail the call on a missing key — fall through to Gemini —
+            // but make the misconfiguration impossible to miss while A/B-ing by ear.
+            if (_testPipeline === "openai-realtime" && !_useOpenAIRealtime) {
+              console.warn(`[Pipeline] TEST override openai-realtime IGNORED for callSid=${callSid} — OPENAI_API_KEY not set; using Gemini`);
+            }
+            if (_testPipeline === "grok-realtime" && !_useGrokRealtime) {
+              console.warn(`[Pipeline] TEST override grok-realtime IGNORED for callSid=${callSid} — XAI_API_KEY not set; using Gemini`);
+            }
             if (_useOpenAIRealtime) console.log(`[Pipeline] TEST override → openai-realtime for callSid=${callSid}`);
+            if (_useGrokRealtime) console.log(`[Pipeline] TEST override → grok-realtime for callSid=${callSid}`);
             const _sessionFactory = _useOpenAIRealtime
               ? (cfg, cbs) => createOpenAIRealtimeSession({ ...cfg, voiceName: process.env.OPENAI_REALTIME_VOICE || "marin", language: session.language }, cbs)
-              : createGeminiSession;
+              : _useGrokRealtime
+                ? (cfg, cbs) => createGrokRealtimeSession({ ...cfg, voiceName: process.env.GROK_REALTIME_VOICE || "eve", language: session.language }, cbs)
+                : createGeminiSession;
             session.geminiSession = _sessionFactory(
               {
                 systemPrompt: geminiSystemPrompt,
@@ -2540,6 +2558,24 @@ wss.on("connection", (twilioWs) => {
                 },
                 onClose: (code, reason) => {
                   console.log(`[GeminiLive] Session closed (code=${code}, reason="${reason}")`);
+                  // SCRUM-378 (review): commit transcript fragments still
+                  // buffered when the session closes without a final
+                  // turn-complete (e.g. the caller's last utterance before an
+                  // end_call/transfer close, or a Grok provisional committed by
+                  // the adapter's close-flush) so cleanupSession's
+                  // getTranscript() → post-call analysis sees them. Caller
+                  // hang-up tears down in the other order (cleanup first) —
+                  // that pre-existing gap is unchanged here.
+                  if (session && pendingUserTranscript.trim()) {
+                    session.addMessage("user", pendingUserTranscript.trim());
+                    logTranscript("[GeminiLive] User (close)", pendingUserTranscript.trim());
+                    pendingUserTranscript = "";
+                  }
+                  if (session && pendingAiTranscript.trim()) {
+                    session.addMessage("assistant", pendingAiTranscript.trim());
+                    logTranscript("[GeminiLive] AI (close)", pendingAiTranscript.trim());
+                    pendingAiTranscript = "";
+                  }
                   // Planned close via end_call tool — not a failure.
                   if (reason === "end_call") {
                     if (session) session.endedReason = "end_call_tool";
