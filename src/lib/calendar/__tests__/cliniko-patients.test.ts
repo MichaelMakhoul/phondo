@@ -146,8 +146,7 @@ describe("findOrCreateClinikoPatient", () => {
     });
     expect(res.created).toBe(true);
     expect(res.patientId).toBe("900");
-    expect(res.duplicateWarning).toContain("Jo Bloggs");
-    expect(res.duplicateWarning).toContain("#1");
+    expect(res.duplicatePatientId).toBe("1");
   });
 
   it("archived patients are never matched", async () => {
@@ -174,7 +173,7 @@ describe("findOrCreateClinikoPatient", () => {
       client: two, organizationId: ORG, firstName: "Jo", lastName: "Bloggs",
     });
     expect(resTwo.created).toBe(true);
-    expect(resTwo.duplicateWarning).toBeTruthy();
+    expect(resTwo.duplicatePatientId).toBe("5");
   });
 
   it("falls back to contains search when exact search is empty", async () => {

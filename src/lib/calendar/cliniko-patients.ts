@@ -16,7 +16,11 @@ import type { ClinikoClient, ClinikoPatient } from "./cliniko";
 export interface PatientResolution {
   patientId: string;
   created: boolean;
-  duplicateWarning?: string;
+  /** When a new patient was created despite name matches that phone couldn't
+   *  corroborate, the id of the nearest possible duplicate (for a review note).
+   *  Only ever set when `created` is true. Structured (not a rendered sentence)
+   *  so the consumer controls what identity, if any, is written where. */
+  duplicatePatientId?: string;
 }
 
 /** Strip to digits and keep the last 9 — collapses 04xx / +614xx / 614xx AU forms. */
@@ -158,8 +162,6 @@ export async function findOrCreateClinikoPatient(opts: {
   return {
     patientId: created.id,
     created: true,
-    ...(nearest && {
-      duplicateWarning: `May duplicate existing patient ${patientDisplayName(nearest)} (#${nearest.id}) — please review/merge.`,
-    }),
+    ...(nearest && { duplicatePatientId: nearest.id }),
   };
 }

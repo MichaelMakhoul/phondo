@@ -20,7 +20,7 @@ vi.mock("@/lib/notifications/notification-service", () => ({
 }));
 vi.mock("@/lib/voice-cache/invalidate", () => ({ invalidateVoiceScheduleCache: vi.fn() }));
 vi.mock("@/lib/calendar/cliniko-booking", () => ({
-  getActiveClinikoIntegration: vi.fn(async () => null),
+  getActiveClinikoIntegration: vi.fn(async () => ({ kind: "none" })),
   clinikoCheckAvailability: vi.fn(async () => ({ success: true, message: "CLINIKO AVAILABILITY" })),
   clinikoBookAppointment: vi.fn(async () => ({ success: true, message: "CLINIKO BOOKED", data: {} })),
   clinikoCancelExternal: vi.fn(async () => undefined),
@@ -40,7 +40,9 @@ import {
 } from "@/lib/calendar/tool-handlers";
 
 const ORG = "44444444-4444-4444-a444-444444444444";
-const CTX = { client: {}, businessId: "b-1", integrationId: "int-1" } as never;
+const CTX = { client: {}, businessId: "b-1", integrationId: "int-1" };
+const OK = { kind: "ok", ctx: CTX } as never;
+const NONE = { kind: "none" } as never;
 
 /** Permissive table-aware admin mock: singles resolve per-table rows, lists resolve []. */
 function fakeAdmin(rows: Record<string, Record<string, unknown> | null> = {}) {
@@ -77,7 +79,7 @@ beforeEach(() => {
 
 describe("check_availability dispatch", () => {
   it("routes to clinikoCheckAvailability when an integration is connected", async () => {
-    vi.mocked(getActiveClinikoIntegration).mockResolvedValue(CTX);
+    vi.mocked(getActiveClinikoIntegration).mockResolvedValue(OK);
     const res = await handleCheckAvailability(ORG, { date: "2026-07-07" });
     expect(res.message).toBe("CLINIKO AVAILABILITY");
     expect(clinikoCheckAvailability).toHaveBeenCalledWith(CTX, ORG, {
@@ -87,7 +89,7 @@ describe("check_availability dispatch", () => {
   });
 
   it("falls through to the existing flow when not connected", async () => {
-    vi.mocked(getActiveClinikoIntegration).mockResolvedValue(null);
+    vi.mocked(getActiveClinikoIntegration).mockResolvedValue(NONE);
     const res = await handleCheckAvailability(ORG, {});
     expect(clinikoCheckAvailability).not.toHaveBeenCalled();
     // Built-in path: no service types, no date -> asks for the date.
@@ -99,7 +101,7 @@ describe("book_appointment dispatch", () => {
   const FUTURE = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
 
   it("routes to clinikoBookAppointment with parsed startDate and sanitized fields", async () => {
-    vi.mocked(getActiveClinikoIntegration).mockResolvedValue(CTX);
+    vi.mocked(getActiveClinikoIntegration).mockResolvedValue(OK);
     const res = await handleBookAppointment(ORG, {
       datetime: FUTURE,
       first_name: "Jo",
@@ -117,7 +119,7 @@ describe("book_appointment dispatch", () => {
   });
 
   it("rejects a past datetime BEFORE dispatching to Cliniko", async () => {
-    vi.mocked(getActiveClinikoIntegration).mockResolvedValue(CTX);
+    vi.mocked(getActiveClinikoIntegration).mockResolvedValue(OK);
     const res = await handleBookAppointment(ORG, {
       datetime: "2020-01-01T10:00:00Z",
       first_name: "Jo",
@@ -130,7 +132,7 @@ describe("book_appointment dispatch", () => {
   });
 
   it("validates name BEFORE any Cliniko dispatch (ordering guard)", async () => {
-    vi.mocked(getActiveClinikoIntegration).mockResolvedValue(CTX);
+    vi.mocked(getActiveClinikoIntegration).mockResolvedValue(OK);
     const res = await handleBookAppointment(ORG, { datetime: FUTURE });
     expect(res.success).toBe(false);
     expect(clinikoBookAppointment).not.toHaveBeenCalled();
@@ -151,7 +153,7 @@ describe("cancel dispatch (cliniko rows propagate to the practice diary)", () =>
   };
 
   it("cancels in Cliniko before freeing the local row", async () => {
-    vi.mocked(getActiveClinikoIntegration).mockResolvedValue(CTX);
+    vi.mocked(getActiveClinikoIntegration).mockResolvedValue(OK);
     vi.mocked(createAdminClient).mockReturnValue(fakeAdmin({ appointments: CLINIKO_ROW }) as never);
 
     const res = await handleCancelAppointment(ORG, {
@@ -159,14 +161,14 @@ describe("cancel dispatch (cliniko rows propagate to the practice diary)", () =>
       phone: "+61412345678",
     });
     expect(clinikoCancelExternal).toHaveBeenCalledTimes(1);
-    const [, rowArg, reasonArg] = vi.mocked(clinikoCancelExternal).mock.calls[0];
-    expect((rowArg as Record<string, unknown>).external_id).toBe("ck-555");
+    const [, , rowArg, reasonArg] = vi.mocked(clinikoCancelExternal).mock.calls[0];
+    expect((rowArg as unknown as Record<string, unknown>).external_id).toBe("ck-555");
     expect(reasonArg).toContain("Cancelled by caller");
     expect(res.success).toBe(true);
   });
 
   it("fails the cancellation (both sides intact) when the Cliniko cancel fails", async () => {
-    vi.mocked(getActiveClinikoIntegration).mockResolvedValue(CTX);
+    vi.mocked(getActiveClinikoIntegration).mockResolvedValue(OK);
     vi.mocked(clinikoCancelExternal).mockRejectedValue(new Error("cliniko down"));
     vi.mocked(createAdminClient).mockReturnValue(fakeAdmin({ appointments: CLINIKO_ROW }) as never);
 
@@ -179,7 +181,7 @@ describe("cancel dispatch (cliniko rows propagate to the practice diary)", () =>
   });
 
   it("does not touch Cliniko for internal rows", async () => {
-    vi.mocked(getActiveClinikoIntegration).mockResolvedValue(CTX);
+    vi.mocked(getActiveClinikoIntegration).mockResolvedValue(OK);
     vi.mocked(createAdminClient).mockReturnValue(
       fakeAdmin({ appointments: { ...CLINIKO_ROW, provider: "internal", external_id: null } }) as never
     );

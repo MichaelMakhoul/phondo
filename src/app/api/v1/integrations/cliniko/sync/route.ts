@@ -3,7 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { withRateLimit } from "@/lib/security/rate-limiter";
 import { hasFeatureAccess } from "@/lib/stripe/billing-service";
-import { ClinikoAuthError } from "@/lib/calendar/cliniko";
+import { ClinikoAuthError, type ClinikoIntegrationSettings } from "@/lib/calendar/cliniko";
 import { getActiveClinikoIntegration } from "@/lib/calendar/cliniko-booking";
 import { syncClinikoCatalog } from "@/lib/calendar/cliniko-sync";
 
@@ -37,45 +37,62 @@ export async function POST(request: Request) {
       );
     }
 
-    const ctx = await getActiveClinikoIntegration(membership.organization_id);
-    if (!ctx) {
+    const resolution = await getActiveClinikoIntegration(membership.organization_id);
+    if (resolution.kind === "error") {
+      return NextResponse.json(
+        { error: "Couldn't reach the Cliniko connection right now. Please try again shortly." },
+        { status: 503 }
+      );
+    }
+    if (resolution.kind === "none") {
       return NextResponse.json(
         { error: "Cliniko isn't connected and active for this organization." },
         { status: 409 }
       );
     }
+    const ctx = resolution.ctx;
 
     const admin = createAdminClient();
-    const readSettings = async (): Promise<Record<string, unknown>> => {
-      const { data } = await (admin as any)
+    // Read returns the current settings, or null when the read FAILED — callers
+    // must skip the write-back rather than spread `{}` and wipe shard/businessId.
+    const readSettings = async (): Promise<ClinikoIntegrationSettings | null> => {
+      const { data, error } = await (admin as any)
         .from("calendar_integrations")
         .select("settings")
         .eq("id", ctx.integrationId)
         .maybeSingle();
-      return { ...((data?.settings as Record<string, unknown>) || {}) };
+      if (error) {
+        console.error("[ClinikoSyncRoute] settings read failed, skipping write-back:", error.message || error.code);
+        return null;
+      }
+      return { ...((data?.settings as ClinikoIntegrationSettings) || {}) };
     };
 
     try {
       const sync = await syncClinikoCatalog(membership.organization_id, ctx.client);
       const settings = await readSettings();
-      await (admin as any)
-        .from("calendar_integrations")
-        .update({
-          settings: { ...settings, lastSyncedAt: new Date().toISOString(), errorState: null },
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", ctx.integrationId);
+      if (settings) {
+        await (admin as any)
+          .from("calendar_integrations")
+          .update({
+            settings: { ...settings, lastSyncedAt: new Date().toISOString(), errorState: null },
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", ctx.integrationId);
+      }
       return NextResponse.json({ sync });
     } catch (err) {
       const settings = await readSettings();
       const errorState = err instanceof ClinikoAuthError ? "auth_failed" : "sync_failed";
-      await (admin as any)
-        .from("calendar_integrations")
-        .update({
-          settings: { ...settings, errorState },
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", ctx.integrationId);
+      if (settings) {
+        await (admin as any)
+          .from("calendar_integrations")
+          .update({
+            settings: { ...settings, errorState },
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", ctx.integrationId);
+      }
       if (err instanceof ClinikoAuthError) {
         return NextResponse.json(
           { error: "Cliniko rejected the stored API key — reconnect with a fresh key." },

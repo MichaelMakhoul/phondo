@@ -31,7 +31,13 @@ interface AuthedOrg {
   organizationId: string;
 }
 
-async function requireOrgMember(): Promise<AuthedOrg | NextResponse> {
+/**
+ * Membership gate. Mutating handlers pass `requireAdmin` — installing or
+ * removing a CRM key redirects real patient bookings, so it's owner/admin
+ * only, matching the webhook integrations route (POST/PATCH/DELETE there
+ * enforce the same roles).
+ */
+async function requireOrgMember(opts: { requireAdmin?: boolean } = {}): Promise<AuthedOrg | NextResponse> {
   const supabase = await createClient();
   const {
     data: { user },
@@ -41,11 +47,17 @@ async function requireOrgMember(): Promise<AuthedOrg | NextResponse> {
   }
   const { data: membership } = (await supabase
     .from("org_members")
-    .select("organization_id")
+    .select("organization_id, role")
     .eq("user_id", user.id)
-    .single()) as { data: { organization_id: string } | null };
+    .single()) as { data: { organization_id: string; role?: string } | null };
   if (!membership) {
     return NextResponse.json({ error: "No organization found" }, { status: 404 });
+  }
+  if (opts.requireAdmin && !["owner", "admin"].includes(membership.role || "")) {
+    return NextResponse.json(
+      { error: "Only organization owners and admins can manage the Cliniko connection." },
+      { status: 403 }
+    );
   }
   return { organizationId: membership.organization_id };
 }
@@ -141,7 +153,7 @@ export async function POST(request: Request) {
     if (!allowed) {
       return NextResponse.json({ error: "Too many requests" }, { status: 429, headers });
     }
-    const auth = await requireOrgMember();
+    const auth = await requireOrgMember({ requireAdmin: true });
     if (auth instanceof NextResponse) return auth;
     const gate = await requireCrmAccess(auth.organizationId);
     if (gate) return gate;
@@ -243,7 +255,7 @@ export async function PATCH(request: Request) {
     if (!allowed) {
       return NextResponse.json({ error: "Too many requests" }, { status: 429, headers });
     }
-    const auth = await requireOrgMember();
+    const auth = await requireOrgMember({ requireAdmin: true });
     if (auth instanceof NextResponse) return auth;
     const gate = await requireCrmAccess(auth.organizationId);
     if (gate) return gate;
@@ -367,7 +379,7 @@ export async function DELETE(request: Request) {
     if (!allowed) {
       return NextResponse.json({ error: "Too many requests" }, { status: 429, headers });
     }
-    const auth = await requireOrgMember();
+    const auth = await requireOrgMember({ requireAdmin: true });
     if (auth instanceof NextResponse) return auth;
 
     const row = await loadIntegrationRow(auth.organizationId);

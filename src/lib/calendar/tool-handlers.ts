@@ -995,9 +995,31 @@ export async function handleBookAppointment(
   // built-in/Cal.com forks. Datetime parsing + horizon guards mirror
   // bookInternal exactly (same copy, same tz-aware interpretation); org-scoped
   // ref enforcement happens inside the Cliniko path via cliniko-linked lookups.
-  const clinikoCtx = await getActiveClinikoIntegration(organizationId);
-  if (clinikoCtx) {
-    const clinikoSchedule = await getOrgSchedule(organizationId).catch(() => null);
+  const clinikoResolution = await getActiveClinikoIntegration(organizationId);
+  if (clinikoResolution.kind === "error") {
+    // Transient DB/decrypt fault — do NOT fall through to built-in booking, or
+    // we'd confirm an appointment the practice's Cliniko diary never receives.
+    return {
+      success: false,
+      message:
+        "I'm having trouble completing the booking right now. Let me take your information and have someone call you back to confirm the appointment.",
+    };
+  }
+  if (clinikoResolution.kind === "ok") {
+    const clinikoCtx = clinikoResolution.ctx;
+    // Resolve the timezone with the SAME loud-failure contract as bookInternal —
+    // guessing Australia/Sydney on a DB blip could shift a non-AU booking by hours.
+    let clinikoSchedule: OrgSchedule | null;
+    try {
+      clinikoSchedule = await getOrgSchedule(organizationId);
+    } catch (error) {
+      console.error("Failed to get org schedule for Cliniko booking:", { organizationId, error });
+      return {
+        success: false,
+        message:
+          "I'm having trouble accessing our schedule right now. Let me take your information and have someone call you back.",
+      };
+    }
     const clinikoTimezone = clinikoSchedule?.timezone || "Australia/Sydney";
     const clinikoStart = new Date(ensureTimezoneOffset(datetime, clinikoTimezone));
     if (isNaN(clinikoStart.getTime())) {
@@ -1020,6 +1042,7 @@ export async function handleBookAppointment(
     }
     return clinikoBookAppointment(clinikoCtx, organizationId, {
       startDate: clinikoStart,
+      timezone: clinikoTimezone,
       sanitizedName,
       firstName: firstName || undefined,
       lastName: lastName || undefined,
@@ -1100,9 +1123,18 @@ export async function handleCheckAvailability(
 
   // ── SCRUM-12: a connected Cliniko practice diary owns availability — it must
   // come from the real appointment book, not the built-in calendar or Cal.com.
-  const clinikoCtx = await getActiveClinikoIntegration(organizationId);
-  if (clinikoCtx) {
-    return clinikoCheckAvailability(clinikoCtx, organizationId, { date, service_type_id });
+  const clinikoAvailResolution = await getActiveClinikoIntegration(organizationId);
+  if (clinikoAvailResolution.kind === "error") {
+    // Don't fall through to built-in availability — that would quote an
+    // empty local calendar as if it were the practice's real diary.
+    return {
+      success: false,
+      message:
+        "I'm having trouble checking the calendar right now. Would you like me to take your information instead?",
+    };
+  }
+  if (clinikoAvailResolution.kind === "ok") {
+    return clinikoCheckAvailability(clinikoAvailResolution.ctx, organizationId, { date, service_type_id });
   }
 
   // ── Resolve service type duration if provided ─────────────────────────
@@ -1622,12 +1654,25 @@ async function cancelSingleAppointment(
     // appointment book (a failure here falls to the outer catch, so the caller
     // hears the trouble message and the appointment stays intact on both sides).
     if (appointment.provider === "cliniko") {
-      const clinikoCtx = await getActiveClinikoIntegration(organizationId);
-      if (clinikoCtx) {
-        await clinikoCancelExternal(clinikoCtx, appointment, reason || "Cancelled by caller via Phondo");
+      const clinikoResolution = await getActiveClinikoIntegration(organizationId);
+      if (clinikoResolution.kind === "error") {
+        // Transient fault — must NOT cancel locally (that would free the slot
+        // while the real Cliniko appointment stands). Surface trouble instead.
+        return {
+          success: false,
+          message:
+            "I'm having trouble cancelling the appointment right now. Would you like me to have someone call you back to help with this?",
+        };
+      }
+      if (clinikoResolution.kind === "ok") {
+        // clinikoCancelExternal throws on a lost external_id (a row whose link
+        // patch failed at booking → the Cliniko appointment still exists) so the
+        // outer catch surfaces trouble rather than falsely reporting "cancelled".
+        await clinikoCancelExternal(clinikoResolution.ctx, organizationId, appointment, reason || "Cancelled by caller via Phondo");
       } else {
-        // Org disconnected the integration — they manage the diary manually now.
-        console.warn("[Cliniko] cancel: integration inactive — cancelling locally only", {
+        // kind === "none": org genuinely disconnected — they manage the diary
+        // manually now, so a local-only cancel is correct.
+        console.warn("[Cliniko] cancel: integration disconnected — cancelling locally only", {
           appointmentId: appointment.id,
         });
       }

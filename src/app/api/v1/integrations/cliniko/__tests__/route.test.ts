@@ -34,14 +34,20 @@ import { POST, GET, PATCH, DELETE } from "../route";
 const ORG = "55555555-5555-4555-a555-555555555555";
 const VALID_KEY = "MS0xLWl0c2FuLXRlc3Q-au2";
 
-function userClient(user: { id: string } | null = { id: "u1" }, orgId: string | null = ORG) {
+function userClient(
+  user: { id: string } | null = { id: "u1" },
+  orgId: string | null = ORG,
+  role: string = "owner"
+) {
   return {
     auth: { getUser: async () => ({ data: { user } }) },
     from: (table: string) => {
       const chain: Record<string, unknown> = {
         select: () => chain,
         eq: () => chain,
-        single: async () => ({ data: table === "org_members" && orgId ? { organization_id: orgId } : null }),
+        single: async () => ({
+          data: table === "org_members" && orgId ? { organization_id: orgId, role } : null,
+        }),
       };
       return chain;
     },
@@ -124,6 +130,14 @@ describe("POST /api/v1/integrations/cliniko (connect)", () => {
     vi.mocked(createClient).mockResolvedValue(userClient(null) as never);
     const res = await POST(req("POST", { apiKey: VALID_KEY }));
     expect(res.status).toBe(401);
+  });
+
+  it("rejects a non-admin org member (installing a CRM key redirects bookings)", async () => {
+    vi.mocked(createClient).mockResolvedValue(userClient({ id: "u1" }, ORG, "member") as never);
+    const res = await POST(req("POST", { apiKey: VALID_KEY }));
+    expect(res.status).toBe(403);
+    // Gate is BEFORE the entitlement check and any Cliniko call.
+    expect(listBusinessesMock).not.toHaveBeenCalled();
   });
 
   it("gates on crmIntegrations plan access", async () => {

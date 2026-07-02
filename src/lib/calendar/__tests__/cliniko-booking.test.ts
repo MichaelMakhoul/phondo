@@ -9,6 +9,7 @@ vi.mock("@/lib/notifications/notification-service", () => ({
   getOrganizationOwnerEmail: vi.fn(async () => "owner@example.com"),
 }));
 vi.mock("@/lib/security/encryption", () => ({ safeDecrypt: vi.fn() }));
+vi.mock("@/lib/stripe/billing-service", () => ({ hasFeatureAccess: vi.fn(async () => true) }));
 vi.mock("@sentry/nextjs", () => ({
   withScope: vi.fn((fn: (scope: unknown) => void) =>
     fn({ setLevel: vi.fn(), setTag: vi.fn(), setExtras: vi.fn() })
@@ -29,6 +30,7 @@ vi.mock("../cliniko-patients", () => ({
 import { createAdminClient } from "@/lib/supabase/admin";
 import { runAfterResponse } from "@/lib/utils/after-response";
 import { safeDecrypt } from "@/lib/security/encryption";
+import { hasFeatureAccess } from "@/lib/stripe/billing-service";
 import { findOrCreateClinikoPatient } from "../cliniko-patients";
 import { ClinikoAuthError, ClinikoUnavailableError, ClinikoRateLimitError, ClinikoValidationError } from "../cliniko";
 import type { ClinikoClient } from "../cliniko";
@@ -136,6 +138,7 @@ const SLOT_2PM = "2026-07-07T04:00:00Z";
 beforeEach(() => {
   vi.clearAllMocks();
   vi.stubEnv("RESEND_API_KEY", "re_test_key");
+  vi.mocked(hasFeatureAccess).mockResolvedValue(true);
   vi.mocked(findOrCreateClinikoPatient).mockResolvedValue({ patientId: "42", created: false });
 });
 
@@ -149,7 +152,7 @@ describe("isClinikoOutage", () => {
 });
 
 describe("getActiveClinikoIntegration", () => {
-  it("returns a context when integration is active with businessId and decryptable key", async () => {
+  it("resolves 'ok' with a context when active, entitled, businessId set, key decryptable", async () => {
     const db = mockDb((call) => {
       if (call.table === "calendar_integrations") {
         return { data: { id: "int-1", access_token: "enc", settings: { shard: "au2", businessId: "b-1" } } };
@@ -158,25 +161,43 @@ describe("getActiveClinikoIntegration", () => {
     });
     vi.mocked(createAdminClient).mockReturnValue(db.client as never);
     vi.mocked(safeDecrypt).mockReturnValue("MS0xLWl0c2Fu-au2");
+    vi.mocked(hasFeatureAccess).mockResolvedValue(true);
 
-    const ctx = await getActiveClinikoIntegration(ORG);
-    expect(ctx).not.toBeNull();
-    expect(ctx!.businessId).toBe("b-1");
-    expect(ctx!.integrationId).toBe("int-1");
+    const res = await getActiveClinikoIntegration(ORG);
+    expect(res.kind).toBe("ok");
+    if (res.kind === "ok") {
+      expect(res.ctx.businessId).toBe("b-1");
+      expect(res.ctx.integrationId).toBe("int-1");
+    }
   });
 
-  it("returns null when no row, no businessId, or decryption fails", async () => {
-    const rows: Array<Record<string, unknown> | null> = [
-      null,
-      { id: "i", access_token: "enc", settings: { shard: "au2" } }, // no businessId
-      { id: "i", access_token: "enc", settings: { shard: "au2", businessId: "b" } }, // decrypt fails
+  it("resolves 'none' when no row, no businessId, or the org lost entitlement", async () => {
+    const cases: Array<{ row: Record<string, unknown> | null; entitled: boolean }> = [
+      { row: null, entitled: true },
+      { row: { id: "i", access_token: "enc", settings: { shard: "au2" } }, entitled: true }, // no businessId
+      { row: { id: "i", access_token: "enc", settings: { shard: "au2", businessId: "b" } }, entitled: false }, // downgraded
     ];
-    for (const [i, row] of rows.entries()) {
+    for (const { row, entitled } of cases) {
       const db = mockDb(() => ({ data: row }));
       vi.mocked(createAdminClient).mockReturnValue(db.client as never);
-      vi.mocked(safeDecrypt).mockReturnValue(i === 2 ? null : "MS0xLWl0c2Fu-au2");
-      expect(await getActiveClinikoIntegration(ORG)).toBeNull();
+      vi.mocked(safeDecrypt).mockReturnValue("MS0xLWl0c2Fu-au2");
+      vi.mocked(hasFeatureAccess).mockResolvedValue(entitled);
+      expect((await getActiveClinikoIntegration(ORG)).kind).toBe("none");
     }
+  });
+
+  it("resolves 'error' (not 'none') on a lookup DB error or an undecryptable key", async () => {
+    // DB error
+    const dbErr = mockDb(() => ({ error: { message: "boom" } }));
+    vi.mocked(createAdminClient).mockReturnValue(dbErr.client as never);
+    expect((await getActiveClinikoIntegration(ORG)).kind).toBe("error");
+
+    // Decrypt failure on a present, entitled row → operational fault, not "none"
+    const db = mockDb(() => ({ data: { id: "i", access_token: "enc", settings: { shard: "au2", businessId: "b" } } }));
+    vi.mocked(createAdminClient).mockReturnValue(db.client as never);
+    vi.mocked(hasFeatureAccess).mockResolvedValue(true);
+    vi.mocked(safeDecrypt).mockReturnValue(null);
+    expect((await getActiveClinikoIntegration(ORG)).kind).toBe("error");
   });
 });
 
@@ -314,11 +335,11 @@ describe("clinikoBookAppointment", () => {
     expect(vi.mocked(runAfterResponse).mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 
-  it("appends the duplicate warning to cliniko notes when the patient may be a duplicate", async () => {
+  it("references a possible duplicate by id only (never the other patient's name) in the note", async () => {
     vi.mocked(findOrCreateClinikoPatient).mockResolvedValue({
       patientId: "900",
       created: true,
-      duplicateWarning: "May duplicate existing patient Jo Bloggs (#1) — please review/merge.",
+      duplicatePatientId: "1",
     });
     const db = mockDb(baseHandler);
     vi.mocked(createAdminClient).mockReturnValue(db.client as never);
@@ -326,7 +347,9 @@ describe("clinikoBookAppointment", () => {
 
     await clinikoBookAppointment(ctx, ORG, bookArgs);
     const createArg = (ctx.client.createAppointment as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    expect(createArg.notes).toContain("May duplicate existing patient");
+    expect(createArg.notes).toContain("Possible duplicate of patient #1");
+    // The old phrasing embedded the OTHER patient's name — it must be gone.
+    expect(createArg.notes).not.toContain("May duplicate existing patient");
   });
 
   it("deletes the mirror row and returns take-a-message copy when the cliniko create fails", async () => {
@@ -418,6 +441,7 @@ describe("clinikoCancelExternal", () => {
     const cancelAppointment = vi.fn(async () => undefined);
     await clinikoCancelExternal(
       ctxWith({ cancelAppointment }),
+      ORG,
       { id: "appt-1", external_id: "ck-555" },
       "Cancelled by caller via Phondo"
     );
@@ -429,14 +453,31 @@ describe("clinikoCancelExternal", () => {
       throw new ClinikoUnavailableError("down");
     });
     await expect(
-      clinikoCancelExternal(ctxWith({ cancelAppointment }), { id: "a", external_id: "ck" }, "x")
+      clinikoCancelExternal(ctxWith({ cancelAppointment }), ORG, { id: "a", external_id: "ck" }, "x")
     ).rejects.toBeInstanceOf(ClinikoUnavailableError);
   });
 
-  it("resolves quietly when the row has no external_id (mirror-only row)", async () => {
+  it("THROWS on a cliniko row with no external_id (lost link — appointment stranded, not 'nothing to cancel')", async () => {
     const cancelAppointment = vi.fn();
-    await clinikoCancelExternal(ctxWith({ cancelAppointment }), { id: "a", external_id: null }, "x");
+    await expect(
+      clinikoCancelExternal(ctxWith({ cancelAppointment }), ORG, { id: "a", external_id: null }, "x")
+    ).rejects.toBeInstanceOf(ClinikoUnavailableError);
     expect(cancelAppointment).not.toHaveBeenCalled();
+  });
+
+  it("flags auth failure + emails owner once when the cliniko cancel returns 401", async () => {
+    const db = mockDb((call) => {
+      if (call.table === "calendar_integrations" && call.op === "select") return { data: { settings: {} } };
+      return { data: null };
+    });
+    vi.mocked(createAdminClient).mockReturnValue(db.client as never);
+    const cancelAppointment = vi.fn(async () => {
+      throw new ClinikoAuthError("bad key");
+    });
+    await expect(
+      clinikoCancelExternal(ctxWith({ cancelAppointment }), ORG, { id: "a", external_id: "ck" }, "x")
+    ).rejects.toBeInstanceOf(ClinikoAuthError);
+    expect(resendSend).toHaveBeenCalledTimes(1);
   });
 });
 

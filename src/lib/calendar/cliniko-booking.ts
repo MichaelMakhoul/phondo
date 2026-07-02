@@ -31,21 +31,35 @@ import {
   sendAppointmentNotification,
   getOrganizationOwnerEmail,
 } from "@/lib/notifications/notification-service";
+import { hasFeatureAccess } from "@/lib/stripe/billing-service";
 import {
   ClinikoClient,
   ClinikoAuthError,
   ClinikoRateLimitError,
   ClinikoUnavailableError,
   ClinikoValidationError,
+  type ClinikoIntegrationSettings,
 } from "./cliniko";
 import { findOrCreateClinikoPatient } from "./cliniko-patients";
 import { generateConfirmationCode } from "./confirmation-code";
 
 export interface ClinikoContext {
-  client: ClinikoClient;
-  businessId: string;
-  integrationId: string;
+  readonly client: ClinikoClient;
+  readonly businessId: string;
+  readonly integrationId: string;
 }
+
+/**
+ * Result of resolving an org's Cliniko integration. The distinction matters at
+ * dispatch: `none` means genuinely not connected (fall through to built-in
+ * booking), but `error` means a transient DB/decrypt failure — the caller must
+ * NOT silently fall through (that would confirm a booking the practice never
+ * receives, or cancel locally while the real diary keeps the appointment).
+ */
+export type ClinikoResolution =
+  | { kind: "none" }
+  | { kind: "error" }
+  | { kind: "ok"; ctx: ClinikoContext };
 
 interface ToolResult {
   success: boolean;
@@ -55,6 +69,9 @@ interface ToolResult {
 
 export interface ClinikoBookArgs {
   startDate: Date;
+  /** Org timezone, resolved once at the dispatch and passed through to avoid a
+   *  second lookup (and a second silent-failure surface) here. */
+  timezone?: string;
   sanitizedName: string;
   firstName?: string;
   lastName?: string;
@@ -95,11 +112,15 @@ export function isClinikoOutage(err: unknown): boolean {
 }
 
 /**
- * Resolve the org's active Cliniko integration into a ready client, or null.
- * Null (never throw) on any miss: absent row, unselected business, undecryptable
- * key, bad shard — callers fall back to the built-in/Cal.com paths.
+ * Resolve the org's Cliniko integration.
+ * - `none`: no active row, unselected business, or the org lost entitlement
+ *   (downgraded below Professional) — genuinely "not using Cliniko now".
+ * - `error`: the lookup failed, or a stored key won't decrypt (an
+ *   ENCRYPTION_KEY problem) — a transient/operational fault the caller must
+ *   surface, never treat as "not connected".
+ * - `ok`: a ready client.
  */
-export async function getActiveClinikoIntegration(organizationId: string): Promise<ClinikoContext | null> {
+export async function getActiveClinikoIntegration(organizationId: string): Promise<ClinikoResolution> {
   const supabase = createAdminClient();
   const { data, error } = await (supabase as any)
     .from("calendar_integrations")
@@ -110,29 +131,39 @@ export async function getActiveClinikoIntegration(organizationId: string): Promi
     .maybeSingle();
 
   if (error) {
-    console.warn("[Cliniko] integration lookup failed:", error.message || error.code);
-    return null;
+    console.error("[Cliniko] integration lookup failed:", error.message || error.code);
+    return { kind: "error" };
   }
-  if (!data?.access_token) return null;
+  if (!data?.access_token) return { kind: "none" };
 
-  const settings = (data.settings || {}) as { shard?: string; businessId?: string };
-  if (!settings.shard || !settings.businessId) return null;
+  const settings = (data.settings || {}) as ClinikoIntegrationSettings;
+  if (!settings.shard || !settings.businessId) return { kind: "none" };
+
+  // Entitlement is re-checked at call time: an org that connected on
+  // Professional+ and later downgraded must stop live-diary booking. Fails
+  // OPEN (hasFeatureAccess returns true on a DB blip) so an outage can't wrongly
+  // disable a paying customer's booking.
+  if (!(await hasFeatureAccess(organizationId, "crmIntegrations"))) {
+    return { kind: "none" };
+  }
 
   const apiKey = safeDecrypt(data.access_token);
   if (!apiKey) {
+    // A stored key that won't decrypt is an operational fault (rotated
+    // ENCRYPTION_KEY), NOT a disconnected org — page it and treat as error so
+    // callers don't silently revert every Cliniko org to built-in booking.
     console.error("[Cliniko] stored API key could not be decrypted", { organizationId, integrationId: data.id });
-    return null;
+    Sentry.captureMessage("Cliniko stored API key failed to decrypt — check ENCRYPTION_KEY");
+    return { kind: "error" };
   }
 
-  let client: ClinikoClient;
   try {
-    client = new ClinikoClient({ apiKey, shard: settings.shard });
+    const client = new ClinikoClient({ apiKey, shard: settings.shard });
+    return { kind: "ok", ctx: { client, businessId: settings.businessId, integrationId: data.id } };
   } catch (err) {
     console.error("[Cliniko] invalid stored shard", { organizationId, error: err instanceof Error ? err.message : err });
-    return null;
+    return { kind: "error" };
   }
-
-  return { client, businessId: settings.businessId, integrationId: data.id };
 }
 
 /**
@@ -142,18 +173,31 @@ export async function getActiveClinikoIntegration(organizationId: string): Promi
 async function markClinikoAuthFailure(organizationId: string, integrationId: string): Promise<void> {
   try {
     const supabase = createAdminClient();
-    const { data } = await (supabase as any)
+    const { data, error: readError } = await (supabase as any)
       .from("calendar_integrations")
       .select("settings")
       .eq("id", integrationId)
       .maybeSingle();
-    const settings = (data?.settings || {}) as Record<string, unknown>;
+    // A failed read must NOT proceed: writing back a spread of `{}` would wipe
+    // shard/businessId/keyLast4 and brick the integration. Bail; the next auth
+    // failure retries.
+    if (readError) {
+      console.error("[Cliniko] auth-failure flag: settings read failed, skipping to avoid wiping settings:", readError.message || readError.code);
+      return;
+    }
+    const settings = (data?.settings || {}) as ClinikoIntegrationSettings;
     if (settings.errorState === "auth_failed") return; // already flagged + emailed
 
-    await (supabase as any)
+    const { error: writeError } = await (supabase as any)
       .from("calendar_integrations")
       .update({ settings: { ...settings, errorState: "auth_failed" }, updated_at: new Date().toISOString() })
       .eq("id", integrationId);
+    // If the flag didn't persist, don't send the email — otherwise the dedupe
+    // is defeated and the owner gets an "Action needed" mail on every call.
+    if (writeError) {
+      console.error("[Cliniko] auth-failure flag: settings write failed, skipping owner email:", writeError.message || writeError.code);
+      return;
+    }
 
     Sentry.withScope((scope) => {
       scope.setLevel("error");
@@ -188,17 +232,18 @@ async function markClinikoAuthFailure(organizationId: string, integrationId: str
 }
 
 async function getOrgTimezone(organizationId: string): Promise<string> {
-  try {
-    const supabase = createAdminClient();
-    const { data } = await (supabase as any)
-      .from("organizations")
-      .select("timezone")
-      .eq("id", organizationId)
-      .single();
-    return data?.timezone || "Australia/Sydney";
-  } catch {
-    return "Australia/Sydney";
+  const supabase = createAdminClient();
+  // supabase .single() returns { error } rather than throwing, so log the error
+  // explicitly instead of leaving it absorbed by the `|| default`.
+  const { data, error } = await (supabase as any)
+    .from("organizations")
+    .select("timezone")
+    .eq("id", organizationId)
+    .single();
+  if (error) {
+    console.warn("[Cliniko] org timezone lookup failed, defaulting to Australia/Sydney:", error.message || error.code);
   }
+  return data?.timezone || "Australia/Sydney";
 }
 
 async function getLinkedServiceType(organizationId: string, serviceTypeId: string): Promise<LinkedServiceType | null> {
@@ -209,6 +254,10 @@ async function getLinkedServiceType(organizationId: string, serviceTypeId: strin
     .eq("id", serviceTypeId)
     .eq("organization_id", organizationId)
     .eq("external_provider", "cliniko")
+    // Caller-supplied service types must be active — parity with the built-in
+    // path's requireActive gate (a deactivated type must not stay bookable from
+    // a stale id mid-conversation).
+    .eq("is_active", true)
     .maybeSingle();
   if (error || !data?.external_id) return null;
   return data as LinkedServiceType;
@@ -326,8 +375,15 @@ async function collectAvailability(
   results.forEach((res, i) => {
     if (res.status === "fulfilled") {
       byPractitioner.set(practitioners[i].id, new Set(res.value));
-    } else if (firstError === null) {
-      firstError = res.reason;
+    } else {
+      // Log every rejection — a practitioner whose availability call keeps
+      // failing would otherwise vanish from answers with no trace.
+      console.warn("[Cliniko] availability lookup failed for practitioner (excluded from results):", {
+        practitionerId: practitioners[i].id,
+        externalId: practitioners[i].external_id,
+        reason: res.reason instanceof Error ? res.reason.message : String(res.reason),
+      });
+      if (firstError === null) firstError = res.reason;
     }
   });
   if (byPractitioner.size === 0 && firstError) throw firstError;
@@ -405,7 +461,7 @@ export async function clinikoBookAppointment(
       return serviceTypePrompt(await listLinkedServiceTypes(organizationId));
     }
 
-    const timezone = await getOrgTimezone(organizationId);
+    const timezone = args.timezone || (await getOrgTimezone(organizationId));
     const allPractitioners = await getLinkedPractitionersForService(organizationId, serviceType.id);
     if (allPractitioners.length === 0) {
       return {
@@ -443,12 +499,19 @@ export async function clinikoBookAppointment(
     // 2) Pick the least-loaded practitioner that day (stable order fallback).
     const practitioner = await pickLeastLoaded(supabase, organizationId, withSlot, args.startDate);
 
+    // Derive first/last ONCE (single rule) so the Cliniko patient and the local
+    // mirror row agree — otherwise a one-word name yields last_name:"" in Cliniko
+    // but attendee_last_name:null locally.
+    const nameParts = args.sanitizedName.split(" ").filter(Boolean);
+    const firstName = args.firstName || nameParts[0] || "";
+    const lastName = args.lastName || nameParts.slice(1).join(" ") || "";
+
     // 3) Patient find-or-create (after slot verify — no patients for dead slots).
     const patient = await findOrCreateClinikoPatient({
       client: ctx.client,
       organizationId,
-      firstName: args.firstName || args.sanitizedName.split(" ")[0] || "",
-      lastName: args.lastName || args.sanitizedName.split(" ").slice(1).join(" ") || "",
+      firstName,
+      lastName,
       phone: args.phone,
     });
 
@@ -465,9 +528,8 @@ export async function clinikoBookAppointment(
           organization_id: organizationId,
           provider: "cliniko",
           attendee_name: args.sanitizedName,
-          attendee_first_name: args.firstName || args.sanitizedName.split(" ")[0] || null,
-          attendee_last_name:
-            args.lastName || (args.sanitizedName.includes(" ") ? args.sanitizedName.split(" ").slice(1).join(" ") : null),
+          attendee_first_name: firstName || null,
+          attendee_last_name: lastName || null,
           attendee_phone: args.phone,
           attendee_email: bookingEmail,
           start_time: args.startDate.toISOString(),
@@ -506,11 +568,16 @@ export async function clinikoBookAppointment(
     confirmationCode = mirror.confirmation_code || confirmationCode;
 
     // 5) The real write: create the appointment in the practice's Cliniko diary.
+    // The possible-duplicate is referenced by id only — writing the OTHER
+    // patient's name into THIS patient's visible note would leak identity
+    // across records. The practice looks up the id in their own Cliniko.
     const noteLines = [
       ...(args.sanitizedNotes ? [args.sanitizedNotes] : []),
       `Caller: ${args.sanitizedName}${args.phone ? ` ${args.phone}` : ""}`,
       "Booked by Phondo AI receptionist.",
-      ...(patient.duplicateWarning ? [patient.duplicateWarning] : []),
+      ...(patient.duplicatePatientId
+        ? [`Possible duplicate of patient #${patient.duplicatePatientId} — please review/merge in Cliniko.`]
+        : []),
     ];
     let clinikoAppointment;
     try {
@@ -523,6 +590,24 @@ export async function clinikoBookAppointment(
         notes: noteLines.join("\n"),
       });
     } catch (err) {
+      // A timeout/network error here may mean Cliniko processed the create AFTER
+      // we gave up (writes are never retried) — a possible ghost appointment in
+      // the diary. Log enough to reconcile it before removing the local row.
+      if (err instanceof ClinikoUnavailableError) {
+        console.error("[ClinikoBooking] createAppointment failed — possible ghost appointment in Cliniko:", {
+          organizationId,
+          practitionerExternalId: practitioner.external_id,
+          appointmentTypeExternalId: serviceType.external_id,
+          startsAt: args.startDate.toISOString(),
+        });
+      } else if (err instanceof ClinikoValidationError) {
+        // A systematic 422 (bad mapping, archived patient, tz format) would
+        // otherwise masquerade as slot contention forever with nothing logged.
+        console.error("[ClinikoBooking] createAppointment rejected (HTTP 422):", {
+          organizationId,
+          detail: (err as ClinikoValidationError).detail,
+        });
+      }
       // The caller never heard a confirmation — remove the local reservation.
       const { error: cleanupError } = await (supabase as any)
         .from("appointments")
@@ -540,26 +625,44 @@ export async function clinikoBookAppointment(
       return handleClinikoFlowError(err, ctx, organizationId, OUTAGE_BOOKING_MESSAGE, "book_appointment");
     }
 
-    // 6) Link mirror -> Cliniko (non-fatal: the booking exists on both sides).
-    const { error: patchError } = await (supabase as any)
-      .from("appointments")
-      .update({
-        external_id: clinikoAppointment.id,
-        metadata: {
-          source: "ai_receptionist",
-          clinikoPatientId: patient.patientId,
-          clinikoBusinessId: ctx.businessId,
-          clinikoAppointmentTypeId: serviceType.external_id,
-          clinikoPractitionerId: practitioner.external_id,
-        },
-      })
-      .eq("id", mirror.id)
-      .eq("organization_id", organizationId);
-    if (patchError) {
-      console.error("[ClinikoBooking] failed to link mirror to cliniko appointment (non-fatal):", {
-        mirrorId: mirror.id,
-        clinikoAppointmentId: clinikoAppointment.id,
-        error: patchError.message || patchError.code,
+    // 6) Link mirror -> Cliniko. The appointment exists on both sides now, so a
+    // failure here is non-fatal to the booking — but a LOST link means a later
+    // cancel/reschedule can't find the Cliniko appointment (it would strand a
+    // booking in the diary the caller thinks is cancelled). Retry once, then page.
+    let linked = false;
+    for (let attempt = 0; attempt < 2 && !linked; attempt++) {
+      const { error: patchError } = await (supabase as any)
+        .from("appointments")
+        .update({
+          external_id: clinikoAppointment.id,
+          metadata: {
+            source: "ai_receptionist",
+            clinikoPatientId: patient.patientId,
+            clinikoBusinessId: ctx.businessId,
+            clinikoAppointmentTypeId: serviceType.external_id,
+            clinikoPractitionerId: practitioner.external_id,
+          },
+        })
+        .eq("id", mirror.id)
+        .eq("organization_id", organizationId);
+      if (!patchError) {
+        linked = true;
+      } else {
+        console.error("[ClinikoBooking] failed to link mirror to cliniko appointment:", {
+          attempt: attempt + 1,
+          mirrorId: mirror.id,
+          clinikoAppointmentId: clinikoAppointment.id,
+          error: patchError.message || patchError.code,
+        });
+      }
+    }
+    if (!linked) {
+      // Operator can re-link mirror.id ↔ clinikoAppointment.id from this alert.
+      Sentry.withScope((scope) => {
+        scope.setLevel("error");
+        scope.setTag("bug", "cliniko_mirror_link_lost");
+        scope.setExtras({ organizationId, mirrorId: mirror.id, clinikoAppointmentId: clinikoAppointment.id });
+        Sentry.captureMessage("Cliniko appointment created but mirror link lost — cancel/reschedule will not reach Cliniko");
       });
     }
 
@@ -637,19 +740,41 @@ export async function clinikoBookAppointment(
  * Cancel the Cliniko-side appointment for a mirror row. Throws on Cliniko
  * failure — the caller (cancelSingleAppointment) decides the caller-facing
  * fallback; cancelling only locally would silently desync the practice diary.
- * Rows without an external_id (link patch failed at booking time) resolve
- * quietly: there is nothing in Cliniko to cancel.
+ *
+ * A `provider:'cliniko'` row with NO external_id is NOT "nothing to cancel": it
+ * means the booking-time link patch failed AFTER the Cliniko appointment was
+ * created, so an appointment exists in the diary we can no longer address.
+ * Throw so the caller surfaces trouble rather than telling the caller it's
+ * cancelled while the practice's diary keeps the booking.
  */
 export async function clinikoCancelExternal(
   ctx: ClinikoContext,
+  organizationId: string,
   appointment: { id: string; external_id?: string | null },
   reason: string
 ): Promise<void> {
   if (!appointment.external_id) {
-    console.warn("[Cliniko] mirror row has no external_id — skipping Cliniko cancel", { appointmentId: appointment.id });
-    return;
+    console.error("[Cliniko] cliniko row has no external_id — cannot reach the Cliniko appointment to cancel", {
+      appointmentId: appointment.id,
+    });
+    Sentry.withScope((scope) => {
+      scope.setLevel("error");
+      scope.setTag("bug", "cliniko_cancel_lost_link");
+      scope.setExtras({ appointmentId: appointment.id, integrationId: ctx.integrationId });
+      Sentry.captureMessage("Cancel requested for a Cliniko row with no external_id — appointment may be stranded in the diary");
+    });
+    throw new ClinikoUnavailableError("cliniko appointment link missing");
   }
-  await ctx.client.cancelAppointment(appointment.external_id, reason);
+  try {
+    await ctx.client.cancelAppointment(appointment.external_id, reason);
+  } catch (err) {
+    // A 401 here must flag the integration + alert the owner, same as the
+    // booking path — otherwise auth breakage on cancel is invisible.
+    if (err instanceof ClinikoAuthError) {
+      await markClinikoAuthFailure(organizationId, ctx.integrationId).catch(() => {});
+    }
+    throw err;
+  }
 }
 
 async function pickLeastLoaded(
@@ -683,19 +808,24 @@ async function pickLeastLoaded(
   }
 }
 
-function handleClinikoFlowError(
+async function handleClinikoFlowError(
   err: unknown,
   ctx: ClinikoContext,
   organizationId: string,
   outageMessage: string,
   operation: string
-): Promise<ToolResult> | ToolResult {
+): Promise<ToolResult> {
   if (err instanceof ClinikoAuthError) {
-    // Fire the flag+email, then hand the caller to message-taking.
-    return markClinikoAuthFailure(organizationId, ctx.integrationId).then(() => ({
-      success: false,
-      message: outageMessage,
-    }));
+    // Flag the integration + email the owner, then hand the caller to message-taking.
+    await markClinikoAuthFailure(organizationId, ctx.integrationId);
+    return { success: false, message: outageMessage };
+  }
+  if (err instanceof ClinikoRateLimitError) {
+    // 429s never reached Sentry before — surface the pattern so a too-tight
+    // rate limit shows up rather than silently degrading to take-a-message.
+    console.warn(`[Cliniko] ${operation} rate-limited:`, err.message);
+    Sentry.captureException(err);
+    return { success: false, message: outageMessage };
   }
   if (isClinikoOutage(err)) {
     console.warn(`[Cliniko] ${operation} outage:`, err instanceof Error ? err.message : err);

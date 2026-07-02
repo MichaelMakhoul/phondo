@@ -18,7 +18,10 @@ import { ClinikoAuthError } from "@/lib/calendar/cliniko";
 import { POST } from "../route";
 
 const ORG = "66666666-6666-4666-a666-666666666666";
-const CTX = { client: {}, businessId: "b-1", integrationId: "int-1" } as never;
+const CTX = { client: {}, businessId: "b-1", integrationId: "int-1" };
+const OK = { kind: "ok", ctx: CTX } as never;
+const NONE = { kind: "none" } as never;
+const ERROR = { kind: "error" } as never;
 
 function userClient() {
   return {
@@ -69,14 +72,19 @@ describe("POST /api/v1/integrations/cliniko/sync", () => {
   });
 
   it("409s when no active integration", async () => {
-    vi.mocked(getActiveClinikoIntegration).mockResolvedValue(null);
+    vi.mocked(getActiveClinikoIntegration).mockResolvedValue(NONE);
     expect((await POST(req())).status).toBe(409);
+  });
+
+  it("503s when the integration lookup errors (do not report as disconnected)", async () => {
+    vi.mocked(getActiveClinikoIntegration).mockResolvedValue(ERROR);
+    expect((await POST(req())).status).toBe(503);
   });
 
   it("syncs and stamps lastSyncedAt, clearing errorState", async () => {
     const admin = adminCapture();
     vi.mocked(createAdminClient).mockReturnValue(admin.client as never);
-    vi.mocked(getActiveClinikoIntegration).mockResolvedValue(CTX);
+    vi.mocked(getActiveClinikoIntegration).mockResolvedValue(OK);
     vi.mocked(syncClinikoCatalog).mockResolvedValue({ practitionersUpserted: 1, serviceTypesUpserted: 2, deactivated: 0 });
 
     const res = await POST(req());
@@ -90,7 +98,7 @@ describe("POST /api/v1/integrations/cliniko/sync", () => {
   it("maps an auth failure to 401 and errorState auth_failed", async () => {
     const admin = adminCapture();
     vi.mocked(createAdminClient).mockReturnValue(admin.client as never);
-    vi.mocked(getActiveClinikoIntegration).mockResolvedValue(CTX);
+    vi.mocked(getActiveClinikoIntegration).mockResolvedValue(OK);
     vi.mocked(syncClinikoCatalog).mockRejectedValue(new ClinikoAuthError("bad"));
 
     const res = await POST(req());

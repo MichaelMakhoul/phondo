@@ -183,9 +183,35 @@ describe("ClinikoClient resources", () => {
     expect(url).toContain("q[]=last_name:=Bloggs");
   });
 
-  it("getPatient returns null on 404", async () => {
+  it("getPatient returns null on 404 (allow404)", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(404, {})));
     await expect(makeClient().getPatient("123")).resolves.toBeNull();
+  });
+
+  it("treats a 404 on list/availability endpoints as a failure, NOT empty results", async () => {
+    // A stale practitioner/appointment-type id must not silently read as
+    // 'no availability'; a catalog 404 must not read as an empty catalog.
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(404, {})));
+    await expect(makeClient().availableTimes("1", "2", "3", "2026-07-07", "2026-07-07")).rejects.toBeInstanceOf(
+      ClinikoUnavailableError
+    );
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(404, {})));
+    await expect(makeClient().listPractitioners()).rejects.toBeInstanceOf(ClinikoUnavailableError);
+  });
+
+  it("scopes listPractitioners to a business when given", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse(200, { practitioners: [], links: {} }));
+    vi.stubGlobal("fetch", fetchMock);
+    await makeClient().listPractitioners("77");
+    expect(String((fetchMock.mock.calls[0] as unknown as [string])[0])).toContain("/businesses/77/practitioners");
+  });
+
+  it("throws rather than minting a poison 'undefined' id when a record has no id", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse(200, { businesses: [{ business_name: "No Id Clinic" }], links: {} }))
+    );
+    await expect(makeClient().listBusinesses()).rejects.toBeInstanceOf(ClinikoUnavailableError);
   });
 
   it("createAppointment posts snake_case numeric-friendly payload and returns normalized appointment", async () => {
