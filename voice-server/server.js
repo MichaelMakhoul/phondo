@@ -1480,6 +1480,18 @@ wss.on("connection", (twilioWs) => {
           sentiment: analysis?.sentiment || null,
           piiRedacted,
           cleanedTranscript: analysis?.cleanedTranscript ?? null,
+          // SCRUM-498: daily summary + analytics count
+          // action_taken="appointment_booked". The tool audit is the ground
+          // truth on the Gemini/realtime paths (reschedules deliberately
+          // excluded); the CLASSIC pipeline's tool loop doesn't write the
+          // audit, so fall back to its confirmedBookings map (review P2 —
+          // classic bookings were otherwise silently uncounted).
+          actionTaken:
+            (s.toolCallAudit || []).some(
+              (t) => t.name === "book_appointment" && t.successful === true
+            ) || (s.confirmedBookings?.size ?? 0) > 0
+              ? "appointment_booked"
+              : null,
         });
       } catch (err) {
         console.error("[Cleanup] Failed to complete call record:", err);
@@ -2101,6 +2113,13 @@ wss.on("connection", (twilioWs) => {
               : _useGrokRealtime
                 ? (cfg, cbs) => createGrokRealtimeSession({ ...cfg, voiceName: process.env.GROK_REALTIME_VOICE || "eve", language: session.language }, cbs)
                 : createGeminiSession;
+            // SCRUM-496: the callbacks below are SHARED by every pipeline this
+            // factory can produce — label failures with the pipeline that
+            // actually ran, in the logs AND in endedReason (which reaches
+            // calls.metadata.ended_reason; the email layer maps the code to
+            // neutral copy — customers never see it verbatim).
+            const _pipelineLabel = _useOpenAIRealtime ? "openai" : _useGrokRealtime ? "grok" : "gemini";
+            const _pipelineTag = _useOpenAIRealtime ? "OpenAIRealtime" : _useGrokRealtime ? "GrokRealtime" : "GeminiLive";
             session.geminiSession = _sessionFactory(
               {
                 systemPrompt: geminiSystemPrompt,
@@ -2515,14 +2534,14 @@ wss.on("connection", (twilioWs) => {
                   // a close is in flight; don't overwrite endedReason or race
                   // the apology with a faster close (SCRUM-424 review).
                   if (session?.callFailed) return;
-                  console.error("[GeminiLive] Session error:", err.message);
+                  console.error(`[${_pipelineTag}] Session error:`, err.message);
                   if (session) {
                     session.callFailed = true;
-                    session.endedReason = "gemini-error";
+                    session.endedReason = `${_pipelineLabel}-error`;
                   }
                   // Close the Twilio call — caller would be stuck in silence otherwise
                   if (twilioWs.readyState === WebSocket.OPEN) {
-                    setTimeout(() => twilioWs.close(1000, "Gemini session error"), 1000);
+                    setTimeout(() => twilioWs.close(1000, `${_pipelineTag} session error`), 1000);
                   }
                 },
                 // SCRUM-424 (finding #10): Gemini setup never completed — the
@@ -2535,9 +2554,9 @@ wss.on("connection", (twilioWs) => {
                   // Null session = cleanup already started (caller hung up) —
                   // nobody left to apologize to; cleanup owns the teardown.
                   if (!session) return;
-                  console.error(`[GeminiLive] Setup timeout — apologizing and ending call. callSid=${session.callSid}:`, err.message);
+                  console.error(`[${_pipelineTag}] Setup timeout — apologizing and ending call. callSid=${session.callSid}:`, err.message);
                   session.callFailed = true;
-                  session.endedReason = "gemini-setup-timeout";
+                  session.endedReason = `${_pipelineLabel}-setup-timeout`;
                   if (twilioWs.readyState !== WebSocket.OPEN) return;
                   // Close only after the apology has had time to PLAY —
                   // sendTTS resolves once chunks are pushed, but Twilio plays
@@ -2548,7 +2567,7 @@ wss.on("connection", (twilioWs) => {
                       closeDelayMs = Math.min((durationMs || 0) + 500, 8000);
                     })
                     .catch((ttsErr) => {
-                      console.error("[GeminiLive] Setup-timeout apology TTS failed:", ttsErr.message || ttsErr);
+                      console.error(`[${_pipelineTag}] Setup-timeout apology TTS failed:`, ttsErr.message || ttsErr);
                     })
                     .finally(() => {
                       setTimeout(() => {
@@ -2557,7 +2576,7 @@ wss.on("connection", (twilioWs) => {
                     });
                 },
                 onClose: (code, reason) => {
-                  console.log(`[GeminiLive] Session closed (code=${code}, reason="${reason}")`);
+                  console.log(`[${_pipelineTag}] Session closed (code=${code}, reason="${reason}")`);
                   // SCRUM-378 (review): commit transcript fragments still
                   // buffered when the session closes without a final
                   // turn-complete (e.g. the caller's last utterance before an
@@ -2568,12 +2587,12 @@ wss.on("connection", (twilioWs) => {
                   // that pre-existing gap is unchanged here.
                   if (session && pendingUserTranscript.trim()) {
                     session.addMessage("user", pendingUserTranscript.trim());
-                    logTranscript("[GeminiLive] User (close)", pendingUserTranscript.trim());
+                    logTranscript(`[${_pipelineTag}] User (close)`, pendingUserTranscript.trim());
                     pendingUserTranscript = "";
                   }
                   if (session && pendingAiTranscript.trim()) {
                     session.addMessage("assistant", pendingAiTranscript.trim());
-                    logTranscript("[GeminiLive] AI (close)", pendingAiTranscript.trim());
+                    logTranscript(`[${_pipelineTag}] AI (close)`, pendingAiTranscript.trim());
                     pendingAiTranscript = "";
                   }
                   // Planned close via end_call tool — not a failure.
@@ -2594,12 +2613,12 @@ wss.on("connection", (twilioWs) => {
                     }
                     return;
                   }
-                  // If Gemini closes unexpectedly mid-call, end the Twilio call too
+                  // If the voice session closes unexpectedly mid-call, end the Twilio call too
                   if (session && !session.callFailed && twilioWs.readyState === WebSocket.OPEN) {
-                    console.warn("[GeminiLive] Unexpected session close — ending Twilio call");
+                    console.warn(`[${_pipelineTag}] Unexpected session close — ending Twilio call`);
                     session.callFailed = true;
-                    session.endedReason = "gemini-session-closed";
-                    setTimeout(() => twilioWs.close(1000, "Gemini session closed"), 1000);
+                    session.endedReason = `${_pipelineLabel}-session-closed`;
+                    setTimeout(() => twilioWs.close(1000, `${_pipelineTag} session closed`), 1000);
                   }
                 },
               }

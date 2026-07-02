@@ -44,6 +44,9 @@ function builder(result: SingleResult) {
   Object.assign(b, {
     select: chain, eq: chain, in: chain, limit: chain, order: chain,
     single: async () => result,
+    // Multi-row queries await the builder directly (no .single()) — e.g. the
+    // owner+admin recipient lookup (SCRUM-497). Same configured result.
+    then: (resolve: (v: SingleResult) => unknown) => resolve(result),
   });
   return b;
 }

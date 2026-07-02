@@ -461,6 +461,120 @@ export async function getOrganizationOwnerEmail(
 }
 
 /**
+ * Resolve every email that should receive business-operations notifications:
+ * the org owner PLUS admin members (SCRUM-497 — admins previously received
+ * nothing). Deduped case-insensitively (owner + admin can be the same person),
+ * owner's email first. Degrades rather than fails: a members-query error
+ * reports through the same owner-lookup Sentry channel and returns [] (the
+ * caller records the dropped channel); members without an email just narrow
+ * the list.
+ *
+ * Billing (subscription-dunning) intentionally still uses
+ * getOrganizationOwnerEmail — billing is the owner's domain.
+ */
+export async function getOrganizationNotificationEmails(
+  organizationId: string
+): Promise<string[]> {
+  const supabase = createAdminClient();
+
+  const { data: members, error: memberError } = await (supabase as any)
+    .from("org_members")
+    .select("user_id, role")
+    .eq("organization_id", organizationId)
+    .in("role", ["owner", "admin"]);
+
+  if (memberError) {
+    console.error("[Notifications] Failed to load org owner/admin members:", {
+      organizationId,
+      error: memberError.message || memberError.code,
+    });
+    reportOwnerEmailLookupFailure("error", "org owner query failed", {
+      organizationId,
+      error: memberError.message || memberError.code,
+    });
+    return [];
+  }
+
+  const memberRows: Array<{ user_id: string; role: string }> = members ?? [];
+  if (memberRows.length === 0) {
+    console.warn("[Notifications] No owner found for organization:", organizationId);
+    reportOwnerEmailLookupFailure("warning", "organization has no owner member", { organizationId });
+    return [];
+  }
+  if (!memberRows.some((m) => m.role === "owner")) {
+    // An org without an owner is a data problem worth surfacing even when
+    // admins exist — but the admins can still be notified, so fall through.
+    console.warn("[Notifications] Organization has admins but no owner member:", organizationId);
+    reportOwnerEmailLookupFailure("warning", "organization has no owner member", { organizationId });
+  }
+
+  const { data: profiles, error: profileError } = await (supabase as any)
+    .from("user_profiles")
+    .select("id, email")
+    .in("id", memberRows.map((m) => m.user_id));
+
+  if (profileError) {
+    console.error("[Notifications] Failed to load owner/admin profiles:", {
+      organizationId,
+      error: profileError.message || profileError.code,
+    });
+    reportOwnerEmailLookupFailure("error", "owner profile query failed", {
+      organizationId,
+      userIds: memberRows.map((m) => m.user_id),
+      error: profileError.message || profileError.code,
+    });
+    return [];
+  }
+
+  const emailByUserId = new Map<string, string>();
+  for (const p of profiles ?? []) {
+    if (p?.id && typeof p.email === "string" && p.email.trim()) {
+      emailByUserId.set(p.id, p.email.trim());
+    }
+  }
+
+  // The OWNER losing their email must stay loud even when admins still
+  // resolve (review P1): the buyer silently dropping off every notification
+  // was exactly what the old single-owner lookup reported on every send.
+  let ownerEmailMissingReported = false;
+  for (const m of memberRows) {
+    if (m.role === "owner" && !emailByUserId.get(m.user_id)) {
+      ownerEmailMissingReported = true;
+      console.warn("[Notifications] Owner has no email:", { organizationId, userId: m.user_id });
+      reportOwnerEmailLookupFailure("warning", "owner profile has no email", {
+        organizationId,
+        userId: m.user_id,
+      });
+    }
+  }
+
+  // Owner first, then admins; dedupe case-insensitively.
+  const ordered = [...memberRows].sort(
+    (a, b) => (a.role === "owner" ? -1 : 0) - (b.role === "owner" ? -1 : 0)
+  );
+  const seen = new Set<string>();
+  const emails: string[] = [];
+  for (const m of ordered) {
+    const email = emailByUserId.get(m.user_id);
+    if (!email) continue;
+    const key = email.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    emails.push(email);
+  }
+
+  if (emails.length === 0 && !ownerEmailMissingReported) {
+    console.warn("[Notifications] No owner/admin member has an email:", { organizationId });
+    reportOwnerEmailLookupFailure("warning", "owner profile has no email", {
+      organizationId,
+      userIds: memberRows.map((m) => m.user_id),
+    });
+  }
+
+  return emails;
+}
+
+/**
  * Await all channel sends and enforce honest delivery reporting (SCRUM-419):
  *
  * - `droppedChannels` lists channels that were WANTED (per preferences) but
@@ -560,16 +674,16 @@ export async function sendMissedCallNotification(
 
   // Only look the owner up when the email channel is wanted — the lookup
   // Sentry-reports failures, so running it for email-off orgs is pure noise.
-  const email = shouldEmail ? await getOrganizationOwnerEmail(data.organizationId) : null;
+  const emails = shouldEmail ? await getOrganizationNotificationEmails(data.organizationId) : [];
 
   const channels: Promise<void>[] = [];
   const droppedChannels: string[] = [];
-  if (shouldEmail && !email) droppedChannels.push("owner-email");
+  if (shouldEmail && emails.length === 0) droppedChannels.push("owner-email");
   if (prefs?.sms_on_missed_call && !prefs.sms_phone_number) droppedChannels.push("sms");
 
-  if (shouldEmail && email) {
+  if (shouldEmail && emails.length > 0) {
     channels.push(sendEmail({
-      to: email,
+      to: emails,
       subject: `Missed Call from ${data.callerName || data.callerPhone}`,
       template: "missed-call",
       data: {
@@ -614,16 +728,16 @@ export async function sendFailedCallNotification(
   const shouldEmail = prefs ? prefs.email_on_failed_call : true;
   const shouldSms = prefs ? prefs.sms_on_failed_call && prefs.sms_phone_number : false;
 
-  const email = shouldEmail ? await getOrganizationOwnerEmail(data.organizationId) : null;
+  const emails = shouldEmail ? await getOrganizationNotificationEmails(data.organizationId) : [];
 
   const channels: Promise<void>[] = [];
   const droppedChannels: string[] = [];
-  if (shouldEmail && !email) droppedChannels.push("owner-email");
+  if (shouldEmail && emails.length === 0) droppedChannels.push("owner-email");
   if (prefs?.sms_on_failed_call && !prefs.sms_phone_number) droppedChannels.push("sms");
 
-  if (shouldEmail && email) {
+  if (shouldEmail && emails.length > 0) {
     channels.push(sendEmail({
-      to: email,
+      to: emails,
       subject: `Failed Call — Action Required`,
       template: "failed-call",
       data: {
@@ -677,13 +791,13 @@ export async function sendUnsuccessfulCallNotification(
   );
   const shouldEmail = prefs ? prefs.email_on_unsuccessful_call : true;
 
-  const email = shouldEmail ? await getOrganizationOwnerEmail(data.organizationId) : null;
+  const emails = shouldEmail ? await getOrganizationNotificationEmails(data.organizationId) : [];
 
   const channels: Promise<void>[] = [];
   const droppedChannels: string[] = [];
-  if (shouldEmail && !email) droppedChannels.push("owner-email");
+  if (shouldEmail && emails.length === 0) droppedChannels.push("owner-email");
 
-  if (shouldEmail && email) {
+  if (shouldEmail && emails.length > 0) {
     // First 200 chars of the transcript so the owner gets the gist without
     // opening the dashboard. escapeHtml runs in generateEmailHtml.
     const transcriptSnippet = data.transcript
@@ -699,7 +813,7 @@ export async function sendUnsuccessfulCallNotification(
         ? "The AI partially helped, but the caller's need wasn't fully resolved."
         : "The AI couldn't resolve the caller's request.";
     channels.push(sendEmail({
-      to: email,
+      to: emails,
       subject: `Unsuccessful Call — ${data.callerName || data.callerPhone}`,
       template: "unsuccessful-call",
       data: {
@@ -757,18 +871,18 @@ export async function sendAppointmentNotification(
   );
   if (!prefs) return "skipped"; // genuinely no prefs row — DB errors fail open to defaults upstream
 
-  const email = prefs.email_on_appointment_booked
-    ? await getOrganizationOwnerEmail(data.organizationId)
-    : null;
+  const emails = prefs.email_on_appointment_booked
+    ? await getOrganizationNotificationEmails(data.organizationId)
+    : [];
 
   const channels: Promise<void>[] = [];
   const droppedChannels: string[] = [];
-  if (prefs.email_on_appointment_booked && !email) droppedChannels.push("owner-email");
+  if (prefs.email_on_appointment_booked && emails.length === 0) droppedChannels.push("owner-email");
 
-  if (prefs.email_on_appointment_booked && email) {
+  if (prefs.email_on_appointment_booked && emails.length > 0) {
     const formattedDate = formatAppointmentDate(data.appointmentDate, data.timezone);
     channels.push(sendEmail({
-      to: email,
+      to: emails,
       subject: `New Appointment Booked - ${formattedDate}`,
       template: "appointment-booked",
       data: {
@@ -806,16 +920,16 @@ export async function sendCallbackNotification(
   const shouldEmail = prefs ? prefs.email_on_callback_scheduled : true;
   const shouldSms = prefs ? prefs.sms_on_callback_scheduled && prefs.sms_phone_number : false;
 
-  const email = shouldEmail ? await getOrganizationOwnerEmail(data.organizationId) : null;
+  const emails = shouldEmail ? await getOrganizationNotificationEmails(data.organizationId) : [];
 
   const channels: Promise<void>[] = [];
   const droppedChannels: string[] = [];
-  if (shouldEmail && !email) droppedChannels.push("owner-email");
+  if (shouldEmail && emails.length === 0) droppedChannels.push("owner-email");
   if (prefs?.sms_on_callback_scheduled && !prefs.sms_phone_number) droppedChannels.push("sms");
 
-  if (shouldEmail && email) {
+  if (shouldEmail && emails.length > 0) {
     channels.push(sendEmail({
-      to: email,
+      to: emails,
       subject: `Callback Requested — ${data.callerName || data.callerPhone}`,
       template: "callback-scheduled",
       data: {
@@ -868,16 +982,16 @@ export async function sendCallbackReminderNotification(
   const shouldEmail = prefs ? prefs.email_on_callback_scheduled : true;
   const shouldSms = prefs ? prefs.sms_on_callback_scheduled && prefs.sms_phone_number : false;
 
-  const email = shouldEmail ? await getOrganizationOwnerEmail(data.organizationId) : null;
+  const emails = shouldEmail ? await getOrganizationNotificationEmails(data.organizationId) : [];
 
   const channels: Promise<void>[] = [];
   const droppedChannels: string[] = [];
-  if (shouldEmail && !email) droppedChannels.push("owner-email");
+  if (shouldEmail && emails.length === 0) droppedChannels.push("owner-email");
   if (prefs?.sms_on_callback_scheduled && !prefs.sms_phone_number) droppedChannels.push("sms");
 
-  if (shouldEmail && email) {
+  if (shouldEmail && emails.length > 0) {
     channels.push(sendEmail({
-      to: email,
+      to: emails,
       subject: `Callback Due — ${data.callerName || data.callerPhone}`,
       template: "callback-reminder",
       data: {
@@ -930,17 +1044,17 @@ export async function sendDailySummaryNotification(
   );
   if (!prefs) return "skipped"; // genuinely no prefs row — DB errors fail open to defaults upstream
 
-  const email = prefs.email_daily_summary
-    ? await getOrganizationOwnerEmail(data.organizationId)
-    : null;
+  const emails = prefs.email_daily_summary
+    ? await getOrganizationNotificationEmails(data.organizationId)
+    : [];
 
   const channels: Promise<void>[] = [];
   const droppedChannels: string[] = [];
-  if (prefs.email_daily_summary && !email) droppedChannels.push("owner-email");
+  if (prefs.email_daily_summary && emails.length === 0) droppedChannels.push("owner-email");
 
-  if (prefs.email_daily_summary && email) {
+  if (prefs.email_daily_summary && emails.length > 0) {
     channels.push(sendEmail({
-      to: email,
+      to: emails,
       subject: `Daily Call Summary - ${data.date.toLocaleDateString()}`,
       template: "daily-summary",
       data: {
@@ -1093,7 +1207,7 @@ export async function sendSubscriptionLapseNotification(
 // ============================================================
 
 interface EmailParams {
-  to: string;
+  to: string | string[]; // Resend accepts either; call notifications fan out to owner + admins (SCRUM-497)
   subject: string;
   template: string;
   data: Record<string, any>;
@@ -1130,18 +1244,59 @@ async function sendEmail(params: EmailParams): Promise<void> {
     resendClient = new Resend(apiKey);
   }
 
-  const { error } = await resendClient.emails.send({
-    from: fromEmail,
-    to,
-    subject,
-    html,
-  });
+  // Per-recipient sends (SCRUM-497 review): Resend treats a multi-recipient
+  // `to` as ONE email — a single malformed admin address would 422 the whole
+  // request and the OWNER would lose the alert too. Fanned out, the email
+  // channel succeeds when at least one recipient got it; each failed
+  // recipient is logged (+ one Sentry warning), and it only throws when
+  // NOBODY was reachable. Bonus: recipients no longer see each other's
+  // addresses in the To: header.
+  const recipients = Array.isArray(to) ? to : [to];
+  const results = await Promise.allSettled(
+    recipients.map(async (recipient) => {
+      const { error } = await resendClient!.emails.send({
+        from: fromEmail,
+        to: recipient,
+        subject,
+        html,
+      });
+      if (error) {
+        throw new Error(`Resend API error: ${error.message}`);
+      }
+    })
+  );
 
-  if (error) {
-    throw new Error(`Resend API error: ${error.message}`);
+  const failures = results
+    .map((result, i) => ({ result, recipient: recipients[i] }))
+    .filter((x): x is { result: PromiseRejectedResult; recipient: string } => x.result.status === "rejected");
+  for (const f of failures) {
+    console.error(`[Email] Send failed for recipient (${template}):`, {
+      recipient: f.recipient,
+      error: f.result.reason instanceof Error ? f.result.reason.message : String(f.result.reason),
+    });
+  }
+  if (failures.length === recipients.length) {
+    const first = failures[0].result.reason;
+    throw first instanceof Error
+      ? first
+      : new Error(`Resend API error: all ${recipients.length} recipient(s) failed`);
+  }
+  if (failures.length > 0) {
+    try {
+      Sentry.captureMessage(
+        `[Email] ${failures.length}/${recipients.length} recipients failed for "${template}"`,
+        "warning"
+      );
+    } catch {
+      // best-effort
+    }
   }
 
-  console.log("[Email] Sent:", { to, subject, template });
+  console.log("[Email] Sent:", {
+    to: recipients.length === 1 ? recipients[0] : `${recipients.length - failures.length}/${recipients.length} recipients`,
+    subject,
+    template,
+  });
 }
 
 /**

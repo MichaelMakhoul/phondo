@@ -55,6 +55,9 @@ function builder(result: SingleResult) {
   Object.assign(b, {
     select: chain, eq: chain, in: chain, limit: chain, order: chain,
     single: async () => result,
+    // Multi-row queries await the builder directly (no .single()) — e.g. the
+    // owner+admin recipient lookup (SCRUM-497). Same configured result.
+    then: (resolve: (v: SingleResult) => unknown) => resolve(result),
   });
   return b;
 }
@@ -76,9 +79,10 @@ const prefsRow = (over: Record<string, unknown> = {}): SingleResult => ({
   error: null,
 });
 
+// Array shapes: the recipient lookup is multi-row (owner + admins, SCRUM-497).
 const OWNER_OK = {
-  org_members: { data: { user_id: "user-1" }, error: null },
-  user_profiles: { data: { email: "owner@biz.com.au" }, error: null },
+  org_members: { data: [{ user_id: "user-1", role: "owner" }] as never, error: null },
+  user_profiles: { data: [{ id: "user-1", email: "owner@biz.com.au" }] as never, error: null },
 };
 
 const CALL = {

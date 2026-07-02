@@ -420,6 +420,14 @@ function handleConversationRelayConnection(ws, req, injected = {}) {
           recordingDisclosureFailed: s.recordingDisclosureFailed || false,
           sentiment: analysis?.sentiment || null,
           cleanedTranscript: analysis?.cleanedTranscript ?? null,
+          // SCRUM-498: same booking label as the other pipelines — without it,
+          // bookings made on CR eval calls were missing from the metric the
+          // pipeline A/B reads.
+          actionTaken: (s.toolCallAudit || []).some(
+            (t) => t.name === "book_appointment" && t.successful === true
+          )
+            ? "appointment_booked"
+            : null,
         });
       } catch (err) {
         console.error("[CR][Cleanup] Failed to complete call record:", err.message);
