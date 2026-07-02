@@ -1,6 +1,7 @@
 import * as Sentry from "@sentry/nextjs";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { type ClinikoAppointment, type ClinikoContext, type ClinikoIntegrationSettings } from "./cliniko";
+import { mergeIntegrationSettings } from "./cliniko-settings";
 
 export interface ReconcileResult {
   /** false when the freshness gate skipped the run or a failure aborted it. */
@@ -142,20 +143,14 @@ export async function reconcileClinikoOrg(
         Sentry.captureMessage("Cliniko reconcile poll was incomplete — cursor held so the window is re-polled");
       });
     } else {
-      // Advance the cursor to poll-start — only on a complete, successful poll,
-      // with a read-before-write spread so shard/businessId aren't clobbered. A
-      // successful poll proves auth works, so a stale auth_failed flag is cleared.
-      const { error: writeError } = await (admin as any)
-        .from("calendar_integrations")
-        .update({
-          settings: {
-            ...settings,
-            lastReconciledAt: nowIso,
-            errorState: settings.errorState === "auth_failed" ? null : settings.errorState ?? null,
-          },
-          updated_at: nowIso,
-        })
-        .eq("id", ctx.integrationId);
+      // Advance the cursor to poll-start — only on a complete, successful poll.
+      // SCRUM-489: patch ONLY the keys we own via an atomic server-side merge so
+      // a concurrent writer's shard/businessId/lastSyncedAt is never clobbered.
+      // A successful poll proves auth works, so clear a stale auth_failed too
+      // (its own single-key patch — never reverts a concurrent sync_failed).
+      const patch: Record<string, unknown> = { lastReconciledAt: nowIso };
+      if (settings.errorState === "auth_failed") patch.errorState = null;
+      const { error: writeError } = await mergeIntegrationSettings(admin, ctx.integrationId, patch);
       if (writeError) {
         console.error("[ClinikoReconcile] cursor write failed:", writeError.message || writeError.code);
       }

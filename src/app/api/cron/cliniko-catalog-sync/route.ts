@@ -4,6 +4,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { safeDecrypt } from "@/lib/security/encryption";
 import { ClinikoClient, ClinikoAuthError } from "@/lib/calendar/cliniko";
 import { syncClinikoCatalog } from "@/lib/calendar/cliniko-sync";
+import { mergeIntegrationSettings } from "@/lib/calendar/cliniko-settings";
 import * as Sentry from "@sentry/nextjs";
 
 /**
@@ -57,25 +58,15 @@ export async function GET(request: NextRequest) {
       }
       const client = new ClinikoClient({ apiKey, shard: String(settings.shard), timeoutMs: 10_000 });
       await syncClinikoCatalog(row.organization_id, client, String(settings.businessId));
-      await (admin as any)
-        .from("calendar_integrations")
-        .update({
-          settings: { ...settings, lastSyncedAt: new Date().toISOString(), errorState: null },
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", row.id);
+      // SCRUM-489: atomic merge — patch only the markers this cron owns so a
+      // concurrent at-call reconcile's lastReconciledAt isn't clobbered.
+      await mergeIntegrationSettings(admin, row.id, { lastSyncedAt: new Date().toISOString(), errorState: null });
       results.push({ organizationId: row.organization_id, ok: true });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const errorState = err instanceof ClinikoAuthError ? "auth_failed" : "sync_failed";
       try {
-        await (admin as any)
-          .from("calendar_integrations")
-          .update({
-            settings: { ...settings, errorState },
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", row.id);
+        await mergeIntegrationSettings(admin, row.id, { errorState });
       } catch (flagErr) {
         console.error("[ClinikoCron] failed to flag errorState:", flagErr instanceof Error ? flagErr.message : flagErr);
       }

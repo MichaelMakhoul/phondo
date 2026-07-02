@@ -35,26 +35,24 @@ function integrationRow(org: string, overrides: Record<string, unknown> = {}) {
 }
 
 function adminMock(rows: Array<Record<string, unknown>>) {
-  const updates: Array<{ id: unknown; payload: Record<string, unknown> }> = [];
+  // SCRUM-489: settings writes are now the merge RPC; capture each patch as
+  // { id, patch } so assertions can read the merged keys directly.
+  const merges: Array<{ id: unknown; patch: Record<string, unknown> }> = [];
   const from = () => {
-    let updatePayload: Record<string, unknown> | null = null;
     const chain: Record<string, unknown> = {
       select: () => chain,
-      eq: (k: string, v: unknown) => {
-        if (updatePayload && k === "id") updates.push({ id: v, payload: updatePayload });
-        return chain;
-      },
+      eq: () => chain,
       order: () => chain,
       limit: () => chain,
-      update: (p: Record<string, unknown>) => {
-        updatePayload = p;
-        return chain;
-      },
       then: (resolve: (v: unknown) => void) => resolve({ data: rows, error: null }),
     };
     return chain;
   };
-  return { client: { from }, updates };
+  const rpc = vi.fn(async (_fn: string, args: { p_id: unknown; p_patch: Record<string, unknown> }) => {
+    merges.push({ id: args.p_id, patch: args.p_patch });
+    return { error: null };
+  });
+  return { client: { from, rpc }, merges };
 }
 
 function req() {
@@ -85,7 +83,7 @@ describe("GET /api/cron/cliniko-catalog-sync", () => {
     expect(body.succeeded).toBe(2);
     expect(vi.mocked(syncClinikoCatalog)).toHaveBeenCalledTimes(2);
     // lastSyncedAt stamped on both
-    expect(admin.updates.filter((u) => (u.payload.settings as Record<string, unknown>)?.lastSyncedAt)).toHaveLength(2);
+    expect(admin.merges.filter((u) => u.patch.lastSyncedAt)).toHaveLength(2);
   });
 
   it("one org's failure doesn't stop the rest; auth failures flag auth_failed", async () => {
@@ -99,7 +97,7 @@ describe("GET /api/cron/cliniko-catalog-sync", () => {
     const body = await res.json();
     expect(body.failed).toBe(1);
     expect(body.succeeded).toBe(1);
-    const flagged = admin.updates.find((u) => (u.payload.settings as Record<string, unknown>)?.errorState === "auth_failed");
+    const flagged = admin.merges.find((u) => u.patch.errorState === "auth_failed");
     expect(flagged).toBeTruthy();
   });
 
@@ -111,7 +109,7 @@ describe("GET /api/cron/cliniko-catalog-sync", () => {
     const body = await res.json();
     expect(body.failed).toBe(1);
     expect(syncClinikoCatalog).not.toHaveBeenCalled();
-    const flagged = admin.updates.find((u) => (u.payload.settings as Record<string, unknown>)?.errorState === "sync_failed");
+    const flagged = admin.merges.find((u) => u.patch.errorState === "sync_failed");
     expect(flagged).toBeTruthy();
   });
 });

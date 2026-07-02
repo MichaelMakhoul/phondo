@@ -31,8 +31,14 @@ function mockAdmin(opts: {
   settingsWriteError?: { message: string } | null;
 }) {
   const updates: Array<{ table: string; payload: Record<string, unknown>; id?: string }> = [];
+  const rpcCalls: Array<{ fn: string; args: Record<string, unknown> }> = [];
   const mirrors = opts.mirrors ?? [];
   const client = {
+    // SCRUM-489: settings writes go through the merge RPC, not .update().
+    rpc: async (fn: string, args: Record<string, unknown>) => {
+      rpcCalls.push({ fn, args });
+      return { error: fn === "merge_calendar_integration_settings" ? opts.settingsWriteError ?? null : null };
+    },
     from(table: string) {
       const state = { table, externalIds: null as null | string[] };
       const chain: Record<string, unknown> = {
@@ -76,7 +82,14 @@ function mockAdmin(opts: {
       return chain;
     },
   };
-  return { client, updates };
+  return { client, updates, rpcCalls };
+}
+
+// The settings patch sent to the merge RPC on this run (undefined if not called).
+function settingsPatch(rpcCalls: Array<{ fn: string; args: Record<string, unknown> }>) {
+  return rpcCalls.find((c) => c.fn === "merge_calendar_integration_settings")?.args.p_patch as
+    | Record<string, unknown>
+    | undefined;
 }
 
 function ctxWith(client: {
@@ -221,22 +234,22 @@ describe("reconcileClinikoOrg", () => {
     expect(ctx.client.listChangedAppointments).toHaveBeenCalled();
   });
 
-  it("advances the cursor to poll-start on success, preserving other settings", async () => {
-    const { client, updates } = mockAdmin({
+  it("advances the cursor via an atomic single-key merge (no full-blob write)", async () => {
+    const { client, rpcCalls } = mockAdmin({
       settings: { ...BASE_SETTINGS },
     });
     vi.mocked(createAdminClient).mockReturnValue(client as never);
     const ctx = ctxWith({});
     await reconcileClinikoOrg(ctx as never, { nowMs: NOW });
-    const settingsWrite = updates.find((u) => u.table === "calendar_integrations");
-    expect(settingsWrite).toBeDefined();
-    const written = settingsWrite!.payload.settings as Record<string, unknown>;
-    expect(written.lastReconciledAt).toBe(new Date(NOW).toISOString());
-    expect(written).toMatchObject({ shard: "au1", businessId: "b-1" });
+    const patch = settingsPatch(rpcCalls);
+    expect(patch).toEqual({ lastReconciledAt: new Date(NOW).toISOString() });
+    // shard/businessId are NOT in the patch — the DB `settings || patch` preserves them.
+    expect(patch).not.toHaveProperty("shard");
+    expect(patch).not.toHaveProperty("errorState");
   });
 
   it("does NOT advance the cursor when the poll throws", async () => {
-    const { client, updates } = mockAdmin({
+    const { client, rpcCalls } = mockAdmin({
       settings: { ...BASE_SETTINGS },
     });
     vi.mocked(createAdminClient).mockReturnValue(client as never);
@@ -247,11 +260,11 @@ describe("reconcileClinikoOrg", () => {
     });
     const res = await reconcileClinikoOrg(ctx as never, { nowMs: NOW });
     expect(res.ran).toBe(false);
-    expect(updates.find((u) => u.table === "calendar_integrations")).toBeUndefined();
+    expect(settingsPatch(rpcCalls)).toBeUndefined();
   });
 
   it("does NOT advance the cursor when the poll is truncated (page cap hit)", async () => {
-    const { client, updates } = mockAdmin({ settings: { ...BASE_SETTINGS } });
+    const { client, rpcCalls } = mockAdmin({ settings: { ...BASE_SETTINGS } });
     vi.mocked(createAdminClient).mockReturnValue(client as never);
     const ctx = ctxWith({
       listChangedAppointments: vi.fn(async () => page([], true)), // truncated
@@ -260,26 +273,24 @@ describe("reconcileClinikoOrg", () => {
     // The run completed but the read was incomplete — hold the cursor so the
     // window is re-polled next run rather than silently skipping the tail.
     expect(res.ran).toBe(true);
-    expect(updates.find((u) => u.table === "calendar_integrations")).toBeUndefined();
+    expect(settingsPatch(rpcCalls)).toBeUndefined();
   });
 
   it("clears a stale auth_failed flag once a poll succeeds", async () => {
-    const { client, updates } = mockAdmin({
+    const { client, rpcCalls } = mockAdmin({
       settings: { ...BASE_SETTINGS, errorState: "auth_failed" },
     });
     vi.mocked(createAdminClient).mockReturnValue(client as never);
     await reconcileClinikoOrg(ctxWith({}) as never, { nowMs: NOW });
-    const written = updates.find((u) => u.table === "calendar_integrations")!.payload.settings as Record<string, unknown>;
-    expect(written.errorState).toBeNull();
+    expect(settingsPatch(rpcCalls)).toMatchObject({ errorState: null });
   });
 
-  it("leaves a sync_failed flag intact (reconcile doesn't exercise catalog sync)", async () => {
-    const { client, updates } = mockAdmin({
+  it("leaves a sync_failed flag intact (patch omits errorState so the merge preserves it)", async () => {
+    const { client, rpcCalls } = mockAdmin({
       settings: { ...BASE_SETTINGS, errorState: "sync_failed" },
     });
     vi.mocked(createAdminClient).mockReturnValue(client as never);
     await reconcileClinikoOrg(ctxWith({}) as never, { nowMs: NOW });
-    const written = updates.find((u) => u.table === "calendar_integrations")!.payload.settings as Record<string, unknown>;
-    expect(written.errorState).toBe("sync_failed");
+    expect(settingsPatch(rpcCalls)).not.toHaveProperty("errorState");
   });
 });

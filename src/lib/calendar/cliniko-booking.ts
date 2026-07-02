@@ -45,6 +45,7 @@ import {
 import { findOrCreateClinikoPatient } from "./cliniko-patients";
 import { generateConfirmationCode } from "./confirmation-code";
 import { reconcileClinikoOrg } from "./cliniko-reconcile";
+import { mergeIntegrationSettings } from "./cliniko-settings";
 
 // ClinikoContext/ClinikoResolution moved to the leaf `cliniko` module so
 // cliniko-reconcile can consume ClinikoContext without importing this module
@@ -178,10 +179,9 @@ async function markClinikoAuthFailure(organizationId: string, integrationId: str
     const settings = (data?.settings || {}) as ClinikoIntegrationSettings;
     if (settings.errorState === "auth_failed") return; // already flagged + emailed
 
-    const { error: writeError } = await (supabase as any)
-      .from("calendar_integrations")
-      .update({ settings: { ...settings, errorState: "auth_failed" }, updated_at: new Date().toISOString() })
-      .eq("id", integrationId);
+    // SCRUM-489: patch only errorState via an atomic merge — a full-object write
+    // here would clobber a lastReconciledAt/lastSyncedAt a concurrent cron set.
+    const { error: writeError } = await mergeIntegrationSettings(supabase, integrationId, { errorState: "auth_failed" });
     // If the flag didn't persist, don't send the email — otherwise the dedupe
     // is defeated and the owner gets an "Action needed" mail on every call.
     if (writeError) {
