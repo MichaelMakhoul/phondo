@@ -110,6 +110,29 @@ describe("getOrganizationNotificationEmails (SCRUM-497)", () => {
     await expect(getOrganizationNotificationEmails("org-1")).resolves.toEqual(["owner@biz.com"]);
   });
 
+  it("reports the OWNER's missing email even when an admin still resolves (review P1)", async () => {
+    vi.mocked(createAdminClient).mockReturnValue(
+      fakeAdmin({
+        org_members: {
+          data: [
+            { user_id: "u-owner", role: "owner" },
+            { user_id: "u-admin", role: "admin" },
+          ],
+          error: null,
+        },
+        user_profiles: {
+          // Owner's profile row missing entirely — the buyer would silently
+          // stop receiving every notification class.
+          data: [{ id: "u-admin", email: "admin@biz.com" }],
+          error: null,
+        },
+      }) as never,
+    );
+
+    await expect(getOrganizationNotificationEmails("org-1")).resolves.toEqual(["admin@biz.com"]);
+    expect(Sentry.captureMessage).toHaveBeenCalled(); // owner drop-off stays loud
+  });
+
   it("still notifies admins when the org has no owner member (and reports the data problem)", async () => {
     vi.mocked(createAdminClient).mockReturnValue(
       fakeAdmin({

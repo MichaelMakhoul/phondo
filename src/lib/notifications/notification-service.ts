@@ -520,6 +520,7 @@ export async function getOrganizationNotificationEmails(
     });
     reportOwnerEmailLookupFailure("error", "owner profile query failed", {
       organizationId,
+      userIds: memberRows.map((m) => m.user_id),
       error: profileError.message || profileError.code,
     });
     return [];
@@ -529,6 +530,21 @@ export async function getOrganizationNotificationEmails(
   for (const p of profiles ?? []) {
     if (p?.id && typeof p.email === "string" && p.email.trim()) {
       emailByUserId.set(p.id, p.email.trim());
+    }
+  }
+
+  // The OWNER losing their email must stay loud even when admins still
+  // resolve (review P1): the buyer silently dropping off every notification
+  // was exactly what the old single-owner lookup reported on every send.
+  let ownerEmailMissingReported = false;
+  for (const m of memberRows) {
+    if (m.role === "owner" && !emailByUserId.get(m.user_id)) {
+      ownerEmailMissingReported = true;
+      console.warn("[Notifications] Owner has no email:", { organizationId, userId: m.user_id });
+      reportOwnerEmailLookupFailure("warning", "owner profile has no email", {
+        organizationId,
+        userId: m.user_id,
+      });
     }
   }
 
@@ -547,9 +563,12 @@ export async function getOrganizationNotificationEmails(
     emails.push(email);
   }
 
-  if (emails.length === 0) {
+  if (emails.length === 0 && !ownerEmailMissingReported) {
     console.warn("[Notifications] No owner/admin member has an email:", { organizationId });
-    reportOwnerEmailLookupFailure("warning", "owner profile has no email", { organizationId });
+    reportOwnerEmailLookupFailure("warning", "owner profile has no email", {
+      organizationId,
+      userIds: memberRows.map((m) => m.user_id),
+    });
   }
 
   return emails;
@@ -1225,18 +1244,59 @@ async function sendEmail(params: EmailParams): Promise<void> {
     resendClient = new Resend(apiKey);
   }
 
-  const { error } = await resendClient.emails.send({
-    from: fromEmail,
-    to,
-    subject,
-    html,
-  });
+  // Per-recipient sends (SCRUM-497 review): Resend treats a multi-recipient
+  // `to` as ONE email — a single malformed admin address would 422 the whole
+  // request and the OWNER would lose the alert too. Fanned out, the email
+  // channel succeeds when at least one recipient got it; each failed
+  // recipient is logged (+ one Sentry warning), and it only throws when
+  // NOBODY was reachable. Bonus: recipients no longer see each other's
+  // addresses in the To: header.
+  const recipients = Array.isArray(to) ? to : [to];
+  const results = await Promise.allSettled(
+    recipients.map(async (recipient) => {
+      const { error } = await resendClient!.emails.send({
+        from: fromEmail,
+        to: recipient,
+        subject,
+        html,
+      });
+      if (error) {
+        throw new Error(`Resend API error: ${error.message}`);
+      }
+    })
+  );
 
-  if (error) {
-    throw new Error(`Resend API error: ${error.message}`);
+  const failures = results
+    .map((result, i) => ({ result, recipient: recipients[i] }))
+    .filter((x): x is { result: PromiseRejectedResult; recipient: string } => x.result.status === "rejected");
+  for (const f of failures) {
+    console.error(`[Email] Send failed for recipient (${template}):`, {
+      recipient: f.recipient,
+      error: f.result.reason instanceof Error ? f.result.reason.message : String(f.result.reason),
+    });
+  }
+  if (failures.length === recipients.length) {
+    const first = failures[0].result.reason;
+    throw first instanceof Error
+      ? first
+      : new Error(`Resend API error: all ${recipients.length} recipient(s) failed`);
+  }
+  if (failures.length > 0) {
+    try {
+      Sentry.captureMessage(
+        `[Email] ${failures.length}/${recipients.length} recipients failed for "${template}"`,
+        "warning"
+      );
+    } catch {
+      // best-effort
+    }
   }
 
-  console.log("[Email] Sent:", { to, subject, template });
+  console.log("[Email] Sent:", {
+    to: recipients.length === 1 ? recipients[0] : `${recipients.length - failures.length}/${recipients.length} recipients`,
+    subject,
+    template,
+  });
 }
 
 /**

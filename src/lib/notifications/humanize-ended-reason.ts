@@ -16,6 +16,7 @@ export function humanizeEndedReason(endedReason: string | undefined): string {
   const reason = endedReason || "";
   switch (reason) {
     case "stt-error":
+    case "stt-connection-lost":
       return "The speech recognition system failed during the call.";
     case "llm-error":
       return "The AI assistant encountered a technical error and couldn't respond.";
@@ -24,6 +25,13 @@ export function humanizeEndedReason(endedReason: string | undefined): string {
     case "server-error":
       return "The voice server encountered an error processing the call.";
     default:
+      // hallucinated_booking / hallucinated_callback / …: the AI claimed an
+      // action it never completed. This is the ONE failure class where the
+      // owner must act (a caller now believes a false thing) — generic
+      // "technical issue" copy would bury that (review P2).
+      if (reason.startsWith("hallucinated_")) {
+        return "The AI may have told the caller something was completed when it wasn't. Please review the call and contact the caller to confirm.";
+      }
       if (PROVIDER_ERROR.test(reason)) {
         return "The AI assistant encountered a technical error and couldn't take the call.";
       }

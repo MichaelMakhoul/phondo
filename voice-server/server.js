@@ -1481,14 +1481,17 @@ wss.on("connection", (twilioWs) => {
           piiRedacted,
           cleanedTranscript: analysis?.cleanedTranscript ?? null,
           // SCRUM-498: daily summary + analytics count
-          // action_taken="appointment_booked"; the audit records every tool
-          // call with its real outcome, so this is the ground truth for
-          // "this call produced a booking" (reschedules deliberately excluded).
-          actionTaken: (s.toolCallAudit || []).some(
-            (t) => t.name === "book_appointment" && t.successful === true
-          )
-            ? "appointment_booked"
-            : null,
+          // action_taken="appointment_booked". The tool audit is the ground
+          // truth on the Gemini/realtime paths (reschedules deliberately
+          // excluded); the CLASSIC pipeline's tool loop doesn't write the
+          // audit, so fall back to its confirmedBookings map (review P2 —
+          // classic bookings were otherwise silently uncounted).
+          actionTaken:
+            (s.toolCallAudit || []).some(
+              (t) => t.name === "book_appointment" && t.successful === true
+            ) || (s.confirmedBookings?.size ?? 0) > 0
+              ? "appointment_booked"
+              : null,
         });
       } catch (err) {
         console.error("[Cleanup] Failed to complete call record:", err);
@@ -2564,7 +2567,7 @@ wss.on("connection", (twilioWs) => {
                       closeDelayMs = Math.min((durationMs || 0) + 500, 8000);
                     })
                     .catch((ttsErr) => {
-                      console.error("[GeminiLive] Setup-timeout apology TTS failed:", ttsErr.message || ttsErr);
+                      console.error(`[${_pipelineTag}] Setup-timeout apology TTS failed:`, ttsErr.message || ttsErr);
                     })
                     .finally(() => {
                       setTimeout(() => {
@@ -2573,7 +2576,7 @@ wss.on("connection", (twilioWs) => {
                     });
                 },
                 onClose: (code, reason) => {
-                  console.log(`[GeminiLive] Session closed (code=${code}, reason="${reason}")`);
+                  console.log(`[${_pipelineTag}] Session closed (code=${code}, reason="${reason}")`);
                   // SCRUM-378 (review): commit transcript fragments still
                   // buffered when the session closes without a final
                   // turn-complete (e.g. the caller's last utterance before an
@@ -2584,12 +2587,12 @@ wss.on("connection", (twilioWs) => {
                   // that pre-existing gap is unchanged here.
                   if (session && pendingUserTranscript.trim()) {
                     session.addMessage("user", pendingUserTranscript.trim());
-                    logTranscript("[GeminiLive] User (close)", pendingUserTranscript.trim());
+                    logTranscript(`[${_pipelineTag}] User (close)`, pendingUserTranscript.trim());
                     pendingUserTranscript = "";
                   }
                   if (session && pendingAiTranscript.trim()) {
                     session.addMessage("assistant", pendingAiTranscript.trim());
-                    logTranscript("[GeminiLive] AI (close)", pendingAiTranscript.trim());
+                    logTranscript(`[${_pipelineTag}] AI (close)`, pendingAiTranscript.trim());
                     pendingAiTranscript = "";
                   }
                   // Planned close via end_call tool — not a failure.

@@ -45,4 +45,17 @@ describe("humanizeEndedReason (SCRUM-496)", () => {
     expect(humanizeEndedReason(undefined)).toBe("The call ended unexpectedly due to a technical issue.");
     expect(humanizeEndedReason("")).toBe("The call ended unexpectedly due to a technical issue.");
   });
+
+  it("hallucinated-action reasons keep their call-to-action instead of generic copy (review P2)", () => {
+    for (const reason of ["hallucinated_booking", "hallucinated_callback", "hallucinated_cancellation"]) {
+      const copy = humanizeEndedReason(reason);
+      expect(copy).toContain("review the call");
+      expect(copy).toContain("contact the caller");
+      expect(copy).not.toContain(reason);
+    }
+  });
+
+  it("stt-connection-lost maps to the specific STT copy, not the generic fallback", () => {
+    expect(humanizeEndedReason("stt-connection-lost")).toBe("The speech recognition system failed during the call.");
+  });
 });

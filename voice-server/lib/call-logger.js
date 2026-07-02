@@ -1,4 +1,5 @@
 const { getSupabase } = require("./supabase");
+const { Sentry } = require("./sentry");
 
 /**
  * Create a call record when the call starts.
@@ -145,8 +146,13 @@ async function completeCallRecord(callId, {
       .is("action_taken", null);
     if (actionError) {
       // Non-fatal: the record itself completed — losing the label only
-      // undercounts the booking metric for this one call, but say so loudly.
+      // undercounts the booking metric for this one call, but say so loudly:
+      // a SYSTEMIC cause (column/grant change) would zero the metric
+      // fleet-wide with nothing but Fly logs to show for it (review P3).
       console.error(`[CallLogger] Failed to set action_taken="${actionTaken}" for call ${callId}:`, actionError.message);
+      try {
+        Sentry.captureMessage(`action_taken write failed for call ${callId}: ${actionError.message}`.slice(0, 300), "warning");
+      } catch { /* best-effort */ }
     }
   }
 }
