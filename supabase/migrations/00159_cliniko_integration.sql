@@ -26,13 +26,14 @@ CREATE TABLE IF NOT EXISTS crm_patient_links (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   provider TEXT NOT NULL CHECK (provider IN ('cliniko')),
-  phone_e164 TEXT NOT NULL,
+  -- Normalized matching key (last 9 digits of the caller number), NOT a full E.164 string
+  phone_key TEXT NOT NULL,
   external_patient_id TEXT NOT NULL,
   patient_name TEXT,
   last_seen_at TIMESTAMPTZ DEFAULT NOW(),
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW(),
-  UNIQUE (organization_id, provider, phone_e164)
+  UNIQUE (organization_id, provider, phone_key)
 );
 CREATE INDEX IF NOT EXISTS idx_crm_patient_links_org ON crm_patient_links(organization_id);
 ALTER TABLE crm_patient_links ENABLE ROW LEVEL SECURITY;
