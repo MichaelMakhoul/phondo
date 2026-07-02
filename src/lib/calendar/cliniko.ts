@@ -457,7 +457,14 @@ export class ClinikoClient {
   async listChangedAppointments(params: { since: string; today: string; businessId: string }): Promise<PagedResult<ClinikoAppointment>> {
     const q = [`updated_at:>${params.since}`, `starts_at:>=${params.today}`];
     const path = `/businesses/${encodeURIComponent(params.businessId)}/individual_appointments`;
-    const { items, truncated } = await this.listAllTracked<Record<string, unknown>>(path, "individual_appointments", { "q[]": q });
+    // Sort oldest-change-first: if the page cap truncates, it drops the NEWEST
+    // records, so the caller can safely advance its cursor to the newest record
+    // it DID fetch and re-poll the rest (SCRUM-490).
+    const { items, truncated } = await this.listAllTracked<Record<string, unknown>>(path, "individual_appointments", {
+      "q[]": q,
+      sort: "updated_at",
+      order: "asc",
+    });
     return { items: items.map((a) => this.mapAppointment(a)), truncated };
   }
 
@@ -471,7 +478,7 @@ export class ClinikoClient {
     const { items, truncated } = await this.listAllTracked<Record<string, unknown>>(
       "/individual_appointments/deleted",
       "individual_appointments",
-      { "q[]": [`deleted_at:>${params.since}`] }
+      { "q[]": [`deleted_at:>${params.since}`], sort: "deleted_at", order: "asc" }
     );
     const mapped = items
       .map((a) => this.mapAppointment(a))

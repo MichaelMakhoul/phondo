@@ -300,6 +300,9 @@ describe("ClinikoClient reconciliation polling", () => {
     expect(url).toContain("/businesses/b-1/individual_appointments");
     expect(url).toContain("q[]=updated_at:>2026-07-01T00:00:00Z");
     expect(url).toContain("q[]=starts_at:>=2026-07-02");
+    // SCRUM-490: sort oldest-change-first so truncation drops the newest tail.
+    expect(url).toContain("sort=updated_at");
+    expect(url).toContain("order=asc");
     expect(res.truncated).toBe(false);
     expect(res.items).toHaveLength(1);
     expect(res.items[0]).toMatchObject({

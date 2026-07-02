@@ -29,6 +29,7 @@ function mockAdmin(opts: {
   settings?: Record<string, unknown>;
   mirrors?: MirrorSeed[];
   settingsWriteError?: { message: string } | null;
+  mirrorWriteError?: { message: string } | null;
 }) {
   const updates: Array<{ table: string; payload: Record<string, unknown>; id?: string }> = [];
   const rpcCalls: Array<{ fn: string; args: Record<string, unknown> }> = [];
@@ -72,7 +73,12 @@ function mockAdmin(opts: {
             },
             then: (resolve: (v: { error: unknown }) => unknown) => {
               updates.push(record);
-              const err = table === "calendar_integrations" ? opts.settingsWriteError ?? null : null;
+              const err =
+                table === "calendar_integrations"
+                  ? opts.settingsWriteError ?? null
+                  : table === "appointments"
+                    ? opts.mirrorWriteError ?? null
+                    : null;
               return resolve({ error: err });
             },
           };
@@ -263,17 +269,58 @@ describe("reconcileClinikoOrg", () => {
     expect(settingsPatch(rpcCalls)).toBeUndefined();
   });
 
-  it("does NOT advance the cursor when the poll is truncated (page cap hit)", async () => {
+  it("holds the cursor when truncated with no fetched records (can't make progress)", async () => {
     const { client, rpcCalls } = mockAdmin({ settings: { ...BASE_SETTINGS } });
     vi.mocked(createAdminClient).mockReturnValue(client as never);
     const ctx = ctxWith({
-      listChangedAppointments: vi.fn(async () => page([], true)), // truncated
+      listChangedAppointments: vi.fn(async () => page([], true)), // truncated, empty
     });
     const res = await reconcileClinikoOrg(ctx as never, { nowMs: NOW });
-    // The run completed but the read was incomplete — hold the cursor so the
-    // window is re-polled next run rather than silently skipping the tail.
     expect(res.ran).toBe(true);
     expect(settingsPatch(rpcCalls)).toBeUndefined();
+  });
+
+  it("advances the cursor to the newest FETCHED change on a truncated poll (SCRUM-490 progress)", async () => {
+    const { client, rpcCalls } = mockAdmin({
+      settings: { ...BASE_SETTINGS },
+      mirrors: [{ id: "m-1", external_id: "900", start_time: "2026-07-10T02:00:00Z", status: "confirmed" }],
+    });
+    vi.mocked(createAdminClient).mockReturnValue(client as never);
+    const NEWEST = "2026-07-02T11:45:00Z"; // between the cursor (11:00) and NOW (12:00)
+    const ctx = ctxWith({
+      listChangedAppointments: vi.fn(async () =>
+        page(
+          [
+            { id: "900", starts_at: "2026-07-10T02:00:00Z", ends_at: "2026-07-10T02:30:00Z", cancelled_at: "2026-07-02T11:40:00Z", deleted_at: null, updated_at: NEWEST },
+          ],
+          true // truncated — more (newer) records remain
+        )
+      ),
+    });
+    const res = await reconcileClinikoOrg(ctx as never, { nowMs: NOW });
+    expect(res).toMatchObject({ ran: true, cancelled: 1 });
+    // Cursor moves forward to the newest record we fetched — NOT to NOW (dropped
+    // tail is newer) and NOT held (that would re-read the same 2000 forever).
+    expect(settingsPatch(rpcCalls)).toEqual({ lastReconciledAt: new Date(NEWEST).toISOString() });
+  });
+
+  it("holds the cursor on a per-row failure even if not truncated (retry next run)", async () => {
+    const { client, rpcCalls } = mockAdmin({
+      settings: { ...BASE_SETTINGS },
+      mirrors: [{ id: "m-1", external_id: "900", start_time: "2026-07-10T02:00:00Z", status: "confirmed" }],
+      mirrorWriteError: { message: "deadlock" },
+    });
+    vi.mocked(createAdminClient).mockReturnValue(client as never);
+    const ctx = ctxWith({
+      listChangedAppointments: vi.fn(async () =>
+        page([
+          { id: "900", starts_at: "2026-07-10T02:00:00Z", ends_at: "2026-07-10T02:30:00Z", cancelled_at: "2026-07-02T11:40:00Z", deleted_at: null, updated_at: "2026-07-02T11:40:00Z" },
+        ])
+      ),
+    });
+    const res = await reconcileClinikoOrg(ctx as never, { nowMs: NOW });
+    expect(res.failed).toBe(1);
+    expect(settingsPatch(rpcCalls)).toBeUndefined(); // held for retry
   });
 
   it("clears a stale auth_failed flag once a poll succeeds", async () => {
