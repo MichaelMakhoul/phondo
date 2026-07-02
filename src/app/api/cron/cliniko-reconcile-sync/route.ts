@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
+import * as Sentry from "@sentry/nextjs";
 import { requireCronAuth } from "@/lib/security/cron-auth";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { safeDecrypt } from "@/lib/security/encryption";
-import { ClinikoClient, ClinikoAuthError } from "@/lib/calendar/cliniko";
+import { ClinikoClient } from "@/lib/calendar/cliniko";
 import { reconcileClinikoOrg } from "@/lib/calendar/cliniko-reconcile";
 
 /**
@@ -53,22 +54,21 @@ export async function GET(request: NextRequest) {
         throw new Error("integration row is missing key/shard/business");
       }
       const client = new ClinikoClient({ apiKey, shard: String(settings.shard), timeoutMs: 10_000 });
-      await reconcileClinikoOrg(
+      // reconcileClinikoOrg never throws and owns its own auth/Sentry handling;
+      // ran=false here (force bypasses the freshness gate) means it aborted on a
+      // Cliniko/DB failure it already logged, so surface that as not-ok.
+      const result = await reconcileClinikoOrg(
         { client, businessId: String(settings.businessId), integrationId: row.id },
         row.organization_id,
         { force: true }
       );
-      results.push({ organizationId: row.organization_id, ok: true });
+      results.push({ organizationId: row.organization_id, ok: result.ran });
     } catch (err) {
+      // Only the pre-reconcile setup (decrypt / missing config / bad shard) can
+      // throw here. Mirror the sibling catalog cron: log + Sentry, keep going.
       const message = err instanceof Error ? err.message : String(err);
-      if (err instanceof ClinikoAuthError) {
-        await (admin as any)
-          .from("calendar_integrations")
-          .update({ settings: { ...settings, errorState: "auth_failed" }, updated_at: new Date().toISOString() })
-          .eq("id", row.id)
-          .then((r: { error?: unknown }) => r, () => undefined);
-      }
       console.error(`[ClinikoReconcileCron] org ${row.organization_id} failed:`, message);
+      Sentry.captureException(err);
       results.push({ organizationId: row.organization_id, ok: false, error: message });
     }
   }

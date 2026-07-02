@@ -17,11 +17,11 @@ vi.mock("@/lib/calendar/cliniko", async (importOriginal) => {
 vi.mock("@/lib/calendar/cliniko-reconcile", () => ({
   reconcileClinikoOrg: vi.fn(async () => ({ ran: true, cancelled: 0, moved: 0, scanned: 0 })),
 }));
+vi.mock("@sentry/nextjs", () => ({ captureException: vi.fn() }));
 
 import { requireCronAuth } from "@/lib/security/cron-auth";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { reconcileClinikoOrg } from "@/lib/calendar/cliniko-reconcile";
-import { ClinikoAuthError } from "@/lib/calendar/cliniko";
 import { GET } from "../cliniko-reconcile-sync/route";
 
 function integrationRow(org: string, overrides: Record<string, unknown> = {}) {
@@ -87,25 +87,25 @@ describe("GET /api/cron/cliniko-reconcile-sync", () => {
     expect(vi.mocked(reconcileClinikoOrg).mock.calls[0][0]).toMatchObject({ integrationId: "int-org-1", businessId: "b-1" });
   });
 
-  it("one org failing does not block the rest", async () => {
-    const { client } = adminMock([integrationRow("org-1"), integrationRow("org-2")]);
+  it("one org's setup failure does not block the rest", async () => {
+    // A row missing its key throws in setup (before reconcile); the other runs.
+    const { client } = adminMock([integrationRow("org-1", { access_token: "plain-not-enc" }), integrationRow("org-2")]);
     vi.mocked(createAdminClient).mockReturnValue(client as never);
-    vi.mocked(reconcileClinikoOrg).mockRejectedValueOnce(new Error("boom"));
     const res = await GET(req());
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.processed).toBe(2);
     expect(body.results.filter((r: { ok: boolean }) => r.ok)).toHaveLength(1);
-    expect(vi.mocked(reconcileClinikoOrg)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(reconcileClinikoOrg)).toHaveBeenCalledTimes(1); // org-2 only
   });
 
-  it("flags the integration on an auth failure", async () => {
-    const { client, updates } = adminMock([integrationRow("org-1")]);
+  it("reports ok:false when reconcile aborts internally (ran:false)", async () => {
+    const { client } = adminMock([integrationRow("org-1")]);
     vi.mocked(createAdminClient).mockReturnValue(client as never);
-    vi.mocked(reconcileClinikoOrg).mockRejectedValueOnce(new ClinikoAuthError("bad key"));
-    await GET(req());
-    const flag = updates.find((u) => u.id === "int-org-1");
-    expect((flag?.payload.settings as Record<string, unknown>)?.errorState).toBe("auth_failed");
+    vi.mocked(reconcileClinikoOrg).mockResolvedValueOnce({ ran: false, cancelled: 0, moved: 0, scanned: 0 });
+    const res = await GET(req());
+    const body = await res.json();
+    expect(body.results[0]).toMatchObject({ organizationId: "org-1", ok: false });
   });
 
   it("skips an integration missing its shard/business without throwing", async () => {

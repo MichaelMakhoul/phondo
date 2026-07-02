@@ -116,12 +116,46 @@ export interface ClinikoAppointment {
   ends_at: string;
   cancelled_at: string | null;
   deleted_at: string | null;
-  updated_at: string;
+  // null (not "") when Cliniko omits it — reconciliation filters on updated_at
+  // server-side via the q[] query, so the mapped value is informational only.
+  updated_at: string | null;
   patient_id?: string;
   practitioner_id?: string;
   appointment_type_id?: string;
   business_id?: string;
   notes?: string | null;
+}
+
+/**
+ * A resolved, ready-to-use Cliniko integration for one org: the authed client
+ * plus the ids the booking/reconcile flows need. Lives here (the leaf client
+ * module) so both cliniko-booking and cliniko-reconcile can import it without a
+ * module cycle.
+ */
+export interface ClinikoContext {
+  readonly client: ClinikoClient;
+  readonly businessId: string;
+  readonly integrationId: string;
+}
+
+/**
+ * Result of resolving an org's Cliniko integration. The distinction matters at
+ * dispatch: `none` means genuinely not connected (fall through to built-in
+ * booking), but `error` means a transient DB/decrypt failure — the caller must
+ * NOT silently fall through (that would confirm a booking the practice never
+ * receives, or cancel locally while the real diary keeps the appointment).
+ */
+export type ClinikoResolution =
+  | { kind: "none" }
+  | { kind: "error" }
+  | { kind: "ok"; ctx: ClinikoContext };
+
+/** A page-capped list result. `truncated` is true when MAX_PAGES was hit and
+ *  more records almost certainly remain unread — the caller must treat the set
+ *  as incomplete (e.g. reconciliation must not advance its cursor past it). */
+export interface PagedResult<T> {
+  items: T[];
+  truncated: boolean;
 }
 
 interface RequestResult {
@@ -267,8 +301,18 @@ export class ClinikoClient {
 
   /** Fetch every page of a list endpoint, extracting `collectionKey` from each page. */
   private async listAll<T>(path: string, collectionKey: string, query?: Record<string, string | string[]>): Promise<T[]> {
+    return (await this.listAllTracked<T>(path, collectionKey, query)).items;
+  }
+
+  /**
+   * Like listAll, but reports whether the MAX_PAGES cap was hit with more pages
+   * still to fetch. Callers that must not silently drop the tail (reconciliation)
+   * use this so they can refuse to advance a cursor past an incomplete read.
+   */
+  private async listAllTracked<T>(path: string, collectionKey: string, query?: Record<string, string | string[]>): Promise<PagedResult<T>> {
     const items: T[] = [];
     let next: string | null = null;
+    let truncated = false;
     for (let page = 0; page < MAX_PAGES; page++) {
       const { data } = next
         ? await this.request("GET", next)
@@ -279,8 +323,10 @@ export class ClinikoClient {
       const links = data.links as { next?: string } | undefined;
       next = links?.next || null;
       if (!next) break;
+      // We exhausted the page budget but Cliniko says there's another page.
+      if (page === MAX_PAGES - 1) truncated = true;
     }
-    return items;
+    return { items, truncated };
   }
 
   async listBusinesses(): Promise<ClinikoBusiness[]> {
@@ -404,11 +450,11 @@ export class ClinikoClient {
    * uses this to catch practice-side cancels (cancelled_at set) and moves
    * (starts_at changed) without polling the whole diary.
    */
-  async listChangedAppointments(params: { since: string; today: string; businessId: string }): Promise<ClinikoAppointment[]> {
+  async listChangedAppointments(params: { since: string; today: string; businessId: string }): Promise<PagedResult<ClinikoAppointment>> {
     const q = [`updated_at:>${params.since}`, `starts_at:>=${params.today}`];
     const path = `/businesses/${encodeURIComponent(params.businessId)}/individual_appointments`;
-    const raw = await this.listAll<Record<string, unknown>>(path, "individual_appointments", { "q[]": q });
-    return raw.map((a) => this.mapAppointment(a));
+    const { items, truncated } = await this.listAllTracked<Record<string, unknown>>(path, "individual_appointments", { "q[]": q });
+    return { items: items.map((a) => this.mapAppointment(a)), truncated };
   }
 
   /**
@@ -417,15 +463,16 @@ export class ClinikoClient {
    * is applied server-side where supported and re-checked client-side so a stale
    * row is never missed.
    */
-  async listDeletedAppointments(params: { since: string }): Promise<ClinikoAppointment[]> {
-    const raw = await this.listAll<Record<string, unknown>>(
+  async listDeletedAppointments(params: { since: string }): Promise<PagedResult<ClinikoAppointment>> {
+    const { items, truncated } = await this.listAllTracked<Record<string, unknown>>(
       "/individual_appointments/deleted",
       "individual_appointments",
       { "q[]": [`deleted_at:>${params.since}`] }
     );
-    return raw
+    const mapped = items
       .map((a) => this.mapAppointment(a))
       .filter((a) => a.deleted_at != null && a.deleted_at > params.since);
+    return { items: mapped, truncated };
   }
 
   private mapPatient(p: Record<string, unknown>): ClinikoPatient {
@@ -450,7 +497,7 @@ export class ClinikoClient {
       ends_at: String(a.ends_at ?? ""),
       cancelled_at: (a.cancelled_at as string | null) ?? null,
       deleted_at: (a.deleted_at as string | null) ?? null,
-      updated_at: String(a.updated_at ?? ""),
+      updated_at: (a.updated_at as string | null) ?? null,
       patient_id: a.patient_id != null ? String(a.patient_id) : undefined,
       practitioner_id: a.practitioner_id != null ? String(a.practitioner_id) : undefined,
       appointment_type_id: a.appointment_type_id != null ? String(a.appointment_type_id) : undefined,

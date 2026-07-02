@@ -85,12 +85,17 @@ function ctxWith(client: {
 }) {
   return {
     client: {
-      listChangedAppointments: client.listChangedAppointments ?? vi.fn(async () => []),
-      listDeletedAppointments: client.listDeletedAppointments ?? vi.fn(async () => []),
+      listChangedAppointments: client.listChangedAppointments ?? vi.fn(async () => ({ items: [], truncated: false })),
+      listDeletedAppointments: client.listDeletedAppointments ?? vi.fn(async () => ({ items: [], truncated: false })),
     },
     businessId: "b-1",
     integrationId: "int-1",
   };
+}
+
+// Wrap a list of appointments as a non-truncated PagedResult.
+function page(items: unknown[], truncated = false) {
+  return { items, truncated };
 }
 
 const BASE_SETTINGS = { shard: "au1", businessId: "b-1", lastReconciledAt: "2026-07-02T11:00:00Z" };
@@ -105,7 +110,7 @@ describe("reconcileClinikoOrg", () => {
     });
     vi.mocked(createAdminClient).mockReturnValue(client as never);
     const ctx = ctxWith({
-      listChangedAppointments: vi.fn(async () => [
+      listChangedAppointments: vi.fn(async () => page([
         {
           id: "900",
           starts_at: "2026-07-10T02:00:00Z",
@@ -114,7 +119,7 @@ describe("reconcileClinikoOrg", () => {
           deleted_at: null,
           updated_at: "2026-07-02T11:30:00Z",
         },
-      ]),
+      ])),
     });
     const res = await reconcileClinikoOrg(ctx as never, ORG, { nowMs: NOW });
     expect(res).toMatchObject({ ran: true, cancelled: 1, moved: 0 });
@@ -130,7 +135,7 @@ describe("reconcileClinikoOrg", () => {
     });
     vi.mocked(createAdminClient).mockReturnValue(client as never);
     const ctx = ctxWith({
-      listChangedAppointments: vi.fn(async () => [
+      listChangedAppointments: vi.fn(async () => page([
         {
           id: "901",
           starts_at: "2026-07-10T05:00:00Z",
@@ -139,7 +144,7 @@ describe("reconcileClinikoOrg", () => {
           deleted_at: null,
           updated_at: "2026-07-02T11:30:00Z",
         },
-      ]),
+      ])),
     });
     const res = await reconcileClinikoOrg(ctx as never, ORG, { nowMs: NOW });
     expect(res).toMatchObject({ ran: true, cancelled: 0, moved: 1 });
@@ -154,7 +159,7 @@ describe("reconcileClinikoOrg", () => {
     });
     vi.mocked(createAdminClient).mockReturnValue(client as never);
     const ctx = ctxWith({
-      listDeletedAppointments: vi.fn(async () => [
+      listDeletedAppointments: vi.fn(async () => page([
         {
           id: "902",
           starts_at: "2026-07-10T02:00:00Z",
@@ -163,7 +168,7 @@ describe("reconcileClinikoOrg", () => {
           deleted_at: "2026-07-02T11:30:00Z",
           updated_at: "2026-07-02T11:30:00Z",
         },
-      ]),
+      ])),
     });
     const res = await reconcileClinikoOrg(ctx as never, ORG, { nowMs: NOW });
     expect(res.cancelled).toBe(1);
@@ -177,7 +182,7 @@ describe("reconcileClinikoOrg", () => {
     });
     vi.mocked(createAdminClient).mockReturnValue(client as never);
     const ctx = ctxWith({
-      listChangedAppointments: vi.fn(async () => [
+      listChangedAppointments: vi.fn(async () => page([
         {
           id: "999",
           starts_at: "2026-07-10T02:00:00Z",
@@ -186,7 +191,7 @@ describe("reconcileClinikoOrg", () => {
           deleted_at: null,
           updated_at: "2026-07-02T11:30:00Z",
         },
-      ]),
+      ])),
     });
     const res = await reconcileClinikoOrg(ctx as never, ORG, { nowMs: NOW });
     expect(res.cancelled).toBe(0);
@@ -242,5 +247,38 @@ describe("reconcileClinikoOrg", () => {
     const res = await reconcileClinikoOrg(ctx as never, ORG, { nowMs: NOW });
     expect(res.ran).toBe(false);
     expect(updates.find((u) => u.table === "calendar_integrations")).toBeUndefined();
+  });
+
+  it("does NOT advance the cursor when the poll is truncated (page cap hit)", async () => {
+    const { client, updates } = mockAdmin({ settings: { ...BASE_SETTINGS } });
+    vi.mocked(createAdminClient).mockReturnValue(client as never);
+    const ctx = ctxWith({
+      listChangedAppointments: vi.fn(async () => page([], true)), // truncated
+    });
+    const res = await reconcileClinikoOrg(ctx as never, ORG, { nowMs: NOW });
+    // The run completed but the read was incomplete — hold the cursor so the
+    // window is re-polled next run rather than silently skipping the tail.
+    expect(res.ran).toBe(true);
+    expect(updates.find((u) => u.table === "calendar_integrations")).toBeUndefined();
+  });
+
+  it("clears a stale auth_failed flag once a poll succeeds", async () => {
+    const { client, updates } = mockAdmin({
+      settings: { ...BASE_SETTINGS, errorState: "auth_failed" },
+    });
+    vi.mocked(createAdminClient).mockReturnValue(client as never);
+    await reconcileClinikoOrg(ctxWith({}) as never, ORG, { nowMs: NOW });
+    const written = updates.find((u) => u.table === "calendar_integrations")!.payload.settings as Record<string, unknown>;
+    expect(written.errorState).toBeNull();
+  });
+
+  it("leaves a sync_failed flag intact (reconcile doesn't exercise catalog sync)", async () => {
+    const { client, updates } = mockAdmin({
+      settings: { ...BASE_SETTINGS, errorState: "sync_failed" },
+    });
+    vi.mocked(createAdminClient).mockReturnValue(client as never);
+    await reconcileClinikoOrg(ctxWith({}) as never, ORG, { nowMs: NOW });
+    const written = updates.find((u) => u.table === "calendar_integrations")!.payload.settings as Record<string, unknown>;
+    expect(written.errorState).toBe("sync_failed");
   });
 });

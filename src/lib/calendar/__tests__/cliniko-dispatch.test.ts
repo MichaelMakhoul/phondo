@@ -25,6 +25,9 @@ vi.mock("@/lib/calendar/cliniko-booking", () => ({
   clinikoBookAppointment: vi.fn(async () => ({ success: true, message: "CLINIKO BOOKED", data: {} })),
   clinikoCancelExternal: vi.fn(async () => undefined),
 }));
+vi.mock("@/lib/calendar/cliniko-reconcile", () => ({
+  reconcileClinikoOrg: vi.fn(async () => ({ ran: true, cancelled: 0, moved: 0, scanned: 0 })),
+}));
 
 import { createAdminClient } from "@/lib/supabase/admin";
 import {
@@ -33,10 +36,12 @@ import {
   clinikoBookAppointment,
   clinikoCancelExternal,
 } from "@/lib/calendar/cliniko-booking";
+import { reconcileClinikoOrg } from "@/lib/calendar/cliniko-reconcile";
 import {
   handleCheckAvailability,
   handleBookAppointment,
   handleCancelAppointment,
+  handleLookupAppointment,
 } from "@/lib/calendar/tool-handlers";
 
 const ORG = "44444444-4444-4444-a444-444444444444";
@@ -192,5 +197,23 @@ describe("cancel dispatch (cliniko rows propagate to the practice diary)", () =>
     });
     expect(clinikoCancelExternal).not.toHaveBeenCalled();
     expect(res.success).toBe(true);
+  });
+});
+
+describe("lookup_appointment reconcile (SCRUM-482)", () => {
+  const ORG_ROW = { organizations: { appointment_verification_fields: null, timezone: "Australia/Sydney" } };
+
+  it("reconciles the mirror before reading it when Cliniko is connected", async () => {
+    vi.mocked(getActiveClinikoIntegration).mockResolvedValue(OK);
+    vi.mocked(createAdminClient).mockReturnValue(fakeAdmin(ORG_ROW) as never);
+    await handleLookupAppointment(ORG, { confirmation_code: "123456" });
+    expect(vi.mocked(reconcileClinikoOrg)).toHaveBeenCalledWith(CTX, ORG);
+  });
+
+  it("does not reconcile for a non-Cliniko org", async () => {
+    vi.mocked(getActiveClinikoIntegration).mockResolvedValue(NONE);
+    vi.mocked(createAdminClient).mockReturnValue(fakeAdmin(ORG_ROW) as never);
+    await handleLookupAppointment(ORG, { confirmation_code: "123456" });
+    expect(vi.mocked(reconcileClinikoOrg)).not.toHaveBeenCalled();
   });
 });

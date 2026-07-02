@@ -39,28 +39,17 @@ import {
   ClinikoUnavailableError,
   ClinikoValidationError,
   type ClinikoIntegrationSettings,
+  type ClinikoContext,
+  type ClinikoResolution,
 } from "./cliniko";
 import { findOrCreateClinikoPatient } from "./cliniko-patients";
 import { generateConfirmationCode } from "./confirmation-code";
 import { reconcileClinikoOrg } from "./cliniko-reconcile";
 
-export interface ClinikoContext {
-  readonly client: ClinikoClient;
-  readonly businessId: string;
-  readonly integrationId: string;
-}
-
-/**
- * Result of resolving an org's Cliniko integration. The distinction matters at
- * dispatch: `none` means genuinely not connected (fall through to built-in
- * booking), but `error` means a transient DB/decrypt failure — the caller must
- * NOT silently fall through (that would confirm a booking the practice never
- * receives, or cancel locally while the real diary keeps the appointment).
- */
-export type ClinikoResolution =
-  | { kind: "none" }
-  | { kind: "error" }
-  | { kind: "ok"; ctx: ClinikoContext };
+// ClinikoContext/ClinikoResolution moved to the leaf `cliniko` module so
+// cliniko-reconcile can consume ClinikoContext without importing this module
+// (which imports reconcile) — re-exported here for existing importers.
+export type { ClinikoContext, ClinikoResolution } from "./cliniko";
 
 interface ToolResult {
   success: boolean;

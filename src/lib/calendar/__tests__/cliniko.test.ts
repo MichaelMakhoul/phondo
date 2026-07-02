@@ -300,13 +300,29 @@ describe("ClinikoClient reconciliation polling", () => {
     expect(url).toContain("/businesses/b-1/individual_appointments");
     expect(url).toContain("q[]=updated_at:>2026-07-01T00:00:00Z");
     expect(url).toContain("q[]=starts_at:>=2026-07-02");
-    expect(res).toHaveLength(1);
-    expect(res[0]).toMatchObject({
+    expect(res.truncated).toBe(false);
+    expect(res.items).toHaveLength(1);
+    expect(res.items[0]).toMatchObject({
       id: "900",
       cancelled_at: "2026-07-05T00:00:00Z",
       deleted_at: null,
       updated_at: "2026-07-05T00:00:00Z",
     });
+  });
+
+  it("listChangedAppointments reports truncation when the page cap is hit", async () => {
+    // Every page says there's a next page → the client stops at MAX_PAGES and flags truncated.
+    const fetchMock = vi.fn(async () =>
+      jsonResponse(200, {
+        individual_appointments: [
+          { id: 1, starts_at: "2026-07-10T02:00:00Z", ends_at: "2026-07-10T02:30:00Z", cancelled_at: null, deleted_at: null, updated_at: "2026-07-05T00:00:00Z" },
+        ],
+        links: { next: "https://api.au2.cliniko.com/v1/businesses/b-1/individual_appointments?page=99" },
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const res = await makeClient().listChangedAppointments({ since: "2026-07-01T00:00:00Z", today: "2026-07-02", businessId: "b-1" });
+    expect(res.truncated).toBe(true);
   });
 
   it("listDeletedAppointments hits the deleted endpoint and filters client-side by deleted_at", async () => {
@@ -338,7 +354,7 @@ describe("ClinikoClient reconciliation polling", () => {
     const res = await makeClient().listDeletedAppointments({ since: "2026-07-01T00:00:00Z" });
     const url = decodeURIComponent(String((fetchMock.mock.calls[0] as unknown as [string])[0]));
     expect(url).toContain("/individual_appointments/deleted");
-    expect(res).toHaveLength(1);
-    expect(res[0]).toMatchObject({ id: "901", deleted_at: "2026-07-05T00:00:00Z" });
+    expect(res.items).toHaveLength(1);
+    expect(res.items[0]).toMatchObject({ id: "901", deleted_at: "2026-07-05T00:00:00Z" });
   });
 });

@@ -29,6 +29,7 @@ import {
   clinikoBookAppointment,
   clinikoCancelExternal,
 } from "@/lib/calendar/cliniko-booking";
+import { reconcileClinikoOrg } from "@/lib/calendar/cliniko-reconcile";
 import { generateConfirmationCode } from "@/lib/calendar/confirmation-code";
 import { validateOrgScopedRefs } from "@/lib/calendar/validate-org-scoped-refs";
 import { MAX_BOOKING_HORIZON_MS } from "@/lib/calendar/appointment-lifecycle";
@@ -2814,6 +2815,20 @@ export async function handleLookupAppointment(
 
   if (orgError || !org) {
     return { success: false, message: "I'm having trouble accessing the system right now. Would you like me to arrange a callback instead?" };
+  }
+
+  // SCRUM-482: a lookup reads the local mirror, so for a Cliniko org reconcile it
+  // first — otherwise "is my appointment still on?" can confirm a slot the
+  // practice already cancelled in Cliniko. Freshness-gated + never fatal: the
+  // whole block is guarded so a resolution/reconcile failure degrades to reading
+  // the mirror as-is (a no-op if availability/book already reconciled this call).
+  try {
+    const clinikoLookupResolution = await getActiveClinikoIntegration(organizationId);
+    if (clinikoLookupResolution.kind === "ok") {
+      await reconcileClinikoOrg(clinikoLookupResolution.ctx, organizationId).catch(() => {});
+    }
+  } catch {
+    // ignore — never let mirror-reconciliation break a lookup
   }
 
   // Parse verification settings (structured object or legacy array) — shared

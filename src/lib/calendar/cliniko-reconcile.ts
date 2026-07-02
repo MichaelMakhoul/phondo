@@ -1,7 +1,6 @@
 import * as Sentry from "@sentry/nextjs";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { ClinikoAuthError, type ClinikoAppointment, type ClinikoIntegrationSettings } from "./cliniko";
-import type { ClinikoContext } from "./cliniko-booking";
+import { type ClinikoAppointment, type ClinikoContext, type ClinikoIntegrationSettings } from "./cliniko";
 
 export interface ReconcileResult {
   /** false when the freshness gate skipped the run or a failure aborted it. */
@@ -32,9 +31,15 @@ function isoDate(ms: number): string {
  * SCRUM-482: pull-based reconciliation (Cliniko has no webhooks). Polls Cliniko
  * for upcoming appointments changed since the per-integration cursor and drags
  * the matching mirror rows back in line — cancelled/deleted → status='cancelled'
- * (frees the slot under no_overlapping_appointments), moved → retimed. Never
- * throws: any failure is logged, the cursor is left unadvanced, and the caller
+ * (frees the slot under no_overlapping_practitioner_appointments, since Cliniko
+ * mirror rows always carry a practitioner_id), moved → retimed. Never throws:
+ * any failure is logged + Sentry'd, the cursor is left unadvanced, and the caller
  * proceeds (availability/booking already read live Cliniko).
+ *
+ * Auth failures are deliberately NOT flagged here — the caller's own downstream
+ * Cliniko call raises the same 401 and routes to markClinikoAuthFailure (which
+ * flags the banner AND emails the owner, deduped on errorState). Flagging here
+ * would trip that dedupe and suppress the owner email.
  */
 export async function reconcileClinikoOrg(
   ctx: ClinikoContext,
@@ -42,6 +47,7 @@ export async function reconcileClinikoOrg(
   opts: { force?: boolean; nowMs?: number } = {}
 ): Promise<ReconcileResult> {
   const nowMs = opts.nowMs ?? Date.now();
+  const nowIso = new Date(nowMs).toISOString();
   const admin = createAdminClient();
 
   // Read settings fresh — the cursor + freshness marker live here, not on ctx.
@@ -73,12 +79,13 @@ export async function reconcileClinikoOrg(
     ]);
 
     const byId = new Map<string, ClinikoAppointment>();
-    for (const a of changed) byId.set(a.id, a);
-    for (const a of deleted) byId.set(a.id, a); // a delete overrides an update for the same id
+    for (const a of changed.items) byId.set(a.id, a);
+    for (const a of deleted.items) byId.set(a.id, a); // a delete overrides an update for the same id
     const scanned = byId.size;
 
     let cancelled = 0;
     let moved = 0;
+    let failed = 0;
 
     if (scanned > 0) {
       const ids = [...byId.keys()];
@@ -99,12 +106,17 @@ export async function reconcileClinikoOrg(
             await applyMirrorUpdate(admin, row.id, { status: "cancelled" });
             cancelled++;
           } else if (appt.starts_at && Date.parse(appt.starts_at) !== Date.parse(row.start_time)) {
-            await applyMirrorUpdate(admin, row.id, { start_time: appt.starts_at, end_time: appt.ends_at || null });
+            // Only overwrite end_time when Cliniko actually gave us one (a moved
+            // appointment always does); never blank a known end on a null.
+            const patch: Record<string, unknown> = { start_time: appt.starts_at };
+            if (appt.ends_at) patch.end_time = appt.ends_at;
+            await applyMirrorUpdate(admin, row.id, patch);
             moved++;
           }
         } catch (rowErr) {
           // A single row (e.g. a retime that collides with another mirror row)
           // must not abort the batch. Availability reads live Cliniko regardless.
+          failed++;
           Sentry.withScope((scope) => {
             scope.setLevel("error");
             scope.setTag("bug", "cliniko_reconcile_row_failed");
@@ -115,31 +127,42 @@ export async function reconcileClinikoOrg(
       }
     }
 
-    // Advance the cursor to poll-start — only on a successful poll, and with a
-    // read-before-write spread so shard/businessId/errorState are never clobbered.
-    const { error: writeError } = await (admin as any)
-      .from("calendar_integrations")
-      .update({
-        settings: { ...settings, lastReconciledAt: new Date(nowMs).toISOString() },
-        updated_at: new Date(nowMs).toISOString(),
-      })
-      .eq("id", ctx.integrationId);
-    if (writeError) {
-      console.error("[ClinikoReconcile] cursor write failed:", writeError.message || writeError.code);
+    // A truncated poll (page cap hit) or any per-row failure means the read was
+    // incomplete — do NOT advance the cursor past what we could not process, or
+    // those cancels/moves are lost forever. Re-poll the same window next run
+    // (reconcile is idempotent, so re-processing the rows we did handle is free).
+    const incomplete = changed.truncated || deleted.truncated || failed > 0;
+    if (incomplete) {
+      Sentry.withScope((scope) => {
+        scope.setLevel("warning");
+        scope.setTag("bug", "cliniko_reconcile_incomplete");
+        scope.setExtras({ organizationId, integrationId: ctx.integrationId, changedTruncated: changed.truncated, deletedTruncated: deleted.truncated, failed });
+        Sentry.captureMessage("Cliniko reconcile poll was incomplete — cursor held so the window is re-polled");
+      });
+    } else {
+      // Advance the cursor to poll-start — only on a complete, successful poll,
+      // with a read-before-write spread so shard/businessId aren't clobbered. A
+      // successful poll proves auth works, so a stale auth_failed flag is cleared.
+      const { error: writeError } = await (admin as any)
+        .from("calendar_integrations")
+        .update({
+          settings: {
+            ...settings,
+            lastReconciledAt: nowIso,
+            errorState: settings.errorState === "auth_failed" ? null : settings.errorState ?? null,
+          },
+          updated_at: nowIso,
+        })
+        .eq("id", ctx.integrationId);
+      if (writeError) {
+        console.error("[ClinikoReconcile] cursor write failed:", writeError.message || writeError.code);
+      }
     }
 
     return { ran: true, cancelled, moved, scanned };
   } catch (err) {
-    if (err instanceof ClinikoAuthError) {
-      // Flag for the dashboard banner without wiping settings. The daily reconcile
-      // cron sends the owner email on its next run (avoids a value-import cycle
-      // with cliniko-booking's markClinikoAuthFailure).
-      await (admin as any)
-        .from("calendar_integrations")
-        .update({ settings: { ...settings, errorState: "auth_failed" }, updated_at: new Date(nowMs).toISOString() })
-        .eq("id", ctx.integrationId)
-        .then((r: { error?: unknown }) => r, () => undefined);
-    }
+    // Includes ClinikoAuthError — intentionally NOT flagged here (see the header
+    // comment); the caller's own 401 handling owns the flag + owner email.
     console.error("[ClinikoReconcile] reconcile failed:", err instanceof Error ? err.message : String(err));
     Sentry.withScope((scope) => {
       scope.setLevel("error");
