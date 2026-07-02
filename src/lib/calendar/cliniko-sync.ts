@@ -30,13 +30,20 @@ interface LocalRef {
   external_id: string;
 }
 
-export async function syncClinikoCatalog(organizationId: string, client: ClinikoClient): Promise<ClinikoSyncResult> {
+export async function syncClinikoCatalog(
+  organizationId: string,
+  client: ClinikoClient,
+  // The selected business (location). Scopes practitioners so a multi-location
+  // account doesn't import the other site's staff (who would never have slots
+  // at this location → perpetual "no availability"). Omitted → whole account.
+  businessId?: string
+): Promise<ClinikoSyncResult> {
   const supabase = createAdminClient();
   const errors: string[] = [];
   const now = new Date().toISOString();
 
   const [practitioners, appointmentTypes] = await Promise.all([
-    client.listPractitioners(),
+    client.listPractitioners(businessId),
     client.listAppointmentTypes(),
   ]);
   const activePractitioners = practitioners.filter((p) => p.active);

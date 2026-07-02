@@ -81,6 +81,16 @@ function fakeClient(): ClinikoClient {
   } as unknown as ClinikoClient;
 }
 
+describe("syncClinikoCatalog business scoping", () => {
+  it("forwards the selected businessId to listPractitioners (multi-location isolation)", async () => {
+    const db = mockDb(defaultHandler);
+    vi.mocked(createAdminClient).mockReturnValue(db.client as never);
+    const client = fakeClient();
+    await syncClinikoCatalog(ORG, client, "biz-7");
+    expect(client.listPractitioners).toHaveBeenCalledWith("biz-7");
+  });
+});
+
 /** Default handler: upserts return local rows, selects return no stale rows. */
 const defaultHandler: Handler = (call) => {
   if (call.op === "upsert" && call.table === "practitioners") {

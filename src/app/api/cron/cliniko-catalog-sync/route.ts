@@ -56,7 +56,7 @@ export async function GET(request: NextRequest) {
         throw new Error("integration row is missing key/shard/business");
       }
       const client = new ClinikoClient({ apiKey, shard: String(settings.shard), timeoutMs: 10_000 });
-      await syncClinikoCatalog(row.organization_id, client);
+      await syncClinikoCatalog(row.organization_id, client, String(settings.businessId));
       await (admin as any)
         .from("calendar_integrations")
         .update({

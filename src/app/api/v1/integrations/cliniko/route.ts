@@ -124,7 +124,7 @@ async function runInitialSync(
 ): Promise<{ sync: Awaited<ReturnType<typeof syncClinikoCatalog>> | null; syncError?: string }> {
   const admin = createAdminClient();
   try {
-    const sync = await syncClinikoCatalog(organizationId, client);
+    const sync = await syncClinikoCatalog(organizationId, client, settings.businessId as string | undefined);
     await (admin as any)
       .from("calendar_integrations")
       .update({

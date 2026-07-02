@@ -285,8 +285,9 @@ export function ClinikoCard() {
             {status.errorState === "sync_failed" && (
               <div className="rounded-md border border-amber-200 bg-amber-50 p-3 dark:border-amber-900 dark:bg-amber-950">
                 <p className="text-sm text-amber-800 dark:text-amber-200">
-                  The last catalog sync failed. Bookings still work; use Sync now to refresh practitioners and
-                  appointment types.
+                  {(status.counts?.serviceTypes ?? 0) === 0
+                    ? "The catalog sync failed and no appointment types were imported yet, so the AI can't book into Cliniko until it succeeds. Use Sync now to retry."
+                    : "The last catalog sync failed, so practitioners and appointment types may be out of date. Bookings still work; use Sync now to refresh."}
                 </p>
               </div>
             )}

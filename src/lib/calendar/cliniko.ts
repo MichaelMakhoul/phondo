@@ -72,8 +72,11 @@ export function parseClinikoApiKey(raw: string): { key: string; shard: string } 
   }
   const match = key.match(/-([a-z]{2,3}\d{1,2})$/);
   if (!match || !SHARD_PATTERN.test(match[1])) {
+    // Older Cliniko keys have no region suffix at all — "copy everything after
+    // the dash" wouldn't help, so tell them to generate a fresh key (current
+    // Cliniko keys always carry the suffix).
     throw new ClinikoApiKeyError(
-      "The key is missing its region suffix (e.g. \"-au1\"). Copy the full key from Cliniko, including everything after the last dash."
+      "This key is missing its region suffix (e.g. \"-au1\"). Generate a new API key in Cliniko (My Info → Manage API keys) and paste it here — new keys include the suffix."
     );
   }
   return { key, shard: match[1] };

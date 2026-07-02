@@ -69,7 +69,7 @@ export async function POST(request: Request) {
     };
 
     try {
-      const sync = await syncClinikoCatalog(membership.organization_id, ctx.client);
+      const sync = await syncClinikoCatalog(membership.organization_id, ctx.client, ctx.businessId);
       const settings = await readSettings();
       if (settings) {
         await (admin as any)
