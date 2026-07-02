@@ -23,6 +23,13 @@ import { runAfterResponse } from "@/lib/utils/after-response";
 import { rateLimitDistributed } from "@/lib/security/rate-limiter";
 import { hasNonLatinLetters } from "@/lib/calendar/latin-name";
 import { resolveRescheduleIdentity, resolveRescheduledBooking } from "@/lib/calendar/reschedule-core";
+import {
+  getActiveClinikoIntegration,
+  clinikoCheckAvailability,
+  clinikoBookAppointment,
+  clinikoCancelExternal,
+} from "@/lib/calendar/cliniko-booking";
+import { generateConfirmationCode } from "@/lib/calendar/confirmation-code";
 import { validateOrgScopedRefs } from "@/lib/calendar/validate-org-scoped-refs";
 import { MAX_BOOKING_HORIZON_MS } from "@/lib/calendar/appointment-lifecycle";
 import {
@@ -81,9 +88,8 @@ const DEFAULT_SLOT_DURATION_MINUTES = 30;
 // appointment-lifecycle so the dashboard routes enforce the same horizon.
 
 /** Generate a 6-digit confirmation code (crypto-secure, digits only) */
-function generateConfirmationCode(): string {
-  return crypto.randomInt(100000, 999999).toString();
-}
+// SCRUM-12: generateConfirmationCode moved to ./confirmation-code so the
+// Cliniko booking path can mint codes without importing this module (cycle).
 
 /**
  * Get blocked time ranges for an org on a given date.
@@ -985,6 +991,46 @@ export async function handleBookAppointment(
     serviceTypeDuration = st.duration_minutes;
   }
 
+  // ── SCRUM-12: a connected Cliniko diary owns booking — dispatch before the
+  // built-in/Cal.com forks. Datetime parsing + horizon guards mirror
+  // bookInternal exactly (same copy, same tz-aware interpretation); org-scoped
+  // ref enforcement happens inside the Cliniko path via cliniko-linked lookups.
+  const clinikoCtx = await getActiveClinikoIntegration(organizationId);
+  if (clinikoCtx) {
+    const clinikoSchedule = await getOrgSchedule(organizationId).catch(() => null);
+    const clinikoTimezone = clinikoSchedule?.timezone || "Australia/Sydney";
+    const clinikoStart = new Date(ensureTimezoneOffset(datetime, clinikoTimezone));
+    if (isNaN(clinikoStart.getTime())) {
+      return {
+        success: false,
+        message: "I didn't understand that date and time. Could you say it again?",
+      };
+    }
+    if (clinikoStart.getTime() > Date.now() + MAX_BOOKING_HORIZON_MS) {
+      return {
+        success: false,
+        message: "I can only book appointments up to a year in advance. Would you like to pick a closer date?",
+      };
+    }
+    if (clinikoStart.getTime() < Date.now()) {
+      return {
+        success: false,
+        message: "That time has already passed. Would you like to book a later time today or a different day?",
+      };
+    }
+    return clinikoBookAppointment(clinikoCtx, organizationId, {
+      startDate: clinikoStart,
+      sanitizedName,
+      firstName: firstName || undefined,
+      lastName: lastName || undefined,
+      phone,
+      email,
+      sanitizedNotes,
+      serviceTypeId: service_type_id,
+      requestedPractitionerId: args.practitioner_id || undefined,
+    });
+  }
+
   const useBuiltIn = service_type_id || serviceTypes.length > 0;
 
   if (useBuiltIn) {
@@ -1050,6 +1096,13 @@ export async function handleCheckAvailability(
       success: false,
       message: "That appointment type doesn't seem right. Could you tell me which type of appointment you'd like?",
     };
+  }
+
+  // ── SCRUM-12: a connected Cliniko practice diary owns availability — it must
+  // come from the real appointment book, not the built-in calendar or Cal.com.
+  const clinikoCtx = await getActiveClinikoIntegration(organizationId);
+  if (clinikoCtx) {
+    return clinikoCheckAvailability(clinikoCtx, organizationId, { date, service_type_id });
   }
 
   // ── Resolve service type duration if provided ─────────────────────────
@@ -1561,6 +1614,22 @@ async function cancelSingleAppointment(
           appointmentId: appointment.id,
         });
         // Don't fail — still cancel locally
+      }
+    }
+
+    // SCRUM-12: propagate to the practice's Cliniko diary BEFORE freeing the
+    // local row — cancelling only locally would silently desync the real
+    // appointment book (a failure here falls to the outer catch, so the caller
+    // hears the trouble message and the appointment stays intact on both sides).
+    if (appointment.provider === "cliniko") {
+      const clinikoCtx = await getActiveClinikoIntegration(organizationId);
+      if (clinikoCtx) {
+        await clinikoCancelExternal(clinikoCtx, appointment, reason || "Cancelled by caller via Phondo");
+      } else {
+        // Org disconnected the integration — they manage the diary manually now.
+        console.warn("[Cliniko] cancel: integration inactive — cancelling locally only", {
+          appointmentId: appointment.id,
+        });
       }
     }
 

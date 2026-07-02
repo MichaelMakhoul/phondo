@@ -365,6 +365,9 @@ export async function clinikoCheckAvailability(
     if (!args.date) {
       return { success: false, message: "What date would you like me to check availability for?" };
     }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(args.date)) {
+      return { success: false, message: "I need the date in a standard format. Could you say the date again?" };
+    }
 
     const timezone = await getOrgTimezone(organizationId);
     const practitioners = await getLinkedPractitionersForService(organizationId, serviceType.id);
