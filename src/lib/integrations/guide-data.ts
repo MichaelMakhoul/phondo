@@ -107,13 +107,13 @@ export const INDUSTRY_RECOMMENDATIONS: IndustryRecommendation[] = [
     industry: "dental",
     label: "Dental Practice",
     tools: ["Cliniko", "Dentally", "Open Dental", "Google Sheets"],
-    tip: "Most dental offices use Cliniko or Dentally for patient management. Connect via Zapier to automatically log new patient inquiries.",
+    tip: "Cliniko users: connect the native Cliniko integration above and the AI books straight into your appointment book — no Zapier needed. Other tools connect via webhooks.",
   },
   {
     industry: "medical",
     label: "Medical Practice",
     tools: ["Cliniko", "Jane App", "Halaxy", "Practice Better"],
-    tip: "Send call data to your practice management software to pre-fill patient intake forms.",
+    tip: "Cliniko users get live diary booking via the native integration above. For other practice software, send call data via webhooks to pre-fill patient intake forms.",
   },
   {
     industry: "legal",

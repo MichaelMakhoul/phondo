@@ -50,7 +50,7 @@ interface DbCall {
   filters: Record<string, unknown>;
   inArgs: Record<string, unknown[]>;
 }
-type Handler = (call: DbCall, seq: DbCall[]) => { data?: unknown; error?: { message?: string; code?: string } | null };
+type Handler = (call: DbCall, seq?: DbCall[]) => { data?: unknown; error?: { message?: string; code?: string } | null };
 
 function mockDb(handler: Handler) {
   const calls: DbCall[] = [];

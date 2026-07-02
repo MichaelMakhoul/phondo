@@ -28,7 +28,7 @@ interface IntegrationRow {
 }
 
 export async function GET(request: NextRequest) {
-  const authError = requireCronAuth(request);
+  const authError = requireCronAuth(request, "cliniko-catalog-sync");
   if (authError) return authError;
 
   const admin = createAdminClient();

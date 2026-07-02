@@ -58,7 +58,7 @@ describe("ClinikoClient request basics", () => {
     vi.stubGlobal("fetch", fetchMock);
     await makeClient().listBusinesses();
 
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toContain("https://api.au2.cliniko.com/v1/businesses");
     const headers = init.headers as Record<string, string>;
     expect(headers.Authorization).toBe(`Basic ${Buffer.from("MS0xLWl0c2Fu-au2:").toString("base64")}`);
@@ -144,7 +144,7 @@ describe("ClinikoClient resources", () => {
 
     const practitioners = await makeClient().listPractitioners();
     expect(practitioners.map((p) => p.id)).toEqual(["1", "2"]);
-    expect(fetchMock.mock.calls[1][0]).toContain("page=2");
+    expect((fetchMock.mock.calls[1] as unknown as [string, RequestInit])[0]).toContain("page=2");
   });
 
   it("availableTimes returns appointment_start ISO strings", async () => {
@@ -178,7 +178,7 @@ describe("ClinikoClient resources", () => {
     vi.stubGlobal("fetch", fetchMock);
     const patients = await makeClient().findPatientsByName("Jo", "Bloggs");
     expect(patients[0].id).toBe("99");
-    const url = decodeURIComponent(String(fetchMock.mock.calls[0][0]));
+    const url = decodeURIComponent(String((fetchMock.mock.calls[0] as unknown as [string, RequestInit])[0]));
     expect(url).toContain("q[]=first_name:=Jo");
     expect(url).toContain("q[]=last_name:=Bloggs");
   });
@@ -207,7 +207,7 @@ describe("ClinikoClient resources", () => {
       notes: "Toothache",
     });
     expect(appt.id).toBe("555");
-    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    const body = JSON.parse(((fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1]).body as string);
     expect(body).toMatchObject({
       business_id: "1",
       practitioner_id: "2",
@@ -222,7 +222,7 @@ describe("ClinikoClient resources", () => {
     const fetchMock = vi.fn(async () => jsonResponse(204, {}));
     vi.stubGlobal("fetch", fetchMock);
     await makeClient().cancelAppointment("555", "Cancelled by caller via Phondo");
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toContain("/individual_appointments/555/cancel");
     expect(init.method).toBe("PATCH");
     expect(JSON.parse(init.body as string)).toMatchObject({
@@ -241,7 +241,7 @@ describe("ClinikoClient resources", () => {
     vi.stubGlobal("fetch", fetchMock);
     const appt = await makeClient().updateAppointmentTime("555", "2026-07-08T01:00:00Z");
     expect(appt.starts_at).toBe("2026-07-08T01:00:00Z");
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toContain("/individual_appointments/555");
     expect(init.method).toBe("PUT");
   });
