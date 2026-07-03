@@ -718,7 +718,7 @@ function createRealtimeSession(config, callbacks, provider = PROVIDERS.openai) {
         // a response that had already finished server-side. Dropped BOTH
         // 2026-07-03 eval calls (one right after a successful booking) before
         // this was treated as the non-event it is.
-        if (code === "invalid_request_error" && /no active response/i.test(msg.error?.message || "")) {
+        if (code === "invalid_request_error" && /cancel/i.test(msg.error?.message || "") && /no active response/i.test(msg.error?.message || "")) {
           console.warn(`[${P.tag}] benign cancel race:`, msg.error?.message);
           return;
         }
