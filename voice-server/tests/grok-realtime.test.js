@@ -160,6 +160,22 @@ describe("createInputTranscriptTracker (SCRUM-378) — one commit per utterance"
     assert.deepEqual(commits, ["first", "second"]);
   });
 
+  it("a NEW utterance item superseding a held one commits the held one in order (segment boundary)", () => {
+    const { t, commits } = mkTracker();
+    t.updated("item_1", "first segment");
+    t.updated("item_2", "second segment"); // no explicit flush between segments
+    t.flush(); // turn over (response.created)
+    assert.deepEqual(commits, ["first segment", "second segment"]);
+  });
+
+  it("REVISED snapshots for the SAME item never double-commit (the 'Are youAre you' stutter)", () => {
+    const { t, commits } = mkTracker();
+    t.updated("item_1", "Are you");
+    t.updated("item_1", "Are you open tomorrow"); // cumulative revision mid-utterance
+    t.flush();
+    assert.deepEqual(commits, ["Are you open tomorrow"]); // newest wins, once
+  });
+
   it("id-less events fall back to exact-text dedup (flush then same-text .completed)", () => {
     const { t, commits } = mkTracker();
     t.updated(null, "hi");

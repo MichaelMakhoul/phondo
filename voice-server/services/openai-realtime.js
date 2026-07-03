@@ -76,6 +76,7 @@ const SETUP_WATCHDOG_MS = 10000;
 const KNOWN_IGNORED = new Set([
   "session.created",
   "conversation.created", // xAI: carries the resumable conversation id (resumption unused here)
+  "ping", // xAI: app-level keepalive every ~10s — flooded the logs on the first real calls
   "response.output_item.done",
   "response.content_part.added", "response.content_part.done",
   "response.output_audio.done", "response.output_audio_transcript.done",
@@ -86,8 +87,10 @@ const KNOWN_IGNORED = new Set([
   // real lines out of the buffer.
   "response.function_call_arguments.delta",
   "rate_limits.updated",
-  // speech_stopped/committed are HANDLED (end-of-utterance transcript flush).
-  "input_audio_buffer.cleared",
+  // speech_stopped/committed also fire at INTRA-utterance pauses — flushing
+  // transcripts on them stuttered the stored transcript (see the note at the
+  // response.created handler). Deliberately ignored.
+  "input_audio_buffer.speech_stopped", "input_audio_buffer.committed", "input_audio_buffer.cleared",
   "conversation.item.created", "conversation.item.added", "conversation.item.done",
   "conversation.item.truncated", "conversation.item.input_audio_transcription.delta",
 ]);
@@ -327,10 +330,14 @@ function createInputTranscriptTracker(commit) {
   }
 
   return {
-    /** Cumulative snapshot (Grok) — hold as provisional, newest wins. */
+    /** Cumulative snapshot (Grok) — hold as provisional, newest wins. A snapshot
+     *  for a NEW utterance item while another is held marks a segment boundary:
+     *  commit the held one (in order) before tracking the new one, so multi-item
+     *  caller turns don't lose their earlier segments to the single slot. */
     updated(itemId, transcript) {
       if (typeof transcript !== "string" || !transcript) return;
       if (itemId && flushedIds.has(itemId)) return; // this utterance was already committed
+      if (provisionalText && provisionalId && itemId && itemId !== provisionalId) flushProvisional();
       provisionalId = itemId || null;
       provisionalText = transcript;
     },
@@ -501,10 +508,10 @@ function createRealtimeSession(config, callbacks, provider = PROVIDERS.openai) {
       case "response.created":
         // A create we did NOT request (gate not pending) is the server's VAD
         // answering the caller — that utterance is over; commit its provisional
-        // transcript (fallback boundary — speech_stopped/committed is the
-        // primary one). Our OWN creates (greeting / tool-followup / sendText)
-        // say nothing about the caller's speech, which may still be in flight —
-        // flushing there would truncate a mid-air utterance (review F4).
+        // transcript. This is the PRIMARY commit boundary (one commit per turn).
+        // Our OWN creates (greeting / tool-followup / sendText) say nothing
+        // about the caller's speech, which may still be in flight — flushing
+        // there would truncate a mid-air utterance (review F4).
         if (!gate.snapshot.pending) inputTranscripts.flush();
         bargedIn = false; // a new response starts fresh interruption bookkeeping
         gate.created();
@@ -512,13 +519,13 @@ function createRealtimeSession(config, callbacks, provider = PROVIDERS.openai) {
         if (armEndOnNextCreate) { endAfterResponseId = msg.response?.id || null; armEndOnNextCreate = false; }
         return;
 
-      // End-of-utterance signals (VAD boundary / buffer commit): the definitive
-      // moment to commit a provisional Grok transcript. No-op on OpenAI, whose
-      // transcripts arrive via the terminal `.completed` event instead.
-      case "input_audio_buffer.speech_stopped":
-      case "input_audio_buffer.committed":
-        inputTranscripts.flush();
-        return;
+      // NOTE (2026-07-03, from the first real Grok calls): speech_stopped /
+      // committed fire at INTRA-utterance pauses too, and Grok's cumulative
+      // `.updated` snapshots get REVISED across those pauses — flushing here
+      // committed overlapping partials and stuttered the stored transcript
+      // ("Are youAre you"). Commit once per turn instead: on the server's own
+      // response.created (it answers when the turn is truly over), on a new
+      // utterance item superseding a held one (see the tracker), and at close.
 
       // The server acknowledges a barge-in cancel with response.done(status=cancelled)
       // OR a bare response.cancelled — handle BOTH so `active` always clears.
@@ -706,6 +713,15 @@ function createRealtimeSession(config, callbacks, provider = PROVIDERS.openai) {
           return;
         }
         if (isBenignError(code)) { console.warn(`[${P.tag}] benign:`, code); return; }
+        // Grok reports the benign cancel race with a GENERIC code where OpenAI
+        // uses response_cancel_not_active: our barge-in response.cancel crossed
+        // a response that had already finished server-side. Dropped BOTH
+        // 2026-07-03 eval calls (one right after a successful booking) before
+        // this was treated as the non-event it is.
+        if (code === "invalid_request_error" && /cancel/i.test(msg.error?.message || "") && /no active response/i.test(msg.error?.message || "")) {
+          console.warn(`[${P.tag}] benign cancel race:`, msg.error?.message);
+          return;
+        }
         // Genuinely fatal — surface to Sentry HERE (the provider's error detail)
         // before the downstream onError loses it, then propagate.
         console.error(`[${P.tag}] server error event:`, JSON.stringify(msg.error || msg).slice(0, 500));
