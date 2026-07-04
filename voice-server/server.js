@@ -2289,16 +2289,46 @@ wss.on("connection", (twilioWs) => {
                   // rather than escalating. The directive is appended to the
                   // RETURNED message only — the audit/dedupe/cache checks above
                   // key off the unmodified `message` const.
+                  // SCRUM-367/503: availability/conflict rejections are the
+                  // legitimate "offer another time" turns shared by BOTH the book
+                  // and reschedule loop-breakers. One pattern keeps the twin caps
+                  // byte-identical and covers every availability message their
+                  // shared handleBookAppointment path emits — including the
+                  // practitioner-unavailable case ("unavailable at this time").
+                  const availabilityRejectRe = /no longer available|already booked|currently blocked|not available for this service|fully booked|no available slot|unavailable at this time/i;
+
                   let bookLoopDirective = "";
                   if (session && toolCall.name === "book_appointment") {
                     const lastAudit = session.toolCallAudit[session.toolCallAudit.length - 1] || {};
                     const succeeded = (typeof result === "object" && typeof result.success === "boolean")
                       ? result.success
                       : lastAudit.successful === true;
-                    const isAvailabilityReject = /no longer available|already booked|currently blocked|not available for this service|fully booked|no available slot/i.test(message);
+                    const isAvailabilityReject = availabilityRejectRe.test(message);
                     bookLoopDirective = session.registerBookOutcome({ successful: succeeded, isAvailabilityReject });
                     if (bookLoopDirective) {
                       console.warn(`[BookLoopCap] Escalation injected (attempt ${session.bookRejectionCount}). callSid=${session.callSid}`);
+                    }
+                  }
+
+                  // SCRUM-503: same anti-loop escalation for reschedule — on the
+                  // first completed Grok eval call the model re-fired
+                  // reschedule_appointment ~10x in 40s instead of relaying the
+                  // tool's "confirm the name" question to the caller, until the
+                  // per-number attempt cap blocked the flow. Faithful twin of the
+                  // book block above: authoritative `result.success`, with the
+                  // SCRUM-227 audit signal as the fallback (governs the test-mode
+                  // simulated path, which omits `success`) and the SAME shared
+                  // availability regex so a legit "offer another time" resets.
+                  let rescheduleLoopDirective = "";
+                  if (session && toolCall.name === "reschedule_appointment") {
+                    const lastAudit = session.toolCallAudit[session.toolCallAudit.length - 1] || {};
+                    const succeeded = (typeof result === "object" && typeof result.success === "boolean")
+                      ? result.success
+                      : lastAudit.successful === true;
+                    const isAvailabilityReject = availabilityRejectRe.test(message);
+                    rescheduleLoopDirective = session.registerRescheduleOutcome({ successful: succeeded, isAvailabilityReject });
+                    if (rescheduleLoopDirective) {
+                      console.warn(`[RescheduleLoopCap] Escalation injected (attempt ${session.rescheduleRetryCount}). callSid=${session.callSid}`);
                     }
                   }
 
@@ -2345,7 +2375,7 @@ wss.on("connection", (twilioWs) => {
                   // Preserve __endCall flag so gemini-live.js can detect end_call
                   // and close the WebSocket. Without this, the session stays open
                   // indefinitely after end_call.
-                  const ret = { message: message + bookLoopDirective };
+                  const ret = { message: message + bookLoopDirective + rescheduleLoopDirective };
                   if (typeof result === "object" && result?.__endCall) ret.__endCall = true;
                   // SCRUM-378: forward `action` (e.g. "transfer") so the OpenAI
                   // Realtime adapter can suppress its follow-up response.create on a
