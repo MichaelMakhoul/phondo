@@ -81,6 +81,8 @@ class CallSession {
     // Set true once a booking completes under escalation — its name/phone were
     // AI-supplied, so post-call review may want to verify the spelling.
     this.bookNameEscalated = false;
+    // SCRUM-503: reschedule twin of the book-loop cap.
+    this.rescheduleRetryCount = 0;
 
     // SCRUM-372: deterministic cancel-confirmation gate. The FIRST
     // cancel_appointment call in a call is held pending an explicit caller
@@ -121,6 +123,37 @@ class CallSession {
       `Stop asking the caller to repeat it. If a name is not in English/Latin letters, transliterate it into ` +
       `English letters YOURSELF and use that. Use the caller's phone from caller ID. Then complete the booking. ` +
       `If instead a requested time is unavailable, offer the caller an alternative time.)`
+    );
+  }
+
+  /**
+   * SCRUM-503: the reschedule twin of registerBookOutcome. On the first
+   * completed Grok eval call (2026-07-04) the model re-fired
+   * reschedule_appointment ~10x in 40s when the tool asked it to confirm the
+   * caller's name — every non-success reschedule result is a QUESTION to relay
+   * to the caller (name / phone / which-appointment disambiguation), never a
+   * retriable error. The blind retries then tripped the per-number attempt cap
+   * and blocked the eventually-correct call.
+   *
+   * Availability/conflict rejections reset the counter — they're legitimate
+   * "offer another time" turns, exactly as in the booking cap.
+   *
+   * @param {{ successful: boolean, isAvailabilityReject: boolean }} outcome
+   * @returns {string} directive to append to the tool-result message ("" = none)
+   */
+  registerRescheduleOutcome({ successful, isAvailabilityReject }) {
+    if (successful || isAvailabilityReject) {
+      this.rescheduleRetryCount = 0;
+      return "";
+    }
+    this.rescheduleRetryCount += 1;
+    if (this.rescheduleRetryCount < 2) return "";
+    return (
+      ` (SYSTEM — reschedule attempt ${this.rescheduleRetryCount}: STOP calling reschedule_appointment. ` +
+      `The tool result above is a QUESTION for the caller, not a retriable error. ASK THE CALLER for exactly ` +
+      `what it requests (the name on the booking, or which appointment to move), WAIT for their spoken answer, ` +
+      `then call the tool ONCE more with that answer included. If instead the tool says a time or practitioner ` +
+      `is unavailable, offer the caller an alternative time.)`
     );
   }
 

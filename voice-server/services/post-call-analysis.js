@@ -126,7 +126,15 @@ async function callOpenAI({ system, user, maxTokens, model, timeoutMs }) {
   }
 
   if (finishReason === "length") {
-    throw new Error("OpenAI hit max_tokens (truncated)");
+    // SCRUM-502: tag the ONLY benign truncation so the caller can downgrade it
+    // without substring-matching err.message — a 4xx error body can itself
+    // contain "max_tokens" (e.g. an unsupported-parameter 400 on a model swap),
+    // and that must still page the operator, not be silently swallowed.
+    const err = /** @type {Error & { isMaxTokensTruncation?: boolean }} */ (
+      new Error("OpenAI hit max_tokens (truncated)")
+    );
+    err.isMaxTokensTruncation = true;
+    throw err;
   }
 
   return JSON.parse(content);
@@ -175,10 +183,16 @@ async function analyzeCleanup(transcript, language) {
     // the slower model would otherwise risk silently timing out on exactly the
     // calls this is meant to help.
     const garbled = containsNonLatinScript(transcript);
+    const sliced = transcript.slice(0, 6000);
     const parsed = await callOpenAI({
       system: CLEANUP_PROMPT + langHint,
-      user: `Clean up this transcript:\n\n${transcript.slice(0, 6000)}`,
-      maxTokens: 2500,
+      user: `Clean up this transcript:\n\n${sliced}`,
+      // SCRUM-502: the output re-emits the whole input as JSON turns, so a
+      // fixed 2500 truncated on every long call (and Arabic runs ~1 token per
+      // character) — which raised an [ALERT:error] + operator email per call.
+      // Budget ≈ input size + JSON overhead, capped far below the model's
+      // output ceiling.
+      maxTokens: Math.min(10_000, 1500 + sliced.length),
       model: garbled ? CLEANUP_MODEL_GARBLED : undefined,
       timeoutMs: garbled ? 35_000 : undefined,
     });
@@ -189,6 +203,16 @@ async function analyzeCleanup(transcript, language) {
     );
     return turns.length > 0 ? { turns } : null;
   } catch (err) {
+    // SCRUM-502: truncation despite the scaled budget means "transcript too
+    // big to clean", not a system fault — the RAW transcript is kept and the
+    // dashboard shows it uncleaned. Warn only (an [ALERT:error] here emailed
+    // the operator after every long call). Keyed off the typed flag, not a
+    // message substring, so a genuine 4xx that merely mentions "max_tokens"
+    // still falls through to the real-error path below.
+    if (err.isMaxTokensTruncation) {
+      console.warn("[PostCallAnalysis] Cleanup skipped — transcript exceeds even the scaled output budget:", err.message);
+      return null;
+    }
     console.error("[PostCallAnalysis] Cleanup analysis failed:", err.message);
     Sentry.withScope((scope) => {
       scope.setTag("service", "post-call-analysis");
