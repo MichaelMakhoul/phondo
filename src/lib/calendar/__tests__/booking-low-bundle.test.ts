@@ -155,6 +155,9 @@ describe("confirmation-code collision retry (finding #49)", () => {
     const result = await handleBookAppointment("org-1", BOOK_ARGS);
     expect(result.success).toBe(false);
     expect(result.message).toMatch(/trouble completing the booking/i);
+    // SCRUM-509: collision-exhausted is a GENUINE failure — must carry the flag
+    // so the voice server emits [ALERT:error] (not a silent 200 + success:false).
+    expect((result as { error?: boolean }).error).toBe(true);
     expect(counts.inserts).toBe(3);
   });
 
@@ -171,6 +174,26 @@ describe("confirmation-code collision retry (finding #49)", () => {
     expect(result.success).toBe(false);
     expect(result.message).toMatch(/no longer available/i);
     expect(counts.inserts).toBe(1);
+  });
+
+  it("flags a genuine insert failure (non-constraint DB error) with error:true", async () => {
+    // SCRUM-509: a plain insert fault (e.g. connection drop) is the single most
+    // likely real booking failure. It must return success:false + error:true so
+    // the voice server alerts — NOT a silent graceful 200. Distinct from the
+    // 23P01 overlap above, which is a business "slot taken" and stays unflagged.
+    vi.mocked(createAdminClient).mockReturnValue(
+      fakeAdmin(
+        baseTables(),
+        [{ data: null, error: { code: "08006", message: "connection failure" } }],
+        counts,
+      ) as never,
+    );
+
+    const result = await handleBookAppointment("org-1", BOOK_ARGS);
+    expect(result.success).toBe(false);
+    expect(result.message).toMatch(/trouble completing the booking/i);
+    expect((result as { error?: boolean }).error).toBe(true);
+    expect(counts.inserts).toBe(1); // no retry on a non-code error
   });
 });
 
