@@ -467,6 +467,16 @@ async function upsertAppointmentConfirmation(params: {
   }
 }
 
+// SCRUM-264: customer-facing SMS is PAUSED globally until the AU sender ID is
+// registered with Twilio (blocked on the business ABN). Sending from the org's
+// UNREGISTERED AU number makes the confirmation land on the caller's handset
+// labelled "Unverified" — worse for trust than sending nothing. This gate stops
+// ALL caller SMS (confirmations, cancellations, missed-call text-back). It does
+// NOT touch owner/admin alert SMS (notification-service.ts), which go to the
+// business's own phone. Default OFF so prod pauses without extra config; re-enable
+// by setting env CALLER_SMS_ENABLED="true" once the sender is verified (SCRUM-264).
+const CALLER_SMS_ENABLED = process.env.CALLER_SMS_ENABLED === "true";
+
 async function sendCallerSMS(params: {
   orgId: string;
   callerPhone: string;
@@ -476,6 +486,23 @@ async function sendCallerSMS(params: {
   appointment?: AppointmentContext;
 }): Promise<SMSSendResult> {
   const { orgId, callerPhone, messageType, messageBody, isSpam, appointment } = params;
+
+  // SCRUM-264: global pause (see CALLER_SMS_ENABLED above). Still record a skipped
+  // row so the dashboard shows the intended confirmation, just not sent.
+  if (!CALLER_SMS_ENABLED) {
+    if (appointment) {
+      await upsertAppointmentConfirmation({
+        orgId,
+        appointmentId: appointment.appointmentId,
+        appointmentStartTime: appointment.appointmentStartTime,
+        channel: "sms",
+        intent: appointment.intent,
+        recipient: callerPhone,
+        status: "skipped_disabled",
+      });
+    }
+    return { sent: false, status: "skipped", reason: "sms_globally_paused" };
+  }
 
   // 0. Org-level opt-out (SCRUM-240 Phase 1) — applies to both confirmation and
   //    cancellation messages. If the business turned off customer SMS we honor it.
