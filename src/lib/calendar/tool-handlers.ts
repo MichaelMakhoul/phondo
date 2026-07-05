@@ -2426,11 +2426,9 @@ async function bookInternal(
         scope.setExtras({ organizationId });
         Sentry.captureMessage("Booking org-ref validation failed — booking refused (fail-closed)");
       });
-      return {
-        success: false,
-        message:
-          "I'm having trouble verifying those appointment details right now. Let me take your information and have someone call you back.",
-      };
+      return errorResult(
+        "I'm having trouble verifying those appointment details right now. Let me take your information and have someone call you back."
+      );
     }
   }
 
@@ -2440,11 +2438,10 @@ async function bookInternal(
     schedule = await getOrgSchedule(organizationId);
   } catch (error) {
     console.error("Failed to get org schedule for booking:", { organizationId, error });
-    return {
-      success: false,
-      message:
-        "I'm having trouble accessing our schedule right now. Let me take your information and have someone call you back.",
-    };
+    Sentry.captureException(error instanceof Error ? error : new Error("Booking: getOrgSchedule failed"));
+    return errorResult(
+      "I'm having trouble accessing our schedule right now. Let me take your information and have someone call you back."
+    );
   }
 
   const internalTimezone = schedule?.timezone || "Australia/Sydney";
@@ -2675,20 +2672,18 @@ async function bookInternal(
       };
     }
     console.error("Failed to insert internal appointment:", dbError);
-    return {
-      success: false,
-      message:
-        "I'm having trouble completing the booking right now. Let me take your information and have someone call you back to confirm the appointment.",
-    };
+    Sentry.captureException(new Error(`Booking: internal appointment insert failed (${dbError?.code ?? "no code"})`));
+    return errorResult(
+      "I'm having trouble completing the booking right now. Let me take your information and have someone call you back to confirm the appointment."
+    );
   }
 
   if (!appointment) {
     console.error("[Booking] Confirmation-code collision retries exhausted");
-    return {
-      success: false,
-      message:
-        "I'm having trouble completing the booking right now. Let me take your information and have someone call you back to confirm the appointment.",
-    };
+    Sentry.captureException(new Error("Booking: confirmation-code collision retries exhausted"));
+    return errorResult(
+      "I'm having trouble completing the booking right now. Let me take your information and have someone call you back to confirm the appointment."
+    );
   }
 
   // 4. Send notification (SCRUM-240 Phase 1: pass appointment.id so the SMS

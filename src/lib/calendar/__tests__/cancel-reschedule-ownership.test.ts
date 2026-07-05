@@ -625,14 +625,37 @@ describe("handleRescheduleAppointment ownership (SCRUM-438)", () => {
 // emits an [ALERT:error] line (the reschedule failure was invisible to alerting
 // because it fell back to a friendly message with HTTP 200). Business
 // non-success (not found, wrong owner) must NOT be flagged, or the alert floods.
-describe("handleCancelAppointment error flagging (SCRUM-509)", () => {
+describe("tool error flagging (SCRUM-509)", () => {
   let captured: Captured;
   beforeEach(() => {
     vi.clearAllMocks();
     captured = { ilikes: [], updated: false, inserted: false };
   });
 
-  it("flags a genuine DB error with error:true", async () => {
+  it("reschedule flags a genuine DB error with error:true", async () => {
+    vi.mocked(createAdminClient).mockReturnValue(
+      fakeAdmin(
+        {
+          organizations: [orgVerification(null)],
+          appointments: [{ data: null, error: { message: "db boom" } }], // existing-appointment lookup fails
+        },
+        captured,
+      ) as never,
+    );
+
+    const result = await handleRescheduleAppointment(
+      ORG,
+      { phone: VICTIM_PHONE, new_datetime: FUTURE_B },
+      { verifiedCallerPhone: VICTIM_PHONE },
+    );
+
+    expect(result.success).toBe(false);
+    expect((result as { error?: boolean }).error).toBe(true);
+    expect(result.message).toMatch(/trouble/i);
+    expect(captured.inserted).toBe(false);
+  });
+
+  it("cancel flags a genuine DB error with error:true", async () => {
     vi.mocked(createAdminClient).mockReturnValue(
       fakeAdmin(
         {
