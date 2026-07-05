@@ -76,8 +76,12 @@ interface ToolResult {
 // not-found and the knowledge-factor-mismatch cases in lookup. Identical wording
 // either way so a caller with a (spoofable) matching phone but the wrong name
 // can't tell whether a booking exists under that number — no enumeration oracle.
+// It invites the caller to SPELL their name: phone STT routinely mangles unusual
+// names ("Makhoul"→"McCool") past the tolerant matcher, and spelled letters
+// transcribe reliably, so the retry usually lands. Phrasing never asserts a
+// booking exists (preserving the anti-enumeration property).
 const LOOKUP_NO_MATCH_MESSAGE =
-  "I couldn't find any upcoming appointments matching your details. It's possible the appointment was booked under a different name or phone number. Would you like me to arrange a callback so someone from the team can help you?";
+  "I couldn't find a match under that name. Sometimes a name gets misheard on a call — could you spell your last name for me, letter by letter, so I can check again? If it still doesn't come up, I can arrange a callback from the team.";
 
 interface BusinessHours {
   open: string; // "09:00"
