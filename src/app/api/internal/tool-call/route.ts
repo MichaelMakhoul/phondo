@@ -267,6 +267,10 @@ export async function POST(request: Request) {
       success: result.success,
       message: result.message,
       ...("data" in result && { data: (result as any).data }),
+      // SCRUM-509: forward the genuine-error flag so the voice server can emit an
+      // [ALERT:error] line — a tool that fails gracefully (200 + success:false)
+      // must not be invisible to alerting.
+      ...((result as any).error === true && { error: true }),
     });
   } catch (err) {
     console.error("[ToolCall] Unhandled error:", {
@@ -277,6 +281,7 @@ export async function POST(request: Request) {
     return NextResponse.json(
       {
         success: false,
+        error: true, // SCRUM-509: also surfaced via the HTTP 500 below.
         message:
           "I'm having trouble with that right now. Would you like me to take your information instead?",
       },
