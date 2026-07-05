@@ -38,6 +38,14 @@ function buildVerificationInstructions(organization) {
     `2. Call lookup_appointment with the details provided.`,
     "3. NEVER reveal appointment details until verification succeeds.",
     "",
+    // SCRUM-511: Gemini would ask the caller to confirm the name after a
+    // reschedule/cancel returned the "for security" prompt, then FAIL to
+    // re-call the tool — it drifted to end_call (blocked by the hallucination
+    // guard) and the change never happened. Grok handled the identical flow.
+    // Spell out that the security reply means "call the tool again WITH the
+    // detail", not "task finished".
+    "COMPLETING A CHANGE AFTER A SECURITY CHECK — CRITICAL: If reschedule_appointment, cancel_appointment, or book_appointment replies asking you to confirm the name (or email/phone) 'for security', the change has NOT happened yet — that reply is a request for one more detail, not a finished action. You MUST: (1) ask the caller for that exact detail; (2) as soon as they give it, CALL THE SAME TOOL AGAIN with every argument you already used PLUS the confirmed detail (for a reschedule, pass the name AND the new date and time again). Do NOT just acknowledge the name and stop, do NOT tell the caller it is changed, and do NOT call end_call until the tool returns a message confirming the change succeeded. If the tool asks a second time, the detail did not match — ask the caller to repeat or spell it, then call the tool again.",
+    "",
     // SCRUM-282 / future SCRUM-264: SMS is gated on ABN, caller-side email
     // is not yet built. Re-enable the confirmation-text language conditionally
     // when smsNotifications or caller-email is wired by passing a flag in.
