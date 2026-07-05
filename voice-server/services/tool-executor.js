@@ -732,13 +732,33 @@ async function executeCalendarCall(functionName, args, context) {
       };
     }
 
-    const data = /** @type {{ message?: string, success?: boolean }} */ (await res.json());
+    const data = /** @type {{ message?: string, success?: boolean, error?: boolean }} */ (await res.json());
+    // SCRUM-509: a tool that fails GRACEFULLY (HTTP 200 + success:false +
+    // error:true) is otherwise invisible to alerting. An HTTP error or a timeout
+    // already emits [ALERT:error] via the branches above (Sentry shim), but a
+    // handler that caught its own fault and returned a friendly message did not
+    // — that's the blind spot the reschedule failure fell through. Emit one here
+    // so a genuine tool failure always alerts, while a normal business
+    // non-success (slot taken, "which appointment?") stays quiet (no error flag).
+    if (data.error === true) {
+      Sentry.withScope((scope) => {
+        scope.setTag("service", "tool-executor");
+        scope.setTag("tool_function", functionName);
+        scope.setExtra("organizationId", context.organizationId);
+        scope.setExtra("assistantId", context.assistantId);
+        scope.setExtra("callId", context.callId);
+        scope.setExtra("callSid", context.callSid);
+        Sentry.captureException(new Error(`ToolExecutor: ${functionName} returned a genuine error result`));
+      });
+    }
     // SCRUM-367: preserve the handler's authoritative `success` boolean
     // (additive — other call sites read only `.message`/`.error`) so the
     // book-loop cap keys off it rather than re-deriving success from prose.
+    // SCRUM-509: forward `error` too so the failure signal survives downstream.
     return {
       message: data.message || "The operation completed but returned no message.",
       ...(typeof data.success === "boolean" && { success: data.success }),
+      ...(data.error === true && { error: true }),
     };
   } catch (err) {
     console.error(`[ToolExecutor] Failed to execute ${functionName}:`, err.message);

@@ -70,6 +70,27 @@ interface ToolResult {
   success: boolean;
   message: string;
   data?: Record<string, unknown>;
+  /**
+   * SCRUM-509: marks a GENUINE failure — a caught exception or a DB/integration
+   * error — as opposed to a business non-success (slot taken, "which appointment
+   * did you mean?", a validation prompt). It propagates through the internal
+   * route to the voice server, which emits an `[ALERT:error]` line the Grafana
+   * "error logged" alert watches. Without it, a tool that fails gracefully
+   * (HTTP 200 + `success:false`) is invisible to alerting — the reschedule
+   * failure that motivated this only alerted because it also tripped a
+   * hallucination guard. NEVER set this for a normal conversational outcome.
+   */
+  error?: boolean;
+}
+
+/**
+ * Build a genuine-error ToolResult (see {@link ToolResult.error}). Use ONLY for
+ * unexpected failures (caught exceptions, DB/integration errors), never for
+ * business non-success. Callers that catch an exception should also capture it
+ * to Sentry for the exact cause.
+ */
+function errorResult(message: string): ToolResult {
+  return { success: false, error: true, message };
 }
 
 // SCRUM-505: one canonical "nothing found" line, shared by the genuine
@@ -985,11 +1006,9 @@ export async function handleBookAppointment(
       st = await getServiceType(service_type_id, organizationId);
     } catch {
       // Already logged with full context inside getServiceType.
-      return {
-        success: false,
-        message:
-          "I'm having trouble verifying those appointment details right now. Let me take your information and have someone call you back.",
-      };
+      return errorResult(
+        "I'm having trouble verifying those appointment details right now. Let me take your information and have someone call you back."
+      );
     }
     // SCRUM-444: a null here means the id is unknown/cross-org — reject NOW
     // instead of falling through with a default duration and relying on
@@ -1012,11 +1031,9 @@ export async function handleBookAppointment(
   if (clinikoResolution.kind === "error") {
     // Transient DB/decrypt fault — do NOT fall through to built-in booking, or
     // we'd confirm an appointment the practice's Cliniko diary never receives.
-    return {
-      success: false,
-      message:
-        "I'm having trouble completing the booking right now. Let me take your information and have someone call you back to confirm the appointment.",
-    };
+    return errorResult(
+      "I'm having trouble completing the booking right now. Let me take your information and have someone call you back to confirm the appointment."
+    );
   }
   if (clinikoResolution.kind === "ok") {
     const clinikoCtx = clinikoResolution.ctx;
@@ -1027,11 +1044,10 @@ export async function handleBookAppointment(
       clinikoSchedule = await getOrgSchedule(organizationId);
     } catch (error) {
       console.error("Failed to get org schedule for Cliniko booking:", { organizationId, error });
-      return {
-        success: false,
-        message:
-          "I'm having trouble accessing our schedule right now. Let me take your information and have someone call you back.",
-      };
+      Sentry.captureException(error instanceof Error ? error : new Error("Cliniko booking: getOrgSchedule failed"));
+      return errorResult(
+        "I'm having trouble accessing our schedule right now. Let me take your information and have someone call you back."
+      );
     }
     const clinikoTimezone = clinikoSchedule?.timezone || "Australia/Sydney";
     const clinikoStart = new Date(ensureTimezoneOffset(datetime, clinikoTimezone));
@@ -1472,7 +1488,7 @@ export async function handleCancelAppointment(
       // SCRUM-339: log the code's presence/length only — the value is a usable
       // mutation token and must never land in logs.
       console.error("Cancel: confirmation code lookup error:", { organizationId, codeLength: code.length, error: codeErr });
-      return { success: false, message: "I'm having trouble looking up that code right now. Would you like me to have someone call you back?" };
+      return errorResult("I'm having trouble looking up that code right now. Would you like me to have someone call you back?");
     }
     if (codeMatch) {
       // SCRUM-415/438: a code match is not enough — the caller must hold the
@@ -1560,11 +1576,7 @@ export async function handleCancelAppointment(
 
   if (queryError) {
     console.error("Failed to query appointments for cancellation:", { organizationId, phone, error: queryError });
-    return {
-      success: false,
-      message:
-        "I'm having trouble looking up your appointment right now. Would you like me to have someone call you back?",
-    };
+    return errorResult("I'm having trouble looking up your appointment right now. Would you like me to have someone call you back?");
   }
 
   // SCRUM-438: possession gate BEFORE anything is listed or cancelled. Each
@@ -1677,11 +1689,9 @@ async function cancelSingleAppointment(
       if (clinikoResolution.kind === "error") {
         // Transient fault — must NOT cancel locally (that would free the slot
         // while the real Cliniko appointment stands). Surface trouble instead.
-        return {
-          success: false,
-          message:
-            "I'm having trouble cancelling the appointment right now. Would you like me to have someone call you back to help with this?",
-        };
+        return errorResult(
+          "I'm having trouble cancelling the appointment right now. Would you like me to have someone call you back to help with this?"
+        );
       }
       if (clinikoResolution.kind === "ok") {
         // clinikoCancelExternal throws on a lost external_id (a row whose link
@@ -1706,11 +1716,9 @@ async function cancelSingleAppointment(
 
     if (cancelDbError) {
       console.error("Failed to update appointment status:", cancelDbError);
-      return {
-        success: false,
-        message:
-          "I'm having trouble cancelling the appointment right now. Would you like me to have someone call you back to help with this?",
-      };
+      return errorResult(
+        "I'm having trouble cancelling the appointment right now. Would you like me to have someone call you back to help with this?"
+      );
     }
 
     // Invalidate voice server schedule cache after the response (SCRUM-410: bare
@@ -1756,11 +1764,10 @@ async function cancelSingleAppointment(
     };
   } catch (error: any) {
     console.error("Cancel appointment error:", { organizationId, message: error.message, stack: error.stack });
-    return {
-      success: false,
-      message:
-        "I'm having trouble cancelling the appointment right now. Would you like me to have someone call you back to help with this?",
-    };
+    Sentry.captureException(error instanceof Error ? error : new Error("Cancel appointment error"));
+    return errorResult(
+      "I'm having trouble cancelling the appointment right now. Would you like me to have someone call you back to help with this?"
+    );
   }
 }
 
@@ -1876,7 +1883,7 @@ export async function handleRescheduleAppointment(
         .limit(2);
       if (codeErr) {
         console.error("Reschedule: confirmation code lookup error:", { organizationId, error: codeErr });
-        return { success: false, message: "I'm having trouble looking up that appointment right now. Would you like me to have someone call you back?" };
+        return errorResult("I'm having trouble looking up that appointment right now. Would you like me to have someone call you back?");
       }
       if (codeRows && codeRows.length === 1) {
         // SCRUM-415/438: a code match is not enough — the caller must hold the
@@ -1934,7 +1941,7 @@ export async function handleRescheduleAppointment(
         .limit(5);
       if (qErr) {
         console.error("Reschedule: appointment lookup error:", { organizationId, error: qErr });
-        return { success: false, message: "I'm having trouble finding your appointment right now. Would you like me to have someone call you back?" };
+        return errorResult("I'm having trouble finding your appointment right now. Would you like me to have someone call you back?");
       }
       // SCRUM-438: possession gate BEFORE anything is listed or moved — each
       // row's attendee_phone must match the verified caller ID (or the model
@@ -2035,7 +2042,10 @@ export async function handleRescheduleAppointment(
     );
 
     if (!bookResult.success) {
-      return { success: false, message: bookResult.message };
+      // Propagate a genuine-error flag (e.g. a DB/integration fault deep in the
+      // booking path) so a silently-failed reschedule still alerts — but NOT a
+      // business non-success like "that slot is taken" (SCRUM-509).
+      return { success: false, message: bookResult.message, ...((bookResult as any).error === true && { error: true }) };
     }
 
     // ── 3. New is secured — now free the OLD one. SCRUM-388: mark it `rescheduled`
@@ -2099,10 +2109,10 @@ export async function handleRescheduleAppointment(
     };
   } catch (err: any) {
     console.error("Reschedule appointment error:", { organizationId, message: err?.message, stack: err?.stack });
-    return {
-      success: false,
-      message: "I'm having trouble rescheduling that right now. Would you like me to have someone call you back to help with this?",
-    };
+    Sentry.captureException(err instanceof Error ? err : new Error("Reschedule appointment error"));
+    return errorResult(
+      "I'm having trouble rescheduling that right now. Would you like me to have someone call you back to help with this?"
+    );
   }
 }
 
@@ -2416,11 +2426,9 @@ async function bookInternal(
         scope.setExtras({ organizationId });
         Sentry.captureMessage("Booking org-ref validation failed — booking refused (fail-closed)");
       });
-      return {
-        success: false,
-        message:
-          "I'm having trouble verifying those appointment details right now. Let me take your information and have someone call you back.",
-      };
+      return errorResult(
+        "I'm having trouble verifying those appointment details right now. Let me take your information and have someone call you back."
+      );
     }
   }
 
@@ -2430,11 +2438,10 @@ async function bookInternal(
     schedule = await getOrgSchedule(organizationId);
   } catch (error) {
     console.error("Failed to get org schedule for booking:", { organizationId, error });
-    return {
-      success: false,
-      message:
-        "I'm having trouble accessing our schedule right now. Let me take your information and have someone call you back.",
-    };
+    Sentry.captureException(error instanceof Error ? error : new Error("Booking: getOrgSchedule failed"));
+    return errorResult(
+      "I'm having trouble accessing our schedule right now. Let me take your information and have someone call you back."
+    );
   }
 
   const internalTimezone = schedule?.timezone || "Australia/Sydney";
@@ -2665,20 +2672,18 @@ async function bookInternal(
       };
     }
     console.error("Failed to insert internal appointment:", dbError);
-    return {
-      success: false,
-      message:
-        "I'm having trouble completing the booking right now. Let me take your information and have someone call you back to confirm the appointment.",
-    };
+    Sentry.captureException(new Error(`Booking: internal appointment insert failed (${dbError?.code ?? "no code"})`));
+    return errorResult(
+      "I'm having trouble completing the booking right now. Let me take your information and have someone call you back to confirm the appointment."
+    );
   }
 
   if (!appointment) {
     console.error("[Booking] Confirmation-code collision retries exhausted");
-    return {
-      success: false,
-      message:
-        "I'm having trouble completing the booking right now. Let me take your information and have someone call you back to confirm the appointment.",
-    };
+    Sentry.captureException(new Error("Booking: confirmation-code collision retries exhausted"));
+    return errorResult(
+      "I'm having trouble completing the booking right now. Let me take your information and have someone call you back to confirm the appointment."
+    );
   }
 
   // 4. Send notification (SCRUM-240 Phase 1: pass appointment.id so the SMS
