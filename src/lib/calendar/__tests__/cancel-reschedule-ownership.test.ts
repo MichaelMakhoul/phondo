@@ -698,6 +698,52 @@ describe("SCRUM-506: collected-details backfill (carry a detail forward, securit
     expect(captured.updated).toBe(true);
   });
 
+  it("cancel PHONE path (no code): a collected name satisfies the knowledge gate without re-asking", async () => {
+    vi.mocked(createAdminClient).mockReturnValue(
+      fakeAdmin(
+        {
+          organizations: [orgVerification({ method: "details_only", fields: ["name", "phone"] })],
+          appointments: [
+            { data: [apptRow()], error: null }, // phone lookup (owned)
+            { data: null, error: null },        // status update on success
+          ],
+        },
+        captured,
+      ) as never,
+    );
+
+    const result = await handleCancelAppointment(
+      ORG,
+      { phone: VICTIM_PHONE }, // NO name in args — carried from earlier this call
+      { verifiedCallerPhone: VICTIM_PHONE, collectedDetails: { name: "jane" } },
+    );
+
+    expect(result.success).toBe(true);
+    expect(captured.updated).toBe(true);
+  });
+
+  it("cancel PHONE path (no code): a WRONG collected name is still refused (knowledge gate runs)", async () => {
+    vi.mocked(createAdminClient).mockReturnValue(
+      fakeAdmin(
+        {
+          organizations: [orgVerification({ method: "details_only", fields: ["name", "phone"] })],
+          appointments: [{ data: [apptRow()], error: null }],
+        },
+        captured,
+      ) as never,
+    );
+
+    const result = await handleCancelAppointment(
+      ORG,
+      { phone: VICTIM_PHONE },
+      { verifiedCallerPhone: VICTIM_PHONE, collectedDetails: { name: "Robert Brown" } },
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.message).toMatch(/don't match/i);
+    expect(captured.updated).toBe(false);
+  });
+
   it("reschedule: a collected name gets PAST the verification gate that would otherwise re-ask", async () => {
     vi.mocked(createAdminClient).mockReturnValue(
       fakeAdmin(

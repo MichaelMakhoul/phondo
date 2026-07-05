@@ -3,6 +3,7 @@ import {
   parseVerificationSettings,
   verifyKnowledgeFactors,
   applyCollectedDetails,
+  sanitizeCollectedDetails,
 } from "@/lib/calendar/appointment-verification";
 
 // SCRUM-438: shared parsing of `appointment_verification_fields` and the
@@ -164,5 +165,46 @@ describe("applyCollectedDetails (SCRUM-506)", () => {
       { name: "N", phone: "+61400000000", date_of_birth: "1990-01-01" },
     );
     expect(out).toEqual({ name: "N" });
+  });
+});
+
+describe("sanitizeCollectedDetails (SCRUM-506) — the internal-route defensive boundary", () => {
+  it("keeps only the allowlisted string factors, trimmed", () => {
+    expect(
+      sanitizeCollectedDetails({ name: "  Jane  ", email: "j@x.com", phone: "+61400000000" }),
+    ).toEqual({ name: "Jane", email: "j@x.com", phone: "+61400000000" });
+  });
+
+  it("drops non-string values (number/object/null/boolean)", () => {
+    expect(
+      sanitizeCollectedDetails({ name: 42, email: { a: 1 }, phone: null, date_of_birth: true }),
+    ).toBeUndefined();
+  });
+
+  it("strips keys that are not on the allowlist (e.g. ssn)", () => {
+    expect(sanitizeCollectedDetails({ name: "Jane", ssn: "123-45-6789" })).toEqual({ name: "Jane" });
+  });
+
+  it("caps an over-long value at 200 chars", () => {
+    const out = sanitizeCollectedDetails({ name: "a".repeat(300) });
+    expect(out?.name).toHaveLength(200);
+  });
+
+  it("rejects non-objects and arrays outright", () => {
+    expect(sanitizeCollectedDetails(null)).toBeUndefined();
+    expect(sanitizeCollectedDetails("Jane")).toBeUndefined();
+    expect(sanitizeCollectedDetails(42)).toBeUndefined();
+    expect(sanitizeCollectedDetails(["name", "Jane"])).toBeUndefined();
+  });
+
+  it("returns undefined when nothing survives (all-empty / whitespace)", () => {
+    expect(sanitizeCollectedDetails({})).toBeUndefined();
+    expect(sanitizeCollectedDetails({ name: "   ", email: "" })).toBeUndefined();
+  });
+
+  it("cannot be prototype-polluted via __proto__/constructor keys", () => {
+    const out = sanitizeCollectedDetails(JSON.parse('{"__proto__":{"polluted":"x"},"constructor":"y","name":"Jane"}'));
+    expect(out).toEqual({ name: "Jane" });
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined(); // global proto untouched
   });
 });

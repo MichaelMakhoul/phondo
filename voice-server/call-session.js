@@ -539,8 +539,12 @@ class CallSession {
       cancel_appointment: ["name", "phone", "email"],
       reschedule_appointment: ["name", "phone", "email"],
     };
+    // Array.isArray (not a plain truthy check): functionName is model-controlled,
+    // so a name matching an Object.prototype key ("constructor"/"toString"/…)
+    // would otherwise return a truthy non-array via the prototype chain and make
+    // the for..of below throw. Only the three real tool entries are arrays.
     const fields = FIELDS_BY_TOOL[functionName];
-    if (!fields) return;
+    if (!Array.isArray(fields)) return;
     for (const key of fields) {
       const v = args[key];
       if (typeof v === "string" && v.trim()) {

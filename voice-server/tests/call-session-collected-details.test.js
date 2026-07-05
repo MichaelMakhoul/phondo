@@ -61,6 +61,14 @@ describe("SCRUM-506: CallSession.rememberDetails / getCollectedDetails", () => {
     assert.deepEqual(s.getCollectedDetails(), {});
   });
 
+  it("hardening: a tool name matching an Object.prototype key never throws or stores (prototype-chain guard)", () => {
+    const s = new CallSession("c5c");
+    for (const evil of ["constructor", "toString", "hasOwnProperty", "__proto__", "valueOf"]) {
+      s.rememberDetails(evil, { name: "Should Not Store" });
+    }
+    assert.deepEqual(s.getCollectedDetails(), {});
+  });
+
   it("getCollectedDetails returns a COPY (mutating it can't corrupt the live store)", () => {
     const s = new CallSession("c6");
     s.rememberDetails("lookup_appointment", { name: "Ann" });

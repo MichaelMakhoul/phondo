@@ -31,6 +31,14 @@ describe("sentry PII scrubber", () => {
       assert.equal(isPiiKey("responseContent"), true);
     });
 
+    it("SCRUM-506: matches the per-call collected-details bag and its snake_case factors", () => {
+      assert.equal(isPiiKey("collectedDetails"), true);
+      assert.equal(isPiiKey("collected_details"), true);
+      assert.equal(isPiiKey("date_of_birth"), true);
+      assert.equal(isPiiKey("medicare"), true);
+      assert.equal(isPiiKey("medicare_number"), true);
+    });
+
     it("does not match safe technical keys", () => {
       assert.equal(isPiiKey("organizationId"), false);
       assert.equal(isPiiKey("assistantId"), false);

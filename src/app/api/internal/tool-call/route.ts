@@ -12,7 +12,7 @@ import {
 import { handleScheduleCallback } from "@/lib/callbacks/tool-handler";
 import { getActiveServiceTypes } from "@/lib/service-types";
 import { withRateLimit } from "@/lib/security/rate-limiter";
-import { resolveCallerId } from "@/lib/calendar/appointment-verification";
+import { resolveCallerId, sanitizeCollectedDetails } from "@/lib/calendar/appointment-verification";
 
 function verifyInternalSecret(request: Request): boolean {
   const secret = process.env.INTERNAL_API_SECRET;
@@ -62,24 +62,6 @@ interface ToolCallPayload {
    * so cancel/reschedule don't re-ask. Never forwarded to book_appointment.
    */
   collectedDetails?: Record<string, unknown>;
-}
-
-// SCRUM-506: the per-call collected details arrive as a top-level field the
-// model can't reach. Sanitize defensively even on the authenticated internal
-// channel: keep only allowlisted string factors, trimmed and length-capped.
-const COLLECTED_DETAIL_KEYS = ["name", "phone", "email", "date_of_birth", "medicare_number"] as const;
-function sanitizeCollectedDetails(raw: unknown): Record<string, string> | undefined {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
-  const src = raw as Record<string, unknown>;
-  const out: Record<string, string> = {};
-  for (const key of COLLECTED_DETAIL_KEYS) {
-    const v = src[key];
-    if (typeof v === "string") {
-      const trimmed = v.trim().slice(0, 200);
-      if (trimmed) out[key] = trimmed;
-    }
-  }
-  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 /**
@@ -161,11 +143,15 @@ export async function POST(request: Request) {
         : isProductionCall
         ? { callerIdState: "withheld" }
         : {};
-    // SCRUM-506: attach the sanitized per-call details so cancel/reschedule/lookup
-    // can backfill a missing factor. book_appointment never receives `trusted`,
-    // so it can't inherit these (third-party-attendee safe).
-    return collectedDetails ? { ...base, collectedDetails } : base;
+    return base;
   })();
+
+  // SCRUM-506: ONLY the mutation handlers (cancel/reschedule) backfill a missing
+  // verification factor from the per-call details. lookup + book_appointment do
+  // not consume it, so they never receive the PII bag — keeps the surface tight
+  // and avoids threading a value the handler ignores.
+  const trustedForMutation: TrustedCallContext =
+    collectedDetails ? { ...trusted, collectedDetails } : trusted;
 
   try {
     let result;
@@ -233,7 +219,7 @@ export async function POST(request: Request) {
             name: parsedArgs.name,
             email: parsedArgs.email,
           },
-          trusted
+          trustedForMutation
         );
         break;
 
@@ -256,7 +242,7 @@ export async function POST(request: Request) {
             service_type_id: parsedArgs.service_type_id,
             practitioner_id: parsedArgs.practitioner_id,
           },
-          trusted
+          trustedForMutation
         );
         break;
 

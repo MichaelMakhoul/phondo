@@ -241,6 +241,36 @@ const MUTATION_DETAILS_MISMATCH: VerificationResult = {
 export type CollectedDetails = Record<string, string>;
 
 /**
+ * SCRUM-506: the allowlisted keys the per-call collected-details bag may carry.
+ * `phone`/`date_of_birth`/`medicare_number` are accepted (so the store can hold
+ * them) but only `name`/`email` are backfilled as verification factors today —
+ * the rest is defensive breadth for future factors, Sentry-scrubbed either way.
+ */
+const COLLECTED_DETAIL_KEYS = ["name", "phone", "email", "date_of_birth", "medicare_number"] as const;
+
+/**
+ * SCRUM-506: the per-call collected details reach the internal route as a
+ * top-level, model-inaccessible field. Sanitize defensively even on the
+ * authenticated internal channel: keep only allowlisted string factors, trimmed
+ * and length-capped; reject non-objects/arrays; return undefined when nothing
+ * survives. Iterating a fixed literal allowlist (never keys off `raw`) means
+ * `__proto__`/`constructor` can never pollute the output.
+ */
+export function sanitizeCollectedDetails(raw: unknown): CollectedDetails | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const src = raw as Record<string, unknown>;
+  const out: Record<string, string> = {};
+  for (const key of COLLECTED_DETAIL_KEYS) {
+    const v = src[key];
+    if (typeof v === "string") {
+      const trimmed = v.trim().slice(0, 200);
+      if (trimmed) out[key] = trimmed;
+    }
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/**
  * SCRUM-506: fill a MISSING verification factor (name/email) from the per-call
  * collected details — never overriding a value the model DID provide. Pure;
  * returns a new object. This only avoids a re-ASK: verifyKnowledgeFactors still
@@ -292,7 +322,7 @@ export function verifyKnowledgeFactors(
         };
       }
       // SCRUM-506: use the SAME tolerant phonetic match as lookup
-      // (name-match.ts, used at tool-handlers.ts:3001) — a name good enough to
+      // (name-match.ts, used at tool-handlers.ts:3011) — a name good enough to
       // FIND the booking must be good enough to CHANGE it. Safe here because
       // verifyKnowledgeFactors is only reached AFTER phone possession returns
       // "match" (the precondition name-match.ts requires). `stored`/`given`
