@@ -225,13 +225,20 @@ export async function POST(request: Request) {
         break;
 
       case "lookup_appointment":
-        result = await handleLookupAppointment(organizationId, {
-          confirmation_code: parsedArgs.confirmation_code,
-          name: parsedArgs.name,
-          phone: parsedArgs.phone,
-          email: parsedArgs.email,
-          date_of_birth: parsedArgs.date_of_birth,
-        });
+        // SCRUM-505: pass the trusted caller ID so lookup can pin the caller's
+        // OWN appointments by verified possession (like cancel/reschedule),
+        // instead of relying on a model-guessed phone the model can't know.
+        result = await handleLookupAppointment(
+          organizationId,
+          {
+            confirmation_code: parsedArgs.confirmation_code,
+            name: parsedArgs.name,
+            phone: parsedArgs.phone,
+            email: parsedArgs.email,
+            date_of_birth: parsedArgs.date_of_birth,
+          },
+          trusted
+        );
         break;
 
       case "schedule_callback":
