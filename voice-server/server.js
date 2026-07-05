@@ -2229,10 +2229,12 @@ wss.on("connection", (twilioWs) => {
                   // Flag so goodbye-loop auto-end knows a tool call is in progress
                   // and won't close the session mid-execution.
                   if (session) session._toolCallInFlight = true;
+                  session.rememberDetails(toolCall.name, toolCall.args); // SCRUM-506: carry caller details forward this call
                   let result;
                   try {
                     result = await executeToolCall(toolCall.name, toolCall.args, {
                       organizationId: session.organizationId,
+                      collectedDetails: session.getCollectedDetails(), // SCRUM-506
                       assistantId: session.assistantId,
                       callSid: session.callSid,
                       callId: session.callRecordId,
@@ -3187,8 +3189,10 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
             }
           }
 
+          session.rememberDetails(fnName, fnArgs); // SCRUM-506: carry caller details forward this call
           const toolResult = await executeToolCall(fnName, fnArgs, {
             organizationId: session.organizationId,
+            collectedDetails: session.getCollectedDetails(), // SCRUM-506
             assistantId: session.assistantId,
             callSid: session.callSid,
             callId: session.callRecordId,
@@ -3886,8 +3890,10 @@ testWss.on("connection", (ws, req) => {
                     "DO NOT CANCEL YET. Before cancelling, confirm with the caller: read back which appointment would be cancelled (its date and time) and ask them — in their language — to clearly confirm (yes/no). ONLY if they clearly say yes, call cancel_appointment again with the same details. If they say no or you are unsure, do NOT cancel.",
                 };
               }
+              session.rememberDetails(toolCall.name, toolCall.args); // SCRUM-506
               const result = await executeToolCall(toolCall.name, toolCall.args, {
                 organizationId: session.organizationId,
+                collectedDetails: session.getCollectedDetails(), // SCRUM-506
                 assistantId: session.assistantId,
                 callSid: session.callSid,
                 transferRules: [],
@@ -4221,8 +4227,10 @@ async function handleTestUserSpeech(session, ws, transcript) {
             continue;
           }
 
+          session.rememberDetails(fnName, fnArgs); // SCRUM-506
           const toolResult = await executeToolCall(fnName, fnArgs, {
             organizationId: session.organizationId,
+            collectedDetails: session.getCollectedDetails(), // SCRUM-506
             assistantId: session.assistantId,
             callSid: session.callSid,
             transferRules: [],

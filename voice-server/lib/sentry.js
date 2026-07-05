@@ -24,7 +24,9 @@ const PII_FIELD_PATTERNS = [
   /^to$/i, /^from$/i, /transferTo/i, /callerPhone/i,
   /attendeeName/i, /attendee_name/i, /firstName/i, /first_name/i,
   /lastName/i, /last_name/i, /^name$/i, /ruleName/i,
-  /dob/i, /dateOfBirth/i, /responseBody/i, /responseContent/i,
+  /dob/i, /dateOfBirth/i, /date_of_birth/i, /responseBody/i, /responseContent/i,
+  // SCRUM-506: never let the per-call collected-details bag (or medicare) leak.
+  /collectedDetails/i, /collected_details/i, /medicare/i,
 ];
 
 function isPiiKey(key) {

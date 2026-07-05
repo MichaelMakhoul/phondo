@@ -12,7 +12,7 @@ import {
 import { handleScheduleCallback } from "@/lib/callbacks/tool-handler";
 import { getActiveServiceTypes } from "@/lib/service-types";
 import { withRateLimit } from "@/lib/security/rate-limiter";
-import { resolveCallerId } from "@/lib/calendar/appointment-verification";
+import { resolveCallerId, sanitizeCollectedDetails } from "@/lib/calendar/appointment-verification";
 
 function verifyInternalSecret(request: Request): boolean {
   const secret = process.env.INTERNAL_API_SECRET;
@@ -54,6 +54,14 @@ interface ToolCallPayload {
    *  - absent (and no callerPhone): browser/test sessions only
    */
   callerIdState?: string;
+  /**
+   * SCRUM-506: the caller's OWN identity details collected earlier in THIS call
+   * (name/phone/email/date_of_birth), set by the voice server from its per-call
+   * session store — a top-level, model-inaccessible field (NEVER read from
+   * `arguments`). Sanitized here, then backfills a missing verification factor
+   * so cancel/reschedule don't re-ask. Never forwarded to book_appointment.
+   */
+  collectedDetails?: Record<string, unknown>;
 }
 
 /**
@@ -114,22 +122,36 @@ export async function POST(request: Request) {
   // contexts omit callId). It is the only reliable test-vs-production
   // discriminator the caller-ID fields alone can't give us.
   const isProductionCall = typeof payload.callId === "string" && payload.callId.length > 0;
+  // SCRUM-506: sanitized per-call caller details (model-inaccessible top-level field).
+  const collectedDetails = sanitizeCollectedDetails(payload.collectedDetails);
   const trusted: TrustedCallContext = (() => {
     const resolved = resolveCallerId({
       // A present-but-malformed state fails secure to 'withheld' in the resolver.
       callerIdState: payload.callerIdState === undefined ? undefined : String(payload.callerIdState),
       verifiedCallerPhone: typeof payload.callerPhone === "string" ? payload.callerPhone : undefined,
     });
-    if (resolved.state === "verified") {
-      return { callerIdState: "verified", verifiedCallerPhone: resolved.phone };
-    }
-    if (resolved.state === "withheld") return { callerIdState: "withheld" };
-    // No caller-ID fields at all. Only a genuine browser/test session (no callId)
-    // may use the model-phone fallback downstream. A PRODUCTION call that arrives
-    // without caller-ID fields — an older voice server mid-rolling-deploy, or a
-    // tampered body — must fail secure to 'withheld', never the model phone.
-    return isProductionCall ? { callerIdState: "withheld" } : {};
+    const base: TrustedCallContext =
+      resolved.state === "verified"
+        ? { callerIdState: "verified", verifiedCallerPhone: resolved.phone }
+        : resolved.state === "withheld"
+        ? { callerIdState: "withheld" }
+        // No caller-ID fields at all. Only a genuine browser/test session (no
+        // callId) may use the model-phone fallback downstream. A PRODUCTION call
+        // that arrives without caller-ID fields — an older voice server
+        // mid-rolling-deploy, or a tampered body — must fail secure to
+        // 'withheld', never the model phone.
+        : isProductionCall
+        ? { callerIdState: "withheld" }
+        : {};
+    return base;
   })();
+
+  // SCRUM-506: ONLY the mutation handlers (cancel/reschedule) backfill a missing
+  // verification factor from the per-call details. lookup + book_appointment do
+  // not consume it, so they never receive the PII bag — keeps the surface tight
+  // and avoids threading a value the handler ignores.
+  const trustedForMutation: TrustedCallContext =
+    collectedDetails ? { ...trusted, collectedDetails } : trusted;
 
   try {
     let result;
@@ -197,7 +219,7 @@ export async function POST(request: Request) {
             name: parsedArgs.name,
             email: parsedArgs.email,
           },
-          trusted
+          trustedForMutation
         );
         break;
 
@@ -220,7 +242,7 @@ export async function POST(request: Request) {
             service_type_id: parsedArgs.service_type_id,
             practitioner_id: parsedArgs.practitioner_id,
           },
-          trusted
+          trustedForMutation
         );
         break;
 

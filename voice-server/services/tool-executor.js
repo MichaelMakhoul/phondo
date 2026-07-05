@@ -668,6 +668,23 @@ function resolveCallerIdFields(context) {
 }
 
 /**
+ * SCRUM-506: forward the per-call collected caller details (name/phone/email/
+ * date_of_birth the caller already gave THIS call) as a TOP-LEVEL trusted field,
+ * exactly like the caller-ID fields — never inside `arguments` (model-controlled).
+ * The Next.js handlers backfill a MISSING verification factor from it so the AI
+ * doesn't re-ask. Omitted when empty.
+ * @param {{ collectedDetails?: Record<string, string> }} context
+ * @returns {{ collectedDetails?: Record<string, string> }}
+ */
+function resolveCollectedDetailsField(context) {
+  const d = context.collectedDetails;
+  if (d && typeof d === "object" && !Array.isArray(d) && Object.keys(d).length > 0) {
+    return { collectedDetails: d };
+  }
+  return {};
+}
+
+/**
  * Execute a calendar tool call via the Next.js internal API.
  */
 async function executeCalendarCall(functionName, args, context) {
@@ -710,6 +727,9 @@ async function executeCalendarCall(functionName, args, context) {
         // for production calls with no usable caller ID; both fields are
         // omitted only for test/browser sessions.
         ...resolveCallerIdFields(context),
+        // SCRUM-506: per-call collected caller details (top-level trusted field,
+        // NOT in `arguments`) — handlers backfill a missing verification factor.
+        ...resolveCollectedDetailsField(context),
       }),
     });
 
@@ -1104,7 +1124,7 @@ module.exports = {
   executeToolCall,
   _test: {
     getTransferService, resolveCurrentDatetime, resolveAvailabilityFromCache, applyCallerIdPhoneFallback,
-    isDialableCallerId, resolveCallerIdFields,
+    isDialableCallerId, resolveCallerIdFields, resolveCollectedDetailsField,
     CALENDAR_FUNCTIONS, CALENDAR_WRITE_FUNCTIONS,
   },
 };
