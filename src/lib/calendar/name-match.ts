@@ -46,7 +46,15 @@ export function phoneticSkeleton(raw: string): string {
     .normalize("NFD")
     .replace(/[̀-ͯ]/g, "") // strip combining diacritics
     .replace(/['’\-]/g, "") // drop intra-name apostrophes/hyphens (O'Brien → obrien)
-    .replace(/[^a-z\s]/g, " "); // any other non-letter → word break
+    .replace(/[^a-z\s]/g, " ") // any other non-letter → word break
+    .replace(/\s+/g, " ")
+    .trim();
+
+  // Join spelled-out runs ("m a k h o u l" → "makhoul") — when STT mangles a
+  // name the caller often SPELLS it, which otherwise splinters into single
+  // letters the matcher discards. Only 3+ consecutive single letters (a real
+  // spelling), so ordinary names and middle initials are untouched.
+  s = s.replace(/\b[a-z](?: [a-z]){2,}\b/g, (run) => run.replace(/ /g, ""));
 
   // Soft "c" (before e/i/y) → s. Runs first so it isn't clobbered by the
   // digraph/bare-c passes; "ch" is untouched here (c is before h, not e/i/y).

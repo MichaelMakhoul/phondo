@@ -134,7 +134,7 @@ describe("handleLookupAppointment — verified caller ID pin (SCRUM-505)", () =>
     withData({ method: "details_only", fields: ["phone"] }, [{ ...APPT, attendee_phone: "+61400000000" }]);
     const result = await handleLookupAppointment(ORG, {}, VERIFIED);
     expect(result.message).toBe(
-      "I couldn't find any upcoming appointments matching your details. It's possible the appointment was booked under a different name or phone number. Would you like me to arrange a callback so someone from the team can help you?",
+      "I couldn't find a match under that name. Sometimes a name gets misheard on a call — could you spell your last name for me, letter by letter, so I can check again? If it still doesn't come up, I can arrange a callback from the team.",
     );
   });
 });

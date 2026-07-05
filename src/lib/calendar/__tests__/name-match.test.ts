@@ -24,6 +24,14 @@ describe("phoneticSkeleton", () => {
     expect(phoneticSkeleton("Aaron")).toBe("aron");
     expect(phoneticSkeleton("Emmett")).toBe(phoneticSkeleton("Emet"));
   });
+
+  it("joins spelled-out letter runs (caller spells their name)", () => {
+    expect(phoneticSkeleton("M A K H O U L")).toBe("makoul");
+    expect(phoneticSkeleton("M-A-K-H-O-U-L")).toBe("makoul");
+    expect(phoneticSkeleton("Michael M A K H O U L")).toBe("mikael makoul");
+    // A lone middle initial is NOT a spelled run (needs 3+ letters).
+    expect(phoneticSkeleton("John A Smith")).toBe("john a smit");
+  });
 });
 
 describe("levenshtein", () => {
@@ -45,6 +53,8 @@ describe("namesMatch — confirms STT near-misses", () => {
     ["Machool→Makhoul", "Machool", "Makhoul"],
     ["Makoul→Makhoul", "Makoul", "Makhoul"],
     ["spelled-out surname vs full", "Makhoul", "Michael MAKHOUL"],
+    ["caller spells the surname aloud", "M A K H O U L", "Michael Makhoul"],
+    ["first name + spelled surname", "Michael M A K H O U L", "Michael MAKHOUL"],
     ["extra middle name the booking lacks", "Michael Xavier Makhoul", "Michael Makhoul"],
     ["Catherine↔Katherine", "Catherine", "Katherine"],
     ["Steven↔Stephen (≥5-char fuzzy)", "Steven", "Stephen"],
@@ -71,6 +81,7 @@ describe("namesMatch — rejects distinct names (no over-matching)", () => {
     ["distinct short names, exact required", "Ben", "Ken Smith"],
     ["single initial never confirms", "A", "Michael Makhoul"],
     ["short first-name drift needs exact (Jon≠John here)", "Jon", "John Baker"],
+    ["spelling a wrong surname still doesn't confirm", "J O N E S", "Makhoul"],
     ["empty spoken", "", "Jane Smith"],
     ["empty stored", "Jane Smith", ""],
     ["null-ish", null, "Jane Smith"],

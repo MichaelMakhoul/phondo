@@ -236,7 +236,7 @@ const calendarToolDefinitions = [
     function: {
       name: "lookup_appointment",
       description:
-        "Look up the caller's existing appointment(s). The caller's phone number is taken AUTOMATICALLY from caller ID — do NOT ask them to read out their own number. Just confirm the name the booking is under (some businesses also ask for a date of birth), then call this. Only ask the caller for a phone number if they say the booking is under a DIFFERENT number, or if their caller ID is withheld/blocked (then ask for the name and phone number on the booking, or a 6-digit confirmation code if they have one).",
+        "Look up the caller's existing appointment(s). The caller's phone number is taken AUTOMATICALLY from caller ID — do NOT ask them to read out their own number. Just confirm the name the booking is under (some businesses also ask for a date of birth), then call this. Only ask the caller for a phone number if they say the booking is under a DIFFERENT number, or if their caller ID is withheld/blocked (then ask for the name and phone number on the booking, or a 6-digit confirmation code if they have one). If the lookup returns no match, ask the caller to SPELL their last name letter by letter and call this again with the spelled name before offering a callback — phone audio often mishears unusual names.",
       parameters: {
         type: "object",
         properties: {
