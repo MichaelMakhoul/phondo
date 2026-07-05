@@ -71,3 +71,22 @@ describe("SCRUM-368 — stay in the caller's language + don't end on an incomple
     }
   });
 });
+
+// SCRUM-508 regression test.
+//
+// A real lookup call ended prematurely: the AI asked "Is there anything else I
+// can help you with?", the caller said "Yes" (meaning: yes, I need more), and
+// the model read it as a goodbye cue and called end_call. Pin the prompt rule
+// that a "yes"/"ok" to "anything else?" means CONTINUE, not hang up.
+describe("SCRUM-508 — don't hang up on an affirmative reply to 'anything else?'", () => {
+  test("prompt-builder.js: 'anything else?' is-not-a-goodbye rule present", () => {
+    assert.ok(/IS NOT A GOODBYE/.test(promptBuilderSrc), "anything-else is-not-a-goodbye rule missing from prompt-builder");
+    assert.ok(/never a cue to hang up/i.test(promptBuilderSrc), "never-end-on-yes wording missing from prompt-builder");
+  });
+
+  test("server.js: FINAL CRITICAL RULE restates don't-hang-up-on-yes for Gemini (freshest instruction)", () => {
+    assert.ok(/DON'T HANG UP ON/i.test(serverSrc), "don't-hang-up-on-yes restatement missing from server.js FINAL CRITICAL RULE");
+    // It must sit inside the inbound FINAL CRITICAL RULE block, after the greeting.
+    assert.ok(serverSrc.includes('right after asking'), "'anything else?' qualifier missing from server.js restatement");
+  });
+});

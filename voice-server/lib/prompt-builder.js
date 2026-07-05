@@ -555,6 +555,13 @@ function buildBehaviorsSection(behaviors, options) {
     "Only call `end_call` ONCE per conversation."
   );
 
+  // SCRUM-508: don't hang up on an affirmative reply to "anything else?". A
+  // caller saying "yes"/"ok" there is asking to CONTINUE, not to end — the model
+  // was mis-reading it as a goodbye cue and calling end_call immediately.
+  lines.push(
+    "- \"ANYTHING ELSE?\" IS NOT A GOODBYE — NEVER END ON \"YES\"/\"OK\": After you ask 'Is there anything else I can help you with?' (or any similar check-in), a reply of 'yes', 'yeah', 'yep', 'ok', 'okay', 'sure', 'please', 'one moment', 'mmhmm', or ANYTHING ambiguous means the caller wants to CONTINUE — respond 'Of course — what else can I help you with?' and DO NOT call `end_call`. Only give a farewell and call `end_call` when the caller CLEARLY declines further help: 'no', 'no thanks', 'that's all', 'that's everything', 'nothing else', 'I'm good/all good', 'goodbye', or 'bye'. A bare 'yes' or 'ok' right after you ask 'anything else?' is a request to keep going, NEVER a cue to hang up. When the reply is unclear, ASK — do not end the call."
+  );
+
   // SCRUM-368: don't end cordially on an abandoned booking. The SCRUM-227
   // guard only catches FALSE success claims ("you're all set"); this catches
   // SILENT abandonment — the AI drifting to "anything else? / shall we end?"
