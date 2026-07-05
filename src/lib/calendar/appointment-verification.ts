@@ -29,6 +29,7 @@
 //     a voice attacker can't enumerate confirmation codes).
 
 import { isValidPhoneNumber } from "@/lib/security/validation";
+import { namesMatch } from "@/lib/calendar/name-match";
 
 interface VerificationResult {
   success: boolean;
@@ -232,6 +233,32 @@ const MUTATION_DETAILS_MISMATCH: VerificationResult = {
 };
 
 /**
+ * SCRUM-506: the caller's OWN identity details collected earlier in THIS call
+ * (accumulated in the voice server's per-call session store and threaded here as
+ * a trusted, model-inaccessible field). Used to backfill a verification factor
+ * the model didn't repeat, so the AI doesn't re-ask for something already given.
+ */
+export type CollectedDetails = Record<string, string>;
+
+/**
+ * SCRUM-506: fill a MISSING verification factor (name/email) from the per-call
+ * collected details — never overriding a value the model DID provide. Pure;
+ * returns a new object. This only avoids a re-ASK: verifyKnowledgeFactors still
+ * runs the match against the actual record, so a carried-but-wrong detail is
+ * still rejected (MUTATION_DETAILS_MISMATCH).
+ */
+export function applyCollectedDetails(
+  provided: { name?: string; email?: string },
+  collected: CollectedDetails | undefined
+): { name?: string; email?: string } {
+  if (!collected) return provided;
+  const out = { ...provided };
+  if (!out.name?.trim() && collected.name?.trim()) out.name = collected.name;
+  if (!out.email?.trim() && collected.email?.trim()) out.email = collected.email;
+  return out;
+}
+
+/**
  * Enforce the org's explicitly-configured knowledge factors (name/email) on a
  * mutation, mirroring handleLookupAppointment's field comparisons:
  *   - name: case-insensitive bidirectional contains against attendee_name
@@ -264,7 +291,14 @@ export function verifyKnowledgeFactors(
           message: "For security, could you confirm the name on the booking before I make that change?",
         };
       }
-      if (!stored.includes(given) && !given.includes(stored)) {
+      // SCRUM-506: use the SAME tolerant phonetic match as lookup
+      // (name-match.ts, used at tool-handlers.ts:3001) — a name good enough to
+      // FIND the booking must be good enough to CHANGE it. Safe here because
+      // verifyKnowledgeFactors is only reached AFTER phone possession returns
+      // "match" (the precondition name-match.ts requires). `stored`/`given`
+      // above already established both are non-empty; namesMatch does its own
+      // normalization, so compare the original-case values.
+      if (!namesMatch(provided.name || "", appointment.attendee_name || "")) {
         return MUTATION_DETAILS_MISMATCH;
       }
     } else if (field === "email") {

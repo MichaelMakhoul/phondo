@@ -621,6 +621,129 @@ describe("handleRescheduleAppointment ownership (SCRUM-438)", () => {
   });
 });
 
+describe("SCRUM-506: collected-details backfill (carry a detail forward, security preserved)", () => {
+  let captured: Captured;
+  beforeEach(() => {
+    vi.clearAllMocks();
+    captured = { ilikes: [], updated: false, inserted: false };
+  });
+
+  it("cancel: a name given EARLIER in the call (collectedDetails) satisfies verification without re-asking", async () => {
+    vi.mocked(createAdminClient).mockReturnValue(
+      fakeAdmin(
+        {
+          organizations: [orgVerification({ method: "code_and_verify", fields: ["name"] })],
+          appointments: [
+            { data: apptRow(), error: null }, // code lookup
+            { data: null, error: null },      // status update (only reached on success)
+          ],
+        },
+        captured,
+      ) as never,
+    );
+
+    const result = await handleCancelAppointment(
+      ORG,
+      { confirmation_code: "111111" }, // NO name in args — it was collected earlier this call
+      { verifiedCallerPhone: VICTIM_PHONE, collectedDetails: { name: "jane" } },
+    );
+
+    expect(result.success).toBe(true);
+    expect(captured.updated).toBe(true);
+  });
+
+  it("cancel: a WRONG carried name is still refused — backfill only skips the re-ask, the match still runs", async () => {
+    vi.mocked(createAdminClient).mockReturnValue(
+      fakeAdmin(
+        {
+          organizations: [orgVerification({ method: "code_and_verify", fields: ["name"] })],
+          appointments: [{ data: apptRow(), error: null }],
+        },
+        captured,
+      ) as never,
+    );
+
+    const result = await handleCancelAppointment(
+      ORG,
+      { confirmation_code: "111111" },
+      { verifiedCallerPhone: VICTIM_PHONE, collectedDetails: { name: "Robert Brown" } },
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.message).toMatch(/don't match/i);
+    expect(captured.updated).toBe(false);
+  });
+
+  it("cancel: the model's OWN name argument still wins over a stale collected value", async () => {
+    vi.mocked(createAdminClient).mockReturnValue(
+      fakeAdmin(
+        {
+          organizations: [orgVerification({ method: "code_and_verify", fields: ["name"] })],
+          appointments: [
+            { data: apptRow(), error: null },
+            { data: null, error: null },
+          ],
+        },
+        captured,
+      ) as never,
+    );
+
+    const result = await handleCancelAppointment(
+      ORG,
+      { confirmation_code: "111111", name: "jane" }, // correct arg name
+      { verifiedCallerPhone: VICTIM_PHONE, collectedDetails: { name: "Robert Brown" } }, // stale/wrong
+    );
+
+    expect(result.success).toBe(true); // args.name won; the stale collected value was ignored
+    expect(captured.updated).toBe(true);
+  });
+
+  it("reschedule: a collected name gets PAST the verification gate that would otherwise re-ask", async () => {
+    vi.mocked(createAdminClient).mockReturnValue(
+      fakeAdmin(
+        {
+          organizations: [orgVerification({ method: "details_only", fields: ["name", "phone"] })],
+          appointments: [{ data: [apptRow()], error: null }],
+        },
+        captured,
+      ) as never,
+    );
+
+    const result = await handleRescheduleAppointment(
+      ORG,
+      { confirmation_code: "111111", new_datetime: "2027-07-02T10:00:00" }, // NO name in args
+      { verifiedCallerPhone: VICTIM_PHONE, collectedDetails: { name: "Jane Smith" } },
+    );
+
+    // Whatever happens downstream, it must NOT be the "confirm the name" re-ask —
+    // that is the exact dead-end SCRUM-506 removes.
+    expect(result.message).not.toMatch(/confirm the name/i);
+  });
+
+  it("reschedule: a WRONG carried name is still refused before any book/free", async () => {
+    vi.mocked(createAdminClient).mockReturnValue(
+      fakeAdmin(
+        {
+          organizations: [orgVerification({ method: "details_only", fields: ["name", "phone"] })],
+          appointments: [{ data: [apptRow()], error: null }],
+        },
+        captured,
+      ) as never,
+    );
+
+    const result = await handleRescheduleAppointment(
+      ORG,
+      { confirmation_code: "111111", new_datetime: "2027-07-02T10:00:00" },
+      { verifiedCallerPhone: VICTIM_PHONE, collectedDetails: { name: "Robert Brown" } },
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.message).toMatch(/don't match/i);
+    expect(captured.inserted).toBe(false);
+    expect(captured.updated).toBe(false);
+  });
+});
+
 // SCRUM-509: genuine tool failures must carry `error:true` so the voice server
 // emits an [ALERT:error] line (the reschedule failure was invisible to alerting
 // because it fell back to a friendly message with HTTP 200). Business

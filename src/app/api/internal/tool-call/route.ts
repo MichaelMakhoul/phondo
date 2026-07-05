@@ -54,6 +54,32 @@ interface ToolCallPayload {
    *  - absent (and no callerPhone): browser/test sessions only
    */
   callerIdState?: string;
+  /**
+   * SCRUM-506: the caller's OWN identity details collected earlier in THIS call
+   * (name/phone/email/date_of_birth), set by the voice server from its per-call
+   * session store — a top-level, model-inaccessible field (NEVER read from
+   * `arguments`). Sanitized here, then backfills a missing verification factor
+   * so cancel/reschedule don't re-ask. Never forwarded to book_appointment.
+   */
+  collectedDetails?: Record<string, unknown>;
+}
+
+// SCRUM-506: the per-call collected details arrive as a top-level field the
+// model can't reach. Sanitize defensively even on the authenticated internal
+// channel: keep only allowlisted string factors, trimmed and length-capped.
+const COLLECTED_DETAIL_KEYS = ["name", "phone", "email", "date_of_birth", "medicare_number"] as const;
+function sanitizeCollectedDetails(raw: unknown): Record<string, string> | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const src = raw as Record<string, unknown>;
+  const out: Record<string, string> = {};
+  for (const key of COLLECTED_DETAIL_KEYS) {
+    const v = src[key];
+    if (typeof v === "string") {
+      const trimmed = v.trim().slice(0, 200);
+      if (trimmed) out[key] = trimmed;
+    }
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 /**
@@ -114,21 +140,31 @@ export async function POST(request: Request) {
   // contexts omit callId). It is the only reliable test-vs-production
   // discriminator the caller-ID fields alone can't give us.
   const isProductionCall = typeof payload.callId === "string" && payload.callId.length > 0;
+  // SCRUM-506: sanitized per-call caller details (model-inaccessible top-level field).
+  const collectedDetails = sanitizeCollectedDetails(payload.collectedDetails);
   const trusted: TrustedCallContext = (() => {
     const resolved = resolveCallerId({
       // A present-but-malformed state fails secure to 'withheld' in the resolver.
       callerIdState: payload.callerIdState === undefined ? undefined : String(payload.callerIdState),
       verifiedCallerPhone: typeof payload.callerPhone === "string" ? payload.callerPhone : undefined,
     });
-    if (resolved.state === "verified") {
-      return { callerIdState: "verified", verifiedCallerPhone: resolved.phone };
-    }
-    if (resolved.state === "withheld") return { callerIdState: "withheld" };
-    // No caller-ID fields at all. Only a genuine browser/test session (no callId)
-    // may use the model-phone fallback downstream. A PRODUCTION call that arrives
-    // without caller-ID fields — an older voice server mid-rolling-deploy, or a
-    // tampered body — must fail secure to 'withheld', never the model phone.
-    return isProductionCall ? { callerIdState: "withheld" } : {};
+    const base: TrustedCallContext =
+      resolved.state === "verified"
+        ? { callerIdState: "verified", verifiedCallerPhone: resolved.phone }
+        : resolved.state === "withheld"
+        ? { callerIdState: "withheld" }
+        // No caller-ID fields at all. Only a genuine browser/test session (no
+        // callId) may use the model-phone fallback downstream. A PRODUCTION call
+        // that arrives without caller-ID fields — an older voice server
+        // mid-rolling-deploy, or a tampered body — must fail secure to
+        // 'withheld', never the model phone.
+        : isProductionCall
+        ? { callerIdState: "withheld" }
+        : {};
+    // SCRUM-506: attach the sanitized per-call details so cancel/reschedule/lookup
+    // can backfill a missing factor. book_appointment never receives `trusted`,
+    // so it can't inherit these (third-party-attendee safe).
+    return collectedDetails ? { ...base, collectedDetails } : base;
   })();
 
   try {

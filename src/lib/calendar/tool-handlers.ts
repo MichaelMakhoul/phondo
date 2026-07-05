@@ -40,8 +40,10 @@ import {
   resolveCallerId,
   verifyPhonePossession,
   verifyKnowledgeFactors,
+  applyCollectedDetails,
   type CallerIdState,
   type VerificationSettings,
+  type CollectedDetails,
 } from "@/lib/calendar/appointment-verification";
 
 /**
@@ -60,6 +62,14 @@ import {
 export interface TrustedCallContext {
   verifiedCallerPhone?: string;
   callerIdState?: CallerIdState;
+  /**
+   * SCRUM-506: the caller's OWN identity details collected earlier in THIS call
+   * (name/email/…), threaded from the voice server's per-call session store via
+   * the internal route. Used ONLY to backfill a MISSING verification factor so
+   * the AI doesn't re-ask; the match still runs against the record. Absent for
+   * book_appointment (never receives `trusted`) and test/browser sessions.
+   */
+  collectedDetails?: CollectedDetails;
 }
 
 // SCRUM-399: `resolveRescheduleIdentity` moved to reschedule-core (shared with the
@@ -1496,7 +1506,7 @@ export async function handleCancelAppointment(
       // the model-supplied argument only on test sessions).
       const possession = verifyPhonePossession(codeMatch, phone, callerId);
       if (possession === "match") {
-        const factorFail = verifyKnowledgeFactors(codeMatch, { name: args.name, email: args.email }, verification);
+        const factorFail = verifyKnowledgeFactors(codeMatch, applyCollectedDetails({ name: args.name, email: args.email }, trusted?.collectedDetails), verification);
         if (factorFail) return factorFail;
         return cancelSingleAppointment(supabase, organizationId, codeMatch, reason);
       }
@@ -1602,7 +1612,7 @@ export async function handleCancelAppointment(
   // row about to be cancelled — rows sharing a phone can carry different
   // names (e.g. family members on one number).
   const knowledgeGate = (appt: any): ToolResult | null =>
-    verifyKnowledgeFactors(appt, { name: args.name, email: args.email }, verification);
+    verifyKnowledgeFactors(appt, applyCollectedDetails({ name: args.name, email: args.email }, trusted?.collectedDetails), verification);
 
   // Single match — cancel directly.
   if (owned.length === 1) {
@@ -2005,7 +2015,7 @@ export async function handleRescheduleAppointment(
     // SCRUM-438: org-configured knowledge factors (name/email) on the pinned
     // appointment — single choke point for both the code and phone paths,
     // BEFORE anything is booked or freed.
-    const factorFail = verifyKnowledgeFactors(existing, { name: args.name, email: args.email }, verification);
+    const factorFail = verifyKnowledgeFactors(existing, applyCollectedDetails({ name: args.name, email: args.email }, trusted?.collectedDetails), verification);
     if (factorFail) return factorFail;
 
     // ── 2. Book the NEW appointment FIRST (never cancel before the new slot is

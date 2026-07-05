@@ -249,8 +249,10 @@ async function runGuardedToolCall(session, toolCall, deps = {}) {
     }
   }
 
+  session.rememberDetails(name, args); // SCRUM-506: carry caller details forward this call
   const result = await exec(name, args, {
     organizationId: session.organizationId,
+    collectedDetails: session.getCollectedDetails(), // SCRUM-506
     assistantId: session.assistantId,
     callSid: session.callSid,
     callId: session.callRecordId,

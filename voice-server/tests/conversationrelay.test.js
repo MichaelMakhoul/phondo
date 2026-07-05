@@ -33,6 +33,8 @@ function fakeSession(overrides = {}) {
     hasUnfinishedBooking() { return this._unfinished; },
     confirmCancel() { return this._cancelOK; },
     registerBookOutcome() { return this._directive; },
+    rememberDetails() {}, // SCRUM-506: CallSession contract used by runGuardedToolCall
+    getCollectedDetails() { return {}; },
     ...overrides,
   };
 }

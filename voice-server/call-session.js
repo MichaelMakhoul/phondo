@@ -89,6 +89,16 @@ class CallSession {
     // confirmation; only a SECOND call with a matching fingerprint executes.
     // Prevents an irreversible cancel from a single misheard/garbled turn.
     this._pendingCancel = null; // { fp: string, at: number } | null
+
+    // SCRUM-506: per-call carry-forward of the caller's OWN identity/verification
+    // details (name/phone/email/date_of_birth), so the AI never re-asks for
+    // something the caller already gave earlier in THIS call.
+    // PRIVACY CONTRACT: in-memory on this per-call session ONLY; wiped in
+    // destroy() at call end; NEVER persisted, NEVER logged as raw values, NEVER
+    // shared across calls (each call gets its own CallSession); deliberately NOT
+    // restored across a transfer reconnect (see restoreFrom) so it can't enter
+    // the module-global pendingTransfers map.
+    this.collectedDetails = {};
   }
 
   /**
@@ -508,6 +518,42 @@ class CallSession {
     }
   }
 
+  /**
+   * SCRUM-506: accumulate the caller's OWN identity/verification details from
+   * the structured tool args the model already controls, so a later tool call
+   * in THIS call can reuse them instead of re-asking. Last-non-empty wins (a
+   * correction updates it; an arg-less later call can't wipe a good value).
+   *
+   * Scoped to the caller's identity: book_appointment is intentionally excluded
+   * (its attendee may be a THIRD PARTY), and a reschedule's first_name/last_name
+   * (the NEW attendee name for a rename) are excluded too — only the top-level
+   * `name` (the caller confirming who they are) is remembered.
+   *
+   * @param {string} functionName
+   * @param {Record<string, unknown>} args
+   */
+  rememberDetails(functionName, args) {
+    if (!args || typeof args !== "object") return;
+    const FIELDS_BY_TOOL = {
+      lookup_appointment: ["name", "phone", "email", "date_of_birth"],
+      cancel_appointment: ["name", "phone", "email"],
+      reschedule_appointment: ["name", "phone", "email"],
+    };
+    const fields = FIELDS_BY_TOOL[functionName];
+    if (!fields) return;
+    for (const key of fields) {
+      const v = args[key];
+      if (typeof v === "string" && v.trim()) {
+        this.collectedDetails[key] = v.trim();
+      }
+    }
+  }
+
+  /** SCRUM-506: a shallow copy of the per-call details (never the live ref). */
+  getCollectedDetails() {
+    return { ...this.collectedDetails };
+  }
+
   destroy() {
     if (this._utteranceTimer) clearTimeout(this._utteranceTimer);
     if (this._maxWaitTimer) clearTimeout(this._maxWaitTimer);
@@ -522,6 +568,7 @@ class CallSession {
     }
     this.messages = [];
     this.fullTranscriptMessages = [];
+    this.collectedDetails = {}; // SCRUM-506: wipe caller details at call end
   }
 }
 

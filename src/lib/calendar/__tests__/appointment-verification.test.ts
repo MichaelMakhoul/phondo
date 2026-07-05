@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   parseVerificationSettings,
   verifyKnowledgeFactors,
+  applyCollectedDetails,
 } from "@/lib/calendar/appointment-verification";
 
 // SCRUM-438: shared parsing of `appointment_verification_fields` and the
@@ -69,10 +70,22 @@ describe("verifyKnowledgeFactors", () => {
     expect(r?.message).toMatch(/confirm the name/i);
   });
 
-  it("passes a case-insensitive partial name (bidirectional contains, same as lookup)", () => {
+  it("passes a case-insensitive partial/whole-token name (tolerant phonetic match, same as lookup)", () => {
     expect(verifyKnowledgeFactors(APPT, { name: "jane" }, NAME_ORG)).toBeNull();
     expect(verifyKnowledgeFactors(APPT, { name: "JANE SMITH" }, NAME_ORG)).toBeNull();
     expect(verifyKnowledgeFactors({ attendee_name: "Jane" }, { name: "Jane Smith" }, NAME_ORG)).toBeNull();
+  });
+
+  it("SCRUM-506: accepts an STT-mangled spelling that lookup would accept (Makhoul≈Macool), fixing the lookup/mutation asymmetry", () => {
+    // Before: mutation used a strict substring check, so a name good enough to
+    // FIND the booking could FAIL to change it. Now both use namesMatch.
+    expect(verifyKnowledgeFactors({ attendee_name: "Makhoul" }, { name: "Macool" }, NAME_ORG)).toBeNull();
+  });
+
+  it("SCRUM-506: still refuses an unrelated name under the tolerant matcher (not a rubber stamp)", () => {
+    expect(
+      verifyKnowledgeFactors({ attendee_name: "Makhoul" }, { name: "Michael" }, NAME_ORG)?.success
+    ).toBe(false);
   });
 
   it("refuses a non-matching name with a GENERIC message that names no factor and echoes no identity", () => {
@@ -120,5 +133,36 @@ describe("verifyKnowledgeFactors", () => {
     it("skips the factor when no email is on file", () => {
       expect(verifyKnowledgeFactors({ attendee_email: null }, {}, EMAIL_ORG)).toBeNull();
     });
+  });
+});
+
+describe("applyCollectedDetails (SCRUM-506)", () => {
+  it("fills a MISSING name/email from the per-call collected details", () => {
+    expect(applyCollectedDetails({}, { name: "Jane Smith", email: "j@x.com" })).toEqual({
+      name: "Jane Smith",
+      email: "j@x.com",
+    });
+  });
+
+  it("NEVER overrides a value the model actually provided", () => {
+    expect(applyCollectedDetails({ name: "Model Name" }, { name: "Collected Name" })).toEqual({
+      name: "Model Name",
+    });
+  });
+
+  it("treats a blank/whitespace provided value as missing (backfills it)", () => {
+    expect(applyCollectedDetails({ name: "   " }, { name: "Collected" }).name).toBe("Collected");
+  });
+
+  it("is a no-op when there are no collected details", () => {
+    expect(applyCollectedDetails({ name: "A" }, undefined)).toEqual({ name: "A" });
+  });
+
+  it("only backfills the enforced factors (name/email), ignoring other collected keys", () => {
+    const out = applyCollectedDetails(
+      {},
+      { name: "N", phone: "+61400000000", date_of_birth: "1990-01-01" },
+    );
+    expect(out).toEqual({ name: "N" });
   });
 });
