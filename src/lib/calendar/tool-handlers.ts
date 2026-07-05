@@ -31,6 +31,7 @@ import {
 } from "@/lib/calendar/cliniko-booking";
 import { reconcileClinikoOrg } from "@/lib/calendar/cliniko-reconcile";
 import { generateConfirmationCode } from "@/lib/calendar/confirmation-code";
+import { namesMatch } from "@/lib/calendar/name-match";
 import { validateOrgScopedRefs } from "@/lib/calendar/validate-org-scoped-refs";
 import { MAX_BOOKING_HORIZON_MS } from "@/lib/calendar/appointment-lifecycle";
 import {
@@ -70,6 +71,13 @@ interface ToolResult {
   message: string;
   data?: Record<string, unknown>;
 }
+
+// SCRUM-505: one canonical "nothing found" line, shared by the genuine
+// not-found and the knowledge-factor-mismatch cases in lookup. Identical wording
+// either way so a caller with a (spoofable) matching phone but the wrong name
+// can't tell whether a booking exists under that number — no enumeration oracle.
+const LOOKUP_NO_MATCH_MESSAGE =
+  "I couldn't find any upcoming appointments matching your details. It's possible the appointment was booked under a different name or phone number. Would you like me to arrange a callback so someone from the team can help you?";
 
 interface BusinessHours {
   open: string; // "09:00"
@@ -2802,7 +2810,8 @@ export async function handleLookupAppointment(
     phone?: string;
     email?: string;
     date_of_birth?: string;
-  }
+  },
+  trusted?: TrustedCallContext
 ): Promise<ToolResult> {
   const supabase = createAdminClient();
 
@@ -2921,6 +2930,80 @@ export async function handleLookupAppointment(
     }
   }
 
+  // 2a½. SCRUM-505: VERIFIED-CALLER-ID LOOKUP.
+  // On a real inbound call the voice server threads the VERIFIED caller ID as a
+  // trusted, model-inaccessible field — a possession PROOF, unlike the
+  // model-supplied `args.phone`, which the model can only guess (this exact gap
+  // made a caller's own upcoming appointment un-findable). When the org uses the
+  // phone factor and we hold a verified caller ID, pin the caller's OWN upcoming
+  // appointments by it, then confirm the org's knowledge factor TOLERANTLY so an
+  // STT-mangled name ("Makhoul" heard as "Macool") still confirms. Test/browser
+  // sessions (no trusted caller ID) and non-phone-factor orgs fall through to the
+  // legacy field-based path below, unchanged.
+  const callerId = resolveCallerId(trusted);
+  const verifiedCallerPhone = callerId.state === "verified" ? callerId.phone : undefined;
+  const usesNameFactor = verificationFields.includes("name");
+  const usesEmailFactor = verificationFields.includes("email");
+  // A `date_of_birth` factor is NOT enforced here — appointments have no DOB
+  // column yet (SCRUM-506). Safe: this branch still gates on VERIFIED possession
+  // (strictly stronger than the legacy path's spoofable model phone) and pulls
+  // no identity when there's no name/email factor. SCRUM-506 adds the column +
+  // exact DOB check + the settings UI.
+
+  if (verificationFields.includes("phone") && verifiedCallerPhone) {
+    // A required knowledge factor not yet captured — ask for it before revealing
+    // anything, rather than listing appointments off caller ID alone.
+    if (usesNameFactor && !args.name?.trim()) {
+      return { success: false, message: "To find your appointment, what's the full name it's booked under?" };
+    }
+    if (usesEmailFactor && !args.email?.trim()) {
+      return { success: false, message: "To find your appointment, what's the email address it's booked under?" };
+    }
+
+    // Only fetch the stored name when a name/email factor will consume it
+    // (SCRUM-437: never pull identity for a phone-only match).
+    const includeIdentity = usesNameFactor || usesEmailFactor;
+    const suffix = verifiedCallerPhone.replace(/\D/g, "").slice(-9);
+    const { data: pinnedRows, error: pinError } = await (supabase as any)
+      .from("appointments")
+      .select(
+        `id, ${includeIdentity ? "attendee_name, " : ""}attendee_phone, attendee_email, start_time, end_time, duration_minutes, status, service_type_id, practitioner_id`
+      )
+      .eq("organization_id", organizationId)
+      .in("status", ["confirmed", "pending"])
+      .gte("start_time", new Date().toISOString()) // Only future appointments
+      .ilike("attendee_phone", `%${suffix}`)
+      .order("start_time", { ascending: true })
+      .limit(10);
+
+    if (pinError) {
+      console.error("Appointment lookup (verified caller ID) error:", pinError);
+      return { success: false, message: "I'm having trouble looking up appointments right now. Would you like me to arrange a callback instead?" };
+    }
+
+    // The ilike suffix is a cheap prefilter; verifyPhonePossession is the precise
+    // (NANP-aware) ownership check, against the VERIFIED caller ID only.
+    let owned = (pinnedRows || []).filter(
+      (a: any) => verifyPhonePossession(a, undefined, callerId) === "match"
+    );
+    // Knowledge factor(s) on the possessed appointments: name is TOLERANT
+    // (STT/spelling drift), email is exact when supplied.
+    if (usesNameFactor) {
+      owned = owned.filter((a: any) => namesMatch(args.name, a.attendee_name));
+    }
+    if (usesEmailFactor && args.email?.trim()) {
+      const givenEmail = args.email.trim().toLowerCase();
+      owned = owned.filter((a: any) => (a.attendee_email || "").toLowerCase() === givenEmail);
+    }
+
+    // Anti-enumeration: a factor mismatch returns the SAME line as a genuine
+    // not-found, so a spoofed caller ID can't probe who holds a booking.
+    if (owned.length === 0) {
+      return { success: true, message: LOOKUP_NO_MATCH_MESSAGE };
+    }
+    return formatAppointmentResult(owned, timezone, supabase);
+  }
+
   // 2b. FIELD-BASED VERIFICATION (details_only mode, or code fallback)
   const missing: string[] = [];
   for (const field of verificationFields) {
@@ -2997,10 +3080,7 @@ export async function handleLookupAppointment(
   }
 
   if (!appointments || appointments.length === 0) {
-    return {
-      success: true,
-      message: "I couldn't find any upcoming appointments matching your details. It's possible the appointment was booked under a different name or phone number. Would you like me to arrange a callback so someone from the team can help you?",
-    };
+    return { success: true, message: LOOKUP_NO_MATCH_MESSAGE };
   }
 
   return formatAppointmentResult(appointments, timezone, supabase as any);
