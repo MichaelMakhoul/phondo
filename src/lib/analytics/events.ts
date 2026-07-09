@@ -25,6 +25,7 @@ export const EventNames = {
   ASSISTANT_TOGGLED: "assistant_toggled",
   TEST_CALL_STARTED: "test_call_started",
   TEST_CALL_COMPLETED: "test_call_completed",
+  TEST_CALL_MIC_GATE_BYPASSED: "test_call_mic_gate_bypassed",
   PHONE_NUMBER_ADDED: "phone_number_added",
   PHONE_NUMBER_REMOVED: "phone_number_removed",
   AI_TOGGLE_CHANGED: "ai_toggle_changed",
@@ -146,6 +147,26 @@ export function trackTestCallCompleted(
   pushEvent(EventNames.TEST_CALL_COMPLETED, {
     duration_seconds: durationSeconds,
     source,
+  });
+}
+
+/**
+ * The browser mic gate gave up gating because it believed it was muting the
+ * caller. It is self-healing, so the call still works — but the caller now
+ * streams room noise to the model, which degrades the demo. A console warning
+ * lands only in the prospect's devtools, so count it here: if this fires on a
+ * meaningful share of demos, the gate is mistuned and nobody would otherwise
+ * find out.
+ */
+export function trackTestCallMicGateBypassed(
+  source: "dashboard" | "onboarding",
+  rms: number,
+  noiseFloor: number
+): void {
+  pushEvent(EventNames.TEST_CALL_MIC_GATE_BYPASSED, {
+    source,
+    rms: Number(rms.toFixed(4)),
+    noise_floor: Number(noiseFloor.toFixed(4)),
   });
 }
 

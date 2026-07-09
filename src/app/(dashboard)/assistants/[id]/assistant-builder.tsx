@@ -112,6 +112,8 @@ interface AssistantBuilderProps {
   hasBusinessHours: boolean;
   hasTimezone: boolean;
   industry?: string;
+  /** Org ISO country code — selects the emergency number in the generated prompt. */
+  country?: string;
 }
 
 export function AssistantBuilder({
@@ -121,6 +123,7 @@ export function AssistantBuilder({
   hasBusinessHours,
   hasTimezone,
   industry,
+  country,
 }: AssistantBuilderProps) {
   const router = useRouter();
   const { toast } = useToast();
@@ -672,6 +675,7 @@ export function AssistantBuilder({
                   businessName={name}
                   systemPrompt={systemPrompt}
                   firstMessage={firstMessage}
+                  country={country}
                   onChange={(updates) => {
                     setSystemPrompt(updates.systemPrompt);
                     setFirstMessage(updates.firstMessage);

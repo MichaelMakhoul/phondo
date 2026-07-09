@@ -1,4 +1,5 @@
 import type { PromptConfig, CollectionField, TonePreset, VerificationMethod, AfterHoursConfig } from "./types";
+import { getEmergencyNumber } from "@/lib/country-config";
 
 export interface PromptContext {
   businessName: string;
@@ -120,9 +121,16 @@ export function buildSchedulingSection(
   return lines.join("\n");
 }
 
-/** Emergency services number by country (AU "000", else US "911"). */
+/**
+ * Emergency services number by country (AU "000", else US "911").
+ *
+ * Delegates to the country registry so the number lives in exactly one place
+ * (`countries/*.ts`). Guards the empty case first: `getEmergencyNumber("")`
+ * would log an "unknown country code" error on every prompt built without a
+ * country, which is the normal case for the dashboard preview.
+ */
 function emergencyNumberFor(country?: string): string {
-  return (country || "").toUpperCase() === "AU" ? "000" : "911";
+  return country ? getEmergencyNumber(country) : "911";
 }
 
 function getIndustryGuidelines(industry: string, emergencyNumber = "911"): string {
@@ -391,7 +399,7 @@ export function buildPromptFromConfig(config: PromptConfig, context: PromptConte
   sections.push(buildSchedulingSection(context.timezone, context.businessHours, context.defaultAppointmentDuration));
 
   // 6. Industry guidelines
-  const guidelines = getIndustryGuidelines(context.industry);
+  const guidelines = getIndustryGuidelines(context.industry, emergencyNumber);
   if (guidelines) {
     sections.push(guidelines.trim());
   }

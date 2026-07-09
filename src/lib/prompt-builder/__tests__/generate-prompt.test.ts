@@ -175,6 +175,52 @@ describe("generate-prompt", () => {
       expect(prompt).toContain("MESSAGES:");
     });
 
+    // Caller-safety wording: telling an Australian to call 911 (or an American
+    // to call 000) in a medical emergency is the worst regression this file can
+    // ship. Pin BOTH emitters — the EMERGENCIES behavior line and the industry
+    // guidelines block, which regressed to a hardcoded 911 once already.
+    describe("emergency number by country", () => {
+      it("uses 000 for AU in both the behaviors line and industry guidelines", () => {
+        const config = getDefaultConfig("medical");
+        const prompt = buildPromptFromConfig(config, { ...baseContext, country: "AU" });
+        expect(prompt).toContain("EMERGENCIES:");
+        expect(prompt).toContain("call 000");
+        expect(prompt).not.toContain("911");
+      });
+
+      it("uses 911 for US", () => {
+        const config = getDefaultConfig("medical");
+        const prompt = buildPromptFromConfig(config, { ...baseContext, country: "US" });
+        expect(prompt).toContain("call 911");
+        expect(prompt).not.toContain("000");
+      });
+
+      it("defaults to 911 when no country is supplied", () => {
+        const config = getDefaultConfig("medical");
+        const prompt = buildPromptFromConfig(config, baseContext);
+        expect(prompt).toContain("call 911");
+        expect(prompt).not.toContain("000");
+      });
+
+      it("is case-insensitive for the country code", () => {
+        const config = getDefaultConfig("medical");
+        const prompt = buildPromptFromConfig(config, { ...baseContext, country: "au" });
+        expect(prompt).toContain("call 000");
+        expect(prompt).not.toContain("911");
+      });
+
+      it("threads the country into home_services guidelines too", () => {
+        const config = getDefaultConfig("home_services");
+        const prompt = buildPromptFromConfig(config, {
+          ...baseContext,
+          industry: "home_services",
+          country: "AU",
+        });
+        expect(prompt).toContain("000");
+        expect(prompt).not.toContain("911");
+      });
+    });
+
     it("should not include disabled capabilities", () => {
       const config = getDefaultConfig("other"); // only takeMessages is on
       const prompt = buildPromptFromConfig(config, baseContext);

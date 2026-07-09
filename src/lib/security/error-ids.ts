@@ -188,6 +188,18 @@ export const SENTRY_REASONS = {
    *  (e.g. /auth/callback). A burst of these is someone probing the auth flow
    *  for a post-login phishing bounce — worth surfacing, not silently dropping. */
   OPEN_REDIRECT_BLOCKED: "open-redirect-blocked",
+
+  // ─── phone-number provisioning rollback ─────────────────────────────
+  /** A number was purchased from the carrier but a later provisioning step
+   *  failed AND the compensating release also failed. The number is now
+   *  orphaned: billed monthly, owned by nobody. The console.error alone is
+   *  write-only, so this pages someone to release it by hand. */
+  PHONE_NUMBER_ORPHANED: "phone-number-orphaned",
+
+  /** The carrier voice webhook could not be configured on a freshly purchased
+   *  number, so the number was released and provisioning failed. Recurring
+   *  hits mean new numbers cannot be made call-ready. */
+  PHONE_NUMBER_WEBHOOK_CONFIG_FAILED: "phone-number-webhook-config-failed",
 } as const;
 
 export type SentryReason = (typeof SENTRY_REASONS)[keyof typeof SENTRY_REASONS];

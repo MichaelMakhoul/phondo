@@ -4309,11 +4309,24 @@ function warmUpGeminiLive() {
   const t0 = Date.now();
   let settled = false;
   let sess = null;
-  const finish = (how) => {
+  /**
+   * Terminal for the warmup. EVERY path closes the throwaway session — the
+   * error path used to disarm the timeout without closing, leaving the socket's
+   * closure to the remote end (gemini-live's `goAway` fires onError without
+   * closing). `warmed` distinguishes "produced audio, path is hot" from
+   * "gave up": logging a timeout as "warmed" hid the very cold start this
+   * function exists to kill.
+   */
+  const settle = (how, warmed) => {
     if (settled) return;
     settled = true;
     try { sess && sess.close(); } catch {}
-    console.log(`[GeminiWarmup] Gemini Live path warmed in ${Date.now() - t0}ms (${how})`);
+    const ms = Date.now() - t0;
+    if (warmed) {
+      console.log(`[GeminiWarmup] Gemini Live path warmed in ${ms}ms (${how})`);
+    } else {
+      console.warn(`[GeminiWarmup] gave up after ${ms}ms (${how}) — the first call may be slow`);
+    }
   };
   try {
     sess = createGeminiSession(
@@ -4324,22 +4337,20 @@ function warmUpGeminiLive() {
         triggerGreeting: true,
       },
       {
-        onAudio: () => finish("first-audio"), // generation path is warm
-        onTurnComplete: () => finish("turn-complete"),
-        onError: (err) => {
-          if (settled) return;
-          settled = true;
-          console.warn(`[GeminiWarmup] failed: ${err && err.message ? err.message : err}`);
-        },
-        onClose: () => {},
+        onAudio: () => settle("first-audio", true), // generation path is warm
+        onTurnComplete: () => settle("turn-complete", true),
+        onError: (err) => settle(`error: ${err && err.message ? err.message : err}`, false),
+        onClose: () => settle("closed before audio", false),
       }
     );
   } catch (err) {
     console.warn(`[GeminiWarmup] failed to start: ${err.message}`);
     return;
   }
-  // Safety net — never hang or hold the warmup session open.
-  setTimeout(() => finish("timeout"), 20000);
+  // Safety net — never hang or hold the warmup session open. Unref'd so a
+  // pending warmup can never keep the process alive on its own.
+  const timer = setTimeout(() => settle("timeout", false), 20000);
+  if (typeof timer.unref === "function") timer.unref();
 }
 
 server.listen(Number(PORT), "0.0.0.0", () => {
