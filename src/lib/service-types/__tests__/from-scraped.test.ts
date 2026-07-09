@@ -38,8 +38,28 @@ describe("serviceTypesFromScraped", () => {
     const result = serviceTypesFromScraped(["Root Canal", "Teeth Whitening"], known);
 
     expect(result[0]).toMatchObject({ name: "Root Canal", duration_minutes: 90 });
+    // The description we already wrote for it comes along.
+    expect(result[0].description).toBe("Root canal treatment");
     // Not in the table, so it stays neutral rather than inheriting a neighbour's.
     expect(result[1]).toMatchObject({ name: "Teeth Whitening", duration_minutes: 30 });
+    expect(result[1].description).toBeUndefined();
+  });
+
+  it("rejects a short sentence, not just a long one", () => {
+    // The only prose fixture is 14 words, so the word-count rule catches it and
+    // the sentence rule never has to fire. This one is four words.
+    expect(serviceTypesFromScraped(["We fix taps. Fast."])).toEqual([]);
+  });
+
+  it("rejects a nine-word marketing blurb", () => {
+    // The limit is eight. Without a fixture near the boundary it could drift
+    // to thirteen unnoticed, and blurbs would become bookable services.
+    expect(serviceTypesFromScraped(["Same day hot water system repairs across all of Sydney"])).toEqual([]);
+    expect(serviceTypesFromScraped(["Same day hot water system repairs"])).toHaveLength(1);
+  });
+
+  it("dedupes before it caps, so 40 duplicates yield one service", () => {
+    expect(serviceTypesFromScraped(Array.from({ length: 40 }, () => "Car Servicing"))).toHaveLength(1);
   });
 
   it("matches a known service through case, punctuation, and '&' spelled out", () => {

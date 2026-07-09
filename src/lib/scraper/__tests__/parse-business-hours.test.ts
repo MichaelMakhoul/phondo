@@ -112,6 +112,43 @@ describe("parseBusinessHours — what a real site says", () => {
     const result = parseBusinessHours(["Mon-Fri: 9 - 12"]);
     expect(result!.hours.monday).toEqual({ open: "09:00", close: "12:00" });
   });
+
+  it("reads 12am as midnight and 12pm as noon", () => {
+    // 12am -> 12:00 parses SUCCESSFULLY and writes a wrong week with no toast:
+    // a venue opening at midnight silently told it opens at noon.
+    const a = parseBusinessHours(["Mon-Fri: 12am - 5pm"]);
+    expect(a!.hours.monday).toEqual({ open: "00:00", close: "17:00" });
+    const b = parseBusinessHours(["Mon-Fri: 12pm - 8pm"]);
+    expect(b!.hours.monday).toEqual({ open: "12:00", close: "20:00" });
+  });
+
+  it("understands a wrap-around day range", () => {
+    // "Sun-Thu" crosses the end of the week. Without the modulo it silently
+    // refuses, and a real seven-day listing falls back to the default.
+    const result = parseBusinessHours(["Sun-Thu: 9am - 5pm", "Fri: Closed", "Sat: Closed"]);
+    expect(result!.hours.sunday).toEqual({ open: "09:00", close: "17:00" });
+    expect(result!.hours.thursday).toEqual({ open: "09:00", close: "17:00" });
+    expect(result!.hours.friday).toBeNull();
+  });
+
+  it("accepts '&', 'and' and '+' between day names, not only commas", () => {
+    const result = parseBusinessHours([
+      "Mon & Tue: 9am - 5pm",
+      "Wed and Thu: 9am - 5pm",
+      "Fri + Sat: 9am - 1pm",
+      "Sun: Closed",
+    ]);
+    expect(result!.hours.tuesday).toEqual({ open: "09:00", close: "17:00" });
+    expect(result!.hours.thursday).toEqual({ open: "09:00", close: "17:00" });
+    expect(result!.hours.saturday).toEqual({ open: "09:00", close: "13:00" });
+  });
+
+  it("collapses windows to the outer envelope regardless of the order given", () => {
+    // min(open) and max(close), not first and last. Every other fixture lists
+    // the morning window first, so "first" and "min" agree and the bug hides.
+    const result = parseBusinessHours(["Mon-Fri: 1pm - 5pm, 9am - 12pm"]);
+    expect(result!.hours.monday).toEqual({ open: "09:00", close: "17:00" });
+  });
 });
 
 describe("parseBusinessHours — refuses rather than guess", () => {
@@ -180,6 +217,14 @@ describe("parseBusinessHours — refuses rather than guess", () => {
     expect(parseBusinessHours(["Mon-Fri: 9am - 12pm, 2 - 6pm"])).toBeNull();
   });
 
+  it("refuses a gym's '6 - 9pm', because 6am and 6pm are both real openings", () => {
+    // Intended collateral, recorded so it is not later mistaken for a bug. A
+    // 6am-9pm gym and a 6pm-9pm evening class write the same string. The old
+    // code silently guessed 06:00; refusing shows the owner a warning instead.
+    expect(parseBusinessHours(["Mon-Fri: 6 - 9pm"])).toBeNull();
+    expect(parseBusinessHours(["Mon-Fri: 7 - 8pm"])).toBeNull();
+  });
+
   it("keeps a bare open whose only sensible reading is morning", () => {
     // 9pm is after 5pm, so "9" cannot have meant 9pm.
     expect(parseBusinessHours(["Mon-Fri: 9 - 5pm"])!.hours.monday).toEqual({
@@ -230,6 +275,20 @@ describe("parseBusinessHours — refuses rather than guess", () => {
     expect(parseBusinessHours(["Monday: 25:00 - 26:00", "Tue-Fri: 9am - 5pm", "Sat-Sun: Closed"])).toBeNull();
     expect(parseBusinessHours(["Monday: 9:75am - 5pm", "Tue-Fri: 9am - 5pm", "Sat-Sun: Closed"])).toBeNull();
     expect(parseBusinessHours(["Monday: 13pm - 5pm", "Tue-Fri: 9am - 5pm", "Sat-Sun: Closed"])).toBeNull();
+    // Compact 24h form. Unguarded, "2530" becomes a SUCCESSFUL "25:30" and the
+    // bare-hour ambiguity checks never fire on four digits.
+    expect(parseBusinessHours(["Monday: 2530 - 2600", "Tue-Fri: 9am - 5pm", "Sat-Sun: Closed"])).toBeNull();
+    expect(parseBusinessHours(["Monday: 0875 - 1730", "Tue-Fri: 9am - 5pm", "Sat-Sun: Closed"])).toBeNull();
+  });
+
+  it("refuses four named days, and accepts five", () => {
+    // MIN_DAYS_NAMED is the valve that stops a partial extraction from marking
+    // the rest of the week closed. Only the accept side was pinned, so the
+    // threshold could drift down to 4 unnoticed and a Mon-Thu scrape would
+    // start closing Fri, Sat and Sun.
+    const fourDays = ["Mon: 9am - 5pm", "Tue: 9am - 5pm", "Wed: 9am - 5pm", "Thu: 9am - 5pm"];
+    expect(parseBusinessHours(fourDays)).toBeNull();
+    expect(parseBusinessHours([...fourDays, "Fri: 9am - 5pm"])).not.toBeNull();
   });
 
   it("returns null when every listed day is closed", () => {

@@ -107,6 +107,31 @@ describe("POST /api/v1/service-types/seed", () => {
     expect(state.insertedRows[0].organization_id).toBe("org-1");
   });
 
+  it("falls back to the caller's OWN industry, not the generic table", async () => {
+    // Ignoring `industry` here reseeds a dental practice with "Appointment" and
+    // "Consultation" — the very "AI recites one thing, books another" failure
+    // this ticket exists to close. Assert the dental table, not just non-empty.
+    await POST(req({ organizationId: "org-1", industry: "dental", scrapedServices: [] }));
+    const names = state.insertedRows.map((r: { name: string }) => r.name);
+    expect(names).toContain("Check-up & Clean");
+    expect(names).not.toContain("Appointment");
+  });
+
+  it("uses the generic table only when the industry is unknown", async () => {
+    await POST(req({ organizationId: "org-1", industry: "underwater-basket-weaving", scrapedServices: [] }));
+    const names = state.insertedRows.map((r: { name: string }) => r.name);
+    expect(names).toContain("Appointment");
+  });
+
+  it("adopts a duration from the caller's industry when a scraped name matches", async () => {
+    // The route must thread `industry` into the KNOWN-durations table too, not
+    // only into the fallback. A dental "Root Canal" is 90 minutes; packing it
+    // into the neutral 30 double-books the chair.
+    await POST(req({ organizationId: "org-1", industry: "dental", scrapedServices: ["Root Canal"] }));
+    expect(state.insertedRows).toHaveLength(1);
+    expect(state.insertedRows[0]).toMatchObject({ name: "Root Canal", duration_minutes: 90 });
+  });
+
   it("falls back when no scrapedServices key is sent at all (older client)", async () => {
     const res = await POST(req({ organizationId: "org-1", industry: "dental" }));
     const body = await res.json();
