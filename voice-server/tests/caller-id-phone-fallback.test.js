@@ -123,6 +123,30 @@ describe("applyCallerIdPhoneFallback — junk values (SCRUM-518)", () => {
     const out = applyCallerIdPhoneFallback("cancel_appointment", { phone: "0.5" }, CALLER);
     assert.equal(out.phone, "0.5");
   });
+
+  it("replaces junk on reschedule too, not only on booking", () => {
+    // Every other junk case above says "book_appointment". Narrowing this check
+    // to booking alone would leave the "0.5" dead-end alive on reschedules,
+    // where the prompts tell the model to identify the appointment by "the same
+    // number" — and the whole suite would stay green while it did.
+    for (const junk of ["0.5", "00000000", "+266696687", "oh four one two"]) {
+      const out = applyCallerIdPhoneFallback(
+        "reschedule_appointment",
+        { new_datetime: "2027-06-17T10:15:00", phone: junk },
+        CALLER
+      );
+      assert.equal(out.phone, CALLER, `junk: ${junk}`);
+    }
+  });
+
+  it("keeps a real number on reschedule, same as on booking", () => {
+    const out = applyCallerIdPhoneFallback(
+      "reschedule_appointment",
+      { new_datetime: "2027-06-17T10:15:00", phone: "+61399998888" },
+      CALLER
+    );
+    assert.equal(out.phone, "+61399998888");
+  });
 });
 
 describe("isDialablePhoneArg (SCRUM-518)", () => {
