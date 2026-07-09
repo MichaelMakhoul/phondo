@@ -9,6 +9,7 @@ export interface PromptContext {
   defaultAppointmentDuration?: number;
   isAfterHours?: boolean;
   afterHoursConfig?: AfterHoursConfig | null;
+  country?: string; // ISO country code — drives the emergency services number in guidance
 }
 
 const toneDescriptions: Record<TonePreset, string> = {
@@ -119,7 +120,12 @@ export function buildSchedulingSection(
   return lines.join("\n");
 }
 
-function getIndustryGuidelines(industry: string): string {
+/** Emergency services number by country (AU "000", else US "911"). */
+function emergencyNumberFor(country?: string): string {
+  return (country || "").toUpperCase() === "AU" ? "000" : "911";
+}
+
+function getIndustryGuidelines(industry: string, emergencyNumber = "911"): string {
   switch (industry) {
     case "medical":
       return `
@@ -128,7 +134,7 @@ IMPORTANT — HIPAA & Medical Guidelines:
 - Never discuss patient information with anyone other than the verified patient
 - For existing patients, verify identity with name and date of birth before discussing any details
 - Never provide medical advice — always defer to clinical staff
-- For symptoms that could be emergencies (chest pain, difficulty breathing, severe bleeding, stroke symptoms), instruct the caller to call 911 immediately
+- For symptoms that could be emergencies (chest pain, difficulty breathing, severe bleeding, stroke symptoms), instruct the caller to call ${emergencyNumber} immediately
 - For prescription refill requests, collect patient name, DOB, medication name, and pharmacy information`;
 
     case "dental":
@@ -152,7 +158,7 @@ IMPORTANT — Legal Practice Guidelines:
     case "home_services":
       return `
 Home Services Guidelines:
-- For emergencies (gas leaks, flooding, electrical hazards), advise calling 911 first if there is immediate danger, then prioritize urgent dispatch
+- For emergencies (gas leaks, flooding, electrical hazards), advise calling ${emergencyNumber} first if there is immediate danger, then prioritize urgent dispatch
 - Collect the service address early in the conversation
 - Clarify urgency level to help with scheduling priority
 - If quoting prices, always note that final pricing may vary after on-site assessment`;
@@ -292,7 +298,7 @@ function buildFieldCollectionSection(fields: CollectionField[]): string {
 
 function buildBehaviorsSection(
   behaviors: PromptConfig["behaviors"],
-  options?: { isAfterHours?: boolean; afterHoursConfig?: AfterHoursConfig | null }
+  options?: { isAfterHours?: boolean; afterHoursConfig?: AfterHoursConfig | null; emergencyNumber?: string }
 ): string {
   const lines: string[] = [];
 
@@ -305,8 +311,9 @@ function buildBehaviorsSection(
   }
 
   if (behaviors.handleEmergencies) {
+    const emergencyNumber = options?.emergencyNumber || "911";
     lines.push(
-      "- EMERGENCIES: If a caller describes an emergency, take it seriously. Provide appropriate urgent guidance (e.g., call 911) and escalate immediately."
+      `- EMERGENCIES: If a caller describes a medical or safety emergency, tell them to call ${emergencyNumber} immediately, then escalate (transfer if configured, otherwise take an urgent message). Do NOT give clinical or professional advice.`
     );
   }
 
@@ -371,10 +378,13 @@ export function buildPromptFromConfig(config: PromptConfig, context: PromptConte
     sections.push(fieldSection);
   }
 
+  const emergencyNumber = emergencyNumberFor(context.country);
+
   // 4. Behaviors (with after-hours awareness)
   sections.push(buildBehaviorsSection(config.behaviors, {
     isAfterHours: context.isAfterHours,
     afterHoursConfig: context.afterHoursConfig,
+    emergencyNumber,
   }));
 
   // 5. Timezone, business hours & scheduling instructions (always included)

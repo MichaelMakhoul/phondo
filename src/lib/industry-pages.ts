@@ -36,7 +36,7 @@ export const INDUSTRY_PAGES: IndustryPage[] = [
     color: "rose",
     heroTitle: "An AI receptionist built for dental and medical practices",
     heroSubtitle:
-      "Answer every patient call, book appointments instantly, and handle after-hours triage — without adding staff. Built for Australian healthcare with AHPRA-aware privacy standards.",
+      "Answer every patient call, book appointments instantly, and handle after-hours triage, without adding staff. Built for Australian healthcare with AHPRA-aware privacy standards.",
     features: [
       {
         icon: "Calendar",
@@ -60,7 +60,7 @@ export const INDUSTRY_PAGES: IndustryPage[] = [
         icon: "PhoneForwarded",
         title: "Emergency Call Routing",
         description:
-          "Detects urgent cases — pain, swelling, trauma — and transfers directly to the right practitioner's mobile.",
+          "Detects urgent cases (pain, swelling, trauma) and transfers directly to the right practitioner's mobile.",
       },
       {
         icon: "MessageSquare",
@@ -90,7 +90,7 @@ export const INDUSTRY_PAGES: IndustryPage[] = [
       {
         question: "How does it handle patient privacy and AHPRA requirements?",
         answer:
-          "All data is hosted on Australian servers in Sydney. The AI never shares information between callers and handles call recording consent automatically per state requirements. We are building towards full AHPRA compliance.",
+          "Call transcripts and patient data are stored at rest in Sydney, Australia, and isolated per practice. The AI never shares information between callers and handles call recording consent automatically per state requirements. Real-time conversations are processed by vetted AI providers, and we're upfront about how that works. We're building towards full AHPRA compliance.",
       },
       {
         question: "What happens when a patient calls with a dental emergency after hours?",
@@ -119,7 +119,7 @@ export const INDUSTRY_PAGES: IndustryPage[] = [
     color: "blue",
     heroTitle: "An AI receptionist that understands legal practice",
     heroSubtitle:
-      "Capture every lead, handle client intake, and schedule consultations — 24/7. Professional tone, strict confidentiality, and Australian legal compliance built in.",
+      "Capture every lead, handle client intake, and schedule consultations, 24/7. Professional tone, strict confidentiality, and Australian legal compliance built in.",
     features: [
       {
         icon: "FileText",
@@ -137,19 +137,19 @@ export const INDUSTRY_PAGES: IndustryPage[] = [
         icon: "Lock",
         title: "Strict Confidentiality",
         description:
-          "Never reveals client information between calls. Australian-hosted data protects solicitor-client privilege. No offshore data transfers.",
+          "Never reveals client information between calls. Client data is stored in Australia and isolated per firm. We're transparent about how conversations are processed.",
       },
       {
         icon: "Phone",
         title: "24/7 Lead Capture",
         description:
-          "Legal enquiries don't stop at 5pm. Capture potential clients calling after hours, weekends, and holidays — before they call your competitor.",
+          "Legal enquiries don't stop at 5pm. Capture potential clients calling after hours, weekends, and holidays, before they call your competitor.",
       },
       {
         icon: "PhoneForwarded",
         title: "Urgent Matter Transfers",
         description:
-          "Detects time-sensitive matters — court deadlines, bail, family emergencies — and transfers directly to the relevant solicitor.",
+          "Detects time-sensitive matters (court deadlines, bail, family emergencies) and transfers directly to the relevant solicitor.",
       },
       {
         icon: "BarChart3",
@@ -159,16 +159,16 @@ export const INDUSTRY_PAGES: IndustryPage[] = [
       },
     ],
     stats: [
-      { value: "24/7", label: "lead capture — enquiries don't wait for business hours" },
+      { value: "24/7", label: "lead capture, enquiries don't wait for business hours" },
       { value: "85%", label: "of callers who reach voicemail never call a law firm back" },
       { value: "$1,200+", label: "average value of a new legal client" },
-      { value: "100%", label: "Australian-hosted data for solicitor-client privilege" },
+      { value: "Sydney", label: "Where your client records are stored at rest" },
     ],
     faqs: [
       {
         question: "How does the AI handle solicitor-client confidentiality?",
         answer:
-          "The AI never shares information between callers and operates under strict data isolation. All data is hosted in Sydney, Australia, ensuring solicitor-client privilege is maintained under Australian law. No data is transferred offshore.",
+          "The AI never shares information between callers and operates under strict data isolation. Client matter data is stored at rest in Sydney, Australia. We disclose exactly how conversations are processed so you can meet your confidentiality obligations.",
       },
       {
         question: "Can it handle different practice areas (family, criminal, commercial)?",
@@ -202,7 +202,7 @@ export const INDUSTRY_PAGES: IndustryPage[] = [
     color: "amber",
     heroTitle: "An AI receptionist for plumbers, electricians, and tradies",
     heroSubtitle:
-      "Answer calls while you're on the job. Capture job details, handle emergency dispatch, and book appointments — without missing a beat.",
+      "Answer calls while you're on the job. Capture job details, handle emergency dispatch, and book appointments, without missing a beat.",
     features: [
       {
         icon: "ClipboardList",
@@ -214,7 +214,7 @@ export const INDUSTRY_PAGES: IndustryPage[] = [
         icon: "Zap",
         title: "Emergency Dispatch",
         description:
-          "Detects emergencies — burst pipes, power outages, gas leaks — and calls your mobile immediately with the job details.",
+          "Detects emergencies (burst pipes, power outages, gas leaks) and calls your mobile immediately with the job details.",
       },
       {
         icon: "Calendar",
@@ -245,28 +245,28 @@ export const INDUSTRY_PAGES: IndustryPage[] = [
       { value: "47%", label: "more bookings with instant SMS text-back" },
       { value: "$450", label: "average revenue lost per missed service call" },
       { value: "73%", label: "of homeowners hire the first tradie who answers" },
-      { value: "24/7", label: "emergency call handling — nights, weekends, holidays" },
+      { value: "24/7", label: "emergency call handling: nights, weekends, holidays" },
     ],
     faqs: [
       {
-        question: "I'm on a job all day — how do I know what calls came in?",
+        question: "I'm on a job all day, so how do I know what calls came in?",
         answer:
           "Every call is logged with a full transcript, caller details, job description, and urgency level. You get an SMS notification for urgent calls and can review everything in your dashboard when you have a break. Think of it as a second pair of hands on the phone.",
       },
       {
         question: "Can it tell the difference between an emergency and a routine job?",
         answer:
-          "Yes. The AI is trained on trade-specific urgency signals — burst pipes, electrical faults, gas smells, no hot water. Emergencies get escalated immediately (call transfer or priority SMS). Routine jobs get booked into your next available slot.",
+          "Yes. The AI is trained on trade-specific urgency signals: burst pipes, electrical faults, gas smells, no hot water. Emergencies get escalated immediately (call transfer or priority SMS). Routine jobs get booked into your next available slot.",
       },
       {
         question: "What if a customer wants a quote over the phone?",
         answer:
-          "The AI captures all the job details (what's broken, location, photos if they text them) and lets the caller know you'll follow up with a quote. It doesn't guess pricing — it gets you the information you need to quote accurately.",
+          "The AI captures all the job details (what's broken, location, photos if they text them) and lets the caller know you'll follow up with a quote. It doesn't guess pricing; it gets you the information you need to quote accurately.",
       },
       {
         question: "Does it work for a one-person operation or just big companies?",
         answer:
-          "It's built for tradies and small crews. One-person operations are our sweet spot — you're the one who can't answer the phone because you're elbow-deep in a job. No minimum team size, no enterprise-only features.",
+          "It's built for tradies and small crews. One-person operations are our sweet spot: you're the one who can't answer the phone because you're elbow-deep in a job. No minimum team size, no enterprise-only features.",
       },
       {
         question: "Can I set different responses for business hours vs after hours?",

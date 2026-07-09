@@ -46,6 +46,7 @@ export interface CountryConfig {
   locale: string;
   phoneProvider: "twilio" | "telnyx";
   twilioCountryCode: string; // ISO country code — used by both Twilio and Telnyx
+  emergencyNumber: string; // Emergency services number (US "911", AU "000") — used in the AI's emergency guidance
 }
 
 // ── Registry ───────────────────────────────────────────────────────
@@ -68,6 +69,11 @@ export function getCountryConfig(code: CountryCode | string): CountryConfig {
     return COUNTRY_CONFIGS.US;
   }
   return config;
+}
+
+/** Emergency services number for a country (US "911", AU "000"). Falls back to US. */
+export function getEmergencyNumber(code: CountryCode | string): string {
+  return getCountryConfig(code).emergencyNumber;
 }
 
 // Sorted once at module load — getCountryForCallingCode runs on every

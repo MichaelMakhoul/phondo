@@ -4,7 +4,7 @@ import {
   Shield,
   Server,
   Lock,
-  MapPin,
+  Cpu,
   CheckCircle2,
   ArrowRight,
   Globe,
@@ -16,69 +16,69 @@ import { MarketingFooter } from "@/components/marketing/marketing-footer";
 import { AnimateOnScroll } from "@/components/marketing/animate-on-scroll";
 
 export const metadata: Metadata = {
-  title: "Australian Data Sovereignty | Phondo",
+  title: "Data Security & Australian Hosting | Phondo",
   description:
-    "Your business data stays in Australia. Phondo hosts all data on Australian servers with enterprise-grade security, encryption, and compliance.",
+    "Your business data is stored in Australia. Phondo hosts call transcripts and business data in our Sydney region with encryption and row-level isolation, and is transparent about how conversations are processed.",
 };
 
 const INFRASTRUCTURE = [
   {
     icon: Server,
-    title: "Australian-Hosted Database",
+    title: "Australian Data Residency",
     description:
-      "All call data, transcripts, and business information stored in Sydney (ap-southeast-2) on enterprise-grade managed infrastructure. Your data never leaves Australian soil.",
+      "Call transcripts, appointment details, and business data are stored at rest in Sydney, Australia, on SOC 2 Type II certified managed infrastructure. Your records stay in Australia.",
   },
   {
     icon: Globe,
-    title: "Sydney Edge Network",
+    title: "Sydney Region Hosting",
     description:
-      "Application served from Australian edge nodes for the fastest possible response times. Sub-50ms latency for Australian users.",
+      "The Phondo app and API run in our Australian region for fast, reliable, low-latency access for Australian users.",
   },
   {
     icon: Lock,
     title: "End-to-End Encryption",
     description:
-      "TLS 1.3 encryption in transit. AES-256 encryption at rest. Your call recordings and transcripts are protected at every stage.",
+      "TLS 1.3 encryption in transit. AES-256 encryption at rest. Your transcripts and business data are protected at every stage.",
   },
   {
-    icon: MapPin,
-    title: "Australian Voice Processing",
+    icon: Cpu,
+    title: "Transparent AI Processing",
     description:
-      "Voice calls routed through our Sydney-based voice servers. Call metadata and transcripts stored exclusively in Australia.",
+      "Natural conversations are powered by leading speech and language AI. That real-time processing is performed by vetted providers under commercial terms that prohibit training on your data. We're transparent about the providers involved and where your data is handled, and the full list is available on request.",
   },
 ];
 
 const COMPLIANCE_POINTS = [
-  "All data stored in Sydney, Australia (ap-southeast-2)",
-  "Compliant with the Australian Privacy Act 1988",
-  "Row-Level Security on all database tables",
-  "No data shared with offshore third parties without consent",
-  "Call recording consent handled per state requirements",
-  "Enterprise-grade infrastructure with built-in security monitoring",
+  "Call transcripts and business data stored at rest in Sydney, Australia",
+  "Built to support your obligations under the Australian Privacy Act 1988",
+  "Row-Level Security isolates every organisation's data",
+  "Real-time voice AI is processed by vetted providers under commercial terms that prohibit training on your data",
+  "AI processing may occur outside Australia; we disclose the providers involved and where your data is handled",
+  "State-aware call recording consent, so your callers are always informed",
+  "Encryption in transit (TLS 1.3) and at rest (AES-256)",
   "Hosted on SOC 2 Type II certified managed infrastructure",
-  "GDPR-ready for international clients",
 ];
 
 const VERTICALS = [
   {
     title: "Medical & Dental",
     description:
-      "Patient data stays in Australia. Critical for AHPRA compliance and medical privacy requirements. No offshore data transfers.",
+      "Patient records are stored in Australia, with call recording consent handled per state rules. We're transparent about the AI that powers conversations, which is important context for your AHPRA and privacy obligations.",
   },
   {
     title: "Legal Practices",
     description:
-      "Client confidentiality is paramount. Australian-hosted data ensures solicitor-client privilege is maintained under Australian law.",
+      "Client matter details are stored in Australia and isolated per firm with row-level security. We disclose exactly how conversations are processed so you can meet your confidentiality obligations.",
   },
   {
     title: "Financial Services",
     description:
-      "Meet APRA and ASIC data residency expectations. All financial conversation data stored and processed domestically.",
+      "Conversation data is stored in Australia. We provide the transparency on data handling and sub-processors that APRA- and ASIC-regulated firms expect.",
   },
   {
     title: "Government & Education",
     description:
-      "Australian data sovereignty is a procurement requirement for many government and educational institutions.",
+      "Australian data storage supports procurement requirements around data residency. Talk to us about your specific sovereignty needs.",
   },
 ];
 
@@ -96,11 +96,13 @@ export default function DataSovereigntyPage() {
               <Shield className="h-8 w-8 text-orange-400" />
             </div>
             <h1 className="text-4xl font-bold tracking-tight text-white sm:text-5xl lg:text-6xl">
-              Your data stays in Australia
+              Your data is stored in Australia
             </h1>
             <p className="mx-auto mt-6 max-w-2xl text-lg text-slate-400 sm:text-xl">
-              Every call recording, transcript, and piece of business data is
-              hosted on Australian servers. No exceptions. No offshore transfers.
+              Call transcripts and business data are stored at rest in our
+              Sydney region. And we&apos;re transparent about the thing most AI
+              vendors gloss over: exactly how and where your conversations are
+              processed.
             </p>
             <div className="mt-8 flex flex-col items-center gap-4 sm:flex-row sm:justify-center">
               <Link href="/signup">
@@ -133,8 +135,8 @@ export default function DataSovereigntyPage() {
                 Built for Australian businesses
               </h2>
               <p className="mx-auto mt-4 max-w-2xl text-muted-foreground">
-                Our infrastructure is purpose-built to keep your data within
-                Australian borders while delivering enterprise-grade performance.
+                Our infrastructure stores your data in Australia and gives you
+                clear visibility into how it&apos;s handled, with no vague promises.
               </p>
             </div>
           </AnimateOnScroll>
@@ -166,7 +168,7 @@ export default function DataSovereigntyPage() {
                   <FileCheck className="h-6 w-6 text-orange-400" />
                 </div>
                 <h2 className="text-3xl font-bold text-white sm:text-4xl">
-                  Compliance & security
+                  Security & data handling
                 </h2>
                 <p className="mx-auto mt-4 max-w-2xl text-slate-400">
                   We take security seriously so you can focus on your patients,
@@ -185,6 +187,16 @@ export default function DataSovereigntyPage() {
                     </li>
                   ))}
                 </ul>
+                <p className="mt-8 text-center text-sm text-slate-400">
+                  Read the full detail in our{" "}
+                  <Link
+                    href="/privacy"
+                    className="text-orange-400 hover:underline"
+                  >
+                    Privacy Policy
+                  </Link>
+                  , including where your data is stored and processed.
+                </p>
               </div>
             </AnimateOnScroll>
           </div>
@@ -198,8 +210,9 @@ export default function DataSovereigntyPage() {
                 Trusted by regulated industries
               </h2>
               <p className="mx-auto mt-4 max-w-2xl text-muted-foreground">
-                Australian data sovereignty isn&apos;t just a feature — it&apos;s
-                a requirement for many industries. We make compliance effortless.
+                Australian data residency isn&apos;t just a feature; it&apos;s a
+                requirement for many industries. We&apos;re built to help you
+                meet it, and we&apos;re honest about the trade-offs.
               </p>
             </div>
           </AnimateOnScroll>
@@ -226,8 +239,8 @@ export default function DataSovereigntyPage() {
                 Ready to keep your data in Australia?
               </h2>
               <p className="mx-auto mt-4 max-w-xl text-muted-foreground">
-                Start your 14-day free trial. No credit card required. Your data
-                stays on Australian servers from day one.
+                Start your 14-day free trial. No credit card required. Your
+                business data is stored on Australian servers from day one.
               </p>
               <div className="mt-8 flex flex-col items-center gap-4 sm:flex-row sm:justify-center">
                 <Link href="/signup">

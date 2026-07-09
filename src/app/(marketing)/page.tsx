@@ -55,7 +55,7 @@ export const metadata: Metadata = {
   openGraph: {
     title: "Phondo | AI Receptionist for Australian Businesses",
     description:
-      "Industry research shows most SMB calls go unanswered — each one costs hundreds in lost revenue. Phondo answers every call, 24/7.",
+      "Industry research shows most SMB calls go unanswered, and each one costs hundreds in lost revenue. Phondo answers every call, 24/7.",
     type: "website",
   },
 };
@@ -210,7 +210,7 @@ export default function LandingPage() {
 
           <div className="relative container mx-auto px-4 py-16 text-center sm:py-24 lg:py-32">
             <Badge className="mb-6 animate-fade-in-up border-orange-500/30 bg-orange-500/10 text-orange-300 hover:bg-orange-500/20">
-              Next-generation voice AI — built for Australian businesses
+              Next-generation voice AI, built for Australian businesses
             </Badge>
 
             <h1 className="mx-auto max-w-4xl text-4xl font-bold tracking-tight text-white animate-fade-in-up-delay-1 sm:text-5xl lg:text-6xl">
@@ -223,7 +223,7 @@ export default function LandingPage() {
 
             <p className="mx-auto mt-6 max-w-2xl text-lg text-slate-400 animate-fade-in-up-delay-2">
               Phondo is an AI receptionist that answers every call, books
-              appointments, and texts back missed callers — 24 hours a day, 7 days
+              appointments, and texts back missed callers, 24 hours a day, 7 days
               a week. Set up in under 5 minutes.
             </p>
 
@@ -269,7 +269,7 @@ export default function LandingPage() {
           <div className="container mx-auto flex flex-col items-center justify-center gap-3 px-4 py-4 sm:flex-row sm:gap-4">
             <div className="flex items-center gap-2 text-sm font-medium text-foreground">
               <Headphones className="h-4 w-4 text-orange-500" />
-              Hear it for yourself — talk to our AI in English, Mandarin, Arabic, or any of 90+ languages
+              Hear it for yourself: talk to our AI in English, Mandarin, Arabic, or any of 90+ languages
             </div>
             <Link href="/demo">
               <Button size="sm" className="gap-1.5 bg-orange-500 text-white hover:bg-orange-600">
@@ -325,7 +325,7 @@ export default function LandingPage() {
               <h2 className="text-3xl font-bold">The most natural AI voice on the market</h2>
               <p className="mx-auto mt-3 max-w-2xl text-muted-foreground">
                 Most AI phone systems sound robotic because they convert your voice to text,
-                process it, then convert text back to speech — three separate steps with noticeable delays.
+                process it, then convert text back to speech, which is three separate steps with noticeable delays.
                 Phondo is one of the first AI receptionists in the world to use next-generation
                 native audio intelligence. Our AI listens, understands, and responds in one seamless step.
               </p>
@@ -378,15 +378,15 @@ export default function LandingPage() {
                     </div>
                     <div className="flex items-start gap-2">
                       <Check className="mt-0.5 h-4 w-4 text-orange-500 flex-shrink-0" />
-                      <span>Near-instant responses — conversations feel natural and human</span>
+                      <span>Near-instant responses, so conversations feel natural and human</span>
                     </div>
                     <div className="flex items-start gap-2">
                       <Check className="mt-0.5 h-4 w-4 text-orange-500 flex-shrink-0" />
-                      <span>Warm, expressive voice — callers stay on the line</span>
+                      <span>Warm, expressive voice, so callers stay on the line</span>
                     </div>
                     <div className="flex items-start gap-2">
                       <Check className="mt-0.5 h-4 w-4 text-orange-500 flex-shrink-0" />
-                      <span>Hears tone, pace, and urgency — adapts in real time</span>
+                      <span>Hears tone, pace, and urgency, and adapts in real time</span>
                     </div>
                   </div>
                 </div>
@@ -400,10 +400,10 @@ export default function LandingPage() {
                   <Languages className="h-7 w-7 text-orange-500" />
                 </div>
                 <div className="text-center sm:text-left">
-                  <h3 className="text-lg font-semibold">Speaks 90+ languages — automatically</h3>
+                  <h3 className="text-lg font-semibold">Speaks 90+ languages automatically</h3>
                   <p className="mt-1 text-sm text-muted-foreground">
                     Your caller speaks Mandarin? Your AI responds in Mandarin. Arabic? Arabic. Vietnamese, Greek,
-                    Italian, Punjabi, Cantonese, Hindi, Spanish, Korean, and 80+ more — no setup needed.
+                    Italian, Punjabi, Cantonese, Hindi, Spanish, Korean, and 80+ more, with no setup needed.
                     Perfect for Australia&apos;s multicultural communities.
                   </p>
                   <div className="mt-3 flex flex-wrap justify-center sm:justify-start gap-1.5">
@@ -424,7 +424,7 @@ export default function LandingPage() {
                   Hear the Difference Yourself
                 </Button>
               </Link>
-              <p className="mt-2 text-xs text-muted-foreground">Free demo call — no signup required. Try it in any language.</p>
+              <p className="mt-2 text-xs text-muted-foreground">Free demo call, no signup required. Try it in any language.</p>
             </div>
           </div>
         </section>
@@ -469,8 +469,8 @@ export default function LandingPage() {
                   Calculate your missed call cost
                 </h2>
                 <p className="mt-3 text-muted-foreground">
-                  Slide to see how much revenue you&apos;re leaving on the table
-                  — and how fast Phondo pays for itself.
+                  Slide to see how much revenue you&apos;re leaving on the table,
+                  and how fast Phondo pays for itself.
                 </p>
               </AnimateOnScroll>
               <AnimateOnScroll className="mt-10">
@@ -541,19 +541,19 @@ export default function LandingPage() {
         <section className="border-t py-16 sm:py-24">
           <div className="container mx-auto px-4">
             <AnimateOnScroll className="text-center">
-              <h2 className="text-3xl font-bold">Your data never leaves Australia</h2>
+              <h2 className="text-3xl font-bold">Your data is stored in Australia</h2>
               <p className="mx-auto mt-3 max-w-2xl text-muted-foreground">
-                Patient records, legal conversations, and sensitive business data are stored and processed
-                entirely on Australian soil. Nothing is sent offshore — ever. Built for industries
-                where privacy isn&apos;t optional.
+                Call transcripts and sensitive business data are stored at rest in our Sydney region. And
+                we&apos;re upfront about how each conversation is processed, including the AI that powers it.
+                Built for industries where privacy isn&apos;t optional.
               </p>
             </AnimateOnScroll>
             <div className="mx-auto mt-14 grid max-w-5xl gap-6 sm:grid-cols-2 lg:grid-cols-4">
               {[
                 {
                   icon: Server,
-                  title: "100% Australian Infrastructure",
-                  description: "All call data, transcripts, recordings, and patient/client information is hosted and processed exclusively in Australia. No offshore servers, no exceptions.",
+                  title: "Australian Data Residency",
+                  description: "Call transcripts, appointment details, and business data are stored at rest in our Sydney region in Australia. Row-Level Security isolates every practice's data.",
                 },
                 {
                   icon: Shield,
@@ -562,8 +562,8 @@ export default function LandingPage() {
                 },
                 {
                   icon: Lock,
-                  title: "Privacy Act Compliant",
-                  description: "Full compliance with the Australian Privacy Act. State-aware recording consent for all jurisdictions. Your callers are always informed.",
+                  title: "Privacy Act Aligned",
+                  description: "Built to support your Australian Privacy Act obligations, with state-aware call-recording consent so your callers are always informed.",
                 },
                 {
                   icon: Zap,

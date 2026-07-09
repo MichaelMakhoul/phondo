@@ -4,6 +4,7 @@ export const US_CONFIG: CountryConfig = {
   code: "US",
   name: "United States",
   flag: "US",
+  emergencyNumber: "911",
   phone: {
     countryCallingCode: "1",
     placeholder: "+1 (555) 123-4567",

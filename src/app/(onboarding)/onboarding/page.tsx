@@ -91,18 +91,25 @@ const initialData: OnboardingData = {
   createdAssistantId: "",
 };
 
+// Pre-launch lockdown (SCRUM-215): mirrors the server-side PROVISIONING_ENABLED
+// gate. When off (default), the Go Live step hides paid plans + number search and
+// everyone completes on the 14-day free trial; set to "true" at launch to restore
+// the full number + plan selection flow.
+const PROVISIONING_ENABLED = process.env.NEXT_PUBLIC_PROVISIONING_ENABLED === "true";
+
 const steps = [
   { id: 1, name: "Business Info", description: "Tell us about your business", minutes: 2 },
   { id: 2, name: "AI Setup", description: "Configure your AI receptionist", minutes: 2 },
   { id: 3, name: "Forwarding", description: "Where calls go when the AI can't help", minutes: 1 },
   { id: 4, name: "Test Call", description: "Try out your AI", minutes: 1 },
-  { id: 5, name: "Go Live", description: "Choose your plan and phone number", minutes: 1 },
+  { id: 5, name: "Go Live", description: "Launch your AI receptionist", minutes: 1 },
 ];
 
 const TOTAL_STEPS = steps.length; // 5 wizard steps; step 6 is the celebration screen
 
 export default function OnboardingPage() {
   const [currentStep, setCurrentStep] = useState(1);
+  const [provisionedNumber, setProvisionedNumber] = useState("");
   const [data, setData] = useState<OnboardingData>(initialData);
   const [isLoading, setIsLoading] = useState(false);
   const [isCompleting, setIsCompleting] = useState(false);
@@ -161,9 +168,12 @@ export default function OnboardingPage() {
 
       const result = await res.json();
 
-      // Cache KB content for saving after org creation; reset scraped fields
+      // Cache KB content for saving after org creation; reset scraped fields.
+      // Cap to the KB API's 50k limit — a large multi-page scrape would
+      // otherwise 400 on save ("String must contain at most 50000 characters").
+      const MAX_KB_CONTENT = 50_000;
       const updates: Partial<OnboardingData> = {
-        scrapedKBContent: result.content,
+        scrapedKBContent: (result.content || "").slice(0, MAX_KB_CONTENT),
         scrapedSourceUrl: url,
         scrapedAddress: "",
         scrapedCustomInstructions: "",
@@ -223,7 +233,11 @@ export default function OnboardingPage() {
       case 4:
         return true; // Test call is optional
       case 5: {
-        return data.selectedPhoneNumber !== "" && data.selectedPlan !== "";
+        // Early access (provisioning off): no number/plan required — everyone
+        // completes on the 14-day trial. Full requirement returns at launch.
+        return PROVISIONING_ENABLED
+          ? data.selectedPhoneNumber !== "" && data.selectedPlan !== ""
+          : true;
       }
       default:
         return false;
@@ -372,7 +386,8 @@ export default function OnboardingPage() {
               body: JSON.stringify({
                 title: kbTitle,
                 sourceType: "website",
-                content: data.scrapedKBContent,
+                // Guard resumed sessions whose cached content predates the cap.
+                content: data.scrapedKBContent.slice(0, 50_000),
                 sourceUrl: data.scrapedSourceUrl,
               }),
             });
@@ -603,13 +618,21 @@ export default function OnboardingPage() {
           return;
         }
 
+        // Capture the provisioned number for the "You're Live!" screen. The buy
+        // route selects the actual number (which may differ from the picker
+        // choice), so read it from the response — and read the body only once,
+        // since it can't be re-read for the fallback PATCH below.
+        const phoneRecord = await phoneRes.json().catch(() => null);
+        if (phoneRecord?.phone_number) {
+          setProvisionedNumber(phoneRecord.phone_number);
+        }
+
         // SCRUM-284: apply the emergency fallback number captured in the
         // Forwarding step. The number only exists now (just provisioned), so
         // we PATCH it on. Non-fatal — a failure here shouldn't block go-live;
         // the owner can set it later from settings.
         if (data.fallbackForwardNumber.trim()) {
           try {
-            const phoneRecord = await phoneRes.json();
             if (phoneRecord?.id) {
               const patchRes = await fetch(`/api/v1/phone-numbers/${phoneRecord.id}`, {
                 method: "PATCH",
@@ -686,7 +709,12 @@ export default function OnboardingPage() {
           <div className="w-full max-w-lg">
             <Card>
               <CardContent className="pt-8 pb-6">
-                <Success businessName={data.businessName} planName={planLabel} />
+                <Success
+                  businessName={data.businessName}
+                  planName={planLabel}
+                  phoneNumber={provisionedNumber || undefined}
+                  countryCode={data.country}
+                />
               </CardContent>
             </Card>
           </div>
@@ -826,6 +854,7 @@ export default function OnboardingPage() {
                     selectedPhoneNumber: data.selectedPhoneNumber,
                   }}
                   countryCode={data.country || "US"}
+                  provisioningEnabled={PROVISIONING_ENABLED}
                   onChange={(updates) => updateData(updates)}
                 />
               )}

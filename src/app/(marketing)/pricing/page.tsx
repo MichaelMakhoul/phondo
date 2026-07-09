@@ -115,7 +115,7 @@ export default function PricingPage() {
                 },
                 {
                   q: "What happens when I hit my call limit?",
-                  a: "Your AI receptionist will continue answering calls even if you exceed your limit \u2014 we never let a call go unanswered. You\u2019ll receive warnings prompting you to upgrade.",
+                  a: "Your AI receptionist will continue answering calls even if you exceed your limit, and we never let a call go unanswered. You\u2019ll receive warnings prompting you to upgrade.",
                 },
                 {
                   q: "Is there a contract?",
