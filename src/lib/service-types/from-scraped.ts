@@ -18,9 +18,9 @@ import type { ServiceTypeDefault } from "./defaults";
  * visible.
  */
 
-/** Matches the `service_types` column limits (name ≤ 100, description ≤ 500). */
+/** Matches the name limit the service_types API validates against. */
 const MAX_NAME_LENGTH = 100;
-/** The seed route caps an org at 50 rows; keep a first import well under that. */
+/** An org is capped at 50 service types (enforced on manual add). Stay well under. */
 const MAX_SERVICES = 12;
 const DEFAULT_DURATION_MINUTES = 30;
 

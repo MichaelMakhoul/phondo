@@ -229,6 +229,20 @@ function parseTimeRanges(spec: string): DayHours | null {
       if (openHour < closeHour && closeHour < 12) return null;
     }
 
+    // The same ambiguity runs the other way, and it is easier to miss because
+    // only the OPEN is bare. "2 - 6pm" is 2pm-6pm to any human, but the bare
+    // "2" parses as 02:00 and the pm repair never fires (the close already sits
+    // after the open), so it lands as 02:00-18:00 and the assistant offers 2am
+    // appointments. If reading the open as pm ALSO lands before the close, both
+    // readings are valid and nothing on the page decides between them.
+    //
+    // "12 - 8pm" survives, because 12pm is 12:00 either way. "9 - 5pm" survives,
+    // because 9pm is after 5pm and so cannot be meant.
+    if (isBareClockHour(m[1])) {
+      const openAsPm = parseTime(`${m[1].trim()}pm`);
+      if (openAsPm && openAsPm !== open && openAsPm < close) return null;
+    }
+
     opens.push(open);
     closes.push(close);
   }

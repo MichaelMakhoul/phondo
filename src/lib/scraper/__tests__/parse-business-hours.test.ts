@@ -168,6 +168,36 @@ describe("parseBusinessHours — refuses rather than guess", () => {
     expect(parseBusinessHours(["Mon-Fri: 9 - 12, 1 - 5"])).toBeNull();
   });
 
+  it("returns null when only the OPEN is bare and could equally be afternoon", () => {
+    // The close states pm, so the pm repair never fires and the bare open
+    // silently lands in the small hours: "2 - 6pm" would parse as 02:00-18:00
+    // and offer a 2am appointment at a business that opens at 2pm.
+    expect(parseBusinessHours(["Mon-Fri: 2 - 6pm"])).toBeNull();
+    expect(parseBusinessHours(["Mon-Fri: 5 - 11pm"])).toBeNull();
+    expect(parseBusinessHours(["Mon-Fri: 1 - 5pm"])).toBeNull();
+    // A split-session clinic. The morning window is fine; the afternoon one
+    // drags the envelope open back to 02:00.
+    expect(parseBusinessHours(["Mon-Fri: 9am - 12pm, 2 - 6pm"])).toBeNull();
+  });
+
+  it("keeps a bare open whose only sensible reading is morning", () => {
+    // 9pm is after 5pm, so "9" cannot have meant 9pm.
+    expect(parseBusinessHours(["Mon-Fri: 9 - 5pm"])!.hours.monday).toEqual({
+      open: "09:00",
+      close: "17:00",
+    });
+    // Noon is noon either way.
+    expect(parseBusinessHours(["Mon-Fri: 12 - 8pm"])!.hours.monday).toEqual({
+      open: "12:00",
+      close: "20:00",
+    });
+    // 11pm is after 2pm.
+    expect(parseBusinessHours(["Mon-Fri: 11 - 2pm"])!.hours.monday).toEqual({
+      open: "11:00",
+      close: "14:00",
+    });
+  });
+
   it("returns null for prose it cannot anchor to a day", () => {
     expect(parseBusinessHours(["We are open most days, please call ahead"])).toBeNull();
     expect(parseBusinessHours(["Open 7 days"])).toBeNull();
