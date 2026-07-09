@@ -21,6 +21,7 @@ const { synthesizeSpeech, chunkAudioForTwilio } = require("./services/deepgram-t
 const { loadCallContext, loadTestCallContext, loadScheduleSnapshot } = require("./lib/call-context");
 const { buildSystemPrompt, getGreeting, buildLiveScheduleSection } = require("./lib/prompt-builder");
 const scheduleCache = require("./lib/schedule-cache");
+const { bookingKey } = require("./lib/booking-key");
 const { createCallRecord, completeCallRecord, notifyCallCompleted } = require("./lib/call-logger");
 const { calendarToolDefinitions, listServiceTypesToolDefinition, transferToolDefinition, callbackToolDefinition, endCallToolDefinition, executeToolCall } = require("./services/tool-executor");
 const { createGeminiSession } = require("./services/gemini-live");
@@ -2210,7 +2211,7 @@ wss.on("connection", (twilioWs) => {
                   // confusing the caller. The intercept returns a hard rejection
                   // so she can't create a duplicate.
                   if (toolCall.name === "book_appointment" && session.confirmedBookings?.size > 0) {
-                    const reqKey = `${toolCall.args.datetime}|${(toolCall.args.first_name || "").toLowerCase()}|${(toolCall.args.last_name || "").toLowerCase()}`;
+                    const reqKey = bookingKey(toolCall.args);
                     const existing = session.confirmedBookings.get(reqKey);
                     if (existing) {
                       console.warn(`[RebookGuard] Blocking duplicate book_appointment — already booked code=${existing.code} callSid=${session.callSid}`);
@@ -2336,12 +2337,12 @@ wss.on("connection", (twilioWs) => {
                   }
 
                   // SCRUM-257: track confirmed bookings to prevent duplicates.
-                  // Key = `datetime|first_name|last_name` (lowered) so the same
-                  // attendee+time can't be booked twice but a family booking
-                  // (different attendee) still goes through.
+                  // SCRUM-514: keyed by lib/booking-key, which folds the datetime
+                  // to a UTC instant and drops the surname — the model respelling
+                  // it mid-call used to slip straight past this guard.
                   if (session && toolCall.name === "book_appointment" && (message.includes("confirmed") || message.includes("booked") || message.includes("confirmation"))) {
                     if (!session.confirmedBookings) session.confirmedBookings = new Map();
-                    const bookKey = `${toolCall.args.datetime}|${(toolCall.args.first_name || "").toLowerCase()}|${(toolCall.args.last_name || "").toLowerCase()}`;
+                    const bookKey = bookingKey(toolCall.args);
                     const codeMatch = message.match(/\b(\d{6})\b/);
                     session.confirmedBookings.set(bookKey, {
                       code: codeMatch?.[1] || "unknown",
@@ -3176,7 +3177,7 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
 
           // SCRUM-257: rebook intercept (classic pipeline — mirrors Gemini path)
           if (fnName === "book_appointment" && session.confirmedBookings?.size > 0) {
-            const reqKey = `${fnArgs.datetime}|${(fnArgs.first_name || "").toLowerCase()}|${(fnArgs.last_name || "").toLowerCase()}`;
+            const reqKey = bookingKey(fnArgs);
             const existing = session.confirmedBookings.get(reqKey);
             if (existing) {
               console.warn(`[RebookGuard] Blocking duplicate book_appointment (classic) — code=${existing.code} callSid=${session.callSid}`);
@@ -3214,7 +3215,7 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
           // SCRUM-257: track confirmed bookings (classic pipeline)
           if (fnName === "book_appointment" && (resultMessage.includes("confirmed") || resultMessage.includes("booked") || resultMessage.includes("confirmation"))) {
             if (!session.confirmedBookings) session.confirmedBookings = new Map();
-            const bookKey = `${fnArgs.datetime}|${(fnArgs.first_name || "").toLowerCase()}|${(fnArgs.last_name || "").toLowerCase()}`;
+            const bookKey = bookingKey(fnArgs);
             const codeMatch = resultMessage.match(/\b(\d{6})\b/);
             session.confirmedBookings.set(bookKey, {
               code: codeMatch?.[1] || "unknown",

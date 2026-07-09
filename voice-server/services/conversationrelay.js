@@ -28,6 +28,7 @@ const { WebSocket } = require("ws");
 const { Sentry } = require("../lib/sentry");
 const { DEBUG_TRANSCRIPTS, logTranscript, logToolCall } = require("../lib/log-transcript");
 const { maskPhone } = require("../lib/mask-phone");
+const { bookingKey } = require("../lib/booking-key");
 const { CallSession } = require("../call-session");
 const { loadCallContext } = require("../lib/call-context");
 const { buildSystemPrompt, getGreeting } = require("../lib/prompt-builder");
@@ -237,7 +238,7 @@ async function runGuardedToolCall(session, toolCall, deps = {}) {
 
   // SCRUM-257: block a duplicate book of an already-confirmed appointment.
   if (name === "book_appointment" && session.confirmedBookings?.size > 0) {
-    const reqKey = `${args.datetime}|${(args.first_name || "").toLowerCase()}|${(args.last_name || "").toLowerCase()}`;
+    const reqKey = bookingKey(args);
     if (session.confirmedBookings.get(reqKey)) {
       session.toolCallAudit.push({ name: "book_appointment_blocked", successful: false, at: now() });
       return {
@@ -306,7 +307,7 @@ async function runGuardedToolCall(session, toolCall, deps = {}) {
   // happens to contain "booked"/"cancelled" can't poison the dedupe map.
   if (name === "book_appointment" && successful) {
     if (!session.confirmedBookings) session.confirmedBookings = new Map();
-    const bookKey = `${args.datetime}|${(args.first_name || "").toLowerCase()}|${(args.last_name || "").toLowerCase()}`;
+    const bookKey = bookingKey(args);
     const codeMatch = message.match(/\b(\d{6})\b/);
     session.confirmedBookings.set(bookKey, { code: codeMatch?.[1] || "unknown", at: now() });
   }

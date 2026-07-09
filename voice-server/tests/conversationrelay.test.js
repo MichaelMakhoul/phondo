@@ -10,6 +10,7 @@ process.env.OPENAI_API_KEY = process.env.OPENAI_API_KEY || "test";
 process.env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "test";
 
 const { _test, handleConversationRelayConnection } = require("../services/conversationrelay");
+const { bookingKey } = require("../lib/booking-key");
 const {
   crTextFrame, crEndFrame, buildCrTools, parseSetup,
   buildConversationRelayTwiml, buildCriticalRulesSuffix, runGuardedToolCall,
@@ -166,13 +167,56 @@ describe("runGuardedToolCall (SCRUM-378)", () => {
   });
 
   it("blocks a duplicate book of an already-confirmed appointment", async () => {
-    const s = fakeSession({ confirmedBookings: new Map([["2026-06-10T14:00|john|doe", { code: "123456" }]]) });
+    const s = fakeSession({
+      confirmedBookings: new Map([
+        [bookingKey({ datetime: "2026-06-10T14:00", first_name: "John", last_name: "Doe" }), { code: "123456" }],
+      ]),
+    });
     let exec = false;
     const out = await runGuardedToolCall(s, { name: "book_appointment", args: { datetime: "2026-06-10T14:00", first_name: "John", last_name: "Doe" } },
       { executeToolCall: async () => { exec = true; return { message: "booked" }; }, now: () => 1 });
     assert.equal(out.held, true);
     assert.equal(exec, false);
     assert.match(out.content, /already booked this exact appointment/);
+  });
+
+  // SCRUM-514, from a real call: the model booked for "Stamatopulos", then
+  // re-issued book_appointment spelling it "STAMATOPOULOS". The old key was
+  // `datetime|first|last`, so the guard missed, the DB overlap constraint
+  // rejected the insert, and the AI told the caller their booking had FAILED —
+  // while the confirmed booking sat in the database. The surname is not part
+  // of the key any more.
+  it("blocks a duplicate even when the model respells the surname", async () => {
+    const s = fakeSession({
+      confirmedBookings: new Map([
+        [bookingKey({ datetime: "2026-06-10T14:00", first_name: "Nick", last_name: "Stamatopulos" }), { code: "241909" }],
+      ]),
+    });
+    let exec = false;
+    const out = await runGuardedToolCall(
+      s,
+      { name: "book_appointment", args: { datetime: "2026-06-10T14:00:00", first_name: "Nick", last_name: "STAMATOPOULOS" } },
+      { executeToolCall: async () => { exec = true; return { message: "booked" }; }, now: () => 1 }
+    );
+    assert.equal(out.held, true, "guard must hold the duplicate");
+    assert.equal(exec, false, "the tool must never run a second time");
+  });
+
+  // ...but a genuinely different attendee at the same time is NOT a duplicate.
+  it("does not block a different attendee at the same time", async () => {
+    const s = fakeSession({
+      confirmedBookings: new Map([
+        [bookingKey({ datetime: "2026-06-10T14:00", first_name: "Nick", last_name: "Stamatopulos" }), { code: "241909" }],
+      ]),
+    });
+    let exec = false;
+    const out = await runGuardedToolCall(
+      s,
+      { name: "book_appointment", args: { datetime: "2026-06-10T14:00", first_name: "Maria", last_name: "Stamatopulos" } },
+      { executeToolCall: async () => { exec = true; return { message: "booked" }; }, now: () => 1 }
+    );
+    assert.equal(out.held, false);
+    assert.equal(exec, true);
   });
 
   it("on a successful book: audits success, records the booking, appends the loop directive", async () => {
@@ -184,7 +228,7 @@ describe("runGuardedToolCall (SCRUM-378)", () => {
     assert.match(out.content, /\[PROCEED-WITH-DETAILS\]/);
     const audit = s.toolCallAudit.find((a) => a.name === "book_appointment");
     assert.equal(audit.successful, true);
-    assert.ok(s.confirmedBookings.get("2026-06-10T14:00|jane|roe"));
+    assert.ok(s.confirmedBookings.get(bookingKey({ datetime: "2026-06-10T14:00", first_name: "Jane", last_name: "Roe" })));
   });
 
   it("on an availability rejection: audits NOT successful (no fabricated success)", async () => {
