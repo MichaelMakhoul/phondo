@@ -330,12 +330,24 @@ export function ForwardingSetupDialog({
     // SCRUM-516: the destination must be in the national dialing format the
     // carrier's own documentation uses. Passing the raw E.164 digits here set
     // every AU customer's forwarding to "61285551234", which does not route.
-    const { enable, disable, note } = buildForwardingCodes(
-      carrier,
-      type,
-      destinationNumber,
-      countryCode
-    );
+    const codes = buildForwardingCodes(carrier, type, destinationNumber, countryCode);
+
+    // We could not place the number's country, so any code we printed would be
+    // a guess. The customer has just paid for this number, so say something.
+    if (!codes) {
+      return (
+        <Alert variant="destructive">
+          <AlertCircle className="h-4 w-4" />
+          <AlertDescription>
+            We couldn&apos;t work out the forwarding code for{" "}
+            {formatPhoneNumber(destinationNumber, countryCode)}. Your number is active and
+            will still answer calls placed to it directly. Contact support and we&apos;ll set
+            up forwarding with you.
+          </AlertDescription>
+        </Alert>
+      );
+    }
+    const { enable, disable, note } = codes;
 
     return (
       <div className="space-y-3">

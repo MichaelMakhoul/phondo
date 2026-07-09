@@ -113,14 +113,25 @@ export function toNationalDialable(phone: string, countryCode: CountryCode | str
 /**
  * The dial codes for one carrier and one forwarding mode, with the destination
  * already substituted.
+ *
+ * Returns null when we cannot establish the destination's country, because the
+ * only thing worse than no forwarding code is one that dials the wrong place
+ * and still plays a confirmation tone. Callers must render nothing rather than
+ * fall back — and the null return is what makes the compiler say so, instead of
+ * leaving the safety to whoever writes the next caller.
  */
 export function buildForwardingCodes(
   carrier: CarrierInfo,
   mode: ForwardingMode,
   destinationPhone: string,
   countryCode: CountryCode | string
-): ForwardingCodes {
-  const destination = toNationalDialable(destinationPhone, countryCode);
+): ForwardingCodes | null {
+  const country = resolveForwardingCountry(destinationPhone, countryCode);
+  if (!country) return null;
+
+  const destination = toNationalDialable(destinationPhone, country);
+  if (!destination) return null;
+
   const instructions = carrier.instructions[mode];
   return {
     enable: formatInstructions(instructions.enable, destination),

@@ -137,7 +137,11 @@ export function ForwardingInstructions({
 
   const renderMode = (mode: ForwardingMode) => {
     if (!carrier) return null;
-    const { enable, disable, note } = buildForwardingCodes(carrier, mode, destinationPhone, country);
+    const codes = buildForwardingCodes(carrier, mode, destinationPhone, country);
+    // Unreachable while `country` is non-null and the destination is E.164, but
+    // the code we would otherwise print is one that silently dials nowhere.
+    if (!codes) return null;
+    const { enable, disable, note } = codes;
     return (
       <div className="space-y-3">
         <p className="text-sm text-muted-foreground">{FORWARDING_MODE_LABELS[mode].blurb}</p>

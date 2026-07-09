@@ -87,9 +87,19 @@ describe("toNationalDialable — a wrong country must not resurrect the bug", ()
 
   it("produces the AU carrier codes for an AU number under a US country", () => {
     const telstra = getCarriersForCountry("AU").find((c) => c.id === "telstra")!;
-    const codes = buildForwardingCodes(telstra, "unconditional", "+61285551234", "US");
+    const codes = buildForwardingCodes(telstra, "unconditional", "+61285551234", "US")!;
     expect(codes.enable).toBe("*21*0285551234#");
     expect(codes.enable).not.toContain("61285551234");
+  });
+
+  it("refuses to build a code when the destination's country is unknowable", () => {
+    // A code that dials nowhere is worse than no code, because the carrier
+    // plays its confirmation tone either way. The null return is what stops the
+    // next caller of this function from having to remember that.
+    const telstra = getCarriersForCountry("AU").find((c) => c.id === "telstra")!;
+    expect(buildForwardingCodes(telstra, "unconditional", "+6421234567", "US")).toBeNull();
+    expect(buildForwardingCodes(telstra, "unconditional", "0285551234", "NZ")).toBeNull();
+    expect(buildForwardingCodes(telstra, "unconditional", "", "AU")).toBeNull();
   });
 });
 
@@ -120,7 +130,7 @@ describe("buildForwardingCodes", () => {
   const vodafone = getCarriersForCountry("AU").find((c) => c.id === "vodafone_au")!;
 
   it("substitutes a dialable destination into the carrier's own template", () => {
-    const codes = buildForwardingCodes(telstra, "unconditional", "+61285551234", "AU");
+    const codes = buildForwardingCodes(telstra, "unconditional", "+61285551234", "AU")!;
     expect(codes.enable).toBe("*21*0285551234#");
     expect(codes.disable).toBe("#21#");
   });
@@ -128,16 +138,16 @@ describe("buildForwardingCodes", () => {
   it("keeps each carrier's distinct codes", () => {
     // Vodafone uses the double-star form; Telstra does not. Collapsing them
     // would send half our customers a code their network rejects.
-    const t = buildForwardingCodes(telstra, "unconditional", "+61285551234", "AU");
-    const v = buildForwardingCodes(vodafone, "unconditional", "+61285551234", "AU");
+    const t = buildForwardingCodes(telstra, "unconditional", "+61285551234", "AU")!;
+    const v = buildForwardingCodes(vodafone, "unconditional", "+61285551234", "AU")!;
     expect(t.enable).toBe("*21*0285551234#");
     expect(v.enable).toBe("**21*0285551234#");
     expect(t.enable).not.toBe(v.enable);
   });
 
   it("distinguishes the two forwarding modes", () => {
-    const conditional = buildForwardingCodes(telstra, "conditional", "+61285551234", "AU");
-    const unconditional = buildForwardingCodes(telstra, "unconditional", "+61285551234", "AU");
+    const conditional = buildForwardingCodes(telstra, "conditional", "+61285551234", "AU")!;
+    const unconditional = buildForwardingCodes(telstra, "unconditional", "+61285551234", "AU")!;
     expect(conditional.enable).not.toBe(unconditional.enable);
     expect(conditional.note).toBeTruthy();
   });
@@ -149,8 +159,9 @@ describe("buildForwardingCodes", () => {
       for (const carrier of getCarriersForCountry(country)) {
         for (const mode of ["conditional", "unconditional"] as const) {
           const codes = buildForwardingCodes(carrier, mode, "+61285551234", country);
-          expect(telHref(codes.enable)).not.toBeNull();
-          expect(telHref(codes.disable)).not.toBeNull();
+          expect(codes).not.toBeNull();
+          expect(telHref(codes!.enable)).not.toBeNull();
+          expect(telHref(codes!.disable)).not.toBeNull();
         }
       }
     }
@@ -160,7 +171,7 @@ describe("buildForwardingCodes", () => {
     for (const country of ["AU", "US"] as const) {
       for (const carrier of getCarriersForCountry(country)) {
         for (const mode of ["conditional", "unconditional"] as const) {
-          const codes = buildForwardingCodes(carrier, mode, "+61285551234", country);
+          const codes = buildForwardingCodes(carrier, mode, "+61285551234", country)!;
           expect(codes.enable).not.toContain("{destination_number}");
           expect(codes.disable).not.toContain("{destination_number}");
         }
