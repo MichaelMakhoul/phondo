@@ -4,6 +4,8 @@ import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import confetti from "canvas-confetti";
 import { Button } from "@/components/ui/button";
+import { ForwardingInstructions } from "@/components/phone-numbers/forwarding-instructions";
+import { FORWARDING_MODE_LABELS } from "@/lib/country-config/forwarding";
 import { formatPhoneNumber } from "@/lib/utils";
 import {
   CheckCircle2,
@@ -130,16 +132,37 @@ export function Success({ businessName, planName, phoneNumber, countryCode }: Su
         </div>
       </div>
 
+      {/* SCRUM-516: forwarding is the one step between finishing setup and the
+          product doing anything. Telling the owner to "redirect your existing
+          line" without giving them the code is where they stall. */}
+      {phoneNumber && (
+        <ForwardingInstructions
+          destinationPhone={phoneNumber}
+          countryCode={countryCode ?? "US"}
+        />
+      )}
+
       {/* Phased rollout tip */}
       <div className="rounded-lg border border-primary/20 bg-primary/5 p-4 text-left">
         <div className="flex gap-3">
           <Lightbulb className="h-5 w-5 shrink-0 text-primary" />
           <div>
-            <p className="text-sm font-medium">Pro tip: start with after-hours calls</p>
+            <p className="text-sm font-medium">Pro tip: start with the calls you miss</p>
             <p className="mt-1 text-xs text-muted-foreground">
-              Forward calls to your AI only outside business hours first. Once you&apos;re
-              confident it handles your common questions, expand to all calls. Most
-              businesses go fully live within a week.
+              {phoneNumber ? (
+                <>
+                  Choose &quot;{FORWARDING_MODE_LABELS.conditional.title}&quot; above so your
+                  phone still rings first and only the calls you miss reach your AI.
+                </>
+              ) : (
+                <>
+                  Once you have a number, forward only the calls you miss at first, so your
+                  phone still rings first.
+                </>
+              )}{" "}
+              Once you&apos;re confident it handles your common questions, switch to
+              &quot;{FORWARDING_MODE_LABELS.unconditional.title}&quot;. Most businesses go
+              fully live within a week.
             </p>
           </div>
         </div>
