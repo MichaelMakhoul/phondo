@@ -37,9 +37,14 @@ import { formatPhoneNumber } from "@/lib/utils";
 import {
   getCountryConfig,
   validatePhoneForCountry,
-  formatInstructions,
   type CarrierInfo,
 } from "@/lib/country-config";
+import {
+  buildForwardingCodes,
+  telHref,
+  FORWARDING_MODE_LABELS,
+  type ForwardingMode,
+} from "@/lib/country-config/forwarding";
 import { trackPhoneNumberAdded } from "@/lib/analytics";
 
 interface Assistant {
@@ -275,62 +280,81 @@ export function ForwardingSetupDialog({
     router.refresh();
   };
 
+  /**
+   * One dial code, with a tap-to-dial link and a copy fallback.
+   *
+   * The link pre-fills the handset's dialer; it does not place the call, and no
+   * phone will auto-send an MMI code from a link. On a desktop it may open
+   * nothing at all, which is why the code stays visible and copyable next to it.
+   */
+  const renderCodeRow = (label: string, code: string) => {
+    const href = telHref(code);
+    return (
+      <div className="space-y-2">
+        <Label className="text-xs font-medium text-muted-foreground">{label}</Label>
+        <div className="flex items-center gap-2">
+          <code className="flex-1 rounded-md bg-muted px-3 py-2 font-mono text-sm break-all">
+            {code}
+          </code>
+          {href && (
+            <Button asChild variant="default" size="sm" className="h-8 shrink-0 sm:hidden">
+              <a href={href} aria-label={`Dial ${code}`}>
+                <PhoneCall className="mr-1.5 h-3.5 w-3.5" />
+                Dial
+              </a>
+            </Button>
+          )}
+          <Button
+            variant="outline"
+            size="icon"
+            className="h-8 w-8 shrink-0"
+            aria-label={`Copy ${code}`}
+            onClick={() => handleCopy(code)}
+          >
+            {copiedText === code ? (
+              <Check className="h-3.5 w-3.5" />
+            ) : (
+              <Copy className="h-3.5 w-3.5" />
+            )}
+          </Button>
+        </div>
+      </div>
+    );
+  };
+
   const renderDialCode = (
     carrier: CarrierInfo,
-    type: "conditional" | "unconditional",
+    type: ForwardingMode,
     destinationNumber: string
   ) => {
-    const inst = carrier.instructions[type];
-    const enableCode = formatInstructions(inst.enable, destinationNumber);
-    const disableCode = formatInstructions(inst.disable, destinationNumber);
+    // SCRUM-516: the destination must be in the national dialing format the
+    // carrier's own documentation uses. Passing the raw E.164 digits here set
+    // every AU customer's forwarding to "61285551234", which does not route.
+    const codes = buildForwardingCodes(carrier, type, destinationNumber, countryCode);
+
+    // We could not place the number's country, so any code we printed would be
+    // a guess. The customer has just paid for this number, so say something.
+    if (!codes) {
+      return (
+        <Alert variant="destructive">
+          <AlertCircle className="h-4 w-4" />
+          <AlertDescription>
+            We couldn&apos;t work out the forwarding code for{" "}
+            {formatPhoneNumber(destinationNumber, countryCode)}. Your number is active and
+            will still answer calls placed to it directly. Contact support and we&apos;ll set
+            up forwarding with you.
+          </AlertDescription>
+        </Alert>
+      );
+    }
+    const { enable, disable, note } = codes;
 
     return (
       <div className="space-y-3">
-        <div className="space-y-2">
-          <Label className="text-xs font-medium text-muted-foreground">
-            To enable forwarding, dial:
-          </Label>
-          <div className="flex items-center gap-2">
-            <code className="flex-1 rounded-md bg-muted px-3 py-2 font-mono text-sm">
-              {enableCode}
-            </code>
-            <Button
-              variant="outline"
-              size="icon"
-              className="h-8 w-8 shrink-0"
-              onClick={() => handleCopy(enableCode)}
-            >
-              {copiedText === enableCode ? (
-                <Check className="h-3.5 w-3.5" />
-              ) : (
-                <Copy className="h-3.5 w-3.5" />
-              )}
-            </Button>
-          </div>
-        </div>
-        <div className="space-y-2">
-          <Label className="text-xs font-medium text-muted-foreground">
-            To disable forwarding later:
-          </Label>
-          <div className="flex items-center gap-2">
-            <code className="flex-1 rounded-md bg-muted px-3 py-2 font-mono text-sm">
-              {disableCode}
-            </code>
-            <Button
-              variant="outline"
-              size="icon"
-              className="h-8 w-8 shrink-0"
-              onClick={() => handleCopy(disableCode)}
-            >
-              {copiedText === disableCode ? (
-                <Check className="h-3.5 w-3.5" />
-              ) : (
-                <Copy className="h-3.5 w-3.5" />
-              )}
-            </Button>
-          </div>
-        </div>
-        <p className="text-xs text-muted-foreground">{inst.note}</p>
+        <p className="text-sm text-muted-foreground">{FORWARDING_MODE_LABELS[type].blurb}</p>
+        {renderCodeRow("To turn forwarding on, dial:", enable)}
+        {renderCodeRow("To turn it off again later:", disable)}
+        <p className="text-xs text-muted-foreground">{note}</p>
 
         {/* SCRUM-260: explain the transfer-to-human fallback */}
         <div className="rounded-md bg-blue-50 dark:bg-blue-950/30 p-3 text-xs text-blue-900 dark:text-blue-100">
@@ -339,7 +363,7 @@ export function ForwardingSetupDialog({
             When a caller asks to speak to a person, the AI will transfer them back to your number ({userPhone || "your business number"}). Most businesses want this. If you want transfers to go elsewhere instead, set up Transfer Rules in Settings after you finish here.
           </p>
           <p className="mt-2 text-[11px] text-blue-800 dark:text-blue-200">
-            <strong>Note:</strong> if you use &quot;unconditional&quot; forwarding (forward ALL calls to us), this will create a loop. Use &quot;when busy&quot; or &quot;when unanswered&quot; forwarding, or configure a different transfer destination.
+            <strong>Note:</strong> if you forward <em>every</em> call to us, a transfer back to this same number will loop. Either forward only when you can&apos;t answer, or send transfers somewhere else in Settings.
           </p>
         </div>
       </div>
@@ -495,25 +519,17 @@ export function ForwardingSetupDialog({
             <Tabs defaultValue="conditional">
               <TabsList className="w-full">
                 <TabsTrigger value="conditional" className="flex-1">
-                  When Busy / No Answer
+                  {FORWARDING_MODE_LABELS.conditional.title}
                 </TabsTrigger>
                 <TabsTrigger value="unconditional" className="flex-1">
-                  Always Forward
+                  {FORWARDING_MODE_LABELS.unconditional.title}
                 </TabsTrigger>
               </TabsList>
               <TabsContent value="conditional" className="mt-3">
-                {renderDialCode(
-                  selectedCarrier,
-                  "conditional",
-                  provisioned.phone_number.replace(/\D/g, "")
-                )}
+                {renderDialCode(selectedCarrier, "conditional", provisioned.phone_number)}
               </TabsContent>
               <TabsContent value="unconditional" className="mt-3">
-                {renderDialCode(
-                  selectedCarrier,
-                  "unconditional",
-                  provisioned.phone_number.replace(/\D/g, "")
-                )}
+                {renderDialCode(selectedCarrier, "unconditional", provisioned.phone_number)}
               </TabsContent>
             </Tabs>
 
@@ -575,7 +591,7 @@ export function ForwardingSetupDialog({
                     <li>Make sure you dialed the forwarding code from the instructions step</li>
                     <li>Call from a different phone (not the one being forwarded)</li>
                     <li>Some carriers take a few minutes to activate forwarding</li>
-                    <li>If you set up conditional forwarding, let it ring until it goes unanswered</li>
+                    <li>If you chose &quot;{FORWARDING_MODE_LABELS.conditional.title}&quot;, let it ring out without answering</li>
                   </ul>
                 </div>
               </div>
