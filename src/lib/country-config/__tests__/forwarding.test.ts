@@ -43,6 +43,23 @@ describe("toNationalDialable", () => {
     expect(toNationalDialable("", "AU")).toBe("");
     expect(toNationalDialable(null as unknown as string, "AU")).toBe("");
   });
+
+  it("only rebuilds an AU number of exactly the right length", () => {
+    // "61" + 9 digits is the whole rule. A longer string that happens to start
+    // with 61 is not an AU number, and slicing it produces a plausible, wrong,
+    // dialable-looking result.
+    expect(toNationalDialable("+612855512345", "AU")).toBe("612855512345");
+    expect(toNationalDialable("+6128555", "AU")).toBe("6128555");
+  });
+
+  it("only strips a leading US 1 when it really is the calling code", () => {
+    // Without the prefix check, any 11-digit number loses its first digit.
+    expect(toNationalDialable("20285551234", "US")).toBe("20285551234");
+    expect(toNationalDialable("15551234567", "US")).toBe("5551234567");
+    // And "1" + 10 digits is the whole rule. A twelve-digit string starting
+    // with 1 is not a US number; slicing it invents a plausible wrong one.
+    expect(toNationalDialable("155512345678", "US")).toBe("155512345678");
+  });
 });
 
 describe("resolveForwardingCountry", () => {
@@ -122,6 +139,14 @@ describe("telHref", () => {
     expect(telHref("call me")).toBeNull();
     expect(telHref("")).toBeNull();
     expect(telHref(null as unknown as string)).toBeNull();
+  });
+
+  it("refuses a payload hidden after a newline", () => {
+    // The gate must anchor to the whole STRING. Add the `m` flag and "^...$"
+    // starts matching a LINE, so a first line of digits waves the rest through.
+    expect(telHref("123\njavascript:alert(1)")).toBeNull();
+    expect(telHref("*21*0285551234#\r\njavascript:alert(1)")).toBeNull();
+    expect(telHref("\n**21*0285551234#\n")).toBe("tel:**21*0285551234%23"); // trim only
   });
 });
 

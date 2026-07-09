@@ -92,21 +92,24 @@ export function toNationalDialable(phone: string, countryCode: CountryCode | str
   const callingCode = config.phone.countryCallingCode;
 
   if (config.code === "AU") {
-    // "61" + 9 national digits. The trunk prefix "0" is not part of E.164.
+    // "61" + 9 national digits, exactly. The trunk prefix "0" is not part of
+    // E.164, so it has to be put back.
     if (digits.startsWith(callingCode) && digits.length === 11) {
       return `0${digits.slice(callingCode.length)}`;
     }
-    // Already national: "0285551234".
-    if (digits.startsWith("0") && digits.length === 10) return digits;
+    // Already national ("0285551234"), or a length we do not recognise. Hand
+    // the digits back rather than mangle them: the owner can see they are wrong.
     return digits;
   }
 
   // US: "1" + 10 national digits. The "1" is both the calling code and the
-  // trunk prefix, so a national number may legitimately carry it.
+  // trunk prefix, so a national number may legitimately carry it. Strip it only
+  // when it really IS the calling code on an 11-digit number — without that
+  // check, an 11-digit number beginning with anything else loses its first
+  // digit. A 10-digit national number needs no change.
   if (digits.startsWith(callingCode) && digits.length === 11) {
     return digits.slice(callingCode.length);
   }
-  if (digits.length === 10) return digits;
   return digits;
 }
 
