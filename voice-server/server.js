@@ -4298,6 +4298,50 @@ async function handleTestUserSpeech(session, ws, transcript) {
   }
 }
 
+// Warm the Gemini Live path on boot so the FIRST real call doesn't eat a cold
+// start. The first Gemini Live session in a fresh process is slow to produce its
+// first audio (auth/DNS/connection + first-generation warmup); later sessions
+// are fast. A throwaway mini-turn at startup pays that cost before any caller is
+// on the line — fire-and-forget, non-blocking, ~1 cheap generation per process
+// boot. With min_machines_running=1 on Fly this runs once and the path stays warm.
+function warmUpGeminiLive() {
+  if (VOICE_PIPELINE !== "gemini-live" || !process.env.GEMINI_API_KEY) return;
+  const t0 = Date.now();
+  let settled = false;
+  let sess = null;
+  const finish = (how) => {
+    if (settled) return;
+    settled = true;
+    try { sess && sess.close(); } catch {}
+    console.log(`[GeminiWarmup] Gemini Live path warmed in ${Date.now() - t0}ms (${how})`);
+  };
+  try {
+    sess = createGeminiSession(
+      {
+        systemPrompt: "Warmup session — reply with the single word 'ready'.",
+        tools: [],
+        voiceName: getGeminiVoice(),
+        triggerGreeting: true,
+      },
+      {
+        onAudio: () => finish("first-audio"), // generation path is warm
+        onTurnComplete: () => finish("turn-complete"),
+        onError: (err) => {
+          if (settled) return;
+          settled = true;
+          console.warn(`[GeminiWarmup] failed: ${err && err.message ? err.message : err}`);
+        },
+        onClose: () => {},
+      }
+    );
+  } catch (err) {
+    console.warn(`[GeminiWarmup] failed to start: ${err.message}`);
+    return;
+  }
+  // Safety net — never hang or hold the warmup session open.
+  setTimeout(() => finish("timeout"), 20000);
+}
+
 server.listen(Number(PORT), "0.0.0.0", () => {
   console.log(`Voice server listening on port ${PORT}`);
   console.log(`Voice pipeline: ${VOICE_PIPELINE}${VOICE_PIPELINE === "gemini-live" ? " (Gemini 3.1 Flash Live)" : ` (LLM: ${LLM_PROVIDER}/${FULL_MODEL})`}`);
@@ -4311,6 +4355,8 @@ server.listen(Number(PORT), "0.0.0.0", () => {
     console.log(`Outbound caller number: ${process.env.OUTBOUND_CALLER_NUMBER}`);
   }
 
+  // Pre-warm Gemini so the first caller after a (re)boot gets a fast response.
+  warmUpGeminiLive();
 });
 
 // ── Graceful shutdown on SIGTERM / SIGINT ──
