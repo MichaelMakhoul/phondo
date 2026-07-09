@@ -38,49 +38,62 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody, trackingSource 
   const workletNodeRef = useRef<AudioWorkletNode | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
-  const audioQueueRef = useRef<AudioBuffer[]>([]);
-  const isPlayingRef = useRef(false);
-  const currentSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  // Gapless playback: audio chunks are scheduled back-to-back on the
+  // AudioContext timeline. The previous approach chained buffers with
+  // `source.onended`, which left a small silent gap at every chunk boundary and
+  // made the assistant's voice sound choppy / "breaking".
+  const scheduledSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
+  const nextStartTimeRef = useRef(0);
   const callStartTimeRef = useRef<number | null>(null);
 
-  const playNextInQueue = useCallback(() => {
+  const enqueueAudio = useCallback((buffer: AudioBuffer) => {
     const ctx = audioContextRef.current;
-    if (!ctx || audioQueueRef.current.length === 0) {
-      isPlayingRef.current = false;
-      return;
+    if (!ctx) return;
+
+    // A short lookahead absorbs network jitter so we don't start a chunk before
+    // the next one has arrived (an underrun also sounds like a glitch).
+    const JITTER_BUFFER = 0.1; // seconds
+    const now = ctx.currentTime;
+    if (nextStartTimeRef.current < now + 0.02) {
+      // First chunk, or the buffer drained and we fell behind — reset the clock.
+      nextStartTimeRef.current = now + JITTER_BUFFER;
     }
 
-    isPlayingRef.current = true;
-    const buffer = audioQueueRef.current.shift()!;
     const source = ctx.createBufferSource();
     source.buffer = buffer;
     source.connect(ctx.destination);
-    currentSourceRef.current = source;
+    source.start(nextStartTimeRef.current);
+    nextStartTimeRef.current += buffer.duration;
 
+    scheduledSourcesRef.current.add(source);
     source.onended = () => {
-      currentSourceRef.current = null;
-      playNextInQueue();
+      scheduledSourcesRef.current.delete(source);
     };
-
-    source.start();
   }, []);
 
-  const enqueueAudio = useCallback(
-    (buffer: AudioBuffer) => {
-      audioQueueRef.current.push(buffer);
-      if (!isPlayingRef.current) {
-        playNextInQueue();
+  // Stop and drop all scheduled audio immediately. Used on barge-in (the server
+  // sends a "clear" when the caller interrupts) and on teardown.
+  const flushPlayback = useCallback(() => {
+    scheduledSourcesRef.current.forEach((source) => {
+      try {
+        source.onended = null;
+        source.stop();
+        source.disconnect();
+      } catch {
+        // Already stopped.
       }
-    },
-    [playNextInQueue]
-  );
+    });
+    scheduledSourcesRef.current.clear();
+    nextStartTimeRef.current = 0;
+  }, []);
 
   const start = useCallback(async () => {
     updateStatus("connecting");
     setError(null);
     setTranscript([]);
     setIsAssistantSpeaking(false);
-    audioQueueRef.current = [];
+    scheduledSourcesRef.current.clear();
+    nextStartTimeRef.current = 0;
     trackTestCallStarted(trackingSource);
 
     try {
@@ -165,6 +178,11 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody, trackingSource 
             callStartTimeRef.current = Date.now();
             break;
 
+          case "clear":
+            // Barge-in: the caller interrupted, so drop any audio buffered ahead.
+            flushPlayback();
+            break;
+
           case "transcript":
             if (msg.isFinal && msg.content?.trim()) {
               setTranscript((prev) => {
@@ -225,7 +243,7 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody, trackingSource 
       updateStatus("error");
       cleanup();
     }
-  }, [assistantId, tokenUrl, tokenBody, trackingSource, enqueueAudio, updateStatus]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [assistantId, tokenUrl, tokenBody, trackingSource, enqueueAudio, flushPlayback, updateStatus]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const stop = useCallback(() => {
     const ws = wsRef.current;
@@ -263,17 +281,8 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody, trackingSource 
   }, []);
 
   function cleanup() {
-    // Stop any playing audio
-    if (currentSourceRef.current) {
-      try {
-        currentSourceRef.current.stop();
-      } catch {
-        // Already stopped
-      }
-      currentSourceRef.current = null;
-    }
-    audioQueueRef.current = [];
-    isPlayingRef.current = false;
+    // Stop any scheduled/playing audio
+    flushPlayback();
 
     // Disconnect worklet
     if (workletNodeRef.current) {

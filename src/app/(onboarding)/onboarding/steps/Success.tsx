@@ -4,6 +4,7 @@ import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import confetti from "canvas-confetti";
 import { Button } from "@/components/ui/button";
+import { formatPhoneNumber } from "@/lib/utils";
 import {
   CheckCircle2,
   Phone,
@@ -17,22 +18,15 @@ import {
 interface SuccessProps {
   businessName: string;
   planName: string;
+  // Provisioned number (E.164) if one was bought during onboarding. When set,
+  // the screen reflects the live number instead of prompting to get one.
+  phoneNumber?: string;
+  countryCode?: string;
 }
 
-const COMPLETED_ITEMS = [
-  { icon: Sparkles, label: "AI receptionist created and trained" },
-  { icon: Shield, label: "14-day free trial activated" },
-  { icon: Calendar, label: "Notification preferences configured" },
-];
-
-const NEXT_STEPS = [
-  { label: "Get a phone number", description: "Provision an Australian or US number for your AI to answer." },
-  { label: "Forward or share your number", description: "Redirect your existing line or share the new number with customers." },
-  { label: "Receive your first call", description: "Your AI receptionist handles it from here." },
-];
-
-export function Success({ businessName, planName }: SuccessProps) {
+export function Success({ businessName, planName, phoneNumber, countryCode }: SuccessProps) {
   const router = useRouter();
+  const formattedNumber = phoneNumber ? formatPhoneNumber(phoneNumber, countryCode) : "";
 
   useEffect(() => {
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
@@ -59,6 +53,34 @@ export function Success({ businessName, planName }: SuccessProps) {
     frame();
   }, []);
 
+  const completedItems = [
+    { icon: Sparkles, label: "AI receptionist created and trained" },
+    { icon: Shield, label: "14-day free trial activated" },
+    ...(phoneNumber
+      ? [{ icon: Phone, label: `Phone number active: ${formattedNumber}` }]
+      : []),
+    { icon: Calendar, label: "Notification preferences configured" },
+  ];
+
+  // Once a number is provisioned, "get a phone number" no longer belongs in the
+  // next steps — lead with forwarding instead.
+  const nextSteps = phoneNumber
+    ? [
+        {
+          label: "Forward or share your number",
+          description: `Redirect your existing line to ${formattedNumber}, or share it with customers.`,
+        },
+        { label: "Receive your first call", description: "Your AI receptionist handles it from here." },
+      ]
+    : [
+        { label: "Get a phone number", description: "Provision an Australian or US number for your AI to answer." },
+        {
+          label: "Forward or share your number",
+          description: "Redirect your existing line or share the new number with customers.",
+        },
+        { label: "Receive your first call", description: "Your AI receptionist handles it from here." },
+      ];
+
   return (
     <div className="space-y-8 text-center">
       {/* Hero */}
@@ -68,14 +90,19 @@ export function Success({ businessName, planName }: SuccessProps) {
         </div>
         <h2 className="text-2xl font-bold">You&apos;re Live!</h2>
         <p className="text-muted-foreground">
-          {businessName ? `${businessName}'s` : "Your"} AI receptionist is ready
-          to take calls on the <span className="font-medium text-foreground">{planName}</span> plan.
+          {businessName ? `${businessName}'s` : "Your"} AI receptionist is ready to take calls
+          {phoneNumber ? (
+            <>
+              {" "}on <span className="font-medium text-foreground">{formattedNumber}</span>
+            </>
+          ) : null}{" "}
+          on the <span className="font-medium text-foreground">{planName}</span> plan.
         </p>
       </div>
 
       {/* What was set up */}
       <div className="mx-auto max-w-sm space-y-3">
-        {COMPLETED_ITEMS.map((item) => (
+        {completedItems.map((item) => (
           <div key={item.label} className="flex items-center gap-3 text-left">
             <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-green-100 dark:bg-green-900/30">
               <item.icon className="h-4 w-4 text-green-600 dark:text-green-400" />
@@ -89,7 +116,7 @@ export function Success({ businessName, planName }: SuccessProps) {
       <div className="rounded-lg border bg-muted/50 p-6 text-left">
         <h3 className="mb-4 text-sm font-semibold">Next steps</h3>
         <div className="space-y-4">
-          {NEXT_STEPS.map((step, i) => (
+          {nextSteps.map((step, i) => (
             <div key={step.label} className="flex gap-3">
               <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-medium text-primary">
                 {i + 1}
@@ -120,22 +147,27 @@ export function Success({ businessName, planName }: SuccessProps) {
 
       {/* CTA */}
       <div className="flex flex-col items-center gap-3">
-        <Button
-          size="lg"
-          className="gap-2"
-          onClick={() => router.push("/phone-numbers?setup=true")}
-        >
-          <Phone className="h-4 w-4" />
-          Get Your Phone Number
-          <ArrowRight className="h-4 w-4" />
-        </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => router.push("/dashboard")}
-        >
-          Go to Dashboard
-        </Button>
+        {phoneNumber ? (
+          <Button size="lg" className="gap-2" onClick={() => router.push("/dashboard")}>
+            Go to Dashboard
+            <ArrowRight className="h-4 w-4" />
+          </Button>
+        ) : (
+          <>
+            <Button
+              size="lg"
+              className="gap-2"
+              onClick={() => router.push("/phone-numbers?setup=true")}
+            >
+              <Phone className="h-4 w-4" />
+              Get Your Phone Number
+              <ArrowRight className="h-4 w-4" />
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => router.push("/dashboard")}>
+              Go to Dashboard
+            </Button>
+          </>
+        )}
       </div>
     </div>
   );

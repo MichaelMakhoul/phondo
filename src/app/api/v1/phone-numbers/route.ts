@@ -227,22 +227,41 @@ export async function POST(request: Request) {
       twilioSid = purchased.sid;
       phoneNumber = purchased.number;
 
-      // 3. Configure Twilio voice webhook to point at voice server
+      // 3. Configure Twilio voice webhook to point at voice server. FATAL — a
+      // number with no voice webhook drops every call, so never save one in that
+      // state: release it and surface an error (mirrors the Telnyx path above).
       const voiceServerUrl = process.env.VOICE_SERVER_PUBLIC_URL;
-      if (voiceServerUrl) {
+      if (!voiceServerUrl) {
+        console.error(`[PhoneNumbers] VOICE_SERVER_PUBLIC_URL not set — releasing ${phoneNumber} (would be call-dead)`);
         try {
-          const appUrl = process.env.NEXT_PUBLIC_APP_URL;
-          const fallbackUrl = appUrl ? `${appUrl}/api/twilio/voice-fallback` : undefined;
-          if (!fallbackUrl) {
-            console.warn(`[PhoneNumbers] NEXT_PUBLIC_APP_URL not set — fallback URL not configured for ${phoneNumber}`);
-          }
-          await configureVoiceWebhook(twilioSid, `${voiceServerUrl}/twiml`, fallbackUrl);
-        } catch (webhookErr) {
-          console.error(`[PhoneNumbers] Failed to configure voice webhook for ${phoneNumber}:`, webhookErr);
-          // Non-fatal — the number still works, just needs manual webhook config
+          const { releaseNumber } = await import("@/lib/twilio/client");
+          await releaseNumber(twilioSid);
+        } catch (releaseErr) {
+          console.error(`CRITICAL: Orphaned Twilio number! SID=${twilioSid}, number=${phoneNumber}. Manual release required.`, releaseErr);
         }
-      } else {
-        console.warn("[PhoneNumbers] VOICE_SERVER_PUBLIC_URL not set — voice webhook not configured");
+        return NextResponse.json(
+          { error: "Phone service is not fully configured. Please try again shortly or contact support." },
+          { status: 502 }
+        );
+      }
+      try {
+        const appUrl = process.env.NEXT_PUBLIC_APP_URL;
+        const fallbackUrl = appUrl ? `${appUrl}/api/twilio/voice-fallback` : undefined;
+        // configureVoiceWebhook sets the primary voiceUrl independently of the
+        // (best-effort) fallback, so it only throws if the critical primary fails.
+        await configureVoiceWebhook(twilioSid, `${voiceServerUrl}/twiml`, fallbackUrl);
+      } catch (webhookErr) {
+        console.error(`[PhoneNumbers] Failed to configure voice webhook for ${phoneNumber} — releasing number:`, webhookErr);
+        try {
+          const { releaseNumber } = await import("@/lib/twilio/client");
+          await releaseNumber(twilioSid);
+        } catch (releaseErr) {
+          console.error(`CRITICAL: Orphaned Twilio number! SID=${twilioSid}, number=${phoneNumber}. Manual release required.`, releaseErr);
+        }
+        return NextResponse.json(
+          { error: "Failed to configure phone number for voice calls. Please try again." },
+          { status: 502 }
+        );
       }
 
       // 3b. Configure Twilio SMS webhook for opt-out tracking

@@ -84,7 +84,7 @@ type DemoState = "select" | "calling" | "ended";
 function getHeroSubtitle(demoState: DemoState, selectedIndustry: DemoIndustry | null): string {
   switch (demoState) {
     case "select":
-      return "Pick an industry and have a real conversation with our AI. No signup needed \u2014 just your microphone.";
+      return "Pick an industry and have a real conversation with our AI. No signup needed, just your microphone.";
     case "calling":
       return `Speaking with ${selectedIndustry ? DEMO_INDUSTRIES[selectedIndustry].name : "AI"}`;
     case "ended":
@@ -102,7 +102,6 @@ export default function DemoPage() {
   }, []);
   const [rateLimited, setRateLimited] = useState(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const transcriptEndRef = useRef<HTMLDivElement>(null);
 
   const assistantId = selectedIndustry
     ? DEMO_INDUSTRIES[selectedIndustry].assistantId
@@ -160,12 +159,15 @@ export default function DemoPage() {
 
   const transcriptContainerRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    // Only auto-scroll if user is already near the bottom (within 100px)
+    // Auto-scroll the transcript box only (not the page). scrollIntoView() used
+    // to scroll every ancestor, which jumped the whole window on each new line.
+    // Setting scrollTop keeps the page position fixed. Only follow along when the
+    // user is already near the bottom (within 100px).
     const container = transcriptContainerRef.current;
     if (!container) return;
     const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 100;
     if (isNearBottom) {
-      transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" });
+      container.scrollTop = container.scrollHeight;
     }
   }, [transcript]);
 
@@ -292,7 +294,7 @@ export default function DemoPage() {
                       <>
                         <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse" />
                         <span className="text-green-600 font-medium">
-                          Call Active &mdash; {formatDuration(duration)}
+                          Call Active &middot; {formatDuration(duration)}
                         </span>
                       </>
                     )}
@@ -301,7 +303,7 @@ export default function DemoPage() {
                     {selectedIndustry ? DEMO_INDUSTRIES[selectedIndustry].name : "Demo"}
                   </CardTitle>
                   <CardDescription>
-                    Speak naturally — the AI will respond in real time
+                    Speak naturally, and the AI will respond in real time
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="p-6">
@@ -354,7 +356,6 @@ export default function DemoPage() {
                         </div>
                       </div>
                     )}
-                    <div ref={transcriptEndRef} />
                   </div>
 
                   {/* Call Controls */}
@@ -435,7 +436,7 @@ export default function DemoPage() {
                       Duration: {formatDuration(duration)}
                     </p>
                     <p className="text-lg text-muted-foreground mb-8 max-w-md mx-auto">
-                      Imagine that running 24/7 for your business — never missing a call, always professional.
+                      Imagine that running 24/7 for your business, never missing a call, always professional.
                     </p>
                     <div className="flex flex-col sm:flex-row justify-center gap-3">
                       <Button variant="outline" onClick={handleTryAnother}>
@@ -483,7 +484,7 @@ export default function DemoPage() {
             <div className="grid md:grid-cols-3 gap-8 max-w-4xl mx-auto">
               {[
                 { value: "24/7", title: "Always Available", desc: "Never miss a call, even after hours or during busy periods" },
-                { value: "62%", title: "Calls Recovered", desc: "Small businesses miss 62% of calls — each one costs ~$450 in lost revenue" },
+                { value: "62%", title: "Calls Recovered", desc: "Small businesses miss 62% of calls, and each one costs ~$450 in lost revenue" },
                 { value: "5 min", title: "Setup Time", desc: "Get your AI receptionist running in under 5 minutes" },
               ].map((item) => (
                 <div key={item.value}>

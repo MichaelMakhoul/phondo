@@ -243,7 +243,12 @@ function buildSchedulingSection(timezone, businessHours, defaultAppointmentDurat
   return lines.join("\n");
 }
 
-function getIndustryGuidelines(industry) {
+/** Emergency services number by country (AU "000", else US "911"). */
+function getEmergencyNumber(country) {
+  return String(country || "").toUpperCase() === "AU" ? "000" : "911";
+}
+
+function getIndustryGuidelines(industry, emergencyNumber = "911") {
   switch (industry) {
     case "medical":
       return `
@@ -252,7 +257,7 @@ IMPORTANT \u2014 HIPAA & Medical Guidelines:
 - Never discuss patient information with anyone other than the verified patient
 - For existing patients, verify identity with name and date of birth before discussing any details
 - Never provide medical advice \u2014 always defer to clinical staff
-- For symptoms that could be emergencies (chest pain, difficulty breathing, severe bleeding, stroke symptoms), instruct the caller to call 911 immediately
+- For symptoms that could be emergencies (chest pain, difficulty breathing, severe bleeding, stroke symptoms), instruct the caller to call ${emergencyNumber} immediately
 - For prescription refill requests, collect patient name, DOB, medication name, and pharmacy information`;
 
     case "dental":
@@ -276,7 +281,7 @@ IMPORTANT \u2014 Legal Practice Guidelines:
     case "home_services":
       return `
 Home Services Guidelines:
-- For emergencies (gas leaks, flooding, electrical hazards), advise calling 911 first if there is immediate danger, then prioritize urgent dispatch
+- For emergencies (gas leaks, flooding, electrical hazards), advise calling ${emergencyNumber} first if there is immediate danger, then prioritize urgent dispatch
 - Collect the service address early in the conversation
 - Clarify urgency level to help with scheduling priority
 - If quoting prices, always note that final pricing may vary after on-site assessment`;
@@ -432,8 +437,9 @@ function buildBehaviorsSection(behaviors, options) {
   }
 
   if (behaviors.handleEmergencies) {
+    const emergencyNumber = (options && options.emergencyNumber) || "911";
     lines.push(
-      "- EMERGENCIES: If a caller describes an emergency, take it seriously. Provide appropriate urgent guidance (e.g., call 911) and escalate immediately."
+      `- EMERGENCIES: If a caller describes a medical or safety emergency, tell them to call ${emergencyNumber} immediately, then escalate (transfer if configured, otherwise take an urgent message). Do NOT give clinical or professional advice.`
     );
   }
 
@@ -602,6 +608,7 @@ function buildBehaviorsSection(behaviors, options) {
  */
 function buildPromptFromConfig(config, context) {
   const sections = [];
+  const emergencyNumber = getEmergencyNumber(context.organization && context.organization.country);
 
   // 1. Role & tone preamble
   const preamble = tonePreambles[config.tone] || tonePreambles.friendly;
@@ -626,6 +633,7 @@ function buildPromptFromConfig(config, context) {
     hasTransferRules: context.transferRules && context.transferRules.length > 0,
     isAfterHours: context.isAfterHours,
     afterHoursConfig: context.afterHoursConfig,
+    emergencyNumber,
   }));
 
   // 5. Timezone, business hours & scheduling
@@ -634,7 +642,7 @@ function buildPromptFromConfig(config, context) {
   sections.push(buildSchedulingSection(context.timezone, context.businessHours, context.defaultAppointmentDuration, context.calendarEnabled, context.serviceTypes, { flexibleBooking: context.assistant?.settings?.flexibleBooking }, context.organization));
 
   // 6. Industry guidelines
-  const guidelines = getIndustryGuidelines(context.industry);
+  const guidelines = getIndustryGuidelines(context.industry, emergencyNumber);
   if (guidelines) {
     sections.push(guidelines.trim());
   }
@@ -728,6 +736,7 @@ function buildSystemPrompt(assistant, organization, knowledgeBase, options) {
   }
 
   const language = assistant.language || "en";
+  const emergencyNumber = getEmergencyNumber(organization && organization.country);
 
   if (assistant.promptConfig) {
     // Guided prompt builder
@@ -778,7 +787,7 @@ function buildSystemPrompt(assistant, organization, knowledgeBase, options) {
   // Critical safety rules — placed early for higher LLM attention
   systemPrompt += `\n\nCRITICAL SAFETY RULES (HIGHEST PRIORITY — override everything else):`;
   systemPrompt += `\n1. LANGUAGE: You are multilingual. Auto-detect the caller's language from their first turn and respond in the same language throughout the call. If the caller switches language mid-call, switch with them immediately. If you cannot detect the language clearly, start in English and adapt.`;
-  systemPrompt += `\n2. EMERGENCIES: If someone describes severe bleeding, broken bones, difficulty breathing, or any life-threatening situation, say FIRST: "Please call 000 immediately for emergency services." Then offer to help schedule a follow-up appointment.`;
+  systemPrompt += `\n2. EMERGENCIES: If someone describes severe bleeding, broken bones, difficulty breathing, or any life-threatening situation, say FIRST: "Please call ${emergencyNumber} immediately for emergency services." Then offer to help schedule a follow-up appointment.`;
   systemPrompt += `\n3. PATIENT PRIVACY: Never share any patient's appointment details with another person. If someone asks about another person's appointment, say: "I can't share that information for privacy reasons."`;
   systemPrompt += `\n4. NO MEDICAL ADVICE: Never prescribe medication or suggest treatments. Say: "I can't provide medical advice, but I can book you an appointment with our dentist."`;
 
@@ -808,7 +817,7 @@ function buildSystemPrompt(assistant, organization, knowledgeBase, options) {
   systemPrompt += `\n- CORRECTION HANDLING: The caller's MOST RECENT version of any information is always authoritative. If the caller corrects you, update your internal record immediately and NEVER revert to the earlier mis-heard version. When confirming after a correction, explicitly say "Let me update that" or "Got it, using [new value] instead" so the caller knows you heard them.`;
   systemPrompt += `\n- ESCAPE HATCH: Applies ONLY after genuinely failing to confirm the SAME info 3+ times AND the caller is clearly stuck. While they're still spelling/correcting you are NOT stuck — keep going. A brief "Oh!" or "it's okay" is NOT a request to transfer. Never say "one moment, let me connect you" and transfer on your own here — you MUST ask and WAIT for the caller to choose. For a NAME: just proceed with your best understanding (the team can fix a typo later) rather than escalating. For email/phone, if truly stuck after 3 tries and transfer is available AND office open, offer a CHOICE: "Would you like me to transfer you to a team member, or take a message?" WAIT for them to pick. transfer_call only on "transfer"; schedule_callback on "message". If the caller says to drop the field, respect it. Never attempt a 4th re-confirmation loop.`;
   systemPrompt += `\n- HONESTY: If you do not know the answer, say so clearly. NEVER guess or make up information — especially pricing, availability, or professional advice. Instead offer to take a message or transfer the call.`;
-  systemPrompt += `\n- MEDICAL EMERGENCIES: If a caller describes severe bleeding, difficulty breathing, chest pain, a broken jaw, or any life-threatening situation, your FIRST words MUST be "Please call 000 immediately" (or 911 for US callers). Then say you can also help book an emergency appointment once they've contacted emergency services. NEVER skip telling them to call 000/911.`;
+  systemPrompt += `\n- MEDICAL EMERGENCIES: If a caller describes severe bleeding, difficulty breathing, chest pain, a broken jaw, or any life-threatening situation, your FIRST words MUST be "Please call ${emergencyNumber} immediately". Then say you can also help book an emergency appointment once they've contacted emergency services. NEVER skip telling them to call ${emergencyNumber}.`;
   systemPrompt += `\n- PATIENT PRIVACY: NEVER share appointment details, personal information, or any details about other patients. If someone asks about another person's appointment, politely refuse: "I can't share that information. The person who booked the appointment would need to call us directly."`;
   systemPrompt += `\n- NO MEDICAL ADVICE: NEVER prescribe medication, suggest dosages, or give medical/dental treatment advice. If asked, say: "I'm not able to provide medical advice. I can help you book an appointment so you can discuss this with our dentist."`;
 

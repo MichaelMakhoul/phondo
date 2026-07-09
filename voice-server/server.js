@@ -3860,6 +3860,12 @@ testWss.on("connection", (ws, req) => {
               }
             },
             onInterrupted: () => {
+              // Barge-in: tell the browser to drop audio it has buffered ahead so
+              // the assistant stops the instant the caller interrupts (mirrors the
+              // Twilio "clear" event on the phone path).
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: "clear" }));
+              }
               // Guard: session may be null if Gemini delivers buffered events after cleanup
               if (!session) {
                 pendingAiTranscript = "";

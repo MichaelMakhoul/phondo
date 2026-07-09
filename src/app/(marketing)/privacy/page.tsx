@@ -18,7 +18,7 @@ export default function PrivacyPage() {
 
           <div className="prose prose-gray dark:prose-invert max-w-none">
             <p className="text-muted-foreground">
-              Last updated: January 2026
+              Last updated: July 2026
             </p>
 
             <h2>1. Introduction</h2>
@@ -80,14 +80,53 @@ export default function PrivacyPage() {
               </li>
             </ul>
 
-            <h2>5. Data Security</h2>
+            <h2>5. Where Your Data Is Stored and Processed</h2>
             <p>
-              We implement industry-standard security measures to protect your data,
-              including encryption in transit and at rest. However, no method of
-              transmission over the Internet is 100% secure.
+              Your account data, call transcripts, and business information are
+              stored at rest in Australia, in our Sydney region.
+            </p>
+            <p>
+              However, some of your information is processed by trusted
+              third-party providers that may store or process data outside
+              Australia, including in the United States. In particular:
+            </p>
+            <ul>
+              <li>
+                <strong>Voice AI:</strong> the real-time speech and language
+                models that power each conversation
+              </li>
+              <li>
+                <strong>Telephony:</strong> call transport and any call
+                recordings (handled by our telephony provider)
+              </li>
+              <li>
+                <strong>Payments and monitoring:</strong> payment processing and
+                error/performance monitoring
+              </li>
+            </ul>
+            <p>
+              We put contractual protections in place with these providers,
+              including terms that prohibit them from using your data to train
+              their models. By using the Service, you consent to this overseas
+              processing. This disclosure is made consistent with Australian
+              Privacy Principle 8. We do not claim that your data never leaves
+              Australia; we aim to be transparent about exactly where it is
+              handled. Contact us at{" "}
+              <a href="mailto:privacy@phondo.ai" className="text-orange-500 hover:underline">
+                privacy@phondo.ai
+              </a>{" "}
+              for our current list of sub-processors.
             </p>
 
-            <h2>6. Data Retention</h2>
+            <h2>6. Data Security</h2>
+            <p>
+              We implement industry-standard security measures to protect your data,
+              including encryption in transit (TLS) and at rest (AES-256), and
+              row-level isolation of each organisation&apos;s data. However, no
+              method of transmission over the Internet is 100% secure.
+            </p>
+
+            <h2>7. Data Retention</h2>
             <p>
               We retain your data for as long as your account is active or as needed
               to provide the Service. Call recordings are retained according to your
@@ -95,7 +134,7 @@ export default function PrivacyPage() {
               configured.
             </p>
 
-            <h2>7. Your Rights</h2>
+            <h2>8. Your Rights</h2>
             <p>You have the right to:</p>
             <ul>
               <li>Access your personal data</li>
@@ -105,27 +144,27 @@ export default function PrivacyPage() {
               <li>Export your data in a portable format</li>
             </ul>
 
-            <h2>8. Cookies</h2>
+            <h2>9. Cookies</h2>
             <p>
               We use cookies and similar tracking technologies to track activity on
               our Service and hold certain information. You can instruct your browser
               to refuse all cookies or indicate when a cookie is being sent.
             </p>
 
-            <h2>9. Children&apos;s Privacy</h2>
+            <h2>10. Children&apos;s Privacy</h2>
             <p>
               The Service is not intended for use by anyone under the age of 18. We
               do not knowingly collect personal information from children under 18.
             </p>
 
-            <h2>10. Changes to This Policy</h2>
+            <h2>11. Changes to This Policy</h2>
             <p>
               We may update this Privacy Policy from time to time. We will notify you
               of any changes by posting the new Privacy Policy on this page and
               updating the &quot;Last updated&quot; date.
             </p>
 
-            <h2>11. Contact Us</h2>
+            <h2>12. Contact Us</h2>
             <p>
               If you have questions about this Privacy Policy, please contact us at{" "}
               <a href="mailto:privacy@phondo.ai" className="text-orange-500 hover:underline">

@@ -65,7 +65,7 @@ export function MarketingFooter() {
               </li>
               <li>
                 <Link href="/data-sovereignty" className="hover:text-foreground">
-                  Data Sovereignty
+                  Data & Security
                 </Link>
               </li>
             </ul>

@@ -26,6 +26,9 @@ interface GoLiveProps {
     selectedPhoneNumber: string;
   };
   countryCode: string;
+  // Pre-launch lockdown: when false (early access), hide the number search +
+  // paid plans and let the user complete on the 14-day trial.
+  provisioningEnabled: boolean;
   onChange: (data: Partial<GoLiveProps["data"]>) => void;
 }
 
@@ -34,7 +37,7 @@ const plans = getDisplayPlans().map((plan) => ({
   highlight: plan.highlighted,
 }));
 
-export function GoLive({ data, countryCode, onChange }: GoLiveProps) {
+export function GoLive({ data, countryCode, provisioningEnabled, onChange }: GoLiveProps) {
   const config = getCountryConfig(countryCode);
   const { areaCodeLength } = config.phone;
   const suggestedAreaCodes = config.suggestedAreaCodes;
@@ -44,6 +47,10 @@ export function GoLive({ data, countryCode, onChange }: GoLiveProps) {
   const [isSearching, setIsSearching] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
+  // Pre-launch lockdown (SCRUM-215): number provisioning is gated behind the
+  // PROVISIONING_ENABLED flag. Treat that as a calm "coming soon" state, not a
+  // red error — onboarding still completes fine without a number.
+  const [provisioningDisabled, setProvisioningDisabled] = useState(false);
 
   const handleSearch = async (areaCodeOverride?: string) => {
     const ac = areaCodeOverride ?? data.areaCode;
@@ -51,6 +58,7 @@ export function GoLive({ data, countryCode, onChange }: GoLiveProps) {
 
     setIsSearching(true);
     setSearchError(null);
+    setProvisioningDisabled(false);
     setAvailableNumbers([]);
     setHasSearched(false);
     // Clear previous selection when searching again
@@ -65,6 +73,11 @@ export function GoLive({ data, countryCode, onChange }: GoLiveProps) {
 
       if (!response.ok) {
         const err = await response.json().catch(() => ({}));
+        // Expected pre-launch state — surface it gently, no destructive toast.
+        if (response.status === 503 && err?.code === "PROVISIONING_DISABLED") {
+          setProvisioningDisabled(true);
+          return;
+        }
         throw new Error(err.error || "Failed to search phone numbers");
       }
 
@@ -88,13 +101,34 @@ export function GoLive({ data, countryCode, onChange }: GoLiveProps) {
     setAvailableNumbers([]);
     setHasSearched(false);
     setSearchError(null);
+    setProvisioningDisabled(false);
     // Auto-search when clicking a suggested area code
     handleSearch(code);
   };
 
   return (
     <div className="space-y-6">
+      {/* Early access: no plan/number selection — everyone starts on the trial */}
+      {!provisioningEnabled && (
+        <div className="rounded-lg border border-primary/30 bg-primary/5 p-4">
+          <Badge variant="secondary" className="bg-green-100 text-green-700">
+            14-day free trial
+          </Badge>
+          <h3 className="mt-3 text-lg font-medium">You&apos;re ready to go live</h3>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Your AI receptionist is set up. You&apos;re starting on the 14-day free
+            trial, with no plan to choose and no payment required right now. We&apos;ll
+            help you set up your phone number as part of early access. Questions? Email{" "}
+            <a href="mailto:hello@phondo.ai" className="text-primary hover:underline">
+              hello@phondo.ai
+            </a>
+            .
+          </p>
+        </div>
+      )}
+
       {/* Phone Number Selection */}
+      {provisioningEnabled && (
       <div className="space-y-4">
         <div>
           <h3 className="text-lg font-medium">Get Your Phone Number</h3>
@@ -117,6 +151,7 @@ export function GoLive({ data, countryCode, onChange }: GoLiveProps) {
                 setAvailableNumbers([]);
                 setHasSearched(false);
                 setSearchError(null);
+                setProvisioningDisabled(false);
               }}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
@@ -174,6 +209,22 @@ export function GoLive({ data, countryCode, onChange }: GoLiveProps) {
           </div>
         )}
 
+        {/* Pre-launch: provisioning gated — calm informational state, not an error */}
+        {provisioningDisabled && (
+          <div className="rounded-lg border bg-muted/50 p-4 text-sm">
+            <p className="font-medium">Phone numbers are coming soon</p>
+            <p className="mt-1 text-muted-foreground">
+              New numbers are being enabled for early-access accounts. You can finish
+              setting up your AI receptionist now, and we&apos;ll help you get your number.
+              Questions? Email{" "}
+              <a href="mailto:hello@phondo.ai" className="text-primary hover:underline">
+                hello@phondo.ai
+              </a>
+              .
+            </p>
+          </div>
+        )}
+
         {/* Available numbers list */}
         {hasSearched && availableNumbers.length > 0 && (
           <div className="space-y-2">
@@ -227,8 +278,10 @@ export function GoLive({ data, countryCode, onChange }: GoLiveProps) {
           </div>
         )}
       </div>
+      )}
 
       {/* Plan Selection */}
+      {provisioningEnabled && (
       <div className="space-y-4">
         <div className="flex items-center justify-between">
           <div>
@@ -305,6 +358,7 @@ export function GoLive({ data, countryCode, onChange }: GoLiveProps) {
           ))}
         </RadioGroup>
       </div>
+      )}
 
       {/* What's Next */}
       <Card className="bg-muted/50 p-4">

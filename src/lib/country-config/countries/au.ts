@@ -4,6 +4,7 @@ export const AU_CONFIG: CountryConfig = {
   code: "AU",
   name: "Australia",
   flag: "AU",
+  emergencyNumber: "000",
   phone: {
     countryCallingCode: "61",
     placeholder: "02 9876 5432",
