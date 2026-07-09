@@ -18,6 +18,7 @@ import { Success } from "./steps/Success";
 import { ArrowLeft, ArrowRight, Loader2, CheckCircle2, Clock } from "lucide-react";
 import { getCountryConfig } from "@/lib/country-config";
 import { buildCustomInstructionsFromBusinessInfo } from "@/lib/scraper/build-custom-instructions";
+import { parseBusinessHours } from "@/lib/scraper/parse-business-hours";
 import { parsePhoneToE164, type SupportedCountry } from "@/lib/phone/normalize";
 import {
   trackOnboardingStart,
@@ -39,6 +40,11 @@ interface OnboardingData {
   scrapedSourceUrl: string;
   scrapedAddress: string; // Persisted to organizations.business_address
   scrapedCustomInstructions: string; // Injected into prompt config, not persisted directly
+  // SCRUM-515: the STRUCTURED half of the scrape. These reach the config the AI
+  // actually books from — organizations.business_hours and service_types — not
+  // just the prose it recites. Held raw so the parse happens once, at save.
+  scrapedHours: string[];
+  scrapedServices: string[];
   // Step 2: Assistant Setup
   assistantName: string;
   systemPrompt: string;
@@ -75,6 +81,8 @@ const initialData: OnboardingData = {
   scrapedSourceUrl: "",
   scrapedAddress: "",
   scrapedCustomInstructions: "",
+  scrapedHours: [],
+  scrapedServices: [],
   assistantName: "",
   systemPrompt: "",
   firstMessage: "",
@@ -128,7 +136,10 @@ export default function OnboardingPage() {
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
-        setData(parsed.data || initialData);
+        // Merged over initialData, not substituted for it: progress saved by an
+        // earlier deploy predates any field added since, and reading `.length`
+        // off one of those undefineds would crash a user mid-wizard.
+        setData({ ...initialData, ...(parsed.data || {}) });
         setCurrentStep(parsed.step || 1);
       } catch {
         // Invalid saved data, start fresh
@@ -179,6 +190,10 @@ export default function OnboardingPage() {
         scrapedSourceUrl: url,
         scrapedAddress: "",
         scrapedCustomInstructions: "",
+        // Re-scanning a different site must not leave the previous one's hours
+        // and services behind to be saved against this business.
+        scrapedHours: [],
+        scrapedServices: [],
       };
 
       // Auto-fill fields from scraped data (user clicked Import, so overwrite)
@@ -190,6 +205,13 @@ export default function OnboardingPage() {
       }
       if (result.businessInfo?.address) {
         updates.scrapedAddress = result.businessInfo.address;
+      }
+      // SCRUM-515: kept raw for the structured save at org creation.
+      if (Array.isArray(result.businessInfo?.hours)) {
+        updates.scrapedHours = result.businessInfo.hours.filter((h: unknown) => typeof h === "string");
+      }
+      if (Array.isArray(result.businessInfo?.services)) {
+        updates.scrapedServices = result.businessInfo.services.filter((s: unknown) => typeof s === "string");
       }
 
       // Build custom instructions from scraped business info
@@ -346,6 +368,12 @@ export default function OnboardingPage() {
         // 00150 UPDATE allowlist → 42501) would let the user finish
         // onboarding with default country/timezone and no industry, silently
         // (SCRUM-421 review). Throwing routes it to the catch + toast below.
+        // SCRUM-515: the AI books against organizations.business_hours. Left at
+        // its Mon-Fri 9-5 default it will offer 9:00 to callers of a business
+        // that opens at 8:30 — while reciting the correct 8:30 from the
+        // knowledge base. Only write hours we parsed with confidence; the
+        // parser returns null rather than guess, and the default stands.
+        const parsedHours = parseBusinessHours(data.scrapedHours);
         const { error: orgUpdateError } = await (supabase as any)
           .from("organizations")
           .update({
@@ -360,10 +388,25 @@ export default function OnboardingPage() {
             business_address: data.scrapedAddress || null,
             country: data.country || "US",
             timezone: countryConfig?.defaultTimezone || "America/New_York",
+            ...(parsedHours && { business_hours: parsedHours.hours }),
           })
           .eq("id", orgId);
         if (orgUpdateError) {
           throw new Error(`Failed to save business details: ${orgUpdateError.message}`);
+        }
+        // Anything the user must know about this import is collected here and
+        // reported ONCE at the end of the step. The toaster only ever shows the
+        // newest toast, so firing them as they happen means the last one silently
+        // eats the others — and the hours warning is the one that costs bookings.
+        const importWarnings: string[] = [];
+        const importNotes: string[] = [];
+
+        // The site listed hours we couldn't read. Say so, or the first they
+        // learn of it is a caller being offered a slot on a day they're shut.
+        if (data.scrapedHours.length > 0 && !parsedHours) {
+          importWarnings.push(
+            "We couldn't read the opening hours on your website, so your assistant will use Monday to Friday, 9 to 5. You can change them in Settings, under Business Hours."
+          );
         }
 
         // SCRUM-426: when resuming into an existing org, adopt an existing
@@ -404,11 +447,11 @@ export default function OnboardingPage() {
             });
             if (!kbRes.ok) {
               console.error("KB save failed:", kbRes.status);
-              toast({ title: "Website import saved partially", description: "Your assistant was created but the knowledge base import failed. You can re-import later from settings.", variant: "destructive" });
+              importWarnings.push("The knowledge base import failed. You can re-import your website later from Settings.");
             }
           } catch (err) {
             console.error("Failed to save scraped KB:", err);
-            toast({ title: "Website import saved partially", description: "Your assistant was created but the knowledge base import failed. You can re-import later from settings.", variant: "destructive" });
+            importWarnings.push("The knowledge base import failed. You can re-import your website later from Settings.");
           }
         }
 
@@ -441,19 +484,54 @@ export default function OnboardingPage() {
           const assistant = await assistantResponse.json();
           adoptedAssistantId = assistant.id;
 
-          // Seed industry-default service types (non-fatal)
+          // Seed service types — the caller-facing "what can I book?" list.
+          // SCRUM-515: scraped services win over the generic industry table, so
+          // a dealership offers car servicing rather than a "consultation".
+          // Non-fatal: the industry defaults are the fallback inside the route.
           try {
             const seedRes = await fetch("/api/v1/service-types/seed", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ organizationId: orgId, industry: data.industry }),
+              body: JSON.stringify({
+                organizationId: orgId,
+                industry: data.industry,
+                scrapedServices: data.scrapedServices,
+              }),
             });
             if (!seedRes.ok) {
               console.warn("Service type seeding returned non-OK status:", seedRes.status);
+              importWarnings.push(
+                "We couldn't set up your appointment types. Add them in Settings, under Appointment Types, before you go live."
+              );
+            } else {
+              const seed = await seedRes.json().catch(() => null);
+              // Silence about an import is how a dentist discovers, mid-root-canal,
+              // that every service was booked as a 30 minute slot.
+              if (seed?.seeded && seed.source === "scraped") {
+                importNotes.push(
+                  `We added ${seed.count} services from your website. Check how long each one takes in Settings, under Appointment Types.`
+                );
+              }
             }
           } catch (seedErr) {
             console.warn("Service type seeding failed (non-fatal):", seedErr);
+            importWarnings.push(
+              "We couldn't set up your appointment types. Add them in Settings, under Appointment Types, before you go live."
+            );
           }
+        }
+
+        // One toast, last, carrying everything the user needs to know. The
+        // toaster shows only the newest, so anything reported earlier in this
+        // step would have been silently replaced by whatever came after it.
+        if (importWarnings.length > 0) {
+          toast({
+            title: "Check a few things before you go live",
+            description: [...importWarnings, ...importNotes].join(" "),
+            variant: "destructive",
+          });
+        } else if (importNotes.length > 0) {
+          toast({ title: "Imported from your website", description: importNotes.join(" ") });
         }
 
         // adoptedAssistantId is always set by here (adopted on resume, or
