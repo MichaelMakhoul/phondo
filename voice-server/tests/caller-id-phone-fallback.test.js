@@ -86,6 +86,16 @@ describe("applyCallerIdPhoneFallback — junk values (SCRUM-518)", () => {
     assert.equal(out.phone, CALLER);
   });
 
+  it("replaces an all-same-digit number, which isValidPhoneNumber rejects downstream", () => {
+    // Long enough to clear a bare digit-count window, but the booking handler
+    // refuses it. Without this the AI still dead-ends asking for a number it is
+    // already holding — the same bug as "0.5", wearing a different mask.
+    for (const junk of ["00000000", "11111111", "0000000000", "0 0 0 0 0 0 0 0"]) {
+      const out = applyCallerIdPhoneFallback("book_appointment", { phone: junk }, CALLER);
+      assert.equal(out.phone, CALLER, `junk: ${junk}`);
+    }
+  });
+
   it("replaces a non-string phone rather than passing it downstream", () => {
     for (const junk of [0.5, null, {}, []]) {
       const out = applyCallerIdPhoneFallback("book_appointment", { phone: junk }, CALLER);
@@ -127,8 +137,17 @@ describe("isDialablePhoneArg (SCRUM-518)", () => {
   it("rejects too few digits, too many, and the anonymous sentinel", () => {
     assert.equal(isDialablePhoneArg("0.5"), false);
     assert.equal(isDialablePhoneArg("1234567"), false); // 7 digits
+    assert.equal(isDialablePhoneArg("12345678"), true); // 8 digits: the boundary
+    assert.equal(isDialablePhoneArg("123456789012345"), true); // 15 digits
     assert.equal(isDialablePhoneArg("1234567890123456"), false); // 16 digits
     assert.equal(isDialablePhoneArg("+266696687"), false);
+  });
+
+  it("rejects an all-same-digit number, matching isValidPhoneNumber", () => {
+    assert.equal(isDialablePhoneArg("00000000"), false);
+    assert.equal(isDialablePhoneArg("999999999999"), false);
+    // Not all the same, so it stands.
+    assert.equal(isDialablePhoneArg("00000001"), true);
   });
 
   it("rejects anything that is not a string", () => {

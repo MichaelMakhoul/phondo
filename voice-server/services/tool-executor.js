@@ -631,16 +631,23 @@ function applyCallerIdPhoneFallback(functionName, args, callerPhone) {
 /**
  * True when a model-supplied `phone` argument could actually be dialed.
  *
- * Deliberately the same 8–15 digit window as `isDialableCallerId`, so a value
- * that survives here also survives `isValidPhoneNumber` downstream. Anything
- * narrower would reject real international numbers; anything wider would let
- * "0.5" through, which is the bug.
+ * Mirrors `isValidPhoneNumber` (src/lib/security/validation.ts), the check this
+ * value must meet downstream: the same 8–15 digit window as
+ * `isDialableCallerId`, AND the same rejection of an all-same-digit number.
+ *
+ * Any value accepted here but rejected there is one the fallback stands down on
+ * and the handler then refuses — the "0.5" dead-end this ticket exists to close,
+ * wearing a different mask. "00000000" is a real speech-to-text artifact.
+ *
+ * A genuine caller ID is never all-same-digit, so `isDialableCallerId` does not
+ * carry that rule. Only a model-supplied argument needs it.
  *
  * @param {unknown} phone
  * @returns {boolean}
  */
 function isDialablePhoneArg(phone) {
   if (typeof phone !== "string") return false;
+  if (/^(\d)\1+$/.test(phone.replace(/\D/g, ""))) return false;
   return isDialableCallerId(phone);
 }
 
