@@ -4,11 +4,52 @@ import { getCountryConfig, formatPhoneForCountry } from "@/lib/country-config";
 import { z } from "zod";
 import { checkResourceLimit } from "@/lib/stripe/billing-service";
 import { PLANS } from "@/lib/stripe/client";
+import { pageSentry } from "@/lib/observability/page-sentry";
+import { SENTRY_REASONS } from "@/lib/security/error-ids";
 
 // Type for org_members query result
 interface Membership {
   organization_id: string;
   role?: string;
+}
+
+/**
+ * Release a just-purchased carrier number after a later provisioning step failed.
+ *
+ * If the release ITSELF fails the number is orphaned — still billed, owned by
+ * nobody — and a console.error in a serverless log is write-only. Page so a
+ * human actually releases it; the SID is the identifier they need (the raw
+ * number is PII and gets scrubbed).
+ */
+async function releaseOrphanOrPage(
+  provider: "twilio" | "telnyx",
+  id: string,
+  phoneNumber: string | null
+): Promise<void> {
+  try {
+    // Literal specifiers: a computed one defeats both tsc's module resolution
+    // and test-time module mocking.
+    if (provider === "twilio") {
+      const { releaseNumber } = await import("@/lib/twilio/client");
+      await releaseNumber(id);
+    } else {
+      const { releaseNumber } = await import("@/lib/telnyx/client");
+      await releaseNumber(id);
+    }
+  } catch (releaseErr) {
+    console.error(
+      `CRITICAL: Orphaned ${provider} number! id=${id}, number=${phoneNumber}. Manual release required.`,
+      releaseErr
+    );
+    pageSentry({
+      service: "next-api",
+      reason: SENTRY_REASONS.PHONE_NUMBER_ORPHANED,
+      level: "error",
+      err: releaseErr,
+      tags: { provider },
+      extras: { carrierId: id, phoneNumber },
+    });
+  }
 }
 
 const buyPhoneNumberSchema = z.object({
@@ -188,12 +229,15 @@ export async function POST(request: Request) {
         await configureVoiceWebhook(telnyxConnectionId);
       } catch (webhookErr) {
         console.error(`[PhoneNumbers] Failed to configure Telnyx voice for ${phoneNumber} — releasing number:`, webhookErr);
-        try {
-          const { releaseNumber: releaseTelnyx } = await import("@/lib/telnyx/client");
-          await releaseTelnyx(telnyxConnectionId);
-        } catch (releaseErr) {
-          console.error(`CRITICAL: Orphaned Telnyx number! ID=${telnyxConnectionId}, number=${phoneNumber}`, releaseErr);
-        }
+        pageSentry({
+          service: "next-api",
+          reason: SENTRY_REASONS.PHONE_NUMBER_WEBHOOK_CONFIG_FAILED,
+          level: "error",
+          err: webhookErr,
+          tags: { provider: "telnyx" },
+          extras: { carrierId: telnyxConnectionId },
+        });
+        await releaseOrphanOrPage("telnyx", telnyxConnectionId, phoneNumber);
         return NextResponse.json(
           { error: "Failed to configure phone number for voice calls. Please try again." },
           { status: 502 }
@@ -233,12 +277,15 @@ export async function POST(request: Request) {
       const voiceServerUrl = process.env.VOICE_SERVER_PUBLIC_URL;
       if (!voiceServerUrl) {
         console.error(`[PhoneNumbers] VOICE_SERVER_PUBLIC_URL not set — releasing ${phoneNumber} (would be call-dead)`);
-        try {
-          const { releaseNumber } = await import("@/lib/twilio/client");
-          await releaseNumber(twilioSid);
-        } catch (releaseErr) {
-          console.error(`CRITICAL: Orphaned Twilio number! SID=${twilioSid}, number=${phoneNumber}. Manual release required.`, releaseErr);
-        }
+        pageSentry({
+          service: "next-api",
+          reason: SENTRY_REASONS.PHONE_NUMBER_WEBHOOK_CONFIG_FAILED,
+          level: "error",
+          message: "VOICE_SERVER_PUBLIC_URL not set — purchased number released (would be call-dead)",
+          tags: { provider: "twilio" },
+          extras: { carrierId: twilioSid },
+        });
+        await releaseOrphanOrPage("twilio", twilioSid, phoneNumber);
         return NextResponse.json(
           { error: "Phone service is not fully configured. Please try again shortly or contact support." },
           { status: 502 }
@@ -252,12 +299,15 @@ export async function POST(request: Request) {
         await configureVoiceWebhook(twilioSid, `${voiceServerUrl}/twiml`, fallbackUrl);
       } catch (webhookErr) {
         console.error(`[PhoneNumbers] Failed to configure voice webhook for ${phoneNumber} — releasing number:`, webhookErr);
-        try {
-          const { releaseNumber } = await import("@/lib/twilio/client");
-          await releaseNumber(twilioSid);
-        } catch (releaseErr) {
-          console.error(`CRITICAL: Orphaned Twilio number! SID=${twilioSid}, number=${phoneNumber}. Manual release required.`, releaseErr);
-        }
+        pageSentry({
+          service: "next-api",
+          reason: SENTRY_REASONS.PHONE_NUMBER_WEBHOOK_CONFIG_FAILED,
+          level: "error",
+          err: webhookErr,
+          tags: { provider: "twilio" },
+          extras: { carrierId: twilioSid },
+        });
+        await releaseOrphanOrPage("twilio", twilioSid, phoneNumber);
         return NextResponse.json(
           { error: "Failed to configure phone number for voice calls. Please try again." },
           { status: 502 }
@@ -330,26 +380,10 @@ export async function POST(request: Request) {
     if (error) {
       // Rollback: release from carrier
       if (twilioSid) {
-        try {
-          const { releaseNumber } = await import("@/lib/twilio/client");
-          await releaseNumber(twilioSid);
-        } catch (e) {
-          console.error(
-            `CRITICAL: Orphaned Twilio number! SID=${twilioSid}, number=${phoneNumber}. Manual release required.`,
-            e
-          );
-        }
+        await releaseOrphanOrPage("twilio", twilioSid, phoneNumber);
       }
       if (telnyxConnectionId) {
-        try {
-          const { releaseNumber } = await import("@/lib/telnyx/client");
-          await releaseNumber(telnyxConnectionId);
-        } catch (e) {
-          console.error(
-            `CRITICAL: Orphaned Telnyx number! ID=${telnyxConnectionId}, number=${phoneNumber}. Manual release required.`,
-            e
-          );
-        }
+        await releaseOrphanOrPage("telnyx", telnyxConnectionId, phoneNumber);
       }
       // SCRUM-347 (L1): log the DB insert detail server-side, return a generic
       // message — the raw PostgREST error leaks schema to the client.

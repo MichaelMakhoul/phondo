@@ -67,12 +67,13 @@ export default async function AssistantDetailPage({
 
   const organizationId = membership.organization_id as string;
 
-  // Get org timezone and business hours (needed for after-hours warning)
+  // Get org timezone and business hours (needed for after-hours warning), plus
+  // country (drives the emergency number in the generated prompt).
   const { data: organization, error: orgError } = await (supabase as any)
     .from("organizations")
-    .select("timezone, business_hours, industry")
+    .select("timezone, business_hours, industry, country")
     .eq("id", organizationId)
-    .single() as { data: { timezone: string | null; business_hours: Record<string, any> | null; industry: string | null } | null; error: any };
+    .single() as { data: { timezone: string | null; business_hours: Record<string, any> | null; industry: string | null; country: string | null } | null; error: any };
 
   if (orgError) {
     console.error("[assistant-detail] organization fetch error:", orgError.message || orgError.code);
@@ -109,6 +110,7 @@ export default async function AssistantDetailPage({
       hasBusinessHours={!!(organization?.business_hours && Object.keys(organization.business_hours).length > 0)}
       hasTimezone={!!(organization?.timezone)}
       industry={organization?.industry || undefined}
+      country={organization?.country || undefined}
     />
   );
 }

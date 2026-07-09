@@ -172,8 +172,10 @@ export default function OnboardingPage() {
       // Cap to the KB API's 50k limit — a large multi-page scrape would
       // otherwise 400 on save ("String must contain at most 50000 characters").
       const MAX_KB_CONTENT = 50_000;
+      const scrapedContent: string = result.content || "";
+      const wasTruncated = scrapedContent.length > MAX_KB_CONTENT;
       const updates: Partial<OnboardingData> = {
-        scrapedKBContent: (result.content || "").slice(0, MAX_KB_CONTENT),
+        scrapedKBContent: scrapedContent.slice(0, MAX_KB_CONTENT),
         scrapedSourceUrl: url,
         scrapedAddress: "",
         scrapedCustomInstructions: "",
@@ -204,6 +206,15 @@ export default function OnboardingPage() {
         businessInfo: result.businessInfo || {},
         totalPages: result.totalPages || 0,
       });
+      // Truncation used to be silent, so the AI would later be unable to answer
+      // from the dropped tail with nothing to explain why. Say so plainly.
+      if (wasTruncated) {
+        toast({
+          title: "Imported the first 50,000 characters",
+          description:
+            "Your website is large, so we saved the first 50,000 characters. You can add anything we missed in Knowledge Base later.",
+        });
+      }
       trackOnboardingWebsiteScan(true);
     } catch (error: any) {
       trackOnboardingWebsiteScan(false);
@@ -622,9 +633,17 @@ export default function OnboardingPage() {
         // route selects the actual number (which may differ from the picker
         // choice), so read it from the response — and read the body only once,
         // since it can't be re-read for the fallback PATCH below.
-        const phoneRecord = await phoneRes.json().catch(() => null);
+        // A 2xx with an unreadable body means the number IS provisioned but we
+        // can't see it: don't fail go-live, but never let it pass silently — it
+        // downgrades the success screen and skips the fallback PATCH below.
+        const phoneRecord = await phoneRes.json().catch((parseErr) => {
+          console.error("Provisioning succeeded but the response body was unreadable:", parseErr);
+          return null;
+        });
         if (phoneRecord?.phone_number) {
           setProvisionedNumber(phoneRecord.phone_number);
+        } else {
+          console.error("Provisioning response is missing phone_number; success screen will not show the number.");
         }
 
         // SCRUM-284: apply the emergency fallback number captured in the
@@ -632,6 +651,11 @@ export default function OnboardingPage() {
         // we PATCH it on. Non-fatal — a failure here shouldn't block go-live;
         // the owner can set it later from settings.
         if (data.fallbackForwardNumber.trim()) {
+          const fallbackToast = () =>
+            toast({
+              title: "Number is live. One thing to finish",
+              description: "We couldn't set your emergency fallback number. You can add it any time from Settings → Phone Numbers.",
+            });
           try {
             if (phoneRecord?.id) {
               const patchRes = await fetch(`/api/v1/phone-numbers/${phoneRecord.id}`, {
@@ -644,14 +668,17 @@ export default function OnboardingPage() {
                 // Non-blocking: the number is live and the AI works; the owner
                 // can set the emergency fallback in Settings. Surface it so it
                 // isn't a silent gap on a routing-critical field.
-                toast({
-                  title: "Number is live — one thing to finish",
-                  description: "We couldn't set your emergency fallback number. You can add it any time from Settings → Phone Numbers.",
-                });
+                fallbackToast();
               }
+            } else {
+              // No id to PATCH: the fallback the user explicitly entered was
+              // never applied. Same routing-critical gap, so same warning.
+              console.error("Cannot apply fallback forward number: provisioning response had no id.");
+              fallbackToast();
             }
           } catch (fbErr) {
             console.error("Failed to apply fallback forward number (non-fatal):", fbErr);
+            fallbackToast();
           }
         }
       }
@@ -813,6 +840,7 @@ export default function OnboardingPage() {
                   businessInfo={{
                     businessName: data.businessName,
                     industry: data.industry,
+                    country: data.country,
                   }}
                   scrapedCustomInstructions={data.scrapedCustomInstructions}
                   onChange={(updates) => updateData(updates)}

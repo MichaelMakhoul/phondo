@@ -2,7 +2,11 @@
 
 import { useState, useRef, useCallback, useEffect } from "react";
 import { mulawToAudioBuffer } from "./mulaw";
-import { trackTestCallStarted, trackTestCallCompleted } from "@/lib/analytics";
+import {
+  trackTestCallStarted,
+  trackTestCallCompleted,
+  trackTestCallMicGateBypassed,
+} from "@/lib/analytics";
 
 export interface TranscriptMessage {
   role: "assistant" | "user";
@@ -45,6 +49,10 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody, trackingSource 
   const scheduledSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
   const nextStartTimeRef = useRef(0);
   const callStartTimeRef = useRef<number | null>(null);
+  // Bumped on every flush. Decoding a chunk is async, so a chunk that arrived
+  // just before a barge-in can finish decoding *after* flushPlayback() and would
+  // otherwise schedule a stale blip of pre-interrupt audio.
+  const playbackGenerationRef = useRef(0);
 
   const enqueueAudio = useCallback((buffer: AudioBuffer) => {
     const ctx = audioContextRef.current;
@@ -85,6 +93,7 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody, trackingSource 
     });
     scheduledSourcesRef.current.clear();
     nextStartTimeRef.current = 0;
+    playbackGenerationRef.current += 1;
   }, []);
 
   const start = useCallback(async () => {
@@ -133,6 +142,17 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody, trackingSource 
       const workletNode = new AudioWorkletNode(ctx, "mulaw-encoder-processor");
       workletNodeRef.current = workletNode;
 
+      // Registered before the node is connected — once audio flows the processor
+      // can throw, and a throw stops it permanently: the caller's mic goes dead
+      // mid-call with no other signal. Surface it and tear the call down, so the
+      // browser's recording indicator and the server session don't outlive it.
+      workletNode.onprocessorerror = () => {
+        console.error("[VoiceTest] Mic processor crashed");
+        setError("Microphone stopped working. Please restart the call.");
+        updateStatus("error");
+        cleanup();
+      };
+
       const sourceNode = ctx.createMediaStreamSource(stream);
       sourceNodeRef.current = sourceNode;
       sourceNode.connect(workletNode);
@@ -142,17 +162,47 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody, trackingSource 
       const ws = new WebSocket(`${wsUrl}?token=${encodeURIComponent(token)}`);
       wsRef.current = ws;
 
-      // Forward mulaw audio from worklet to WebSocket
+      // Forward mulaw audio from worklet to WebSocket. The worklet also posts
+      // plain-object gate diagnostics, which must never be sent as audio.
       workletNode.port.onmessage = (event: MessageEvent) => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(event.data as Uint8Array);
+        const payload = event.data;
+        // ArrayBuffer.isView, not `instanceof Uint8Array`: the worklet runs in
+        // its own realm, and while postMessage structured-clones into ours, an
+        // identity check on the constructor is the kind of thing that fails
+        // silently — and failing here means the caller's mic goes nowhere.
+        if (ArrayBuffer.isView(payload)) {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(payload);
+          }
+          return;
+        }
+        if (payload?.type === "gate") {
+          // The mic gate can only mute a caller by mis-calibrating; log both the
+          // healthy first-open and the self-healing bypass so a "the AI can't
+          // hear me" report is diagnosable rather than invisible.
+          if (payload.event === "bypass") {
+            console.warn(
+              `[VoiceTest] Mic gate bypassed (mis-calibrated): peak=${payload.rms?.toFixed(4)} floor=${payload.floor?.toFixed(4)}`
+            );
+            // A console warning lives in the prospect's devtools, where nobody
+            // on this team will ever read it.
+            trackTestCallMicGateBypassed(trackingSource, payload.rms ?? 0, payload.floor ?? 0);
+          } else {
+            console.info(
+              `[VoiceTest] Mic gate opened: rms=${payload.rms?.toFixed(4)} floor=${payload.floor?.toFixed(4)}`
+            );
+          }
         }
       };
 
       ws.onmessage = (event: MessageEvent) => {
         if (event.data instanceof Blob) {
           // Binary audio data — decode mulaw and play
+          const generation = playbackGenerationRef.current;
           event.data.arrayBuffer().then((ab) => {
+            // A barge-in ("clear") landed while this chunk was decoding — it is
+            // pre-interrupt audio and must not be scheduled.
+            if (generation !== playbackGenerationRef.current) return;
             const mulawData = new Uint8Array(ab);
             if (mulawData.length > 0 && audioContextRef.current) {
               const audioBuffer = mulawToAudioBuffer(mulawData, audioContextRef.current);
@@ -200,6 +250,12 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody, trackingSource 
 
           case "speaking":
             setIsAssistantSpeaking(msg.speaking);
+            // The mic gate must not mistake the echo of our own voice for a
+            // caller it is wrongly muting.
+            workletNode.port.postMessage({
+              type: "assistant-speaking",
+              speaking: msg.speaking,
+            });
             break;
 
           case "ended": {

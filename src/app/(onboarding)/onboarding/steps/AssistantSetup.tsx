@@ -21,6 +21,8 @@ interface AssistantSetupProps {
   businessInfo: {
     businessName: string;
     industry: string;
+    /** Org ISO country code — selects the emergency number in the generated prompt. */
+    country?: string;
   };
   scrapedCustomInstructions?: string;
   onChange: (data: Partial<AssistantSetupProps["data"]>) => void;
@@ -45,6 +47,7 @@ export function AssistantSetup({ data, businessInfo, scrapedCustomInstructions, 
       const generated = buildPromptFromConfig(defaultConfig, {
         businessName: businessInfo.businessName || "{business_name}",
         industry: businessInfo.industry,
+        country: businessInfo.country,
       });
       const greeting = generateGreeting(defaultConfig.tone, businessInfo.businessName);
 
@@ -68,6 +71,7 @@ export function AssistantSetup({ data, businessInfo, scrapedCustomInstructions, 
       const generated = buildPromptFromConfig(config, {
         businessName: businessInfo.businessName || "{business_name}",
         industry: businessInfo.industry,
+        country: businessInfo.country,
       });
       onChange({ systemPrompt: generated, promptConfig: config });
     }
@@ -104,6 +108,7 @@ export function AssistantSetup({ data, businessInfo, scrapedCustomInstructions, 
         businessName={businessInfo.businessName || ""}
         systemPrompt={data.systemPrompt}
         firstMessage={data.firstMessage}
+        country={businessInfo.country}
         onChange={handlePromptBuilderChange}
         variant="onboarding"
       />

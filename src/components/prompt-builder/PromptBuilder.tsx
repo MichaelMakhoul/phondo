@@ -17,6 +17,8 @@ interface PromptBuilderProps {
   businessName: string;
   systemPrompt: string;
   firstMessage: string;
+  /** Org ISO country code — selects the emergency number in guidance (AU "000", else "911"). */
+  country?: string;
   onChange: (updates: {
     systemPrompt: string;
     firstMessage: string;
@@ -31,6 +33,7 @@ export function PromptBuilder({
   businessName,
   systemPrompt,
   firstMessage,
+  country,
   onChange,
   variant = "onboarding",
 }: PromptBuilderProps) {
@@ -73,6 +76,7 @@ export function PromptBuilder({
       const generated = buildPromptFromConfig(cfg, {
         businessName: businessName || "{business_name}",
         industry,
+        country,
       });
 
       onChange({
@@ -81,7 +85,7 @@ export function PromptBuilder({
         promptConfig: cfg,
       });
     },
-    [businessName, industry, firstMessage, manualPrompt, onChange]
+    [businessName, industry, country, firstMessage, manualPrompt, onChange]
   );
 
   const updateFields = (fields: CollectionField[]) => {
@@ -107,6 +111,7 @@ export function PromptBuilder({
     const generated = buildPromptFromConfig(updated, {
       businessName: businessName || "{business_name}",
       industry,
+      country,
     });
     const greeting = generateGreeting(tone, businessName);
 
