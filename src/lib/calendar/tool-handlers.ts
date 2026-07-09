@@ -887,7 +887,15 @@ export async function handleBookAppointment(
   // Kept OUT of `args` (which is populated from the LLM tool-call payload) so
   // the model can never claim a freshly-supplied ref is "carried" to bypass the
   // is_active gate — the isolation is structural, not comment-enforced.
-  internal?: { carriedRefs?: { service_type?: boolean; practitioner?: boolean } }
+  // SCRUM-514: `callId` is the voice server's `calls.id` for THIS call. It is a
+  // trusted, model-inaccessible field (the internal route reads it from the
+  // request envelope, never from the tool arguments) and is what makes a
+  // re-booking recognisable as the caller's own rather than someone else's.
+  internal?: {
+    carriedRefs?: { service_type?: boolean; practitioner?: boolean };
+    callId?: string;
+    rescheduleLeg?: boolean;
+  }
 ): Promise<ToolResult> {
   const { datetime, phone, email, notes, service_type_id } = args;
 
@@ -1109,7 +1117,7 @@ export async function handleBookAppointment(
       firstName,
       lastName,
       args.practitioner_id || undefined,
-      internal?.carriedRefs
+      internal
     );
   }
 
@@ -1142,7 +1150,7 @@ export async function handleBookAppointment(
     firstName,
     lastName,
     args.practitioner_id || undefined,
-    internal?.carriedRefs
+    internal
   );
 }
 
@@ -1818,7 +1826,9 @@ export async function handleRescheduleAppointment(
     service_type_id?: string;
     practitioner_id?: string;
   },
-  trusted?: TrustedCallContext
+  trusted?: TrustedCallContext,
+  // SCRUM-514: INTERNAL-ONLY, from the request envelope — never from `args`.
+  internal?: { callId?: string }
 ): Promise<ToolResult> {
   const { phone, confirmation_code, new_datetime } = args;
 
@@ -2048,7 +2058,10 @@ export async function handleRescheduleAppointment(
     const bookResult = await handleBookAppointment(
       organizationId,
       { datetime: new_datetime, ...rescheduledBooking },
-      { carriedRefs: carried_refs }
+      // SCRUM-514: the new row belongs to this call too. Without the linkage a
+      // later book_appointment colliding with a slot we just rescheduled into
+      // isn't recognisable as the caller's own, and they get told it failed.
+      { carriedRefs: carried_refs, callId: internal?.callId, rescheduleLeg: true }
     );
 
     if (!bookResult.success) {
@@ -2365,6 +2378,67 @@ async function checkAvailabilityViaCal(
 
 // ─── Built-in booking helper ────────────────────────────────────────────────
 
+/** Case- and punctuation-insensitive given name, for comparing attendees. */
+function normalizeGivenName(name: string | null | undefined): string {
+  return (name || "").trim().toLowerCase().replace(/[^\p{L}]/gu, "");
+}
+
+/**
+ * SCRUM-514: find a live appointment created by THIS call, for the SAME person,
+ * that overlaps the requested window.
+ *
+ * Used only after the DB's exclusion constraint has already rejected an insert,
+ * to tell "the caller is colliding with the booking they made thirty seconds
+ * ago" apart from "somebody else has that slot".
+ *
+ * Two scopings, both load-bearing:
+ *   - `call_id`. Any looser match would hand a caller a stranger's confirmation
+ *     code for any slot whose attendee and time they could guess.
+ *   - the given name. `no_overlapping_appointments` is org-wide for bookings
+ *     with no practitioner, so "book me at 2, and my husband at 2" collides
+ *     within a single call. Returning her booking as his would be worse than
+ *     the honest "that slot is taken". Surnames are compared loosely — the bug
+ *     that started this was the model respelling one between two tool calls.
+ */
+async function findOverlappingBookingFromCall(
+  supabase: ReturnType<typeof createAdminClient>,
+  organizationId: string,
+  callId: string,
+  givenName: string,
+  startDate: Date,
+  endDate: Date
+): Promise<{ id: string; confirmation_code: string; start_time: string } | null> {
+  const { data, error } = await (supabase as any)
+    .from("appointments")
+    .select("id, confirmation_code, start_time, attendee_first_name, attendee_name")
+    .eq("organization_id", organizationId)
+    .eq("call_id", callId)
+    .in("status", ["confirmed", "pending"])
+    .lt("start_time", endDate.toISOString())
+    .gt("end_time", startDate.toISOString())
+    .order("start_time", { ascending: true })
+    .limit(5);
+
+  if (error) {
+    // Fail toward "slot taken": never invent a confirmation we can't see.
+    console.error("[Booking] Self-conflict lookup failed:", error);
+    Sentry.withScope((scope) => {
+      scope.setExtras({ organizationId, callId, code: error.code });
+      Sentry.captureException(new Error(`Booking: self-conflict lookup failed (${error.code ?? "no code"})`));
+    });
+    return null;
+  }
+
+  const want = normalizeGivenName(givenName);
+  if (!want) return null;
+
+  const match = (data || []).find((row: { attendee_first_name?: string; attendee_name?: string }) => {
+    const rowFirst = row.attendee_first_name || (row.attendee_name || "").split(" ")[0];
+    return normalizeGivenName(rowFirst) === want;
+  });
+  return match ?? null;
+}
+
 async function bookInternal(
   organizationId: string,
   datetime: string,
@@ -2377,11 +2451,32 @@ async function bookInternal(
   firstNameOverride?: string,
   lastNameOverride?: string,
   requestedPractitionerId?: string,
-  // SCRUM-444 review: refs carried over from an existing booking by a reschedule
-  // (vs supplied by the caller) — see handleBookAppointment's internal param.
-  carriedRefs?: { service_type?: boolean; practitioner?: boolean }
+  internal?: {
+    // SCRUM-444 review: refs carried over from an existing booking by a
+    // reschedule (vs supplied by the caller) — see handleBookAppointment.
+    carriedRefs?: { service_type?: boolean; practitioner?: boolean };
+    // SCRUM-514: trusted `calls.id` for this call; links the row and makes a
+    // caller's own re-booking of the same slot recognisable.
+    callId?: string;
+    // This insert is the "book the new slot" half of a reschedule. Only used to
+    // keep the self-overlap message from telling a caller who asked to move an
+    // appointment that they could move it.
+    rescheduleLeg?: boolean;
+  }
 ): Promise<ToolResult> {
   const supabase = createAdminClient();
+  const carriedRefs = internal?.carriedRefs;
+  const callId = internal?.callId;
+
+  // `call_id` is a uuid column. A malformed value would fail the INSERT itself
+  // (22P02) and cost the caller a real booking — a far worse trade than losing
+  // the linkage. Drop it instead, loudly: only a broken voice server can send
+  // one, and we want to hear about it.
+  const linkedCallId = callId && isValidUUID(callId) ? callId : undefined;
+  if (callId && !linkedCallId) {
+    console.error(`[Booking] Ignoring malformed callId — booking will not be linked to its call`);
+    Sentry.captureException(new Error("Booking: malformed callId from the voice server"));
+  }
 
   // 0. SCRUM-425 (finding #43): service_type_id / practitioner_id are
   // LLM/caller-supplied — verify both belong to THIS organization before any
@@ -2658,6 +2753,7 @@ async function bookInternal(
         notes: sanitizedNotes,
         confirmation_code: confirmationCode,
         metadata: { source: "ai_receptionist" },
+        ...(linkedCallId && { call_id: linkedCallId }),
         ...(serviceTypeId && { service_type_id: serviceTypeId }),
         ...(assignedPractitionerId && { practitioner_id: assignedPractitionerId }),
       })
@@ -2675,6 +2771,71 @@ async function bookInternal(
     }
     // Exclusion constraint violation = overlapping appointment
     if (dbError.code === "23P01") {
+      // SCRUM-514: the appointment we collided with may be one THIS CALL just
+      // made. A model that re-issues book_appointment (a retry, or the same
+      // slot with the caller's name spelled differently) would otherwise be
+      // told the slot is gone — and tell the caller their booking failed while
+      // a confirmed booking sits in the DB. That was the worst outcome we
+      // shipped: the caller hangs up believing they have no appointment.
+      //
+      // Only a row created by this same call can be returned. Matching on
+      // attendee details instead would hand a caller someone else's
+      // confirmation code for any slot they could guess the name and time of.
+      const own = linkedCallId
+        ? await findOverlappingBookingFromCall(
+            supabase,
+            organizationId,
+            linkedCallId,
+            firstNameOverride || sanitizedName.split(" ")[0],
+            startDate,
+            endDate
+          )
+        : null;
+
+      if (own) {
+        const timezone = schedule?.timezone || "Australia/Sydney";
+        const { dateStr, timeStr } = formatDateTimeForVoice(new Date(own.start_time), timezone);
+
+        // Same slot: the model asked twice. Report the booking it already has.
+        // No notification — the original booking already sent one.
+        //
+        // Compared as instants, never as strings: PostgREST serialises
+        // timestamptz as "…T00:00:00+00:00" while toISOString() emits
+        // "…T00:00:00.000Z". String equality here would never match, the
+        // duplicate would fall through to the overlap branch, and the bug this
+        // whole change exists to fix would survive it.
+        if (new Date(own.start_time).getTime() === startDate.getTime()) {
+          console.warn(
+            `[Booking] Duplicate book_appointment in call ${callId} — returning existing appointment ${own.id}`
+          );
+          const practitionerNote = assignedPractitionerName ? ` with ${assignedPractitionerName}` : "";
+          return {
+            success: true,
+            message: `Your appointment is already confirmed for ${dateStr} at ${timeStr}${practitionerNote}. Is there anything else I can help you with?`,
+            data: {
+              appointmentId: own.id,
+              confirmationCode: own.confirmation_code,
+              startTime: startDate.toISOString(),
+              endTime: endDate.toISOString(),
+              duplicate: true,
+            },
+          };
+        }
+
+        // Different but overlapping slot: they are colliding with themselves.
+        // "That time is no longer available" would be baffling.
+        //
+        // On a reschedule leg the caller is ALREADY asking to move it, so
+        // offering to move it would send the model straight back round the
+        // loop. Ask for a time that doesn't overlap instead.
+        return {
+          success: false,
+          message: internal?.rescheduleLeg
+            ? `That overlaps the appointment you're moving, which is at ${timeStr} on ${dateStr}. What time would you like instead?`
+            : `You already have an appointment booked for ${dateStr} at ${timeStr}, which overlaps that time. Would you like me to move it instead?`,
+        };
+      }
+
       return {
         success: false,
         message:

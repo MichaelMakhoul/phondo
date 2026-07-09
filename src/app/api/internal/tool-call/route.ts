@@ -173,18 +173,25 @@ export async function POST(request: Request) {
         break;
 
       case "book_appointment":
-        result = await handleBookAppointment(organizationId, {
-          datetime: parsedArgs.datetime,
-          // Support both old (name) and new (first_name + last_name) formats
-          name: parsedArgs.name,
-          first_name: parsedArgs.first_name,
-          last_name: parsedArgs.last_name,
-          phone: parsedArgs.phone,
-          email: parsedArgs.email,
-          notes: parsedArgs.notes,
-          service_type_id: parsedArgs.service_type_id,
-          practitioner_id: parsedArgs.practitioner_id,
-        });
+        result = await handleBookAppointment(
+          organizationId,
+          {
+            datetime: parsedArgs.datetime,
+            // Support both old (name) and new (first_name + last_name) formats
+            name: parsedArgs.name,
+            first_name: parsedArgs.first_name,
+            last_name: parsedArgs.last_name,
+            phone: parsedArgs.phone,
+            email: parsedArgs.email,
+            notes: parsedArgs.notes,
+            service_type_id: parsedArgs.service_type_id,
+            practitioner_id: parsedArgs.practitioner_id,
+          },
+          // SCRUM-514: from the request envelope, never from `arguments` — the
+          // model must not be able to claim another call's id and be handed
+          // that call's confirmation code.
+          isProductionCall ? { callId: payload.callId } : undefined
+        );
         break;
 
       case "list_service_types": {
@@ -242,7 +249,10 @@ export async function POST(request: Request) {
             service_type_id: parsedArgs.service_type_id,
             practitioner_id: parsedArgs.practitioner_id,
           },
-          trustedForMutation
+          trustedForMutation,
+          // SCRUM-514: the rescheduled booking is created by THIS call, so it
+          // needs the same linkage a direct booking gets.
+          isProductionCall ? { callId: payload.callId } : undefined
         );
         break;
 
