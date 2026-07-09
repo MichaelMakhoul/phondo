@@ -12,10 +12,12 @@ import {
 } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/components/ui/use-toast";
-import { Copy, Check, PhoneCall } from "lucide-react";
+import { Copy, Check, PhoneCall, Smartphone } from "lucide-react";
 import { getCarriersForCountry } from "@/lib/country-config";
+import { formatPhoneNumber } from "@/lib/utils";
 import {
   buildForwardingCodes,
+  resolveForwardingCountry,
   telHref,
   FORWARDING_MODE_LABELS,
   type ForwardingMode,
@@ -37,8 +39,11 @@ interface ForwardingInstructionsProps {
  * this number" and left the owner to work out how, which is the single step
  * between finishing setup and the product doing anything at all.
  *
- * The carrier defaults to "Other", whose codes are the ones most networks
- * share, so the card is useful before the owner touches the picker.
+ * The carrier is deliberately NOT defaulted. "Other" carries the codes most
+ * networks share, but Vodafone AU documents the double-star form (`**21*`)
+ * where that shared set uses `*21*`. A Vodafone customer who never opened the
+ * picker would be handed a code their network rejects and — with no verify step
+ * on this screen — would not find out until a caller went unanswered.
  */
 export function ForwardingInstructions({
   destinationPhone,
@@ -46,16 +51,21 @@ export function ForwardingInstructions({
   className,
 }: ForwardingInstructionsProps) {
   const { toast } = useToast();
-  const carriers = getCarriersForCountry(countryCode);
-  // "Other" carries the widely-shared codes, so it is the safest default.
-  const fallbackCarrierId = carriers.find((c) => c.id === "other")?.id ?? carriers[0]?.id ?? "";
-  const [carrierId, setCarrierId] = useState(fallbackCarrierId);
+  const [carrierId, setCarrierId] = useState("");
   const [copiedText, setCopiedText] = useState<string | null>(null);
 
-  const carrier = carriers.find((c) => c.id === carrierId) ?? carriers[0];
+  // The number's own calling code beats the passed country, which both call
+  // sites default to "US". Showing an Australian number Verizon's codes would
+  // be silently, confidently wrong.
+  const country = resolveForwardingCountry(destinationPhone, countryCode);
+  const carriers = country ? getCarriersForCountry(country) : [];
+  const carrier = carriers.find((c) => c.id === carrierId);
 
-  // A country with no carrier table would render an empty, confusing card.
-  if (!carrier || !destinationPhone) return null;
+  // No country means no dialing rules we can vouch for. Show nothing rather
+  // than another country's codes.
+  if (!country || carriers.length === 0 || !destinationPhone) return null;
+
+  const formattedDestination = formatPhoneNumber(destinationPhone, country);
 
   const handleCopy = async (text: string) => {
     try {
@@ -71,17 +81,36 @@ export function ForwardingInstructions({
     }
   };
 
-  const renderCodeRow = (label: string, code: string) => {
+  /**
+   * One dial code. The `tel:` link pre-fills the handset's dialer; it does not
+   * place the call, and no phone auto-sends an MMI code from a link. It is
+   * hidden above the mobile breakpoint because tapping it on a laptop would
+   * dial the laptop, not the phone being forwarded.
+   */
+  const renderCodeRow = (label: string, code: string, subdued = false) => {
     const href = telHref(code);
     return (
       <div className="space-y-1.5">
-        <Label className="text-xs font-medium text-muted-foreground">{label}</Label>
+        <Label
+          className={`text-xs font-medium ${subdued ? "text-muted-foreground/80" : "text-muted-foreground"}`}
+        >
+          {label}
+        </Label>
         <div className="flex items-center gap-2">
-          <code className="flex-1 rounded-md bg-muted px-3 py-2 font-mono text-sm break-all">
+          <code
+            className={`flex-1 break-all rounded-md bg-muted px-3 py-2 font-mono ${
+              subdued ? "text-xs text-muted-foreground" : "text-sm"
+            }`}
+          >
             {code}
           </code>
           {href && (
-            <Button asChild variant="default" size="sm" className="h-8 shrink-0 sm:hidden">
+            <Button
+              asChild
+              variant={subdued ? "ghost" : "default"}
+              size="sm"
+              className="h-8 shrink-0 sm:hidden"
+            >
               <a href={href} aria-label={`Dial ${code}`}>
                 <PhoneCall className="mr-1.5 h-3.5 w-3.5" />
                 Dial
@@ -107,17 +136,39 @@ export function ForwardingInstructions({
   };
 
   const renderMode = (mode: ForwardingMode) => {
-    const { enable, disable, note } = buildForwardingCodes(
-      carrier,
-      mode,
-      destinationPhone,
-      countryCode
-    );
+    if (!carrier) return null;
+    const { enable, disable, note } = buildForwardingCodes(carrier, mode, destinationPhone, country);
     return (
       <div className="space-y-3">
         <p className="text-sm text-muted-foreground">{FORWARDING_MODE_LABELS[mode].blurb}</p>
-        {renderCodeRow("To turn forwarding on, dial:", enable)}
-        {renderCodeRow("To turn it off again later:", disable)}
+
+        {/* The destination is buried inside the code string. Show it plainly so
+            the owner can check where calls will land before dialing anything. */}
+        <p className="text-xs text-muted-foreground">
+          Forwards calls to{" "}
+          <span className="font-medium text-foreground">{formattedDestination}</span>
+        </p>
+
+        {renderCodeRow("On the phone you want forwarded, dial:", enable)}
+
+        {mode === "unconditional" && (
+          <div className="rounded-md bg-blue-50 p-3 text-xs text-blue-900 dark:bg-blue-950/30 dark:text-blue-100">
+            <p className="font-medium">Before you forward every call</p>
+            <p className="mt-1">
+              When a caller asks for a person, your AI transfers them back to this same
+              phone, which forwards straight back to the AI. Either choose &quot;
+              {FORWARDING_MODE_LABELS.conditional.title}&quot; instead, or set a different
+              transfer destination in Settings first.
+            </p>
+          </div>
+        )}
+
+        {/* Kept visible — an owner evaluating us wants to see the way out before
+            they commit — but subordinated, so a hurried one does not dial it. */}
+        <div className="rounded-md border border-dashed p-3">
+          {renderCodeRow("Need to undo this later? Dial:", disable, true)}
+        </div>
+
         <p className="text-xs text-muted-foreground">{note}</p>
       </div>
     );
@@ -150,24 +201,48 @@ export function ForwardingInstructions({
               ))}
             </SelectContent>
           </Select>
+          <p className="text-xs text-muted-foreground">
+            Codes differ by network, so pick yours. Not sure? Choose &quot;Other&quot; for the
+            codes most carriers share.
+          </p>
         </div>
 
-        <Tabs defaultValue="conditional">
-          <TabsList className="w-full">
-            <TabsTrigger value="conditional" className="flex-1">
-              {FORWARDING_MODE_LABELS.conditional.title}
-            </TabsTrigger>
-            <TabsTrigger value="unconditional" className="flex-1">
-              {FORWARDING_MODE_LABELS.unconditional.title}
-            </TabsTrigger>
-          </TabsList>
-          <TabsContent value="conditional" className="mt-3">
-            {renderMode("conditional")}
-          </TabsContent>
-          <TabsContent value="unconditional" className="mt-3">
-            {renderMode("unconditional")}
-          </TabsContent>
-        </Tabs>
+        {!carrier ? (
+          <p className="rounded-md bg-muted/50 px-3 py-4 text-center text-xs text-muted-foreground">
+            Choose your carrier above to see your forwarding code.
+          </p>
+        ) : (
+          <>
+            <Tabs defaultValue="conditional">
+              <TabsList className="w-full">
+                <TabsTrigger value="conditional" className="flex-1">
+                  {FORWARDING_MODE_LABELS.conditional.title}
+                </TabsTrigger>
+                <TabsTrigger value="unconditional" className="flex-1">
+                  {FORWARDING_MODE_LABELS.unconditional.title}
+                </TabsTrigger>
+              </TabsList>
+              <TabsContent value="conditional" className="mt-3">
+                {renderMode("conditional")}
+              </TabsContent>
+              <TabsContent value="unconditional" className="mt-3">
+                {renderMode("unconditional")}
+              </TabsContent>
+            </Tabs>
+
+            {/* The Dial button exists only on a handset. On a laptop the code has
+                to reach the phone somehow, and saying so beats a Copy button that
+                quietly copies to the wrong device. */}
+            <div className="flex gap-2 rounded-md bg-muted/50 p-3 text-xs text-muted-foreground">
+              <Smartphone className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <p>
+                Dial the code on the phone you are forwarding, not on this computer. If that
+                line runs through a hosted phone system or VoIP provider, set forwarding in
+                their portal instead.
+              </p>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

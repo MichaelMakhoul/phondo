@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   toNationalDialable,
   buildForwardingCodes,
+  resolveForwardingCountry,
   telHref,
   FORWARDING_MODE_LABELS,
 } from "../forwarding";
@@ -41,6 +42,54 @@ describe("toNationalDialable", () => {
     expect(toNationalDialable("12345", "AU")).toBe("12345");
     expect(toNationalDialable("", "AU")).toBe("");
     expect(toNationalDialable(null as unknown as string, "AU")).toBe("");
+  });
+});
+
+describe("resolveForwardingCountry", () => {
+  it("believes the number's own calling code over the passed country", () => {
+    // The phone-numbers page silently leaves countryCode at "US" when the
+    // organizations row fails to load. Trusting it would hand an Australian
+    // number the US rules and rebuild the exact bug this module exists to fix.
+    expect(resolveForwardingCountry("+61285551234", "US")).toBe("AU");
+    expect(resolveForwardingCountry("+15551234567", "AU")).toBe("US");
+  });
+
+  it("does not read a country out of bare digits", () => {
+    // "6125551234" is a Minneapolis number, and it starts with Australia's
+    // calling code. Only a leading "+" makes the digits E.164.
+    expect(resolveForwardingCountry("6125551234", "US")).toBe("US");
+    expect(resolveForwardingCountry("0285551234", "AU")).toBe("AU");
+  });
+
+  it("returns null for an E.164 number from a country we have no rules for", () => {
+    // Better to show no code than New Zealand's number with America's codes.
+    expect(resolveForwardingCountry("+6421234567", "US")).toBeNull();
+    expect(resolveForwardingCountry("+33123456789", "AU")).toBeNull();
+  });
+
+  it("returns null when neither the number nor the country tells us anything", () => {
+    expect(resolveForwardingCountry("0285551234", "")).toBeNull();
+    expect(resolveForwardingCountry("0285551234", "NZ")).toBeNull();
+    expect(resolveForwardingCountry("", "")).toBeNull();
+  });
+});
+
+describe("toNationalDialable — a wrong country must not resurrect the bug", () => {
+  it("still dials an AU number correctly when told the org is American", () => {
+    // Without this, digits fall through the US branch untouched and come back
+    // as "61285551234" — the unroutable string the whole module exists to kill.
+    expect(toNationalDialable("+61285551234", "US")).toBe("0285551234");
+  });
+
+  it("still dials a US number correctly when told the org is Australian", () => {
+    expect(toNationalDialable("+15551234567", "AU")).toBe("5551234567");
+  });
+
+  it("produces the AU carrier codes for an AU number under a US country", () => {
+    const telstra = getCarriersForCountry("AU").find((c) => c.id === "telstra")!;
+    const codes = buildForwardingCodes(telstra, "unconditional", "+61285551234", "US");
+    expect(codes.enable).toBe("*21*0285551234#");
+    expect(codes.enable).not.toContain("61285551234");
   });
 });
 

@@ -1,4 +1,11 @@
-import { getCountryConfig, formatInstructions, type CarrierInfo, type CountryCode } from "./index";
+import {
+  getCountryConfig,
+  getCountryForCallingCode,
+  formatInstructions,
+  SUPPORTED_COUNTRIES,
+  type CarrierInfo,
+  type CountryCode,
+} from "./index";
 
 /**
  * SCRUM-516: build the call-forwarding dial codes a customer actually types
@@ -30,6 +37,41 @@ export interface ForwardingCodes {
 }
 
 /**
+ * Which country's dialing rules apply to this destination.
+ *
+ * The passed `countryCode` is a side channel and can be wrong: the phone-numbers
+ * page silently leaves it at "US" when the organizations row fails to load, and
+ * both call sites default it. Handing an Australian number the US rules
+ * reproduces the exact bug this module exists to fix — `+61285551234` falls
+ * through the US branch untouched and comes back as the unroutable
+ * `61285551234` — while `getCarriersForCountry("US")` shows Verizon codes. The
+ * carrier plays its tone; nobody finds out.
+ *
+ * A leading "+" means E.164, and an E.164 number states its own country. Trust
+ * that over the side channel. Only a leading "+" counts: the US number
+ * `6125551234` (a Minneapolis area code) starts with Australia's calling code,
+ * so digits alone cannot be read as a country.
+ *
+ * Returns null when the country cannot be established, so callers can decline to
+ * show a code rather than show a confidently wrong one.
+ */
+export function resolveForwardingCountry(
+  phone: string,
+  countryCode: CountryCode | string
+): CountryCode | null {
+  const raw = String(phone || "").trim();
+  if (raw.startsWith("+")) {
+    // An E.164 number we cannot place is NOT silently handed to another
+    // country's rules. We'd rather show nothing.
+    return getCountryForCallingCode(raw.replace(/\D/g, ""));
+  }
+  const normalized = String(countryCode || "").toUpperCase();
+  return SUPPORTED_COUNTRIES.some((c) => c.code === normalized)
+    ? (normalized as CountryCode)
+    : null;
+}
+
+/**
  * Render an E.164 number in the national form a handset can dial.
  *
  * AU: "+61285551234" → "0285551234" (drop the calling code, restore the "0"
@@ -44,7 +86,9 @@ export function toNationalDialable(phone: string, countryCode: CountryCode | str
   const digits = String(phone || "").replace(/\D/g, "");
   if (!digits) return "";
 
-  const config = getCountryConfig(countryCode);
+  // The number's own calling code beats the side channel. See above.
+  const resolved = resolveForwardingCountry(phone, countryCode);
+  const config = getCountryConfig(resolved ?? countryCode);
   const callingCode = config.phone.countryCallingCode;
 
   if (config.code === "AU") {
