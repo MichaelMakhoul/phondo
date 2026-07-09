@@ -605,6 +605,10 @@ async function executeToolCall(functionName, args, context) {
  * `isValidPhoneNumber` reject ("I didn't catch that number"), which is more
  * confusing than letting the model ask for a number.
  *
+ * Substitutes when the model omits `phone`, sends an empty one, or sends one
+ * that could not be dialed ("0.5", a number spelled out in words). See
+ * `isDialablePhoneArg`.
+ *
  * @param {string} functionName
  * @param {object} args - parsed LLM arguments
  * @param {string|undefined} callerPhone - caller ID number, if known
@@ -613,10 +617,38 @@ async function executeToolCall(functionName, args, context) {
 function applyCallerIdPhoneFallback(functionName, args, callerPhone) {
   if (functionName !== "book_appointment" && functionName !== "reschedule_appointment") return args;
   if (!isDialableCallerId(callerPhone)) return args; // unknown / withheld / SIP
-  const hasPhone =
-    args && typeof args.phone === "string" && args.phone.trim() !== "";
-  if (hasPhone) return args;
+  // SCRUM-518: a NON-EMPTY phone is not the same as a USABLE one. A real call
+  // captured `phone: "0.5"`, which is non-empty, so the fallback stood down and
+  // the handler rejected it — the AI asked a caller for a number it was already
+  // holding. Speech-to-text produces this routinely: a half-heard digit, a
+  // number spelled out in words, a stray "point five". When the model's own
+  // value could not possibly dial, caller ID is strictly better information.
+  const hasUsablePhone = args && isDialablePhoneArg(args.phone);
+  if (hasUsablePhone) return args;
   return { ...(args || {}), phone: callerPhone };
+}
+
+/**
+ * True when a model-supplied `phone` argument could actually be dialed.
+ *
+ * Mirrors `isValidPhoneNumber` (src/lib/security/validation.ts), the check this
+ * value must meet downstream: the same 8–15 digit window as
+ * `isDialableCallerId`, AND the same rejection of an all-same-digit number.
+ *
+ * Any value accepted here but rejected there is one the fallback stands down on
+ * and the handler then refuses — the "0.5" dead-end this ticket exists to close,
+ * wearing a different mask. "00000000" is a real speech-to-text artifact.
+ *
+ * A genuine caller ID is never all-same-digit, so `isDialableCallerId` does not
+ * carry that rule. Only a model-supplied argument needs it.
+ *
+ * @param {unknown} phone
+ * @returns {boolean}
+ */
+function isDialablePhoneArg(phone) {
+  if (typeof phone !== "string") return false;
+  if (/^(\d)\1+$/.test(phone.replace(/\D/g, ""))) return false;
+  return isDialableCallerId(phone);
 }
 
 /**
@@ -1124,6 +1156,7 @@ module.exports = {
   executeToolCall,
   _test: {
     getTransferService, resolveCurrentDatetime, resolveAvailabilityFromCache, applyCallerIdPhoneFallback,
+    isDialablePhoneArg,
     isDialableCallerId, resolveCallerIdFields, resolveCollectedDetailsField,
     CALENDAR_FUNCTIONS, CALENDAR_WRITE_FUNCTIONS,
   },

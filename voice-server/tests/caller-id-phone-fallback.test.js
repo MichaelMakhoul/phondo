@@ -65,3 +65,118 @@ describe("applyCallerIdPhoneFallback (SCRUM-366)", () => {
     assert.equal(applyCallerIdPhoneFallback("book_appointment", null, CALLER).phone, CALLER);
   });
 });
+
+// SCRUM-518: a non-empty phone is not a usable one. A real call captured
+// `phone: "0.5"`; because it was non-empty the fallback stood down, the handler
+// rejected it, and the AI asked the caller for a number it was already holding.
+describe("applyCallerIdPhoneFallback — junk values (SCRUM-518)", () => {
+  const CALLER = "+61414141883";
+
+  it("replaces a phone that could not possibly dial", () => {
+    // Every one of these came out of, or is one keystroke from, a real
+    // speech-to-text failure.
+    for (const junk of ["0.5", "0", "5", ".", "-", "12345", "oh four one two", "N/A", "unknown"]) {
+      const out = applyCallerIdPhoneFallback("book_appointment", { datetime: "x", phone: junk }, CALLER);
+      assert.equal(out.phone, CALLER, `junk: ${JSON.stringify(junk)}`);
+    }
+  });
+
+  it("replaces the withheld-caller sentinel if the model ever echoes it back", () => {
+    const out = applyCallerIdPhoneFallback("book_appointment", { phone: "+266696687" }, CALLER);
+    assert.equal(out.phone, CALLER);
+  });
+
+  it("replaces an all-same-digit number, which isValidPhoneNumber rejects downstream", () => {
+    // Long enough to clear a bare digit-count window, but the booking handler
+    // refuses it. Without this the AI still dead-ends asking for a number it is
+    // already holding — the same bug as "0.5", wearing a different mask.
+    for (const junk of ["00000000", "11111111", "0000000000", "0 0 0 0 0 0 0 0"]) {
+      const out = applyCallerIdPhoneFallback("book_appointment", { phone: junk }, CALLER);
+      assert.equal(out.phone, CALLER, `junk: ${junk}`);
+    }
+  });
+
+  it("replaces a non-string phone rather than passing it downstream", () => {
+    for (const junk of [0.5, null, {}, []]) {
+      const out = applyCallerIdPhoneFallback("book_appointment", { phone: junk }, CALLER);
+      assert.equal(out.phone, CALLER, `junk: ${JSON.stringify(junk)}`);
+    }
+  });
+
+  it("still keeps a real number the caller gave for someone else", () => {
+    // The whole point of the guard is that it fires ONLY on unusable values.
+    for (const real of ["+61399998888", "02 9999 8888", "0299998888", "(02) 9999-8888"]) {
+      const out = applyCallerIdPhoneFallback("book_appointment", { phone: real }, CALLER);
+      assert.equal(out.phone, real, `real: ${real}`);
+    }
+  });
+
+  it("leaves junk alone when there is no caller ID to put in its place", () => {
+    // Overwriting with nothing would book an appointment with no contact number
+    // and never tell anyone. Leaving it lets the handler reject and the AI ask.
+    const args = { datetime: "x", phone: "0.5" };
+    assert.equal(applyCallerIdPhoneFallback("book_appointment", args, undefined).phone, "0.5");
+    assert.equal(applyCallerIdPhoneFallback("book_appointment", args, "anonymous").phone, "0.5");
+  });
+
+  it("does not touch cancel/lookup, where phone is a match key", () => {
+    const out = applyCallerIdPhoneFallback("cancel_appointment", { phone: "0.5" }, CALLER);
+    assert.equal(out.phone, "0.5");
+  });
+
+  it("replaces junk on reschedule too, not only on booking", () => {
+    // Every other junk case above says "book_appointment". Narrowing this check
+    // to booking alone would leave the "0.5" dead-end alive on reschedules,
+    // where the prompts tell the model to identify the appointment by "the same
+    // number" — and the whole suite would stay green while it did.
+    for (const junk of ["0.5", "00000000", "+266696687", "oh four one two"]) {
+      const out = applyCallerIdPhoneFallback(
+        "reschedule_appointment",
+        { new_datetime: "2027-06-17T10:15:00", phone: junk },
+        CALLER
+      );
+      assert.equal(out.phone, CALLER, `junk: ${junk}`);
+    }
+  });
+
+  it("keeps a real number on reschedule, same as on booking", () => {
+    const out = applyCallerIdPhoneFallback(
+      "reschedule_appointment",
+      { new_datetime: "2027-06-17T10:15:00", phone: "+61399998888" },
+      CALLER
+    );
+    assert.equal(out.phone, "+61399998888");
+  });
+});
+
+describe("isDialablePhoneArg (SCRUM-518)", () => {
+  const { isDialablePhoneArg } = _test;
+
+  it("accepts what a phone can dial, in the formats callers say it", () => {
+    for (const ok of ["+61414141883", "0414141883", "02 9999 8888", "(02) 9999-8888", "12345678"]) {
+      assert.equal(isDialablePhoneArg(ok), true, ok);
+    }
+  });
+
+  it("rejects too few digits, too many, and the anonymous sentinel", () => {
+    assert.equal(isDialablePhoneArg("0.5"), false);
+    assert.equal(isDialablePhoneArg("1234567"), false); // 7 digits
+    assert.equal(isDialablePhoneArg("12345678"), true); // 8 digits: the boundary
+    assert.equal(isDialablePhoneArg("123456789012345"), true); // 15 digits
+    assert.equal(isDialablePhoneArg("1234567890123456"), false); // 16 digits
+    assert.equal(isDialablePhoneArg("+266696687"), false);
+  });
+
+  it("rejects an all-same-digit number, matching isValidPhoneNumber", () => {
+    assert.equal(isDialablePhoneArg("00000000"), false);
+    assert.equal(isDialablePhoneArg("999999999999"), false);
+    // Not all the same, so it stands.
+    assert.equal(isDialablePhoneArg("00000001"), true);
+  });
+
+  it("rejects anything that is not a string", () => {
+    for (const bad of [undefined, null, 0.5, 61414141883, {}, []]) {
+      assert.equal(isDialablePhoneArg(bad), false, JSON.stringify(bad));
+    }
+  });
+});
