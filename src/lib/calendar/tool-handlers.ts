@@ -737,6 +737,107 @@ function formatBuiltInAvailabilityForVoice(
   return `On ${dateStr}, I have ${slots.length} available slots — ${parts.join(" and ")}. Would you prefer morning or afternoon?`;
 }
 
+/** Date-only day arithmetic, DST-safe via UTC noon. "2026-07-10" + 1 → "2026-07-11". */
+export function addDaysISO(date: string, days: number): string {
+  const d = new Date(`${date}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * SCRUM-524: what the AI says when a date has NO slots. "No available
+ * appointments" for a day the business is simply CLOSED sounds fully booked
+ * — a caller hears a thriving practice with no room, not "don't come
+ * Sundays" — and the old copy never offered the next real opening either.
+ * Exported for unit testing; the sentence logic is the product decision.
+ */
+export function describeNoSlotsForVoice(opts: {
+  date: string;
+  closed: boolean;
+  timezone: string;
+  /** The first following day with real availability, if one was found.
+   * Callers must not pass empty slots — the composed sentence would claim
+   * availability and then read none (internally guarded before this call). */
+  nextOpen: { date: string; slots: string[] } | null;
+  /** The week could not be CHECKED (a lookahead query failed) — distinct
+   * from "checked and found nothing", whose copy asserts the whole week. */
+  lookaheadFailed?: boolean;
+}): string {
+  const weekday = new Date(`${opts.date}T12:00:00`).toLocaleDateString("en-US", {
+    weekday: "long",
+    timeZone: opts.timezone,
+  });
+  const lead = opts.closed
+    ? `We're closed on ${weekday}s.`
+    : `I'm sorry, ${weekday} is fully booked.`;
+
+  if (opts.nextOpen) {
+    // The formatter's sentence starts "On {date}, I have N available slots…",
+    // which reads naturally after the lead.
+    return `${lead} ${formatBuiltInAvailabilityForVoice(opts.nextOpen.date, opts.nextOpen.slots, opts.timezone)}`;
+  }
+  if (opts.lookaheadFailed) {
+    // We KNOW the answer for the asked date; only the week scan failed.
+    // Never claim "no openings in the following week" about days not checked.
+    return `${lead} Would you like to check a different day?`;
+  }
+  return `${lead} I couldn't find any openings in the following week either. Would you like me to take a message so the team can arrange a time with you?`;
+}
+
+/**
+ * The message for a built-in availability check: real slots, or the honest
+ * no-slots story (closed vs fully booked, plus the next real opening within
+ * a week). The lookahead only queries days the schedule says are OPEN —
+ * closed days are skipped with a pure check, so an all-closed week costs
+ * zero extra queries.
+ */
+export async function builtInAvailabilityMessage(
+  organizationId: string,
+  date: string,
+  schedule: OrgSchedule | null,
+  durationMinutes: number,
+  serviceTypeId?: string
+): Promise<string> {
+  const timezone = schedule?.timezone || "Australia/Sydney";
+  if (!schedule || Object.keys(schedule.businessHours).length === 0) {
+    // No org schedule row, or a NULL/empty business_hours column (the DB
+    // default before the owner configures hours). Every day reads "closed"
+    // for that shape — but the business is merely unconfigured, and telling
+    // its callers "we're closed all week" is a confident false claim. Keep
+    // the old generic copy: we cannot say "closed" truthfully.
+    return "I'm sorry, there are no available appointments on that date. Would you like to check a different day?";
+  }
+  const slots = await getBuiltInAvailability(organizationId, date, schedule, durationMinutes, serviceTypeId);
+  if (slots.length > 0) return formatBuiltInAvailabilityForVoice(date, slots, timezone);
+
+  const closed = getHoursForDate(schedule, date) === null;
+  // The lookahead multiplies DB exposure (up to 7 availability computations).
+  // A throw on day N must not discard the answer we ALREADY have for the
+  // asked date — degrade to the lead sentence, never to the handler's
+  // "trouble checking the calendar".
+  let nextOpen: { date: string; slots: string[] } | null = null;
+  let lookaheadFailed = false;
+  try {
+    for (let i = 1; i <= 7; i++) {
+      const nextDate = addDaysISO(date, i);
+      if (getHoursForDate(schedule, nextDate) === null) continue; // closed — no query
+      const nextSlots = await getBuiltInAvailability(organizationId, nextDate, schedule, durationMinutes, serviceTypeId);
+      if (nextSlots.length > 0) {
+        nextOpen = { date: nextDate, slots: nextSlots };
+        break;
+      }
+    }
+  } catch (error) {
+    console.error("Availability lookahead failed — answering with the asked date only:", {
+      organizationId,
+      date,
+      message: error instanceof Error ? error.message : String(error),
+    });
+    lookaheadFailed = true;
+  }
+  return describeNoSlotsForVoice({ date, closed, timezone, nextOpen, lookaheadFailed });
+}
+
 // ─── Timezone helpers ────────────────────────────────────────────────────────
 
 // Fixed Intl options for offset computation; formatters are memoised per zone
@@ -1238,12 +1339,10 @@ export async function handleCheckAvailability(
     console.log("Using built-in availability (service types configured):", { organizationId, service_type_id });
     try {
       const schedule = await getOrgSchedule(organizationId);
-      const timezone = schedule?.timezone || "Australia/Sydney";
       const durationMinutes = serviceTypeDuration ?? schedule?.defaultAppointmentDuration ?? DEFAULT_SLOT_DURATION_MINUTES;
-      const slots = await getBuiltInAvailability(organizationId, date, schedule, durationMinutes, service_type_id);
       return {
         success: true,
-        message: formatBuiltInAvailabilityForVoice(date, slots, timezone),
+        message: await builtInAvailabilityMessage(organizationId, date, schedule, durationMinutes, service_type_id),
       };
     } catch (error: any) {
       console.error("Built-in availability error:", { organizationId, date, message: error.message, stack: error.stack });
@@ -1266,12 +1365,10 @@ export async function handleCheckAvailability(
   console.log("Using built-in availability (no Cal.com client):", { organizationId });
   try {
     const schedule = await getOrgSchedule(organizationId);
-    const timezone = schedule?.timezone || "Australia/Sydney";
     const durationMinutes = schedule?.defaultAppointmentDuration ?? DEFAULT_SLOT_DURATION_MINUTES;
-    const slots = await getBuiltInAvailability(organizationId, date, schedule, durationMinutes);
     return {
       success: true,
-      message: formatBuiltInAvailabilityForVoice(date, slots, timezone),
+      message: await builtInAvailabilityMessage(organizationId, date, schedule, durationMinutes),
     };
   } catch (error: any) {
     console.error("Built-in availability error:", { organizationId, date, message: error.message, stack: error.stack });
