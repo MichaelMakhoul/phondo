@@ -69,6 +69,7 @@ async function createCallRecord({ orgId, assistantId, phoneNumberId, callerPhone
  * @param {*} [fields.outcome]
  * @param {*} [fields.cleanedTranscript]
  * @param {*} [fields.actionTaken]
+ * @param {*} [fields.pipelineFailover] - SCRUM-535: {from, to, reason, model} when the fallback provider served the call
  */
 async function completeCallRecord(callId, {
   status,
@@ -89,6 +90,7 @@ async function completeCallRecord(callId, {
   outcome,
   cleanedTranscript,
   actionTaken,
+  pipelineFailover,
 }) {
   const supabase = getSupabase();
 
@@ -120,6 +122,9 @@ async function completeCallRecord(callId, {
     ...(consentReason != null && { consentReason, callerState: callerState ?? null }),
     ...(piiRedacted && { piiRedacted: true }),
     ...(answeredBy && { answeredBy }),
+    // SCRUM-535: queryable record of which calls a Gemini outage touched —
+    // Sentry has the alert, this has the audit trail.
+    ...(pipelineFailover && { pipelineFailover }),
   };
 
   if (Object.keys(metadataExtras).length > 0) {

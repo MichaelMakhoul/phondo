@@ -26,6 +26,7 @@ const { createCallRecord, completeCallRecord, notifyCallCompleted } = require(".
 const { calendarToolDefinitions, listServiceTypesToolDefinition, transferToolDefinition, callbackToolDefinition, endCallToolDefinition, executeToolCall } = require("./services/tool-executor");
 const { createGeminiSession } = require("./services/gemini-live");
 const { createOpenAIRealtimeSession, createGrokRealtimeSession } = require("./services/openai-realtime"); // SCRUM-378 eval spike (OpenAI + Grok share the adapter)
+const { createSessionWithFailover, isFailoverEnabled } = require("./services/gemini-failover"); // SCRUM-535
 const { resolveTestPipeline, KNOWN_TEST_PIPELINES } = require("./lib/pipeline-routing"); // SCRUM-378 per-number test override
 const { handleConversationRelayConnection, buildConversationRelayTwiml } = require("./services/conversationrelay"); // SCRUM-378 eval spike (ConversationRelay + Claude)
 const { validateToolResponse } = require("./services/turn-validator");
@@ -1478,6 +1479,7 @@ wss.on("connection", (twilioWs) => {
           transferAttempt: s.transferAttempt || null,
           callerState: s.callerState || null,
           consentReason: s.consentReason || null,
+          pipelineFailover: s.pipelineFailover || null,
           sentiment: analysis?.sentiment || null,
           piiRedacted,
           cleanedTranscript: analysis?.cleanedTranscript ?? null,
@@ -2110,18 +2112,65 @@ wss.on("connection", (twilioWs) => {
             }
             if (_useOpenAIRealtime) console.log(`[Pipeline] TEST override → openai-realtime for callSid=${callSid}`);
             if (_useGrokRealtime) console.log(`[Pipeline] TEST override → grok-realtime for callSid=${callSid}`);
-            const _sessionFactory = _useOpenAIRealtime
-              ? (cfg, cbs) => createOpenAIRealtimeSession({ ...cfg, voiceName: process.env.OPENAI_REALTIME_VOICE || "marin", language: session.language }, cbs)
-              : _useGrokRealtime
-                ? (cfg, cbs) => createGrokRealtimeSession({ ...cfg, voiceName: process.env.GROK_REALTIME_VOICE || "eve", language: session.language }, cbs)
-                : createGeminiSession;
             // SCRUM-496: the callbacks below are SHARED by every pipeline this
             // factory can produce — label failures with the pipeline that
             // actually ran, in the logs AND in endedReason (which reaches
             // calls.metadata.ended_reason; the email layer maps the code to
             // neutral copy — customers never see it verbatim).
-            const _pipelineLabel = _useOpenAIRealtime ? "openai" : _useGrokRealtime ? "grok" : "gemini";
-            const _pipelineTag = _useOpenAIRealtime ? "OpenAIRealtime" : _useGrokRealtime ? "GrokRealtime" : "GeminiLive";
+            // `let`, not `const`: a SCRUM-535 failover re-labels mid-setup so
+            // a post-failover error is recorded against the provider that
+            // actually failed.
+            let _pipelineLabel = _useOpenAIRealtime ? "openai" : _useGrokRealtime ? "grok" : "gemini";
+            let _pipelineTag = _useOpenAIRealtime ? "OpenAIRealtime" : _useGrokRealtime ? "GrokRealtime" : "GeminiLive";
+            // SCRUM-535: when the primary is Gemini (no A/B override in play),
+            // wrap it so a call whose Gemini session never comes up is served
+            // by OpenAI Realtime instead of apologising and hanging up. The
+            // wrapper only ever fires BEFORE Gemini's setupComplete — the
+            // caller has heard nothing, so the swap is invisible. Disable
+            // with GEMINI_LIVE_FAILOVER=off.
+            const _failoverModel = process.env.OPENAI_REALTIME_MODEL || "gpt-realtime-2.1";
+            const _geminiWithFailover = (cfg, cbs) =>
+              createSessionWithFailover(
+                createGeminiSession,
+                {
+                  enabled: isFailoverEnabled(process.env.GEMINI_LIVE_FAILOVER, !!process.env.OPENAI_API_KEY),
+                  canFailover: () => !!session && !session.callFailed && twilioWs.readyState === WebSocket.OPEN,
+                  fallbackFactory: (c, cb) =>
+                    createOpenAIRealtimeSession(
+                      { ...c, voiceName: process.env.OPENAI_REALTIME_VOICE || "marin", language: session.language },
+                      cb
+                    ),
+                  onFailover: (reason, err) => {
+                    _pipelineLabel = "openai";
+                    _pipelineTag = "OpenAIRealtime(failover)";
+                    console.error(`[Failover] GeminiLive → openai-realtime (${reason}) callSid=${callSid}:`, err?.message);
+                    // Stable construction site + message → one Sentry issue for
+                    // the whole outage. This is the "notify the operator" leg;
+                    // the call-record metadata below is the audit trail.
+                    Sentry.withScope((scope) => {
+                      scope.setTag("failover", "gemini-to-openai");
+                      scope.setExtra("reason", reason);
+                      scope.setExtra("callSid", callSid);
+                      Sentry.captureException(new Error("GeminiLive failover to openai-realtime"));
+                    });
+                    if (session) {
+                      session.pipelineFailover = {
+                        from: "gemini-live",
+                        to: "openai-realtime",
+                        reason,
+                        model: _failoverModel,
+                      };
+                    }
+                  },
+                },
+                cfg,
+                cbs
+              );
+            const _sessionFactory = _useOpenAIRealtime
+              ? (cfg, cbs) => createOpenAIRealtimeSession({ ...cfg, voiceName: process.env.OPENAI_REALTIME_VOICE || "marin", language: session.language }, cbs)
+              : _useGrokRealtime
+                ? (cfg, cbs) => createGrokRealtimeSession({ ...cfg, voiceName: process.env.GROK_REALTIME_VOICE || "eve", language: session.language }, cbs)
+                : _geminiWithFailover;
             session.geminiSession = _sessionFactory(
               {
                 systemPrompt: geminiSystemPrompt,

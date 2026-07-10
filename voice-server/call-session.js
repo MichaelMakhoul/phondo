@@ -29,6 +29,10 @@ class CallSession {
     this.language = "en";
     this.callFailed = false;
     this.endedReason = null;
+    // SCRUM-535: set when the call was served by the fallback realtime
+    // provider because Gemini never completed setup. Shape:
+    // { from, to, reason, model } — persisted into calls.metadata.
+    this.pipelineFailover = null;
     this.recordingDisclosurePlayed = false;
     this.recordingDisclosureFailed = false;
     // SCRUM-424: the disclosure was woven into Gemini's first message but its
