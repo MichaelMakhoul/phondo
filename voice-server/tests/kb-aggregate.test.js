@@ -62,6 +62,36 @@ describe("aggregateKnowledgeBase — owner entries outrank the website import (S
     assert.equal(prompt.includes("certified hybrid service centre"), false);
   });
 
+  it("the FAQ survives the cap through the GUIDED prompt_config path too — the one production uses", () => {
+    // Onboarding-created assistants carry prompt_config, so real calls take
+    // buildPromptFromConfig, not the {knowledge_base} placeholder path. The
+    // tail marker sits ~19k into the website entry: present in the prompt
+    // means the cap stopped being applied on this path.
+    const bigSite = websiteEntry(1, {
+      content: "We are a family owned practice. ".repeat(600) + " TAIL_MARKER_BEYOND_CAP",
+    });
+    const kb = aggregateKnowledgeBase([bigSite, OWNER_FAQ]);
+    const prompt = buildSystemPrompt(
+      { promptConfig: { tone: "friendly", fields: [], behaviors: [] }, language: "en", settings: {} },
+      { name: "Test Org", country: "AU", timezone: "Australia/Sydney" },
+      kb,
+      {}
+    );
+    assert.ok(prompt.includes("certified hybrid service centre"), "owner FAQ must reach guided prompts");
+    assert.equal(prompt.includes("TAIL_MARKER_BEYOND_CAP"), false, "the 12k cap must apply to guided prompts");
+  });
+
+  it("the FAQ survives through the legacy NO-placeholder append path too", () => {
+    const kb = aggregateKnowledgeBase([websiteEntry(20_000), OWNER_FAQ]);
+    const prompt = buildSystemPrompt(
+      { systemPrompt: "You are a receptionist.", language: "en", settings: {} },
+      { name: "Test Org", country: "AU", timezone: "Australia/Sydney" },
+      kb,
+      {}
+    );
+    assert.ok(prompt.includes("certified hybrid service centre"));
+  });
+
   it("website entries move after ALL owner-authored entries, whatever the input order", () => {
     const manual = { id: "m", title: "Parking", source_type: "manual", content: "Free parking behind the building." };
     const doc = { id: "d", title: "Price List", source_type: "document", content: "Standard service $199." };
@@ -112,9 +142,29 @@ describe("aggregateKnowledgeBase — section formatting (behaviour moved from ca
     assert.ok(kb.includes("Q: Do you service hybrid vehicles?\nA: Yes, we are a certified hybrid service centre."));
   });
 
-  it("falls back to raw content when FAQ JSON is malformed", () => {
+  it("joins multiple Q/A pairs with a blank line between pairs", () => {
+    // Real FAQs have many pairs; every other fixture has one. A refactor that
+    // renders only the first pair, or comma-joins them, passes every other test.
+    const kb = aggregateKnowledgeBase([{
+      id: "f",
+      title: "FAQs",
+      source_type: "faq",
+      content: JSON.stringify([
+        { question: "Q1?", answer: "A1." },
+        { question: "Q2?", answer: "A2." },
+        { question: "Q3?", answer: "A3." },
+      ]),
+    }]);
+    assert.equal(kb, "## FAQs\nQ: Q1?\nA: A1.\n\nQ: Q2?\nA: A2.\n\nQ: Q3?\nA: A3.");
+  });
+
+  it("falls back to raw content when FAQ JSON is malformed, and warns with the entry id", (t) => {
+    const warn = t.mock.method(console, "warn", () => {});
     const kb = aggregateKnowledgeBase([{ id: "f", title: "FAQs", source_type: "faq", content: "not json {" }]);
     assert.equal(kb, "## FAQs\nnot json {");
+    const call = warn.mock.calls.find((c) => String(c.arguments[0]).includes("malformed JSON"));
+    assert.ok(call, "malformed FAQ must be logged");
+    assert.equal(call.arguments[1].entryId, "f");
   });
 
   it("falls back to raw content when FAQ JSON parses but is not an array", () => {
