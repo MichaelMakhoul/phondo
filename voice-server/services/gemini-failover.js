@@ -41,8 +41,9 @@ function createSessionWithFailover(primaryFactory, options, config, callbacks) {
   let active;
 
   // The fallback's own lifecycle flows to the original callbacks untouched —
-  // it can never trigger another failover, and its setup timeout degrades to
-  // the plain error path (apology + hangup at the call site).
+  // it can never trigger another failover. Its setup watchdog (armed from
+  // construction in openai-realtime.js) routes here through onSetupTimeout,
+  // which lands on the call site's apology-then-hangup handler.
   const fallbackCallbacks = {
     ...callbacks,
     onSetupTimeout: (err) => {
@@ -82,13 +83,26 @@ function createSessionWithFailover(primaryFactory, options, config, callbacks) {
     }
 
     failedOver = true;
-    options.onFailover?.(reason, err);
+    try {
+      options.onFailover?.(reason, err);
+    } catch (notifyErr) {
+      // onFailover is telemetry (log/Sentry/metadata). A throw here would
+      // unwind into the primary's ws event listener and kill the process —
+      // dropping every concurrent call on the instance to report on one.
+      console.error("[Failover] onFailover callback threw:", notifyErr?.message || notifyErr);
+    }
     return true;
   }
 
   const primaryCallbacks = {
     ...callbacks,
     onSetupComplete: () => {
+      // A setupComplete racing our own abandonment (Gemini finally answering
+      // at 10.001s, the message already in flight when the watchdog fired) is
+      // a lie: the socket is closing and cannot serve the call. Letting it
+      // flip primarySetupDone here would re-arm event forwarding and let the
+      // abandoned primary's dying close tear down the healthy fallback call.
+      if (attempted) return;
       primarySetupDone = true;
       callbacks.onSetupComplete?.();
     },
@@ -100,9 +114,14 @@ function createSessionWithFailover(primaryFactory, options, config, callbacks) {
     onError: (err) => {
       // Pre-setup errors are failover triggers; post-setup errors belong to
       // the call site (primarySetupDone makes attemptFailover refuse).
-      if (!attemptFailover("error-before-setup", err)) {
-        callbacks.onError?.(err);
+      if (attemptFailover("error-before-setup", err)) return;
+      if (failedOver) {
+        // A stray second error from the abandoned primary. The call-site
+        // handler would see callFailed=false and close the Twilio call —
+        // killing the call the failover just saved.
+        return;
       }
+      callbacks.onError?.(err);
     },
     onClose: (code, reason) => {
       // A pre-setup close with no preceding error (e.g. the model rejects
@@ -110,10 +129,13 @@ function createSessionWithFailover(primaryFactory, options, config, callbacks) {
       if (attemptFailover(`closed-before-setup-code-${code}`, new Error(reason || `closed with code ${code}`))) {
         return; // the close belonged to the abandoned primary; the call goes on
       }
-      if (failedOver && !primarySetupDone) {
+      if (failedOver) {
         // Self-inflicted: our own close() of the abandoned primary, arriving
         // after the fallback took over. It must not reach the call site's
-        // teardown handling.
+        // teardown handling. Plain `failedOver` — NOT `&& !primarySetupDone`,
+        // which the late-setupComplete race above would defeat. When the
+        // fallback failed to BUILD, failedOver stays false and the primary's
+        // close correctly still flows (it is the only thing ending the call).
         return;
       }
       callbacks.onClose?.(code, reason);

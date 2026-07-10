@@ -243,15 +243,20 @@ function createGeminiSession(config, callbacks) {
 
     // Setup complete
     if (msg.setupComplete) {
+      const firstAck = !setupComplete;
       setupComplete = true;
       setupWatchdog.clear();
       console.log(`[GeminiLive] Session ready in ${Date.now() - sessionStartTime}ms (${preSetupBuffer.length} buffered chunks)`);
       // SCRUM-535: tells the failover wrapper the window for swapping
       // providers has closed — from here, a failure is the call site's.
-      try {
-        callbacks.onSetupComplete?.();
-      } catch (cbErr) {
-        console.error("[GeminiLive] onSetupComplete callback threw:", cbErr.message);
+      // Edge-triggered: the window closes ONCE; a duplicate ack must not
+      // re-fire consumers.
+      if (firstAck) {
+        try {
+          callbacks.onSetupComplete?.();
+        } catch (cbErr) {
+          console.error("[GeminiLive] onSetupComplete callback threw:", cbErr && cbErr.message);
+        }
       }
 
       // Trigger Gemini to speak the greeting immediately.

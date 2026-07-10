@@ -389,6 +389,7 @@ function createRealtimeSession(config, callbacks, provider = PROVIDERS.openai) {
   const startedAt = Date.now();
 
   let ready = false;
+  let setupWatchdogFired = false;
   let transcriptIn = "";
   let transcriptOut = "";
   let intentionalClose = null;
@@ -463,18 +464,39 @@ function createRealtimeSession(config, callbacks, provider = PROVIDERS.openai) {
 
   function resetTurnAudio() { currentItemId = null; audioStartMs = 0; generatedMs = 0; }
 
+  // Setup watchdog — armed FROM CONSTRUCTION, not from "open" (SCRUM-535
+  // review, HIGH): a socket that connects TCP but stalls in the TLS/upgrade
+  // handshake never emits open/error/close, and a watchdog armed inside
+  // ws.on("open") never arms. That was survivable while this adapter served
+  // only A/B test calls; as the Gemini failover target it would strand a real
+  // caller in unbounded silence during exactly the correlated-outage window
+  // failover exists for. Mirrors gemini-live.js, which arms from creation
+  // ("covers a stalled TCP/WS connect as well as a stalled setup exchange").
+  setupTimer = setTimeout(() => {
+    setupTimer = null;
+    if (ready) return;
+    setupWatchdogFired = true;
+    console.error(`[${P.tag}] no session.updated within ${SETUP_WATCHDOG_MS}ms of construction — treating as setup failure`);
+    try { Sentry.captureMessage(`${P.tag} session setup timeout — session.update never acked`, "error"); } catch { /* best-effort */ }
+    try {
+      // onSetupTimeout when the call site provides it (the apology path —
+      // parity with gemini-live), else the plain error path.
+      const err = new Error(`${P.tag} session setup timeout`);
+      if (callbacks.onSetupTimeout) callbacks.onSetupTimeout(err);
+      else callbacks.onError?.(err);
+    } finally {
+      try {
+        ws.close(1000, "setup-timeout");
+      } catch {
+        /* socket may still be CONNECTING or already dead — nothing else to do */
+      }
+    }
+  }, SETUP_WATCHDOG_MS);
+  if (typeof setupTimer.unref === "function") setupTimer.unref();
+
   ws.on("open", () => {
     console.log(`[${P.tag}] WS connected, sending session.update…`);
     send(P.buildSessionConfig(config));
-    // Setup watchdog: if the provider never acks with session.updated, fail the
-    // call LOUDLY instead of leaving the caller in unrecorded dead air.
-    setupTimer = setTimeout(() => {
-      setupTimer = null;
-      if (ready) return;
-      console.error(`[${P.tag}] no session.updated within ${SETUP_WATCHDOG_MS}ms — treating as setup failure`);
-      try { Sentry.captureMessage(`${P.tag} session setup timeout — session.update never acked`, "error"); } catch { /* best-effort */ }
-      callbacks.onError?.(new Error(`${P.tag} session setup timeout`));
-    }, SETUP_WATCHDOG_MS);
   });
 
   ws.on("message", async (data) => {
@@ -739,10 +761,25 @@ function createRealtimeSession(config, callbacks, provider = PROVIDERS.openai) {
     }
   });
 
-  ws.on("error", (err) => { console.error(`[${P.tag}] WS error:`, err.message); Sentry.captureException(err); callbacks.onError?.(err); });
+  ws.on("error", (err) => {
+    if (setupWatchdogFired) {
+      // Self-inflicted: closing a CONNECTING socket emits a synthetic error.
+      // The timeout was already surfaced — don't double-report into teardown.
+      console.log(`[${P.tag}] Ignoring post-watchdog socket error:`, err.message);
+      return;
+    }
+    console.error(`[${P.tag}] WS error:`, err.message);
+    Sentry.captureException(err);
+    callbacks.onError?.(err);
+  });
   ws.on("close", (code, reason) => {
     clearWatchdog();
     if (setupTimer) { clearTimeout(setupTimer); setupTimer = null; }
+    if (setupWatchdogFired) {
+      // The watchdog handler owns teardown — mirror gemini-live's one-shot.
+      console.log(`[${P.tag}] Post-watchdog socket close (code=${code}) — already handled`);
+      return;
+    }
     if (closeTimer) { clearTimeout(closeTimer); closeTimer = null; }
     // Best-effort: a caller utterance still held provisionally (Grok) is
     // committed via onTranscriptIn; reaching the STORED transcript relies on

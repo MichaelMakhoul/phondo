@@ -121,6 +121,54 @@ describe("createSessionWithFailover — the window (SCRUM-535)", () => {
     assert.deepEqual(site.seen.closes, [{ code: 1000, reason: "end_call" }]);
   });
 
+  it("a LATE setupComplete from the abandoned primary cannot reopen event forwarding", () => {
+    // The race: Gemini finally answers at 10.001s — the ack was in flight
+    // when the watchdog fired. If it flipped primarySetupDone, the abandoned
+    // primary's dying close would flow to teardown and kill the healthy
+    // fallback call.
+    const { primary, fallback, site } = build();
+    primary.fire("onSetupTimeout", new Error("stalled"));
+    primary.fire("onSetupComplete"); // the late, in-flight ack
+    assert.equal(site.seen.setupCompletes, 0, "a late ack must not reach the call site");
+    primary.fire("onClose", 1000, "setup-timeout");
+    assert.deepEqual(site.seen.closes, [], "the abandoned primary's close must stay swallowed");
+    fallback.fire("onClose", 1000, "end_call");
+    assert.deepEqual(site.seen.closes, [{ code: 1000, reason: "end_call" }]);
+  });
+
+  it("a stray SECOND error from the abandoned primary is swallowed, not fed to teardown", () => {
+    const { primary, fallback, site } = build();
+    primary.fire("onError", new Error("ws refused")); // → failover
+    primary.fire("onError", new Error("socket hang up")); // the dying socket again
+    assert.equal(fallback.built, 1);
+    assert.deepEqual(site.seen.errors, [], "the call-site onError would close the rescued call");
+  });
+
+  it("a throwing onFailover does not unwind into the primary's event handler — the fallback still serves", () => {
+    const primary = makeFakeSession("gemini");
+    const fallback = makeFakeSession("openai");
+    const site = makeSiteCallbacks();
+    const handle = createSessionWithFailover(
+      primary,
+      {
+        fallbackFactory: fallback,
+        enabled: true,
+        onFailover: () => {
+          // Telemetry must never be able to take the call (or, unwound to the
+          // top of a ws event handler, the whole process) down with it.
+          throw new Error("sentry exploded");
+        },
+      },
+      { systemPrompt: "prompt", tools: [] },
+      site
+    );
+    assert.doesNotThrow(() => primary.fire("onSetupTimeout", new Error("stalled")));
+    assert.equal(fallback.built, 1);
+    assert.equal(handle.failedOver, true);
+    handle.sendAudio("a1");
+    assert.deepEqual(fallback.calls.audio, ["a1"]);
+  });
+
   it("audio and text route to the fallback after failover; transcripts come from it too", () => {
     const { primary, fallback, handle } = build();
     handle.sendAudio("a1");
