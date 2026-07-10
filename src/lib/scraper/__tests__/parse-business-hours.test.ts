@@ -352,3 +352,76 @@ describe("parseBusinessHours — output is exactly the DB shape", () => {
     expect(parseBusinessHours(nasty)).toBeNull();
   });
 });
+
+// ── SCRUM-534: the detailed readings the approve screen consumes ────────
+
+import { parseBusinessHoursDetailed, parseTimeRangesDetailed } from "../parse-business-hours";
+
+describe("parseTimeRangesDetailed (SCRUM-534)", () => {
+  it("returns ok + hours for an unambiguous range", () => {
+    expect(parseTimeRangesDetailed("9am - 5pm")).toEqual({
+      status: "ok",
+      hours: { open: "09:00", close: "17:00" },
+    });
+  });
+
+  it("'5 - 11' is ambiguous: literal AM candidate, warning names both readings", () => {
+    const r = parseTimeRangesDetailed("5 - 11");
+    expect(r.status).toBe("ambiguous");
+    expect(r.hours).toEqual({ open: "05:00", close: "11:00" });
+    expect(r.warning).toContain("5am-11am");
+    expect(r.warning).toContain("5pm-11pm");
+  });
+
+  it("'2 - 6pm' is ambiguous with the PM reading as the candidate — how a human reads it", () => {
+    const r = parseTimeRangesDetailed("2 - 6pm");
+    expect(r.status).toBe("ambiguous");
+    expect(r.hours).toEqual({ open: "14:00", close: "18:00" });
+    expect(r.warning).toContain("2pm");
+    expect(r.warning).toContain("2am");
+  });
+
+  it("garbage stays unparsed with no candidate", () => {
+    expect(parseTimeRangesDetailed("ring for times")).toEqual({ status: "unparsed", hours: null });
+    expect(parseTimeRangesDetailed("5pm - 9am")).toEqual({ status: "unparsed", hours: null });
+  });
+});
+
+describe("parseBusinessHoursDetailed (SCRUM-534)", () => {
+  it("labels each line instead of sinking the week: parsed, ambiguous, closed, unparsed", () => {
+    const readings = parseBusinessHoursDetailed([
+      "Monday: 9am - 5pm",
+      "Tuesday: 5 - 11",
+      "Sunday: closed",
+      "Public holidays vary",
+    ]);
+    expect(readings.map((r) => r.status)).toEqual(["parsed", "ambiguous", "closed", "unparsed"]);
+    expect(readings[0].hours).toEqual({ open: "09:00", close: "17:00" });
+    expect(readings[1].warning).toBeTruthy();
+    expect(readings[3].days).toEqual([]);
+  });
+
+  it("keeps the verbatim line — the owner confirms against what the site actually said", () => {
+    const [r] = parseBusinessHoursDetailed(["Mon-Fri: 2 - 6pm"]);
+    expect(r.line).toBe("Mon-Fri: 2 - 6pm");
+    expect(r.days).toEqual(["monday", "tuesday", "wednesday", "thursday", "friday"]);
+    expect(r.status).toBe("ambiguous");
+  });
+
+  it("a day listed twice with DIFFERENT times marks the later line ambiguous, not the week dead", () => {
+    const readings = parseBusinessHoursDetailed(["Monday: 9am - 5pm", "Monday: 10am - 4pm"]);
+    expect(readings[0].status).toBe("parsed");
+    expect(readings[1].status).toBe("ambiguous");
+    expect(readings[1].warning).toContain("listed twice");
+  });
+
+  it("a duplicate day with the SAME times is not a conflict", () => {
+    const readings = parseBusinessHoursDetailed(["Monday: 9am - 5pm", "Monday: 9am - 5pm"]);
+    expect(readings.map((r) => r.status)).toEqual(["parsed", "parsed"]);
+  });
+
+  it("returns [] for null/undefined and skips blank lines", () => {
+    expect(parseBusinessHoursDetailed(null)).toEqual([]);
+    expect(parseBusinessHoursDetailed(["", "  "])).toEqual([]);
+  });
+});
