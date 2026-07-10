@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { scrapeWebsite, generateKnowledgeBase, extractBusinessInfoWithLLM } from "@/lib/scraper/website-scraper";
+import { scrapeWebsite, finalizeScrape, extractBusinessInfoWithLLM } from "@/lib/scraper/website-scraper";
 import { isUrlAllowedAsync } from "@/lib/security/validation";
 import { withRateLimitDistributed } from "@/lib/security/rate-limiter";
 import { SENTRY_REASONS } from "@/lib/security/error-ids";
@@ -107,29 +107,24 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // Regex extracts phone/email only; all other fields come from LLM.
-    // Regex takes priority where both exist.
-    const llmInfo = llmResult ?? {};
-    const regexInfo = scrapedData.businessInfo;
-    const mergedInfo = {
-      name: regexInfo.name || llmInfo.name,
-      phone: regexInfo.phone || llmInfo.phone,
-      email: regexInfo.email || llmInfo.email,
-      address: regexInfo.address || llmInfo.address,
-      hours: regexInfo.hours?.length ? regexInfo.hours : llmInfo.hours,
-      services: regexInfo.services?.length ? regexInfo.services : llmInfo.services,
-      about: regexInfo.about || llmInfo.about,
-      faqs: llmInfo.faqs,
-      summary: llmInfo.summary,
-    };
+    // Merge (regex wins on phone/email) + KB build + mode decision live in
+    // ONE exported helper so this route and knowledge-base/scrape cannot
+    // drift apart (SCRUM-532 review).
+    const { businessInfo, content, extraction } = finalizeScrape(scrapedData, llmResult);
 
-    // Mutate scrapedData so generateKnowledgeBase picks up merged info
-    scrapedData.businessInfo = mergedInfo;
-    const extraction = llmResult !== null ? ('structured' as const) : ('raw-fallback' as const);
-    const content = generateKnowledgeBase(scrapedData, { mode: extraction });
+    if (extraction === "raw-fallback") {
+      // level=warning: one event is routine (a site the LLM couldn't read);
+      // a cluster means every onboarding import is silently degrading.
+      pageSentry({
+        service: "next-api",
+        reason: SENTRY_REASONS.SCRAPE_EXTRACTION_FALLBACK,
+        level: "warning",
+        extras: { url, llmFailed: llmResult === null },
+      });
+    }
 
     return NextResponse.json({
-      businessInfo: mergedInfo,
+      businessInfo,
       content,
       totalPages: scrapedData.totalPages,
       // "raw-fallback" = the site was crawled but could not be read into

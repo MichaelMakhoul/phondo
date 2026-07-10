@@ -565,7 +565,11 @@ export async function extractBusinessInfoWithLLM(
       },
       body: JSON.stringify({
         model: 'claude-haiku-4-5-20251001',
-        max_tokens: 4000,
+        // Must exceed what FIELD_LIMITS invite (~37k chars ≈ 9k+ tokens), or
+        // the sites this ticket exists for — long FAQ pages — hit
+        // stop_reason max_tokens, truncate the JSON mid-string, and the
+        // RICHEST sites get the WORST output (raw fallback).
+        max_tokens: 16_000,
         system: `You are a business information extractor. Given website text, extract structured business details. Return ONLY a JSON object with these fields (all optional, omit if not found):
 - "name": string — the business name
 - "address": string — full street address
@@ -627,6 +631,20 @@ Only include fields you are confident about. Return {} if no useful info is foun
     } catch (parseError) {
       console.warn('[LLM Extract] Failed to parse LLM JSON output:', {
         error: parseError instanceof Error ? parseError.message : parseError,
+        contentPreview: content.substring(0, 200),
+        // Distinguishes max_tokens truncation (fix: raise the cap) from
+        // genuinely garbled output. The empty-content path logs it too.
+        stopReason: data.stop_reason,
+      });
+      return null;
+    }
+
+    // JSON.parse also accepts arrays, strings, numbers, booleans and null.
+    // For those, every parsed.x read below is undefined — an all-empty
+    // "successful" extraction that would be stored as an unflagged, nearly
+    // empty structured KB. That is a FAILED read; say so.
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      console.warn('[LLM Extract] LLM returned non-object JSON:', {
         contentPreview: content.substring(0, 200),
       });
       return null;
@@ -756,6 +774,61 @@ export async function scrapeWebsite(
 }
 
 /**
+ * Merge regex-extracted business info (phone/email — high precision) with
+ * the LLM extraction. Regex wins where both exist; faqs/summary are
+ * LLM-only. One home for these semantics — both scrape routes use it
+ * (SCRUM-532 review: the two copies had already diverged once, when the
+ * Settings route shipped without LLM extraction at all).
+ */
+export function mergeBusinessInfo(
+  regexInfo: ScrapedWebsite['businessInfo'],
+  llmInfo: ScrapedWebsite['businessInfo']
+): ScrapedWebsite['businessInfo'] {
+  return {
+    name: regexInfo.name || llmInfo.name,
+    phone: regexInfo.phone || llmInfo.phone,
+    email: regexInfo.email || llmInfo.email,
+    address: regexInfo.address || llmInfo.address,
+    hours: regexInfo.hours?.length ? regexInfo.hours : llmInfo.hours,
+    services: regexInfo.services?.length ? regexInfo.services : llmInfo.services,
+    about: regexInfo.about || llmInfo.about,
+    faqs: llmInfo.faqs,
+    summary: llmInfo.summary,
+  };
+}
+
+/**
+ * The single home for the merge + mode decision both scrape routes share.
+ *
+ * Mode rules:
+ * - llmResult null (extraction FAILED) → "raw-fallback".
+ * - Extraction succeeded but the structured KB came out EMPTY while the
+ *   crawl produced pages (parked domain, JS-only shell) → also
+ *   "raw-fallback": storing an active empty entry that reports success
+ *   teaches the AI nothing and tells the owner nothing went wrong. The
+ *   flag and the content are decided together here so they can never
+ *   disagree.
+ *
+ * Mutates scrapedData.businessInfo to the merged result (both routes
+ * relied on that before extraction).
+ */
+export function finalizeScrape(
+  scrapedData: ScrapedWebsite,
+  llmResult: ScrapedWebsite['businessInfo'] | null
+): { businessInfo: ScrapedWebsite['businessInfo']; content: string; extraction: 'structured' | 'raw-fallback' } {
+  const businessInfo = mergeBusinessInfo(scrapedData.businessInfo, llmResult ?? {});
+  scrapedData.businessInfo = businessInfo;
+
+  let extraction: 'structured' | 'raw-fallback' = llmResult !== null ? 'structured' : 'raw-fallback';
+  let content = generateKnowledgeBase(scrapedData, { mode: extraction });
+  if (extraction === 'structured' && content.trim() === '' && scrapedData.pages.length > 0) {
+    extraction = 'raw-fallback';
+    content = generateKnowledgeBase(scrapedData, { mode: extraction });
+  }
+  return { businessInfo, content, extraction };
+}
+
+/**
  * How much raw page text the raw-fallback mode may store. Sits under the
  * voice server's 12k aggregate cap (MAX_KB_CHARS) so even the fallback
  * cannot evict other content, and SCRUM-531 ranks website entries last
@@ -784,10 +857,13 @@ export function generateKnowledgeBase(
   const mode = options.mode ?? 'structured';
   const sections: string[] = [];
 
-  // Business info section — shared by both modes.
+  // Business info section — shared by both modes. The header guard covers
+  // ONLY the fields this section renders: counting faqs/summary here would
+  // emit a bare "## Business Information" header above nothing whenever the
+  // extraction found only FAQs.
   const { name, phone, email, address, hours, services, about, faqs, summary } = scrapedData.businessInfo;
-  const hasBusinessInfo = Object.values(scrapedData.businessInfo).some(
-    (v) => v !== undefined && (!Array.isArray(v) || v.length > 0)
+  const hasBusinessInfo = Boolean(
+    name || phone || email || address || about || hours?.length || services?.length
   );
   if (hasBusinessInfo) {
     sections.push('## Business Information');

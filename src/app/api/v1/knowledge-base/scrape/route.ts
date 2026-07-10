@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { scrapeWebsite, generateKnowledgeBase, extractBusinessInfoWithLLM } from "@/lib/scraper/website-scraper";
+import { scrapeWebsite, finalizeScrape, extractBusinessInfoWithLLM } from "@/lib/scraper/website-scraper";
 import { isUrlAllowedAsync } from "@/lib/security/validation";
 import { withRateLimitDistributed } from "@/lib/security/rate-limiter";
 import { SENTRY_REASONS } from "@/lib/security/error-ids";
@@ -126,30 +126,25 @@ export async function POST(request: NextRequest) {
       console.error("[kb-scrape] BUG: extractBusinessInfoWithLLM threw unexpectedly:", err);
       pageSentry({
         service: "next-api",
-        reason: SENTRY_REASONS.SCRAPE_PREVIEW_LLM_EXTRACT_BUG,
+        reason: SENTRY_REASONS.KB_SCRAPE_LLM_EXTRACT_BUG,
         level: "error",
         err,
         extras: { url, organizationId },
       });
     }
 
-    const llmInfo = llmResult ?? {};
-    const regexInfo = scrapedData.businessInfo;
-    scrapedData.businessInfo = {
-      name: regexInfo.name || llmInfo.name,
-      phone: regexInfo.phone || llmInfo.phone,
-      email: regexInfo.email || llmInfo.email,
-      address: regexInfo.address || llmInfo.address,
-      hours: regexInfo.hours?.length ? regexInfo.hours : llmInfo.hours,
-      services: regexInfo.services?.length ? regexInfo.services : llmInfo.services,
-      about: regexInfo.about || llmInfo.about,
-      faqs: llmInfo.faqs,
-      summary: llmInfo.summary,
-    };
+    // Merge + KB build + mode decision — shared with scrape-preview so the
+    // two routes cannot drift apart (SCRUM-532 review).
+    const { content: knowledgeBaseContent, extraction } = finalizeScrape(scrapedData, llmResult);
 
-    // Generate knowledge base content
-    const extraction = llmResult !== null ? ("structured" as const) : ("raw-fallback" as const);
-    const knowledgeBaseContent = generateKnowledgeBase(scrapedData, { mode: extraction });
+    if (extraction === "raw-fallback") {
+      pageSentry({
+        service: "next-api",
+        reason: SENTRY_REASONS.SCRAPE_EXTRACTION_FALLBACK,
+        level: "warning",
+        extras: { url, organizationId, llmFailed: llmResult === null },
+      });
+    }
 
     // Derive title from domain if not provided
     let entryTitle = title;
@@ -208,6 +203,8 @@ export async function POST(request: NextRequest) {
         businessInfo: scrapedData.businessInfo,
         content: knowledgeBaseContent,
         contentLength: knowledgeBaseContent.length,
+        // "raw-fallback" = crawl worked, structured read did not (SCRUM-532).
+        extraction,
         pages: scrapedData.pages.map((p) => ({
           url: p.url,
           title: p.title,
