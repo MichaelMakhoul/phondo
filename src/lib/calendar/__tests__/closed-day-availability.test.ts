@@ -48,6 +48,24 @@ describe("describeNoSlotsForVoice", () => {
     const msg = describeNoSlotsForVoice({ date: SUNDAY, closed: true, timezone: TZ, nextOpen: null });
     expect(msg).toContain("take a message");
   });
+
+  it("the headline quadrant: fully booked day rolls forward to the next open day's slots", () => {
+    const msg = describeNoSlotsForVoice({ date: SUNDAY, closed: false, timezone: TZ, nextOpen });
+    expect(msg).toContain("Sunday is fully booked");
+    expect(msg).toContain("Monday, July 13");
+  });
+
+  it("a FAILED week scan never claims the week was checked", () => {
+    // We know the asked date's answer; only the lookahead broke. 'No openings
+    // in the following week' would assert days nobody checked.
+    const msg = describeNoSlotsForVoice({
+      date: SUNDAY, closed: true, timezone: TZ, nextOpen: null, lookaheadFailed: true,
+    });
+    expect(msg).toContain("We're closed on Sundays.");
+    expect(msg).toContain("different day");
+    expect(msg).not.toContain("following week");
+    expect(msg).not.toContain("take a message");
+  });
 });
 
 // The orchestrator itself, on the zero-DB path: an all-closed schedule never
@@ -57,9 +75,13 @@ describe("describeNoSlotsForVoice", () => {
 import { builtInAvailabilityMessage } from "../tool-handlers";
 
 describe("builtInAvailabilityMessage — closed-day wiring (no DB)", () => {
+  // EXPLICIT nulls: the owner configured the week and closed every day.
   const allClosed = {
     timezone: TZ,
-    businessHours: {},
+    businessHours: {
+      monday: null, tuesday: null, wednesday: null, thursday: null,
+      friday: null, saturday: null, sunday: null,
+    },
     defaultAppointmentDuration: 30,
   };
 
@@ -74,4 +96,35 @@ describe("builtInAvailabilityMessage — closed-day wiring (no DB)", () => {
     const msg = await builtInAvailabilityMessage("org-1", SUNDAY, null, 30);
     expect(msg).toContain("no available appointments");
   });
+
+  it("an EMPTY business_hours (NULL column — unconfigured org) also keeps the generic copy", async () => {
+    // Review finding: '{} means every day reads closed' — but the business is
+    // merely unconfigured; 'we're closed all week' would be a false claim.
+    const msg = await builtInAvailabilityMessage(
+      "org-1",
+      SUNDAY,
+      { timezone: TZ, businessHours: {}, defaultAppointmentDuration: 30 } as never,
+      30
+    );
+    expect(msg).toContain("no available appointments");
+    expect(msg).not.toContain("closed");
+  });
 });
+
+  it("a THROWING lookahead degrades to the lead sentence — never the handler's generic failure", async () => {
+    // Sunday closed (answer known, zero DB), Monday open — the lookahead's
+    // availability query hits Supabase, which throws in this env (no config).
+    // The catch must keep the KNOWN answer instead of unwinding the tool call.
+    const schedule = {
+      timezone: TZ,
+      businessHours: {
+        sunday: null,
+        monday: { open: "09:00", close: "17:00" },
+      },
+      defaultAppointmentDuration: 30,
+    };
+    const msg = await builtInAvailabilityMessage("org-1", SUNDAY, schedule as never, 30);
+    expect(msg).toContain("We're closed on Sundays.");
+    expect(msg).toContain("different day");
+    expect(msg).not.toContain("following week");
+  });
