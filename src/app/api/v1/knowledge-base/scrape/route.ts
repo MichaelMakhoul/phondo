@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { scrapeWebsite, generateKnowledgeBase } from "@/lib/scraper/website-scraper";
+import { scrapeWebsite, finalizeScrape, extractBusinessInfoWithLLM } from "@/lib/scraper/website-scraper";
 import { isUrlAllowedAsync } from "@/lib/security/validation";
 import { withRateLimitDistributed } from "@/lib/security/rate-limiter";
 import { SENTRY_REASONS } from "@/lib/security/error-ids";
@@ -114,8 +114,37 @@ export async function POST(request: NextRequest) {
       maxDepth: 2,
     });
 
-    // Generate knowledge base content
-    const knowledgeBaseContent = generateKnowledgeBase(scrapedData);
+    // SCRUM-532: this route used to skip LLM extraction entirely and store
+    // the raw page dump — up to 50k chars of homepage prose per import,
+    // regex phone/email as the only structure. Now it runs the same
+    // extraction pipeline as onboarding's scrape-preview. Non-fatal: null
+    // (extraction FAILED) switches the KB to the flagged raw-fallback mode.
+    let llmResult: Awaited<ReturnType<typeof extractBusinessInfoWithLLM>> = null;
+    try {
+      llmResult = await extractBusinessInfoWithLLM(scrapedData.pages);
+    } catch (err) {
+      console.error("[kb-scrape] BUG: extractBusinessInfoWithLLM threw unexpectedly:", err);
+      pageSentry({
+        service: "next-api",
+        reason: SENTRY_REASONS.KB_SCRAPE_LLM_EXTRACT_BUG,
+        level: "error",
+        err,
+        extras: { url, organizationId },
+      });
+    }
+
+    // Merge + KB build + mode decision — shared with scrape-preview so the
+    // two routes cannot drift apart (SCRUM-532 review).
+    const { content: knowledgeBaseContent, extraction } = finalizeScrape(scrapedData, llmResult);
+
+    if (extraction === "raw-fallback") {
+      pageSentry({
+        service: "next-api",
+        reason: SENTRY_REASONS.SCRAPE_EXTRACTION_FALLBACK,
+        level: "warning",
+        extras: { url, organizationId, llmFailed: llmResult === null },
+      });
+    }
 
     // Derive title from domain if not provided
     let entryTitle = title;
@@ -141,6 +170,8 @@ export async function POST(request: NextRequest) {
           totalPages: scrapedData.totalPages,
           scrapedAt: scrapedData.scrapedAt,
           businessInfo: scrapedData.businessInfo,
+          // "raw-fallback" = crawl succeeded, structured read did not.
+          extraction,
         },
         is_active: true,
       });
@@ -172,6 +203,8 @@ export async function POST(request: NextRequest) {
         businessInfo: scrapedData.businessInfo,
         content: knowledgeBaseContent,
         contentLength: knowledgeBaseContent.length,
+        // "raw-fallback" = crawl worked, structured read did not (SCRUM-532).
+        extraction,
         pages: scrapedData.pages.map((p) => ({
           url: p.url,
           title: p.title,

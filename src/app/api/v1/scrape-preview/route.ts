@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { scrapeWebsite, generateKnowledgeBase, extractBusinessInfoWithLLM } from "@/lib/scraper/website-scraper";
+import { scrapeWebsite, finalizeScrape, extractBusinessInfoWithLLM } from "@/lib/scraper/website-scraper";
 import { isUrlAllowedAsync } from "@/lib/security/validation";
 import { withRateLimitDistributed } from "@/lib/security/rate-limiter";
 import { SENTRY_REASONS } from "@/lib/security/error-ids";
@@ -85,10 +85,12 @@ export async function POST(request: NextRequest) {
       maxDepth: 1,
     });
 
-    // LLM extraction for rich business info (non-fatal — must never fail the scrape)
-    let llmInfo: Awaited<ReturnType<typeof extractBusinessInfoWithLLM>> = {};
+    // LLM extraction for rich business info (non-fatal — must never fail the
+    // scrape). SCRUM-532: null means extraction FAILED (vs found-little) —
+    // that switches the KB output to the flagged raw-fallback mode below.
+    let llmResult: Awaited<ReturnType<typeof extractBusinessInfoWithLLM>> = null;
     try {
-      llmInfo = await extractBusinessInfoWithLLM(scrapedData.pages);
+      llmResult = await extractBusinessInfoWithLLM(scrapedData.pages);
     } catch (err) {
       // Should never happen — extractBusinessInfoWithLLM catches internally.
       console.error('[scrape-preview] BUG: extractBusinessInfoWithLLM threw unexpectedly:', err);
@@ -105,27 +107,29 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // Regex extracts phone/email only; all other fields come from LLM.
-    // Regex takes priority where both exist.
-    const regexInfo = scrapedData.businessInfo;
-    const mergedInfo = {
-      name: regexInfo.name || llmInfo.name,
-      phone: regexInfo.phone || llmInfo.phone,
-      email: regexInfo.email || llmInfo.email,
-      address: regexInfo.address || llmInfo.address,
-      hours: regexInfo.hours?.length ? regexInfo.hours : llmInfo.hours,
-      services: regexInfo.services?.length ? regexInfo.services : llmInfo.services,
-      about: regexInfo.about || llmInfo.about,
-    };
+    // Merge (regex wins on phone/email) + KB build + mode decision live in
+    // ONE exported helper so this route and knowledge-base/scrape cannot
+    // drift apart (SCRUM-532 review).
+    const { businessInfo, content, extraction } = finalizeScrape(scrapedData, llmResult);
 
-    // Mutate scrapedData so generateKnowledgeBase picks up merged info
-    scrapedData.businessInfo = mergedInfo;
-    const content = generateKnowledgeBase(scrapedData);
+    if (extraction === "raw-fallback") {
+      // level=warning: one event is routine (a site the LLM couldn't read);
+      // a cluster means every onboarding import is silently degrading.
+      pageSentry({
+        service: "next-api",
+        reason: SENTRY_REASONS.SCRAPE_EXTRACTION_FALLBACK,
+        level: "warning",
+        extras: { url, llmFailed: llmResult === null },
+      });
+    }
 
     return NextResponse.json({
-      businessInfo: mergedInfo,
+      businessInfo,
       content,
       totalPages: scrapedData.totalPages,
+      // "raw-fallback" = the site was crawled but could not be read into
+      // structured form (LLM outage/timeout) — the UI can say so.
+      extraction,
     });
   } catch (error) {
     console.error("Scrape preview error:", error);

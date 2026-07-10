@@ -83,18 +83,26 @@ export const SENTRY_REASONS = {
    *  we want to see it loudly. Uses level=error.
    *
    *  CONTRACT: `extractBusinessInfoWithLLM` (src/lib/scraper/website-
-   *  scraper.ts) returns `{}` on every POST-validation error path (its
-   *  pre-`try` arg guard is the only window that could throw, and the
-   *  route always passes a well-formed pages array), so this fires 0× in
-   *  production. If this alert EVER fires, the catch-internally contract
-   *  has broken — RUNBOOK: check website-scraper.ts's
-   *  `extractBusinessInfoWithLLM` for a regression in the inner catch
-   *  handler (e.g. an OpenAI SDK upgrade or a refactor that lets an
-   *  error escape the function). The scrape itself is unaffected (the
+   *  scraper.ts) returns `null` on every POST-validation error path
+   *  (SCRUM-532; its pre-`try` arg guard is the only window that could
+   *  throw, and the route always passes a well-formed pages array), so
+   *  this fires 0× in production. If this alert EVER fires, the
+   *  catch-internally contract has broken — RUNBOOK: check
+   *  website-scraper.ts's `extractBusinessInfoWithLLM` for a regression
+   *  in the inner catch handler (e.g. an Anthropic client change or a
+   *  refactor that lets an error escape the function). The scrape itself is unaffected (the
    *  LLM step is non-fatal); the alert is a code-health signal, not a
    *  customer-facing incident. Covered by scrape-preview/__tests__/
    *  route.test.ts (SCRUM-307). */
   SCRAPE_PREVIEW_LLM_EXTRACT_BUG: "scrape-preview-llm-extract-bug",
+  /** Same contract-violation detector for the Settings import route —
+   *  its own reason so on-call isn't sent to the wrong route first. */
+  KB_SCRAPE_LLM_EXTRACT_BUG: "kb-scrape-llm-extract-bug",
+  /** SCRUM-532: a scrape stored the RAW-FALLBACK KB — the crawl worked
+   *  but the structured read failed (LLM outage/timeout/truncation) or
+   *  produced nothing. level=warning: one event is routine; a cluster
+   *  means every import is silently degrading to raw dumps. */
+  SCRAPE_EXTRACTION_FALLBACK: "scrape-extraction-fallback",
   KB_SCRAPE_FAILED: "kb-scrape-failed",
   LEAD_DISCOVERY_SCAN_FAILED: "lead-discovery-scan-failed",
   LEAD_DISCOVERY_SEARCH_FAILED: "lead-discovery-search-failed",

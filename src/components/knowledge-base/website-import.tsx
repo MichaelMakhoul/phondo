@@ -192,7 +192,7 @@ export function WebsiteImport({
 
             <div className="flex items-center gap-2 text-sm">
               <Badge variant="secondary">
-                {Math.round(result.content.length / 1000)}K characters
+                {result.content.length.toLocaleString()} characters
               </Badge>
             </div>
           </div>
