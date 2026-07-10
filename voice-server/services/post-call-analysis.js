@@ -11,7 +11,11 @@
 const { Sentry } = require("../lib/sentry");
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const ANALYSIS_MODEL = "gpt-4.1-nano";
+// SCRUM-533: mini, not nano — this runs AFTER hangup (off the latency path)
+// and writes exactly the text the owner reads in the dashboard: summary,
+// caller name, success evaluation, collected details. Weakest-tier output on
+// the most-visible surface was the wrong trade; cost is fractions of a cent.
+const ANALYSIS_MODEL = "gpt-4.1-mini";
 // SCRUM-370: when the raw transcript carries the STT mis-detection signature
 // (non-Latin scripts where the caller most likely spoke a Latin-script or
 // Arabic language), recover with a stronger model. Post-call batch step, so the

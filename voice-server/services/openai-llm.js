@@ -13,7 +13,7 @@ const PROVIDER_CONFIG = {
     authHeader: (key) => ({ Authorization: `Bearer ${key}` }),
   },
   gemini: {
-    defaultModel: "gemini-2.5-flash",
+    defaultModel: "gemini-3.5-flash", // SCRUM-533: 3.5 is GA; fallback-pipeline path only
     apiKeyEnv: "GEMINI_API_KEY",
     name: "Gemini",
     type: "openai-compat",
