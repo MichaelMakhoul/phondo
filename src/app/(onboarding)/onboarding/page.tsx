@@ -18,6 +18,7 @@ import { Success } from "./steps/Success";
 import { ArrowLeft, ArrowRight, Loader2, CheckCircle2, Clock } from "lucide-react";
 import { getCountryConfig } from "@/lib/country-config";
 import { buildCustomInstructionsFromBusinessInfo } from "@/lib/scraper/build-custom-instructions";
+import type { ApprovedScrapedData } from "@/components/onboarding/approve-scraped-data";
 import { parseBusinessHours } from "@/lib/scraper/parse-business-hours";
 import { parsePhoneToE164, type SupportedCountry } from "@/lib/phone/normalize";
 import {
@@ -125,6 +126,11 @@ export default function OnboardingPage() {
   const [scrapeResult, setScrapeResult] = useState<{
     businessInfo: Record<string, any>;
     totalPages: number;
+    extraction?: "structured" | "raw-fallback";
+    /** Monotonic per-scan nonce — the approve panel remounts on THIS, not on
+     *  the live URL input (each keystroke would wipe unapplied selections)
+     *  and not on totalPages (an equal-count re-scan would keep stale state). */
+    scanId: number;
   } | null>(null);
   const router = useRouter();
   const { toast } = useToast();
@@ -196,23 +202,10 @@ export default function OnboardingPage() {
         scrapedServices: [],
       };
 
-      // Auto-fill fields from scraped data (user clicked Import, so overwrite)
-      if (result.businessInfo?.name) {
-        updates.businessName = result.businessInfo.name;
-      }
-      if (result.businessInfo?.phone) {
-        updates.businessPhone = result.businessInfo.phone;
-      }
-      if (result.businessInfo?.address) {
-        updates.scrapedAddress = result.businessInfo.address;
-      }
-      // SCRUM-515: kept raw for the structured save at org creation.
-      if (Array.isArray(result.businessInfo?.hours)) {
-        updates.scrapedHours = result.businessInfo.hours.filter((h: unknown) => typeof h === "string");
-      }
-      if (Array.isArray(result.businessInfo?.services)) {
-        updates.scrapedServices = result.businessInfo.services.filter((s: unknown) => typeof s === "string");
-      }
+      // SCRUM-534: structured fields (name/phone/address/hours/services) are
+      // NO LONGER auto-applied here. The approve panel below the scan shows
+      // what was found; handleApplyScraped writes only what the owner
+      // confirmed. The resets above still clear a previous site's leftovers.
 
       // Build custom instructions from scraped business info
       const instructions = buildCustomInstructionsFromBusinessInfo(result.businessInfo || {});
@@ -227,6 +220,8 @@ export default function OnboardingPage() {
       setScrapeResult({
         businessInfo: result.businessInfo || {},
         totalPages: result.totalPages || 0,
+        extraction: result.extraction === "raw-fallback" ? "raw-fallback" : "structured",
+        scanId: Date.now(),
       });
       // Truncation used to be silent, so the AI would later be unable to answer
       // from the dropped tail with nothing to explain why. Say so plainly.
@@ -248,6 +243,13 @@ export default function OnboardingPage() {
     } finally {
       setIsScraping(false);
     }
+  };
+
+  // SCRUM-534: the ONLY path scraped structured data takes into the form.
+  // scrapedHours arrives already normalized by buildApprovedHoursLines, so
+  // the strict parser at org creation accepts every line the owner confirmed.
+  const handleApplyScraped = (approved: ApprovedScrapedData) => {
+    updateData(approved);
   };
 
   const canProceed = () => {
@@ -904,6 +906,7 @@ export default function OnboardingPage() {
                   onScrape={handleScrape}
                   isScraping={isScraping}
                   scrapeResult={scrapeResult}
+                  onApplyScraped={handleApplyScraped}
                 />
               )}
 

@@ -1,4 +1,7 @@
 /**
+ * (Two tiers since SCRUM-534: the STRICT functions below refuse ambiguity —
+ * they are the only unattended write path — while the *Detailed functions at
+ * the bottom surface candidates for the approve screen to confirm.)
  * SCRUM-515: turn the scraper's human-readable opening hours into the structured
  * shape the availability engine books from.
  *
@@ -192,17 +195,33 @@ function parseDays(label: string): string[] | null {
  * outer envelope: the schema holds one interval per day, and a lunch break is
  * modelled as a blocked time, not as a closed business.
  */
-function parseTimeRanges(spec: string): DayHours | null {
+/**
+ * SCRUM-534: the detailed core behind parseTimeRanges. Where the strict
+ * parser REFUSES an ambiguous line (correct with no human in the loop —
+ * a wrong guess books callers into a closed business), this returns the
+ * candidate reading plus a warning, so an approve screen can turn every
+ * refusal into a one-tap confirm instead of a lost field.
+ */
+export interface TimeRangeReading {
+  status: "ok" | "ambiguous" | "unparsed";
+  /** The reading — for "ambiguous", the likeliest human interpretation. */
+  hours: DayHours | null;
+  /** Why this needs the owner's confirmation. Set iff status is "ambiguous". */
+  warning?: string;
+}
+
+export function parseTimeRangesDetailed(spec: string): TimeRangeReading {
   const windows = spec.split(/\s*(?:,|&|\band\b)\s*/).filter(Boolean);
   const opens: string[] = [];
   const closes: string[] = [];
+  let warning: string | undefined;
 
   for (const window of windows) {
     const m = /^(.+?)\s*(?:-|–|—|to|until|till|til)\s*(.+)$/.exec(window.trim());
-    if (!m) return null;
+    if (!m) return { status: "unparsed", hours: null };
     const open = parseTime(m[1]);
     let close = parseTime(m[2]);
-    if (!open || !close) return null;
+    if (!open || !close) return { status: "unparsed", hours: null };
 
     // "9 - 5" with no meridiem: the close is plainly an afternoon time.
     // Only repair the unambiguous case, and only by shifting the close.
@@ -212,7 +231,7 @@ function parseTimeRanges(spec: string): DayHours | null {
     }
     // A business closing before it opens (or at the same minute) is a line we
     // did not understand. Overnight venues are out of scope, deliberately.
-    if (close <= open) return null;
+    if (close <= open) return { status: "unparsed", hours: null };
 
     // A bare ASCENDING range says nothing about its meridiem: "5 - 11" is a
     // bakery's morning or a bar's evening, and the page does not say which.
@@ -226,7 +245,12 @@ function parseTimeRanges(spec: string): DayHours | null {
     if (isBareClockHour(m[1]) && isBareClockHour(m[2])) {
       const openHour = Number(open.slice(0, 2));
       const closeHour = Number(close.slice(0, 2));
-      if (openHour < closeHour && closeHour < 12) return null;
+      if (openHour < closeHour && closeHour < 12) {
+        // Candidate: the literal AM reading; the warning names the PM one.
+        // First ambiguity wins — a later window's warning must not overwrite
+        // the one that explains the candidate (SCRUM-534 review, F6).
+        warning ??= `"${window.trim()}" could mean ${openHour}am-${closeHour}am or ${openHour}pm-${closeHour}pm — confirm which`;
+      }
     }
 
     // The same ambiguity runs the other way, and it is easier to miss because
@@ -240,18 +264,31 @@ function parseTimeRanges(spec: string): DayHours | null {
     // because 9pm is after 5pm and so cannot be meant.
     if (isBareClockHour(m[1])) {
       const openAsPm = parseTime(`${m[1].trim()}pm`);
-      if (openAsPm && openAsPm !== open && openAsPm < close) return null;
+      if (openAsPm && openAsPm !== open && openAsPm < close) {
+        // Candidate: the PM reading — any human reads "2 - 6pm" as 2pm.
+        warning ??= `"${window.trim()}" read as starting ${Number(openAsPm.slice(0, 2)) - 12}pm — the page could also mean ${Number(open.slice(0, 2))}am`;
+        opens.push(openAsPm);
+        closes.push(close);
+        continue;
+      }
     }
 
     opens.push(open);
     closes.push(close);
   }
 
-  if (opens.length === 0) return null;
-  return {
+  if (opens.length === 0) return { status: "unparsed", hours: null };
+  const hours = {
     open: opens.reduce((a, b) => (a < b ? a : b)),
     close: closes.reduce((a, b) => (a > b ? a : b)),
   };
+  return warning ? { status: "ambiguous", hours, warning } : { status: "ok", hours };
+}
+
+/** The strict reading: refuses (null) whatever is not unambiguous. */
+function parseTimeRanges(spec: string): DayHours | null {
+  const reading = parseTimeRangesDetailed(spec);
+  return reading.status === "ok" ? reading.hours : null;
 }
 
 /**
@@ -331,4 +368,108 @@ export function parseBusinessHours(lines: string[] | undefined | null): ParsedBu
   if (DAYS.every((d) => hours[d] === null)) return null;
 
   return { hours, unparsed };
+}
+
+// ── SCRUM-534: per-line detail for the approve screen ───────────────────
+
+export type HoursLineStatus = "parsed" | "closed" | "ambiguous" | "unparsed";
+
+export interface HoursLineReading {
+  /** The original scraped line, verbatim — the owner confirms against THIS. */
+  line: string;
+  /** Resolved day keys; [] when the day label itself was unintelligible. */
+  days: string[];
+  status: HoursLineStatus;
+  /** The (candidate) reading. null for "closed" and "unparsed". */
+  hours: DayHours | null;
+  /** Why this line needs explicit confirmation. Set iff "ambiguous". */
+  warning?: string;
+}
+
+/**
+ * The approve-screen reading of scraped hours (SCRUM-534).
+ *
+ * Where parseBusinessHours refuses the WHOLE week on any ambiguity (correct
+ * with no human in the loop), this returns every line with a status so the
+ * owner confirms or fixes each one: "parsed" lines pre-check, "ambiguous"
+ * lines carry the likeliest candidate plus a warning naming the alternative,
+ * "unparsed" lines are shown for manual entry. Conflicting duplicate days
+ * surface as ambiguous on the later line rather than sinking the week.
+ *
+ * The strict parser stays the ONLY path that writes hours without a human —
+ * this function's output must always pass through the owner's confirmation.
+ */
+export function parseBusinessHoursDetailed(lines: string[] | undefined | null): HoursLineReading[] {
+  if (!Array.isArray(lines)) return [];
+  const readings: HoursLineReading[] = [];
+  const seen: BusinessHoursMap = {};
+
+  for (const rawLine of lines) {
+    const line = String(rawLine ?? "").trim();
+    if (!line) continue;
+
+    const sep = line.indexOf(":");
+    const hasLabel = sep > 0 && parseDays(line.slice(0, sep)) !== null;
+    const rest = hasLabel ? line.slice(sep + 1).trim() : line;
+    const days = hasLabel ? (parseDays(line.slice(0, sep)) as string[]) : null;
+
+    if (!days) {
+      readings.push({ line, days: [], status: "unparsed", hours: null });
+      continue;
+    }
+
+    if (CLOSED_RE.test(stripTrailingPunctuation(rest))) {
+      // Hours-then-closed is a conflict too (the reverse direction is caught
+      // by the generic check below). Without this, "Monday: 9am - 5pm" then
+      // "Monday: Closed" arrived PRE-CONFIRMED as closed — for a day the
+      // site also listed with real hours (SCRUM-534 review, F3).
+      const conflicted = days.some((day) => day in seen && seen[day] !== null);
+      for (const day of days) seen[day] = null;
+      if (conflicted) {
+        readings.push({
+          line,
+          days,
+          status: "ambiguous",
+          hours: null,
+          warning: "This day was listed twice with different times — confirm which is right",
+        });
+      } else {
+        readings.push({ line, days, status: "closed", hours: null });
+      }
+      continue;
+    }
+
+    const reading = parseTimeRangesDetailed(rest);
+    if (reading.status === "unparsed" || !reading.hours) {
+      readings.push({ line, days, status: "unparsed", hours: null });
+      continue;
+    }
+
+    // A day already claimed with DIFFERENT times: the later line needs the
+    // owner's eyes even if it parsed cleanly on its own.
+    const conflicted = days.some((day) => {
+      const existing = seen[day];
+      return (
+        day in seen &&
+        !(existing !== null && existing.open === reading.hours!.open && existing.close === reading.hours!.close)
+      );
+    });
+    for (const day of days) seen[day] = reading.hours;
+
+    if (conflicted) {
+      readings.push({
+        line,
+        days,
+        status: "ambiguous",
+        hours: reading.hours,
+        warning: "This day was listed twice with different times — confirm which is right",
+      });
+    } else if (reading.status === "ambiguous") {
+      readings.push({ line, days, status: "ambiguous", hours: reading.hours, warning: reading.warning });
+    } else {
+      readings.push({ line, days, status: "parsed", hours: reading.hours });
+    }
+  }
+
+  return readings;
 }

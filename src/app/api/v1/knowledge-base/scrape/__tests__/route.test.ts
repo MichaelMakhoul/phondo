@@ -61,7 +61,11 @@ vi.mock("@/lib/scraper/website-scraper", () => ({
   extractBusinessInfoWithLLM: vi.fn(async () => {
     if (state.llmShouldThrow) throw state.llmShouldThrow;
     if (state.llmReturnsNull) return null;
-    return { about: "A dental practice.", faqs: [{ question: "Q?", answer: "A." }] };
+    return {
+      about: "A dental practice.",
+      faqs: [{ question: "Q?", answer: "A." }],
+      staff: [{ name: "Dr Chen", role: "Dentist" }],
+    };
   }),
   finalizeScrape: vi.fn((scrapedData: { businessInfo: object }, llmResult: object | null) => {
     const businessInfo = { ...scrapedData.businessInfo, ...(llmResult ?? {}) };
@@ -97,6 +101,9 @@ describe("POST /api/v1/knowledge-base/scrape (SCRUM-532)", () => {
     const metadata = row.metadata as Record<string, unknown>;
     expect(metadata.extraction).toBe("structured");
     expect((metadata.businessInfo as { faqs: unknown }).faqs).toEqual([{ question: "Q?", answer: "A." }]);
+    // SCRUM-534: staff is display-only for the approve screen and must never
+    // be persisted — not even into metadata (security review caveat).
+    expect((metadata.businessInfo as { staff?: unknown }).staff).toBeUndefined();
     const body = await res.json();
     expect(body.data.extraction).toBe("structured");
     expect(pageSentryMock).not.toHaveBeenCalled();

@@ -553,6 +553,11 @@ import { mergeBusinessInfo, finalizeScrape } from "../website-scraper";
 import { vi, afterEach } from "vitest";
 
 describe("mergeBusinessInfo (SCRUM-532)", () => {
+  it("staff rides through the merge, LLM-only (SCRUM-534)", () => {
+    const merged = mergeBusinessInfo({}, { staff: [{ name: "Dr Chen", role: "Dentist" }] });
+    expect(merged.staff).toEqual([{ name: "Dr Chen", role: "Dentist" }]);
+  });
+
   it("regex wins on scalars, arrays fall back only when regex found none, faqs/summary are LLM-only", () => {
     const merged = mergeBusinessInfo(
       { phone: "02 8555 1234", hours: [], services: ["Regex Service"] },
@@ -641,6 +646,7 @@ describe("extractBusinessInfoWithLLM (SCRUM-532) — stubbed-fetch E2E", () => {
       hours: Array.from({ length: 30 }, (_, i) => `Day ${i}: ${"9-5 ".repeat(50)}`),
       faqs: Array.from({ length: 30 }, (_, i) => ({ question: `Q${i}?`, answer: "a".repeat(3000) })),
     };
+    (oversized as Record<string, unknown>).staff = Array.from({ length: 30 }, (_, i) => ({ name: `P${i}` }));
     stubAnthropic({ content: [{ text: JSON.stringify(oversized) }] });
     const info = (await extractBusinessInfoWithLLM([page(1, 100)]))!;
     expect(info.name!.length).toBeLessThanOrEqual(201);
@@ -651,6 +657,9 @@ describe("extractBusinessInfoWithLLM (SCRUM-532) — stubbed-fetch E2E", () => {
     expect(info.hours).toHaveLength(14);
     expect(info.faqs).toHaveLength(20);
     expect(info.faqs![0].answer.length).toBeLessThanOrEqual(1201);
+    // SCRUM-534: staff must ride the response mapping too — deleting the
+    // passthrough line silently kills the team blurb with every test green.
+    expect(info.staff).toHaveLength(15);
   });
 
   it("an HTTP error (529 outage) returns NULL — the raw-fallback trigger, not an empty success", async () => {
@@ -678,5 +687,52 @@ describe("extractBusinessInfoWithLLM (SCRUM-532) — stubbed-fetch E2E", () => {
     // all get raw-fallback.
     expect(req.max_tokens).toBeGreaterThanOrEqual(8000);
     expect(req.messages[0].content).toContain("page-1");
+  });
+});
+
+// ── SCRUM-534: staff extraction (display-only) ──────────────────────────
+
+import { cleanLLMStaff } from "../website-scraper";
+
+describe("cleanLLMStaff (SCRUM-534)", () => {
+  it("keeps name+role pairs, role optional, order preserved", () => {
+    expect(
+      cleanLLMStaff([
+        { name: "Dr Sarah Chen", role: "Principal Dentist" },
+        { name: "Marco Riva" },
+      ])
+    ).toEqual([{ name: "Dr Sarah Chen", role: "Principal Dentist" }, { name: "Marco Riva" }]);
+  });
+
+  it("drops nameless, placeholder and non-object entries; placeholder roles become roleless", () => {
+    expect(
+      cleanLLMStaff([
+        "a string",
+        null,
+        { role: "Dentist" },
+        { name: "N/A" },
+        { name: "  " },
+        { name: "Kept", role: "unknown" },
+      ])
+    ).toEqual([{ name: "Kept" }]);
+  });
+
+  it("caps the count at 15 and clamps runaway lengths", () => {
+    expect(cleanLLMStaff(Array.from({ length: 30 }, (_, i) => ({ name: `P${i}` })))).toHaveLength(15);
+    const [long] = cleanLLMStaff([{ name: "n".repeat(200), role: "r".repeat(200) }])!;
+    expect(long.name.length).toBeLessThanOrEqual(81);
+    expect(long.role!.length).toBeLessThanOrEqual(81);
+  });
+
+  it("returns undefined for non-arrays and empty results", () => {
+    expect(cleanLLMStaff(undefined)).toBeUndefined();
+    expect(cleanLLMStaff([])).toBeUndefined();
+  });
+
+  it("staff never reaches the generated KB — bookability is an owner action, not a scrape side effect", () => {
+    const kb = generateKnowledgeBase(
+      scraped({ name: "X", staff: [{ name: "Dr Sarah Chen", role: "Dentist" }] })
+    );
+    expect(kb).not.toContain("Sarah Chen");
   });
 });

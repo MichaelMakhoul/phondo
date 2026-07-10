@@ -169,7 +169,10 @@ export async function POST(request: NextRequest) {
         metadata: {
           totalPages: scrapedData.totalPages,
           scrapedAt: scrapedData.scrapedAt,
-          businessInfo: scrapedData.businessInfo,
+          // staff is stripped: it is display-only for the approve screen
+          // (SCRUM-534) and must never be persisted anywhere — bookable
+          // practitioners are an explicit owner action in Settings.
+          businessInfo: { ...scrapedData.businessInfo, staff: undefined },
           // "raw-fallback" = crawl succeeded, structured read did not.
           extraction,
         },
