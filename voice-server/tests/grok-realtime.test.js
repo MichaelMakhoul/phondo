@@ -72,10 +72,10 @@ describe("PROVIDERS (SCRUM-378) — per-provider URL/key resolution", () => {
     assert.ok(PROVIDERS.grok.url().includes("grok-voice-think-fast-1.0"));
   });
 
-  it("openai provider is unchanged: api.openai.com + gpt-realtime-2 default", () => {
+  it("openai provider: api.openai.com + gpt-realtime-2.1 default (SCRUM-535 failover model)", () => {
     const url = PROVIDERS.openai.url();
     assert.ok(url.startsWith("wss://api.openai.com/v1/realtime?model="), url);
-    assert.ok(url.includes("gpt-realtime-2"), url);
+    assert.ok(url.includes("model=gpt-realtime-2.1"), url);
     assert.equal(PROVIDERS.openai.apiKeyEnv, "OPENAI_API_KEY");
   });
 

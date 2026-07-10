@@ -61,6 +61,7 @@ function convertSchemaToGemini(schema) {
  * @param {function} callbacks.onInterrupted - () => void — user barged in
  * @param {function} callbacks.onTurnComplete - () => void — AI finished speaking
  * @param {function} callbacks.onError - (err: Error) => void
+ * @param {function} [callbacks.onSetupComplete] - () => void — Gemini acked setup; the failover window (SCRUM-535) is closed
  * @param {function} [callbacks.onSetupTimeout] - (err: Error) => void — setup
  *   handshake never completed within the deadline (caller stranded in
  *   silence). Optional: when absent, the timeout is routed to onError so
@@ -245,6 +246,13 @@ function createGeminiSession(config, callbacks) {
       setupComplete = true;
       setupWatchdog.clear();
       console.log(`[GeminiLive] Session ready in ${Date.now() - sessionStartTime}ms (${preSetupBuffer.length} buffered chunks)`);
+      // SCRUM-535: tells the failover wrapper the window for swapping
+      // providers has closed — from here, a failure is the call site's.
+      try {
+        callbacks.onSetupComplete?.();
+      } catch (cbErr) {
+        console.error("[GeminiLive] onSetupComplete callback threw:", cbErr.message);
+      }
 
       // Trigger Gemini to speak the greeting immediately.
       // NOTE: clientContent is BLOCKED on gemini-3.1-flash-live-preview (causes 1007).

@@ -248,7 +248,10 @@ const PROVIDERS = {
   openai: {
     tag: "OpenAIRealtime",
     apiKeyEnv: "OPENAI_API_KEY",
-    url: () => `wss://api.openai.com/v1/realtime?model=${process.env.OPENAI_REALTIME_MODEL || "gpt-realtime-2"}`,
+    // SCRUM-535: this default also serves as the Gemini Live failover model,
+    // so keep it current — a stale default here means outages are handled by
+    // a superseded model and the SCRUM-378 A/B benchmarks against it too.
+    url: () => `wss://api.openai.com/v1/realtime?model=${process.env.OPENAI_REALTIME_MODEL || "gpt-realtime-2.1"}`,
     buildSessionConfig,
   },
   grok: {
