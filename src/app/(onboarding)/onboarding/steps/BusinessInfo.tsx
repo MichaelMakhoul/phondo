@@ -12,19 +12,17 @@ import {
 } from "@/components/ui/select";
 import { industryOptions } from "@/lib/templates";
 import { SUPPORTED_COUNTRIES, getCountryConfig } from "@/lib/country-config";
-import { Loader2, CheckCircle2, Globe } from "lucide-react";
+import { Loader2, Globe } from "lucide-react";
+import {
+  ApproveScrapedData,
+  type ApprovedScrapedData,
+  type ScrapedBusinessInfo,
+} from "@/components/onboarding/approve-scraped-data";
 
 interface ScrapeResult {
-  businessInfo: {
-    name?: string;
-    phone?: string;
-    email?: string;
-    address?: string;
-    hours?: string[];
-    services?: string[];
-    about?: string;
-  };
+  businessInfo: ScrapedBusinessInfo;
   totalPages: number;
+  extraction?: "structured" | "raw-fallback";
 }
 
 interface BusinessInfoProps {
@@ -39,9 +37,11 @@ interface BusinessInfoProps {
   onScrape?: (url: string) => Promise<void>;
   isScraping?: boolean;
   scrapeResult?: ScrapeResult | null;
+  /** SCRUM-534: the only path scraped data takes into the form. */
+  onApplyScraped?: (approved: ApprovedScrapedData) => void;
 }
 
-export function BusinessInfo({ data, onChange, onScrape, isScraping, scrapeResult }: BusinessInfoProps) {
+export function BusinessInfo({ data, onChange, onScrape, isScraping, scrapeResult, onApplyScraped }: BusinessInfoProps) {
   const config = data.country ? getCountryConfig(data.country) : null;
   const phonePlaceholder = config?.phone.placeholder || "+1 (555) 123-4567";
 
@@ -105,34 +105,17 @@ export function BusinessInfo({ data, onChange, onScrape, isScraping, scrapeResul
             </Button>
           )}
         </div>
-        {scrapeResult ? (
-          <div className="space-y-2 rounded-md bg-green-50 px-3 py-3 text-sm text-green-800 dark:bg-green-950/30 dark:text-green-300">
-            <div className="flex items-center gap-2 font-medium">
-              <CheckCircle2 className="h-4 w-4 flex-shrink-0" />
-              <span>Website imported — please confirm the details below</span>
-            </div>
-            <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 pl-6 text-xs">
-              {([
-                ["Name", scrapeResult.businessInfo.name],
-                ["Phone", scrapeResult.businessInfo.phone],
-                ["Email", scrapeResult.businessInfo.email],
-                ["Address", scrapeResult.businessInfo.address],
-                ["Hours", scrapeResult.businessInfo.hours?.join(", ")],
-                ["Services", scrapeResult.businessInfo.services?.join(", ")],
-              ] as const).map(([label, value]) =>
-                value ? (
-                  <span key={label} className="contents">
-                    <dt className="font-medium text-green-700 dark:text-green-400">{label}</dt>
-                    <dd>{value}</dd>
-                  </span>
-                ) : null
-              )}
-            </dl>
-            <p className="pl-6 text-xs text-green-600 dark:text-green-400">
-              {scrapeResult.totalPages} page{scrapeResult.totalPages !== 1 ? "s" : ""} scraped.
-              Some fields below have been pre-filled — review and edit if needed.
-            </p>
-          </div>
+        {scrapeResult && onApplyScraped ? (
+          /* SCRUM-534: nothing auto-applies. The owner reviews each block
+             and presses Apply; the panel keys on the scan so a re-scan of a
+             different site starts its state fresh. */
+          <ApproveScrapedData
+            key={`${data.businessWebsite}-${scrapeResult.totalPages}`}
+            businessInfo={scrapeResult.businessInfo}
+            totalPages={scrapeResult.totalPages}
+            extraction={scrapeResult.extraction}
+            onApply={onApplyScraped}
+          />
         ) : (
           <p className="text-xs text-muted-foreground">
             We can import information from your website to train your AI
