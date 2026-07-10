@@ -1,5 +1,6 @@
 const { getSupabase } = require("./supabase");
 const { isWithinBusinessHours } = require("./business-hours");
+const { aggregateKnowledgeBase } = require("./kb-aggregate");
 
 /**
  * Validate and sanitize after_hours_config from DB.
@@ -171,33 +172,10 @@ async function loadCallContext(calledNumber, prefetchedPhone) {
     serviceTypes = stData;
   }
 
-  // Aggregate KB content — this is the sole KB-aggregation implementation
-  // (the TS mirror src/lib/knowledge-base/aggregate.ts was removed in SCRUM-435)
-  let knowledgeBase = "";
-  if (kbEntries && kbEntries.length > 0) {
-    const sections = [];
-    for (const entry of kbEntries) {
-      const heading = entry.title || entry.source_type;
-      if (entry.source_type === "faq") {
-        try {
-          const pairs = JSON.parse(entry.content);
-          const qaParts = pairs
-            .map((p) => `Q: ${p.question}\nA: ${p.answer}`)
-            .join("\n\n");
-          sections.push(`## ${heading}\n${qaParts}`);
-        } catch (parseErr) {
-          console.warn("[CallContext] FAQ entry has malformed JSON — using raw content:", {
-            entryId: entry.id,
-            error: parseErr.message,
-          });
-          sections.push(`## ${heading}\n${entry.content}`);
-        }
-      } else {
-        sections.push(`## ${heading}\n${entry.content}`);
-      }
-    }
-    knowledgeBase = sections.join("\n\n");
-  }
+  // Aggregate KB content — owner-authored entries first, website imports
+  // last (SCRUM-531). Shared with loadTestCallContext via lib/kb-aggregate.js
+  // (the TS mirror src/lib/knowledge-base/aggregate.ts was removed in SCRUM-435).
+  const knowledgeBase = aggregateKnowledgeBase(kbEntries, "[CallContext]");
 
   // Calendar tools are available if there's a Cal.com integration OR business hours
   // (built-in scheduling works with just business hours configured)
@@ -365,32 +343,9 @@ async function loadTestCallContext(assistantId, organizationId) {
     serviceTypes = stData;
   }
 
-  // Aggregate KB
-  let knowledgeBase = "";
-  if (kbEntries && kbEntries.length > 0) {
-    const sections = [];
-    for (const entry of kbEntries) {
-      const heading = entry.title || entry.source_type;
-      if (entry.source_type === "faq") {
-        try {
-          const pairs = JSON.parse(entry.content);
-          const qaParts = pairs
-            .map((p) => `Q: ${p.question}\nA: ${p.answer}`)
-            .join("\n\n");
-          sections.push(`## ${heading}\n${qaParts}`);
-        } catch (parseErr) {
-          console.warn("[TestCallContext] FAQ entry has malformed JSON — using raw content:", {
-            entryId: entry.id,
-            error: parseErr.message,
-          });
-          sections.push(`## ${heading}\n${entry.content}`);
-        }
-      } else {
-        sections.push(`## ${heading}\n${entry.content}`);
-      }
-    }
-    knowledgeBase = sections.join("\n\n");
-  }
+  // Aggregate KB — owner-authored entries first, website imports last
+  // (SCRUM-531); shared with loadCallContext via lib/kb-aggregate.js.
+  const knowledgeBase = aggregateKnowledgeBase(kbEntries, "[TestCallContext]");
 
   // Determine if the call is arriving outside business hours
   const afterHoursConfig = sanitizeAfterHoursConfig(assistant.after_hours_config, assistant.id);
