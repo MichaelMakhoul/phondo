@@ -42,7 +42,7 @@ export function DialCodeQr({ code, className }: { code: string; className?: stri
 
   if (!matrix) return null;
 
-  const QUIET_ZONE = 2; // modules of white border, per the QR spec minimum
+  const QUIET_ZONE = 4; // modules of white border — ISO/IEC 18004 minimum
   const size = matrix.count + QUIET_ZONE * 2;
 
   return (

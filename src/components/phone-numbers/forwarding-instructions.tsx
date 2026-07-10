@@ -94,7 +94,7 @@ export function ForwardingInstructions({
       <div className="space-y-1.5">
         {/* SCRUM-529: on a desktop the Dial button can't exist — the QR is
             how the code reaches the handset without hand-transcription. */}
-        {!subdued && (
+        {!subdued && href && (
           <div className="hidden items-center gap-3 sm:flex">
             <DialCodeQr code={code} className="h-24 w-24 shrink-0 rounded border" />
             <p className="text-xs text-muted-foreground">

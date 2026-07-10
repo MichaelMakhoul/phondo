@@ -295,7 +295,7 @@ export function ForwardingSetupDialog({
     return (
       <div className="space-y-2">
         <Label className="text-xs font-medium text-muted-foreground">{label}</Label>
-        {showQr && (
+        {showQr && href && (
           <div className="hidden items-center gap-3 sm:flex">
             <DialCodeQr code={code} className="h-24 w-24 shrink-0 rounded border" />
             <p className="text-xs text-muted-foreground">
