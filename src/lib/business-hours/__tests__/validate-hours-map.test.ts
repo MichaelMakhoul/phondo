@@ -49,3 +49,8 @@ describe("validateBusinessHoursMap", () => {
     expect(validateBusinessHoursMap(undefined as never)).toEqual([]);
   });
 });
+
+  it("skips non-canonical keys — legacy dead data must not block the save unfixably", () => {
+    expect(validateBusinessHoursMap({ Monday: { open: "", close: "17:00" } } as never)).toEqual([]);
+    expect(validateBusinessHoursMap({ monday: { open: "", close: "17:00" } })).toHaveLength(1);
+  });

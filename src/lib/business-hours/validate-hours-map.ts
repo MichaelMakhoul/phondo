@@ -35,9 +35,17 @@ function isValidTime(t: unknown): t is string {
  * Errors for every OPEN day whose window a call could not honor. Closed
  * days (null/undefined) are never errors.
  */
+const CANONICAL_DAYS = new Set([
+  "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+]);
+
 export function validateBusinessHoursMap(hours: BusinessHoursMap): HoursMapError[] {
   const errors: HoursMapError[] = [];
   for (const [day, window] of Object.entries(hours ?? {})) {
+    // A stray non-canonical key (legacy data) is dead weight no reader looks
+    // at — flagging it would block the save with an error the UI renders
+    // nowhere and the owner can't fix.
+    if (!CANONICAL_DAYS.has(day)) continue;
     if (window === null || window === undefined) continue;
     if (!isValidTime(window.open) || !isValidTime(window.close)) {
       errors.push({ day, error: "Set both an opening and a closing time" });

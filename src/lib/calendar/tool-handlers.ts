@@ -2787,7 +2787,7 @@ async function bookInternal(
     }
 
     // Also check practitioner-specific blocked times
-    const { data: blocks } = await (supabaseAdmin as any)
+    const { data: blocks, error: blocksError } = await (supabaseAdmin as any)
       .from("blocked_times")
       .select("id")
       .eq("organization_id", organizationId)
@@ -2795,6 +2795,16 @@ async function bookInternal(
       .lt("start_time", endDate.toISOString())
       .gt("end_time", startDate.toISOString())
       .limit(1);
+
+    if (blocksError) {
+      // SCRUM-541: same silent-failure class as the availability path — on a
+      // DB error this check passed and the caller was booked on top of the
+      // practitioner's day off (blocked_times has NO DB backstop; see the
+      // round-robin sibling, which fails closed). Fail loud; the handler's
+      // catch offers to take a message instead.
+      console.error("Failed to fetch blocked times for requested-practitioner booking:", { organizationId, error: blocksError });
+      throw new Error(`Failed to fetch blocked times: ${blocksError.message}`);
+    }
 
     if (blocks && blocks.length > 0) {
       return {

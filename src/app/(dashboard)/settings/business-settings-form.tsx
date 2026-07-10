@@ -254,7 +254,7 @@ export function BusinessSettingsForm({
       toast({
         variant: "destructive",
         title: "Check your business hours",
-        description: `Fix ${hourErrs.map((e) => e.day).join(", ")} before saving.`,
+        description: `Fix ${hourErrs.map((e) => e.day.charAt(0).toUpperCase() + e.day.slice(1)).join(", ")} before saving.`,
       });
       return;
     }
@@ -568,14 +568,14 @@ export function BusinessSettingsForm({
                 {businessHours[day.key] ? (
                   <div className="flex items-center gap-2 text-sm pl-10 sm:pl-0">
                     <TimePicker
-                      value={businessHours[day.key]?.open || "09:00"}
+                      value={businessHours[day.key]?.open ?? ""}
                       onChange={(v) => updateDayHours(day.key, "open", v)}
                       className="w-[8rem]"
                       aria-label={`${day.label} open time`}
                     />
                     <span className="text-muted-foreground">to</span>
                     <TimePicker
-                      value={businessHours[day.key]?.close || "17:00"}
+                      value={businessHours[day.key]?.close ?? ""}
                       onChange={(v) => updateDayHours(day.key, "close", v)}
                       className="w-[8rem]"
                       aria-label={`${day.label} close time`}
