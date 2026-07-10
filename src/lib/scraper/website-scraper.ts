@@ -22,6 +22,11 @@ export interface ScrapedFaq {
   answer: string;
 }
 
+export interface ScrapedStaffMember {
+  name: string;
+  role?: string;
+}
+
 export interface ScrapedWebsite {
   baseUrl: string;
   pages: ScrapedPage[];
@@ -40,6 +45,11 @@ export interface ScrapedWebsite {
     /** SCRUM-532: compact prose for caller-relevant facts that fit no other
      * field (parking, payment, insurance, service area, policies). */
     summary?: string;
+    /** SCRUM-534: staff names + roles from "Our Team" pages. DISPLAY ONLY —
+     * never auto-created as bookable practitioner rows: practitioner_id
+     * participates in the booking exclusion constraints, and the prompt
+     * forbids promising specific-practitioner bookings on lower plans. */
+    staff?: ScrapedStaffMember[];
   };
   scrapedAt: Date;
   totalPages: number;
@@ -456,6 +466,9 @@ const FIELD_LIMITS = {
   faqQuestion: 300,
   faqAnswer: 1200,
   faqs: 20,
+  staffName: 80,
+  staffRole: 80,
+  staff: 15,
 } as const;
 
 function clampString(value: string | undefined, max: number): string | undefined {
@@ -496,6 +509,30 @@ export function cleanLLMFaqs(value: unknown): ScrapedFaq[] | undefined {
     });
   }
   return faqs.length > 0 ? faqs : undefined;
+}
+
+/**
+ * Validate the LLM's staff field: objects with a non-empty string name;
+ * role optional. Display-only downstream (see the businessInfo type note).
+ */
+export function cleanLLMStaff(value: unknown): ScrapedStaffMember[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const staff: ScrapedStaffMember[] = [];
+  for (const item of value) {
+    if (staff.length >= FIELD_LIMITS.staff) break;
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+    const n = (item as Record<string, unknown>).name;
+    const r = (item as Record<string, unknown>).role;
+    if (typeof n !== 'string') continue;
+    const name = n.trim();
+    if (!name || isPlaceholder(name)) continue;
+    const role = typeof r === 'string' && r.trim() && !isPlaceholder(r.trim()) ? r.trim() : undefined;
+    staff.push({
+      name: clampString(name, FIELD_LIMITS.staffName) as string,
+      ...(role ? { role: clampString(role, FIELD_LIMITS.staffRole) } : {}),
+    });
+  }
+  return staff.length > 0 ? staff : undefined;
 }
 
 /**
@@ -580,6 +617,7 @@ export async function extractBusinessInfoWithLLM(
 - "about": string — 1-2 sentence summary of what the business does
 - "faqs": array of {"question": string, "answer": string} — questions and answers the site itself publishes (FAQ pages, "common questions" sections). Keep the site's own wording, condensed. Up to 20.
 - "summary": string — up to 3 short paragraphs of OTHER facts a receptionist answering this business's phone would need: parking, payment methods, insurance accepted, service area, cancellation or booking policies, accessibility. Only facts stated on the site. Do NOT repeat what is already captured in the fields above.
+- "staff": array of {"name": string, "role": string} — team members the site names (e.g. practitioners, stylists, agents), role optional. Up to 15. Names only as written on the site; never infer or invent.
 
 IMPORTANT: Only extract general business information. Do NOT extract individual product listings, property listings, menu items, inventory details, or other catalog data. These change frequently and should not be in the knowledge base.
 
@@ -660,6 +698,7 @@ Only include fields you are confident about. Return {} if no useful info is foun
       about: clampString(cleanLLMField(parsed.about), FIELD_LIMITS.about),
       faqs: cleanLLMFaqs(parsed.faqs),
       summary: clampString(cleanLLMField(parsed.summary), FIELD_LIMITS.summary),
+      staff: cleanLLMStaff(parsed.staff),
     };
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') {
@@ -794,6 +833,7 @@ export function mergeBusinessInfo(
     about: regexInfo.about || llmInfo.about,
     faqs: llmInfo.faqs,
     summary: llmInfo.summary,
+    staff: llmInfo.staff,
   };
 }
 
@@ -857,7 +897,11 @@ export function generateKnowledgeBase(
   const mode = options.mode ?? 'structured';
   const sections: string[] = [];
 
-  // Business info section — shared by both modes. The header guard covers
+  // Business info section — shared by both modes. `staff` is deliberately
+  // NOT rendered into the KB: it exists for the approve screen (SCRUM-534);
+  // bookable practitioners are an explicit owner action in Settings, never
+  // a scrape side effect.
+  // The header guard covers
   // ONLY the fields this section renders: counting faqs/summary here would
   // emit a bare "## Business Information" header above nothing whenever the
   // extraction found only FAQs.
