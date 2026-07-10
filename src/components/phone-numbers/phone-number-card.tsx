@@ -319,7 +319,15 @@ export function PhoneNumberCard({ phoneNumber, countryCode, assistants = [] }: P
                     {fallbackNumber ? "Edit Fallback Number" : "Set Fallback Number"}
                   </DropdownMenuItem>
                   {isForwarded && (
-                    <DropdownMenuItem>View Forwarding Instructions</DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() =>
+                        document
+                          .getElementById("forwarding-guide")
+                          ?.scrollIntoView({ behavior: "smooth", block: "start" })
+                      }
+                    >
+                      View Forwarding Instructions
+                    </DropdownMenuItem>
                   )}
                   <DropdownMenuItem className="text-destructive" onClick={() => setReleaseOpen(true)}>
                     {isForwarded ? "Remove Forwarding" : "Release Number"}

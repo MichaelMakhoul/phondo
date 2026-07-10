@@ -34,7 +34,7 @@ export function ForwardingGuideSection({ phoneNumbers, countryCode }: Forwarding
   // Hooks before any early return.
   const [selectedId, setSelectedId] = useState("");
 
-  const destinations = forwardingDestinations(phoneNumbers);
+  const destinations = forwardingDestinations(phoneNumbers, countryCode);
   if (destinations.length === 0) return null;
 
   const selected = destinations.find((d) => d.id === selectedId) ?? destinations[0];
@@ -48,7 +48,9 @@ export function ForwardingGuideSection({ phoneNumbers, countryCode }: Forwarding
   };
 
   return (
-    <div className="max-w-xl space-y-3">
+    // scroll-mt keeps the heading clear of any sticky chrome when the
+    // number card's "View Forwarding Instructions" item scrolls here.
+    <div id="forwarding-guide" className="max-w-xl scroll-mt-20 space-y-3">
       <div>
         <h2 className="text-lg font-semibold">Call forwarding</h2>
         <p className="text-sm text-muted-foreground">

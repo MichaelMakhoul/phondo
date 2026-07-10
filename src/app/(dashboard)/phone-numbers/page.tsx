@@ -39,7 +39,7 @@ export default async function PhoneNumbersPage() {
       // fallback visible in server logs until the page grows a real error
       // state. Country-sensitive children defend themselves: the forwarding
       // guide resolves the country from each number's own "+" prefix.
-      console.error("[PhoneNumbers] organizations lookup failed — defaulting country to US:", orgError);
+      console.error(`[PhoneNumbers] organizations lookup failed for org ${orgId} — defaulting country to US:`, orgError);
     }
   }
 

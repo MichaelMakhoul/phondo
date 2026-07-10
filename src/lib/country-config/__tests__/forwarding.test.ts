@@ -7,7 +7,7 @@ import {
   forwardingDestinations,
   FORWARDING_MODE_LABELS,
 } from "../forwarding";
-import { getCarriersForCountry } from "../index";
+import { getCarriersForCountry, formatPhoneForCountry } from "../index";
 
 // SCRUM-516. These strings are typed into a real phone by a real business
 // owner. If the destination is wrong, forwarding is set to a number that does
@@ -229,25 +229,72 @@ describe("forwardingDestinations", () => {
   it("keeps active numbers of BOTH source types (a 'forwarded' row still holds the Phondo number)", () => {
     const purchased = { ...base, id: "a", source_type: "purchased" };
     const forwarded = { ...base, id: "b", source_type: "forwarded" };
-    expect(forwardingDestinations([purchased, forwarded]).map((n) => n.id)).toEqual(["a", "b"]);
+    expect(forwardingDestinations([purchased, forwarded], "AU").map((n) => n.id)).toEqual(["a", "b"]);
+  });
+
+  it("preserves input order — the caller's ordering decides the default destination", () => {
+    // The component defaults to destinations[0] and most owners never open
+    // the picker, so the order IS the product. Ids and phones are both
+    // deliberately non-ascending so any helpful `.sort()` dies here.
+    const rows = [
+      { ...base, id: "z", phone_number: "+61255550300" },
+      { ...base, id: "a", phone_number: "+61255550100" },
+      { ...base, id: "m", phone_number: "+61255550200" },
+    ];
+    expect(forwardingDestinations(rows, "AU").map((n) => n.id)).toEqual(["z", "a", "m"]);
   });
 
   it("drops inactive numbers — their dial code would point at a released number", () => {
-    expect(forwardingDestinations([{ ...base, is_active: false }])).toEqual([]);
+    expect(forwardingDestinations([{ ...base, is_active: false }], "AU")).toEqual([]);
   });
 
   it("drops rows with a null, empty or whitespace phone_number", () => {
     expect(
-      forwardingDestinations([
-        { ...base, id: "n", phone_number: null },
-        { ...base, id: "e", phone_number: "" },
-        { ...base, id: "w", phone_number: "   " },
-      ])
+      forwardingDestinations(
+        [
+          { ...base, id: "n", phone_number: null },
+          { ...base, id: "e", phone_number: "" },
+          { ...base, id: "w", phone_number: "   " },
+        ],
+        "AU"
+      )
     ).toEqual([]);
   });
 
+  it("drops a number whose country cannot be established — the guide pane would render blank", () => {
+    // ForwardingInstructions returns null for a country it has no rules for;
+    // offering the number anyway produces a heading and picker above nothing.
+    const nz = { ...base, id: "nz", phone_number: "+6421234567" };
+    const au = { ...base, id: "au", phone_number: "+61255550100" };
+    expect(forwardingDestinations([nz, au], "US").map((n) => n.id)).toEqual(["au"]);
+    // Bare digits with no usable org country are unknowable too.
+    expect(forwardingDestinations([{ ...base, phone_number: "0285551234" }], "")).toEqual([]);
+  });
+
   it("returns [] for null/undefined input", () => {
-    expect(forwardingDestinations(null)).toEqual([]);
-    expect(forwardingDestinations(undefined)).toEqual([]);
+    expect(forwardingDestinations(null, "AU")).toEqual([]);
+    expect(forwardingDestinations(undefined, "AU")).toEqual([]);
+  });
+});
+
+// SCRUM-536 companion pins: the picker label is the string a customer eyeballs
+// to confirm where calls will land, and formatPhoneForCountry had no tests
+// anywhere in the repo. Display-only (dial codes are re-derived from E.164
+// downstream), but toNationalDialable is exactly the function class that
+// rotted silently in SCRUM-516.
+describe("formatPhoneForCountry", () => {
+  it("formats AU landline and mobile E.164 for display", () => {
+    expect(formatPhoneForCountry("+61255550100", "AU")).toBe("+61 2 5555 0100");
+    expect(formatPhoneForCountry("+61412345678", "AU")).toBe("+61 412 345 678");
+  });
+
+  it("formats US E.164 and bare ten-digit numbers for display", () => {
+    expect(formatPhoneForCountry("+15551234567", "US")).toBe("+1 (555) 123-4567");
+    expect(formatPhoneForCountry("5551234567", "US")).toBe("(555) 123-4567");
+  });
+
+  it("passes through what it cannot recognise instead of mangling it", () => {
+    expect(formatPhoneForCountry("gibberish", "AU")).toBe("gibberish");
+    expect(formatPhoneForCountry("+6421234567", "AU")).toBe("+6421234567");
   });
 });
