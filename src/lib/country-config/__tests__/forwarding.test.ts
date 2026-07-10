@@ -4,6 +4,7 @@ import {
   buildForwardingCodes,
   resolveForwardingCountry,
   telHref,
+  forwardingDestinations,
   FORWARDING_MODE_LABELS,
 } from "../forwarding";
 import { getCarriersForCountry } from "../index";
@@ -216,5 +217,37 @@ describe("FORWARDING_MODE_LABELS", () => {
     expect(copy).not.toContain("conditional");
     expect(copy).not.toContain("mmi");
     expect(copy).not.toContain("dial code");
+  });
+});
+
+// SCRUM-536: the guide lives permanently on /phone-numbers, so which numbers
+// it offers as destinations is a product decision, pinned here because the
+// component itself is unpinnable (no component-test harness, SCRUM-530).
+describe("forwardingDestinations", () => {
+  const base = { id: "p1", phone_number: "+61255550100", is_active: true };
+
+  it("keeps active numbers of BOTH source types (a 'forwarded' row still holds the Phondo number)", () => {
+    const purchased = { ...base, id: "a", source_type: "purchased" };
+    const forwarded = { ...base, id: "b", source_type: "forwarded" };
+    expect(forwardingDestinations([purchased, forwarded]).map((n) => n.id)).toEqual(["a", "b"]);
+  });
+
+  it("drops inactive numbers — their dial code would point at a released number", () => {
+    expect(forwardingDestinations([{ ...base, is_active: false }])).toEqual([]);
+  });
+
+  it("drops rows with a null, empty or whitespace phone_number", () => {
+    expect(
+      forwardingDestinations([
+        { ...base, id: "n", phone_number: null },
+        { ...base, id: "e", phone_number: "" },
+        { ...base, id: "w", phone_number: "   " },
+      ])
+    ).toEqual([]);
+  });
+
+  it("returns [] for null/undefined input", () => {
+    expect(forwardingDestinations(null)).toEqual([]);
+    expect(forwardingDestinations(undefined)).toEqual([]);
   });
 });

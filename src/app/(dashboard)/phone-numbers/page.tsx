@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Phone, ArrowUpRight } from "lucide-react";
 import { PhoneNumberActions } from "@/components/phone-numbers/phone-number-actions";
 import { PhoneNumberCard } from "@/components/phone-numbers/phone-number-card";
+import { ForwardingGuideSection } from "@/components/phone-numbers/forwarding-guide-section";
 import { checkResourceLimit } from "@/lib/stripe/billing-service";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PhoneScene } from "@/components/ui/empty-state-scenes";
@@ -33,6 +34,12 @@ export default async function PhoneNumbersPage() {
       .single();
     if (!orgError && org?.country) {
       countryCode = org.country;
+    } else if (orgError) {
+      // SCRUM-528: the page proceeds with a defaulted "US" — at least make the
+      // fallback visible in server logs until the page grows a real error
+      // state. Country-sensitive children defend themselves: the forwarding
+      // guide resolves the country from each number's own "+" prefix.
+      console.error("[PhoneNumbers] organizations lookup failed — defaulting country to US:", orgError);
     }
   }
 
@@ -89,16 +96,25 @@ export default async function PhoneNumbersPage() {
 
       {/* Phone Numbers List */}
       {phoneNumbers && phoneNumbers.length > 0 ? (
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          {phoneNumbers.map((phoneNumber) => (
-            <PhoneNumberCard
-              key={phoneNumber.id}
-              phoneNumber={phoneNumber}
-              countryCode={countryCode}
-              assistants={assistants || []}
-            />
-          ))}
-        </div>
+        <>
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+            {phoneNumbers.map((phoneNumber) => (
+              <PhoneNumberCard
+                key={phoneNumber.id}
+                phoneNumber={phoneNumber}
+                countryCode={countryCode}
+                assistants={assistants || []}
+              />
+            ))}
+          </div>
+
+          {/* SCRUM-536: the forwarding guide lives here permanently. Before
+              this it appeared once on the You're-Live screen and inside the
+              "Add Number" wizard — nowhere an existing customer would look
+              when they change carrier, get a new handset, or need the
+              DISABLE code to switch forwarding off. */}
+          <ForwardingGuideSection phoneNumbers={phoneNumbers} countryCode={countryCode} />
+        </>
       ) : (
         <Card className="p-12">
           <EmptyState

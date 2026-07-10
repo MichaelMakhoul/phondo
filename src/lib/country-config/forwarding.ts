@@ -175,6 +175,24 @@ export function telHref(code: string): string | null {
 }
 
 /**
+ * Which of an org's phone numbers can serve as a forwarding destination.
+ *
+ * Both source types qualify: a "purchased" row IS the Phondo number, and a
+ * "forwarded" row's phone_number column also holds the provisioned Twilio
+ * number Phondo answers on (user_phone_number holds the customer's own line).
+ * Inactive rows and rows without a number are excluded — showing a dial code
+ * that points at a released number is the SCRUM-516 bug wearing a new hat.
+ */
+export function forwardingDestinations<
+  T extends { phone_number: string | null; is_active: boolean }
+>(numbers: readonly T[] | null | undefined): T[] {
+  if (!Array.isArray(numbers)) return [];
+  return numbers.filter(
+    (n) => n.is_active && typeof n.phone_number === "string" && n.phone_number.trim() !== ""
+  );
+}
+
+/**
  * How the two modes are described to a business owner, who does not think in
  * terms of "conditional" and "unconditional".
  */
