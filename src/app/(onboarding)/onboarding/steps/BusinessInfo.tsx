@@ -23,6 +23,7 @@ interface ScrapeResult {
   businessInfo: ScrapedBusinessInfo;
   totalPages: number;
   extraction?: "structured" | "raw-fallback";
+  scanId: number;
 }
 
 interface BusinessInfoProps {
@@ -110,7 +111,7 @@ export function BusinessInfo({ data, onChange, onScrape, isScraping, scrapeResul
              and presses Apply; the panel keys on the scan so a re-scan of a
              different site starts its state fresh. */
           <ApproveScrapedData
-            key={`${data.businessWebsite}-${scrapeResult.totalPages}`}
+            key={scrapeResult.scanId}
             businessInfo={scrapeResult.businessInfo}
             totalPages={scrapeResult.totalPages}
             extraction={scrapeResult.extraction}

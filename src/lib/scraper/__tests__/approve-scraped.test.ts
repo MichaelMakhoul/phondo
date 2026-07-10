@@ -104,3 +104,92 @@ describe("buildApprovedHoursLines — THE round-trip invariant", () => {
     expect(parsed!.hours.saturday).toBeNull();
   });
 });
+
+// ── Review-round pins (SCRUM-534 gate) ──────────────────────────────────
+
+import { validateHoursSelections } from "../approve-scraped";
+import { parseTimeRangesDetailed } from "../parse-business-hours";
+
+describe("hours-then-closed conflicts (review F3 — was a real bug)", () => {
+  it("hours then closed for the same day marks the closed line ambiguous, and the row arrives UNCONFIRMED", () => {
+    const readings = parseBusinessHoursDetailed(["Monday: 9am - 5pm", "Monday: closed"]);
+    expect(readings[1].status).toBe("ambiguous");
+    expect(readings[1].warning).toContain("listed twice");
+    const rows = readingsToDaySelections(readings);
+    expect(rows[0].include).toBe(false);
+  });
+
+  it("closed then hours (the direction that already worked) stays ambiguous", () => {
+    const readings = parseBusinessHoursDetailed(["Monday: closed", "Monday: 9am - 5pm"]);
+    expect(readings[1].status).toBe("ambiguous");
+  });
+
+  it("the realistic scrape shape: header hours plus a Mondays-closed notice cannot arrive pre-confirmed", () => {
+    const rows = readingsToDaySelections(
+      parseBusinessHoursDetailed(["Mon-Fri: 9am - 5pm", "Monday: closed"])
+    );
+    const monday = rows.find((r) => r.day === "monday")!;
+    expect(monday.include).toBe(false);
+  });
+});
+
+describe("mixed multi-window specs (review — the only new seam in the strict loop)", () => {
+  it("one ambiguous window poisons the whole spec: detailed says ambiguous, strict refuses the week", () => {
+    const r = parseTimeRangesDetailed("5 - 11, 2pm - 6pm");
+    expect(r.status).toBe("ambiguous");
+    expect(r.hours).toEqual({ open: "05:00", close: "18:00" });
+    expect(r.warning).toContain("5am-11am"); // first ambiguity explains the candidate
+    expect(parseBusinessHours(["Mon-Thu: 9am - 5pm", "Friday: 5 - 11, 2pm - 6pm"])).toBeNull();
+  });
+
+  it("with TWO ambiguous windows, the FIRST ambiguity explains the candidate", () => {
+    // "5 - 11" is both-ways ambiguous; "2 - 6pm" is bare-open ambiguous.
+    // The candidate envelope embeds window 1's literal reading, so window 2's
+    // warning overwriting window 1's would explain the wrong number.
+    const r = parseTimeRangesDetailed("5 - 11, 2 - 6pm");
+    expect(r.status).toBe("ambiguous");
+    expect(r.warning).toContain("5am-11am");
+    expect(r.warning).not.toContain("starting 2pm");
+
+    // And with two BOTH-WAYS windows, still the first:
+    const r2 = parseTimeRangesDetailed("5 - 11, 3 - 7");
+    expect(r2.warning).toContain("5am-11am");
+    expect(r2.warning).not.toContain("3am-7am");
+  });
+});
+
+describe("validateHoursSelections (review F1 — HIGH: silent drops became CLOSED days)", () => {
+  it("flags a confirmed row missing either time, and one with close before open", () => {
+    const errors = validateHoursSelections([
+      { day: "monday", include: true, hours: { open: "", close: "17:00" } },
+      { day: "tuesday", include: true, hours: { open: "17:00", close: "09:00" } },
+      { day: "wednesday", include: true, hours: { open: "09:00", close: "17:00" } },
+    ]);
+    expect(errors.map((e) => e.day)).toEqual(["monday", "tuesday"]);
+  });
+
+  it("unconfirmed and closed rows are never errors", () => {
+    expect(
+      validateHoursSelections([
+        { day: "monday", include: false, hours: { open: "", close: "" } },
+        { day: "tuesday", include: true, hours: null },
+      ])
+    ).toEqual([]);
+  });
+});
+
+describe("MIN_DAYS_NAMED interaction (review F2 — pinned as a conscious decision)", () => {
+  it("four confirmed days emit four lines the strict parser REFUSES — the default stands", () => {
+    // The panel detects this via the same round-trip and emits [] with an
+    // inline notice instead of letting org creation blame the website.
+    const lines = buildApprovedHoursLines(
+      ["monday", "tuesday", "wednesday", "thursday"].map((day) => ({
+        day,
+        include: true,
+        hours: { open: "09:00", close: "17:00" },
+      }))
+    );
+    expect(lines).toHaveLength(4);
+    expect(parseBusinessHours(lines)).toBeNull();
+  });
+});

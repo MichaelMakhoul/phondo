@@ -1,4 +1,7 @@
 /**
+ * (Two tiers since SCRUM-534: the STRICT functions below refuse ambiguity —
+ * they are the only unattended write path — while the *Detailed functions at
+ * the bottom surface candidates for the approve screen to confirm.)
  * SCRUM-515: turn the scraper's human-readable opening hours into the structured
  * shape the availability engine books from.
  *
@@ -244,7 +247,9 @@ export function parseTimeRangesDetailed(spec: string): TimeRangeReading {
       const closeHour = Number(close.slice(0, 2));
       if (openHour < closeHour && closeHour < 12) {
         // Candidate: the literal AM reading; the warning names the PM one.
-        warning = `"${window.trim()}" could mean ${openHour}am-${closeHour}am or ${openHour}pm-${closeHour}pm — confirm which`;
+        // First ambiguity wins — a later window's warning must not overwrite
+        // the one that explains the candidate (SCRUM-534 review, F6).
+        warning ??= `"${window.trim()}" could mean ${openHour}am-${closeHour}am or ${openHour}pm-${closeHour}pm — confirm which`;
       }
     }
 
@@ -261,7 +266,7 @@ export function parseTimeRangesDetailed(spec: string): TimeRangeReading {
       const openAsPm = parseTime(`${m[1].trim()}pm`);
       if (openAsPm && openAsPm !== open && openAsPm < close) {
         // Candidate: the PM reading — any human reads "2 - 6pm" as 2pm.
-        warning = `"${window.trim()}" read as starting ${Number(openAsPm.slice(0, 2)) - 12}pm — the page could also mean ${Number(open.slice(0, 2))}am`;
+        warning ??= `"${window.trim()}" read as starting ${Number(openAsPm.slice(0, 2)) - 12}pm — the page could also mean ${Number(open.slice(0, 2))}am`;
         opens.push(openAsPm);
         closes.push(close);
         continue;
@@ -414,8 +419,23 @@ export function parseBusinessHoursDetailed(lines: string[] | undefined | null): 
     }
 
     if (CLOSED_RE.test(stripTrailingPunctuation(rest))) {
+      // Hours-then-closed is a conflict too (the reverse direction is caught
+      // by the generic check below). Without this, "Monday: 9am - 5pm" then
+      // "Monday: Closed" arrived PRE-CONFIRMED as closed — for a day the
+      // site also listed with real hours (SCRUM-534 review, F3).
+      const conflicted = days.some((day) => day in seen && seen[day] !== null);
       for (const day of days) seen[day] = null;
-      readings.push({ line, days, status: "closed", hours: null });
+      if (conflicted) {
+        readings.push({
+          line,
+          days,
+          status: "ambiguous",
+          hours: null,
+          warning: "This day was listed twice with different times — confirm which is right",
+        });
+      } else {
+        readings.push({ line, days, status: "closed", hours: null });
+      }
       continue;
     }
 

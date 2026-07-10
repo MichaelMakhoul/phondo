@@ -16,10 +16,8 @@
 
 import type { HoursLineReading } from "./parse-business-hours";
 
-export interface DayHours {
-  open: string; // "HH:MM" 24h
-  close: string;
-}
+export type { DayHours } from "./parse-business-hours";
+import type { DayHours } from "./parse-business-hours";
 
 export interface HoursDaySelection {
   /** lowercase day key: "monday" ... "sunday" */
@@ -99,14 +97,44 @@ export function readingsToDaySelections(readings: HoursLineReading[]): HoursDayS
   return DAY_ORDER.filter((d) => byDay.has(d)).map((d) => byDay.get(d) as HoursDaySelection);
 }
 
+export interface HoursSelectionError {
+  day: string;
+  error: string;
+}
+
+/**
+ * Validate included rows BEFORE emitting (SCRUM-534 review, F1 — HIGH).
+ * A confirmed row with a missing or inverted window must block Apply, not
+ * be dropped silently: once five OTHER days parse, an omitted day is read
+ * as CLOSED, so silent omission turns an owner-configured day into a day
+ * the AI turns callers away from — under a green "Applied" tick.
+ */
+export function validateHoursSelections(selections: HoursDaySelection[]): HoursSelectionError[] {
+  const errors: HoursSelectionError[] = [];
+  for (const s of selections) {
+    if (!s.include || s.hours === null) continue;
+    const open = formatTime12h(s.hours.open);
+    const close = formatTime12h(s.hours.close);
+    if (!open || !close) {
+      errors.push({ day: s.day, error: "Set both an opening and a closing time" });
+    } else if (s.hours.close <= s.hours.open) {
+      errors.push({ day: s.day, error: "Closing time must be after opening time" });
+    }
+  }
+  return errors;
+}
+
 /**
  * Turn confirmed selections into normalized hour lines.
  *
  * INVARIANT (pinned by test): every emitted line is accepted by the strict
  * parseBusinessHours, and a set with >= 5 confirmed days round-trips into a
  * non-null ParsedBusinessHours whose windows equal the selections. Rows the
- * owner did not confirm, and rows with malformed times, are omitted —
- * omission falls back to the org default, which is the safe direction.
+ * owner did not confirm are omitted. Malformed included rows are ALSO
+ * omitted as a last line of defense, but callers must run
+ * validateHoursSelections first and refuse to apply while it reports
+ * errors — silent omission here is NOT safe once five other days parse
+ * (the omitted day becomes CLOSED, not the default).
  */
 export function buildApprovedHoursLines(selections: HoursDaySelection[]): string[] {
   const lines: string[] = [];

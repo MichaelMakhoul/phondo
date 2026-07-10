@@ -7,10 +7,11 @@ import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { AlertTriangle, CheckCircle2, Info } from "lucide-react";
-import { parseBusinessHoursDetailed } from "@/lib/scraper/parse-business-hours";
+import { parseBusinessHours, parseBusinessHoursDetailed } from "@/lib/scraper/parse-business-hours";
 import {
   readingsToDaySelections,
   buildApprovedHoursLines,
+  validateHoursSelections,
   formatTime12h,
   type HoursDaySelection,
 } from "@/lib/scraper/approve-scraped";
@@ -80,15 +81,33 @@ export function ApproveScrapedData({ businessInfo, totalPages, extraction, onApp
   );
   const [applied, setApplied] = useState(false);
 
-  const updateDay = (day: string, patch: Partial<HoursDaySelection>) =>
+  const updateDay = (day: string, patch: Partial<HoursDaySelection>) => {
+    setApplied(false);
     setDays((rows) => rows.map((r) => (r.day === day ? { ...r, ...patch } : r)));
+  };
+
+  // F1 (review, HIGH): a confirmed row with a missing or inverted window must
+  // block Apply — silently dropping it would mark that day CLOSED once five
+  // other days parse, under a green "Applied" tick.
+  const dayErrors = useMemo(() => validateHoursSelections(days), [days]);
+  const errorFor = (day: string) => dayErrors.find((e) => e.day === day)?.error;
+
+  // F2 (review): fewer than 5 confirmed days cannot take effect — the strict
+  // parser refuses the set at org creation and the default would silently win.
+  const approvedLines = useMemo(() => (dayErrors.length === 0 ? buildApprovedHoursLines(days) : []), [days, dayErrors]);
+  const hoursIneffective =
+    dayErrors.length === 0 && approvedLines.length > 0 && parseBusinessHours(approvedLines) === null;
 
   const handleApply = () => {
+    if (dayErrors.length > 0) return;
     onApply({
       ...(includeDetails && name.trim() ? { businessName: name.trim() } : {}),
       ...(includeDetails && phone.trim() ? { businessPhone: phone.trim() } : {}),
       ...(includeDetails && address.trim() ? { scrapedAddress: address.trim() } : {}),
-      scrapedHours: buildApprovedHoursLines(days),
+      // An ineffective set must not reach org creation looking authoritative:
+      // the failure toast there blames the WEBSITE for hours the owner just
+      // confirmed. Empty means "leave the default", and the notice below says so.
+      scrapedHours: hoursIneffective ? [] : approvedLines,
       scrapedServices: services.filter((s) => s.include).map((s) => s.name),
     });
     setApplied(true);
@@ -123,17 +142,17 @@ export function ApproveScrapedData({ businessInfo, totalPages, extraction, onApp
           <div className="space-y-2 pl-6">
             <div className="space-y-1">
               <Label htmlFor="approve-name" className="text-xs text-muted-foreground">Business name</Label>
-              <Input id="approve-name" value={name} onChange={(e) => setName(e.target.value)} />
+              <Input id="approve-name" value={name} onChange={(e) => { setApplied(false); setName(e.target.value); }} />
             </div>
             <div className="space-y-1">
               <Label htmlFor="approve-phone" className="text-xs text-muted-foreground">
                 Your existing number — calls will forward from here to your AI
               </Label>
-              <Input id="approve-phone" value={phone} onChange={(e) => setPhone(e.target.value)} />
+              <Input id="approve-phone" value={phone} onChange={(e) => { setApplied(false); setPhone(e.target.value); }} />
             </div>
             <div className="space-y-1">
               <Label htmlFor="approve-address" className="text-xs text-muted-foreground">Address</Label>
-              <Input id="approve-address" value={address} onChange={(e) => setAddress(e.target.value)} />
+              <Input id="approve-address" value={address} onChange={(e) => { setApplied(false); setAddress(e.target.value); }} />
             </div>
           </div>
         )}
@@ -179,15 +198,25 @@ export function ApproveScrapedData({ businessInfo, totalPages, extraction, onApp
                     />
                   </span>
                 )}
+                {errorFor(row.day) && (
+                  <span className="text-xs text-destructive">{errorFor(row.day)}</span>
+                )}
                 {row.warning && (
                   <span className="flex items-center gap-1 text-xs text-amber-600 dark:text-amber-500">
                     <AlertTriangle className="h-3 w-3 shrink-0" />
                     {row.warning}
-                    {row.hours && ` — we read it as ${formatTime12h(row.hours.open)} to ${formatTime12h(row.hours.close)}; tick to confirm or fix the times`}
+                    {row.hours && formatTime12h(row.hours.open) && formatTime12h(row.hours.close) &&
+                      ` — we read it as ${formatTime12h(row.hours.open)} to ${formatTime12h(row.hours.close)}; tick to confirm or fix the times`}
                   </span>
                 )}
               </div>
             ))}
+            {hoursIneffective && (
+              <p className="flex items-center gap-1 text-xs text-amber-600 dark:text-amber-500">
+                <AlertTriangle className="h-3 w-3 shrink-0" />
+                Tick at least 5 days (mark the rest closed) or these hours can&apos;t be saved — your account default will stay.
+              </p>
+            )}
             {unrepresentable.map((r) => (
               <p key={r.line} className="text-xs text-muted-foreground">
                 Couldn&apos;t read &quot;{r.line}&quot; — you can set this later in Settings.
@@ -202,13 +231,14 @@ export function ApproveScrapedData({ businessInfo, totalPages, extraction, onApp
         <div className="space-y-2">
           <p className="font-medium">Services callers can book</p>
           <div className="grid gap-1.5 pl-1 sm:grid-cols-2">
-            {services.map((s) => (
-              <label key={s.name} className="flex items-center gap-2">
+            {services.map((s, i) => (
+              <label key={i} className="flex items-center gap-2">
                 <Checkbox
                   checked={s.include}
-                  onCheckedChange={(v) =>
-                    setServices((rows) => rows.map((r) => (r.name === s.name ? { ...r, include: v === true } : r)))
-                  }
+                  onCheckedChange={(v) => {
+                    setApplied(false);
+                    setServices((rows) => rows.map((r, ri) => (ri === i ? { ...r, include: v === true } : r)));
+                  }}
                 />
                 <span>{s.name}</span>
               </label>
@@ -241,9 +271,12 @@ export function ApproveScrapedData({ businessInfo, totalPages, extraction, onApp
       )}
 
       <div className="flex items-center gap-3">
-        <Button type="button" onClick={handleApply}>
+        <Button type="button" onClick={handleApply} disabled={dayErrors.length > 0}>
           Apply selections
         </Button>
+        {dayErrors.length > 0 && (
+          <span className="text-xs text-destructive">Fix the highlighted days first</span>
+        )}
         {applied && (
           <span className="flex items-center gap-1 text-xs text-green-600">
             <CheckCircle2 className="h-3.5 w-3.5" /> Applied — you can adjust and apply again

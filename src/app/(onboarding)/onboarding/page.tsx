@@ -18,6 +18,7 @@ import { Success } from "./steps/Success";
 import { ArrowLeft, ArrowRight, Loader2, CheckCircle2, Clock } from "lucide-react";
 import { getCountryConfig } from "@/lib/country-config";
 import { buildCustomInstructionsFromBusinessInfo } from "@/lib/scraper/build-custom-instructions";
+import type { ApprovedScrapedData } from "@/components/onboarding/approve-scraped-data";
 import { parseBusinessHours } from "@/lib/scraper/parse-business-hours";
 import { parsePhoneToE164, type SupportedCountry } from "@/lib/phone/normalize";
 import {
@@ -126,6 +127,10 @@ export default function OnboardingPage() {
     businessInfo: Record<string, any>;
     totalPages: number;
     extraction?: "structured" | "raw-fallback";
+    /** Monotonic per-scan nonce — the approve panel remounts on THIS, not on
+     *  the live URL input (each keystroke would wipe unapplied selections)
+     *  and not on totalPages (an equal-count re-scan would keep stale state). */
+    scanId: number;
   } | null>(null);
   const router = useRouter();
   const { toast } = useToast();
@@ -216,6 +221,7 @@ export default function OnboardingPage() {
         businessInfo: result.businessInfo || {},
         totalPages: result.totalPages || 0,
         extraction: result.extraction === "raw-fallback" ? "raw-fallback" : "structured",
+        scanId: Date.now(),
       });
       // Truncation used to be silent, so the AI would later be unable to answer
       // from the dropped tail with nothing to explain why. Say so plainly.
@@ -242,13 +248,7 @@ export default function OnboardingPage() {
   // SCRUM-534: the ONLY path scraped structured data takes into the form.
   // scrapedHours arrives already normalized by buildApprovedHoursLines, so
   // the strict parser at org creation accepts every line the owner confirmed.
-  const handleApplyScraped = (approved: {
-    businessName?: string;
-    businessPhone?: string;
-    scrapedAddress?: string;
-    scrapedHours: string[];
-    scrapedServices: string[];
-  }) => {
+  const handleApplyScraped = (approved: ApprovedScrapedData) => {
     updateData(approved);
   };
 
