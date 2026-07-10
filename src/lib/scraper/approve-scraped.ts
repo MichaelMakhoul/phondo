@@ -112,7 +112,17 @@ export interface HoursSelectionError {
 export function validateHoursSelections(selections: HoursDaySelection[]): HoursSelectionError[] {
   const errors: HoursSelectionError[] = [];
   for (const s of selections) {
-    if (!s.include || s.hours === null) continue;
+    if (!s.include) continue;
+    if (s.hours === null) {
+      // A GENUINE closed row (from a "closed" line, no warning) is valid.
+      // But an unparsed row still carries its warning — ticking it with the
+      // time fields left empty would silently emit "Day: closed" for a day
+      // the owner meant to fill in (re-verify pass, residual 2).
+      if (s.warning) {
+        errors.push({ day: s.day, error: "Set the hours, or untick this day" });
+      }
+      continue;
+    }
     const open = formatTime12h(s.hours.open);
     const close = formatTime12h(s.hours.close);
     if (!open || !close) {

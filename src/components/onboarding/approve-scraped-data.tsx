@@ -135,7 +135,7 @@ export function ApproveScrapedData({ businessInfo, totalPages, extraction, onApp
       {/* Business details */}
       <div className="space-y-2">
         <label className="flex items-center gap-2 font-medium">
-          <Checkbox checked={includeDetails} onCheckedChange={(v) => setIncludeDetails(v === true)} />
+          <Checkbox checked={includeDetails} onCheckedChange={(v) => { setApplied(false); setIncludeDetails(v === true); }} />
           Business details
         </label>
         {includeDetails && (

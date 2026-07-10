@@ -193,3 +193,16 @@ describe("MIN_DAYS_NAMED interaction (review F2 — pinned as a conscious decisi
     expect(parseBusinessHours(lines)).toBeNull();
   });
 });
+
+describe("re-verify residuals (SCRUM-534)", () => {
+  it("an unparsed row ticked with empty times is an ERROR, not a silent closed day", () => {
+    const errors = validateHoursSelections([
+      { day: "monday", include: true, hours: null, warning: "We couldn't read this line" },
+    ]);
+    expect(errors).toEqual([{ day: "monday", error: "Set the hours, or untick this day" }]);
+  });
+
+  it("a genuine closed row (no warning) stays valid", () => {
+    expect(validateHoursSelections([{ day: "sunday", include: true, hours: null }])).toEqual([]);
+  });
+});
