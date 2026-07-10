@@ -11,6 +11,7 @@ import { checkResourceLimit } from "@/lib/stripe/billing-service";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PhoneScene } from "@/components/ui/empty-state-scenes";
 import type { PhoneNumber, Assistant } from "@/types/phone-number";
+import { forwardingDestinations } from "@/lib/country-config/forwarding";
 
 export default async function PhoneNumbersPage() {
   const supabase = await createClient();
@@ -44,14 +45,14 @@ export default async function PhoneNumbersPage() {
   }
 
   // Get phone numbers
-  const { data: phoneNumbers } = orgId ? await supabase
+  const { data: phoneNumbers, error: phoneNumbersError } = orgId ? await supabase
     .from("phone_numbers")
     .select(`
       *,
       assistants (id, name)
     `)
     .eq("organization_id", orgId)
-    .order("created_at", { ascending: false }) as { data: PhoneNumber[] | null } : { data: null };
+    .order("created_at", { ascending: false }) as unknown as { data: PhoneNumber[] | null; error: { message: string } | null } : { data: null, error: null };
 
   // Get assistants for assignment
   const { data: assistants } = orgId ? await supabase
@@ -59,6 +60,17 @@ export default async function PhoneNumbersPage() {
     .select("id, name")
     .eq("organization_id", orgId)
     .eq("is_active", true) as { data: Assistant[] | null } : { data: null };
+
+  if (phoneNumbersError) {
+    // SCRUM-538: a DB failure used to render "No phone numbers yet" — the
+    // empty-state with purchase CTAs — to a customer who HAS numbers.
+    console.error(`[PhoneNumbers] numbers lookup failed for org ${orgId}:`, phoneNumbersError);
+  }
+
+  // SCRUM-538: the card's "View Forwarding Instructions" item scrolls to the
+  // guide — which only renders when at least one destination qualifies. Tell
+  // the cards, so the item never scrolls to nothing.
+  const hasForwardingGuide = forwardingDestinations(phoneNumbers ?? [], countryCode).length > 0;
 
   // Check resource limit for phone numbers
   const limitInfo = orgId ? await checkResourceLimit(orgId, "phoneNumbers") : null;
@@ -95,7 +107,14 @@ export default async function PhoneNumbersPage() {
       </div>
 
       {/* Phone Numbers List */}
-      {phoneNumbers && phoneNumbers.length > 0 ? (
+      {phoneNumbersError ? (
+        <Card className="p-12 text-center">
+          <p className="font-medium">We couldn't load your phone numbers</p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Your numbers are safe — this page just failed to load them. Refresh to try again.
+          </p>
+        </Card>
+      ) : phoneNumbers && phoneNumbers.length > 0 ? (
         <>
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
             {phoneNumbers.map((phoneNumber) => (
@@ -104,6 +123,7 @@ export default async function PhoneNumbersPage() {
                 phoneNumber={phoneNumber}
                 countryCode={countryCode}
                 assistants={assistants || []}
+                hasForwardingGuide={hasForwardingGuide}
               />
             ))}
           </div>

@@ -43,6 +43,9 @@ interface PhoneNumberCardProps {
   phoneNumber: PhoneNumber;
   countryCode: string;
   assistants?: Assistant[];
+  /** SCRUM-538: whether the page's forwarding guide rendered — the menu
+   * item scrolls to it and must not scroll to nothing. */
+  hasForwardingGuide?: boolean;
 }
 
 function findCarrierInfo(carrier: string | null, countryCode: string): CarrierInfo | null {
@@ -51,7 +54,7 @@ function findCarrierInfo(carrier: string | null, countryCode: string): CarrierIn
   return config.carriers.find((c: CarrierInfo) => c.id === carrier) || null;
 }
 
-export function PhoneNumberCard({ phoneNumber, countryCode, assistants = [] }: PhoneNumberCardProps) {
+export function PhoneNumberCard({ phoneNumber, countryCode, assistants = [], hasForwardingGuide = false }: PhoneNumberCardProps) {
   const router = useRouter();
   const { toast } = useToast();
   const [toggling, setToggling] = useState(false);
@@ -318,7 +321,7 @@ export function PhoneNumberCard({ phoneNumber, countryCode, assistants = [] }: P
                   >
                     {fallbackNumber ? "Edit Fallback Number" : "Set Fallback Number"}
                   </DropdownMenuItem>
-                  {isForwarded && (
+                  {isForwarded && hasForwardingGuide && (
                     <DropdownMenuItem
                       onClick={() =>
                         document
