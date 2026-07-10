@@ -27,28 +27,81 @@ describe("readingsToDaySelections", () => {
     const rows = readingsToDaySelections(
       parseBusinessHoursDetailed(["Monday: 9am - 5pm", "Tuesday: 2 - 6pm", "Sunday: closed"])
     );
-    expect(rows).toHaveLength(3);
-    const [mon, tue, sun] = rows;
-    expect(mon).toMatchObject({ day: "monday", include: true, hours: { open: "09:00", close: "17:00" } });
-    expect(tue.include).toBe(false);
-    expect(tue.hours).toEqual({ open: "14:00", close: "18:00" });
-    expect(tue.warning).toBeTruthy();
-    expect(sun).toMatchObject({ day: "sunday", include: true, hours: null });
+    // SCRUM-540: the full week renders — unmentioned days as pre-ticked closed.
+    expect(rows).toHaveLength(7);
+    const byDay = Object.fromEntries(rows.map((r) => [r.day, r]));
+    expect(byDay.monday).toMatchObject({ include: true, hours: { open: "09:00", close: "17:00" } });
+    expect(byDay.tuesday.include).toBe(false);
+    expect(byDay.tuesday.hours).toEqual({ open: "14:00", close: "18:00" });
+    expect(byDay.tuesday.warning).toBeTruthy();
+    expect(byDay.sunday).toMatchObject({ include: true, hours: null });
+    // An unmentioned day: pre-ticked closed, NO warning (stays valid as closed).
+    expect(byDay.wednesday).toMatchObject({ include: true, hours: null });
+    expect(byDay.wednesday.warning).toBeUndefined();
   });
 
-  it("unparsed-with-day rows start unconfirmed and empty; day ranges expand", () => {
+  it("SCRUM-540: a weekend-only listing emits a full 7-line week that the strict parser ACCEPTS", () => {
+    const rows = readingsToDaySelections(
+      parseBusinessHoursDetailed(["Saturday: 9am - 2pm", "Sunday: 10am - 1pm"])
+    );
+    expect(rows).toHaveLength(7);
+    const lines = buildApprovedHoursLines(rows);
+    expect(lines).toHaveLength(7);
+    const parsed = parseBusinessHours(lines);
+    expect(parsed).not.toBeNull();
+    expect(parsed!.hours.saturday).toEqual({ open: "09:00", close: "14:00" });
+    expect(parsed!.hours.monday).toBeNull();
+  });
+
+  it("SCRUM-540 review (HIGH): an UNREADABLE line suspends the closed-fill — its days could be any of them", () => {
+    // "Weekdays: 9am - 5pm" fails the day label entirely. Pre-ticking Mon-Fri
+    // closed would turn callers away from days the site says are open — the
+    // strict parser's own precondition for "unmentioned means closed" is that
+    // every line was intelligible.
+    const rows = readingsToDaySelections(
+      parseBusinessHoursDetailed(["Saturday: 9am - 2pm", "Weekdays: 9am - 5pm"])
+    );
+    expect(rows).toHaveLength(7);
+    const monday = rows.find((r) => r.day === "monday")!;
+    expect(monday.include).toBe(false);
+    expect(monday.warning).toBeTruthy();
+    // And ticking it without setting times must be blocked, not read as closed.
+    expect(validateHoursSelections([{ ...monday, include: true }])).toHaveLength(1);
+    const saturday = rows.find((r) => r.day === "saturday")!;
+    expect(saturday).toMatchObject({ include: true, hours: { open: "09:00", close: "14:00" } });
+  });
+
+  it("SCRUM-540: a single closed line fills to an all-closed week the strict parser REFUSES (panel notice territory)", () => {
+    const rows = readingsToDaySelections(parseBusinessHoursDetailed(["Sunday: closed"]));
+    const lines = buildApprovedHoursLines(rows);
+    expect(lines).toHaveLength(7);
+    expect(lines.every((l) => l.endsWith(": closed"))).toBe(true);
+    expect(parseBusinessHours(lines)).toBeNull();
+  });
+
+  it("SCRUM-540: no days mentioned at all still hides the hours block ([])", () => {
+    expect(readingsToDaySelections(parseBusinessHoursDetailed(["ring for times"]))).toEqual([]);
+    expect(readingsToDaySelections([])).toEqual([]);
+  });
+
+  it("unparsed-with-day rows start unconfirmed and empty; day ranges expand; the rest fill closed", () => {
     const rows = readingsToDaySelections(parseBusinessHoursDetailed(["Mon-Wed: ring for times"]));
-    expect(rows.map((r) => r.day)).toEqual(["monday", "tuesday", "wednesday"]);
-    expect(rows.every((r) => !r.include && r.hours === null && r.warning)).toBe(true);
+    expect(rows.map((r) => r.day)).toEqual([
+      "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+    ]);
+    const mentioned = rows.slice(0, 3);
+    expect(mentioned.every((r) => !r.include && r.hours === null && r.warning)).toBe(true);
+    const filled = rows.slice(3);
+    expect(filled.every((r) => r.include && r.hours === null && !r.warning)).toBe(true);
   });
 
   it("a later line for the same day replaces the earlier row", () => {
     const rows = readingsToDaySelections(
       parseBusinessHoursDetailed(["Monday: 9am - 5pm", "Monday: 10am - 4pm"])
     );
-    expect(rows).toHaveLength(1);
-    expect(rows[0].include).toBe(false); // conflict → owner must look
-    expect(rows[0].hours).toEqual({ open: "10:00", close: "16:00" });
+    const monday = rows.find((r) => r.day === "monday")!;
+    expect(monday.include).toBe(false); // conflict → owner must look
+    expect(monday.hours).toEqual({ open: "10:00", close: "16:00" });
   });
 });
 

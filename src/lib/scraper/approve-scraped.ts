@@ -68,6 +68,14 @@ export function formatTime12h(t: string): string | null {
  * A later line for the same day replaces the earlier row (matching the
  * duplicate-day semantics of the detailed parser, which already marks the
  * conflict ambiguous).
+ *
+ * SCRUM-540: when the site mentioned ANY day, the remaining days of the week
+ * are filled in as PRE-TICKED closed rows. That is the strict parser's own
+ * reading of an hours table ("days the site never mentioned are closed"),
+ * made visible and editable before Apply instead of implied after it — and
+ * it means a weekend-only listing emits a full 7-line week, so
+ * MIN_DAYS_NAMED no longer silently discards hours the owner confirmed.
+ * No days mentioned at all → [] (the hours block hides, as before).
  */
 export function readingsToDaySelections(readings: HoursLineReading[]): HoursDaySelection[] {
   const byDay = new Map<string, HoursDaySelection>();
@@ -94,7 +102,33 @@ export function readingsToDaySelections(readings: HoursLineReading[]): HoursDayS
       }
     }
   }
-  return DAY_ORDER.filter((d) => byDay.has(d)).map((d) => byDay.get(d) as HoursDaySelection);
+  if (byDay.size === 0) return [];
+  // The strict parser's own precondition for "unmentioned means closed" is
+  // that EVERY line was intelligible (it refuses the week otherwise). A line
+  // whose day label failed entirely ("Weekdays: 9am - 5pm") could describe
+  // any of the missing days — pre-ticking them closed would turn callers
+  // away from days the site says are open. Fill those as UNTICKED rows the
+  // owner must set instead.
+  const hasUnreadableLine = readings.some((r) => r.days.length === 0);
+  return DAY_ORDER.map(
+    (d) =>
+      byDay.get(d) ??
+      (hasUnreadableLine
+        ? {
+            day: d,
+            include: false,
+            hours: null,
+            warning: "The site listed hours we couldn't read — set this day's hours or leave it unticked",
+          }
+        : {
+            day: d,
+            // Pre-ticked closed: visible, editable, and consistent with how
+            // the strict parser reads a FULLY intelligible hours table. No
+            // warning — a genuine closed row must stay valid.
+            include: true,
+            hours: null,
+          })
+  );
 }
 
 export interface HoursSelectionError {
@@ -138,8 +172,10 @@ export function validateHoursSelections(selections: HoursDaySelection[]): HoursS
  * Turn confirmed selections into normalized hour lines.
  *
  * INVARIANT (pinned by test): every emitted line is accepted by the strict
- * parseBusinessHours, and a set with >= 5 confirmed days round-trips into a
- * non-null ParsedBusinessHours whose windows equal the selections. Rows the
+ * parseBusinessHours, and a set with >= 5 confirmed days AND at least one
+ * OPEN day round-trips into a non-null ParsedBusinessHours whose windows
+ * equal the selections (an all-closed week is refused by the parser's
+ * all-closed guard — the panel detects that via the same round-trip). Rows the
  * owner did not confirm are omitted. Malformed included rows are ALSO
  * omitted as a last line of defense, but callers must run
  * validateHoursSelections first and refuse to apply while it reports

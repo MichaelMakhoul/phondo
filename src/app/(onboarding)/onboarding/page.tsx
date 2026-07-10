@@ -406,8 +406,10 @@ export default function OnboardingPage() {
         // The site listed hours we couldn't read. Say so, or the first they
         // learn of it is a caller being offered a slot on a day they're shut.
         if (data.scrapedHours.length > 0 && !parsedHours) {
+          // SCRUM-540: since SCRUM-534 these lines are owner-confirmed in the
+          // approve panel, not raw website text — don't blame the website.
           importWarnings.push(
-            "We couldn't read the opening hours on your website, so your assistant will use Monday to Friday, 9 to 5. You can change them in Settings, under Business Hours."
+            "Your opening hours couldn't be saved, so your assistant will use Monday to Friday, 9 to 5 for now. You can set the real hours in Settings, under Business Hours."
           );
         }
 
