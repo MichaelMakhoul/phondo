@@ -97,6 +97,13 @@ export function ApproveScrapedData({ businessInfo, totalPages, extraction, onApp
   const approvedLines = useMemo(() => (dayErrors.length === 0 ? buildApprovedHoursLines(days) : []), [days, dayErrors]);
   const hoursIneffective =
     dayErrors.length === 0 && approvedLines.length > 0 && parseBusinessHours(approvedLines) === null;
+  // The two ways a set can be ineffective need different advice.
+  const allClosed = approvedLines.length > 0 && approvedLines.every((l) => l.endsWith(": closed"));
+  // Unticking a day while >= 5 others still parse is a placebo: the strict
+  // parser reads omitted days as closed anyway. Say so instead of letting
+  // the tick look like it did something.
+  const untickedButStillClosed =
+    !hoursIneffective && approvedLines.length > 0 && days.some((d) => !d.include);
 
   const handleApply = () => {
     if (dayErrors.length > 0) return;
@@ -214,7 +221,14 @@ export function ApproveScrapedData({ businessInfo, totalPages, extraction, onApp
             {hoursIneffective && (
               <p className="flex items-center gap-1 text-xs text-amber-600 dark:text-amber-500">
                 <AlertTriangle className="h-3 w-3 shrink-0" />
-                Tick at least 5 days (mark the rest closed) or these hours can&apos;t be saved — your account default will stay.
+                {allClosed
+                  ? "Every day is marked closed — set at least one open day or these hours can't be saved."
+                  : "Tick at least 5 days (mark the rest closed) or these hours can't be saved — your account default will stay."}
+              </p>
+            )}
+            {untickedButStillClosed && (
+              <p className="text-xs text-muted-foreground">
+                Days you leave unticked are still treated as closed. If one is actually open, set its hours here or in Settings later.
               </p>
             )}
             {unrepresentable.map((r) => (

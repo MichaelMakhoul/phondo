@@ -103,16 +103,31 @@ export function readingsToDaySelections(readings: HoursLineReading[]): HoursDayS
     }
   }
   if (byDay.size === 0) return [];
+  // The strict parser's own precondition for "unmentioned means closed" is
+  // that EVERY line was intelligible (it refuses the week otherwise). A line
+  // whose day label failed entirely ("Weekdays: 9am - 5pm") could describe
+  // any of the missing days — pre-ticking them closed would turn callers
+  // away from days the site says are open. Fill those as UNTICKED rows the
+  // owner must set instead.
+  const hasUnreadableLine = readings.some((r) => r.days.length === 0);
   return DAY_ORDER.map(
     (d) =>
-      byDay.get(d) ?? {
-        day: d,
-        // Pre-ticked closed: visible, editable, and consistent with how the
-        // strict parser reads an hours table. No warning — a genuine closed
-        // row must stay valid in validateHoursSelections.
-        include: true,
-        hours: null,
-      }
+      byDay.get(d) ??
+      (hasUnreadableLine
+        ? {
+            day: d,
+            include: false,
+            hours: null,
+            warning: "The site listed hours we couldn't read — set this day's hours or leave it unticked",
+          }
+        : {
+            day: d,
+            // Pre-ticked closed: visible, editable, and consistent with how
+            // the strict parser reads a FULLY intelligible hours table. No
+            // warning — a genuine closed row must stay valid.
+            include: true,
+            hours: null,
+          })
   );
 }
 
@@ -157,8 +172,10 @@ export function validateHoursSelections(selections: HoursDaySelection[]): HoursS
  * Turn confirmed selections into normalized hour lines.
  *
  * INVARIANT (pinned by test): every emitted line is accepted by the strict
- * parseBusinessHours, and a set with >= 5 confirmed days round-trips into a
- * non-null ParsedBusinessHours whose windows equal the selections. Rows the
+ * parseBusinessHours, and a set with >= 5 confirmed days AND at least one
+ * OPEN day round-trips into a non-null ParsedBusinessHours whose windows
+ * equal the selections (an all-closed week is refused by the parser's
+ * all-closed guard — the panel detects that via the same round-trip). Rows the
  * owner did not confirm are omitted. Malformed included rows are ALSO
  * omitted as a last line of defense, but callers must run
  * validateHoursSelections first and refuse to apply while it reports

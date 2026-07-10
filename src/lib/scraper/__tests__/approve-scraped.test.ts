@@ -53,6 +53,32 @@ describe("readingsToDaySelections", () => {
     expect(parsed!.hours.monday).toBeNull();
   });
 
+  it("SCRUM-540 review (HIGH): an UNREADABLE line suspends the closed-fill — its days could be any of them", () => {
+    // "Weekdays: 9am - 5pm" fails the day label entirely. Pre-ticking Mon-Fri
+    // closed would turn callers away from days the site says are open — the
+    // strict parser's own precondition for "unmentioned means closed" is that
+    // every line was intelligible.
+    const rows = readingsToDaySelections(
+      parseBusinessHoursDetailed(["Saturday: 9am - 2pm", "Weekdays: 9am - 5pm"])
+    );
+    expect(rows).toHaveLength(7);
+    const monday = rows.find((r) => r.day === "monday")!;
+    expect(monday.include).toBe(false);
+    expect(monday.warning).toBeTruthy();
+    // And ticking it without setting times must be blocked, not read as closed.
+    expect(validateHoursSelections([{ ...monday, include: true }])).toHaveLength(1);
+    const saturday = rows.find((r) => r.day === "saturday")!;
+    expect(saturday).toMatchObject({ include: true, hours: { open: "09:00", close: "14:00" } });
+  });
+
+  it("SCRUM-540: a single closed line fills to an all-closed week the strict parser REFUSES (panel notice territory)", () => {
+    const rows = readingsToDaySelections(parseBusinessHoursDetailed(["Sunday: closed"]));
+    const lines = buildApprovedHoursLines(rows);
+    expect(lines).toHaveLength(7);
+    expect(lines.every((l) => l.endsWith(": closed"))).toBe(true);
+    expect(parseBusinessHours(lines)).toBeNull();
+  });
+
   it("SCRUM-540: no days mentioned at all still hides the hours block ([])", () => {
     expect(readingsToDaySelections(parseBusinessHoursDetailed(["ring for times"]))).toEqual([]);
     expect(readingsToDaySelections([])).toEqual([]);
