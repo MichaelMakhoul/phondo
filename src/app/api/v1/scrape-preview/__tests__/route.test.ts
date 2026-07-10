@@ -18,6 +18,8 @@ import type { NextRequest } from "next/server";
 const scraperState = vi.hoisted(() => ({
   llmShouldThrow: null as Error | null,
   scrapeShouldThrow: null as Error | null,
+  // SCRUM-532: null = extraction FAILED (distinct from {} = found little).
+  llmReturnsNull: false,
 }));
 
 const pageSentryMock = vi.hoisted(() => vi.fn());
@@ -66,7 +68,8 @@ vi.mock("@/lib/scraper/website-scraper", () => ({
   generateKnowledgeBase: vi.fn(() => "KB content"),
   extractBusinessInfoWithLLM: vi.fn(async () => {
     if (scraperState.llmShouldThrow) throw scraperState.llmShouldThrow;
-    return {};
+    if (scraperState.llmReturnsNull) return null;
+    return { summary: "Free parking.", faqs: [{ question: "Q?", answer: "A." }] };
   }),
 }));
 
@@ -84,6 +87,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   scraperState.llmShouldThrow = null;
   scraperState.scrapeShouldThrow = null;
+  scraperState.llmReturnsNull = false;
 });
 
 describe("POST /api/v1/scrape-preview — LLM-extract-bug contract (SCRUM-307)", () => {
@@ -109,6 +113,9 @@ describe("POST /api/v1/scrape-preview — LLM-extract-bug contract (SCRUM-307)",
     expect(body.businessInfo.name).toBe("Test Biz");
     expect(body.content).toBe("KB content");
     expect(body.totalPages).toBe(1);
+    // SCRUM-532: a THROWN extractor is a failed extraction — the KB must be
+    // built in the flagged raw-fallback mode, never as an empty structured one.
+    expect(body.extraction).toBe("raw-fallback");
 
     // The contract-violation detector fired exactly once with the right
     // reason + level + the `url` triage breadcrumb (the outer route catch
@@ -121,6 +128,35 @@ describe("POST /api/v1/scrape-preview — LLM-extract-bug contract (SCRUM-307)",
         level: "error",
         extras: { url: "https://example.com" },
       }),
+    );
+  });
+
+  it("SCRUM-532: extraction success → structured KB, faqs/summary merged into the response", async () => {
+    const res = await POST(makeRequest());
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.extraction).toBe("structured");
+    expect(body.businessInfo.summary).toBe("Free parking.");
+    expect(body.businessInfo.faqs).toEqual([{ question: "Q?", answer: "A." }]);
+    const { generateKnowledgeBase } = await import("@/lib/scraper/website-scraper");
+    expect(vi.mocked(generateKnowledgeBase)).toHaveBeenCalledWith(
+      expect.anything(),
+      { mode: "structured" },
+    );
+  });
+
+  it("SCRUM-532: extraction returning NULL (failed, not thrown) → raw-fallback mode, flagged in the response", async () => {
+    scraperState.llmReturnsNull = true;
+    const res = await POST(makeRequest());
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.extraction).toBe("raw-fallback");
+    // A failed extraction is NOT the contract-violation bug — no Sentry page.
+    expect(pageSentryMock).not.toHaveBeenCalled();
+    const { generateKnowledgeBase } = await import("@/lib/scraper/website-scraper");
+    expect(vi.mocked(generateKnowledgeBase)).toHaveBeenCalledWith(
+      expect.anything(),
+      { mode: "raw-fallback" },
     );
   });
 

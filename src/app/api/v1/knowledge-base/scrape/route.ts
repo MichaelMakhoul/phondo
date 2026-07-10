@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { scrapeWebsite, generateKnowledgeBase } from "@/lib/scraper/website-scraper";
+import { scrapeWebsite, generateKnowledgeBase, extractBusinessInfoWithLLM } from "@/lib/scraper/website-scraper";
 import { isUrlAllowedAsync } from "@/lib/security/validation";
 import { withRateLimitDistributed } from "@/lib/security/rate-limiter";
 import { SENTRY_REASONS } from "@/lib/security/error-ids";
@@ -114,8 +114,42 @@ export async function POST(request: NextRequest) {
       maxDepth: 2,
     });
 
+    // SCRUM-532: this route used to skip LLM extraction entirely and store
+    // the raw page dump — up to 50k chars of homepage prose per import,
+    // regex phone/email as the only structure. Now it runs the same
+    // extraction pipeline as onboarding's scrape-preview. Non-fatal: null
+    // (extraction FAILED) switches the KB to the flagged raw-fallback mode.
+    let llmResult: Awaited<ReturnType<typeof extractBusinessInfoWithLLM>> = null;
+    try {
+      llmResult = await extractBusinessInfoWithLLM(scrapedData.pages);
+    } catch (err) {
+      console.error("[kb-scrape] BUG: extractBusinessInfoWithLLM threw unexpectedly:", err);
+      pageSentry({
+        service: "next-api",
+        reason: SENTRY_REASONS.SCRAPE_PREVIEW_LLM_EXTRACT_BUG,
+        level: "error",
+        err,
+        extras: { url, organizationId },
+      });
+    }
+
+    const llmInfo = llmResult ?? {};
+    const regexInfo = scrapedData.businessInfo;
+    scrapedData.businessInfo = {
+      name: regexInfo.name || llmInfo.name,
+      phone: regexInfo.phone || llmInfo.phone,
+      email: regexInfo.email || llmInfo.email,
+      address: regexInfo.address || llmInfo.address,
+      hours: regexInfo.hours?.length ? regexInfo.hours : llmInfo.hours,
+      services: regexInfo.services?.length ? regexInfo.services : llmInfo.services,
+      about: regexInfo.about || llmInfo.about,
+      faqs: llmInfo.faqs,
+      summary: llmInfo.summary,
+    };
+
     // Generate knowledge base content
-    const knowledgeBaseContent = generateKnowledgeBase(scrapedData);
+    const extraction = llmResult !== null ? ("structured" as const) : ("raw-fallback" as const);
+    const knowledgeBaseContent = generateKnowledgeBase(scrapedData, { mode: extraction });
 
     // Derive title from domain if not provided
     let entryTitle = title;
@@ -141,6 +175,8 @@ export async function POST(request: NextRequest) {
           totalPages: scrapedData.totalPages,
           scrapedAt: scrapedData.scrapedAt,
           businessInfo: scrapedData.businessInfo,
+          // "raw-fallback" = crawl succeeded, structured read did not.
+          extraction,
         },
         is_active: true,
       });

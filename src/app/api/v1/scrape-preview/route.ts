@@ -85,10 +85,12 @@ export async function POST(request: NextRequest) {
       maxDepth: 1,
     });
 
-    // LLM extraction for rich business info (non-fatal — must never fail the scrape)
-    let llmInfo: Awaited<ReturnType<typeof extractBusinessInfoWithLLM>> = {};
+    // LLM extraction for rich business info (non-fatal — must never fail the
+    // scrape). SCRUM-532: null means extraction FAILED (vs found-little) —
+    // that switches the KB output to the flagged raw-fallback mode below.
+    let llmResult: Awaited<ReturnType<typeof extractBusinessInfoWithLLM>> = null;
     try {
-      llmInfo = await extractBusinessInfoWithLLM(scrapedData.pages);
+      llmResult = await extractBusinessInfoWithLLM(scrapedData.pages);
     } catch (err) {
       // Should never happen — extractBusinessInfoWithLLM catches internally.
       console.error('[scrape-preview] BUG: extractBusinessInfoWithLLM threw unexpectedly:', err);
@@ -107,6 +109,7 @@ export async function POST(request: NextRequest) {
 
     // Regex extracts phone/email only; all other fields come from LLM.
     // Regex takes priority where both exist.
+    const llmInfo = llmResult ?? {};
     const regexInfo = scrapedData.businessInfo;
     const mergedInfo = {
       name: regexInfo.name || llmInfo.name,
@@ -116,16 +119,22 @@ export async function POST(request: NextRequest) {
       hours: regexInfo.hours?.length ? regexInfo.hours : llmInfo.hours,
       services: regexInfo.services?.length ? regexInfo.services : llmInfo.services,
       about: regexInfo.about || llmInfo.about,
+      faqs: llmInfo.faqs,
+      summary: llmInfo.summary,
     };
 
     // Mutate scrapedData so generateKnowledgeBase picks up merged info
     scrapedData.businessInfo = mergedInfo;
-    const content = generateKnowledgeBase(scrapedData);
+    const extraction = llmResult !== null ? ('structured' as const) : ('raw-fallback' as const);
+    const content = generateKnowledgeBase(scrapedData, { mode: extraction });
 
     return NextResponse.json({
       businessInfo: mergedInfo,
       content,
       totalPages: scrapedData.totalPages,
+      // "raw-fallback" = the site was crawled but could not be read into
+      // structured form (LLM outage/timeout) — the UI can say so.
+      extraction,
     });
   } catch (error) {
     console.error("Scrape preview error:", error);
