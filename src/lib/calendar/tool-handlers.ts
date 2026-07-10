@@ -589,8 +589,13 @@ async function getBuiltInAvailability(
       practitioner_id: string | null;
     }[];
 
-    // Fetch practitioner-specific blocked times for this date
-    const { data: practBlocks } = await (supabase as any)
+    // Fetch practitioner-specific blocked times for this date.
+    // SCRUM-541: the error was silently ignored — on a DB failure the blocks
+    // simply didn't apply and slots were offered inside a practitioner's day
+    // off or lunch. Fail loudly like the sibling appointments query: the
+    // handler's catch answers "trouble checking the calendar", which beats a
+    // double-booking that nobody can explain later.
+    const { data: practBlocks, error: practBlocksError } = await (supabase as any)
       .from("blocked_times")
       .select("practitioner_id, start_time, end_time")
       .eq("organization_id", organizationId)
@@ -598,6 +603,11 @@ async function getBuiltInAvailability(
       .in("practitioner_id", practitionerIds)
       .lt("start_time", dayEndISO)
       .gt("end_time", dayStartISO);
+
+    if (practBlocksError) {
+      console.error("Failed to fetch practitioner blocked times:", { organizationId, date, error: practBlocksError });
+      throw new Error(`Failed to fetch practitioner blocked times: ${practBlocksError.message}`);
+    }
 
     const practitionerBlocks = (practBlocks || []) as {
       practitioner_id: string;
@@ -2777,7 +2787,7 @@ async function bookInternal(
     }
 
     // Also check practitioner-specific blocked times
-    const { data: blocks } = await (supabaseAdmin as any)
+    const { data: blocks, error: blocksError } = await (supabaseAdmin as any)
       .from("blocked_times")
       .select("id")
       .eq("organization_id", organizationId)
@@ -2785,6 +2795,16 @@ async function bookInternal(
       .lt("start_time", endDate.toISOString())
       .gt("end_time", startDate.toISOString())
       .limit(1);
+
+    if (blocksError) {
+      // SCRUM-541: same silent-failure class as the availability path — on a
+      // DB error this check passed and the caller was booked on top of the
+      // practitioner's day off (blocked_times has NO DB backstop; see the
+      // round-robin sibling, which fails closed). Fail loud; the handler's
+      // catch offers to take a message instead.
+      console.error("Failed to fetch blocked times for requested-practitioner booking:", { organizationId, error: blocksError });
+      throw new Error(`Failed to fetch blocked times: ${blocksError.message}`);
+    }
 
     if (blocks && blocks.length > 0) {
       return {

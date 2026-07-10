@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { validateBusinessHoursMap } from "@/lib/business-hours/validate-hours-map";
 import { createClient } from "@/lib/supabase/client";
 import {
   Card,
@@ -147,6 +148,7 @@ export function BusinessSettingsForm({
   );
   const [smsSender, setSmsSender] = useState(initialData.smsSender || "");
   const [smsSenderError, setSmsSenderError] = useState<string | null>(null);
+  const [hoursErrors, setHoursErrors] = useState<{ day: string; error: string }[]>([]);
   const [businessHours, setBusinessHours] = useState<BusinessHours>(
     initialData.businessHours || {
       monday: { open: "09:00", close: "17:00" },
@@ -243,6 +245,19 @@ export function BusinessSettingsForm({
 
   const handleSave = async () => {
     if (!validate()) return;
+    // SCRUM-541: an open day saved with an empty or inverted window reads as
+    // CLOSED on calls while this page shows it open — callers get turned
+    // away with no signal anywhere. Refuse the save, name the days.
+    const hourErrs = validateBusinessHoursMap(businessHours);
+    if (hourErrs.length > 0) {
+      setHoursErrors(hourErrs);
+      toast({
+        variant: "destructive",
+        title: "Check your business hours",
+        description: `Fix ${hourErrs.map((e) => e.day.charAt(0).toUpperCase() + e.day.slice(1)).join(", ")} before saving.`,
+      });
+      return;
+    }
     // SCRUM-260: validate SMS sender (alphanumeric, 1-11 chars, at least one letter)
     if (smsSender.trim()) {
       const s = smsSender.trim();
@@ -318,6 +333,7 @@ export function BusinessSettingsForm({
   };
 
   const toggleDayOpen = (day: string) => {
+    setHoursErrors([]);
     setBusinessHours((prev) => ({
       ...prev,
       [day]: prev[day] ? null : { open: "09:00", close: "17:00" },
@@ -329,6 +345,7 @@ export function BusinessSettingsForm({
     field: "open" | "close",
     value: string
   ) => {
+    setHoursErrors([]);
     setBusinessHours((prev) => ({
       ...prev,
       [day]: prev[day] ? { ...prev[day]!, [field]: value } : null,
@@ -551,14 +568,14 @@ export function BusinessSettingsForm({
                 {businessHours[day.key] ? (
                   <div className="flex items-center gap-2 text-sm pl-10 sm:pl-0">
                     <TimePicker
-                      value={businessHours[day.key]?.open || "09:00"}
+                      value={businessHours[day.key]?.open ?? ""}
                       onChange={(v) => updateDayHours(day.key, "open", v)}
                       className="w-[8rem]"
                       aria-label={`${day.label} open time`}
                     />
                     <span className="text-muted-foreground">to</span>
                     <TimePicker
-                      value={businessHours[day.key]?.close || "17:00"}
+                      value={businessHours[day.key]?.close ?? ""}
                       onChange={(v) => updateDayHours(day.key, "close", v)}
                       className="w-[8rem]"
                       aria-label={`${day.label} close time`}
@@ -566,6 +583,11 @@ export function BusinessSettingsForm({
                   </div>
                 ) : (
                   <span className="text-sm text-muted-foreground pl-10 sm:pl-0">Closed</span>
+                )}
+                {hoursErrors.some((e) => e.day === day.key) && (
+                  <span className="text-xs text-destructive pl-10 sm:pl-0">
+                    {hoursErrors.find((e) => e.day === day.key)!.error}
+                  </span>
                 )}
               </div>
             ))}
