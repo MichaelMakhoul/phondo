@@ -10,6 +10,8 @@
  * message-taking guidance is used instead.
  */
 
+const { MAX_KB_CHARS } = require("./kb-aggregate");
+
 /**
  * Build verification instructions based on the org's appointment_verification_fields setting.
  * Returns an array of prompt lines.
@@ -743,10 +745,13 @@ function buildSystemPrompt(assistant, organization, knowledgeBase, options) {
   const afterHoursConfig = options?.afterHoursConfig ?? null;
   const serviceTypes = options?.serviceTypes ?? [];
 
-  // Cap knowledge base to a reasonable size for cost efficiency
-  const MAX_KB_CHARS = 12_000;
+  // Cap knowledge base to a reasonable size for cost efficiency. Loudly:
+  // a silent cut is how owner-authored KB entries went missing for months
+  // (SCRUM-531). kb-aggregate.js logs WHICH entries the cap cuts; this is
+  // the backstop for callers that didn't aggregate through it.
   let trimmedKB = knowledgeBase;
   if (trimmedKB && trimmedKB.length > MAX_KB_CHARS) {
+    console.warn(`[PromptBuilder] Knowledge base is ${trimmedKB.length} chars — truncating to ${MAX_KB_CHARS}; content beyond the cap never reaches the AI`);
     trimmedKB = trimmedKB.slice(0, MAX_KB_CHARS) + "\n\n[Knowledge base truncated for brevity]";
   }
 
