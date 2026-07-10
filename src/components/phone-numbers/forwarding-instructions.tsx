@@ -22,6 +22,7 @@ import {
   FORWARDING_MODE_LABELS,
   type ForwardingMode,
 } from "@/lib/country-config/forwarding";
+import { DialCodeQr } from "./dial-code-qr";
 
 interface ForwardingInstructionsProps {
   /** The Phondo number calls should land on, in E.164 ("+61285551234"). */
@@ -91,6 +92,17 @@ export function ForwardingInstructions({
     const href = telHref(code);
     return (
       <div className="space-y-1.5">
+        {/* SCRUM-529: on a desktop the Dial button can't exist — the QR is
+            how the code reaches the handset without hand-transcription. */}
+        {!subdued && href && (
+          <div className="hidden items-center gap-3 sm:flex">
+            <DialCodeQr code={code} className="h-24 w-24 shrink-0 rounded border" />
+            <p className="text-xs text-muted-foreground">
+              Scan with the phone you want forwarded — the dialer opens with this code
+              entered, then press call.
+            </p>
+          </div>
+        )}
         <Label
           className={`text-xs font-medium ${subdued ? "text-muted-foreground/80" : "text-muted-foreground"}`}
         >

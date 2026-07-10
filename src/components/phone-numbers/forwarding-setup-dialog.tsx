@@ -45,6 +45,7 @@ import {
   FORWARDING_MODE_LABELS,
   type ForwardingMode,
 } from "@/lib/country-config/forwarding";
+import { DialCodeQr } from "./dial-code-qr";
 import { trackPhoneNumberAdded } from "@/lib/analytics";
 
 interface Assistant {
@@ -287,11 +288,22 @@ export function ForwardingSetupDialog({
    * phone will auto-send an MMI code from a link. On a desktop it may open
    * nothing at all, which is why the code stays visible and copyable next to it.
    */
-  const renderCodeRow = (label: string, code: string) => {
+  const renderCodeRow = (label: string, code: string, showQr = false) => {
+    // SCRUM-529: see forwarding-instructions.tsx — the desktop path for the code.
+
     const href = telHref(code);
     return (
       <div className="space-y-2">
         <Label className="text-xs font-medium text-muted-foreground">{label}</Label>
+        {showQr && href && (
+          <div className="hidden items-center gap-3 sm:flex">
+            <DialCodeQr code={code} className="h-24 w-24 shrink-0 rounded border" />
+            <p className="text-xs text-muted-foreground">
+              Scan with the phone you want forwarded — the dialer opens with this code
+              entered, then press call.
+            </p>
+          </div>
+        )}
         <div className="flex items-center gap-2">
           <code className="flex-1 rounded-md bg-muted px-3 py-2 font-mono text-sm break-all">
             {code}
@@ -352,7 +364,7 @@ export function ForwardingSetupDialog({
     return (
       <div className="space-y-3">
         <p className="text-sm text-muted-foreground">{FORWARDING_MODE_LABELS[type].blurb}</p>
-        {renderCodeRow("To turn forwarding on, dial:", enable)}
+        {renderCodeRow("To turn forwarding on, dial:", enable, true)}
         {renderCodeRow("To turn it off again later:", disable)}
         <p className="text-xs text-muted-foreground">{note}</p>
 
