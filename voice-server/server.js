@@ -57,6 +57,7 @@ const { detectExpectedInput } = require("./lib/input-type-detector");
 const { requiresRecordingDisclosureHybrid, getRecordingDisclosureText } = require("./lib/recording-consent");
 const { getSupabase } = require("./lib/supabase");
 const { saveForTransfer, getTransfer, consumeTransfer, finishTransferredCall } = require("./lib/pending-transfers");
+const { maybeEmitUnhappyCall } = require("./lib/unhappy-call");
 const { forwardingFallbackEligible } = require("./lib/transfer-eligibility");
 
 // SCRUM-375: human-readable name for the assistant's configured language, used
@@ -1422,6 +1423,15 @@ wss.on("connection", (twilioWs) => {
           const callerForLog = DEBUG_TRANSCRIPTS ? (analysis.callerName || "unknown") : "[redacted]";
           const reasonForLog = DEBUG_TRANSCRIPTS ? (analysis.callerPhoneReason || "unknown") : "[redacted]";
           console.log(`[PostCall] Analysis complete: caller=${callerForLog}, reason=${reasonForLog}, success=${analysis.successEvaluation}`);
+
+          // SCRUM-192: page unhappy calls — shared helper, also wired into
+          // the transfer-completion path (lib/pending-transfers.js), which
+          // handles every call that ends in a transfer attempt.
+          maybeEmitUnhappyCall(analysis, {
+            callSid: s.callSid,
+            organizationId: s.organizationId,
+            durationSeconds,
+          });
         }
       } catch (err) {
         console.error("[PostCall] Analysis failed:", err);

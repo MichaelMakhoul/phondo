@@ -56,6 +56,15 @@ const SENTRY_REASONS = Object.freeze({
    *  configured number couldn't be reached. */
   RING_FIRST_DEGRADED: "ring-first-degraded",
 
+  // ─── post-call quality (SCRUM-192) ──────────────────────────────────
+  /** Post-call analysis judged the call unhappy — successEvaluation
+   *  "unsuccessful" or sentiment "negative". Not a system error: this is
+   *  the semantic-failure half of call-quality alerting (a confused AI,
+   *  an angry caller) that crash/error rules can't see. Warning level;
+   *  its own Grafana rule matches reason=unhappy-call. Raise the rule's
+   *  threshold when call volume makes per-call emails noisy. */
+  UNHAPPY_CALL: "unhappy-call",
+
   // ─── fallback-dial-consent (recording disclosure) ───────────────────
   /** Recording disclosure can't render because the org row was missing
    *  from the lookup result. */

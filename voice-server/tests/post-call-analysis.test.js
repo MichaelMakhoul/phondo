@@ -127,6 +127,45 @@ describe("analyzeCallTranscript", () => {
     assert.equal(result.sentiment, null);
   });
 
+  // SCRUM-192: success_evaluation is now allowlisted like sentiment — the
+  // prompt requests the enum but JSON mode doesn't enforce string values,
+  // and downstream (unhappy-call paging, DB, dashboard) treats it as one.
+  it("normalizes free-text success_evaluation to null (no LLM prose into logs/DB)", async () => {
+    globalThis.fetch = mockStructuredOnly({
+      caller_name: null,
+      caller_phone_reason: "Complaint",
+      appointment_requested: false,
+      summary: "Caller could not be helped.",
+      success_evaluation: "unsuccessful — caller John Smith couldn't reach Dr. Patel",
+      collected_data: null,
+      unanswered_questions: null,
+      sentiment: "neutral",
+    });
+
+    const analyzeCallTranscript = getAnalyzer();
+    const result = await analyzeCallTranscript("This is a long enough transcript to analyze properly.");
+
+    assert.equal(result.successEvaluation, null);
+  });
+
+  it("keeps every canonical success_evaluation value", async () => {
+    for (const value of ["successful", "partial", "unsuccessful"]) {
+      globalThis.fetch = mockStructuredOnly({
+        caller_name: null,
+        caller_phone_reason: "x",
+        appointment_requested: false,
+        summary: "x",
+        success_evaluation: value,
+        collected_data: null,
+        unanswered_questions: null,
+        sentiment: "neutral",
+      });
+      const analyzeCallTranscript = getAnalyzer();
+      const result = await analyzeCallTranscript("This is a long enough transcript to analyze properly.");
+      assert.equal(result.successEvaluation, value);
+    }
+  });
+
   it("defaults missing sentiment field to null", async () => {
     globalThis.fetch = mockStructuredOnly({
       caller_name: "Bob",

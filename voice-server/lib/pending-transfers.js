@@ -7,6 +7,7 @@
 
 const { completeCallRecord, notifyCallCompleted } = require("./call-logger");
 const { analyzeCallTranscript } = require("../services/post-call-analysis");
+const { maybeEmitUnhappyCall } = require("./unhappy-call");
 
 const INTERNAL_API_URL = process.env.INTERNAL_API_URL;
 const INTERNAL_API_SECRET = process.env.INTERNAL_API_SECRET;
@@ -22,7 +23,10 @@ const TRANSFER_TTL_MS = 180_000; // 25s ring per destination × up to 5 destinat
  * @param {object} sessionState
  */
 function saveForTransfer(callSid, sessionState) {
-  pendingTransfers.set(callSid, { ...sessionState, savedAt: Date.now() });
+  // callSid is stamped into the entry so finishTransferredCall can report
+  // it (unhappy-call paging, SCRUM-192) regardless of which caller —
+  // status webhook or TTL sweep — hands the entry over.
+  pendingTransfers.set(callSid, { ...sessionState, callSid, savedAt: Date.now() });
 }
 
 /**
@@ -79,6 +83,16 @@ async function finishTransferredCall(savedState, outcome) {
       console.error("[PendingTransfer] Post-call analysis failed:", err);
     }
   }
+
+  // SCRUM-192: transfer-terminated calls are disproportionately the
+  // unhappiest in the system (dead-ended dials, TTL expiries) — they must
+  // page like every other completion path.
+  maybeEmitUnhappyCall(analysis, {
+    callSid: savedState.callSid,
+    organizationId: savedState.organizationId,
+    durationSeconds,
+    transferOutcome: outcome,
+  });
 
   // Update transfer attempt outcome
   const transferAttempt = savedState.transferAttempt
