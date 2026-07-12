@@ -44,6 +44,12 @@ const SENTRY_REASONS = Object.freeze({
   /** Could not load the org-specific voicemail greeting; the route
    *  fell back to the generic message. */
   VOICEMAIL_GREETING_LOOKUP_FAILED: "voicemail-greeting-lookup-failed",
+  /** SCRUM-212: the voicemail raw-URL fallback write failed. This write
+   *  is the safety net behind the Supabase storage pipeline — if it
+   *  fails while the pipeline is also unreachable, the caller's message
+   *  exists only in Twilio's console with no dashboard pointer. Pages at
+   *  error level: Twilio does not retry the <Record> action callback. */
+  VOICEMAIL_RECORDING_SAVE_FAILED: "voicemail-recording-save-failed",
 
   // ─── server.js + answer-mode ring-first (SCRUM-260) ─────────────────
   /** Ring-first answer mode degraded to AI-answers because the user's

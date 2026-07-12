@@ -24,6 +24,9 @@ const { SENTRY_REASONS, setReasonTag } = require("../sentry-reasons");
  * lock the alert-line shape in place, and this extraction is checked
  * against them. Do not "improve" the Sentry tag/extras shape here
  * without also updating the contract tests in lockstep.
+ * (SCRUM-212 deliberately changed the voicemail <Record> TwiML — added
+ * recordingStatusCallback attributes — with the tests updated in
+ * lockstep. The Sentry shapes remain untouched.)
  */
 
 /**
@@ -31,17 +34,43 @@ const { SENTRY_REASONS, setReasonTag } = require("../sentry-reasons");
  * except the recording-action URL differs:
  *   - Twilio: /twiml/ai-disabled-recording-done
  *   - Telnyx: /texml/recording-done (legacy callback path)
+ *
+ * SCRUM-212: when `recordingStatusCallbackUrl` is provided (Twilio only),
+ * the <Record> carries the same recordingStatusCallback attributes as the
+ * ring-first <Connect> — Twilio POSTs the finished recording to the
+ * Next.js webhook, which downloads the audio into Supabase storage, the
+ * same pipeline AI-answered calls use. Without it the audio stays on
+ * Twilio and the dashboard's raw-URL fallback gets a 401 in the browser.
  */
-function buildVoicemailResponse({ businessName, pollyVoice, recordActionUrl, escapeXml, publicUrl }) {
+function buildVoicemailResponse({ businessName, pollyVoice, recordActionUrl, escapeXml, publicUrl, recordingStatusCallbackUrl }) {
   const greeting = businessName
     ? `Thank you for calling ${escapeXml(businessName)}. We are unable to take your call right now. Please leave a message after the beep and we will get back to you as soon as possible.`
     : `Thank you for calling. We are unable to take your call right now. Please leave a message after the beep and we will get back to you as soon as possible.`;
+  const statusCallbackAttrs = recordingStatusCallbackUrl
+    ? ` recordingStatusCallback="${escapeXml(recordingStatusCallbackUrl)}" recordingStatusCallbackMethod="POST" recordingStatusCallbackEvent="completed failed absent"`
+    : "";
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say voice="${pollyVoice}">${greeting}</Say>
-  <Record maxLength="120" playBeep="true" action="${escapeXml(publicUrl + recordActionUrl)}" />
+  <Record maxLength="120" playBeep="true" action="${escapeXml(publicUrl + recordActionUrl)}"${statusCallbackAttrs} />
   <Say voice="${pollyVoice}">Thank you for your message. Goodbye.</Say>
 </Response>`;
+}
+
+/**
+ * Resolve the recordingStatusCallback URL for a voicemail <Record>.
+ * Telnyx always gets null — the Next.js recording webhook validates
+ * Twilio signatures, so a Telnyx POST would be rejected with a 403
+ * (Telnyx voicemail storage is tracked separately in SCRUM-212).
+ * Twilio without APP_PUBLIC_URL degrades to the legacy raw-URL flow.
+ */
+function voicemailStatusCallbackUrl({ isTwilio, deps, logTag }) {
+  if (!isTwilio) return null;
+  if (!deps.recordingStatusCallbackUrl) {
+    console.warn(`${logTag} APP_PUBLIC_URL not set — voicemail recording stays on Twilio; dashboard playback of this message will 401 (SCRUM-212)`);
+    return null;
+  }
+  return deps.recordingStatusCallbackUrl;
 }
 
 /**
@@ -198,6 +227,7 @@ ${disclosureSay}  <Dial callerId="${escapeXml(fallbackCallerId)}" timeout="30" a
         recordActionUrl: recordingDonePath,
         escapeXml,
         publicUrl,
+        recordingStatusCallbackUrl: voicemailStatusCallbackUrl({ isTwilio, deps, logTag }),
       }),
     );
     return true;
@@ -400,13 +430,89 @@ async function handleAiDisabledFallbackStatus(req, res, opts) {
       recordActionUrl: recordingDonePath,
       escapeXml,
       publicUrl,
+      recordingStatusCallbackUrl: voicemailStatusCallbackUrl({ isTwilio, deps, logTag }),
     }),
   );
+}
+
+/**
+ * Handle /twiml/ai-disabled-recording-done — Twilio POSTs here when the
+ * voicemail <Record> finishes (the verb's `action` callback, which must
+ * return TwiML to end the call). Extracted from server.js for unit
+ * testability (same rationale as SCRUM-287).
+ *
+ * SCRUM-212: the REAL storage work happens out-of-band — the <Record>'s
+ * recordingStatusCallback POSTs to the Next.js webhook, which downloads
+ * the audio into Supabase storage and nulls recording_url. This handler
+ * only (1) writes the raw Twilio URL as a degraded fallback so the
+ * message isn't lost if that pipeline fails — guarded with
+ * `.is("recording_storage_path", null)` so it can never clobber a row
+ * the pipeline already migrated (callback ordering is not guaranteed) —
+ * and (2) speaks the goodbye. Signature validation lives in the route
+ * wiring (server.js).
+ */
+async function handleVoicemailRecordingDone(req, res, opts) {
+  const { deps } = opts;
+  const { Sentry, supabase, getPollyVoice } = deps;
+
+  // A failed write here must PAGE (not just warn): this write is the
+  // safety net — it only matters when the Supabase pipeline may also
+  // have failed, and Twilio does not retry the <Record> action callback,
+  // so a swallowed failure means the message survives only in Twilio's
+  // console with zero operator signal. Alert-and-continue: the goodbye
+  // TwiML below is still owed to the caller either way.
+  const pageSaveFailure = (err, callSid) => {
+    try {
+      Sentry.withScope((scope) => {
+        scope.setTag("service", "voice-server");
+        setReasonTag(scope, SENTRY_REASONS.VOICEMAIL_RECORDING_SAVE_FAILED);
+        scope.setLevel("error");
+        scope.setExtras({ callSid });
+        Sentry.captureException(err);
+      });
+    } catch (sentryErr) {
+      console.error("[RecordingDone] Sentry capture failed (suppressed):", sentryErr.message);
+    }
+  };
+
+  const recordingUrl = req.body.RecordingUrl;
+  const callSid = req.body.CallSid;
+  if (recordingUrl && callSid) {
+    try {
+      const { error } = await supabase
+        .from("calls")
+        .update({ recording_url: recordingUrl })
+        .eq("vapi_call_id", `sh_${callSid}`)
+        .is("recording_storage_path", null);
+      if (error) {
+        console.warn("[RecordingDone] Failed to save recording URL:", {
+          callSid, code: error.code, message: error.message,
+        });
+        pageSaveFailure(new Error(`recording_url update failed: ${error.message}`), callSid);
+      }
+    } catch (err) {
+      console.warn("[RecordingDone] Error saving recording (non-fatal):", err.message);
+      pageSaveFailure(err, callSid);
+    }
+  }
+
+  // No phoneRecord in scope at this callback — Twilio only sends CallSid +
+  // recording metadata. Fetching the org country would require an extra DB
+  // roundtrip just for a 5-word hang-up acknowledgment; the AU/UK accent
+  // was already delivered on the greeting + record-end "Thank you for your
+  // message. Goodbye." Falls through to Polly.Joanna by design.
+  const pollyVoice = getPollyVoice(null);
+  res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="${pollyVoice}">Thank you for your message. Goodbye.</Say>
+  <Hangup/>
+</Response>`);
 }
 
 module.exports = {
   handleAiDisabledBranch,
   handleAiDisabledFallbackStatus,
+  handleVoicemailRecordingDone,
   finaliseFallbackDial,
   // Exported only for tests — internal helper.
   _test: { buildVoicemailResponse },

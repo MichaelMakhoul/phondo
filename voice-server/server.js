@@ -157,6 +157,13 @@ const PUBLIC_URL = process.env.PUBLIC_URL;
 // Twilio/Telnyx POST to. Intentionally NO fallback to PUBLIC_URL: if unset,
 // recording is hard-disabled (otherwise we'd POST to the voice server's URL → 404).
 const APP_PUBLIC_URL = process.env.APP_PUBLIC_URL;
+if (!APP_PUBLIC_URL) {
+  // SCRUM-212: page once at boot instead of a per-call console.warn — this
+  // misconfig silently disables ALL recording storage (AI calls refuse to
+  // record; voicemail stays on Twilio and the dashboard 401s on playback).
+  // Line format matches lib/sentry.js so the Grafana error-logged rule fires.
+  console.error("[ALERT:error] [voice-server] APP_PUBLIC_URL not set — call recordings (AI calls + voicemail) cannot reach Supabase storage; recording is disabled for AI calls and voicemail playback will 401");
+}
 const WS_SECRET = process.env.TWILIO_AUTH_TOKEN;
 const WS_URL = PUBLIC_URL.replace(/^http/, "ws") + "/ws/audio";
 // SCRUM-378 eval spike: ConversationRelay connects to its own WS path (JSON
@@ -348,6 +355,12 @@ function makeKillSwitchDeps() {
     getPollyVoice,
     publicUrl: PUBLIC_URL,
     e164Regex: E164_REGEX_VOICE,
+    // SCRUM-212: Next.js webhook that downloads voicemail recordings into
+    // Supabase storage (same endpoint the AI-call paths use). Null when
+    // APP_PUBLIC_URL is unset — the handlers degrade to the raw-URL flow.
+    recordingStatusCallbackUrl: APP_PUBLIC_URL
+      ? `${APP_PUBLIC_URL}/api/webhooks/twilio-recording-done`
+      : null,
   };
 }
 
@@ -913,43 +926,31 @@ app.post("/twiml/recording-status", async (req, res) => {
 });
 
 // Recording callback for AI-disabled voicemail — Twilio POSTs here after recording ends.
+// SCRUM-212: body extracted to lib/route-handlers/kill-switch.js. The raw-URL
+// write is now a guarded fallback; Supabase storage happens via the <Record>
+// recordingStatusCallback → Next.js webhook (same pipeline as AI calls).
 app.post("/twiml/ai-disabled-recording-done", async (req, res) => {
   if (!validateTwilioSignature(req)) {
     console.warn("[RecordingDone] Rejected request — invalid Twilio signature");
     return res.status(403).send("Forbidden");
   }
-
-  // Best-effort: store recording URL in the call record
-  const recordingUrl = req.body.RecordingUrl;
-  const callSid = req.body.CallSid;
-  if (recordingUrl && callSid) {
-    try {
-      const supabase = getSupabase();
-      const { error } = await supabase
-        .from("calls")
-        .update({ recording_url: recordingUrl })
-        .eq("vapi_call_id", `sh_${callSid}`);
-      if (error) {
-        console.warn("[RecordingDone] Failed to save recording URL:", {
-          callSid, code: error.code, message: error.message,
-        });
-      }
-    } catch (err) {
-      console.warn("[RecordingDone] Error saving recording (non-fatal):", err.message);
-    }
-  }
-
-  // No phoneRecord in scope at this callback — Twilio only sends CallSid +
-  // recording metadata. Fetching the org country would require an extra DB
-  // roundtrip just for a 5-word hang-up acknowledgment; the AU/UK accent
-  // was already delivered on the greeting + record-end "Thank you for your
-  // message. Goodbye." Falls through to Polly.Joanna by design.
-  const pollyVoice = getPollyVoice(null);
-  res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
+  // The goodbye TwiML is owed to the caller no matter what fails here —
+  // an async throw (e.g. makeKillSwitchDeps → getSupabase on missing env)
+  // would otherwise become an unhandledRejection and take the whole
+  // server down mid-call. The original inline handler could never throw;
+  // the extraction must keep that invariant.
+  try {
+    await killSwitch.handleVoicemailRecordingDone(req, res, { deps: makeKillSwitchDeps() });
+  } catch (err) {
+    console.warn("[RecordingDone] handler failed (non-fatal):", err.message);
+    if (!res.headersSent) {
+      res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say voice="${pollyVoice}">Thank you for your message. Goodbye.</Say>
+  <Say voice="${getPollyVoice(null)}">Thank you for your message. Goodbye.</Say>
   <Hangup/>
 </Response>`);
+    }
+  }
 });
 
 // Health check with Supabase connectivity test
