@@ -220,6 +220,20 @@ function emitVoicemailRecordingSaveFailed({ err, callSid }) {
   });
 }
 
+/** SCRUM-192: post-call analysis flagged an unhappy call (semantic
+ *  failure, not a system error). NOTE: this is the file's only
+ *  captureMessage site — the shim must still merge scope tags into the
+ *  line or the reason= token (and the Grafana rule) silently dies. */
+function emitUnhappyCall({ callSid, organizationId, successEvaluation, sentiment, durationSeconds }) {
+  Sentry.withScope((scope) => {
+    scope.setTag("service", "voice-server");
+    scope.setTag("reason", "unhappy-call");
+    scope.setLevel("warning");
+    scope.setExtras({ callSid, organizationId, successEvaluation, sentiment, durationSeconds });
+    Sentry.captureMessage("Unhappy call flagged by post-call analysis (SCRUM-192)", "warning");
+  });
+}
+
 /**
  * The canonical reason→level taxonomy this test file asserts. Verified
  * against server.js by the introspection test below — keep these in sync
@@ -232,6 +246,7 @@ const REASON_LEVELS = Object.freeze({
   "fallback-finalise-failed": "warning",
   "voicemail-greeting-lookup-failed": "warning",
   "voicemail-recording-save-failed": "error",
+  "unhappy-call": "warning",
 });
 const REASONS = Object.freeze(Object.keys(REASON_LEVELS));
 
@@ -564,6 +579,14 @@ describe("server.js Sentry sites — contract tests (SCRUM-273)", () => {
             err: new Error("x"),
             callSid: "p6",
           }),
+        "unhappy-call": () =>
+          emitUnhappyCall({
+            callSid: "p7",
+            organizationId: "org-p7",
+            successEvaluation: "unsuccessful",
+            sentiment: "negative",
+            durationSeconds: 42,
+          }),
       };
       // Every REASON must have a probe — surfacing missing coverage instead
       // of silently skipping.
@@ -672,7 +695,7 @@ describe("server.js Sentry sites — contract tests (SCRUM-273)", () => {
       );
     });
 
-    it("production contains 8 reason-tagged call sites (6 in kill-switch.js + 2 in server.js)", () => {
+    it("production contains 9 reason-tagged call sites (6 in kill-switch.js + 3 in server.js)", () => {
       // SCRUM-287 consolidated provider mirrors: log-failed, fail-open,
       // and voicemail-greeting-lookup-failed each fire from ONE site
       // that parameterizes provider (twilio|telnyx). fallback-finalise-
@@ -681,13 +704,14 @@ describe("server.js Sentry sites — contract tests (SCRUM-273)", () => {
       // server.js (twilio + telnyx mirrors, not yet extracted).
       // SCRUM-212 added voicemail-recording-save-failed (1 site in
       // handleVoicemailRecordingDone, shared by both failure branches).
-      // Total 6 in kill-switch.js + 2 in server.js = 8.
+      // SCRUM-192 added unhappy-call (1 site in the post-call analysis
+      // block in server.js). Total 6 in kill-switch.js + 3 in server.js = 9.
       const serverCount = countReasonSites(serverSource);
       const killSwitchCount = countReasonSites(killSwitchSource);
       assert.equal(
         serverCount,
-        2,
-        `expected 2 reason-tagged sites in server.js (ring-first-degraded twilio + telnyx), found ${serverCount}`,
+        3,
+        `expected 3 reason-tagged sites in server.js (ring-first-degraded twilio + telnyx, unhappy-call), found ${serverCount}`,
       );
       assert.equal(
         killSwitchCount,
@@ -696,8 +720,19 @@ describe("server.js Sentry sites — contract tests (SCRUM-273)", () => {
       );
       assert.equal(
         serverCount + killSwitchCount,
-        8,
-        `expected 8 reason-tagged Sentry sites total — update this test deliberately when sites are added/removed`,
+        9,
+        `expected 9 reason-tagged Sentry sites total — update this test deliberately when sites are added/removed`,
+      );
+    });
+
+    it("SCRUM-192: the unhappy-call page is gated on unsuccessful OR negative — and no other condition", () => {
+      // Source-pin: the site lives inline in the post-call block (not
+      // extracted), so pin the trigger condition here. Widening it (e.g.
+      // adding "partial") or narrowing it (dropping sentiment) must be a
+      // deliberate edit of this test.
+      assert.match(
+        serverSource,
+        /if \(analysis\.successEvaluation === "unsuccessful" \|\| analysis\.sentiment === "negative"\) \{/,
       );
     });
   });

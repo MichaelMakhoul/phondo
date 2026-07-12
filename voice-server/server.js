@@ -1422,6 +1422,31 @@ wss.on("connection", (twilioWs) => {
           const callerForLog = DEBUG_TRANSCRIPTS ? (analysis.callerName || "unknown") : "[redacted]";
           const reasonForLog = DEBUG_TRANSCRIPTS ? (analysis.callerPhoneReason || "unknown") : "[redacted]";
           console.log(`[PostCall] Analysis complete: caller=${callerForLog}, reason=${reasonForLog}, success=${analysis.successEvaluation}`);
+
+          // SCRUM-192: page unhappy calls — the semantic-failure half of
+          // call-quality alerting. Crash/error rules only see technical
+          // failures; a call that connected fine but left the caller angry
+          // or unserved is invisible without this. Extras are safe
+          // enums/ids only (no PII — summary/transcript stay out).
+          if (analysis.successEvaluation === "unsuccessful" || analysis.sentiment === "negative") {
+            try {
+              Sentry.withScope((scope) => {
+                scope.setTag("service", "voice-server");
+                setReasonTag(scope, SENTRY_REASONS.UNHAPPY_CALL);
+                scope.setLevel("warning");
+                scope.setExtras({
+                  callSid: s.callSid,
+                  organizationId: s.organizationId,
+                  successEvaluation: analysis.successEvaluation,
+                  sentiment: analysis.sentiment,
+                  durationSeconds,
+                });
+                Sentry.captureMessage("Unhappy call flagged by post-call analysis (SCRUM-192)", "warning");
+              });
+            } catch (sentryErr) {
+              console.error("[PostCall] Sentry capture failed (suppressed):", sentryErr.message);
+            }
+          }
         }
       } catch (err) {
         console.error("[PostCall] Analysis failed:", err);
