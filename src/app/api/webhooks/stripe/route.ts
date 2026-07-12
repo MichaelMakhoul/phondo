@@ -29,6 +29,9 @@ export async function POST(request: Request) {
     const signature = request.headers.get("stripe-signature");
 
     if (!signature) {
+      // Not paged: Stripe always sends the header, so this is pure probe
+      // traffic — but leave a breadcrumb so a sustained flood shows in Loki.
+      console.warn("Stripe webhook: request without stripe-signature header rejected");
       return NextResponse.json({ error: "No signature" }, { status: 400 });
     }
 
@@ -142,10 +145,24 @@ export async function POST(request: Request) {
       // claim so Stripe's retry can re-attempt — otherwise the retry would be
       // skipped as a duplicate and the event would never be applied. Re-throw to
       // the outer catch so we return 500 and Stripe knows to retry.
-      const { error: releaseError } = await (ledger as any)
-        .from("stripe_processed_events")
-        .delete()
-        .eq("event_id", event.id);
+      //
+      // SCRUM-201: a THROWN release (builder-level exception, SDK behavior
+      // change) is the same stranded condition as a returned error — coerce
+      // it so the STRANDED page below fires instead of the throw escaping
+      // to the outer catch, which would page under the wrong reason with no
+      // event identity and swallow the original handler error.
+      let releaseError: { message: string; code?: string } | null;
+      try {
+        ({ error: releaseError } = await (ledger as any)
+          .from("stripe_processed_events")
+          .delete()
+          .eq("event_id", event.id));
+      } catch (thrownRelease) {
+        releaseError = {
+          message: thrownRelease instanceof Error ? thrownRelease.message : String(thrownRelease),
+          code: "thrown",
+        };
+      }
       if (releaseError) {
         // Compound failure: the handler threw AND we couldn't release the claim.
         // The row is now stranded, so Stripe's retry will be skipped as a

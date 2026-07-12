@@ -10,6 +10,7 @@ const h = vi.hoisted(() => ({
   constructError: null as any,
   insertError: null as any,
   deleteError: null as any,
+  deleteThrow: null as any,
   handlerError: null as any,
   inserts: [] as any[],
   deletes: [] as any[],
@@ -57,6 +58,7 @@ vi.mock("@/lib/supabase/admin", () => ({
       }),
       delete: vi.fn(() => ({
         eq: vi.fn((col: string, val: any) => {
+          if (h.deleteThrow) throw h.deleteThrow;
           h.deletes.push({ table, col, val });
           return { error: h.deleteError };
         }),
@@ -87,6 +89,7 @@ beforeEach(() => {
   h.constructError = null;
   h.insertError = null;
   h.deleteError = null;
+  h.deleteThrow = null;
   h.handlerError = null;
   h.inserts = [];
   h.deletes = [];
@@ -223,5 +226,26 @@ describe("POST /api/webhooks/stripe — failure paging (SCRUM-201)", () => {
       level: "error",
       extras: { eventId: "evt_test_1", eventType: "customer.subscription.updated", code: "08006" },
     });
+  });
+
+  it("a THROWN claim release is the same stranded condition — coerced, paged as STRANDED with the event identity, handler error preserved", async () => {
+    // Without the coercion the throw escapes to the outer catch: wrong
+    // reason, stage=request, no eventId, and the original billing failure
+    // is swallowed by the release throw.
+    h.handlerError = new Error("boom");
+    h.deleteThrow = new Error("fetch failed");
+    const res = await POST(makeReq());
+    expect(res.status).toBe(500);
+    const reasons = h.pages.map((p: any) => p.reason);
+    expect(reasons).toContain("stripe-webhook-event-stranded");
+    expect(h.pages).toHaveLength(2);
+    const stranded = h.pages.find((p: any) => p.reason === "stripe-webhook-event-stranded");
+    expect(stranded).toMatchObject({
+      level: "error",
+      extras: { eventId: "evt_test_1", code: "thrown" },
+    });
+    // The handler page still carries the ORIGINAL billing error.
+    const handler = h.pages.find((p: any) => p.reason === "stripe-webhook-failed");
+    expect(handler).toMatchObject({ err: h.handlerError, extras: { stage: "handler" } });
   });
 });
