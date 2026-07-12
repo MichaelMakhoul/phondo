@@ -639,9 +639,11 @@ describe("server.js Sentry sites — contract tests (SCRUM-273)", () => {
     // assertion below still compares wire values (the spec the Grafana
     // alert rules match on).
     const serverSource = fs.readFileSync(SERVER_JS_PATH, "utf8");
+    const unhappySource = fs.readFileSync(path.join(__dirname, "..", "lib", "unhappy-call.js"), "utf8");
+    const pendingTransfersSource = fs.readFileSync(path.join(__dirname, "..", "lib", "pending-transfers.js"), "utf8");
     const KILL_SWITCH_PATH = path.join(__dirname, "..", "lib", "route-handlers", "kill-switch.js");
     const killSwitchSource = fs.readFileSync(KILL_SWITCH_PATH, "utf8");
-    const productionSources = [serverSource, killSwitchSource];
+    const productionSources = [serverSource, killSwitchSource, unhappySource];
     const { SENTRY_REASONS } = require("../lib/sentry-reasons");
 
     /**
@@ -695,7 +697,7 @@ describe("server.js Sentry sites — contract tests (SCRUM-273)", () => {
       );
     });
 
-    it("production contains 9 reason-tagged call sites (6 in kill-switch.js + 3 in server.js)", () => {
+    it("production contains 9 reason-tagged call sites (6 kill-switch + 2 server + 1 unhappy-call)", () => {
       // SCRUM-287 consolidated provider mirrors: log-failed, fail-open,
       // and voicemail-greeting-lookup-failed each fire from ONE site
       // that parameterizes provider (twilio|telnyx). fallback-finalise-
@@ -704,14 +706,19 @@ describe("server.js Sentry sites — contract tests (SCRUM-273)", () => {
       // server.js (twilio + telnyx mirrors, not yet extracted).
       // SCRUM-212 added voicemail-recording-save-failed (1 site in
       // handleVoicemailRecordingDone, shared by both failure branches).
-      // SCRUM-192 added unhappy-call (1 site in the post-call analysis
-      // block in server.js). Total 6 in kill-switch.js + 3 in server.js = 9.
+      // SCRUM-192 added unhappy-call — extracted to lib/unhappy-call.js
+      // because it fires from TWO completion paths (cleanupSession +
+      // finishTransferredCall). NOTE: countReasonSites only sees the
+      // files enumerated here — a reason site added in a NEW file must
+      // also be added to productionSources + this census or it is
+      // invisible to the reason-union check forever.
       const serverCount = countReasonSites(serverSource);
       const killSwitchCount = countReasonSites(killSwitchSource);
+      const unhappyCount = countReasonSites(unhappySource);
       assert.equal(
         serverCount,
-        3,
-        `expected 3 reason-tagged sites in server.js (ring-first-degraded twilio + telnyx, unhappy-call), found ${serverCount}`,
+        2,
+        `expected 2 reason-tagged sites in server.js (ring-first-degraded twilio + telnyx), found ${serverCount}`,
       );
       assert.equal(
         killSwitchCount,
@@ -719,21 +726,36 @@ describe("server.js Sentry sites — contract tests (SCRUM-273)", () => {
         `expected 6 reason-tagged sites in kill-switch.js, found ${killSwitchCount}`,
       );
       assert.equal(
-        serverCount + killSwitchCount,
+        unhappyCount,
+        1,
+        `expected 1 reason-tagged site in lib/unhappy-call.js, found ${unhappyCount}`,
+      );
+      assert.equal(
+        serverCount + killSwitchCount + unhappyCount,
         9,
         `expected 9 reason-tagged Sentry sites total — update this test deliberately when sites are added/removed`,
       );
     });
 
     it("SCRUM-192: the unhappy-call page is gated on unsuccessful OR negative — and no other condition", () => {
-      // Source-pin: the site lives inline in the post-call block (not
-      // extracted), so pin the trigger condition here. Widening it (e.g.
-      // adding "partial") or narrowing it (dropping sentiment) must be a
+      // Source-pin on the helper: widening the trigger (e.g. adding
+      // "partial") or narrowing it (dropping sentiment) must be a
       // deliberate edit of this test.
       assert.match(
-        serverSource,
-        /if \(analysis\.successEvaluation === "unsuccessful" \|\| analysis\.sentiment === "negative"\) \{/,
+        unhappySource,
+        /if \(!\(analysis\.successEvaluation === "unsuccessful" \|\| analysis\.sentiment === "negative"\)\) \{/,
       );
+    });
+
+    it("SCRUM-192: BOTH call-completion paths are wired to the unhappy-call pager", () => {
+      // The transfer-completion path (pending-transfers.js) handles every
+      // call that ends in a transfer attempt — disproportionately the
+      // unhappiest calls. A refactor that drops either wiring silently
+      // exempts a whole completion path from call-quality alerting.
+      assert.match(serverSource, /maybeEmitUnhappyCall\(analysis, \{/);
+      assert.match(pendingTransfersSource, /maybeEmitUnhappyCall\(analysis, \{/);
+      // ...and the transfer path must report which outcome dead-ended.
+      assert.match(pendingTransfersSource, /transferOutcome: outcome,/);
     });
   });
 });

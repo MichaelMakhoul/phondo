@@ -156,7 +156,13 @@ async function analyzeStructured(transcript) {
       callerPhoneReason: parsed.caller_phone_reason || null,
       appointmentRequested: !!parsed.appointment_requested,
       summary: parsed.summary || null,
-      successEvaluation: parsed.success_evaluation || null,
+      // SCRUM-192: allowlist like sentiment below — the prompt requests the
+      // enum but JSON mode doesn't enforce string VALUES, and downstream
+      // (unhappy-call paging, the DB column, the dashboard) treats this as
+      // an enum. Off-enum output (free text, casing drift) clamps to null.
+      successEvaluation: ["successful", "partial", "unsuccessful"].includes(parsed.success_evaluation)
+        ? parsed.success_evaluation
+        : null,
       collectedData: parsed.collected_data || null,
       unansweredQuestions: Array.isArray(parsed.unanswered_questions) ? parsed.unanswered_questions : null,
       sentiment: ["positive", "neutral", "negative"].includes(parsed.sentiment) ? parsed.sentiment : null,

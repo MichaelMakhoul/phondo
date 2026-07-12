@@ -57,6 +57,7 @@ const { detectExpectedInput } = require("./lib/input-type-detector");
 const { requiresRecordingDisclosureHybrid, getRecordingDisclosureText } = require("./lib/recording-consent");
 const { getSupabase } = require("./lib/supabase");
 const { saveForTransfer, getTransfer, consumeTransfer, finishTransferredCall } = require("./lib/pending-transfers");
+const { maybeEmitUnhappyCall } = require("./lib/unhappy-call");
 const { forwardingFallbackEligible } = require("./lib/transfer-eligibility");
 
 // SCRUM-375: human-readable name for the assistant's configured language, used
@@ -1423,30 +1424,14 @@ wss.on("connection", (twilioWs) => {
           const reasonForLog = DEBUG_TRANSCRIPTS ? (analysis.callerPhoneReason || "unknown") : "[redacted]";
           console.log(`[PostCall] Analysis complete: caller=${callerForLog}, reason=${reasonForLog}, success=${analysis.successEvaluation}`);
 
-          // SCRUM-192: page unhappy calls — the semantic-failure half of
-          // call-quality alerting. Crash/error rules only see technical
-          // failures; a call that connected fine but left the caller angry
-          // or unserved is invisible without this. Extras are safe
-          // enums/ids only (no PII — summary/transcript stay out).
-          if (analysis.successEvaluation === "unsuccessful" || analysis.sentiment === "negative") {
-            try {
-              Sentry.withScope((scope) => {
-                scope.setTag("service", "voice-server");
-                setReasonTag(scope, SENTRY_REASONS.UNHAPPY_CALL);
-                scope.setLevel("warning");
-                scope.setExtras({
-                  callSid: s.callSid,
-                  organizationId: s.organizationId,
-                  successEvaluation: analysis.successEvaluation,
-                  sentiment: analysis.sentiment,
-                  durationSeconds,
-                });
-                Sentry.captureMessage("Unhappy call flagged by post-call analysis (SCRUM-192)", "warning");
-              });
-            } catch (sentryErr) {
-              console.error("[PostCall] Sentry capture failed (suppressed):", sentryErr.message);
-            }
-          }
+          // SCRUM-192: page unhappy calls — shared helper, also wired into
+          // the transfer-completion path (lib/pending-transfers.js), which
+          // handles every call that ends in a transfer attempt.
+          maybeEmitUnhappyCall(analysis, {
+            callSid: s.callSid,
+            organizationId: s.organizationId,
+            durationSeconds,
+          });
         }
       } catch (err) {
         console.error("[PostCall] Analysis failed:", err);
