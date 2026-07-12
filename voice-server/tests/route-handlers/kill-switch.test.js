@@ -133,6 +133,9 @@ function makeDeps(overrides = {}) {
       getPollyVoice: () => "Polly.Joanna",
       publicUrl: "https://voice.test",
       e164Regex: /^\+[1-9]\d{7,14}$/,
+      // SCRUM-212: mirrors server.js makeKillSwitchDeps — the Next.js
+      // webhook that downloads voicemail recordings into Supabase.
+      recordingStatusCallbackUrl: "https://app.test/api/webhooks/twilio-recording-done",
       ...overrides,
     },
   };
@@ -311,10 +314,35 @@ describe("kill-switch.handleAiDisabledBranch", () => {
       assert.match(res._state.body, /\/twiml\/ai-disabled-recording-done/);
       // Greeting includes the business name from getPhoneNumberContext
       assert.match(res._state.body, /Test Org/);
+      // SCRUM-212: the <Record> must carry the status-callback attributes so
+      // Twilio pushes the finished recording into the Supabase pipeline. The
+      // exact event list matters — "failed"/"absent" surface broken
+      // recordings in call metadata instead of silently vanishing.
+      assert.match(
+        res._state.body,
+        /recordingStatusCallback="https:\/\/app\.test\/api\/webhooks\/twilio-recording-done" recordingStatusCallbackMethod="POST" recordingStatusCallbackEvent="completed failed absent"/,
+      );
       assert.equal(captures.length, 0);
     });
 
-    it("(telnyx) sends voicemail TeXML with the telnyx legacy recording-done action", async () => {
+    it("(twilio) recordingStatusCallbackUrl unset (no APP_PUBLIC_URL) — degrades to legacy <Record> without status-callback attributes", async () => {
+      ({ captures, deps } = makeDeps({
+        isAiEnabled: async () => false,
+        recordingStatusCallbackUrl: null,
+      }));
+      const res = makeRes();
+      await killSwitch.handleAiDisabledBranch(makeReq(), res, {
+        ...baseOpts,
+        phoneRecord: { fallback_forward_number: "", organizations: { country: "AU" } },
+        provider: "twilio",
+        deps,
+      });
+      assert.match(res._state.body, /<Record /);
+      assert.doesNotMatch(res._state.body, /recordingStatusCallback/);
+      assert.equal(captures.length, 0);
+    });
+
+    it("(telnyx) sends voicemail TeXML with the telnyx legacy recording-done action — and NO recordingStatusCallback (Next.js webhook validates Twilio signatures; a Telnyx POST would 403)", async () => {
       const res = makeRes();
       await killSwitch.handleAiDisabledBranch(makeReq(), res, {
         ...baseOpts,
@@ -323,6 +351,7 @@ describe("kill-switch.handleAiDisabledBranch", () => {
         deps,
       });
       assert.match(res._state.body, /\/texml\/recording-done/);
+      assert.doesNotMatch(res._state.body, /recordingStatusCallback/);
     });
   });
 
@@ -647,6 +676,13 @@ describe("kill-switch.handleAiDisabledFallbackStatus", () => {
     await killSwitch.handleAiDisabledFallbackStatus(req, res, { provider: "twilio", deps });
     assert.match(res._state.body, /<Record /);
     assert.match(res._state.body, /\/twiml\/ai-disabled-recording-done/);
+    // SCRUM-212: this entry path builds the same <Record> — the recording
+    // must reach Supabase from here too, not only from the direct
+    // AI-disabled voicemail branch.
+    assert.match(
+      res._state.body,
+      /recordingStatusCallback="https:\/\/app\.test\/api\/webhooks\/twilio-recording-done"/,
+    );
     // Greeting should include the business name
     assert.match(res._state.body, /Test Org/);
     assert.equal(captures.length, 0);
@@ -692,6 +728,8 @@ describe("kill-switch.handleAiDisabledFallbackStatus", () => {
     assert.equal(captures.length, 1);
     assert.equal(captures[0].extras.provider, "telnyx");
     assert.match(res._state.body, /\/texml\/recording-done/);
+    // SCRUM-212: Telnyx must never get the Twilio status-callback attributes.
+    assert.doesNotMatch(res._state.body, /recordingStatusCallback/);
   });
 
   it("(telnyx) accepts both Called and To params (older Telnyx payload shape)", async () => {
@@ -708,6 +746,88 @@ describe("kill-switch.handleAiDisabledFallbackStatus", () => {
     // Should still produce a voicemail response — the `To` was resolved.
     assert.match(res._state.body, /<Record /);
     assert.equal(captures.length, 0); // happy path
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// handleVoicemailRecordingDone (SCRUM-212)
+// ──────────────────────────────────────────────────────────────────────────
+
+/**
+ * Supabase mock capturing the update chain. The real builder is thenable,
+ * so the mock resolves `{ error }` when awaited at any point in the chain —
+ * a handler that drops `.is()` still resolves, but the captured calls
+ * expose it.
+ */
+function makeUpdateCaptureSupabase({ error = null, throwOnUpdate = false } = {}) {
+  const calls = { table: null, update: null, eq: null, is: null };
+  const chain = {
+    update(values) {
+      if (throwOnUpdate) throw new Error("supabase unreachable");
+      calls.update = values;
+      return chain;
+    },
+    eq(col, val) { calls.eq = [col, val]; return chain; },
+    is(col, val) { calls.is = [col, val]; return chain; },
+    then(resolve) { resolve({ error }); },
+  };
+  return { from(t) { calls.table = t; return chain; }, _calls: calls };
+}
+
+describe("kill-switch.handleVoicemailRecordingDone", () => {
+  const GOODBYE = /<Say voice="Polly\.Joanna">Thank you for your message\. Goodbye\.<\/Say>[\s\S]*<Hangup\/>/;
+
+  it("writes the raw URL as fallback — guarded so it never clobbers a Supabase-stored recording", async () => {
+    const supabase = makeUpdateCaptureSupabase();
+    const { deps } = makeDeps({ supabase });
+    const res = makeRes();
+    await killSwitch.handleVoicemailRecordingDone(
+      makeReq({ RecordingUrl: "https://api.twilio.com/rec/RE123", CallSid: "CA_VM_1" }),
+      res,
+      { deps },
+    );
+    assert.equal(supabase._calls.table, "calls");
+    assert.deepEqual(supabase._calls.update, { recording_url: "https://api.twilio.com/rec/RE123" });
+    assert.deepEqual(supabase._calls.eq, ["vapi_call_id", "sh_CA_VM_1"]);
+    // The guard: recordingStatusCallback ordering isn't guaranteed, so the
+    // raw-URL write must be scoped to rows the storage pipeline hasn't
+    // migrated yet.
+    assert.deepEqual(supabase._calls.is, ["recording_storage_path", null]);
+    assert.equal(res._state.type, "text/xml");
+    assert.match(res._state.body, GOODBYE);
+  });
+
+  it("missing RecordingUrl: skips the write but still returns the goodbye TwiML", async () => {
+    const supabase = makeUpdateCaptureSupabase();
+    const { deps } = makeDeps({ supabase });
+    const res = makeRes();
+    await killSwitch.handleVoicemailRecordingDone(makeReq({ CallSid: "CA_VM_2" }), res, { deps });
+    assert.equal(supabase._calls.update, null);
+    assert.match(res._state.body, GOODBYE);
+  });
+
+  it("DB error result: non-fatal — caller still gets the goodbye TwiML", async () => {
+    const supabase = makeUpdateCaptureSupabase({ error: { code: "57014", message: "timeout" } });
+    const { deps } = makeDeps({ supabase });
+    const res = makeRes();
+    await killSwitch.handleVoicemailRecordingDone(
+      makeReq({ RecordingUrl: "https://api.twilio.com/rec/RE124", CallSid: "CA_VM_3" }),
+      res,
+      { deps },
+    );
+    assert.match(res._state.body, GOODBYE);
+  });
+
+  it("supabase throws synchronously: non-fatal — caller still gets the goodbye TwiML", async () => {
+    const supabase = makeUpdateCaptureSupabase({ throwOnUpdate: true });
+    const { deps } = makeDeps({ supabase });
+    const res = makeRes();
+    await killSwitch.handleVoicemailRecordingDone(
+      makeReq({ RecordingUrl: "https://api.twilio.com/rec/RE125", CallSid: "CA_VM_4" }),
+      res,
+      { deps },
+    );
+    assert.match(res._state.body, GOODBYE);
   });
 });
 
