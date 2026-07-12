@@ -191,6 +191,23 @@ export const SENTRY_REASONS = {
    *  on-call investigate whether the carrier or our handler is buggy. */
   TERMINAL_STATE_COLLISION: "terminal_state_collision",
 
+  // ─── stripe billing webhook (SCRUM-201) ─────────────────────────────
+  /** Stripe webhook signature verification failed — internet probe noise
+   *  or a misconfigured STRIPE_WEBHOOK_SECRET. A sustained run means NO
+   *  billing events are applying; cross-check the Stripe dashboard's
+   *  webhook-delivery view. Warning level: single hits are noise. */
+  STRIPE_WEBHOOK_SIGNATURE_FAILED: "stripe-webhook-signature-failed",
+  /** A billing event failed to apply (see `stage` extra: ledger-claim,
+   *  handler, or request). Stripe retries with backoff so a one-off is
+   *  self-healing — repeated hits mean billing state is drifting from
+   *  Stripe's. */
+  STRIPE_WEBHOOK_FAILED: "stripe-webhook-failed",
+  /** Compound failure: the handler threw AND the ledger claim could not
+   *  be released — Stripe's retry will be skipped as a duplicate, so the
+   *  event will NEVER apply. Requires manual reconciliation (delete the
+   *  ledger row, then re-send the event from the Stripe dashboard). */
+  STRIPE_WEBHOOK_EVENT_STRANDED: "stripe-webhook-event-stranded",
+
   // ─── open-redirect probe (SCRUM-354) ────────────────────────────────
   /** safeRedirectPath rejected a NON-EMPTY redirect param at a server sink
    *  (e.g. /auth/callback). A burst of these is someone probing the auth flow

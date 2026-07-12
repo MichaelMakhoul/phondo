@@ -8,10 +8,22 @@ import {
   handleInvoicePaymentFailed,
 } from "@/lib/stripe/billing-service";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { pageSentry } from "@/lib/observability/page-sentry";
+import { SENTRY_REASONS } from "@/lib/security/error-ids";
 import type Stripe from "stripe";
 
 // POST /api/webhooks/stripe - Handle Stripe webhook events
+//
+// SCRUM-201: every failure path pages via pageSentry — before this, all
+// four failure sites were console.error only, invisible to Grafana on
+// Vercel Hobby (this route never used the Loki-push path). Levels:
+// signature failures are warning (internet probe noise; a sustained run
+// still shows in Loki), everything that stalls or strands a billing
+// event is error (emails via the Next.js error-logged rule).
 export async function POST(request: Request) {
+  // Set when the handler-stage catch already paged, so the outer catch
+  // doesn't page the same failure twice on the re-throw.
+  let pagedHandlerFailure = false;
   try {
     const payload = await request.text();
     const signature = request.headers.get("stripe-signature");
@@ -25,6 +37,12 @@ export async function POST(request: Request) {
       event = constructWebhookEvent(payload, signature);
     } catch (err) {
       console.error("Webhook signature verification failed:", err);
+      pageSentry({
+        service: "next-api",
+        reason: SENTRY_REASONS.STRIPE_WEBHOOK_SIGNATURE_FAILED,
+        level: "warning",
+        err,
+      });
       return NextResponse.json({ error: "Invalid signature" }, { status: 400 });
     }
 
@@ -48,6 +66,13 @@ export async function POST(request: Request) {
       // Any other ledger error: fail closed (500 → Stripe retries) rather than
       // process without a recorded claim, which a later retry would double-apply.
       console.error("Stripe webhook: failed to record event id; skipping to avoid double-apply:", claimError);
+      pageSentry({
+        service: "next-api",
+        reason: SENTRY_REASONS.STRIPE_WEBHOOK_FAILED,
+        level: "error",
+        message: `ledger claim failed: ${claimError.message}`,
+        extras: { stage: "ledger-claim", eventId: event.id, eventType: event.type, code: claimError.code },
+      });
       return NextResponse.json({ error: "Webhook processing failed" }, { status: 500 });
     }
 
@@ -132,13 +157,39 @@ export async function POST(request: Request) {
           event.type,
           releaseError
         );
+        pageSentry({
+          service: "next-api",
+          reason: SENTRY_REASONS.STRIPE_WEBHOOK_EVENT_STRANDED,
+          level: "error",
+          message: `stranded billing event: claim release failed: ${releaseError.message}`,
+          extras: { eventId: event.id, eventType: event.type, code: releaseError.code },
+        });
       }
+      pagedHandlerFailure = true;
+      pageSentry({
+        service: "next-api",
+        reason: SENTRY_REASONS.STRIPE_WEBHOOK_FAILED,
+        level: "error",
+        err: handlerErr,
+        extras: { stage: "handler", eventId: event.id, eventType: event.type },
+      });
       throw handlerErr;
     }
 
     return NextResponse.json({ received: true });
   } catch (error) {
     console.error("Stripe webhook error:", error);
+    if (!pagedHandlerFailure) {
+      // Pre-handler failure (body read, ledger insert throw, …) — the
+      // handler-stage catch didn't see it, so page it here.
+      pageSentry({
+        service: "next-api",
+        reason: SENTRY_REASONS.STRIPE_WEBHOOK_FAILED,
+        level: "error",
+        err: error,
+        extras: { stage: "request" },
+      });
+    }
     return NextResponse.json(
       { error: "Webhook processing failed" },
       { status: 500 }
