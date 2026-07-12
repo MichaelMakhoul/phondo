@@ -207,6 +207,19 @@ function emitVoicemailGreetingLookupFailed({ err, callSid, called, provider }) {
   });
 }
 
+/** SCRUM-212: voicemail raw-URL fallback write failed (kill-switch
+ *  handleVoicemailRecordingDone). Level=error — this is the safety net
+ *  behind the Supabase storage pipeline and Twilio won't retry. */
+function emitVoicemailRecordingSaveFailed({ err, callSid }) {
+  Sentry.withScope((scope) => {
+    scope.setTag("service", "voice-server");
+    scope.setTag("reason", "voicemail-recording-save-failed");
+    scope.setLevel("error");
+    scope.setExtras({ callSid });
+    Sentry.captureException(err);
+  });
+}
+
 /**
  * The canonical reason→level taxonomy this test file asserts. Verified
  * against server.js by the introspection test below — keep these in sync
@@ -218,6 +231,7 @@ const REASON_LEVELS = Object.freeze({
   "ring-first-degraded": "warning",
   "fallback-finalise-failed": "warning",
   "voicemail-greeting-lookup-failed": "warning",
+  "voicemail-recording-save-failed": "error",
 });
 const REASONS = Object.freeze(Object.keys(REASON_LEVELS));
 
@@ -545,6 +559,11 @@ describe("server.js Sentry sites — contract tests (SCRUM-273)", () => {
             called: "+61299999999",
             provider: "twilio",
           }),
+        "voicemail-recording-save-failed": () =>
+          emitVoicemailRecordingSaveFailed({
+            err: new Error("x"),
+            callSid: "p6",
+          }),
       };
       // Every REASON must have a probe — surfacing missing coverage instead
       // of silently skipping.
@@ -565,9 +584,13 @@ describe("server.js Sentry sites — contract tests (SCRUM-273)", () => {
       }
     });
 
-    it("exactly one reason uses level=error (fail-open) — others are warning", () => {
+    it("exactly two reasons use level=error — others are warning", () => {
+      // fail-open: customer intent (AI paused) silently violated.
+      // voicemail-recording-save-failed (SCRUM-212): the safety-net write
+      // behind the Supabase recording pipeline failed and Twilio won't
+      // retry — the caller's message may exist only in Twilio's console.
       const errorReasons = REASONS.filter((r) => REASON_LEVELS[r] === "error");
-      assert.deepEqual(errorReasons, ["fail-open"]);
+      assert.deepEqual(errorReasons, ["fail-open", "voicemail-recording-save-failed"]);
     });
   });
 
@@ -649,14 +672,16 @@ describe("server.js Sentry sites — contract tests (SCRUM-273)", () => {
       );
     });
 
-    it("production contains 7 reason-tagged call sites (5 in kill-switch.js + 2 in server.js)", () => {
+    it("production contains 8 reason-tagged call sites (6 in kill-switch.js + 2 in server.js)", () => {
       // SCRUM-287 consolidated provider mirrors: log-failed, fail-open,
       // and voicemail-greeting-lookup-failed each fire from ONE site
       // that parameterizes provider (twilio|telnyx). fallback-finalise-
       // failed has 2 sites (lookup + complete stages, distinguished by
       // the `stage` extra). ring-first-degraded has 2 sites in
-      // server.js (twilio + telnyx mirrors, not yet extracted). Total
-      // 5 in kill-switch.js + 2 in server.js = 7.
+      // server.js (twilio + telnyx mirrors, not yet extracted).
+      // SCRUM-212 added voicemail-recording-save-failed (1 site in
+      // handleVoicemailRecordingDone, shared by both failure branches).
+      // Total 6 in kill-switch.js + 2 in server.js = 8.
       const serverCount = countReasonSites(serverSource);
       const killSwitchCount = countReasonSites(killSwitchSource);
       assert.equal(
@@ -666,13 +691,13 @@ describe("server.js Sentry sites — contract tests (SCRUM-273)", () => {
       );
       assert.equal(
         killSwitchCount,
-        5,
-        `expected 5 reason-tagged sites in kill-switch.js, found ${killSwitchCount}`,
+        6,
+        `expected 6 reason-tagged sites in kill-switch.js, found ${killSwitchCount}`,
       );
       assert.equal(
         serverCount + killSwitchCount,
-        7,
-        `expected 7 reason-tagged Sentry sites total — update this test deliberately when sites are added/removed`,
+        8,
+        `expected 8 reason-tagged Sentry sites total — update this test deliberately when sites are added/removed`,
       );
     });
   });

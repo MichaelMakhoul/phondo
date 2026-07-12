@@ -453,7 +453,27 @@ async function handleAiDisabledFallbackStatus(req, res, opts) {
  */
 async function handleVoicemailRecordingDone(req, res, opts) {
   const { deps } = opts;
-  const { supabase, getPollyVoice } = deps;
+  const { Sentry, supabase, getPollyVoice } = deps;
+
+  // A failed write here must PAGE (not just warn): this write is the
+  // safety net — it only matters when the Supabase pipeline may also
+  // have failed, and Twilio does not retry the <Record> action callback,
+  // so a swallowed failure means the message survives only in Twilio's
+  // console with zero operator signal. Alert-and-continue: the goodbye
+  // TwiML below is still owed to the caller either way.
+  const pageSaveFailure = (err, callSid) => {
+    try {
+      Sentry.withScope((scope) => {
+        scope.setTag("service", "voice-server");
+        setReasonTag(scope, SENTRY_REASONS.VOICEMAIL_RECORDING_SAVE_FAILED);
+        scope.setLevel("error");
+        scope.setExtras({ callSid });
+        Sentry.captureException(err);
+      });
+    } catch (sentryErr) {
+      console.error("[RecordingDone] Sentry capture failed (suppressed):", sentryErr.message);
+    }
+  };
 
   const recordingUrl = req.body.RecordingUrl;
   const callSid = req.body.CallSid;
@@ -468,9 +488,11 @@ async function handleVoicemailRecordingDone(req, res, opts) {
         console.warn("[RecordingDone] Failed to save recording URL:", {
           callSid, code: error.code, message: error.message,
         });
+        pageSaveFailure(new Error(`recording_url update failed: ${error.message}`), callSid);
       }
     } catch (err) {
       console.warn("[RecordingDone] Error saving recording (non-fatal):", err.message);
+      pageSaveFailure(err, callSid);
     }
   }
 

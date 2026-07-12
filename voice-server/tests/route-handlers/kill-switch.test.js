@@ -134,8 +134,10 @@ function makeDeps(overrides = {}) {
       publicUrl: "https://voice.test",
       e164Regex: /^\+[1-9]\d{7,14}$/,
       // SCRUM-212: mirrors server.js makeKillSwitchDeps — the Next.js
-      // webhook that downloads voicemail recordings into Supabase.
-      recordingStatusCallbackUrl: "https://app.test/api/webhooks/twilio-recording-done",
+      // webhook that downloads voicemail recordings into Supabase. The
+      // `&` is deliberate: it forces the XML-escaping of the attribute
+      // value to be load-bearing in every assertion (`&` → `&amp;`).
+      recordingStatusCallbackUrl: "https://app.test/api/webhooks/twilio-recording-done?src=vm&v=1",
       ...overrides,
     },
   };
@@ -317,10 +319,11 @@ describe("kill-switch.handleAiDisabledBranch", () => {
       // SCRUM-212: the <Record> must carry the status-callback attributes so
       // Twilio pushes the finished recording into the Supabase pipeline. The
       // exact event list matters — "failed"/"absent" surface broken
-      // recordings in call metadata instead of silently vanishing.
+      // recordings in call metadata instead of silently vanishing. The
+      // &amp; pins XML-escaping of the attribute value.
       assert.match(
         res._state.body,
-        /recordingStatusCallback="https:\/\/app\.test\/api\/webhooks\/twilio-recording-done" recordingStatusCallbackMethod="POST" recordingStatusCallbackEvent="completed failed absent"/,
+        /recordingStatusCallback="https:\/\/app\.test\/api\/webhooks\/twilio-recording-done\?src=vm&amp;v=1" recordingStatusCallbackMethod="POST" recordingStatusCallbackEvent="completed failed absent"/,
       );
       assert.equal(captures.length, 0);
     });
@@ -678,10 +681,10 @@ describe("kill-switch.handleAiDisabledFallbackStatus", () => {
     assert.match(res._state.body, /\/twiml\/ai-disabled-recording-done/);
     // SCRUM-212: this entry path builds the same <Record> — the recording
     // must reach Supabase from here too, not only from the direct
-    // AI-disabled voicemail branch.
+    // AI-disabled voicemail branch. &amp; pins the XML-escaping.
     assert.match(
       res._state.body,
-      /recordingStatusCallback="https:\/\/app\.test\/api\/webhooks\/twilio-recording-done"/,
+      /recordingStatusCallback="https:\/\/app\.test\/api\/webhooks\/twilio-recording-done\?src=vm&amp;v=1"/,
     );
     // Greeting should include the business name
     assert.match(res._state.body, /Test Org/);
@@ -806,9 +809,9 @@ describe("kill-switch.handleVoicemailRecordingDone", () => {
     assert.match(res._state.body, GOODBYE);
   });
 
-  it("DB error result: non-fatal — caller still gets the goodbye TwiML", async () => {
+  it("DB error result: non-fatal for the caller, but PAGES — the safety-net write failed and Twilio won't retry", async () => {
     const supabase = makeUpdateCaptureSupabase({ error: { code: "57014", message: "timeout" } });
-    const { deps } = makeDeps({ supabase });
+    const { captures, deps } = makeDeps({ supabase });
     const res = makeRes();
     await killSwitch.handleVoicemailRecordingDone(
       makeReq({ RecordingUrl: "https://api.twilio.com/rec/RE124", CallSid: "CA_VM_3" }),
@@ -816,17 +819,51 @@ describe("kill-switch.handleVoicemailRecordingDone", () => {
       { deps },
     );
     assert.match(res._state.body, GOODBYE);
+    assert.equal(captures.length, 1);
+    assert.equal(captures[0].tags.reason, "voicemail-recording-save-failed");
+    assert.equal(captures[0].tags.service, "voice-server");
+    assert.equal(captures[0].level, "error");
+    assert.equal(captures[0].extras.callSid, "CA_VM_3");
   });
 
-  it("supabase throws synchronously: non-fatal — caller still gets the goodbye TwiML", async () => {
+  it("supabase throws synchronously: non-fatal for the caller, but PAGES", async () => {
     const supabase = makeUpdateCaptureSupabase({ throwOnUpdate: true });
-    const { deps } = makeDeps({ supabase });
+    const { captures, deps } = makeDeps({ supabase });
     const res = makeRes();
     await killSwitch.handleVoicemailRecordingDone(
       makeReq({ RecordingUrl: "https://api.twilio.com/rec/RE125", CallSid: "CA_VM_4" }),
       res,
       { deps },
     );
+    assert.match(res._state.body, GOODBYE);
+    assert.equal(captures.length, 1);
+    assert.equal(captures[0].tags.reason, "voicemail-recording-save-failed");
+    assert.equal(captures[0].level, "error");
+  });
+
+  it("Sentry shim defect (withScope throws): suppressed — caller still gets the goodbye TwiML", async () => {
+    const supabase = makeUpdateCaptureSupabase({ throwOnUpdate: true });
+    const { deps } = makeDeps({ supabase });
+    deps.Sentry = { withScope() { throw new Error("shim defect"); }, captureException() {} };
+    const res = makeRes();
+    await killSwitch.handleVoicemailRecordingDone(
+      makeReq({ RecordingUrl: "https://api.twilio.com/rec/RE126", CallSid: "CA_VM_5" }),
+      res,
+      { deps },
+    );
+    assert.match(res._state.body, GOODBYE);
+  });
+
+  it("happy path pages nothing", async () => {
+    const supabase = makeUpdateCaptureSupabase();
+    const { captures, deps } = makeDeps({ supabase });
+    const res = makeRes();
+    await killSwitch.handleVoicemailRecordingDone(
+      makeReq({ RecordingUrl: "https://api.twilio.com/rec/RE127", CallSid: "CA_VM_6" }),
+      res,
+      { deps },
+    );
+    assert.equal(captures.length, 0);
     assert.match(res._state.body, GOODBYE);
   });
 });

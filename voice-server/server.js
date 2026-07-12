@@ -157,6 +157,13 @@ const PUBLIC_URL = process.env.PUBLIC_URL;
 // Twilio/Telnyx POST to. Intentionally NO fallback to PUBLIC_URL: if unset,
 // recording is hard-disabled (otherwise we'd POST to the voice server's URL → 404).
 const APP_PUBLIC_URL = process.env.APP_PUBLIC_URL;
+if (!APP_PUBLIC_URL) {
+  // SCRUM-212: page once at boot instead of a per-call console.warn — this
+  // misconfig silently disables ALL recording storage (AI calls refuse to
+  // record; voicemail stays on Twilio and the dashboard 401s on playback).
+  // Line format matches lib/sentry.js so the Grafana error-logged rule fires.
+  console.error("[ALERT:error] [voice-server] APP_PUBLIC_URL not set — call recordings (AI calls + voicemail) cannot reach Supabase storage; recording is disabled for AI calls and voicemail playback will 401");
+}
 const WS_SECRET = process.env.TWILIO_AUTH_TOKEN;
 const WS_URL = PUBLIC_URL.replace(/^http/, "ws") + "/ws/audio";
 // SCRUM-378 eval spike: ConversationRelay connects to its own WS path (JSON
@@ -927,7 +934,23 @@ app.post("/twiml/ai-disabled-recording-done", async (req, res) => {
     console.warn("[RecordingDone] Rejected request — invalid Twilio signature");
     return res.status(403).send("Forbidden");
   }
-  await killSwitch.handleVoicemailRecordingDone(req, res, { deps: makeKillSwitchDeps() });
+  // The goodbye TwiML is owed to the caller no matter what fails here —
+  // an async throw (e.g. makeKillSwitchDeps → getSupabase on missing env)
+  // would otherwise become an unhandledRejection and take the whole
+  // server down mid-call. The original inline handler could never throw;
+  // the extraction must keep that invariant.
+  try {
+    await killSwitch.handleVoicemailRecordingDone(req, res, { deps: makeKillSwitchDeps() });
+  } catch (err) {
+    console.warn("[RecordingDone] handler failed (non-fatal):", err.message);
+    if (!res.headersSent) {
+      res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="${getPollyVoice(null)}">Thank you for your message. Goodbye.</Say>
+  <Hangup/>
+</Response>`);
+    }
+  }
 });
 
 // Health check with Supabase connectivity test
