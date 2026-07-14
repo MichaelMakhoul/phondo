@@ -1569,13 +1569,12 @@ function generateEmailHtml(template: string, data: Record<string, any>): string 
   // Outlook 2016/2019 and several mobile clients still don't reliably
   // support flex.
   //
-  // Logomark: a stylised "P" letter glyph in white on the brand-orange
-  // tile. An earlier revision used an inline Lucide phone SVG, but code
-  // review caught that Gmail web, Outlook desktop, Yahoo, and AOL all
-  // strip <svg> at render time — the orange tile would appear empty for
-  // a majority of recipients. A letter glyph renders everywhere. When
-  // we have a hosted PNG at phondo.ai/email-assets/ we can swap in a
-  // richer mark.
+  // Logomark: the Phondo phone mark as a hosted PNG (public/logo-mark.png,
+  // served from NEXT_PUBLIC_APP_URL). Email clients strip inline <svg>
+  // (Gmail web, Outlook desktop, Yahoo, AOL all drop it at render time), so
+  // a raster PNG is used instead of the SVG. Remote images can be blocked
+  // until the recipient clicks "show images" — when that happens the img
+  // alt text "Phondo" plus the wordmark beside it keep the header branded.
   //
   // Body typography is inlined on the inner <td> because Gmail web
   // strips <style> blocks above ~102KB and many clients ignore class
@@ -1619,7 +1618,11 @@ function generateEmailHtml(template: string, data: Record<string, any>): string 
                 <td style="background: #ffffff; padding: 20px 24px; border-bottom: 1px solid #e5e7eb;">
                   <table cellpadding="0" cellspacing="0" border="0" role="presentation">
                     <tr>
-                      <td style="background: #f97316; border-radius: 8px; width: 36px; height: 36px; ${bodyFont} font-size: 22px; font-weight: 700; color: #ffffff; line-height: 36px; text-align: center; vertical-align: middle;" align="center" valign="middle" aria-hidden="true">P</td>
+                      <td width="36" valign="middle" style="width: 36px;">
+                        <a href="${escapedAppUrl}" target="_blank" rel="noopener noreferrer" style="text-decoration: none; display: inline-block;" aria-label="Phondo">
+                          <img src="${escapedAppUrl}/logo-mark.png" width="36" height="36" alt="Phondo" style="display: block; width: 36px; height: 36px; border: 0;" />
+                        </a>
+                      </td>
                       <td style="padding-left: 12px;" valign="middle">
                         <a href="${escapedAppUrl}" target="_blank" rel="noopener noreferrer" style="text-decoration: none;" aria-label="Phondo">
                           <span style="font-size: 22px; font-weight: 700; color: #0f172a; ${bodyFont}">Phondo</span>

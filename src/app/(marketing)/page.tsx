@@ -101,7 +101,7 @@ const STATS = [
   { value: "62%", label: "of SMB calls go unanswered*" },
   { value: "$450", label: "average revenue lost per missed call*" },
   { value: "85%", label: "of callers who reach voicemail never call back*" },
-  { value: "47%", label: "higher engagement with SMS text-back*" },
+  { value: "78%", label: "of customers buy from the business that responds first*" },
 ];
 
 const FEATURES = [
@@ -113,12 +113,12 @@ const FEATURES = [
   {
     icon: Calendar,
     title: "Appointment Booking",
-    description: "Books directly into Cal.com or your business hours. Sends SMS confirmation.",
+    description: "Books directly into Cal.com or your business hours, right there on the call.",
   },
   {
     icon: MessageSquare,
-    title: "SMS Text-Back",
-    description: "Missed calls get an instant text with a booking link to recover lost leads.",
+    title: "Message Taking",
+    description: "Captures the caller's name, number, and reason, and sends it to your team the moment they hang up.",
   },
   {
     icon: PhoneForwarded,
@@ -215,7 +215,7 @@ export default function LandingPage() {
 
             <h1 className="mx-auto max-w-4xl text-4xl font-bold tracking-tight text-white animate-fade-in-up-delay-1 sm:text-5xl lg:text-6xl">
               Stop losing{" "}
-              <span className="text-gradient-hero">$450</span> every time
+              <span className="text-gradient-hero">$450</span> every time{" "}
               <br className="hidden sm:block" />
               the phone rings and{" "}
               <span className="text-slate-300">nobody answers</span>
@@ -223,8 +223,8 @@ export default function LandingPage() {
 
             <p className="mx-auto mt-6 max-w-2xl text-lg text-slate-400 animate-fade-in-up-delay-2">
               Phondo is an AI receptionist that answers every call, books
-              appointments, and texts back missed callers, 24 hours a day, 7 days
-              a week. Set up in under 5 minutes.
+              appointments, and transfers urgent callers to a real person, 24
+              hours a day, 7 days a week. Set up in under 5 minutes.
             </p>
 
             <div className="mt-10 flex flex-col items-center justify-center gap-4 animate-fade-in-up-delay-3 sm:flex-row">

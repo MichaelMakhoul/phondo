@@ -6,7 +6,7 @@ import { NotificationSettings } from "./notification-settings";
 
 export const metadata: Metadata = {
   title: "Notification Settings | Phondo",
-  description: "Manage your email and SMS notification preferences",
+  description: "Manage your email notification preferences",
 };
 
 export default async function NotificationsPage() {

@@ -28,6 +28,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/components/ui/use-toast";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Loader2, Building, Clock, Globe, Calendar, Shield, AlertTriangle } from "lucide-react";
+import { SMS_UI_ENABLED } from "@/lib/feature-flags";
 import {
   SUPPORTED_COUNTRIES,
   getCountryConfig,
@@ -258,8 +259,9 @@ export function BusinessSettingsForm({
       });
       return;
     }
-    // SCRUM-260: validate SMS sender (alphanumeric, 1-11 chars, at least one letter)
-    if (smsSender.trim()) {
+    // SCRUM-260: validate SMS sender (alphanumeric, 1-11 chars, at least one letter).
+    // Only when the SMS UI is shown — otherwise the field is hidden and can't be edited.
+    if (SMS_UI_ENABLED && smsSender.trim()) {
       const s = smsSender.trim();
       let smsErr: string | null = null;
       if (s.length > 11) smsErr = "SMS sender must be at most 11 characters";
@@ -499,9 +501,11 @@ export function BusinessSettingsForm({
             {errors.businessEmail && (
               <p className="text-xs text-destructive">{errors.businessEmail}</p>
             )}
-            <p className="text-xs text-muted-foreground">
-              Used as an opt-out contact on text messages when you&apos;re not giving out your phone number.
-            </p>
+            {SMS_UI_ENABLED && (
+              <p className="text-xs text-muted-foreground">
+                Used as an opt-out contact on text messages when you&apos;re not giving out your phone number.
+              </p>
+            )}
           </div>
         </div>
 
@@ -721,6 +725,7 @@ export function BusinessSettingsForm({
           )}
         </div>
 
+        {SMS_UI_ENABLED && (<>
         <Separator />
 
         {/* Customer Confirmation Messages (SCRUM-240 Phase 1) */}
@@ -781,6 +786,7 @@ export function BusinessSettingsForm({
             </div>
           )}
         </div>
+        </>)}
 
         <Separator />
 

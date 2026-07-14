@@ -18,7 +18,7 @@ const ANCHOR_LINKS = [
 export function MarketingHeader({ showAnchorLinks = false }: MarketingHeaderProps): React.ReactElement {
   return (
     <header className="sticky top-0 z-50 border-b border-white/10 bg-[#0F172A]/80 backdrop-blur supports-[backdrop-filter]:bg-[#0F172A]/60">
-      <div className="container mx-auto flex h-16 items-center justify-between px-4">
+      <div className="container mx-auto flex h-16 items-center justify-between px-4 sm:px-6 lg:px-8">
         <Link href="/" className="flex items-center gap-2">
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-orange-500">
             <Phone className="h-4 w-4 text-white" />
@@ -44,11 +44,12 @@ export function MarketingHeader({ showAnchorLinks = false }: MarketingHeaderProp
             Demo
           </Link>
         </nav>
-        <div className="flex items-center gap-3">
-          <Link href="/demo" className="md:hidden">
-            <Button variant="ghost" size="sm" className="gap-1.5 text-slate-300 hover:text-white hover:bg-white/10">
-              <Play className="h-3.5 w-3.5" />
-              Demo
+        <div className="flex items-center gap-2 sm:gap-3">
+          {/* Compact icon-only demo link on mobile (the centered nav is md-only,
+              so this is the only header path to the demo below md). */}
+          <Link href="/demo" className="md:hidden" aria-label="Try the live demo">
+            <Button variant="ghost" size="icon" className="h-9 w-9 text-slate-300 hover:text-white hover:bg-white/10">
+              <Play className="h-4 w-4" />
             </Button>
           </Link>
           <Link href="/login">

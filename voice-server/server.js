@@ -81,6 +81,14 @@ function languageName(code) {
  * mis-heard as Spanish and locked there), and — the user-chosen safe failure
  * mode — take a message rather than guess/transact when audio can't be
  * understood.
+ * SCRUM-547: the original wording (detect once from the first clear turn,
+ * then keep that language for the whole call) made a WRONG first-turn
+ * detection permanent —
+ * a train caller's noise-garbled English was transcribed as one Russian word
+ * and the call stayed Russian while they kept speaking English. Switching now
+ * needs full-sentence directed evidence, background voices are explicitly not
+ * the caller, and switching back when the caller clearly speaks a served
+ * language is mandatory.
  * @param {string} langCode
  */
 function buildLanguageLockDirective(langCode) {
@@ -89,10 +97,12 @@ function buildLanguageLockDirective(langCode) {
   const langOrEnglish = lang === "English" ? "English" : `${lang} or English`;
   return (
     `\n\n🌐 LANGUAGE LOCK (read carefully): This business serves callers in ${langsPhrase}. ` +
-    `Detect the caller's language from their first clear turn and stay in it for the WHOLE call. ` +
-    `Do NOT assume an unrelated language (e.g. Spanish, German, Portuguese) from unclear, quiet, or noisy audio — ` +
-    `if a turn sounds like a language the caller has not clearly used, treat it as ${langOrEnglish} mis-heard on a noisy line and continue in the language they have been using; never switch to it. ` +
-    `If you genuinely cannot understand a turn, ask them to repeat — in the language they are using. ` +
+    `Speak ${langOrEnglish} unless the caller clearly establishes another language — by explicitly asking for it, or by speaking a FULL, clearly intelligible sentence in it directed at you. ` +
+    `A single word or fragment is NEVER enough evidence to change language: phone lines are noisy, and background voices (station and train announcements, TVs, other people talking near the caller) are NOT the caller — ignore them completely. ` +
+    `Do NOT assume an unrelated language (e.g. Russian, Spanish, German) from unclear, quiet, or noisy audio — ` +
+    `if a turn sounds like a language the caller has not clearly used, treat it as ${langOrEnglish} mis-heard on a noisy line and continue in the language they have been using. ` +
+    `RECOVERY IS MANDATORY: if you changed language and the caller then clearly speaks ${langOrEnglish}, switch back on that very turn — a wrong language guess must never stick for the rest of the call. ` +
+    `If you genuinely cannot understand a turn, ask them to repeat — in the language the caller last clearly used. ` +
     `If after ONE repeat the turn is still COMPLETELY unintelligible (not merely a strong accent or one unclear word), do NOT guess and do NOT book, cancel, or change anything: ` +
     `tell the caller you're having trouble hearing them and use schedule_callback to take their name and number so a person can call them back.`
   );

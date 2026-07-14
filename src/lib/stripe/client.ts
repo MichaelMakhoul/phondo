@@ -1,4 +1,5 @@
 import Stripe from "stripe";
+import { SMS_UI_ENABLED } from "@/lib/feature-flags";
 
 let stripeClient: Stripe | null = null;
 
@@ -190,10 +191,15 @@ export function planTypeFromPriceId(
 
 /** Returns SMB plans for display in UI (excludes agency tiers). */
 export function getDisplayPlans() {
+  // SMS is hidden from the UI for now (SMS_UI_ENABLED). Strip any SMS feature
+  // line so it never appears in pricing or billing. The `smsNotifications`
+  // entitlement booleans are left untouched — this only affects display.
+  const stripSms = (features: readonly string[]): string[] =>
+    SMS_UI_ENABLED ? [...features] : features.filter((f) => !/sms/i.test(f));
   return [
-    { id: "starter" as PlanType, ...PLANS.starter },
-    { id: "professional" as PlanType, ...PLANS.professional },
-    { id: "business" as PlanType, ...PLANS.business },
+    { id: "starter" as PlanType, ...PLANS.starter, features: stripSms(PLANS.starter.features) },
+    { id: "professional" as PlanType, ...PLANS.professional, features: stripSms(PLANS.professional.features) },
+    { id: "business" as PlanType, ...PLANS.business, features: stripSms(PLANS.business.features) },
   ];
 }
 

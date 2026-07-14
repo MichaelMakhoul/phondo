@@ -72,6 +72,47 @@ describe("SCRUM-368 — stay in the caller's language + don't end on an incomple
   });
 });
 
+// SCRUM-547 regression test.
+//
+// A real call from a train: Gemini transcribed the caller's noise-garbled
+// English first turn as ONE Russian word and the AI conducted the call in
+// Russian, never recovering while the caller kept speaking English. A retry
+// call captured the train announcement "Next stop is Seoul" as caller speech.
+// Two prompt defects made a wrong first-turn detection permanent:
+//  (a) "auto-detect from their first turn and conduct the ENTIRE call in that
+//      language" (prompt-builder) locked whatever turn 1 sounded like, and
+//  (b) the SCRUM-375 LANGUAGE LOCK said "stay in it for the WHOLE call",
+//      blocking recovery once the guess was wrong.
+// The fix gates switching on full-sentence directed evidence and mandates
+// switching back when the caller clearly speaks a served language.
+describe("SCRUM-547 — language switching is evidence-gated and always recoverable", () => {
+  test("prompt-builder.js: switching requires full-sentence evidence, never fragments", () => {
+    assert.ok(/FULL, clearly intelligible sentence/.test(promptBuilderSrc), "full-sentence evidence bar missing from prompt-builder");
+    assert.ok(/NEVER change language because of one word/i.test(promptBuilderSrc), "single-word/fragment guard missing from prompt-builder");
+  });
+
+  test("prompt-builder.js: background voices are explicitly not the caller", () => {
+    assert.ok(/are NOT the caller/i.test(promptBuilderSrc), "background-voice guard missing from prompt-builder");
+  });
+
+  test("prompt-builder.js: a wrong language guess is recoverable (no first-turn lock-in)", () => {
+    assert.ok(/RECOVERY:/.test(promptBuilderSrc), "recovery rule missing from prompt-builder");
+    assert.ok(
+      !/Auto-detect the caller's language from their first turn and conduct the ENTIRE call/i.test(promptBuilderSrc),
+      "sticky first-turn auto-detect wording is back — it locked a train caller into Russian (SCRUM-547)"
+    );
+  });
+
+  test("server.js: LANGUAGE LOCK gates switching on evidence and mandates switch-back", () => {
+    assert.ok(/A single word or fragment is NEVER enough evidence/i.test(serverSrc), "single-word evidence guard missing from LANGUAGE LOCK");
+    assert.ok(/RECOVERY IS MANDATORY/.test(serverSrc), "mandatory switch-back missing from LANGUAGE LOCK");
+    assert.ok(
+      !/first clear turn and stay in it for the WHOLE call/i.test(serverSrc),
+      "'stay in it for the WHOLE call' is back in the LANGUAGE LOCK — it blocked recovery from a wrong first-turn detection (SCRUM-547)"
+    );
+  });
+});
+
 // SCRUM-508 regression test.
 //
 // A real lookup call ended prematurely: the AI asked "Is there anything else I

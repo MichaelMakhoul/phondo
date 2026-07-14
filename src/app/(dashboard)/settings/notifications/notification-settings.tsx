@@ -9,6 +9,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { useToast } from "@/components/ui/use-toast";
 import { Loader2, Mail, MessageSquare, Webhook, Phone, ArrowUpRight } from "lucide-react";
 import { trackNotificationPrefsUpdated } from "@/lib/analytics";
+import { SMS_UI_ENABLED } from "@/lib/feature-flags";
 
 interface NotificationPreferences {
   email_on_missed_call: boolean;
@@ -61,16 +62,20 @@ export function NotificationSettings({
   const validate = (): boolean => {
     const newErrors: Record<string, string> = {};
 
-    if (preferences.sms_phone_number) {
-      const digits = preferences.sms_phone_number.replace(/\D/g, "");
-      if (digits.length < 7 || digits.length > 15) {
-        newErrors.sms_phone_number = "Enter a valid phone number (7-15 digits)";
+    // SMS UI is hidden while SMS_UI_ENABLED is off — skip its validation so a
+    // hidden field can never block save.
+    if (SMS_UI_ENABLED) {
+      if (preferences.sms_phone_number) {
+        const digits = preferences.sms_phone_number.replace(/\D/g, "");
+        if (digits.length < 7 || digits.length > 15) {
+          newErrors.sms_phone_number = "Enter a valid phone number (7-15 digits)";
+        }
       }
-    }
 
-    // Require SMS phone when SMS toggles are on
-    if ((preferences.sms_on_missed_call || preferences.sms_on_voicemail || preferences.sms_on_callback_scheduled) && !preferences.sms_phone_number) {
-      newErrors.sms_phone_number = "Phone number is required when SMS notifications are enabled";
+      // Require SMS phone when SMS toggles are on
+      if ((preferences.sms_on_missed_call || preferences.sms_on_voicemail || preferences.sms_on_callback_scheduled) && !preferences.sms_phone_number) {
+        newErrors.sms_phone_number = "Phone number is required when SMS notifications are enabled";
+      }
     }
 
     // TODO(SCRUM-235): re-enable webhook validation when feature is unhidden
@@ -257,6 +262,7 @@ export function NotificationSettings({
         </CardContent>
       </Card>
 
+      {SMS_UI_ENABLED && (<>
       {/* SMS Notifications */}
       <Card>
         <CardHeader>
@@ -405,6 +411,7 @@ export function NotificationSettings({
           </div>
         </CardContent>
       </Card>
+      </>)}
 
       {/* TODO(SCRUM-235): re-enable when webhook delivery is hardened */}
       {false && (
