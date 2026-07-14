@@ -5,7 +5,7 @@ import { Slider } from "@/components/ui/slider";
 import { formatCurrency } from "@/lib/utils";
 
 const REVENUE_PER_MISSED_CALL_CENTS = 450_00; // $450 AUD industry average
-const RECOVERY_RATE = 0.47; // 47% of missed calls recovered with AI + SMS
+const RECOVERY_RATE = 0.47; // 47% of missed calls recovered with AI answering
 const PLAN_COST_PER_MONTH_CENTS = 249_00; // Professional plan ($249/mo)
 
 export function ROICalculator() {
@@ -90,7 +90,7 @@ export function ROICalculator() {
         </div>
 
         <p className="text-[10px] text-muted-foreground leading-relaxed">
-          Estimates based on industry averages: $450 revenue per missed call, 47% recovery rate with AI + SMS, Professional plan at $249/mo.
+          Estimates based on industry averages: $450 revenue per missed call, 47% recovery rate with AI, Professional plan at $249/mo.
           Your actual savings depend on your call value, conversion rate, and selected plan.
         </p>
       </div>

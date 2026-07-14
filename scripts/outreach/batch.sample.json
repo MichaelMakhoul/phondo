@@ -1,0 +1,24 @@
+[
+  {
+    "email": "test@example.com",
+    "template": "T2",
+    "firstName": "there",
+    "business": "Example Dental",
+    "board": "Seek",
+    "verticalPlural": "dental practices",
+    "booksLine": "captures appointment requests",
+    "evidence": "answering a high volume of incoming calls and booking patients",
+    "scheduledAt": "2026-07-15T09:30:00+10:00"
+  },
+  {
+    "email": "test2@example.com",
+    "template": "T1",
+    "firstName": "there",
+    "business": "Example Motors",
+    "month": "June",
+    "verticalPlural": "auto businesses",
+    "verticalFields": "name, rego, vehicle, issue, preferred time",
+    "evidence": "they will not answer a phone call at all",
+    "scheduledAt": "2026-07-15T09:45:00+10:00"
+  }
+]

@@ -42,7 +42,7 @@ export const INDUSTRY_PAGES: IndustryPage[] = [
         icon: "Calendar",
         title: "Instant Appointment Booking",
         description:
-          "Books check-ups, cleanings, and consultations directly into your calendar. Sends SMS confirmation to patients automatically.",
+          "Books check-ups, cleanings, and consultations directly into your calendar, and confirms the time with the patient on the call.",
       },
       {
         icon: "Clock",
@@ -64,9 +64,9 @@ export const INDUSTRY_PAGES: IndustryPage[] = [
       },
       {
         icon: "MessageSquare",
-        title: "Missed Call Recovery",
+        title: "Never Miss a Patient",
         description:
-          "Sends patients an SMS with a booking link when they can't get through. 47% of missed callers book via text-back.",
+          "Answers the calls you would have missed, so patients reach a real, helpful voice instead of voicemail and book instead of calling another practice.",
       },
       {
         icon: "BarChart3",
@@ -76,7 +76,7 @@ export const INDUSTRY_PAGES: IndustryPage[] = [
       },
     ],
     stats: [
-      { value: "35%", label: "reduction in no-shows with SMS confirmations" },
+      { value: "78%", label: "of patients book with the first practice that answers" },
       { value: "62%", label: "of practice calls go unanswered during busy periods" },
       { value: "24/7", label: "patient call coverage including weekends and holidays" },
       { value: "<5min", label: "setup time with dental-specific AI training" },
@@ -220,7 +220,7 @@ export const INDUSTRY_PAGES: IndustryPage[] = [
         icon: "Calendar",
         title: "Booking & Scheduling",
         description:
-          "Books jobs into your calendar around existing appointments. Sends the customer an SMS confirmation with your arrival window.",
+          "Books jobs into your calendar around existing appointments, and confirms the arrival window with the customer on the call.",
       },
       {
         icon: "Clock",
@@ -230,9 +230,9 @@ export const INDUSTRY_PAGES: IndustryPage[] = [
       },
       {
         icon: "MessageSquare",
-        title: "Quote Follow-Up SMS",
+        title: "Quote Follow-Up",
         description:
-          "Sends callers an SMS with next steps when you can't take the call. Keeps the job alive until you can call back with a quote.",
+          "Takes down the job details when you can't pick up, so you have what you need to call back with a quote. Keeps the job alive instead of losing it to voicemail.",
       },
       {
         icon: "MapPin",
@@ -242,7 +242,7 @@ export const INDUSTRY_PAGES: IndustryPage[] = [
       },
     ],
     stats: [
-      { value: "47%", label: "more bookings with instant SMS text-back" },
+      { value: "62%", label: "of calls to trades go unanswered" },
       { value: "$450", label: "average revenue lost per missed service call" },
       { value: "73%", label: "of homeowners hire the first tradie who answers" },
       { value: "24/7", label: "emergency call handling: nights, weekends, holidays" },
@@ -251,12 +251,12 @@ export const INDUSTRY_PAGES: IndustryPage[] = [
       {
         question: "I'm on a job all day, so how do I know what calls came in?",
         answer:
-          "Every call is logged with a full transcript, caller details, job description, and urgency level. You get an SMS notification for urgent calls and can review everything in your dashboard when you have a break. Think of it as a second pair of hands on the phone.",
+          "Every call is logged with a full transcript, caller details, job description, and urgency level. You get an email notification for urgent calls and can review everything in your dashboard when you have a break. Think of it as a second pair of hands on the phone.",
       },
       {
         question: "Can it tell the difference between an emergency and a routine job?",
         answer:
-          "Yes. The AI is trained on trade-specific urgency signals: burst pipes, electrical faults, gas smells, no hot water. Emergencies get escalated immediately (call transfer or priority SMS). Routine jobs get booked into your next available slot.",
+          "Yes. The AI is trained on trade-specific urgency signals: burst pipes, electrical faults, gas smells, no hot water. Emergencies get escalated immediately with a call transfer to your mobile. Routine jobs get booked into your next available slot.",
       },
       {
         question: "What if a customer wants a quote over the phone?",

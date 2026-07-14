@@ -27,6 +27,11 @@ yarn-error.log*
 .env*.local
 .env
 
+# Outreach working data (recipient lists, send logs, opt-outs) — keep local
+scripts/outreach/batch.json
+scripts/outreach/sent.csv
+scripts/outreach/suppression.csv
+
 # Vercel
 .vercel
 
@@ -50,3 +55,5 @@ competitive-analysis.md
 #CLAUDE.md
 .claude/
 supabase/.temp/
+
+/docs
