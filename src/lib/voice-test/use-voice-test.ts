@@ -97,12 +97,19 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody, trackingSource 
   }, []);
 
   const start = useCallback(async () => {
+    // Tear down any prior/orphaned session before starting a new one. Without
+    // this, switching industry — or starting again after a back/refresh that
+    // didn't unmount cleanly — leaves the previous WebSocket + AudioContext
+    // alive, and the old socket keeps decoding the assistant's voice into the
+    // new context: two receptionists talking at once. cleanup() is idempotent
+    // (a no-op on the first call) and detaches the old socket's handlers so its
+    // asynchronous close can't disturb the session we're about to create.
+    cleanup();
+
     updateStatus("connecting");
     setError(null);
     setTranscript([]);
     setIsAssistantSpeaking(false);
-    scheduledSourcesRef.current.clear();
-    nextStartTimeRef.current = 0;
     trackTestCallStarted(trackingSource);
 
     try {
@@ -340,8 +347,12 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody, trackingSource 
     // Stop any scheduled/playing audio
     flushPlayback();
 
-    // Disconnect worklet
+    // Disconnect worklet. Detach its handlers first so a disconnected node's
+    // late processor-error or forwarded mic message can't call back into (or
+    // send audio for) a session that has already moved on.
     if (workletNodeRef.current) {
+      workletNodeRef.current.onprocessorerror = null;
+      workletNodeRef.current.port.onmessage = null;
       workletNodeRef.current.disconnect();
       workletNodeRef.current = null;
     }
@@ -364,10 +375,20 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody, trackingSource 
       mediaStreamRef.current = null;
     }
 
-    // Close WebSocket
+    // Close WebSocket. Detach handlers FIRST: close() fires onclose
+    // asynchronously, so if start() is tearing this socket down to begin a new
+    // session, that stale onclose would otherwise flip the fresh session to
+    // "ended" and cleanup() its just-created resources. Nulling onmessage also
+    // stops the old socket from decoding any more of the assistant's audio into
+    // the current AudioContext — the actual "two receptionists" symptom.
     if (wsRef.current) {
-      if (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING) {
-        wsRef.current.close();
+      const ws = wsRef.current;
+      ws.onopen = null;
+      ws.onmessage = null;
+      ws.onerror = null;
+      ws.onclose = null;
+      if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+        ws.close();
       }
       wsRef.current = null;
     }
@@ -378,6 +399,17 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody, trackingSource 
     return () => {
       cleanup();
     };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Deterministic teardown on refresh / back-navigation / tab-close / bfcache
+  // freeze. React's unmount effect is not guaranteed to run on those paths, and
+  // a session that survives them is exactly how an orphaned receptionist lives
+  // on to fight the next one for the speaker. `pagehide` (not `visibilitychange`)
+  // so a plain tab-switch during an active call doesn't hang up on the caller.
+  useEffect(() => {
+    const teardown = () => cleanup();
+    window.addEventListener("pagehide", teardown);
+    return () => window.removeEventListener("pagehide", teardown);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   return {
