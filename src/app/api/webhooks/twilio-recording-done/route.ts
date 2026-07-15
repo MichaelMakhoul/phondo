@@ -3,6 +3,7 @@ import twilio from "twilio";
 import * as Sentry from "@sentry/nextjs";
 import { downloadAndStoreRecording } from "@/lib/call-recordings/download-and-store";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { runAfterResponse } from "@/lib/utils/after-response";
 
 export const runtime = "nodejs";
 
@@ -127,6 +128,33 @@ export async function POST(req: NextRequest) {
       );
     }
     return NextResponse.json({ ok: false, error: result.error });
+  }
+
+  // SCRUM-550: kick off post-call re-transcription (fixes the caller-side
+  // transcript Gemini mis-hears). Fire-and-forget AFTER the response — never
+  // blocks Twilio's ack; the voice-server handler degrades to Gemini's
+  // transcript on any failure. Gated by RETRANSCRIBE_ENABLED (default on).
+  if (process.env.RETRANSCRIBE_ENABLED !== "false") {
+    const voiceUrl = process.env.VOICE_SERVER_PUBLIC_URL;
+    const internalSecret = process.env.INTERNAL_API_SECRET;
+    if (voiceUrl && internalSecret) {
+      runAfterResponse(async () => {
+        try {
+          await fetch(`${voiceUrl}/internal/retranscribe`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "x-internal-secret": internalSecret },
+            body: JSON.stringify({ callId: CallSid }),
+            signal: AbortSignal.timeout(60_000),
+          });
+        } catch (err) {
+          console.warn("[TwilioRecording] retranscribe trigger failed (non-fatal):", err);
+        }
+      });
+    } else {
+      console.warn(
+        "[TwilioRecording] retranscribe skipped — VOICE_SERVER_PUBLIC_URL or INTERNAL_API_SECRET unset",
+      );
+    }
   }
 
   return NextResponse.json({ ok: true, callId: result.callId });

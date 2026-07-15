@@ -16,6 +16,9 @@ const h = vi.hoisted(() => ({
   selectThrows: null as any,
   metaUpdates: [] as any[], // { payload, col, val }
   sentry: [] as any[],
+  // SCRUM-550: captures the fire-and-forget retranscribe trigger.
+  afterWork: null as null | (() => Promise<unknown>),
+  fetchCalls: [] as any[], // { url, init }
 }));
 
 vi.mock("twilio", () => ({
@@ -62,6 +65,14 @@ vi.mock("@sentry/nextjs", () => ({
   captureException: (err: any) => h.sentry.push({ kind: "exception", err }),
 }));
 
+// SCRUM-550: capture the work fn instead of scheduling it, so tests can decide
+// whether the trigger was registered and (optionally) drive it to assert fetch.
+vi.mock("@/lib/utils/after-response", () => ({
+  runAfterResponse: (work: () => Promise<unknown>) => {
+    h.afterWork = work;
+  },
+}));
+
 import { POST } from "../route";
 import * as store from "@/lib/call-recordings/download-and-store";
 
@@ -86,6 +97,9 @@ const COMPLETED = {
 
 let origToken: string | undefined;
 let origAppUrl: string | undefined;
+let origVoiceUrl: string | undefined;
+let origSecret: string | undefined;
+let origRetranscribe: string | undefined;
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -98,18 +112,38 @@ beforeEach(() => {
   h.selectThrows = null;
   h.metaUpdates = [];
   h.sentry = [];
+  h.afterWork = null;
+  h.fetchCalls = [];
   origToken = process.env.TWILIO_AUTH_TOKEN;
   origAppUrl = process.env.NEXT_PUBLIC_APP_URL;
+  origVoiceUrl = process.env.VOICE_SERVER_PUBLIC_URL;
+  origSecret = process.env.INTERNAL_API_SECRET;
+  origRetranscribe = process.env.RETRANSCRIBE_ENABLED;
   process.env.TWILIO_AUTH_TOKEN = "tok_test";
+  // SCRUM-550: trigger is enabled by default (env present, flag unset==on).
+  process.env.VOICE_SERVER_PUBLIC_URL = "https://voice.phondo.ai";
+  process.env.INTERNAL_API_SECRET = "int_secret";
+  delete process.env.RETRANSCRIBE_ENABLED;
   // Default: unset, so the signature is computed over req.url unless a test
   // opts in. Restored in afterEach.
   delete process.env.NEXT_PUBLIC_APP_URL;
+  globalThis.fetch = vi.fn(async (url: any, init: any) => {
+    h.fetchCalls.push({ url, init });
+    return { ok: true, status: 200, json: async () => ({}), text: async () => "" } as any;
+  }) as any;
 });
+
+function restoreEnv(key: string, val: string | undefined) {
+  if (val === undefined) delete process.env[key];
+  else process.env[key] = val;
+}
 
 afterEach(() => {
   process.env.TWILIO_AUTH_TOKEN = origToken;
-  if (origAppUrl === undefined) delete process.env.NEXT_PUBLIC_APP_URL;
-  else process.env.NEXT_PUBLIC_APP_URL = origAppUrl;
+  restoreEnv("NEXT_PUBLIC_APP_URL", origAppUrl);
+  restoreEnv("VOICE_SERVER_PUBLIC_URL", origVoiceUrl);
+  restoreEnv("INTERNAL_API_SECRET", origSecret);
+  restoreEnv("RETRANSCRIBE_ENABLED", origRetranscribe);
 });
 
 describe("POST /api/webhooks/twilio-recording-done (SCRUM-545)", () => {
@@ -255,5 +289,56 @@ describe("POST /api/webhooks/twilio-recording-done (SCRUM-545)", () => {
     const res = await POST(makeReq(COMPLETED));
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toEqual({ ok: false, error: "recording_sid conflict" });
+  });
+});
+
+describe("POST /api/webhooks/twilio-recording-done — retranscribe trigger (SCRUM-550)", () => {
+  it("registers a fire-and-forget retranscribe call after a successful store; running it POSTs to the voice server", async () => {
+    const res = await POST(makeReq(COMPLETED));
+    expect(res.status).toBe(200);
+    expect(typeof h.afterWork).toBe("function");
+    // nothing fetched until the after-response work actually runs
+    expect(h.fetchCalls).toHaveLength(0);
+    await h.afterWork!();
+    expect(h.fetchCalls).toHaveLength(1);
+    expect(h.fetchCalls[0].url).toBe("https://voice.phondo.ai/internal/retranscribe");
+    expect(h.fetchCalls[0].init.method).toBe("POST");
+    expect(h.fetchCalls[0].init.headers["x-internal-secret"]).toBe("int_secret");
+    expect(JSON.parse(h.fetchCalls[0].init.body)).toEqual({ callId: "CA1" });
+  });
+
+  it("does NOT trigger when the store failed (transient)", async () => {
+    h.storeResult = { ok: false, error: "x", transient: true };
+    await POST(makeReq(COMPLETED));
+    expect(h.afterWork).toBeNull();
+  });
+
+  it("does NOT trigger when the store failed (terminal)", async () => {
+    h.storeResult = { ok: false, error: "x", transient: false };
+    await POST(makeReq(COMPLETED));
+    expect(h.afterWork).toBeNull();
+  });
+
+  it("does NOT trigger when RETRANSCRIBE_ENABLED=false (kill-switch) — still 200s", async () => {
+    process.env.RETRANSCRIBE_ENABLED = "false";
+    const res = await POST(makeReq(COMPLETED));
+    expect(res.status).toBe(200);
+    expect(h.afterWork).toBeNull();
+  });
+
+  it("does NOT trigger when VOICE_SERVER_PUBLIC_URL is unset", async () => {
+    delete process.env.VOICE_SERVER_PUBLIC_URL;
+    const res = await POST(makeReq(COMPLETED));
+    expect(res.status).toBe(200);
+    expect(h.afterWork).toBeNull();
+  });
+
+  it("a failing trigger fetch never escapes (swallowed inside the work fn)", async () => {
+    globalThis.fetch = vi.fn(async () => {
+      throw new Error("voice server down");
+    }) as any;
+    await POST(makeReq(COMPLETED));
+    expect(typeof h.afterWork).toBe("function");
+    await expect(h.afterWork!()).resolves.toBeUndefined();
   });
 });
