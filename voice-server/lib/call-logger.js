@@ -221,16 +221,19 @@ async function notifyCallCompleted(internalApiUrl, secret, payload) {
  *
  * Structured fields follow the existing convention: summary/caller_name/
  * collected_data/sentiment/cleaned_transcript are columns; successEvaluation +
- * unansweredQuestions live in `metadata` (merged, not clobbered — safe
- * read-modify-write, as re-transcription runs post-call with no concurrent
- * writer). A null analysis (e.g. a call too short to analyze) still fixes the
- * transcript but leaves the display columns/metadata untouched.
+ * unansweredQuestions are merged into `metadata`. The caller passes the metadata
+ * it already read (`priorMetadata`) so we merge onto it in-process — no second
+ * SELECT here. That avoids clobbering the accumulated metadata (voice_provider,
+ * pipelineFailover, consentReason/callerState, disclosure flags) that a failed
+ * re-read would collapse to {}, and sidesteps the read-then-write race
+ * completeCallRecord deliberately avoids. A null analysis (e.g. a call too short
+ * to analyze) still fixes the transcript but leaves display columns/metadata alone.
  *
  * @param {string} callId
- * @param {{ accurateTranscript: string, priorTranscript: string|null, analysis: object|null }} fields
+ * @param {{ accurateTranscript: string, priorTranscript: string|null, priorMetadata?: object|null, analysis: object|null }} fields
  * @throws on DB error (caller catches → fallback to Gemini's transcript)
  */
-async function applyReanalysis(callId, { accurateTranscript, priorTranscript, analysis }) {
+async function applyReanalysis(callId, { accurateTranscript, priorTranscript, priorMetadata, analysis }) {
   const supabase = getSupabase();
 
   const updatePayload = {
@@ -246,13 +249,10 @@ async function applyReanalysis(callId, { accurateTranscript, priorTranscript, an
     if (analysis.sentiment) updatePayload.sentiment = analysis.sentiment;
     if (analysis.cleanedTranscript) updatePayload.cleaned_transcript = analysis.cleanedTranscript;
 
-    const { data: existing } = await supabase
-      .from("calls")
-      .select("metadata")
-      .eq("id", callId)
-      .single();
+    // Merge onto the metadata the caller already read — never re-read (a failed
+    // re-read would collapse to {} and wipe the accumulated keys).
     updatePayload.metadata = {
-      ...(existing?.metadata || {}),
+      ...(priorMetadata || {}),
       ...(analysis.successEvaluation && { successEvaluation: analysis.successEvaluation }),
       ...(analysis.unansweredQuestions && analysis.unansweredQuestions.length > 0 && {
         unansweredQuestions: analysis.unansweredQuestions,

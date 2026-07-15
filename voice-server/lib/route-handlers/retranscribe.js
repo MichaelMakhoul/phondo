@@ -1,6 +1,7 @@
 "use strict";
 
 const { SENTRY_REASONS, setReasonTag } = require("../sentry-reasons");
+const { SUPPORTED_STT_LANGUAGES } = require("../../services/deepgram-stt");
 
 // SCRUM-550: post-call re-transcription orchestration. Runs entirely off the
 // live-call path (triggered by the Next.js recording webhook). Deps are
@@ -55,11 +56,22 @@ async function handleRetranscribe({ callId, deps }) {
   }
 
   const supabase = getSupabase();
-  const { data: row, error } = await supabase
-    .from("calls")
-    .select("id, organization_id, recording_storage_path, transcript, transcript_source, language, metadata")
-    .eq("id", callId)
-    .single();
+  // Wrap the lookup so a THROWN rejection (network/pool) is paged with the
+  // retranscribe-failed reason the Grafana rule watches, not just a returned
+  // `error`. Without this the throw escapes past page() to server.js's outer
+  // net — safe for the transcript, but invisible to alerting.
+  /** @type {{ data: any, error: any }} */
+  let lookup;
+  try {
+    lookup = await supabase
+      .from("calls")
+      .select("id, organization_id, recording_storage_path, transcript, transcript_source, language, metadata")
+      .eq("id", callId)
+      .single();
+  } catch (err) {
+    lookup = { data: null, error: err };
+  }
+  const { data: row, error } = lookup;
 
   if (error || !row) {
     page(`retranscribe: call ${callId} not found: ${error?.message || "no row"}`, "warning");
@@ -71,6 +83,15 @@ async function handleRetranscribe({ callId, deps }) {
   if (!row.recording_storage_path) {
     return { ok: true, retranscribed: false, reason: "no-recording" };
   }
+  // Deepgram Nova-3 pre-recorded supports only {en, es} (SUPPORTED_STT_LANGUAGES).
+  // transcribeRecording would silently transcribe an unsupported language (e.g. an
+  // Arabic call) with the English model, yielding plausible-looking garbage that
+  // passes the empty-guard and overwrites the Gemini-derived analysis columns
+  // (summary/caller_name/collected_data/sentiment) — and those have NO raw_ backup.
+  // Skip; keep Gemini's transcript AND analysis. Null/unset language ⇒ English ⇒ OK.
+  if (row.language && !SUPPORTED_STT_LANGUAGES.has(row.language)) {
+    return { ok: true, retranscribed: false, reason: "unsupported-language" };
+  }
 
   try {
     const { data: blob, error: dlErr } = await supabase.storage
@@ -80,10 +101,20 @@ async function handleRetranscribe({ callId, deps }) {
     const audio = Buffer.from(await blob.arrayBuffer());
 
     const industry = row.metadata && row.metadata.industry;
-    const { utterances } = await transcribeRecording(deepgramApiKey, audio, {
+    const { utterances, channelCount } = await transcribeRecording(deepgramApiKey, audio, {
       language: row.language,
       industry,
     });
+    // Dual-channel diarization is the whole premise: caller on one channel, AI on
+    // the other. A single-channel result (mono recording, multichannel not honored,
+    // config drift) puts every utterance on channel 0 → buildTwoSidedTranscript
+    // labels ALL of it "User:" with no AI turns. That non-empty garbage would pass
+    // the empty-guard, overwrite Gemini's correct transcript, and stamp it
+    // permanently (idempotent — never retried). Skip; keep Gemini's.
+    if (!(channelCount >= 2)) {
+      page(`retranscribe: expected multichannel, got ${channelCount} channel(s) for call ${callId}`, "warning");
+      return { ok: true, retranscribed: false, reason: "not-multichannel" };
+    }
     const accurateTranscript = buildTwoSidedTranscript(utterances);
     if (!accurateTranscript.trim()) {
       page(`retranscribe: empty transcript for call ${callId}`, "warning");
@@ -94,6 +125,7 @@ async function handleRetranscribe({ callId, deps }) {
     await applyReanalysis(callId, {
       accurateTranscript,
       priorTranscript: row.transcript,
+      priorMetadata: row.metadata,
       analysis,
     });
     return { ok: true, retranscribed: true };

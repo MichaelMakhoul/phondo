@@ -4,9 +4,10 @@
 // accurate Deepgram version, preserves Gemini's original in raw_transcript, and
 // stamps transcript_source='deepgram'. Structured fields follow the existing
 // convention: summary/caller_name/collected_data/sentiment/cleaned_transcript
-// are columns; successEvaluation + unansweredQuestions live in metadata (merged,
-// not clobbered). getSupabase is stubbed via require.cache (same idiom as
-// call-logger-metadata.test.js).
+// are columns; successEvaluation + unansweredQuestions are merged onto the
+// caller-supplied priorMetadata (no second SELECT — state.selected pins that we
+// never re-read, so a failed re-read can't wipe accumulated keys). getSupabase is
+// stubbed via require.cache (same idiom as call-logger-metadata.test.js).
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -63,11 +64,17 @@ const ANALYSIS = {
   cleanedTranscript: { turns: [{ role: "user", text: "hi" }] },
 };
 
-test("writes the transcript trio + display columns and merges metadata", async () => {
-  reset({ existingMetadata: { voice_provider: "self_hosted", pipelineFailover: { to: "gpt" } } });
+test("writes the transcript trio + display columns and merges analysis into priorMetadata (audit keys preserved)", async () => {
+  reset();
   await applyReanalysis("call-1", {
     accurateTranscript: "User: hi\nAI: hello",
     priorTranscript: "User: gibberish\nAI: hello",
+    priorMetadata: {
+      voice_provider: "self_hosted",
+      pipelineFailover: { to: "gpt" },
+      consentReason: "two-party-state",
+      callerState: "CA",
+    },
     analysis: ANALYSIS,
   });
   assert.equal(state.updates.length, 1);
@@ -81,12 +88,17 @@ test("writes the transcript trio + display columns and merges metadata", async (
   assert.deepEqual(payload.collected_data, { email: "j@x.com" });
   assert.equal(payload.sentiment, "positive");
   assert.deepEqual(payload.cleaned_transcript, { turns: [{ role: "user", text: "hi" }] });
+  // consentReason/callerState (recording-consent audit trail) MUST survive the merge.
   assert.deepEqual(payload.metadata, {
     voice_provider: "self_hosted",
     pipelineFailover: { to: "gpt" },
+    consentReason: "two-party-state",
+    callerState: "CA",
     successEvaluation: "successful",
     unansweredQuestions: ["Do you accept my insurance?"],
   });
+  // No second read — metadata comes from priorMetadata, never a SELECT.
+  assert.equal(state.selected, false);
 });
 
 test("with null analysis writes ONLY the transcript trio (no display columns, no metadata read)", async () => {
@@ -116,4 +128,19 @@ test("preserves raw_transcript=null when there was no prior transcript", async (
   reset();
   await applyReanalysis("call-4", { accurateTranscript: "User: hi", priorTranscript: null, analysis: null });
   assert.equal(state.updates[0].payload.raw_transcript, null);
+});
+
+test("analysis without successEvaluation/unansweredQuestions leaves priorMetadata byte-for-byte (no key loss, no spurious add)", async () => {
+  reset();
+  await applyReanalysis("call-5", {
+    accurateTranscript: "User: hi\nAI: hello",
+    priorTranscript: null,
+    priorMetadata: { voice_provider: "self_hosted", consentReason: "one-party", callerState: null },
+    analysis: { summary: "s", sentiment: "neutral" },
+  });
+  assert.deepEqual(state.updates[0].payload.metadata, {
+    voice_provider: "self_hosted",
+    consentReason: "one-party",
+    callerState: null,
+  });
 });

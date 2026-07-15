@@ -138,16 +138,32 @@ export async function POST(req: NextRequest) {
     const voiceUrl = process.env.VOICE_SERVER_PUBLIC_URL;
     const internalSecret = process.env.INTERNAL_API_SECRET;
     if (voiceUrl && internalSecret) {
+      // Pass the resolved DB UUID (calls.id), NOT the Twilio CallSid — the
+      // voice-server handler looks up the row by `.eq("id", callId)`, and the
+      // CallSid lives in vapi_call_id ("sh_"+CallSid), not the primary key.
+      const resolvedCallId = result.callId;
       runAfterResponse(async () => {
         try {
-          await fetch(`${voiceUrl}/internal/retranscribe`, {
+          const r = await fetch(`${voiceUrl}/internal/retranscribe`, {
             method: "POST",
             headers: { "Content-Type": "application/json", "x-internal-secret": internalSecret },
-            body: JSON.stringify({ callId: CallSid }),
+            body: JSON.stringify({ callId: resolvedCallId }),
             signal: AbortSignal.timeout(60_000),
           });
+          // A non-ok response RESOLVES (no throw) — e.g. a 401 from an
+          // INTERNAL_API_SECRET drift would otherwise silently disable
+          // re-transcription fleet-wide. Surface it so the owner isn't blind.
+          if (!r.ok) {
+            console.warn(`[TwilioRecording] retranscribe trigger returned ${r.status} (non-fatal)`);
+            Sentry.captureMessage(
+              `TwilioRecording: retranscribe trigger non-ok ${r.status}`,
+              "warning",
+            );
+          }
         } catch (err) {
+          // Voice server unreachable — re-transcription is off until it recovers.
           console.warn("[TwilioRecording] retranscribe trigger failed (non-fatal):", err);
+          Sentry.captureException(err);
         }
       });
     } else {

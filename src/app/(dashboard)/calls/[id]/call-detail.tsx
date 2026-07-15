@@ -716,7 +716,7 @@ export function CallDetail({ call: initialCall }: { call: Call }) {
                 {call.transcript_source === "deepgram" && (
                   <span
                     className="text-xs font-normal text-muted-foreground"
-                    title="The caller side was re-transcribed with Deepgram after the call for higher accuracy. The AI side is Gemini's own (already accurate)."
+                    title="After the call, the recording was re-transcribed with Deepgram for a more accurate caller transcript. Gemini's original is preserved under 'Gemini original'."
                   >
                     · re-transcribed (Deepgram)
                   </span>

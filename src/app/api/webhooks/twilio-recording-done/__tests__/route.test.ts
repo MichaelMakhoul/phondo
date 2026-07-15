@@ -304,7 +304,11 @@ describe("POST /api/webhooks/twilio-recording-done — retranscribe trigger (SCR
     expect(h.fetchCalls[0].url).toBe("https://voice.phondo.ai/internal/retranscribe");
     expect(h.fetchCalls[0].init.method).toBe("POST");
     expect(h.fetchCalls[0].init.headers["x-internal-secret"]).toBe("int_secret");
-    expect(JSON.parse(h.fetchCalls[0].init.body)).toEqual({ callId: "CA1" });
+    // Must be the resolved DB UUID (storeResult.callId="c1"), NOT the Twilio
+    // CallSid ("CA1"): the voice-server handler looks up calls by primary key.
+    // Passing CallSid would silently no-op every re-transcription (no row).
+    expect(JSON.parse(h.fetchCalls[0].init.body)).toEqual({ callId: "c1" });
+    expect(JSON.parse(h.fetchCalls[0].init.body).callId).not.toBe("CA1");
   });
 
   it("does NOT trigger when the store failed (transient)", async () => {
@@ -333,12 +337,33 @@ describe("POST /api/webhooks/twilio-recording-done — retranscribe trigger (SCR
     expect(h.afterWork).toBeNull();
   });
 
-  it("a failing trigger fetch never escapes (swallowed inside the work fn)", async () => {
+  it("a failing trigger fetch never escapes, but IS captured to Sentry (voice server unreachable)", async () => {
     globalThis.fetch = vi.fn(async () => {
       throw new Error("voice server down");
     }) as any;
     await POST(makeReq(COMPLETED));
     expect(typeof h.afterWork).toBe("function");
     await expect(h.afterWork!()).resolves.toBeUndefined();
+    // A globally-unreachable voice server silently disables re-transcription —
+    // the owner must be paged, not left blind.
+    const exc = h.sentry.find((s) => s.kind === "exception");
+    expect(exc).toBeTruthy();
+    expect(String(exc.err)).toContain("voice server down");
+  });
+
+  it("captures a Sentry warning when the trigger responds non-ok (e.g. 401 INTERNAL_API_SECRET drift)", async () => {
+    globalThis.fetch = vi.fn(async (url: any, init: any) => {
+      h.fetchCalls.push({ url, init });
+      return { ok: false, status: 401, json: async () => ({}), text: async () => "" } as any;
+    }) as any;
+    await POST(makeReq(COMPLETED));
+    await h.afterWork!();
+    expect(h.fetchCalls).toHaveLength(1);
+    // A non-ok response RESOLVES (no throw) — without an explicit check it would
+    // be fully silent. Pin that it escalates to Sentry with the status.
+    const msg = h.sentry.find((s) => s.kind === "message");
+    expect(msg).toBeTruthy();
+    expect(msg.level).toBe("warning");
+    expect(String(msg.msg)).toContain("401");
   });
 });

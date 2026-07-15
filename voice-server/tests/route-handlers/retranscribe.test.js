@@ -43,14 +43,20 @@ const DEFAULT_ROW = {
 };
 
 function makeDeps(overrides = {}) {
-  const captured = { applyReanalysis: null, transcribeArgs: null };
+  const captured = { applyReanalysis: null, transcribeArgs: null, lookup: null };
   const row = "row" in overrides ? overrides.row : { ...DEFAULT_ROW };
   const supabase = {
     from: () => ({
       select: () => ({
-        eq: () => ({
-          single: async () => ({ data: row, error: overrides.selectError || null }),
-        }),
+        eq: (col, val) => {
+          captured.lookup = { col, val };
+          return {
+            single: async () => {
+              if (overrides.selectThrows) throw overrides.selectThrows;
+              return { data: row, error: overrides.selectError || null };
+            },
+          };
+        },
       }),
     }),
     storage: {
@@ -136,6 +142,7 @@ describe("handleRetranscribe (SCRUM-550)", () => {
     assert.equal(captured.applyReanalysis.callId, "c1");
     assert.equal(captured.applyReanalysis.fields.accurateTranscript, "User: real caller words\nAI: hello");
     assert.equal(captured.applyReanalysis.fields.priorTranscript, "User: gibberish\nAI: hello");
+    assert.deepEqual(captured.applyReanalysis.fields.priorMetadata, { industry: "dental" });
     assert.deepEqual(captured.applyReanalysis.fields.analysis, { summary: "s", sentiment: "neutral" });
   });
 
@@ -158,5 +165,52 @@ describe("handleRetranscribe (SCRUM-550)", () => {
     const res = await handleRetranscribe({ callId: "c1", deps });
     assert.equal(res.reason, "empty-transcript");
     assert.equal(captured.applyReanalysis, null);
+  });
+
+  it("looks the row up by primary key (id) with the given callId — pins the producer/consumer contract", async () => {
+    const { deps, captured } = makeDeps();
+    await handleRetranscribe({ callId: "c1", deps });
+    // The webhook must send calls.id (a UUID), not the Twilio CallSid. If this
+    // regresses to .eq("vapi_call_id", …) or a typo, re-transcription no-ops
+    // in prod — the mock now captures the real column/value so it can't hide it.
+    assert.deepEqual(captured.lookup, { col: "id", val: "c1" });
+  });
+
+  it("pages and returns not-found when the row lookup THROWS (never escapes the handler)", async () => {
+    const { deps, captured, sentry } = makeDeps({ selectThrows: new Error("pool timeout") });
+    const res = await handleRetranscribe({ callId: "c1", deps });
+    assert.equal(res.reason, "not-found");
+    assert.equal(res.retranscribed, false);
+    assert.equal(captured.applyReanalysis, null);
+    assert.equal(sentry.events[0].level, "warning");
+    assert.equal(sentry.events[0].reason, "retranscribe-failed");
+  });
+
+  it("skips (no page, no write) an unsupported language — keeps Gemini's transcript AND analysis", async () => {
+    const { deps, captured, sentry } = makeDeps({ row: { ...DEFAULT_ROW, language: "ar" } });
+    const res = await handleRetranscribe({ callId: "c1", deps });
+    assert.equal(res.reason, "unsupported-language");
+    assert.equal(res.retranscribed, false);
+    assert.equal(captured.applyReanalysis, null);
+    // An expected skip (Deepgram Nova-3 supports only en/es), not a failure — no page.
+    assert.equal(sentry.events.length, 0);
+  });
+
+  it("skips (pages, no write) a single-channel Deepgram result — no all-User garbage overwrite", async () => {
+    const { deps, captured, sentry } = makeDeps({
+      transcribeRecording: async () => ({
+        utterances: [
+          { start: 0, channel: 0, transcript: "everything landed on one channel" },
+          { start: 1, channel: 0, transcript: "and would be labelled all User" },
+        ],
+        channelCount: 1,
+      }),
+    });
+    const res = await handleRetranscribe({ callId: "c1", deps });
+    assert.equal(res.reason, "not-multichannel");
+    assert.equal(res.retranscribed, false);
+    assert.equal(captured.applyReanalysis, null);
+    assert.equal(sentry.events[0].level, "warning");
+    assert.equal(sentry.events[0].reason, "retranscribe-failed");
   });
 });
