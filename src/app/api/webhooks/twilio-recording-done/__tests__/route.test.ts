@@ -85,6 +85,7 @@ const COMPLETED = {
 };
 
 let origToken: string | undefined;
+let origAppUrl: string | undefined;
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -98,11 +99,17 @@ beforeEach(() => {
   h.metaUpdates = [];
   h.sentry = [];
   origToken = process.env.TWILIO_AUTH_TOKEN;
+  origAppUrl = process.env.NEXT_PUBLIC_APP_URL;
   process.env.TWILIO_AUTH_TOKEN = "tok_test";
+  // Default: unset, so the signature is computed over req.url unless a test
+  // opts in. Restored in afterEach.
+  delete process.env.NEXT_PUBLIC_APP_URL;
 });
 
 afterEach(() => {
   process.env.TWILIO_AUTH_TOKEN = origToken;
+  if (origAppUrl === undefined) delete process.env.NEXT_PUBLIC_APP_URL;
+  else process.env.NEXT_PUBLIC_APP_URL = origAppUrl;
 });
 
 describe("POST /api/webhooks/twilio-recording-done (SCRUM-545)", () => {
@@ -120,6 +127,38 @@ describe("POST /api/webhooks/twilio-recording-done (SCRUM-545)", () => {
     expect(res.status).toBe(403);
     expect(store.downloadAndStoreRecording).not.toHaveBeenCalled();
     expect(h.sentry.some((s) => s.level === "warning")).toBe(true);
+  });
+
+  // The signature is validated over the PUBLIC-facing URL. Behind Vercel,
+  // req.url reflects the internal origin, so NEXT_PUBLIC_APP_URL must be used
+  // to reconstruct it — if this regresses, EVERY recording webhook 403s and
+  // recordings silently stop. These pin that reconstruction (route.ts:15-17).
+  it("recomputes the signed URL over NEXT_PUBLIC_APP_URL + pathname + search (Vercel origin fix)", async () => {
+    process.env.NEXT_PUBLIC_APP_URL = "https://real.phondo.ai";
+    const req = new NextRequest(
+      "https://phondo-internal.vercel.app/api/webhooks/twilio-recording-done?x=1",
+      {
+        method: "POST",
+        headers: {
+          "x-twilio-signature": "sig",
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams(COMPLETED).toString(),
+      },
+    );
+    await POST(req);
+    expect(h.validateCalls).toHaveLength(1);
+    // public origin + original pathname AND query — never the internal origin.
+    expect(h.validateCalls[0].url).toBe(
+      "https://real.phondo.ai/api/webhooks/twilio-recording-done?x=1",
+    );
+  });
+
+  it("falls back to req.url for the signature when NEXT_PUBLIC_APP_URL is unset", async () => {
+    await POST(makeReq(COMPLETED));
+    expect(h.validateCalls[0].url).toBe(
+      "https://app.phondo.ai/api/webhooks/twilio-recording-done",
+    );
   });
 
   it("returns 400 when CallSid is missing", async () => {
@@ -167,6 +206,16 @@ describe("POST /api/webhooks/twilio-recording-done (SCRUM-545)", () => {
   it("returns 400 when a completed event is missing RecordingSid", async () => {
     const { RecordingSid, ...rest } = COMPLETED;
     void RecordingSid;
+    const res = await POST(makeReq(rest));
+    expect(res.status).toBe(400);
+    expect(store.downloadAndStoreRecording).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when a completed event is missing RecordingUrl (guards the !RecordingUrl half)", async () => {
+    // Without this branch, RecordingUrl.startsWith(...) at route.ts:97 throws
+    // → a 500 instead of a clean 400.
+    const { RecordingUrl, ...rest } = COMPLETED;
+    void RecordingUrl;
     const res = await POST(makeReq(rest));
     expect(res.status).toBe(400);
     expect(store.downloadAndStoreRecording).not.toHaveBeenCalled();

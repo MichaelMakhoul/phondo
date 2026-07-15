@@ -13,9 +13,10 @@ const h = vi.hoisted(() => ({
   lookupKeys: [] as string[], // captured vapi_call_id lookup values
   uploadError: null as any,
   updateError: null as any,
-  uploads: [] as any[], // { path, opts }
+  uploads: [] as any[], // { path, audio, opts }
   updates: [] as any[], // { table, payload, col, val }
   // fetch behaviour
+  fetchBuffer: new ArrayBuffer(0) as ArrayBuffer,
   fetchResponse: { ok: true, status: 200, arrayBuffer: async () => new ArrayBuffer(8) } as any,
   fetchThrows: null as any,
   fetchCalls: [] as any[], // { url, headers }
@@ -42,8 +43,8 @@ vi.mock("@/lib/supabase/admin", () => ({
     }),
     storage: {
       from: (_bucket: string) => ({
-        upload: async (path: string, _audio: any, opts: any) => {
-          h.uploads.push({ path, opts });
+        upload: async (path: string, audio: any, opts: any) => {
+          h.uploads.push({ path, audio, opts });
           return { error: h.uploadError };
         },
       }),
@@ -77,7 +78,8 @@ beforeEach(() => {
   h.updateError = null;
   h.uploads = [];
   h.updates = [];
-  h.fetchResponse = { ok: true, status: 200, arrayBuffer: async () => new ArrayBuffer(8) };
+  h.fetchBuffer = new ArrayBuffer(8);
+  h.fetchResponse = { ok: true, status: 200, arrayBuffer: async () => h.fetchBuffer };
   h.fetchThrows = null;
   h.fetchCalls = [];
   h.sentry = [];
@@ -125,6 +127,8 @@ describe("downloadAndStoreRecording (SCRUM-545)", () => {
     expect(h.uploads).toHaveLength(1);
     expect(h.uploads[0].path).toBe("org-1/call-1.mp3");
     expect(h.uploads[0].opts).toMatchObject({ contentType: "audio/mpeg", upsert: true });
+    // the exact bytes fetched from the provider are what get uploaded (no swap/re-encode)
+    expect(h.uploads[0].audio).toBe(h.fetchBuffer);
     // (2) THE UPDATE TRIPLE: storage path set, sid set, recording_url nulled —
     // keyed by the call id. Dropping recording_url:null here silently breaks
     // the voice-server fallback guard.
@@ -159,6 +163,18 @@ describe("downloadAndStoreRecording (SCRUM-545)", () => {
     expect((h.fetchCalls[0].headers as any).Authorization).toBe("Bearer telnyx_test");
   });
 
+  it("missing Telnyx API key surfaces as a transient download failure (not a crash)", async () => {
+    delete process.env.TELNYX_API_KEY;
+    h.lookup = [{ data: { ...CALL_ROW }, error: null }];
+    const result = await downloadAndStoreRecording(
+      params({ provider: "telnyx", recordingUrl: "https://api.telnyx.com/rec/RE1.mp3" }),
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.transient).toBe(true);
+    expect(result.error).toMatch(/Download failed/);
+  });
+
   it("idempotent: same recording_sid already stored short-circuits (no fetch/upload/update)", async () => {
     h.lookup = [
       {
@@ -171,6 +187,20 @@ describe("downloadAndStoreRecording (SCRUM-545)", () => {
     expect(h.fetchCalls).toHaveLength(0);
     expect(h.uploads).toHaveLength(0);
     expect(h.updates).toHaveLength(0);
+  });
+
+  it("same recording_sid but NO stored path yet (interrupted prior write) does NOT short-circuit — completes the store", async () => {
+    // Guards the `&& call.recording_storage_path` half of the idempotency check:
+    // a row that claimed the SID but never finished uploading must still be
+    // fetched/uploaded/updated, not falsely reported as stored with a null path.
+    h.lookup = [
+      { data: { ...CALL_ROW, recording_sid: "RE1", recording_storage_path: null }, error: null },
+    ];
+    const result = await downloadAndStoreRecording(params()); // recordingSid: RE1
+    expect(result).toEqual({ ok: true, callId: "call-1", storagePath: "org-1/call-1.mp3" });
+    expect(h.fetchCalls).toHaveLength(1);
+    expect(h.uploads).toHaveLength(1);
+    expect(h.updates).toHaveLength(1);
   });
 
   it("refuses to overwrite when a DIFFERENT recording_sid already exists on the call", async () => {
@@ -207,6 +237,32 @@ describe("downloadAndStoreRecording (SCRUM-545)", () => {
     expect(result.error).toMatch(/No call row/);
     // three attempts (backoffs [0, 1500, 4000]) before giving up
     expect(h.lookupKeys).toEqual(["sh_CA123", "sh_CA123", "sh_CA123"]);
+  });
+
+  it("waits the [1500, 4000]ms schedule between attempts — not just N instant retries", async () => {
+    // Pins the DELAYS, not only the count. The backoffs exist to ride out the
+    // voice-server row-write race; zeroing them (instant ×3) must fail here.
+    vi.useFakeTimers();
+    h.lookup = [
+      { data: null, error: null }, // attempt 0 (backoff 0)
+      { data: null, error: null }, // attempt 1 (after 1500ms)
+      { data: { ...CALL_ROW }, error: null }, // attempt 2 (after 4000ms)
+    ];
+    const p = downloadAndStoreRecording(params());
+
+    await vi.advanceTimersByTimeAsync(0); // attempt 0 fires immediately
+    expect(h.lookupKeys).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1499); // still inside the first backoff
+    expect(h.lookupKeys).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1); // crosses 1500 → attempt 1
+    expect(h.lookupKeys).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(3999); // still inside the second backoff
+    expect(h.lookupKeys).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(1); // crosses 4000 → attempt 2 finds the row
+    expect(h.lookupKeys).toHaveLength(3);
+
+    const result = await p;
+    expect(result.ok).toBe(true);
   });
 
   it("lookup DB error returns transient immediately (no further attempts)", async () => {
