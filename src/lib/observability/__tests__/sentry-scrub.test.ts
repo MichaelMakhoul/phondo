@@ -8,6 +8,8 @@ describe("isPiiKey (SCRUM-312)", () => {
       "phone", "callerPhone", "email", "address", "transcript",
       "to", "from", "firstName", "last_name", "name", "dob", "dateOfBirth",
       "responseBody",
+      // SCRUM-546: Stripe error internals surfaced by ExtraErrorData.
+      "payload", "rawPayload", "detail", "header",
     ]) {
       expect(isPiiKey(k), k).toBe(true);
     }
@@ -17,6 +19,9 @@ describe("isPiiKey (SCRUM-312)", () => {
     for (const k of [
       "orgId", "callSid", "upstreamStatus", "voiceId", "businessIdCount",
       "failureKind", "reason", "service", "code", "limit",
+      // SCRUM-546: `detail`/`header` are anchored so these benign near-misses
+      // stay visible for triage — pins the anchoring against a future broad regex.
+      "orderDetails", "detailedStatus", "headerText",
     ]) {
       expect(isPiiKey(k), k).toBe(false);
     }
@@ -44,6 +49,43 @@ describe("scrubObject (SCRUM-312)", () => {
     expect(out.nested.email).toBe("[scrubbed]");
     expect(out.nested.safe).toBe(1);
     expect(out.list[0].firstName).toBe("[scrubbed]");
+  });
+
+  it("scrubs the REAL ExtraErrorData shape — Stripe err.payload/err.header are TOP-LEVEL context props (SCRUM-546)", () => {
+    // stripe 17.7.0 sets `header`/`payload` as own TOP-LEVEL props on a
+    // StripeSignatureVerificationError (Error.js:160-161); `err.detail` is
+    // undefined for sig errors. Sentry's ExtraErrorData flattens all own props
+    // into event.contexts[name], so payload/header arrive as SIBLINGS of detail,
+    // never nested under it. This pins the load-bearing patterns (/payload/i and
+    // /^header$/i) against the shape that actually occurs — a future edit that
+    // drops /payload/i (mis-trusting `detail`) would reopen the leak and fail here.
+    const out = scrubObject({
+      StripeSignatureVerificationError: {
+        type: "StripeSignatureVerificationError",
+        payload: '{"data":{"object":{"customer_email":"a@b.com"}}}',
+        header: "t=1700000000,v1=deadbeefdeadbeef",
+        detail: undefined,
+      },
+    }) as any;
+    const ctx = out.StripeSignatureVerificationError;
+    expect(ctx.payload).toBe("[scrubbed]");
+    expect(ctx.header).toBe("[scrubbed]");
+    // Non-PII sibling survives for triage.
+    expect(ctx.type).toBe("StripeSignatureVerificationError");
+    expect(JSON.stringify(out)).not.toContain("a@b.com");
+  });
+
+  it("scrubs a nested `detail` subtree for API errors that DO populate err.detail (SCRUM-546)", () => {
+    // /^detail$/i earns its place for non-signature Stripe/API errors whose
+    // `detail` carries request specifics — masked whole, not recursed into.
+    const out = scrubObject({
+      SomeApiError: { detail: { rawBody: "email=a@b.com", note: "x" } },
+      rawPayload: '{"email":"x@y.com"}',
+    }) as any;
+    expect(out.SomeApiError.detail).toBe("[scrubbed]");
+    expect(out.rawPayload).toBe("[scrubbed]");
+    expect(JSON.stringify(out)).not.toContain("a@b.com");
+    expect(JSON.stringify(out)).not.toContain("x@y.com");
   });
 
   it("fails CLOSED past depth 5 — deep value replaced with the sentinel (no PII leak)", () => {

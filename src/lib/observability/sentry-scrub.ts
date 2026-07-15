@@ -21,13 +21,29 @@ import type { ErrorEvent, EventHint } from "@sentry/nextjs";
  * sync with the voice-server when they change.
  */
 
-// PII field-name patterns — mirror voice-server/lib/sentry.js exactly.
+// PII field-name patterns. Mostly mirrors voice-server/lib/sentry.js, but the
+// two intentionally diverge on `payload`: the voice-server shim WANTS the raw
+// diagnostic payload in its Loki alert, whereas the real @sentry/nextjs SDK
+// auto-serialises error-internal props to a US/EU-hosted backend, so we scrub.
 const PII_FIELD_PATTERNS: RegExp[] = [
   /phone/i, /email/i, /address/i, /transcript/i,
   /^to$/i, /^from$/i, /transferTo/i, /callerPhone/i,
   /attendeeName/i, /attendee_name/i, /firstName/i, /first_name/i,
   /lastName/i, /last_name/i, /^name$/i, /ruleName/i,
   /dob/i, /dateOfBirth/i, /responseBody/i, /responseContent/i,
+  // SCRUM-546: Sentry's ExtraErrorData integration FLATTENS an error's own
+  // enumerable props into event.contexts[ErrorName], which scrubObject runs
+  // over. A StripeSignatureVerificationError exposes the raw signed webhook
+  // body (customer PII) as a TOP-LEVEL `payload` prop and the signature as a
+  // top-level `header` prop (verified against stripe 17.7.0 Error.js) — they
+  // are SIBLINGS of `detail`, not nested under it (`err.detail` is undefined
+  // for sig errors). So the load-bearing patterns here are `/payload/i` (broad
+  // — a `payload` key is always a body-carrier) and `/^header$/i` (anchored:
+  // the singular Stripe-Signature header, deliberately NOT the plural `headers`
+  // triage map, which scrubInternal handles separately). `/^detail$/i` is kept
+  // for OTHER Stripe/API errors that DO populate `err.detail`; anchored like
+  // `^to$`/`^name$` so benign keys (orderDetails) stay visible.
+  /payload/i, /^detail$/i, /^header$/i,
 ];
 
 export function isPiiKey(key: string): boolean {
