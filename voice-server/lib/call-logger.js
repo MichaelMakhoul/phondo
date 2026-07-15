@@ -213,8 +213,62 @@ async function notifyCallCompleted(internalApiUrl, secret, payload) {
   }
 }
 
+/**
+ * SCRUM-550: focused post-call update after re-transcription. Overwrites
+ * `transcript` with the accurate Deepgram version, preserves Gemini's original
+ * in `raw_transcript`, and stamps `transcript_source='deepgram'` (also the
+ * idempotency guard). Does NOT touch status/ended_at/duration — those are final.
+ *
+ * Structured fields follow the existing convention: summary/caller_name/
+ * collected_data/sentiment/cleaned_transcript are columns; successEvaluation +
+ * unansweredQuestions live in `metadata` (merged, not clobbered — safe
+ * read-modify-write, as re-transcription runs post-call with no concurrent
+ * writer). A null analysis (e.g. a call too short to analyze) still fixes the
+ * transcript but leaves the display columns/metadata untouched.
+ *
+ * @param {string} callId
+ * @param {{ accurateTranscript: string, priorTranscript: string|null, analysis: object|null }} fields
+ * @throws on DB error (caller catches → fallback to Gemini's transcript)
+ */
+async function applyReanalysis(callId, { accurateTranscript, priorTranscript, analysis }) {
+  const supabase = getSupabase();
+
+  const updatePayload = {
+    transcript: accurateTranscript,
+    raw_transcript: priorTranscript ?? null,
+    transcript_source: "deepgram",
+  };
+
+  if (analysis) {
+    if (analysis.summary) updatePayload.summary = analysis.summary;
+    if (analysis.callerName) updatePayload.caller_name = analysis.callerName;
+    if (analysis.collectedData) updatePayload.collected_data = analysis.collectedData;
+    if (analysis.sentiment) updatePayload.sentiment = analysis.sentiment;
+    if (analysis.cleanedTranscript) updatePayload.cleaned_transcript = analysis.cleanedTranscript;
+
+    const { data: existing } = await supabase
+      .from("calls")
+      .select("metadata")
+      .eq("id", callId)
+      .single();
+    updatePayload.metadata = {
+      ...(existing?.metadata || {}),
+      ...(analysis.successEvaluation && { successEvaluation: analysis.successEvaluation }),
+      ...(analysis.unansweredQuestions && analysis.unansweredQuestions.length > 0 && {
+        unansweredQuestions: analysis.unansweredQuestions,
+      }),
+    };
+  }
+
+  const { error } = await supabase.from("calls").update(updatePayload).eq("id", callId);
+  if (error) {
+    throw new Error(`applyReanalysis failed for ${callId}: ${error.message}`);
+  }
+}
+
 module.exports = {
   createCallRecord,
   completeCallRecord,
   notifyCallCompleted,
+  applyReanalysis,
 };
