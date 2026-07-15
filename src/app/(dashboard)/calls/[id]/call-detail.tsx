@@ -62,6 +62,11 @@ interface Call {
   cleaned_transcript: unknown;
   summary: string | null;
   transcript: string | null;
+  // SCRUM-550: when a call is re-transcribed, `transcript` holds the accurate
+  // Deepgram version and `raw_transcript` preserves Gemini's original for
+  // comparison; `transcript_source` is 'deepgram' | 'gemini' | null(=legacy).
+  raw_transcript: string | null;
+  transcript_source: string | null;
   outcome: string | null;
   cost_cents: number | null;
   follow_up_required: boolean | null;
@@ -162,7 +167,7 @@ export function CallDetail({ call: initialCall }: { call: Call }) {
     () => parseCleanedTranscript(call.cleaned_transcript),
     [call.cleaned_transcript],
   );
-  const [transcriptMode, setTranscriptMode] = useState<"raw" | "cleaned">(
+  const [transcriptMode, setTranscriptMode] = useState<"raw" | "cleaned" | "gemini">(
     cleaned ? "cleaned" : "raw"
   );
   const [editCallerName, setEditCallerName] = useState(call.caller_name || "");
@@ -708,26 +713,46 @@ export function CallDetail({ call: initialCall }: { call: Call }) {
               <CardTitle className="flex items-center gap-2">
                 <FileText className="h-5 w-5" />
                 Transcript
+                {call.transcript_source === "deepgram" && (
+                  <span
+                    className="text-xs font-normal text-muted-foreground"
+                    title="After the call, the recording was re-transcribed with Deepgram for a more accurate caller transcript. Gemini's original is preserved under 'Gemini original'."
+                  >
+                    · re-transcribed (Deepgram)
+                  </span>
+                )}
               </CardTitle>
             </CardHeader>
             <CardContent>
-              {cleaned && (
-                <div className="mb-3 flex gap-2">
-                  <Button
-                    size="sm"
-                    variant={transcriptMode === "cleaned" ? "default" : "outline"}
-                    onClick={() => setTranscriptMode("cleaned")}
-                  >
-                    Cleaned
-                  </Button>
+              {(cleaned || call.raw_transcript) && (
+                <div className="mb-3 flex flex-wrap gap-2">
+                  {cleaned && (
+                    <Button
+                      size="sm"
+                      variant={transcriptMode === "cleaned" ? "default" : "outline"}
+                      onClick={() => setTranscriptMode("cleaned")}
+                    >
+                      Cleaned
+                    </Button>
+                  )}
                   <Button
                     size="sm"
                     variant={transcriptMode === "raw" ? "default" : "outline"}
                     onClick={() => setTranscriptMode("raw")}
-                    title="The unprocessed speech-to-text output. Garbled or mixed-language text here is a transcription artifact, not what the AI understood."
+                    title="The uncleaned transcript. When a call is re-transcribed, this is the accurate Deepgram version."
                   >
                     Original (raw STT)
                   </Button>
+                  {call.raw_transcript && (
+                    <Button
+                      size="sm"
+                      variant={transcriptMode === "gemini" ? "default" : "outline"}
+                      onClick={() => setTranscriptMode("gemini")}
+                      title="Gemini's original transcript, before re-transcription. Kept for comparison — the caller side may be less accurate here."
+                    >
+                      Gemini original
+                    </Button>
+                  )}
                 </div>
               )}
 
@@ -748,6 +773,12 @@ export function CallDetail({ call: initialCall }: { call: Call }) {
                       </div>
                     ))}
                   </div>
+                </ScrollArea>
+              ) : transcriptMode === "gemini" && call.raw_transcript ? (
+                <ScrollArea className="h-[400px]">
+                  <pre className="whitespace-pre-wrap font-sans text-sm">
+                    {call.raw_transcript}
+                  </pre>
                 </ScrollArea>
               ) : call.transcript ? (
                 <ScrollArea className="h-[400px]">

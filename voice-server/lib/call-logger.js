@@ -213,8 +213,62 @@ async function notifyCallCompleted(internalApiUrl, secret, payload) {
   }
 }
 
+/**
+ * SCRUM-550: focused post-call update after re-transcription. Overwrites
+ * `transcript` with the accurate Deepgram version, preserves Gemini's original
+ * in `raw_transcript`, and stamps `transcript_source='deepgram'` (also the
+ * idempotency guard). Does NOT touch status/ended_at/duration — those are final.
+ *
+ * Structured fields follow the existing convention: summary/caller_name/
+ * collected_data/sentiment/cleaned_transcript are columns; successEvaluation +
+ * unansweredQuestions are merged into `metadata`. The caller passes the metadata
+ * it already read (`priorMetadata`) so we merge onto it in-process — no second
+ * SELECT here. That avoids clobbering the accumulated metadata (voice_provider,
+ * pipelineFailover, consentReason/callerState, disclosure flags) that a failed
+ * re-read would collapse to {}, and sidesteps the read-then-write race
+ * completeCallRecord deliberately avoids. A null analysis (e.g. a call too short
+ * to analyze) still fixes the transcript but leaves display columns/metadata alone.
+ *
+ * @param {string} callId
+ * @param {{ accurateTranscript: string, priorTranscript: string|null, priorMetadata?: object|null, analysis: object|null }} fields
+ * @throws on DB error (caller catches → fallback to Gemini's transcript)
+ */
+async function applyReanalysis(callId, { accurateTranscript, priorTranscript, priorMetadata, analysis }) {
+  const supabase = getSupabase();
+
+  const updatePayload = {
+    transcript: accurateTranscript,
+    raw_transcript: priorTranscript ?? null,
+    transcript_source: "deepgram",
+  };
+
+  if (analysis) {
+    if (analysis.summary) updatePayload.summary = analysis.summary;
+    if (analysis.callerName) updatePayload.caller_name = analysis.callerName;
+    if (analysis.collectedData) updatePayload.collected_data = analysis.collectedData;
+    if (analysis.sentiment) updatePayload.sentiment = analysis.sentiment;
+    if (analysis.cleanedTranscript) updatePayload.cleaned_transcript = analysis.cleanedTranscript;
+
+    // Merge onto the metadata the caller already read — never re-read (a failed
+    // re-read would collapse to {} and wipe the accumulated keys).
+    updatePayload.metadata = {
+      ...(priorMetadata || {}),
+      ...(analysis.successEvaluation && { successEvaluation: analysis.successEvaluation }),
+      ...(analysis.unansweredQuestions && analysis.unansweredQuestions.length > 0 && {
+        unansweredQuestions: analysis.unansweredQuestions,
+      }),
+    };
+  }
+
+  const { error } = await supabase.from("calls").update(updatePayload).eq("id", callId);
+  if (error) {
+    throw new Error(`applyReanalysis failed for ${callId}: ${error.message}`);
+  }
+}
+
 module.exports = {
   createCallRecord,
   completeCallRecord,
   notifyCallCompleted,
+  applyReanalysis,
 };

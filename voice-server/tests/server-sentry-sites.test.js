@@ -234,6 +234,20 @@ function emitUnhappyCall({ callSid, organizationId, successEvaluation, sentiment
   });
 }
 
+/** SCRUM-550: Deepgram re-transcription of the recording failed/degraded.
+ *  Warning — the dashboard keeps Gemini's original transcript, so no data is
+ *  lost (unlike a broken core path). Its own Grafana rule matches
+ *  reason=retranscribe-failed. Lives in lib/route-handlers/retranscribe.js. */
+function emitRetranscribeFailed({ callId }) {
+  Sentry.withScope((scope) => {
+    scope.setTag("service", "voice-server");
+    scope.setTag("reason", "retranscribe-failed");
+    scope.setLevel("warning");
+    scope.setExtras({ callId });
+    Sentry.captureMessage("retranscribe failed (SCRUM-550)", "warning");
+  });
+}
+
 /**
  * The canonical reason→level taxonomy this test file asserts. Verified
  * against server.js by the introspection test below — keep these in sync
@@ -247,6 +261,7 @@ const REASON_LEVELS = Object.freeze({
   "voicemail-greeting-lookup-failed": "warning",
   "voicemail-recording-save-failed": "error",
   "unhappy-call": "warning",
+  "retranscribe-failed": "warning",
 });
 const REASONS = Object.freeze(Object.keys(REASON_LEVELS));
 
@@ -587,6 +602,7 @@ describe("server.js Sentry sites — contract tests (SCRUM-273)", () => {
             sentiment: "negative",
             durationSeconds: 42,
           }),
+        "retranscribe-failed": () => emitRetranscribeFailed({ callId: "p8" }),
       };
       // Every REASON must have a probe — surfacing missing coverage instead
       // of silently skipping.
@@ -643,7 +659,13 @@ describe("server.js Sentry sites — contract tests (SCRUM-273)", () => {
     const pendingTransfersSource = fs.readFileSync(path.join(__dirname, "..", "lib", "pending-transfers.js"), "utf8");
     const KILL_SWITCH_PATH = path.join(__dirname, "..", "lib", "route-handlers", "kill-switch.js");
     const killSwitchSource = fs.readFileSync(KILL_SWITCH_PATH, "utf8");
-    const productionSources = [serverSource, killSwitchSource, unhappySource];
+    // SCRUM-550: retranscribe.js is a NEW reason-site file — enumerate it here
+    // or its capture site (and reason) is invisible to the census/union check.
+    const retranscribeSource = fs.readFileSync(
+      path.join(__dirname, "..", "lib", "route-handlers", "retranscribe.js"),
+      "utf8",
+    );
+    const productionSources = [serverSource, killSwitchSource, unhappySource, retranscribeSource];
     const { SENTRY_REASONS } = require("../lib/sentry-reasons");
 
     /**
@@ -697,7 +719,7 @@ describe("server.js Sentry sites — contract tests (SCRUM-273)", () => {
       );
     });
 
-    it("production contains 9 reason-tagged call sites (6 kill-switch + 2 server + 1 unhappy-call)", () => {
+    it("production contains 10 reason-tagged call sites (6 kill-switch + 2 server + 1 unhappy-call + 1 retranscribe)", () => {
       // SCRUM-287 consolidated provider mirrors: log-failed, fail-open,
       // and voicemail-greeting-lookup-failed each fire from ONE site
       // that parameterizes provider (twilio|telnyx). fallback-finalise-
@@ -715,6 +737,7 @@ describe("server.js Sentry sites — contract tests (SCRUM-273)", () => {
       const serverCount = countReasonSites(serverSource);
       const killSwitchCount = countReasonSites(killSwitchSource);
       const unhappyCount = countReasonSites(unhappySource);
+      const retranscribeCount = countReasonSites(retranscribeSource);
       assert.equal(
         serverCount,
         2,
@@ -731,9 +754,14 @@ describe("server.js Sentry sites — contract tests (SCRUM-273)", () => {
         `expected 1 reason-tagged site in lib/unhappy-call.js, found ${unhappyCount}`,
       );
       assert.equal(
-        serverCount + killSwitchCount + unhappyCount,
-        9,
-        `expected 9 reason-tagged Sentry sites total — update this test deliberately when sites are added/removed`,
+        retranscribeCount,
+        1,
+        `expected 1 reason-tagged site in lib/route-handlers/retranscribe.js, found ${retranscribeCount}`,
+      );
+      assert.equal(
+        serverCount + killSwitchCount + unhappyCount + retranscribeCount,
+        10,
+        `expected 10 reason-tagged Sentry sites total — update this test deliberately when sites are added/removed`,
       );
     });
 
