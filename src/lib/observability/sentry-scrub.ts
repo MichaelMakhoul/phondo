@@ -31,12 +31,18 @@ const PII_FIELD_PATTERNS: RegExp[] = [
   /attendeeName/i, /attendee_name/i, /firstName/i, /first_name/i,
   /lastName/i, /last_name/i, /^name$/i, /ruleName/i,
   /dob/i, /dateOfBirth/i, /responseBody/i, /responseContent/i,
-  // SCRUM-546: Sentry's ExtraErrorData integration serialises non-standard
-  // error props. A StripeSignatureVerificationError carries the raw signed
-  // webhook body (customer PII) under `err.detail.payload` + `err.detail.header`.
-  // Scrub the whole `detail` subtree (anchored, like `^to$`/`^name$`, so benign
-  // keys like `orderDetails` are untouched) and any `payload` (distinctive —
-  // always a body-carrier, matched broadly) as a belt-and-suspenders net.
+  // SCRUM-546: Sentry's ExtraErrorData integration FLATTENS an error's own
+  // enumerable props into event.contexts[ErrorName], which scrubObject runs
+  // over. A StripeSignatureVerificationError exposes the raw signed webhook
+  // body (customer PII) as a TOP-LEVEL `payload` prop and the signature as a
+  // top-level `header` prop (verified against stripe 17.7.0 Error.js) — they
+  // are SIBLINGS of `detail`, not nested under it (`err.detail` is undefined
+  // for sig errors). So the load-bearing patterns here are `/payload/i` (broad
+  // — a `payload` key is always a body-carrier) and `/^header$/i` (anchored:
+  // the singular Stripe-Signature header, deliberately NOT the plural `headers`
+  // triage map, which scrubInternal handles separately). `/^detail$/i` is kept
+  // for OTHER Stripe/API errors that DO populate `err.detail`; anchored like
+  // `^to$`/`^name$` so benign keys (orderDetails) stay visible.
   /payload/i, /^detail$/i, /^header$/i,
 ];
 
