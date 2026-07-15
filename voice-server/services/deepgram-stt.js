@@ -149,4 +149,56 @@ function openDeepgramStream(apiKey, { onTranscript, onUtteranceEnd, onError, onC
   return ws;
 }
 
-module.exports = { openDeepgramStream, INDUSTRY_KEYWORDS };
+/**
+ * SCRUM-550: pre-recorded (batch) transcription of a stored call recording.
+ * Runs post-call on the dual-channel mp3 — independent of Gemini, no live-call
+ * impact. `multichannel=true` transcribes each channel separately (caller vs
+ * AI); `utterances=true` returns a flat, channel-tagged, timestamped list that
+ * `buildTwoSidedTranscript()` interleaves into the two-sided transcript.
+ *
+ * @param {string} apiKey
+ * @param {Buffer} audio - raw mp3 bytes
+ * @param {{ language?: string, industry?: string }} [options]
+ * @returns {Promise<{ utterances: Array<{start:number,end:number,channel:number,transcript:string}>, channelCount:number }>}
+ * @throws on non-2xx or a malformed response (caller treats as fallback)
+ */
+const PRERECORDED_URL = "https://api.deepgram.com/v1/listen";
+
+async function transcribeRecording(apiKey, audio, { language, industry } = {}) {
+  const lang = language && SUPPORTED_STT_LANGUAGES.has(language) ? language : "en";
+  const url =
+    PRERECORDED_URL +
+    "?model=nova-3&multichannel=true&utterances=true&punctuate=true&smart_format=true" +
+    `&language=${lang}` +
+    buildKeytermsParam(industry);
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { Authorization: `Token ${apiKey}`, "Content-Type": "audio/mpeg" },
+    body: audio,
+    signal: AbortSignal.timeout(30_000),
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Deepgram pre-recorded returned ${res.status}: ${String(text).slice(0, 300)}`);
+  }
+
+  const json = await res.json();
+  const utterances = json && json.results && json.results.utterances;
+  if (!Array.isArray(utterances)) {
+    throw new Error("Deepgram pre-recorded: missing results.utterances");
+  }
+
+  return {
+    utterances: utterances.map((u) => ({
+      start: u.start,
+      end: u.end,
+      channel: u.channel ?? 0,
+      transcript: u.transcript || "",
+    })),
+    channelCount: Array.isArray(json.results.channels) ? json.results.channels.length : 1,
+  };
+}
+
+module.exports = { openDeepgramStream, transcribeRecording, INDUSTRY_KEYWORDS };
