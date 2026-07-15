@@ -8,6 +8,8 @@ describe("isPiiKey (SCRUM-312)", () => {
       "phone", "callerPhone", "email", "address", "transcript",
       "to", "from", "firstName", "last_name", "name", "dob", "dateOfBirth",
       "responseBody",
+      // SCRUM-546: Stripe error internals surfaced by ExtraErrorData.
+      "payload", "rawPayload", "detail", "header",
     ]) {
       expect(isPiiKey(k), k).toBe(true);
     }
@@ -17,6 +19,9 @@ describe("isPiiKey (SCRUM-312)", () => {
     for (const k of [
       "orgId", "callSid", "upstreamStatus", "voiceId", "businessIdCount",
       "failureKind", "reason", "service", "code", "limit",
+      // SCRUM-546: `detail`/`header` are anchored so these benign near-misses
+      // stay visible for triage — pins the anchoring against a future broad regex.
+      "orderDetails", "detailedStatus", "headerText",
     ]) {
       expect(isPiiKey(k), k).toBe(false);
     }
@@ -44,6 +49,31 @@ describe("scrubObject (SCRUM-312)", () => {
     expect(out.nested.email).toBe("[scrubbed]");
     expect(out.nested.safe).toBe(1);
     expect(out.list[0].firstName).toBe("[scrubbed]");
+  });
+
+  it("scrubs Stripe err.detail / payload / header — raw signed webhook body must not reach Sentry (SCRUM-546)", () => {
+    // Shape that @sentry/nextjs's ExtraErrorData integration surfaces from a
+    // StripeSignatureVerificationError into event.contexts before beforeSend runs.
+    const out = scrubObject({
+      StripeSignatureVerificationError: {
+        detail: {
+          payload: '{"data":{"object":{"customer_email":"a@b.com"}}}',
+          header: "t=1700000000,v1=deadbeefdeadbeef",
+        },
+      },
+      // Flattened/renamed variants — the belt for the `detail` suspenders.
+      rawPayload: '{"email":"x@y.com","phone":"+61400000000"}',
+      // Non-PII sibling stays visible for triage.
+      message: "No signatures found matching the expected signature",
+    }) as any;
+    // The whole detail subtree is masked, not recursed into.
+    expect(out.StripeSignatureVerificationError.detail).toBe("[scrubbed]");
+    expect(out.rawPayload).toBe("[scrubbed]");
+    expect(out.message).toBe("No signatures found matching the expected signature");
+    // Nothing PII survives anywhere in the serialised output.
+    expect(JSON.stringify(out)).not.toContain("a@b.com");
+    expect(JSON.stringify(out)).not.toContain("x@y.com");
+    expect(JSON.stringify(out)).not.toContain("+61400000000");
   });
 
   it("fails CLOSED past depth 5 — deep value replaced with the sentinel (no PII leak)", () => {

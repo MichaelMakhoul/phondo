@@ -21,13 +21,23 @@ import type { ErrorEvent, EventHint } from "@sentry/nextjs";
  * sync with the voice-server when they change.
  */
 
-// PII field-name patterns — mirror voice-server/lib/sentry.js exactly.
+// PII field-name patterns. Mostly mirrors voice-server/lib/sentry.js, but the
+// two intentionally diverge on `payload`: the voice-server shim WANTS the raw
+// diagnostic payload in its Loki alert, whereas the real @sentry/nextjs SDK
+// auto-serialises error-internal props to a US/EU-hosted backend, so we scrub.
 const PII_FIELD_PATTERNS: RegExp[] = [
   /phone/i, /email/i, /address/i, /transcript/i,
   /^to$/i, /^from$/i, /transferTo/i, /callerPhone/i,
   /attendeeName/i, /attendee_name/i, /firstName/i, /first_name/i,
   /lastName/i, /last_name/i, /^name$/i, /ruleName/i,
   /dob/i, /dateOfBirth/i, /responseBody/i, /responseContent/i,
+  // SCRUM-546: Sentry's ExtraErrorData integration serialises non-standard
+  // error props. A StripeSignatureVerificationError carries the raw signed
+  // webhook body (customer PII) under `err.detail.payload` + `err.detail.header`.
+  // Scrub the whole `detail` subtree (anchored, like `^to$`/`^name$`, so benign
+  // keys like `orderDetails` are untouched) and any `payload` (distinctive —
+  // always a body-carrier, matched broadly) as a belt-and-suspenders net.
+  /payload/i, /^detail$/i, /^header$/i,
 ];
 
 export function isPiiKey(key: string): boolean {
