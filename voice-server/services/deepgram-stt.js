@@ -164,7 +164,8 @@ function openDeepgramStream(apiKey, { onTranscript, onUtteranceEnd, onError, onC
  */
 const PRERECORDED_URL = "https://api.deepgram.com/v1/listen";
 
-async function transcribeRecording(apiKey, audio, { language, industry } = {}) {
+async function transcribeRecording(apiKey, audio, options = {}) {
+  const { language, industry } = options;
   const lang = language && SUPPORTED_STT_LANGUAGES.has(language) ? language : "en";
   const url =
     PRERECORDED_URL +
@@ -184,7 +185,9 @@ async function transcribeRecording(apiKey, audio, { language, industry } = {}) {
     throw new Error(`Deepgram pre-recorded returned ${res.status}: ${String(text).slice(0, 300)}`);
   }
 
-  const json = await res.json();
+  // Node's fetch types `.json()` as Promise<unknown>; the response shape is
+  // Deepgram's documented contract — cast to any (project-wide pattern).
+  const json = /** @type {any} */ (await res.json());
   const utterances = json && json.results && json.results.utterances;
   if (!Array.isArray(utterances)) {
     throw new Error("Deepgram pre-recorded: missing results.utterances");

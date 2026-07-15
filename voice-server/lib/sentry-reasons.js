@@ -65,6 +65,14 @@ const SENTRY_REASONS = Object.freeze({
    *  threshold when call volume makes per-call emails noisy. */
   UNHAPPY_CALL: "unhappy-call",
 
+  // ─── post-call re-transcription (SCRUM-550) ─────────────────────────
+  /** Deepgram re-transcription of the call recording failed or degraded
+   *  (missing key, download error, STT error, empty result). Not fatal:
+   *  the dashboard keeps Gemini's original transcript. Warning level
+   *  (error for missing config). Its own Grafana rule matches
+   *  reason=retranscribe-failed. */
+  RETRANSCRIBE_FAILED: "retranscribe-failed",
+
   // ─── fallback-dial-consent (recording disclosure) ───────────────────
   /** Recording disclosure can't render because the org row was missing
    *  from the lookup result. */
