@@ -15,14 +15,14 @@ const express = require("express");
 const http = require("http");
 const { WebSocketServer, WebSocket } = require("ws");
 const { CallSession } = require("./call-session");
-const { openDeepgramStream } = require("./services/deepgram-stt");
+const { openDeepgramStream, transcribeRecording } = require("./services/deepgram-stt");
 const { getChatResponse, streamChatResponse, LLM_PROVIDER, DEFAULT_MODEL } = require("./services/openai-llm");
 const { synthesizeSpeech, chunkAudioForTwilio } = require("./services/deepgram-tts");
 const { loadCallContext, loadTestCallContext, loadScheduleSnapshot } = require("./lib/call-context");
 const { buildSystemPrompt, getGreeting, buildLiveScheduleSection } = require("./lib/prompt-builder");
 const scheduleCache = require("./lib/schedule-cache");
 const { bookingKey } = require("./lib/booking-key");
-const { createCallRecord, completeCallRecord, notifyCallCompleted } = require("./lib/call-logger");
+const { createCallRecord, completeCallRecord, notifyCallCompleted, applyReanalysis } = require("./lib/call-logger");
 const { calendarToolDefinitions, listServiceTypesToolDefinition, transferToolDefinition, callbackToolDefinition, endCallToolDefinition, executeToolCall } = require("./services/tool-executor");
 const { createGeminiSession } = require("./services/gemini-live");
 const { createOpenAIRealtimeSession, createGrokRealtimeSession } = require("./services/openai-realtime"); // SCRUM-378 eval spike (OpenAI + Grok share the adapter)
@@ -56,6 +56,8 @@ const { generateHoldAudio, getHoldPreset } = require("./lib/hold-audio");
 const { detectExpectedInput } = require("./lib/input-type-detector");
 const { requiresRecordingDisclosureHybrid, getRecordingDisclosureText } = require("./lib/recording-consent");
 const { getSupabase } = require("./lib/supabase");
+const { handleRetranscribe } = require("./lib/route-handlers/retranscribe");
+const { buildTwoSidedTranscript } = require("./lib/transcript-from-utterances");
 const { saveForTransfer, getTransfer, consumeTransfer, finishTransferredCall } = require("./lib/pending-transfers");
 const { maybeEmitUnhappyCall } = require("./lib/unhappy-call");
 const { forwardingFallbackEligible } = require("./lib/transfer-eligibility");
@@ -1092,6 +1094,43 @@ function previewCacheSet(key, buffer) {
 // returns base64 PCM at 24kHz mono, wrapped in a WAV container for browser
 // playback. Results are cached in-memory so subsequent clicks on the same
 // voice are free and can't hit Gemini rate limits.
+// SCRUM-550: post-call re-transcription. Fired fire-and-forget by the Next.js
+// twilio-recording-done webhook once the recording lands in Supabase. Runs
+// Deepgram on the dual-channel recording, re-runs analysis, and writes the
+// accurate transcript — all off the live-call path. The handler never throws;
+// it degrades to Gemini's transcript on any failure. body is parsed by the
+// global express.json() (line ~348).
+app.post("/internal/retranscribe", async (req, res) => {
+  if (!timingSafeEqualStr(req.headers["x-internal-secret"], INTERNAL_API_SECRET)) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  const callId = req.body && req.body.callId;
+  if (!callId || typeof callId !== "string") {
+    return res.status(400).json({ error: "callId (string) required" });
+  }
+  try {
+    const result = await handleRetranscribe({
+      callId,
+      deps: {
+        getSupabase,
+        transcribeRecording,
+        buildTwoSidedTranscript,
+        analyzeCallTranscript,
+        applyReanalysis,
+        Sentry,
+        deepgramApiKey: process.env.DEEPGRAM_API_KEY,
+        retranscribeEnabled: process.env.RETRANSCRIBE_ENABLED !== "false",
+      },
+    });
+    return res.json(result);
+  } catch (err) {
+    // handleRetranscribe is designed never to throw; this is a last-resort net
+    // so an unexpected defect can't 500 the (fire-and-forget) trigger.
+    console.error("[Retranscribe] unexpected handler error:", err);
+    return res.json({ ok: true, retranscribed: false, reason: "handler-error" });
+  }
+});
+
 app.post("/preview", async (req, res) => {
   // SCRUM-355: constant-time secret comparison (was a plain !== that leaked
   // length/prefix via timing).
