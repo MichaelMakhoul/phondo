@@ -46,7 +46,7 @@ const DEFAULT_ROW = {
 };
 
 function makeDeps(overrides = {}) {
-  const captured = { applyReanalysis: null, transcribeArgs: null, lookup: null, selectCols: null };
+  const captured = { applyReanalysis: null, transcribeArgs: null, lookup: null, selectCols: null, judgeArgs: null };
   const row = "row" in overrides ? overrides.row : { ...DEFAULT_ROW };
   const supabase = {
     from: () => ({
@@ -87,6 +87,12 @@ function makeDeps(overrides = {}) {
       overrides.buildTwoSidedTranscript || (() => "User: real caller words\nAI: hello"),
     analyzeCallTranscript:
       overrides.analyzeCallTranscript || (async () => ({ summary: "s", sentiment: "neutral" })),
+    judgeContentLoss:
+      overrides.judgeContentLoss ||
+      (async (prior, replacement) => {
+        captured.judgeArgs = { prior, replacement };
+        return { contentLoss: false, note: null };
+      }),
     applyReanalysis: async (callId, fields) => {
       captured.applyReanalysis = { callId, fields };
     },
@@ -150,6 +156,11 @@ describe("handleRetranscribe (SCRUM-550)", () => {
     assert.equal(captured.applyReanalysis.fields.priorTranscript, "User: gibberish\nAI: hello");
     assert.deepEqual(captured.applyReanalysis.fields.priorMetadata, { voice_provider: "self_hosted" });
     assert.deepEqual(captured.applyReanalysis.fields.analysis, { summary: "s", sentiment: "neutral" });
+    // SCRUM-553: the content-loss judge sees exactly the pair being swapped.
+    assert.deepEqual(captured.judgeArgs, {
+      prior: "User: gibberish\nAI: hello",
+      replacement: "User: real caller words\nAI: hello",
+    });
   });
 
   it("falls back (pages, no write) when Deepgram throws — transcript left untouched", async () => {
@@ -260,6 +271,60 @@ describe("handleRetranscribe (SCRUM-550)", () => {
     });
     await handleRetranscribe({ callId: "c1", deps });
     assert.deepEqual(captured.transcribeArgs.opts, { language: "en", industry: "legal" });
+  });
+
+  it("skips (no page, no STT call) when there is no prior transcript — call-end write may not have landed yet", async () => {
+    const { deps, captured, sentry } = makeDeps({ row: { ...DEFAULT_ROW, transcript: "   " } });
+    const res = await handleRetranscribe({ callId: "c1", deps });
+    assert.equal(res.reason, "no-prior-transcript");
+    assert.equal(res.retranscribed, false);
+    // Must skip BEFORE Deepgram: racing completeCallRecord would let its later
+    // write clobber the Deepgram transcript while transcript_source lies.
+    assert.equal(captured.transcribeArgs, null);
+    assert.equal(captured.applyReanalysis, null);
+    assert.equal(sentry.events.length, 0);
+  });
+
+  it("skips (pages, no write) on GROSS content loss — replacement under half the original's length", async () => {
+    const longPrior = `User: ${"caller words ".repeat(20)}\nAI: ${"assistant words ".repeat(20)}`;
+    const { deps, captured, sentry } = makeDeps({
+      row: { ...DEFAULT_ROW, transcript: longPrior },
+      buildTwoSidedTranscript: () => "User: tiny\nAI: fragment",
+    });
+    const res = await handleRetranscribe({ callId: "c1", deps });
+    assert.equal(res.reason, "content-loss");
+    assert.equal(res.retranscribed, false);
+    assert.equal(captured.applyReanalysis, null);
+    assert.equal(sentry.events[0].level, "warning");
+    assert.equal(sentry.events[0].reason, "retranscribe-failed");
+    assert.match(sentry.events[0].msg, /gross content loss/);
+  });
+
+  it("skips (pages, no write) when the judge reports content loss — Gemini's transcript kept", async () => {
+    const { deps, captured, sentry } = makeDeps({
+      judgeContentLoss: async () => ({ contentLoss: true, note: "Arabic exchange missing from B" }),
+    });
+    const res = await handleRetranscribe({ callId: "c1", deps });
+    assert.equal(res.reason, "content-loss");
+    assert.equal(res.retranscribed, false);
+    assert.equal(captured.applyReanalysis, null);
+    assert.equal(sentry.events[0].level, "warning");
+    assert.equal(sentry.events[0].reason, "retranscribe-failed");
+    assert.match(sentry.events[0].msg, /judge.*Arabic exchange missing/);
+  });
+
+  it("FAIL-OPEN: a judge outage does not disable re-transcription (proceeds to write)", async () => {
+    const { deps, captured } = makeDeps({
+      judgeContentLoss: async () => {
+        throw new Error("openai 503");
+      },
+    });
+    const res = await handleRetranscribe({ callId: "c1", deps });
+    // The judge is a best-effort guard on a strictly-additive feature — its own
+    // outage must not turn the feature off. Gross loss is still caught by the
+    // deterministic length backstop.
+    assert.deepEqual(res, { ok: true, retranscribed: true });
+    assert.ok(captured.applyReanalysis);
   });
 
   it("skips (pages, no write) a single-channel Deepgram result — no all-User garbage overwrite", async () => {

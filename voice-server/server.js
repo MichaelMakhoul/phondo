@@ -50,7 +50,7 @@ const VOICE_PIPELINE = process.env.VOICE_PIPELINE || "classic"; // "classic" or 
 
 // Audio caches — used by classic pipeline only (Gemini Live uses native TTS)
 const disclosureAudioCache = new Map();
-const { analyzeCallTranscript } = require("./services/post-call-analysis");
+const { analyzeCallTranscript, judgeTranscriptContentLoss } = require("./services/post-call-analysis");
 const { getDeepgramVoice, getGeminiVoice } = require("./lib/voice-mapping");
 const { generateHoldAudio, getHoldPreset } = require("./lib/hold-audio");
 const { detectExpectedInput } = require("./lib/input-type-detector");
@@ -1116,6 +1116,7 @@ app.post("/internal/retranscribe", async (req, res) => {
         transcribeRecording,
         buildTwoSidedTranscript,
         analyzeCallTranscript,
+        judgeContentLoss: judgeTranscriptContentLoss,
         applyReanalysis,
         Sentry,
         deepgramApiKey: process.env.DEEPGRAM_API_KEY,

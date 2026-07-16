@@ -44,6 +44,14 @@ describe("server.js /internal/retranscribe wiring (SCRUM-550)", () => {
     assert.match(serverSource, /deepgramApiKey: process\.env\.DEEPGRAM_API_KEY/);
   });
 
+  it("SCRUM-553: wires the content-loss judge into deps", () => {
+    assert.match(serverSource, /judgeContentLoss: judgeTranscriptContentLoss/);
+    assert.match(
+      serverSource,
+      /analyzeCallTranscript, judgeTranscriptContentLoss \} = require\("\.\/services\/post-call-analysis"\)/,
+    );
+  });
+
   it("imports the wiring pieces (transcribeRecording, applyReanalysis, handleRetranscribe, buildTwoSidedTranscript)", () => {
     assert.match(serverSource, /openDeepgramStream, transcribeRecording \} = require\("\.\/services\/deepgram-stt"\)/);
     assert.match(serverSource, /applyReanalysis \} = require\("\.\/lib\/call-logger"\)/);

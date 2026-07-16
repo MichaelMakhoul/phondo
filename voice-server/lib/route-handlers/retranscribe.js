@@ -14,7 +14,7 @@ const BUCKET = "call-recordings";
 /**
  * @param {{ callId: string, deps: object }} args
  *   deps: { getSupabase, transcribeRecording, buildTwoSidedTranscript,
- *           analyzeCallTranscript, applyReanalysis, Sentry,
+ *           analyzeCallTranscript, judgeContentLoss, applyReanalysis, Sentry,
  *           deepgramApiKey, retranscribeEnabled }
  * @returns {Promise<{ ok: true, retranscribed: boolean, reason?: string }>}
  *   Never throws.
@@ -25,6 +25,7 @@ async function handleRetranscribe({ callId, deps }) {
     transcribeRecording,
     buildTwoSidedTranscript,
     analyzeCallTranscript,
+    judgeContentLoss,
     applyReanalysis,
     Sentry,
     deepgramApiKey,
@@ -118,6 +119,15 @@ async function handleRetranscribe({ callId, deps }) {
   if (!row.recording_storage_path) {
     return { ok: true, retranscribed: false, reason: "no-recording" };
   }
+  // SCRUM-553: no prior transcript ⇒ skip. Two reasons: (1) on short calls the
+  // recording webhook can beat the call-end analysis write, and re-transcribing
+  // mid-race would interleave with completeCallRecord — its later write clobbers
+  // the Deepgram transcript while transcript_source keeps claiming 'deepgram'.
+  // (2) With nothing to compare against, the content-loss guards below are
+  // blind. A call whose Gemini transcript is genuinely empty loses nothing.
+  if (!row.transcript || !String(row.transcript).trim()) {
+    return { ok: true, retranscribed: false, reason: "no-prior-transcript" };
+  }
   // No assistant embed = no language evidence (assistant deleted — the FK is
   // ON DELETE SET NULL). Guessing English on a possibly non-English recording
   // would permanently overwrite Gemini's correct transcript AND analysis (no
@@ -138,10 +148,10 @@ async function handleRetranscribe({ callId, deps }) {
 
   // Deepgram Nova-3 pre-recorded supports only {en, es} (SUPPORTED_STT_LANGUAGES).
   // Today this guard is future-proofing: assistants.language is DB-constrained
-  // to {en, es}, so it can only fire once assistants gain more languages. What
-  // it does NOT cover is a mid-call language switch (SCRUM-547) on an `en`
-  // assistant — no per-call language signal is recorded yet, so such a call
-  // would be transcribed with the English model (tracked as SCRUM-553).
+  // to {en, es}, so it can only fire once assistants gain more languages. A
+  // mid-call language switch (SCRUM-547) on an `en` assistant is instead caught
+  // AFTER transcription by the SCRUM-553 content-loss guards below — there is no
+  // reliable per-call language signal (Gemini's turn labels are garble-noise).
   if (language && !SUPPORTED_STT_LANGUAGES.has(language)) {
     return { ok: true, retranscribed: false, reason: "unsupported-language" };
   }
@@ -171,6 +181,45 @@ async function handleRetranscribe({ callId, deps }) {
     if (!accurateTranscript.trim()) {
       page(`retranscribe: empty transcript for call ${callId}`, "warning");
       return { ok: true, retranscribed: false, reason: "empty-transcript" };
+    }
+
+    // SCRUM-553 guard 1 (deterministic backstop): a replacement under half the
+    // original's length means Deepgram dropped a large share of the call (e.g.
+    // audio in a language its model can't transcribe). Catches only GROSS loss
+    // by design — the observed real-world mixed-language loss sat at 0.757, so
+    // the semantic judge below is the primary guard; this one survives judge
+    // outages. Skip = keep Gemini's transcript; the stamp is never written, so
+    // nothing is lost.
+    if (accurateTranscript.length < 0.5 * row.transcript.length) {
+      page(
+        `retranscribe: gross content loss for call ${callId} — replacement ${accurateTranscript.length} chars vs original ${row.transcript.length}`,
+        "warning",
+      );
+      return { ok: true, retranscribed: false, reason: "content-loss" };
+    }
+
+    // SCRUM-553 guard 2 (primary): LLM compare of old-vs-new. Prod evidence
+    // (call 6e1feb9c, 2026-07-17): Deepgram-en silently dropped a mid-call
+    // Arabic exchange Gemini had kept (garbled but present) — invisible to
+    // length ratios and to Gemini's noise-ridden per-turn language labels.
+    // FAIL-OPEN by design: the judge is a best-effort guard on a strictly-
+    // additive feature; its own outage must not disable re-transcription
+    // (gross loss is still caught above). A false positive only skips —
+    // Gemini's transcript stays, which is today's status quo.
+    try {
+      const verdict = await judgeContentLoss(row.transcript, accurateTranscript);
+      if (verdict && verdict.contentLoss) {
+        page(
+          `retranscribe: content loss (judge) for call ${callId}${verdict.note ? ` — ${verdict.note}` : ""}`,
+          "warning",
+        );
+        return { ok: true, retranscribed: false, reason: "content-loss" };
+      }
+    } catch (judgeErr) {
+      console.warn(
+        `[Retranscribe] content-loss judge failed for ${callId} — proceeding (fail-open):`,
+        judgeErr && judgeErr.message ? judgeErr.message : String(judgeErr),
+      );
     }
 
     const analysis = await analyzeCallTranscript(accurateTranscript, { language });

@@ -279,4 +279,53 @@ async function analyzeCallTranscript(transcript, options = {}) {
   };
 }
 
-module.exports = { analyzeCallTranscript, _test: { containsNonLatinScript } };
+// SCRUM-553: judge whether a re-transcription (SCRUM-550) OMITS conversation
+// that the original transcript contains. Prod evidence: Deepgram's English
+// model silently DROPPED a mid-call Arabic exchange that Gemini had (garbled
+// but present) — length ratios can't catch it (the real case was 0.757) and
+// Gemini's per-turn language labels are garble-noise on exactly the calls the
+// feature exists for. Comparing the two transcripts directly is the signal a
+// human would use. Skips only — a false positive keeps Gemini's transcript.
+const CONTENT_LOSS_PROMPT = `You compare two transcripts of the SAME phone call between an AI receptionist and a caller.
+
+Transcript A is the original, from a live speech model. It may contain garbled words, wrong-language artifacts, random foreign characters, and fragments.
+Transcript B is a batch re-transcription intended to REPLACE A. It is usually more accurate, better punctuated, and tighter.
+
+Decide whether B OMITS SUBSTANTIVE CONVERSATION that A contains.
+
+Content loss (content_loss = true):
+- An entire question-and-answer exchange present in A is missing from B.
+- A caller turn in A — in ANY language, even garbled or nonsensical text (garbled text still proves the caller SAID something there) — has no corresponding turn in B.
+- B's flow has a non-sequitur (e.g. the AI responds to something no one said in B) where A shows the exchange that prompted it.
+
+NOT content loss (content_loss = false):
+- Different wording, corrected or cleaned-up versions of garbled text.
+- Consecutive turns merged into one.
+- Single-word fragments, false starts, or filler present only in A.
+- Punctuation, casing, or formatting differences.
+- B being moderately shorter while still covering every exchange.
+
+Return ONLY JSON: {"content_loss": boolean, "note": "one short sentence naming the missing exchange, or an empty string"}`;
+
+/**
+ * @param {string} priorTranscript - the transcript being replaced (Gemini's)
+ * @param {string} replacementTranscript - the candidate replacement (Deepgram's)
+ * @returns {Promise<{ contentLoss: boolean, note: string|null }>}
+ * @throws on API/parse failure — the caller decides the failure posture
+ *   (retranscribe.js fails OPEN: the guard's outage must not disable the feature).
+ */
+async function judgeTranscriptContentLoss(priorTranscript, replacementTranscript) {
+  const parsed = await callOpenAI({
+    system: CONTENT_LOSS_PROMPT,
+    user:
+      `TRANSCRIPT A (original):\n${String(priorTranscript).slice(0, 6000)}\n\n` +
+      `TRANSCRIPT B (re-transcription):\n${String(replacementTranscript).slice(0, 6000)}`,
+    maxTokens: 200,
+  });
+  return {
+    contentLoss: Boolean(parsed.content_loss),
+    note: typeof parsed.note === "string" && parsed.note ? parsed.note.slice(0, 300) : null,
+  };
+}
+
+module.exports = { analyzeCallTranscript, judgeTranscriptContentLoss, _test: { containsNonLatinScript } };
