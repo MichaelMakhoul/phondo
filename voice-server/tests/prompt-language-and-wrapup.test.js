@@ -171,6 +171,55 @@ describe("SCRUM-554 — noise robustness: VAD onset, noisy-line protocol, langua
   });
 });
 
+// SCRUM-554 functional pins: build REAL prompts through the public API so a
+// rule lost from ONE path can't hide behind the other path's source text.
+// Mutation testing proved the source-regex pins above have exactly that blind
+// spot: rewording the legacy language rule back to sticky first-turn
+// detection, or deleting the guided-menu escalation from only the structured
+// path, stayed green. Fixtures mirror emergency-number-prompt.test.js.
+describe("SCRUM-554 — functional: BOTH built prompts carry the noise + language rules", () => {
+  const { buildSystemPrompt } = require("../lib/prompt-builder");
+  const org = {
+    name: "Acme Dental",
+    industry: "dental",
+    timezone: "Australia/Sydney",
+    country: "AU",
+    businessHours: {},
+    defaultAppointmentDuration: 30,
+  };
+  const prompts = {
+    structured: buildSystemPrompt(
+      { language: "en", promptConfig: { tone: "friendly", fields: [], behaviors: {} } },
+      org, "", { calendarEnabled: true }
+    ),
+    legacy: buildSystemPrompt(
+      { language: "en", systemPrompt: "You are the receptionist for {business_name}." },
+      org, "", { calendarEnabled: true }
+    ),
+  };
+
+  for (const [name, prompt] of Object.entries(prompts)) {
+    test(`${name} prompt: noisy-line protocol with guided-menu escalation + confirm-before-acting`, () => {
+      assert.ok(prompt.includes("NOISY LINE PROTOCOL"), `${name}: protocol missing`);
+      assert.ok(/go GUIDED|offer the short menu/i.test(prompt), `${name}: guided-menu escalation missing`);
+      assert.ok(/CONFIRM (your interpretation )?before acting/i.test(prompt), `${name}: confirm-before-acting missing`);
+      assert.ok(/never book, cancel, or change anything from an unconfirmed guess/i.test(prompt), `${name}: unconfirmed-guess prohibition missing`);
+    });
+
+    test(`${name} prompt: language switching is evidence-gated with the language-name fast path`, () => {
+      assert.ok(/changing language requires EVIDENCE/i.test(prompt), `${name}: evidence bar missing`);
+      assert.ok(
+        /NAME of a language/i.test(prompt),
+        `${name}: language-name request fast path missing — a garbled 'can we speak Arabic' must trigger a bilingual confirm, not a transfer (SCRUM-554)`
+      );
+      assert.ok(
+        !/first turn and (respond|keep responding) in (the same|that) language (throughout|for the rest)/i.test(prompt),
+        `${name}: sticky first-turn language detection is back in the BUILT prompt (SCRUM-554)`
+      );
+    });
+  }
+});
+
 // SCRUM-508 regression test.
 //
 // A real lookup call ended prematurely: the AI asked "Is there anything else I
