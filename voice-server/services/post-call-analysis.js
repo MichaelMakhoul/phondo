@@ -333,8 +333,12 @@ async function judgeTranscriptContentLoss(priorTranscript, replacementTranscript
     maxTokens: 500,
   });
   if (typeof parsed.content_loss !== "boolean") {
+    // SHAPE-ONLY error message — never embed the payload: a drifted verdict
+    // may still carry `note` (a caller-speech paraphrase), and this message
+    // flows into the systemic Sentry page, which bypasses the extras scrubber
+    // (the exact leak the PR #407 security fix closed). Key NAMES are safe.
     throw new Error(
-      `content-loss judge returned malformed verdict: ${JSON.stringify(parsed).slice(0, 200)}`,
+      `content-loss judge returned malformed verdict (content_loss=${typeof parsed.content_loss}, keys=${Object.keys(parsed).slice(0, 5).join(",") || "none"})`,
     );
   }
   return {

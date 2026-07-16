@@ -77,8 +77,22 @@ describe("judgeTranscriptContentLoss (SCRUM-553)", () => {
     // JSON mode enforces syntax, not schema: a model swap emitting
     // {"contentLoss": ...} or {"content_loss": "yes"} would otherwise become a
     // permanent, fleet-wide silent "no loss" with no error existing anywhere.
-    globalThis.fetch = mockJudge({ content_loss: "yes", note: "" });
-    await assert.rejects(() => getJudge()("User: a", "User: b"), /malformed verdict/);
+    globalThis.fetch = mockJudge({
+      content_loss: "yes",
+      note: "Caller gave her Medicare number and asked about billing",
+    });
+    await assert.rejects(
+      () => getJudge()("User: a", "User: b"),
+      (err) => {
+        assert.match(err.message, /malformed verdict/);
+        // SHAPE-ONLY: the payload's note paraphrases caller speech and this
+        // message flows into a Sentry page that bypasses the extras scrubber.
+        // Key NAMES may appear; values must not.
+        assert.doesNotMatch(err.message, /Medicare/);
+        assert.doesNotMatch(err.message, /"yes"/);
+        return true;
+      },
+    );
   });
 
   it("THROWS when content_loss is missing entirely (e.g. key drift after a prompt edit)", async () => {

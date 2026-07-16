@@ -161,8 +161,10 @@ async function handleRetranscribe({ callId, deps, isRetry = false }) {
   if (!row.transcript || !String(row.transcript).trim()) {
     if (!row.ended_at && !isRetry) {
       scheduleRetry(() => {
-        handleRetranscribe({ callId, deps, isRetry: true }).catch(() => {
-          /* handler never throws; belt-and-braces for the detached call */
+        // Handler never throws by contract; this net exists because the retry
+        // is detached — a rejection here has no webhook-layer last-resort net.
+        handleRetranscribe({ callId, deps, isRetry: true }).catch((e) => {
+          console.error(`[Retranscribe] delayed retry rejected for ${callId}:`, e);
         });
       });
       return { ok: true, retranscribed: false, reason: "no-prior-transcript-retrying" };
@@ -289,7 +291,12 @@ async function handleRetranscribe({ callId, deps, isRetry = false }) {
         /^OpenAI 40[13]\b/.test(judgeMsg) ||
         judgeMsg.includes("OPENAI_API_KEY not set") ||
         judgeMsg.includes("malformed verdict") ||
-        judgeErr instanceof TypeError;
+        // Wiring defects (dep undefined → "x is not a function") are TypeErrors,
+        // but so is EVERY undici network failure ("TypeError: fetch failed" —
+        // DNS blip, ECONNRESET). Those are blips, not guard-off states; letting
+        // them page would train the owner to dismiss the one message that must
+        // mean revoked-key/wiring-defect.
+        (judgeErr instanceof TypeError && !judgeMsg.includes("fetch failed"));
       if (systemic) {
         page(
           `retranscribe: content-loss judge SYSTEMICALLY failing (${judgeMsg.slice(0, 120)}) — guard is OFF fleet-wide`,

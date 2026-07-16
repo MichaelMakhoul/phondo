@@ -429,6 +429,22 @@ describe("handleRetranscribe (SCRUM-550)", () => {
     assert.match(sentry.events[0].msg, /SYSTEMICALLY failing/);
   });
 
+  it("undici network blip (TypeError: fetch failed) is NOT systemic — no page, fails open on Latin", async () => {
+    const { deps, captured, sentry } = makeDeps({
+      judgeContentLoss: async () => {
+        // Node's fetch rejects with TypeError("fetch failed") for ALL
+        // network-level failures (DNS, ECONNRESET). Classifying those as
+        // systemic would train the owner to dismiss the one page that must
+        // mean revoked-key/wiring-defect.
+        throw new TypeError("fetch failed");
+      },
+    });
+    const res = await handleRetranscribe({ callId: "c1", deps });
+    assert.deepEqual(res, { ok: true, retranscribed: true });
+    assert.ok(captured.applyReanalysis);
+    assert.equal(sentry.events.length, 0);
+  });
+
   it("SYSTEMIC wiring defect (judge dep undefined → TypeError) pages, garbled call still fails closed", async () => {
     const { deps, captured, sentry } = makeDeps({
       row: { ...DEFAULT_ROW, transcript: "User: مرحبا\nAI: hi" },
