@@ -45,6 +45,24 @@ async function handleRetranscribe({ callId, deps }) {
     }
   };
 
+  // SCRUM-552: distinct reason at ERROR level for a PostgREST-rejected lookup
+  // (bad column / unresolvable embed). One of these means the feature is dead
+  // for EVERY call — the exact failure that shipped camouflaged as per-call
+  // "not found" warnings. Separate reason so Grafana can alert on it alone.
+  const pageLookupRejected = (msg) => {
+    try {
+      Sentry.withScope((scope) => {
+        scope.setTag("service", "voice-server");
+        setReasonTag(scope, SENTRY_REASONS.RETRANSCRIBE_LOOKUP_REJECTED);
+        scope.setLevel("error");
+        scope.setExtras({ callId });
+        Sentry.captureMessage(String(msg).slice(0, 300), "error");
+      });
+    } catch {
+      /* best-effort */
+    }
+  };
+
   if (!retranscribeEnabled) return { ok: true, retranscribed: false, reason: "disabled" };
   if (!deepgramApiKey) {
     // Warning, not error: re-transcription is a strictly-additive enhancement.
@@ -79,6 +97,18 @@ async function handleRetranscribe({ callId, deps }) {
   const { data: row, error } = lookup;
 
   if (error || !row) {
+    // A PostgREST REJECTION (has a code and it isn't PGRST116/"no rows") is
+    // systemic — a bad column or unresolvable embed rejects the query for
+    // every call, not this one. Page it apart from the benign miss so it
+    // can't hide as per-call noise again. Codeless (thrown/network) errors
+    // stay on the benign path: transient, self-limiting, can't be classified.
+    const rejected = Boolean(error && error.code && error.code !== "PGRST116");
+    if (rejected) {
+      pageLookupRejected(
+        `retranscribe: lookup REJECTED (${error.code}): ${error.message} — feature likely dead for ALL calls`,
+      );
+      return { ok: true, retranscribed: false, reason: "lookup-rejected" };
+    }
     page(`retranscribe: call ${callId} not found: ${error?.message || "no row"}`, "warning");
     return { ok: true, retranscribed: false, reason: "not-found" };
   }
@@ -88,21 +118,30 @@ async function handleRetranscribe({ callId, deps }) {
   if (!row.recording_storage_path) {
     return { ok: true, retranscribed: false, reason: "no-recording" };
   }
+  // No assistant embed = no language evidence (assistant deleted — the FK is
+  // ON DELETE SET NULL). Guessing English on a possibly non-English recording
+  // would permanently overwrite Gemini's correct transcript AND analysis (no
+  // raw_ backup for the analysis columns, and the deepgram stamp is never
+  // retried). Skip — strictly-additive means never risking the good copy.
+  if (!row.assistants) {
+    return { ok: true, retranscribed: false, reason: "no-assistant" };
+  }
+
   // Language = the assistant's configured language (what the live pipeline
   // spoke); industry = the org's (metadata.industry never materialized in prod —
   // 0 of 259 calls — kept only as a legacy fallback for the keyterm boost).
-  const language = (row.assistants && row.assistants.language) || null;
+  const language = row.assistants.language || null;
   const industry =
     (row.organizations && row.organizations.industry) ||
     (row.metadata && row.metadata.industry) ||
     null;
 
   // Deepgram Nova-3 pre-recorded supports only {en, es} (SUPPORTED_STT_LANGUAGES).
-  // transcribeRecording would silently transcribe an unsupported language (e.g. an
-  // Arabic call) with the English model, yielding plausible-looking garbage that
-  // passes the empty-guard and overwrites the Gemini-derived analysis columns
-  // (summary/caller_name/collected_data/sentiment) — and those have NO raw_ backup.
-  // Skip; keep Gemini's transcript AND analysis. Null/unset language ⇒ English ⇒ OK.
+  // Today this guard is future-proofing: assistants.language is DB-constrained
+  // to {en, es}, so it can only fire once assistants gain more languages. What
+  // it does NOT cover is a mid-call language switch (SCRUM-547) on an `en`
+  // assistant — no per-call language signal is recorded yet, so such a call
+  // would be transcribed with the English model (tracked as SCRUM-553).
   if (language && !SUPPORTED_STT_LANGUAGES.has(language)) {
     return { ok: true, retranscribed: false, reason: "unsupported-language" };
   }

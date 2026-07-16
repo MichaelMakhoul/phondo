@@ -248,6 +248,21 @@ function emitRetranscribeFailed({ callId }) {
   });
 }
 
+/** SCRUM-552: the retranscribe calls-row lookup was REJECTED by PostgREST
+ *  (bad column / unresolvable embed, e.g. 42703). Systemic — the feature is
+ *  dead for EVERY call, which previously camouflaged as per-call "not found"
+ *  warnings. Error level: needs a human, not a threshold. Lives in
+ *  lib/route-handlers/retranscribe.js (pageLookupRejected). */
+function emitRetranscribeLookupRejected({ callId }) {
+  Sentry.withScope((scope) => {
+    scope.setTag("service", "voice-server");
+    scope.setTag("reason", "retranscribe-lookup-rejected");
+    scope.setLevel("error");
+    scope.setExtras({ callId });
+    Sentry.captureMessage("retranscribe lookup REJECTED (SCRUM-552)", "error");
+  });
+}
+
 /**
  * The canonical reason→level taxonomy this test file asserts. Verified
  * against server.js by the introspection test below — keep these in sync
@@ -262,6 +277,7 @@ const REASON_LEVELS = Object.freeze({
   "voicemail-recording-save-failed": "error",
   "unhappy-call": "warning",
   "retranscribe-failed": "warning",
+  "retranscribe-lookup-rejected": "error",
 });
 const REASONS = Object.freeze(Object.keys(REASON_LEVELS));
 
@@ -603,6 +619,7 @@ describe("server.js Sentry sites — contract tests (SCRUM-273)", () => {
             durationSeconds: 42,
           }),
         "retranscribe-failed": () => emitRetranscribeFailed({ callId: "p8" }),
+        "retranscribe-lookup-rejected": () => emitRetranscribeLookupRejected({ callId: "p9" }),
       };
       // Every REASON must have a probe — surfacing missing coverage instead
       // of silently skipping.
@@ -623,13 +640,20 @@ describe("server.js Sentry sites — contract tests (SCRUM-273)", () => {
       }
     });
 
-    it("exactly two reasons use level=error — others are warning", () => {
+    it("exactly three reasons use level=error — others are warning", () => {
       // fail-open: customer intent (AI paused) silently violated.
       // voicemail-recording-save-failed (SCRUM-212): the safety-net write
       // behind the Supabase recording pipeline failed and Twilio won't
       // retry — the caller's message may exist only in Twilio's console.
+      // retranscribe-lookup-rejected (SCRUM-552): a PostgREST-rejected
+      // lookup (bad column/embed) kills re-transcription for EVERY call —
+      // systemic, not per-call noise.
       const errorReasons = REASONS.filter((r) => REASON_LEVELS[r] === "error");
-      assert.deepEqual(errorReasons, ["fail-open", "voicemail-recording-save-failed"]);
+      assert.deepEqual(errorReasons, [
+        "fail-open",
+        "voicemail-recording-save-failed",
+        "retranscribe-lookup-rejected",
+      ]);
     });
   });
 
@@ -719,7 +743,7 @@ describe("server.js Sentry sites — contract tests (SCRUM-273)", () => {
       );
     });
 
-    it("production contains 10 reason-tagged call sites (6 kill-switch + 2 server + 1 unhappy-call + 1 retranscribe)", () => {
+    it("production contains 11 reason-tagged call sites (6 kill-switch + 2 server + 1 unhappy-call + 2 retranscribe)", () => {
       // SCRUM-287 consolidated provider mirrors: log-failed, fail-open,
       // and voicemail-greeting-lookup-failed each fire from ONE site
       // that parameterizes provider (twilio|telnyx). fallback-finalise-
@@ -755,13 +779,13 @@ describe("server.js Sentry sites — contract tests (SCRUM-273)", () => {
       );
       assert.equal(
         retranscribeCount,
-        1,
-        `expected 1 reason-tagged site in lib/route-handlers/retranscribe.js, found ${retranscribeCount}`,
+        2,
+        `expected 2 reason-tagged sites in lib/route-handlers/retranscribe.js (page + pageLookupRejected), found ${retranscribeCount}`,
       );
       assert.equal(
         serverCount + killSwitchCount + unhappyCount + retranscribeCount,
-        10,
-        `expected 10 reason-tagged Sentry sites total — update this test deliberately when sites are added/removed`,
+        11,
+        `expected 11 reason-tagged Sentry sites total — update this test deliberately when sites are added/removed`,
       );
     });
 

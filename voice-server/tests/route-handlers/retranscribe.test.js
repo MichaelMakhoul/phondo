@@ -211,14 +211,47 @@ describe("handleRetranscribe (SCRUM-550)", () => {
     assert.equal(sentry.events.length, 0);
   });
 
-  it("proceeds with null language/industry when both embeds are null (e.g. deleted assistant)", async () => {
-    const { deps, captured } = makeDeps({
-      row: { ...DEFAULT_ROW, assistants: null, organizations: null, metadata: null },
+  it("skips (no page, no write) when the assistant embed is null — never guesses English over a good transcript", async () => {
+    const { deps, captured, sentry } = makeDeps({
+      row: { ...DEFAULT_ROW, assistants: null },
     });
     const res = await handleRetranscribe({ callId: "c1", deps });
-    // Null language falls through the guard (transcribeRecording defaults to en).
-    assert.deepEqual(res, { ok: true, retranscribed: true });
-    assert.deepEqual(captured.transcribeArgs.opts, { language: null, industry: null });
+    // Assistant deleted (FK is ON DELETE SET NULL) ⇒ no language evidence.
+    // Transcribing with a guessed English model could permanently overwrite
+    // Gemini's correct transcript + analysis — skip instead.
+    assert.equal(res.reason, "no-assistant");
+    assert.equal(res.retranscribed, false);
+    assert.equal(captured.applyReanalysis, null);
+    assert.equal(sentry.events.length, 0);
+  });
+
+  it("classifies a PostgREST query REJECTION as lookup-rejected at ERROR level — never benign not-found", async () => {
+    // Replays the SCRUM-552 failure shape: a bad column/embed rejects the
+    // query for EVERY call (42703), which previously camouflaged as per-call
+    // "not found" warnings. Must page loudly under its own reason.
+    const { deps, captured, sentry } = makeDeps({
+      selectError: { code: "42703", message: "column calls.language does not exist" },
+      row: null,
+    });
+    const res = await handleRetranscribe({ callId: "c1", deps });
+    assert.equal(res.reason, "lookup-rejected");
+    assert.equal(res.retranscribed, false);
+    assert.equal(captured.applyReanalysis, null);
+    assert.equal(sentry.events.length, 1);
+    assert.equal(sentry.events[0].level, "error");
+    assert.equal(sentry.events[0].reason, "retranscribe-lookup-rejected");
+    assert.match(sentry.events[0].msg, /REJECTED \(42703\)/);
+  });
+
+  it("keeps PGRST116 (no rows) on the benign not-found path — not a rejection", async () => {
+    const { deps, sentry } = makeDeps({
+      selectError: { code: "PGRST116", message: "JSON object requested, multiple (or no) rows returned" },
+      row: null,
+    });
+    const res = await handleRetranscribe({ callId: "c1", deps });
+    assert.equal(res.reason, "not-found");
+    assert.equal(sentry.events[0].level, "warning");
+    assert.equal(sentry.events[0].reason, "retranscribe-failed");
   });
 
   it("falls back to metadata.industry when the organization embed is null (legacy path)", async () => {
