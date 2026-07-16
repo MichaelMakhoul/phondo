@@ -68,10 +68,15 @@ const SENTRY_REASONS = Object.freeze({
   // ─── post-call re-transcription (SCRUM-550) ─────────────────────────
   /** Deepgram re-transcription of the call recording failed or degraded
    *  (missing key, download error, STT error, empty result). Not fatal:
-   *  the dashboard keeps Gemini's original transcript. Warning level
-   *  (error for missing config). Its own Grafana rule matches
-   *  reason=retranscribe-failed. */
+   *  the dashboard keeps Gemini's original transcript. Warning level.
+   *  Its own Grafana rule matches reason=retranscribe-failed. */
   RETRANSCRIBE_FAILED: "retranscribe-failed",
+  /** SCRUM-552: the calls-row lookup was REJECTED by PostgREST (bad
+   *  column / unresolvable embed — code 42703/PGRST200-class), not merely
+   *  empty. One of these means the feature is dead for EVERY call — the
+   *  exact failure that shipped camouflaged as per-call "not found"
+   *  warnings. Error level: it needs a human, not a threshold. */
+  RETRANSCRIBE_LOOKUP_REJECTED: "retranscribe-lookup-rejected",
 
   // ─── fallback-dial-consent (recording disclosure) ───────────────────
   /** Recording disclosure can't render because the org row was missing
