@@ -209,12 +209,20 @@ function createGeminiSession(config, callbacks) {
         },
         realtimeInputConfig: {
           automaticActivityDetection: {
-            // SCRUM-375: keep onset sensitivity HIGH (trigger readily on a quiet
-            // caller) but soften end-of-speech so quiet/slow turns aren't cut off
-            // mid-word — truncated turns starved the language detector and were a
-            // contributor to mis-detecting a low-volume Arabic caller as Spanish.
-            startOfSpeechSensitivity: "START_SENSITIVITY_HIGH",
+            // SCRUM-554: onset LOW + prefix padding. SCRUM-375 set onset HIGH so a
+            // quiet caller triggers turns readily, but with
+            // START_OF_ACTIVITY_INTERRUPTS that let train announcements and
+            // background voices open "caller turns" and cut the AI off
+            // mid-sentence — real calls on 2026-07-15/16 show background audio
+            // transcribed as German/Japanese/Spanish turns on an English call.
+            // LOW onset + ~250ms of sustained speech before a start commits means
+            // brief noise bursts and faint background chatter no longer open or
+            // interrupt turns. The quiet-caller case SCRUM-375 tuned for is
+            // covered by end-of-speech staying LOW (their turns aren't cut off)
+            // and by the inbound AGC front-end (SCRUM-555).
+            startOfSpeechSensitivity: "START_SENSITIVITY_LOW",
             endOfSpeechSensitivity: "END_SENSITIVITY_LOW",
+            prefixPaddingMs: 250,
             silenceDurationMs: 1000,
           },
           activityHandling: "START_OF_ACTIVITY_INTERRUPTS",

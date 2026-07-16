@@ -103,6 +103,7 @@ function buildLanguageLockDirective(langCode) {
     `A single word or fragment is NEVER enough evidence to change language: phone lines are noisy, and background voices (station and train announcements, TVs, other people talking near the caller) are NOT the caller — ignore them completely. ` +
     `Do NOT assume an unrelated language (e.g. Russian, Spanish, German) from unclear, quiet, or noisy audio — ` +
     `if a turn sounds like a language the caller has not clearly used, treat it as ${langOrEnglish} mis-heard on a noisy line and continue in the language they have been using. ` +
+    `ONE EXCEPTION cuts through the garble: if you can make out the NAME of a language in an otherwise unclear turn ('Arabic', 'عربي', 'Chinese', 'Greek'…), that is a language REQUEST — do not ignore it and do not transfer; confirm in ONE short line spoken in both your current language and the requested one (e.g. "Would you like to continue in Arabic? تحب تكمل بالعربي؟"), and a yes in either language is full evidence to switch immediately. ` +
     `RECOVERY IS MANDATORY: if you changed language and the caller then clearly speaks ${langOrEnglish}, switch back on that very turn — a wrong language guess must never stick for the rest of the call. ` +
     `If you genuinely cannot understand a turn, ask them to repeat — in the language the caller last clearly used. ` +
     `If after ONE repeat the turn is still COMPLETELY unintelligible (not merely a strong accent or one unclear word), do NOT guess and do NOT book, cancel, or change anything: ` +
