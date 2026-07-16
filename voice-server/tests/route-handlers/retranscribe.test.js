@@ -310,7 +310,10 @@ describe("handleRetranscribe (SCRUM-550)", () => {
     assert.equal(captured.applyReanalysis, null);
     assert.equal(sentry.events[0].level, "warning");
     assert.equal(sentry.events[0].reason, "retranscribe-failed");
-    assert.match(sentry.events[0].msg, /judge.*Arabic exchange missing/);
+    assert.match(sentry.events[0].msg, /content loss \(judge\)/);
+    // The note paraphrases caller speech — it must NEVER reach the Sentry
+    // message (messages bypass the extras scrubber → verbatim in Loki).
+    assert.doesNotMatch(sentry.events[0].msg, /Arabic exchange missing/);
   });
 
   it("FAIL-OPEN: a judge outage does not disable re-transcription (proceeds to write)", async () => {

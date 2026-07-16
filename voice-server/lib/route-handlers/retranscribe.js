@@ -2,6 +2,7 @@
 
 const { SENTRY_REASONS, setReasonTag } = require("../sentry-reasons");
 const { SUPPORTED_STT_LANGUAGES } = require("../../services/deepgram-stt");
+const { DEBUG_TRANSCRIPTS } = require("../log-transcript");
 
 // SCRUM-550: post-call re-transcription orchestration. Runs entirely off the
 // live-call path (triggered by the Next.js recording webhook). Deps are
@@ -209,10 +210,17 @@ async function handleRetranscribe({ callId, deps }) {
     try {
       const verdict = await judgeContentLoss(row.transcript, accurateTranscript);
       if (verdict && verdict.contentLoss) {
-        page(
-          `retranscribe: content loss (judge) for call ${callId}${verdict.note ? ` — ${verdict.note}` : ""}`,
-          "warning",
-        );
+        // The judge note paraphrases caller speech — keep it OUT of the Sentry
+        // message: messages bypass the key-based extras scrubber and land
+        // verbatim in the Loki alert line (security review, PR #407). callId is
+        // enough to triage — both transcripts are in the DB. SCRUM-339 pattern:
+        // content only on explicit debug opt-in, newline-stripped.
+        if (DEBUG_TRANSCRIPTS && verdict.note) {
+          console.log(
+            `[Retranscribe] judge note for ${callId}: ${verdict.note.replace(/[\r\n]+/g, " ")}`,
+          );
+        }
+        page(`retranscribe: content loss (judge) for call ${callId}`, "warning");
         return { ok: true, retranscribed: false, reason: "content-loss" };
       }
     } catch (judgeErr) {
