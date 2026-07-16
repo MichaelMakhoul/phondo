@@ -305,27 +305,47 @@ NOT content loss (content_loss = false):
 - Punctuation, casing, or formatting differences.
 - B being moderately shorter while still covering every exchange.
 
-Return ONLY JSON: {"content_loss": boolean, "note": "one short sentence naming the missing exchange, or an empty string"}`;
+Return ONLY JSON: {"content_loss": boolean, "note": "one short sentence IN ENGLISH naming the missing exchange, or an empty string"}`;
 
 /**
  * @param {string} priorTranscript - the transcript being replaced (Gemini's)
  * @param {string} replacementTranscript - the candidate replacement (Deepgram's)
  * @returns {Promise<{ contentLoss: boolean, note: string|null }>}
- * @throws on API/parse failure — the caller decides the failure posture
- *   (retranscribe.js fails OPEN: the guard's outage must not disable the feature).
+ * @throws on API/parse failure OR a schema-drifted response (missing/non-boolean
+ *   content_loss) — the caller decides the failure posture. A parseable response
+ *   with no verdict field must THROW, never coerce to a confident "no loss":
+ *   JSON mode enforces syntax, not schema (see the successEvaluation allowlist
+ *   above), and a silent false-negative here turns the guard off fleet-wide
+ *   with no error existing anywhere.
  */
 async function judgeTranscriptContentLoss(priorTranscript, replacementTranscript) {
+  // 24k chars per side (not the analysis prompts' 6k): this is a COMPARISON —
+  // both sides must cover the same span of the call, and B is by design tighter
+  // than A, so a short window structurally hides late-call loss. gpt-4.1-mini's
+  // context makes this trivial; cost stays sub-cent.
   const parsed = await callOpenAI({
     system: CONTENT_LOSS_PROMPT,
     user:
-      `TRANSCRIPT A (original):\n${String(priorTranscript).slice(0, 6000)}\n\n` +
-      `TRANSCRIPT B (re-transcription):\n${String(replacementTranscript).slice(0, 6000)}`,
-    maxTokens: 200,
+      `TRANSCRIPT A (original):\n${String(priorTranscript).slice(0, 24_000)}\n\n` +
+      `TRANSCRIPT B (re-transcription):\n${String(replacementTranscript).slice(0, 24_000)}`,
+    // 500, not 200: a POSITIVE verdict carries a note and truncation would
+    // concentrate on exactly the verdicts the guard exists to deliver.
+    maxTokens: 500,
   });
+  if (typeof parsed.content_loss !== "boolean") {
+    throw new Error(
+      `content-loss judge returned malformed verdict: ${JSON.stringify(parsed).slice(0, 200)}`,
+    );
+  }
   return {
-    contentLoss: Boolean(parsed.content_loss),
+    contentLoss: parsed.content_loss,
     note: typeof parsed.note === "string" && parsed.note ? parsed.note.slice(0, 300) : null,
   };
 }
 
-module.exports = { analyzeCallTranscript, judgeTranscriptContentLoss, _test: { containsNonLatinScript } };
+module.exports = {
+  analyzeCallTranscript,
+  judgeTranscriptContentLoss,
+  containsNonLatinScript,
+  _test: { containsNonLatinScript },
+};

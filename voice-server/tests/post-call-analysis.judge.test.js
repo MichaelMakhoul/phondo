@@ -62,6 +62,9 @@ describe("judgeTranscriptContentLoss (SCRUM-553)", () => {
     // The one instruction the whole guard hinges on: garbled text in A still
     // counts as the caller having said something there.
     assert.match(system, /garbled text still proves the caller SAID something/);
+    // 500, not 200: positive verdicts carry a note — a tight cap concentrates
+    // truncation on exactly the verdicts the guard exists to deliver.
+    assert.equal(capture.body.max_tokens, 500);
   });
 
   it("maps a clean verdict and normalizes an empty note to null", async () => {
@@ -70,8 +73,21 @@ describe("judgeTranscriptContentLoss (SCRUM-553)", () => {
     assert.deepEqual(verdict, { contentLoss: false, note: null });
   });
 
-  it("coerces a non-boolean content_loss and clamps an oversize note", async () => {
-    globalThis.fetch = mockJudge({ content_loss: "yes", note: "x".repeat(500) });
+  it("THROWS on a non-boolean content_loss — schema drift must never coerce to a confident verdict", async () => {
+    // JSON mode enforces syntax, not schema: a model swap emitting
+    // {"contentLoss": ...} or {"content_loss": "yes"} would otherwise become a
+    // permanent, fleet-wide silent "no loss" with no error existing anywhere.
+    globalThis.fetch = mockJudge({ content_loss: "yes", note: "" });
+    await assert.rejects(() => getJudge()("User: a", "User: b"), /malformed verdict/);
+  });
+
+  it("THROWS when content_loss is missing entirely (e.g. key drift after a prompt edit)", async () => {
+    globalThis.fetch = mockJudge({ verdict: true });
+    await assert.rejects(() => getJudge()("User: a", "User: b"), /malformed verdict/);
+  });
+
+  it("clamps an oversize note to 300 chars", async () => {
+    globalThis.fetch = mockJudge({ content_loss: true, note: "x".repeat(500) });
     const verdict = await getJudge()("User: a", "User: b");
     assert.equal(verdict.contentLoss, true);
     assert.equal(verdict.note.length, 300);
@@ -97,11 +113,14 @@ describe("judgeTranscriptContentLoss (SCRUM-553)", () => {
     await assert.rejects(() => getJudge()("User: a", "User: b"), /OPENAI_API_KEY not set/);
   });
 
-  it("truncates giant transcripts to keep the request bounded", async () => {
+  it("truncates giant transcripts at 24k/side — a comparison needs BOTH sides to cover the same span", async () => {
     const capture = {};
     globalThis.fetch = mockJudge({ content_loss: false, note: "" }, capture);
-    await getJudge()("A".repeat(10_000), "B".repeat(10_000));
+    await getJudge()("A".repeat(30_000), "B".repeat(30_000));
     const user = capture.body.messages.find((m) => m.role === "user").content;
-    assert.ok(user.length < 13_000, `user message unexpectedly large: ${user.length}`);
+    // 2×24k + labels: bounded, but NOT the analysis prompts' 6k window — a
+    // short window structurally hides late-call loss (B is tighter than A).
+    assert.ok(user.length < 49_000, `user message unexpectedly large: ${user.length}`);
+    assert.ok(user.length > 40_000, `slice window regressed below 24k/side: ${user.length}`);
   });
 });

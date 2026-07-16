@@ -2,6 +2,7 @@
 
 const { SENTRY_REASONS, setReasonTag } = require("../sentry-reasons");
 const { SUPPORTED_STT_LANGUAGES } = require("../../services/deepgram-stt");
+const { containsNonLatinScript } = require("../../services/post-call-analysis");
 const { DEBUG_TRANSCRIPTS } = require("../log-transcript");
 
 // SCRUM-550: post-call re-transcription orchestration. Runs entirely off the
@@ -13,14 +14,16 @@ const { DEBUG_TRANSCRIPTS } = require("../log-transcript");
 const BUCKET = "call-recordings";
 
 /**
- * @param {{ callId: string, deps: object }} args
+ * @param {{ callId: string, deps: object, isRetry?: boolean }} args
  *   deps: { getSupabase, transcribeRecording, buildTwoSidedTranscript,
  *           analyzeCallTranscript, judgeContentLoss, applyReanalysis, Sentry,
- *           deepgramApiKey, retranscribeEnabled }
+ *           deepgramApiKey, retranscribeEnabled, scheduleRetry? }
+ *   isRetry: internal — set by the one-shot delayed self-retry when the
+ *   recording webhook beat the call-end write (never re-schedules).
  * @returns {Promise<{ ok: true, retranscribed: boolean, reason?: string }>}
  *   Never throws.
  */
-async function handleRetranscribe({ callId, deps }) {
+async function handleRetranscribe({ callId, deps, isRetry = false }) {
   const {
     getSupabase,
     transcribeRecording,
@@ -31,6 +34,11 @@ async function handleRetranscribe({ callId, deps }) {
     Sentry,
     deepgramApiKey,
     retranscribeEnabled,
+    // Injectable for tests; default holds no process open (unref).
+    scheduleRetry = (fn) => {
+      const t = setTimeout(fn, 60_000);
+      if (typeof t.unref === "function") t.unref();
+    },
   } = deps;
 
   const page = (msg, level) => {
@@ -65,6 +73,24 @@ async function handleRetranscribe({ callId, deps }) {
     }
   };
 
+  // SCRUM-553: guard hits are the guard WORKING, not the feature failing —
+  // their own reason keeps retranscribe-failed a clean broken-feature alert
+  // and gives the owner a reviewable queue of kept-Gemini calls (the same
+  // conflation lesson SCRUM-552 fixed with lookup-rejected).
+  const pageContentLoss = (msg) => {
+    try {
+      Sentry.withScope((scope) => {
+        scope.setTag("service", "voice-server");
+        setReasonTag(scope, SENTRY_REASONS.RETRANSCRIBE_CONTENT_LOSS);
+        scope.setLevel("warning");
+        scope.setExtras({ callId });
+        Sentry.captureMessage(String(msg).slice(0, 300), "warning");
+      });
+    } catch {
+      /* best-effort */
+    }
+  };
+
   if (!retranscribeEnabled) return { ok: true, retranscribed: false, reason: "disabled" };
   if (!deepgramApiKey) {
     // Warning, not error: re-transcription is a strictly-additive enhancement.
@@ -90,7 +116,7 @@ async function handleRetranscribe({ callId, deps }) {
     // same as answer-mode.js) and either can be null (e.g. deleted assistant).
     lookup = await supabase
       .from("calls")
-      .select("id, organization_id, recording_storage_path, transcript, transcript_source, metadata, assistants(language), organizations(industry)")
+      .select("id, organization_id, recording_storage_path, transcript, transcript_source, ended_at, metadata, assistants(language), organizations(industry)")
       .eq("id", callId)
       .single();
   } catch (err) {
@@ -120,13 +146,33 @@ async function handleRetranscribe({ callId, deps }) {
   if (!row.recording_storage_path) {
     return { ok: true, retranscribed: false, reason: "no-recording" };
   }
-  // SCRUM-553: no prior transcript ⇒ skip. Two reasons: (1) on short calls the
-  // recording webhook can beat the call-end analysis write, and re-transcribing
-  // mid-race would interleave with completeCallRecord — its later write clobbers
-  // the Deepgram transcript while transcript_source keeps claiming 'deepgram'.
-  // (2) With nothing to compare against, the content-loss guards below are
-  // blind. A call whose Gemini transcript is genuinely empty loses nothing.
+  // SCRUM-553: no prior transcript ⇒ don't overwrite. Two distinct cases,
+  // discriminated by ended_at (written in the SAME update as the transcript by
+  // completeCallRecord):
+  //   ended_at NULL  → the recording webhook BEAT the call-end write (analysis
+  //     can take 10-35s; Twilio's recording callback is seconds-scale). Writing
+  //     now would let completeCallRecord clobber the Deepgram transcript while
+  //     transcript_source keeps claiming 'deepgram'. The webhook fires ONCE —
+  //     no retry exists anywhere — so schedule ONE delayed self-retry; if the
+  //     call-end write STILL hasn't landed then, the call-end path died: page.
+  //   ended_at SET   → the call genuinely produced no transcript. Nothing to
+  //     improve, nothing to compare the content-loss guards against — silent
+  //     skip is correct.
   if (!row.transcript || !String(row.transcript).trim()) {
+    if (!row.ended_at && !isRetry) {
+      scheduleRetry(() => {
+        handleRetranscribe({ callId, deps, isRetry: true }).catch(() => {
+          /* handler never throws; belt-and-braces for the detached call */
+        });
+      });
+      return { ok: true, retranscribed: false, reason: "no-prior-transcript-retrying" };
+    }
+    if (!row.ended_at) {
+      page(
+        `retranscribe: call-end write never landed for ${callId} — re-transcription skipped`,
+        "warning",
+      );
+    }
     return { ok: true, retranscribed: false, reason: "no-prior-transcript" };
   }
   // No assistant embed = no language evidence (assistant deleted — the FK is
@@ -192,9 +238,8 @@ async function handleRetranscribe({ callId, deps }) {
     // outages. Skip = keep Gemini's transcript; the stamp is never written, so
     // nothing is lost.
     if (accurateTranscript.length < 0.5 * row.transcript.length) {
-      page(
+      pageContentLoss(
         `retranscribe: gross content loss for call ${callId} — replacement ${accurateTranscript.length} chars vs original ${row.transcript.length}`,
-        "warning",
       );
       return { ok: true, retranscribed: false, reason: "content-loss" };
     }
@@ -209,7 +254,7 @@ async function handleRetranscribe({ callId, deps }) {
     // Gemini's transcript stays, which is today's status quo.
     try {
       const verdict = await judgeContentLoss(row.transcript, accurateTranscript);
-      if (verdict && verdict.contentLoss) {
+      if (verdict.contentLoss) {
         // The judge note paraphrases caller speech — keep it OUT of the Sentry
         // message: messages bypass the key-based extras scrubber and land
         // verbatim in the Loki alert line (security review, PR #407). callId is
@@ -220,14 +265,55 @@ async function handleRetranscribe({ callId, deps }) {
             `[Retranscribe] judge note for ${callId}: ${verdict.note.replace(/[\r\n]+/g, " ")}`,
           );
         }
-        page(`retranscribe: content loss (judge) for call ${callId}`, "warning");
+        pageContentLoss(`retranscribe: content loss (judge) for call ${callId}`);
         return { ok: true, retranscribed: false, reason: "content-loss" };
       }
     } catch (judgeErr) {
-      console.warn(
-        `[Retranscribe] content-loss judge failed for ${callId} — proceeding (fail-open):`,
-        judgeErr && judgeErr.message ? judgeErr.message : String(judgeErr),
-      );
+      const judgeMsg = judgeErr && judgeErr.message ? judgeErr.message : String(judgeErr);
+
+      // A verdict too large to emit is note-bearing, i.e. positive-leaning —
+      // truncation concentrates on exactly the verdicts the guard exists to
+      // deliver. Fail CLOSED (keep Gemini's transcript).
+      if (judgeErr && judgeErr.isMaxTokensTruncation) {
+        pageContentLoss(
+          `retranscribe: judge verdict truncated for call ${callId} — failing closed`,
+        );
+        return { ok: true, retranscribed: false, reason: "content-loss" };
+      }
+
+      // Systemic signatures (revoked/unset key, a wiring defect making the dep
+      // undefined, malformed-verdict schema drift) mean the guard is OFF for
+      // EVERY call, not this one — rare by nature, so paging them is not
+      // per-call noise. Blips (429/5xx/timeouts) stay on console only.
+      const systemic =
+        /^OpenAI 40[13]\b/.test(judgeMsg) ||
+        judgeMsg.includes("OPENAI_API_KEY not set") ||
+        judgeMsg.includes("malformed verdict") ||
+        judgeErr instanceof TypeError;
+      if (systemic) {
+        page(
+          `retranscribe: content-loss judge SYSTEMICALLY failing (${judgeMsg.slice(0, 120)}) — guard is OFF fleet-wide`,
+          "warning",
+        );
+      }
+
+      // Bound the blast radius: a garble-signature original (non-Latin script —
+      // the mixed-language class where Deepgram-en demonstrably drops content,
+      // call 6e1feb9c) fails CLOSED when the judge can't rule. Latin-script
+      // calls fail OPEN: there a judge outage is genuinely harmless and the
+      // gross-length backstop still stands.
+      if (containsNonLatinScript(row.transcript)) {
+        pageContentLoss(
+          `retranscribe: judge unavailable on a garble-signature call ${callId} — failing closed`,
+        );
+        return { ok: true, retranscribed: false, reason: "content-loss" };
+      }
+      if (!systemic) {
+        console.warn(
+          `[Retranscribe] content-loss judge failed for ${callId} — proceeding (fail-open):`,
+          judgeMsg,
+        );
+      }
     }
 
     const analysis = await analyzeCallTranscript(accurateTranscript, { language });

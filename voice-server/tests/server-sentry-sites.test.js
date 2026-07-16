@@ -263,6 +263,22 @@ function emitRetranscribeLookupRejected({ callId }) {
   });
 }
 
+/** SCRUM-553: a content-loss guard kept Gemini's transcript (gross length
+ *  drop, judge verdict, or fail-closed on a garble-signature call). The guard
+ *  WORKING, not the feature failing — its own reason keeps retranscribe-failed
+ *  a clean broken-feature alert and gives the owner a reviewable queue of
+ *  kept-Gemini calls. Warning level. Lives in lib/route-handlers/retranscribe.js
+ *  (pageContentLoss). */
+function emitRetranscribeContentLoss({ callId }) {
+  Sentry.withScope((scope) => {
+    scope.setTag("service", "voice-server");
+    scope.setTag("reason", "retranscribe-content-loss");
+    scope.setLevel("warning");
+    scope.setExtras({ callId });
+    Sentry.captureMessage("retranscribe content loss — kept original (SCRUM-553)", "warning");
+  });
+}
+
 /**
  * The canonical reason→level taxonomy this test file asserts. Verified
  * against server.js by the introspection test below — keep these in sync
@@ -278,6 +294,7 @@ const REASON_LEVELS = Object.freeze({
   "unhappy-call": "warning",
   "retranscribe-failed": "warning",
   "retranscribe-lookup-rejected": "error",
+  "retranscribe-content-loss": "warning",
 });
 const REASONS = Object.freeze(Object.keys(REASON_LEVELS));
 
@@ -620,6 +637,7 @@ describe("server.js Sentry sites — contract tests (SCRUM-273)", () => {
           }),
         "retranscribe-failed": () => emitRetranscribeFailed({ callId: "p8" }),
         "retranscribe-lookup-rejected": () => emitRetranscribeLookupRejected({ callId: "p9" }),
+        "retranscribe-content-loss": () => emitRetranscribeContentLoss({ callId: "p10" }),
       };
       // Every REASON must have a probe — surfacing missing coverage instead
       // of silently skipping.
@@ -743,7 +761,7 @@ describe("server.js Sentry sites — contract tests (SCRUM-273)", () => {
       );
     });
 
-    it("production contains 11 reason-tagged call sites (6 kill-switch + 2 server + 1 unhappy-call + 2 retranscribe)", () => {
+    it("production contains 12 reason-tagged call sites (6 kill-switch + 2 server + 1 unhappy-call + 3 retranscribe)", () => {
       // SCRUM-287 consolidated provider mirrors: log-failed, fail-open,
       // and voicemail-greeting-lookup-failed each fire from ONE site
       // that parameterizes provider (twilio|telnyx). fallback-finalise-
@@ -779,13 +797,13 @@ describe("server.js Sentry sites — contract tests (SCRUM-273)", () => {
       );
       assert.equal(
         retranscribeCount,
-        2,
-        `expected 2 reason-tagged sites in lib/route-handlers/retranscribe.js (page + pageLookupRejected), found ${retranscribeCount}`,
+        3,
+        `expected 3 reason-tagged sites in lib/route-handlers/retranscribe.js (page + pageLookupRejected + pageContentLoss), found ${retranscribeCount}`,
       );
       assert.equal(
         serverCount + killSwitchCount + unhappyCount + retranscribeCount,
-        11,
-        `expected 11 reason-tagged Sentry sites total — update this test deliberately when sites are added/removed`,
+        12,
+        `expected 12 reason-tagged Sentry sites total — update this test deliberately when sites are added/removed`,
       );
     });
 
