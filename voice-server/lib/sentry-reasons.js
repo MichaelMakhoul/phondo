@@ -77,6 +77,12 @@ const SENTRY_REASONS = Object.freeze({
    *  exact failure that shipped camouflaged as per-call "not found"
    *  warnings. Error level: it needs a human, not a threshold. */
   RETRANSCRIBE_LOOKUP_REJECTED: "retranscribe-lookup-rejected",
+  /** SCRUM-553: a content-loss guard KEPT Gemini's transcript (gross length
+   *  drop, judge verdict, or fail-closed on a garble-signature call). The
+   *  guard WORKING is not the feature FAILING — separate reason so the
+   *  retranscribe-failed alert stays a broken-feature signal, and guard hits
+   *  form their own reviewable queue. Warning level. */
+  RETRANSCRIBE_CONTENT_LOSS: "retranscribe-content-loss",
 
   // ─── fallback-dial-consent (recording disclosure) ───────────────────
   /** Recording disclosure can't render because the org row was missing
