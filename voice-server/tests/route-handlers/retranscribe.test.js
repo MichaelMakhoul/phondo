@@ -38,26 +38,32 @@ const DEFAULT_ROW = {
   recording_storage_path: "o1/c1.mp3",
   transcript: "User: gibberish\nAI: hello",
   transcript_source: null,
-  language: "en",
-  metadata: { industry: "dental" },
+  metadata: { voice_provider: "self_hosted" },
+  // SCRUM-552: language/industry are NOT calls columns — they arrive via
+  // to-one FK embeds (assistants/organizations), either of which can be null.
+  assistants: { language: "en" },
+  organizations: { industry: "dental" },
 };
 
 function makeDeps(overrides = {}) {
-  const captured = { applyReanalysis: null, transcribeArgs: null, lookup: null };
+  const captured = { applyReanalysis: null, transcribeArgs: null, lookup: null, selectCols: null };
   const row = "row" in overrides ? overrides.row : { ...DEFAULT_ROW };
   const supabase = {
     from: () => ({
-      select: () => ({
-        eq: (col, val) => {
-          captured.lookup = { col, val };
-          return {
-            single: async () => {
-              if (overrides.selectThrows) throw overrides.selectThrows;
-              return { data: row, error: overrides.selectError || null };
-            },
-          };
-        },
-      }),
+      select: (cols) => {
+        captured.selectCols = cols;
+        return {
+          eq: (col, val) => {
+            captured.lookup = { col, val };
+            return {
+              single: async () => {
+                if (overrides.selectThrows) throw overrides.selectThrows;
+                return { data: row, error: overrides.selectError || null };
+              },
+            };
+          },
+        };
+      },
     }),
     storage: {
       from: () => ({
@@ -142,7 +148,7 @@ describe("handleRetranscribe (SCRUM-550)", () => {
     assert.equal(captured.applyReanalysis.callId, "c1");
     assert.equal(captured.applyReanalysis.fields.accurateTranscript, "User: real caller words\nAI: hello");
     assert.equal(captured.applyReanalysis.fields.priorTranscript, "User: gibberish\nAI: hello");
-    assert.deepEqual(captured.applyReanalysis.fields.priorMetadata, { industry: "dental" });
+    assert.deepEqual(captured.applyReanalysis.fields.priorMetadata, { voice_provider: "self_hosted" });
     assert.deepEqual(captured.applyReanalysis.fields.analysis, { summary: "s", sentiment: "neutral" });
   });
 
@@ -174,6 +180,15 @@ describe("handleRetranscribe (SCRUM-550)", () => {
     // regresses to .eq("vapi_call_id", …) or a typo, re-transcription no-ops
     // in prod — the mock now captures the real column/value so it can't hide it.
     assert.deepEqual(captured.lookup, { col: "id", val: "c1" });
+    // SCRUM-552: EXACT select pin. The shipped bug selected `language`, which is
+    // not a calls column — PostgREST 42703'd every lookup and the feature no-op'd
+    // in prod, invisible to a mock that accepts any select string. Any change to
+    // this string must be a conscious, schema-checked edit (update this pin AND
+    // verify each bare column exists on calls; embeds are to-one FK joins).
+    assert.equal(
+      captured.selectCols,
+      "id, organization_id, recording_storage_path, transcript, transcript_source, metadata, assistants(language), organizations(industry)",
+    );
   });
 
   it("pages and returns not-found when the row lookup THROWS (never escapes the handler)", async () => {
@@ -186,14 +201,32 @@ describe("handleRetranscribe (SCRUM-550)", () => {
     assert.equal(sentry.events[0].reason, "retranscribe-failed");
   });
 
-  it("skips (no page, no write) an unsupported language — keeps Gemini's transcript AND analysis", async () => {
-    const { deps, captured, sentry } = makeDeps({ row: { ...DEFAULT_ROW, language: "ar" } });
+  it("skips (no page, no write) an unsupported assistant language — keeps Gemini's transcript AND analysis", async () => {
+    const { deps, captured, sentry } = makeDeps({ row: { ...DEFAULT_ROW, assistants: { language: "ar" } } });
     const res = await handleRetranscribe({ callId: "c1", deps });
     assert.equal(res.reason, "unsupported-language");
     assert.equal(res.retranscribed, false);
     assert.equal(captured.applyReanalysis, null);
     // An expected skip (Deepgram Nova-3 supports only en/es), not a failure — no page.
     assert.equal(sentry.events.length, 0);
+  });
+
+  it("proceeds with null language/industry when both embeds are null (e.g. deleted assistant)", async () => {
+    const { deps, captured } = makeDeps({
+      row: { ...DEFAULT_ROW, assistants: null, organizations: null, metadata: null },
+    });
+    const res = await handleRetranscribe({ callId: "c1", deps });
+    // Null language falls through the guard (transcribeRecording defaults to en).
+    assert.deepEqual(res, { ok: true, retranscribed: true });
+    assert.deepEqual(captured.transcribeArgs.opts, { language: null, industry: null });
+  });
+
+  it("falls back to metadata.industry when the organization embed is null (legacy path)", async () => {
+    const { deps, captured } = makeDeps({
+      row: { ...DEFAULT_ROW, organizations: null, metadata: { industry: "legal" } },
+    });
+    await handleRetranscribe({ callId: "c1", deps });
+    assert.deepEqual(captured.transcribeArgs.opts, { language: "en", industry: "legal" });
   });
 
   it("skips (pages, no write) a single-channel Deepgram result — no all-User garbage overwrite", async () => {

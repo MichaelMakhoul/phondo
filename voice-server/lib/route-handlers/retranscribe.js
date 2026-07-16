@@ -63,9 +63,14 @@ async function handleRetranscribe({ callId, deps }) {
   /** @type {{ data: any, error: any }} */
   let lookup;
   try {
+    // SCRUM-552: calls has NO language/industry columns — language lives on the
+    // assistant, industry on the organization. Selecting a non-existent column
+    // makes PostgREST reject the whole query (42703), which sent EVERY call down
+    // the not-found branch. Both embeds are to-one FK joins (bare-table idiom,
+    // same as answer-mode.js) and either can be null (e.g. deleted assistant).
     lookup = await supabase
       .from("calls")
-      .select("id, organization_id, recording_storage_path, transcript, transcript_source, language, metadata")
+      .select("id, organization_id, recording_storage_path, transcript, transcript_source, metadata, assistants(language), organizations(industry)")
       .eq("id", callId)
       .single();
   } catch (err) {
@@ -83,13 +88,22 @@ async function handleRetranscribe({ callId, deps }) {
   if (!row.recording_storage_path) {
     return { ok: true, retranscribed: false, reason: "no-recording" };
   }
+  // Language = the assistant's configured language (what the live pipeline
+  // spoke); industry = the org's (metadata.industry never materialized in prod —
+  // 0 of 259 calls — kept only as a legacy fallback for the keyterm boost).
+  const language = (row.assistants && row.assistants.language) || null;
+  const industry =
+    (row.organizations && row.organizations.industry) ||
+    (row.metadata && row.metadata.industry) ||
+    null;
+
   // Deepgram Nova-3 pre-recorded supports only {en, es} (SUPPORTED_STT_LANGUAGES).
   // transcribeRecording would silently transcribe an unsupported language (e.g. an
   // Arabic call) with the English model, yielding plausible-looking garbage that
   // passes the empty-guard and overwrites the Gemini-derived analysis columns
   // (summary/caller_name/collected_data/sentiment) — and those have NO raw_ backup.
   // Skip; keep Gemini's transcript AND analysis. Null/unset language ⇒ English ⇒ OK.
-  if (row.language && !SUPPORTED_STT_LANGUAGES.has(row.language)) {
+  if (language && !SUPPORTED_STT_LANGUAGES.has(language)) {
     return { ok: true, retranscribed: false, reason: "unsupported-language" };
   }
 
@@ -100,9 +114,8 @@ async function handleRetranscribe({ callId, deps }) {
     if (dlErr || !blob) throw new Error(`download failed: ${dlErr?.message || "no blob"}`);
     const audio = Buffer.from(await blob.arrayBuffer());
 
-    const industry = row.metadata && row.metadata.industry;
     const { utterances, channelCount } = await transcribeRecording(deepgramApiKey, audio, {
-      language: row.language,
+      language,
       industry,
     });
     // Dual-channel diarization is the whole premise: caller on one channel, AI on
@@ -121,7 +134,7 @@ async function handleRetranscribe({ callId, deps }) {
       return { ok: true, retranscribed: false, reason: "empty-transcript" };
     }
 
-    const analysis = await analyzeCallTranscript(accurateTranscript, { language: row.language });
+    const analysis = await analyzeCallTranscript(accurateTranscript, { language });
     await applyReanalysis(callId, {
       accurateTranscript,
       priorTranscript: row.transcript,
