@@ -87,6 +87,12 @@ describe("SCRUM-557 — rebook classification", () => {
 
   test("message constants carry the load-bearing instructions", () => {
     assert.match(DUPLICATE_REBOOK_MESSAGE, /DO NOT call book_appointment again/);
+    // SCRUM-561: this message is the guard's live steering at exactly the
+    // incident moment (the model just improvised cancel+rebook to change the
+    // doctor). It must route practitioner changes to reschedule_appointment,
+    // not only time changes.
+    assert.match(DUPLICATE_REBOOK_MESSAGE, /To change the TIME or the PRACTITIONER, call reschedule_appointment/);
+    assert.match(DUPLICATE_REBOOK_MESSAGE, /pass practitioner_id for a practitioner change/);
     assert.match(CORRECTION_ERROR_MESSAGE, /do NOT cancel/i);
     assert.match(CORRECTION_ERROR_MESSAGE, /do NOT claim it was fixed/i);
     assert.match(CANCEL_NUDGE, /NO appointment from this call/);
