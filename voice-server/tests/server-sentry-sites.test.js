@@ -279,6 +279,21 @@ function emitRetranscribeContentLoss({ callId }) {
   });
 }
 
+/** SCRUM-559: the post-call analysis says the caller left believing an
+ *  appointment from THIS call exists, while the tool log shows zero net live
+ *  bookings (booked then cancelled, never re-booked). The caller is owed an
+ *  appointment that does not exist — error level, pages. Lives in server.js
+ *  (post-call analysis block, BookingStateMismatch). */
+function emitBookingStateMismatch({ callSid, organizationId }) {
+  Sentry.withScope((scope) => {
+    scope.setTag("service", "booking_state_monitor");
+    scope.setTag("reason", "booking-state-mismatch");
+    scope.setLevel("error");
+    scope.setExtras({ callSid, organizationId, toolCallAudit: [] });
+    Sentry.captureMessage("Booking state mismatch: caller left believing in a nonexistent appointment (SCRUM-559)", "error");
+  });
+}
+
 /**
  * The canonical reason→level taxonomy this test file asserts. Verified
  * against server.js by the introspection test below — keep these in sync
@@ -295,6 +310,8 @@ const REASON_LEVELS = Object.freeze({
   "retranscribe-failed": "warning",
   "retranscribe-lookup-rejected": "error",
   "retranscribe-content-loss": "warning",
+  // SCRUM-559: caller left believing in a nonexistent appointment — pages.
+  "booking-state-mismatch": "error",
 });
 const REASONS = Object.freeze(Object.keys(REASON_LEVELS));
 
@@ -638,6 +655,8 @@ describe("server.js Sentry sites — contract tests (SCRUM-273)", () => {
         "retranscribe-failed": () => emitRetranscribeFailed({ callId: "p8" }),
         "retranscribe-lookup-rejected": () => emitRetranscribeLookupRejected({ callId: "p9" }),
         "retranscribe-content-loss": () => emitRetranscribeContentLoss({ callId: "p10" }),
+        "booking-state-mismatch": () =>
+          emitBookingStateMismatch({ callSid: "p11", organizationId: "org-p11" }),
       };
       // Every REASON must have a probe — surfacing missing coverage instead
       // of silently skipping.
@@ -658,7 +677,7 @@ describe("server.js Sentry sites — contract tests (SCRUM-273)", () => {
       }
     });
 
-    it("exactly three reasons use level=error — others are warning", () => {
+    it("exactly four reasons use level=error — others are warning", () => {
       // fail-open: customer intent (AI paused) silently violated.
       // voicemail-recording-save-failed (SCRUM-212): the safety-net write
       // behind the Supabase recording pipeline failed and Twilio won't
@@ -666,11 +685,14 @@ describe("server.js Sentry sites — contract tests (SCRUM-273)", () => {
       // retranscribe-lookup-rejected (SCRUM-552): a PostgREST-rejected
       // lookup (bad column/embed) kills re-transcription for EVERY call —
       // systemic, not per-call noise.
+      // booking-state-mismatch (SCRUM-559): the caller hung up believing
+      // in an appointment that does not exist — a human must call back.
       const errorReasons = REASONS.filter((r) => REASON_LEVELS[r] === "error");
       assert.deepEqual(errorReasons, [
         "fail-open",
         "voicemail-recording-save-failed",
         "retranscribe-lookup-rejected",
+        "booking-state-mismatch",
       ]);
     });
   });
@@ -761,7 +783,7 @@ describe("server.js Sentry sites — contract tests (SCRUM-273)", () => {
       );
     });
 
-    it("production contains 12 reason-tagged call sites (6 kill-switch + 2 server + 1 unhappy-call + 3 retranscribe)", () => {
+    it("production contains 13 reason-tagged call sites (6 kill-switch + 3 server + 1 unhappy-call + 3 retranscribe)", () => {
       // SCRUM-287 consolidated provider mirrors: log-failed, fail-open,
       // and voicemail-greeting-lookup-failed each fire from ONE site
       // that parameterizes provider (twilio|telnyx). fallback-finalise-
@@ -782,8 +804,8 @@ describe("server.js Sentry sites — contract tests (SCRUM-273)", () => {
       const retranscribeCount = countReasonSites(retranscribeSource);
       assert.equal(
         serverCount,
-        2,
-        `expected 2 reason-tagged sites in server.js (ring-first-degraded twilio + telnyx), found ${serverCount}`,
+        3,
+        `expected 3 reason-tagged sites in server.js (ring-first-degraded twilio + telnyx, booking-state-mismatch SCRUM-559), found ${serverCount}`,
       );
       assert.equal(
         killSwitchCount,
@@ -802,8 +824,8 @@ describe("server.js Sentry sites — contract tests (SCRUM-273)", () => {
       );
       assert.equal(
         serverCount + killSwitchCount + unhappyCount + retranscribeCount,
-        12,
-        `expected 12 reason-tagged Sentry sites total — update this test deliberately when sites are added/removed`,
+        13,
+        `expected 13 reason-tagged Sentry sites total — update this test deliberately when sites are added/removed`,
       );
     });
 
