@@ -45,6 +45,7 @@ import {
   type CallerIdState,
   type VerificationSettings,
   type CollectedDetails,
+  phonesMatchForOwnership,
 } from "@/lib/calendar/appointment-verification";
 
 /**
@@ -3412,10 +3413,10 @@ export async function handleUpdateAppointmentDetails(
     email?: string;
     notes?: string;
   },
-  anchor?: { callId?: string }
+  anchor?: { callId?: string; verifiedCallerPhone?: string }
 ): Promise<ToolResult> {
   const FAILURE_TAIL =
-    " The appointment still exists under the PREVIOUS details — do NOT cancel it and do NOT claim it was fixed. Apologize and tell the caller the team will correct it on their booking.";
+    " The appointment still exists under the PREVIOUS details — do NOT cancel it and do NOT claim it was fixed. Apologize, offer schedule_callback so the team can correct it, and only promise what that tool confirms.";
   const callId = anchor?.callId;
   if (!callId) {
     return { success: false, message: `CORRECTION UNAVAILABLE on this call.${FAILURE_TAIL}` };
@@ -3485,10 +3486,21 @@ export async function handleUpdateAppointmentDetails(
       if (within.length >= 1) candidates = within;
     }
   }
-  if (candidates.length !== 1) {
+  if (candidates.length === 0) {
+    // Everyday model-reachable case: the caller wants to fix a booking made on
+    // a PREVIOUS call. Nothing exists for this tool to touch — say so plainly
+    // and steer to the real paths; never imply an appointment was found or
+    // promise team action that nothing records.
     return {
       success: false,
-      message: `CORRECTION FAILED: could not pin down exactly one appointment from this call${candidates.length > 1 ? " (multiple found — retry with the exact datetime)" : ""}.${FAILURE_TAIL}`,
+      message:
+        "CORRECTION FAILED: no appointment was booked in THIS call, so there is nothing this tool can change — NOTHING was changed. For a booking made on a previous call: verify it with lookup_appointment (name + phone), then use reschedule_appointment for time changes or cancel_appointment — or call schedule_callback so the team can update the details. Do NOT claim anything was fixed.",
+    };
+  }
+  if (candidates.length > 1) {
+    return {
+      success: false,
+      message: `CORRECTION FAILED: could not pin down exactly one appointment from this call (multiple found — retry with the exact datetime).${FAILURE_TAIL}`,
     };
   }
 
@@ -3555,9 +3567,20 @@ export async function handleUpdateAppointmentDetails(
   // RebookGuard keys its ledger refresh on the "NAME CORRECTED" prefix — keep
   // that contract whenever the name changed; other fields get a distinct prefix.
   const prefix = wantsNameChange ? `NAME CORRECTED` : `APPOINTMENT DETAILS UPDATED`;
+  // Possession gates (cancel/reschedule) validate against the VERIFIED caller
+  // ID. A corrected phone that no longer matches it means later cancel/
+  // reschedule attempts — this call or future calls from the old number — will
+  // be refused as not-found. Without this warning the model gets unexplainable
+  // refusals minutes after being told "it's fixed". (SCRUM-560 tracks making
+  // possession accept call_id ownership, the principled fix.)
+  const phoneChanged = changedFields.some((c) => c.field === "phone");
+  const phoneWarning =
+    phoneChanged && anchor?.verifiedCallerPhone && !phonesMatchForOwnership(phone, anchor.verifiedCallerPhone)
+      ? " IMPORTANT: security checks for cancelling or rescheduling this booking now go by the NEW number — such changes from THIS call may be refused; offer schedule_callback if needed, or the caller can call back from the new number."
+      : "";
   return {
     success: true,
-    message: `${prefix}: the existing appointment is unchanged in date and time — ${summary}. The confirmation code is the same. Tell the caller it's fixed — do NOT call book_appointment again and do NOT cancel.`,
+    message: `${prefix}: the existing appointment is unchanged in date and time — ${summary}. The confirmation code is the same. Tell the caller it's fixed — do NOT call book_appointment again and do NOT cancel.${phoneWarning}`,
   };
 }
 

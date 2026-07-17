@@ -57,7 +57,7 @@ const DUPLICATE_REBOOK_MESSAGE =
 
 /** Fallback when the correction attempt itself throws (network etc.). */
 const CORRECTION_ERROR_MESSAGE =
-  "NAME CORRECTION FAILED (internal error). The appointment still exists under the PREVIOUS name — do NOT cancel it and do NOT claim it was fixed. Apologize and tell the caller the team will correct the spelling on their booking; offer schedule_callback if they want confirmation.";
+  "CORRECTION FAILED (internal error). The appointment still exists under the PREVIOUS details — do NOT cancel it and do NOT claim it was fixed. Apologize and offer schedule_callback so the team can correct it.";
 
 /**
  * SCRUM-557: appended to a successful cancel_appointment result so the model

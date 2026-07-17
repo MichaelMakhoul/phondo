@@ -233,7 +233,8 @@ const calendarToolDefinitions = [
           },
           notes: {
             type: "string",
-            description: "Corrected or added appointment notes, only if the caller asked.",
+            description:
+              "The full final appointment note, only if the caller asked to change it — this REPLACES any earlier note, so include everything that should remain.",
           },
         },
         required: [],
@@ -1170,14 +1171,30 @@ function simulateCalendarWrite(functionName, args) {
     };
   }
   if (functionName === "update_appointment" || functionName === "update_appointment_attendee") {
-    // SCRUM-557/558: mirror the real handler's success prefixes — RebookGuard
-    // keys its ledger update on "NAME CORRECTED".
-    const wantsName = Boolean(args.first_name || args.last_name);
+    // SCRUM-557/558: mirror the real handler's success prefixes AND refusals —
+    // RebookGuard keys its ledger update on "NAME CORRECTED", and an owner
+    // test-driving the assistant must see the same refusals real calls hit
+    // (a simulator that accepts what production refuses validates nothing).
+    const first = (args.first_name || "").trim();
+    const last = (args.last_name || "").trim();
+    const wantsName = Boolean(first || last);
+    if (wantsName && (!first || !last)) {
+      return { success: false, message: "CORRECTION FAILED: to fix the name, provide BOTH the corrected first and last name. (test mode)" };
+    }
+    const phoneDigits = String(args.phone || "").replace(/\D/g, "");
+    if (args.phone && phoneDigits.length < 8) {
+      return { success: false, message: "CORRECTION FAILED: that phone number doesn't look valid — read it back to the caller and try again. (test mode)" };
+    }
+    if (args.email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(args.email))) {
+      return { success: false, message: "CORRECTION FAILED: that email doesn't look valid — spell it back to the caller and try again. (test mode)" };
+    }
+    if (!wantsName && !args.phone && !args.email && !args.notes) {
+      return { success: false, message: "CORRECTION FAILED: no corrected details were provided. Pass only the fields the caller corrected. To change the TIME, call reschedule_appointment instead. (test mode)" };
+    }
     if (wantsName) {
-      const full = [args.first_name, args.last_name].filter(Boolean).join(" ");
       return {
         success: true,
-        message: `NAME CORRECTED: the existing appointment is unchanged in date and time — name is now "${full}". The confirmation code is the same. Tell the caller it's fixed — do NOT call book_appointment again and do NOT cancel.`,
+        message: `NAME CORRECTED: the existing appointment is unchanged in date and time — name is now "${first} ${last}". The confirmation code is the same. Tell the caller it's fixed — do NOT call book_appointment again and do NOT cancel.`,
       };
     }
     return {

@@ -210,7 +210,15 @@ export async function POST(request: Request) {
             email: parsedArgs.email,
             notes: parsedArgs.notes,
           },
-          isProductionCall ? { callId: payload.callId } : undefined
+          isProductionCall
+            ? {
+                callId: payload.callId,
+                // SCRUM-558: lets the handler warn when a corrected phone no
+                // longer matches the possession gates' verified caller ID.
+                verifiedCallerPhone:
+                  trusted.callerIdState === "verified" ? trusted.verifiedCallerPhone : undefined,
+              }
+            : undefined
         );
         break;
 

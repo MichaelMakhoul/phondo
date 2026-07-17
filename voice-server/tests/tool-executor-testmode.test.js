@@ -89,6 +89,21 @@ describe("test mode — mutating tools never hit the internal API (SCRUM-452)", 
     assert.match(result.message, /^APPOINTMENT DETAILS UPDATED/, "non-name corrections carry the details prefix");
   });
 
+  it("update_appointment simulation mirrors production REFUSALS (owner test calls must see real behavior)", async () => {
+    for (const [args, pattern] of [
+      [{ first_name: "Michael" }, /provide BOTH the corrected first and last name/],
+      [{ phone: "12" }, /phone number doesn't look valid/],
+      [{ email: "not-an-email" }, /email doesn't look valid/],
+      [{}, /no corrected details were provided/],
+    ]) {
+      const result = await executeToolCall("update_appointment", args, makeTestContext());
+      assert.equal(fetchCalls, 0, "refusals must also be fetch-free");
+      assert.equal(result.success, false, `${JSON.stringify(args)} must be refused like production`);
+      assert.match(result.message, pattern);
+      assert.ok(!result.message.startsWith("NAME CORRECTED"), "a refusal must never carry the success prefix");
+    }
+  });
+
   it("update_appointment_attendee is simulated (zero fetches) — SCRUM-557", async () => {
     const result = await executeToolCall(
       "update_appointment_attendee",
