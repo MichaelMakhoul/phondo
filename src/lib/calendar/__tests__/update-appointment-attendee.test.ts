@@ -15,7 +15,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 //    test-mode SIMULATOR's prefix (tool-executor-testmode.test.js); this file
 //    pins the REAL handler's, so the two cannot drift apart silently.
 //  - FAILURE POSTURE: every failure message must carry the "the appointment
-//    still exists under the PREVIOUS name — do NOT cancel" instruction. The
+//    still exists under the PREVIOUS details — do NOT cancel" instruction. The
 //    real 2026-07-17 incident was a cancel issued on the back of a
 //    misunderstood guard reply; the tail is the fix.
 
@@ -101,8 +101,8 @@ describe("handleUpdateAppointmentAttendee (SCRUM-557)", () => {
   it("no callId anchor: refuses without touching the DB, and forbids a cancel", async () => {
     const result = await handleUpdateAppointmentAttendee(ORG, CORRECT_ARGS, undefined);
     expect(result.success).toBe(false);
-    expect(result.message).toMatch(/^NAME CORRECTION UNAVAILABLE/);
-    expect(result.message).toMatch(/still exists under the PREVIOUS name/);
+    expect(result.message).toMatch(/^CORRECTION UNAVAILABLE/);
+    expect(result.message).toMatch(/still exists under the PREVIOUS details/);
     expect(result.message).toMatch(/do NOT cancel it/);
     expect(createAdminClient).not.toHaveBeenCalled();
     expect(recordAppointmentEvent).not.toHaveBeenCalled();
@@ -116,7 +116,7 @@ describe("handleUpdateAppointmentAttendee (SCRUM-557)", () => {
     ]) {
       const result = await handleUpdateAppointmentAttendee(ORG, args, { callId: CALL });
       expect(result.success).toBe(false);
-      expect(result.message).toMatch(/full corrected first and last name is required/);
+      expect(result.message).toMatch(/provide BOTH the corrected first and last name/);
       expect(result.message).toMatch(/do NOT cancel it/);
     }
     expect(createAdminClient).not.toHaveBeenCalled();
@@ -258,7 +258,7 @@ describe("handleUpdateAppointmentAttendee (SCRUM-557)", () => {
     expect(recordAppointmentEvent).not.toHaveBeenCalled();
   });
 
-  it("no appointment from this call: fails without the 'multiple found' hint", async () => {
+  it("no appointment from this call: steers to lookup/reschedule/callback, never fabricates an appointment or a team promise", async () => {
     vi.mocked(createAdminClient).mockReturnValue(
       fakeAdmin({ appointments: [{ data: [], error: null }] }, captured) as never
     );
@@ -266,8 +266,15 @@ describe("handleUpdateAppointmentAttendee (SCRUM-557)", () => {
     const result = await handleUpdateAppointmentAttendee(ORG, CORRECT_ARGS, { callId: CALL });
 
     expect(result.success).toBe(false);
-    expect(result.message).toMatch(/could not pin down exactly one appointment/);
-    expect(result.message).not.toMatch(/multiple found/);
+    expect(result.message).toMatch(/no appointment was booked in THIS call/);
+    expect(result.message).toMatch(/NOTHING was changed/);
+    expect(result.message).toMatch(/lookup_appointment/);
+    expect(result.message).toMatch(/schedule_callback/);
+    expect(result.message).toMatch(/Do NOT claim anything was fixed/);
+    // The everyday case (fixing last week's booking) must not assert a
+    // nonexistent appointment "still exists" or promise unrecorded team action.
+    expect(result.message).not.toMatch(/still exists under the PREVIOUS details/);
+    expect(result.message).not.toMatch(/team will correct it/);
     expect(captured.updatePayload).toBeNull();
   });
 
@@ -279,9 +286,9 @@ describe("handleUpdateAppointmentAttendee (SCRUM-557)", () => {
     const result = await handleUpdateAppointmentAttendee(ORG, CORRECT_ARGS, { callId: CALL });
 
     expect(result.success).toBe(false);
-    expect(result.message).toMatch(/NAME CORRECTION FAILED \(lookup error\)/);
+    expect(result.message).toMatch(/CORRECTION FAILED \(lookup error\)/);
     expect(result.error).toBe(true); // genuine fault — must carry the SCRUM-509 alert flag
-    expect(result.message).toMatch(/still exists under the PREVIOUS name/);
+    expect(result.message).toMatch(/still exists under the PREVIOUS details/);
     expect(captured.updatePayload).toBeNull();
     expect(recordAppointmentEvent).not.toHaveBeenCalled();
   });
@@ -354,6 +361,126 @@ describe("handleUpdateAppointmentAttendee (SCRUM-557)", () => {
     expect(recordAppointmentEvent).not.toHaveBeenCalled();
   });
 
+  for (const [args, column, field, from] of [
+    [{ phone: "+61400000999" }, "attendee_phone", "phone", "+61400000001"],
+    [{ email: "new@example.com" }, "attendee_email", "email", "old@example.com"],
+    [{ notes: "gate code 4321" }, "notes", "notes", null],
+  ] as const) {
+    it(`${field}-only correction: updates ${column}, DETAILS prefix, audited as ${field} change`, async () => {
+      vi.mocked(createAdminClient).mockReturnValue(
+        fakeAdmin(
+          {
+            appointments: [
+              { data: [apptRow({ attendee_phone: "+61400000001", attendee_email: "old@example.com", notes: null })], error: null },
+              { data: [{ id: "appt-a" }], error: null },
+            ],
+          },
+          captured
+        ) as never
+      );
+      const to = Object.values(args)[0];
+      const result = await handleUpdateAppointmentAttendee(ORG, args as never, { callId: CALL });
+      expect(result.success).toBe(true);
+      expect(result.message).toMatch(/^APPOINTMENT DETAILS UPDATED: /);
+      // the summary naming the field is what kills a dropped-write mutation
+      expect(result.message).toContain(`${field} is now "${to}"`);
+      expect(captured.updatePayload).toMatchObject({ [column]: to });
+      expect(captured.updatePayload).not.toHaveProperty("attendee_name");
+      expect(vi.mocked(recordAppointmentEvent).mock.calls[0][1]).toMatchObject({
+        changedFields: [{ field, from, to }],
+      });
+    });
+  }
+
+  it("phone corrected AWAY from the verified caller ID: success carries the possession warning", async () => {
+    vi.mocked(createAdminClient).mockReturnValue(
+      fakeAdmin(
+        {
+          appointments: [
+            { data: [apptRow({ attendee_phone: "+61400000001" })], error: null },
+            { data: [{ id: "appt-a" }], error: null },
+          ],
+        },
+        captured
+      ) as never
+    );
+    const result = await handleUpdateAppointmentAttendee(
+      ORG,
+      { phone: "+61498765432" } as never,
+      { callId: CALL, verifiedCallerPhone: "+61400000001" } as never
+    );
+    expect(result.success).toBe(true);
+    expect(result.message).toMatch(/security checks for cancelling or rescheduling this booking now go by the NEW number/);
+  });
+
+  it("phone corrected but still matching caller ID (formatting fix): NO possession warning", async () => {
+    vi.mocked(createAdminClient).mockReturnValue(
+      fakeAdmin(
+        {
+          appointments: [
+            { data: [apptRow({ attendee_phone: "0400 000 001" })], error: null },
+            { data: [{ id: "appt-a" }], error: null },
+          ],
+        },
+        captured
+      ) as never
+    );
+    const result = await handleUpdateAppointmentAttendee(
+      ORG,
+      { phone: "+61400000001" } as never,
+      { callId: CALL, verifiedCallerPhone: "+61400000001" } as never
+    );
+    expect(result.success).toBe(true);
+    expect(result.message).not.toMatch(/security checks/);
+  });
+
+  it("invalid phone / invalid email are rejected before any DB call", async () => {
+    for (const [args, pattern] of [
+      [{ phone: "12" }, /phone number doesn't look valid/],
+      [{ email: "not-an-email" }, /email doesn't look valid/],
+    ] as const) {
+      const result = await handleUpdateAppointmentAttendee(ORG, args as never, { callId: CALL });
+      expect(result.success).toBe(false);
+      expect(result.message).toMatch(pattern);
+    }
+    expect(createAdminClient).not.toHaveBeenCalled();
+  });
+
+  it("no corrected fields at all: refused, with the reschedule redirect for time changes", async () => {
+    const result = await handleUpdateAppointmentAttendee(ORG, {} as never, { callId: CALL });
+    expect(result.success).toBe(false);
+    expect(result.message).toMatch(/no corrected details were provided/);
+    expect(result.message).toMatch(/reschedule_appointment/);
+    expect(createAdminClient).not.toHaveBeenCalled();
+  });
+
+  it("name + phone together: NAME CORRECTED prefix wins, both fields updated and audited", async () => {
+    vi.mocked(createAdminClient).mockReturnValue(
+      fakeAdmin(
+        {
+          appointments: [
+            { data: [apptRow({ attendee_phone: "+61400000001" })], error: null },
+            { data: [{ id: "appt-a" }], error: null },
+          ],
+        },
+        captured
+      ) as never
+    );
+    const result = await handleUpdateAppointmentAttendee(
+      ORG,
+      { ...CORRECT_ARGS, phone: "+61400000999" } as never,
+      { callId: CALL }
+    );
+    expect(result.success).toBe(true);
+    expect(result.message).toMatch(/^NAME CORRECTED: /);
+    expect(captured.updatePayload).toMatchObject({
+      attendee_name: "Michael Makhoul",
+      attendee_phone: "+61400000999",
+    });
+    const fields = (vi.mocked(recordAppointmentEvent).mock.calls[0][1] as { changedFields: { field: string }[] }).changedFields.map((c) => c.field);
+    expect(fields).toEqual(["name", "phone"]);
+  });
+
   it("update error: old name persists — message says so, forbids cancel, records no event", async () => {
     vi.mocked(createAdminClient).mockReturnValue(
       fakeAdmin(
@@ -370,9 +497,9 @@ describe("handleUpdateAppointmentAttendee (SCRUM-557)", () => {
     const result = await handleUpdateAppointmentAttendee(ORG, CORRECT_ARGS, { callId: CALL });
 
     expect(result.success).toBe(false);
-    expect(result.message).toMatch(/NAME CORRECTION FAILED \(update error\)/);
+    expect(result.message).toMatch(/CORRECTION FAILED \(update error\)/);
     expect(result.error).toBe(true); // genuine fault — must carry the SCRUM-509 alert flag
-    expect(result.message).toMatch(/still exists under the PREVIOUS name — do NOT cancel it/);
+    expect(result.message).toMatch(/still exists under the PREVIOUS details — do NOT cancel it/);
     expect(result.message).not.toMatch(/^NAME CORRECTED: /);
     expect(recordAppointmentEvent).not.toHaveBeenCalled();
   });

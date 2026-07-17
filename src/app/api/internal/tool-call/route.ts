@@ -6,6 +6,7 @@ import {
   handleBookAppointment,
   handleCancelAppointment,
   handleUpdateAppointmentAttendee,
+  handleUpdateAppointmentDetails,
   handleRescheduleAppointment,
   handleLookupAppointment,
   type TrustedCallContext,
@@ -192,6 +193,32 @@ export async function POST(request: Request) {
           // model must not be able to claim another call's id and be handed
           // that call's confirmation code.
           isProductionCall ? { callId: payload.callId } : undefined
+        );
+        break;
+
+      case "update_appointment":
+        // SCRUM-558: model-facing corrections for any detail of an appointment
+        // created by THIS call (time excluded — reschedule owns it). Same
+        // call-anchored handler as the guard-internal name correction.
+        result = await handleUpdateAppointmentDetails(
+          organizationId,
+          {
+            datetime: parsedArgs.datetime,
+            first_name: parsedArgs.first_name,
+            last_name: parsedArgs.last_name,
+            phone: parsedArgs.phone,
+            email: parsedArgs.email,
+            notes: parsedArgs.notes,
+          },
+          isProductionCall
+            ? {
+                callId: payload.callId,
+                // SCRUM-558: lets the handler warn when a corrected phone no
+                // longer matches the possession gates' verified caller ID.
+                verifiedCallerPhone:
+                  trusted.callerIdState === "verified" ? trusted.verifiedCallerPhone : undefined,
+              }
+            : undefined
         );
         break;
 

@@ -53,11 +53,11 @@ function classifyRebookAttempt(existing, args) {
 
 /** The original SCRUM-257 hard rejection for a true duplicate. */
 const DUPLICATE_REBOOK_MESSAGE =
-  "CRITICAL: You already booked this exact appointment in this call. The booking is LOCKED in the database. DO NOT call book_appointment again. If the caller wants to change the appointment, call the reschedule_appointment tool (it moves it atomically in one step) — do NOT call book_appointment again.";
+  "CRITICAL: You already booked this exact appointment in this call. The booking is LOCKED in the database. DO NOT call book_appointment again. To change the TIME, call reschedule_appointment (it moves it atomically in one step). To fix a DETAIL the caller corrected — name spelling, contact phone, email, or a note — call update_appointment with only the corrected fields.";
 
 /** Fallback when the correction attempt itself throws (network etc.). */
 const CORRECTION_ERROR_MESSAGE =
-  "NAME CORRECTION FAILED (internal error). The appointment still exists under the PREVIOUS name — do NOT cancel it and do NOT claim it was fixed. Apologize and tell the caller the team will correct the spelling on their booking; offer schedule_callback if they want confirmation.";
+  "CORRECTION FAILED (internal error). The appointment still exists under the PREVIOUS details — do NOT cancel it and do NOT claim it was fixed. Apologize and offer schedule_callback so the team can correct it.";
 
 /**
  * SCRUM-557: appended to a successful cancel_appointment result so the model

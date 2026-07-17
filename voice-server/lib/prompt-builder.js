@@ -173,6 +173,7 @@ function buildSchedulingSection(timezone, businessHours, defaultAppointmentDurat
       "- get_current_datetime: Call this FIRST to know today's date before checking availability or booking.",
       "- check_availability: Check available appointment slots for a specific date (YYYY-MM-DD format).",
       "- book_appointment: Book an appointment. Requires datetime (ISO format), caller name, and phone number.",
+      "- update_appointment: Fix a detail on an appointment booked EARLIER IN THIS SAME CALL — a misspelled name, a different contact phone or email, or a note. Pass ONLY the corrected fields. NEVER cancel and re-book to fix a detail, and never claim it is fixed until this tool returns success. It cannot change the TIME (use reschedule_appointment) and cannot touch bookings from other calls.",
       "- cancel_appointment: Cancel an existing appointment by the caller's phone number.",
       "- lookup_appointment: Look up an existing appointment. Requires the caller's name and phone for identity verification. Use when a caller asks to check, confirm, or reschedule their appointment.",
       "- list_service_types: List the available appointment/service types offered by the business."
