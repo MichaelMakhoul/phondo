@@ -89,11 +89,23 @@ describe("SCRUM-557 — wiring pins (server.js + tool-executor)", () => {
     assert.ok(nudges >= 2, `expected the cancel nudge in both pipelines (got ${nudges})`);
   });
 
-  test("the ledger name is refreshed after a successful correction (a second correction must also work)", () => {
-    assert.ok(
-      /confirmedBookings\.set\(reqKey, \{\s*\.\.\.existing,/.test(serverSrc),
-      "ledger entry must be updated with the corrected name"
-    );
+  test("the ledger name is refreshed after a successful correction — in BOTH pipelines", () => {
+    const ledgerSets = (serverSrc.match(/confirmedBookings\.set\(reqKey, \{\s*\.\.\.existing,/g) || []).length;
+    assert.ok(ledgerSets >= 2, `ledger refresh must exist in both pipelines (got ${ledgerSets})`);
+  });
+
+  test("the correction only fires on the name-correction verdict — in BOTH pipelines", () => {
+    const cmp = (serverSrc.match(/verdict\.kind === "name-correction"/g) || []).length;
+    assert.ok(cmp >= 2, `expected the verdict comparison in both pipelines (got ${cmp})`);
+  });
+
+  test("BOTH pipelines key success on the NAME CORRECTED prefix (the real-handler contract)", () => {
+    // Three parties share this contract: the real handler and the test-mode
+    // simulator PRODUCE the prefix (pinned in their own suites), server.js
+    // CONSUMES it. If the consumer key drifts, every real success counts as
+    // failure: stale ledger + false Sentry alarms while the model relays success.
+    const keys = (serverSrc.match(/startsWith\("NAME CORRECTED"\)/g) || []).length;
+    assert.ok(keys >= 2, `expected the success-prefix key in both pipelines (got ${keys})`);
   });
 
   test("update_appointment_attendee routes to the internal API AND is simulated in test mode", () => {
