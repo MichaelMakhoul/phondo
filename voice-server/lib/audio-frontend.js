@@ -49,6 +49,10 @@ let loadPromise = null;
 // session per process and every 25th after, so a systematic DSP bug pages
 // instead of hiding in unalertable console lines.
 let deadSessions = 0;
+// Test seams (production never touches these): the wasm import and the load
+// timeout are injectable so the hung-load path is functionally testable.
+let importRnnoise = () => import("@shiguredo/rnnoise-wasm");
+let loadTimeoutMs = LOAD_TIMEOUT_MS;
 
 /**
  * Load the RNNoise wasm once. Safe to call repeatedly. Resolves to
@@ -76,14 +80,14 @@ function initAudioFrontend() {
       // process-wide with zero signal). A late success is discarded — the
       // front-end must not flip on mid-run after boot reported it disabled.
       const loading = (async () => {
-        const { Rnnoise } = await import("@shiguredo/rnnoise-wasm");
+        const { Rnnoise } = await importRnnoise();
         return Rnnoise.load();
       })();
       loading.catch(() => {}); // a post-timeout failure must not become an unhandled rejection
       const instance = await Promise.race([
         loading,
         new Promise((_, reject) => {
-          const t = setTimeout(() => reject(new Error(`load timeout after ${LOAD_TIMEOUT_MS}ms`)), LOAD_TIMEOUT_MS);
+          const t = setTimeout(() => reject(new Error(`load timeout after ${loadTimeoutMs}ms`)), loadTimeoutMs);
           if (typeof t.unref === "function") t.unref();
         }),
       ]);
@@ -114,6 +118,15 @@ function _resetForTests() {
   rnnoiseInstance = null;
   loadPromise = null;
   deadSessions = 0;
+}
+
+/**
+ * Test hook: override the wasm importer / load timeout (no args = restore defaults).
+ * @param {{ importer?: () => Promise<any>, timeoutMs?: number }} [overrides]
+ */
+function _setTestOverrides({ importer, timeoutMs } = {}) {
+  importRnnoise = importer || (() => import("@shiguredo/rnnoise-wasm"));
+  loadTimeoutMs = timeoutMs || LOAD_TIMEOUT_MS;
 }
 
 // ── per-session front-end ────────────────────────────────────────────────────
@@ -271,4 +284,5 @@ module.exports = {
   createSessionFrontend,
   AudioFrontend,
   _resetForTests,
+  _setTestOverrides,
 };

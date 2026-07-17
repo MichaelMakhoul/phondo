@@ -12,6 +12,8 @@ const {
   initAudioFrontend,
   createSessionFrontend,
   AudioFrontend,
+  _resetForTests,
+  _setTestOverrides,
 } = require("../lib/audio-frontend");
 const { pcm16ToMulaw, twilioToGemini, mulawToPcm16 } = require("../lib/audio-converter");
 
@@ -253,21 +255,74 @@ describe("SCRUM-555 — audio front-end (RNNoise + VAD-gated AGC)", () => {
     fe.destroy();
   });
 
-  test("fail-open: a processing error yields the LEGACY conversion for that frame; 5 errors go legacy permanently", () => {
-    const fe = createSessionFrontend();
-    const phase = { phase: 0 };
-    const frame = toTwilioBase64(makeSineFrame(160, 6000, 400, 8000, phase));
-    const legacy = twilioToGemini(frame);
-    fe.state.processFrame = () => {
-      throw new Error("boom");
-    };
-    for (let i = 0; i < 5; i++) {
-      assert.strictEqual(fe.processTwilioFrame(frame), legacy, "errored frame must fall back to the legacy conversion");
+  test("fail-open: a processing error yields the LEGACY conversion for that frame; 5 errors go legacy permanently + ALERT once", () => {
+    // NOTE: this is the only test in the process that kills sessions, so the
+    // first dead session here is deadSessions #1 — the alert must fire exactly
+    // once, and a second dead session (#2, not a multiple of 25) must not.
+    const warns = [];
+    const origWarn = console.warn;
+    console.warn = (...args) => warns.push(args.join(" "));
+    try {
+      const killSession = () => {
+        const fe = createSessionFrontend();
+        const phase = { phase: 0 };
+        const frame = toTwilioBase64(makeSineFrame(160, 6000, 400, 8000, phase));
+        const legacy = twilioToGemini(frame);
+        fe.state.processFrame = () => {
+          throw new Error("boom");
+        };
+        for (let i = 0; i < 5; i++) {
+          assert.strictEqual(fe.processTwilioFrame(frame), legacy, "errored frame must fall back to the legacy conversion");
+        }
+        assert.strictEqual(fe.dead, true, "5 errors must switch the session to the legacy path");
+        // dead sessions keep working via legacy — the caller is still heard
+        assert.strictEqual(fe.processTwilioFrame(frame), legacy);
+        fe.destroy();
+      };
+      killSession();
+      const alerts = () => warns.filter((w) => /\[ALERT:warning\].*AudioFrontend session went legacy/.test(w));
+      assert.strictEqual(alerts().length, 1, "the FIRST dead session must emit exactly one alertable warning");
+      assert.match(alerts()[0], /1 dead sessions/, "the alert must carry the dead-session count");
+      killSession(); // dead session #2 — below the every-25th cadence
+      assert.strictEqual(alerts().length, 1, "a second dead session must NOT alert again (cadence: 1st, then every 25th)");
+    } finally {
+      console.warn = origWarn;
     }
-    assert.strictEqual(fe.dead, true, "5 errors must switch the session to the legacy path");
-    // dead sessions keep working via legacy — the caller is still heard
-    assert.strictEqual(fe.processTwilioFrame(frame), legacy);
-    fe.destroy();
+  });
+
+  test("a hung wasm load times out: shims restored, enabled:false with a loud reason, no unhandled rejection", async () => {
+    _resetForTests();
+    // The fake load outlives the 60ms timeout (so the race times out) but DOES
+    // settle at 150ms — a truly never-settling promise would trip node:test's
+    // pending-promise detector at loop drain. Its late failure exercises the
+    // post-timeout swallow path.
+    _setTestOverrides({
+      importer: () =>
+        new Promise((resolve) => {
+          // deliberately NOT unref'd: the timer must fire so the promise
+          // settles before the test process drains (pending-promise detector)
+          setTimeout(
+            () => resolve({ Rnnoise: { load: () => Promise.reject(new Error("late failure after timeout")) } }),
+            150
+          );
+        }),
+      timeoutMs: 60,
+    });
+    try {
+      const { enabled, reason } = await initAudioFrontend();
+      assert.strictEqual(enabled, false, "a hung load must report disabled, not hang forever");
+      assert.match(reason, /load timeout after 60ms/, "the reason must name the timeout");
+      assert.strictEqual(typeof window, "undefined", "window shim must be restored on timeout");
+      assert.strictEqual(typeof self, "undefined", "self shim must be restored on timeout");
+      assert.strictEqual(typeof document, "undefined", "document shim must be restored on timeout");
+      assert.strictEqual(createSessionFrontend(), null, "sessions must run legacy after a timed-out load");
+    } finally {
+      // restore the real importer and reload the wasm for any later test
+      _setTestOverrides();
+      _resetForTests();
+      const { enabled } = await initAudioFrontend();
+      assert.ok(enabled, "real wasm must reload after the timeout test");
+    }
   });
 
   test("destroy is idempotent and a destroyed front-end still returns legacy audio", () => {
