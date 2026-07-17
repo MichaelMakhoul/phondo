@@ -55,6 +55,12 @@ describe("humanizeEndedReason (SCRUM-496)", () => {
     }
   });
 
+  it("booking-state-mismatch (SCRUM-559) gets the must-act copy, never the generic technical-issue line", () => {
+    const copy = humanizeEndedReason("booking-state-mismatch");
+    expect(copy).toMatch(/review the call and contact the caller/);
+    expect(copy).not.toMatch(/technical issue/);
+  });
+
   it("stt-connection-lost maps to the specific STT copy, not the generic fallback", () => {
     expect(humanizeEndedReason("stt-connection-lost")).toBe("The speech recognition system failed during the call.");
   });

@@ -13,8 +13,9 @@ let origFetch;
  * The new post-call-analysis service makes TWO parallel OpenAI calls; this stub
  * has to be able to respond to either.
  */
-function mockOpenAI({ structuredObj = null, cleanupObj = null } = {}) {
+function mockOpenAI({ structuredObj = null, cleanupObj = null, capture = null } = {}) {
   return function fakeFetch(_url, init) {
+    if (capture) capture.push(init && init.body ? String(init.body) : "");
     let body = {};
     try {
       body = init && init.body ? JSON.parse(init.body) : {};
@@ -341,5 +342,58 @@ describe("analyzeCallTranscript", () => {
     const result = await analyzeCallTranscript("This is a long enough transcript to analyze properly.");
 
     assert.equal(result, null);
+  });
+});
+
+
+describe("SCRUM-559 — tool digest + final_booking_claimed", () => {
+  beforeEach(() => {
+    origApiKey = process.env.OPENAI_API_KEY;
+    origFetch = globalThis.fetch;
+    process.env.OPENAI_API_KEY = "test-key";
+  });
+  afterEach(() => {
+    if (origApiKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = origApiKey;
+    globalThis.fetch = origFetch;
+  });
+
+  const TRANSCRIPT = "AI: Hi there!\nUser: I want to book.\nAI: Booked for 9am — actually cancelled per your request.";
+
+  it("injects the tool digest into the STRUCTURED request as ground truth (and only there)", async () => {
+    const capture = [];
+    globalThis.fetch = mockOpenAI({ structuredObj: {}, cleanupObj: { turns: [] }, capture });
+    const { analyzeCallTranscript } = require("../services/post-call-analysis");
+    await analyzeCallTranscript(TRANSCRIPT, {
+      toolDigest: "- book_appointment: SUCCEEDED\n- cancel_appointment: SUCCEEDED\nFINAL STATE: NO live appointment resulted from this call (anything booked was cancelled or never completed).",
+    });
+    const structuredBodies = capture.filter((b) => b.includes("Extract the following information"));
+    assert.equal(structuredBodies.length, 1);
+    assert.ok(structuredBodies[0].includes("TOOL EXECUTION LOG"), "digest header missing from the structured request");
+    assert.ok(structuredBodies[0].includes("NO live appointment resulted"), "digest content missing");
+    const cleanupBodies = capture.filter((b) => b.includes("normalising a phone call transcript"));
+    assert.ok(cleanupBodies.every((b) => !b.includes("TOOL EXECUTION LOG")), "digest must not leak into the cleanup pass");
+  });
+
+  it("the structured prompt asks for final_booking_claimed and the field parses as strict boolean-or-null", async () => {
+    for (const [value, expected] of [
+      [true, true],
+      [false, false],
+      ["true", null], // JSON mode can't enforce value types — strings clamp to null
+      [undefined, null],
+    ]) {
+      const capture = [];
+      globalThis.fetch = mockOpenAI({
+        structuredObj: value === undefined ? {} : { final_booking_claimed: value },
+        cleanupObj: { turns: [] },
+        capture,
+      });
+      delete require.cache[require.resolve("../services/post-call-analysis")];
+      const { analyzeCallTranscript } = require("../services/post-call-analysis");
+      const analysis = await analyzeCallTranscript(TRANSCRIPT, {});
+      assert.equal(analysis.finalBookingClaimed, expected, `raw value ${JSON.stringify(value)}`);
+      const structuredBody = capture.find((b) => b.includes("Extract the following information"));
+      assert.ok(structuredBody.includes("final_booking_claimed"), "prompt must request the field");
+    }
   });
 });

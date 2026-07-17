@@ -21,7 +21,7 @@ const { synthesizeSpeech, chunkAudioForTwilio } = require("./services/deepgram-t
 const { loadCallContext, loadTestCallContext, loadScheduleSnapshot } = require("./lib/call-context");
 const { buildSystemPrompt, getGreeting, buildLiveScheduleSection } = require("./lib/prompt-builder");
 const scheduleCache = require("./lib/schedule-cache");
-const { bookingKey } = require("./lib/booking-key");
+const { bookingKey, normalizeDatetime } = require("./lib/booking-key");
 const { classifyRebookAttempt, DUPLICATE_REBOOK_MESSAGE, CORRECTION_ERROR_MESSAGE, CANCEL_NUDGE } = require("./lib/rebook-correction"); // SCRUM-557
 const { createCallRecord, completeCallRecord, notifyCallCompleted, applyReanalysis } = require("./lib/call-logger");
 const { calendarToolDefinitions, listServiceTypesToolDefinition, transferToolDefinition, callbackToolDefinition, endCallToolDefinition, executeToolCall } = require("./services/tool-executor");
@@ -31,7 +31,7 @@ const { createSessionWithFailover, isFailoverEnabled } = require("./services/gem
 const { resolveTestPipeline, KNOWN_TEST_PIPELINES } = require("./lib/pipeline-routing"); // SCRUM-378 per-number test override
 const { handleConversationRelayConnection, buildConversationRelayTwiml } = require("./services/conversationrelay"); // SCRUM-378 eval spike (ConversationRelay + Claude)
 const { validateToolResponse } = require("./services/turn-validator");
-const { detectPhantomAction, detectPostCallPhantoms, summarizePhantoms } = require("./lib/action-claim-detector"); // SCRUM-381 live + SCRUM-383 post-call phantom-action detection
+const { detectPhantomAction, detectPostCallPhantoms, summarizePhantoms, netLiveOutcome, buildToolOutcomeDigest } = require("./lib/action-claim-detector"); // SCRUM-381 live + SCRUM-383 post-call + SCRUM-559 cancel-aware state checks
 // SCRUM-166 outbound calling service (cherry-picked to main for smoke testing)
 const {
   makeOutboundCall,
@@ -1469,7 +1469,10 @@ wss.on("connection", (twilioWs) => {
     let analysis = null;
     if (transcript && durationSeconds > 5) {
       try {
-        analysis = await analyzeCallTranscript(transcript, { language: s.language });
+        analysis = await analyzeCallTranscript(transcript, {
+          language: s.language,
+          toolDigest: buildToolOutcomeDigest(s.toolCallAudit || []), // SCRUM-559: analysis sees tool ground truth
+        });
         if (analysis) {
           // SCRUM-339: caller name AND the free-text call reason are PII —
           // redact both unless DEBUG_TRANSCRIPTS. success is a safe enum.
@@ -1485,6 +1488,28 @@ wss.on("connection", (twilioWs) => {
             organizationId: s.organizationId,
             durationSeconds,
           });
+
+          // SCRUM-559: language-agnostic booking-state check. The English
+          // claim regexes missed the real incident's ARABIC "you're booked"
+          // claims; the analysis LLM judges the claim in any language and the
+          // tool audit is ground truth. finalBookingClaimed with zero net live
+          // outcome = the caller hung up believing in an appointment that does
+          // not exist.
+          if (analysis.finalBookingClaimed === true && netLiveOutcome(s.toolCallAudit || []) === 0 && callStatus !== "failed") {
+            console.error(`[BookingStateMismatch] callSid=${s.callSid} — analysis says the caller left believing a booking from this call exists, but the tool log shows NO live appointment. toolCallAudit=${JSON.stringify(s.toolCallAudit || [])}`);
+            Sentry.withScope((scope) => {
+              scope.setTag("service", "booking_state_monitor");
+              setReasonTag(scope, SENTRY_REASONS.BOOKING_STATE_MISMATCH);
+              scope.setExtras({
+                callSid: s.callSid,
+                organizationId: s.organizationId,
+                toolCallAudit: s.toolCallAudit || [],
+              });
+              Sentry.captureMessage("Booking state mismatch: caller left believing in a nonexistent appointment (SCRUM-559)", "error");
+            });
+            callStatus = "failed";
+            endedReason = "booking-state-mismatch";
+          }
         }
       } catch (err) {
         console.error("[PostCall] Analysis failed:", err);
@@ -1553,10 +1578,12 @@ wss.on("connection", (twilioWs) => {
           // excluded); the CLASSIC pipeline's tool loop doesn't write the
           // audit, so fall back to its confirmedBookings map (review P2 —
           // classic bookings were otherwise silently uncounted).
+          // SCRUM-559: net-live, not "a book succeeded somewhere" — the
+          // incident call was recorded failed AND "appointment_booked" (the
+          // booking had been cancelled). confirmedBookings already clears on
+          // cancel, so the classic fallback is naturally net-aware.
           actionTaken:
-            (s.toolCallAudit || []).some(
-              (t) => t.name === "book_appointment" && t.successful === true
-            ) || (s.confirmedBookings?.size ?? 0) > 0
+            netLiveOutcome(s.toolCallAudit || []) > 0 || (s.confirmedBookings?.size ?? 0) > 0
               ? "appointment_booked"
               : null,
         });
@@ -2440,7 +2467,23 @@ wss.on("connection", (twilioWs) => {
                       const hasSuccessSignal = /\b(confirmation code|i've booked|you'?re all set|booked your|appointment (?:is|has been) (?:booked|confirmed))\b/i.test(msg);
                       if (!hasSuccessSignal) successful = false;
                     }
-                    session.toolCallAudit.push({ name: toolCall.name, successful, at: Date.now() });
+                    // SCRUM-559: appointment identity so netLiveOutcome can
+                    // pair a cancel with the booking it actually cancels — an
+                    // identity-blind counter false-failed "book Friday, cancel
+                    // my Monday checkup" calls.
+                    const auditEntry = { name: toolCall.name, successful, at: Date.now() };
+                    if (toolCall.name === "book_appointment") {
+                      auditEntry.dt = normalizeDatetime(toolCall.args?.datetime) || undefined;
+                      const codeM = message.match(/\b(\d{6})\b/);
+                      if (codeM) auditEntry.code = codeM[1];
+                    } else if (toolCall.name === "reschedule_appointment") {
+                      auditEntry.dt = normalizeDatetime(toolCall.args?.new_datetime) || undefined;
+                      auditEntry.oldDt = normalizeDatetime(toolCall.args?.current_datetime || toolCall.args?.current_date) || undefined;
+                    } else if (toolCall.name === "cancel_appointment") {
+                      auditEntry.dt = normalizeDatetime(toolCall.args?.datetime || toolCall.args?.date) || undefined;
+                      auditEntry.codeArg = String(toolCall.args?.confirmation_code || "").trim() || undefined;
+                    }
+                    session.toolCallAudit.push(auditEntry);
                   }
 
                   // SCRUM-367 (B): break the name/detail re-confirm loop
@@ -2653,7 +2696,7 @@ wss.on("connection", (twilioWs) => {
                     // finally caught.
                     const phantom = detectPhantomAction(aiTurnText, session.toolCallAudit);
                     if (phantom) {
-                      const { action, primaryTool } = phantom;
+                      const { action, primaryTool, negated } = phantom;
                       const notDone =
                         action === "booking" ? "the caller has NO appointment booked"
                         : action === "reschedule" ? "the caller's appointment was NOT moved — it is still at the original time"
@@ -2675,12 +2718,20 @@ wss.on("connection", (twilioWs) => {
                       // Inject correction — but limit to 2 attempts to avoid an
                       // infinite correction loop if Gemini keeps ignoring us.
                       if (session._phantomActionCount <= 2 && session.geminiSession?.sendText) {
+                        // SCRUM-559: a NEGATED booking needs truthful wording —
+                        // the model DID call book_appointment (it has the result
+                        // in context), so "you did NOT call it" is a false
+                        // premise it can dismiss. The truth: it was cancelled.
                         session.geminiSession.sendText(
-                          `CRITICAL ERROR: You just told the caller the ${action} was done, but you did NOT call ${primaryTool}. ` +
-                          `The action did NOT happen — ${notDone}. ` +
-                          `You MUST now: (1) apologize briefly ("I'm sorry, let me actually do that for you now"), ` +
-                          `(2) call ${primaryTool} NOW with the correct details, ` +
-                          `(3) then confirm the REAL result to the caller. Do NOT end the call until ${primaryTool} has been called.`
+                          negated
+                            ? `CRITICAL ERROR: The appointment you booked earlier in this call was CANCELLED — the caller currently has NO live appointment, but you just told them one exists. ` +
+                              `You MUST now: (1) tell the caller honestly where things stand, (2) if they still want the appointment, call book_appointment NOW with the full details, ` +
+                              `(3) only confirm what the tool actually returns. Do NOT end the call while the caller believes an appointment exists that does not.`
+                            : `CRITICAL ERROR: You just told the caller the ${action} was done, but you did NOT call ${primaryTool}. ` +
+                              `The action did NOT happen — ${notDone}. ` +
+                              `You MUST now: (1) apologize briefly ("I'm sorry, let me actually do that for you now"), ` +
+                              `(2) call ${primaryTool} NOW with the correct details, ` +
+                              `(3) then confirm the REAL result to the caller. Do NOT end the call until ${primaryTool} has been called.`
                         );
                       } else if (session._phantomActionCount > 2) {
                         // Gemini is ignoring corrections — fall back to schedule_callback
@@ -3429,6 +3480,31 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
 
           let resultMessage = typeof toolResult === "string" ? toolResult : toolResult.message;
           console.log(`[ToolCall] ${fnName} result: "${resultMessage.slice(0, 100)}..."`);
+
+          // SCRUM-559: classic pipeline audit parity (mirrors the Gemini site).
+          // Without these entries classic calls have EMPTY audits — net-live 0 —
+          // and the booking-state monitor would false-page every successful
+          // classic booking while post-call phantom detection stays blind.
+          if (session.toolCallAudit) {
+            let auditSuccessful = !(typeof toolResult === "object" && (toolResult?.error || toolResult?.success === false));
+            if (auditSuccessful && fnName === "book_appointment") {
+              const hasSuccessSignal = /\b(confirmation code|i've booked|you'?re all set|booked your|appointment (?:is|has been) (?:booked|confirmed))\b/i.test(resultMessage);
+              if (!hasSuccessSignal) auditSuccessful = false;
+            }
+            const auditEntry = { name: fnName, successful: auditSuccessful, at: Date.now() };
+            if (fnName === "book_appointment") {
+              auditEntry.dt = normalizeDatetime(fnArgs?.datetime) || undefined;
+              const codeM = resultMessage.match(/\b(\d{6})\b/);
+              if (codeM) auditEntry.code = codeM[1];
+            } else if (fnName === "reschedule_appointment") {
+              auditEntry.dt = normalizeDatetime(fnArgs?.new_datetime) || undefined;
+              auditEntry.oldDt = normalizeDatetime(fnArgs?.current_datetime || fnArgs?.current_date) || undefined;
+            } else if (fnName === "cancel_appointment") {
+              auditEntry.dt = normalizeDatetime(fnArgs?.datetime || fnArgs?.date) || undefined;
+              auditEntry.codeArg = String(fnArgs?.confirmation_code || "").trim() || undefined;
+            }
+            session.toolCallAudit.push(auditEntry);
+          }
 
           // SCRUM-257: track confirmed bookings (classic pipeline)
           if (fnName === "book_appointment" && (resultMessage.includes("confirmed") || resultMessage.includes("booked") || resultMessage.includes("confirmation"))) {

@@ -69,6 +69,81 @@ const CROSS_TOOLS = {
 // Appointment-mutating tools, used to find the most-recent successful write.
 const SCHEDULING_WRITE_TOOLS = ["book_appointment", "reschedule_appointment", "cancel_appointment"];
 
+// SCRUM-559: UNAMBIGUOUS booking-completion claims. Deliberately EXCLUDES
+// "you're all set" — that phrase is also legitimate closure language right
+// after a successful cancel ("you're all set, the appointment is cancelled"),
+// so it must not participate in the cancel-negation rule below.
+const STRONG_BOOKING_CLAIM =
+  /\b(i'?ve booked|booked you in|i have you booked|you'?re booked(?: in)?|your appointment (?:is|has been) (?:booked|confirmed))\b/i;
+
+/**
+ * SCRUM-559: net LIVE booking outcome of a call from its tool audit.
+ * A successful book or atomic reschedule leaves a live appointment; a
+ * successful cancel removes one. Floored at zero. The real incident: one
+ * successful book followed by one successful cancel = 0 live — yet the AI
+ * kept claiming a booking existed, and "a successful book anywhere backs the
+ * claim" made every monitor blind to the negation.
+ * @param {Array<{name?: string, successful?: boolean, dt?: string, oldDt?: string, code?: string, codeArg?: string}>} audit
+ * @returns {number}
+ */
+function netLiveOutcome(audit) {
+  // Set-of-live-entries model (review finding): a plain counter is
+  // IDENTITY-BLIND — "book Friday, and cancel my Monday checkup" netted to
+  // zero and false-failed a legitimate call (and the live nudge would push
+  // the model into a duplicate re-book). Audit entries carry appointment
+  // identity where the pipeline could attach it: dt (normalized datetime),
+  // oldDt (a reschedule's source), code (a booking's confirmation code),
+  // codeArg (the code a cancel was invoked with).
+  const live = [];
+  for (const t of Array.isArray(audit) ? audit : []) {
+    if (!t || !t.successful) continue;
+    if (t.name === "book_appointment") {
+      live.push({ dt: t.dt || null, code: t.code || null });
+    } else if (t.name === "reschedule_appointment") {
+      // A within-call reschedule MOVES a live entry (net-neutral); moving a
+      // pre-existing appointment leaves one live entry (the caller ends the
+      // call with a real appointment changed in this call).
+      if (t.oldDt) {
+        const i = live.findIndex((e) => e.dt && e.dt === t.oldDt);
+        if (i !== -1) live.splice(i, 1);
+      }
+      live.push({ dt: t.dt || null, code: null });
+    } else if (t.name === "cancel_appointment") {
+      let i = -1;
+      if (t.dt) i = live.findIndex((e) => e.dt && e.dt === t.dt);
+      if (i === -1 && t.codeArg) i = live.findIndex((e) => e.code && e.code === t.codeArg);
+      // Legacy/identity-less entries on BOTH sides still pair up (preserves
+      // the incident semantics for old-shape audits); an IDENTIFIED cancel
+      // that matches nothing live is a pre-existing appointment from another
+      // day and must never debit this call's bookings.
+      if (i === -1 && !t.dt && !t.codeArg) i = live.findIndex((e) => !e.dt && !e.code);
+      if (i !== -1) live.splice(i, 1);
+    }
+  }
+  return live.length;
+}
+
+/**
+ * SCRUM-559: compact ground-truth digest of a call's appointment tool activity
+ * for the post-call analysis LLM — the transcript alone reads as success when
+ * the AI confidently claims a booking that the tools never (net) delivered.
+ * Language-agnostic by construction: it reports what the TOOLS did.
+ * @param {Array<{name?: string, successful?: boolean}>} audit
+ * @returns {string|null} digest text, or null when there is no tool activity
+ */
+function buildToolOutcomeDigest(audit) {
+  const entries = (Array.isArray(audit) ? audit : []).filter((t) => t && typeof t.name === "string");
+  if (entries.length === 0) return null;
+  const lines = entries.slice(-20).map((t) => `- ${t.name}: ${t.successful ? "SUCCEEDED" : "did NOT succeed"}`);
+  const live = netLiveOutcome(entries);
+  lines.push(
+    live > 0
+      ? `FINAL STATE: ${live} live appointment(s) booked or moved in this call.`
+      : "FINAL STATE: NO live appointment resulted from this call (anything booked was cancelled or never completed)."
+  );
+  return lines.join("\n");
+}
+
 // The tool to name in the corrective nudge when a claim has no backing tool.
 const PRIMARY_TOOL = {
   reschedule: "reschedule_appointment",
@@ -116,7 +191,7 @@ function mostRecentWrite(audit) {
  *
  * @param {string} aiTurnText - what the AI just said to the caller
  * @param {Array<{name?: string, successful?: boolean, at?: number}>} [toolCallAudit]
- * @returns {null | {action: string, primaryTool: string}}
+ * @returns {null | {action: string, primaryTool: string, negated?: boolean}}
  */
 function detectPhantomAction(aiTurnText, toolCallAudit) {
   if (!aiTurnText || typeof aiTurnText !== "string") return null;
@@ -130,6 +205,16 @@ function detectPhantomAction(aiTurnText, toolCallAudit) {
     const backedByCross = cross.length > 0 && cross.includes(latestWrite);
     if (!backedByPrimary && !backedByCross) {
       return { action, primaryTool: PRIMARY_TOOL[action] };
+    }
+    // SCRUM-559: a booking success that was NEGATED by a later cancel must not
+    // keep backing UNAMBIGUOUS "you're booked" claims (the real incident: book
+    // → cancel → "your new appointment is at 9am"). Loose phrases like
+    // "you're all set" stay exempt — they're legit closure after a cancel.
+    // `negated: true` lets the nudge speak the TRUTH ("your booking was
+    // CANCELLED") instead of the SCRUM-381 wording ("you did NOT call the
+    // tool"), which would be demonstrably false here and easy to dismiss.
+    if (action === "booking" && STRONG_BOOKING_CLAIM.test(aiTurnText) && netLiveOutcome(audit) === 0) {
+      return { action, primaryTool: PRIMARY_TOOL[action], negated: true };
     }
     // Claim is backed — keep scanning for a later, unbacked claim in the same turn.
   }
@@ -189,8 +274,8 @@ function postCallBackingTools(action) {
  * schedule_callback means the caller is owed a callback that won't happen, which is
  * exactly the phantom worth flagging.
  *
- * @param {Array<{role?: string, content?: string}>} transcriptMessages - full transcript messages
- * @param {Array<{name?: string, successful?: boolean}>} [toolCallAudit]
+ * @param {Array<{role?: string, content?: string, at?: number}>} transcriptMessages - full transcript messages
+ * @param {Array<{name?: string, successful?: boolean, at?: number, dt?: string, oldDt?: string, code?: string, codeArg?: string}>} [toolCallAudit]
  * @returns {string[]} phantom action names (subset of booking/reschedule/cancellation/callback)
  */
 function detectPostCallPhantoms(transcriptMessages, toolCallAudit) {
@@ -213,6 +298,35 @@ function detectPostCallPhantoms(transcriptMessages, toolCallAudit) {
   // booking. With any appointment op it's a legit read-back, so don't double-flag.
   if (!phantoms.includes("booking") && CONFIRMATION_CODE_TELL.test(aiText) && !succeeded(APPOINTMENT_TOOLS)) {
     phantoms.push("booking");
+  }
+  // SCRUM-559: negated booking — a successful book that a later successful
+  // cancel removed no longer backs an UNAMBIGUOUS booking claim. (The loose
+  // "you're all set" is deliberately excluded: legit closure after a cancel.)
+  // TEMPORAL: only claims made AFTER the last successful cancel count — the
+  // truthful "your appointment is confirmed" said BEFORE a legitimate
+  // change-of-mind cancel must never fail the call. Messages without an `at`
+  // (pre-SCRUM-559 recordings) are conservatively excluded from negation.
+  if (!phantoms.includes("booking") && succeeded(["book_appointment"]) && netLiveOutcome(audit) === 0) {
+    let lastCancelAt = Number.NEGATIVE_INFINITY;
+    for (const t of audit) {
+      if (t && t.successful && t.name === "cancel_appointment" && typeof t.at === "number" && t.at > lastCancelAt) {
+        lastCancelAt = t.at;
+      }
+    }
+    const postCancelAiText = (Array.isArray(transcriptMessages) ? transcriptMessages : [])
+      .filter(
+        (m) =>
+          m &&
+          m.role === "assistant" &&
+          typeof m.content === "string" &&
+          typeof m.at === "number" &&
+          m.at > lastCancelAt
+      )
+      .map((m) => m.content)
+      .join("\n");
+    if (postCancelAiText && STRONG_BOOKING_CLAIM.test(postCancelAiText)) {
+      phantoms.push("booking");
+    }
   }
   return phantoms;
 }
@@ -239,6 +353,9 @@ module.exports = {
   detectPostCallPhantoms,
   summarizePhantoms,
   mostRecentWrite,
+  netLiveOutcome,
+  buildToolOutcomeDigest,
+  STRONG_BOOKING_CLAIM,
   ACTION_CLAIM_PATTERNS,
   POST_CALL_PATTERN_OVERRIDES,
   PRIMARY_TOOLS,

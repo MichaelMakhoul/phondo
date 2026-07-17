@@ -321,7 +321,7 @@ class CallSession {
     this.messages.push({ role, content });
     // Keep a complete copy for transcript (never windowed)
     if ((role === "user" || role === "assistant") && typeof content === "string") {
-      this.fullTranscriptMessages.push({ role, content });
+      this.fullTranscriptMessages.push({ role, content, at: Date.now() }); // at: SCRUM-559 temporal claim alignment
     }
     // Sliding window: keep system prompt + last N messages
     if (this.messages.length > MAX_MESSAGES) {
