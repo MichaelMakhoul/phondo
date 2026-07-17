@@ -23,9 +23,9 @@
 
 Inbound audio front-end in the voice server, before Gemini: software AGC (normalize quiet callers up — closes the SCRUM-375 concern for good) + RNNoise-style suppression for stationary noise on the 8 kHz Twilio leg. Explicit non-goal: suppression cannot remove *competing speech*; the prompt protocol covers that. Validate per-call CPU on Fly shared-cpu; A/B against the 2026-07-15 train-call recordings.
 
-## Package C — held
+## Package C — implemented DARK (SCRUM-556)
 
-Own turn-taking: disable Gemini auto-VAD, run Silero VAD with a noise-floor dominance gate, send manual activity events. Only if A+B prove insufficient on real calls.
+Own turn-taking behind `CUSTOM_VAD` (default **off**): Gemini auto-VAD disabled, `lib/turn-gate.js` drives manual activityStart/activityEnd markers from the front-end's per-block voice probability (RNNoise, not Silero — one dep serves B and C) + a learned noise-floor **dominance gate** (speech must stand ~8dB above ambient, so background announcements at ambient volume never open turns). Open = 120ms sustained qualifying speech; close = 800ms sustained silence with hangover. Safety: requires the front-end (falls back to automatic VAD when unavailable); a front-end death mid-call fails LOUD through onError/failover rather than stranding a marker-less call. Turn on only for supervised test calls until tuned (expected tuning: onset-clip vs latency trade-off on the 120ms open window).
 
 ## Verification
 

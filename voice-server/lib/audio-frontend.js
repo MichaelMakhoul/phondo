@@ -135,11 +135,16 @@ function _setTestOverrides({ importer, timeoutMs } = {}) {
  * Create a front-end for one call session, or null when the front-end is
  * disabled or the wasm isn't ready (sessions then use the legacy path for
  * their whole lifetime — no mid-call path switching).
+ * @param {{ onBlock?: (prob: number, rms: number) => void, onDead?: () => void }} [opts]
+ *   onBlock — per-10ms-block hook (voice probability + post-denoise pre-AGC
+ *   RMS); SCRUM-556's turn gate consumes it. onDead — fired ONCE if the
+ *   session hits the 5-error legacy fallback (custom VAD must fail loud: with
+ *   Gemini auto-VAD disabled, a dead front-end means no more turn markers).
  */
-function createSessionFrontend() {
+function createSessionFrontend(opts) {
   if (!flagEnabled() || !rnnoiseInstance) return null;
   try {
-    return new AudioFrontend(rnnoiseInstance);
+    return new AudioFrontend(rnnoiseInstance, opts);
   } catch (err) {
     console.error("[AudioFrontend] session init failed — using legacy path:", err && err.message);
     return null;
@@ -147,7 +152,13 @@ function createSessionFrontend() {
 }
 
 class AudioFrontend {
-  constructor(rnnoise) {
+  /**
+   * @param {{ createDenoiseState: () => { processFrame: (f: Float32Array) => number, destroy: () => void } }} rnnoise
+   * @param {{ onBlock?: (prob: number, rms: number) => void, onDead?: () => void }} [hooks]
+   */
+  constructor(rnnoise, { onBlock, onDead } = {}) {
+    this.onBlock = onBlock || null;
+    this.onDead = onDead || null;
     this.state = rnnoise.createDenoiseState();
     this.destroyed = false;
     this.dead = false; // too many errors — permanent legacy fallback
@@ -199,6 +210,13 @@ class AudioFrontend {
             "warning"
           );
         }
+        if (this.onDead) {
+          try {
+            this.onDead();
+          } catch (deadErr) {
+            console.error("[AudioFrontend] onDead hook threw:", deadErr && deadErr.message);
+          }
+        }
       }
       // Fail-open: the caller must still be heard even if the DSP chain breaks.
       return twilioToGemini(twilioBase64);
@@ -238,6 +256,12 @@ class AudioFrontend {
       sumSq += v * v;
     }
     const rms = Math.sqrt(sumSq / BLOCK_16K);
+
+    // SCRUM-556 turn gate. Deliberately NOT wrapped: a throwing hook flows
+    // into processTwilioFrame's catch (per-frame legacy fallback → 5 errors →
+    // dead → onDead → the session fails LOUD). Silently disabling the hook
+    // would strand a custom-VAD call with no turn markers and no signal.
+    if (this.onBlock) this.onBlock(vad, rms);
 
     this._updateGain(vad, rms);
     const g = this.gain;

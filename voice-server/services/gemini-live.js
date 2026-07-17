@@ -9,6 +9,7 @@
 const WebSocket = require("ws");
 const { twilioToGemini, geminiToTwilio } = require("../lib/audio-converter");
 const { createSessionFrontend } = require("../lib/audio-frontend");
+const { TurnGate, customVadEnabled } = require("../lib/turn-gate");
 const { Sentry } = require("../lib/sentry");
 const { logTranscript } = require("../lib/log-transcript");
 
@@ -175,10 +176,50 @@ function createGeminiSession(config, callbacks) {
   let intentionalCloseReason = null; // Set when we close via end_call tool
   const preSetupBuffer = []; // Buffer audio before setup completes
 
+  // SCRUM-556: custom turn-taking (DARK by default — CUSTOM_VAD env flag).
+  // The gate consumes per-block voice probability + RMS from the front-end
+  // and drives manual activityStart/activityEnd markers with Gemini's
+  // automatic VAD disabled. Decided per session, never mid-call.
+  const wantCustomVad = customVadEnabled();
+  let turnGate = null;
+  const sendActivityMarker = (event) => {
+    if (ws.readyState !== WebSocket.OPEN || !setupComplete) return;
+    const marker = event === "start" ? { activityStart: {} } : { activityEnd: {} };
+    try {
+      ws.send(JSON.stringify({ realtimeInput: marker }));
+    } catch (err) {
+      console.error(`[GeminiLive] activity marker send failed (${event}):`, err && err.message);
+    }
+  };
+
   // SCRUM-555: per-session denoise + AGC front-end (null → legacy path for
   // this whole session; processTwilioFrame itself also fails open per frame).
-  const audioFrontend = createSessionFrontend();
-  console.log(`[GeminiLive] Inbound audio path: ${audioFrontend ? "front-end (RNNoise + AGC)" : "legacy"}`);
+  const audioFrontend = createSessionFrontend(
+    wantCustomVad
+      ? {
+          onBlock: (prob, rms) => {
+            const event = turnGate && turnGate.push(prob, rms);
+            if (event) sendActivityMarker(event);
+          },
+          // With automatic VAD disabled, a dead front-end means no more turn
+          // markers — the call would hang silently. Fail LOUD instead: the
+          // onError path runs the existing teardown/failover machinery.
+          onDead: () => {
+            callbacks.onError?.(new Error("audio front-end died while CUSTOM_VAD was driving turn-taking"));
+          },
+        }
+      : undefined
+  );
+  // Custom VAD is only safe WITH the front-end (it supplies the gate's
+  // inputs). No front-end → keep Gemini's automatic VAD.
+  const customVadActive = wantCustomVad && !!audioFrontend;
+  if (customVadActive) turnGate = new TurnGate();
+  if (wantCustomVad && !audioFrontend) {
+    console.warn("[GeminiLive] CUSTOM_VAD requested but the audio front-end is unavailable — keeping Gemini automatic VAD");
+  }
+  console.log(
+    `[GeminiLive] Inbound audio path: ${audioFrontend ? "front-end (RNNoise + AGC)" : "legacy"}${customVadActive ? " + custom VAD (manual turn markers)" : ""}`
+  );
 
   // Audio-drain bookkeeping for end_call.
   // Gemini Live emits tool calls in the SAME turn as the closing audio
@@ -213,26 +254,35 @@ function createGeminiSession(config, callbacks) {
         systemInstruction: {
           parts: [{ text: config.systemPrompt }],
         },
-        realtimeInputConfig: {
-          automaticActivityDetection: {
-            // SCRUM-554: onset LOW + prefix padding. SCRUM-375 set onset HIGH so a
-            // quiet caller triggers turns readily, but with
-            // START_OF_ACTIVITY_INTERRUPTS that let train announcements and
-            // background voices open "caller turns" and cut the AI off
-            // mid-sentence — real calls on 2026-07-15/16 show background audio
-            // transcribed as German/Japanese/Spanish turns on an English call.
-            // LOW onset + ~250ms of sustained speech before a start commits means
-            // brief noise bursts and faint background chatter no longer open or
-            // interrupt turns. The quiet-caller case SCRUM-375 tuned for is
-            // covered by end-of-speech staying LOW (their turns aren't cut off)
-            // and by the inbound AGC front-end (SCRUM-555).
-            startOfSpeechSensitivity: "START_SENSITIVITY_LOW",
-            endOfSpeechSensitivity: "END_SENSITIVITY_LOW",
-            prefixPaddingMs: 250,
-            silenceDurationMs: 1000,
-          },
-          activityHandling: "START_OF_ACTIVITY_INTERRUPTS",
-        },
+        // SCRUM-556: when custom VAD is active, Gemini's automatic detection is
+        // fully disabled and the voice server delimits turns with manual
+        // activityStart/activityEnd markers (noise-floor dominance gate in
+        // lib/turn-gate.js). Otherwise the SCRUM-554 tuned automatic config.
+        realtimeInputConfig: customVadActive
+          ? {
+              automaticActivityDetection: { disabled: true },
+              activityHandling: "START_OF_ACTIVITY_INTERRUPTS",
+            }
+          : {
+              automaticActivityDetection: {
+                // SCRUM-554: onset LOW + prefix padding. SCRUM-375 set onset HIGH so a
+                // quiet caller triggers turns readily, but with
+                // START_OF_ACTIVITY_INTERRUPTS that let train announcements and
+                // background voices open "caller turns" and cut the AI off
+                // mid-sentence — real calls on 2026-07-15/16 show background audio
+                // transcribed as German/Japanese/Spanish turns on an English call.
+                // LOW onset + ~250ms of sustained speech before a start commits means
+                // brief noise bursts and faint background chatter no longer open or
+                // interrupt turns. The quiet-caller case SCRUM-375 tuned for is
+                // covered by end-of-speech staying LOW (their turns aren't cut off)
+                // and by the inbound AGC front-end (SCRUM-555).
+                startOfSpeechSensitivity: "START_SENSITIVITY_LOW",
+                endOfSpeechSensitivity: "END_SENSITIVITY_LOW",
+                prefixPaddingMs: 250,
+                silenceDurationMs: 1000,
+              },
+              activityHandling: "START_OF_ACTIVITY_INTERRUPTS",
+            },
         inputAudioTranscription: {},
         outputAudioTranscription: {},
       },
