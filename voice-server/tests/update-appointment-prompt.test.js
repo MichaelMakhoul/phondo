@@ -38,7 +38,19 @@ describe("SCRUM-558 — update_appointment prompt + declaration", () => {
     test(`${name} prompt: explains update_appointment and forbids cancel+rebook corrections`, () => {
       assert.ok(prompt.includes("update_appointment:"), `${name}: correction tool missing from the scheduling section`);
       assert.match(prompt, /NEVER cancel and re-book to fix a detail/i, `${name}: anti-cancel+rebook rule missing`);
-      assert.match(prompt, /cannot change the TIME \(use reschedule_appointment\)/i, `${name}: time exclusion missing`);
+      assert.match(prompt, /cannot change the TIME or the PRACTITIONER \(use reschedule_appointment for both\)/i, `${name}: time+practitioner exclusion missing`);
+    });
+
+    // SCRUM-561: a real call improvised cancel+rebook to change the doctor and
+    // round-robin re-assigned the SAME practitioner. The model must be told the
+    // sanctioned path (reschedule_appointment + practitioner_id) in BOTH prompt
+    // paths, and the read-back rule must no longer prescribe cancel+rebook.
+    test(`${name} prompt: practitioner changes route to reschedule_appointment, never cancel+rebook`, () => {
+      assert.match(prompt, /CHANGING THE PRACTITIONER \/ DOCTOR: use reschedule_appointment with the new practitioner_id/, `${name}: practitioner-change rule missing`);
+      assert.match(prompt, /set new_datetime to the appointment's CURRENT time if only the practitioner changes/, `${name}: same-time practitioner change instruction missing`);
+      assert.match(prompt, /NEVER cancel and re-book to change who the caller sees/, `${name}: anti-cancel+rebook rule for practitioner changes missing`);
+      assert.ok(!/If wrong, cancel and rebook/.test(prompt), `${name}: the stale read-back rule that caused the incident is back`);
+      assert.match(prompt, /fix it NOW with the right tool: update_appointment for a name, phone, email, or note; reschedule_appointment for the time or the practitioner/, `${name}: read-back correction routing missing`);
     });
   }
 

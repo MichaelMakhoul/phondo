@@ -51,7 +51,7 @@ function buildVerificationInstructions(organization) {
     // SCRUM-282 / future SCRUM-264: SMS is gated on ABN, caller-side email
     // is not yet built. Re-enable the confirmation-text language conditionally
     // when smsNotifications or caller-email is wired by passing a flag in.
-    "AFTER BOOKING: Read back ALL details to the caller: name, date, time, and practitioner. Then ask 'Is everything correct?' If wrong, cancel and rebook with correct details. NEVER promise a confirmation text, email, or any other follow-up notification — none are sent automatically. The read-back is the only confirmation the caller receives. POST-CONFIRMATION CLOSE — MANDATORY: When the caller responds positively (yes, sounds right, thanks, perfect, goodbye), say ONE brief warm closing phrase and IMMEDIATELY call end_call with reason='booking_complete'. NEVER say goodbye without calling end_call. NEVER mirror their goodbye.",
+    "AFTER BOOKING: Read back ALL details to the caller: name, date, time, and practitioner. Then ask 'Is everything correct?' If anything is wrong, fix it NOW with the right tool: update_appointment for a name, phone, email, or note; reschedule_appointment for the time or the practitioner (pass practitioner_id). NEVER cancel and re-book to fix a mistake — that loses the slot and can re-assign the same practitioner. NEVER promise a confirmation text, email, or any other follow-up notification — none are sent automatically. The read-back is the only confirmation the caller receives. POST-CONFIRMATION CLOSE — MANDATORY: When the caller responds positively (yes, sounds right, thanks, perfect, goodbye), say ONE brief warm closing phrase and IMMEDIATELY call end_call with reason='booking_complete'. NEVER say goodbye without calling end_call. NEVER mirror their goodbye.",
   );
 
   lines.push(
@@ -173,7 +173,8 @@ function buildSchedulingSection(timezone, businessHours, defaultAppointmentDurat
       "- get_current_datetime: Call this FIRST to know today's date before checking availability or booking.",
       "- check_availability: Check available appointment slots for a specific date (YYYY-MM-DD format).",
       "- book_appointment: Book an appointment. Requires datetime (ISO format), caller name, and phone number.",
-      "- update_appointment: Fix a detail on an appointment booked EARLIER IN THIS SAME CALL — a misspelled name, a different contact phone or email, or a note. Pass ONLY the corrected fields. NEVER cancel and re-book to fix a detail, and never claim it is fixed until this tool returns success. It cannot change the TIME (use reschedule_appointment) and cannot touch bookings from other calls.",
+      "- update_appointment: Fix a detail on an appointment booked EARLIER IN THIS SAME CALL — a misspelled name, a different contact phone or email, or a note. Pass ONLY the corrected fields. NEVER cancel and re-book to fix a detail, and never claim it is fixed until this tool returns success. It cannot change the TIME or the PRACTITIONER (use reschedule_appointment for both) and cannot touch bookings from other calls.",
+      "- CHANGING THE PRACTITIONER / DOCTOR: use reschedule_appointment with the new practitioner_id — set new_datetime to the appointment's CURRENT time if only the practitioner changes. NEVER cancel and re-book to change who the caller sees: a fresh booking without a practitioner_id gets auto-assigned and can land on the SAME practitioner again. If the caller wants 'a different practitioner' without naming one, offer the practitioners on staff and use the chosen one's ID — pass it to check_availability (to confirm they're free) AND to the change itself.",
       "- cancel_appointment: Cancel an existing appointment by the caller's phone number.",
       "- lookup_appointment: Look up an existing appointment. Requires the caller's name and phone for identity verification. Use when a caller asks to check, confirm, or reschedule their appointment.",
       "- list_service_types: List the available appointment/service types offered by the business."
@@ -203,10 +204,11 @@ function buildSchedulingSection(timezone, businessHours, defaultAppointmentDurat
         "CRITICAL: You MUST use book_appointment (not schedule_callback) when booking. schedule_callback is ONLY for when the caller wants someone to call them back, NOT for making appointments.",
         "",
         "STAFF & PRACTITIONER RULES:",
-        "- The system automatically assigns the next available practitioner when booking. If the booking confirmation includes a practitioner name, mention it to the caller.",
-        "- If a caller asks to book with a SPECIFIC person by name (e.g., 'I want to see Dr. Smith'), do NOT promise to book with that person. Instead say: 'Our system automatically assigns you to the next available practitioner for that service. I can book the appointment and the team will confirm the assigned practitioner.' If they insist on a specific person, offer to take a message so the office can arrange it.",
-        "- The business knowledge base may mention staff names and bios. This is for general information only — do NOT use those names to promise specific practitioner bookings. The booking system handles assignment automatically.",
-        "- NEVER guess or make up practitioner names. Only mention a practitioner name if the booking confirmation explicitly includes one."
+        "- If the caller states no practitioner preference, omit practitioner_id — the system auto-assigns the next available practitioner. If the booking confirmation includes a practitioner name, mention it to the caller.",
+        "- If a caller asks for a SPECIFIC practitioner and this prompt includes a PRACTITIONERS ON STAFF list, use it: pass that practitioner's ID as practitioner_id to check_availability (their personal schedule differs from the aggregate) AND to book_appointment. Only slots from a practitioner_id availability check are valid for that practitioner.",
+        "- If the person they ask for is NOT in the PRACTITIONERS ON STAFF list (or no list appears in this prompt), do NOT promise them: offer to book with the next available practitioner, or take a message so the office can arrange it. Knowledge-base staff bios are background info, not bookable practitioners.",
+        "- To change the practitioner on an EXISTING appointment, follow the CHANGING THE PRACTITIONER / DOCTOR rule above — reschedule_appointment with practitioner_id, never cancel + re-book.",
+        "- NEVER guess or make up practitioner names or IDs. Use only names and IDs from the PRACTITIONERS ON STAFF list or a tool result."
       );
     } else {
       lines.push(
