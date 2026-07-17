@@ -36,9 +36,11 @@ const CALENDAR_FUNCTIONS = [
   "reschedule_appointment",
   "list_service_types",
   "lookup_appointment",
+  // SCRUM-558: model-facing corrections for an appointment made in THIS call.
+  "update_appointment",
   // SCRUM-557: guard-internal ONLY — invoked by RebookGuard when a "duplicate"
   // book_appointment is actually a name correction. Never appears in the
-  // model's tool declarations (see lib assistant tool definitions).
+  // model's tool declarations.
   "update_appointment_attendee",
 ];
 
@@ -51,7 +53,8 @@ const CALENDAR_WRITE_FUNCTIONS = [
   "book_appointment",
   "cancel_appointment",
   "reschedule_appointment",
-  "update_appointment_attendee", // SCRUM-557: mutates the appointment row — must be simulated in test mode
+  "update_appointment", // SCRUM-558: mutates the appointment row — must be simulated in test mode
+  "update_appointment_attendee", // SCRUM-557: guard-internal variant of the same mutation
 ];
 
 /**
@@ -195,6 +198,45 @@ const calendarToolDefinitions = [
         // the model compulsively ask the caller for a number we already have,
         // which dead-ended bookings when the model couldn't extract it.
         required: ["datetime", "first_name", "last_name"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_appointment",
+      description:
+        "Fix a detail on an appointment booked EARLIER IN THIS SAME CALL: a misspelled name, a different contact phone or email, or a note. Pass ONLY the fields the caller corrected. Do NOT cancel and re-book to fix a detail, and do NOT tell the caller it is fixed until this tool returns success. This tool CANNOT change the appointment time (use reschedule_appointment) and CANNOT touch bookings made in other calls.",
+      parameters: {
+        type: "object",
+        properties: {
+          datetime: {
+            type: "string",
+            description:
+              "The appointment's date and time in ISO format — only needed if more than one appointment was booked in this call.",
+          },
+          first_name: {
+            type: "string",
+            description: "Corrected first name in English letters. Provide together with last_name when fixing the name.",
+          },
+          last_name: {
+            type: "string",
+            description: "Corrected last name/surname in English letters. Provide together with first_name when fixing the name.",
+          },
+          phone: {
+            type: "string",
+            description: "Corrected contact phone number, only if the caller asked to change it.",
+          },
+          email: {
+            type: "string",
+            description: "Corrected email address, only if the caller asked to change it.",
+          },
+          notes: {
+            type: "string",
+            description: "Corrected or added appointment notes, only if the caller asked.",
+          },
+        },
+        required: [],
       },
     },
   },
@@ -1127,12 +1169,20 @@ function simulateCalendarWrite(functionName, args) {
       message: `The appointment associated with ${args.phone} has been cancelled successfully.`,
     };
   }
-  if (functionName === "update_appointment_attendee") {
-    // SCRUM-557: mirror the real handler's success prefix — RebookGuard keys
-    // its ledger update on "NAME CORRECTED".
-    const full = [args.first_name, args.last_name].filter(Boolean).join(" ") || "the caller";
+  if (functionName === "update_appointment" || functionName === "update_appointment_attendee") {
+    // SCRUM-557/558: mirror the real handler's success prefixes — RebookGuard
+    // keys its ledger update on "NAME CORRECTED".
+    const wantsName = Boolean(args.first_name || args.last_name);
+    if (wantsName) {
+      const full = [args.first_name, args.last_name].filter(Boolean).join(" ");
+      return {
+        success: true,
+        message: `NAME CORRECTED: the existing appointment is unchanged in date and time — name is now "${full}". The confirmation code is the same. Tell the caller it's fixed — do NOT call book_appointment again and do NOT cancel.`,
+      };
+    }
     return {
-      message: `NAME CORRECTED: the existing appointment is unchanged in date and time and is now under "${full}". The confirmation code is the same. Tell the caller the booking is fixed — do NOT call book_appointment again and do NOT cancel.`,
+      success: true,
+      message: `APPOINTMENT DETAILS UPDATED: the existing appointment is unchanged in date and time. The confirmation code is the same. Tell the caller it's fixed — do NOT call book_appointment again and do NOT cancel.`,
     };
   }
   if (functionName === "reschedule_appointment") {

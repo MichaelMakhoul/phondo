@@ -3385,59 +3385,83 @@ export async function handleLookupAppointment(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SCRUM-557: in-place attendee-name correction for the voice server's
-// RebookGuard. NOT exposed to the model as a tool — the guard invokes it when
-// a "duplicate" book_appointment turns out to be the caller correcting their
-// name for the SAME slot (lib/booking-key drops the surname by design,
-// SCRUM-514, so a surname correction maps to the duplicate key). Without this,
-// the guard blocked the correction, its "already booked" reply convinced the
-// model the fix was done, and a follow-up cancel stranded a real caller with
-// zero appointments while being told "you're booked for 9am tomorrow".
+// SCRUM-557/558: in-place correction of details on an appointment CREATED BY
+// THIS CALL. Two entry points share this handler:
+//   - update_appointment (SCRUM-558): model-facing — the caller corrected any
+//     captured detail (name spelling, contact phone, email, notes). Time is
+//     deliberately excluded: reschedule_appointment owns time atomically.
+//   - update_appointment_attendee (SCRUM-557): RebookGuard-internal — a
+//     "duplicate" book_appointment that carries a corrected surname.
+//
+// Why this exists: without a correction primitive the model either re-books
+// (blocked as a duplicate — the correction is silently lost) or fabricates
+// ("noted!"). A real call ended with ZERO appointments while the caller was
+// told "you're booked for 9am tomorrow" (see SCRUM-557).
 //
 // Anchored on the CALL: only an appointment created by THIS call can be
-// renamed (callId comes from the request envelope, never from model args —
-// the SCRUM-514 principle), so a caller can never rename another booking.
+// changed (callId comes from the request envelope, never from model args —
+// the SCRUM-514 principle), so a caller can never touch another booking.
 // ─────────────────────────────────────────────────────────────────────────────
-export async function handleUpdateAppointmentAttendee(
+export async function handleUpdateAppointmentDetails(
   organizationId: string,
-  args: { datetime?: string; first_name?: string; last_name?: string },
+  args: {
+    datetime?: string;
+    first_name?: string;
+    last_name?: string;
+    phone?: string;
+    email?: string;
+    notes?: string;
+  },
   anchor?: { callId?: string }
 ): Promise<ToolResult> {
   const FAILURE_TAIL =
-    " The appointment still exists under the PREVIOUS name — do NOT cancel it and do NOT claim it was fixed. Apologize and tell the caller the team will correct the spelling on their booking.";
+    " The appointment still exists under the PREVIOUS details — do NOT cancel it and do NOT claim it was fixed. Apologize and tell the caller the team will correct it on their booking.";
   const callId = anchor?.callId;
   if (!callId) {
-    return { success: false, message: `NAME CORRECTION UNAVAILABLE on this call.${FAILURE_TAIL}` };
+    return { success: false, message: `CORRECTION UNAVAILABLE on this call.${FAILURE_TAIL}` };
   }
+
+  // Validate each SUPPLIED field with the same gates the booking path uses.
   const first = sanitizeString(args.first_name || "", 80).trim();
   const last = sanitizeString(args.last_name || "", 80).trim();
-  if (!first || !last) {
-    return { success: false, message: `NAME CORRECTION FAILED: a full corrected first and last name is required.${FAILURE_TAIL}` };
+  const wantsNameChange = Boolean(first || last);
+  if (wantsNameChange && (!first || !last)) {
+    return { success: false, message: `CORRECTION FAILED: to fix the name, provide BOTH the corrected first and last name.${FAILURE_TAIL}` };
   }
-  // SCRUM-367 parity: the booking path rejects non-Latin names; a "correction"
-  // must not become a side door into the same columns.
-  if (hasNonLatinLetters(`${first} ${last}`)) {
-    return {
-      success: false,
-      message: `NAME CORRECTION FAILED: please collect the ENGLISH spelling of the name (letter by letter if needed).${FAILURE_TAIL}`,
-    };
+  if (wantsNameChange && hasNonLatinLetters(`${first} ${last}`)) {
+    // SCRUM-367 parity: the booking path rejects non-Latin names; a
+    // "correction" must not become a side door into the same columns.
+    return { success: false, message: `CORRECTION FAILED: please collect the ENGLISH spelling of the name (letter by letter if needed).${FAILURE_TAIL}` };
+  }
+  const phone = args.phone ? sanitizeString(args.phone, 32).trim() : "";
+  if (phone && !isValidPhoneNumber(phone)) {
+    return { success: false, message: `CORRECTION FAILED: that phone number doesn't look valid — read it back to the caller and try again.${FAILURE_TAIL}` };
+  }
+  const email = args.email ? sanitizeString(args.email, 254).trim() : "";
+  if (email && !isValidEmail(email)) {
+    return { success: false, message: `CORRECTION FAILED: that email doesn't look valid — spell it back to the caller and try again.${FAILURE_TAIL}` };
+  }
+  const notes = args.notes ? sanitizeString(args.notes, 500).trim() : "";
+  if (!wantsNameChange && !phone && !email && !notes) {
+    return { success: false, message: `CORRECTION FAILED: no corrected details were provided. Pass only the fields the caller corrected (first_name+last_name, phone, email, or notes). To change the TIME, call reschedule_appointment instead.${FAILURE_TAIL}` };
   }
 
   const supabase = createAdminClient();
   // Mutation rate limit, keyed per call — parity with book/cancel (the guard
-  // intercepts before book_appointment's own limiter can run).
-  const rl = await enforceApptMutationRateLimit(supabase, organizationId, `attendee-correction:${callId}`);
+  // path intercepts before book_appointment's own limiter can run).
+  const rl = await enforceApptMutationRateLimit(supabase, organizationId, `appointment-correction:${callId}`);
   if (rl) return rl;
+
   const { data: rows, error } = await (supabase as any)
     .from("appointments")
-    .select("id, start_time, attendee_name, status")
+    .select("id, start_time, attendee_name, attendee_phone, attendee_email, notes, status")
     .eq("organization_id", organizationId)
     .eq("call_id", callId)
     .in("status", ["confirmed", "pending"]);
 
   if (error) {
-    console.error("[UpdateAttendee] lookup failed:", { organizationId, error: error.message });
-    return errorResult(`NAME CORRECTION FAILED (lookup error).${FAILURE_TAIL}`);
+    console.error("[UpdateAppointment] lookup failed:", { organizationId, error: error.message });
+    return errorResult(`CORRECTION FAILED (lookup error).${FAILURE_TAIL}`);
   }
 
   let candidates = rows || [];
@@ -3464,38 +3488,55 @@ export async function handleUpdateAppointmentAttendee(
   if (candidates.length !== 1) {
     return {
       success: false,
-      message: `NAME CORRECTION FAILED: could not pin down exactly one appointment from this call${candidates.length > 1 ? " (multiple found — retry with the exact datetime)" : ""}.${FAILURE_TAIL}`,
+      message: `CORRECTION FAILED: could not pin down exactly one appointment from this call${candidates.length > 1 ? " (multiple found — retry with the exact datetime)" : ""}.${FAILURE_TAIL}`,
     };
   }
 
   const appt = candidates[0];
-  const newFull = `${first} ${last}`;
+  const updatePayload: Record<string, unknown> = { updated_at: new Date().toISOString() };
+  const changedFields: { field: "name" | "phone" | "email" | "notes"; from: string | null; to: string | null }[] = [];
+  let newFull = "";
+  if (wantsNameChange) {
+    newFull = `${first} ${last}`;
+    updatePayload.attendee_first_name = first;
+    updatePayload.attendee_last_name = last;
+    updatePayload.attendee_name = newFull;
+    changedFields.push({ field: "name", from: appt.attendee_name ?? null, to: newFull });
+  }
+  if (phone) {
+    updatePayload.attendee_phone = phone;
+    changedFields.push({ field: "phone", from: appt.attendee_phone ?? null, to: phone });
+  }
+  if (email) {
+    updatePayload.attendee_email = email;
+    changedFields.push({ field: "email", from: appt.attendee_email ?? null, to: email });
+  }
+  if (notes) {
+    updatePayload.notes = notes;
+    changedFields.push({ field: "notes", from: appt.notes ?? null, to: notes });
+  }
+
   // The status filter stays on the UPDATE and the row-count is verified: staff
   // can cancel/delete this exact appointment from the dashboard mid-call (the
-  // call is ABOUT it), and "NAME CORRECTED" on a cancelled or vanished row
+  // call is ABOUT it), and a success claim on a cancelled or vanished row
   // would be the same false-success this whole fix exists to kill.
   const { data: updatedRows, error: updErr } = await (supabase as any)
     .from("appointments")
-    .update({
-      attendee_first_name: first,
-      attendee_last_name: last,
-      attendee_name: newFull,
-      updated_at: new Date().toISOString(),
-    })
+    .update(updatePayload)
     .eq("id", appt.id)
     .eq("organization_id", organizationId)
     .in("status", ["confirmed", "pending"])
     .select("id");
 
   if (updErr) {
-    console.error("[UpdateAttendee] update failed:", { organizationId, error: updErr.message });
-    return errorResult(`NAME CORRECTION FAILED (update error).${FAILURE_TAIL}`);
+    console.error("[UpdateAppointment] update failed:", { organizationId, error: updErr.message });
+    return errorResult(`CORRECTION FAILED (update error).${FAILURE_TAIL}`);
   }
   if (!updatedRows || updatedRows.length !== 1) {
     return {
       success: false,
       message:
-        "NAME CORRECTION FAILED: the appointment could not be updated — it may have just been changed or cancelled by the team. Do NOT cancel anything and do NOT claim it was fixed; tell the caller the team will confirm their booking details.",
+        "CORRECTION FAILED: the appointment could not be updated — it may have just been changed or cancelled by the team. Do NOT cancel anything and do NOT claim it was fixed; tell the caller the team will confirm their booking details.",
     };
   }
 
@@ -3505,13 +3546,26 @@ export async function handleUpdateAppointmentAttendee(
     eventType: "edited",
     actorType: "ai",
     channel: "voice",
-    changedFields: [{ field: "name", from: appt.attendee_name ?? null, to: newFull }],
-    note: "Attendee name corrected mid-call (RebookGuard, SCRUM-557)",
+    changedFields,
+    note: "Caller corrected booking details mid-call (SCRUM-557/558)",
     callId,
   });
 
+  const summary = changedFields.map((c) => `${c.field} is now "${c.to}"`).join(", ");
+  // RebookGuard keys its ledger refresh on the "NAME CORRECTED" prefix — keep
+  // that contract whenever the name changed; other fields get a distinct prefix.
+  const prefix = wantsNameChange ? `NAME CORRECTED` : `APPOINTMENT DETAILS UPDATED`;
   return {
     success: true,
-    message: `NAME CORRECTED: the existing appointment is unchanged in date and time and is now under "${newFull}". The confirmation code is the same. Tell the caller the booking is fixed — do NOT call book_appointment again and do NOT cancel.`,
+    message: `${prefix}: the existing appointment is unchanged in date and time — ${summary}. The confirmation code is the same. Tell the caller it's fixed — do NOT call book_appointment again and do NOT cancel.`,
   };
+}
+
+/** SCRUM-557 back-compat entry point for the RebookGuard (name-only shape). */
+export async function handleUpdateAppointmentAttendee(
+  organizationId: string,
+  args: { datetime?: string; first_name?: string; last_name?: string },
+  anchor?: { callId?: string }
+): Promise<ToolResult> {
+  return handleUpdateAppointmentDetails(organizationId, args, anchor);
 }
