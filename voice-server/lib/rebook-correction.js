@@ -1,0 +1,69 @@
+/**
+ * SCRUM-557 — classify a RebookGuard hit: true duplicate vs name correction.
+ *
+ * Real call 2026-07-17: the AI booked "Michael PL" (mis-heard surname), the
+ * caller spelled the correction ("Makhoul"), and the AI re-called
+ * book_appointment with the fixed name. lib/booking-key DELIBERATELY drops the
+ * surname (SCRUM-514 — a respelled surname must not slip the duplicate guard),
+ * so the corrected re-book mapped to the same key and RebookGuard blocked it
+ * as a duplicate. Worse, the guard's "already booked, it's LOCKED" reply
+ * convinced the model the corrected booking existed; a follow-up cancel then
+ * removed the only real appointment while the caller was told "you're booked
+ * for 9am tomorrow".
+ *
+ * The fix: when the guarded re-book carries a DIFFERENT surname than the
+ * ledger entry, it is the caller correcting their name — not the model
+ * second-guessing itself. The guard performs an in-place attendee update on
+ * the appointment this call created (update_appointment_attendee, a
+ * guard-internal tool that is never exposed to the model) instead of blocking.
+ *
+ * Pure classification + message constants here so both pipelines (Gemini +
+ * classic) share one tested implementation.
+ */
+
+const { normalizeName } = require("./booking-key");
+
+/** Normalized surname from a ledger name ("Michael PL" → "pl"); "" if none. */
+function surnameFromLedgerName(name) {
+  const parts = String(name || "").trim().split(/\s+/);
+  return parts.length > 1 ? normalizeName(parts.slice(1).join(" ")) : "";
+}
+
+/**
+ * @param {{ name?: string }} existing - the ledger entry for the matched key
+ * @param {{ last_name?: string }} args - the new book_appointment args
+ * @returns {{ kind: "duplicate" } | { kind: "name-correction" }}
+ */
+function classifyRebookAttempt(existing, args) {
+  const newLast = normalizeName(args?.last_name || "");
+  if (!newLast) return { kind: "duplicate" }; // no surname supplied — same-person re-book
+  const oldLast = surnameFromLedgerName(existing?.name);
+  // Same normalized surname = the SCRUM-514 respelling case — still a duplicate.
+  // A different (or newly supplied) surname = the caller correcting their name.
+  return oldLast === newLast ? { kind: "duplicate" } : { kind: "name-correction" };
+}
+
+/** The original SCRUM-257 hard rejection for a true duplicate. */
+const DUPLICATE_REBOOK_MESSAGE =
+  "CRITICAL: You already booked this exact appointment in this call. The booking is LOCKED in the database. DO NOT call book_appointment again. If the caller wants to change the appointment, call the reschedule_appointment tool (it moves it atomically in one step) — do NOT call book_appointment again.";
+
+/** Fallback when the correction attempt itself throws (network etc.). */
+const CORRECTION_ERROR_MESSAGE =
+  "NAME CORRECTION FAILED (internal error). The appointment still exists under the PREVIOUS name — do NOT cancel it and do NOT claim it was fixed. Apologize and tell the caller the team will correct the spelling on their booking; offer schedule_callback if they want confirmation.";
+
+/**
+ * SCRUM-557: appended to a successful cancel_appointment result so the model
+ * can never believe a phantom booking survives the cancel — the exact belief
+ * that stranded a caller with zero appointments while being told "you're
+ * booked for 9am".
+ */
+const CANCEL_NUDGE =
+  " NOTE: the caller now has NO appointment from this call. If they still want an appointment, call book_appointment NOW with the full details — do NOT tell them anything is booked until it returns success.";
+
+module.exports = {
+  classifyRebookAttempt,
+  surnameFromLedgerName,
+  DUPLICATE_REBOOK_MESSAGE,
+  CORRECTION_ERROR_MESSAGE,
+  CANCEL_NUDGE,
+};

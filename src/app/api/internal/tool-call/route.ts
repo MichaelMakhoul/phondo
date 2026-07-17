@@ -5,6 +5,7 @@ import {
   handleCheckAvailability,
   handleBookAppointment,
   handleCancelAppointment,
+  handleUpdateAppointmentAttendee,
   handleRescheduleAppointment,
   handleLookupAppointment,
   type TrustedCallContext,
@@ -190,6 +191,21 @@ export async function POST(request: Request) {
           // SCRUM-514: from the request envelope, never from `arguments` — the
           // model must not be able to claim another call's id and be handed
           // that call's confirmation code.
+          isProductionCall ? { callId: payload.callId } : undefined
+        );
+        break;
+
+      case "update_appointment_attendee":
+        // SCRUM-557: RebookGuard-internal name correction — never in the
+        // model's tool list. Anchored to the calling call via the envelope
+        // (SCRUM-514 principle: identity never comes from model arguments).
+        result = await handleUpdateAppointmentAttendee(
+          organizationId,
+          {
+            datetime: parsedArgs.datetime,
+            first_name: parsedArgs.first_name,
+            last_name: parsedArgs.last_name,
+          },
           isProductionCall ? { callId: payload.callId } : undefined
         );
         break;

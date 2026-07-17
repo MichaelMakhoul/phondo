@@ -79,6 +79,17 @@ describe("test mode — mutating tools never hit the internal API (SCRUM-452)", 
     assert.match(result.message, /cancelled/i);
   });
 
+  it("update_appointment_attendee is simulated (zero fetches) — SCRUM-557", async () => {
+    const result = await executeToolCall(
+      "update_appointment_attendee",
+      { datetime: "2026-06-18T10:00:00", first_name: "Michael", last_name: "Makhoul" },
+      makeTestContext()
+    );
+    assert.equal(fetchCalls, 0, "fetch must NOT be called in test mode");
+    assert.match(result.message, /^NAME CORRECTED/, "must carry the success prefix RebookGuard keys on");
+    assert.match(result.message, /Michael Makhoul/);
+  });
+
   it("reschedule_appointment is simulated (zero fetches) — the SCRUM-452 regression", async () => {
     const result = await executeToolCall(
       "reschedule_appointment",
@@ -205,7 +216,7 @@ describe("structural — write-function set stays consistent", () => {
   it("every mutating calendar function is covered by the test-mode simulation suite above", () => {
     // If a future write tool is added to CALENDAR_WRITE_FUNCTIONS without a
     // matching zero-fetch test here, this pin fails so the gap is noticed.
-    const simulatedHere = ["book_appointment", "cancel_appointment", "reschedule_appointment"];
+    const simulatedHere = ["book_appointment", "cancel_appointment", "reschedule_appointment", "update_appointment_attendee"];
     assert.deepEqual(
       [...CALENDAR_WRITE_FUNCTIONS].sort(),
       [...simulatedHere].sort(),

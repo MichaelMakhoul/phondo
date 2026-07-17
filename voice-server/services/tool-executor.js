@@ -36,6 +36,10 @@ const CALENDAR_FUNCTIONS = [
   "reschedule_appointment",
   "list_service_types",
   "lookup_appointment",
+  // SCRUM-557: guard-internal ONLY — invoked by RebookGuard when a "duplicate"
+  // book_appointment is actually a name correction. Never appears in the
+  // model's tool declarations (see lib assistant tool definitions).
+  "update_appointment_attendee",
 ];
 
 // SCRUM-452: calendar tools that MUTATE appointment rows. Test/demo calls run
@@ -47,6 +51,7 @@ const CALENDAR_WRITE_FUNCTIONS = [
   "book_appointment",
   "cancel_appointment",
   "reschedule_appointment",
+  "update_appointment_attendee", // SCRUM-557: mutates the appointment row — must be simulated in test mode
 ];
 
 /**
@@ -1119,6 +1124,14 @@ function simulateCalendarWrite(functionName, args) {
   if (functionName === "cancel_appointment") {
     return {
       message: `The appointment associated with ${args.phone} has been cancelled successfully.`,
+    };
+  }
+  if (functionName === "update_appointment_attendee") {
+    // SCRUM-557: mirror the real handler's success prefix — RebookGuard keys
+    // its ledger update on "NAME CORRECTED".
+    const full = [args.first_name, args.last_name].filter(Boolean).join(" ") || "the caller";
+    return {
+      message: `NAME CORRECTED: the existing appointment is unchanged in date and time and is now under "${full}". The confirmation code is the same. Tell the caller the booking is fixed — do NOT call book_appointment again and do NOT cancel.`,
     };
   }
   if (functionName === "reschedule_appointment") {
