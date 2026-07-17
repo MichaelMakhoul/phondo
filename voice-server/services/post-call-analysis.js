@@ -64,6 +64,7 @@ Return a JSON object with these fields:
 - collected_data: Any structured data collected during the call like phone numbers, emails, dates mentioned (object or null)
 - unanswered_questions: ONLY questions the caller explicitly asked that the AI clearly FAILED to answer or address — e.g. the AI said it didn't know, gave no relevant response, or deflected without helping. Do NOT include a question the AI handled in any way, including via a tool/lookup (checking the calendar, availability, existing appointments, or pricing) or by answering after a clarifying question. Speech-to-text can garble a question (e.g. "next appointment" misheard as "next payment"); judge by what the AI actually DID in response, not the literal (possibly misheard) wording. When in doubt, treat it as answered and exclude it. Translate to English. (array of strings, or null)
 - sentiment: "positive" | "neutral" | "negative" (string)
+- final_booking_claimed: true ONLY if, at the END of the call, the assistant had told the caller that an appointment booked or changed DURING THIS CALL was in place (the caller hangs up believing that appointment exists). False if it was cancelled by the end of the call, was never completed, or if only an appointment from a previous call was discussed. Judge this in whatever language the call used. (boolean)
 
 Return ONLY valid JSON, no other text.`;
 
@@ -144,11 +145,18 @@ async function callOpenAI({ system, user, maxTokens, model, timeoutMs }) {
   return JSON.parse(content);
 }
 
-async function analyzeStructured(transcript) {
+async function analyzeStructured(transcript, toolDigest) {
   try {
+    // SCRUM-559: the transcript ALONE reads as success when the AI confidently
+    // claims a booking the tools never (net) delivered — the real incident's
+    // summary said "successfully booked" for a call that ended with zero
+    // appointments. The digest is ground truth from the tool log.
+    const digestBlock = toolDigest
+      ? `\n\nTOOL EXECUTION LOG (ground truth from the system — the transcript's claims may be wrong; your summary, success_evaluation and final_booking_claimed MUST be consistent with this log, and if the assistant's claims contradict it, state the discrepancy in the summary):\n${toolDigest}`
+      : "";
     const parsed = await callOpenAI({
       system: STRUCTURED_PROMPT,
-      user: `Analyze this call transcript:\n\n${transcript.slice(0, 6000)}`,
+      user: `Analyze this call transcript:\n\n${transcript.slice(0, 6000)}${digestBlock}`,
       maxTokens: 600,
     });
     return {
@@ -166,6 +174,8 @@ async function analyzeStructured(transcript) {
       collectedData: parsed.collected_data || null,
       unansweredQuestions: Array.isArray(parsed.unanswered_questions) ? parsed.unanswered_questions : null,
       sentiment: ["positive", "neutral", "negative"].includes(parsed.sentiment) ? parsed.sentiment : null,
+      // SCRUM-559: strict boolean-or-null — downstream compares === true.
+      finalBookingClaimed: typeof parsed.final_booking_claimed === "boolean" ? parsed.final_booking_claimed : null,
     };
   } catch (err) {
     console.error("[PostCallAnalysis] Structured analysis failed:", err.message);
@@ -239,8 +249,11 @@ async function analyzeCleanup(transcript, language) {
  * the other.
  *
  * @param {string} transcript - The full call transcript
- * @param {{ language?: string }} [options] - language: the call's configured
- *   language (BCP-47/ISO 639-1), used as a recovery hint for the cleanup pass.
+ * @param {{ language?: string, toolDigest?: string|null }} [options] - language: the call's
+ *   configured language (BCP-47/ISO 639-1), used as a recovery hint for the
+ *   cleanup pass. toolDigest: SCRUM-559 ground-truth tool-outcome digest
+ *   (lib/action-claim-detector buildToolOutcomeDigest) injected into the
+ *   structured analysis so summaries reflect tool reality, not claims.
  * @returns {Promise<object|null>} Extracted data or null if both calls fail
  */
 async function analyzeCallTranscript(transcript, options = {}) {
@@ -258,7 +271,7 @@ async function analyzeCallTranscript(transcript, options = {}) {
   }
 
   const [structured, cleanedTranscript] = await Promise.all([
-    analyzeStructured(transcript),
+    analyzeStructured(transcript, options.toolDigest),
     analyzeCleanup(transcript, options.language),
   ]);
 
@@ -274,6 +287,7 @@ async function analyzeCallTranscript(transcript, options = {}) {
       collectedData: null,
       unansweredQuestions: null,
       sentiment: null,
+      finalBookingClaimed: null,
     }),
     cleanedTranscript,
   };

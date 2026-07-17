@@ -84,6 +84,13 @@ const SENTRY_REASONS = Object.freeze({
    *  form their own reviewable queue. Warning level. */
   RETRANSCRIBE_CONTENT_LOSS: "retranscribe-content-loss",
 
+  // ─── booking-state monitor (SCRUM-559) ──────────────────────────────
+  /** The post-call analysis says the caller left believing an appointment
+   *  from THIS call exists, but the tool log shows zero net live bookings
+   *  (e.g. booked then cancelled with no re-book). The caller is owed an
+   *  appointment that does not exist — page LOUDLY. */
+  BOOKING_STATE_MISMATCH: "booking-state-mismatch",
+
   // ─── fallback-dial-consent (recording disclosure) ───────────────────
   /** Recording disclosure can't render because the org row was missing
    *  from the lookup result. */

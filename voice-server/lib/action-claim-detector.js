@@ -69,6 +69,54 @@ const CROSS_TOOLS = {
 // Appointment-mutating tools, used to find the most-recent successful write.
 const SCHEDULING_WRITE_TOOLS = ["book_appointment", "reschedule_appointment", "cancel_appointment"];
 
+// SCRUM-559: UNAMBIGUOUS booking-completion claims. Deliberately EXCLUDES
+// "you're all set" — that phrase is also legitimate closure language right
+// after a successful cancel ("you're all set, the appointment is cancelled"),
+// so it must not participate in the cancel-negation rule below.
+const STRONG_BOOKING_CLAIM =
+  /\b(i'?ve booked|booked you in|i have you booked|your appointment (?:is|has been) (?:booked|confirmed))\b/i;
+
+/**
+ * SCRUM-559: net LIVE booking outcome of a call from its tool audit.
+ * A successful book or atomic reschedule leaves a live appointment; a
+ * successful cancel removes one. Floored at zero. The real incident: one
+ * successful book followed by one successful cancel = 0 live — yet the AI
+ * kept claiming a booking existed, and "a successful book anywhere backs the
+ * claim" made every monitor blind to the negation.
+ * @param {Array<{name?: string, successful?: boolean}>} audit
+ * @returns {number}
+ */
+function netLiveOutcome(audit) {
+  let live = 0;
+  for (const t of Array.isArray(audit) ? audit : []) {
+    if (!t || !t.successful) continue;
+    if (t.name === "book_appointment" || t.name === "reschedule_appointment") live++;
+    else if (t.name === "cancel_appointment") live = Math.max(0, live - 1);
+  }
+  return live;
+}
+
+/**
+ * SCRUM-559: compact ground-truth digest of a call's appointment tool activity
+ * for the post-call analysis LLM — the transcript alone reads as success when
+ * the AI confidently claims a booking that the tools never (net) delivered.
+ * Language-agnostic by construction: it reports what the TOOLS did.
+ * @param {Array<{name?: string, successful?: boolean}>} audit
+ * @returns {string|null} digest text, or null when there is no tool activity
+ */
+function buildToolOutcomeDigest(audit) {
+  const entries = (Array.isArray(audit) ? audit : []).filter((t) => t && typeof t.name === "string");
+  if (entries.length === 0) return null;
+  const lines = entries.slice(-20).map((t) => `- ${t.name}: ${t.successful ? "SUCCEEDED" : "did NOT succeed"}`);
+  const live = netLiveOutcome(entries);
+  lines.push(
+    live > 0
+      ? `FINAL STATE: ${live} live appointment(s) booked or moved in this call.`
+      : "FINAL STATE: NO live appointment resulted from this call (anything booked was cancelled or never completed)."
+  );
+  return lines.join("\n");
+}
+
 // The tool to name in the corrective nudge when a claim has no backing tool.
 const PRIMARY_TOOL = {
   reschedule: "reschedule_appointment",
@@ -129,6 +177,13 @@ function detectPhantomAction(aiTurnText, toolCallAudit) {
     const backedByPrimary = audit.some((t) => t && t.successful && primary.includes(t.name));
     const backedByCross = cross.length > 0 && cross.includes(latestWrite);
     if (!backedByPrimary && !backedByCross) {
+      return { action, primaryTool: PRIMARY_TOOL[action] };
+    }
+    // SCRUM-559: a booking success that was NEGATED by a later cancel must not
+    // keep backing UNAMBIGUOUS "you're booked" claims (the real incident: book
+    // → cancel → "your new appointment is at 9am"). Loose phrases like
+    // "you're all set" stay exempt — they're legit closure after a cancel.
+    if (action === "booking" && STRONG_BOOKING_CLAIM.test(aiTurnText) && netLiveOutcome(audit) === 0) {
       return { action, primaryTool: PRIMARY_TOOL[action] };
     }
     // Claim is backed — keep scanning for a later, unbacked claim in the same turn.
@@ -214,6 +269,17 @@ function detectPostCallPhantoms(transcriptMessages, toolCallAudit) {
   if (!phantoms.includes("booking") && CONFIRMATION_CODE_TELL.test(aiText) && !succeeded(APPOINTMENT_TOOLS)) {
     phantoms.push("booking");
   }
+  // SCRUM-559: negated booking — a successful book that a later successful
+  // cancel removed no longer backs an UNAMBIGUOUS booking claim. (The loose
+  // "you're all set" is deliberately excluded: legit closure after a cancel.)
+  if (
+    !phantoms.includes("booking") &&
+    succeeded(["book_appointment"]) &&
+    netLiveOutcome(audit) === 0 &&
+    STRONG_BOOKING_CLAIM.test(aiText)
+  ) {
+    phantoms.push("booking");
+  }
   return phantoms;
 }
 
@@ -239,6 +305,9 @@ module.exports = {
   detectPostCallPhantoms,
   summarizePhantoms,
   mostRecentWrite,
+  netLiveOutcome,
+  buildToolOutcomeDigest,
+  STRONG_BOOKING_CLAIM,
   ACTION_CLAIM_PATTERNS,
   POST_CALL_PATTERN_OVERRIDES,
   PRIMARY_TOOLS,

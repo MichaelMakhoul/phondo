@@ -366,3 +366,105 @@ describe("summarizePhantoms (SCRUM-383)", () => {
     });
   });
 });
+
+
+// ── SCRUM-559: cancel-negation + net live outcome + tool digest ──────────────
+// The real incident: book_appointment ✓, corrected re-book blocked, cancel ✓,
+// then confident "your new appointment is at 9am" claims (some in Arabic).
+// "A successful book anywhere backs the claim" made every monitor blind.
+const {
+  netLiveOutcome,
+  buildToolOutcomeDigest,
+} = require("../lib/action-claim-detector");
+
+describe("SCRUM-559 — netLiveOutcome", () => {
+  it("counts books/reschedules up, cancels down, floors at zero", () => {
+    const ok = (name) => ({ name, successful: true, at: 1 });
+    assert.strictEqual(netLiveOutcome([]), 0);
+    assert.strictEqual(netLiveOutcome([ok("book_appointment")]), 1);
+    assert.strictEqual(netLiveOutcome([ok("book_appointment"), ok("cancel_appointment")]), 0, "the incident shape");
+    assert.strictEqual(netLiveOutcome([ok("book_appointment"), ok("book_appointment"), ok("cancel_appointment")]), 1);
+    assert.strictEqual(netLiveOutcome([ok("reschedule_appointment")]), 1, "a successful reschedule leaves a live appointment");
+    assert.strictEqual(netLiveOutcome([ok("cancel_appointment")]), 0, "floor at zero");
+    assert.strictEqual(netLiveOutcome([{ name: "book_appointment", successful: false }]), 0, "failures don't count");
+  });
+});
+
+describe("SCRUM-559 — post-call negated-booking detection", () => {
+  const ok = (name) => ({ name, successful: true, at: 1 });
+  const asAI = (text) => [{ role: "assistant", content: text }];
+
+  it("the incident: book ✓ then cancel ✓ + a strong booking claim = phantom booking", () => {
+    const phantoms = detectPostCallPhantoms(
+      asAI("I have you booked in for tomorrow at 9 AM. Is everything correct?"),
+      [ok("book_appointment"), ok("cancel_appointment")]
+    );
+    assert.ok(phantoms.includes("booking"), "a cancelled booking must not keep backing 'you're booked' claims");
+  });
+
+  it("a LIVE booking still backs the same claim (book, book, cancel = one alive)", () => {
+    const phantoms = detectPostCallPhantoms(
+      asAI("I have you booked in for tomorrow at 9 AM."),
+      [ok("book_appointment"), ok("book_appointment"), ok("cancel_appointment")]
+    );
+    assert.deepStrictEqual(phantoms, []);
+  });
+
+  it("legit book-then-cancel closure with 'you're all set' is NOT flagged (loose phrase exempt)", () => {
+    const phantoms = detectPostCallPhantoms(
+      asAI("That's cancelled. You're all set — anything else?"),
+      [ok("book_appointment"), ok("cancel_appointment")]
+    );
+    assert.ok(!phantoms.includes("booking"), "'you're all set' after a legit cancel must not fail the call");
+  });
+
+  it("a successful reschedule-only call is never flagged by the negation rule", () => {
+    const phantoms = detectPostCallPhantoms(
+      asAI("Your appointment has been moved. You're all set for Friday at 11."),
+      [ok("reschedule_appointment")]
+    );
+    assert.deepStrictEqual(phantoms, []);
+  });
+});
+
+describe("SCRUM-559 — live detector cancel-negation", () => {
+  const ok = (name) => ({ name, successful: true, at: 1 });
+
+  it("mid-call strong claim after book→cancel returns a booking phantom", () => {
+    const result = detectPhantomAction("Your appointment is confirmed for 9 AM tomorrow.", [
+      ok("book_appointment"),
+      ok("cancel_appointment"),
+    ]);
+    assert.ok(result && result.action === "booking", "negated booking must trigger the live nudge");
+  });
+
+  it("mid-call 'you're all set' right after a cancel does NOT nudge (closure language)", () => {
+    const result = detectPhantomAction("You're all set — the appointment is cancelled.", [
+      ok("book_appointment"),
+      ok("cancel_appointment"),
+    ]);
+    assert.strictEqual(result, null);
+  });
+
+  it("a live booking keeps backing strong claims (no regression)", () => {
+    const result = detectPhantomAction("Your appointment is confirmed for 9 AM tomorrow.", [ok("book_appointment")]);
+    assert.strictEqual(result, null);
+  });
+});
+
+describe("SCRUM-559 — buildToolOutcomeDigest", () => {
+  it("null with no tool activity; lines + FINAL STATE otherwise", () => {
+    assert.strictEqual(buildToolOutcomeDigest([]), null);
+    assert.strictEqual(buildToolOutcomeDigest(undefined), null);
+    const digest = buildToolOutcomeDigest([
+      { name: "book_appointment", successful: true, at: 1 },
+      { name: "book_appointment_blocked", successful: false, at: 2 },
+      { name: "cancel_appointment", successful: true, at: 3 },
+    ]);
+    assert.match(digest, /- book_appointment: SUCCEEDED/);
+    assert.match(digest, /- book_appointment_blocked: did NOT succeed/);
+    assert.match(digest, /FINAL STATE: NO live appointment resulted/);
+    const aliveDigest = buildToolOutcomeDigest([{ name: "book_appointment", successful: true, at: 1 }]);
+    assert.match(aliveDigest, /FINAL STATE: 1 live appointment/);
+  });
+});

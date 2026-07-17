@@ -31,7 +31,7 @@ const { createSessionWithFailover, isFailoverEnabled } = require("./services/gem
 const { resolveTestPipeline, KNOWN_TEST_PIPELINES } = require("./lib/pipeline-routing"); // SCRUM-378 per-number test override
 const { handleConversationRelayConnection, buildConversationRelayTwiml } = require("./services/conversationrelay"); // SCRUM-378 eval spike (ConversationRelay + Claude)
 const { validateToolResponse } = require("./services/turn-validator");
-const { detectPhantomAction, detectPostCallPhantoms, summarizePhantoms } = require("./lib/action-claim-detector"); // SCRUM-381 live + SCRUM-383 post-call phantom-action detection
+const { detectPhantomAction, detectPostCallPhantoms, summarizePhantoms, netLiveOutcome, buildToolOutcomeDigest } = require("./lib/action-claim-detector"); // SCRUM-381 live + SCRUM-383 post-call + SCRUM-559 cancel-aware state checks
 // SCRUM-166 outbound calling service (cherry-picked to main for smoke testing)
 const {
   makeOutboundCall,
@@ -1469,7 +1469,10 @@ wss.on("connection", (twilioWs) => {
     let analysis = null;
     if (transcript && durationSeconds > 5) {
       try {
-        analysis = await analyzeCallTranscript(transcript, { language: s.language });
+        analysis = await analyzeCallTranscript(transcript, {
+          language: s.language,
+          toolDigest: buildToolOutcomeDigest(s.toolCallAudit || []), // SCRUM-559: analysis sees tool ground truth
+        });
         if (analysis) {
           // SCRUM-339: caller name AND the free-text call reason are PII —
           // redact both unless DEBUG_TRANSCRIPTS. success is a safe enum.
@@ -1485,6 +1488,28 @@ wss.on("connection", (twilioWs) => {
             organizationId: s.organizationId,
             durationSeconds,
           });
+
+          // SCRUM-559: language-agnostic booking-state check. The English
+          // claim regexes missed the real incident's ARABIC "you're booked"
+          // claims; the analysis LLM judges the claim in any language and the
+          // tool audit is ground truth. finalBookingClaimed with zero net live
+          // outcome = the caller hung up believing in an appointment that does
+          // not exist.
+          if (analysis.finalBookingClaimed === true && netLiveOutcome(s.toolCallAudit || []) === 0 && callStatus !== "failed") {
+            console.error(`[BookingStateMismatch] callSid=${s.callSid} — analysis says the caller left believing a booking from this call exists, but the tool log shows NO live appointment. toolCallAudit=${JSON.stringify(s.toolCallAudit || [])}`);
+            Sentry.withScope((scope) => {
+              scope.setTag("service", "booking_state_monitor");
+              setReasonTag(scope, SENTRY_REASONS.BOOKING_STATE_MISMATCH);
+              scope.setExtras({
+                callSid: s.callSid,
+                organizationId: s.organizationId,
+                toolCallAudit: s.toolCallAudit || [],
+              });
+              Sentry.captureMessage("Booking state mismatch: caller left believing in a nonexistent appointment (SCRUM-559)", "error");
+            });
+            callStatus = "failed";
+            endedReason = "booking-state-mismatch";
+          }
         }
       } catch (err) {
         console.error("[PostCall] Analysis failed:", err);
