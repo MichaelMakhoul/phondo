@@ -23,9 +23,9 @@
 
 Inbound audio front-end in the voice server, before Gemini: software AGC (normalize quiet callers up — closes the SCRUM-375 concern for good) + RNNoise-style suppression for stationary noise on the 8 kHz Twilio leg. Explicit non-goal: suppression cannot remove *competing speech*; the prompt protocol covers that. Validate per-call CPU on Fly shared-cpu; A/B against the 2026-07-15 train-call recordings.
 
-## Package C — held
+## Package C — implemented DARK (SCRUM-556)
 
-Own turn-taking: disable Gemini auto-VAD, run Silero VAD with a noise-floor dominance gate, send manual activity events. Only if A+B prove insufficient on real calls.
+Own turn-taking behind `CUSTOM_VAD` (default **off**): Gemini auto-VAD disabled, `lib/turn-gate.js` drives manual activityStart/activityEnd markers from the front-end's per-block voice probability (RNNoise, not Silero — one dep serves B and C) + a learned noise-floor **dominance gate** (speech must stand ~8dB above ambient, so background announcements at ambient volume never open turns). Open = 120ms sustained qualifying speech; close = 800ms sustained silence with hangover. Safety: requires the front-end (falls back to automatic VAD when unavailable); a front-end death mid-call fails LOUD through onError/failover rather than stranding a marker-less call. Turn on only for supervised test calls until tuned. **First supervised-call checklist:** (1) greeting speaks within ~2s of answer (the `realtimeInput.text` greeting trigger may not register outside an activity window — if dead air, bracket text sends with markers while the gate is closed); (2) a Tier-2 correction nudge is spoken promptly; (3) onset clipping: does the AI miss the first word of turns (~120ms open window — tune `OPEN_BLOCKS` down if so); (4) barge-in still interrupts; (5) turn ends feel right (800ms close window). Marker-send failures alert on the first occurrence and fail the session loud on the third; a fleet-wide silent degrade to automatic VAD alerts one-shot per process.
 
 ## Verification
 

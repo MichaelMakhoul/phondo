@@ -217,6 +217,43 @@ describe("SCRUM-555 — audio front-end (RNNoise + VAD-gated AGC)", () => {
     fe.destroy();
   });
 
+  test("onBlock hook (SCRUM-556 contract): called once per 10ms block with (prob, rms); a throwing hook flows into the error machinery", () => {
+    const calls = [];
+    const fe = new AudioFrontend(
+      { createDenoiseState: () => ({ processFrame: () => 0.7, destroy() {} }) },
+      { onBlock: (prob, rms) => calls.push({ prob, rms }) }
+    );
+    const phase = { phase: 0 };
+    fe.processTwilioFrame(toTwilioBase64(makeSineFrame(160, 6000, 400, 8000, phase))); // 2 blocks
+    assert.strictEqual(calls.length, 2, "one onBlock call per 10ms block");
+    assert.ok(calls.every((c) => c.prob === 0.7 && c.rms > 0), "hook must receive the block's prob and a real RMS");
+    fe.destroy();
+
+    // a throwing hook must NOT be silently disabled — it rides the per-frame
+    // fail-open (legacy output) and counts toward the 5-error dead path
+    const feThrow = new AudioFrontend(
+      { createDenoiseState: () => ({ processFrame: () => 0.7, destroy() {} }) },
+      { onBlock: () => { throw new Error("gate bug"); } }
+    );
+    const frame = toTwilioBase64(makeSineFrame(160, 6000, 400, 8000, { phase: 0 }));
+    assert.strictEqual(feThrow.processTwilioFrame(frame), twilioToGemini(frame), "hook errors fall back to legacy for the frame");
+    assert.strictEqual(feThrow.errorCount, 1, "hook errors must count toward the dead threshold");
+    feThrow.destroy();
+  });
+
+  test("onDead hook fires exactly once when the session hits the 5-error legacy fallback", () => {
+    let deadCalls = 0;
+    const fe = new AudioFrontend(
+      { createDenoiseState: () => ({ processFrame: () => { throw new Error("boom"); }, destroy() {} }) },
+      { onDead: () => deadCalls++ }
+    );
+    const frame = toTwilioBase64(makeSineFrame(160, 6000, 400, 8000, { phase: 0 }));
+    for (let i = 0; i < 7; i++) fe.processTwilioFrame(frame);
+    assert.strictEqual(fe.dead, true);
+    assert.strictEqual(deadCalls, 1, "onDead must fire exactly once (custom VAD's loud-failure signal)");
+    fe.destroy();
+  });
+
   test("fifo is cleared on a processing error — recovery after an error never duplicates audio", () => {
     // The legacy fallback covers the ENTIRE errored frame, so samples that
     // frame already queued must be dropped. Without the clear, the next
@@ -255,10 +292,15 @@ describe("SCRUM-555 — audio front-end (RNNoise + VAD-gated AGC)", () => {
     fe.destroy();
   });
 
-  test("fail-open: a processing error yields the LEGACY conversion for that frame; 5 errors go legacy permanently + ALERT once", () => {
-    // NOTE: this is the only test in the process that kills sessions, so the
-    // first dead session here is deadSessions #1 — the alert must fire exactly
-    // once, and a second dead session (#2, not a multiple of 25) must not.
+  test("fail-open: a processing error yields the LEGACY conversion for that frame; 5 errors go legacy permanently + ALERT once", async () => {
+    // Other tests also kill sessions, so normalize the module's dead-session
+    // counter first: reset the singleton and reload the real wasm, making the
+    // dead session below deadSessions #1 — the alert must fire exactly once,
+    // and a second dead session (#2, not a multiple of 25) must not.
+    _setTestOverrides();
+    _resetForTests();
+    const { enabled } = await initAudioFrontend();
+    assert.ok(enabled, "real wasm must reload for the alert-cadence test");
     const warns = [];
     const origWarn = console.warn;
     console.warn = (...args) => warns.push(args.join(" "));
