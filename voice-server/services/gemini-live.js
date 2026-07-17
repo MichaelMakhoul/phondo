@@ -8,6 +8,7 @@
 
 const WebSocket = require("ws");
 const { twilioToGemini, geminiToTwilio } = require("../lib/audio-converter");
+const { createSessionFrontend } = require("../lib/audio-frontend");
 const { Sentry } = require("../lib/sentry");
 const { logTranscript } = require("../lib/log-transcript");
 
@@ -173,6 +174,11 @@ function createGeminiSession(config, callbacks) {
   let audioErrorCount = 0;
   let intentionalCloseReason = null; // Set when we close via end_call tool
   const preSetupBuffer = []; // Buffer audio before setup completes
+
+  // SCRUM-555: per-session denoise + AGC front-end (null → legacy path for
+  // this whole session; processTwilioFrame itself also fails open per frame).
+  const audioFrontend = createSessionFrontend();
+  console.log(`[GeminiLive] Inbound audio path: ${audioFrontend ? "front-end (RNNoise + AGC)" : "legacy"}`);
 
   // Audio-drain bookkeeping for end_call.
   // Gemini Live emits tool calls in the SAME turn as the closing audio
@@ -470,6 +476,7 @@ function createGeminiSession(config, callbacks) {
 
   ws.on("close", (code, reason) => {
     setupWatchdog.clear();
+    audioFrontend?.destroy(); // free the wasm denoise state (both close branches)
     if (watchdogFired) {
       // The watchdog handler owns call teardown — don't double-report.
       console.log(`[GeminiLive] Post-watchdog socket close (code=${code}) — already handled`);
@@ -494,7 +501,10 @@ function createGeminiSession(config, callbacks) {
         return;
       }
       try {
-        const geminiAudio = twilioToGemini(twilioBase64);
+        const geminiAudio = audioFrontend
+          ? audioFrontend.processTwilioFrame(twilioBase64)
+          : twilioToGemini(twilioBase64);
+        if (!geminiAudio) return; // front-end buffered a sub-block — nothing to send yet
         ws.send(JSON.stringify({
           realtimeInput: {
             audio: {

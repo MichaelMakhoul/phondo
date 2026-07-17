@@ -120,6 +120,7 @@ function getTwilioRestClient() {
   return _twilioRestClient;
 }
 const { lookupPhoneNumber, isAiEnabled, getAnswerMode, getPhoneNumberContext } = require("./lib/answer-mode");
+const { initAudioFrontend } = require("./lib/audio-frontend");
 const { detectAndRedact, redactObject } = require("./lib/pii-detector");
 const { maskPhone } = require("./lib/mask-phone");
 const { getTestClientIp, createTestSessionCaps } = require("./lib/test-session-caps");
@@ -4464,6 +4465,16 @@ function warmUpGeminiLive() {
   const timer = setTimeout(() => settle("timeout", false), 20000);
   if (typeof timer.unref === "function") timer.unref();
 }
+
+// SCRUM-555: load the RNNoise wasm before we take calls so the first call
+// gets the front-end. Never blocks startup — on failure calls use the legacy
+// audio path and Sentry gets one warning.
+initAudioFrontend().then(({ enabled, reason }) => {
+  console.log(`[AudioFrontend] ${enabled ? "enabled" : "disabled"} (${reason})`);
+  if (!enabled && reason !== "AUDIO_FRONTEND=off") {
+    Sentry.captureMessage(`AudioFrontend disabled: ${reason}`, "warning");
+  }
+});
 
 server.listen(Number(PORT), "0.0.0.0", () => {
   console.log(`Voice server listening on port ${PORT}`);
