@@ -1008,6 +1008,10 @@ export async function handleBookAppointment(
     carriedRefs?: { service_type?: boolean; practitioner?: boolean };
     callId?: string;
     rescheduleLeg?: boolean;
+    // SCRUM-561: the id of the appointment a reschedule is moving. Lets the
+    // booking path recognise "colliding with the row being replaced" (its slot
+    // is legitimately about to be freed) apart from a real conflict.
+    rescheduleFromId?: string;
   }
 ): Promise<ToolResult> {
   const { datetime, phone, email, notes, service_type_id } = args;
@@ -1238,6 +1242,16 @@ export async function handleBookAppointment(
   const calClient = await getCalComClient(organizationId);
 
   if (calClient) {
+    // SCRUM-561: bookViaCal has no practitioner concept — silently dropping a
+    // requested practitioner would confirm "with Dr X" while booking nobody in
+    // particular. Refuse honestly instead.
+    if (args.practitioner_id) {
+      return {
+        success: false,
+        message:
+          "Practitioner selection isn't supported on this business's booking system. I can book the appointment and the team will confirm who you'll be seeing — shall I go ahead without a specific practitioner?",
+      };
+    }
     return bookViaCal(
       calClient,
       organizationId,
@@ -2137,13 +2151,45 @@ export async function handleRescheduleAppointment(
     const factorFail = verifyKnowledgeFactors(existing, applyCollectedDetails({ name: args.name, email: args.email }, trusted?.collectedDetails), verification);
     if (factorFail) return factorFail;
 
+    // ── SCRUM-561: refuse a structural no-op BEFORE booking. A same-instant
+    // reschedule that changes neither practitioner nor service would collide
+    // with the row being moved (org-level constraint for practitioner-less
+    // rows, per-practitioner constraint otherwise) and, same-call, the
+    // SCRUM-514 duplicate recovery would vouch for that very row as the "new"
+    // leg — which step 3 then cancels: the caller's only appointment destroyed
+    // while the tool reports success. Catch it here with an honest steer.
+    const resolvedPractitionerId = args.practitioner_id || existing.practitioner_id || null;
+    const resolvedServiceTypeId = args.service_type_id || existing.service_type_id || null;
+    let newInstant: number | null = null;
+    try {
+      newInstant = new Date(ensureTimezoneOffset(new_datetime, tz)).getTime();
+    } catch {
+      newInstant = null; // unparseable → let the booking path return its own validation error
+    }
+    if (
+      newInstant !== null &&
+      !Number.isNaN(newInstant) &&
+      newInstant === new Date(existing.start_time).getTime() &&
+      resolvedPractitionerId === (existing.practitioner_id || null) &&
+      resolvedServiceTypeId === (existing.service_type_id || null)
+    ) {
+      return {
+        success: false,
+        message:
+          "This appointment is already at exactly that time with the same practitioner and service — nothing needed to change, and it is unchanged. To move it, call reschedule_appointment with a DIFFERENT new_datetime. To change the practitioner, call reschedule_appointment again with the new practitioner_id (a same-time practitioner change works). To fix the name, phone, email, or a note on a booking made THIS call, use update_appointment.",
+      };
+    }
+
     // ── 2. Book the NEW appointment FIRST (never cancel before the new slot is
     // secured — a failed book then leaves the caller's original intact).
-    // NOTE (SCRUM-377 follow-up): because the old appointment is still live here,
-    // the DB no-overlap constraint rejects a move INTO the old appointment's own
-    // slot (same time, or a sub-slot shift). That case currently fails SAFE
-    // ("that time isn't available", original kept) rather than duplicating; an
-    // in-place UPDATE would handle it and is tracked as a follow-up.
+    // NOTE (SCRUM-377 follow-up, refined by SCRUM-561): because the old
+    // appointment is still live here, the DB no-overlap constraint rejects a
+    // move INTO the old appointment's own slot when the practitioner is
+    // UNCHANGED (or both legs are practitioner-less) — same time or a sub-slot
+    // shift. Those cases fail SAFE (original kept; honest no-op/overlap
+    // messages), and an in-place UPDATE remains the tracked follow-up. A
+    // same-time move to a DIFFERENT practitioner does not collide (the
+    // constraints are split per practitioner) and books normally.
     // SCRUM-386/390: a reschedule MOVES a known booking — it must change ONLY what
     // the caller asked for. Every field of the new booking defaults to the existing
     // appointment unless the caller explicitly supplied a new value. So a time-only
@@ -2170,7 +2216,7 @@ export async function handleRescheduleAppointment(
       // SCRUM-514: the new row belongs to this call too. Without the linkage a
       // later book_appointment colliding with a slot we just rescheduled into
       // isn't recognisable as the caller's own, and they get told it failed.
-      { carriedRefs: carried_refs, callId: internal?.callId, rescheduleLeg: true }
+      { carriedRefs: carried_refs, callId: internal?.callId, rescheduleLeg: true, rescheduleFromId: existing.id }
     );
 
     if (!bookResult.success) {
@@ -2186,6 +2232,27 @@ export async function handleRescheduleAppointment(
     // confirmation already covers it. Either status frees the slot (allowlist). ──
     const oldWhen = fmtWhen(existing.start_time);
     const newAppointmentId = (bookResult.data as any)?.appointmentId;
+    // SCRUM-561 backstop: if the "new" appointment IS the one being moved
+    // (a duplicate-recovery path vouched for it), cancelling would destroy the
+    // caller's only booking while reporting success. Should be unreachable
+    // behind the no-op check + the rescheduleLeg guard in bookInternal — page
+    // loudly if it ever fires.
+    if (newAppointmentId && newAppointmentId === existing.id) {
+      console.error("[Reschedule] Book leg returned the appointment being moved — self-cancel averted", {
+        organizationId, appointmentId: existing.id, newDatetime: new_datetime,
+      });
+      Sentry.withScope((scope) => {
+        scope.setLevel("error");
+        scope.setTag("bug", "reschedule_self_cancel_averted");
+        scope.setExtras({ organizationId, appointmentId: existing.id, newDatetime: new_datetime });
+        Sentry.captureMessage("Reschedule book leg resolved to the appointment being moved");
+      });
+      return {
+        success: false,
+        message:
+          "I couldn't process that as a change — the appointment is unchanged and still confirmed for its original time. Nothing was cancelled. To move it, use a different new_datetime; to change the practitioner, pass the new practitioner_id.",
+      };
+    }
     const cancelResult = await cancelSingleAppointment(
       supabase,
       organizationId,
@@ -2571,6 +2638,11 @@ async function bookInternal(
     // keep the self-overlap message from telling a caller who asked to move an
     // appointment that they could move it.
     rescheduleLeg?: boolean;
+    // SCRUM-561: the id of the appointment that reschedule is moving — its
+    // slot is about to be freed, so it must not count as a practitioner
+    // conflict, and a same-instant collision with it is a no-op to refuse
+    // (never a duplicate to vouch for).
+    rescheduleFromId?: string;
   }
 ): Promise<ToolResult> {
   const supabase = createAdminClient();
@@ -2769,17 +2841,24 @@ async function bookInternal(
     // validateOrgScopedRefs gate (SCRUM-425 + SCRUM-444 requireActive), so
     // the standalone is_active re-query that used to live here is gone.
 
-    // Check if this practitioner is free at the requested time
+    // Check if this practitioner is free at the requested time.
+    // SCRUM-561: on a reschedule leg, exclude the appointment being moved —
+    // its slot is legitimately about to be freed, and counting it here told
+    // callers "that practitioner is already booked at this time" about their
+    // OWN appointment (and could talk them out of the booking they hold).
     const supabaseAdmin = createAdminClient();
-    const { data: conflicts } = await (supabaseAdmin as any)
+    let conflictQuery = (supabaseAdmin as any)
       .from("appointments")
       .select("id")
       .eq("organization_id", organizationId)
       .eq("practitioner_id", requestedPractitionerId)
       .in("status", ["confirmed", "pending"])
       .lt("start_time", endDate.toISOString())
-      .gt("end_time", startDate.toISOString())
-      .limit(1);
+      .gt("end_time", startDate.toISOString());
+    if (internal?.rescheduleFromId) {
+      conflictQuery = conflictQuery.neq("id", internal.rescheduleFromId);
+    }
+    const { data: conflicts } = await conflictQuery.limit(1);
 
     if (conflicts && conflicts.length > 0) {
       return {
@@ -2924,6 +3003,22 @@ async function bookInternal(
         // duplicate would fall through to the overlap branch, and the bug this
         // whole change exists to fix would survive it.
         if (new Date(own.start_time).getTime() === startDate.getTime()) {
+          // SCRUM-561: on a reschedule leg this "you already have it" success
+          // would be taken as the NEW leg — and the reschedule then cancels
+          // the old row, i.e. the very appointment this success points at.
+          // Refuse instead, honestly, and steer.
+          if (internal?.rescheduleLeg) {
+            const isSelf = !!internal?.rescheduleFromId && own.id === internal.rescheduleFromId;
+            console.warn(
+              `[Booking] Reschedule leg collided same-instant with ${isSelf ? "the appointment being moved" : "another same-call booking"} (${own.id}) — refusing`
+            );
+            return {
+              success: false,
+              message: isSelf
+                ? "That is exactly when this appointment already is, so there is nothing to re-book — the appointment is unchanged. For a different time, call reschedule_appointment with a different new_datetime; to change the practitioner at the same time, pass the new practitioner_id."
+                : `That time is taken by another appointment made in this call (${timeStr} on ${dateStr}). Pick a different time, or move that other appointment instead.`,
+            };
+          }
           console.warn(
             `[Booking] Duplicate book_appointment in call ${callId} — returning existing appointment ${own.id}`
           );

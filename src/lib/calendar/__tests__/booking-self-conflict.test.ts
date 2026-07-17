@@ -32,8 +32,13 @@ vi.mock("@/lib/sms/caller-sms", () => ({
 vi.mock("@/lib/voice-cache/invalidate", () => ({
   invalidateVoiceScheduleCache: vi.fn(async () => {}),
 }));
+vi.mock("@/lib/calendar/cal-com", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  getCalComClient: vi.fn(async () => null),
+}));
 
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getCalComClient } from "@/lib/calendar/cal-com";
 import { handleBookAppointment, handleRescheduleAppointment } from "@/lib/calendar/tool-handlers";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -92,7 +97,7 @@ interface Recorder {
 function fakeAdmin(
   selfConflictRows: any[],
   rec: Recorder,
-  opts: { lookupError?: any; appointmentQueue?: any[] } = {}
+  opts: { lookupError?: any; appointmentQueue?: any[]; tableRows?: Record<string, any[]> } = {}
 ) {
   return {
     from: (table: string) => {
@@ -105,6 +110,7 @@ function fakeAdmin(
       Object.assign(b, {
         select: () => b,
         eq: chain("eq"),
+        neq: chain("neq"),
         in: chain("in"),
         is: () => b,
         not: () => b,
@@ -129,12 +135,23 @@ function fakeAdmin(
           if (table === "appointments") {
             return { data: null, error: { code: "23P01", message: "conflicting key value" } };
           }
+          if (opts.tableRows && table in opts.tableRows) {
+            return { data: opts.tableRows[table][0] ?? null, error: null };
+          }
           return { data: null, error: null };
         },
-        maybeSingle: async () => ({ data: null, error: null }),
+        maybeSingle: async () => {
+          if (opts.tableRows && table in opts.tableRows) {
+            return { data: opts.tableRows[table][0] ?? null, error: null };
+          }
+          return { data: null, error: null };
+        },
         // Awaiting the builder (the self-conflict lookup, blocked_times, etc.)
         then: (onF: (v: any) => unknown, onR?: (e: unknown) => unknown) => {
           let value: any = { data: [], error: null };
+          if (opts.tableRows && table in opts.tableRows) {
+            return Promise.resolve({ data: opts.tableRows[table], error: null }).then(onF, onR);
+          }
           if (table === "appointments" && opts.appointmentQueue?.length) {
             return Promise.resolve({ data: opts.appointmentQueue.shift(), error: null }).then(onF, onR);
           }
@@ -323,5 +340,192 @@ describe("book_appointment self-conflict (SCRUM-514)", () => {
 
     expect(result.success).toBe(false);
     expect(result.message).toMatch(/no longer available/i);
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// SCRUM-561: the reschedule leg vs the appointment it is moving.
+//
+// Real call 2026-07-17: "I'd like a different doctor" was improvised as
+// cancel+rebook. The prompt fix routes it through reschedule_appointment with
+// new_datetime = the appointment's CURRENT time — which made two silent
+// handler bugs reachable: (a) a structural no-op reschedule collided with the
+// row being moved and the SCRUM-514 duplicate recovery vouched for THAT row
+// as the "new" leg, so step 3 cancelled it — the caller's only appointment
+// destroyed while the tool reported success; (b) the requested-practitioner
+// pre-check counted the row being moved as the conflict and told callers
+// their own practitioner was "already booked at this time".
+// ──────────────────────────────────────────────────────────────────────────
+
+describe("reschedule leg vs the appointment being moved (SCRUM-561)", () => {
+  const PRAC_UUID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  const SVC_UUID = "12121212-3434-4565-8787-909090909090";
+  const OLD_APPT = {
+    id: "appt-old",
+    start_time: SLOT_INSTANT,
+    attendee_name: "Nick Stamatopulos",
+    attendee_first_name: "Nick",
+    attendee_phone: "+61412345678",
+    attendee_email: null,
+    service_type_id: null,
+    practitioner_id: null,
+    notes: null,
+    external_id: null,
+    provider: "internal",
+    metadata: {},
+    confirmation_code: "241909",
+    status: "confirmed",
+    created_at: "2027-06-01T00:00:00+00:00",
+  };
+  let rec: Recorder;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    rec = { insertRows: [], selects: [] };
+  });
+
+  it("refuses a structural no-op reschedule BEFORE booking (the destroyed-booking incident path)", async () => {
+    // Same instant, same (absent) practitioner, same (absent) service: nothing
+    // changes. Booking first would 23P01 against the row being moved, the
+    // duplicate recovery would vouch for it, and the cancel would destroy it.
+    vi.mocked(createAdminClient).mockReturnValue(
+      fakeAdmin([], rec, { appointmentQueue: [[OLD_APPT]] }) as never
+    );
+
+    const result = await handleRescheduleAppointment(
+      ORG,
+      { confirmation_code: "241909", phone: "+61412345678", new_datetime: SLOT },
+      undefined,
+      { callId: CALL_ID }
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.message).toMatch(/nothing needed to change/i);
+    expect(result.message).toMatch(/it is unchanged/i);
+    // Steers, in one message, to every sanctioned change path.
+    expect(result.message).toMatch(/practitioner_id/);
+    expect(result.message).toMatch(/update_appointment/);
+    // The load-bearing assertion: no booking was even attempted, so no
+    // recovery could vouch for the old row and nothing can cancel it.
+    expect(rec.insertRows).toHaveLength(0);
+    // Must not read as an availability rejection (those reset the voice
+    // server's reschedule loop cap instead of counting toward it).
+    expect(result.message).not.toMatch(
+      /no longer available|already booked|currently blocked|not available for this service|fully booked|no available slot|unavailable at this time/i
+    );
+  });
+
+  it("same-instant collision with ANOTHER same-call booking is refused honestly, never vouched for", async () => {
+    // The caller moves their 11:00 appointment onto their OTHER same-call
+    // 10:00 booking. Pre-561 the recovery returned success:true "already
+    // confirmed" pointing at the 10:00 row — which the reschedule then took as
+    // its new leg and cancelled the 11:00 original... while the model told the
+    // caller the move succeeded.
+    const ELEVEN = "2027-07-07T01:00:00+00:00"; // 11:00 Sydney
+    const MOVING = { ...OLD_APPT, id: "appt-moving", start_time: ELEVEN, confirmation_code: "111111" };
+    vi.mocked(createAdminClient).mockReturnValue(
+      fakeAdmin([], rec, { appointmentQueue: [[MOVING], [EXISTING]] }) as never
+    );
+
+    const result = await handleRescheduleAppointment(
+      ORG,
+      { confirmation_code: "111111", phone: "+61412345678", new_datetime: SLOT },
+      undefined,
+      { callId: CALL_ID }
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.message).toMatch(/another appointment made in this call/i);
+    expect(result.message).not.toMatch(/already confirmed/i);
+    // Neither booking's code may leak into a refusal.
+    expect(JSON.stringify(result)).not.toContain("241909");
+    expect(JSON.stringify(result)).not.toContain("111111");
+  });
+
+  it("same-time SERVICE change collides with the row being moved and is refused, not destroyed", async () => {
+    // A ref change the pre-flight no-op check deliberately lets through: the
+    // insert still collides with the live old row (both practitioner-less at
+    // the same instant). The recovery must refuse — success:true here is what
+    // cancelled the caller's only appointment.
+    vi.mocked(createAdminClient).mockReturnValue(
+      fakeAdmin([], rec, {
+        appointmentQueue: [[OLD_APPT], [OLD_APPT]],
+        tableRows: {
+          service_types: [{ id: SVC_UUID, name: "Checkup", duration_minutes: 30, is_active: true }],
+        },
+      }) as never
+    );
+
+    const result = await handleRescheduleAppointment(
+      ORG,
+      { confirmation_code: "241909", phone: "+61412345678", new_datetime: SLOT, service_type_id: SVC_UUID },
+      undefined,
+      { callId: CALL_ID }
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.message).toMatch(/nothing to re-book|exactly when this appointment already is/i);
+    expect(result.message).not.toMatch(/already confirmed/i);
+  });
+
+  it("the practitioner conflict pre-check excludes the appointment being moved", async () => {
+    // Same-time practitioner change: the old row must not count as "that
+    // practitioner is already booked" — its slot is about to be freed.
+    vi.mocked(createAdminClient).mockReturnValue(
+      fakeAdmin([], rec, {
+        tableRows: { practitioners: [{ id: PRAC_UUID }] },
+      }) as never
+    );
+
+    await handleBookAppointment(
+      ORG,
+      { datetime: SLOT, first_name: "Nick", last_name: "Stamatopulos", phone: "+61412345678", practitioner_id: PRAC_UUID },
+      { callId: CALL_ID, rescheduleLeg: true, rescheduleFromId: "appt-old" }
+    );
+
+    const conflictCheck = rec.selects.find((s) => s.filters["eq:practitioner_id"] === PRAC_UUID);
+    expect(conflictCheck).toBeDefined();
+    expect(conflictCheck!.filters["neq:id"]).toBe("appt-old");
+  });
+
+  it("a plain booking's practitioner conflict check has NO exclusion", async () => {
+    // The exclusion is reschedule-leg-only — a fresh booking colliding with
+    // ANY live appointment (including one from this call) is a real conflict.
+    vi.mocked(createAdminClient).mockReturnValue(
+      fakeAdmin([], rec, {
+        tableRows: { practitioners: [{ id: PRAC_UUID }] },
+      }) as never
+    );
+
+    await handleBookAppointment(
+      ORG,
+      { datetime: SLOT, first_name: "Nick", last_name: "Stamatopulos", phone: "+61412345678", practitioner_id: PRAC_UUID },
+      { callId: CALL_ID }
+    );
+
+    const conflictCheck = rec.selects.find((s) => s.filters["eq:practitioner_id"] === PRAC_UUID);
+    expect(conflictCheck).toBeDefined();
+    expect(conflictCheck!.filters["neq:id"]).toBeUndefined();
+  });
+
+  it("refuses a practitioner request on the Cal.com fork instead of silently dropping it", async () => {
+    // bookViaCal has no practitioner concept. Confirming "with Dr X" while
+    // booking nobody in particular is a silent lie; refuse honestly.
+    vi.mocked(createAdminClient).mockReturnValue(
+      fakeAdmin([], rec, { tableRows: { practitioners: [{ id: PRAC_UUID }] } }) as never
+    );
+    vi.mocked(getCalComClient).mockResolvedValueOnce({} as never);
+
+    const result = await handleBookAppointment(
+      ORG,
+      { datetime: SLOT, first_name: "Nick", last_name: "Stamatopulos", phone: "+61412345678", practitioner_id: PRAC_UUID },
+      { callId: CALL_ID }
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.message).toMatch(/practitioner selection isn't supported/i);
+    expect(rec.insertRows).toHaveLength(0);
   });
 });
