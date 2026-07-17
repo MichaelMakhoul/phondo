@@ -377,65 +377,158 @@ const {
   buildToolOutcomeDigest,
 } = require("../lib/action-claim-detector");
 
-describe("SCRUM-559 — netLiveOutcome", () => {
-  it("counts books/reschedules up, cancels down, floors at zero", () => {
-    const ok = (name) => ({ name, successful: true, at: 1 });
+describe("SCRUM-559 — netLiveOutcome (set-of-live-entries model)", () => {
+  const ok = (name, extra = {}) => ({ name, successful: true, at: 1, ...extra });
+
+  it("identity-less legacy entries still pair up (incident semantics preserved)", () => {
     assert.strictEqual(netLiveOutcome([]), 0);
     assert.strictEqual(netLiveOutcome([ok("book_appointment")]), 1);
     assert.strictEqual(netLiveOutcome([ok("book_appointment"), ok("cancel_appointment")]), 0, "the incident shape");
-    assert.strictEqual(netLiveOutcome([ok("book_appointment"), ok("book_appointment"), ok("cancel_appointment")]), 1);
-    assert.strictEqual(netLiveOutcome([ok("reschedule_appointment")]), 1, "a successful reschedule leaves a live appointment");
-    assert.strictEqual(netLiveOutcome([ok("cancel_appointment")]), 0, "floor at zero");
+    assert.strictEqual(netLiveOutcome([ok("cancel_appointment")]), 0, "cancel of a pre-existing appointment never goes negative");
     assert.strictEqual(netLiveOutcome([{ name: "book_appointment", successful: false }]), 0, "failures don't count");
+  });
+
+  it("an IDENTIFIED cancel only debits the booking it actually matches (dt or confirmation code)", () => {
+    assert.strictEqual(
+      netLiveOutcome([ok("book_appointment", { dt: "A" }), ok("cancel_appointment", { dt: "B" })]),
+      1,
+      "cancel of a different appointment must not debit this call's booking"
+    );
+    assert.strictEqual(
+      netLiveOutcome([ok("book_appointment", { dt: "A" }), ok("cancel_appointment", { dt: "A" })]),
+      0
+    );
+    assert.strictEqual(
+      netLiveOutcome([ok("book_appointment", { dt: "A", code: "482916" }), ok("cancel_appointment", { codeArg: "482916" })]),
+      0,
+      "confirmation-code cancels match by code"
+    );
+    assert.strictEqual(
+      netLiveOutcome([ok("book_appointment", { dt: "A" }), ok("cancel_appointment")]),
+      1,
+      "an identity-less cancel must not steal an IDENTIFIED booking (conservative: no debit)"
+    );
+  });
+
+  it("reschedules move a within-call entry (net-neutral) or add one for a pre-existing appointment", () => {
+    assert.strictEqual(netLiveOutcome([ok("reschedule_appointment", { oldDt: "X", dt: "Y" })]), 1, "standalone reschedule = one live");
+    assert.strictEqual(
+      netLiveOutcome([ok("book_appointment", { dt: "A" }), ok("reschedule_appointment", { oldDt: "A", dt: "B" })]),
+      1,
+      "moving this call's own booking is net-neutral"
+    );
   });
 });
 
 describe("SCRUM-559 — post-call negated-booking detection", () => {
-  const ok = (name) => ({ name, successful: true, at: 1 });
-  const asAI = (text) => [{ role: "assistant", content: text }];
+  const ok = (name, at = 1, extra = {}) => ({ name, successful: true, at, ...extra });
+  const asAI = (text, at = 100) => [{ role: "assistant", content: text, at }];
 
-  it("the incident: book ✓ then cancel ✓ + a strong booking claim = phantom booking", () => {
+  it("the incident: book ✓ then cancel ✓ + a strong booking claim AFTER the cancel = phantom booking", () => {
     const phantoms = detectPostCallPhantoms(
-      asAI("I have you booked in for tomorrow at 9 AM. Is everything correct?"),
-      [ok("book_appointment"), ok("cancel_appointment")]
+      asAI("I have you booked in for tomorrow at 9 AM. Is everything correct?", 100),
+      [ok("book_appointment", 10), ok("cancel_appointment", 20)]
     );
     assert.ok(phantoms.includes("booking"), "a cancelled booking must not keep backing 'you're booked' claims");
   });
 
-  it("a LIVE booking still backs the same claim (book, book, cancel = one alive)", () => {
+  it("TEMPORAL: a truthful confirmation BEFORE a legit change-of-mind cancel never fails the call", () => {
+    // Review CRITICAL: virtually every legitimate book-then-cancel call
+    // contains the (truthful at the time) "your appointment is confirmed"
+    // turn. Joined-text matching failed these calls and emailed the owner.
+    const messages = [
+      { role: "assistant", content: "Your appointment is confirmed for 9 AM tomorrow.", at: 15 }, // truthful — before cancel
+      { role: "assistant", content: "That's cancelled. You're all set — anything else?", at: 30 },
+    ];
+    const phantoms = detectPostCallPhantoms(messages, [ok("book_appointment", 10), ok("cancel_appointment", 20)]);
+    assert.ok(!phantoms.includes("booking"), "pre-cancel truthful confirmations must not be negation evidence");
+  });
+
+  it("TEMPORAL: legacy messages without timestamps are conservatively excluded from negation", () => {
+    const phantoms = detectPostCallPhantoms(
+      [{ role: "assistant", content: "I have you booked in for tomorrow at 9 AM." }], // no `at`
+      [ok("book_appointment", 10), ok("cancel_appointment", 20)]
+    );
+    assert.ok(!phantoms.includes("booking"), "no-timestamp messages must not trigger the negation rule");
+  });
+
+  it("a LIVE booking still backs the same claim (book, book, cancel of one of them = one alive)", () => {
     const phantoms = detectPostCallPhantoms(
       asAI("I have you booked in for tomorrow at 9 AM."),
-      [ok("book_appointment"), ok("book_appointment"), ok("cancel_appointment")]
+      [ok("book_appointment", 10, { dt: "2026-07-18T09:00" }), ok("book_appointment", 11, { dt: "2026-07-18T11:00" }), ok("cancel_appointment", 20, { dt: "2026-07-18T11:00" })]
     );
     assert.deepStrictEqual(phantoms, []);
+  });
+
+  it("IDENTITY: booking Friday + cancelling a DIFFERENT pre-existing appointment never nets to zero", () => {
+    // Review finding: an identity-blind counter false-failed the everyday
+    // "book me Friday, and cancel my Monday checkup" call — and the live
+    // nudge would have pushed the model into a duplicate re-book.
+    const phantoms = detectPostCallPhantoms(
+      asAI("I have you booked in for Friday at 9 AM."),
+      [ok("book_appointment", 10, { dt: "2026-07-24T09:00" }), ok("cancel_appointment", 20, { dt: "2026-07-20T14:00" })]
+    );
+    assert.ok(!phantoms.includes("booking"), "a cancel of a different appointment must not debit this call's booking");
+  });
+
+  it("IDENTITY: book → reschedule (same appointment) → cancel = zero live; the incident can't hide behind a reschedule", () => {
+    const audit = [
+      ok("book_appointment", 10, { dt: "2026-07-18T09:00" }),
+      ok("reschedule_appointment", 15, { oldDt: "2026-07-18T09:00", dt: "2026-07-18T11:00" }),
+      ok("cancel_appointment", 20, { dt: "2026-07-18T11:00" }),
+    ];
+    assert.strictEqual(netLiveOutcome(audit), 0, "a moved-then-cancelled appointment is not live");
+    const phantoms = detectPostCallPhantoms(asAI("You're booked in for 11 AM.", 100), audit);
+    assert.ok(phantoms.includes("booking"));
   });
 
   it("legit book-then-cancel closure with 'you're all set' is NOT flagged (loose phrase exempt)", () => {
     const phantoms = detectPostCallPhantoms(
       asAI("That's cancelled. You're all set — anything else?"),
-      [ok("book_appointment"), ok("cancel_appointment")]
+      [ok("book_appointment", 10), ok("cancel_appointment", 20)]
     );
     assert.ok(!phantoms.includes("booking"), "'you're all set' after a legit cancel must not fail the call");
   });
 
   it("a successful reschedule-only call is never flagged by the negation rule", () => {
+    // A standalone reschedule moves a PRE-EXISTING appointment: its old key
+    // isn't in this call's live set, so it contributes one live entry.
     const phantoms = detectPostCallPhantoms(
       asAI("Your appointment has been moved. You're all set for Friday at 11."),
-      [ok("reschedule_appointment")]
+      [ok("reschedule_appointment", 10, { oldDt: "2026-07-18T09:00", dt: "2026-07-24T11:00" })]
     );
     assert.deepStrictEqual(phantoms, []);
+    assert.strictEqual(netLiveOutcome([ok("reschedule_appointment", 10, { oldDt: "x", dt: "y" })]), 1);
+  });
+
+  it("NOISE: real audit marker entries (incl. a SUCCESSFUL book_appointment_corrected) never count as live bookings", () => {
+    // Faithful to the server.js producers — the SCRUM-557 incident audit
+    // contains exactly this mix. book_appointment_corrected renames the SAME
+    // appointment; counting it live would blind every SCRUM-559 check.
+    const noisyIncidentAudit = [
+      { name: "check_availability", successful: true, at: 1 },
+      ok("book_appointment", 2, { dt: "2026-07-18T09:00" }),
+      { name: "book_appointment_corrected", successful: true, at: 3 },
+      { name: "cancel_appointment_held", successful: false, at: 4 },
+      ok("cancel_appointment", 5, { dt: "2026-07-18T09:00" }),
+      { name: "end_call_blocked", successful: false, at: 6 },
+    ];
+    assert.strictEqual(netLiveOutcome(noisyIncidentAudit), 0, "marker entries must not count toward live outcome");
+    const phantoms = detectPostCallPhantoms(asAI("I have you booked in for tomorrow at 9 AM.", 100), noisyIncidentAudit);
+    assert.ok(phantoms.includes("booking"));
   });
 });
 
 describe("SCRUM-559 — live detector cancel-negation", () => {
   const ok = (name) => ({ name, successful: true, at: 1 });
 
-  it("mid-call strong claim after book→cancel returns a booking phantom", () => {
+  it("mid-call strong claim after book→cancel returns a booking phantom MARKED negated (truthful nudge wording)", () => {
     const result = detectPhantomAction("Your appointment is confirmed for 9 AM tomorrow.", [
       ok("book_appointment"),
       ok("cancel_appointment"),
     ]);
     assert.ok(result && result.action === "booking", "negated booking must trigger the live nudge");
+    assert.strictEqual(result.negated, true, "the nudge needs the truth: the booking was CANCELLED, not never-made");
   });
 
   it("mid-call 'you're all set' right after a cancel does NOT nudge (closure language)", () => {
@@ -453,6 +546,17 @@ describe("SCRUM-559 — live detector cancel-negation", () => {
 });
 
 describe("SCRUM-559 — buildToolOutcomeDigest", () => {
+  it("caps entry lines at the last 20 but computes FINAL STATE over the FULL audit", () => {
+    // If FINAL STATE were computed over the truncated window, a long call
+    // whose successful book scrolled out would feed the analysis LLM the
+    // falsehood "NO live appointment resulted" — labelled as ground truth.
+    const noise = Array.from({ length: 24 }, (_, i) => ({ name: "check_availability", successful: true, at: i + 2 }));
+    const digest = buildToolOutcomeDigest([{ name: "book_appointment", successful: true, at: 1 }, ...noise]);
+    assert.strictEqual(digest.split("\n").length, 21, "20 capped entry lines + FINAL STATE");
+    assert.ok(!digest.includes("- book_appointment:"), "the book scrolled out of the 20-entry window");
+    assert.match(digest, /FINAL STATE: 1 live appointment/, "FINAL STATE must reflect the FULL audit");
+  });
+
   it("null with no tool activity; lines + FINAL STATE otherwise", () => {
     assert.strictEqual(buildToolOutcomeDigest([]), null);
     assert.strictEqual(buildToolOutcomeDigest(undefined), null);

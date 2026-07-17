@@ -30,9 +30,20 @@ describe("SCRUM-559 — booking-state monitor wiring", () => {
   it("finalBookingClaimed with zero net live outcome fails the call with the registered reason", () => {
     assert.match(
       serverSrc,
-      /analysis\.finalBookingClaimed === true && netLiveOutcome\(s\.toolCallAudit \|\| \[\]\) === 0/,
-      "the language-agnostic mismatch check is gone"
+      /analysis\.finalBookingClaimed === true && netLiveOutcome\(s\.toolCallAudit \|\| \[\]\) === 0 && callStatus !== "failed"/,
+      "the mismatch check is gone — or lost its guard and now double-fires/clobbers hallucinated_* reasons"
     );
+    assert.match(
+      serverSrc,
+      /callStatus = "failed";\s*\n\s*endedReason = "booking-state-mismatch";/,
+      "a mismatch must fail the call record (the human-review queue keys on status), not just tag the reason"
+    );
+    // SCRUM-559 review: the classic pipeline needs audit parity or every
+    // successful classic booking false-pages (empty audit = net-live 0).
+    const auditPushes = (serverSrc.match(/session\.toolCallAudit\.push\(auditEntry\)/g) || []).length;
+    assert.ok(auditPushes >= 2, `expected the identity-carrying audit push in BOTH pipelines (got ${auditPushes})`);
+    assert.match(serverSrc, /negated\s*\n?\s*\? `CRITICAL ERROR: The appointment you booked earlier in this call was CANCELLED/,
+      "the negated-booking nudge must state the truth (cancelled), not the false 'you did NOT call it' premise");
     assert.match(serverSrc, /SENTRY_REASONS\.BOOKING_STATE_MISMATCH/, "capture must use the registry constant");
     assert.equal(SENTRY_REASONS.BOOKING_STATE_MISMATCH, "booking-state-mismatch", "reason string is a Grafana alert contract");
     assert.match(serverSrc, /endedReason = "booking-state-mismatch"/, "the call record must carry the mismatch reason");

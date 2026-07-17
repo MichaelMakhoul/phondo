@@ -64,7 +64,7 @@ Return a JSON object with these fields:
 - collected_data: Any structured data collected during the call like phone numbers, emails, dates mentioned (object or null)
 - unanswered_questions: ONLY questions the caller explicitly asked that the AI clearly FAILED to answer or address — e.g. the AI said it didn't know, gave no relevant response, or deflected without helping. Do NOT include a question the AI handled in any way, including via a tool/lookup (checking the calendar, availability, existing appointments, or pricing) or by answering after a clarifying question. Speech-to-text can garble a question (e.g. "next appointment" misheard as "next payment"); judge by what the AI actually DID in response, not the literal (possibly misheard) wording. When in doubt, treat it as answered and exclude it. Translate to English. (array of strings, or null)
 - sentiment: "positive" | "neutral" | "negative" (string)
-- final_booking_claimed: true ONLY if, at the END of the call, the assistant had told the caller that an appointment booked or changed DURING THIS CALL was in place (the caller hangs up believing that appointment exists). False if it was cancelled by the end of the call, was never completed, or if only an appointment from a previous call was discussed. Judge this in whatever language the call used. (boolean)
+- final_booking_claimed: true ONLY if, at the END of the call, the assistant had told the caller that an appointment booked or changed DURING THIS CALL was in place (the caller hangs up believing that appointment exists). Judge this field ONLY from what the ASSISTANT SAID to the caller — ignore any tool log for this field. "Cancelled by the end" means the ASSISTANT told the caller it was cancelled; if the assistant's last word was that the appointment exists, return true even if a tool log says otherwise. False if the assistant communicated the cancellation, the booking was never completed, or only an appointment from a previous call was discussed. Judge this in whatever language the call used. (boolean)
 
 Return ONLY valid JSON, no other text.`;
 
@@ -151,8 +151,12 @@ async function analyzeStructured(transcript, toolDigest) {
     // claims a booking the tools never (net) delivered — the real incident's
     // summary said "successfully booked" for a call that ended with zero
     // appointments. The digest is ground truth from the tool log.
+    // NOTE: final_booking_claimed is deliberately NOT in the must-be-consistent
+    // list — it reports what the ASSISTANT SAID. Forcing it to match the log
+    // would return false on exactly the incident-shaped calls (tools cancelled,
+    // assistant claimed booked) and defuse the booking-state monitor.
     const digestBlock = toolDigest
-      ? `\n\nTOOL EXECUTION LOG (ground truth from the system — the transcript's claims may be wrong; your summary, success_evaluation and final_booking_claimed MUST be consistent with this log, and if the assistant's claims contradict it, state the discrepancy in the summary):\n${toolDigest}`
+      ? `\n\nTOOL EXECUTION LOG (ground truth from the system — the transcript's claims may be wrong; your summary and success_evaluation MUST be consistent with this log, and if the assistant's claims contradict it, state the discrepancy in the summary. final_booking_claimed is the exception: judge it ONLY from what the assistant said):\n${toolDigest}`
       : "";
     const parsed = await callOpenAI({
       system: STRUCTURED_PROMPT,

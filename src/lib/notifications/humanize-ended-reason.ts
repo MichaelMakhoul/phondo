@@ -29,7 +29,11 @@ export function humanizeEndedReason(endedReason: string | undefined): string {
       // action it never completed. This is the ONE failure class where the
       // owner must act (a caller now believes a false thing) — generic
       // "technical issue" copy would bury that (review P2).
-      if (reason.startsWith("hallucinated_")) {
+      if (reason.startsWith("hallucinated_") || reason === "booking-state-mismatch") {
+        // booking-state-mismatch (SCRUM-559): the caller hung up believing an
+        // appointment from this call exists while the tool log shows none —
+        // same must-act class as hallucinated_*, so it must never fall through
+        // to the generic "technical issue" copy that buries it.
         return "The AI may have told the caller something was completed when it wasn't. Please review the call and contact the caller to confirm.";
       }
       if (PROVIDER_ERROR.test(reason)) {
