@@ -26,6 +26,7 @@
  */
 
 const { mulawToPcm16, twilioToGemini } = require("./audio-converter");
+const { Sentry } = require("./sentry");
 
 // ── tuning constants ─────────────────────────────────────────────────────────
 const BLOCK_8K = 80; // 10ms at 8kHz — one RNNoise frame after ×6 upsample
@@ -38,10 +39,16 @@ const AGC_VAD_GATE = 0.6; // only adapt gain when RNNoise says this is a voice
 const AGC_ATTACK = 0.35; // per-block smoothing when gain must DROP (fast)
 const AGC_RELEASE = 0.02; // per-block smoothing when gain may RISE (slow)
 const MAX_SESSION_ERRORS = 5; // after this many processing errors, go legacy
+const LOAD_TIMEOUT_MS = 15000; // a hung wasm load must not hold the browser shims forever
 
 // ── wasm singleton ───────────────────────────────────────────────────────────
 let rnnoiseInstance = null; // Rnnoise | null once load settles
 let loadPromise = null;
+// Silent-failure guard: sessions that die via the error path degrade the fleet
+// to legacy with the boot log still saying "enabled". Alert on the first dead
+// session per process and every 25th after, so a systematic DSP bug pages
+// instead of hiding in unalertable console lines.
+let deadSessions = 0;
 
 /**
  * Load the RNNoise wasm once. Safe to call repeatedly. Resolves to
@@ -63,8 +70,23 @@ function initAudioFrontend() {
     globalThis.self = globalThis;
     globalThis.document = { baseURI: `file://${process.cwd()}/`, currentScript: null };
     try {
-      const { Rnnoise } = await import("@shiguredo/rnnoise-wasm");
-      const instance = await Rnnoise.load();
+      // Race the load against a timeout: if the wasm load hangs, the finally
+      // below still restores the shims and the boot log + Sentry warning fire
+      // (a never-settling load would otherwise leave browser globals installed
+      // process-wide with zero signal). A late success is discarded — the
+      // front-end must not flip on mid-run after boot reported it disabled.
+      const loading = (async () => {
+        const { Rnnoise } = await import("@shiguredo/rnnoise-wasm");
+        return Rnnoise.load();
+      })();
+      loading.catch(() => {}); // a post-timeout failure must not become an unhandled rejection
+      const instance = await Promise.race([
+        loading,
+        new Promise((_, reject) => {
+          const t = setTimeout(() => reject(new Error(`load timeout after ${LOAD_TIMEOUT_MS}ms`)), LOAD_TIMEOUT_MS);
+          if (typeof t.unref === "function") t.unref();
+        }),
+      ]);
       if (instance.frameSize !== RN_FRAME) {
         throw new Error(`unexpected RNNoise frameSize ${instance.frameSize} (expected ${RN_FRAME})`);
       }
@@ -91,6 +113,7 @@ function flagEnabled() {
 function _resetForTests() {
   rnnoiseInstance = null;
   loadPromise = null;
+  deadSessions = 0;
 }
 
 // ── per-session front-end ────────────────────────────────────────────────────
@@ -144,13 +167,25 @@ class AudioFrontend {
       }
       return out.toString("base64");
     } catch (err) {
+      // The legacy fallback below covers the ENTIRE current frame, so any
+      // samples this frame already pushed to the fifo (or leftovers consumed
+      // into a discarded block) must be dropped — keeping them would re-send
+      // ~10ms of audio on the next successful frame (silent duplication).
+      this.fifo.length = 0;
       this.errorCount++;
       if (this.errorCount <= 2) {
         console.error("[AudioFrontend] frame processing error — bypassing frame:", err && err.message);
       }
       if (this.errorCount >= MAX_SESSION_ERRORS && !this.dead) {
         this.dead = true;
+        deadSessions++;
         console.error(`[AudioFrontend] ${MAX_SESSION_ERRORS} processing errors — legacy path for the rest of this call`);
+        if (deadSessions === 1 || deadSessions % 25 === 0) {
+          Sentry.captureMessage(
+            `AudioFrontend session went legacy after repeated errors (${deadSessions} dead sessions this process): ${err && err.message}`,
+            "warning"
+          );
+        }
       }
       // Fail-open: the caller must still be heard even if the DSP chain breaks.
       return twilioToGemini(twilioBase64);

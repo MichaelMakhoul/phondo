@@ -106,6 +106,10 @@ describe("SCRUM-555 — audio front-end (RNNoise + VAD-gated AGC)", () => {
       }
     }
     assert.strictEqual(outSamples, inSamples * 2, "16k output must be exactly 2x the 8k input samples");
+    assert.ok(
+      Number.isFinite(fe.lastSpeechProb) && fe.lastSpeechProb >= 0 && fe.lastSpeechProb <= 1,
+      "real RNNoise processFrame must return a 0..1 voice probability — AGC gating and package C both depend on it"
+    );
     fe.destroy();
   });
 
@@ -172,6 +176,80 @@ describe("SCRUM-555 — audio front-end (RNNoise + VAD-gated AGC)", () => {
     const g = fe.gain;
     fe._updateGain(0.95, 50);
     assert.strictEqual(fe.gain, g, "sub-floor frames must not adapt the gain");
+    fe.destroy();
+  });
+
+  test("the smoothed gain is APPLIED to output samples — on every block, including unvoiced ones", () => {
+    // VAD stub returns 0 → _updateGain never adapts, so each front-end's gain
+    // stays pinned where we set it. Kills two mutants: deleting the gain
+    // application loop, and applying gain only on voiced blocks (which would
+    // reintroduce the SCRUM-375 pumping this design exists to avoid).
+    const identityStub = { createDenoiseState: () => ({ processFrame: () => 0, destroy() {} }) };
+    const feUnity = new AudioFrontend(identityStub);
+    const feBoost = new AudioFrontend(identityStub);
+    feBoost.gain = 4;
+    const phase1 = { phase: 0 };
+    const phase2 = { phase: 0 };
+    const outUnity = feUnity.processTwilioFrame(toTwilioBase64(makeSineFrame(160, 1000, 400, 8000, phase1)));
+    const outBoost = feBoost.processTwilioFrame(toTwilioBase64(makeSineFrame(160, 1000, 400, 8000, phase2)));
+    const ratio = rmsOfBase64Pcm(outBoost) / rmsOfBase64Pcm(outUnity);
+    assert.ok(
+      ratio > 3.9 && ratio < 4.1,
+      `gain=4 must yield ~4x output RMS (got ${ratio.toFixed(2)}x) — the AGC must actually touch the samples`
+    );
+    feUnity.destroy();
+    feBoost.destroy();
+  });
+
+  test("voice-probability contract (package C): lastSpeechProb tracks the newest block, avgSpeechProb averages the session", () => {
+    let call = 0;
+    const probs = [0.25, 0.75]; // exact binary fractions — the average is exactly 0.5
+    const fe = new AudioFrontend({
+      createDenoiseState: () => ({ processFrame: () => probs[call++], destroy() {} }),
+    });
+    assert.strictEqual(fe.avgSpeechProb(), 0, "no blocks yet must give 0, not NaN");
+    const phase = { phase: 0 };
+    fe.processTwilioFrame(toTwilioBase64(makeSineFrame(160, 1000, 400, 8000, phase))); // 160 samples = 2 blocks
+    assert.strictEqual(fe.lastSpeechProb, 0.75, "lastSpeechProb must be the most recent block's VAD");
+    assert.strictEqual(fe.avgSpeechProb(), 0.5, "avgSpeechProb must average all blocks");
+    fe.destroy();
+  });
+
+  test("fifo is cleared on a processing error — recovery after an error never duplicates audio", () => {
+    // The legacy fallback covers the ENTIRE errored frame, so samples that
+    // frame already queued must be dropped. Without the clear, the next
+    // successful frame re-emits ~10ms of already-sent audio (repro'd in
+    // review). Throw on the SECOND block of a 3-frame stream of 120-sample
+    // chunks (fifo carries a 40-sample leftover into frame 2, so the error
+    // frame genuinely has queued samples to leak).
+    let blockCalls = 0;
+    const fe = new AudioFrontend({
+      createDenoiseState: () => ({
+        processFrame: () => {
+          blockCalls++;
+          if (blockCalls === 2) throw new Error("boom");
+          return 0;
+        },
+        destroy() {},
+      }),
+    });
+    const phase = { phase: 0 };
+    const mkFrame = () => toTwilioBase64(makeSineFrame(120, 6000, 400, 8000, phase));
+
+    const out1 = fe.processTwilioFrame(mkFrame()); // 1 block out, 40-sample leftover
+    assert.strictEqual(Buffer.from(out1, "base64").length / 2, 160);
+
+    const errFrame = mkFrame();
+    const out2 = fe.processTwilioFrame(errFrame); // throws on its first processed block
+    assert.strictEqual(out2, twilioToGemini(errFrame), "errored frame must fall back to legacy for the whole frame");
+    assert.strictEqual(fe.fifo.length, 0, "the fifo must be cleared on error — leftover samples would replay");
+
+    const out3 = fe.processTwilioFrame(mkFrame()); // fresh start: 120 samples → 1 block, 40 leftover
+    assert.strictEqual(
+      Buffer.from(out3, "base64").length / 2,
+      160,
+      "post-error frame must only emit its own samples — a larger block count means duplicated audio"
+    );
     fe.destroy();
   });
 
