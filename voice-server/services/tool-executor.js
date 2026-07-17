@@ -206,7 +206,7 @@ const calendarToolDefinitions = [
     function: {
       name: "update_appointment",
       description:
-        "Fix a detail on an appointment booked EARLIER IN THIS SAME CALL: a misspelled name, a different contact phone or email, or a note. Pass ONLY the fields the caller corrected. Do NOT cancel and re-book to fix a detail, and do NOT tell the caller it is fixed until this tool returns success. This tool CANNOT change the appointment time (use reschedule_appointment) and CANNOT touch bookings made in other calls.",
+        "Fix a detail on an appointment booked EARLIER IN THIS SAME CALL: a misspelled name, a different contact phone or email, or a note. Pass ONLY the fields the caller corrected. Do NOT cancel and re-book to fix a detail, and do NOT tell the caller it is fixed until this tool returns success. This tool CANNOT change the appointment time or the practitioner (use reschedule_appointment for both) and CANNOT touch bookings made in other calls.",
       parameters: {
         type: "object",
         properties: {
@@ -310,7 +310,7 @@ const calendarToolDefinitions = [
     function: {
       name: "reschedule_appointment",
       description:
-        "Atomically MOVE an existing appointment to a new date/time in ONE step — it books the new slot and cancels the old one together, verified server-side. ALWAYS use this for a reschedule / change-of-time request. NEVER reschedule by calling cancel_appointment and book_appointment separately — that can leave a duplicate. Identify the existing appointment by the caller's phone plus its current date (or the confirmation code), and provide the new_datetime.",
+        "Atomically MOVE or CHANGE an existing appointment in ONE step — it books the new version and releases the old one together, verified server-side. ALWAYS use this for a reschedule / change-of-time request AND for changing the PRACTITIONER of an existing appointment (including one booked on a previous call). To change ONLY the practitioner, pass practitioner_id and set new_datetime to the appointment's CURRENT time. NEVER reschedule or change an appointment by calling cancel_appointment and book_appointment separately — that can leave a duplicate, lose the slot, or re-assign the same practitioner. Identify the existing appointment by the caller's phone plus its current date (or the confirmation code), and provide the new_datetime.",
       parameters: {
         type: "object",
         properties: {
@@ -356,7 +356,8 @@ const calendarToolDefinitions = [
           },
           practitioner_id: {
             type: "string",
-            description: "Preferred practitioner for the new appointment (optional).",
+            description:
+              "The practitioner for the appointment going forward. REQUIRED when the caller asks to change the practitioner/doctor — use the ID from the PRACTITIONERS ON STAFF list (ask which one they'd like if they haven't named one). Omit to keep the current practitioner.",
           },
         },
         required: ["new_datetime"],
