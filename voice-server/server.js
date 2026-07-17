@@ -2507,6 +2507,7 @@ wss.on("connection", (twilioWs) => {
                       code: codeMatch?.[1] || "unknown",
                       datetime: toolCall.args.datetime,
                       name: `${toolCall.args.first_name || ""} ${toolCall.args.last_name || ""}`.trim(),
+                      practitioner_id: toolCall.args.practitioner_id, // SCRUM-557: correction-vs-second-person discriminator
                       at: Date.now(),
                     });
                   }
@@ -2515,7 +2516,16 @@ wss.on("connection", (twilioWs) => {
                   // SCRUM-557: also tell the model, in the tool result itself, that
                   // NOTHING is booked now — a real caller was told "you're booked
                   // 9am tomorrow" right after the only appointment was cancelled.
-                  if (session && toolCall.name === "cancel_appointment" && !message.toLowerCase().includes("error") && !message.toLowerCase().includes("not found")) {
+                  // SCRUM-557 (review): key on the handler's authoritative success
+                  // flag — the old text heuristic matched EVERY failure message
+                  // ("I'm having trouble cancelling…" contains neither "error" nor
+                  // "not found"), so a FAILED cancel cleared the ledger and told the
+                  // model nothing was booked while the appointment still stood.
+                  const cancelOk =
+                    typeof result === "object" && result !== null && typeof result.success === "boolean"
+                      ? result.success
+                      : !message.toLowerCase().includes("error") && !message.toLowerCase().includes("not found");
+                  if (session && toolCall.name === "cancel_appointment" && cancelOk) {
                     if (session.confirmedBookings) session.confirmedBookings.clear();
                     message += CANCEL_NUDGE;
                   }
@@ -3369,7 +3379,11 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
                   console.error(`[RebookGuard] attendee correction threw (classic): ${corrErr && corrErr.message} callSid=${session.callSid}`);
                   correctionMsg = CORRECTION_ERROR_MESSAGE;
                 }
-                if (correctionMsg.startsWith("NAME CORRECTED")) {
+                const classicCorrectionOk = correctionMsg.startsWith("NAME CORRECTED");
+                if (session.toolCallAudit) {
+                  session.toolCallAudit.push({ name: "book_appointment_corrected", successful: classicCorrectionOk, at: Date.now() });
+                }
+                if (classicCorrectionOk) {
                   session.confirmedBookings.set(reqKey, {
                     ...existing,
                     name: `${fnArgs.first_name || ""} ${fnArgs.last_name || ""}`.trim(),
@@ -3425,10 +3439,17 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
               code: codeMatch?.[1] || "unknown",
               datetime: fnArgs.datetime,
               name: `${fnArgs.first_name || ""} ${fnArgs.last_name || ""}`.trim(),
+              practitioner_id: fnArgs.practitioner_id, // SCRUM-557: correction-vs-second-person discriminator
               at: Date.now(),
             });
           }
-          if (fnName === "cancel_appointment" && !resultMessage.toLowerCase().includes("error") && !resultMessage.toLowerCase().includes("not found")) {
+          // SCRUM-557 (review): authoritative success flag, same reasoning as the
+          // Gemini site — the text heuristic nudged on failed cancels.
+          const cancelOk =
+            typeof toolResult === "object" && toolResult !== null && typeof toolResult.success === "boolean"
+              ? toolResult.success
+              : !resultMessage.toLowerCase().includes("error") && !resultMessage.toLowerCase().includes("not found");
+          if (fnName === "cancel_appointment" && cancelOk) {
             if (session.confirmedBookings) session.confirmedBookings.clear();
             resultMessage += CANCEL_NUDGE; // SCRUM-557: nothing is booked now — say so in the tool result
           }

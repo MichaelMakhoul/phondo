@@ -3414,8 +3414,20 @@ export async function handleUpdateAppointmentAttendee(
   if (!first || !last) {
     return { success: false, message: `NAME CORRECTION FAILED: a full corrected first and last name is required.${FAILURE_TAIL}` };
   }
+  // SCRUM-367 parity: the booking path rejects non-Latin names; a "correction"
+  // must not become a side door into the same columns.
+  if (hasNonLatinLetters(`${first} ${last}`)) {
+    return {
+      success: false,
+      message: `NAME CORRECTION FAILED: please collect the ENGLISH spelling of the name (letter by letter if needed).${FAILURE_TAIL}`,
+    };
+  }
 
   const supabase = createAdminClient();
+  // Mutation rate limit, keyed per call — parity with book/cancel (the guard
+  // intercepts before book_appointment's own limiter can run).
+  const rl = await enforceApptMutationRateLimit(supabase, organizationId, `attendee-correction:${callId}`);
+  if (rl) return rl;
   const { data: rows, error } = await (supabase as any)
     .from("appointments")
     .select("id, start_time, attendee_name, status")
@@ -3425,12 +3437,23 @@ export async function handleUpdateAppointmentAttendee(
 
   if (error) {
     console.error("[UpdateAttendee] lookup failed:", { organizationId, error: error.message });
-    return { success: false, message: `NAME CORRECTION FAILED (lookup error).${FAILURE_TAIL}` };
+    return errorResult(`NAME CORRECTION FAILED (lookup error).${FAILURE_TAIL}`);
   }
 
   let candidates = rows || [];
   if (candidates.length > 1 && args.datetime) {
-    const target = new Date(args.datetime).getTime();
+    // The model's datetime is org-local and usually naive; start_time is UTC.
+    // Anchor the naive form in the org's timezone or the ±15min window lands
+    // hours off for any non-UTC org (fails closed, but the disambiguation
+    // would be inert). Offset-carrying datetimes pass through unchanged.
+    let orgTz = "Australia/Sydney";
+    const { data: orgRow } = await (supabase as any)
+      .from("organizations")
+      .select("timezone")
+      .eq("id", organizationId)
+      .single();
+    if (orgRow?.timezone) orgTz = orgRow.timezone;
+    const target = new Date(ensureTimezoneOffset(args.datetime, orgTz)).getTime();
     if (!Number.isNaN(target)) {
       const within = candidates.filter(
         (r: any) => Math.abs(new Date(r.start_time).getTime() - target) <= 15 * 60 * 1000
@@ -3447,7 +3470,11 @@ export async function handleUpdateAppointmentAttendee(
 
   const appt = candidates[0];
   const newFull = `${first} ${last}`;
-  const { error: updErr } = await (supabase as any)
+  // The status filter stays on the UPDATE and the row-count is verified: staff
+  // can cancel/delete this exact appointment from the dashboard mid-call (the
+  // call is ABOUT it), and "NAME CORRECTED" on a cancelled or vanished row
+  // would be the same false-success this whole fix exists to kill.
+  const { data: updatedRows, error: updErr } = await (supabase as any)
     .from("appointments")
     .update({
       attendee_first_name: first,
@@ -3456,11 +3483,20 @@ export async function handleUpdateAppointmentAttendee(
       updated_at: new Date().toISOString(),
     })
     .eq("id", appt.id)
-    .eq("organization_id", organizationId);
+    .eq("organization_id", organizationId)
+    .in("status", ["confirmed", "pending"])
+    .select("id");
 
   if (updErr) {
     console.error("[UpdateAttendee] update failed:", { organizationId, error: updErr.message });
-    return { success: false, message: `NAME CORRECTION FAILED (update error).${FAILURE_TAIL}` };
+    return errorResult(`NAME CORRECTION FAILED (update error).${FAILURE_TAIL}`);
+  }
+  if (!updatedRows || updatedRows.length !== 1) {
+    return {
+      success: false,
+      message:
+        "NAME CORRECTION FAILED: the appointment could not be updated — it may have just been changed or cancelled by the team. Do NOT cancel anything and do NOT claim it was fixed; tell the caller the team will confirm their booking details.",
+    };
   }
 
   await recordAppointmentEvent(supabase as any, {

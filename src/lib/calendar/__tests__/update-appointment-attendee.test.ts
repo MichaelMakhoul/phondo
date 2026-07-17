@@ -128,7 +128,7 @@ describe("handleUpdateAppointmentAttendee (SCRUM-557)", () => {
         {
           appointments: [
             { data: [apptRow()], error: null }, // anchored lookup
-            { data: null, error: null }, // update
+            { data: [{ id: "appt-a" }], error: null }, // update (returns the updated row)
           ],
         },
         captured
@@ -189,7 +189,7 @@ describe("handleUpdateAppointmentAttendee (SCRUM-557)", () => {
               ],
               error: null,
             },
-            { data: null, error: null }, // update
+            { data: [{ id: "appt-a" }], error: null }, // update (returns the updated row)
           ],
         },
         captured
@@ -280,8 +280,77 @@ describe("handleUpdateAppointmentAttendee (SCRUM-557)", () => {
 
     expect(result.success).toBe(false);
     expect(result.message).toMatch(/NAME CORRECTION FAILED \(lookup error\)/);
+    expect(result.error).toBe(true); // genuine fault — must carry the SCRUM-509 alert flag
     expect(result.message).toMatch(/still exists under the PREVIOUS name/);
     expect(captured.updatePayload).toBeNull();
+    expect(recordAppointmentEvent).not.toHaveBeenCalled();
+  });
+
+  it("non-Latin correction is rejected (SCRUM-367 parity with the booking gate)", async () => {
+    const result = await handleUpdateAppointmentAttendee(
+      ORG,
+      { first_name: "Michael", last_name: "مكحول" },
+      { callId: CALL }
+    );
+    expect(result.success).toBe(false);
+    expect(result.message).toMatch(/ENGLISH spelling/);
+    expect(result.message).toMatch(/do NOT cancel it/);
+    expect(createAdminClient).not.toHaveBeenCalled();
+  });
+
+  it("naive org-local datetime disambiguates correctly for a non-UTC org (Sydney)", async () => {
+    // 10:00 naive + Australia/Sydney (+10 in July) = 00:00Z — matches appt-a.
+    // Without ensureTimezoneOffset the naive parse lands 10h off and the
+    // disambiguation is inert for every AU org.
+    vi.mocked(createAdminClient).mockReturnValue(
+      fakeAdmin(
+        {
+          appointments: [
+            {
+              data: [
+                apptRow({ start_time: "2027-07-01T00:00:00Z" }),
+                apptRow({ id: "appt-b", start_time: "2027-07-01T04:00:00Z" }),
+              ],
+              error: null,
+            },
+            { data: [{ id: "appt-a" }], error: null }, // update
+          ],
+          organizations: [{ data: { timezone: "Australia/Sydney" }, error: null }],
+        },
+        captured
+      ) as never
+    );
+
+    const result = await handleUpdateAppointmentAttendee(
+      ORG,
+      { ...CORRECT_ARGS, datetime: "2027-07-01T10:00:00" },
+      { callId: CALL }
+    );
+
+    expect(result.success).toBe(true);
+    const updateEqs = captured.filters.filter((f) => f.phase === "update" && f.op === "eq");
+    expect(updateEqs).toContainEqual({ phase: "update", op: "eq", column: "id", value: "appt-a" });
+  });
+
+  it("raced away: the update matches zero rows (staff cancelled mid-call) — NO false NAME CORRECTED", async () => {
+    vi.mocked(createAdminClient).mockReturnValue(
+      fakeAdmin(
+        {
+          appointments: [
+            { data: [apptRow()], error: null },
+            { data: [], error: null }, // update touched nothing — row cancelled/deleted between SELECT and UPDATE
+          ],
+        },
+        captured
+      ) as never
+    );
+
+    const result = await handleUpdateAppointmentAttendee(ORG, CORRECT_ARGS, { callId: CALL });
+
+    expect(result.success).toBe(false);
+    expect(result.message).not.toMatch(/^NAME CORRECTED: /);
+    expect(result.message).toMatch(/may have just been changed or cancelled/);
+    expect(result.message).toMatch(/Do NOT cancel anything and do NOT claim it was fixed/);
     expect(recordAppointmentEvent).not.toHaveBeenCalled();
   });
 
@@ -302,6 +371,7 @@ describe("handleUpdateAppointmentAttendee (SCRUM-557)", () => {
 
     expect(result.success).toBe(false);
     expect(result.message).toMatch(/NAME CORRECTION FAILED \(update error\)/);
+    expect(result.error).toBe(true); // genuine fault — must carry the SCRUM-509 alert flag
     expect(result.message).toMatch(/still exists under the PREVIOUS name — do NOT cancel it/);
     expect(result.message).not.toMatch(/^NAME CORRECTED: /);
     expect(recordAppointmentEvent).not.toHaveBeenCalled();

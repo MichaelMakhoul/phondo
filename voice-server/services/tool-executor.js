@@ -1123,6 +1123,7 @@ function simulateCalendarWrite(functionName, args) {
   }
   if (functionName === "cancel_appointment") {
     return {
+      success: true, // SCRUM-557: the cancel-nudge gate keys on the success flag
       message: `The appointment associated with ${args.phone} has been cancelled successfully.`,
     };
   }

@@ -64,6 +64,27 @@ describe("SCRUM-557 — rebook classification", () => {
     );
   });
 
+  test("same slot booked to a DIFFERENT practitioner: a second same-first-name PERSON is never renamed", () => {
+    // "John Smith with Dr A" then "John Baker with Dr B" at the same instant —
+    // the one legitimate two-people shape of the duplicate key. Renaming would
+    // destroy attendee #1; the recoverable false-block is the accepted cost.
+    const existing = { name: "John Smith", practitioner_id: "prac-a" };
+    assert.strictEqual(
+      classifyRebookAttempt(existing, { first_name: "John", last_name: "Baker", practitioner_id: "prac-b" }).kind,
+      "duplicate"
+    );
+    // Same practitioner + different surname stays a correction.
+    assert.strictEqual(
+      classifyRebookAttempt(existing, { first_name: "John", last_name: "Baker", practitioner_id: "prac-a" }).kind,
+      "name-correction"
+    );
+    // Missing practitioner ids fall back to the surname logic (older ledger entries).
+    assert.strictEqual(
+      classifyRebookAttempt({ name: "John Smith" }, { first_name: "John", last_name: "Baker" }).kind,
+      "name-correction"
+    );
+  });
+
   test("message constants carry the load-bearing instructions", () => {
     assert.match(DUPLICATE_REBOOK_MESSAGE, /DO NOT call book_appointment again/);
     assert.match(CORRECTION_ERROR_MESSAGE, /do NOT cancel/i);
@@ -87,6 +108,26 @@ describe("SCRUM-557 — wiring pins (server.js + tool-executor)", () => {
   test("BOTH pipelines append the cancel nudge when clearing the booking ledger", () => {
     const nudges = (serverSrc.match(/\+= CANCEL_NUDGE/g) || []).length;
     assert.ok(nudges >= 2, `expected the cancel nudge in both pipelines (got ${nudges})`);
+  });
+
+  test("the cancel gate keys on the handler's SUCCESS FLAG, not message text — in BOTH pipelines", () => {
+    // The old text heuristic matched every failure message ("I'm having
+    // trouble cancelling…" contains neither "error" nor "not found"), so a
+    // FAILED cancel cleared the ledger and told the model nothing was booked.
+    const flagGates = (serverSrc.match(/typeof (result|toolResult)\.success === "boolean"/g) || []).length;
+    assert.ok(flagGates >= 2, `expected the success-flag gate in both pipelines (got ${flagGates})`);
+    const gatedNudges = (serverSrc.match(/&& cancelOk\)/g) || []).length;
+    assert.ok(gatedNudges >= 2, `the nudge/clear must be guarded by cancelOk in both pipelines (got ${gatedNudges})`);
+  });
+
+  test("BOTH ledger entries record practitioner_id (the correction-vs-second-person discriminator)", () => {
+    const fields = (serverSrc.match(/practitioner_id: (toolCall\.args|fnArgs)\.practitioner_id/g) || []).length;
+    assert.ok(fields >= 2, `expected practitioner_id in both ledger set sites (got ${fields})`);
+  });
+
+  test("BOTH pipelines audit the correction outcome (post-call detectors + completion payloads)", () => {
+    const audits = (serverSrc.match(/name: "book_appointment_corrected"/g) || []).length;
+    assert.ok(audits >= 2, `expected the corrected-audit push in both pipelines (got ${audits})`);
   });
 
   test("the ledger name is refreshed after a successful correction — in BOTH pipelines", () => {

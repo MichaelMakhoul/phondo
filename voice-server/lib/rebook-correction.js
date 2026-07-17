@@ -30,11 +30,19 @@ function surnameFromLedgerName(name) {
 }
 
 /**
- * @param {{ name?: string }} existing - the ledger entry for the matched key
- * @param {{ last_name?: string }} args - the new book_appointment args
+ * @param {{ name?: string, practitioner_id?: string }} existing - the ledger entry for the matched key
+ * @param {{ last_name?: string, practitioner_id?: string }} args - the new book_appointment args
  * @returns {{ kind: "duplicate" } | { kind: "name-correction" }}
  */
 function classifyRebookAttempt(existing, args) {
+  // Two DIFFERENT practitioners at the same instant is the one legitimate way
+  // the duplicate key can carry two PEOPLE ("John Smith with Dr A, and John
+  // Baker with Dr B" — the DB's split overlap indexes allow it). Renaming
+  // would silently destroy attendee #1's booking, so classify it back to the
+  // old recoverable false-block, which the booking-key doc already accepts.
+  const oldPrac = existing?.practitioner_id;
+  const newPrac = args?.practitioner_id;
+  if (oldPrac && newPrac && String(oldPrac) !== String(newPrac)) return { kind: "duplicate" };
   const newLast = normalizeName(args?.last_name || "");
   if (!newLast) return { kind: "duplicate" }; // no surname supplied — same-person re-book
   const oldLast = surnameFromLedgerName(existing?.name);
