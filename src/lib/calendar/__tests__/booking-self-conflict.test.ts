@@ -81,6 +81,7 @@ const EXISTING = {
 
 interface Recorder {
   insertRows: any[];
+  updateRows: { table: string; row: any }[];
   selects: { table: string; filters: Record<string, unknown> }[];
 }
 
@@ -97,7 +98,12 @@ interface Recorder {
 function fakeAdmin(
   selfConflictRows: any[],
   rec: Recorder,
-  opts: { lookupError?: any; appointmentQueue?: any[]; tableRows?: Record<string, any[]> } = {}
+  opts: {
+    lookupError?: any;
+    appointmentQueue?: any[];
+    tableRows?: Record<string, any[]>;
+    insertResult?: { id: string; confirmation_code: string };
+  } = {}
 ) {
   return {
     from: (table: string) => {
@@ -127,12 +133,20 @@ function fakeAdmin(
           rec.insertRows.push(row);
           return b;
         },
+        update: (row: any) => {
+          rec.updateRows.push({ table, row });
+          return b;
+        },
         single: async () => {
           if (table === "organizations") {
             return { data: { business_hours: OPEN_HOURS, timezone: ORG_TIMEZONE }, error: null };
           }
-          // The appointments insert: always a slot collision.
+          // The appointments insert: a slot collision, unless the test says
+          // the new leg genuinely fits (SCRUM-561 happy path).
           if (table === "appointments") {
+            if (opts.insertResult) {
+              return { data: opts.insertResult, error: null };
+            }
             return { data: null, error: { code: "23P01", message: "conflicting key value" } };
           }
           if (opts.tableRows && table in opts.tableRows) {
@@ -183,7 +197,7 @@ describe("book_appointment self-conflict (SCRUM-514)", () => {
     vi.clearAllMocks();
     vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
-    rec = { insertRows: [], selects: [] };
+    rec = { insertRows: [], updateRows: [], selects: [] };
   });
 
   it("returns the caller's own booking instead of claiming the slot is gone", async () => {
@@ -383,7 +397,7 @@ describe("reschedule leg vs the appointment being moved (SCRUM-561)", () => {
     vi.clearAllMocks();
     vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
-    rec = { insertRows: [], selects: [] };
+    rec = { insertRows: [], updateRows: [], selects: [] };
   });
 
   it("refuses a structural no-op reschedule BEFORE booking (the destroyed-booking incident path)", async () => {
@@ -468,6 +482,41 @@ describe("reschedule leg vs the appointment being moved (SCRUM-561)", () => {
     expect(result.success).toBe(false);
     expect(result.message).toMatch(/nothing to re-book|exactly when this appointment already is/i);
     expect(result.message).not.toMatch(/already confirmed/i);
+  });
+
+  it("a same-time DIFFERENT-practitioner reschedule books normally and frees the old row", async () => {
+    // The core SCRUM-561 promise: the split overlap constraints allow the
+    // same-instant swap, so the leg must book (not be refused as a no-op)
+    // and the old row must be marked rescheduled — a future refactor turning
+    // this into a spurious refusal would resurrect the incident behavior.
+    vi.mocked(createAdminClient).mockReturnValue(
+      fakeAdmin([], rec, {
+        appointmentQueue: [[OLD_APPT]],
+        tableRows: { practitioners: [{ id: PRAC_UUID }] },
+        insertResult: { id: "appt-new", confirmation_code: "654321" },
+      }) as never
+    );
+
+    const result = await handleRescheduleAppointment(
+      ORG,
+      { confirmation_code: "241909", phone: "+61412345678", new_datetime: SLOT, practitioner_id: PRAC_UUID },
+      undefined,
+      { callId: CALL_ID }
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.message).toMatch(/moved your appointment/i);
+    expect((result.data as any)?.newAppointmentId).toBe("appt-new");
+    expect((result.data as any)?.newAppointmentId).not.toBe(OLD_APPT.id);
+    // The new leg carries the requested practitioner and this call's id.
+    expect(rec.insertRows).toHaveLength(1);
+    expect(rec.insertRows[0].practitioner_id).toBe(PRAC_UUID);
+    expect(rec.insertRows[0].call_id).toBe(CALL_ID);
+    // The old row was freed as `rescheduled`, and the new row linked back.
+    const statusUpdate = rec.updateRows.find((u) => u.table === "appointments" && u.row.status === "rescheduled");
+    expect(statusUpdate).toBeDefined();
+    const link = rec.updateRows.find((u) => u.table === "appointments" && u.row.rescheduled_from_id === OLD_APPT.id);
+    expect(link).toBeDefined();
   });
 
   it("the practitioner conflict pre-check excludes the appointment being moved", async () => {
