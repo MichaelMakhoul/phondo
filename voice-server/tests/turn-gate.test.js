@@ -104,11 +104,46 @@ describe("SCRUM-556 — turn gate", () => {
     );
   });
 
-  test("full cycle: open → close → re-open works repeatedly", () => {
+  test("full cycle: open → close → re-open works repeatedly with full re-arming", () => {
+    // Streak resets at BOTH transitions are load-bearing: each one alone looks
+    // redundant, but deleting the pair makes every turn after the first open
+    // on a single block (burst rejection gone) or close on a single dip
+    // (hangover gone). Pin the exact timing per cycle.
     const gate = new TurnGate();
     for (let i = 0; i < 3; i++) {
-      assert.deepStrictEqual(pushN(gate, 12, SPEECH), ["start"], `cycle ${i + 1} open`);
-      assert.deepStrictEqual(pushN(gate, 80, SILENCE), ["end"], `cycle ${i + 1} close`);
+      assert.deepStrictEqual(pushN(gate, 11, SPEECH), [], `cycle ${i + 1}: 110ms must not open`);
+      assert.deepStrictEqual(pushN(gate, 1, SPEECH), ["start"], `cycle ${i + 1}: block 12 opens`);
+      assert.deepStrictEqual(pushN(gate, 79, SILENCE), [], `cycle ${i + 1}: 790ms must not close`);
+      assert.deepStrictEqual(pushN(gate, 1, SILENCE), ["end"], `cycle ${i + 1}: 800ms closes`);
     }
+  });
+
+  test("a closed gate emits nothing through long silence or ambient noise (no spurious 'end')", () => {
+    // An activityEnd with no open activity, sent to a detector-disabled Gemini
+    // session, is protocol-undefined — the close logic must be unreachable
+    // while the gate is closed.
+    const gate = new TurnGate();
+    assert.deepStrictEqual(pushN(gate, 400, SILENCE), [], "silence from closed must emit nothing");
+    assert.deepStrictEqual(pushN(gate, 400, { prob: 0.2, rms: 1500 }), [], "ambient noise from closed must emit nothing");
+  });
+
+  test("each close-condition leg works alone: prob leg (silent caller, loud room) and energy leg (floor-level chatter)", () => {
+    // The close disjunct is prob < CLOSE_PROB || rms < floor*1.2 — SILENCE
+    // satisfies both legs at once, so either leg could be deleted invisibly
+    // without these per-leg pins.
+    const probLeg = new TurnGate();
+    pushN(probLeg, 12, SPEECH);
+    assert.deepStrictEqual(
+      pushN(probLeg, 80, { prob: 0.05, rms: 4000 }),
+      ["end"],
+      "caller stopped speaking in a loud room: the probability leg alone must close"
+    );
+    const energyLeg = new TurnGate();
+    pushN(energyLeg, 12, SPEECH);
+    assert.deepStrictEqual(
+      pushN(energyLeg, 80, { prob: 0.9, rms: 150 }),
+      ["end"],
+      "floor-level background chatter: the energy leg alone must close"
+    );
   });
 });

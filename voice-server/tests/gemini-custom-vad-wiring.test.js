@@ -46,13 +46,18 @@ FakeWebSocket.CLOSED = 3;
 const wsPath = require.resolve("ws");
 require.cache[wsPath] = { id: wsPath, filename: wsPath, loaded: true, exports: FakeWebSocket };
 
-// Scripted turn gate: pops events from a static queue on each push().
+// Scripted turn gate: pops events from a static queue on each push() and
+// captures its arguments — the (prob, rms) order pin matters, because a
+// swapped push(rms, prob) starves the real gate (rms < ABS_MIN_RMS forever):
+// a silently deaf call.
 class FakeTurnGate {
-  push() {
+  push(prob, rms) {
+    FakeTurnGate.pushes.push({ prob, rms });
     return FakeTurnGate.queue.length ? FakeTurnGate.queue.shift() : null;
   }
 }
 FakeTurnGate.queue = [];
+FakeTurnGate.pushes = [];
 
 const realTurnGate = require("../lib/turn-gate");
 const gatePath = require.resolve("../lib/turn-gate");
@@ -123,10 +128,87 @@ test("CUSTOM_VAD=on: setup disables automatic detection; gate events emit manual
       ws.sent.filter((m) => m.realtimeInput && m.realtimeInput.audio).length >= 2,
       "audio must keep streaming with manual markers"
     );
+    // (prob, rms) order pin — see FakeTurnGate note.
+    assert.ok(FakeTurnGate.pushes.length >= 4, "two 20ms frames must drive four 10ms gate pushes");
+    assert.ok(
+      FakeTurnGate.pushes.every((p) => p.prob >= 0 && p.prob <= 1),
+      "arg 1 must be the voice probability (0..1)"
+    );
+    assert.ok(
+      FakeTurnGate.pushes.some((p) => p.rms > 1),
+      "arg 2 must be the block RMS (int16 scale; first block can be ~0 during resampler warm-up)"
+    );
     ws.emit("close", 1000, Buffer.from(""));
   } finally {
     delete process.env.CUSTOM_VAD;
     FakeTurnGate.queue = [];
+    FakeTurnGate.pushes = [];
+  }
+});
+
+test("pre-setup: NO realtimeInput of any kind is sent — buffered audio never reaches the front-end or the gate", () => {
+  process.env.CUSTOM_VAD = "on";
+  try {
+    const session = createGeminiSession(
+      { systemPrompt: "prompt", tools: [], voiceName: "Kore" },
+      { onAudio: () => {}, onToolCall: async () => ({}), onError: () => {}, onClose: () => {} }
+    );
+    const ws = created[created.length - 1];
+    ws.emit("open"); // setup sent, but setupComplete NOT received
+    FakeTurnGate.queue = ["start"];
+    session.sendAudio(makeSineB64(160));
+    assert.equal(
+      ws.sent.filter((m) => m.realtimeInput).length,
+      0,
+      "pre-setup audio is buffered raw — no audio, no markers, no gate pushes may escape"
+    );
+    assert.equal(FakeTurnGate.pushes.length, 0, "the gate must never run on pre-setup audio");
+    ws.emit("close", 1000, Buffer.from(""));
+  } finally {
+    delete process.env.CUSTOM_VAD;
+    FakeTurnGate.queue = [];
+    FakeTurnGate.pushes = [];
+  }
+});
+
+test("marker send failures: first Sentry-warns (one dropped turn is correlatable), third fails the session LOUD", () => {
+  process.env.CUSTOM_VAD = "on";
+  const warns = [];
+  const origWarn = console.warn;
+  console.warn = (...args) => warns.push(args.join(" "));
+  const errors = [];
+  try {
+    const session = createGeminiSession(
+      { systemPrompt: "prompt", tools: [], voiceName: "Kore" },
+      { onAudio: () => {}, onToolCall: async () => ({}), onError: (e) => errors.push(e), onClose: () => {} }
+    );
+    const ws = created[created.length - 1];
+    ws.emit("open");
+    ws.emit("message", JSON.stringify({ setupComplete: {} }));
+    // markers throw; audio sends keep succeeding (so the audio path's counter
+    // keeps resetting — the marker path needs its OWN escalation)
+    const origSend = ws.send.bind(ws);
+    ws.send = (data) => {
+      if (typeof data === "string" && data.includes("activityStart")) throw new Error("EPIPE");
+      return origSend(data);
+    };
+    FakeTurnGate.queue = ["start", null, "start", null, "start", null];
+    session.sendAudio(makeSineB64(160)); // marker failure #1
+    assert.ok(
+      warns.some((w) => /\[ALERT:warning\].*activity marker send failed/.test(w)),
+      "the FIRST lost marker must emit an alertable warning"
+    );
+    assert.equal(errors.length, 0, "one lost marker must not kill the call");
+    session.sendAudio(makeSineB64(160)); // #2
+    session.sendAudio(makeSineB64(160)); // #3
+    assert.equal(errors.length, 1, "the THIRD lost marker must fail the session loud via onError");
+    assert.match(errors[0].message, /activity-marker send failure/);
+    ws.emit("close", 1000, Buffer.from(""));
+  } finally {
+    console.warn = origWarn;
+    delete process.env.CUSTOM_VAD;
+    FakeTurnGate.queue = [];
+    FakeTurnGate.pushes = [];
   }
 });
 
@@ -142,17 +224,27 @@ test("CUSTOM_VAD unset: setup keeps the SCRUM-554 tuned automatic config, no mar
   ws.emit("close", 1000, Buffer.from(""));
 });
 
-test("CUSTOM_VAD=on but front-end unavailable: automatic VAD is KEPT (never a disabled detector without a gate)", () => {
+test("CUSTOM_VAD=on but front-end unavailable: automatic VAD is KEPT + one-shot alert (never a silent fleet-wide degrade)", () => {
   process.env.CUSTOM_VAD = "on";
   process.env.AUDIO_FRONTEND = "off"; // front-end gone → gate has no inputs
+  const warns = [];
+  const origWarn = console.warn;
+  console.warn = (...args) => warns.push(args.join(" "));
   try {
     const { ws } = makeReadySession();
     const setup = ws.sent.find((m) => m.setup);
     const aad = setup.setup.realtimeInputConfig.automaticActivityDetection;
     assert.equal(aad.disabled, undefined, "automatic VAD must be kept when the gate can't run");
     assert.equal(aad.startOfSpeechSensitivity, "START_SENSITIVITY_LOW");
+    const alerts = () => warns.filter((w) => /\[ALERT:warning\].*CUSTOM_VAD=on but the audio front-end is unavailable/.test(w));
+    assert.equal(alerts().length, 1, "the degrade must emit exactly one alertable warning");
     ws.emit("close", 1000, Buffer.from(""));
+    // second session: the alert is one-shot per process, the console.warn is per-call
+    const second = makeReadySession();
+    assert.equal(alerts().length, 1, "the Sentry-level alert must not repeat per call");
+    second.ws.emit("close", 1000, Buffer.from(""));
   } finally {
+    console.warn = origWarn;
     delete process.env.CUSTOM_VAD;
     delete process.env.AUDIO_FRONTEND;
   }

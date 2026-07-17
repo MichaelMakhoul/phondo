@@ -10,6 +10,11 @@ const WebSocket = require("ws");
 const { twilioToGemini, geminiToTwilio } = require("../lib/audio-converter");
 const { createSessionFrontend } = require("../lib/audio-frontend");
 const { TurnGate, customVadEnabled } = require("../lib/turn-gate");
+
+// One-shot per process (SCRUM-556): alert the first time CUSTOM_VAD is
+// requested but can't actually run, so a fleet-wide flag that silently
+// degrades to automatic VAD pages someone instead of hiding in console lines.
+let customVadFallbackAlerted = false;
 const { Sentry } = require("../lib/sentry");
 const { logTranscript } = require("../lib/log-transcript");
 
@@ -182,13 +187,26 @@ function createGeminiSession(config, callbacks) {
   // automatic VAD disabled. Decided per session, never mid-call.
   const wantCustomVad = customVadEnabled();
   let turnGate = null;
+  // Marker failures get their own counter: the audio path's counter is RESET
+  // by every successful audio send, so interleaved marker-only failures would
+  // never escalate through it. A lost marker silently discards a whole caller
+  // turn (audio outside an activity window is not committed), so the first
+  // failure Sentry-warns and the third fails the session loud.
+  let markerErrorCount = 0;
   const sendActivityMarker = (event) => {
     if (ws.readyState !== WebSocket.OPEN || !setupComplete) return;
     const marker = event === "start" ? { activityStart: {} } : { activityEnd: {} };
     try {
       ws.send(JSON.stringify({ realtimeInput: marker }));
     } catch (err) {
-      console.error(`[GeminiLive] activity marker send failed (${event}):`, err && err.message);
+      markerErrorCount++;
+      console.error(`[GeminiLive] activity marker send failed (${event}, #${markerErrorCount}):`, err && err.message);
+      if (markerErrorCount === 1) {
+        Sentry.captureMessage("Custom-VAD activity marker send failed — one caller turn may have been dropped", "warning");
+      }
+      if (markerErrorCount === 3) {
+        callbacks.onError?.(new Error("Persistent activity-marker send failure under CUSTOM_VAD"));
+      }
     }
   };
 
@@ -216,6 +234,13 @@ function createGeminiSession(config, callbacks) {
   if (customVadActive) turnGate = new TurnGate();
   if (wantCustomVad && !audioFrontend) {
     console.warn("[GeminiLive] CUSTOM_VAD requested but the audio front-end is unavailable — keeping Gemini automatic VAD");
+    // One-shot per process: an operator who turned CUSTOM_VAD on fleet-wide
+    // must find out it isn't actually running (wasm load failure etc.), not
+    // discover it weeks later in unalertable console lines.
+    if (!customVadFallbackAlerted) {
+      customVadFallbackAlerted = true;
+      Sentry.captureMessage("CUSTOM_VAD=on but the audio front-end is unavailable — calls are running automatic VAD", "warning");
+    }
   }
   console.log(
     `[GeminiLive] Inbound audio path: ${audioFrontend ? "front-end (RNNoise + AGC)" : "legacy"}${customVadActive ? " + custom VAD (manual turn markers)" : ""}`
