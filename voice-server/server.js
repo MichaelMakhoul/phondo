@@ -22,6 +22,7 @@ const { loadCallContext, loadTestCallContext, loadScheduleSnapshot } = require("
 const { buildSystemPrompt, getGreeting, buildLiveScheduleSection } = require("./lib/prompt-builder");
 const scheduleCache = require("./lib/schedule-cache");
 const { bookingKey } = require("./lib/booking-key");
+const { classifyRebookAttempt, DUPLICATE_REBOOK_MESSAGE, CORRECTION_ERROR_MESSAGE, CANCEL_NUDGE } = require("./lib/rebook-correction"); // SCRUM-557
 const { createCallRecord, completeCallRecord, notifyCallCompleted, applyReanalysis } = require("./lib/call-logger");
 const { calendarToolDefinitions, listServiceTypesToolDefinition, transferToolDefinition, callbackToolDefinition, endCallToolDefinition, executeToolCall } = require("./services/tool-executor");
 const { createGeminiSession } = require("./services/gemini-live");
@@ -2322,10 +2323,56 @@ wss.on("connection", (twilioWs) => {
                   // herself and re-calls the tool, producing a different code and
                   // confusing the caller. The intercept returns a hard rejection
                   // so she can't create a duplicate.
+                  // SCRUM-557: unless the re-book carries a DIFFERENT surname —
+                  // that's the caller correcting a mis-heard name (booking-key
+                  // drops surnames by design, so the correction maps to the same
+                  // key). Blocking it convinced the model the fixed booking
+                  // existed; a follow-up cancel then left a real caller with
+                  // ZERO appointments while being told "you're booked". Perform
+                  // an in-place attendee update on this call's appointment.
                   if (toolCall.name === "book_appointment" && session.confirmedBookings?.size > 0) {
                     const reqKey = bookingKey(toolCall.args);
                     const existing = session.confirmedBookings.get(reqKey);
                     if (existing) {
+                      const verdict = classifyRebookAttempt(existing, toolCall.args);
+                      if (verdict.kind === "name-correction") {
+                        console.warn(`[RebookGuard] Name-corrected re-book — updating attendee in place. callSid=${session.callSid}`);
+                        let correctionMsg;
+                        try {
+                          const corrected = await executeToolCall("update_appointment_attendee", {
+                            datetime: toolCall.args.datetime,
+                            first_name: toolCall.args.first_name,
+                            last_name: toolCall.args.last_name,
+                          }, {
+                            organizationId: session.organizationId,
+                            assistantId: session.assistantId,
+                            callSid: session.callSid,
+                            callId: session.callRecordId,
+                            sourceType: session.sourceType,
+                            organization: session.organization,
+                            callerPhone: session.callerPhone,
+                          });
+                          correctionMsg = typeof corrected === "string" ? corrected : corrected.message;
+                        } catch (corrErr) {
+                          console.error(`[RebookGuard] attendee correction threw: ${corrErr && corrErr.message} callSid=${session.callSid}`);
+                          correctionMsg = CORRECTION_ERROR_MESSAGE;
+                        }
+                        const correctionOk = correctionMsg.startsWith("NAME CORRECTED");
+                        session.toolCallAudit.push({ name: "book_appointment_corrected", successful: correctionOk, at: Date.now() });
+                        if (correctionOk) {
+                          session.confirmedBookings.set(reqKey, {
+                            ...existing,
+                            name: `${toolCall.args.first_name || ""} ${toolCall.args.last_name || ""}`.trim(),
+                          });
+                        } else {
+                          Sentry.withScope((scope) => {
+                            scope.setTag("service", "rebook_guard");
+                            scope.setExtras({ callSid: session.callSid, attemptedDatetime: toolCall.args.datetime });
+                            Sentry.captureMessage("Name-corrected re-book: attendee update FAILED", "warning");
+                          });
+                        }
+                        return { message: correctionMsg };
+                      }
                       console.warn(`[RebookGuard] Blocking duplicate book_appointment — already booked code=${existing.code} callSid=${session.callSid}`);
                       session.toolCallAudit.push({ name: "book_appointment_blocked", successful: false, at: Date.now() });
                       Sentry.withScope((scope) => {
@@ -2334,7 +2381,7 @@ wss.on("connection", (twilioWs) => {
                         Sentry.captureMessage("Duplicate book_appointment intercepted", "warning");
                       });
                       return {
-                        message: `CRITICAL: You already booked this exact appointment in this call. The booking is LOCKED in the database. DO NOT call book_appointment again. If the caller wants to change the appointment, call the reschedule_appointment tool (it moves it atomically in one step) — do NOT call book_appointment again.`,
+                        message: DUPLICATE_REBOOK_MESSAGE,
                       };
                     }
                   }
@@ -2365,7 +2412,7 @@ wss.on("connection", (twilioWs) => {
                   } finally {
                     if (session) session._toolCallInFlight = false;
                   }
-                  const message = typeof result === "string" ? result : result.message;
+                  let message = typeof result === "string" ? result : result.message;
                   console.log(`[GeminiLive] Tool result: "${message.slice(0, 100)}"`);
 
                   // Track last tool result for Tier 2 validator — it compares
@@ -2460,13 +2507,27 @@ wss.on("connection", (twilioWs) => {
                       code: codeMatch?.[1] || "unknown",
                       datetime: toolCall.args.datetime,
                       name: `${toolCall.args.first_name || ""} ${toolCall.args.last_name || ""}`.trim(),
+                      practitioner_id: toolCall.args.practitioner_id, // SCRUM-557: correction-vs-second-person discriminator
                       at: Date.now(),
                     });
                   }
                   // SCRUM-257: clear confirmedBookings entry on successful cancel so
                   // the reschedule flow (cancel → book) still works.
-                  if (session && toolCall.name === "cancel_appointment" && !message.toLowerCase().includes("error") && !message.toLowerCase().includes("not found")) {
+                  // SCRUM-557: also tell the model, in the tool result itself, that
+                  // NOTHING is booked now — a real caller was told "you're booked
+                  // 9am tomorrow" right after the only appointment was cancelled.
+                  // SCRUM-557 (review): key on the handler's authoritative success
+                  // flag — the old text heuristic matched EVERY failure message
+                  // ("I'm having trouble cancelling…" contains neither "error" nor
+                  // "not found"), so a FAILED cancel cleared the ledger and told the
+                  // model nothing was booked while the appointment still stood.
+                  const cancelOk =
+                    typeof result === "object" && result !== null && typeof result.success === "boolean"
+                      ? result.success
+                      : !message.toLowerCase().includes("error") && !message.toLowerCase().includes("not found");
+                  if (session && toolCall.name === "cancel_appointment" && cancelOk) {
                     if (session.confirmedBookings) session.confirmedBookings.clear();
+                    message += CANCEL_NUDGE;
                   }
 
                   // Apply cache delta for writes — guard against cleanup race
@@ -3288,15 +3349,60 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
           }
 
           // SCRUM-257: rebook intercept (classic pipeline — mirrors Gemini path)
+          // SCRUM-557: a re-book with a DIFFERENT surname is a name correction —
+          // update the attendee in place instead of blocking (see the Gemini
+          // site and lib/rebook-correction.js for the full story).
           if (fnName === "book_appointment" && session.confirmedBookings?.size > 0) {
             const reqKey = bookingKey(fnArgs);
             const existing = session.confirmedBookings.get(reqKey);
             if (existing) {
+              const verdict = classifyRebookAttempt(existing, fnArgs);
+              if (verdict.kind === "name-correction") {
+                console.warn(`[RebookGuard] Name-corrected re-book (classic) — updating attendee in place. callSid=${session.callSid}`);
+                let correctionMsg;
+                try {
+                  const corrected = await executeToolCall("update_appointment_attendee", {
+                    datetime: fnArgs.datetime,
+                    first_name: fnArgs.first_name,
+                    last_name: fnArgs.last_name,
+                  }, {
+                    organizationId: session.organizationId,
+                    assistantId: session.assistantId,
+                    callSid: session.callSid,
+                    callId: session.callRecordId,
+                    sourceType: session.sourceType,
+                    organization: session.organization,
+                    callerPhone: session.callerPhone,
+                  });
+                  correctionMsg = typeof corrected === "string" ? corrected : corrected.message;
+                } catch (corrErr) {
+                  console.error(`[RebookGuard] attendee correction threw (classic): ${corrErr && corrErr.message} callSid=${session.callSid}`);
+                  correctionMsg = CORRECTION_ERROR_MESSAGE;
+                }
+                const classicCorrectionOk = correctionMsg.startsWith("NAME CORRECTED");
+                if (session.toolCallAudit) {
+                  session.toolCallAudit.push({ name: "book_appointment_corrected", successful: classicCorrectionOk, at: Date.now() });
+                }
+                if (classicCorrectionOk) {
+                  session.confirmedBookings.set(reqKey, {
+                    ...existing,
+                    name: `${fnArgs.first_name || ""} ${fnArgs.last_name || ""}`.trim(),
+                  });
+                } else {
+                  Sentry.withScope((scope) => {
+                    scope.setTag("service", "rebook_guard");
+                    scope.setExtras({ callSid: session.callSid, attemptedDatetime: fnArgs.datetime });
+                    Sentry.captureMessage("Name-corrected re-book: attendee update FAILED (classic)", "warning");
+                  });
+                }
+                session.messages.push({ role: "tool", tool_call_id: toolCall.id, content: correctionMsg });
+                continue;
+              }
               console.warn(`[RebookGuard] Blocking duplicate book_appointment (classic) — code=${existing.code} callSid=${session.callSid}`);
               session.messages.push({
                 role: "tool",
                 tool_call_id: toolCall.id,
-                content: `CRITICAL: You already booked this exact appointment in this call. The booking is LOCKED in the database. DO NOT call book_appointment again.`,
+                content: DUPLICATE_REBOOK_MESSAGE,
               });
               continue;
             }
@@ -3321,7 +3427,7 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
             scheduleSnapshot: session.scheduleSnapshot,
           });
 
-          const resultMessage = typeof toolResult === "string" ? toolResult : toolResult.message;
+          let resultMessage = typeof toolResult === "string" ? toolResult : toolResult.message;
           console.log(`[ToolCall] ${fnName} result: "${resultMessage.slice(0, 100)}..."`);
 
           // SCRUM-257: track confirmed bookings (classic pipeline)
@@ -3333,11 +3439,19 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
               code: codeMatch?.[1] || "unknown",
               datetime: fnArgs.datetime,
               name: `${fnArgs.first_name || ""} ${fnArgs.last_name || ""}`.trim(),
+              practitioner_id: fnArgs.practitioner_id, // SCRUM-557: correction-vs-second-person discriminator
               at: Date.now(),
             });
           }
-          if (fnName === "cancel_appointment" && !resultMessage.toLowerCase().includes("error") && !resultMessage.toLowerCase().includes("not found")) {
+          // SCRUM-557 (review): authoritative success flag, same reasoning as the
+          // Gemini site — the text heuristic nudged on failed cancels.
+          const cancelOk =
+            typeof toolResult === "object" && toolResult !== null && typeof toolResult.success === "boolean"
+              ? toolResult.success
+              : !resultMessage.toLowerCase().includes("error") && !resultMessage.toLowerCase().includes("not found");
+          if (fnName === "cancel_appointment" && cancelOk) {
             if (session.confirmedBookings) session.confirmedBookings.clear();
+            resultMessage += CANCEL_NUDGE; // SCRUM-557: nothing is booked now — say so in the tool result
           }
 
           // Apply optimistic cache delta for write operations
