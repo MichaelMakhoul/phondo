@@ -194,6 +194,20 @@ export function resolveCallerId(trusted?: {
 }
 
 /**
+ * SCRUM-560: gate for the call-authority id. Only a well-formed uuid from the
+ * request ENVELOPE (never `arguments`) may ever grant ownership or reach a
+ * `call_id.eq.` filter — `call_id` is a uuid column, so a malformed value in
+ * a query would become a cast error the caller hears as "having trouble".
+ */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export function trustedCallIdForOwnership(callId: string | undefined | null): string | undefined {
+  const v = typeof callId === "string" ? callId.trim() : "";
+  // Lowercased so the strict === in verifyPhonePossession can never miss a
+  // row the SQL call_id.eq filter surfaced (uuid columns render lowercase).
+  return v && UUID_RE.test(v) ? v.toLowerCase() : undefined;
+}
+
+/**
  * SCRUM-438 possession factor: does the caller hold the booking's number?
  *
  * For 'verified' calls the inbound caller ID (threaded by the voice server,
@@ -204,14 +218,29 @@ export function resolveCallerId(trusted?: {
  * number would otherwise re-open the spoof). The model phone applies only to
  * 'test' sessions, where no caller ID can exist.
  *
+ * SCRUM-560 call authority: a row whose `call_id` equals the CURRENT call's
+ * trusted id is owned outright — the call that created a booking has full
+ * authority over it (the same trust basis update_appointment anchors on).
+ * Checked FIRST and phone-independently: it must hold after the caller
+ * corrects the contact phone away from their caller ID, which is exactly
+ * when the phone comparison goes blind. `trustedCallId` comes from the
+ * request envelope via trustedCallIdForOwnership — never from model args.
+ * (The mutation handlers still refuse withheld caller IDs before possession
+ * is ever consulted; the authority check deliberately doesn't reintroduce
+ * that decision here.)
+ *
  * "unverifiable" = no phone on file, no phone available to compare, or a
  * withheld caller ID — callers must treat it as NOT verified.
  */
 export function verifyPhonePossession(
-  appointment: { attendee_phone?: string | null },
+  appointment: { attendee_phone?: string | null; call_id?: string | null },
   modelPhone: string | undefined,
-  callerId: ResolvedCallerId
+  callerId: ResolvedCallerId,
+  trustedCallId?: string
 ): PossessionCheck {
+  if (trustedCallId && appointment.call_id && appointment.call_id === trustedCallId) {
+    return "match";
+  }
   if (callerId.state === "withheld") return "unverifiable";
   const candidate =
     callerId.state === "verified" ? callerId.phone.trim() : modelPhone?.trim() || "";

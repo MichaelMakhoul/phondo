@@ -23,7 +23,7 @@ import { recordAppointmentEvent } from "@/lib/appointments/events"; // SCRUM-557
 import { runAfterResponse } from "@/lib/utils/after-response";
 import { rateLimitDistributed } from "@/lib/security/rate-limiter";
 import { hasNonLatinLetters } from "@/lib/calendar/latin-name";
-import { resolveRescheduleIdentity, resolveRescheduledBooking } from "@/lib/calendar/reschedule-core";
+import { resolveRescheduleIdentity, resolveRescheduledBooking, stripRescheduleIdentitySlots } from "@/lib/calendar/reschedule-core";
 import {
   getActiveClinikoIntegration,
   clinikoCheckAvailability,
@@ -39,6 +39,7 @@ import {
   parseVerificationSettings,
   getVerificationSettings,
   resolveCallerId,
+  trustedCallIdForOwnership,
   verifyPhonePossession,
   verifyKnowledgeFactors,
   applyCollectedDetails,
@@ -1575,9 +1576,24 @@ const WITHHELD_CALLER_ID_REFUSAL: ToolResult = {
 export async function handleCancelAppointment(
   organizationId: string,
   args: { phone?: string; reason?: string; confirmation_code?: string; date?: string; datetime?: string; name?: string; email?: string },
-  trusted?: TrustedCallContext
+  trusted?: TrustedCallContext,
+  // SCRUM-514/560: INTERNAL-ONLY, from the request envelope — never from
+  // `args`. Grants call authority over rows THIS call created (mirrors the
+  // reschedule handler's param).
+  internal?: { callId?: string }
 ): Promise<ToolResult> {
   const { phone, confirmation_code } = args;
+  // SCRUM-560: uuid-gated call-authority id — lets the caller cancel the
+  // booking they made THIS call even after correcting its contact phone away
+  // from their caller ID (update_appointment), which blinds the phone gate.
+  const authorityCallId = trustedCallIdForOwnership(internal?.callId);
+  if (internal?.callId && !authorityCallId) {
+    // Fail-safe (plain phone path) but never silent: a production envelope
+    // callId that isn't a uuid means voice-server drift (e.g. a Twilio
+    // callSid instead of calls.id) — the caller's own just-made booking
+    // would quietly read as not-found. Length only, per SCRUM-339.
+    console.warn("[CallAuthority] production callId failed the uuid gate — call authority disabled for this cancel (voice-server drift?)", { organizationId, callIdLength: internal.callId.length });
+  }
   const reason = args.reason ? sanitizeString(args.reason, 500) : undefined;
   const date = args.date && /^\d{4}-\d{2}-\d{2}$/.test(args.date) ? args.date : undefined;
   // SCRUM-259: accept exact datetime for precise cancel ("cancel the 10:15 AM one").
@@ -1619,7 +1635,7 @@ export async function handleCancelAppointment(
     const code = confirmation_code.trim();
     const { data: codeMatch, error: codeErr } = await (supabase as any)
       .from("appointments")
-      .select("id, start_time, attendee_name, attendee_phone, attendee_email, service_type_id, external_id, provider, metadata, confirmation_code, status")
+      .select("id, start_time, attendee_name, attendee_phone, attendee_email, service_type_id, external_id, provider, metadata, confirmation_code, status, call_id")
       .eq("organization_id", organizationId)
       .eq("confirmation_code", code)
       .in("status", ["confirmed", "pending"])
@@ -1634,8 +1650,9 @@ export async function handleCancelAppointment(
     if (codeMatch) {
       // SCRUM-415/438: a code match is not enough — the caller must hold the
       // booking's phone number (verified caller ID only on production calls;
-      // the model-supplied argument only on test sessions).
-      const possession = verifyPhonePossession(codeMatch, phone, callerId);
+      // the model-supplied argument only on test sessions). SCRUM-560: a row
+      // THIS call created passes on call authority instead.
+      const possession = verifyPhonePossession(codeMatch, phone, callerId, authorityCallId);
       if (possession === "match") {
         const factorFail = verifyKnowledgeFactors(codeMatch, applyCollectedDetails({ name: args.name, email: args.email }, trusted?.collectedDetails), verification);
         if (factorFail) return factorFail;
@@ -1675,11 +1692,19 @@ export async function handleCancelAppointment(
   // anchored last-9-digit suffix match (the form PR #346 gave lookup) instead
   // of an exact IN over synthesized format variants — it tolerates any stored
   // formatting, and the possession gate below re-verifies each row anyway.
+  // SCRUM-560: on production calls the candidate set ALSO includes rows THIS
+  // call created (call authority) — a corrected contact phone no longer
+  // matches the caller's number, so the suffix match alone would never even
+  // surface the caller's own just-made booking. The uuid gate on
+  // authorityCallId keeps a malformed envelope value out of the filter.
   let query = (supabase as any)
     .from("appointments")
-    .select("id, start_time, attendee_name, attendee_phone, attendee_email, service_type_id, external_id, provider, metadata, confirmation_code, status, created_at")
-    .eq("organization_id", organizationId)
-    .ilike("attendee_phone", phoneSuffixPattern(phone))
+    .select("id, start_time, attendee_name, attendee_phone, attendee_email, service_type_id, external_id, provider, metadata, confirmation_code, status, created_at, call_id")
+    .eq("organization_id", organizationId);
+  query = authorityCallId
+    ? query.or(`attendee_phone.ilike.${phoneSuffixPattern(phone)},call_id.eq.${authorityCallId}`)
+    : query.ilike("attendee_phone", phoneSuffixPattern(phone));
+  query = query
     .in("status", ["confirmed", "pending"])
     .gte("start_time", new Date().toISOString())
     .order("start_time", { ascending: true });
@@ -1725,8 +1750,9 @@ export async function handleCancelAppointment(
   // model phone when there is no caller ID — browser test calls). This blocks
   // a model echoing a victim's number from cancelling — or even ENUMERATING —
   // a stranger's appointments, and weeds out NANP last-9 suffix collisions.
+  // SCRUM-560: rows THIS call created pass on call authority.
   const owned = ((appointments || []) as any[]).filter(
-    (a) => verifyPhonePossession(a, phone, callerId) === "match"
+    (a) => verifyPhonePossession(a, phone, callerId, authorityCallId) === "match"
   );
 
   if (!owned.length) {
@@ -1988,8 +2014,16 @@ export async function handleRescheduleAppointment(
 
     // SCRUM-390: include practitioner_id / attendee_email / notes so a reschedule
     // can carry them over — a move must only change what the caller asked for.
+    // SCRUM-560: call_id feeds the call-authority possession check.
     const selectCols =
-      "id, start_time, attendee_name, attendee_phone, attendee_email, service_type_id, practitioner_id, notes, external_id, provider, metadata, confirmation_code, status, created_at";
+      "id, start_time, attendee_name, attendee_phone, attendee_email, service_type_id, practitioner_id, notes, external_id, provider, metadata, confirmation_code, status, created_at, call_id";
+    // SCRUM-560: uuid-gated call authority — the booking THIS call made stays
+    // reachable after its contact phone was corrected away from the caller ID.
+    const authorityCallId = trustedCallIdForOwnership(internal?.callId);
+    if (internal?.callId && !authorityCallId) {
+      // Fail-safe but never silent — see the cancel-side twin for the story.
+      console.warn("[CallAuthority] production callId failed the uuid gate — call authority disabled for this reschedule (voice-server drift?)", { organizationId, callIdLength: internal.callId.length });
+    }
     const fmtWhen = (iso: string) => {
       const d = new Date(iso);
       const dateStr = d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: tz });
@@ -2031,8 +2065,9 @@ export async function handleRescheduleAppointment(
       if (codeRows && codeRows.length === 1) {
         // SCRUM-415/438: a code match is not enough — the caller must hold the
         // booking's phone number (verified caller ID only on production calls;
-        // selectCols includes attendee_phone).
-        const possession = verifyPhonePossession(codeRows[0], phone, callerId);
+        // selectCols includes attendee_phone). SCRUM-560: a row THIS call
+        // created passes on call authority instead.
+        const possession = verifyPhonePossession(codeRows[0], phone, callerId, authorityCallId);
         const hasCandidatePhone = callerId.state === "verified" || Boolean(phone?.trim());
         if (possession === "match") {
           existing = codeRows[0];
@@ -2073,11 +2108,16 @@ export async function handleRescheduleAppointment(
             "That phone number doesn't look complete. Could you give me the full phone number the appointment was booked under?",
         };
       }
-      const { data: upcoming, error: qErr } = await (supabase as any)
+      // SCRUM-560: widen to call-authority rows on production calls — the
+      // caller's own just-corrected booking would otherwise never surface.
+      let upcomingQuery = (supabase as any)
         .from("appointments")
         .select(selectCols)
-        .eq("organization_id", organizationId)
-        .ilike("attendee_phone", phoneSuffixPattern(phone))
+        .eq("organization_id", organizationId);
+      upcomingQuery = authorityCallId
+        ? upcomingQuery.or(`attendee_phone.ilike.${phoneSuffixPattern(phone)},call_id.eq.${authorityCallId}`)
+        : upcomingQuery.ilike("attendee_phone", phoneSuffixPattern(phone));
+      const { data: upcoming, error: qErr } = await upcomingQuery
         .in("status", ["confirmed", "pending"])
         .gte("start_time", new Date().toISOString())
         .order("start_time", { ascending: true })
@@ -2090,8 +2130,9 @@ export async function handleRescheduleAppointment(
       // row's attendee_phone must match the verified caller ID (or the model
       // phone when there is no caller ID). A model echoing a victim's number
       // can no longer move or enumerate a stranger's appointments.
+      // SCRUM-560: rows THIS call created pass on call authority.
       const upcomingOwned = ((upcoming || []) as any[]).filter(
-        (a) => verifyPhonePossession(a, phone, callerId) === "match"
+        (a) => verifyPhonePossession(a, phone, callerId, authorityCallId) === "match"
       );
       if (!upcomingOwned.length) {
         // Same message whether nothing matched or matches failed possession.
@@ -2206,8 +2247,11 @@ export async function handleRescheduleAppointment(
     // internal-only parameter — it must never travel inside `args` (the
     // LLM-populated shape) or a model could mark a freshly-supplied deactivated
     // ref as "carried" to bypass the is_active gate.
+    // SCRUM-560: phone joined the stripped identity slots — see
+    // stripRescheduleIdentitySlots for why letting it through silently
+    // reverts a same-call SCRUM-558 contact-phone correction.
     const { carried_refs, ...rescheduledBooking } = resolveRescheduledBooking(
-      { ...args, name: undefined, email: undefined },
+      stripRescheduleIdentitySlots(args),
       existing
     );
     const bookResult = await handleBookAppointment(
@@ -3663,15 +3707,14 @@ export async function handleUpdateAppointmentDetails(
   // that contract whenever the name changed; other fields get a distinct prefix.
   const prefix = wantsNameChange ? `NAME CORRECTED` : `APPOINTMENT DETAILS UPDATED`;
   // Possession gates (cancel/reschedule) validate against the VERIFIED caller
-  // ID. A corrected phone that no longer matches it means later cancel/
-  // reschedule attempts — this call or future calls from the old number — will
-  // be refused as not-found. Without this warning the model gets unexplainable
-  // refusals minutes after being told "it's fixed". (SCRUM-560 tracks making
-  // possession accept call_id ownership, the principled fix.)
+  // ID — but SCRUM-560 call authority means the booking THIS call created
+  // stays fully changeable on THIS call regardless of the corrected phone.
+  // The caveat that remains real is for FUTURE calls: they go by the NEW
+  // number, so a later call from the old number will be refused as not-found.
   const phoneChanged = changedFields.some((c) => c.field === "phone");
   const phoneWarning =
     phoneChanged && anchor?.verifiedCallerPhone && !phonesMatchForOwnership(phone, anchor.verifiedCallerPhone)
-      ? " IMPORTANT: security checks for cancelling or rescheduling this booking now go by the NEW number — such changes from THIS call may be refused; offer schedule_callback if needed, or the caller can call back from the new number."
+      ? " Note: you can still cancel or reschedule this booking normally during THIS call. For LATER calls, security goes by the NEW number — a future call from the old number will be refused, so the caller should call from the new number then."
       : "";
   return {
     success: true,
