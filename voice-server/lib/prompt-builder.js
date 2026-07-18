@@ -1026,7 +1026,7 @@ function buildLiveScheduleSection(snapshot, todayStr) {
   const lines = [];
 
   lines.push("LIVE SCHEDULE (pre-loaded AGGREGATE availability — sum across ALL practitioners):");
-  lines.push(`Current date: ${todayStr}, Current time: ${currentTime} (${timezone})`);
+  lines.push(`Current date: ${todayStr}, Current time: ${currentTime} (${sanitizeForPrompt(timezone)})`); // SCRUM-562: snapshot-sourced free text
   lines.push("");
   lines.push("⚠️ IMPORTANT: the times below are AGGREGATE (any-practitioner). If a caller asks for a SPECIFIC practitioner by name, DO NOT use these times. Instead, call `check_availability` with `practitioner_id` set to that practitioner's ID from the PRACTITIONERS ON STAFF list below — this is the ONLY way to see slots that respect that practitioner's personal blocked times (days off, lunch breaks, etc.). Booking with practitioner_id on a day they're blocked WILL fail.");
   lines.push("");
@@ -1102,7 +1102,11 @@ function buildLiveScheduleSection(snapshot, todayStr) {
       }
       statusParts.push(`${apptCount} appointment${apptCount === 1 ? "" : "s"} today`);
 
-      lines.push(`- ${p.name} [ID: ${p.id}]: ${statusParts.join(", ")}`);
+      // SCRUM-562: snapshot names are org/Cliniko-controlled free text — the
+      // SCRUM-561 staff rules tell the model to TRUST this list, so a name
+      // must never smuggle its own prompt line (service types get the same
+      // treatment in buildSchedulingSection).
+      lines.push(`- ${sanitizeForPrompt(p.name)} [ID: ${p.id}]: ${statusParts.join(", ")}`);
     }
     lines.push("");
     lines.push("PRACTITIONER BOOKING RULES:");
