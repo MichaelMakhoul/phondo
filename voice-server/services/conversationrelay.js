@@ -29,6 +29,7 @@ const { Sentry } = require("../lib/sentry");
 const { DEBUG_TRANSCRIPTS, logTranscript, logToolCall } = require("../lib/log-transcript");
 const { maskPhone } = require("../lib/mask-phone");
 const { bookingKey } = require("../lib/booking-key");
+const { applyRescheduleToLedger } = require("../lib/reschedule-ledger"); // SCRUM-563
 const { CallSession } = require("../call-session");
 const { loadCallContext } = require("../lib/call-context");
 const { buildSystemPrompt, getGreeting } = require("../lib/prompt-builder");
@@ -313,6 +314,12 @@ async function runGuardedToolCall(session, toolCall, deps = {}) {
   }
   if (name === "cancel_appointment" && successful) {
     if (session.confirmedBookings) session.confirmedBookings.clear();
+  }
+  // SCRUM-563: mirror the server.js pipelines — a successful reschedule moves
+  // this call's dedupe entry to the new slot instead of leaving the old one
+  // to false-block a legitimate re-book at the freed time.
+  if (name === "reschedule_appointment" && successful) {
+    applyRescheduleToLedger(session.confirmedBookings, args, now());
   }
 
   return { content: message + directive, held: false, endCall: !!(typeof result === "object" && result?.__endCall) };

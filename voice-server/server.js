@@ -22,6 +22,7 @@ const { loadCallContext, loadTestCallContext, loadScheduleSnapshot } = require("
 const { buildSystemPrompt, getGreeting, buildLiveScheduleSection } = require("./lib/prompt-builder");
 const scheduleCache = require("./lib/schedule-cache");
 const { bookingKey, normalizeDatetime } = require("./lib/booking-key");
+const { applyRescheduleToLedger } = require("./lib/reschedule-ledger"); // SCRUM-563
 const { classifyRebookAttempt, DUPLICATE_REBOOK_MESSAGE, CORRECTION_ERROR_MESSAGE, CANCEL_NUDGE } = require("./lib/rebook-correction"); // SCRUM-557
 const { createCallRecord, completeCallRecord, notifyCallCompleted, applyReanalysis } = require("./lib/call-logger");
 const { calendarToolDefinitions, listServiceTypesToolDefinition, transferToolDefinition, callbackToolDefinition, endCallToolDefinition, executeToolCall } = require("./services/tool-executor");
@@ -2573,6 +2574,37 @@ wss.on("connection", (twilioWs) => {
                     message += CANCEL_NUDGE;
                   }
 
+                  // SCRUM-563: a successful reschedule MOVES this call's ledger
+                  // entry — book writes it, cancel clears it, but reschedule
+                  // used to leave the OLD slot vouched-for, so RebookGuard
+                  // refused a legitimate re-book at the freed time ("already
+                  // booked... LOCKED") for the rest of the call. Same
+                  // authoritative-flag pattern as cancelOk above; the audit
+                  // fallback governs results without a `success` boolean (the
+                  // test-mode simulated reschedule, plain-string results).
+                  if (session && toolCall.name === "reschedule_appointment") {
+                    const lastAudit = session.toolCallAudit[session.toolCallAudit.length - 1] || {};
+                    const rescheduleOk =
+                      typeof result === "object" && result !== null && typeof result.success === "boolean"
+                        ? result.success
+                        : lastAudit.successful === true;
+                    if (rescheduleOk) {
+                      const move = applyRescheduleToLedger(session.confirmedBookings, toolCall.args, Date.now());
+                      if (move.moved) {
+                        console.log(`[RebookGuard] Reschedule moved ledger entry ${move.fromKey} -> ${move.toKey}. callSid=${session.callSid}`);
+                      } else if (move.ambiguous) {
+                        console.warn(`[RebookGuard] Reschedule ledger move ambiguous — entries left untouched. callSid=${session.callSid}`);
+                      }
+                      // The move also freed the old slot and took the new one —
+                      // the pre-loaded availability snapshot is stale on both
+                      // counts (book/cancel already maintain the cache below;
+                      // reschedule never did).
+                      if (session.scheduleSnapshot) {
+                        scheduleCache.invalidate(session.organizationId);
+                      }
+                    }
+                  }
+
                   // Apply cache delta for writes — guard against cleanup race
                   if (session && session.scheduleSnapshot) {
                     if (toolCall.name === "book_appointment" && (message.includes("confirmed") || message.includes("booked") || message.includes("confirmation"))) {
@@ -3528,6 +3560,29 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
           if (fnName === "cancel_appointment" && cancelOk) {
             if (session.confirmedBookings) session.confirmedBookings.clear();
             resultMessage += CANCEL_NUDGE; // SCRUM-557: nothing is booked now — say so in the tool result
+          }
+
+          // SCRUM-563: move this call's ledger entry on a successful reschedule
+          // (classic pipeline — mirrors the Gemini site; see it for the story).
+          if (fnName === "reschedule_appointment") {
+            const lastAudit = (session.toolCallAudit && session.toolCallAudit[session.toolCallAudit.length - 1]) || {};
+            const rescheduleOk =
+              typeof toolResult === "object" && toolResult !== null && typeof toolResult.success === "boolean"
+                ? toolResult.success
+                : lastAudit.successful === true;
+            if (rescheduleOk) {
+              const move = applyRescheduleToLedger(session.confirmedBookings, fnArgs, Date.now());
+              if (move.moved) {
+                console.log(`[RebookGuard] Reschedule moved ledger entry ${move.fromKey} -> ${move.toKey} (classic). callSid=${session.callSid}`);
+              } else if (move.ambiguous) {
+                console.warn(`[RebookGuard] Reschedule ledger move ambiguous — entries left untouched (classic). callSid=${session.callSid}`);
+              }
+              // Reschedule frees the old slot and takes the new one — the
+              // snapshot cache is stale on both counts.
+              if (session.scheduleSnapshot) {
+                scheduleCache.invalidate(session.organizationId);
+              }
+            }
           }
 
           // Apply optimistic cache delta for write operations
