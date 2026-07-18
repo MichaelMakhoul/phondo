@@ -43,9 +43,12 @@ async function proxy(request: Request, pathSegments: string[]): Promise<NextResp
       signal: AbortSignal.timeout(10_000),
     });
     return relayResponse(upstream, await upstream.arrayBuffer());
-  } catch {
-    // Analytics is best-effort — a proxy failure must never surface to the
-    // caller as anything actionable, and posthog-js retries batches itself.
+  } catch (err) {
+    // Analytics is best-effort — the caller gets a plain 502 and posthog-js
+    // retries batches itself. But LOG the upstream failure: this is the only
+    // server-side trace when PostHog EU is unreachable (Vercel function
+    // logs); the client-side swallow doctrine does not apply to server code.
+    console.error(`[ingest-proxy] upstream fetch failed (${target}):`, err);
     return new NextResponse(null, { status: 502 });
   }
 }
