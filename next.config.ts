@@ -43,6 +43,22 @@ const securityHeaders = [
 ];
 
 const nextConfig: NextConfig = {
+  // SCRUM-566: first-party reverse proxy for PostHog (EU cloud) — keeps every
+  // analytics request same-origin (ad-blocker resilient, and the CSP needs no
+  // new hosts: connect-src/script-src 'self' cover /ingest). The static route
+  // must precede the catch-all.
+  async rewrites() {
+    return [
+      {
+        source: "/ingest/static/:path*",
+        destination: "https://eu-assets.i.posthog.com/static/:path*",
+      },
+      {
+        source: "/ingest/:path*",
+        destination: "https://eu.i.posthog.com/:path*",
+      },
+    ];
+  },
   experimental: {
     serverActions: {
       bodySizeLimit: "2mb",

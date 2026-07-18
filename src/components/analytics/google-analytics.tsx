@@ -5,9 +5,8 @@ import { usePathname, useSearchParams } from "next/navigation";
 import Script from "next/script";
 import {
   GA_MEASUREMENT_ID,
-  initGtag,
+  initAnalytics,
   trackPageView,
-  initConsent,
 } from "@/lib/analytics";
 
 const GA_ID_PATTERN = /^G-[A-Z0-9]+$/;
@@ -17,8 +16,10 @@ export function GoogleAnalytics() {
   const searchParams = useSearchParams();
 
   useEffect(() => {
-    initGtag();
-    initConsent();
+    // SCRUM-566: single init for every configured backend (GA scripts below
+    // stay GA-gated; PostHog inits here even when GA is dormant — the early
+    // null return below only skips the GA <Script> tags, not these hooks).
+    initAnalytics();
   }, []);
 
   useEffect(() => {

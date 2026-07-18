@@ -1,4 +1,5 @@
 import { updateConsent } from "./gtag";
+import { phUpdateConsent } from "./posthog";
 
 const CONSENT_KEY = "analytics_consent";
 
@@ -22,6 +23,9 @@ export function setConsent(granted: boolean): void {
     console.debug("[Analytics] localStorage write failed:", err);
   }
   updateConsent(granted);
+  // SCRUM-566: PostHog mirrors the same signal — granted upgrades to
+  // persisted analytics, denied drops back to cookieless memory mode.
+  phUpdateConsent(granted);
 }
 
 export function initConsent(): void {

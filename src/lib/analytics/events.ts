@@ -1,4 +1,6 @@
-import { pushEvent } from "./gtag";
+// SCRUM-566: events dispatch through the backend fan-out (GA4 + PostHog),
+// not gtag directly — every typed tracker below feeds both.
+import { pushEvent } from "./dispatch";
 
 // ─── Event Name Constants ───────────────────────────────────────────
 
