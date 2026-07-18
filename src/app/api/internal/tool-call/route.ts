@@ -269,7 +269,11 @@ export async function POST(request: Request) {
             name: parsedArgs.name,
             email: parsedArgs.email,
           },
-          trustedForMutation
+          trustedForMutation,
+          // SCRUM-560: call authority — from the request envelope, never from
+          // `arguments`. Lets the caller cancel the booking THIS call made
+          // even after correcting its contact phone away from the caller ID.
+          isProductionCall ? { callId: payload.callId } : undefined
         );
         break;
 
