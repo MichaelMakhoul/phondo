@@ -22,7 +22,12 @@ import {
 import {
   verifyPhonePossession,
   resolveCallerId,
+  trustedCallIdForOwnership,
 } from "@/lib/calendar/appointment-verification";
+import {
+  resolveRescheduledBooking,
+  stripRescheduleIdentitySlots,
+} from "@/lib/calendar/reschedule-core";
 
 type Result = { data: unknown; error: { message?: string; code?: string } | null };
 
@@ -157,6 +162,48 @@ describe("verifyPhonePossession call authority (SCRUM-560)", () => {
     expect(
       verifyPhonePossession({ attendee_phone: CORRECTED_PHONE, call_id: CALL_ID }, undefined, withheld, CALL_ID),
     ).toBe("match");
+  });
+
+  it("an UPPERCASE envelope uuid is normalized so possession can't miss the lowercase DB row", () => {
+    const gated = trustedCallIdForOwnership(CALL_ID.toUpperCase());
+    expect(gated).toBe(CALL_ID);
+    expect(
+      verifyPhonePossession({ attendee_phone: CORRECTED_PHONE, call_id: CALL_ID }, undefined, verified, gated),
+    ).toBe("match");
+  });
+});
+
+describe("stripRescheduleIdentitySlots (SCRUM-560)", () => {
+  it("clears exactly the identity slots and preserves the edits", () => {
+    const stripped = stripRescheduleIdentitySlots({
+      name: "Jane Smith",
+      email: "jane@example.com",
+      phone: CALLER_PHONE,
+      first_name: "Jane",
+      last_name: "Smyth",
+      notes: "prefers mornings",
+      service_type_id: "st-1",
+      practitioner_id: "prac-1",
+    });
+    expect(stripped.name).toBeUndefined();
+    expect(stripped.email).toBeUndefined();
+    expect(stripped.phone).toBeUndefined();
+    expect(stripped.first_name).toBe("Jane");
+    expect(stripped.last_name).toBe("Smyth");
+    expect(stripped.notes).toBe("prefers mornings");
+    expect(stripped.service_type_id).toBe("st-1");
+    expect(stripped.practitioner_id).toBe("prac-1");
+  });
+
+  it("a same-call reschedule carries the CORRECTED contact phone, not the caller-ID the model echoes", () => {
+    // The SCRUM-558 correction set attendee_phone to CORRECTED_PHONE; the
+    // model passes the caller-ID number as the identity `phone` arg. Without
+    // the strip, the new leg would silently revert the correction.
+    const newLeg = resolveRescheduledBooking(
+      stripRescheduleIdentitySlots({ phone: CALLER_PHONE, name: "Jane Smith" }),
+      { attendee_name: "Jane Smith", attendee_phone: CORRECTED_PHONE, attendee_email: null, notes: null, service_type_id: null, practitioner_id: null },
+    );
+    expect(newLeg.phone).toBe(CORRECTED_PHONE);
   });
 });
 
@@ -312,8 +359,62 @@ describe("handleRescheduleAppointment call authority (SCRUM-560)", () => {
     expect(result.message).toMatch(/more than one upcoming appointment/i);
     expect(captured.ors.length).toBeGreaterThan(0);
     expect(captured.ors[0]).toContain(`call_id.eq.${CALL_ID}`);
+    // BOTH arms must survive — dropping the phone arm would hide the caller's
+    // other bookings whenever call authority is present.
+    expect(captured.ors[0]).toContain("attendee_phone.ilike.");
     // Disambiguation options must not leak identity (SCRUM-438 invariant).
     expect(result.message).not.toContain("Jane");
     expect(result.message).not.toContain("111111");
+  });
+
+  it("code path: this call's corrected-phone booking is accepted on authority — no phone-path fallthrough", async () => {
+    // The discriminator: when the code row passes possession via authority,
+    // the phone-branch candidate query NEVER runs (no ilike, no or). The
+    // mutant that drops authorityCallId at the code site falls through to
+    // the phone path and issues that query.
+    vi.mocked(createAdminClient).mockReturnValue(
+      fakeAdmin(
+        {
+          organizations: [orgVerification(null)],
+          appointments: [
+            { data: [apptRow({ attendee_phone: CORRECTED_PHONE, call_id: CALL_ID, confirmation_code: "222222" })], error: null }, // code lookup (limit 2)
+          ],
+        },
+        captured,
+      ) as never,
+    );
+
+    const result = await handleRescheduleAppointment(
+      ORG,
+      { confirmation_code: "222222", phone: CALLER_PHONE, new_datetime: "2027-07-15T10:00:00" },
+      { callerIdState: "verified", verifiedCallerPhone: CALLER_PHONE },
+      { callId: CALL_ID },
+    );
+
+    expect(captured.ors.length).toBe(0);
+    expect(captured.ilikes.length).toBe(0);
+    expect(result.message).not.toMatch(/couldn't find an upcoming appointment/i);
+  });
+
+  it("a malformed callId keeps the reschedule query on the plain ilike path", async () => {
+    vi.mocked(createAdminClient).mockReturnValue(
+      fakeAdmin(
+        {
+          organizations: [orgVerification(null)],
+          appointments: [{ data: [apptRow()], error: null }],
+        },
+        captured,
+      ) as never,
+    );
+
+    await handleRescheduleAppointment(
+      ORG,
+      { phone: CALLER_PHONE, new_datetime: "2027-07-15T10:00:00" },
+      { callerIdState: "verified", verifiedCallerPhone: CALLER_PHONE },
+      { callId: "definitely-not-a-uuid" },
+    );
+
+    expect(captured.ors.length).toBe(0);
+    expect(captured.ilikes.length).toBeGreaterThan(0);
   });
 });

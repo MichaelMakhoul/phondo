@@ -159,6 +159,38 @@ describe("cancel/reschedule call-authority threading (SCRUM-560)", () => {
     expect(call[3]).toBeUndefined();
   });
 
+  it("cancel_appointment: a callId smuggled through model `arguments` never wins over the envelope", async () => {
+    const SMUGGLED = "9e8d7c6b-5a4f-4e3d-8c2b-1a0f9e8d7c6b";
+    await post({
+      organizationId: ORG,
+      assistantId: "asst-1",
+      functionName: "cancel_appointment",
+      arguments: { phone: CALLER, callId: SMUGGLED },
+      callId: CALL_ID,
+      callerIdState: "verified",
+      callerPhone: CALLER,
+    });
+
+    const call = vi.mocked(handleCancelAppointment).mock.calls[0];
+    expect(call[3]).toEqual({ callId: CALL_ID });
+  });
+
+  it("reschedule_appointment: a callId smuggled through model `arguments` never wins over the envelope", async () => {
+    const SMUGGLED = "9e8d7c6b-5a4f-4e3d-8c2b-1a0f9e8d7c6b";
+    await post({
+      organizationId: ORG,
+      assistantId: "asst-1",
+      functionName: "reschedule_appointment",
+      arguments: { phone: CALLER, new_datetime: "2027-07-15T10:00:00", callId: SMUGGLED },
+      callId: CALL_ID,
+      callerIdState: "verified",
+      callerPhone: CALLER,
+    });
+
+    const call = vi.mocked(handleRescheduleAppointment).mock.calls[0];
+    expect(call[3]).toEqual({ callId: CALL_ID });
+  });
+
   it("reschedule_appointment keeps its envelope callId threading (existing linkage pin)", async () => {
     await post({
       organizationId: ORG,

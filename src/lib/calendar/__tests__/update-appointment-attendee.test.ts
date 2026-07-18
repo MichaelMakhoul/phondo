@@ -410,7 +410,10 @@ describe("handleUpdateAppointmentAttendee (SCRUM-557)", () => {
       { callId: CALL, verifiedCallerPhone: "+61400000001" } as never
     );
     expect(result.success).toBe(true);
-    expect(result.message).toMatch(/security checks for cancelling or rescheduling this booking now go by the NEW number/);
+    // SCRUM-560 reword: same-call changes now WORK via call authority — the
+    // warning must say so, and scope the new-number caveat to FUTURE calls.
+    expect(result.message).toMatch(/still cancel or reschedule this booking normally during THIS call/i);
+    expect(result.message).toMatch(/For LATER calls, security goes by the NEW number/i);
   });
 
   it("phone corrected but still matching caller ID (formatting fix): NO possession warning", async () => {

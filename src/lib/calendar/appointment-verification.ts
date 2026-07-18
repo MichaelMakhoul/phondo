@@ -202,7 +202,9 @@ export function resolveCallerId(trusted?: {
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export function trustedCallIdForOwnership(callId: string | undefined | null): string | undefined {
   const v = typeof callId === "string" ? callId.trim() : "";
-  return v && UUID_RE.test(v) ? v : undefined;
+  // Lowercased so the strict === in verifyPhonePossession can never miss a
+  // row the SQL call_id.eq filter surfaced (uuid columns render lowercase).
+  return v && UUID_RE.test(v) ? v.toLowerCase() : undefined;
 }
 
 /**

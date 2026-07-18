@@ -66,6 +66,26 @@ interface ExistingForCarryover {
 }
 
 /**
+ * SCRUM-438/560: the reschedule args' identity/lookup slots verify WHO the
+ * caller is — they are never edits, so they must not flow into the new leg:
+ *  - name/email: a partial verification name ("Jane" contains-matching "Jane
+ *    Smith") or a model-collected verification email would silently overwrite
+ *    the carried-over contact details (SCRUM-438).
+ *  - phone: the schema tells the model to pass the CALLER-ID number here. On
+ *    a booking whose contact phone was just corrected away from the caller ID
+ *    (update_appointment, SCRUM-558) — reachable same-call via SCRUM-560 call
+ *    authority — letting it through books the new leg under the OLD number,
+ *    silently reverting the correction the caller was told is "fixed".
+ * Contact-detail changes are update_appointment's job; a rename still works
+ * via a complete first_name + last_name.
+ */
+export function stripRescheduleIdentitySlots<
+  T extends { name?: string; email?: string; phone?: string }
+>(args: T): T {
+  return { ...args, name: undefined, email: undefined, phone: undefined };
+}
+
+/**
  * SCRUM-390/399: build the field set for a reschedule's NEW booking, defaulting
  * every field to the existing appointment unless the caller explicitly supplied a
  * new value — a move changes ONLY what was asked for. Used by the AI path to feed
