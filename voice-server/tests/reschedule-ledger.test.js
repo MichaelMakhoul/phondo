@@ -1,7 +1,7 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { applyRescheduleToLedger } = require("../lib/reschedule-ledger");
+const { applyRescheduleToLedger, RESCHEDULE_SUCCESS_SIGNAL } = require("../lib/reschedule-ledger");
 const { bookingKey } = require("../lib/booking-key");
 
 /**
@@ -60,6 +60,15 @@ describe("applyRescheduleToLedger — the move", () => {
     });
     assert.equal(res.moved, true);
     assert.ok(map.get(bookingKey({ datetime: "2026-07-21T09:00:00", first_name: "John" })));
+
+    // Offset vs Z spellings of the SAME instant also fold to one key.
+    const map2 = seedLedger({ datetime: "2026-07-20T09:00:00+10:00", first_name: "John" });
+    const res2 = applyRescheduleToLedger(map2, {
+      current_datetime: "2026-07-19T23:00:00Z",
+      new_datetime: "2026-07-21T09:00:00+10:00",
+    });
+    assert.equal(res2.moved, true);
+    assert.ok(map2.get(bookingKey({ datetime: "2026-07-21T09:00:00+10:00", first_name: "John" })));
   });
 
   it("reports fromKey and toKey for call-site logging", () => {
@@ -215,6 +224,28 @@ describe("applyRescheduleToLedger — current_date fallback", () => {
     assert.ok(map.get(bookingKey({ datetime: "2026-07-21T10:00:00", first_name: "John" })));
   });
 
+  it("matches an offset datetime whose UTC date differs from the literal date (AU morning)", () => {
+    // The key's date is UTC-shifted (2026-07-19T23:00) but current_date is
+    // the org-local literal — the fallback must compare against the LITERAL
+    // datetime the booking was made with, never the key. Under TZ=UTC (CI,
+    // Fly) a key-based comparison passes every naive-datetime test and only
+    // breaks for real AU callers.
+    const booked = "2026-07-20T09:00:00+10:00";
+    const map = new Map();
+    map.set(bookingKey({ datetime: booked, first_name: "John" }), {
+      code: "123456", datetime: booked, name: "John Smith", at: 1000,
+    });
+
+    const res = applyRescheduleToLedger(map, {
+      current_date: "2026-07-20",
+      new_datetime: "2026-07-21T10:00:00+10:00",
+    });
+
+    assert.equal(res.moved, true);
+    assert.equal(map.size, 1);
+    assert.ok(map.get(bookingKey({ datetime: "2026-07-21T10:00:00+10:00", first_name: "John" })));
+  });
+
   it("with two same-day entries and no name, moves nothing", () => {
     const map = seedLedger({ datetime: "2026-07-20T09:00:00", first_name: "John" });
     map.set(bookingKey({ datetime: "2026-07-20T11:00:00", first_name: "John" }), { code: "654321", datetime: "2026-07-20T11:00:00", name: "John", at: 1500 });
@@ -223,6 +254,28 @@ describe("applyRescheduleToLedger — current_date fallback", () => {
     assert.equal(res.moved, false);
     assert.equal(res.ambiguous, true);
     assert.equal(map.size, 2);
+  });
+});
+
+describe("RESCHEDULE_SUCCESS_SIGNAL — the structured-less success gate", () => {
+  it("admits the only structured-less success: the test-mode simulated message", () => {
+    assert.ok(RESCHEDULE_SUCCESS_SIGNAL.test("Done — I've moved your appointment from 2026-07-20T09:00:00 to 2026-07-20T10:00:00."));
+    assert.ok(RESCHEDULE_SUCCESS_SIGNAL.test("Done — I've moved your appointment to the new time."));
+  });
+
+  it("rejects every tool-executor infra-failure message (each audits as successful)", () => {
+    // Verbatim from services/tool-executor.js — the three bare {message}
+    // returns with no success/error field: missing config, internal-API
+    // non-OK, fetch throw/timeout. If any of these ever matches, a failed
+    // reschedule moves the ledger again.
+    const infraFailures = [
+      "I'm sorry, I'm unable to access the calendar system right now. Would you like me to take your information instead?",
+      "I'm having trouble with that right now. Would you like me to take your information instead?",
+      "I'm having a little trouble right now. Could you give me a moment?",
+    ];
+    for (const message of infraFailures) {
+      assert.ok(!RESCHEDULE_SUCCESS_SIGNAL.test(message), `must reject: "${message}"`);
+    }
   });
 });
 

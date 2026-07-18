@@ -30,6 +30,21 @@
 const { bookingKey, normalizeName, normalizeDatetime } = require("./booking-key");
 
 /**
+ * Positive success signal for a reschedule result that carries NO structured
+ * `success` boolean. The real internal-API handler returns `success` on every
+ * business path, so a structured-less result is either the test-mode simulated
+ * success ("Done — I've moved your appointment…") or one of the tool-executor
+ * INFRA failures (missing config / internal-API 5xx / fetch timeout) — bare
+ * `{ message }` objects whose apologetic text carries neither `error` nor
+ * `success:false`. Without this gate the audit-entry fallback reads those as
+ * success and a timed-out reschedule would still move the ledger: the old
+ * entry vanishes (re-book of the still-live slot slips the guard into the DB
+ * overlap constraint) and a phantom entry blocks the new time — the very bug
+ * SCRUM-563 fixes, re-created on the failure path.
+ */
+const RESCHEDULE_SUCCESS_SIGNAL = /\b(moved your appointment|i'?ve moved|rescheduled|changed your appointment)\b/i;
+
+/**
  * A confirmedBookings ledger entry. server.js stores {code, datetime, name,
  * practitioner_id, at}; conversationrelay.js stores a lean {code, at} — every
  * field except `at` is optional here so both shapes move cleanly.
@@ -120,4 +135,4 @@ function applyRescheduleToLedger(confirmedBookings, args = {}, now = Date.now())
   return { moved: true, fromKey, toKey };
 }
 
-module.exports = { applyRescheduleToLedger };
+module.exports = { applyRescheduleToLedger, RESCHEDULE_SUCCESS_SIGNAL };

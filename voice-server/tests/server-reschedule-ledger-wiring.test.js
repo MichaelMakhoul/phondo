@@ -36,16 +36,39 @@ describe("SCRUM-563: reschedule ledger-move wiring", () => {
     assert.ok(gated.length >= 2, `expected ≥2 success-gated sites, got ${gated.length}`);
   });
 
+  it("both server.js fallback branches demand the positive success signal", () => {
+    // The tool-executor INFRA failures (config missing / 5xx / timeout) are
+    // bare {message} shapes the audit records as SUCCESSFUL — without the
+    // signal test, a timed-out reschedule moves the ledger for a reschedule
+    // that never happened.
+    const guarded = src.match(/lastAudit\.successful === true && RESCHEDULE_SUCCESS_SIGNAL\.test\(/g) || [];
+    assert.ok(guarded.length >= 2, `expected ≥2 signal-guarded fallbacks, got ${guarded.length}`);
+  });
+
+  it("the ambiguous no-move pages via the Sentry shim at both server.js sites", () => {
+    const pages = src.match(/Reschedule ledger move ambiguous — stale entry left/g) || [];
+    assert.ok(pages.length >= 2, `expected ≥2 ambiguous-page sites, got ${pages.length}`);
+  });
+
   it("a successful reschedule also invalidates the schedule snapshot cache at both sites", () => {
     // book applies a cache delta and cancel invalidates, but reschedule used
     // to leave the pre-loaded availability stale on BOTH slots (old shown
     // taken, new shown free).
-    const sites = src.match(/applyRescheduleToLedger\(session\.confirmedBookings[^]{0,1200}?scheduleCache\.invalidate\(session\.organizationId\)/g) || [];
+    const sites = src.match(/applyRescheduleToLedger\(session\.confirmedBookings[^]{0,2500}?scheduleCache\.invalidate\(session\.organizationId\)/g) || [];
     assert.ok(sites.length >= 2, `expected cache invalidation next to ≥2 ledger-move sites, got ${sites.length}`);
   });
 
   it("conversationrelay pipeline moves the ledger on a successful reschedule", () => {
     assert.match(crSrc, /require\("\.\.\/lib\/reschedule-ledger"\)/);
-    assert.match(crSrc, /name === "reschedule_appointment" && successful[^]{0,300}?applyRescheduleToLedger\(session\.confirmedBookings/);
+    assert.match(crSrc, /name === "reschedule_appointment"\)[^]{0,600}?applyRescheduleToLedger\(session\.confirmedBookings/);
+    // Same fallback discipline as server.js — PROSE_FAIL_SIGNAL misses the
+    // "having trouble" infra shapes, so the positive signal is load-bearing.
+    assert.match(crSrc, /successful && RESCHEDULE_SUCCESS_SIGNAL\.test\(message\)/);
+  });
+
+  it("conversationrelay book entries carry the full server.js shape", () => {
+    // A lean {code, at} entry silently kills the reschedule move's
+    // current_date fallback (it matches on entry.datetime) on this pipeline.
+    assert.match(crSrc, /confirmedBookings\.set\(bookKey, \{[^]{0,200}?datetime: args\.datetime/);
   });
 });

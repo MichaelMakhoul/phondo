@@ -29,7 +29,7 @@ const { Sentry } = require("../lib/sentry");
 const { DEBUG_TRANSCRIPTS, logTranscript, logToolCall } = require("../lib/log-transcript");
 const { maskPhone } = require("../lib/mask-phone");
 const { bookingKey } = require("../lib/booking-key");
-const { applyRescheduleToLedger } = require("../lib/reschedule-ledger"); // SCRUM-563
+const { applyRescheduleToLedger, RESCHEDULE_SUCCESS_SIGNAL } = require("../lib/reschedule-ledger"); // SCRUM-563
 const { CallSession } = require("../call-session");
 const { loadCallContext } = require("../lib/call-context");
 const { buildSystemPrompt, getGreeting } = require("../lib/prompt-builder");
@@ -310,16 +310,38 @@ async function runGuardedToolCall(session, toolCall, deps = {}) {
     if (!session.confirmedBookings) session.confirmedBookings = new Map();
     const bookKey = bookingKey(args);
     const codeMatch = message.match(/\b(\d{6})\b/);
-    session.confirmedBookings.set(bookKey, { code: codeMatch?.[1] || "unknown", at: now() });
+    // SCRUM-563: full server.js entry shape (was a lean {code, at}) — the
+    // reschedule move's current_date fallback matches on entry.datetime, so
+    // a lean entry silently killed that whole matching path on this pipeline.
+    session.confirmedBookings.set(bookKey, {
+      code: codeMatch?.[1] || "unknown",
+      datetime: args.datetime,
+      name: `${args.first_name || ""} ${args.last_name || ""}`.trim(),
+      practitioner_id: args.practitioner_id,
+      at: now(),
+    });
   }
   if (name === "cancel_appointment" && successful) {
     if (session.confirmedBookings) session.confirmedBookings.clear();
   }
   // SCRUM-563: mirror the server.js pipelines — a successful reschedule moves
   // this call's dedupe entry to the new slot instead of leaving the old one
-  // to false-block a legitimate re-book at the freed time.
-  if (name === "reschedule_appointment" && successful) {
-    applyRescheduleToLedger(session.confirmedBookings, args, now());
+  // to false-block a legitimate re-book at the freed time. The fallback
+  // demands the positive signal for the same reason as server.js: the infra
+  // failures ("having trouble...") are bare {message} shapes that
+  // PROSE_FAIL_SIGNAL doesn't catch, and a failed reschedule must not move
+  // the ledger.
+  if (name === "reschedule_appointment") {
+    const rescheduleOk =
+      typeof result === "object" && result !== null && typeof result.success === "boolean"
+        ? result.success
+        : successful && RESCHEDULE_SUCCESS_SIGNAL.test(message);
+    if (rescheduleOk) {
+      const move = applyRescheduleToLedger(session.confirmedBookings, args, now());
+      if (move.ambiguous) {
+        console.warn(`[ConversationRelay] Reschedule ledger move ambiguous — entries left untouched. callSid=${session.callSid}`);
+      }
+    }
   }
 
   return { content: message + directive, held: false, endCall: !!(typeof result === "object" && result?.__endCall) };
