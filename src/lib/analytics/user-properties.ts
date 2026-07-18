@@ -1,4 +1,5 @@
 import { setUserProperties as gtagSetUserProperties } from "./gtag";
+import { phIdentify } from "./posthog";
 
 export interface UserIdentityParams {
   userId: string;
@@ -38,6 +39,18 @@ export async function identifyUser(params: UserIdentityParams): Promise<void> {
     gtagSetUserProperties({
       user_id_hash: hashedUserId,
       organization_id_hash: hashedOrgId,
+      plan_type: params.planType ?? "none",
+      industry: params.industry ?? "unknown",
+      country: params.country ?? "unknown",
+      ...(params.assistantCount !== undefined && { assistant_count: params.assistantCount }),
+      ...(params.phoneNumberCount !== undefined && { phone_number_count: params.phoneNumberCount }),
+    });
+
+    // SCRUM-566: PostHog gets the RAW uuid as the person's distinct id (the
+    // pseudonymous join key its person profiles are built on — hashing would
+    // orphan cross-tool lookups; see posthog.ts). No email/name is sent.
+    phIdentify(params.userId, {
+      organization_id: params.organizationId,
       plan_type: params.planType ?? "none",
       industry: params.industry ?? "unknown",
       country: params.country ?? "unknown",

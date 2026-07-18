@@ -14,7 +14,12 @@ export const config = {
      * - favicon.ico (favicon file)
      * - public folder
      * - api routes (we handle auth separately in API routes)
+     * - ingest (PostHog proxy, SCRUM-566 — running updateSession's
+     *   supabase.auth.getUser() on every analytics beacon adds a Supabase
+     *   Auth round-trip per event batch AND enrolls beacons in the
+     *   concurrent-token-refresh race; the proxy route also strips cookies,
+     *   so auth has no business there)
      */
-    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$|api).*)",
+    "/((?!_next/static|_next/image|favicon.ico|ingest/|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$|api).*)",
   ],
 };

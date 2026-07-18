@@ -43,6 +43,10 @@ const securityHeaders = [
 ];
 
 const nextConfig: NextConfig = {
+  // SCRUM-566: the first-party PostHog proxy lives in
+  // src/app/ingest/[...path]/route.ts (a route handler, NOT a rewrite —
+  // external rewrites forward the Supabase auth cookies to the destination;
+  // the handler strips them). Same-origin, so the CSP needs no new hosts.
   experimental: {
     serverActions: {
       bodySizeLimit: "2mb",
