@@ -22,6 +22,7 @@ const { loadCallContext, loadTestCallContext, loadScheduleSnapshot } = require("
 const { buildSystemPrompt, getGreeting, buildLiveScheduleSection } = require("./lib/prompt-builder");
 const scheduleCache = require("./lib/schedule-cache");
 const { bookingKey, normalizeDatetime } = require("./lib/booking-key");
+const { applyRescheduleToLedger, RESCHEDULE_SUCCESS_SIGNAL } = require("./lib/reschedule-ledger"); // SCRUM-563
 const { classifyRebookAttempt, DUPLICATE_REBOOK_MESSAGE, CORRECTION_ERROR_MESSAGE, CANCEL_NUDGE } = require("./lib/rebook-correction"); // SCRUM-557
 const { createCallRecord, completeCallRecord, notifyCallCompleted, applyReanalysis } = require("./lib/call-logger");
 const { calendarToolDefinitions, listServiceTypesToolDefinition, transferToolDefinition, callbackToolDefinition, endCallToolDefinition, executeToolCall } = require("./services/tool-executor");
@@ -2573,6 +2574,55 @@ wss.on("connection", (twilioWs) => {
                     message += CANCEL_NUDGE;
                   }
 
+                  // SCRUM-563: a successful reschedule MOVES this call's ledger
+                  // entry — book writes it, cancel clears it, but reschedule
+                  // used to leave the OLD slot vouched-for, so RebookGuard
+                  // refused a legitimate re-book at the freed time ("already
+                  // booked... LOCKED") for the rest of the call. Same
+                  // authoritative-flag pattern as cancelOk above. The fallback
+                  // additionally requires a positive success signal: the ONLY
+                  // structured-less results reschedule can produce are the
+                  // test-mode simulated success and the tool-executor INFRA
+                  // failures (config missing / 5xx / timeout) — bare
+                  // `{message}` shapes the audit records as successful, which
+                  // would move the ledger on a reschedule that never happened.
+                  if (session && toolCall.name === "reschedule_appointment") {
+                    const lastAudit = session.toolCallAudit[session.toolCallAudit.length - 1] || {};
+                    const rescheduleOk =
+                      typeof result === "object" && result !== null && typeof result.success === "boolean"
+                        ? result.success
+                        : lastAudit.successful === true && RESCHEDULE_SUCCESS_SIGNAL.test(message);
+                    if (rescheduleOk) {
+                      const move = applyRescheduleToLedger(session.confirmedBookings, toolCall.args, Date.now());
+                      if (move.moved) {
+                        console.log(`[RebookGuard] Reschedule moved ledger entry ${move.fromKey} -> ${move.toKey}. callSid=${session.callSid}`);
+                      } else if (move.ambiguous) {
+                        // A stale entry is now guaranteed to false-block the
+                        // freed slot for the rest of the call — page like the
+                        // sibling duplicate-block does; near-impossible
+                        // precondition makes a page-per-occurrence cheap.
+                        console.warn(`[RebookGuard] Reschedule ledger move ambiguous — entries left untouched. callSid=${session.callSid}`);
+                        Sentry.withScope((scope) => {
+                          scope.setTag("service", "rebook_guard");
+                          scope.setExtras({ callSid: session.callSid, attemptedDatetime: toolCall.args?.current_datetime || toolCall.args?.current_date });
+                          Sentry.captureMessage("Reschedule ledger move ambiguous — stale entry left", "warning");
+                        });
+                      } else if (session.confirmedBookings?.size > 0) {
+                        // Breadcrumb only: legitimately reached when a PRIOR-
+                        // call appointment is moved while this call also booked
+                        // something, but it's the one trace of key-fold drift.
+                        console.log(`[RebookGuard] Reschedule matched no this-call ledger entry (${session.confirmedBookings.size} held). callSid=${session.callSid}`);
+                      }
+                      // The move also freed the old slot and took the new one —
+                      // the pre-loaded availability snapshot is stale on both
+                      // counts (book/cancel already maintain the cache below;
+                      // reschedule never did).
+                      if (session.scheduleSnapshot) {
+                        scheduleCache.invalidate(session.organizationId);
+                      }
+                    }
+                  }
+
                   // Apply cache delta for writes — guard against cleanup race
                   if (session && session.scheduleSnapshot) {
                     if (toolCall.name === "book_appointment" && (message.includes("confirmed") || message.includes("booked") || message.includes("confirmation"))) {
@@ -3528,6 +3578,37 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
           if (fnName === "cancel_appointment" && cancelOk) {
             if (session.confirmedBookings) session.confirmedBookings.clear();
             resultMessage += CANCEL_NUDGE; // SCRUM-557: nothing is booked now — say so in the tool result
+          }
+
+          // SCRUM-563: move this call's ledger entry on a successful reschedule
+          // (classic pipeline — mirrors the Gemini site; see it for the story,
+          // including why the fallback requires the positive success signal).
+          if (fnName === "reschedule_appointment") {
+            const lastAudit = (session.toolCallAudit && session.toolCallAudit[session.toolCallAudit.length - 1]) || {};
+            const rescheduleOk =
+              typeof toolResult === "object" && toolResult !== null && typeof toolResult.success === "boolean"
+                ? toolResult.success
+                : lastAudit.successful === true && RESCHEDULE_SUCCESS_SIGNAL.test(resultMessage);
+            if (rescheduleOk) {
+              const move = applyRescheduleToLedger(session.confirmedBookings, fnArgs, Date.now());
+              if (move.moved) {
+                console.log(`[RebookGuard] Reschedule moved ledger entry ${move.fromKey} -> ${move.toKey} (classic). callSid=${session.callSid}`);
+              } else if (move.ambiguous) {
+                console.warn(`[RebookGuard] Reschedule ledger move ambiguous — entries left untouched (classic). callSid=${session.callSid}`);
+                Sentry.withScope((scope) => {
+                  scope.setTag("service", "rebook_guard");
+                  scope.setExtras({ callSid: session.callSid, attemptedDatetime: fnArgs?.current_datetime || fnArgs?.current_date });
+                  Sentry.captureMessage("Reschedule ledger move ambiguous — stale entry left (classic)", "warning");
+                });
+              } else if (session.confirmedBookings?.size > 0) {
+                console.log(`[RebookGuard] Reschedule matched no this-call ledger entry (${session.confirmedBookings.size} held, classic). callSid=${session.callSid}`);
+              }
+              // Reschedule frees the old slot and takes the new one — the
+              // snapshot cache is stale on both counts.
+              if (session.scheduleSnapshot) {
+                scheduleCache.invalidate(session.organizationId);
+              }
+            }
           }
 
           // Apply optimistic cache delta for write operations
