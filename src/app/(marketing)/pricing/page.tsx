@@ -30,7 +30,7 @@ export default function PricingPage() {
               Simple, transparent pricing
             </h1>
             <p className="mx-auto mt-4 max-w-2xl text-lg text-slate-400">
-              Start with a 14-day free trial. No credit card required.
+              Start with a 30-day free trial. No credit card required.
               Cancel anytime.
             </p>
           </div>
@@ -141,7 +141,7 @@ export default function PricingPage() {
               Ready to never miss a call again?
             </h2>
             <p className="mx-auto mt-4 max-w-xl text-slate-400">
-              14-day free trial. No credit card required. Set up in 5 minutes.
+              30-day free trial. No credit card required. Set up in 5 minutes.
             </p>
             <div className="mt-8">
               <Link href="/signup">

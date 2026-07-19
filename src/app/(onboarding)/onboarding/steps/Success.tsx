@@ -57,7 +57,7 @@ export function Success({ businessName, planName, phoneNumber, countryCode }: Su
 
   const completedItems = [
     { icon: Sparkles, label: "AI receptionist created and trained" },
-    { icon: Shield, label: "14-day free trial activated" },
+    { icon: Shield, label: "30-day free trial activated" },
     ...(phoneNumber
       ? [{ icon: Phone, label: `Phone number active: ${formattedNumber}` }]
       : []),

@@ -505,7 +505,7 @@ export default function DemoPage() {
               Ready to Never Miss a Call Again?
             </h2>
             <p className="text-slate-400 mb-8 max-w-xl mx-auto">
-              Start your 14-day free trial today. No credit card required.
+              Start your 30-day free trial today. No credit card required.
               Set up in 5 minutes.
             </p>
             <Link href="/signup">

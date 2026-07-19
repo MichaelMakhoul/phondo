@@ -515,7 +515,7 @@ export async function createSubscriptionCheckout(
     ],
     mode: "subscription",
     subscription_data: {
-      trial_period_days: ("trialDays" in planConfig ? planConfig.trialDays : 14) || 14,
+      trial_period_days: ("trialDays" in planConfig ? planConfig.trialDays : 30) || 30,
       metadata: {
         organizationId,
         plan,

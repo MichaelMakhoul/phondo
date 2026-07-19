@@ -39,7 +39,7 @@ import { formatCurrency } from "@/lib/utils";
 export const metadata: Metadata = {
   title: "Phondo | AI Receptionist for Australian Businesses",
   description:
-    "Never miss a call again. AI-powered phone receptionist that answers calls, books appointments, and recovers missed revenue 24/7. Built for Australian SMBs. 14-day free trial.",
+    "Never miss a call again. AI-powered phone receptionist that answers calls, books appointments, and recovers missed revenue 24/7. Built for Australian SMBs. 30-day free trial.",
   keywords: [
     "AI receptionist",
     "AI receptionist Australia",
@@ -230,7 +230,7 @@ export default function LandingPage() {
             <div className="mt-10 flex flex-col items-center justify-center gap-4 animate-fade-in-up-delay-3 sm:flex-row">
               <Link href="/signup">
                 <Button size="lg" className="gap-2 bg-orange-500 text-white hover:bg-orange-600 animate-glow-pulse">
-                  Start 14-Day Free Trial
+                  Start 30-Day Free Trial
                   <ArrowRight className="h-4 w-4" />
                 </Button>
               </Link>
@@ -628,7 +628,7 @@ export default function LandingPage() {
             <AnimateOnScroll className="text-center">
               <h2 className="text-3xl font-bold">Simple, transparent pricing</h2>
               <p className="mt-3 text-muted-foreground">
-                All prices in AUD. Start with a 14-day free trial. No credit card required.
+                All prices in AUD. Start with a 30-day free trial. No credit card required.
               </p>
             </AnimateOnScroll>
             <div className="mx-auto mt-14 grid max-w-5xl gap-8 md:grid-cols-3">
@@ -704,7 +704,7 @@ export default function LandingPage() {
             </h2>
             <p className="mx-auto mt-4 max-w-xl text-slate-400">
               Join Australian businesses that never miss a call. Set up in
-              under 5 minutes, 14-day free trial, cancel anytime.
+              under 5 minutes, 30-day free trial, cancel anytime.
             </p>
             <div className="mt-8 flex flex-col items-center justify-center gap-4 sm:flex-row">
               <Link href="/signup">

@@ -120,7 +120,7 @@ export async function POST(request: Request) {
     const plan: PlanType = planType as PlanType;
     const planConfig = PLANS[plan];
 
-    const trialDays = "trialDays" in planConfig ? planConfig.trialDays : 14;
+    const trialDays = "trialDays" in planConfig ? planConfig.trialDays : 30;
     const trialEnd = new Date();
     trialEnd.setDate(trialEnd.getDate() + trialDays);
 
