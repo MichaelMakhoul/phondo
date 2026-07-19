@@ -230,7 +230,7 @@ export default function LandingPage() {
             <div className="mt-10 flex flex-col items-center justify-center gap-4 animate-fade-in-up-delay-3 sm:flex-row">
               <Link href="/signup">
                 <Button size="lg" className="gap-2 bg-orange-500 text-white hover:bg-orange-600 animate-glow-pulse">
-                  Start 14-Day Free Trial
+                  Start 30-Day Free Trial
                   <ArrowRight className="h-4 w-4" />
                 </Button>
               </Link>
