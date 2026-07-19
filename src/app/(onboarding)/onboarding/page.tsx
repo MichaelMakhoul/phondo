@@ -102,7 +102,7 @@ const initialData: OnboardingData = {
 
 // Pre-launch lockdown (SCRUM-215): mirrors the server-side PROVISIONING_ENABLED
 // gate. When off (default), the Go Live step hides paid plans + number search and
-// everyone completes on the 14-day free trial; set to "true" at launch to restore
+// everyone completes on the 30-day free trial; set to "true" at launch to restore
 // the full number + plan selection flow.
 const PROVISIONING_ENABLED = process.env.NEXT_PUBLIC_PROVISIONING_ENABLED === "true";
 
@@ -269,7 +269,7 @@ export default function OnboardingPage() {
         return true; // Test call is optional
       case 5: {
         // Early access (provisioning off): no number/plan required — everyone
-        // completes on the 14-day trial. Full requirement returns at launch.
+        // completes on the 30-day trial. Full requirement returns at launch.
         return PROVISIONING_ENABLED
           ? data.selectedPhoneNumber !== "" && data.selectedPlan !== ""
           : true;

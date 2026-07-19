@@ -27,7 +27,7 @@ interface GoLiveProps {
   };
   countryCode: string;
   // Pre-launch lockdown: when false (early access), hide the number search +
-  // paid plans and let the user complete on the 14-day trial.
+  // paid plans and let the user complete on the 30-day trial.
   provisioningEnabled: boolean;
   onChange: (data: Partial<GoLiveProps["data"]>) => void;
 }
@@ -112,11 +112,11 @@ export function GoLive({ data, countryCode, provisioningEnabled, onChange }: GoL
       {!provisioningEnabled && (
         <div className="rounded-lg border border-primary/30 bg-primary/5 p-4">
           <Badge variant="secondary" className="bg-green-100 text-green-700">
-            14-day free trial
+            30-day free trial
           </Badge>
           <h3 className="mt-3 text-lg font-medium">You&apos;re ready to go live</h3>
           <p className="mt-1 text-sm text-muted-foreground">
-            Your AI receptionist is set up. You&apos;re starting on the 14-day free
+            Your AI receptionist is set up. You&apos;re starting on the 30-day free
             trial, with no plan to choose and no payment required right now. We&apos;ll
             help you set up your phone number as part of early access. Questions? Email{" "}
             <a href="mailto:hello@phondo.ai" className="text-primary hover:underline">
@@ -287,11 +287,11 @@ export function GoLive({ data, countryCode, provisioningEnabled, onChange }: GoL
           <div>
             <h3 className="text-lg font-medium">Choose Your Plan</h3>
             <p className="text-sm text-muted-foreground">
-              Start with a 14-day free trial - no credit card required
+              Start with a 30-day free trial - no credit card required
             </p>
           </div>
           <Badge variant="secondary" className="bg-green-100 text-green-700">
-            14-day free trial
+            30-day free trial
           </Badge>
         </div>
 

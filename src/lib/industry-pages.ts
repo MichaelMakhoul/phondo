@@ -110,7 +110,7 @@ export const INDUSTRY_PAGES: IndustryPage[] = [
     ],
     ctaTitle: "Stop losing patients to voicemail",
     ctaDescription:
-      "Every missed call is a patient who books with another practice. Start your 14-day free trial and answer every call from day one.",
+      "Every missed call is a patient who books with another practice. Start your 30-day free trial and answer every call from day one.",
   },
   {
     slug: "legal",
@@ -193,7 +193,7 @@ export const INDUSTRY_PAGES: IndustryPage[] = [
     ],
     ctaTitle: "Never miss a potential client again",
     ctaDescription:
-      "85% of callers who reach voicemail never call back. Start your 14-day free trial and capture every legal enquiry, 24/7.",
+      "85% of callers who reach voicemail never call back. Start your 30-day free trial and capture every legal enquiry, 24/7.",
   },
   {
     slug: "home-services",
@@ -276,7 +276,7 @@ export const INDUSTRY_PAGES: IndustryPage[] = [
     ],
     ctaTitle: "Stop losing jobs to missed calls",
     ctaDescription:
-      "73% of homeowners hire the first tradie who answers the phone. Start your 14-day free trial and never miss a job again.",
+      "73% of homeowners hire the first tradie who answers the phone. Start your 30-day free trial and never miss a job again.",
   },
   // Phase 2 — requires CRM/listing integration
   // {
@@ -360,7 +360,7 @@ export const INDUSTRY_PAGES: IndustryPage[] = [
   //   ],
   //   ctaTitle: "Capture every property lead, day and night",
   //   ctaDescription:
-  //     "78% of property enquiries happen outside business hours. Start your 14-day free trial and never miss a buyer again.",
+  //     "78% of property enquiries happen outside business hours. Start your 30-day free trial and never miss a buyer again.",
   // },
 ];
 

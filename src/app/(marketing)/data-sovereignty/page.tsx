@@ -239,7 +239,7 @@ export default function DataSovereigntyPage() {
                 Ready to keep your data in Australia?
               </h2>
               <p className="mx-auto mt-4 max-w-xl text-muted-foreground">
-                Start your 14-day free trial. No credit card required. Your
+                Start your 30-day free trial. No credit card required. Your
                 business data is stored on Australian servers from day one.
               </p>
               <div className="mt-8 flex flex-col items-center gap-4 sm:flex-row sm:justify-center">

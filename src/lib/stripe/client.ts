@@ -32,7 +32,7 @@ export const PLANS = {
     practitioners: false,
     practitionersLimit: 0,
     highlighted: false,
-    trialDays: 14,
+    trialDays: 30,
     stripePriceId: process.env.STRIPE_STARTER_PRICE_ID,
     features: [
       "150 calls/month",
@@ -62,7 +62,7 @@ export const PLANS = {
     practitioners: true,
     practitionersLimit: 5,
     highlighted: true,
-    trialDays: 14,
+    trialDays: 30,
     stripePriceId: process.env.STRIPE_PROFESSIONAL_PRICE_ID,
     features: [
       "400 calls/month",
@@ -92,7 +92,7 @@ export const PLANS = {
     practitioners: true,
     practitionersLimit: 15,
     highlighted: false,
-    trialDays: 14,
+    trialDays: 30,
     stripePriceId: process.env.STRIPE_BUSINESS_PRICE_ID,
     features: [
       "Everything in Professional",
