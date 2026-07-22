@@ -49,22 +49,23 @@ export function isGoogleAdsConfigured(): boolean {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function gtag(..._args: any[]) {
   if (typeof window === "undefined") return;
-  window.dataLayer = window.dataLayer || [];
   try {
+    // Even the `|| []` assignment is guarded — a consent platform / extension
+    // can make window.dataLayer a non-writable or throwing property, so the
+    // "telemetry never breaks the product" doctrine must cover it too.
+    window.dataLayer = window.dataLayer || [];
     // gtag() must push the `arguments` object, not a spread array, so the
     // Google tag processes it correctly.
     // eslint-disable-next-line prefer-rest-params
     window.dataLayer.push(arguments as unknown as Record<string, unknown>);
   } catch (err) {
-    // Telemetry must never break the product (mirrors posthog.ts) — a consent
-    // platform or extension can redefine dataLayer to a non-array/throwing push.
     console.debug("[Analytics] Google Ads gtag push failed:", err);
   }
 }
 
 export function initGoogleAds(): void {
   if (!isGoogleAdsConfigured()) return;
-  window.dataLayer = window.dataLayer || [];
+  // dataLayer is initialized inside gtag() (guarded) — no bare touch here.
   gtag("js", new Date());
   gtag("config", GOOGLE_ADS_ID);
 }

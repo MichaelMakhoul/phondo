@@ -27,14 +27,15 @@ function isAvailable(): boolean {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function gtag(..._args: any[]) {
   if (!isAvailable()) return;
-  window.dataLayer = window.dataLayer || [];
   try {
+    // Even the `|| []` assignment is guarded — a consent platform / extension
+    // can make window.dataLayer a non-writable or throwing property, so the
+    // "telemetry never breaks the product" doctrine must cover it too.
+    window.dataLayer = window.dataLayer || [];
     // gtag() must push the `arguments` object, not a spread array
     // eslint-disable-next-line prefer-rest-params
     window.dataLayer.push(arguments as unknown as Record<string, unknown>);
   } catch (err) {
-    // Telemetry must never break the product (mirrors posthog.ts) — a consent
-    // platform or extension can redefine dataLayer to a non-array/throwing push.
     console.debug("[Analytics] gtag push failed:", err);
   }
 }
@@ -45,7 +46,7 @@ export function initGtag(): void {
     console.warn(`[Analytics] NEXT_PUBLIC_GA_MEASUREMENT_ID "${GA_MEASUREMENT_ID}" does not match expected format (G-XXXXXXXXXX). Analytics will not initialize.`);
     return;
   }
-  window.dataLayer = window.dataLayer || [];
+  // dataLayer is initialized inside gtag() (guarded) — no bare touch here.
   gtag("js", new Date());
   gtag("config", GA_MEASUREMENT_ID, {
     send_page_view: false,

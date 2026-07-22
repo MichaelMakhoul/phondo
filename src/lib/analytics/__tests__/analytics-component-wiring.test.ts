@@ -63,3 +63,27 @@ describe("GoogleAnalytics component wiring (source pin)", () => {
     expect(src).toMatch(/resolveGtagLoadId\(GA_MEASUREMENT_ID, GOOGLE_ADS_ID\)/);
   });
 });
+
+describe("early-access conversion gate (source pin)", () => {
+  // SCRUM-569: the honeypot→phantom-conversion fix lives in TWO places — the
+  // server returns `tracked` only for a genuine lead (pinned in route.test.ts),
+  // and the CLIENT fires the conversion only behind that flag. The signup page
+  // is un-executable TSX here, so source-pin the gate: a refactor that dropped
+  // it would re-introduce phantom conversions with a green server-contract test.
+  const signup = fs.readFileSync(
+    path.join(__dirname, "..", "..", "..", "app", "(auth)", "signup", "page.tsx"),
+    "utf8",
+  );
+
+  it("fires the lead/ads conversion ONLY behind the server's `tracked` flag", () => {
+    expect(signup).toMatch(/if \(json\.tracked\)/);
+    expect(signup).toMatch(/trackEarlyAccessRequest\(\)/);
+  });
+
+  it("commits the success UX (setEaSubmitted) BEFORE analytics — telemetry can't undo it", () => {
+    const submittedIdx = signup.indexOf("setEaSubmitted(true)");
+    const trackIdx = signup.indexOf("trackEarlyAccessRequest()");
+    expect(submittedIdx).toBeGreaterThan(-1);
+    expect(trackIdx).toBeGreaterThan(submittedIdx);
+  });
+});
