@@ -2,7 +2,6 @@
 
 import { useRef, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { TurnstileWidget, type TurnstileHandle } from "@/components/auth/turnstile-widget";
 import {
@@ -13,11 +12,12 @@ import {
 } from "@/lib/captcha";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/components/ui/use-toast";
 import { Phone } from "lucide-react";
-import { trackSignUp } from "@/lib/analytics";
+import { trackSignUp, trackEarlyAccessRequest } from "@/lib/analytics";
 
 const SIGNUP_ENABLED = process.env.NEXT_PUBLIC_ENABLE_SIGNUP === "true";
 
@@ -29,9 +29,75 @@ export default function SignupPage() {
   const [captchaToken, setCaptchaToken] = useState<string | null>(null);
   const [captchaLoadFailed, setCaptchaLoadFailed] = useState(false);
   const captchaRef = useRef<TurnstileHandle>(null);
-  const router = useRouter();
   const { toast } = useToast();
   const supabase = createClient();
+
+  // Early-access form (shown only while SIGNUP_ENABLED is false). Kept separate
+  // from the main signup form above — only one of the two branches ever renders.
+  const [eaName, setEaName] = useState("");
+  const [eaBusiness, setEaBusiness] = useState("");
+  const [eaEmail, setEaEmail] = useState("");
+  const [eaPhone, setEaPhone] = useState("");
+  const [eaMessage, setEaMessage] = useState("");
+  const [eaWebsite, setEaWebsite] = useState(""); // honeypot — humans leave this empty
+  const [eaSubmitting, setEaSubmitting] = useState(false);
+  const [eaSubmitted, setEaSubmitted] = useState(false);
+
+  const handleEarlyAccess = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setEaSubmitting(true);
+    try {
+      const res = await fetch("/api/v1/early-access", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          fullName: eaName,
+          businessName: eaBusiness,
+          email: eaEmail,
+          phone: eaPhone,
+          message: eaMessage,
+          website: eaWebsite,
+        }),
+      });
+      const json = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        tracked?: boolean;
+        error?: string;
+      };
+      if (res.ok && json.ok) {
+        // Commit the success UX FIRST — analytics must never break it.
+        setEaSubmitted(true);
+        // SCRUM-569: count the lead (GA + PostHog) and fire the Google Ads
+        // conversion so paid-campaign cost-per-lead is measurable — but ONLY for
+        // a genuinely persisted lead (`tracked`). The honeypot path returns
+        // { ok: true } without it, so a trap trip never records a phantom
+        // conversion. Count-only; no PII leaves the client (details went to the
+        // server above), and the facade swallows internally — the try is belt-
+        // and-suspenders so a redefined dataLayer can't undo the success state.
+        if (json.tracked) {
+          try {
+            trackEarlyAccessRequest();
+          } catch {
+            /* telemetry must never break the success flow */
+          }
+        }
+        return;
+      }
+      toast({
+        variant: "destructive",
+        title: "Couldn't send that",
+        description: json.error || "Something went wrong. Please try again, or email hello@phondo.ai.",
+      });
+    } catch {
+      toast({
+        variant: "destructive",
+        title: "Network error",
+        description: "Please check your connection and try again, or email hello@phondo.ai.",
+      });
+    } finally {
+      setEaSubmitting(false);
+    }
+  };
 
   if (!SIGNUP_ENABLED) {
     return (
@@ -52,14 +118,101 @@ export default function SignupPage() {
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <Button
-                asChild
-                className="w-full bg-orange-500 text-white hover:bg-orange-600"
-              >
-                <a href="mailto:hello@phondo.ai?subject=Phondo%20Early%20Access%20Request">
-                  Request early access
-                </a>
-              </Button>
+              {eaSubmitted ? (
+                <div className="space-y-2 rounded-lg border border-green-500/30 bg-green-500/10 p-4 text-center">
+                  <p className="font-medium text-foreground">Thanks — you&apos;re on the list.</p>
+                  <p className="text-sm text-muted-foreground">
+                    The Phondo team will be in touch shortly. Want it sooner? Call us on{" "}
+                    <a href="tel:+61257015064" className="text-orange-500 hover:underline">
+                      02&nbsp;5701&nbsp;5064
+                    </a>
+                    .
+                  </p>
+                </div>
+              ) : (
+                <form onSubmit={handleEarlyAccess} className="space-y-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="ea-name">Full name</Label>
+                    <Input
+                      id="ea-name"
+                      value={eaName}
+                      onChange={(e) => setEaName(e.target.value)}
+                      placeholder="Jane Smith"
+                      required
+                      disabled={eaSubmitting}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="ea-business">
+                      Business name <span className="text-muted-foreground">(optional)</span>
+                    </Label>
+                    <Input
+                      id="ea-business"
+                      value={eaBusiness}
+                      onChange={(e) => setEaBusiness(e.target.value)}
+                      placeholder="Smith Dental"
+                      disabled={eaSubmitting}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="ea-email">Email</Label>
+                    <Input
+                      id="ea-email"
+                      type="email"
+                      value={eaEmail}
+                      onChange={(e) => setEaEmail(e.target.value)}
+                      placeholder="you@example.com"
+                      required
+                      disabled={eaSubmitting}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="ea-phone">
+                      Phone <span className="text-muted-foreground">(optional)</span>
+                    </Label>
+                    <Input
+                      id="ea-phone"
+                      type="tel"
+                      value={eaPhone}
+                      onChange={(e) => setEaPhone(e.target.value)}
+                      placeholder="Best number to reach you"
+                      disabled={eaSubmitting}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="ea-message">
+                      Anything we should know? <span className="text-muted-foreground">(optional)</span>
+                    </Label>
+                    <Textarea
+                      id="ea-message"
+                      value={eaMessage}
+                      onChange={(e) => setEaMessage(e.target.value)}
+                      placeholder="e.g. we miss a lot of calls at reception"
+                      rows={3}
+                      disabled={eaSubmitting}
+                    />
+                  </div>
+                  {/* Honeypot: positioned off-screen, hidden from users; bots that
+                      fill every field trip it and get silently dropped server-side. */}
+                  <input
+                    type="text"
+                    name="website"
+                    tabIndex={-1}
+                    autoComplete="off"
+                    aria-hidden="true"
+                    className="hidden"
+                    value={eaWebsite}
+                    onChange={(e) => setEaWebsite(e.target.value)}
+                  />
+                  <Button
+                    type="submit"
+                    className="w-full bg-orange-500 text-white hover:bg-orange-600"
+                    disabled={eaSubmitting}
+                  >
+                    {eaSubmitting ? "Sending..." : "Request early access"}
+                  </Button>
+                </form>
+              )}
             </CardContent>
             <CardFooter className="justify-center text-center text-sm text-muted-foreground">
               Already have an account?{" "}

@@ -1,5 +1,6 @@
 import posthog from "posthog-js";
 import * as Sentry from "@sentry/nextjs";
+import { isPublicReplayPath } from "./replay-routes";
 
 // SCRUM-566: PostHog product-analytics backend, fanned out UNDER the existing
 // typed facade (events.ts trackers / trackPageView / identifyUser) — call
@@ -61,7 +62,13 @@ export function initPostHog(consented: boolean): void {
       capture_pageview: false,
       autocapture: false,
       person_profiles: "identified_only",
+      // SCRUM-569: the recorder stays DISABLED at init — session replay is
+      // default-deny and only started imperatively on public marketing/auth
+      // routes (see phSyncSessionReplay). maskAllInputs is set now so that when
+      // recording IS active (e.g. the /signup early-access form), typed values
+      // (email, phone, password) are never captured.
       disable_session_recording: true,
+      session_recording: { maskAllInputs: true },
       persistence: consented ? "localStorage+cookie" : "memory",
     });
     initialized = true;
@@ -135,5 +142,28 @@ export function phUpdateConsent(granted: boolean): void {
     posthog.set_config({ persistence: granted ? "localStorage+cookie" : "memory" });
   } catch (err) {
     console.debug("[Analytics] PostHog consent update failed:", err);
+  }
+}
+
+// SCRUM-569: default-deny session replay. init keeps the recorder disabled;
+// we START it only on allowlisted public marketing/auth routes and STOP it on
+// every other route, so the authenticated app (caller PII) is never recorded.
+// The PostHog project also carries a URL blocklist for those routes as a second
+// layer. Called on every SPA route change with the pathname (no query string).
+let replayActive = false;
+
+export function phSyncSessionReplay(pathname: string): void {
+  if (!isConfigured() || !initialized) return;
+  const shouldRecord = isPublicReplayPath(pathname);
+  try {
+    if (shouldRecord && !replayActive) {
+      posthog.startSessionRecording();
+      replayActive = true;
+    } else if (!shouldRecord && replayActive) {
+      posthog.stopSessionRecording();
+      replayActive = false;
+    }
+  } catch (err) {
+    console.debug("[Analytics] PostHog session replay sync failed:", err);
   }
 }

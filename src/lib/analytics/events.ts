@@ -1,6 +1,6 @@
 // SCRUM-566: events dispatch through the backend fan-out (GA4 + PostHog),
 // not gtag directly — every typed tracker below feeds both.
-import { pushEvent } from "./dispatch";
+import { pushEvent, trackConversion } from "./dispatch";
 
 // ─── Event Name Constants ───────────────────────────────────────────
 
@@ -66,6 +66,7 @@ export const EventNames = {
   CTA_CLICKED: "cta_clicked",
   PRICING_PAGE_VIEWED: "pricing_page_viewed",
   INDUSTRY_PAGE_VIEWED: "industry_page_viewed",
+  EARLY_ACCESS_SUBMITTED: "early_access_submitted",
 } as const;
 
 export type EventName = (typeof EventNames)[keyof typeof EventNames];
@@ -326,4 +327,16 @@ export function trackROICalculatorUsed(
 
 export function trackCTAClicked(ctaName: string, location: string): void {
   pushEvent(EventNames.CTA_CLICKED, { cta_name: ctaName, location });
+}
+
+/**
+ * SCRUM-569: an early-access request was submitted from the private-beta
+ * signup page. Fans out to GA + PostHog for funnel analytics AND fires the
+ * Google Ads conversion so paid-campaign cost-per-lead is measurable. No PII
+ * is sent — the lead's details go only to the server (early-access API); this
+ * is a count-only signal.
+ */
+export function trackEarlyAccessRequest(): void {
+  pushEvent(EventNames.EARLY_ACCESS_SUBMITTED);
+  trackConversion();
 }

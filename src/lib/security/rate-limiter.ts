@@ -195,6 +195,29 @@ export const rateLimitConfigs = {
     windowMs: 60 * 60 * 1000,
     maxRequests: 100,
   },
+  // Per-IP cap on early-access signups — 10/hour/IP. Deliberately an HOURLY
+  // window kept well below the 200/hr global bucket (below), so one IP maxing
+  // out consumes at most 10 of the 200 global slots and cannot alone 429 the
+  // whole funnel. (A per-minute cap like "auth" = 10/min = 600/hr would exceed
+  // the global bucket and let a single IP starve every other signup for the
+  // rest of the hour.) 10/hr is far above any human's legitimate retries.
+  earlyAccessPerIp: {
+    windowMs: 60 * 60 * 1000,
+    maxRequests: 10,
+  },
+  // Global cap on early-access signups across ALL IPs — 200 per hour, single
+  // shared bucket (key "global"). Mirrors demoCallGlobal: the per-IP layer is
+  // bypassable by an IP-rotating bot spreading across lambdas (SCRUM-340), and
+  // each accepted POST both writes a PII row and fires a founder-notification
+  // email — so an uncapped funnel means inbox flood + Resend quota burn.
+  // FAIL-OPEN (no costControl): a real early-access spike shouldn't be blocked,
+  // and during a Supabase brownout the insert itself fails anyway, so an open
+  // fallback adds no exposure. 200/hr is far above any plausible organic rate
+  // at this stage; raise it if that ever changes.
+  earlyAccessGlobal: {
+    windowMs: 60 * 60 * 1000,
+    maxRequests: 200,
+  },
 } as const;
 
 export type RateLimitType = keyof typeof rateLimitConfigs;
