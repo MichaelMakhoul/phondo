@@ -34,10 +34,32 @@ describe("GoogleAnalytics component wiring (source pin)", () => {
     expect(src).toMatch(/\[pathname, searchParams\]/);
   });
 
-  it("PostHog inits even when GA is dormant: the GA guard only gates the <Script> render, after the hooks", () => {
-    const guardIdx = src.indexOf("if (!GA_MEASUREMENT_ID");
+  it("PostHog inits even when Google is dormant: the tag guard only gates the <Script> render, after the hooks", () => {
+    // SCRUM-569: the render guard is now GA-OR-Ads (either loads the Google
+    // tag), but the intent is unchanged — it must sit AFTER the hooks so
+    // PostHog/replay init is never skipped when Google is unconfigured.
+    const guardIdx = src.indexOf("if (!gtagLoadId)");
     const initIdx = src.indexOf("initAnalytics()");
     expect(initIdx).toBeGreaterThan(-1);
     expect(guardIdx).toBeGreaterThan(initIdx);
+  });
+
+  it("SCRUM-569: the pageview effect also syncs default-deny session replay by pathname", () => {
+    // pathname only (no query string) — the replay allowlist matches paths.
+    expect(src).toMatch(/syncSessionReplay\(pathname\)/);
+  });
+
+  it("SCRUM-569: the replay stop() runs BEFORE trackPageView — the PII-stop must not depend on GA telemetry", () => {
+    const syncIdx = src.indexOf("syncSessionReplay(pathname)");
+    const pvIdx = src.indexOf("trackPageView(url)");
+    expect(syncIdx).toBeGreaterThan(-1);
+    expect(pvIdx).toBeGreaterThan(-1);
+    expect(syncIdx).toBeLessThan(pvIdx);
+  });
+
+  it("SCRUM-569: the Google tag load id comes from the tested GA-or-Ads resolver", () => {
+    // resolveGtagLoadId is unit-tested (google-ads.test.ts) for the three-way
+    // GA→Ads→null branch; the component just feeds it BOTH ids.
+    expect(src).toMatch(/resolveGtagLoadId\(GA_MEASUREMENT_ID, GOOGLE_ADS_ID\)/);
   });
 });

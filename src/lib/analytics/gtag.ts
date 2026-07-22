@@ -28,9 +28,15 @@ function isAvailable(): boolean {
 function gtag(..._args: any[]) {
   if (!isAvailable()) return;
   window.dataLayer = window.dataLayer || [];
-  // gtag() must push the `arguments` object, not a spread array
-  // eslint-disable-next-line prefer-rest-params
-  window.dataLayer.push(arguments as unknown as Record<string, unknown>);
+  try {
+    // gtag() must push the `arguments` object, not a spread array
+    // eslint-disable-next-line prefer-rest-params
+    window.dataLayer.push(arguments as unknown as Record<string, unknown>);
+  } catch (err) {
+    // Telemetry must never break the product (mirrors posthog.ts) — a consent
+    // platform or extension can redefine dataLayer to a non-array/throwing push.
+    console.debug("[Analytics] gtag push failed:", err);
+  }
 }
 
 export function initGtag(): void {
