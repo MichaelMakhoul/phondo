@@ -84,7 +84,9 @@ type DemoState = "select" | "calling" | "ended";
 function getHeroSubtitle(demoState: DemoState, selectedIndustry: DemoIndustry | null): string {
   switch (demoState) {
     case "select":
-      return "Pick an industry and have a real conversation with our AI. No signup needed, just your microphone.";
+      // SCRUM-570: no mic warning, no pick-an-industry homework — the hero CTA
+      // below starts a call immediately; industry cards are the secondary path.
+      return "Have a real conversation with the AI receptionist that answers for our customers — right here in your browser.";
     case "calling":
       return `Speaking with ${selectedIndustry ? DEMO_INDUSTRIES[selectedIndustry].name : "AI"}`;
     case "ended":
@@ -220,6 +222,27 @@ export default function DemoPage() {
             <p className="text-lg text-slate-400 max-w-2xl mx-auto">
               {getHeroSubtitle(demoState, selectedIndustry)}
             </p>
+            {demoState === "select" && (
+              /* SCRUM-570: instant-call hero CTA. Replays showed ads visitors
+                 scrolling past three equal industry cards and choosing nothing —
+                 so the primary action starts the dental demo (the ads/flyer
+                 target vertical) with zero decisions; the cards below become
+                 the "tailor it" secondary path. */
+              <div className="mt-8">
+                <Button
+                  size="lg"
+                  className="h-14 gap-2 bg-orange-500 px-10 text-lg text-white hover:bg-orange-600 animate-glow-pulse"
+                  onClick={() => handleStartDemo("dental")}
+                  disabled={!audioSupported}
+                >
+                  <Phone className="h-5 w-5" />
+                  Talk to it now
+                </Button>
+                <p className="mt-3 text-sm text-slate-400">
+                  30-second live conversation · free · no signup
+                </p>
+              </div>
+            )}
           </div>
         </section>
 
@@ -240,6 +263,9 @@ export default function DemoPage() {
                 </div>
               )}
 
+              <h2 className="text-center text-lg font-semibold mb-6">
+                Or hear it tailored to your industry
+              </h2>
               <div className="grid md:grid-cols-3 gap-6 max-w-5xl mx-auto">
                 {INDUSTRY_CARDS.map((industry) => {
                   const Icon = industry.icon;
@@ -262,10 +288,14 @@ export default function DemoPage() {
                           disabled={!audioSupported}
                         >
                           <Phone className="w-4 h-4 mr-2" />
-                          Try It Now
+                          Call the AI now
                         </Button>
+                        {/* SCRUM-570: value copy, not a mic warning — the
+                            browser's own permission prompt handles disclosure
+                            at the moment it actually matters (see the
+                            connecting state). */}
                         <p className="text-xs text-muted-foreground text-center mt-2">
-                          Uses your browser microphone
+                          30-second call · free · no signup
                         </p>
                       </CardContent>
                     </Card>
@@ -303,7 +333,9 @@ export default function DemoPage() {
                     {selectedIndustry ? DEMO_INDUSTRIES[selectedIndustry].name : "Demo"}
                   </CardTitle>
                   <CardDescription>
-                    Speak naturally, and the AI will respond in real time
+                    {status === "connecting"
+                      ? "Your browser will ask to use your microphone — tap Allow to talk"
+                      : "Speak naturally, and the AI will respond in real time"}
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="p-6">
