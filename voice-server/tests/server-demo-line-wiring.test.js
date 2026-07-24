@@ -40,14 +40,41 @@ describe("SCRUM-571: demo-line wiring", () => {
     );
   });
 
-  it("the phone WS session gets the demo duration cap, keyed on DEMO_ORG_ID", () => {
+  it("the phone WS session gets the demo cap, keyed on DEMO_ORG_ID, and the timer actually ends the call", () => {
+    // Anchored through the close() call so a log-only timer callback (that
+    // never ends the call) can't pass.
     assert.match(
       src,
-      /organizationId === DEMO_ORG_ID[^]{0,600}?MAX_DEMO_CALL_DURATION_MS/
+      /organizationId === DEMO_ORG_ID[^]{0,600}?twilioWs\.close\(1000, "Demo max duration"\)[^]{0,300}?MAX_DEMO_CALL_DURATION_MS/
     );
   });
 
-  it("the demo cap timer is cleared when the socket closes", () => {
-    assert.match(src, /clearTimeout\(demoLineTimer\)/);
+  it("the demo cap timer is cleared IN THE CLOSE HANDLER, not somewhere else", () => {
+    // `(code, reason)` disambiguates from the ping-interval close listener. A
+    // clearTimeout moved into the timer's own callback would leave the timer
+    // armed against every naturally-ended demo call.
+    assert.match(
+      src,
+      /twilioWs\.on\("close", \(code, reason\) => \{[^]{0,400}?clearTimeout\(demoLineTimer\)/
+    );
+  });
+
+  it("the gate also runs before the ring-first answerMode branch", () => {
+    // If the demo org's answer mode ever drifted to ring_first, a gate placed
+    // below that branch's early-return would silently un-gate those calls.
+    const gateIdx = src.indexOf("isDemoOrgPhone(phoneRecord)");
+    const answerModeIdx = src.indexOf("getAnswerMode(called, phoneRecord)");
+    assert.ok(answerModeIdx > 0, "ring-first branch must exist");
+    assert.ok(gateIdx < answerModeIdx, "gate must run before ring-first");
+  });
+
+  it("a capped call records demo-max-duration, not caller-hangup", () => {
+    // cleanupSession defaults endedReason to "caller-hangup" — without this,
+    // every 3-minute cutoff is misattributed to the prospect, and "did they
+    // hang up or did we cut them off?" is exactly the demo-funnel question.
+    assert.match(
+      src,
+      /session\.endedReason = "demo-max-duration"[^]{0,300}?twilioWs\.close\(1000, "Demo max duration"\)/
+    );
   });
 });

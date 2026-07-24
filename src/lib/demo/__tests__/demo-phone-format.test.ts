@@ -17,4 +17,11 @@ describe("SCRUM-571: formatDemoPhoneDisplay", () => {
     expect(formatDemoPhoneDisplay("+12025550123")).toBe("+12025550123");
     expect(formatDemoPhoneDisplay("")).toBe("");
   });
+
+  it("near-miss AU numbers pass through untouched (never display a truncated number)", () => {
+    // Anchors matter: without them a wrong-length env value would DISPLAY a
+    // plausible truncated number while tel: dials the raw (wrong) value.
+    expect(formatDemoPhoneDisplay("+612912345678")).toBe("+612912345678"); // one digit too many
+    expect(formatDemoPhoneDisplay("+6129123456")).toBe("+6129123456"); // one digit short
+  });
 });

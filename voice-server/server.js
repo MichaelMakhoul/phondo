@@ -1816,6 +1816,11 @@ wss.on("connection", (twilioWs) => {
           if (session.organizationId === DEMO_ORG_ID) {
             demoLineTimer = setTimeout(() => {
               console.log(`[DemoLine] Max duration reached — ending demo call callSid=${session?.callSid}`);
+              // cleanupSession defaults endedReason to "caller-hangup" — stamp
+              // the real reason so a capped call isn't misattributed to the
+              // prospect in call records ("did they hang up or did we cut
+              // them off at 3:00?" is the demo-funnel question).
+              if (session) session.endedReason = "demo-max-duration";
               try {
                 twilioWs.close(1000, "Demo max duration");
               } catch (err) {

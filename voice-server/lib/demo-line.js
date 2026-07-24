@@ -14,6 +14,11 @@
  * restart resetting the counters only fails OPEN into the caps again — the
  * blast radius of losing state is "a caller gets a few extra demo calls",
  * never "a customer call is dropped".
+ *
+ * SCOPE: wired into the Twilio /twiml route only. The /texml (Telnyx) route
+ * family has NO demo gate — fine while the demo number lives on Twilio and
+ * Telnyx stays dormant, but migrating the demo number to Telnyx would
+ * silently shed this rate limit unless /texml gets the same gate.
  */
 
 const { DEMO_ORG_ID } = require("./session-limits");

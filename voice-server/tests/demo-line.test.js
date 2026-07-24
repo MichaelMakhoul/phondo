@@ -9,6 +9,7 @@ const {
   DEMO_LINE_PER_CALLER_LIMIT,
   DEMO_LINE_PER_CALLER_WINDOW_MS,
   DEMO_LINE_GLOBAL_DAILY_LIMIT,
+  DEMO_LINE_GLOBAL_WINDOW_MS,
 } = require("../lib/demo-line");
 const { DEMO_ORG_ID } = require("../lib/session-limits");
 
@@ -103,6 +104,25 @@ describe("SCRUM-571: checkDemoLineCall — global rolling-day cap", () => {
       assert.equal(r.allowed, true, `caller ${i + 1}/${remaining} should still fit under the global cap`);
     }
     assert.equal(checkDemoLineCall("+61400008888", T0 + 500).allowed, false);
+  });
+
+  it("the global cap is a rolling DAY — outlives the caller window, frees after 24h", () => {
+    for (let i = 0; i < DEMO_LINE_GLOBAL_DAILY_LIMIT; i++) {
+      assert.equal(checkDemoLineCall(`+6140000${String(1000 + i)}`, T0 + i).allowed, true);
+    }
+    // 2h later: every caller bucket has expired (1h window), but the global
+    // budget must still be spent — caller pruning must not free global quota.
+    // (A window-constant swap to the 1h caller window would turn 30/day into
+    // ~720 paid Gemini sessions/day and pass every other test.)
+    const midDay = checkDemoLineCall("+61400009999", T0 + 2 * 60 * 60 * 1000);
+    assert.equal(midDay.allowed, false);
+    assert.equal(midDay.reason, "global-cap");
+    // Past the 24h window the demo line must come back — a permanent lifetime
+    // cap would silently kill the demo line until the next redeploy.
+    assert.equal(
+      checkDemoLineCall("+61400009999", T0 + DEMO_LINE_GLOBAL_WINDOW_MS + 1000).allowed,
+      true
+    );
   });
 });
 
