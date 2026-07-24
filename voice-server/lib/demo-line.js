@@ -45,6 +45,11 @@ for (const n of DEMO_LINE_NUMBERS) {
     console.warn(`[DemoLine] DEMO_LINE_NUMBERS entry looks malformed (expected E.164, e.g. +61238205672): "${n}" — this number will NOT match Twilio's Called value, leaving it UNGUARDED`);
   }
 }
+if (DEMO_LINE_NUMBERS.size === 0) {
+  // Reachable via a separators-only env (e.g. " , ") — empty string keeps the
+  // default, but this parse result means number-keyed guarding is fully OFF.
+  console.warn("[DemoLine] DEMO_LINE_NUMBERS parsed to an EMPTY set — the published line is UNGUARDED by number");
+}
 console.log(`[DemoLine] Guarding demo-line numbers: ${[...DEMO_LINE_NUMBERS].join(", ")}`);
 
 const DEMO_LINE_PER_CALLER_LIMIT = 3; // calls per caller per rolling hour

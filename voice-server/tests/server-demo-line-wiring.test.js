@@ -43,13 +43,20 @@ describe("SCRUM-571: demo-line wiring", () => {
     );
   });
 
-  it("the phone WS session gets the demo cap for demo-org OR demo-line calls, and the timer actually ends the call", () => {
-    // Anchored through the close() call so a log-only timer callback (that
-    // never ends the call) can't pass.
+  it("the PRIMARY start-branch cap site exists, and its timer actually ends the call", () => {
+    // Anchored through this site's distinct log literal ("ending demo call",
+    // vs the reconnect site's "ending reconnected demo call") so the
+    // reconnect site can't satisfy this pin — deleting the primary cap block
+    // must fail here, not pass on the other site's text.
     assert.match(
       src,
-      /organizationId === DEMO_ORG_ID \|\| isDemoLineNumber\(calledNumber\)[^]{0,600}?twilioWs\.close\(1000, "Demo max duration"\)[^]{0,300}?MAX_DEMO_CALL_DURATION_MS/
+      /organizationId === DEMO_ORG_ID \|\| isDemoLineNumber\(calledNumber\)[^]{0,200}?ending demo call callSid[^]{0,500}?twilioWs\.close\(1000, "Demo max duration"\)[^]{0,300}?MAX_DEMO_CALL_DURATION_MS/
     );
+  });
+
+  it("the cap is armed at EXACTLY two sites: primary start branch + reconnect", () => {
+    const sites = src.match(/organizationId === DEMO_ORG_ID \|\| isDemoLineNumber\(calledNumber\)/g) || [];
+    assert.equal(sites.length, 2, "dropping either cap site (or adding an unreviewed third) must fail");
   });
 
   it("the demo cap timer is cleared IN THE CLOSE HANDLER, not somewhere else", () => {
@@ -90,10 +97,11 @@ describe("SCRUM-571: demo-line wiring", () => {
     // normal start-branch cap block — without its own arming, a demo caller
     // whose transfer fails gets reconnected to an UNCAPPED paid session on
     // the public line. Newly reachable now that a real org (with transfers
-    // possible) answers the line.
+    // possible) answers the line. Anchored through this site's distinct log
+    // literal so the primary site can't satisfy it.
     assert.match(
       src,
-      /session\.restoreFrom\(savedState\)[^]{0,600}?(organizationId === DEMO_ORG_ID \|\| isDemoLineNumber\(calledNumber\))[^]{0,700}?MAX_DEMO_CALL_DURATION_MS/
+      /session\.restoreFrom\(savedState\)[^]{0,600}?(organizationId === DEMO_ORG_ID \|\| isDemoLineNumber\(calledNumber\))[^]{0,300}?ending reconnected demo call[^]{0,500}?MAX_DEMO_CALL_DURATION_MS/
     );
   });
 
