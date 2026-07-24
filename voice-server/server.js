@@ -127,8 +127,10 @@ const { detectAndRedact, redactObject } = require("./lib/pii-detector");
 const { maskPhone } = require("./lib/mask-phone");
 const { getTestClientIp, createTestSessionCaps } = require("./lib/test-session-caps");
 const { getMaxSessionDurationMs, DEMO_ORG_ID, MAX_DEMO_CALL_DURATION_MS } = require("./lib/session-limits");
-// SCRUM-571: rate limits for the public tap-to-call demo line (phone path).
-const { isDemoOrgPhone, checkDemoLineCall, buildDemoLineRejectTwiml } = require("./lib/demo-line");
+// SCRUM-571/573: rate limits for the public tap-to-call demo line (phone
+// path). Guards key on the published NUMBER or the demo org — the line stays
+// capped whichever org the owner points it at (currently Smile Hub Dental).
+const { isDemoLineCall, isDemoLineNumber, checkDemoLineCall, buildDemoLineRejectTwiml } = require("./lib/demo-line");
 const { timingSafeEqualStr } = require("./lib/timing-safe");
 const { buildFallbackDisclosureSay } = require("./lib/fallback-dial-consent");
 const { getPollyVoice } = require("./lib/polly-voice");
@@ -414,17 +416,18 @@ app.post("/twiml", async (req, res) => {
     return;
   }
 
-  // SCRUM-571: the public demo line is an unauthenticated spend surface —
-  // rate-gate demo-org calls BEFORE any stream token is issued. Only the
-  // ai-first /twiml path needs this: the demo org's seeded assistants never
-  // use ring-first, and rejected calls get static TwiML (no Gemini session).
-  if (isDemoOrgPhone(phoneRecord)) {
+  // SCRUM-571/573: the public demo line is an unauthenticated spend surface —
+  // rate-gate it BEFORE any stream token is issued. Keyed on the published
+  // number OR the demo org (isDemoLineCall), so the guards survive the owner
+  // pointing the line at a real org, and even a null phoneRecord (DB
+  // fail-open). Rejected calls get static TwiML (no Gemini session).
+  if (isDemoLineCall(called, phoneRecord)) {
     const gate = checkDemoLineCall(from);
     if (!gate.allowed) {
       console.warn(`[DemoLine] Rejected call from=${maskPhone(from)} reason=${gate.reason}`);
       return res
         .type("text/xml")
-        .send(buildDemoLineRejectTwiml(getPollyVoice(phoneRecord.organizations?.country)));
+        .send(buildDemoLineRejectTwiml(getPollyVoice(phoneRecord?.organizations?.country)));
     }
     console.log(`[DemoLine] Accepted demo-line call from=${maskPhone(from)}`);
   }
@@ -1699,6 +1702,23 @@ wss.on("connection", (twilioWs) => {
               session.restoreFrom(savedState);
               sessions.set(streamSid, session);
 
+              // SCRUM-573: the reconnect path never reaches the normal start-
+              // branch cap block — re-arm the demo ceiling here, or a demo
+              // caller whose transfer fails comes back to an UNCAPPED paid
+              // session on the public line. Same condition + close-handler
+              // cleanup as the primary site.
+              if (session.organizationId === DEMO_ORG_ID || isDemoLineNumber(calledNumber)) {
+                demoLineTimer = setTimeout(() => {
+                  console.log(`[DemoLine] Max duration reached — ending reconnected demo call callSid=${session?.callSid}`);
+                  if (session) session.endedReason = "demo-max-duration";
+                  try {
+                    twilioWs.close(1000, "Demo max duration");
+                  } catch (err) {
+                    console.error("[DemoLine] Failed to close socket at max duration:", err.message);
+                  }
+                }, MAX_DEMO_CALL_DURATION_MS);
+              }
+
               // Re-open Deepgram STT
               session.deepgramWs = openDeepgramStream(DEEPGRAM_API_KEY, {
                 language: session.language,
@@ -1808,12 +1828,14 @@ wss.on("connection", (twilioWs) => {
           session.assistantId = context.assistantId;
           session.phoneNumberId = context.phoneNumberId;
 
-          // SCRUM-571: the public demo line gets the same 3-minute ceiling as
-          // the browser demo (/ws/test) — a phone caller must not hold a paid
-          // Gemini session open indefinitely on the demo org. Real customer
-          // orgs stay uncapped. Closing the stream ends the call (the TwiML is
-          // <Connect><Stream>, which terminates with its stream).
-          if (session.organizationId === DEMO_ORG_ID) {
+          // SCRUM-571/573: the public demo line gets the same 3-minute
+          // ceiling as the browser demo (/ws/test) — a phone caller must not
+          // hold a paid Gemini session open indefinitely. Keyed on the demo
+          // org OR the published line number, so the cap survives the line
+          // pointing at a real org (Smile Hub). Customer calls to their OWN
+          // numbers stay uncapped. Closing the stream ends the call (the
+          // TwiML is <Connect><Stream>, which terminates with its stream).
+          if (session.organizationId === DEMO_ORG_ID || isDemoLineNumber(calledNumber)) {
             demoLineTimer = setTimeout(() => {
               console.log(`[DemoLine] Max duration reached — ending demo call callSid=${session?.callSid}`);
               // cleanupSession defaults endedReason to "caller-hangup" — stamp

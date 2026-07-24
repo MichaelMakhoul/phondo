@@ -23,6 +23,35 @@
 
 const { DEMO_ORG_ID } = require("./session-limits");
 
+// SCRUM-573: the guards follow the NUMBER, not just the demo org. The owner
+// points the published line at a REAL org (Smile Hub Dental — richer prompt
+// than the seeded demo assistant), so keying on DEMO_ORG_ID alone would
+// un-guard the line the moment it answers as that org. The default is the
+// number printed on phondo.ai/demo (public, not a secret); override or extend
+// via DEMO_LINE_NUMBERS (comma-separated E.164).
+const DEMO_LINE_NUMBERS = new Set(
+  (process.env.DEMO_LINE_NUMBERS || "+61238205672")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+);
+
+// A misconfigured env (typo, missing "+") is a SILENT total un-guard — the
+// line answers perfectly with no caps and nothing else backs it up now that
+// it points at a real org. Announce the parsed set at boot and flag entries
+// that don't look like E.164 so the mistake is visible in Fly logs.
+for (const n of DEMO_LINE_NUMBERS) {
+  if (!/^\+\d{7,15}$/.test(n)) {
+    console.warn(`[DemoLine] DEMO_LINE_NUMBERS entry looks malformed (expected E.164, e.g. +61238205672): "${n}" — this number will NOT match Twilio's Called value, leaving it UNGUARDED`);
+  }
+}
+if (DEMO_LINE_NUMBERS.size === 0) {
+  // Reachable via a separators-only env (e.g. " , ") — empty string keeps the
+  // default, but this parse result means number-keyed guarding is fully OFF.
+  console.warn("[DemoLine] DEMO_LINE_NUMBERS parsed to an EMPTY set — the published line is UNGUARDED by number");
+}
+console.log(`[DemoLine] Guarding demo-line numbers: ${[...DEMO_LINE_NUMBERS].join(", ")}`);
+
 const DEMO_LINE_PER_CALLER_LIMIT = 3; // calls per caller per rolling hour
 const DEMO_LINE_PER_CALLER_WINDOW_MS = 60 * 60 * 1000;
 const DEMO_LINE_GLOBAL_DAILY_LIMIT = 30; // calls across ALL callers per rolling day
@@ -40,6 +69,28 @@ let globalLog = [];
  */
 function isDemoOrgPhone(phoneRecord) {
   return !!phoneRecord && phoneRecord.organization_id === DEMO_ORG_ID;
+}
+
+/**
+ * Whether the CALLED number is the published demo line.
+ * @param {string | null | undefined} calledNumber - Twilio `Called`/`To` (E.164)
+ * @returns {boolean}
+ */
+function isDemoLineNumber(calledNumber) {
+  return !!calledNumber && DEMO_LINE_NUMBERS.has(calledNumber);
+}
+
+/**
+ * SCRUM-573: is this inbound call subject to the demo-line guards? True for
+ * the published line REGARDLESS of which org its phone record points at (and
+ * even when the record is null — the DB fail-open path must not turn the
+ * public line into an unlimited spend surface), and for any demo-org number.
+ * @param {string | null | undefined} calledNumber
+ * @param {{ organization_id?: string } | null | undefined} phoneRecord
+ * @returns {boolean}
+ */
+function isDemoLineCall(calledNumber, phoneRecord) {
+  return isDemoLineNumber(calledNumber) || isDemoOrgPhone(phoneRecord);
 }
 
 /**
@@ -102,6 +153,8 @@ function resetDemoLineState() {
 
 module.exports = {
   isDemoOrgPhone,
+  isDemoLineNumber,
+  isDemoLineCall,
   checkDemoLineCall,
   buildDemoLineRejectTwiml,
   resetDemoLineState,
