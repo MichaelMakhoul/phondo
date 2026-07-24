@@ -84,6 +84,25 @@ describe("SCRUM-570: microcopy invites instead of warns", () => {
   });
 });
 
+describe("SCRUM-571: tap-to-call demo line", () => {
+  it("hero renders a tel: link, gated on the env-configured number", () => {
+    // No env var → no dead UI. The number ships via NEXT_PUBLIC_DEMO_PHONE_NUMBER
+    // only after the voice-server guards are deployed.
+    expect(demoPageSource).toMatch(/\{DEMO_PHONE_NUMBER && \(/);
+    expect(demoPageSource).toContain("href={`tel:${DEMO_PHONE_NUMBER}`}");
+  });
+
+  it("the tap is tracked as a CTA click", () => {
+    expect(demoPageSource).toMatch(/trackCTAClicked\("demo_phone_number", "demo_hero"\)/);
+  });
+
+  it("the tel CTA sits inside the select-state hero block", () => {
+    expect(demoPageSource).toMatch(
+      /demoState === "select" && \([\s\S]{0,2500}?tel:\$\{DEMO_PHONE_NUMBER\}/
+    );
+  });
+});
+
 describe("SCRUM-570: consent banner is a slim bottom bar on mobile", () => {
   it("mobile layout pins to the viewport bottom edge instead of floating over content", () => {
     expect(consentSource).toMatch(/[\s"]bottom-0\b/);

@@ -126,7 +126,9 @@ const { initAudioFrontend } = require("./lib/audio-frontend");
 const { detectAndRedact, redactObject } = require("./lib/pii-detector");
 const { maskPhone } = require("./lib/mask-phone");
 const { getTestClientIp, createTestSessionCaps } = require("./lib/test-session-caps");
-const { getMaxSessionDurationMs } = require("./lib/session-limits");
+const { getMaxSessionDurationMs, DEMO_ORG_ID, MAX_DEMO_CALL_DURATION_MS } = require("./lib/session-limits");
+// SCRUM-571: rate limits for the public tap-to-call demo line (phone path).
+const { isDemoOrgPhone, checkDemoLineCall, buildDemoLineRejectTwiml } = require("./lib/demo-line");
 const { timingSafeEqualStr } = require("./lib/timing-safe");
 const { buildFallbackDisclosureSay } = require("./lib/fallback-dial-consent");
 const { getPollyVoice } = require("./lib/polly-voice");
@@ -410,6 +412,21 @@ app.post("/twiml", async (req, res) => {
     deps: makeKillSwitchDeps(),
   })) {
     return;
+  }
+
+  // SCRUM-571: the public demo line is an unauthenticated spend surface —
+  // rate-gate demo-org calls BEFORE any stream token is issued. Only the
+  // ai-first /twiml path needs this: the demo org's seeded assistants never
+  // use ring-first, and rejected calls get static TwiML (no Gemini session).
+  if (isDemoOrgPhone(phoneRecord)) {
+    const gate = checkDemoLineCall(from);
+    if (!gate.allowed) {
+      console.warn(`[DemoLine] Rejected call from=${maskPhone(from)} reason=${gate.reason}`);
+      return res
+        .type("text/xml")
+        .send(buildDemoLineRejectTwiml(getPollyVoice(phoneRecord.organizations?.country)));
+    }
+    console.log(`[DemoLine] Accepted demo-line call from=${maskPhone(from)}`);
   }
 
   // Check if this assistant uses ring-first mode
@@ -1407,6 +1424,9 @@ const sessions = new Map();
 wss.on("connection", (twilioWs) => {
   let session = null;
   let cleaningUp = false;
+  // SCRUM-571: demo-line duration cap timer (set only for demo-org calls).
+  /** @type {ReturnType<typeof setTimeout> | null} */
+  let demoLineTimer = null;
 
   async function cleanupSession() {
     if (!session || cleaningUp) return;
@@ -1787,6 +1807,27 @@ wss.on("connection", (twilioWs) => {
           session.organizationId = context.organizationId;
           session.assistantId = context.assistantId;
           session.phoneNumberId = context.phoneNumberId;
+
+          // SCRUM-571: the public demo line gets the same 3-minute ceiling as
+          // the browser demo (/ws/test) — a phone caller must not hold a paid
+          // Gemini session open indefinitely on the demo org. Real customer
+          // orgs stay uncapped. Closing the stream ends the call (the TwiML is
+          // <Connect><Stream>, which terminates with its stream).
+          if (session.organizationId === DEMO_ORG_ID) {
+            demoLineTimer = setTimeout(() => {
+              console.log(`[DemoLine] Max duration reached — ending demo call callSid=${session?.callSid}`);
+              // cleanupSession defaults endedReason to "caller-hangup" — stamp
+              // the real reason so a capped call isn't misattributed to the
+              // prospect in call records ("did they hang up or did we cut
+              // them off at 3:00?" is the demo-funnel question).
+              if (session) session.endedReason = "demo-max-duration";
+              try {
+                twilioWs.close(1000, "Demo max duration");
+              } catch (err) {
+                console.error("[DemoLine] Failed to close socket at max duration:", err.message);
+              }
+            }, MAX_DEMO_CALL_DURATION_MS);
+          }
           session.transferRules = context.transferRules || [];
           // SCRUM-260: expose forwarding fields so transfer_call can fall back
           // to the business's own number when no transfer rules are configured.
@@ -3140,6 +3181,12 @@ wss.on("connection", (twilioWs) => {
   });
 
   twilioWs.on("close", (code, reason) => {
+    // SCRUM-571: a demo call that ends naturally must not leave the cap timer
+    // armed against a dead socket.
+    if (demoLineTimer) {
+      clearTimeout(demoLineTimer);
+      demoLineTimer = null;
+    }
     const reasonStr = reason ? reason.toString() : "";
     console.log(`[Twilio] WebSocket closed (code=${code}, reason="${reasonStr}", callSid=${session?.callSid}, duration=${session?.getDurationSeconds?.() || 0}s)`);
     cleanupSession().catch((err) => {

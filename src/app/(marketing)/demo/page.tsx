@@ -18,7 +18,14 @@ import {
   ArrowRight,
 } from "lucide-react";
 import { useVoiceTest, type TranscriptMessage } from "@/lib/voice-test/use-voice-test";
-import { DEMO_INDUSTRIES, DEMO_RATE_LIMIT_ERROR, type DemoIndustry } from "@/lib/demo/config";
+import {
+  DEMO_INDUSTRIES,
+  DEMO_PHONE_NUMBER,
+  DEMO_RATE_LIMIT_ERROR,
+  formatDemoPhoneDisplay,
+  type DemoIndustry,
+} from "@/lib/demo/config";
+import { trackCTAClicked } from "@/lib/analytics";
 import { MarketingHeader } from "@/components/marketing/marketing-header";
 import { MarketingFooter } from "@/components/marketing/marketing-footer";
 
@@ -248,6 +255,26 @@ export default function DemoPage() {
                     ? "30-second live conversation · free · no signup"
                     : "Live calls need a modern browser — please use the latest Chrome, Edge, or Firefox."}
                 </p>
+                {/* SCRUM-571: tap-to-call demo line. On mobile the instinctive
+                    action for "hear an AI receptionist" is ringing a number,
+                    not granting mic access to an unfamiliar site — so offer a
+                    real call as a first-class path. Env-gated: no number
+                    configured → no dead UI. */}
+                {DEMO_PHONE_NUMBER && (
+                  <div className="mt-6">
+                    <a
+                      href={`tel:${DEMO_PHONE_NUMBER}`}
+                      onClick={() => trackCTAClicked("demo_phone_number", "demo_hero")}
+                      className="inline-flex items-center gap-2 rounded-full border border-slate-600 px-6 py-3 text-sm font-medium text-slate-200 transition-colors hover:border-orange-500 hover:text-white"
+                    >
+                      <Phone className="h-4 w-4" />
+                      Or ring the demo line: {formatDemoPhoneDisplay(DEMO_PHONE_NUMBER)}
+                    </a>
+                    <p className="mt-2 text-xs text-slate-500">
+                      A real phone call — it answers as our demo dental clinic
+                    </p>
+                  </div>
+                )}
               </div>
             )}
           </div>
