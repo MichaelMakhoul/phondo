@@ -23,6 +23,19 @@
 
 const { DEMO_ORG_ID } = require("./session-limits");
 
+// SCRUM-573: the guards follow the NUMBER, not just the demo org. The owner
+// points the published line at a REAL org (Smile Hub Dental — richer prompt
+// than the seeded demo assistant), so keying on DEMO_ORG_ID alone would
+// un-guard the line the moment it answers as that org. The default is the
+// number printed on phondo.ai/demo (public, not a secret); override or extend
+// via DEMO_LINE_NUMBERS (comma-separated E.164).
+const DEMO_LINE_NUMBERS = new Set(
+  (process.env.DEMO_LINE_NUMBERS || "+61238205672")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+);
+
 const DEMO_LINE_PER_CALLER_LIMIT = 3; // calls per caller per rolling hour
 const DEMO_LINE_PER_CALLER_WINDOW_MS = 60 * 60 * 1000;
 const DEMO_LINE_GLOBAL_DAILY_LIMIT = 30; // calls across ALL callers per rolling day
@@ -40,6 +53,28 @@ let globalLog = [];
  */
 function isDemoOrgPhone(phoneRecord) {
   return !!phoneRecord && phoneRecord.organization_id === DEMO_ORG_ID;
+}
+
+/**
+ * Whether the CALLED number is the published demo line.
+ * @param {string | null | undefined} calledNumber - Twilio `Called`/`To` (E.164)
+ * @returns {boolean}
+ */
+function isDemoLineNumber(calledNumber) {
+  return !!calledNumber && DEMO_LINE_NUMBERS.has(calledNumber);
+}
+
+/**
+ * SCRUM-573: is this inbound call subject to the demo-line guards? True for
+ * the published line REGARDLESS of which org its phone record points at (and
+ * even when the record is null — the DB fail-open path must not turn the
+ * public line into an unlimited spend surface), and for any demo-org number.
+ * @param {string | null | undefined} calledNumber
+ * @param {{ organization_id?: string } | null | undefined} phoneRecord
+ * @returns {boolean}
+ */
+function isDemoLineCall(calledNumber, phoneRecord) {
+  return isDemoLineNumber(calledNumber) || isDemoOrgPhone(phoneRecord);
 }
 
 /**
@@ -102,6 +137,8 @@ function resetDemoLineState() {
 
 module.exports = {
   isDemoOrgPhone,
+  isDemoLineNumber,
+  isDemoLineCall,
   checkDemoLineCall,
   buildDemoLineRejectTwiml,
   resetDemoLineState,

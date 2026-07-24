@@ -3,6 +3,8 @@ const assert = require("node:assert/strict");
 
 const {
   isDemoOrgPhone,
+  isDemoLineNumber,
+  isDemoLineCall,
   checkDemoLineCall,
   resetDemoLineState,
   buildDemoLineRejectTwiml,
@@ -12,6 +14,12 @@ const {
   DEMO_LINE_GLOBAL_WINDOW_MS,
 } = require("../lib/demo-line");
 const { DEMO_ORG_ID } = require("../lib/session-limits");
+
+// The published demo line (default of DEMO_LINE_NUMBERS). SCRUM-573: the owner
+// points this number at a REAL org (Smile Hub Dental — richer prompt than the
+// seeded demo assistant), so guards must key on the number itself, not only
+// the demo org.
+const LINE = "+61238205672";
 
 /**
  * SCRUM-571: the tap-to-call demo line points a real Twilio number at the
@@ -34,6 +42,37 @@ describe("SCRUM-571: isDemoOrgPhone", () => {
     assert.equal(isDemoOrgPhone(null), false);
     assert.equal(isDemoOrgPhone(undefined), false);
     assert.equal(isDemoOrgPhone({}), false);
+  });
+});
+
+describe("SCRUM-573: isDemoLineNumber / isDemoLineCall — guards follow the NUMBER", () => {
+  it("the published demo line number is recognized by default (no env needed)", () => {
+    assert.equal(isDemoLineNumber(LINE), true);
+    assert.equal(isDemoLineNumber("+61257015064"), false); // a customer number
+    assert.equal(isDemoLineNumber(null), false);
+    assert.equal(isDemoLineNumber(undefined), false);
+    assert.equal(isDemoLineNumber(""), false);
+  });
+
+  it("a call TO the line is gated regardless of which org the number points at", () => {
+    const smileHubRecord = { organization_id: "35cc7464-e4c5-4924-bf39-f5f939824825" };
+    assert.equal(isDemoLineCall(LINE, smileHubRecord), true);
+  });
+
+  it("a call to a demo-org number is gated even if it isn't the published line", () => {
+    assert.equal(isDemoLineCall("+61200000000", { organization_id: DEMO_ORG_ID }), true);
+  });
+
+  it("a customer call to a customer number is NEVER gated", () => {
+    const customerRecord = { organization_id: "ea3d12cd-797a-4c7d-aef5-3afde5c0ab41" };
+    assert.equal(isDemoLineCall("+61257015064", customerRecord), false);
+  });
+
+  it("the line stays gated even when the phone record is null (DB fail-open path)", () => {
+    // lookupPhoneNumber fails open to AI-answers on DB errors — the rate gate
+    // keyed on the called number must survive that, or an outage would turn
+    // the public line into an unlimited spend surface.
+    assert.equal(isDemoLineCall(LINE, null), true);
   });
 });
 

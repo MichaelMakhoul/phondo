@@ -22,15 +22,18 @@ describe("SCRUM-571: demo-line wiring", () => {
     assert.match(src, /require\("\.\/lib\/demo-line"\)/);
   });
 
-  it("/twiml gates demo-org calls (check → reject TwiML) as one unit", () => {
+  it("/twiml gates demo-line calls by NUMBER-or-org (check → reject TwiML) as one unit", () => {
+    // SCRUM-573: the gate must key on isDemoLineCall (published number OR demo
+    // org) — keying on the org alone un-guards the line the moment the owner
+    // points the number at a real org (Smile Hub).
     assert.match(
       src,
-      /isDemoOrgPhone\(phoneRecord\)[^]{0,600}?checkDemoLineCall\(from\)[^]{0,600}?buildDemoLineRejectTwiml/
+      /isDemoLineCall\(called, phoneRecord\)[^]{0,600}?checkDemoLineCall\(from\)[^]{0,600}?buildDemoLineRejectTwiml/
     );
   });
 
   it("the gate runs BEFORE any stream token is issued", () => {
-    const gateIdx = src.indexOf("isDemoOrgPhone(phoneRecord)");
+    const gateIdx = src.indexOf("isDemoLineCall(called, phoneRecord)");
     const tokenIdx = src.indexOf("const token = issueStreamToken(called, from");
     assert.ok(gateIdx > 0, "gate must exist");
     assert.ok(tokenIdx > 0, "token issuance must exist");
@@ -40,12 +43,12 @@ describe("SCRUM-571: demo-line wiring", () => {
     );
   });
 
-  it("the phone WS session gets the demo cap, keyed on DEMO_ORG_ID, and the timer actually ends the call", () => {
+  it("the phone WS session gets the demo cap for demo-org OR demo-line calls, and the timer actually ends the call", () => {
     // Anchored through the close() call so a log-only timer callback (that
     // never ends the call) can't pass.
     assert.match(
       src,
-      /organizationId === DEMO_ORG_ID[^]{0,600}?twilioWs\.close\(1000, "Demo max duration"\)[^]{0,300}?MAX_DEMO_CALL_DURATION_MS/
+      /organizationId === DEMO_ORG_ID \|\| isDemoLineNumber\(calledNumber\)[^]{0,600}?twilioWs\.close\(1000, "Demo max duration"\)[^]{0,300}?MAX_DEMO_CALL_DURATION_MS/
     );
   });
 
@@ -60,9 +63,9 @@ describe("SCRUM-571: demo-line wiring", () => {
   });
 
   it("the gate also runs before the ring-first answerMode branch", () => {
-    // If the demo org's answer mode ever drifted to ring_first, a gate placed
-    // below that branch's early-return would silently un-gate those calls.
-    const gateIdx = src.indexOf("isDemoOrgPhone(phoneRecord)");
+    // If the demo line's org ever drifted to ring_first answer mode, a gate
+    // placed below that branch's early-return would silently un-gate calls.
+    const gateIdx = src.indexOf("isDemoLineCall(called, phoneRecord)");
     const answerModeIdx = src.indexOf("getAnswerMode(called, phoneRecord)");
     assert.ok(answerModeIdx > 0, "ring-first branch must exist");
     assert.ok(gateIdx < answerModeIdx, "gate must run before ring-first");
