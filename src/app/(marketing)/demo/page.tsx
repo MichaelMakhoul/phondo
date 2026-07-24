@@ -234,12 +234,19 @@ export default function DemoPage() {
                   className="h-14 gap-2 bg-orange-500 px-10 text-lg text-white hover:bg-orange-600 animate-glow-pulse"
                   onClick={() => handleStartDemo("dental")}
                   disabled={!audioSupported}
+                  aria-describedby="hero-demo-cta-note"
                 >
                   <Phone className="h-5 w-5" />
                   Talk to it now
                 </Button>
-                <p className="mt-3 text-sm text-slate-400">
-                  30-second live conversation · free · no signup
+                {/* When AudioWorklet is missing the button renders disabled and
+                    the "Browser not supported" banner sits below the fold on
+                    small phones — so this line must carry the explanation, not
+                    promise a call the button can't start. */}
+                <p id="hero-demo-cta-note" className="mt-3 text-sm text-slate-400">
+                  {audioSupported
+                    ? "30-second live conversation · free · no signup"
+                    : "Live calls need a modern browser — please use the latest Chrome, Edge, or Firefox."}
                 </p>
               </div>
             )}
