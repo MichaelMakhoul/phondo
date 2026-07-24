@@ -74,6 +74,42 @@ describe("SCRUM-573: isDemoLineNumber / isDemoLineCall — guards follow the NUM
     // the public line into an unlimited spend surface.
     assert.equal(isDemoLineCall(LINE, null), true);
   });
+
+  it("a customer call stays UN-gated when the phone record is null (fail-open must not gate the fleet)", () => {
+    // Inverse of the line+null case: during a DB outage every lookup returns
+    // null. A fail-closed edit (e.g. `|| !phoneRecord`) would put ALL customer
+    // calls behind the shared 30/day global demo budget and the 3-minute cap —
+    // a fleet-wide outage. Fail-open means customer calls stay uncapped.
+    assert.equal(isDemoLineCall("+61257015064", null), false);
+    assert.equal(isDemoLineCall("+61257015064", undefined), false);
+    assert.equal(isDemoLineCall(null, null), false);
+  });
+});
+
+describe("SCRUM-573: DEMO_LINE_NUMBERS env parsing (fresh process — module-load state)", () => {
+  const { execFileSync } = require("node:child_process");
+
+  it("a custom env set REPLACES the default, trims whitespace, splits on commas", () => {
+    // Parsed once at module load, so this runs in a child process instead of
+    // fighting the require cache. Guards the owner's number-rotation path: a
+    // dropped trim, a renamed env var, or the default surviving a replace all
+    // fail silently into an un-guarded public spend surface.
+    const out = execFileSync(
+      process.execPath,
+      ["-e", `
+        const { isDemoLineNumber } = require(${JSON.stringify(require.resolve("../lib/demo-line"))});
+        console.log(JSON.stringify([
+          isDemoLineNumber("+61299999999"),
+          isDemoLineNumber("+61288888888"),
+          isDemoLineNumber("+61238205672"),
+        ]));
+      `],
+      { env: { ...process.env, DEMO_LINE_NUMBERS: "+61299999999, +61288888888 ," } }
+    ).toString().trim();
+    // Boot may log guard lines before the payload — the assertion reads the
+    // LAST stdout line. [custom #1, custom #2 (had spaces), default gone]
+    assert.deepEqual(JSON.parse(out.split("\n").pop()), [true, true, false]);
+  });
 });
 
 describe("SCRUM-571: checkDemoLineCall — per-caller cap", () => {

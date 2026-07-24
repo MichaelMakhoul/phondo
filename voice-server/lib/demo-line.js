@@ -36,6 +36,17 @@ const DEMO_LINE_NUMBERS = new Set(
     .filter(Boolean)
 );
 
+// A misconfigured env (typo, missing "+") is a SILENT total un-guard — the
+// line answers perfectly with no caps and nothing else backs it up now that
+// it points at a real org. Announce the parsed set at boot and flag entries
+// that don't look like E.164 so the mistake is visible in Fly logs.
+for (const n of DEMO_LINE_NUMBERS) {
+  if (!/^\+\d{7,15}$/.test(n)) {
+    console.warn(`[DemoLine] DEMO_LINE_NUMBERS entry looks malformed (expected E.164, e.g. +61238205672): "${n}" — this number will NOT match Twilio's Called value, leaving it UNGUARDED`);
+  }
+}
+console.log(`[DemoLine] Guarding demo-line numbers: ${[...DEMO_LINE_NUMBERS].join(", ")}`);
+
 const DEMO_LINE_PER_CALLER_LIMIT = 3; // calls per caller per rolling hour
 const DEMO_LINE_PER_CALLER_WINDOW_MS = 60 * 60 * 1000;
 const DEMO_LINE_GLOBAL_DAILY_LIMIT = 30; // calls across ALL callers per rolling day

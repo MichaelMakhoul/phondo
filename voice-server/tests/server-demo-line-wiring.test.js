@@ -67,8 +67,34 @@ describe("SCRUM-571: demo-line wiring", () => {
     // placed below that branch's early-return would silently un-gate calls.
     const gateIdx = src.indexOf("isDemoLineCall(called, phoneRecord)");
     const answerModeIdx = src.indexOf("getAnswerMode(called, phoneRecord)");
+    assert.ok(gateIdx > 0, "gate must exist");
     assert.ok(answerModeIdx > 0, "ring-first branch must exist");
     assert.ok(gateIdx < answerModeIdx, "gate must run before ring-first");
+  });
+
+  it("the reject-TwiML voice lookup survives a null phone record (DB fail-open)", () => {
+    // SCRUM-573 dropped the old invariant that phoneRecord is truthy inside
+    // the gate (the line is gated by NUMBER even when lookup fails open to
+    // null). Reverting this optional chain to `phoneRecord.organizations`
+    // makes the over-quota reject path throw inside an async handler with no
+    // try/catch — Twilio gets no response at all (dead air, not the polite
+    // reject) exactly when the DB is down.
+    assert.match(
+      src,
+      /buildDemoLineRejectTwiml\(getPollyVoice\(phoneRecord\?\.organizations\?\.country\)\)/
+    );
+  });
+
+  it("the failed-transfer RECONNECT branch re-arms the demo cap", () => {
+    // The reconnect path restores a saved session and never reaches the
+    // normal start-branch cap block — without its own arming, a demo caller
+    // whose transfer fails gets reconnected to an UNCAPPED paid session on
+    // the public line. Newly reachable now that a real org (with transfers
+    // possible) answers the line.
+    assert.match(
+      src,
+      /session\.restoreFrom\(savedState\)[^]{0,600}?(organizationId === DEMO_ORG_ID \|\| isDemoLineNumber\(calledNumber\))[^]{0,700}?MAX_DEMO_CALL_DURATION_MS/
+    );
   });
 
   it("a capped call records demo-max-duration, not caller-hangup", () => {

@@ -1702,6 +1702,23 @@ wss.on("connection", (twilioWs) => {
               session.restoreFrom(savedState);
               sessions.set(streamSid, session);
 
+              // SCRUM-573: the reconnect path never reaches the normal start-
+              // branch cap block — re-arm the demo ceiling here, or a demo
+              // caller whose transfer fails comes back to an UNCAPPED paid
+              // session on the public line. Same condition + close-handler
+              // cleanup as the primary site.
+              if (session.organizationId === DEMO_ORG_ID || isDemoLineNumber(calledNumber)) {
+                demoLineTimer = setTimeout(() => {
+                  console.log(`[DemoLine] Max duration reached — ending reconnected demo call callSid=${session?.callSid}`);
+                  if (session) session.endedReason = "demo-max-duration";
+                  try {
+                    twilioWs.close(1000, "Demo max duration");
+                  } catch (err) {
+                    console.error("[DemoLine] Failed to close socket at max duration:", err.message);
+                  }
+                }, MAX_DEMO_CALL_DURATION_MS);
+              }
+
               // Re-open Deepgram STT
               session.deepgramWs = openDeepgramStream(DEEPGRAM_API_KEY, {
                 language: session.language,
