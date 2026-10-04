@@ -41,6 +41,11 @@ describe("SCRUM-570: /demo hero instant-call CTA", () => {
     expect(demoPageSource).toContain("heroIndustry ? DEMO_PHONE_LINES[heroIndustry] : undefined");
   });
 
+  it("reserves the phone-link slot only when some line is configured, with the margin on the slot", () => {
+    expect(demoPageSource).toContain("{HAS_DEMO_PHONE_LINE && (");
+    expect(demoPageSource).toContain('<div className="mt-6 min-h-[6.75rem] sm:min-h-[4.5rem]">');
+  });
+
   it("each demo start is tracked with its persona", () => {
     expect(demoPageSource).toContain("trackDemoCallStarted(industry)");
   });
@@ -112,8 +117,9 @@ describe("SCRUM-571: tap-to-call demo line", () => {
   });
 
   it("the tap is tracked as a CTA click", () => {
-    // Per-persona name, so dental and trades line taps are told apart.
-    expect(demoPageSource).toContain('trackCTAClicked(`demo_phone_number_${heroIndustry}`, "demo_hero")');
+    // Dental keeps the original name (existing insights); other lines are told apart.
+    expect(demoPageSource).toContain('heroIndustry === "dental" ? "demo_phone_number" : `demo_phone_number_${heroIndustry}`');
+    expect(demoPageSource).toContain('"demo_hero"');
   });
 
   it("the tel CTA sits inside the select-state hero block", () => {

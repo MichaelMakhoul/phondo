@@ -22,6 +22,7 @@ import {
   DEMO_INDUSTRIES,
   DEMO_PHONE_LINES,
   DEMO_RATE_LIMIT_ERROR,
+  HAS_DEMO_PHONE_LINE,
   demoIndustryFromSearch,
   formatDemoPhoneDisplay,
   type DemoIndustry,
@@ -277,15 +278,24 @@ export default function DemoPage() {
                     action for "hear an AI receptionist" is ringing a number,
                     not granting mic access to an unfamiliar site — so offer a
                     real call as a first-class path. Env-gated: no number
-                    configured → no dead UI. The slot is reserved because the
-                    link only appears once the persona is known (after
-                    hydration), and the hero shouldn't jump when it does. */}
-                <div className="min-h-[5.5rem]">
+                    configured → no dead UI. When any line is configured, its
+                    slot is reserved: the link only appears once the persona is
+                    known (after hydration), and the hero shouldn't jump when
+                    it does. The margin sits on the slot itself so it can't
+                    collapse through it. */}
+                {HAS_DEMO_PHONE_LINE && (
+                <div className="mt-6 min-h-[6.75rem] sm:min-h-[4.5rem]">
                 {heroPhoneLine?.number && (
-                  <div className="mt-6">
+                  <div>
                     <a
                       href={`tel:${heroPhoneLine.number}`}
-                      onClick={() => trackCTAClicked(`demo_phone_number_${heroIndustry}`, "demo_hero")}
+                      onClick={() =>
+                        // Dental keeps its original event name so existing insights carry on.
+                        trackCTAClicked(
+                          heroIndustry === "dental" ? "demo_phone_number" : `demo_phone_number_${heroIndustry}`,
+                          "demo_hero"
+                        )
+                      }
                       className="inline-flex items-center gap-2 rounded-full border border-slate-600 px-6 py-3 text-sm font-medium text-slate-200 transition-colors hover:border-orange-500 hover:text-white"
                     >
                       <Phone className="h-4 w-4" />
@@ -297,6 +307,7 @@ export default function DemoPage() {
                   </div>
                 )}
                 </div>
+                )}
               </div>
             )}
           </div>

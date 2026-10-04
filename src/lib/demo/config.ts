@@ -46,10 +46,11 @@ export const DEMO_PHONE_NUMBER = process.env.NEXT_PUBLIC_DEMO_PHONE_NUMBER;
 /**
  * The trades demo line, which answers as Copperline Plumbing. Publish switch:
  * set it only after (1) the number points at the demo org's plumber assistant,
- * (2) the voice server runs demo-org PHONE calls in test mode with the
- * browser-style prompt (otherwise bookings are real and phone-only rules clash
- * with the persona), and (3) the number is in the voice server's
- * DEMO_LINE_NUMBERS (the caps' fallback when the DB lookup fails).
+ * (2) the voice server runs demo-org PHONE calls in test mode, because
+ * otherwise bookings are real and land in the shared demo calendar; it also
+ * adds stricter phone-only rules (surname spelled back, a final booking block)
+ * that the persona was not written for, and (3) the number is in the voice
+ * server's DEMO_LINE_NUMBERS (the caps' fallback when the DB lookup fails).
  */
 export const DEMO_TRADES_PHONE_NUMBER = process.env.NEXT_PUBLIC_DEMO_TRADES_PHONE_NUMBER;
 
@@ -58,6 +59,9 @@ export const DEMO_PHONE_LINES: Partial<Record<DemoIndustry, { number: string | u
   dental: { number: DEMO_PHONE_NUMBER, persona: "our demo dental clinic" },
   home_services: { number: DEMO_TRADES_PHONE_NUMBER, persona: "our demo plumbing business" },
 };
+
+/** Build-time: is any tap-to-call line configured at all? (No line → no reserved hero slot.) */
+export const HAS_DEMO_PHONE_LINE = Object.values(DEMO_PHONE_LINES).some((line) => !!line?.number);
 
 /** Render an E.164 AU number in familiar local notation; pass through anything else. */
 export function formatDemoPhoneDisplay(e164: string): string {
