@@ -20,8 +20,9 @@ import {
 import { useVoiceTest, type TranscriptMessage } from "@/lib/voice-test/use-voice-test";
 import {
   DEMO_INDUSTRIES,
-  DEMO_PHONE_NUMBER,
+  DEMO_PHONE_LINES,
   DEMO_RATE_LIMIT_ERROR,
+  demoIndustryFromSearch,
   formatDemoPhoneDisplay,
   type DemoIndustry,
 } from "@/lib/demo/config";
@@ -63,14 +64,14 @@ const INDUSTRY_CARDS: {
   },
   {
     id: "home_services",
-    label: "Home Services",
+    label: "Plumber",
     icon: Wrench,
     color: "bg-amber-500/10 text-amber-500",
     description: DEMO_INDUSTRIES.home_services.description,
     suggestions: [
+      "My kitchen sink is leaking",
       "My hot water system isn't working",
-      "Can someone come out today?",
-      "How much do you charge for a service call?",
+      "How much is a call-out?",
     ],
   },
 ];
@@ -104,6 +105,14 @@ function getHeroSubtitle(demoState: DemoState, selectedIndustry: DemoIndustry | 
 export default function DemoPage() {
   const [demoState, setDemoState] = useState<DemoState>("select");
   const [selectedIndustry, setSelectedIndustry] = useState<DemoIndustry | null>(null);
+  // The hero's one-tap persona. Plain /demo stays dental, which is what the
+  // live ads promise; tradie outreach deep-links to ?industry=home_services.
+  const [heroIndustry, setHeroIndustry] = useState<DemoIndustry>("dental");
+  useEffect(() => {
+    const fromLink = demoIndustryFromSearch(window.location.search);
+    if (fromLink) setHeroIndustry(fromLink);
+  }, []);
+  const heroPhoneLine = DEMO_PHONE_LINES[heroIndustry];
   const [duration, setDuration] = useState(0);
   const [audioSupported, setAudioSupported] = useState(true); // assume true during SSR
   useEffect(() => {
@@ -239,7 +248,7 @@ export default function DemoPage() {
                 <Button
                   size="lg"
                   className="h-14 gap-2 bg-orange-500 px-10 text-lg text-white hover:bg-orange-600 animate-glow-pulse"
-                  onClick={() => handleStartDemo("dental")}
+                  onClick={() => handleStartDemo(heroIndustry)}
                   disabled={!audioSupported}
                   aria-describedby="hero-demo-cta-note"
                 >
@@ -260,18 +269,18 @@ export default function DemoPage() {
                     not granting mic access to an unfamiliar site — so offer a
                     real call as a first-class path. Env-gated: no number
                     configured → no dead UI. */}
-                {DEMO_PHONE_NUMBER && (
+                {heroPhoneLine?.number && (
                   <div className="mt-6">
                     <a
-                      href={`tel:${DEMO_PHONE_NUMBER}`}
+                      href={`tel:${heroPhoneLine.number}`}
                       onClick={() => trackCTAClicked("demo_phone_number", "demo_hero")}
                       className="inline-flex items-center gap-2 rounded-full border border-slate-600 px-6 py-3 text-sm font-medium text-slate-200 transition-colors hover:border-orange-500 hover:text-white"
                     >
                       <Phone className="h-4 w-4" />
-                      Or ring the demo line: {formatDemoPhoneDisplay(DEMO_PHONE_NUMBER)}
+                      Or ring the demo line: {formatDemoPhoneDisplay(heroPhoneLine.number)}
                     </a>
                     <p className="mt-2 text-xs text-slate-500">
-                      A real phone call — it answers as our demo dental clinic
+                      A real phone call — it answers as {heroPhoneLine.persona}
                     </p>
                   </div>
                 )}

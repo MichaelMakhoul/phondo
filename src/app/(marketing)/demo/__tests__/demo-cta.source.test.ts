@@ -24,9 +24,14 @@ const consentSource = readFileSync(
 );
 
 describe("SCRUM-570: /demo hero instant-call CTA", () => {
-  it("hero has a primary CTA that starts the dental demo directly (no industry pick)", () => {
-    expect(demoPageSource).toContain('handleStartDemo("dental")');
+  it("hero has a primary CTA that starts a demo directly (no industry pick)", () => {
+    expect(demoPageSource).toContain("handleStartDemo(heroIndustry)");
     expect(demoPageSource).toContain("Talk to it now");
+  });
+
+  it("the hero defaults to dental (what the live ads promise) and honours ?industry= deep links", () => {
+    expect(demoPageSource).toMatch(/useState<DemoIndustry>\("dental"\)/);
+    expect(demoPageSource).toContain("demoIndustryFromSearch(window.location.search)");
   });
 
   it("hero CTA is disabled when AudioWorklet is unsupported, like the card buttons", () => {
@@ -88,8 +93,11 @@ describe("SCRUM-571: tap-to-call demo line", () => {
   it("hero renders a tel: link, gated on the env-configured number", () => {
     // No env var → no dead UI. The number ships via NEXT_PUBLIC_DEMO_PHONE_NUMBER
     // only after the voice-server guards are deployed.
-    expect(demoPageSource).toMatch(/\{DEMO_PHONE_NUMBER && \(/);
-    expect(demoPageSource).toContain("href={`tel:${DEMO_PHONE_NUMBER}`}");
+    expect(demoPageSource).toMatch(/\{heroPhoneLine\?\.number && \(/);
+    expect(demoPageSource).toContain("href={`tel:${heroPhoneLine.number}`}");
+    // The line shown must be the one that answers as the hero's persona.
+    expect(demoPageSource).toContain("DEMO_PHONE_LINES[heroIndustry]");
+    expect(demoPageSource).toContain("it answers as {heroPhoneLine.persona}");
   });
 
   it("the tap is tracked as a CTA click", () => {
@@ -98,7 +106,7 @@ describe("SCRUM-571: tap-to-call demo line", () => {
 
   it("the tel CTA sits inside the select-state hero block", () => {
     expect(demoPageSource).toMatch(
-      /demoState === "select" && \([\s\S]{0,2500}?tel:\$\{DEMO_PHONE_NUMBER\}/
+      /demoState === "select" && \([\s\S]{0,2500}?tel:\$\{heroPhoneLine\.number\}/
     );
   });
 });
