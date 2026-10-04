@@ -1,7 +1,12 @@
 import { describe, it, expect } from "vitest";
 import { createRequire } from "node:module";
 import path from "node:path";
-import { decodeMulaw, StreamingUpsampler, createMulawPlaybackDecoder } from "../mulaw";
+import {
+  decodeMulaw,
+  StreamingUpsampler,
+  createMulawPlaybackDecoder,
+  type MulawPlaybackDecoder,
+} from "../mulaw";
 
 // ──────────────────────────────────────────────────────────────────────────
 // Browser playback of the assistant's voice (demo + dashboard test calls).
@@ -98,6 +103,20 @@ function processInChunks(up: StreamingUpsampler, input: Float32Array, sizes: num
 
 const CHUNK_SIZES = [160, 7, 333, 1, 480, 59, 160, 1024, 3];
 
+/** Feed server μ-law to `decoder` in irregular slices, the way the hook receives it. */
+function decodeInChunks(decoder: MulawPlaybackDecoder, mulaw: Uint8Array, sizes: number[]): Float32Array {
+  const parts: Float32Array[] = [];
+  for (let i = 0, k = 0; i < mulaw.length; k++) {
+    const size = sizes[k % sizes.length];
+    parts.push(decoder.decode(mulaw.subarray(i, i + size)));
+    i += size;
+  }
+  return concat(parts);
+}
+
+const serverSpeech = (n: number) =>
+  encodeWithServer(Array.from(speechLike(8000, n), (s) => Math.round(s * 32767)));
+
 describe("decodeMulaw: G.711 μ-law, matching the voice server's encoder", () => {
   it("decodes digital silence to exactly zero", () => {
     // μ-law has a +0 and a -0 code; both must come back as silence.
@@ -145,6 +164,18 @@ describe("StreamingUpsampler: 8 kHz telephone audio to the AudioContext rate", (
         }
       });
 
+      it("passes the top of the telephone band (3-3.4 kHz) like a phone call does", () => {
+        // The image test only gets happier as the cutoff drops, so without this
+        // a filter that muffles the voice would pass.
+        const gainAt = (freq: number) => {
+          const out = new StreamingUpsampler(8000, outRate).process(sine(freq, 8000, 8000));
+          const steady = out.subarray(outRate / 10, out.length - outRate / 10);
+          return 20 * Math.log10(rms(steady) / (0.5 / Math.SQRT2));
+        };
+        expect(Math.abs(gainAt(3000))).toBeLessThan(0.5);
+        expect(gainAt(3400)).toBeGreaterThan(-3);
+      });
+
       it("suppresses the spectral images that make linear interpolation sound metallic", () => {
         // A tone at f in 8 kHz audio images to 8000 - f and 8000 + f when upsampled.
         for (const freq of [1000, 2000, 3000]) {
@@ -185,6 +216,27 @@ describe("StreamingUpsampler: 8 kHz telephone audio to the AudioContext rate", (
 });
 
 describe("createMulawPlaybackDecoder", () => {
+  // The hook only ever talks to this factory, so the continuity and barge-in
+  // guarantees must hold here, not just on the class underneath it.
+  for (const outRate of [48000, 44100]) {
+    it(`gives identical audio however the network chunked it, at ${outRate} Hz`, () => {
+      const mulaw = serverSpeech(4000);
+      const whole = createMulawPlaybackDecoder(outRate).decode(mulaw);
+      const chunked = decodeInChunks(createMulawPlaybackDecoder(outRate), mulaw, CHUNK_SIZES);
+      expect(chunked.length).toBe(whole.length);
+      expect(Array.from(chunked)).toEqual(Array.from(whole));
+    });
+  }
+
+  it("reset() drops pre-barge-in audio, so the next reply starts clean", () => {
+    const mulaw = serverSpeech(1200);
+    const after = mulaw.subarray(400);
+    const decoder = createMulawPlaybackDecoder(48000);
+    decoder.decode(mulaw);
+    decoder.reset();
+    expect(Array.from(decoder.decode(after))).toEqual(Array.from(createMulawPlaybackDecoder(48000).decode(after)));
+  });
+
   it("decodes and upsamples server μ-law into continuous audio at the context rate", () => {
     const pcm = Array.from(sine(1000, 8000, 8000, 0.3), (s) => Math.round(s * 32768));
     const mulaw = encodeWithServer(pcm);

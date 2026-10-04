@@ -33,6 +33,13 @@ describe("useVoiceTest: browser playback of the assistant's voice", () => {
     expect(functionBody("flushPlayback")).toMatch(/playbackDecoderRef\.current\?\.reset\(\)/);
   });
 
+  it("flushes playback (and so the decoder) when the server sends clear", () => {
+    // Slice the case body: a lazy regex would match the flushPlayback() in cleanup().
+    const at = hookSource.indexOf('case "clear":');
+    expect(at, 'case "clear" not found').toBeGreaterThan(-1);
+    expect(hookSource.slice(at, hookSource.indexOf("break;", at))).toMatch(/flushPlayback\(\)/);
+  });
+
   it("never schedules an empty buffer while the filter fills", () => {
     expect(hookSource).toMatch(/if \(pcm\.length === 0\) return;/);
   });
