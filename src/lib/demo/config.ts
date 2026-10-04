@@ -16,7 +16,7 @@ export const DEMO_INDUSTRIES = {
   home_services: {
     assistantId: "d0000000-0000-4000-a000-000000000030",
     name: "Copperline Plumbing",
-    description: "Leaks, blocked drains and hot water. It books the job and asks for a photo so the plumber brings the right parts",
+    description: "Leaks, blocked drains, and hot water: books the job and asks for a photo so the plumber brings the right parts",
   },
 } as const;
 
@@ -44,9 +44,12 @@ export function demoIndustryFromSearch(search: string): DemoIndustry | null {
 export const DEMO_PHONE_NUMBER = process.env.NEXT_PUBLIC_DEMO_PHONE_NUMBER;
 
 /**
- * The trades demo line, which answers as Copperline Plumbing. Same publish
- * switch: set it only once the number points at the demo org's plumber
- * assistant.
+ * The trades demo line, which answers as Copperline Plumbing. Publish switch:
+ * set it only after (1) the number points at the demo org's plumber assistant,
+ * (2) the voice server runs demo-org PHONE calls in test mode with the
+ * browser-style prompt (otherwise bookings are real and phone-only rules clash
+ * with the persona), and (3) the number is in the voice server's
+ * DEMO_LINE_NUMBERS (the caps' fallback when the DB lookup fails).
  */
 export const DEMO_TRADES_PHONE_NUMBER = process.env.NEXT_PUBLIC_DEMO_TRADES_PHONE_NUMBER;
 

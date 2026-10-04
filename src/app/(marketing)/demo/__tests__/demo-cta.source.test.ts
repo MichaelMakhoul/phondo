@@ -25,13 +25,24 @@ const consentSource = readFileSync(
 
 describe("SCRUM-570: /demo hero instant-call CTA", () => {
   it("hero has a primary CTA that starts a demo directly (no industry pick)", () => {
-    expect(demoPageSource).toContain("handleStartDemo(heroIndustry)");
+    expect(demoPageSource).toContain('handleStartDemo(heroIndustry ?? "dental")');
     expect(demoPageSource).toContain("Talk to it now");
   });
 
   it("the hero defaults to dental (what the live ads promise) and honours ?industry= deep links", () => {
-    expect(demoPageSource).toMatch(/useState<DemoIndustry>\("dental"\)/);
     expect(demoPageSource).toContain("demoIndustryFromSearch(window.location.search)");
+    expect(demoPageSource).toContain('setHeroIndustry(fromLink ?? "dental")');
+  });
+
+  it("no persona is assumed in the pre-rendered page, so a deep-linked tradie never sees the dental line", () => {
+    // A tel: link works before hydration; defaulting to dental at render time
+    // would put the dental clinic's number in the HTML of /demo?industry=home_services.
+    expect(demoPageSource).toMatch(/useState<DemoIndustry \| null>\(null\)/);
+    expect(demoPageSource).toContain("heroIndustry ? DEMO_PHONE_LINES[heroIndustry] : undefined");
+  });
+
+  it("each demo start is tracked with its persona", () => {
+    expect(demoPageSource).toContain("trackDemoCallStarted(industry)");
   });
 
   it("hero CTA is disabled when AudioWorklet is unsupported, like the card buttons", () => {
@@ -101,7 +112,8 @@ describe("SCRUM-571: tap-to-call demo line", () => {
   });
 
   it("the tap is tracked as a CTA click", () => {
-    expect(demoPageSource).toMatch(/trackCTAClicked\("demo_phone_number", "demo_hero"\)/);
+    // Per-persona name, so dental and trades line taps are told apart.
+    expect(demoPageSource).toContain('trackCTAClicked(`demo_phone_number_${heroIndustry}`, "demo_hero")');
   });
 
   it("the tel CTA sits inside the select-state hero block", () => {

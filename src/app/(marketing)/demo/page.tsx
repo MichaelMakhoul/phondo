@@ -26,7 +26,7 @@ import {
   formatDemoPhoneDisplay,
   type DemoIndustry,
 } from "@/lib/demo/config";
-import { trackCTAClicked } from "@/lib/analytics";
+import { trackCTAClicked, trackDemoCallStarted } from "@/lib/analytics";
 import { MarketingHeader } from "@/components/marketing/marketing-header";
 import { MarketingFooter } from "@/components/marketing/marketing-footer";
 
@@ -107,12 +107,19 @@ export default function DemoPage() {
   const [selectedIndustry, setSelectedIndustry] = useState<DemoIndustry | null>(null);
   // The hero's one-tap persona. Plain /demo stays dental, which is what the
   // live ads promise; tradie outreach deep-links to ?industry=home_services.
-  const [heroIndustry, setHeroIndustry] = useState<DemoIndustry>("dental");
+  // It stays null until the URL has been read: /demo is pre-rendered, and
+  // defaulting to dental there would hand a deep-linked tradie the dental
+  // clinic's phone line until hydration (a tel: link works without JS).
+  const [heroIndustry, setHeroIndustry] = useState<DemoIndustry | null>(null);
   useEffect(() => {
+    const requested = new URLSearchParams(window.location.search).get("industry");
     const fromLink = demoIndustryFromSearch(window.location.search);
-    if (fromLink) setHeroIndustry(fromLink);
+    if (requested && !fromLink) {
+      console.warn(`[DemoPage] Unknown ?industry=${requested}; showing the default demo`);
+    }
+    setHeroIndustry(fromLink ?? "dental");
   }, []);
-  const heroPhoneLine = DEMO_PHONE_LINES[heroIndustry];
+  const heroPhoneLine = heroIndustry ? DEMO_PHONE_LINES[heroIndustry] : undefined;
   const [duration, setDuration] = useState(0);
   const [audioSupported, setAudioSupported] = useState(true); // assume true during SSR
   useEffect(() => {
@@ -191,6 +198,7 @@ export default function DemoPage() {
 
   const handleStartDemo = useCallback(
     (industry: DemoIndustry) => {
+      trackDemoCallStarted(industry);
       setSelectedIndustry(industry);
       setDemoState("calling");
       setDuration(0);
@@ -241,14 +249,15 @@ export default function DemoPage() {
             {demoState === "select" && (
               /* SCRUM-570: instant-call hero CTA. Replays showed ads visitors
                  scrolling past three equal industry cards and choosing nothing —
-                 so the primary action starts the dental demo (the ads/flyer
-                 target vertical) with zero decisions; the cards below become
-                 the "tailor it" secondary path. */
+                 so the primary action starts a demo with zero decisions: dental
+                 by default (what the ads promise), or the persona a deep link
+                 asks for (?industry=home_services for tradie outreach). The
+                 cards below are the "tailor it" secondary path. */
               <div className="mt-8">
                 <Button
                   size="lg"
                   className="h-14 gap-2 bg-orange-500 px-10 text-lg text-white hover:bg-orange-600 animate-glow-pulse"
-                  onClick={() => handleStartDemo(heroIndustry)}
+                  onClick={() => handleStartDemo(heroIndustry ?? "dental")}
                   disabled={!audioSupported}
                   aria-describedby="hero-demo-cta-note"
                 >
@@ -268,12 +277,15 @@ export default function DemoPage() {
                     action for "hear an AI receptionist" is ringing a number,
                     not granting mic access to an unfamiliar site — so offer a
                     real call as a first-class path. Env-gated: no number
-                    configured → no dead UI. */}
+                    configured → no dead UI. The slot is reserved because the
+                    link only appears once the persona is known (after
+                    hydration), and the hero shouldn't jump when it does. */}
+                <div className="min-h-[5.5rem]">
                 {heroPhoneLine?.number && (
                   <div className="mt-6">
                     <a
                       href={`tel:${heroPhoneLine.number}`}
-                      onClick={() => trackCTAClicked("demo_phone_number", "demo_hero")}
+                      onClick={() => trackCTAClicked(`demo_phone_number_${heroIndustry}`, "demo_hero")}
                       className="inline-flex items-center gap-2 rounded-full border border-slate-600 px-6 py-3 text-sm font-medium text-slate-200 transition-colors hover:border-orange-500 hover:text-white"
                     >
                       <Phone className="h-4 w-4" />
@@ -284,6 +296,7 @@ export default function DemoPage() {
                     </p>
                   </div>
                 )}
+                </div>
               </div>
             )}
           </div>
