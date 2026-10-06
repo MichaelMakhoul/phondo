@@ -44,13 +44,13 @@ export function demoIndustryFromSearch(search: string): DemoIndustry | null {
 export const DEMO_PHONE_NUMBER = process.env.NEXT_PUBLIC_DEMO_PHONE_NUMBER;
 
 /**
- * The trades demo line, which answers as Copperline Plumbing. Publish switch:
- * set it only after (1) the number points at the demo org's plumber assistant,
- * (2) the voice server runs demo-org PHONE calls in test mode, because
- * otherwise bookings are real and land in the shared demo calendar; it also
- * adds stricter phone-only rules (surname spelled back, a final booking block)
- * that the persona was not written for, and (3) the number is in the voice
- * server's DEMO_LINE_NUMBERS (the caps' fallback when the DB lookup fails).
+ * The trades demo line, which answers as Copperline Plumbing. Since migration
+ * 00166, the published line (+61238205672) is that line: its own real org,
+ * re-skinned from Smile Hub Dental, with the same persona text as the browser
+ * plumber. So set this to +61238205672 and UNSET NEXT_PUBLIC_DEMO_PHONE_NUMBER,
+ * or /demo will label the plumber as "our demo dental clinic". Pointing a
+ * number at the demo org instead would first need the voice server to run
+ * demo-org PHONE calls in test mode (docs/engineering-follow-ups.md §H).
  */
 export const DEMO_TRADES_PHONE_NUMBER = process.env.NEXT_PUBLIC_DEMO_TRADES_PHONE_NUMBER;
 

@@ -18,7 +18,7 @@ const personaFile = fs
   .sort()
   .filter((f) => {
     const sql = fs.readFileSync(path.join(migrationsDir, f), "utf8");
-    return sql.includes("WHERE id = 'd0000000-0000-4000-a000-000000000030'") && sql.includes("system_prompt = $prompt$");
+    return sql.includes("'d0000000-0000-4000-a000-000000000030'") && sql.includes("system_prompt = $prompt$");
   })
   .pop();
 const migration = fs.readFileSync(path.join(migrationsDir, personaFile), "utf8");
@@ -61,6 +61,16 @@ describe("plumber demo persona, as assembled for the demo org", () => {
     assert.doesNotMatch(greeting, /Chloe/);
     assert.doesNotMatch(persona, /Chloe/);
     assert.match(greeting, /virtual receptionist/);
+  });
+
+  it("gives the published phone line's assistant the IDENTICAL persona in the same statement", () => {
+    // (02) 3820 5672 answers via its own org's assistant (41537e3b…); one UPDATE
+    // for both rows means the phone and browser demos can never drift apart.
+    assert.match(
+      migration,
+      /WHERE id IN \('d0000000-0000-4000-a000-000000000030', '41537e3b-6ff2-40c0-b2ff-2da327467d68'\)/
+    );
+    assert.equal((migration.match(/\$prompt\$/g) || []).length, 2, "exactly one persona text in the migration");
   });
 
   it("pins the legacy prompt path: prompt_config is cleared", () => {
