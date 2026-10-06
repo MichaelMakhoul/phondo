@@ -31,6 +31,8 @@ yarn-error.log*
 scripts/outreach/batch.json
 scripts/outreach/sent.csv
 scripts/outreach/suppression.csv
+scripts/outreach/do-not-call.txt
+scripts/outreach/calls.csv
 
 # Vercel
 .vercel
