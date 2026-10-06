@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, afterAll } from "vitest";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { describe, it, expect, vi, afterAll, beforeEach } from "vitest";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -22,6 +22,16 @@ import {
 // 5550 xxxx landlines) or Phondo's own line, and fetch is always stubbed.
 
 const SYDNEY = "Australia/Sydney";
+
+// Every test runs with HOME pointed at a throwaway dir, so neither a test nor a
+// regression can write into the operator's real ~/.phondo-outreach (their consent
+// evidence lives there).
+const FAKE_HOME = mkdtempSync(join(tmpdir(), "dial-home-"));
+beforeEach(() => vi.stubEnv("HOME", FAKE_HOME));
+afterAll(() => {
+  vi.unstubAllEnvs();
+  rmSync(FAKE_HOME, { recursive: true, force: true });
+});
 
 describe("normalizeAuNumber", () => {
   it.each([
@@ -224,11 +234,16 @@ function harness({
 } = {}) {
   const requests = [];
   let spoken = null;
+  let polls = 0;
   const fetch = vi.fn(async (url, init = {}) => {
     const method = init.method ?? "GET";
     const body = init.body ? Object.fromEntries(new URLSearchParams(init.body)) : null;
     requests.push({ url, method, body });
-    if (method === "GET") return Response.json({ sid: SID, status, answered_by: answeredBy });
+    if (method === "GET") {
+      // Answering-machine detection settles a moment after your phone is answered.
+      polls += 1;
+      return Response.json({ sid: SID, status, answered_by: polls > 1 ? answeredBy : null });
+    }
     if (url.endsWith("/Calls.json")) spoken = spokenCode(body.Twiml);
     if (body?.Twiml?.includes("<Dial") && bridge !== "ok") {
       if (bridge === "network") throw Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNRESET" } });
@@ -241,7 +256,7 @@ function harness({
     fetch,
     now: vi.fn(() => new Date(now)),
     sleep: async () => {},
-    code: () => "83",
+    code: vi.fn().mockReturnValueOnce("83").mockReturnValue("38"), // a second draw would differ
     interactive: () => true,
     ask: vi.fn(async () => (typed === undefined ? spoken : typed)),
     readDoNotCall: () => dnc,
@@ -279,13 +294,19 @@ describe("main", () => {
     expect(await h.run("0491 570 006", "--call")).toBe(0);
     const create = h.requests[0];
     expect(create.url).toMatch(/\/Calls\.json$/);
-    expect(create.body).toMatchObject({ To: "+61491570159", From: "+61257015064", Timeout: "20", MachineDetection: "Enable" });
+    expect(create.body).toMatchObject({
+      To: "+61491570159",
+      From: "+61257015064",
+      Timeout: "20",
+      MachineDetection: "Enable",
+      MachineDetectionTimeout: "10",
+    });
     expect(create.body.Twiml).toContain("8 3");
     expect(create.body.Twiml).not.toContain("<Dial");
     expect(h.deps.ask).toHaveBeenCalledOnce();
     expect(h.dialed()).toBe(true);
     expect(h.deps.appendLog).toHaveBeenCalledOnce();
-    expect(h.loggedRow()).toContain(`,+61491570006,${SID},connected,Australia/Sydney,`);
+    expect(h.loggedRow()).toContain(`,+61491570006,${SID},connected,Australia/Sydney,human,`);
   });
 
   it("never shows the code anywhere but on the call", async () => {
@@ -307,19 +328,29 @@ describe("main", () => {
   });
 
   it.each(["machine_start", "machine_end_beep", "fax"])(
-    "refuses to connect when Twilio says %s answered your phone, even with the right code",
+    "hangs up as soon as Twilio says %s answered your phone (declining the call cancels it)",
     async (answeredBy) => {
       const h = harness({ answeredBy });
       expect(await h.run("0491 570 006", "--call")).toBe(1);
+      expect(h.deps.ask).not.toHaveBeenCalled();
       expect(h.dialed()).toBe(false);
       expect(h.hungUp()).toBe(true);
+      expect(h.output()).toMatch(/was not called/);
     }
   );
 
-  it.each(["human", "unknown", null])("connects when answering-machine detection says %s and the code matches", async (answeredBy) => {
+  it.each(["human", "unknown"])("connects when answering-machine detection says %s and the code matches", async (answeredBy) => {
     const h = harness({ answeredBy });
     expect(await h.run("0491 570 006", "--call")).toBe(0);
     expect(h.dialed()).toBe(true);
+    expect(h.loggedRow()).toContain(`,${answeredBy},`);
+  });
+
+  it("says so, and logs it, when Twilio gives no answering-machine result", async () => {
+    const h = harness({ answeredBy: null });
+    expect(await h.run("0491 570 006", "--call")).toBe(0);
+    expect(h.output()).toMatch(/no answering-machine result/);
+    expect(h.loggedRow()).toContain(",none,");
   });
 
   it("never rings the prospect when your phone isn't answered", async () => {
@@ -457,6 +488,7 @@ describe("main", () => {
 
   it.each([
     ["a network failure", "network"],
+    ["an internal error", 500],
     ["a gateway error", 502],
   ])("treats %s while connecting as maybe connected: logs it and doesn't hang up", async (_, bridge) => {
     const h = harness({ bridge });
@@ -511,8 +543,20 @@ describe("main with real files on disk (fetch still stubbed)", () => {
     const h = harness({ realFiles: true, env: { DIAL_DNC_FILE: file("ok.txt", ""), DIAL_CALL_LOG: log } });
     expect(await h.run("0491 570 006", "--call", "--consented=asked to ring, any time")).toBe(0);
     const [header, row, extra] = readFileSync(log, "utf8").trim().split("\n");
-    expect(header).toBe("placed_at,prospect,call_sid,outcome,zones,consent");
-    expect(row).toContain(`,+61491570006,${SID},connected,Australia/Sydney,"asked to ring, any time"`);
+    expect(header).toBe("placed_at,prospect,call_sid,outcome,zones,amd,consent");
+    expect(row).toContain(`,+61491570006,${SID},connected,Australia/Sydney,human,"asked to ring, any time"`);
     expect(extra).toBeUndefined();
+  });
+
+  it("defaults both files to ~/.phondo-outreach, outside any checkout", async () => {
+    const dataDir = join(FAKE_HOME, ".phondo-outreach");
+    const missing = harness({ realFiles: true });
+    expect(await missing.run("0491 570 006")).toBe(1);
+    expect(missing.output()).toContain(join(dataDir, "do-not-call.txt"));
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(join(dataDir, "do-not-call.txt"), "");
+    const h = harness({ realFiles: true });
+    expect(await h.run("0491 570 006", "--call")).toBe(0);
+    expect(readFileSync(join(dataDir, "calls.csv"), "utf8")).toContain(`,+61491570006,${SID},connected,`);
   });
 });

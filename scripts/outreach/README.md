@@ -40,7 +40,9 @@ Only email addresses the business has **published** (their site, their Seek/Inde
 
 Twilio rings **your** mobile. Answer it and say hello, and after a moment you'll hear a two-digit code. Type the code in the terminal and Twilio rings the tradie, who sees Phondo's number, (02) 5701 5064. If they ring back, Phondo's AI receptionist answers.
 
-The code shows you're on the call. If voicemail or a call screener answers your phone instead (declined, missed or silenced), Twilio's answering-machine detection stops the call from connecting, so the tradie is never rung into a silent call. Only type a code you heard on the call, never one read off a voicemail transcript or a call-screening screen.
+**The code is the safeguard.** Only type a code you heard yourself on the call, never one read off a voicemail transcript or a call-screening screen. That way the tradie is never rung into a silent call.
+
+As a backstop, Twilio's answering-machine detection hangs up if voicemail or a call screener answers your phone, so declining the call cancels it. The terminal shows the detection's verdict on every call, and the call log records it.
 
 ```bash
 # Preview: runs every check and shows the plan without calling
@@ -54,7 +56,13 @@ node --env-file=.env.local --env-file=scripts/outreach/.env scripts/outreach/dia
 - **Set up:**
   - Set `DIAL_MY_MOBILE` (your own mobile) in `scripts/outreach/.env`.
   - Create the do-not-call list, even empty: `mkdir -p ~/.phondo-outreach && touch ~/.phondo-outreach/do-not-call.txt`. The script refuses to run without it.
+  - Save (02) 5701 5064 in your contacts, so your phone's call screening doesn't answer it for you.
   - `DIAL_CALLER_ID`, `DIAL_DNC_FILE` and `DIAL_CALL_LOG` are optional; see `.env.example`.
+- **First run:** check that the answering-machine backstop works.
+  1. Place a call to the fictitious `0491 570 006` with `--call`, during calling hours.
+  2. Decline it when your phone rings.
+  3. Expected: "Twilio detected voicemail or a call screener", and nothing else happens.
+  4. If instead it says "no answering-machine result", press Enter to cancel. The detection isn't working, so only the code protects your calls.
 - **Calling hours (Telemarketing Industry Standard 2017, which covers business numbers too):**
   - Weekdays 9am–8pm and Saturdays 9am–5pm, never Sundays or national public holidays, all in **their** local time.
   - Landlines take their zone from the area code.
@@ -66,7 +74,7 @@ node --env-file=.env.local --env-file=scripts/outreach/.env scripts/outreach/dia
   - The script refuses listed numbers.
   - It stops on any line that isn't exactly one number, rather than skipping it.
 - **Before calling:** check numbers against the national Do Not Call Register. A sole trader's mobile can be registered, and the ACMA offers a free subscription for small lists.
-- **Call log:** every connected call is logged to `~/.phondo-outreach/calls.csv` with its time zones and any consent note.
+- **Call log:** every connected call is logged to `~/.phondo-outreach/calls.csv`. Each row records the time zones the hours were checked in, the answering-machine verdict, and any consent note.
 - **Cost:** each call has two Twilio legs, your mobile and theirs, plus answering-machine detection on yours.
 - **Call-backs:** they reach Phondo's AI line. Keep the voice server always-on while calling (see `voice-server/deploy.sh`), and check its call log for anyone asking not to be contacted.
 - **Texts:** keep sending these from your own mobile. Twilio texts show as "Unverified" until sender registration, which needs the ABN.

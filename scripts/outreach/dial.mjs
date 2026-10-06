@@ -4,10 +4,10 @@
  *
  * Twilio rings YOUR mobile and reads you a two-digit code. Type it here, and
  * only then does Twilio dial the prospect, showing DIAL_CALLER_ID (default:
- * Phondo's own line, so a call-back reaches Phondo's AI receptionist). Typing
- * the code shows you're on the call, and if Twilio detects that voicemail or a
- * call screener answered your phone instead, it won't connect: the prospect is
- * never rung into a silent call.
+ * Phondo's own line, so a call-back reaches Phondo's AI receptionist). Typing a
+ * code you heard on the call shows you're on it, so the prospect is never rung
+ * into a silent call. As a backstop, Twilio's answering-machine detection hangs
+ * up if voicemail or a call screener answers your phone instead.
  *
  *   node --env-file=.env.local --env-file=scripts/outreach/.env \
  *     scripts/outreach/dial.mjs "0491 570 006"          # preview: run the checks, don't call
@@ -39,8 +39,9 @@ const ASK_TIMEOUT_MS = 45_000; // well inside the hold message, so your leg is s
 const REQUEST_TIMEOUT_MS = 20_000;
 const POLL_MS = 1_000;
 const MAX_RING_POLLS = RING_SECONDS + 15;
-const DATA_DIR = join(homedir(), ".phondo-outreach");
-const LOG_HEADER = "placed_at,prospect,call_sid,outcome,zones,consent\n";
+const AMD_SECONDS = 10; // Twilio's answering-machine detection gives up after this
+const MAX_AMD_POLLS = AMD_SECONDS + 2;
+const LOG_HEADER = "placed_at,prospect,call_sid,outcome,zones,amd,consent\n";
 const FINISHED = new Set(["completed", "busy", "failed", "no-answer", "canceled"]);
 const VOICE = 'voice="Polly.Olivia-Neural" language="en-AU"';
 
@@ -344,8 +345,9 @@ export async function main(argv, env, overrides = {}) {
   }
   const consent = flags.get("consented") ?? "";
 
-  const dncPath = env.DIAL_DNC_FILE || join(DATA_DIR, "do-not-call.txt");
-  const logPath = env.DIAL_CALL_LOG || join(DATA_DIR, "calls.csv");
+  const dataDir = join(homedir(), ".phondo-outreach"); // outside any checkout; read at run time
+  const dncPath = env.DIAL_DNC_FILE || join(dataDir, "do-not-call.txt");
+  const logPath = env.DIAL_CALL_LOG || join(dataDir, "calls.csv");
   let doNotCall;
   try {
     const text = deps.readDoNotCall(dncPath);
@@ -417,7 +419,7 @@ export async function main(argv, env, overrides = {}) {
     try {
       await calls.update(callSid, { Status: "completed" });
     } catch (err) {
-      error(`(Couldn't hang up your phone's leg: ${describe(err)}. It ends by itself within a minute.)`);
+      error(`(Couldn't hang up your phone's leg: ${describe(err)}. It ends by itself within two minutes.)`);
     }
   };
 
@@ -429,7 +431,7 @@ export async function main(argv, env, overrides = {}) {
       Twiml: buildHoldTwiml(code),
       Timeout: String(RING_SECONDS),
       MachineDetection: "Enable",
-      MachineDetectionTimeout: "10",
+      MachineDetectionTimeout: String(AMD_SECONDS),
     });
   } catch (err) {
     error(
@@ -444,6 +446,7 @@ export async function main(argv, env, overrides = {}) {
     return 1;
   }
 
+  let amd = "";
   try {
     log("Ringing your mobile now. Answer it and say hello; after a moment you'll hear a two-digit code.");
     let status = "timeout";
@@ -458,6 +461,28 @@ export async function main(argv, env, overrides = {}) {
       error(`Your phone wasn't answered (${status}). ${pretty(prospect)} was not called.`);
       return 1;
     }
+    // Answering-machine detection settles a few seconds after your phone answers (the
+    // code isn't read out until it has). Voicemail and call screeners (iOS Live
+    // Voicemail, Pixel Call Screen) open with a long greeting, which reads as machine,
+    // so hang up on those. A person who says nothing reads as "unknown"; they still
+    // have to hear the code to type it. Twilio doesn't document when answered_by is
+    // filled in, so a missing verdict is shown and logged rather than trusted.
+    for (let i = 0; i < MAX_AMD_POLLS && !amd; i++) {
+      amd = (await calls.get(call.sid)).answered_by || "";
+      if (!amd) await deps.sleep(POLL_MS);
+    }
+    if (/^(machine|fax)/.test(amd)) {
+      await hangUp(call.sid);
+      error(
+        `Twilio detected ${amd === "fax" ? "a fax machine" : "voicemail or a call screener"} on your phone (declined, missed or silenced?), so hung up. ${pretty(prospect)} was not called.`
+      );
+      return 1;
+    }
+    if (amd) {
+      log(`Answering-machine check: ${amd === "human" ? "a person answered" : `"${amd}"`}.`);
+    } else {
+      error("(Twilio gave no answering-machine result, so only the code protects this call. If you see this on every call, the detection isn't working.)");
+    }
     const typed = await deps.ask(
       `Type the code you heard on the call (never one read off a voicemail or call-screening screen) to ring ${pretty(prospect)}, or press Enter to cancel: `,
       ASK_TIMEOUT_MS
@@ -471,16 +496,6 @@ export async function main(argv, env, overrides = {}) {
     if (!recheck.allowed) {
       await hangUp(call.sid);
       error(`Not connecting: ${recheck.reason}. ${pretty(prospect)} was not called.`);
-      return 1;
-    }
-    // Answering-machine detection settles before the hold message plays, so it's in by
-    // now. Voicemail and call screeners (iOS Live Voicemail, Pixel Call Screen) open
-    // with a long greeting, which reads as machine_*. A person who stays silent reads
-    // as "unknown"; they still had to hear the code to type it.
-    const { answered_by: answeredBy } = await calls.get(call.sid);
-    if (/^(machine|fax)/.test(answeredBy ?? "")) {
-      await hangUp(call.sid);
-      error(`Twilio detected ${answeredBy === "fax" ? "a fax machine" : "voicemail or a call screener"} on your phone, not you, so hung up. ${pretty(prospect)} was not called.`);
       return 1;
     }
   } catch (err) {
@@ -505,7 +520,7 @@ export async function main(argv, env, overrides = {}) {
     );
   }
 
-  const row = [deps.now().toISOString(), prospect, call.sid, outcome, zones.join(" "), csvField(consent)].join(",");
+  const row = [deps.now().toISOString(), prospect, call.sid, outcome, zones.join(" "), amd || "none", csvField(consent)].join(",");
   try {
     deps.appendLog(logPath, row);
   } catch (err) {
