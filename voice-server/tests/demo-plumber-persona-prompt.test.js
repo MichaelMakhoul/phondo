@@ -42,6 +42,16 @@ const assembled = buildSystemPrompt(
   { calendarEnabled: true, transferRules: [], isAfterHours: false, afterHoursConfig: null, serviceTypes: [] }
 );
 
+// Slice between two section markers, failing loudly if either is missing or
+// out of order: an unguarded indexOf(-1) slice is "" and makes every
+// doesNotMatch on it pass vacuously.
+function between(a, b) {
+  const i = persona.indexOf(a);
+  const j = persona.indexOf(b);
+  assert.ok(i > -1 && j > i, `markers "${a}" / "${b}" must exist, in order`);
+  return persona.slice(i, j);
+}
+
 describe("plumber demo persona, as assembled for the demo org", () => {
   it("keeps the photo ask, the no-transfer rule and the Phondo reveal", () => {
     assert.match(assembled, /Ask for a photo/);
@@ -105,11 +115,12 @@ describe("plumber demo persona, as assembled for the demo org", () => {
     const reveal = persona.indexOf("Then give the demo line below as its own reply");
     assert.ok(reveal > -1, "step 5 must deliver the demo line");
     assert.ok(reveal < persona.indexOf("6. Book the visit"), "reveal before any tool call");
-    const close = persona.slice(persona.indexOf("7. Close the call"), persona.indexOf("THE DEMO LINE"));
-    assert.doesNotMatch(close, /demo line/, "the closing reply must not carry the reveal");
+    assert.doesNotMatch(between("7. Close the call", "THE DEMO LINE"), /demo line|demo of Phondo/i, "the closing reply must not carry the reveal");
     assert.match(persona, /Want me to find you a time\?/);
-    // A heading rename must not let a second reveal slip back into the close.
-    assert.equal((persona.match(/demo line below/g) || []).length, 1, "exactly one place gives the demo line");
+    // Exactly one reveal: the DEMO LINE heading plus the step-5 pointer, and the
+    // reveal sentence itself once, so a second reveal can't slip in anywhere.
+    assert.equal((persona.match(/demo line/gi) || []).length, 2, "heading + step 5 only");
+    assert.equal((persona.match(/demo of Phondo/g) || []).length, 1, "the reveal sentence appears once");
   });
 
   it("books a leak the small tap has stopped (the demo's main showcase), but main-off stays urgent", () => {
@@ -117,9 +128,8 @@ describe("plumber demo persona, as assembled for the demo org", () => {
     assert.match(persona, /If they had to turn off the main, they've got no water, so it's still urgent/);
   });
 
-  it("keeps a full booking inside the 3-minute demo cap: no suburb ask, a one-sentence photo ask", () => {
-    const step3 = persona.slice(persona.indexOf("3. Get their"), persona.indexOf("4. Ask for a photo"));
-    assert.doesNotMatch(step3, /suburb/);
+  it("trims the intake toward the 3-minute demo cap (only a timed real call can confirm the fit)", () => {
+    assert.doesNotMatch(between("3. Get their", "4. Ask for a photo"), /suburb/);
     assert.match(persona, /4\. Ask for a photo, in one sentence/);
   });
 
