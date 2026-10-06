@@ -35,3 +35,20 @@ node --env-file=scripts/outreach/.env scripts/outreach/send.mjs --send --at="202
 ## Compliance (AU Spam Act)
 
 Only email addresses the business has **published** (their site, their Seek/Indeed ad, `reception@`/`info@`). Keep the pitch relevant to their operations, identify yourself, and honour every opt-out. Don't reuse the app's transactional key or domain reputation for this.
+
+## Calling from a business number (`dial.mjs`)
+
+Twilio rings **your** mobile first. When you answer, it dials the tradie, who sees Phondo's number, (02) 5701 5064 by default. If they ring back, Phondo's AI receptionist answers.
+
+```bash
+node --env-file=.env.local --env-file=scripts/outreach/.env scripts/outreach/dial.mjs "0469 926 137"
+# --dry-run    check everything and print the plan without calling
+# --consented  they asked you to ring at this time (allows calls outside permitted hours)
+```
+
+- **Set up:** add `DIAL_MY_MOBILE` (and optionally `DIAL_CALLER_ID`) to `scripts/outreach/.env`. See `.env.example`.
+- **Calling hours (Telemarketing Industry Standard 2017, which covers business numbers too):** weekdays 9am–8pm and Saturdays 9am–5pm, Sydney time; never Sundays or national public holidays. The script refuses outside these hours unless you pass `--consented`.
+- **Do-not-call:** add anyone who asks you to stop to `scripts/outreach/do-not-call.txt`, one number per line (gitignored). The script refuses those numbers.
+- **Call log:** every call is logged to `scripts/outreach/calls.csv` (gitignored).
+- **Cost:** each call has two Twilio legs (your mobile and theirs).
+- **Texts:** keep sending these from your own mobile. Twilio texts show as "Unverified" until sender registration, which needs the ABN.
