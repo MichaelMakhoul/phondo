@@ -108,10 +108,19 @@ describe("plumber demo persona, as assembled for the demo org", () => {
     const close = persona.slice(persona.indexOf("7. Close the call"), persona.indexOf("THE DEMO LINE"));
     assert.doesNotMatch(close, /demo line/, "the closing reply must not carry the reveal");
     assert.match(persona, /Want me to find you a time\?/);
+    // A heading rename must not let a second reveal slip back into the close.
+    assert.equal((persona.match(/demo line below/g) || []).length, 1, "exactly one place gives the demo line");
   });
 
-  it("books a leak the tap has stopped (the demo's main showcase) instead of treating it as urgent", () => {
-    assert.match(persona, /If turning off the tap has stopped it, it's no longer an emergency: carry on and book a visit as normal/);
+  it("books a leak the small tap has stopped (the demo's main showcase), but main-off stays urgent", () => {
+    assert.match(persona, /If the small tap under the sink or toilet has stopped it, it's no longer an emergency: carry on and book a visit as normal/);
+    assert.match(persona, /If they had to turn off the main, they've got no water, so it's still urgent/);
+  });
+
+  it("keeps a full booking inside the 3-minute demo cap: no suburb ask, a one-sentence photo ask", () => {
+    const step3 = persona.slice(persona.indexOf("3. Get their"), persona.indexOf("4. Ask for a photo"));
+    assert.doesNotMatch(step3, /suburb/);
+    assert.match(persona, /4\. Ask for a photo, in one sentence/);
   });
 
   it("asks one thing per reply, and the reveal stands alone", () => {
@@ -124,6 +133,9 @@ describe("plumber demo persona, as assembled for the demo org", () => {
     // when no booking resolved; the appended blocks default every goodbye to it.
     assert.match(persona, /end the call with reason "message taken" \(never "booking_complete"\)/);
     assert.match(persona, /An urgent job is a message for Dave, not a booking/);
+    // The reveal comes first; the callback after it, so the reveal never sits in a Tier-2-audited turn.
+    assert.match(persona, /after steps 3 to 5, take it with schedule_callback/);
+    assert.match(persona, /Want me to get Dave to ring you straight back\?/);
     assert.match(persona, /don't go on to book a visit unless they ask/);
   });
 });
