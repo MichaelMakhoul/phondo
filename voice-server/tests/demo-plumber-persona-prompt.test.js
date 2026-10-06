@@ -110,6 +110,15 @@ describe("plumber demo persona, as assembled for the demo org", () => {
     assert.match(persona, /Want me to find you a time\?/);
   });
 
+  it("books a leak the tap has stopped (the demo's main showcase) instead of treating it as urgent", () => {
+    assert.match(persona, /If turning off the tap has stopped it, it's no longer an emergency: carry on and book a visit as normal/);
+  });
+
+  it("asks one thing per reply, and the reveal stands alone", () => {
+    assert.match(persona, /Ask ONE thing per reply, never a list of questions/);
+    assert.match(persona, /give the demo line below as its own reply \(nothing else in that reply\)/);
+  });
+
   it("ends a message-only call as a message, never as booking_complete", () => {
     // call-session.js hasUnfinishedBooking blocks end_call(reason 'booking_complete')
     // when no booking resolved; the appended blocks default every goodbye to it.
