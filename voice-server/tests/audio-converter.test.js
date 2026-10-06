@@ -128,3 +128,42 @@ describe("geminiToTwilio pipeline", () => {
     assert.equal(outBuf.length, 160);
   });
 });
+
+// Loud peaks used to wrap around: the encoder clamped to 0x7fff before adding
+// the 0x84 bias, so anything above 32635 overflowed the 15-bit segment search
+// and came out as a near-SILENT code (32767 → 0, -32768 → 0). Every full-scale
+// peak in the assistant's voice became a click, on the phone and in the
+// browser alike. G.711 clips at 32635 (0x7fff - 0x84) for exactly this reason.
+describe("pcm16ToMulaw — full-scale peaks", () => {
+  // Reference G.711 μ-law decode (what Twilio does on the phone path).
+  function g711Decode(code) {
+    const mu = ~code & 0xff;
+    const exponent = (mu >> 4) & 0x07;
+    const mantissa = mu & 0x0f;
+    const magnitude = (((mantissa << 3) + 0x84) << exponent) - 0x84;
+    return mu & 0x80 ? -magnitude : magnitude;
+  }
+  function encodeOne(sample) {
+    const pcm = Buffer.alloc(2);
+    pcm.writeInt16LE(sample, 0);
+    return pcm16ToMulaw(pcm)[0];
+  }
+
+  it("encodes samples above the G.711 clip level as the loudest code, not as silence", () => {
+    for (const sample of [32635, 32636, 32700, 32767]) {
+      assert.equal(g711Decode(encodeOne(sample)), 32124, `sample ${sample}`);
+    }
+    for (const sample of [-32635, -32636, -32700, -32767, -32768]) {
+      assert.equal(g711Decode(encodeOne(sample)), -32124, `sample ${sample}`);
+    }
+  });
+
+  it("never gets quieter as the input gets louder (no wrap-around anywhere)", () => {
+    let previous = -Infinity;
+    for (let sample = -32768; sample <= 32767; sample++) {
+      const decoded = g711Decode(encodeOne(sample));
+      assert.ok(decoded >= previous, `decoded level dropped at sample ${sample}`);
+      previous = decoded;
+    }
+  });
+});

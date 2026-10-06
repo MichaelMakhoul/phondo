@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useCallback, useEffect } from "react";
-import { mulawToAudioBuffer } from "./mulaw";
+import { createMulawPlaybackDecoder, type MulawPlaybackDecoder } from "./mulaw";
 import {
   trackTestCallStarted,
   trackTestCallCompleted,
@@ -49,10 +49,10 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody, trackingSource 
   const scheduledSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
   const nextStartTimeRef = useRef(0);
   const callStartTimeRef = useRef<number | null>(null);
-  // Bumped on every flush. Decoding a chunk is async, so a chunk that arrived
-  // just before a barge-in can finish decoding *after* flushPlayback() and would
-  // otherwise schedule a stale blip of pre-interrupt audio.
-  const playbackGenerationRef = useRef(0);
+  // One decoder per call: its upsampler carries filter state from chunk to
+  // chunk, so chunks must reach it in arrival order (the socket delivers
+  // ArrayBuffers synchronously for exactly that reason).
+  const playbackDecoderRef = useRef<MulawPlaybackDecoder | null>(null);
 
   const enqueueAudio = useCallback((buffer: AudioBuffer) => {
     const ctx = audioContextRef.current;
@@ -93,7 +93,9 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody, trackingSource 
     });
     scheduledSourcesRef.current.clear();
     nextStartTimeRef.current = 0;
-    playbackGenerationRef.current += 1;
+    // Pre-interrupt audio still sitting in the filter's look-ahead must not
+    // play in front of the next reply.
+    playbackDecoderRef.current?.reset();
   }, []);
 
   const start = useCallback(async () => {
@@ -144,6 +146,8 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody, trackingSource 
       // 3. Set up AudioContext and worklet for mulaw encoding
       const ctx = new AudioContext({ sampleRate: 48000 });
       audioContextRef.current = ctx;
+      // Browsers may not honour the requested rate, so build for the real one.
+      playbackDecoderRef.current = createMulawPlaybackDecoder(ctx.sampleRate);
 
       await ctx.audioWorklet.addModule("/audio-worklets/mulaw-encoder-processor.js");
       const workletNode = new AudioWorkletNode(ctx, "mulaw-encoder-processor");
@@ -167,6 +171,9 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody, trackingSource 
 
       // 4. Connect WebSocket
       const ws = new WebSocket(`${wsUrl}?token=${encodeURIComponent(token)}`);
+      // ArrayBuffer, not Blob: Blob reads are async and could hand chunks to
+      // the stateful decoder out of order, or land after a barge-in flush.
+      ws.binaryType = "arraybuffer";
       wsRef.current = ws;
 
       // Forward mulaw audio from worklet to WebSocket. The worklet also posts
@@ -203,21 +210,16 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody, trackingSource 
       };
 
       ws.onmessage = (event: MessageEvent) => {
-        if (event.data instanceof Blob) {
-          // Binary audio data — decode mulaw and play
-          const generation = playbackGenerationRef.current;
-          event.data.arrayBuffer().then((ab) => {
-            // A barge-in ("clear") landed while this chunk was decoding — it is
-            // pre-interrupt audio and must not be scheduled.
-            if (generation !== playbackGenerationRef.current) return;
-            const mulawData = new Uint8Array(ab);
-            if (mulawData.length > 0 && audioContextRef.current) {
-              const audioBuffer = mulawToAudioBuffer(mulawData, audioContextRef.current);
-              enqueueAudio(audioBuffer);
-            }
-          }).catch((err) => {
-            console.warn("[VoiceTest] Failed to process audio data:", err);
-          });
+        if (event.data instanceof ArrayBuffer) {
+          // Binary audio: the assistant's voice as 8 kHz mulaw.
+          const playbackCtx = audioContextRef.current;
+          const decoder = playbackDecoderRef.current;
+          if (!playbackCtx || !decoder || event.data.byteLength === 0) return;
+          const pcm = decoder.decode(new Uint8Array(event.data));
+          if (pcm.length === 0) return; // the filter is still filling its look-ahead
+          const audioBuffer = playbackCtx.createBuffer(1, pcm.length, playbackCtx.sampleRate);
+          audioBuffer.getChannelData(0).set(pcm);
+          enqueueAudio(audioBuffer);
           return;
         }
 
@@ -358,6 +360,7 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody, trackingSource 
   function cleanup() {
     // Stop any scheduled/playing audio
     flushPlayback();
+    playbackDecoderRef.current = null;
 
     // Disconnect worklet. Detach its handlers first so a disconnected node's
     // late processor-error or forwarded mic message can't call back into (or

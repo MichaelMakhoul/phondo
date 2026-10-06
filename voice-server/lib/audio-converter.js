@@ -52,10 +52,14 @@ function pcm16ToMulaw(pcmBuf) {
 
 function encodeMulawSample(sample) {
   const BIAS = 0x84;
-  const MAX = 0x7fff;
+  // G.711 clips at 0x7fff - BIAS. Clamping at 0x7fff instead let loud peaks
+  // overflow the segment search below and encode as near-silence, so every
+  // full-scale peak in the assistant's voice was a click (same clip as
+  // lib/hold-audio.js).
+  const CLIP = 32635;
   const sign = (sample < 0) ? 0x80 : 0;
   if (sample < 0) sample = -sample;
-  if (sample > MAX) sample = MAX;
+  if (sample > CLIP) sample = CLIP;
   sample += BIAS;
 
   let exponent = 7;
