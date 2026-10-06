@@ -38,7 +38,9 @@ Only email addresses the business has **published** (their site, their Seek/Inde
 
 ## Calling from a business number (`dial.mjs`)
 
-Twilio rings **your** mobile and reads you a two-digit code. When you type the code in the terminal, Twilio rings the tradie, who sees Phondo's number, (02) 5701 5064. If they ring back, Phondo's AI receptionist answers. The code shows you're on the line: if your voicemail answers instead (declined, missed or silenced), nobody hears it, so the tradie is never rung into a silent call.
+Twilio rings **your** mobile. Answer it and say hello, and after a moment you'll hear a two-digit code. Type the code in the terminal and Twilio rings the tradie, who sees Phondo's number, (02) 5701 5064. If they ring back, Phondo's AI receptionist answers.
+
+The code shows you're on the call. If voicemail or a call screener answers your phone instead (declined, missed or silenced), Twilio's answering-machine detection stops the call from connecting, so the tradie is never rung into a silent call. Only type a code you heard on the call, never one read off a voicemail transcript or a call-screening screen.
 
 ```bash
 # Preview: runs every check and shows the plan without calling
@@ -47,22 +49,24 @@ node --env-file=.env.local --env-file=scripts/outreach/.env scripts/outreach/dia
 node --env-file=.env.local --env-file=scripts/outreach/.env scripts/outreach/dial.mjs "0491 570 006" --call
 ```
 
-(0491 570 006 is an ACMA number reserved for fiction, so it's safe to try.)
+0491 570 006 is an ACMA number reserved for fiction, so it's safe to try.
 
 - **Set up:**
-  - Set `DIAL_MY_MOBILE` (your own mobile) in `scripts/outreach/.env`. `DIAL_CALLER_ID` and `DIAL_DNC_FILE` are optional; see `.env.example`.
-  - Create the do-not-call list, even empty: `touch scripts/outreach/do-not-call.txt`. The script refuses to run without it.
+  - Set `DIAL_MY_MOBILE` (your own mobile) in `scripts/outreach/.env`.
+  - Create the do-not-call list, even empty: `mkdir -p ~/.phondo-outreach && touch ~/.phondo-outreach/do-not-call.txt`. The script refuses to run without it.
+  - `DIAL_CALLER_ID`, `DIAL_DNC_FILE` and `DIAL_CALL_LOG` are optional; see `.env.example`.
 - **Calling hours (Telemarketing Industry Standard 2017, which covers business numbers too):**
   - Weekdays 9am–8pm and Saturdays 9am–5pm, never Sundays or national public holidays, all in **their** local time.
-  - Landlines take their time zone from the area code. Mobiles are assumed to be in Sydney; add `--tz=Australia/Perth` (or similar) if they're elsewhere.
+  - Landlines take their zone from the area code.
+  - Mobiles are assumed to be in Sydney; add `--tz=Australia/Perth` (or similar) if they're elsewhere.
   - The hours are checked again just before connecting.
 - **Consent:** if they asked you to ring outside those hours, add `--consented="asked 3/10 to ring Sat 7:30am"`. The note is logged as your evidence.
 - **Do-not-call:** when someone asks you to stop, add their number to the list, one per line, with any note after a `#`:
-  - `0491 570 006  # Joe, asked to stop 7/10`
+  - Example: `0491 570 006  # Joe, asked to stop 7/10`
   - The script refuses listed numbers.
   - It stops on any line that isn't exactly one number, rather than skipping it.
 - **Before calling:** check numbers against the national Do Not Call Register. A sole trader's mobile can be registered, and the ACMA offers a free subscription for small lists.
-- **Call log:** every connected call is logged to `scripts/outreach/calls.csv` (gitignored).
-- **Cost:** each call has two Twilio legs, your mobile and theirs.
+- **Call log:** every connected call is logged to `~/.phondo-outreach/calls.csv` with its time zones and any consent note.
+- **Cost:** each call has two Twilio legs, your mobile and theirs, plus answering-machine detection on yours.
 - **Call-backs:** they reach Phondo's AI line. Keep the voice server always-on while calling (see `voice-server/deploy.sh`), and check its call log for anyone asking not to be contacted.
 - **Texts:** keep sending these from your own mobile. Twilio texts show as "Unverified" until sender registration, which needs the ABN.

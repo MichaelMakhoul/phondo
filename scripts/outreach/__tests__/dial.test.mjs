@@ -1,5 +1,9 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterAll } from "vitest";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
+  newCode,
   normalizeAuNumber,
   zonesFor,
   callingWindow,
@@ -177,6 +181,14 @@ describe("TwiML", () => {
   });
 });
 
+describe("newCode", () => {
+  it("draws a fresh two-digit code for each call", () => {
+    const draws = Array.from({ length: 200 }, newCode);
+    expect(draws.every((c) => /^\d{2}$/.test(c))).toBe(true);
+    expect(new Set(draws).size).toBeGreaterThan(30);
+  });
+});
+
 describe("parseDoNotCallList", () => {
   it("reads one number per line in any format, with notes after #", () => {
     const list = parseDoNotCallList(
@@ -195,17 +207,32 @@ describe("parseDoNotCallList", () => {
   });
 });
 
-// main() with every side effect injected: no real network, file or terminal.
+// main() with every side effect injected: no real network, and no real files
+// unless a test opts in with temp paths.
 const SID = "CA" + "0123456789abcdef".repeat(2);
+const spokenCode = (twiml) => twiml.match(/type ([\d ]+) in your terminal/)?.[1].replace(/ /g, "");
 
-function harness({ status = "in-progress", typed = "47", dnc = "", now = "2026-10-07T10:00:00+11:00", bridge = 200, env = {} } = {}) {
+function harness({
+  status = "in-progress",
+  answeredBy = "human",
+  typed, // what you type; by default, the code spoken on the call
+  dnc = "",
+  now = "2026-10-07T10:00:00+11:00",
+  bridge = "ok", // or an HTTP status, or "network"
+  realFiles = false,
+  env = {},
+} = {}) {
   const requests = [];
+  let spoken = null;
   const fetch = vi.fn(async (url, init = {}) => {
     const method = init.method ?? "GET";
     const body = init.body ? Object.fromEntries(new URLSearchParams(init.body)) : null;
     requests.push({ url, method, body });
-    if (method === "GET") return Response.json({ sid: SID, status });
-    if (body?.Twiml?.includes("<Dial") && bridge !== 200) {
+    if (method === "GET") return Response.json({ sid: SID, status, answered_by: answeredBy });
+    if (url.endsWith("/Calls.json")) spoken = spokenCode(body.Twiml);
+    if (body?.Twiml?.includes("<Dial") && bridge !== "ok") {
+      if (bridge === "network") throw Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNRESET" } });
+      if (bridge >= 500) return new Response("<html>Bad Gateway</html>", { status: bridge });
       return Response.json({ message: "Call is not in-progress. Cannot redirect.", code: 21220 }, { status: bridge });
     }
     return Response.json({ sid: SID, status: "queued" }, { status: 201 });
@@ -214,13 +241,18 @@ function harness({ status = "in-progress", typed = "47", dnc = "", now = "2026-1
     fetch,
     now: vi.fn(() => new Date(now)),
     sleep: async () => {},
-    code: () => "47",
-    ask: vi.fn(async () => typed),
+    code: () => "83",
+    interactive: () => true,
+    ask: vi.fn(async () => (typed === undefined ? spoken : typed)),
     readDoNotCall: () => dnc,
     appendLog: vi.fn(),
     log: vi.fn(),
     error: vi.fn(),
   };
+  if (realFiles) {
+    delete deps.readDoNotCall;
+    delete deps.appendLog;
+  }
   const fullEnv = { TWILIO_ACCOUNT_SID: "ACtest", TWILIO_AUTH_TOKEN: "secret", DIAL_MY_MOBILE: "0491 570 159", ...env };
   return {
     deps,
@@ -228,6 +260,7 @@ function harness({ status = "in-progress", typed = "47", dnc = "", now = "2026-1
     run: (...args) => main(["node", "dial.mjs", ...args], fullEnv, deps),
     dialed: () => requests.some((r) => r.body?.Twiml?.includes("<Dial")),
     hungUp: () => requests.some((r) => r.body?.Status === "completed"),
+    loggedRow: () => deps.appendLog?.mock.calls[0]?.[1],
     output: () => [...deps.log.mock.calls, ...deps.error.mock.calls].flat().join("\n"),
   };
 }
@@ -241,18 +274,25 @@ describe("main", () => {
     expect(h.output()).toMatch(/assumed for a mobile/);
   });
 
-  it("connects the prospect only after you type the code read out on your phone", async () => {
+  it("connects the prospect only after you type the code spoken on your phone", async () => {
     const h = harness();
     expect(await h.run("0491 570 006", "--call")).toBe(0);
     const create = h.requests[0];
     expect(create.url).toMatch(/\/Calls\.json$/);
-    expect(create.body).toMatchObject({ To: "+61491570159", From: "+61257015064" });
-    expect(create.body.Twiml).toContain("4 7");
+    expect(create.body).toMatchObject({ To: "+61491570159", From: "+61257015064", Timeout: "20", MachineDetection: "Enable" });
+    expect(create.body.Twiml).toContain("8 3");
     expect(create.body.Twiml).not.toContain("<Dial");
     expect(h.deps.ask).toHaveBeenCalledOnce();
     expect(h.dialed()).toBe(true);
     expect(h.deps.appendLog).toHaveBeenCalledOnce();
-    expect(h.deps.appendLog.mock.calls[0][0]).toContain("+61491570006");
+    expect(h.loggedRow()).toContain(`,+61491570006,${SID},connected,Australia/Sydney,`);
+  });
+
+  it("never shows the code anywhere but on the call", async () => {
+    const h = harness();
+    await h.run("0491 570 006", "--call");
+    const shown = [h.output(), ...h.deps.ask.mock.calls.map(([question]) => question)].join("\n");
+    expect(shown).not.toMatch(/8\s?3/);
   });
 
   it.each([
@@ -264,6 +304,22 @@ describe("main", () => {
     expect(h.dialed()).toBe(false);
     expect(h.hungUp()).toBe(true);
     expect(h.deps.appendLog).not.toHaveBeenCalled();
+  });
+
+  it.each(["machine_start", "machine_end_beep", "fax"])(
+    "refuses to connect when Twilio says %s answered your phone, even with the right code",
+    async (answeredBy) => {
+      const h = harness({ answeredBy });
+      expect(await h.run("0491 570 006", "--call")).toBe(1);
+      expect(h.dialed()).toBe(false);
+      expect(h.hungUp()).toBe(true);
+    }
+  );
+
+  it.each(["human", "unknown", null])("connects when answering-machine detection says %s and the code matches", async (answeredBy) => {
+    const h = harness({ answeredBy });
+    expect(await h.run("0491 570 006", "--call")).toBe(0);
+    expect(h.dialed()).toBe(true);
   });
 
   it("never rings the prospect when your phone isn't answered", async () => {
@@ -281,11 +337,20 @@ describe("main", () => {
     expect(h.deps.ask).not.toHaveBeenCalled();
   });
 
-  it("refuses when the do-not-call list is missing, unreadable, or lists the number", async () => {
+  it("won't ring your phone without a terminal to type the code into", async () => {
+    const h = harness();
+    h.deps.interactive = () => false;
+    expect(await h.run("0491 570 006", "--call")).toBe(1);
+    expect(h.deps.fetch).not.toHaveBeenCalled();
+  });
+
+  it("refuses, in preview too, when the do-not-call list is missing, unreadable, or lists the number", async () => {
     for (const dnc of [null, "Joe 0491 570 006\n", "0491 570 006 # asked to stop\n"]) {
-      const h = harness({ dnc });
-      expect(await h.run("0491 570 006", "--call")).toBe(1);
-      expect(h.deps.fetch).not.toHaveBeenCalled();
+      for (const mode of [[], ["--call"]]) {
+        const h = harness({ dnc });
+        expect(await h.run("0491 570 006", ...mode)).toBe(1);
+        expect(h.deps.fetch).not.toHaveBeenCalled();
+      }
     }
   });
 
@@ -311,20 +376,31 @@ describe("main", () => {
     expect(bare.deps.fetch).not.toHaveBeenCalled();
     const noted = harness({ now: "2026-10-11T07:30:00+11:00" });
     expect(await noted.run("0491 570 006", "--call", "--consented=asked 3/10 to ring Sun 7:30am, mobile")).toBe(0);
-    expect(noted.deps.appendLog.mock.calls[0][0]).toContain('"asked 3/10 to ring Sun 7:30am, mobile"');
+    expect(noted.loggedRow()).toContain('"asked 3/10 to ring Sun 7:30am, mobile"');
   });
 
-  it("uses --tz for a mobile's local hours, and rejects a zone it doesn't know", async () => {
-    const perth = harness({ now: "2026-10-07T09:30:00+11:00" }); // 6:30am in Perth
-    expect(await perth.run("0491 570 006", "--call", "--tz=Australia/Perth")).toBe(1);
-    expect(perth.deps.fetch).not.toHaveBeenCalled();
-    const typo = harness();
-    expect(await typo.run("0491 570 006", "--call", "--tz=Australia/Perh")).toBe(1);
-    expect(typo.deps.fetch).not.toHaveBeenCalled();
+  it("uses --tz for a mobile's local hours", async () => {
+    const early = harness({ now: "2026-10-07T09:30:00+11:00" }); // 6:30am in Perth
+    expect(await early.run("0491 570 006", "--call", "--tz=Australia/Perth")).toBe(1);
+    expect(early.deps.fetch).not.toHaveBeenCalled();
+    const open = harness({ now: "2026-10-07T12:30:00+11:00" }); // 9:30am in Perth
+    expect(await open.run("0491 570 006", "--tz=Australia/Perth")).toBe(0);
+    expect(open.output()).toContain("Australia/Perth (from --tz)");
+  });
+
+  it("only adds --tz to a landline's zones, never replaces them", async () => {
+    const h = harness({ now: "2026-10-07T10:00:00+11:00" }); // 7am in Perth
+    expect(await h.run("(08) 5550 1234", "--tz=Australia/Sydney")).toBe(1);
+  });
+
+  it.each(["UTC", "Etc/GMT+8", "Australia/Perh", "America/New_York"])("rejects --tz=%s (not an Australian zone)", async (zone) => {
+    // Inside calling hours in UTC, UTC-8 and New York alike, so only the zone check can refuse.
+    const h = harness({ now: "2026-10-07T17:00:00Z" });
+    expect(await h.run("0491 570 006", `--tz=${zone}`)).toBe(1);
   });
 
   it("rejects unknown flags, so a typo can't silently pass", async () => {
-    for (const flag of ["--consent", "--dry-run", "--call=no"]) {
+    for (const flag of ["--consent", "--dry-run", "--call=no", "--constructor", "--toString"]) {
       const h = harness();
       expect(await h.run("0491 570 006", "--call", flag)).toBe(1);
       expect(h.deps.fetch).not.toHaveBeenCalled();
@@ -347,36 +423,51 @@ describe("main", () => {
     expect(h.deps.fetch).not.toHaveBeenCalled();
   });
 
-  it("surfaces a Twilio error, even when the error body isn't JSON", async () => {
+  it("reports a rejected call (4xx) as nobody called", async () => {
     const h = harness();
-    h.deps.fetch.mockImplementationOnce(async () => new Response("<html>Bad Gateway</html>", { status: 502 }));
+    h.deps.fetch.mockImplementationOnce(async () => Response.json({ message: "Invalid 'To' number", code: 21211 }, { status: 400 }));
     expect(await h.run("0491 570 006", "--call")).toBe(1);
-    expect(h.output()).toMatch(/502/);
-    expect(h.dialed()).toBe(false);
+    expect(h.output()).toMatch(/21211/);
+    expect(h.output()).toMatch(/Nobody was called/);
   });
 
-  it("says the call may exist when Twilio's reply has no call SID or never arrives", async () => {
-    const noSid = harness();
-    noSid.deps.fetch.mockImplementationOnce(async () => new Response("{}", { status: 201 }));
-    expect(await noSid.run("0491 570 006", "--call")).toBe(1);
-    expect(noSid.output()).toMatch(/phone rings/i);
-    const lost = harness();
-    lost.deps.fetch.mockImplementationOnce(async () => {
-      throw Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNRESET" } });
-    });
-    expect(await lost.run("0491 570 006", "--call")).toBe(1);
-    expect(lost.output()).toMatch(/ECONNRESET/);
-    expect(lost.output()).toMatch(/phone rings/i);
+  it("says your phone may ring after a gateway error, a reply with no call SID, or a lost connection", async () => {
+    const replies = [
+      async () => new Response("<html>Bad Gateway</html>", { status: 502 }),
+      async () => new Response("{}", { status: 201 }),
+      async () => {
+        throw Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNRESET" } });
+      },
+    ];
+    for (const reply of replies) {
+      const h = harness();
+      h.deps.fetch.mockImplementationOnce(reply);
+      expect(await h.run("0491 570 006", "--call")).toBe(1);
+      expect(h.output()).toMatch(/phone rings/i);
+      expect(h.dialed()).toBe(false);
+    }
   });
 
-  it("reports a refused connection as not called, and logs nothing", async () => {
+  it("reports a refused connection (4xx) as not called, and logs nothing", async () => {
     const h = harness({ bridge: 400 });
     expect(await h.run("0491 570 006", "--call")).toBe(1);
     expect(h.output()).toMatch(/was not called/);
     expect(h.deps.appendLog).not.toHaveBeenCalled();
   });
 
-  it("still reports a connected call when calls.csv can't be written", async () => {
+  it.each([
+    ["a network failure", "network"],
+    ["a gateway error", 502],
+  ])("treats %s while connecting as maybe connected: logs it and doesn't hang up", async (_, bridge) => {
+    const h = harness({ bridge });
+    expect(await h.run("0491 570 006", "--call")).toBe(1);
+    expect(h.output()).toMatch(/may be ringing/);
+    expect(h.output()).toMatch(/Don't re-run/);
+    expect(h.loggedRow()).toContain(",unconfirmed,");
+    expect(h.hungUp()).toBe(false);
+  });
+
+  it("still reports a connected call when the call log can't be written", async () => {
     const h = harness();
     h.deps.appendLog.mockImplementation(() => {
       throw new Error("EACCES");
@@ -384,5 +475,44 @@ describe("main", () => {
     expect(await h.run("0491 570 006", "--call")).toBe(0);
     expect(h.output()).toMatch(/Add this row by hand/);
     expect(h.output()).toMatch(/Don't re-run/);
+  });
+});
+
+describe("main with real files on disk (fetch still stubbed)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "dial-test-"));
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+  const file = (name, contents) => {
+    const path = join(dir, name);
+    if (contents !== null) writeFileSync(path, contents);
+    return path;
+  };
+
+  it("refuses when DIAL_DNC_FILE doesn't exist, and names it", async () => {
+    const path = file("missing.txt", null);
+    const h = harness({ realFiles: true, env: { DIAL_DNC_FILE: path } });
+    expect(await h.run("0491 570 006")).toBe(1);
+    expect(h.output()).toContain(path);
+  });
+
+  it("refuses a number listed in DIAL_DNC_FILE", async () => {
+    const h = harness({ realFiles: true, env: { DIAL_DNC_FILE: file("listed.txt", "0491 570 006 # asked to stop\n") } });
+    expect(await h.run("0491 570 006")).toBe(1);
+  });
+
+  it("checks an empty list and says so", async () => {
+    const path = file("empty.txt", "");
+    const h = harness({ realFiles: true, env: { DIAL_DNC_FILE: path } });
+    expect(await h.run("0491 570 006")).toBe(0);
+    expect(h.output()).toContain(`0 numbers checked (${path})`);
+  });
+
+  it("creates DIAL_CALL_LOG with a header and records the call", async () => {
+    const log = join(dir, "nested", "calls.csv");
+    const h = harness({ realFiles: true, env: { DIAL_DNC_FILE: file("ok.txt", ""), DIAL_CALL_LOG: log } });
+    expect(await h.run("0491 570 006", "--call", "--consented=asked to ring, any time")).toBe(0);
+    const [header, row, extra] = readFileSync(log, "utf8").trim().split("\n");
+    expect(header).toBe("placed_at,prospect,call_sid,outcome,zones,consent");
+    expect(row).toContain(`,+61491570006,${SID},connected,Australia/Sydney,"asked to ring, any time"`);
+    expect(extra).toBeUndefined();
   });
 });

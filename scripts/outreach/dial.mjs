@@ -4,9 +4,10 @@
  *
  * Twilio rings YOUR mobile and reads you a two-digit code. Type it here, and
  * only then does Twilio dial the prospect, showing DIAL_CALLER_ID (default:
- * Phondo's own line, so a call-back reaches Phondo's AI receptionist). The code
- * proves you are on the line: if your voicemail answers (declined, missed,
- * silenced), nobody hears it, so the prospect is never rung into a silent call.
+ * Phondo's own line, so a call-back reaches Phondo's AI receptionist). Typing
+ * the code shows you're on the call, and if Twilio detects that voicemail or a
+ * call screener answered your phone instead, it won't connect: the prospect is
+ * never rung into a silent call.
  *
  *   node --env-file=.env.local --env-file=scripts/outreach/.env \
  *     scripts/outreach/dial.mjs "0491 570 006"          # preview: run the checks, don't call
@@ -17,13 +18,16 @@
  *     public holidays, in the PROSPECT's local time (area code for landlines;
  *     Sydney, or --tz, for mobiles). --consented="<note>" lifts this only when
  *     they asked to be called then; the note is logged as the evidence s 8(5) needs.
- *   - never a number on the do-not-call list (DIAL_DNC_FILE, default
- *     scripts/outreach/do-not-call.txt, gitignored). A missing list, or a line
- *     that isn't exactly one number, stops the script instead of being skipped.
- * Each connected call is logged to scripts/outreach/calls.csv (gitignored).
+ *   - never a number on the do-not-call list. A missing list, or a line that
+ *     isn't exactly one number, stops the script instead of being skipped.
+ * The list and the call log live in ~/.phondo-outreach/ (override with
+ * DIAL_DNC_FILE and DIAL_CALL_LOG), outside any checkout, so a git clean or a
+ * new worktree can't lose them.
  */
 import { randomInt } from "node:crypto";
-import { appendFileSync, existsSync, readFileSync, realpathSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
@@ -31,13 +35,12 @@ const SYDNEY = "Australia/Sydney";
 const DEFAULT_CALLER_ID = "+61257015064";
 const PLACEHOLDER_MOBILE = "+61400000000"; // the old .env.example value
 const RING_SECONDS = 20; // how long Twilio rings your mobile
-const ASK_TIMEOUT_MS = 45_000; // shorter than the hold message, so your leg is still up
+const ASK_TIMEOUT_MS = 45_000; // well inside the hold message, so your leg is still up
 const REQUEST_TIMEOUT_MS = 20_000;
 const POLL_MS = 1_000;
 const MAX_RING_POLLS = RING_SECONDS + 15;
-const DNC_PATH = fileURLToPath(new URL("./do-not-call.txt", import.meta.url));
-const LOG_PATH = fileURLToPath(new URL("./calls.csv", import.meta.url));
-const LOG_HEADER = "placed_at,prospect,call_sid,outcome,consent\n";
+const DATA_DIR = join(homedir(), ".phondo-outreach");
+const LOG_HEADER = "placed_at,prospect,call_sid,outcome,zones,consent\n";
 const FINISHED = new Set(["completed", "busy", "failed", "no-answer", "canceled"]);
 const VOICE = 'voice="Polly.Olivia-Neural" language="en-AU"';
 
@@ -141,6 +144,11 @@ export function callingWindow(date, { zones, consented = false }) {
   return { allowed: true, reason: "inside permitted calling hours" };
 }
 
+/** A fresh two-digit code for each call. */
+export function newCode() {
+  return String(randomInt(10, 100));
+}
+
 /** TwiML for your leg while you're asked for the code. It never dials anyone. */
 export function buildHoldTwiml(code) {
   if (!/^\d{2,4}$/.test(code)) throw new Error(`bad confirmation code: ${code}`);
@@ -148,7 +156,7 @@ export function buildHoldTwiml(code) {
   return (
     '<?xml version="1.0" encoding="UTF-8"?><Response>' +
     `<Say ${VOICE} loop="4">To connect, type ${spoken} in your terminal.</Say>` +
-    '<Pause length="40"/>' +
+    '<Pause length="60"/>' +
     `<Say ${VOICE}>Not connected. Goodbye.</Say><Hangup/></Response>`
   );
 }
@@ -187,12 +195,13 @@ function pretty(e164) {
   return n.startsWith("4") ? `0${n.slice(0, 3)} ${n.slice(3, 6)} ${n.slice(6)}` : `(0${n[0]}) ${n.slice(1, 5)} ${n.slice(5)}`;
 }
 
-function isKnownZone(zone) {
+/** The canonical Australian zone for `zone`, or null (UTC, Etc/GMT+8 and typos are all refused). */
+function australianZone(zone) {
   try {
-    new Intl.DateTimeFormat("en-AU", { timeZone: zone });
-    return true;
+    const id = new Intl.DateTimeFormat("en-AU", { timeZone: zone }).resolvedOptions().timeZone;
+    return id.startsWith("Australia/") ? id : null;
   } catch {
-    return false;
+    return null; // not a zone Intl knows
   }
 }
 
@@ -204,7 +213,7 @@ function describe(err) {
   return err?.cause?.code ?? err?.cause?.message ?? err?.message ?? String(err);
 }
 
-/** Twilio said no (a definite answer, unlike a network failure, where the request may have landed). */
+/** Twilio rejected the request (4xx), so it had no effect. A 5xx or a network failure may have landed. */
 class TwilioRefused extends Error {}
 
 function twilioCalls(accountSid, authToken, fetchImpl) {
@@ -226,7 +235,9 @@ function twilioCalls(accountSid, authToken, fetchImpl) {
     }
     if (!res.ok) {
       const detail = body?.message ? `${body.message}${body.code ? ` [code ${body.code}]` : ""}` : text.trim().slice(0, 200) || "no details";
-      throw new TwilioRefused(`HTTP ${res.status}: ${detail}`);
+      const message = `HTTP ${res.status}: ${detail}`;
+      // A gateway error (5xx) can follow a change that did land, so only a 4xx is a definite no.
+      throw res.status < 500 ? new TwilioRefused(message) : new Error(message);
     }
     return body ?? {};
   }
@@ -238,10 +249,7 @@ function twilioCalls(accountSid, authToken, fetchImpl) {
 }
 
 async function askOnTerminal(question, timeoutMs) {
-  if (!process.stdin.isTTY) {
-    console.error("No interactive terminal to type the code into.");
-    return null;
-  }
+  if (!process.stdin.isTTY) return null;
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   try {
     return await new Promise((resolve) => {
@@ -268,12 +276,14 @@ const defaultDeps = {
   fetch: (url, init) => globalThis.fetch(url, init),
   now: () => new Date(),
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-  code: () => String(randomInt(10, 100)),
+  code: newCode,
+  interactive: () => Boolean(process.stdin.isTTY),
   ask: askOnTerminal,
   readDoNotCall: (path) => (existsSync(path) ? readFileSync(path, "utf8") : null),
-  appendLog: (row) => {
-    if (!existsSync(LOG_PATH)) appendFileSync(LOG_PATH, LOG_HEADER);
-    appendFileSync(LOG_PATH, `${row}\n`);
+  appendLog: (path, row) => {
+    mkdirSync(dirname(path), { recursive: true });
+    if (!existsSync(path)) appendFileSync(path, LOG_HEADER);
+    appendFileSync(path, `${row}\n`);
   },
   log: (...args) => console.log(...args),
   error: (...args) => console.error(...args),
@@ -290,7 +300,7 @@ function parseArgs(args) {
     const eq = arg.indexOf("=");
     const name = arg.slice(2, eq === -1 ? undefined : eq);
     const value = eq === -1 ? null : arg.slice(eq + 1);
-    const kind = FLAGS[name];
+    const kind = Object.hasOwn(FLAGS, name) ? FLAGS[name] : undefined;
     if (!kind || (kind === "switch" && value !== null)) return { problem: `Unknown option ${arg}` };
     if (kind === "value" && !value?.trim()) {
       return {
@@ -327,19 +337,24 @@ export async function main(argv, env, overrides = {}) {
     error(`Not an Australian mobile or landline: "${target}"`);
     return 1;
   }
-  const tz = flags.get("tz") ?? null;
-  if (tz && !isKnownZone(tz)) {
-    error(`Unknown time zone "${tz}". Use one like Australia/Perth, Australia/Brisbane or Australia/Adelaide.`);
+  const tz = flags.has("tz") ? australianZone(flags.get("tz")) : null;
+  if (flags.has("tz") && !tz) {
+    error(`--tz must be an Australian time zone like Australia/Perth, Australia/Brisbane or Australia/Adelaide (got "${flags.get("tz")}").`);
     return 1;
   }
   const consent = flags.get("consented") ?? "";
 
-  const dncPath = env.DIAL_DNC_FILE || DNC_PATH;
+  const dncPath = env.DIAL_DNC_FILE || join(DATA_DIR, "do-not-call.txt");
+  const logPath = env.DIAL_CALL_LOG || join(DATA_DIR, "calls.csv");
   let doNotCall;
   try {
     const text = deps.readDoNotCall(dncPath);
     if (text == null) {
-      error(`No do-not-call list at ${dncPath}. Create it (even empty) so the check can't be skipped:\n  touch "${dncPath}"`);
+      error(
+        `No do-not-call list at ${dncPath}.\n` +
+          "If you already keep one somewhere else, set DIAL_DNC_FILE to it in scripts/outreach/.env.\n" +
+          `If nobody has asked you to stop yet, create it empty:\n  mkdir -p "${dirname(dncPath)}" && touch "${dncPath}"`
+      );
       return 1;
     }
     doNotCall = parseDoNotCallList(text);
@@ -391,6 +406,10 @@ export async function main(argv, env, overrides = {}) {
     log("Preview only: nothing was dialed. Add --call to place it.");
     return 0;
   }
+  if (!deps.interactive()) {
+    error("--call needs an interactive terminal to type the code into, so nothing was dialed.");
+    return 1;
+  }
 
   const calls = twilioCalls(accountSid, authToken, deps.fetch);
   const code = deps.code();
@@ -404,11 +423,18 @@ export async function main(argv, env, overrides = {}) {
 
   let call;
   try {
-    call = await calls.create({ To: myMobile, From: callerId, Twiml: buildHoldTwiml(code), Timeout: String(RING_SECONDS) });
+    call = await calls.create({
+      To: myMobile,
+      From: callerId,
+      Twiml: buildHoldTwiml(code),
+      Timeout: String(RING_SECONDS),
+      MachineDetection: "Enable",
+      MachineDetectionTimeout: "10",
+    });
   } catch (err) {
     error(
       err instanceof TwilioRefused
-        ? `Twilio refused the call (${err.message}). Nobody was called.`
+        ? `Twilio rejected the call (${err.message}). Nobody was called.`
         : `Couldn't reach Twilio (${describe(err)}). If your phone rings anyway, hang up: ${pretty(prospect)} is only called after you type the code.`
     );
     return 1;
@@ -419,7 +445,7 @@ export async function main(argv, env, overrides = {}) {
   }
 
   try {
-    log("Ringing your mobile now…");
+    log("Ringing your mobile now. Answer it and say hello; after a moment you'll hear a two-digit code.");
     let status = "timeout";
     for (let i = 0; i < MAX_RING_POLLS; i++) {
       ({ status } = await calls.get(call.sid));
@@ -432,7 +458,10 @@ export async function main(argv, env, overrides = {}) {
       error(`Your phone wasn't answered (${status}). ${pretty(prospect)} was not called.`);
       return 1;
     }
-    const typed = await deps.ask(`Type the code you hear on your phone to ring ${pretty(prospect)} (Enter alone cancels): `, ASK_TIMEOUT_MS);
+    const typed = await deps.ask(
+      `Type the code you heard on the call (never one read off a voicemail or call-screening screen) to ring ${pretty(prospect)}, or press Enter to cancel: `,
+      ASK_TIMEOUT_MS
+    );
     if ((typed ?? "").replace(/\D/g, "") !== code) {
       await hangUp(call.sid);
       error(`${typed?.trim() ? "Wrong code" : "No code"}, so hung up. ${pretty(prospect)} was not called.`);
@@ -442,6 +471,16 @@ export async function main(argv, env, overrides = {}) {
     if (!recheck.allowed) {
       await hangUp(call.sid);
       error(`Not connecting: ${recheck.reason}. ${pretty(prospect)} was not called.`);
+      return 1;
+    }
+    // Answering-machine detection settles before the hold message plays, so it's in by
+    // now. Voicemail and call screeners (iOS Live Voicemail, Pixel Call Screen) open
+    // with a long greeting, which reads as machine_*. A person who stays silent reads
+    // as "unknown"; they still had to hear the code to type it.
+    const { answered_by: answeredBy } = await calls.get(call.sid);
+    if (/^(machine|fax)/.test(answeredBy ?? "")) {
+      await hangUp(call.sid);
+      error(`Twilio detected ${answeredBy === "fax" ? "a fax machine" : "voicemail or a call screener"} on your phone, not you, so hung up. ${pretty(prospect)} was not called.`);
       return 1;
     }
   } catch (err) {
@@ -460,14 +499,17 @@ export async function main(argv, env, overrides = {}) {
       return 1;
     }
     outcome = "unconfirmed";
-    error(`Couldn't confirm the connection (${describe(err)}): ${pretty(prospect)} may be ringing now. Stay on the line and say who you are.`);
+    error(
+      `Couldn't confirm the connection (${describe(err)}): ${pretty(prospect)} may be ringing now. Stay on the line and say who you are. ` +
+        "Don't re-run until you've checked the call in the Twilio console."
+    );
   }
 
-  const row = [deps.now().toISOString(), prospect, call.sid, outcome, csvField(consent)].join(",");
+  const row = [deps.now().toISOString(), prospect, call.sid, outcome, zones.join(" "), csvField(consent)].join(",");
   try {
-    deps.appendLog(row);
+    deps.appendLog(logPath, row);
   } catch (err) {
-    error(`calls.csv couldn't be written (${err.message}). Add this row by hand:\n${row}\nDon't re-run: that would call them again.`);
+    error(`${logPath} couldn't be written (${err.message}). Add this row by hand:\n${row}\nDon't re-run: that would call them again.`);
   }
   if (outcome === "connected") {
     log(`Connecting you to ${pretty(prospect)}. Say who you are and why you're calling.`);
