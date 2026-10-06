@@ -61,8 +61,13 @@ node --env-file=.env.local --env-file=scripts/outreach/.env scripts/outreach/dia
 - **First run:** check that the answering-machine backstop works.
   1. Place a call to the fictitious `0491 570 006` with `--call`, during calling hours.
   2. Decline it when your phone rings.
-  3. Expected: "Twilio detected voicemail or a call screener", and nothing else happens.
-  4. If instead it says "no answering-machine result", press Enter to cancel. The detection isn't working, so only the code protects your calls.
+  3. Expected: "Twilio detected voicemail or a call screener".
+  4. Check what else you might see:
+     - **The code prompt, for any reason:** press Enter to cancel.
+       - If it said "no answering-machine result", Twilio doesn't report the verdict mid-call.
+       - If it showed a verdict, the detection missed your voicemail.
+       - Either way, only the code protects your calls.
+     - **"Your phone wasn't answered (busy)":** your phone rejected the call instead of sending it to voicemail, so the check didn't run. Turn voicemail on and retry.
 - **Calling hours (Telemarketing Industry Standard 2017, which covers business numbers too):**
   - Weekdays 9am–8pm and Saturdays 9am–5pm, never Sundays or national public holidays, all in **their** local time.
   - Landlines take their zone from the area code.

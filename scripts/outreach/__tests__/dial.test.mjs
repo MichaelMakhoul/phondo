@@ -23,14 +23,17 @@ import {
 
 const SYDNEY = "Australia/Sydney";
 
-// Every test runs with HOME pointed at a throwaway dir, so neither a test nor a
-// regression can write into the operator's real ~/.phondo-outreach (their consent
-// evidence lives there).
+// Neither a test nor a regression may write into the operator's real
+// ~/.phondo-outreach (their consent evidence lives there). main() reads HOME from
+// the env it's given, which the harness points at ENV_HOME. As a backstop, HOME is
+// also stubbed process-wide, to a different dir so a test can tell which one the
+// code used. The stub alone isn't enough: in worker threads os.homedir() ignores it.
+const ENV_HOME = mkdtempSync(join(tmpdir(), "dial-env-home-"));
 const FAKE_HOME = mkdtempSync(join(tmpdir(), "dial-home-"));
 beforeEach(() => vi.stubEnv("HOME", FAKE_HOME));
 afterAll(() => {
   vi.unstubAllEnvs();
-  rmSync(FAKE_HOME, { recursive: true, force: true });
+  for (const dir of [ENV_HOME, FAKE_HOME]) rmSync(dir, { recursive: true, force: true });
 });
 
 describe("normalizeAuNumber", () => {
@@ -225,6 +228,7 @@ const spokenCode = (twiml) => twiml.match(/type ([\d ]+) in your terminal/)?.[1]
 function harness({
   status = "in-progress",
   answeredBy = "human",
+  amdAfter = 3, // GETs before answering-machine detection reports (it takes a few seconds)
   typed, // what you type; by default, the code spoken on the call
   dnc = "",
   now = "2026-10-07T10:00:00+11:00",
@@ -240,9 +244,8 @@ function harness({
     const body = init.body ? Object.fromEntries(new URLSearchParams(init.body)) : null;
     requests.push({ url, method, body });
     if (method === "GET") {
-      // Answering-machine detection settles a moment after your phone is answered.
       polls += 1;
-      return Response.json({ sid: SID, status, answered_by: polls > 1 ? answeredBy : null });
+      return Response.json({ sid: SID, status, answered_by: polls > amdAfter ? answeredBy : null });
     }
     if (url.endsWith("/Calls.json")) spoken = spokenCode(body.Twiml);
     if (body?.Twiml?.includes("<Dial") && bridge !== "ok") {
@@ -268,7 +271,7 @@ function harness({
     delete deps.readDoNotCall;
     delete deps.appendLog;
   }
-  const fullEnv = { TWILIO_ACCOUNT_SID: "ACtest", TWILIO_AUTH_TOKEN: "secret", DIAL_MY_MOBILE: "0491 570 159", ...env };
+  const fullEnv = { HOME: ENV_HOME, TWILIO_ACCOUNT_SID: "ACtest", TWILIO_AUTH_TOKEN: "secret", DIAL_MY_MOBILE: "0491 570 159", ...env };
   return {
     deps,
     requests,
@@ -344,6 +347,20 @@ describe("main", () => {
     expect(await h.run("0491 570 006", "--call")).toBe(0);
     expect(h.dialed()).toBe(true);
     expect(h.loggedRow()).toContain(`,${answeredBy},`);
+  });
+
+  it("catches a machine verdict that only arrives after the wait, before connecting", async () => {
+    const h = harness({ answeredBy: "machine_start", amdAfter: 13 }); // after all 12 detection polls
+    expect(await h.run("0491 570 006", "--call")).toBe(1);
+    expect(h.deps.ask).toHaveBeenCalledOnce();
+    expect(h.dialed()).toBe(false);
+    expect(h.hungUp()).toBe(true);
+  });
+
+  it("keeps an unexpected verdict from breaking the call log's columns", async () => {
+    const h = harness({ answeredBy: "human,odd" });
+    expect(await h.run("0491 570 006", "--call")).toBe(0);
+    expect(h.loggedRow()).toContain(',"human,odd",');
   });
 
   it("says so, and logs it, when Twilio gives no answering-machine result", async () => {
@@ -549,7 +566,7 @@ describe("main with real files on disk (fetch still stubbed)", () => {
   });
 
   it("defaults both files to ~/.phondo-outreach, outside any checkout", async () => {
-    const dataDir = join(FAKE_HOME, ".phondo-outreach");
+    const dataDir = join(ENV_HOME, ".phondo-outreach");
     const missing = harness({ realFiles: true });
     expect(await missing.run("0491 570 006")).toBe(1);
     expect(missing.output()).toContain(join(dataDir, "do-not-call.txt"));

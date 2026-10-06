@@ -206,6 +206,12 @@ function australianZone(zone) {
   }
 }
 
+/** What answered your phone, if Twilio's verdict says it was a machine rather than you. */
+function machineAnswer(verdict) {
+  if (verdict === "fax") return "a fax machine";
+  return verdict.startsWith("machine") ? "voicemail or a call screener" : null;
+}
+
 function csvField(value) {
   return /[",\r\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
 }
@@ -345,7 +351,7 @@ export async function main(argv, env, overrides = {}) {
   }
   const consent = flags.get("consented") ?? "";
 
-  const dataDir = join(homedir(), ".phondo-outreach"); // outside any checkout; read at run time
+  const dataDir = join(env.HOME || homedir(), ".phondo-outreach"); // outside any checkout
   const dncPath = env.DIAL_DNC_FILE || join(dataDir, "do-not-call.txt");
   const logPath = env.DIAL_CALL_LOG || join(dataDir, "calls.csv");
   let doNotCall;
@@ -471,13 +477,12 @@ export async function main(argv, env, overrides = {}) {
       amd = (await calls.get(call.sid)).answered_by || "";
       if (!amd) await deps.sleep(POLL_MS);
     }
-    if (/^(machine|fax)/.test(amd)) {
+    const refuseMachine = async (machine) => {
       await hangUp(call.sid);
-      error(
-        `Twilio detected ${amd === "fax" ? "a fax machine" : "voicemail or a call screener"} on your phone (declined, missed or silenced?), so hung up. ${pretty(prospect)} was not called.`
-      );
+      error(`Twilio detected ${machine} on your phone (declined, missed or silenced?), so hung up. ${pretty(prospect)} was not called.`);
       return 1;
-    }
+    };
+    if (machineAnswer(amd)) return await refuseMachine(machineAnswer(amd));
     if (amd) {
       log(`Answering-machine check: ${amd === "human" ? "a person answered" : `"${amd}"`}.`);
     } else {
@@ -497,6 +502,11 @@ export async function main(argv, env, overrides = {}) {
       await hangUp(call.sid);
       error(`Not connecting: ${recheck.reason}. ${pretty(prospect)} was not called.`);
       return 1;
+    }
+    if (!amd) {
+      // A verdict that turned up after the wait still counts.
+      amd = (await calls.get(call.sid)).answered_by || "";
+      if (machineAnswer(amd)) return await refuseMachine(machineAnswer(amd));
     }
   } catch (err) {
     await hangUp(call.sid);
@@ -520,7 +530,7 @@ export async function main(argv, env, overrides = {}) {
     );
   }
 
-  const row = [deps.now().toISOString(), prospect, call.sid, outcome, zones.join(" "), amd || "none", csvField(consent)].join(",");
+  const row = [deps.now().toISOString(), prospect, call.sid, outcome, zones.join(" "), csvField(amd || "none"), csvField(consent)].join(",");
   try {
     deps.appendLog(logPath, row);
   } catch (err) {
