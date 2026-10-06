@@ -2,109 +2,184 @@
 /**
  * Click-to-call from a business number instead of your personal mobile.
  *
- * Twilio rings YOUR mobile first; when you answer, it dials the prospect and
- * shows them DIAL_CALLER_ID (default: Phondo's own line, whose call-backs are
- * answered by Phondo's AI receptionist, which is a free demo).
+ * Twilio rings YOUR mobile and reads you a two-digit code. Type it here, and
+ * only then does Twilio dial the prospect, showing DIAL_CALLER_ID (default:
+ * Phondo's own line, so a call-back reaches Phondo's AI receptionist). The code
+ * proves you are on the line: if your voicemail answers (declined, missed,
+ * silenced), nobody hears it, so the prospect is never rung into a silent call.
  *
  *   node --env-file=.env.local --env-file=scripts/outreach/.env \
- *     scripts/outreach/dial.mjs "0469 926 137" [--dry-run] [--consented]
+ *     scripts/outreach/dial.mjs "0491 570 006"          # preview: run the checks, don't call
+ *   ...  scripts/outreach/dial.mjs "0491 570 006" --call   # place the call
  *
  * Guards (the Telemarketing Industry Standard 2017 covers business numbers too):
- *   - only weekdays 9am-8pm and Saturdays 9am-5pm, Sydney time; never Sundays
- *     or national public holidays. Pass --consented ONLY when the person asked
- *     to be called at this time (express consent given in advance).
- *   - never a number listed in scripts/outreach/do-not-call.txt (gitignored).
- * Each placed call is logged to scripts/outreach/calls.csv (gitignored).
+ *   - s 8: weekdays 9am-8pm and Saturdays 9am-5pm, never Sundays or national
+ *     public holidays, in the PROSPECT's local time (area code for landlines;
+ *     Sydney, or --tz, for mobiles). --consented="<note>" lifts this only when
+ *     they asked to be called then; the note is logged as the evidence s 8(5) needs.
+ *   - never a number on the do-not-call list (DIAL_DNC_FILE, default
+ *     scripts/outreach/do-not-call.txt, gitignored). A missing list, or a line
+ *     that isn't exactly one number, stops the script instead of being skipped.
+ * Each connected call is logged to scripts/outreach/calls.csv (gitignored).
  */
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
-import { pathToFileURL } from "node:url";
+import { randomInt } from "node:crypto";
+import { appendFileSync, existsSync, readFileSync, realpathSync } from "node:fs";
+import { createInterface } from "node:readline";
+import { fileURLToPath } from "node:url";
 
-const TIME_ZONE = "Australia/Sydney";
+const SYDNEY = "Australia/Sydney";
 const DEFAULT_CALLER_ID = "+61257015064";
-const KNOWN_FLAGS = new Set(["--consented", "--dry-run", "--help"]);
+const PLACEHOLDER_MOBILE = "+61400000000"; // the old .env.example value
+const RING_SECONDS = 20; // how long Twilio rings your mobile
+const ASK_TIMEOUT_MS = 45_000; // shorter than the hold message, so your leg is still up
+const REQUEST_TIMEOUT_MS = 20_000;
+const POLL_MS = 1_000;
+const MAX_RING_POLLS = RING_SECONDS + 15;
+const DNC_PATH = fileURLToPath(new URL("./do-not-call.txt", import.meta.url));
+const LOG_PATH = fileURLToPath(new URL("./calls.csv", import.meta.url));
+const LOG_HEADER = "placed_at,prospect,call_sid,outcome,consent\n";
+const FINISHED = new Set(["completed", "busy", "failed", "no-answer", "canceled"]);
+const VOICE = 'voice="Polly.Olivia-Neural" language="en-AU"';
 
-// National public holidays, plus the common substitute days (conservative: a
-// blocked substitute day costs one day of calls, a missed holiday breaks the
+// The recipient's local time (s 8(4)), by area code. 07 includes Sydney because
+// Tweed Heads (NSW, daylight saving) shares Queensland's numbers; 08 is SA, NT
+// and WA, plus Broken Hill on Adelaide time. Island ranges with their own time
+// (Lord Howe, Christmas, Cocos) aren't modelled.
+const LANDLINE_ZONES = {
+  2: [SYDNEY],
+  3: [SYDNEY],
+  7: ["Australia/Brisbane", SYDNEY],
+  8: ["Australia/Adelaide", "Australia/Darwin", "Australia/Perth"],
+};
+
+// s 8(3): the national public holidays plus weekday substitutes, including
+// state-only ones (a blocked day costs a day of calls; a missed one breaks the
 // Standard). Fails closed for any year not listed.
-const NATIONAL_PUBLIC_HOLIDAYS = {
+export const NATIONAL_PUBLIC_HOLIDAYS = {
   2026: ["2026-01-01", "2026-01-26", "2026-04-03", "2026-04-06", "2026-04-25", "2026-04-27", "2026-12-25", "2026-12-26", "2026-12-28"],
   2027: ["2027-01-01", "2027-01-26", "2027-03-26", "2027-03-29", "2027-04-25", "2027-04-26", "2027-12-25", "2027-12-26", "2027-12-27", "2027-12-28"],
+  2028: ["2028-01-01", "2028-01-03", "2028-01-26", "2028-04-14", "2028-04-17", "2028-04-25", "2028-12-25", "2028-12-26"],
 };
+
+// Permitted hours by weekday (0 = Sunday), in minutes after local midnight: [open, close).
+const HOURS = { 1: [540, 1200], 2: [540, 1200], 3: [540, 1200], 4: [540, 1200], 5: [540, 1200], 6: [540, 1020] };
+const HOURS_HELP =
+  "Permitted: weekdays 9am-8pm and Saturdays 9am-5pm in their local time, never Sundays or national public holidays.\n" +
+  'If they asked you to ring at this time, re-run with --consented="what they said, and when".';
+
+const USAGE = `Usage: node --env-file=.env.local --env-file=scripts/outreach/.env scripts/outreach/dial.mjs "<number>" [options]
+  (no options)       preview: run every check and show the plan, without calling
+  --call             ring your mobile; type the code it reads you, then it rings them
+  --tz=ZONE          a mobile's time zone if they're not in Sydney, e.g. --tz=Australia/Perth
+  --consented="..."  they asked to be called at this time; the note is logged as your evidence`;
+const FLAGS = { call: "switch", help: "switch", tz: "value", consented: "value" };
 
 /** An Australian mobile or geographic landline in E.164 (+61…), or null. */
 export function normalizeAuNumber(input) {
   if (typeof input !== "string" || !/^[\d\s()+.-]+$/.test(input.trim())) return null;
-  let digits = input.replace(/[^\d+]/g, "");
-  if (digits.startsWith("+61")) digits = digits.slice(3);
-  else if (digits.startsWith("61") && digits.length === 11) digits = digits.slice(2);
-  else if (digits.startsWith("0") && digits.length === 10) digits = digits.slice(1);
-  else return null;
+  // +61, 0061 or 61, optionally followed by the trunk 0 ("+61 (0)4…"), or just the trunk 0.
   // 4 = mobile; 2/3/7/8 = landlines. 13/1300/1800, 05 and 000 are not callable prospects.
-  return /^[23478]\d{8}$/.test(digits) ? `+61${digits}` : null;
+  const match = /^(?:(?:\+61|0061|61)0?|0)([23478]\d{8})$/.exec(input.replace(/[\s().-]/g, ""));
+  return match ? `+61${match[1]}` : null;
 }
 
-function sydneyClock(date) {
-  const parts = Object.fromEntries(
-    new Intl.DateTimeFormat("en-AU", {
-      timeZone: TIME_ZONE,
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      hourCycle: "h23",
-      weekday: "short",
-    })
-      .formatToParts(date)
-      .filter((p) => p.type !== "literal")
-      .map((p) => [p.type, p.value])
-  );
+/** The recipient's possible local time zones: by area code, or `mobileZone` for a mobile. */
+export function zonesFor(e164, mobileZone) {
+  return e164[3] === "4" ? [mobileZone] : LANDLINE_ZONES[e164[3]];
+}
+
+const formatters = new Map();
+function localClock(date, zone) {
+  if (!formatters.has(zone)) {
+    formatters.set(
+      zone,
+      new Intl.DateTimeFormat("en-AU", {
+        timeZone: zone,
+        year: "numeric",
+        month: "numeric",
+        day: "numeric",
+        hour: "numeric",
+        minute: "numeric",
+        hourCycle: "h23",
+        numberingSystem: "latn",
+      })
+    );
+  }
+  const parts = Object.fromEntries(formatters.get(zone).formatToParts(date).map((p) => [p.type, p.value]));
+  const [year, month, day, hour, minute] = ["year", "month", "day", "hour", "minute"].map((k) => Number(parts[k]));
+  const pad = (n) => String(n).padStart(2, "0");
   return {
-    ymd: `${parts.year}-${parts.month}-${parts.day}`,
-    year: Number(parts.year),
-    weekday: parts.weekday,
-    minutes: Number(parts.hour) * 60 + Number(parts.minute),
+    valid: [year, month, day, hour, minute].every(Number.isInteger),
+    year,
+    ymd: `${year}-${pad(month)}-${pad(day)}`,
+    weekday: new Date(Date.UTC(year, month - 1, day)).getUTCDay(), // from the date, not locale text
+    minutes: hour * 60 + minute,
+    hhmm: `${pad(hour)}:${pad(minute)}`,
   };
 }
 
-/** May we place a telemarketing call at `date` (Sydney time)? */
-export function callingWindow(date, { consented = false } = {}) {
+/** May we place a telemarketing call at `date`, in every one of the recipient's possible `zones`? */
+export function callingWindow(date, { zones, consented = false }) {
   if (consented) return { allowed: true, reason: "express consent: they asked to be called at this time" };
-  const { ymd, year, weekday, minutes } = sydneyClock(date);
-  const holidays = NATIONAL_PUBLIC_HOLIDAYS[year];
-  if (!holidays) {
-    return { allowed: false, reason: `the public holiday table has no ${year} dates; update NATIONAL_PUBLIC_HOLIDAYS in dial.mjs` };
-  }
-  if (holidays.includes(ymd)) return { allowed: false, reason: `${ymd} is a national public holiday` };
-  if (weekday === "Sun") return { allowed: false, reason: "no telemarketing calls on Sundays" };
-  const saturday = weekday === "Sat";
-  const close = saturday ? 17 * 60 : 20 * 60;
-  if (minutes < 9 * 60 || minutes >= close) {
-    return { allowed: false, reason: `outside ${saturday ? "Saturday 9am-5pm" : "weekday 9am-8pm"} (Sydney time)` };
+  if (!zones?.length) throw new Error("callingWindow needs the recipient's time zones");
+  for (const zone of zones) {
+    const clock = localClock(date, zone);
+    const place = zone.split("/").pop().replace(/_/g, " ");
+    if (!clock.valid) return { allowed: false, reason: `couldn't read the clock for ${zone}` };
+    const holidays = NATIONAL_PUBLIC_HOLIDAYS[clock.year];
+    if (!holidays) {
+      return { allowed: false, reason: `the public holiday table has no ${clock.year} dates (extend NATIONAL_PUBLIC_HOLIDAYS in dial.mjs)` };
+    }
+    if (holidays.includes(clock.ymd)) return { allowed: false, reason: `${clock.ymd} is a public holiday in ${place}` };
+    const hours = HOURS[clock.weekday];
+    if (!hours) return { allowed: false, reason: `it's Sunday in ${place}` };
+    if (!(clock.minutes >= hours[0] && clock.minutes < hours[1])) {
+      const span = clock.weekday === 6 ? "Saturday 9am-5pm" : "weekday 9am-8pm";
+      return { allowed: false, reason: `it's ${clock.hhmm} in ${place}, outside ${span}` };
+    }
   }
   return { allowed: true, reason: "inside permitted calling hours" };
 }
 
-/** TwiML for the leg to your mobile: once you answer, dial the prospect. */
+/** TwiML for your leg while you're asked for the code. It never dials anyone. */
+export function buildHoldTwiml(code) {
+  if (!/^\d{2,4}$/.test(code)) throw new Error(`bad confirmation code: ${code}`);
+  const spoken = code.split("").join(" ");
+  return (
+    '<?xml version="1.0" encoding="UTF-8"?><Response>' +
+    `<Say ${VOICE} loop="4">To connect, type ${spoken} in your terminal.</Say>` +
+    '<Pause length="40"/>' +
+    `<Say ${VOICE}>Not connected. Goodbye.</Say><Hangup/></Response>`
+  );
+}
+
+/** TwiML that bridges your leg to the prospect, showing the business caller ID. */
 export function buildBridgeTwiml(prospect, callerId) {
   for (const n of [prospect, callerId]) {
     if (!/^\+61\d{9}$/.test(n)) throw new Error(`not an E.164 Australian number: ${n}`);
   }
   return (
     '<?xml version="1.0" encoding="UTF-8"?><Response>' +
-    '<Say voice="Polly.Olivia-Neural" language="en-AU">Connecting you now.</Say>' +
+    `<Say ${VOICE}>Connecting you now.</Say>` +
     `<Dial callerId="${callerId}" timeout="30"><Number>${prospect}</Number></Dial>` +
     "</Response>"
   );
 }
 
-/** Is `e164` listed (in any format) in a do-not-call list's text? */
-export function isOnDoNotCallList(e164, listText) {
-  return listText
-    .split("\n")
-    .map((line) => line.replace(/#.*/, "").trim())
-    .filter(Boolean)
-    .some((line) => normalizeAuNumber(line) === e164);
+/** Every number on a do-not-call list: one per line, notes after #. Throws on a line it can't read. */
+export function parseDoNotCallList(text) {
+  const numbers = new Set();
+  text
+    .replace(/^﻿/, "")
+    .split(/\r\n|\r|\n/)
+    .forEach((raw, i) => {
+      const line = raw.replace(/#.*/, "").trim();
+      if (!line) return;
+      const number = normalizeAuNumber(line);
+      if (!number) throw new Error(`line ${i + 1} isn't exactly one phone number: "${raw.trim()}" (put notes after a #)`);
+      numbers.add(number);
+    });
+  return numbers;
 }
 
 function pretty(e164) {
@@ -112,88 +187,304 @@ function pretty(e164) {
   return n.startsWith("4") ? `0${n.slice(0, 3)} ${n.slice(3, 6)} ${n.slice(6)}` : `(0${n[0]}) ${n.slice(1, 5)} ${n.slice(5)}`;
 }
 
-const USAGE = `Usage: node --env-file=.env.local --env-file=scripts/outreach/.env scripts/outreach/dial.mjs "<number>" [--dry-run] [--consented]
-  --dry-run    check everything and print the plan, but don't call
-  --consented  they asked you to ring at this time (allows outside permitted hours)`;
+function isKnownZone(zone) {
+  try {
+    new Intl.DateTimeFormat("en-AU", { timeZone: zone });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
-export async function main(argv, env) {
-  const args = argv.slice(2);
-  const flags = args.filter((a) => a.startsWith("--"));
-  const unknown = flags.filter((f) => !KNOWN_FLAGS.has(f));
-  if (unknown.length) {
-    console.error(`Unknown option ${unknown.join(", ")}\n${USAGE}`);
+function csvField(value) {
+  return /[",\r\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
+}
+
+function describe(err) {
+  return err?.cause?.code ?? err?.cause?.message ?? err?.message ?? String(err);
+}
+
+/** Twilio said no (a definite answer, unlike a network failure, where the request may have landed). */
+class TwilioRefused extends Error {}
+
+function twilioCalls(accountSid, authToken, fetchImpl) {
+  const base = `https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(accountSid)}/Calls`;
+  const authorization = `Basic ${Buffer.from(`${accountSid}:${authToken}`).toString("base64")}`;
+  async function request(path, params) {
+    const res = await fetchImpl(`${base}${path}`, {
+      method: params ? "POST" : "GET",
+      headers: params ? { Authorization: authorization, "Content-Type": "application/x-www-form-urlencoded" } : { Authorization: authorization },
+      body: params ? new URLSearchParams(params) : undefined,
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+    const text = await res.text();
+    let body = null;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      // not JSON (e.g. a gateway error page); the raw text is reported below
+    }
+    if (!res.ok) {
+      const detail = body?.message ? `${body.message}${body.code ? ` [code ${body.code}]` : ""}` : text.trim().slice(0, 200) || "no details";
+      throw new TwilioRefused(`HTTP ${res.status}: ${detail}`);
+    }
+    return body ?? {};
+  }
+  return {
+    create: (params) => request(".json", params),
+    get: (callSid) => request(`/${callSid}.json`),
+    update: (callSid, params) => request(`/${callSid}.json`, params),
+  };
+}
+
+async function askOnTerminal(question, timeoutMs) {
+  if (!process.stdin.isTTY) {
+    console.error("No interactive terminal to type the code into.");
+    return null;
+  }
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    return await new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        process.stdout.write("\n(timed out)\n");
+        resolve(null);
+      }, timeoutMs);
+      rl.on("SIGINT", () => {
+        clearTimeout(timer);
+        process.stdout.write("\n");
+        resolve(null);
+      });
+      rl.question(question, (answer) => {
+        clearTimeout(timer);
+        resolve(answer);
+      });
+    });
+  } finally {
+    rl.close();
+  }
+}
+
+const defaultDeps = {
+  fetch: (url, init) => globalThis.fetch(url, init),
+  now: () => new Date(),
+  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  code: () => String(randomInt(10, 100)),
+  ask: askOnTerminal,
+  readDoNotCall: (path) => (existsSync(path) ? readFileSync(path, "utf8") : null),
+  appendLog: (row) => {
+    if (!existsSync(LOG_PATH)) appendFileSync(LOG_PATH, LOG_HEADER);
+    appendFileSync(LOG_PATH, `${row}\n`);
+  },
+  log: (...args) => console.log(...args),
+  error: (...args) => console.error(...args),
+};
+
+function parseArgs(args) {
+  const flags = new Map();
+  const words = [];
+  for (const arg of args) {
+    if (!arg.startsWith("--")) {
+      words.push(arg);
+      continue;
+    }
+    const eq = arg.indexOf("=");
+    const name = arg.slice(2, eq === -1 ? undefined : eq);
+    const value = eq === -1 ? null : arg.slice(eq + 1);
+    const kind = FLAGS[name];
+    if (!kind || (kind === "switch" && value !== null)) return { problem: `Unknown option ${arg}` };
+    if (kind === "value" && !value?.trim()) {
+      return {
+        problem:
+          name === "tz"
+            ? "--tz needs a zone, e.g. --tz=Australia/Perth"
+            : 'Say what they agreed to, for your records: --consented="asked 3/10 to ring Sat 7:30am"',
+      };
+    }
+    flags.set(name, value?.trim() ?? true);
+  }
+  return { flags, target: words.join(" ") };
+}
+
+export async function main(argv, env, overrides = {}) {
+  const deps = { ...defaultDeps, ...overrides };
+  const { log, error } = deps;
+
+  const { flags, target, problem } = parseArgs(argv.slice(2));
+  if (problem) {
+    error(`${problem}\n${USAGE}`);
     return 1;
   }
-  const target = args.filter((a) => !a.startsWith("--")).join(" ");
-  if (flags.includes("--help") || !target) {
-    console.log(USAGE);
-    return target ? 0 : 1;
+  if (flags.has("help")) {
+    log(USAGE);
+    return 0;
   }
-
+  if (!target) {
+    error(USAGE);
+    return 1;
+  }
   const prospect = normalizeAuNumber(target);
   if (!prospect) {
-    console.error(`Not an Australian mobile or landline: "${target}"`);
+    error(`Not an Australian mobile or landline: "${target}"`);
     return 1;
   }
-  const dncFile = new URL("./do-not-call.txt", import.meta.url);
-  if (existsSync(dncFile) && isOnDoNotCallList(prospect, readFileSync(dncFile, "utf8"))) {
-    console.error(`${pretty(prospect)} is on do-not-call.txt, so not calling.`);
+  const tz = flags.get("tz") ?? null;
+  if (tz && !isKnownZone(tz)) {
+    error(`Unknown time zone "${tz}". Use one like Australia/Perth, Australia/Brisbane or Australia/Adelaide.`);
     return 1;
   }
-  const window = callingWindow(new Date(), { consented: flags.includes("--consented") });
+  const consent = flags.get("consented") ?? "";
+
+  const dncPath = env.DIAL_DNC_FILE || DNC_PATH;
+  let doNotCall;
+  try {
+    const text = deps.readDoNotCall(dncPath);
+    if (text == null) {
+      error(`No do-not-call list at ${dncPath}. Create it (even empty) so the check can't be skipped:\n  touch "${dncPath}"`);
+      return 1;
+    }
+    doNotCall = parseDoNotCallList(text);
+  } catch (err) {
+    error(`Can't use the do-not-call list ${dncPath}: ${err.message}`);
+    return 1;
+  }
+  if (doNotCall.has(prospect)) {
+    error(`${pretty(prospect)} is on the do-not-call list, so not calling.`);
+    return 1;
+  }
+
+  const zones = [...new Set([...zonesFor(prospect, tz ?? SYDNEY), ...(tz ? [tz] : [])])];
+  const inHours = () => callingWindow(deps.now(), { zones, consented: Boolean(consent) });
+  const window = inHours();
   if (!window.allowed) {
-    console.error(
-      `Not calling now: ${window.reason}.\nPermitted: weekdays 9am-8pm and Saturdays 9am-5pm (Sydney), never Sundays or national public holidays.\nIf they asked you to ring at this time, re-run with --consented.`
+    error(`Not calling now: ${window.reason}.\n${HOURS_HELP}`);
+    return 1;
+  }
+
+  const { TWILIO_ACCOUNT_SID: accountSid, TWILIO_AUTH_TOKEN: authToken } = env;
+  if (!accountSid || !authToken) {
+    error("TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN are missing: run with --env-file=.env.local");
+    return 1;
+  }
+  const callerId = normalizeAuNumber(env.DIAL_CALLER_ID || DEFAULT_CALLER_ID);
+  if (!callerId) {
+    error(`DIAL_CALLER_ID is not an Australian number: "${env.DIAL_CALLER_ID}"`);
+    return 1;
+  }
+  const myMobile = normalizeAuNumber(env.DIAL_MY_MOBILE ?? "");
+  if (!myMobile?.startsWith("+614") || [PLACEHOLDER_MOBILE, callerId, prospect].includes(myMobile)) {
+    error(
+      "Set DIAL_MY_MOBILE in scripts/outreach/.env to your own mobile (04…), not a placeholder, the caller ID or the number you're calling."
     );
     return 1;
   }
 
-  const { TWILIO_ACCOUNT_SID: sid, TWILIO_AUTH_TOKEN: token } = env;
-  const myMobile = normalizeAuNumber(env.DIAL_MY_MOBILE ?? "");
-  const callerId = normalizeAuNumber(env.DIAL_CALLER_ID || DEFAULT_CALLER_ID);
-  if (!sid || !token) {
-    console.error("TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN are missing: run with --env-file=.env.local");
-    return 1;
-  }
-  if (!myMobile) {
-    console.error("Set DIAL_MY_MOBILE (your own mobile) in scripts/outreach/.env");
-    return 1;
-  }
-  if (!callerId) {
-    console.error(`DIAL_CALLER_ID is not an Australian number: "${env.DIAL_CALLER_ID}"`);
-    return 1;
-  }
-
-  const twiml = buildBridgeTwiml(prospect, callerId);
-  const plan = `Twilio rings your mobile ${pretty(myMobile)}; when you answer, it dials ${pretty(prospect)}, who sees ${pretty(callerId)}.`;
-  if (flags.includes("--dry-run")) {
-    console.log(`[dry run] ${plan}`);
+  const where =
+    prospect[3] === "4"
+      ? tz
+        ? `${tz} (from --tz)`
+        : `${SYDNEY} (assumed for a mobile; add --tz=Australia/Perth etc. if they're elsewhere)`
+      : `${zones.join(", ")} (from the 0${prospect[3]} area code${tz ? " and --tz" : ""})`;
+  log(`Plan: Twilio rings your mobile ${pretty(myMobile)} and reads you a code. Type it here and it rings ${pretty(prospect)}, who sees ${pretty(callerId)}.`);
+  log(`Their local time: ${where}. ${consent ? `Consent noted: "${consent}".` : "Calling hours are open."}`);
+  log(`Do-not-call list: ${doNotCall.size} number${doNotCall.size === 1 ? "" : "s"} checked (${dncPath}).`);
+  if (!flags.has("call")) {
+    log("Preview only: nothing was dialed. Add --call to place it.");
     return 0;
   }
 
-  const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(sid)}/Calls.json`, {
-    method: "POST",
-    headers: {
-      Authorization: `Basic ${Buffer.from(`${sid}:${token}`).toString("base64")}`,
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: new URLSearchParams({ To: myMobile, From: callerId, Twiml: twiml }),
-  });
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    console.error(`Twilio refused the call (HTTP ${res.status}): ${body.message ?? "no details"}${body.code ? ` [code ${body.code}]` : ""}`);
+  const calls = twilioCalls(accountSid, authToken, deps.fetch);
+  const code = deps.code();
+  const hangUp = async (callSid) => {
+    try {
+      await calls.update(callSid, { Status: "completed" });
+    } catch (err) {
+      error(`(Couldn't hang up your phone's leg: ${describe(err)}. It ends by itself within a minute.)`);
+    }
+  };
+
+  let call;
+  try {
+    call = await calls.create({ To: myMobile, From: callerId, Twiml: buildHoldTwiml(code), Timeout: String(RING_SECONDS) });
+  } catch (err) {
+    error(
+      err instanceof TwilioRefused
+        ? `Twilio refused the call (${err.message}). Nobody was called.`
+        : `Couldn't reach Twilio (${describe(err)}). If your phone rings anyway, hang up: ${pretty(prospect)} is only called after you type the code.`
+    );
+    return 1;
+  }
+  if (!/^CA[0-9a-f]{32}$/.test(call.sid ?? "")) {
+    error(`Twilio replied without a call SID. If your phone rings anyway, hang up: ${pretty(prospect)} is only called after you type the code.`);
     return 1;
   }
 
-  const log = new URL("./calls.csv", import.meta.url);
-  if (!existsSync(log)) appendFileSync(log, "placed_at,prospect,call_sid\n");
-  appendFileSync(log, `${new Date().toISOString()},${prospect},${body.sid}\n`);
-  console.log(`${plan}\nRinging your mobile now.`);
-  console.log("Say who you are and why you're calling. If they ask you to stop, add their number to scripts/outreach/do-not-call.txt.");
-  return 0;
+  try {
+    log("Ringing your mobile now…");
+    let status = "timeout";
+    for (let i = 0; i < MAX_RING_POLLS; i++) {
+      ({ status } = await calls.get(call.sid));
+      if (status === "in-progress" || FINISHED.has(status)) break;
+      status = "timeout";
+      await deps.sleep(POLL_MS);
+    }
+    if (status !== "in-progress") {
+      if (status === "timeout") await hangUp(call.sid);
+      error(`Your phone wasn't answered (${status}). ${pretty(prospect)} was not called.`);
+      return 1;
+    }
+    const typed = await deps.ask(`Type the code you hear on your phone to ring ${pretty(prospect)} (Enter alone cancels): `, ASK_TIMEOUT_MS);
+    if ((typed ?? "").replace(/\D/g, "") !== code) {
+      await hangUp(call.sid);
+      error(`${typed?.trim() ? "Wrong code" : "No code"}, so hung up. ${pretty(prospect)} was not called.`);
+      return 1;
+    }
+    const recheck = inHours();
+    if (!recheck.allowed) {
+      await hangUp(call.sid);
+      error(`Not connecting: ${recheck.reason}. ${pretty(prospect)} was not called.`);
+      return 1;
+    }
+  } catch (err) {
+    await hangUp(call.sid);
+    error(`Lost track of the call (${describe(err)}), so hung up. ${pretty(prospect)} was not called.`);
+    return 1;
+  }
+
+  let outcome = "connected";
+  try {
+    await calls.update(call.sid, { Twiml: buildBridgeTwiml(prospect, callerId) });
+  } catch (err) {
+    if (err instanceof TwilioRefused) {
+      await hangUp(call.sid);
+      error(`Twilio wouldn't connect them (${err.message}). ${pretty(prospect)} was not called.`);
+      return 1;
+    }
+    outcome = "unconfirmed";
+    error(`Couldn't confirm the connection (${describe(err)}): ${pretty(prospect)} may be ringing now. Stay on the line and say who you are.`);
+  }
+
+  const row = [deps.now().toISOString(), prospect, call.sid, outcome, csvField(consent)].join(",");
+  try {
+    deps.appendLog(row);
+  } catch (err) {
+    error(`calls.csv couldn't be written (${err.message}). Add this row by hand:\n${row}\nDon't re-run: that would call them again.`);
+  }
+  if (outcome === "connected") {
+    log(`Connecting you to ${pretty(prospect)}. Say who you are and why you're calling.`);
+  }
+  log(`If they ask you to stop, add their number to ${dncPath}.`);
+  return outcome === "connected" ? 0 : 1;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+function invokedDirectly() {
+  try {
+    return Boolean(process.argv[1]) && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
+  } catch {
+    return false; // argv[1] isn't a file (e.g. a REPL): we were imported, not run
+  }
+}
+
+if (invokedDirectly()) {
   main(process.argv, process.env).then(
     (code) => process.exit(code),
     (err) => {
