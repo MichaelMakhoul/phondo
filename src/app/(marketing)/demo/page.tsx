@@ -22,7 +22,6 @@ import {
   DEMO_INDUSTRIES,
   DEMO_PHONE_LINES,
   DEMO_RATE_LIMIT_ERROR,
-  HAS_DEMO_PHONE_LINE,
   demoIndustryFromSearch,
   formatDemoPhoneDisplay,
   type DemoIndustry,
@@ -278,15 +277,13 @@ export default function DemoPage() {
                     action for "hear an AI receptionist" is ringing a number,
                     not granting mic access to an unfamiliar site — so offer a
                     real call as a first-class path. Env-gated: no number
-                    configured → no dead UI. When any line is configured, its
-                    slot is reserved: the link only appears once the persona is
-                    known (after hydration), and the hero shouldn't jump when
-                    it does. The margin sits on the slot itself so it can't
-                    collapse through it. */}
-                {HAS_DEMO_PHONE_LINE && (
-                <div className="mt-6 min-h-[6.75rem] sm:min-h-[4.5rem]">
+                    configured → no dead UI. It appears once the persona is
+                    known (after hydration), below the CTA; no slot is
+                    reserved, because a persona without a line (plain /demo,
+                    once the published number answers as the plumber) would
+                    otherwise keep an empty gap under the hero. */}
                 {heroPhoneLine?.number && (
-                  <div>
+                  <div className="mt-6">
                     <a
                       href={`tel:${heroPhoneLine.number}`}
                       onClick={() =>
@@ -305,8 +302,6 @@ export default function DemoPage() {
                       A real phone call — it answers as {heroPhoneLine.persona}
                     </p>
                   </div>
-                )}
-                </div>
                 )}
               </div>
             )}

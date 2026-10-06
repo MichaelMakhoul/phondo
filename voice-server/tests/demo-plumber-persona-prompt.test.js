@@ -18,10 +18,13 @@ const personaFile = fs
   .sort()
   .filter((f) => {
     const sql = fs.readFileSync(path.join(migrationsDir, f), "utf8");
-    return sql.includes("'d0000000-0000-4000-a000-000000000030'") && sql.includes("system_prompt = $prompt$");
+    return sql.includes("'d0000000-0000-4000-a000-000000000030'") && /system_prompt\s*=/.test(sql);
   })
   .pop();
 const migration = fs.readFileSync(path.join(migrationsDir, personaFile), "utf8");
+// Every persona migration must quote the prompt with $prompt$, or the match
+// below would silently pin stale text from an older file.
+assert.ok(migration.includes("system_prompt = $prompt$"), `${personaFile} must quote the persona with $prompt$`);
 const persona = migration.match(/\$prompt\$([\s\S]*?)\$prompt\$/)[1];
 const greeting = migration.match(/first_message = '((?:[^']|'')*)'/)[1].replace(/''/g, "'");
 const hours = { open: "09:00", close: "17:00" };
@@ -77,18 +80,24 @@ describe("plumber demo persona, as assembled for the demo org", () => {
     assert.match(migration, /prompt_config = NULL/);
   });
 
-  it("never promises a text: the appended block forbids it", () => {
+  it("never mentions texting: the appended block forbids promising one, and Tier-2 flags unbacked claims", () => {
     assert.match(assembled, /NEVER promise a confirmation text/);
-    assert.doesNotMatch(persona, /will text/i);
+    assert.doesNotMatch(persona, /\btext\b/i);
+  });
+
+  it("a message-only call never claims a booking", () => {
+    // On the phone path a "yes" to "Is everything correct?" becomes "You're all
+    // set!" + end_call(booking_complete); without a booking that's a phantom.
+    assert.match(persona, /If you took a message with schedule_callback instead/);
+    assert.match(persona, /Never say "you're all set", or that anything is booked or confirmed, unless book_appointment succeeded/);
   });
 
   it("asks for the last name book_appointment requires", () => {
     assert.match(persona, /first and last name/);
   });
 
-  it("puts the Phondo reveal before 'Is everything correct?', so an end_call on yes can't swallow it", () => {
-    const step6 = persona.slice(persona.indexOf("6. "));
-    assert.ok(step6.indexOf("the demo line below") > -1, "step 6 must deliver the demo line");
-    assert.ok(step6.indexOf("the demo line below") < step6.indexOf("Is everything correct?"));
+  it("gives the Phondo reveal in the closing reply, not the post-tool turn the phone validator audits", () => {
+    assert.match(persona, /When they confirm, give the demo line below in that same reply, then say goodbye/);
+    assert.match(persona, /When they're done, give the demo line below, then say goodbye/);
   });
 });

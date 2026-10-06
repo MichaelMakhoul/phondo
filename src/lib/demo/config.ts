@@ -48,9 +48,10 @@ export const DEMO_PHONE_NUMBER = process.env.NEXT_PUBLIC_DEMO_PHONE_NUMBER;
  * 00166, the published line (+61238205672) is that line: its own real org,
  * re-skinned from Smile Hub Dental, with the same persona text as the browser
  * plumber. So set this to +61238205672 and UNSET NEXT_PUBLIC_DEMO_PHONE_NUMBER,
- * or /demo will label the plumber as "our demo dental clinic". Pointing a
- * number at the demo org instead would first need the voice server to run
- * demo-org PHONE calls in test mode (docs/engineering-follow-ups.md §H).
+ * or /demo will label the plumber as "our demo dental clinic". Don't point a
+ * number at the demo org itself: demo-org PHONE calls run without test mode,
+ * and test mode's simulated booking reply doesn't match the phone path's
+ * booking-success signal, so every demo booking would audit as failed.
  */
 export const DEMO_TRADES_PHONE_NUMBER = process.env.NEXT_PUBLIC_DEMO_TRADES_PHONE_NUMBER;
 
@@ -59,9 +60,6 @@ export const DEMO_PHONE_LINES: Partial<Record<DemoIndustry, { number: string | u
   dental: { number: DEMO_PHONE_NUMBER, persona: "our demo dental clinic" },
   home_services: { number: DEMO_TRADES_PHONE_NUMBER, persona: "our demo plumbing business" },
 };
-
-/** Build-time: is any tap-to-call line configured at all? (No line → no reserved hero slot.) */
-export const HAS_DEMO_PHONE_LINE = Object.values(DEMO_PHONE_LINES).some((line) => !!line?.number);
 
 /** Render an E.164 AU number in familiar local notation; pass through anything else. */
 export function formatDemoPhoneDisplay(e164: string): string {

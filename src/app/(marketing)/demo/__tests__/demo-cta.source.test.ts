@@ -41,9 +41,8 @@ describe("SCRUM-570: /demo hero instant-call CTA", () => {
     expect(demoPageSource).toContain("heroIndustry ? DEMO_PHONE_LINES[heroIndustry] : undefined");
   });
 
-  it("reserves the phone-link slot only when some line is configured, with the margin on the slot", () => {
-    expect(demoPageSource).toContain("{HAS_DEMO_PHONE_LINE && (");
-    expect(demoPageSource).toContain('<div className="mt-6 min-h-[6.75rem] sm:min-h-[4.5rem]">');
+  it("reserves no empty slot: a persona without a line shows nothing under the hero", () => {
+    expect(demoPageSource).not.toMatch(/min-h-\[[0-9.]+rem\]/);
   });
 
   it("each demo start is tracked with its persona", () => {
