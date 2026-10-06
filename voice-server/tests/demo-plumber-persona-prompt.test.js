@@ -96,8 +96,25 @@ describe("plumber demo persona, as assembled for the demo org", () => {
     assert.match(persona, /first and last name/);
   });
 
-  it("gives the Phondo reveal in the closing reply, not the post-tool turn the phone validator audits", () => {
-    assert.match(persona, /When they confirm, give the demo line below in that same reply, then say goodbye/);
-    assert.match(persona, /When they're done, give the demo line below, then say goodbye/);
+  it("gives the Phondo reveal mid-call: before any tool call, never in the end_call reply", () => {
+    // Phone path: the closing reply is goodbye + end_call in one response, with
+    // a drain sized for one brief phrase, so a reveal there gets cut off and the
+    // caller can't ask about Phondo. The turn right after a booking/callback
+    // result is audited by Tier-2. The reveal goes between the photo ask and
+    // booking, as its own reply ending on a question.
+    const reveal = persona.indexOf("Then give the demo line below as its own reply");
+    assert.ok(reveal > -1, "step 5 must deliver the demo line");
+    assert.ok(reveal < persona.indexOf("6. Book the visit"), "reveal before any tool call");
+    const close = persona.slice(persona.indexOf("7. Close the call"), persona.indexOf("THE DEMO LINE"));
+    assert.doesNotMatch(close, /demo line/, "the closing reply must not carry the reveal");
+    assert.match(persona, /Want me to find you a time\?/);
+  });
+
+  it("ends a message-only call as a message, never as booking_complete", () => {
+    // call-session.js hasUnfinishedBooking blocks end_call(reason 'booking_complete')
+    // when no booking resolved; the appended blocks default every goodbye to it.
+    assert.match(persona, /end the call with reason "message taken" \(never "booking_complete"\)/);
+    assert.match(persona, /An urgent job is a message for Dave, not a booking/);
+    assert.match(persona, /don't go on to book a visit unless they ask/);
   });
 });
