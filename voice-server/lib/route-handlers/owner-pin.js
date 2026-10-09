@@ -225,10 +225,12 @@ async function ownerFirstNameWithin(loadOwnerFirstName, organizationId, callSid)
  *     (attempt > 1), else unstamped
  *   wrong length, or a wrong PIN ⇒ re-Gather while tries remain, else
  *     "Continuing as a normal call." ⇒ the receptionist, stamped "failed"
- *   a tripped lock (either window) ⇒ [ALERT:error] "owner line locked" + Sentry;
- *   the lockout check failing, timing out (3000 ms) or returning anything but
- *     an explicit "not locked" ⇒ [ALERT:error] + Sentry; either way
+ *   a tripped lock (either window) ⇒ [ALERT:error] "owner line locked" + Sentry,
  *     "Continuing as a normal call." ⇒ the receptionist, stamped "locked"
+ *     (PR B emails the owner on it)
+ *   the lockout check failing, timing out (3000 ms) or returning anything but
+ *     an explicit "not locked" ⇒ [ALERT:error] + Sentry, "Continuing as a
+ *     normal call." ⇒ the receptionist, stamped "error" (no lockout email)
  *   right PIN ⇒ the owner stream: { ownerMode: true, ownerAuth: "verified", ownerFirstName }
  * Always sends exactly one TwiML response and never rejects: a fault falls back
  * to the receptionist, and to a hang-up only if that TwiML cannot be built.
@@ -260,7 +262,7 @@ async function handleOwnerPin(req, res, { deps }) {
   let pollyVoice = null;
   /**
    * The receptionist: a customer stream, never owner mode.
-   * @param {{ ownerAuth?: "locked"|"failed" }} extra
+   * @param {{ ownerAuth?: "locked"|"failed"|"error" }} extra
    * @param {string} [sayText]
    */
   const receptionist = (extra, sayText) =>
@@ -324,17 +326,23 @@ async function handleOwnerPin(req, res, { deps }) {
     // stall (3000 ms) fails CLOSED.
     const bucket = await countPinAttemptWithin({ supabase, organizationId, pinSalt: access.pin_salt });
     if (!bucket || bucket.locked !== false) {
+      // Either way no owner session (fail CLOSED). Only a tripped lock is
+      // stamped "locked": PR B emails the owner "someone entered the wrong PIN
+      // too many times" on it, which a failed or stalled check must not claim.
+      /** @type {"locked"|"error"} */
+      let lockStamp = "error";
       if (bucket && bucket.reason === "exhausted") {
+        lockStamp = "locked";
         // Page the lock itself: PR B's lockout email needs the calls row made at
         // stream start, which a guesser who hangs up during the <Say> never creates.
         const lockedWindow = bucket.window || "unknown";
         console.error(`[ALERT:error] [OwnerPin] owner line locked (window=${lockedWindow}) — continuing as a customer call (called=${maskPhone(called)}, from=${maskPhone(from)}, callSid=${callSid})`);
         page(Sentry, new Error(`owner line locked (window=${lockedWindow})`), { callSid, calledMasked: maskPhone(called), fromMasked: maskPhone(from), stage: "locked" });
       } else {
-        console.error(`[ALERT:error] [OwnerPin] PIN lockout check (check_rate_limit_bucket) failed; failing CLOSED, treated as locked (org=${organizationId}, callSid=${callSid}):`, messageOf(bucket && bucket.error));
+        console.error(`[ALERT:error] [OwnerPin] PIN lockout check (check_rate_limit_bucket) failed; failing CLOSED as a customer call stamped "error" (org=${organizationId}, callSid=${callSid}):`, messageOf(bucket && bucket.error));
         page(Sentry, bucket && bucket.error, { callSid, organizationId, stage: "count" });
       }
-      return receptionist({ ownerAuth: "locked" }, SAY_CONTINUE);
+      return receptionist({ ownerAuth: lockStamp }, SAY_CONTINUE);
     }
 
     // verifyPin is async and resolves to a boolean; only `true` is a match, so a

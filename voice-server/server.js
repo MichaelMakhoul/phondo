@@ -331,7 +331,7 @@ const TOKEN_TTL_MS = 30_000;
  * @param {string} callerPhone
  * @param {string} [reconnectCallSid]
  * @param {any} [phoneRecord]
- * @param {{ ownerMode?: boolean, ownerAuth?: "verified"|"locked"|"failed"|null, ownerFirstName?: string|null }} [extra]
+ * @param {{ ownerMode?: boolean, ownerAuth?: "verified"|"locked"|"failed"|"error"|null, ownerFirstName?: string|null }} [extra]
  *   SCRUM-587: owner-mode flags live HERE (server-side) — the TwiML parameter
  *   stays an opaque HMAC token, so a client can never assert owner mode.
  */

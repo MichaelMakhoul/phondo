@@ -43,10 +43,11 @@ class CallSession {
     this.piiRedactionEnabled = false;
     // SCRUM-587: owner-assistant mode (spec §2). Set on the stream `start`
     // event from the SERVER-SIDE token only (/twiml/owner-pin verified the PIN);
-    // false for every customer call. ownerAuth also carries "locked"/"failed"
-    // on a customer call that failed the PIN gate → calls.metadata.owner_auth.
+    // false for every customer call. ownerAuth also carries "locked"/"failed"/
+    // "error" on a customer call that failed the PIN gate (or whose lockout
+    // check failed) → calls.metadata.owner_auth.
     this.ownerMode = false;
-    this.ownerAuth = null;         // "verified" | "locked" | "failed" | null
+    this.ownerAuth = null;         // "verified" | "locked" | "failed" | "error" | null
     this.ownerFirstName = null;    // greeting + caller_name on owner calls
     this.ownerToolCalls = 0;       // per-call cap, lib/owner-tool-runner.js
     // SCRUM-587: the owner confirmation gate's clock (lib/owner-tool-runner.js

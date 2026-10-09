@@ -413,12 +413,12 @@ describe("handleOwnerPin", () => {
       assert.equal(verify.mock.callCount(), 0);
     });
 
-    it("an RPC failure fails CLOSED: locked + [ALERT:error] + Sentry, even with the right PIN", async (t) => {
+    it("an RPC failure fails CLOSED: no owner session, stamped \"error\" (not \"locked\" — no false lockout email), [ALERT:error] + Sentry, even with the right PIN", async (t) => {
       const verify = t.mock.method(ownerAuth, "verifyPin");
       const h = makeHarness({ body: { Digits: PIN }, rpcThrows: true });
       const lines = await run(h);
       assertTwiml(h.res);
-      assert.deepEqual(extras(h), [{ ownerAuth: "locked" }]);
+      assert.deepEqual(extras(h), [{ ownerAuth: "error" }]);
       assert.ok(h.res.body.includes(continueSay));
       assert.equal(verify.mock.callCount(), 0);
       assert.equal(h.state.captured.length, 1);
@@ -430,7 +430,7 @@ describe("handleOwnerPin", () => {
       assert.ok(assertLockoutCheckAlert(lines).includes("rpc down"));
     });
 
-    it("a lockout check that stalls is abandoned after 3000 ms: locked, paged like an RPC error, never verified", async (t) => {
+    it("a lockout check that stalls is abandoned after 3000 ms: stamped \"error\", paged like an RPC error, never verified", async (t) => {
       t.mock.timers.enable({ apis: ["setTimeout"] });
       const lines = [];
       for (const m of LOG_METHODS) t.mock.method(console, m, (...a) => lines.push(`${m}| ${a.map((x) => (typeof x === "string" ? x : util.inspect(x))).join(" ")}`));
@@ -449,7 +449,7 @@ describe("handleOwnerPin", () => {
       }
       assert.equal(await settles(done, 3000), true, "the caller must be answered once the 3000 ms budget is spent");
       assertTwiml(h.res);
-      assert.deepEqual(extras(h), [{ ownerAuth: "locked" }]);
+      assert.deepEqual(extras(h), [{ ownerAuth: "error" }]);
       assert.ok(h.res.body.includes(`${continueSay}\n  <Connect>`), h.res.body);
       assert.equal(verify.mock.callCount(), 0);
       assert.ok(assertLockoutCheckAlert(lines).includes("3000 ms"));
@@ -471,7 +471,7 @@ describe("handleOwnerPin", () => {
       }
     });
 
-    it("anything but an explicit 'not locked' from the lockout check (or a rejection) is locked and paged as a failed check", async (t) => {
+    it("anything but an explicit 'not locked' from the lockout check (or a rejection) fails closed, stamped \"error\" and paged as a failed check", async (t) => {
       const verify = t.mock.method(ownerAuth, "verifyPin");
       let result;
       t.mock.method(ownerAuth, "countPinAttempt", async () => {
@@ -483,7 +483,7 @@ describe("handleOwnerPin", () => {
         const h = makeHarness({ body: { Digits: PIN } });
         const lines = await run(h);
         assertTwiml(h.res);
-        assert.deepEqual(extras(h), [{ ownerAuth: "locked" }], util.inspect(r));
+        assert.deepEqual(extras(h), [{ ownerAuth: "error" }], util.inspect(r));
         assertLockoutCheckAlert(lines);
         assert.equal(h.state.captured.length, 1, util.inspect(r));
       }
@@ -506,7 +506,7 @@ describe("handleOwnerPin", () => {
       const h = makeHarness({ body: { Digits: PIN }, rpcResult: { data: null, error: { code: "PGRST301", message: "JWT expired", details: null, hint: null } } });
       const lines = await run(h);
       assertTwiml(h.res);
-      assert.deepEqual(extras(h), [{ ownerAuth: "locked" }]);
+      assert.deepEqual(extras(h), [{ ownerAuth: "error" }]);
       assert.ok(h.state.captured[0] instanceof Error && h.state.captured[0].message === "JWT expired");
       assert.ok(lines.some((l) => l.startsWith("error| [ALERT:error] [OwnerPin]") && l.includes("JWT expired")), lines.join("\n"));
       assert.ok(!lines.some((l) => l.includes("[object Object]") || l.includes("details:")), lines.join("\n"));

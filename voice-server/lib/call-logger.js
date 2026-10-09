@@ -132,7 +132,8 @@ async function completeCallRecord(callId, {
     // SCRUM-587: PR B's call-completed route reads call_type from the DB row
     // (never from the payload) — cleanupSession awaits this write before the
     // webhook fires. owner_auth is also stamped on a CUSTOMER call that failed
-    // the PIN gate ("locked"/"failed") so PR B can email the owner on lockout.
+    // the PIN gate ("locked"/"failed"/"error") so PR B can email the owner on
+    // a real lockout ("locked" only — "error" is a failed lockout check).
     ...(callType && { call_type: callType }),
     ...(ownerAuth && { owner_auth: ownerAuth }),
   };
