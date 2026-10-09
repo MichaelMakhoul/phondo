@@ -4,11 +4,15 @@
 // assistant-design.md §2-§4). Reached ONLY through the internal tool-call
 // route's owner dispatch (envelope `ownerVerified` + production call). Every
 // query is org-scoped in SQL; ids come back in `data` so the model never has
-// to speak them. SMS to customers is paused (SCRUM-264) — every change says so.
+// to speak them. Anything a customer wrote (names, numbers, notes, reasons,
+// summaries) is flattened to one capped line first (sanitize.ts) — it lands in a
+// session that also holds the reschedule/cancel tools. SMS to customers is paused
+// (SCRUM-264) — every change says so.
 import { createAdminClient } from "@/lib/supabase/admin";
 import { errorResult, toLocalIsoMinute, type ToolResult } from "@/lib/calendar/tool-handlers";
 import { pickName } from "@/lib/calendar/appointment-lifecycle";
 import { OWNER_RANGES, type OwnerRange, ownerRangeBounds, localDayRange, todayISO, formatWhen } from "./time";
+import { sanitizeCustomerText } from "./sanitize";
 
 export const OWNER_TOOL_NAMES = [
   "owner_list_appointments",
@@ -76,6 +80,15 @@ const LIST_LIMIT = 20;
 const MESSAGES_LIMIT = 10;
 /** Calls fetched before the in-process owner/summary filter (≤ MESSAGES_LIMIT survive). */
 const CALLS_FETCH_LIMIT = 30;
+/**
+ * Caps for customer-written text in tool results (see sanitizeCustomerText). Service
+ * and practitioner names are org-controlled, but get the same treatment: it is free.
+ * Phone numbers are covered too — a booking only has to contain 8-15 digits, so the
+ * stored value can carry text around them.
+ */
+const NAME_MAX = 80;
+const PHONE_MAX = 32;
+const TEXT_MAX = 240;
 
 const APPOINTMENT_COLS =
   "id, confirmation_code, start_time, end_time, status, attendee_name, attendee_phone, notes, " +
@@ -107,11 +120,11 @@ function toItem(row: any, tz: string): OwnerAppointmentItem {
     start_local: toLocalIsoMinute(start, tz),
     end_local: row.end_time ? toLocalIsoMinute(new Date(row.end_time), tz) : null,
     when: formatWhen(start, tz),
-    customer_name: row.attendee_name ?? "Unknown",
-    customer_phone: row.attendee_phone ?? null,
-    service: pickName(row.service_types),
-    practitioner: pickName(row.practitioners),
-    notes: row.notes ?? null,
+    customer_name: sanitizeCustomerText(row.attendee_name, NAME_MAX) ?? "Unknown",
+    customer_phone: sanitizeCustomerText(row.attendee_phone, PHONE_MAX),
+    service: sanitizeCustomerText(pickName(row.service_types), NAME_MAX),
+    practitioner: sanitizeCustomerText(pickName(row.practitioners), NAME_MAX),
+    notes: sanitizeCustomerText(row.notes, TEXT_MAX),
     status: row.status,
   };
 }
@@ -195,6 +208,9 @@ export async function handleOwnerListMessages(organizationId: string): Promise<T
     .from("calls")
     .select("id, caller_name, caller_phone, summary, created_at, metadata")
     .eq("organization_id", organizationId)
+    // Spam is not a message. `IS NOT TRUE` (PostgREST `is_spam=not.is.true`) keeps both
+    // false and NULL rows, and doing it in SQL stops spam crowding the fetch window.
+    .not("is_spam", "is", true)
     .gte("created_at", today.start)
     .lt("created_at", today.end)
     .order("created_at", { ascending: false })
@@ -206,24 +222,29 @@ export async function handleOwnerListMessages(organizationId: string): Promise<T
 
   const callbacks: OwnerCallbackItem[] = (cbs ?? []).map((c: any) => ({
     callback_id: c.id,
-    caller_name: c.caller_name,
-    caller_phone: c.caller_phone,
-    reason: c.reason,
+    // These three are `string` in the contract, so nothing printable left reads as a placeholder.
+    caller_name: sanitizeCustomerText(c.caller_name, NAME_MAX) ?? "Unknown caller",
+    caller_phone: sanitizeCustomerText(c.caller_phone, PHONE_MAX) ?? "Unknown number",
+    reason: sanitizeCustomerText(c.reason, TEXT_MAX) ?? "No reason given",
     requested: c.requested_time ? formatWhen(new Date(c.requested_time), tz) : null,
     urgency: c.urgency,
     received: formatWhen(new Date(c.created_at), tz),
   }));
-  // The owner's own calls are not messages; a call without a summary has nothing to relay.
-  const customerCalls: OwnerCallItem[] = (calls ?? [])
-    .filter((c: any) => (c.metadata?.call_type ?? null) !== "owner" && typeof c.summary === "string" && c.summary.trim())
-    .slice(0, MESSAGES_LIMIT)
-    .map((c: any) => ({
+  // The owner's own calls are not messages; a call without a (printable) summary has nothing to relay.
+  const customerCalls: OwnerCallItem[] = [];
+  for (const c of calls ?? []) {
+    if (customerCalls.length === MESSAGES_LIMIT) break;
+    if ((c.metadata?.call_type ?? null) === "owner") continue;
+    const summary = sanitizeCustomerText(c.summary, TEXT_MAX);
+    if (!summary) continue;
+    customerCalls.push({
       call_id: c.id,
       at: formatWhen(new Date(c.created_at), tz),
-      caller_name: c.caller_name ?? null,
-      caller_phone: c.caller_phone ?? null,
-      summary: c.summary.trim(),
-    }));
+      caller_name: sanitizeCustomerText(c.caller_name, NAME_MAX),
+      caller_phone: sanitizeCustomerText(c.caller_phone, PHONE_MAX),
+      summary,
+    });
+  }
 
   const payload: OwnerListMessagesData = { callbacks, calls: customerCalls };
   if (callbacks.length === 0 && customerCalls.length === 0) {
