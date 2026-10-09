@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
   Card, CardContent, CardDescription, CardHeader, CardTitle,
 } from "@/components/ui/card";
@@ -12,12 +13,13 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger,
 } from "@/components/ui/dialog";
 import { useToast } from "@/components/ui/use-toast";
-import { Loader2, Smartphone } from "lucide-react";
+import { AlertCircle, Loader2, Smartphone } from "lucide-react";
 import type { SupportedCountry } from "@/lib/phone/normalize";
 import { formatPhoneNumber } from "@/lib/utils";
 // Client component: only dependency-free modules (line-form imports just
 // pin-rules and the phone normaliser), never ../pin (Node crypto).
 import {
+  LOAD_FAILED_MESSAGE,
   PIN_CONFIRM_ONLY_MESSAGE,
   PIN_RULE_TEXT,
   buildSaveBody,
@@ -25,20 +27,22 @@ import {
   serverErrorMessage,
   validateOwnerLineForm,
   type OwnerLineErrors,
+  type OwnerLineInitial,
 } from "@/lib/owner-assistant/line-form";
 
-export interface OwnerLineInitial {
-  configured: boolean;
-  phoneE164: string | null;
-  pinLength: number | null;
-  enabled: boolean;
-}
+// The Settings page imports the type from here.
+export type { OwnerLineInitial };
 
 interface OwnerLineCardProps {
   country: SupportedCountry;
   /** The org's Phondo number (E.164) for the save-as-a-contact hint; null until one is provisioned. */
   phondoNumber: string | null;
-  initial: OwnerLineInitial;
+  /**
+   * The saved line, or null when the Settings page could not read it. null
+   * renders a load error and no form: an empty form would claim "Not set up
+   * yet." and a save from it would overwrite a stored PIN.
+   */
+  initial: OwnerLineInitial | null;
 }
 
 const EXAMPLE_ASKS = ["What's on tomorrow?", "Any messages?", "Move the 2pm to Thursday."];
@@ -51,17 +55,56 @@ function logRequestFailure(action: string, err: unknown) {
 }
 
 /**
- * Settings → "Your assistant line" (SCRUM-585, spec §6). Registers the mobile
- * the owner rings from and a 4–8 digit PIN. The PIN is write-only: the server
- * stores a hash and this card never shows it again. Validation lives in
- * @/lib/owner-assistant/line-form so it can be unit-tested.
+ * The page could not read the line (initial === null). Say so and offer nothing
+ * to save or remove: the form's empty state reads "Not set up yet.", and a save
+ * from it would overwrite a PIN that is already stored.
+ */
+function OwnerLineLoadFailed() {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Smartphone className="h-5 w-5" />
+          Your assistant line
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <Alert variant="destructive">
+          <AlertCircle className="h-4 w-4" />
+          <AlertDescription>{LOAD_FAILED_MESSAGE}</AlertDescription>
+        </Alert>
+      </CardContent>
+    </Card>
+  );
+}
+
+/**
+ * Settings → "Your assistant line" (SCRUM-585, spec §6): the form when the line
+ * was read, the load error when it was not. A switch only — the form's hooks
+ * live in OwnerLineForm so they never run on the failure path.
+ */
+export function OwnerLineCard({ country, phondoNumber, initial }: OwnerLineCardProps) {
+  if (initial === null) return <OwnerLineLoadFailed />;
+  return <OwnerLineForm country={country} phondoNumber={phondoNumber} initial={initial} />;
+}
+
+interface OwnerLineFormProps {
+  country: SupportedCountry;
+  phondoNumber: string | null;
+  initial: OwnerLineInitial;
+}
+
+/**
+ * Registers the mobile the owner rings from and a 4–8 digit PIN. The PIN is
+ * write-only: the server stores a hash and this card never shows it again.
+ * Validation lives in @/lib/owner-assistant/line-form so it can be unit-tested.
  *
  * The PIN inputs deliberately have no maxLength: a browser would silently cut a
  * pasted 9+ digit PIN down to a valid-looking 8-digit one the owner never
  * chose. The value is kept whole and validateOwnerLineForm rejects it with the
  * format error on Save.
  */
-export function OwnerLineCard({ country, phondoNumber, initial }: OwnerLineCardProps) {
+function OwnerLineForm({ country, phondoNumber, initial }: OwnerLineFormProps) {
   const [configured, setConfigured] = useState(initial.configured);
   const [phone, setPhone] = useState(initial.phoneE164 ?? "");
   const [pin, setPin] = useState("");

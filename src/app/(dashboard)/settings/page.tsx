@@ -6,6 +6,7 @@ import { BrandingForm } from "./branding-form";
 import { DeleteAccountCard } from "./delete-account-card";
 import { OwnerLineCard, type OwnerLineInitial } from "./owner-line-card";
 import { isOwnerAssistantUiEnabled } from "@/lib/feature-flags";
+import { resolveOwnerLineInitial } from "@/lib/owner-assistant/line-form";
 
 export const metadata: Metadata = {
   title: "Settings | Phondo",
@@ -80,7 +81,8 @@ export default async function SettingsPage() {
   // migration 00171 withholds pin_hash/pin_salt from `authenticated`, so a
   // `*` read would fail with permission denied.
   const showOwnerLine = membership.role === "owner" && isOwnerAssistantUiEnabled();
-  let ownerLine: OwnerLineInitial = { configured: false, phoneE164: null, pinLength: null, enabled: true };
+  // null = the row could not be read: the card then shows a load error, no form.
+  let ownerLine: OwnerLineInitial | null = null;
   let phondoNumber: string | null = null;
   if (showOwnerLine) {
     const { data: access, error: accessError } = await (supabase as any)
@@ -89,21 +91,18 @@ export default async function SettingsPage() {
       .eq("organization_id", organization.id)
       .maybeSingle();
     if (accessError) {
-      // Render the card in its empty state rather than hide it; the API
-      // read on save will surface a real outage with its own message.
+      // A failed read must not be mistaken for "no row yet" (the API refuses
+      // the same mistake on its own pre-save read): the empty form would say
+      // "Not set up yet." and its next save would overwrite a stored PIN with
+      // a success toast. resolveOwnerLineInitial turns the error into null, so
+      // the card shows a load error and offers nothing to save or remove.
       console.error("[Settings] owner_access read failed:", {
         organizationId: organization.id,
         errorCode: accessError.code,
         errorMessage: accessError.message,
       });
-    } else if (access) {
-      ownerLine = {
-        configured: true,
-        phoneE164: access.phone_e164,
-        pinLength: access.pin_length,
-        enabled: access.enabled,
-      };
     }
+    ownerLine = resolveOwnerLineInitial({ data: access, error: accessError });
 
     // Only feeds the "save this number as a contact" hint, so a failed read
     // drops the hint rather than the card — but it is logged, not swallowed.

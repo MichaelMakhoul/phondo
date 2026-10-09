@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { parsePhoneToE164 } from "@/lib/phone/normalize";
 import { WEAK_PIN_MESSAGE } from "@/lib/owner-assistant/pin-rules";
 import {
+  LOAD_FAILED_MESSAGE,
   PIN_CONFIRM_ONLY_MESSAGE,
   PIN_FORMAT_MESSAGE,
   PIN_MISMATCH_MESSAGE,
@@ -9,6 +10,7 @@ import {
   PIN_RULE_TEXT,
   buildSaveBody,
   phoneExampleFor,
+  resolveOwnerLineInitial,
   serverErrorMessage,
   validateOwnerLineForm,
 } from "@/lib/owner-assistant/line-form";
@@ -247,5 +249,93 @@ describe("serverErrorMessage", () => {
     ["a numeric error", { error: 500 }],
   ])("falls back for %s", (_label, body) => {
     expect(serverErrorMessage(body, FALLBACK)).toBe(FALLBACK);
+  });
+});
+
+// A failed owner_access read must never look like "no row yet": the empty form
+// says "Not set up yet." and a save from it would overwrite a stored PIN through
+// the service-role API with a success toast. Only a clean no-row read may give
+// the empty form; everything unreadable fails closed to null (the load error).
+describe("resolveOwnerLineInitial — the Settings page's owner_access read", () => {
+  const ROW = { phone_e164: "+61412345678", pin_length: 6, enabled: false };
+  const PERMISSION_DENIED = { code: "42501", message: "permission denied for table owner_access" };
+  const EMPTY = { configured: false, phoneE164: null, pinLength: null, enabled: true };
+
+  it("returns null when the read failed, so a configured line is never shown as not set up", () => {
+    expect(resolveOwnerLineInitial({ data: null, error: PERMISSION_DENIED })).toBeNull();
+  });
+
+  it.each([
+    ["a Postgrest error", PERMISSION_DENIED],
+    ["a thrown Error", new Error("fetch failed")],
+    ["an error without a code", { message: "JWT expired" }],
+    ["a bare string", "boom"],
+    ["true", true],
+  ])("returns null for %s", (_label, error) => {
+    expect(resolveOwnerLineInitial({ data: null, error })).toBeNull();
+  });
+
+  it("lets an error win even when a row came back alongside it", () => {
+    expect(resolveOwnerLineInitial({ data: ROW, error: PERMISSION_DENIED })).toBeNull();
+  });
+
+  it.each([null, undefined])("gives the empty form only for a clean no-row read (data %s)", (data) => {
+    expect(resolveOwnerLineInitial({ data, error: null })).toStrictEqual(EMPTY);
+  });
+
+  it("returns a fresh empty state each time, never a shared object", () => {
+    const first = resolveOwnerLineInitial({ data: null, error: null });
+    const second = resolveOwnerLineInitial({ data: null, error: null });
+    expect(first).not.toBe(second);
+  });
+
+  it("maps a row to the configured state, whatever its pause flag and PIN length", () => {
+    expect(resolveOwnerLineInitial({ data: ROW, error: null })).toStrictEqual({
+      configured: true,
+      phoneE164: "+61412345678",
+      pinLength: 6,
+      enabled: false,
+    });
+    expect(resolveOwnerLineInitial({ data: { ...ROW, enabled: true, pin_length: 4 }, error: null })).toStrictEqual({
+      configured: true,
+      phoneE164: "+61412345678",
+      pinLength: 4,
+      enabled: true,
+    });
+  });
+
+  it("copies only the three non-secret columns, even if the row carries more", () => {
+    const wide = {
+      ...ROW,
+      id: "row-id",
+      organization_id: "org-1",
+      pin_hash: "a".repeat(64),
+      pin_salt: "b".repeat(32),
+    };
+    const result = resolveOwnerLineInitial({ data: wide, error: null });
+    expect(Object.keys(result ?? {}).sort()).toEqual(["configured", "enabled", "phoneE164", "pinLength"]);
+    expect(JSON.stringify(result)).not.toMatch(/a{64}|b{32}/);
+  });
+
+  it.each([
+    ["an empty object", {}],
+    ["a missing phone", { phone_e164: null, pin_length: 6, enabled: true }],
+    ["a missing pause flag", { phone_e164: "+61412345678", pin_length: 6 }],
+    ["a string PIN length", { phone_e164: "+61412345678", pin_length: "6", enabled: true }],
+    ["a string pause flag", { phone_e164: "+61412345678", pin_length: 6, enabled: "true" }],
+    ["a bare string", "a row"],
+    ["an array", []],
+    ["false", false],
+    ["zero", 0],
+    ["an empty string", ""],
+  ])("fails closed on a row that is not the expected columns (%s)", (_label, data) => {
+    expect(resolveOwnerLineInitial({ data, error: null })).toBeNull();
+  });
+});
+
+describe("LOAD_FAILED_MESSAGE", () => {
+  it("is the agreed wording and never claims the line is not set up", () => {
+    expect(LOAD_FAILED_MESSAGE).toBe("We couldn't load your assistant line — refresh to try again.");
+    expect(LOAD_FAILED_MESSAGE).not.toMatch(/not set up/i);
   });
 });

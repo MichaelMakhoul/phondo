@@ -1,8 +1,9 @@
 /**
  * Form logic for Settings → "Your assistant line" (SCRUM-585, spec §6):
- * field validation, the save payload and server-error extraction. It lives
- * outside the card because this repo has no component test harness; the card
- * is thin wiring over these.
+ * field validation, the save payload, server-error extraction and the card's
+ * initial state from the page's owner_access read. It lives outside the card
+ * because this repo has no component test harness; the card is thin wiring
+ * over these.
  *
  * Client-safe on purpose: it imports only dependency-free modules (the phone
  * normaliser and ./pin-rules) and never ./pin, which pulls Node crypto into
@@ -19,6 +20,15 @@ export const PIN_FORMAT_MESSAGE = `PIN must be ${PIN_RULE_TEXT}`;
 export const PIN_MISMATCH_MESSAGE = "PINs don't match";
 export const PIN_CONFIRM_ONLY_MESSAGE =
   "Enter your new PIN here too, or clear the confirmation to keep your current PIN";
+
+/** What the Settings page hands the card for a line it read successfully. */
+export interface OwnerLineInitial {
+  /** False for a line that was never set up (no owner_access row). */
+  configured: boolean;
+  phoneE164: string | null;
+  pinLength: number | null;
+  enabled: boolean;
+}
 
 export type OwnerLineField = "phone" | "pin" | "pinConfirm";
 export type OwnerLineErrors = Partial<Record<OwnerLineField, string>>;
@@ -120,4 +130,48 @@ export function serverErrorMessage(body: unknown, fallback: string): string {
     if (typeof error === "string" && error.trim() !== "") return error;
   }
   return fallback;
+}
+
+/** Shown instead of the form when the page could not read the line. */
+export const LOAD_FAILED_MESSAGE = "We couldn't load your assistant line — refresh to try again.";
+
+/** The result of the page's `.maybeSingle()` read of owner_access, exactly as Supabase returns it. */
+export interface OwnerAccessRead {
+  /** The row (phone_e164, pin_length, enabled), or null when there is none. */
+  data: unknown;
+  error: unknown;
+}
+
+function hasOwnerAccessColumns(
+  row: unknown,
+): row is { phone_e164: string; pin_length: number; enabled: boolean } {
+  if (typeof row !== "object" || row === null) return false;
+  const { phone_e164, pin_length, enabled } = row as Record<string, unknown>;
+  return typeof phone_e164 === "string" && typeof pin_length === "number" && typeof enabled === "boolean";
+}
+
+/**
+ * The card's initial state from the Settings page's owner_access read, or null
+ * when the line could not be read (the card then shows LOAD_FAILED_MESSAGE and
+ * no form).
+ *
+ * A failed read must never be mistaken for "no row yet", the same rule the API
+ * applies to its own pre-save read: the empty form says "Not set up yet." and a
+ * save from it would overwrite a stored PIN through the service-role API with a
+ * success toast. So an error, and a row that is not the three expected columns,
+ * both fail closed to null. Only a clean "no row" gives the empty form, and only
+ * the three non-secret columns are copied out of a row.
+ */
+export function resolveOwnerLineInitial({ data, error }: OwnerAccessRead): OwnerLineInitial | null {
+  if (error) return null;
+  if (data === null || data === undefined) {
+    return { configured: false, phoneE164: null, pinLength: null, enabled: true };
+  }
+  if (!hasOwnerAccessColumns(data)) return null;
+  return {
+    configured: true,
+    phoneE164: data.phone_e164,
+    pinLength: data.pin_length,
+    enabled: data.enabled,
+  };
 }
