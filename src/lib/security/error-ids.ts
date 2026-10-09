@@ -236,6 +236,14 @@ export const SENTRY_REASONS = {
    *  number, so the number was released and provisioning failed. Recurring
    *  hits mean new numbers cannot be made call-ready. */
   PHONE_NUMBER_WEBHOOK_CONFIG_FAILED: "phone-number-webhook-config-failed",
+
+  // ─── owner assistant (SCRUM-586) ────────────────────────────────────
+  /** The business owner moved a booking by phone; the old booking was freed,
+   *  the new one failed to insert, AND restoring the old one failed — the
+   *  customer now has no active booking. The reschedule core's own page goes
+   *  to Sentry only (no DSN in production), so this is the alertable line.
+   *  Fix by hand in the dashboard: restore the old booking or rebook it. */
+  OWNER_RESCHEDULE_ORPHANED: "owner-reschedule-orphaned",
 } as const;
 
 export type SentryReason = (typeof SENTRY_REASONS)[keyof typeof SENTRY_REASONS];
