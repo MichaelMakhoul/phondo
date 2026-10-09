@@ -4,6 +4,9 @@ import { createClient } from "@/lib/supabase/server";
 import { BusinessSettingsForm } from "./business-settings-form";
 import { BrandingForm } from "./branding-form";
 import { DeleteAccountCard } from "./delete-account-card";
+import { OwnerLineCard } from "./owner-line-card";
+import { isOwnerAssistantUiEnabled } from "@/lib/feature-flags";
+import { resolveOwnerLineInitial, type OwnerLineInitial } from "@/lib/owner-assistant/line-form";
 
 export const metadata: Metadata = {
   title: "Settings | Phondo",
@@ -73,6 +76,54 @@ export default async function SettingsPage() {
 
   const organization = membership.organizations;
 
+  // SCRUM-585: the owner line is owner-only (the API refuses everyone else)
+  // and dark until OWNER_ASSISTANT_UI_ENABLED. Select columns explicitly —
+  // migration 00171 withholds pin_hash/pin_salt from `authenticated`, so a
+  // `*` read would fail with permission denied.
+  const showOwnerLine = membership.role === "owner" && isOwnerAssistantUiEnabled();
+  // null = the row could not be read: the card then shows a load error, no form.
+  let ownerLine: OwnerLineInitial | null = null;
+  let phondoNumber: string | null = null;
+  if (showOwnerLine) {
+    const { data: access, error: accessError } = await (supabase as any)
+      .from("owner_access")
+      .select("phone_e164, pin_length, enabled")
+      .eq("organization_id", organization.id)
+      .maybeSingle();
+    if (accessError) {
+      // A failed read must not be mistaken for "no row yet" (the API refuses
+      // the same mistake on its own pre-save read): the empty form would say
+      // "Not set up yet." and its next save would overwrite a stored PIN with
+      // a success toast. resolveOwnerLineInitial turns the error into null, so
+      // the card shows a load error and offers nothing to save or remove.
+      console.error("[Settings] owner_access read failed:", {
+        organizationId: organization.id,
+        errorCode: accessError.code,
+        errorMessage: accessError.message,
+      });
+    }
+    ownerLine = resolveOwnerLineInitial({ data: access, error: accessError });
+
+    // Only feeds the "save this number as a contact" hint, so a failed read
+    // drops the hint rather than the card — but it is logged, not swallowed.
+    const { data: number, error: numberError } = await (supabase as any)
+      .from("phone_numbers")
+      .select("phone_number")
+      .eq("organization_id", organization.id)
+      .eq("is_active", true)
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    if (numberError) {
+      console.error("[Settings] phone_numbers read for owner line failed:", {
+        organizationId: organization.id,
+        errorCode: numberError.code,
+        errorMessage: numberError.message,
+      });
+    }
+    phondoNumber = number?.phone_number ?? null;
+  }
+
   return (
     <>
       <BusinessSettingsForm
@@ -102,6 +153,14 @@ export default async function SettingsPage() {
         initialLogoUrl={organization.logo_url || ""}
         initialPrimaryColor={organization.primary_color || "#3B82F6"}
       />
+
+      {showOwnerLine && (
+        <OwnerLineCard
+          country={organization.country === "US" ? "US" : "AU"}
+          phondoNumber={phondoNumber}
+          initial={ownerLine}
+        />
+      )}
 
       {membership.role === "owner" && (
         <DeleteAccountCard
