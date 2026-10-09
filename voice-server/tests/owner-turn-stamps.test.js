@@ -33,6 +33,7 @@ describe("CallSession declares the confirmation-gate clock (checkJs, fail-closed
     const s = new CallSession("CA-1");
     assert.equal(s.assistantTurnSeq, 0);
     assert.equal(s.lastAssistantTurnAt, 0);
+    assert.equal(s.lastAssistantSpeechAt, 0);
     assert.equal(s.lastOwnerSpeechAt, 0);
     assert.equal(s.assistantTurnHadSpeech, false);
     assert.equal(s.ownerPendingConfirmations, null);
@@ -43,7 +44,8 @@ describe("CallSession declares the confirmation-gate clock (checkJs, fail-closed
 describe("owner turn stamps", () => {
   it("a turn that produced speech counts once, at its end", () => {
     const s = ownerSession();
-    noteAssistantSpeech(s); noteAssistantSpeech(s); noteAssistantSpeech(s); // three audio chunks of one reply
+    noteAssistantSpeech(s, 900); noteAssistantSpeech(s, 950); noteAssistantSpeech(s, 990); // three audio chunks of one reply
+    assert.equal(s.lastAssistantSpeechAt, 990, "the latest assistant audio is stamped");
     assert.equal(s.assistantTurnSeq, 0, "speech alone does not end the turn");
     assert.equal(noteAssistantTurnEnd(s, 1000), true);
     assert.equal(s.assistantTurnSeq, 1);
@@ -79,12 +81,12 @@ describe("owner turn stamps", () => {
   });
 
   it("empty or wordless transcripts never stamp; any letter or digit (any script) does", () => {
-    for (const text of ["", "   ", "...", "?!", " - ", null, undefined, 42, {}]) {
+    for (const text of ["", "   ", "...", "?!", " - ", null, undefined, 42, {}, "<noise>", "[inaudible]", " <noise> [music] ", "<unk>", "[laughter]<noise>"]) {
       const s = ownerSession();
       assert.equal(noteOwnerSpeech(s, text, 2000), false, JSON.stringify(text));
       assert.equal(s.lastOwnerSpeechAt, 0, JSON.stringify(text));
     }
-    for (const text of ["5", "yes", "نعم", "是", " ok."]) {
+    for (const text of ["5", "yes", "نعم", "是", " ok.", "<noise> yes", "[laughs] ok", "yes <noise>"]) {
       const s = ownerSession();
       assert.equal(noteOwnerSpeech(s, text, 2000), true, text);
       assert.equal(s.lastOwnerSpeechAt, 2000, text);
@@ -93,7 +95,8 @@ describe("owner turn stamps", () => {
 
   it("customer sessions (and no session) are never stamped", () => {
     const s = new CallSession("CA-customer");
-    noteAssistantSpeech(s);
+    noteAssistantSpeech(s, 500);
+    assert.equal(s.lastAssistantSpeechAt, 0);
     assert.equal(noteAssistantTurnEnd(s, 1000), false);
     assert.equal(noteOwnerSpeech(s, "yes", 2000), false);
     assert.equal(s.assistantTurnSeq, 0);
@@ -151,7 +154,7 @@ const cancel = (id, confirmed) => ({ name: "owner_cancel_appointment", args: { a
 let clock = 0;
 const later = () => (clock = Math.max(Date.now() + 50, clock + 10));
 function assistantTurn(s, { spoke = true, ends = 1 } = {}) {
-  if (spoke) noteAssistantSpeech(s);
+  if (spoke) noteAssistantSpeech(s, later());
   const at = later();
   for (let i = 0; i < ends; i++) noteAssistantTurnEnd(s, at + i);
 }
@@ -185,11 +188,24 @@ describe("the stamps drive the real confirmation gate", () => {
     assert.equal(d.calls.at(-1).args.confirmed, true);
   });
 
-  it("speech before the read-back ended is no answer", async () => {
+  it("speech before the read-back ended is no answer (the gate's settle wait gives up after 1500 ms)", async (t) => {
     const s = ownerSession(); const d = makeDeps();
     await arm(s, d);
     ownerSays(s, "yes"); // over the top of the read-back, before it ended
     assistantTurn(s); // the read-back ends after it
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const confirm = runOwnerToolCall(s, cancel("a1", true), d.deps);
+    for (let i = 0; i < 16; i++) { await new Promise((r) => setImmediate(r)); t.mock.timers.tick(100); }
+    await confirm;
+    assert.equal(d.calls.at(-1).args.confirmed, false);
+  });
+
+  it("a read-back whose only audio came BEFORE the arm (a filler) can't be confirmed", async () => {
+    const s = ownerSession(); const d = makeDeps();
+    noteAssistantSpeech(s, Date.now() - 1000); // "one moment" — before PR B handed back the read-back
+    await arm(s, d);
+    noteAssistantTurnEnd(s, later()); // the turn ends with no read-back audio
+    ownerSays(s, "hello?");
     await runOwnerToolCall(s, cancel("a1", true), d.deps);
     assert.equal(d.calls.at(-1).args.confirmed, false);
   });
@@ -222,7 +238,7 @@ describe("the stamps drive the real confirmation gate", () => {
     const s = ownerSession(); const d = makeDeps();
     ownerSays(s, "cancel Bob's job");
     await arm(s, d);
-    noteAssistantSpeech(s); // read-back audio streaming…
+    noteAssistantSpeech(s, later()); // read-back audio streaming…
     await runOwnerToolCall(s, cancel("a1", true), d.deps); // …and confirmed:true before the owner could answer
     assert.equal(d.calls.at(-1).args.confirmed, false);
   });

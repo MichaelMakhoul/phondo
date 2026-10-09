@@ -2894,7 +2894,8 @@ wss.on("connection", (twilioWs) => {
                   // Goodbye-loop detection moved to onTurnComplete so the counter
                   // increments once per TURN, not once per streaming fragment.
                   pendingAiTranscript += text;
-                  if (session?.ownerMode) noteAssistantSpeech(session); // SCRUM-587: this turn produced speech
+                  // SCRUM-587: never a mark on the owner turn clock — transcription can
+                  // trail its turn; only audio (onAudio) makes a turn "spoken".
                 },
                 onInterrupted: () => {
                   // Guard: session may be null if Gemini delivers buffered events after cleanup

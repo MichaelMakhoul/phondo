@@ -56,7 +56,8 @@ class CallSession {
     // expired read-back could match again. 0 / null = fail-closed defaults.
     this.assistantTurnSeq = 0;           // assistant turns that produced speech
     this.lastAssistantTurnAt = 0;        // Date.now() when the last one ended
-    this.assistantTurnHadSpeech = false; // the current turn has spoken
+    this.assistantTurnHadSpeech = false; // the current turn has produced audio
+    this.lastAssistantSpeechAt = 0;      // Date.now() of the latest assistant audio (heard after the arm?)
     this.lastOwnerSpeechAt = 0;          // first fragment of the owner's latest utterance
     this.ownerPendingConfirmations = null; // Map of armed read-backs (the runner creates it)
     this.ownerConfirmSpentSpeechAt = null; // the utterance that last confirmed a write

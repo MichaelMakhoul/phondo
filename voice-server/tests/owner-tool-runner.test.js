@@ -1,5 +1,5 @@
 "use strict";
-const { describe, it, beforeEach } = require("node:test");
+const { describe, it, beforeEach, mock } = require("node:test");
 const assert = require("node:assert/strict");
 const util = require("node:util");
 process.env.INTERNAL_API_URL = process.env.INTERNAL_API_URL || "http://localhost:3000";
@@ -23,13 +23,31 @@ const { executeToolCall } = require("../services/tool-executor");
 // SCRUM-587 — the owner tool path replaces the customer guard chain (spec §5).
 // The turn/speech stamps start as Task 10 declares them on CallSession.
 function makeSession(overrides = {}) {
-  return { callSid: "CA1", organizationId: "org-1", assistantId: "asst-1", callRecordId: "call-1", ownerMode: true, organization: { timezone: "Australia/Sydney" }, callerPhone: "+61400000001", orgPhoneNumber: "+61255550000", telephonyProvider: "twilio", toolCallAudit: [], ownerToolCalls: 0, assistantTurnSeq: 0, lastAssistantTurnAt: 0, lastOwnerSpeechAt: 0, ...overrides };
+  return { callSid: "CA1", organizationId: "org-1", assistantId: "asst-1", callRecordId: "call-1", ownerMode: true, organization: { timezone: "Australia/Sydney" }, callerPhone: "+61400000001", orgPhoneNumber: "+61255550000", telephonyProvider: "twilio", toolCallAudit: [], ownerToolCalls: 0, assistantTurnSeq: 0, lastAssistantTurnAt: 0, lastAssistantSpeechAt: 0, lastOwnerSpeechAt: 0, ...overrides };
 }
 let lastStamp = 0;
-/** A Date.now()-based stamp like server.js's, strictly later than the previous one. */
-const stamp = () => (lastStamp = Math.max(Date.now(), lastStamp + 1));
-/** Task 10's stamps, by hand: an assistant turn (e.g. the read-back) completes or is interrupted. */
-function assistantTurn(s) { s.assistantTurnSeq += 1; s.lastAssistantTurnAt = stamp(); }
+/** A Date.now()-based stamp like server.js's, strictly later than the previous one AND than now (so after any arm). */
+const stamp = () => (lastStamp = Math.max(Date.now() + 1, lastStamp + 1));
+/** Task 10's stamps, by hand: an assistant turn (e.g. the read-back) is heard (audio), then completes or is interrupted. */
+function assistantTurn(s) { s.lastAssistantSpeechAt = stamp(); s.assistantTurnSeq += 1; s.lastAssistantTurnAt = stamp(); }
+/** Let pending promise callbacks run (setImmediate is never mocked here). */
+const flush = async () => { for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r)); };
+/**
+ * Run fn with setTimeout mocked, ticking 100 ms at a time until it settles —
+ * the gate's settle wait (up to 1500 ms) costs no real time in these tests.
+ * @template T @param {() => Promise<T>} fn @returns {Promise<T>}
+ */
+async function settled(fn) {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    let done = false;
+    const p = Promise.resolve().then(fn).finally(() => { done = true; });
+    for (let i = 0; i < 40 && !done; i++) { await flush(); if (!done) mock.timers.tick(100); }
+    return await p;
+  } finally {
+    mock.timers.reset();
+  }
+}
 /** Task 10's stamp, by hand: the owner speaks. */
 function ownerSpeaks(s) { s.lastOwnerSpeechAt = stamp(); }
 function makeDeps(resultFor) {
@@ -484,17 +502,20 @@ describe("runOwnerToolCall — structural confirmation gate", () => {
   const confirmCancel = (s, d, id = "a1") => run(s, d, "owner_cancel_appointment", { appointment_id: id, confirmed: true });
   /**
    * Arm a1 through PR B, then set Task 10's stamps relative to the arm's own:
-   * `turns` assistant turns since, the last one ending at +turnEndsAfterArm ms,
-   * the owner's speech at +spokeAfterArm ms. Returns what the confirm forwarded.
+   * `turns` assistant turns since, the read-back's audio at
+   * +assistantSpokeAfterArm ms, the last turn ending at +turnEndsAfterArm ms,
+   * the owner's speech at +spokeAfterArm ms. Returns what the confirm
+   * forwarded (after any settle wait, on mocked timers).
    */
-  async function confirmAfter(spokeAfterArm, { turns = 1, turnEndsAfterArm = 10 } = {}) {
+  async function confirmAfter(spokeAfterArm, { turns = 1, turnEndsAfterArm = 10, assistantSpokeAfterArm = 5 } = {}) {
     const s = makeSession(); const d = makeDeps(prB);
     await run(s, d, "owner_cancel_appointment", { appointment_id: "a1" });
     const entry = s.ownerPendingConfirmations.get(CANCEL_KEY);
     s.assistantTurnSeq = entry.seq + turns;
+    s.lastAssistantSpeechAt = entry.at + assistantSpokeAfterArm;
     s.lastAssistantTurnAt = entry.at + turnEndsAfterArm;
     s.lastOwnerSpeechAt = entry.at + spokeAfterArm;
-    await confirmCancel(s, d);
+    await settled(() => confirmCancel(s, d));
     return d.calls.at(-1).args.confirmed;
   }
 
@@ -546,6 +567,11 @@ describe("runOwnerToolCall — structural confirmation gate", () => {
   it("a turn-end stamp older than the arm never lets earlier speech through (backstop)", async () => {
     assert.equal(await confirmAfter(-5, { turnEndsAfterArm: -10 }), false);
   });
+  it("the read-back must be HEARD after the arm: assistant audio only before it (a filler) never answers it", async () => {
+    assert.equal(await confirmAfter(20, { assistantSpokeAfterArm: -3 }), false, "audio only before the arm");
+    assert.equal(await confirmAfter(20, { assistantSpokeAfterArm: 0 }), false, "audio in the arm's own millisecond");
+    assert.equal(await confirmAfter(20, { assistantSpokeAfterArm: 1 }), true, "control: audio just after the arm");
+  });
   it("no read-back turn yet — the confirm comes before the assistant has said anything since the arm → refused", async () => {
     assert.equal(await confirmAfter(20, { turns: 0 }), false);
   });
@@ -578,6 +604,9 @@ describe("runOwnerToolCall — structural confirmation gate", () => {
       ["lastOwnerSpeechAt an array", (s) => { s.lastOwnerSpeechAt = [s.lastOwnerSpeechAt]; }],
       ["lastOwnerSpeechAt true", (s) => { s.lastOwnerSpeechAt = true; s.lastAssistantTurnAt = 0; }],
       ["lastOwnerSpeechAt Infinity", (s) => { s.lastOwnerSpeechAt = Infinity; }],
+      ["lastAssistantSpeechAt missing", (s) => { delete s.lastAssistantSpeechAt; }],
+      ["lastAssistantSpeechAt NaN", (s) => { s.lastAssistantSpeechAt = NaN; }],
+      ["lastAssistantSpeechAt a string", (s) => { s.lastAssistantSpeechAt = String(s.lastAssistantSpeechAt); }],
     ];
     for (const [label, breakIt] of BREAKS) {
       const s = makeSession(); const d = makeDeps(prB);
@@ -782,6 +811,116 @@ describe("runOwnerToolCall — structural confirmation gate", () => {
     assert.equal(d.calls[1].args.confirmed, true);
     assert.equal(ret.data.outcome, "cancelled");
     assert.equal(buildOwnerCallSummary(s.toolCallAudit), "Owner call: Cancelled Bob Lee's job on Friday, October 16 at 3:00 PM.");
+  });
+
+  // ── The settle wait (controller ruling): Gemini's input transcription has no
+  // guaranteed order against its tool calls, so the "yes" the model acted on
+  // can be stamped a beat AFTER its confirm. ONLY that condition waits (up to
+  // 1500 ms, re-checking the whole gate every 100 ms); everything else refuses
+  // at once. Mock timers: no real waiting.
+  /** Tick 100 ms at a time, letting the runner's continuations run in between. */
+  const advance = async (t, ms) => { for (let elapsed = 0; elapsed < ms; elapsed += 100) { t.mock.timers.tick(100); await flush(); } };
+  /** Whether a promise has settled, without awaiting it. */
+  const track = (p) => { const state = { done: false }; p.then(() => { state.done = true; }, () => { state.done = true; }); return state; };
+
+  it("settle wait: a 'yes' stamped 400 ms after the confirm call still goes through", async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const s = makeSession(); const d = makeDeps(prB);
+    await run(s, d, "owner_cancel_appointment", { appointment_id: "a1" });
+    assistantTurn(s); // the read-back, heard and ended; the transcript of the "yes" is late
+    const confirm = confirmCancel(s, d);
+    const state = track(confirm);
+    await flush();
+    await advance(t, 400);
+    assert.equal(state.done, false, "still waiting for the yes at 400 ms");
+    assert.equal(d.calls.length, 1, "nothing forwarded yet");
+    ownerSpeaks(s);
+    await advance(t, 100);
+    await confirm;
+    assert.equal(d.calls.at(-1).args.confirmed, true);
+    assert.equal(s.ownerConfirmSpentSpeechAt, s.lastOwnerSpeechAt, "the utterance is spent");
+    assert.equal(s.ownerPendingConfirmations.has(CANCEL_KEY), false, "the entry is spent");
+    assert.equal(auditFor(s, "owner_confirm_gate").length, 0);
+  });
+
+  it("settle wait: a 'yes' stamped at 1600 ms is too late — refused once 1500 ms have passed", async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const s = makeSession(); const d = makeDeps(prB);
+    await run(s, d, "owner_cancel_appointment", { appointment_id: "a1" });
+    assistantTurn(s);
+    const confirm = confirmCancel(s, d);
+    const state = track(confirm);
+    await flush();
+    await advance(t, 1400);
+    assert.equal(state.done, false, "still inside the window at 1400 ms");
+    await advance(t, 100);
+    assert.equal(state.done, true, "gave up at 1500 ms");
+    ownerSpeaks(s); // 1600 ms — too late
+    await confirm;
+    assert.equal(d.calls.at(-1).args.confirmed, false);
+    assert.equal(auditFor(s, "owner_confirm_gate").length, 1);
+    assert.equal(s.ownerPendingConfirmations.has(CANCEL_KEY), true, "PR B re-armed it: the model reads it back again");
+  });
+
+  it("settle wait: no other failing condition waits — wrong turn count, no read-back audio after the arm, a spent yes, nothing pending", async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const cases = [
+      ["no read-back turn yet", () => {}],
+      ["two assistant turns since the arm", (s) => { assistantTurn(s); assistantTurn(s); }],
+      ["a turn ended, but no assistant audio after the arm", (s) => { s.assistantTurnSeq += 1; s.lastAssistantTurnAt = stamp(); }],
+      ["the yes already confirmed another write", (s) => { assistantTurn(s); ownerSpeaks(s); s.ownerConfirmSpentSpeechAt = s.lastOwnerSpeechAt; }],
+    ];
+    for (const [label, setUp] of cases) {
+      const s = makeSession(); const d = makeDeps(prB);
+      await run(s, d, "owner_cancel_appointment", { appointment_id: "a1" });
+      setUp(s);
+      const state = track(confirmCancel(s, d));
+      await flush();
+      assert.equal(state.done, true, `${label}: refused at once, without waiting`);
+      assert.equal(d.calls.at(-1).args.confirmed, false, label);
+    }
+    const s = makeSession(); const d = makeDeps(prB); // a confirm with nothing armed
+    assistantTurn(s);
+    const state = track(confirmCancel(s, d));
+    await flush();
+    assert.equal(state.done, true, "nothing pending: refused at once");
+  });
+
+  it("settle wait re-checks the WHOLE gate: an assistant turn during the wait expires the read-back", async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const s = makeSession(); const d = makeDeps(prB);
+    await run(s, d, "owner_cancel_appointment", { appointment_id: "a1" });
+    assistantTurn(s); // the read-back
+    const confirm = confirmCancel(s, d);
+    const state = track(confirm);
+    await flush();
+    await advance(t, 200);
+    assistantTurn(s); // "Are you still there?" — a second turn since the arm
+    ownerSpeaks(s);
+    await advance(t, 100);
+    assert.equal(state.done, true, "refused as soon as the gate fails for another reason");
+    await confirm;
+    assert.equal(d.calls.at(-1).args.confirmed, false);
+  });
+
+  it("settle wait keeps one utterance → one write: two waiting confirms and one late 'yes' → exactly one goes through", async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const s = makeSession(); const d = makeDeps(prB);
+    await run(s, d, "owner_cancel_appointment", { appointment_id: "a1" });
+    await run(s, d, "owner_cancel_appointment", { appointment_id: "a2" });
+    assistantTurn(s); // both read back in one turn
+    const both = Promise.all([confirmCancel(s, d, "a1"), confirmCancel(s, d, "a2")]);
+    const state = track(both);
+    await flush();
+    await advance(t, 300);
+    assert.equal(state.done, false, "both waiting");
+    ownerSpeaks(s); // one late "yes"
+    await advance(t, 100);
+    await both;
+    const forwarded = d.calls.slice(2).map((c) => c.args.confirmed);
+    assert.equal(forwarded.filter((c) => c === true).length, 1, JSON.stringify(forwarded));
+    assert.equal(forwarded.length, 2);
+    assert.equal(s.ownerConfirmSpentSpeechAt, s.lastOwnerSpeechAt);
   });
 });
 

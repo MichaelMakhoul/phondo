@@ -5,9 +5,13 @@
  * when the last one ended, and when the owner last started to speak.
  * server.js calls these from both pipelines, for owner sessions only:
  *
- * - noteAssistantSpeech — the current assistant turn produced speech: a
- *   Gemini/realtime output audio chunk or output transcription fragment, or
- *   a classic reply sentence that reached the caller.
+ * - noteAssistantSpeech — the current assistant turn produced AUDIO: a
+ *   Gemini/realtime output audio chunk (delivered in order with the turn's
+ *   end), or a classic reply sentence that reached the caller. It also stamps
+ *   lastAssistantSpeechAt — the gate needs the read-back to be heard AFTER the
+ *   arm. Output transcription never counts: it can trail its turn, so a late
+ *   fragment after `interrupted` would make that turn's `turnComplete` count
+ *   again, and one before a tool-call-only turn would make that turn count.
  * - noteAssistantTurnEnd — a turn ended (Gemini turnComplete or interrupted;
  *   classic: once the reply has been spoken). It counts ONCE, and only if the
  *   turn produced speech: a tool-call-only turn (Gemini's non-blocking tool
@@ -15,8 +19,9 @@
  *   Gemini can deliver `interrupted` and `turnComplete` for the same turn —
  *   whichever comes first spends the turn's speech, so the pair counts once.
  * - noteOwnerSpeech — the owner said something (a transcript with at least
- *   one letter or digit). Once per utterance: only the first fragment after
- *   the last assistant turn moves the stamp, so the two fragments of
+ *   one letter or digit once transcription markers such as "<noise>" and
+ *   "[inaudible]" are removed). Once per utterance: only the first fragment
+ *   after the last assistant turn moves the stamp, so the two fragments of
  *   "ok… thanks" are one utterance and can confirm one write.
  *
  * assistantTurnSeq only ever goes up. Nothing resets it mid-call: a reset
@@ -26,6 +31,8 @@
 
 /** At least one letter or digit, in any script — not silence, noise or punctuation. */
 const HAS_WORDS = /[\p{L}\p{N}]/u;
+/** Transcription markers for sounds, not words: "<noise>", "[inaudible]". */
+const NON_SPEECH_MARKERS = /<[^<>]*>|\[[^[\]]*\]/g;
 
 /**
  * @param {any} session
@@ -36,12 +43,14 @@ function isOwnerSession(session) {
 }
 
 /**
- * The current assistant turn produced speech.
+ * The current assistant turn produced audio.
  * @param {any} session
+ * @param {number} [now]
  */
-function noteAssistantSpeech(session) {
+function noteAssistantSpeech(session, now = Date.now()) {
   if (!isOwnerSession(session)) return;
   session.assistantTurnHadSpeech = true;
+  session.lastAssistantSpeechAt = now;
 }
 
 /**
@@ -66,7 +75,8 @@ function noteAssistantTurnEnd(session, now = Date.now()) {
  * @returns {boolean} whether the stamp moved
  */
 function noteOwnerSpeech(session, text, now = Date.now()) {
-  if (!isOwnerSession(session) || typeof text !== "string" || !HAS_WORDS.test(text)) return false;
+  if (!isOwnerSession(session) || typeof text !== "string") return false;
+  if (!HAS_WORDS.test(text.replace(NON_SPEECH_MARKERS, " "))) return false;
   // Already stamped since the assistant last spoke: the same utterance.
   if (session.lastOwnerSpeechAt > session.lastAssistantTurnAt) return false;
   session.lastOwnerSpeechAt = now;

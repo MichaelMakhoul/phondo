@@ -113,7 +113,7 @@ describe("SCRUM-587: owner session — controller-override pins", () => {
 
   it("the turn/speech stamps are wired at exactly these sites (a new site would double-count turns)", () => {
     assert.match(src, /require\("\.\/lib\/owner-turn-stamps"\)/);
-    assert.equal((src.match(/noteAssistantSpeech\(session\)/g) || []).length, 3, "Gemini onAudio + onTranscriptOut, classic reply sentence");
+    assert.equal((src.match(/noteAssistantSpeech\(session\)/g) || []).length, 2, "Gemini onAudio + classic reply sentence — assistant AUDIO only, never transcription");
     assert.equal((src.match(/noteAssistantTurnEnd\(session\)/g) || []).length, 3, "Gemini onInterrupted + onTurnComplete, classic after the reply");
     assert.equal((src.match(/noteOwnerSpeech\(session, /g) || []).length, 2, "Gemini input transcription + classic STT final");
     for (const m of src.matchAll(/^.*note(?:AssistantSpeech|AssistantTurnEnd|OwnerSpeech)\(session.*$/gm)) {
@@ -122,12 +122,13 @@ describe("SCRUM-587: owner session — controller-override pins", () => {
   });
 
   it("server.js never writes the gate's clock directly, and CallSession only declares it (never reset mid-call)", () => {
-    for (const field of ["assistantTurnSeq", "lastAssistantTurnAt", "lastOwnerSpeechAt", "assistantTurnHadSpeech", "ownerPendingConfirmations", "ownerConfirmSpentSpeechAt"]) {
+    for (const field of ["assistantTurnSeq", "lastAssistantTurnAt", "lastAssistantSpeechAt", "lastOwnerSpeechAt", "assistantTurnHadSpeech", "ownerPendingConfirmations", "ownerConfirmSpentSpeechAt"]) {
       assert.doesNotMatch(src, new RegExp(`\\.${field}\\s*(?:[-+*/]?=)(?!=)`), `server.js writes ${field}`);
     }
     const sessionSrc = fs.readFileSync(path.join(__dirname, "..", "call-session.js"), "utf8");
     assert.match(sessionSrc, /this\.assistantTurnSeq = 0;/);
     assert.match(sessionSrc, /this\.lastAssistantTurnAt = 0;/);
+    assert.match(sessionSrc, /this\.lastAssistantSpeechAt = 0;/);
     assert.match(sessionSrc, /this\.lastOwnerSpeechAt = 0;/);
     assert.match(sessionSrc, /this\.assistantTurnHadSpeech = false;/);
     assert.match(sessionSrc, /this\.ownerPendingConfirmations = null;/);
@@ -509,10 +510,11 @@ describe("SCRUM-587: Gemini callbacks, run for real", () => {
     const s = makeSession({ owner: true });
     const { cbs } = makeGeminiCallbacks(s);
     cbs.onAudio("AAAA"); cbs.onAudio("BBBB"); // the greeting
+    assert.ok(s.lastAssistantSpeechAt > 0, "assistant audio is stamped");
     cbs.onTurnComplete();
     assert.equal(s.assistantTurnSeq, 1);
     assert.ok(s.lastAssistantTurnAt > 0);
-    cbs.onTranscriptOut("Bob Lee, Friday 3pm — cancel it?"); // a read-back, barged in on
+    cbs.onAudio("CCCC"); cbs.onTranscriptOut("Bob Lee, Friday 3pm — cancel it?"); // a read-back, barged in on
     cbs.onInterrupted();
     assert.equal(s.assistantTurnSeq, 2, "the interrupted turn ends AT the interruption");
     cbs.onTurnComplete();
@@ -521,11 +523,40 @@ describe("SCRUM-587: Gemini callbacks, run for real", () => {
     assert.equal(s.assistantTurnSeq, 2);
   });
 
+  it("reviewer probes: output transcription never makes a turn spoken — a late fragment can't double-count or count a tool-call-only turn", async () => {
+    const s = makeSession({ owner: true });
+    const { cbs } = makeGeminiCallbacks(s);
+    // A late fragment between interrupted and a SEPARATE turnComplete: one turn.
+    cbs.onAudio("AAAA");
+    cbs.onInterrupted();
+    assert.equal(s.assistantTurnSeq, 1);
+    cbs.onTranscriptOut(" …cancel it?"); // trails the interrupted turn
+    cbs.onTurnComplete();
+    assert.equal(s.assistantTurnSeq, 1, "the late fragment did not make its turnComplete a second turn");
+    // A late fragment followed by a tool-call-only turn: that turn doesn't count.
+    cbs.onAudio("BBBB");
+    cbs.onTurnComplete();
+    assert.equal(s.assistantTurnSeq, 2);
+    const heard = s.lastAssistantSpeechAt;
+    await sleep(3);
+    cbs.onTranscriptOut(" Goodbye."); // trails the turn that just ended
+    cbs.onTurnComplete(); // Gemini 3.8's extra turnComplete for a tool call
+    assert.equal(s.assistantTurnSeq, 2, "a tool-call-only turn after a late fragment is not a turn");
+    assert.equal(s.lastAssistantSpeechAt, heard, "transcription never stamps assistant speech");
+    // Transcription alone never makes a turn spoken.
+    cbs.onTranscriptOut("text with no audio");
+    cbs.onTurnComplete();
+    assert.equal(s.assistantTurnSeq, 2);
+  });
+
   it("owner speech: the first non-empty input fragment after an assistant turn stamps, once per utterance", async () => {
     const s = makeSession({ owner: true });
     const { cbs } = makeGeminiCallbacks(s);
     cbs.onTranscriptIn("   ");
     assert.equal(s.lastOwnerSpeechAt, 0, "noise is not speech");
+    cbs.onTranscriptIn("<noise>");
+    cbs.onTranscriptIn(" [inaudible] ");
+    assert.equal(s.lastOwnerSpeechAt, 0, "transcription markers are not speech");
     cbs.onTranscriptIn("ok");
     const first = s.lastOwnerSpeechAt;
     assert.ok(first > 0);
@@ -600,7 +631,7 @@ describe("SCRUM-587: Gemini callbacks, run for real", () => {
     assert.equal(s.assistantTurnSeq, 1, "the interrupted read-back was one turn");
   });
 
-  it("end to end: a confirm the model sends WITHOUT waiting for the owner is forwarded as confirmed:false", async () => {
+  it("end to end: a confirm the model sends WITHOUT waiting for the owner is forwarded as confirmed:false (after the 1500 ms settle wait)", async (t) => {
     const s = makeSession({ owner: true });
     const executed = [];
     const executeToolCall = async (name, args) => { executed.push(args); return args.confirmed === true ? CANCELLED : NEEDS_CONFIRMATION; };
@@ -608,8 +639,29 @@ describe("SCRUM-587: Gemini callbacks, run for real", () => {
     await cbs.onToolCall({ id: "t1", name: "owner_cancel_appointment", args: { appointment_id: "a1" } });
     await sleep(3);
     cbs.onAudio("AAAA"); cbs.onTurnComplete(); // read-back, but the owner never answers
-    await cbs.onToolCall({ id: "t2", name: "owner_cancel_appointment", args: { appointment_id: "a1", confirmed: true } });
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const confirm = cbs.onToolCall({ id: "t2", name: "owner_cancel_appointment", args: { appointment_id: "a1", confirmed: true } });
+    for (let i = 0; i < 16; i++) { await new Promise((r) => setImmediate(r)); t.mock.timers.tick(100); }
+    await confirm;
     assert.equal(executed.at(-1).confirmed, false);
+  });
+
+  it("end to end: the owner's 'yes' transcript lands AFTER the model's confirm — the settle wait lets it through", async (t) => {
+    const s = makeSession({ owner: true });
+    const executed = [];
+    const executeToolCall = async (name, args) => { executed.push(args); return args.confirmed === true ? CANCELLED : NEEDS_CONFIRMATION; };
+    const { cbs } = makeGeminiCallbacks(s, { runOwnerToolCall, executeToolCall });
+    await cbs.onToolCall({ id: "t1", name: "owner_cancel_appointment", args: { appointment_id: "a1" } });
+    await sleep(3);
+    cbs.onAudio("AAAA"); cbs.onTurnComplete(); // the read-back
+    await sleep(3);
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const confirm = cbs.onToolCall({ id: "t2", name: "owner_cancel_appointment", args: { appointment_id: "a1", confirmed: true } });
+    for (let i = 0; i < 3; i++) { await new Promise((r) => setImmediate(r)); t.mock.timers.tick(100); }
+    cbs.onTranscriptIn("yes"); // Gemini delivers the input transcription ~300 ms late
+    for (let i = 0; i < 3; i++) { await new Promise((r) => setImmediate(r)); t.mock.timers.tick(100); }
+    await confirm;
+    assert.equal(executed.at(-1).confirmed, true);
   });
 });
 
@@ -686,7 +738,8 @@ function makeClassic(o = {}) {
     },
     startHoldAudio: () => ({ stop: () => {} }),
     sendClear: () => {},
-    sendTTS: async (s, ws, text) => { calls.push(["sendTTS", text]); if (o.ttsFails) throw new Error("tts down"); return 100; },
+    // Real TTS takes far longer than a millisecond; 2 ms keeps a read-back's audio stamp after its arm.
+    sendTTS: async (s, ws, text) => { calls.push(["sendTTS", text]); await sleep(2); if (o.ttsFails) throw new Error("tts down"); return 100; },
     executeToolCall: o.executeToolCall || (async (...a) => { calls.push(["executeToolCall", ...a]); return { message: "customer tool result" }; }),
     runOwnerToolCall: o.runOwnerToolCall || (async (...a) => { calls.push(["runOwnerToolCall", ...a]); return { message: "owner result" }; }),
     scheduleCache: { invalidate: () => {}, applyDelta: () => {} },

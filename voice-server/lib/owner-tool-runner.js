@@ -21,9 +21,12 @@
  *   holds the write tools, so the model's own `confirmed: true` is not enough.
  *   A confirmed write goes through only when PR B handed back a read-back for
  *   that exact change, exactly ONE assistant turn (the read-back) has ended
- *   since, and the owner spoke after that turn, with an utterance that hasn't
- *   already confirmed another write. Anything else is sent on as
- *   confirmed:false, which makes PR B answer with the read-back again.
+ *   since, assistant audio was heard after the arm, and the owner spoke after
+ *   that turn, with an utterance that hasn't already confirmed another write.
+ *   When the owner's speech is the ONLY thing missing, the confirm waits up to
+ *   CONFIRM_SETTLE_MS for it (the "yes" transcript can trail the model's tool
+ *   call). Anything else is sent on as confirmed:false at once, which makes
+ *   PR B answer with the read-back again.
  * - Owner wording for failures. The shared executor's receptionist lines (the
  *   "take your information" callback offer, the "give me a moment" stall) are
  *   never said to the owner, and nothing without its result counts as done.
@@ -74,6 +77,20 @@ const RANGE_LABEL = new Map([
   ["tomorrow", "tomorrow's jobs"],
   ["this_week", "this week's jobs"],
 ]);
+
+/**
+ * How long a confirm may wait for the owner's "yes" to be stamped, and how
+ * often it looks (controller ruling). Gemini's input transcription has no
+ * guaranteed order against its tool calls, so the transcript of the "yes" the
+ * model just acted on can land a beat AFTER the confirm call. Only that waits.
+ */
+const CONFIRM_SETTLE_MS = 1500;
+const CONFIRM_POLL_MS = 100;
+
+/** @param {number} ms */
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 /** Owner sessions whose missing call record has already been alerted on (one alert per call). */
 const noCallRecordAlerted = new WeakSet();
@@ -195,31 +212,41 @@ function isStamp(v) {
 }
 
 /**
- * Has the owner answered THIS read-back? server.js (Task 10) stamps the session:
- * `assistantTurnSeq` + `lastAssistantTurnAt` when an assistant turn completes
- * or is interrupted, `lastOwnerSpeechAt` when the owner speaks — all Date.now()
- * based, like the entry. A stamp that is not a finite number refuses.
+ * Has the owner answered THIS read-back? server.js (Task 10, lib/owner-turn-
+ * stamps.js) stamps the session: `assistantTurnSeq` + `lastAssistantTurnAt`
+ * when an assistant turn that produced audio completes or is interrupted,
+ * `lastAssistantSpeechAt` on assistant audio, `lastOwnerSpeechAt` when the
+ * owner starts an utterance — all Date.now() based, like the entry. A stamp
+ * that is not a finite number refuses.
  * - Exactly one assistant turn since the arm: that turn is the read-back, and
  *   any later turn ("OK, I'll leave it") expires the entry, so a declined
  *   read-back can't be confirmed afterwards.
+ * - Assistant audio after the arm: a turn whose only audio came before PR B
+ *   handed back the read-back (a filler) was not the read-back.
  * - The owner spoke after that turn ended (and after the arm itself): a late
- *   transcription, an echo or a barge-in from before the read-back is no answer.
+ *   transcription, an echo or a barge-in from before the read-back is no
+ *   answer. This one alone is "awaiting-speech" — the only verdict a confirm
+ *   waits on (CONFIRM_SETTLE_MS).
  * - That utterance hasn't already confirmed another write.
  * @param {any} session
- * @param {{ at: unknown, seq: unknown }} entry
- * @returns {boolean}
+ * @param {{ at: unknown, seq: unknown }|undefined} entry - the pending read-back, if any
+ * @returns {"answered"|"awaiting-speech"|"refused"}
  */
-function readBackAnswered(session, entry) {
+function readBackVerdict(session, entry) {
+  if (!entry) return "refused";
   const turn = session.assistantTurnSeq;
   const turnEndedAt = session.lastAssistantTurnAt;
+  const heardAt = session.lastAssistantSpeechAt;
   const spokeAt = session.lastOwnerSpeechAt;
   const spent = session.ownerConfirmSpentSpeechAt;
   const { at, seq } = entry;
-  if (!isStamp(turn) || !isStamp(turnEndedAt) || !isStamp(spokeAt) || !isStamp(seq) || !isStamp(at)) return false;
-  if (turn !== seq + 1) return false;
-  if (!(spokeAt > turnEndedAt && spokeAt > at)) return false;
-  if (spent === undefined || spent === null) return true;
-  return isStamp(spent) && spokeAt > spent;
+  if (!isStamp(turn) || !isStamp(turnEndedAt) || !isStamp(heardAt) || !isStamp(spokeAt) || !isStamp(seq) || !isStamp(at)) return "refused";
+  if (turn !== seq + 1) return "refused";
+  if (!(heardAt > at)) return "refused";
+  if (!(spokeAt > turnEndedAt)) return "awaiting-speech";
+  if (!(spokeAt > at)) return "refused";
+  if (spent === undefined || spent === null) return "answered";
+  return isStamp(spent) && spokeAt > spent ? "answered" : "refused";
 }
 
 /**
@@ -227,26 +254,36 @@ function readBackAnswered(session, entry) {
  * a yes (PR B's own predicate), so any other `confirmed` goes on as false. A
  * write arriving with `confirmed: true` is forwarded unchanged only when PR B
  * handed back a read-back (needs_confirmation) for this exact key and the
- * owner has answered it (readBackAnswered). The entry and the utterance are
- * spent before the executor is awaited, so confirmations Gemini runs in
- * parallel can't share either. Otherwise it goes on as confirmed:false and PR
- * B answers with the read-back.
+ * owner has answered it (readBackVerdict). If the owner's speech is the only
+ * thing missing, it re-checks the whole gate every CONFIRM_POLL_MS for up to
+ * CONFIRM_SETTLE_MS. The entry and the utterance are spent in the same
+ * synchronous step as the passing check — before the executor is awaited —
+ * so confirmations Gemini runs in parallel (waiting or not) can't share
+ * either. Otherwise it goes on as confirmed:false and PR B answers with the
+ * read-back.
  * @param {any} session
  * @param {string} name
  * @param {Record<string, any>} args
  * @param {Array<Record<string, any>>} audit
  * @param {() => number} now - audit clock
- * @returns {Record<string, any>} the arguments to forward
+ * @returns {Promise<Record<string, any>>} the arguments to forward
  */
-function applyConfirmationGate(session, name, args, audit, now) {
+async function applyConfirmationGate(session, name, args, audit, now) {
   if (!OWNER_WRITE_TOOL_NAMES.includes(name) || args.confirmed === undefined) return args;
   if (args.confirmed !== true) return { ...args, confirmed: false };
-  const pending = pendingConfirmations(session);
   const key = confirmationKey(name, args);
-  const entry = key === null ? undefined : pending.get(key);
-  if (key !== null && entry && readBackAnswered(session, entry)) {
-    pending.delete(key);
+  const pendingEntry = () => (key === null ? undefined : pendingConfirmations(session).get(key));
+  let verdict = readBackVerdict(session, pendingEntry());
+  let waited = 0;
+  while (verdict === "awaiting-speech" && waited < CONFIRM_SETTLE_MS) {
+    await sleep(CONFIRM_POLL_MS);
+    waited += CONFIRM_POLL_MS;
+    verdict = readBackVerdict(session, pendingEntry());
+  }
+  if (verdict === "answered" && key !== null) {
+    pendingConfirmations(session).delete(key);
     session.ownerConfirmSpentSpeechAt = session.lastOwnerSpeechAt;
+    if (waited > 0) console.log(`[OwnerTools] ${name}: the owner's answer was stamped within ${waited} ms of the confirm — forwarded as confirmed. callSid=${session.callSid}`);
     return args;
   }
   audit.push({ name: "owner_confirm_gate", tool: name, successful: false, at: now() });
@@ -346,7 +383,7 @@ async function runOwnerToolCall(session, toolCall, deps) {
     return { message: NO_CALL_RECORD_MESSAGE };
   }
 
-  const forwardArgs = applyConfirmationGate(session, name, args, audit, now);
+  const forwardArgs = await applyConfirmationGate(session, name, args, audit, now);
 
   /** @type {unknown} */
   let result;
@@ -411,4 +448,4 @@ function buildOwnerCallSummary(audit) {
   return parts.length ? `Owner call: ${parts.join("; ")}.` : "Owner call: no changes made.";
 }
 
-module.exports = { OWNER_MAX_TOOL_CALLS, runOwnerToolCall, buildOwnerCallSummary, describeOwnerToolCall, ownerResultSucceeded };
+module.exports = { OWNER_MAX_TOOL_CALLS, CONFIRM_SETTLE_MS, CONFIRM_POLL_MS, runOwnerToolCall, buildOwnerCallSummary, describeOwnerToolCall, ownerResultSucceeded };
