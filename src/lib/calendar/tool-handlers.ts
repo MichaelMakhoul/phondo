@@ -79,7 +79,7 @@ export interface TrustedCallContext {
 // dashboard reschedule path). Re-exported here so existing imports/tests are stable.
 export { resolveRescheduleIdentity };
 
-interface ToolResult {
+export interface ToolResult {
   success: boolean;
   message: string;
   data?: Record<string, unknown>;
@@ -102,7 +102,7 @@ interface ToolResult {
  * business non-success. Callers that catch an exception should also capture it
  * to Sentry for the exact cause.
  */
-function errorResult(message: string): ToolResult {
+export function errorResult(message: string): ToolResult {
   return { success: false, error: true, message };
 }
 
@@ -1819,7 +1819,8 @@ export async function handleCancelAppointment(
   };
 }
 
-async function cancelSingleAppointment(
+// SCRUM-586: exported for the owner assistant's owner_cancel_appointment.
+export async function cancelSingleAppointment(
   supabase: any,
   organizationId: string,
   appointment: any,
