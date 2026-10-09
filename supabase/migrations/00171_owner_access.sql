@@ -11,8 +11,9 @@
 -- input: the writer and the verifier must agree on that. The Next.js route
 -- /api/v1/owner-access writes it through the service-role admin client; the
 -- voice server verifies it (lib/owner-auth.js). Failed-attempt lockout lives
--- in rate_limit_buckets (00135/00136) under key owner-pin:<org>, so there are
--- no counters here.
+-- in rate_limit_buckets (00135/00136) under keys owner-pin:<org>:<salt8> and
+-- owner-pin-day:<org>:<salt8> (PR C's lib/owner-auth.js — a new PIN rotates
+-- the salt, so it starts fresh buckets); no counters here.
 --
 -- Access posture:
 --   * RLS SELECT for the org's owners/admins (the Settings page read).
@@ -35,7 +36,8 @@ CREATE TABLE IF NOT EXISTS public.owner_access (
   pin_hash text NOT NULL CHECK (pin_hash ~ '^[0-9a-f]{64}$'),
   pin_salt text NOT NULL CHECK (pin_salt ~ '^[0-9a-f]{32}$'),
 
-  -- Drives Twilio's <Gather numDigits>; owner's choice, default 4.
+  -- Drives Twilio's <Gather numDigits>: the length of the PIN the owner chose
+  -- (no DB default; set from the PIN itself).
   pin_length smallint NOT NULL CHECK (pin_length BETWEEN 4 AND 8),
 
   enabled boolean NOT NULL DEFAULT true,

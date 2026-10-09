@@ -13,6 +13,7 @@ import { randomBytes, scryptSync, timingSafeEqual } from "crypto";
  * prerequisite plus the persisted lockout (spec §9). Server-only: never
  * import from a client component.
  */
+
 const SALT_BYTES = 16;
 const HASH_BYTES = 32;
 // A stored hash is HASH_BYTES bytes as hex text. Case-insensitive because hex

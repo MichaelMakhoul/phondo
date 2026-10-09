@@ -65,7 +65,7 @@ describe("Settings page — owner line wiring", () => {
   });
 
   it("routes a failed owner_access read to the card's failure state, never to the empty form", () => {
-    // A read error (42501 from a column-grant or RLS regression, an outage) must
+    // A read error (42501 from a column-grant regression, an outage) must
     // not look like "no row yet": the empty form says "Not set up yet." and its
     // next save would overwrite a stored PIN through the service-role API with a
     // success toast. The unit tests in line-form.test.ts pin that

@@ -2,8 +2,10 @@
  * Central UI feature flags.
  *
  * These gate what the product SHOWS to users, independent of any backend
- * capability. Keep them as plain module constants so they can be imported
- * from both server and client components and used for module-level filtering.
+ * capability. SMS_UI_ENABLED is a plain module constant (importable from
+ * server and client components). isOwnerAssistantUiEnabled() reads a
+ * server-only env var (no NEXT_PUBLIC_ prefix) and is always false in the
+ * browser — call it only from server components and route handlers.
  */
 
 /**
@@ -26,9 +28,8 @@ export const SMS_UI_ENABLED = false;
  * a server component; the route reads process.env), so no NEXT_PUBLIC mirror.
  *
  * Independent of the voice server's OWNER_ASSISTANT_ENABLED, which gates the
- * PIN prompt on real calls. Turn that one on first, then this one for the same
- * orgs so owners can register — never the reverse, or an owner could set a
- * PIN that nothing honours.
+ * PIN prompt on real calls. Turn that one on first, then this one, so no owner
+ * can register a PIN that nothing honours.
  */
 export function isOwnerAssistantUiEnabled(): boolean {
   return process.env.OWNER_ASSISTANT_UI_ENABLED === "true";
