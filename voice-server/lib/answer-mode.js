@@ -3,6 +3,7 @@ const { Sentry } = require("./sentry");
 const { maskPhone } = require("./mask-phone");
 const { SENTRY_REASONS, setReasonTag } = require("./sentry-reasons");
 const { computeLapseState } = require("./lapse-state");
+const { ownerAssistantEnabled } = require("./owner-auth"); // SCRUM-587
 
 /**
  * Emit a Sentry event for a fail-open path in the AI-enabled check.
@@ -145,9 +146,15 @@ async function lookupPhoneNumber(calledNumber, opts = {}) {
     const supabase = getSupabase();
     // Only embed the subscription when the gate is on, so the hot-path query is
     // byte-identical to before when ENFORCE_SUBSCRIPTION_GATE is unset.
-    const orgEmbed = subscriptionGateEnabled()
-      ? "organizations(name, country, recording_consent_mode, business_state, recording_disclosure_text, subscriptions(status, trial_end, service_ended_at, current_period_end))"
-      : "organizations(name, country, recording_consent_mode, business_state, recording_disclosure_text)";
+    // SCRUM-587: same discipline for owner_access (migration 00171, PR A) —
+    // embedded only while OWNER_ASSISTANT_ENABLED=true, so a deploy ahead of
+    // the migration cannot make PostgREST reject this select for EVERY call.
+    // pin_hash/pin_salt are withheld from `authenticated` by column grant;
+    // this runs on the service-role client (getSupabase), which may read them.
+    const orgColumns = ["name, country, recording_consent_mode, business_state, recording_disclosure_text"];
+    if (subscriptionGateEnabled()) orgColumns.push("subscriptions(status, trial_end, service_ended_at, current_period_end)");
+    if (ownerAssistantEnabled()) orgColumns.push("owner_access(phone_e164, pin_hash, pin_salt, pin_length, enabled)");
+    const orgEmbed = `organizations(${orgColumns.join(", ")})`;
     const { data: phone, error } = await supabase
       .from("phone_numbers")
       .select(`id, organization_id, assistant_id, ai_enabled, fallback_forward_number, user_phone_number, forwarding_status, source_type, ${orgEmbed}`)
