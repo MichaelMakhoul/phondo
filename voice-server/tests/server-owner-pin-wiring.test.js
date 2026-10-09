@@ -289,6 +289,21 @@ describe("SCRUM-587: stream token — server.js issueStreamToken / consumeStream
     });
   });
 
+  // Final review, row 18: owner mode rides only with a VERIFIED PIN stamp, so no slip at a
+  // future call site can issue an owner session for a caller who failed or was locked out.
+  it("ownerMode: true without ownerAuth \"verified\" consumes as a customer call, keeping its stamp", () => {
+    const tokens = loadTokenSlice();
+    withClock(() => {
+      for (const ownerAuth of ["failed", "locked", "error", undefined, null, "VERIFIED", 1]) {
+        const data = tokens.consumeStreamToken(tokens.issueStreamToken(BUSINESS, OWNER_MOBILE, undefined, null, { ownerMode: true, ownerAuth, ownerFirstName: "Dave" }));
+        assert.equal(data.ownerMode, false, `ownerAuth=${util.inspect(ownerAuth)}`);
+        assert.equal(data.ownerAuth, typeof ownerAuth === "string" ? ownerAuth : null, `ownerAuth=${util.inspect(ownerAuth)}`);
+      }
+      const verified = tokens.consumeStreamToken(tokens.issueStreamToken(BUSINESS, OWNER_MOBILE, undefined, null, ownerExtra()));
+      assert.equal(verified.ownerMode, true, "control: a verified owner");
+    });
+  });
+
   it("rejects an expired token, an unknown token and an entry whose token does not verify", () => {
     const tokens = loadTokenSlice();
     withClock((clock) => {

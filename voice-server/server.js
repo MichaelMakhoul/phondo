@@ -320,9 +320,10 @@ function validateTwilioSignature(req) {
   return crypto.timingSafeEqual(sigBuf, expectedBuf);
 }
 
-// Pending tokens: issued at /twiml, consumed at WebSocket start. Expire after 30s.
-// Stores { issuedAt, calledNumber, callerPhone } so the WebSocket handler uses
-// server-side values instead of trusting client-provided parameters.
+// Pending tokens: issued at /twiml and /twiml/owner-pin, consumed at WebSocket start. Expire after 30s.
+// Stores { issuedAt, calledNumber, callerPhone, reconnectCallSid, phoneRecord (owner_access stripped),
+// ownerMode, ownerAuth, ownerFirstName } so the WebSocket handler uses server-side values instead of
+// trusting client-provided parameters.
 const pendingTokens = new Map();
 const TOKEN_TTL_MS = 30_000;
 
@@ -346,7 +347,8 @@ function issueStreamToken(calledNumber, callerPhone, reconnectCallSid, phoneReco
     reconnectCallSid,
     // SCRUM-587: never the owner's PIN hash/salt (embedded by lookupPhoneNumber while the flag is on).
     phoneRecord: withoutOwnerAccess(phoneRecord),
-    ownerMode: extra.ownerMode === true,
+    // Owner mode only with a verified PIN: a caller stamped "failed"/"locked" can never carry it.
+    ownerMode: extra.ownerMode === true && extra.ownerAuth === "verified",
     ownerAuth: typeof extra.ownerAuth === "string" ? extra.ownerAuth : null,
     ownerFirstName: typeof extra.ownerFirstName === "string" ? extra.ownerFirstName : null,
   });
@@ -355,7 +357,8 @@ function issueStreamToken(calledNumber, callerPhone, reconnectCallSid, phoneReco
 
 /**
  * Verify and consume a stream token. Returns the stored call metadata
- * (calledNumber, callerPhone) or null if invalid/expired.
+ * (calledNumber, callerPhone, reconnectCallSid, phoneRecord, ownerMode, ownerAuth,
+ * ownerFirstName) or null if invalid/expired.
  */
 function consumeStreamToken(token) {
   try {
