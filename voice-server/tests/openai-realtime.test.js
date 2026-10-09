@@ -158,3 +158,37 @@ describe("createResponseGate (SCRUM-378) — never two active responses", () => 
     assert.equal(sends(), 1);
   });
 });
+
+// SCRUM-587: a Gemini outage fails over to this adapter (SCRUM-535). An owner
+// call must still get PR B's data — the appointment ids its next change needs —
+// while every customer tool's output stays exactly its message.
+describe("functionOutputFor (SCRUM-587) — what the model reads back for a tool call", () => {
+  const { functionOutputFor } = _test;
+  const OWNER_RESULT = { message: "3 jobs tomorrow.", data: { count: 3, appointments: [{ appointment_id: "a1" }] }, success: true };
+
+  it("an owner_* result reaches the model WHOLE: message and data, as JSON", () => {
+    for (const name of ["owner_list_appointments", "owner_list_messages", "owner_reschedule_appointment", "owner_cancel_appointment"]) {
+      assert.equal(functionOutputFor(name, OWNER_RESULT), JSON.stringify({ message: OWNER_RESULT.message, data: OWNER_RESULT.data }), name);
+    }
+  });
+
+  it("an owner_* result without data is its message", () => {
+    assert.equal(functionOutputFor("owner_cancel_appointment", { message: "I can't reach your bookings on this call." }), "I can't reach your bookings on this call.");
+  });
+
+  it("every other tool's output is unchanged — the message only, even when data rides along", () => {
+    assert.equal(functionOutputFor("book_appointment", { message: "Booked.", data: { id: "x" } }), "Booked.");
+    assert.equal(functionOutputFor("check_availability", { message: "9 a.m. or 10 a.m." }), "9 a.m. or 10 a.m.");
+    assert.equal(functionOutputFor("owner_something_else", { message: "m", data: { id: "x" } }), "m", "only the declared owner tools");
+    assert.equal(functionOutputFor("end_call", "Ending the call."), "Ending the call.");
+    assert.equal(functionOutputFor("transfer_call", null), "");
+    assert.equal(functionOutputFor("transfer_call", undefined), "");
+    assert.equal(functionOutputFor("schedule_callback", { message: "" }), "");
+  });
+
+  it("the tool loop submits functionOutputFor's output", () => {
+    const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "services", "openai-realtime.js"), "utf8");
+    assert.match(src, /let out = functionOutputFor\(t\.name, result\);/);
+    assert.doesNotMatch(src, /let out = typeof result === "string"/, "the old message-only line is gone");
+  });
+});

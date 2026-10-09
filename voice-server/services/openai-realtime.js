@@ -55,6 +55,7 @@
 const WebSocket = require("ws");
 const { Sentry } = require("../lib/sentry");
 const { mulawToPcm16, pcm16ToMulaw, normalizeGainPcm16 } = require("../lib/audio-converter");
+const { OWNER_TOOL_NAMES } = require("../lib/owner-tools"); // SCRUM-587
 
 // BCP-47 hint for the input transcription side. session.language is "en"/"ar".
 const LANG_TO_BCP47 = { en: "en", ar: "ar", es: "es", fr: "fr", de: "de" };
@@ -133,6 +134,24 @@ function boostMulawBase64(b64) {
     }
     return b64;
   }
+}
+
+/**
+ * SCRUM-587: the function_call_output for one tool call. An owner_* result goes
+ * WHOLE ({ message, data } as JSON): its data carries the appointment ids the
+ * owner's next change needs, and a Gemini outage that fails over here
+ * (SCRUM-535) must not strip them — the same shape the classic loop sends.
+ * Every other tool's output is its message, exactly as before.
+ * @param {string} name
+ * @param {any} result
+ * @returns {string}
+ */
+function functionOutputFor(name, result) {
+  if (typeof result === "string") return result;
+  if (OWNER_TOOL_NAMES.includes(name) && result && typeof result === "object" && result.data !== undefined) {
+    return JSON.stringify({ message: result.message, data: result.data });
+  }
+  return result?.message || "";
 }
 
 /**
@@ -699,7 +718,7 @@ function createRealtimeSession(config, callbacks, provider = PROVIDERS.openai) {
               result = { message: "I had trouble with that just now." };
               console.error(`[${P.tag}] tool ${t.name} error:`, err.message);
             }
-            let out = typeof result === "string" ? result : (result?.message || "");
+            let out = functionOutputFor(t.name, result);
             if (!out) { console.warn(`[${P.tag}] empty tool output for ${t.name}`); out = "(no result)"; }
             // Submitting the output never collides; only response.create does.
             send({ type: "conversation.item.create", item: { type: "function_call_output", call_id: t.call_id, output: out } });
@@ -823,6 +842,7 @@ module.exports = {
   createOpenAIRealtimeSession,
   createGrokRealtimeSession,
   _test: {
+    functionOutputFor,
     toRealtimeTools,
     buildSessionConfig,
     buildGrokSessionConfig,
