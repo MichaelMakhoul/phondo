@@ -29,7 +29,7 @@ const { calendarToolDefinitions, listServiceTypesToolDefinition, transferToolDef
 const { createGeminiSession } = require("./services/gemini-live");
 const { createOpenAIRealtimeSession, createGrokRealtimeSession } = require("./services/openai-realtime"); // SCRUM-378 eval spike (OpenAI + Grok share the adapter)
 const { createSessionWithFailover, isFailoverEnabled } = require("./services/gemini-failover"); // SCRUM-535
-const { resolveTestPipeline, KNOWN_TEST_PIPELINES } = require("./lib/pipeline-routing"); // SCRUM-378 per-number test override
+const { resolveTestPipeline, KNOWN_TEST_PIPELINES, resolveOwnerPipeline } = require("./lib/pipeline-routing"); // SCRUM-378 per-number test override; SCRUM-587 OWNER_PIPELINE
 const { handleConversationRelayConnection, buildConversationRelayTwiml } = require("./services/conversationrelay"); // SCRUM-378 eval spike (ConversationRelay + Claude)
 const { validateToolResponse } = require("./services/turn-validator");
 const { detectPhantomAction, detectPostCallPhantoms, summarizePhantoms, netLiveOutcome, buildToolOutcomeDigest } = require("./lib/action-claim-detector"); // SCRUM-381 live + SCRUM-383 post-call + SCRUM-559 cancel-aware state checks
@@ -142,6 +142,12 @@ const { handleOwnerPin, buildOwnerPinGatherTwiml, gatherLanguageFor, HANGUP_TWIM
 const { loadOwnerFirstName } = require("./lib/owner-context");
 // SCRUM-587: nonce'd stream tokens + the owner_access strip for pendingTokens.
 const { mintStreamToken, verifyStreamToken, withoutOwnerAccess } = require("./lib/stream-token");
+// SCRUM-587: the owner session — its prompt and tools, the ONE tool path that
+// bypasses the customer guards, and the turn clock its confirmation gate reads.
+const { buildOwnerPrompt, buildOwnerGreeting, buildOwnerGeminiSuffix } = require("./lib/owner-prompt");
+const { buildOwnerTools } = require("./lib/owner-tools");
+const { runOwnerToolCall, buildOwnerCallSummary } = require("./lib/owner-tool-runner");
+const { noteAssistantSpeech, noteAssistantTurnEnd, noteOwnerSpeech } = require("./lib/owner-turn-stamps");
 
 // Mirror of API-layer E164_REGEX. Defense-in-depth at the dialer so a bad
 // value introduced via direct SQL or a future bug can't be sent to Twilio.
@@ -1565,7 +1571,8 @@ wss.on("connection", (twilioWs) => {
     // Scans assistant turns only (detectPostCallPhantoms filters internally) — a
     // hallucinated claim is something the AI said, so a caller reciting a code or
     // narrating a past appointment must not trip it.
-    const phantomActions = detectPostCallPhantoms(s.fullTranscriptMessages, s.toolCallAudit);
+    // SCRUM-587: owner calls skip the claim scan — "cancelled Mrs Smith's job" is the owner's instruction, not a receptionist claim.
+    const phantomActions = s.ownerMode ? [] : detectPostCallPhantoms(s.fullTranscriptMessages, s.toolCallAudit);
     if (phantomActions.length) {
       const { bugTag, reason } = summarizePhantoms(phantomActions);
       console.error(`[HallucinatedAction] callSid=${s.callSid} claimed [${phantomActions.join(", ")}] but no backing tool succeeded. toolCallAudit=${JSON.stringify(s.toolCallAudit || [])}`);
@@ -1587,7 +1594,8 @@ wss.on("connection", (twilioWs) => {
 
     // Run post-call analysis (best-effort, awaited because results feed into the call record)
     let analysis = null;
-    if (transcript && durationSeconds > 5) {
+    // SCRUM-587: no OpenAI analysis on owner calls — the summary is built from the tool audit below.
+    if (!s.ownerMode && transcript && durationSeconds > 5) {
       try {
         analysis = await analyzeCallTranscript(transcript, {
           language: s.language,
@@ -1679,8 +1687,8 @@ wss.on("connection", (twilioWs) => {
           status: callStatus,
           durationSeconds,
           transcript,
-          summary: analysis?.summary || null,
-          callerName: analysis?.callerName || null,
+          summary: s.ownerMode ? buildOwnerCallSummary(s.toolCallAudit || []) : (analysis?.summary || null),
+          callerName: s.ownerMode ? (s.ownerFirstName || "Owner") : (analysis?.callerName || null),
           collectedData: analysis?.collectedData || null,
           successEvaluation: analysis?.successEvaluation || null,
           recordingDisclosurePlayed: s.recordingDisclosurePlayed || false,
@@ -1702,10 +1710,16 @@ wss.on("connection", (twilioWs) => {
           // incident call was recorded failed AND "appointment_booked" (the
           // booking had been cancelled). confirmedBookings already clears on
           // cancel, so the classic fallback is naturally net-aware.
-          actionTaken:
-            netLiveOutcome(s.toolCallAudit || []) > 0 || (s.confirmedBookings?.size ?? 0) > 0
+          actionTaken: s.ownerMode
+            ? "owner_call"
+            : netLiveOutcome(s.toolCallAudit || []) > 0 || (s.confirmedBookings?.size ?? 0) > 0
               ? "appointment_booked"
               : null,
+          // SCRUM-587: written BEFORE notifyCallCompleted (below) — PR B reads
+          // call_type from the row. owner_auth also marks a customer call that
+          // failed the PIN gate.
+          callType: s.ownerMode ? "owner" : null,
+          ownerAuth: s.ownerAuth || null,
         });
       } catch (err) {
         console.error("[Cleanup] Failed to complete call record:", err);
@@ -1735,6 +1749,10 @@ wss.on("connection", (twilioWs) => {
         collectedData: analysis?.collectedData || undefined,
         successEvaluation: analysis?.successEvaluation || undefined,
         unansweredQuestions: analysis?.unansweredQuestions || undefined,
+        // SCRUM-587: informational — PR B reads call_type / owner_auth from
+        // the row written above. Absent from a plain customer call's body.
+        callType: s.ownerMode ? "owner" : undefined,
+        ownerAuth: s.ownerAuth || undefined,
       }).catch((err) =>
         console.error("[Cleanup] Failed to notify call completed:", err)
       );
@@ -2064,28 +2082,43 @@ wss.on("connection", (twilioWs) => {
             console.log(`[AfterHours] Call arriving outside business hours (org=${context.organizationId}, calendar=${effectiveCalendarEnabled})`);
           }
 
-          // Build system prompt (guided or legacy)
-          const systemPrompt = buildSystemPrompt(
-            context.assistant,
-            context.organization,
-            context.knowledgeBase,
-            {
-              // SCRUM-322: userPhoneNumber/forwardingStatus/sourceType used to
-              // be passed here too, but buildSystemPrompt never reads them (only
-              // executeToolCall consumes them, for the forwarded-number transfer
-              // fallback — still wired via the session/context). Dropped the dead
-              // hand-off so the prompt options reflect what's actually used.
-              calendarEnabled: effectiveCalendarEnabled,
-              transferRules: session.transferRules,
-              isAfterHours,
-              afterHoursConfig,
-              serviceTypes: context.serviceTypes,
-            }
-          );
+          // Build system prompt (guided or legacy). SCRUM-587: an owner call
+          // gets lib/owner-prompt.js instead — the customer prompt's privacy,
+          // name-collection and booking rules contradict owner use (spec §2).
+          // Its "Today is <weekday> <date>" is the ORG-local date: a server-UTC
+          // date is a day behind until 10-11 a.m. in Sydney.
+          const ownerTz = context.organization.timezone || "UTC";
+          const systemPrompt = session.ownerMode
+            ? buildOwnerPrompt({
+                orgName: context.organization.name,
+                ownerFirstName: session.ownerFirstName,
+                timezone: ownerTz,
+                todayStr: new Intl.DateTimeFormat("en-CA", { timeZone: ownerTz }).format(new Date()),
+                serviceTypes: context.serviceTypes || [],
+                practitioners: [],
+              })
+            : buildSystemPrompt(
+                context.assistant,
+                context.organization,
+                context.knowledgeBase,
+                {
+                  // SCRUM-322: userPhoneNumber/forwardingStatus/sourceType used to
+                  // be passed here too, but buildSystemPrompt never reads them (only
+                  // executeToolCall consumes them, for the forwarded-number transfer
+                  // fallback — still wired via the session/context). Dropped the dead
+                  // hand-off so the prompt options reflect what's actually used.
+                  calendarEnabled: effectiveCalendarEnabled,
+                  transferRules: session.transferRules,
+                  isAfterHours,
+                  afterHoursConfig,
+                  serviceTypes: context.serviceTypes,
+                }
+              );
           // Append caller context — phone number + client history
           const phoneForPrompt = session.piiRedactionEnabled ? maskPhone(callerPhone) : callerPhone;
           let callerContext = "";
-          if (callerPhone) {
+          // SCRUM-587: no returning-caller hint on owner calls (owner tools return names).
+          if (callerPhone && !session.ownerMode) {
             callerContext = `\n\nCALLER CONTEXT:\nThe caller's phone number is ${phoneForPrompt}. If they say "use the number I'm calling from" or "it's the same number", use this number. Do NOT ask them to repeat it.`;
 
             // SCRUM-414: returning-caller signal ONLY — never inject the name or
@@ -2141,7 +2174,8 @@ wss.on("connection", (twilioWs) => {
           if (clinikoOwnsAvailability) {
             console.log(`[ScheduleCache] Skipped — Cliniko owns availability for org=${context.organizationId} (live diary)`);
           }
-          if (!clinikoOwnsAvailability && (session.calendarEnabled || session.serviceTypes?.length > 0)) {
+          // SCRUM-587: owner sessions carry no snapshot (it has no names); check_availability falls through to the API.
+          if (!session.ownerMode && !clinikoOwnsAvailability && (session.calendarEnabled || session.serviceTypes?.length > 0)) {
             try {
               scheduleSnapshot = scheduleCache.getSchedule(context.organizationId);
               if (!scheduleSnapshot) {
@@ -2210,31 +2244,37 @@ wss.on("connection", (twilioWs) => {
           }
 
           // ── Pipeline selection ───────────────────────────────────────────
-          if (VOICE_PIPELINE === "gemini-live" && !process.env.GEMINI_API_KEY) {
-            console.error("[GeminiLive] VOICE_PIPELINE=gemini-live but GEMINI_API_KEY not set — falling back to classic pipeline");
+          // SCRUM-587: owner calls may run a different pipeline (OWNER_PIPELINE),
+          // resolved once per call; the key check follows the EFFECTIVE pipeline.
+          const effectivePipeline = session.ownerMode ? resolveOwnerPipeline() : VOICE_PIPELINE;
+          if (effectivePipeline === "gemini-live" && !process.env.GEMINI_API_KEY) {
+            console.error("[GeminiLive] pipeline=gemini-live but GEMINI_API_KEY not set — falling back to classic pipeline");
           }
-          if (VOICE_PIPELINE === "gemini-live" && process.env.GEMINI_API_KEY) {
+          if (effectivePipeline === "gemini-live" && process.env.GEMINI_API_KEY) {
             // Gemini Live pipeline — single model handles STT + LLM + TTS
             const geminiT0 = Date.now();
             console.log(`[GeminiLive] Starting session for callSid=${callSid}`);
 
-            const llmOptions = buildLLMOptions(session, { includeTransfer: true });
+            const llmOptions = session.ownerMode ? { tools: buildOwnerTools() } : buildLLMOptions(session, { includeTransfer: true });
             const allTools = llmOptions.tools || [];
 
             // ── Build greeting text for Gemini to speak ──
             // Gemini speaks the disclosure + greeting as its FIRST utterance.
             // This gives ONE consistent voice throughout the call and eliminates
             // the Deepgram TTS delay + voice mismatch.
-            const consentResult = requiresRecordingDisclosureHybrid(
-              context.organization.country,
-              context.organization.businessState,
-              context.organization.recordingConsentMode,
-              session.callerPhone
-            );
-            const greeting = getGreeting(context.assistant, context.organization.name, {
-              isAfterHours,
-              afterHoursConfig,
-            });
+            // SCRUM-587: no spoken disclosure on owner calls (consent is captured
+            // in Settings; recording still runs as today).
+            const consentResult = session.ownerMode
+              ? { required: false, callerState: null, reason: "owner-call" }
+              : requiresRecordingDisclosureHybrid(
+                  context.organization.country,
+                  context.organization.businessState,
+                  context.organization.recordingConsentMode,
+                  session.callerPhone
+                );
+            const greeting = session.ownerMode
+              ? buildOwnerGreeting(session.ownerFirstName)
+              : getGreeting(context.assistant, context.organization.name, { isAfterHours, afterHoursConfig });
 
             // Build the full first message — disclosure (if needed) + greeting
             let firstMessage = greeting;
@@ -2280,68 +2320,77 @@ wss.on("connection", (twilioWs) => {
               geminiSystemPrompt += `\n\nIMPORTANT — YOUR FIRST MESSAGE: When the call connects, you will receive a short text message. Immediately respond by speaking the following greeting (word for word, naturally and warmly): "${firstMessage}" — Then wait for the caller to respond. Do NOT add anything extra. Do NOT invent a receptionist name — you are an AI assistant.`;
             }
 
-            // CRITICAL — tool calling, filler words, and name enforcement
-            geminiSystemPrompt += `\n\nCRITICAL RULES FOR THIS CONVERSATION:`;
-            geminiSystemPrompt += `\n- ABSOLUTELY NEVER FABRICATE ACTIONS: This is the most important rule. It is IMPOSSIBLE to book, cancel, or schedule anything without calling the corresponding tool. The tools (book_appointment, cancel_appointment, schedule_callback) are the ONLY way actions happen in the database. If you say "I've booked your appointment" without calling book_appointment first, the caller will have NO actual appointment — this is a catastrophic failure. The correct sequence is ALWAYS: (1) say a brief filler phrase in the caller's language (the equivalent of "one moment, let me do that for you"), (2) CALL THE TOOL, (3) WAIT for the tool to return a result, (4) ONLY THEN tell the caller what happened based on the tool's response. NEVER speak the words "booked", "confirmed", "cancelled", "scheduled" BEFORE the tool returns. If you catch yourself about to confirm an action — STOP and call the tool first.`;
-            geminiSystemPrompt += `\n- 🔎 UNDERSTAND BEFORE YOU ACT (be a real receptionist): Acting on a misheard request is worse than asking again. If a caller's turn is garbled, cuts in and out, is only fragments, suddenly switches to a language they weren't using, or doesn't form a clear request, do NOT guess what they meant and do NOT act on it — warmly say you didn't catch it and ask them to repeat, in the language they are using (e.g. "Sorry, I didn't quite catch that — could you say it again?"). If you DID hear the request clearly, just proceed — do NOT tack on an extra "is that right?" (the name read-back and post-booking confirmation already cover that). Only when you genuinely couldn't hear, or you'd be guessing a name / date / time / which person they want, restate it and get a clear "yes" before transferring, booking, cancelling, rescheduling, or taking a message (e.g. "Just to confirm, you'd like to move your Thursday 10 a.m. to Friday — is that right?"). A caller who is upset or in a hurry is NOT a reason to make them repeat — if the words are clear, help right away. After a couple of unclear tries, take their name and number for a callback rather than guessing. NEVER transfer, book, cancel, reschedule, or record details based on a guess or an unclear turn.`;
-            // Build name verification instruction based on business config
-            // Check verification method for name fields (first_name or legacy full_name)
-            const nameField = context.assistant.promptConfig?.fields?.find((f) => f.id === "first_name" || f.id === "full_name");
-            const nameVerification = nameField?.verification || "repeat-confirm";
-            let nameInstruction = "";
-            if (nameVerification === "spell-out") {
-              nameInstruction = "Ask them to spell it out letter by letter using the English alphabet (e.g., 'M-I-C-H-A-E-L'). After they spell it, READ THE SPELLING BACK to confirm: 'So that's M-I-C-H-A-E-L, is that correct?' WAIT for them to confirm before proceeding. If they say no, ask them to spell it again.";
-            } else if (nameVerification === "read-back-characters") {
-              nameInstruction = "Read back the name character by character to confirm.";
-            } else {
-              nameInstruction = "Repeat the name back and ask them to confirm it's correct.";
-            }
+            // SCRUM-587: the customer rules below (tool/booking/transfer rules, the
+            // FINAL CRITICAL RULE and the language lock) are for customer calls. An
+            // owner call gets the owner variant of the freshest-instruction block
+            // instead, and NOTHING after it: the language lock ends on
+            // schedule_callback, a customer tool the owner session does not have.
+            if (!session.ownerMode) {
+              // CRITICAL — tool calling, filler words, and name enforcement
+              geminiSystemPrompt += `\n\nCRITICAL RULES FOR THIS CONVERSATION:`;
+              geminiSystemPrompt += `\n- ABSOLUTELY NEVER FABRICATE ACTIONS: This is the most important rule. It is IMPOSSIBLE to book, cancel, or schedule anything without calling the corresponding tool. The tools (book_appointment, cancel_appointment, schedule_callback) are the ONLY way actions happen in the database. If you say "I've booked your appointment" without calling book_appointment first, the caller will have NO actual appointment — this is a catastrophic failure. The correct sequence is ALWAYS: (1) say a brief filler phrase in the caller's language (the equivalent of "one moment, let me do that for you"), (2) CALL THE TOOL, (3) WAIT for the tool to return a result, (4) ONLY THEN tell the caller what happened based on the tool's response. NEVER speak the words "booked", "confirmed", "cancelled", "scheduled" BEFORE the tool returns. If you catch yourself about to confirm an action — STOP and call the tool first.`;
+              geminiSystemPrompt += `\n- 🔎 UNDERSTAND BEFORE YOU ACT (be a real receptionist): Acting on a misheard request is worse than asking again. If a caller's turn is garbled, cuts in and out, is only fragments, suddenly switches to a language they weren't using, or doesn't form a clear request, do NOT guess what they meant and do NOT act on it — warmly say you didn't catch it and ask them to repeat, in the language they are using (e.g. "Sorry, I didn't quite catch that — could you say it again?"). If you DID hear the request clearly, just proceed — do NOT tack on an extra "is that right?" (the name read-back and post-booking confirmation already cover that). Only when you genuinely couldn't hear, or you'd be guessing a name / date / time / which person they want, restate it and get a clear "yes" before transferring, booking, cancelling, rescheduling, or taking a message (e.g. "Just to confirm, you'd like to move your Thursday 10 a.m. to Friday — is that right?"). A caller who is upset or in a hurry is NOT a reason to make them repeat — if the words are clear, help right away. After a couple of unclear tries, take their name and number for a callback rather than guessing. NEVER transfer, book, cancel, reschedule, or record details based on a guess or an unclear turn.`;
+              // Build name verification instruction based on business config
+              // Check verification method for name fields (first_name or legacy full_name)
+              const nameField = context.assistant.promptConfig?.fields?.find((f) => f.id === "first_name" || f.id === "full_name");
+              const nameVerification = nameField?.verification || "repeat-confirm";
+              let nameInstruction = "";
+              if (nameVerification === "spell-out") {
+                nameInstruction = "Ask them to spell it out letter by letter using the English alphabet (e.g., 'M-I-C-H-A-E-L'). After they spell it, READ THE SPELLING BACK to confirm: 'So that's M-I-C-H-A-E-L, is that correct?' WAIT for them to confirm before proceeding. If they say no, ask them to spell it again.";
+              } else if (nameVerification === "read-back-characters") {
+                nameInstruction = "Read back the name character by character to confirm.";
+              } else {
+                nameInstruction = "Repeat the name back and ask them to confirm it's correct.";
+              }
 
-            geminiSystemPrompt += `\n- NAME COLLECTION IS MANDATORY — ZERO EXCEPTIONS: Before calling book_appointment, you MUST: (1) Ask for FIRST NAME — wait for answer, (2) ${nameInstruction}, (3) Ask for LAST NAME — wait for answer, (4) ${nameInstruction}, (5) ONLY after you have BOTH confirmed names, call book_appointment with first_name and last_name. Names MUST be in English letters. If you are unsure of the spelling, ask again. NEVER call book_appointment until the caller has fully spelled and confirmed BOTH names. If you only have one name, ask for the other BEFORE booking.`;
-            geminiSystemPrompt += `\n- CONFIRM BOOKING DETAILS: AFTER book_appointment returns a successful result, read back ALL details to the caller: name, date, time, and practitioner. Then ask "Is everything correct?" If the caller says something is wrong, fix it (cancel and rebook with the correct details). Do NOT end the booking conversation without confirmation. NEVER promise a confirmation text, email, or any other follow-up notification — none are sent automatically. The read-back is the only confirmation the caller receives.`;
-            geminiSystemPrompt += `\n- FILLER WORDS — SPEAK FIRST, THEN CALL TOOL: When you need to call a tool, you MUST speak a filler phrase FIRST as a separate response BEFORE making the tool call. Say a brief filler in the caller's language (the equivalent of "one moment, let me check that") and WAIT for the audio to play. THEN make the tool call in the next step. NEVER bundle the filler and tool result into one response. The caller must hear the filler DURING the silence, not after. Example flow: (1) caller asks for availability → (2) you say "Let me check that for you" → (3) you call check_availability → (4) you say "We have slots on Wednesday...". Steps 2 and 4 must be SEPARATE speech outputs.`;
-            geminiSystemPrompt += `\n- POST-CONFIRMATION CLOSE — MANDATORY: When the caller responds to "Is everything correct?" with ANY positive answer (yes, sounds right, sounds good, thanks, perfect, great, looks good, sure, yep, absolutely) or says goodbye, you MUST follow this exact sequence in ONE response: (1) Say ONE brief warm closing phrase IN THE CALLER'S LANGUAGE (the equivalent of "Perfect! You're all set. Have a great day!") (2) IMMEDIATELY call end_call with reason="booking_complete" in the SAME response. NEVER say "goodbye" without calling end_call. NEVER mirror the caller's goodbye. NEVER continue the conversation after the caller confirms. The closing phrase and the end_call MUST happen together, without waiting for another turn.`;
-            geminiSystemPrompt += `\n- RESCHEDULING: When a caller wants to move or change the time of an existing appointment, you MUST call the reschedule_appointment tool — ONE call that books the new time and removes the old one atomically (verified server-side). Identify the existing appointment by the caller's phone plus its current date (look it up first with lookup_appointment if you don't already know it) and pass new_datetime. NEVER reschedule by calling cancel_appointment and book_appointment separately — that can leave a duplicate appointment.`;
-            // SCRUM-294: imperative transfer instruction. Two variants because
-            // the transfer_call tool is only REGISTERED when both
-            // session.behaviors.transferToHuman !== false AND there's at least
-            // one transfer rule (see line ~2764). If the prompt told the model
-            // to call transfer_call when the tool wasn't registered, Gemini
-            // would hallucinate the invocation and break mid-call — exactly the
-            // class of silent failure SCRUM-294 was filed to fix.
-            const transferAvailableInbound =
-              (session.behaviors?.transferToHuman !== false &&
-                (session.transferRules?.length || 0) > 0) ||
-              forwardingFallbackEligible(session);
-            if (transferAvailableInbound) {
-              geminiSystemPrompt += `\n- TRANSFERS — MUST OBEY: If the caller asks to be transferred, asks to speak to a human / person / manager / somebody / an actual human / a real person / staff, says 'transfer me' / 'put me through' / 'I want to talk to someone' / 'can I speak to a human' / 'get me a person' or any equivalent intent — you MUST IMMEDIATELY say a short filler in the caller's language (the equivalent of "one moment, let me connect you") and call the transfer_call tool in the same turn. The caller already asked — asking again is disobedience. Forbidden phrasings (do NOT say any of these): 'would you like me to transfer you?', 'do you want me to connect you?', 'I can also take a message', 'I can help with that instead', 'is there something specific you need first?', 'first let me check...', 'could you just tell me briefly what you need to discuss with them'. Do NOT ask the caller what they want to discuss. Do NOT offer the message/callback option BEFORE the transfer attempt. Only AFTER the tool returns an error or 'no answer' may you offer a callback or message. If the tool's RESPONSE message tells you to confirm with the caller first, do that — otherwise NEVER ask permission, just transfer. (This "transfer without asking" applies ONLY to a request you CLEARLY heard. If the line was unclear/garbled and you're not sure they actually asked for a person, do NOT transfer on a guess — re-check first by asking them to say it again, e.g. "Sorry, you cut out there — could you repeat that?")`;
-            } else {
-              geminiSystemPrompt += `\n- TRANSFERS — MUST OBEY: If the caller asks to be transferred, asks to speak to a human / person / manager / somebody / an actual human / a real person / staff, says 'transfer me' / 'put me through' / 'I want to talk to someone' / 'can I speak to a human' / 'get me a person' or any equivalent intent — this business has not configured a transfer destination, so you MUST IMMEDIATELY acknowledge the request and call schedule_callback to capture their name and number. Do NOT argue. Do NOT claim you can help instead. Do NOT redirect to booking. The caller asked for a human — your only job is to capture their details and reassure them someone will call back.`;
-            }
+              geminiSystemPrompt += `\n- NAME COLLECTION IS MANDATORY — ZERO EXCEPTIONS: Before calling book_appointment, you MUST: (1) Ask for FIRST NAME — wait for answer, (2) ${nameInstruction}, (3) Ask for LAST NAME — wait for answer, (4) ${nameInstruction}, (5) ONLY after you have BOTH confirmed names, call book_appointment with first_name and last_name. Names MUST be in English letters. If you are unsure of the spelling, ask again. NEVER call book_appointment until the caller has fully spelled and confirmed BOTH names. If you only have one name, ask for the other BEFORE booking.`;
+              geminiSystemPrompt += `\n- CONFIRM BOOKING DETAILS: AFTER book_appointment returns a successful result, read back ALL details to the caller: name, date, time, and practitioner. Then ask "Is everything correct?" If the caller says something is wrong, fix it (cancel and rebook with the correct details). Do NOT end the booking conversation without confirmation. NEVER promise a confirmation text, email, or any other follow-up notification — none are sent automatically. The read-back is the only confirmation the caller receives.`;
+              geminiSystemPrompt += `\n- FILLER WORDS — SPEAK FIRST, THEN CALL TOOL: When you need to call a tool, you MUST speak a filler phrase FIRST as a separate response BEFORE making the tool call. Say a brief filler in the caller's language (the equivalent of "one moment, let me check that") and WAIT for the audio to play. THEN make the tool call in the next step. NEVER bundle the filler and tool result into one response. The caller must hear the filler DURING the silence, not after. Example flow: (1) caller asks for availability → (2) you say "Let me check that for you" → (3) you call check_availability → (4) you say "We have slots on Wednesday...". Steps 2 and 4 must be SEPARATE speech outputs.`;
+              geminiSystemPrompt += `\n- POST-CONFIRMATION CLOSE — MANDATORY: When the caller responds to "Is everything correct?" with ANY positive answer (yes, sounds right, sounds good, thanks, perfect, great, looks good, sure, yep, absolutely) or says goodbye, you MUST follow this exact sequence in ONE response: (1) Say ONE brief warm closing phrase IN THE CALLER'S LANGUAGE (the equivalent of "Perfect! You're all set. Have a great day!") (2) IMMEDIATELY call end_call with reason="booking_complete" in the SAME response. NEVER say "goodbye" without calling end_call. NEVER mirror the caller's goodbye. NEVER continue the conversation after the caller confirms. The closing phrase and the end_call MUST happen together, without waiting for another turn.`;
+              geminiSystemPrompt += `\n- RESCHEDULING: When a caller wants to move or change the time of an existing appointment, you MUST call the reschedule_appointment tool — ONE call that books the new time and removes the old one atomically (verified server-side). Identify the existing appointment by the caller's phone plus its current date (look it up first with lookup_appointment if you don't already know it) and pass new_datetime. NEVER reschedule by calling cancel_appointment and book_appointment separately — that can leave a duplicate appointment.`;
+              // SCRUM-294: imperative transfer instruction. Two variants because
+              // the transfer_call tool is only REGISTERED when both
+              // session.behaviors.transferToHuman !== false AND there's at least
+              // one transfer rule (see line ~2764). If the prompt told the model
+              // to call transfer_call when the tool wasn't registered, Gemini
+              // would hallucinate the invocation and break mid-call — exactly the
+              // class of silent failure SCRUM-294 was filed to fix.
+              const transferAvailableInbound =
+                (session.behaviors?.transferToHuman !== false &&
+                  (session.transferRules?.length || 0) > 0) ||
+                forwardingFallbackEligible(session);
+              if (transferAvailableInbound) {
+                geminiSystemPrompt += `\n- TRANSFERS — MUST OBEY: If the caller asks to be transferred, asks to speak to a human / person / manager / somebody / an actual human / a real person / staff, says 'transfer me' / 'put me through' / 'I want to talk to someone' / 'can I speak to a human' / 'get me a person' or any equivalent intent — you MUST IMMEDIATELY say a short filler in the caller's language (the equivalent of "one moment, let me connect you") and call the transfer_call tool in the same turn. The caller already asked — asking again is disobedience. Forbidden phrasings (do NOT say any of these): 'would you like me to transfer you?', 'do you want me to connect you?', 'I can also take a message', 'I can help with that instead', 'is there something specific you need first?', 'first let me check...', 'could you just tell me briefly what you need to discuss with them'. Do NOT ask the caller what they want to discuss. Do NOT offer the message/callback option BEFORE the transfer attempt. Only AFTER the tool returns an error or 'no answer' may you offer a callback or message. If the tool's RESPONSE message tells you to confirm with the caller first, do that — otherwise NEVER ask permission, just transfer. (This "transfer without asking" applies ONLY to a request you CLEARLY heard. If the line was unclear/garbled and you're not sure they actually asked for a person, do NOT transfer on a guess — re-check first by asking them to say it again, e.g. "Sorry, you cut out there — could you repeat that?")`;
+              } else {
+                geminiSystemPrompt += `\n- TRANSFERS — MUST OBEY: If the caller asks to be transferred, asks to speak to a human / person / manager / somebody / an actual human / a real person / staff, says 'transfer me' / 'put me through' / 'I want to talk to someone' / 'can I speak to a human' / 'get me a person' or any equivalent intent — this business has not configured a transfer destination, so you MUST IMMEDIATELY acknowledge the request and call schedule_callback to capture their name and number. Do NOT argue. Do NOT claim you can help instead. Do NOT redirect to booking. The caller asked for a human — your only job is to capture their details and reassure them someone will call back.`;
+              }
 
-            // SCRUM-227: booking invariant restated as the LAST instruction so it's
-            // the freshest rule in Gemini's context when it decides what to do.
-            geminiSystemPrompt += `\n\n══════════════════════════════════════════════════════\n` +
-              `🚨 FINAL CRITICAL RULE — READ THIS LAST 🚨\n` +
-              `══════════════════════════════════════════════════════\n` +
-              `BOOKING PATH (strict order — no exceptions):\n` +
-              `  1. Caller says a time works ("9am is fine")\n` +
-              `  2. You ask for first name (if not captured)\n` +
-              `  3. You ask for last name (if not captured)\n` +
-              `  4. You say a short filler in the caller's language (the equivalent of "one moment, let me book that for you")\n` +
-              `  5. You CALL THE book_appointment TOOL — this is non-negotiable\n` +
-              `  6. You WAIT for the tool result\n` +
-              `  7. You read back the booking details (name, date, time, practitioner) from the tool result\n` +
-              `  8. You ask "Is everything correct?" — NEVER promise a text, email, or any follow-up notification\n` +
-              `  9. You call end_call AFTER the caller acknowledges\n\n` +
-              `BETWEEN step 4 and step 7, you MUST be SILENT — do not speak any words while the tool is executing. Wait for the tool result before opening your mouth again. The tool call takes 1-3 seconds; the caller will hear your filler phrase during this time.\n\n` +
-              `YOU MUST NOT speak the words "you're all set", "I've booked", "appointment is confirmed", or anything that implies success BEFORE step 6 (tool result) arrives. If you speak these words without a prior successful book_appointment result, THE CALL HAS FAILED and the caller has NO actual appointment.\n\n` +
-              `If book_appointment returns an error, do NOT pretend the booking succeeded. Tell the caller — in their language — that you're having trouble completing the booking and will take their details so someone can call them back. Then call schedule_callback.\n` +
-              `\nINCOMPLETE BOOKING: If you started taking booking details but book_appointment NEVER returned a successful result, do NOT end the call as if it worked. Tell the caller honestly you couldn't finish it this time, then take a callback with schedule_callback (or connect them to the team if a transfer is available and the office is open). Only call end_call AFTER that fallback returns success.\n` +
-              `\nDON'T HANG UP ON "YES": After you ask "Is there anything else I can help you with?", a "yes" / "yeah" / "ok" / "sure" / "please" or ANY unclear reply means the caller wants MORE help — say the equivalent of "Of course — what else can I help you with?" and do NOT call end_call. Only give a farewell and call end_call when the caller CLEARLY declines: "no" / "no thanks" / "that's all" / "that's everything" / "I'm good" / "goodbye" / "bye". NEVER end the call on a bare "yes" or "ok" right after asking "anything else?".\n` +
-              `\n🌐 LANGUAGE — conduct the ENTIRE call in the caller's language: fillers, tool acknowledgements, transfer/hold messages, booking confirmations and closings included. Every English phrase quoted above is an ENGLISH SAMPLE — say its equivalent in the caller's language, never the literal English unless the caller is speaking English. When a tool returns an English message, translate it before speaking, keeping names, numbers, dates, times and confirmation codes exactly as given.\n` +
-              `══════════════════════════════════════════════════════`;
-            geminiSystemPrompt += buildLanguageLockDirective(session.language);
+              // SCRUM-227: booking invariant restated as the LAST instruction so it's
+              // the freshest rule in Gemini's context when it decides what to do.
+              geminiSystemPrompt += `\n\n══════════════════════════════════════════════════════\n` +
+                `🚨 FINAL CRITICAL RULE — READ THIS LAST 🚨\n` +
+                `══════════════════════════════════════════════════════\n` +
+                `BOOKING PATH (strict order — no exceptions):\n` +
+                `  1. Caller says a time works ("9am is fine")\n` +
+                `  2. You ask for first name (if not captured)\n` +
+                `  3. You ask for last name (if not captured)\n` +
+                `  4. You say a short filler in the caller's language (the equivalent of "one moment, let me book that for you")\n` +
+                `  5. You CALL THE book_appointment TOOL — this is non-negotiable\n` +
+                `  6. You WAIT for the tool result\n` +
+                `  7. You read back the booking details (name, date, time, practitioner) from the tool result\n` +
+                `  8. You ask "Is everything correct?" — NEVER promise a text, email, or any follow-up notification\n` +
+                `  9. You call end_call AFTER the caller acknowledges\n\n` +
+                `BETWEEN step 4 and step 7, you MUST be SILENT — do not speak any words while the tool is executing. Wait for the tool result before opening your mouth again. The tool call takes 1-3 seconds; the caller will hear your filler phrase during this time.\n\n` +
+                `YOU MUST NOT speak the words "you're all set", "I've booked", "appointment is confirmed", or anything that implies success BEFORE step 6 (tool result) arrives. If you speak these words without a prior successful book_appointment result, THE CALL HAS FAILED and the caller has NO actual appointment.\n\n` +
+                `If book_appointment returns an error, do NOT pretend the booking succeeded. Tell the caller — in their language — that you're having trouble completing the booking and will take their details so someone can call them back. Then call schedule_callback.\n` +
+                `\nINCOMPLETE BOOKING: If you started taking booking details but book_appointment NEVER returned a successful result, do NOT end the call as if it worked. Tell the caller honestly you couldn't finish it this time, then take a callback with schedule_callback (or connect them to the team if a transfer is available and the office is open). Only call end_call AFTER that fallback returns success.\n` +
+                `\nDON'T HANG UP ON "YES": After you ask "Is there anything else I can help you with?", a "yes" / "yeah" / "ok" / "sure" / "please" or ANY unclear reply means the caller wants MORE help — say the equivalent of "Of course — what else can I help you with?" and do NOT call end_call. Only give a farewell and call end_call when the caller CLEARLY declines: "no" / "no thanks" / "that's all" / "that's everything" / "I'm good" / "goodbye" / "bye". NEVER end the call on a bare "yes" or "ok" right after asking "anything else?".\n` +
+                `\n🌐 LANGUAGE — conduct the ENTIRE call in the caller's language: fillers, tool acknowledgements, transfer/hold messages, booking confirmations and closings included. Every English phrase quoted above is an ENGLISH SAMPLE — say its equivalent in the caller's language, never the literal English unless the caller is speaking English. When a tool returns an English message, translate it before speaking, keeping names, numbers, dates, times and confirmation codes exactly as given.\n` +
+                `══════════════════════════════════════════════════════`;
+              geminiSystemPrompt += buildLanguageLockDirective(session.language);
+            } else {
+              geminiSystemPrompt += buildOwnerGeminiSuffix();
+            }
 
             // Transcript buffering — accumulate fragments, flush on turn complete
             let pendingUserTranscript = "";
@@ -2351,7 +2400,10 @@ wss.on("connection", (twilioWs) => {
             // can run OpenAI Realtime or Grok Realtime instead of Gemini (same
             // session interface, same callbacks/tools/guards). Unset env → null
             // → unchanged Gemini.
-            const _testPipeline = resolveTestPipeline(session.orgPhoneNumber);
+            // SCRUM-587: never for owner calls — owner mode is Gemini/classic
+            // only (the eval adapters pass the model a tool's message without
+            // its data, so the owner's appointment ids would never arrive).
+            const _testPipeline = session.ownerMode ? null : resolveTestPipeline(session.orgPhoneNumber);
             if (_testPipeline && !KNOWN_TEST_PIPELINES.has(_testPipeline)) {
               // A typo'd pipeline name would silently run Gemini and corrupt
               // the A/B comparison — never let that stay invisible.
@@ -2452,6 +2504,8 @@ wss.on("connection", (twilioWs) => {
                       session.recordingDisclosurePlayed = true;
                       session.pendingDisclosureInFirstMessage = false;
                     }
+                    // SCRUM-587: this assistant turn produced speech (the owner confirmation gate's turn clock).
+                    if (session?.ownerMode) noteAssistantSpeech(session);
                   }
                 },
                 onToolCall: async (toolCall) => {
@@ -2461,6 +2515,17 @@ wss.on("connection", (twilioWs) => {
                     return { message: "" };
                   }
                   logToolCall("[GeminiLive] Tool call", toolCall.name, toolCall.args);
+
+                  // SCRUM-587: owner calls use their own tool set and skip every
+                  // customer guard below (RebookGuard, cancel gate, end_call
+                  // funnel, ledgers, cache deltas, loop caps) — see
+                  // lib/owner-tool-runner.js for why each one would misfire.
+                  // Every owner tool call (end_call and parallel calls included)
+                  // goes through the runner, and its result — message AND data —
+                  // is the function response, whole.
+                  if (session.ownerMode) {
+                    return runOwnerToolCall(session, toolCall, { executeToolCall, scheduleCache });
+                  }
 
                   // SCRUM-373: block end_call when a booking was started but never
                   // completed — LANGUAGE-AGNOSTIC. The old guard matched English
@@ -2821,12 +2886,15 @@ wss.on("connection", (twilioWs) => {
                 onTranscriptIn: (text) => {
                   // Buffer user transcript fragments — flush on turn complete
                   pendingUserTranscript += text;
+                  // SCRUM-587: the owner spoke — the first worded fragment after the last assistant turn (once per utterance).
+                  if (session?.ownerMode) noteOwnerSpeech(session, text);
                 },
                 onTranscriptOut: (text) => {
                   // Buffer AI transcript fragments — flush on turn complete.
                   // Goodbye-loop detection moved to onTurnComplete so the counter
                   // increments once per TURN, not once per streaming fragment.
                   pendingAiTranscript += text;
+                  if (session?.ownerMode) noteAssistantSpeech(session); // SCRUM-587: this turn produced speech
                 },
                 onInterrupted: () => {
                   // Guard: session may be null if Gemini delivers buffered events after cleanup
@@ -2834,6 +2902,9 @@ wss.on("connection", (twilioWs) => {
                     pendingAiTranscript = "";
                     return;
                   }
+                  // SCRUM-587: an interrupted turn has ended — counted once, even
+                  // when its turnComplete follows (same serverContent or not).
+                  if (session.ownerMode) noteAssistantTurnEnd(session);
                   // Flush any pending AI transcript before interruption
                   if (pendingAiTranscript.trim()) {
                     session.addMessage("assistant", pendingAiTranscript.trim());
@@ -2851,6 +2922,9 @@ wss.on("connection", (twilioWs) => {
                     pendingAiTranscript = "";
                     return;
                   }
+                  // SCRUM-587: one assistant turn on the confirmation gate's clock —
+                  // only if it produced speech (a tool-call-only turn is not one).
+                  if (session.ownerMode) noteAssistantTurnEnd(session);
                   // Flush accumulated transcripts as complete messages
                   if (pendingUserTranscript.trim()) {
                     session.addMessage("user", pendingUserTranscript.trim());
@@ -2909,7 +2983,9 @@ wss.on("connection", (twilioWs) => {
                     // claims too, so a legit reschedule no longer false-positives
                     // into a re-book thrash, and a phantom "I rebooked you" is
                     // finally caught.
-                    const phantom = detectPhantomAction(aiTurnText, session.toolCallAudit);
+                    // SCRUM-587: off for owner calls — "cancelled Mrs Smith's job"
+                    // there is the owner's instruction, not a receptionist claim.
+                    const phantom = session.ownerMode ? null : detectPhantomAction(aiTurnText, session.toolCallAudit);
                     if (phantom) {
                       const { action, primaryTool, negated } = phantom;
                       const notDone =
@@ -2968,7 +3044,7 @@ wss.on("connection", (twilioWs) => {
                     // times, practitioner names, and other subtle mismatches.
                     // Runs async — no caller-facing latency. Correction injected
                     // into Gemini's next turn if discrepancy found.
-                    if (session._lastToolResult && !session._phantomActionCount) {
+                    if (!session.ownerMode && session._lastToolResult && !session._phantomActionCount) { // SCRUM-587: customer tools only
                       const lastTool = session._lastToolResult;
                       // Only validate if this turn is likely the response to the tool
                       // (within 10 seconds of the tool result)
@@ -3115,6 +3191,8 @@ wss.on("connection", (twilioWs) => {
                 return;
               }
               logTranscript("[STT] Final", transcript);
+              // SCRUM-587: the owner spoke (confirmation-gate clock; once per utterance).
+              if (session.ownerMode) noteOwnerSpeech(session, transcript);
               session.bufferTranscript(transcript, (combined, inputType) => {
                 logTranscript("[STT] Buffered", combined);
                 session.queueOrProcess(combined, (text) => handleUserSpeech(session, twilioWs, text, inputType));
@@ -3151,12 +3229,15 @@ wss.on("connection", (twilioWs) => {
           }, { industry: session.organization?.industry });
 
           // Recording disclosure + greeting — pre-synthesize disclosure while STT connects
-          const consentResult = requiresRecordingDisclosureHybrid(
-            context.organization.country,
-            context.organization.businessState,
-            context.organization.recordingConsentMode,
-            session.callerPhone
-          );
+          // SCRUM-587: no spoken disclosure on owner calls (as on the Gemini path).
+          const consentResult = session.ownerMode
+            ? { required: false, callerState: null, reason: "owner-call" }
+            : requiresRecordingDisclosureHybrid(
+                context.organization.country,
+                context.organization.businessState,
+                context.organization.recordingConsentMode,
+                session.callerPhone
+              );
           session.callerState = consentResult.callerState;
           session.consentReason = consentResult.reason;
           console.log(`[Recording] Consent: required=${consentResult.required}, callerState=${consentResult.callerState}, reason=${consentResult.reason}`);
@@ -3180,10 +3261,9 @@ wss.on("connection", (twilioWs) => {
           }
 
           // Pre-synthesize greeting in parallel too
-          const greeting = getGreeting(context.assistant, context.organization.name, {
-            isAfterHours,
-            afterHoursConfig,
-          });
+          const greeting = session.ownerMode
+            ? buildOwnerGreeting(session.ownerFirstName)
+            : getGreeting(context.assistant, context.organization.name, { isAfterHours, afterHoursConfig });
           const greetingAudioPromise = synthesizeSpeech(DEEPGRAM_API_KEY, stripMarkdown(greeting), {
             voice: session.deepgramVoice,
           }).catch((err) => {
@@ -3326,6 +3406,7 @@ wss.on("connection", (twilioWs) => {
  * @returns {object}
  */
 function buildLLMOptions(session, { includeTransfer = false } = {}) {
+  if (session.ownerMode) return { tools: buildOwnerTools() }; // SCRUM-587: the owner tool set, nothing else
   const tools = [];
   // Service types imply scheduling capability — enable calendar tools even without Cal.com
   const hasScheduling = session.calendarEnabled || session.serviceTypes?.length > 0;
@@ -3557,7 +3638,11 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
             holdStopped = true;
           }
           // Chain TTS calls so they play in order
-          ttsChain = ttsChain.then(async () => { await sendTTS(session, twilioWs, sentence); }).catch((err) => {
+          ttsChain = ttsChain.then(async () => {
+            await sendTTS(session, twilioWs, sentence);
+            // SCRUM-587: a reply sentence reached the caller — this turn produced speech.
+            if (session.ownerMode) noteAssistantSpeech(session);
+          }).catch((err) => {
             session.isSpeaking = false;
             console.error("[StreamTTS] Error sending sentence:", err.message);
           });
@@ -3570,6 +3655,10 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
         reply = result.content;
         // Wait for all queued TTS to finish playing
         await ttsChain;
+        // SCRUM-587: the reply has been spoken — one assistant turn on the owner
+        // confirmation gate's clock (an error apology or the loop-exhausted
+        // fallback is not a read-back, so neither path below counts one).
+        if (session.ownerMode) noteAssistantTurnEnd(session);
         const avgChunkLen = sentenceQueue.length > 0
           ? Math.round(sentenceQueue.reduce((s, c) => s + c.length, 0) / sentenceQueue.length)
           : 0;
@@ -3607,6 +3696,19 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
         for (const toolCall of toolCalls) {
           const fnName = toolCall.function.name;
           const fnArgs = parseToolArgs(toolCall, "ToolCall");
+
+          // SCRUM-587: owner tools bypass the customer guards (see the Gemini
+          // site). Parsed args (a bad JSON string arrives as {}); the runner's
+          // message AND data go back to the model as the tool message.
+          if (session.ownerMode) {
+            const ownerRet = await runOwnerToolCall(session, { name: fnName, args: fnArgs }, { executeToolCall, scheduleCache });
+            session.messages.push({
+              role: "tool",
+              tool_call_id: toolCall.id,
+              content: ownerRet.data !== undefined ? JSON.stringify({ message: ownerRet.message, data: ownerRet.data }) : ownerRet.message,
+            });
+            continue;
+          }
 
           // SCRUM-372: cancel-confirmation gate (classic pipeline — mirrors Gemini path)
           if (fnName === "cancel_appointment" && !session.confirmCancel(fnArgs || {}, Date.now())) {
@@ -3839,6 +3941,13 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
               destinationIndex: toolResult.destinationIndex || 0,
               startedAt: session.startedAt,
               language: session.language || "en",
+              // SCRUM-587: a transferred call is completed by finishTransferredCall
+              // (or a reconnect's cleanup), not by this session's cleanup — the
+              // PIN-gate stamp must ride along or a locked caller's
+              // owner_auth="locked" is lost. (Owner sessions never get here:
+              // their tool calls return above, and they have no transfer tool.)
+              ownerAuth: session.ownerAuth || null,
+              callType: session.ownerMode ? "owner" : null,
             });
 
             // Close Deepgram — stream will close when Twilio starts <Dial>
