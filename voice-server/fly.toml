@@ -3,8 +3,8 @@ primary_region = "syd"
 
 # SCRUM-579: server.js sets SHUTDOWN_GRACE_MS = 15s to drain active calls, but
 # Fly's default kill_timeout is 5s — the drain was being SIGKILLed a third of the
-# way through. That only bit on deploys while min_machines_running = 1 made
-# autostop unreachable; autostop is now routine, so give the drain room to finish.
+# way through. Every deploy hits it, and so does every autostop whenever
+# min_machines_running is 0 (below), so give the drain room to finish.
 kill_timeout = "20s"
 
 [env]
@@ -15,26 +15,27 @@ kill_timeout = "20s"
 [http_service]
   internal_port = 3001
   force_https = true
-  # SCRUM-579: scale to zero while idle. The demo warm-up (min_machines_running = 1)
-  # pinned a performance-1x/2GB machine up 24/7 at ~$39/mo with no traffic. Fly's
-  # proxy autostarts the machine on the inbound Twilio webhook and holds the request
-  # open while it boots. Measured wakes: ~6s with the image host-cached, but ~14.5s
-  # on the FIRST wake after a deploy (the host re-pulls the image).
+  # SCRUM-580: ALWAYS-ON while tradie outreach runs. Prospects ring Phondo's line
+  # back after a cold call and try the demo line or /demo, all served by this
+  # machine, and none of them should wait on a wake. Costs ~$39/mo (one
+  # performance-1x/2GB machine up 24/7, idle or not).
   #
-  # Twilio's read timeout for call HTTP requests is hard-capped at 15s, so that
-  # post-deploy wake leaves /twiml almost no budget: the call falls through to the
-  # fallback URL and the caller gets voicemail instead of the AI. ALWAYS deploy
-  # with ./voice-server/deploy.sh, which absorbs that wake for you — never a bare
+  # Going back to 0 (SCRUM-579, scale to zero while idle) is only safe while no
+  # outreach or marketing push is running. Fly's proxy then autostarts the machine
+  # on the inbound Twilio webhook and holds the request open while it boots.
+  # Measured wakes: ~6s with the image host-cached, but ~14.5s on the FIRST wake
+  # after a deploy (the host re-pulls the image). Twilio's read timeout for call
+  # HTTP requests is hard-capped at 15s, so that post-deploy wake leaves /twiml
+  # almost no budget: the call falls through to the fallback URL and the caller
+  # gets voicemail instead of the AI. Two surfaces wake the machine, not one:
+  # inbound Twilio calls AND the PUBLIC /demo page, whose browser WebSocket to
+  # /ws/test autostarts it the same way.
+  #
+  # Either way, ALWAYS deploy with ./voice-server/deploy.sh, never a bare
   # `fly deploy` (see docs/runbooks/voice-server.md).
-  #
-  # Two surfaces wake this machine, not one: inbound Twilio calls AND the PUBLIC
-  # /demo page, whose browser WebSocket to /ws/test autostarts it the same way.
-  # /demo is live and taking flyer-QR traffic today, so organic marketing visitors
-  # already pay a 6-15s "connecting" wait. Set this back to 1 (SCRUM-580) before
-  # the first pilot call or the next marketing push, whichever comes first.
   auto_stop_machines = 'stop'
   auto_start_machines = true
-  min_machines_running = 0
+  min_machines_running = 1
 
   [[http_service.checks]]
     interval = "15s"

@@ -2,8 +2,10 @@
 # Deploy the voice server, then force the expensive wake so a CALLER never pays it.
 # Use this instead of a bare `fly deploy`.
 #
-# SCRUM-579: the app runs with min_machines_running = 0, so the machine stops
-# when idle. Twilio's read timeout for call webhooks is hard-capped at 15s, and
+# SCRUM-579: whenever the app runs with min_machines_running = 0, the machine
+# stops when idle (see fly.toml: it is 1 while outreach runs, SCRUM-580, but this
+# script works the same either way). Twilio's read timeout for call webhooks is
+# hard-capped at 15s, and
 # a real call landing on a slow wake falls through to the fallback URL: the
 # caller hears "our system is temporarily unavailable" and a status: "failed"
 # row lands in the business's call log.

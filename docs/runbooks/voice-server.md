@@ -100,8 +100,9 @@ A rule sitting in **Normal (NoData)** for >30 days is more likely broken than
 healthy (that's how 2026-07-02 happened). Quarterly: open each rule, run its
 query over a window known to contain matching lines, confirm non-empty.
 
-**SCRUM-579 caveat**: with `min_machines_running = 0` the machine ships no Loki
-lines at all while it is stopped, so NoData is now the *normal* steady state and
+**SCRUM-579 caveat** (whenever `min_machines_running = 0`; it is 1 while outreach
+runs, SCRUM-580): the machine ships no Loki
+lines at all while it is stopped, so NoData is then the *normal* steady state and
 no longer distinguishes "rule broken" from "nobody called". The verification
 window must contain a **known call** (place a test call, note the time, query
 that window) — a merely recent window proves nothing.
@@ -175,7 +176,7 @@ see below for what that costs a caller.
   which happened: a wake under 10s was cached, so the pull was not absorbed.
   The same applies to the **public /demo page**: a browser opening `wss://…/ws/test`
   autostarts the machine exactly like Twilio does, so marketing visitors pay the
-  same wake — see the note under "Machine autostops when idle" below.
+  same wake — see the always-on note below.
 
 - **Verify before dialing**: a call placed mid-deploy lands on the OLD version
   (burned two eval sessions). Confirm the boot line
@@ -184,22 +185,22 @@ see below for what that costs a caller.
   `fly deploy -a phondo-voice -i <registry.fly.io/phondo-voice@sha256:…>`.
 - **Secrets**: `fly secrets set K=V -a phondo-voice` restarts machines
   immediately; add `--stage` to batch several and apply on next deploy.
-- Machine autostops when idle (~5 min). Measured wakes (2026-08-23, syd,
+- **Always-on while outreach runs (SCRUM-580)**: `min_machines_running = 1`
+  keeps the performance-1x/2GB machine up 24/7 (~$39/mo), because a caller should
+  never pay a 6s wake, let alone the post-deploy 14.5s one. Set it back to 0
+  (SCRUM-579) only while no pilot, outreach or marketing push is running; the
+  machine then autostops when idle (~5 min). Measured wakes (2026-08-23, syd,
   performance-1x/2GB): **~6s** with the image host-cached, **~14.5s** on the first
   wake after a deploy. The log line
   `Health check 'servicecheck-00-http-3001' … has failed` **once per
   cold start is EXPECTED** (first probe races the boot; `grace_period=30s`
   already suppresses status consequences; steady state must show
-  `1 passing`). Only investigate if it repeats after boot. Eliminating the
-  cold start entirely = `min_machines_running = 1` (~$39/mo for the always-on
-  performance-1x/2GB machine) — **SCRUM-580 makes that a gate before the first
-  pilot call OR the next marketing push**, whichever comes first, because a
-  caller should never pay a 6s wake, let alone the post-deploy 14.5s one.
+  `1 passing`). Only investigate if it repeats after boot.
 - **The public /demo page is exposed today, not at launch.**
   `src/app/(marketing)/demo/page.tsx` is live and taking flyer-QR traffic; its
   browser WebSocket to `/ws/test` wakes the machine the same way an inbound call
-  does. Every organic visitor after an idle period waits 6-15s on the
-  "connecting" state. Since SCRUM-579 an expiry at least fails loudly (the demo
+  does. While scaled to zero, every organic visitor after an idle period waits
+  6-15s on the "connecting" state. Since SCRUM-579 an expiry at least fails loudly (the demo
   token lives 120s and close code 4003 surfaces as an error) instead of
   rendering a blank "Call Complete", but the dead air itself remains.
 
