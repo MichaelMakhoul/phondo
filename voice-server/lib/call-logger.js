@@ -70,6 +70,8 @@ async function createCallRecord({ orgId, assistantId, phoneNumberId, callerPhone
  * @param {*} [fields.cleanedTranscript]
  * @param {*} [fields.actionTaken]
  * @param {*} [fields.pipelineFailover] - SCRUM-535: {from, to, reason, model} when the fallback provider served the call
+ * @param {"owner"|null} [fields.callType] - SCRUM-587: "owner" for an owner-assistant call → metadata.call_type
+ * @param {string|null} [fields.ownerAuth] - SCRUM-587: "verified"|"locked"|"failed"|"error" → metadata.owner_auth (also on customer calls that failed the PIN gate)
  */
 async function completeCallRecord(callId, {
   status,
@@ -91,6 +93,8 @@ async function completeCallRecord(callId, {
   cleanedTranscript,
   actionTaken,
   pipelineFailover,
+  callType,
+  ownerAuth,
 }) {
   const supabase = getSupabase();
 
@@ -125,6 +129,12 @@ async function completeCallRecord(callId, {
     // SCRUM-535: queryable record of which calls a Gemini outage touched —
     // Sentry has the alert, this has the audit trail.
     ...(pipelineFailover && { pipelineFailover }),
+    // SCRUM-587: PR B's call-completed route reads call_type from the DB row
+    // (never from the payload) — cleanupSession awaits this write before the
+    // webhook fires. owner_auth is also stamped on a CUSTOMER call that failed
+    // the PIN gate ("locked"/"failed") so PR B can email the owner on lockout.
+    ...(callType && { call_type: callType }),
+    ...(ownerAuth && { owner_auth: ownerAuth }),
   };
 
   if (Object.keys(metadataExtras).length > 0) {

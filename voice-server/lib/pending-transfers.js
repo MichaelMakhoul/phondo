@@ -74,9 +74,17 @@ async function finishTransferredCall(savedState, outcome) {
 
   const durationSeconds = Math.round((Date.now() - savedState.startedAt) / 1000);
 
-  // Run post-call analysis
+  // SCRUM-587: the owner fields saved at the hand-off (server.js). Owner
+  // sessions have no transfer tool, so callType is null on every call that
+  // gets here today; ownerAuth is what matters — a customer call that tripped
+  // the PIN lockout and was then transferred must still reach
+  // calls.metadata.owner_auth, or PR B never emails the owner.
+  const isOwnerCall = savedState.callType === "owner";
+  const ownerAuth = typeof savedState.ownerAuth === "string" ? savedState.ownerAuth : null;
+
+  // Run post-call analysis (never on an owner call — same rule as cleanupSession)
   let analysis = null;
-  if (transcript && durationSeconds > 5) {
+  if (!isOwnerCall && transcript && durationSeconds > 5) {
     try {
       analysis = await analyzeCallTranscript(transcript, { language: savedState.language });
     } catch (err) {
@@ -115,6 +123,10 @@ async function finishTransferredCall(savedState, outcome) {
           recordingDisclosurePlayed: false,
           recordingDisclosureFailed: false,
           transferAttempt,
+          // SCRUM-587: written BEFORE notifyCallCompleted (below) — PR B reads
+          // call_type / owner_auth from the row.
+          callType: isOwnerCall ? "owner" : null,
+          ownerAuth,
         });
         break;
       } catch (err) {
@@ -149,6 +161,9 @@ async function finishTransferredCall(savedState, outcome) {
         collectedData: analysis?.collectedData || undefined,
         successEvaluation: analysis?.successEvaluation || undefined,
         unansweredQuestions: analysis?.unansweredQuestions || undefined,
+        // SCRUM-587: informational (PR B reads the row) — absent unless set.
+        callType: isOwnerCall ? "owner" : undefined,
+        ownerAuth: ownerAuth || undefined,
       });
     } catch (err) {
       console.error("[PendingTransfer] Failed to notify call completed:", err);
