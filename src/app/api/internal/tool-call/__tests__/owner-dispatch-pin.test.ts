@@ -84,8 +84,8 @@ describe("owner_* authority (SCRUM-586)", () => {
       expect(alerts).toHaveLength(1);
       expect(alerts[0]).toContain("reason=owner-tool-refused");
       expect(alerts[0]).toContain("functionName=owner_list_appointments");
-      expect(alerts[0]).toContain("hasCallId=true");
-      expect(alerts[0]).toContain("ownerVerifiedType=undefined");
+      expect(alerts[0]).toContain("isProductionCall=true");
+      expect(alerts[0]).toContain("ownerVerified=false");
       expect(alerts[0]).not.toContain(ARG_CANARY);
       expect(alerts[0]).not.toContain("arguments");
       // Nothing else logged on the refusal carries the arguments either.

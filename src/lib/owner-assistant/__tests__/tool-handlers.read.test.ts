@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // SCRUM-586: owner read tools. Pins: org scoping in the SQL, active-only
-// statuses, org-local day bounds, ids in `data`, owner calls, spam calls and
-// summary-less calls filtered out of "messages", customer-written text flattened
+// statuses, org-local day bounds, ids in `data`, owner calls and spam calls
+// filtered out of "messages" (a summary-less customer call is still listed and
+// counted), honest counts when a list is capped, customer-written text flattened
 // and capped before it reaches the model, DB faults → errorResult (error:true).
 
 vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: vi.fn() }));
@@ -314,7 +315,7 @@ describe("owner_list_appointments", () => {
 });
 
 describe("owner_list_messages", () => {
-  it("returns pending callbacks (newest first, ≤10) and today's customer calls with a summary (≤10), skipping owner calls", async () => {
+  it("returns pending callbacks (newest first, ≤10) and today's customer calls (≤10), skipping owner calls but not summary-less ones", async () => {
     db.queues.callback_requests = [{
       data: [{ id: "cb-1", caller_name: "Bob", caller_phone: "+61400000001", reason: "quote for a bathroom", requested_time: null, urgency: "high", created_at: "2026-10-15T01:00:00+00:00" }],
       error: null,
@@ -335,6 +336,7 @@ describe("owner_list_messages", () => {
     expect(filter(cbq, "eq")).toEqual([["organization_id", ORG], ["status", "pending"]]);
     expect(filter(cbq, "order")).toEqual([["created_at", { ascending: false }]]);
     expect(filter(cbq, "limit")).toEqual([[10]]);
+    expect(filter(cbq, "select")[0][1]).toEqual({ count: "exact" });
     const cq = db.log.find((o) => o.table === "calls")!;
     expect(filter(cq, "eq")).toEqual([["organization_id", ORG]]);
     expect(filter(cq, "gte")).toEqual([["created_at", "2026-10-14T13:00:00.000Z"]]);
@@ -344,11 +346,16 @@ describe("owner_list_messages", () => {
         callback_id: "cb-1", caller_name: "Bob", caller_phone: "+61400000001", reason: "quote for a bathroom",
         requested: null, urgency: "high", received: "Thursday, October 15 at 12:00 PM",
       }],
-      calls: [{ call_id: "c-1", at: "Thursday, October 15 at 12:30 PM", caller_name: "Sue", caller_phone: "+61400000003", summary: "Blocked drain, wants Thursday" }],
+      calls: [
+        // A call with no summary (missed, too short, or analysis down) is still a customer who rang.
+        { call_id: "c-nosummary", at: "Thursday, October 15 at 1:00 PM", caller_name: null, caller_phone: "+61400000002", summary: "No message — short or missed call" },
+        { call_id: "c-1", at: "Thursday, October 15 at 12:30 PM", caller_name: "Sue", caller_phone: "+61400000003", summary: "Blocked drain, wants Thursday" },
+      ],
     });
-    expect(r.message).toContain("1 callback waiting");
+    expect(r.message).toContain("1 callback waiting:");
     expect(r.message).toContain("Bob");
-    expect(r.message).toContain("1 customer call today");
+    expect(r.message).toContain("2 customer calls today:");
+    expect(r.message).toContain("- Thursday, October 15 at 1:00 PM: Unknown caller (+61400000002) — No message — short or missed call");
     expect(r.message).not.toContain("Owner checked tomorrow");
   });
 
@@ -451,7 +458,7 @@ describe("owner_list_messages", () => {
     );
   });
 
-  it("keeps the newest 10 customer calls after dropping owner and summary-less calls, fetching a wider window first", async () => {
+  it("lists the newest 10 customer calls after dropping owner calls, fetching a wider window first, and counts them all", async () => {
     const customerCalls = Array.from({ length: 12 }, (_, i) => ({
       id: `c-${String(i + 1).padStart(2, "0")}`, // the DB returns newest first: c-01 is the newest
       caller_name: `Caller ${i + 1}`,
@@ -478,10 +485,92 @@ describe("owner_list_messages", () => {
     expect((r.data as any).calls.map((c: any) => c.call_id)).toEqual(
       customerCalls.slice(0, 10).map((c) => c.id)
     );
-    expect(r.message).toContain("10 customer calls today");
+    // 12 with a summary + 1 without, the owner's own call left out: 13, of which 10 are read out.
+    expect(r.message).toContain("13 customer calls today (newest 10 listed):");
   });
 
-  it("trims summaries and drops blank ones", async () => {
+  it("a day of only missed calls is not 'no customer calls': each is listed and counted", async () => {
+    db.queues.callback_requests = [{ data: [], error: null }];
+    db.queues.calls = [{
+      data: [
+        { id: "c-missed-1", caller_name: null, caller_phone: "+61400000011", summary: null, created_at: "2026-10-15T02:00:00+00:00", metadata: {} },
+        { id: "c-missed-2", caller_name: null, caller_phone: null, summary: null, created_at: "2026-10-15T01:00:00+00:00", metadata: null },
+      ],
+      error: null,
+    }];
+
+    const r = await handleOwnerListMessages(ORG);
+
+    expect(r.message).not.toMatch(/no customer calls/i);
+    expect(r.message).toContain("2 customer calls today:");
+    expect((r.data as any).calls).toEqual([
+      { call_id: "c-missed-1", at: "Thursday, October 15 at 1:00 PM", caller_name: null, caller_phone: "+61400000011", summary: "No message — short or missed call" },
+      { call_id: "c-missed-2", at: "Thursday, October 15 at 12:00 PM", caller_name: null, caller_phone: null, summary: "No message — short or missed call" },
+    ]);
+  });
+
+  it("a full 30-call fetch window says 'at least', since today may hold more calls than were fetched", async () => {
+    db.queues.callback_requests = [{ data: [], error: null }];
+    db.queues.calls = [{
+      data: Array.from({ length: 30 }, (_, i) => ({
+        id: `c-${i + 1}`, caller_name: `Caller ${i + 1}`, caller_phone: "+61400000100", summary: `Summary ${i + 1}`,
+        created_at: "2026-10-15T01:00:00+00:00",
+        // two of the fetched rows are the owner's own calls
+        metadata: i < 2 ? { call_type: "owner" } : {},
+      })),
+      error: null,
+    }];
+
+    const r = await handleOwnerListMessages(ORG);
+
+    expect(r.message).toContain("At least 28 customer calls today (newest 10 listed):");
+    expect((r.data as any).calls.map((c: any) => c.call_id)).toEqual(Array.from({ length: 10 }, (_, i) => `c-${i + 3}`));
+  });
+
+  it("29 fetched calls is the whole day: an exact count, no 'at least'", async () => {
+    db.queues.callback_requests = [{ data: [], error: null }];
+    db.queues.calls = [{
+      data: Array.from({ length: 29 }, (_, i) => ({
+        id: `c-${i + 1}`, caller_name: null, caller_phone: null, summary: `Summary ${i + 1}`, created_at: "2026-10-15T01:00:00+00:00", metadata: {},
+      })),
+      error: null,
+    }];
+    const r = await handleOwnerListMessages(ORG);
+    expect(r.message).toContain("\n29 customer calls today (newest 10 listed):");
+    expect(r.message).not.toMatch(/at least/i);
+  });
+
+  it("says how many callbacks are really waiting when more than ten are (count from the same query)", async () => {
+    db.queues.callback_requests = [{
+      data: Array.from({ length: 10 }, (_, i) => ({
+        id: `cb-${i + 1}`, caller_name: `Caller ${i + 1}`, caller_phone: "+61400000001", reason: "quote", requested_time: null,
+        urgency: "medium", created_at: "2026-10-15T01:00:00+00:00",
+      })),
+      error: null,
+      count: 14,
+    }];
+    db.queues.calls = [{ data: [], error: null }];
+
+    const r = await handleOwnerListMessages(ORG);
+
+    expect(r.message).toContain("14 callbacks waiting (newest 10 listed):");
+    expect((r.data as any).callbacks).toHaveLength(10);
+    expect(Object.keys(r.data as any)).toEqual(["callbacks", "calls"]); // the data contract is unchanged
+  });
+
+  it("falls back to the listed callbacks when the API sends no count", async () => {
+    db.queues.callback_requests = [{
+      data: [{ id: "cb-1", caller_name: "Bob", caller_phone: "+61400000001", reason: "quote", requested_time: null, urgency: "low", created_at: "2026-10-15T01:00:00+00:00" }],
+      error: null,
+      count: null,
+    }];
+    db.queues.calls = [{ data: [], error: null }];
+    const r = await handleOwnerListMessages(ORG);
+    expect(r.message).toContain("1 callback waiting:");
+    expect(r.message).not.toContain("listed)");
+  });
+
+  it("trims summaries; a blank one reads as a short or missed call", async () => {
     db.queues.callback_requests = [{ data: [], error: null }];
     db.queues.calls = [{
       data: [
@@ -494,6 +583,7 @@ describe("owner_list_messages", () => {
     const r = await handleOwnerListMessages(ORG);
 
     expect((r.data as any).calls).toEqual([
+      { call_id: "c-blank", at: "Thursday, October 15 at 12:00 PM", caller_name: "A", caller_phone: "+61400000001", summary: "No message — short or missed call" },
       { call_id: "c-pad", at: "Thursday, October 15 at 12:00 PM", caller_name: "B", caller_phone: "+61400000002", summary: "Leak under the sink" },
     ]);
   });
@@ -748,7 +838,7 @@ describe("customer-written text reaches the model flattened and capped", () => {
       expect(messageLines(r)).toHaveLength(3);
     });
 
-    it("drops a call whose summary is only invisible characters: there is nothing to relay", async () => {
+    it("a call whose summary is only invisible characters reads as a short or missed call", async () => {
       db.queues.callback_requests = [{ data: [], error: null }];
       db.queues.calls = [{
         data: [call({ id: "c-ghost", summary: "\u200b\u202e \n" }), call({ id: "c-real", summary: "Blocked drain" })],
@@ -757,11 +847,14 @@ describe("customer-written text reaches the model flattened and capped", () => {
 
       const r = await handleOwnerListMessages(ORG);
 
-      expect((r.data as any).calls.map((c: any) => c.call_id)).toEqual(["c-real"]);
-      expect(r.message).toContain("1 customer call today:");
+      expect((r.data as any).calls.map((c: any) => [c.call_id, c.summary])).toEqual([
+        ["c-ghost", "No message — short or missed call"],
+        ["c-real", "Blocked drain"],
+      ]);
+      expect(r.message).toContain("2 customer calls today:");
     });
 
-    it("still fills the ten-call cap from the calls after a dropped one", async () => {
+    it("reads out the newest ten calls, a summary-less one included, and counts the rest", async () => {
       db.queues.callback_requests = [{ data: [], error: null }];
       db.queues.calls = [{
         data: [
@@ -773,7 +866,8 @@ describe("customer-written text reaches the model flattened and capped", () => {
 
       const r = await handleOwnerListMessages(ORG);
 
-      expect((r.data as any).calls.map((c: any) => c.call_id)).toEqual(Array.from({ length: 10 }, (_, i) => `c-${i + 1}`));
+      expect((r.data as any).calls.map((c: any) => c.call_id)).toEqual(["c-ghost", ...Array.from({ length: 9 }, (_, i) => `c-${i + 1}`)]);
+      expect(r.message).toContain("12 customer calls today (newest 10 listed):");
     });
 
     it("shows a caller with no printable name or number as null in data and an unknown caller in the message", async () => {

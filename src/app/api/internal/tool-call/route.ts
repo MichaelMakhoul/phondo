@@ -206,11 +206,12 @@ export async function POST(request: Request) {
           reason: SENTRY_REASONS.OWNER_TOOL_REFUSED,
           level: "error",
           message: "owner tool called without owner authority",
+          // The two halves of the authority check, exactly as the gate evaluated them.
           extras: {
             functionName,
             organizationId,
-            hasCallId: Boolean(payload.callId),
-            ownerVerifiedType: typeof payload.ownerVerified,
+            isProductionCall,
+            ownerVerified: payload.ownerVerified === true,
           },
         });
         return NextResponse.json(

@@ -38,6 +38,7 @@ export function todayISO(timezone: string, now: Date = new Date()): string {
  * callers pass `todayISO()` output or a date they have already validated.
  */
 export function localDayRange(dateISO: string, timezone: string): { start: string; end: string } {
+  if (!isRealCalendarDate(dateISO)) throw new RangeError(`localDayRange: not a calendar day: ${dateISO}`);
   const start = new Date(ensureTimezoneOffset(`${dateISO}T00:00:00`, timezone));
   const end = new Date(ensureTimezoneOffset(`${addDaysISO(dateISO, 1)}T00:00:00`, timezone));
   return { start: start.toISOString(), end: end.toISOString() };

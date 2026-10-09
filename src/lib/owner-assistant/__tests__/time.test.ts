@@ -50,6 +50,12 @@ describe("todayISO", () => {
 });
 
 describe("localDayRange", () => {
+  it("throws a RangeError for a day that does not exist, instead of rolling it into the next month", () => {
+    expect(() => localDayRange("2026-02-30", TZ)).toThrow(RangeError);
+    expect(() => localDayRange("2026-13-01", TZ)).toThrow(RangeError);
+    expect(() => localDayRange("15/10/2026", TZ)).toThrow(RangeError);
+  });
+
   it("brackets the local day as UTC instants", () => {
     expect(localDayRange("2026-10-15", TZ)).toEqual({
       start: "2026-10-14T13:00:00.000Z",

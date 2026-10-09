@@ -92,6 +92,8 @@ export interface OwnerCallItem {
   at: string;
   caller_name: string | null;
   caller_phone: string | null;
+  /** The post-call summary, or "No message — short or missed call" when there is none
+   *  (a missed or very short call, or the post-call analysis failed). */
   summary: string;
 }
 export interface OwnerListMessagesData {
@@ -103,8 +105,10 @@ const DEFAULT_TZ = "Australia/Sydney";
 const TROUBLE = "I'm having trouble reaching the calendar right now. Try again in a moment.";
 const LIST_LIMIT = 20;
 const MESSAGES_LIMIT = 10;
-/** Calls fetched before the in-process owner/summary filter (≤ MESSAGES_LIMIT survive). */
+/** Calls fetched before the in-process owner-call filter (≤ MESSAGES_LIMIT are listed). */
 const CALLS_FETCH_LIMIT = 30;
+/** A customer call with no (printable) summary: missed, too short to analyse, or analysis failed. */
+const NO_SUMMARY = "No message — short or missed call";
 /**
  * Caps for customer-written text in tool results (see sanitizeCustomerText). Service
  * and practitioner names are org-controlled, but get the same treatment: it is free.
@@ -217,9 +221,9 @@ export async function handleOwnerListMessages(organizationId: string): Promise<T
   if (!tz) return errorResult(TROUBLE);
   const today = localDayRange(todayISO(tz), tz);
 
-  const { data: cbs, error: cbErr } = await (supabase as any)
+  const { data: cbs, error: cbErr, count: cbCount } = await (supabase as any)
     .from("callback_requests")
-    .select("id, caller_name, caller_phone, reason, requested_time, urgency, created_at")
+    .select("id, caller_name, caller_phone, reason, requested_time, urgency, created_at", { count: "exact" })
     .eq("organization_id", organizationId)
     .eq("status", "pending")
     .order("created_at", { ascending: false })
@@ -255,32 +259,40 @@ export async function handleOwnerListMessages(organizationId: string): Promise<T
     urgency: c.urgency,
     received: formatWhen(new Date(c.created_at), tz),
   }));
-  // The owner's own calls are not messages; a call without a (printable) summary has nothing to relay.
-  const customerCalls: OwnerCallItem[] = [];
-  for (const c of calls ?? []) {
-    if (customerCalls.length === MESSAGES_LIMIT) break;
-    if (isOwnerCallMetadata(c.metadata)) continue;
-    const summary = sanitizeCustomerText(c.summary, TEXT_MAX);
-    if (!summary) continue;
-    customerCalls.push({
-      call_id: c.id,
-      at: formatWhen(new Date(c.created_at), tz),
-      caller_name: sanitizeCustomerText(c.caller_name, NAME_MAX),
-      caller_phone: sanitizeCustomerText(c.caller_phone, PHONE_MAX),
-      summary,
-    });
-  }
+  // The list is capped; the count is the real number waiting.
+  const cbTotal = typeof cbCount === "number" ? cbCount : callbacks.length;
+
+  // The owner's own calls are not messages. Every other call today is: a missed or
+  // short call (or one whose post-call analysis failed) has no summary but is still a
+  // customer who rang, so it is listed and counted rather than dropped.
+  const customerRows = (calls ?? []).filter((c: any) => !isOwnerCallMetadata(c.metadata));
+  const customerCalls: OwnerCallItem[] = customerRows.slice(0, MESSAGES_LIMIT).map((c: any) => ({
+    call_id: c.id,
+    at: formatWhen(new Date(c.created_at), tz),
+    caller_name: sanitizeCustomerText(c.caller_name, NAME_MAX),
+    caller_phone: sanitizeCustomerText(c.caller_phone, PHONE_MAX),
+    summary: sanitizeCustomerText(c.summary, TEXT_MAX) ?? NO_SUMMARY,
+  }));
+  const callTotal = customerRows.length;
+  // A full fetch window means today may hold more calls than were fetched.
+  const callsSaturated = (calls ?? []).length >= CALLS_FETCH_LIMIT;
 
   const payload: OwnerListMessagesData = { callbacks, calls: customerCalls };
-  if (callbacks.length === 0 && customerCalls.length === 0) {
+  if (cbTotal === 0 && callTotal === 0 && !callsSaturated) {
     return { success: true, message: "No messages waiting and no customer calls yet today.", data: payload as unknown as Record<string, unknown> };
   }
   const lines: string[] = [];
-  lines.push(`${callbacks.length} ${callbacks.length === 1 ? "callback" : "callbacks"} waiting${callbacks.length ? ":" : "."}`);
+  lines.push(
+    `${cbTotal} ${cbTotal === 1 ? "callback" : "callbacks"} waiting` +
+      `${cbTotal > callbacks.length ? ` (newest ${callbacks.length} listed)` : ""}${callbacks.length ? ":" : "."}`
+  );
   for (const c of callbacks) {
     lines.push(`- ${c.caller_name} (${c.caller_phone}), ${c.urgency} urgency: ${c.reason}${c.requested ? ` — wants ${c.requested}` : ""} (received ${c.received})`);
   }
-  lines.push(`${customerCalls.length} customer ${customerCalls.length === 1 ? "call" : "calls"} today${customerCalls.length ? ":" : "."}`);
+  lines.push(
+    `${callsSaturated ? "At least " : ""}${callTotal} customer ${callTotal === 1 ? "call" : "calls"} today` +
+      `${callTotal > customerCalls.length ? ` (newest ${customerCalls.length} listed)` : ""}${customerCalls.length ? ":" : "."}`
+  );
   for (const c of customerCalls) {
     lines.push(`- ${c.at}: ${c.caller_name ?? "Unknown caller"}${c.caller_phone ? ` (${c.caller_phone})` : ""} — ${c.summary}`);
   }
