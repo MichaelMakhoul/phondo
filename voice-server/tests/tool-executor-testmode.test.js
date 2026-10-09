@@ -241,7 +241,7 @@ describe("structural — write-function set stays consistent", () => {
   it("every mutating calendar function is covered by the test-mode simulation suite above", () => {
     // If a future write tool is added to CALENDAR_WRITE_FUNCTIONS without a
     // matching zero-fetch test here, this pin fails so the gap is noticed.
-    const simulatedHere = ["book_appointment", "cancel_appointment", "reschedule_appointment", "update_appointment", "update_appointment_attendee"];
+    const simulatedHere = ["book_appointment", "cancel_appointment", "reschedule_appointment", "update_appointment", "update_appointment_attendee", "owner_reschedule_appointment", "owner_cancel_appointment"];
     assert.deepEqual(
       [...CALENDAR_WRITE_FUNCTIONS].sort(),
       [...simulatedHere].sort(),
@@ -262,5 +262,36 @@ describe("test mode — reads intentionally stay real", () => {
       makeTestContext()
     );
     assert.equal(fetchCalls, 1, "reads hit the real API so the LLM gets realistic data");
+  });
+});
+
+describe("test mode — owner writes are simulated too (SCRUM-587)", () => {
+  beforeEach(() => { fetchCalls = 0; });
+  it("owner_reschedule_appointment / owner_cancel_appointment never hit the internal API in test mode", async () => {
+    for (const fn of ["owner_reschedule_appointment", "owner_cancel_appointment"]) {
+      const held = await executeToolCall(fn, { appointment_id: "a1", new_datetime: "2026-10-15T09:00" }, makeTestContext());
+      assert.equal(fetchCalls, 0);
+      assert.equal(held.data.outcome, "needs_confirmation");
+      const done = await executeToolCall(fn, { appointment_id: "a1", new_datetime: "2026-10-15T09:00", confirmed: true }, makeTestContext());
+      assert.equal(fetchCalls, 0);
+      assert.equal(done.data.outcome, fn === "owner_cancel_appointment" ? "cancelled" : "rescheduled");
+      assert.equal(done.data.customer_notified, false);
+    }
+  });
+
+  it("mirrors PR B: only the JSON boolean true confirms, success follows the outcome, and owner mode changes nothing", async () => {
+    for (const fn of ["owner_reschedule_appointment", "owner_cancel_appointment"]) {
+      // ownerMode on a test session (never happens today) must still be fetch-free.
+      const context = makeTestContext({ ownerMode: true, callId: "call-1" });
+      const stringYes = await executeToolCall(fn, { appointment_id: "a1", new_datetime: "2026-10-15T09:00", confirmed: "true" }, context);
+      assert.equal(stringYes.data.outcome, "needs_confirmation", `${fn}: a string "true" is not a confirmation`);
+      assert.equal(stringYes.success, false);
+      assert.equal(stringYes.data.customer_notified, false);
+      const done = await executeToolCall(fn, { appointment_id: "a1", new_datetime: "2026-10-15T09:00", confirmed: true }, context);
+      assert.equal(done.success, true);
+      assert.match(done.message, /NOT been notified/);
+      assert.match(done.message, /test mode/i);
+      assert.equal(fetchCalls, 0, `${fn} must never reach the internal API in test mode`);
+    }
   });
 });
