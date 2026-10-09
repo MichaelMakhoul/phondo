@@ -475,4 +475,129 @@ describe("handleRetranscribe (SCRUM-550)", () => {
     assert.equal(sentry.events[0].level, "warning");
     assert.equal(sentry.events[0].reason, "retranscribe-failed");
   });
+
+  // ---- SCRUM-587: owner-assistant calls are never re-transcribed (spec §5) ----
+  // An owner call is the business owner on their own line: the transcript is
+  // their instructions (not customer speech to polish) and the summary is the
+  // deterministic owner summary, which an LLM re-read would overwrite. The
+  // marker is calls.metadata.call_type, stamped by completeCallRecord in the
+  // SAME atomic update as the transcript and ended_at — so it is on the row
+  // by the time any recording webhook can find a transcript worth replacing.
+  const OWNER_METADATA = { voice_provider: "self_hosted", call_type: "owner" };
+
+  it("SCRUM-587: an owner call is never re-transcribed (no Deepgram call, no page)", async () => {
+    const { deps, captured, sentry } = makeDeps({ row: { ...DEFAULT_ROW, metadata: { voice_provider: "self_hosted", call_type: "owner" } } });
+    const res = await handleRetranscribe({ callId: "c1", deps });
+    assert.deepEqual(res, { ok: true, retranscribed: false, reason: "owner-call" });
+    assert.equal(captured.transcribeArgs, null);
+    assert.equal(captured.applyReanalysis, null);
+    assert.equal(sentry.events.length, 0);
+  });
+
+  it("SCRUM-587: the owner guard precedes EVERY external call — storage, Deepgram, content-loss judge, analysis, write, retry", async () => {
+    const touched = [];
+    const { deps, captured, sentry } = makeDeps({
+      row: { ...DEFAULT_ROW, metadata: OWNER_METADATA },
+      // Spies return plausible values (not throws) so that, were the guard
+      // misplaced, the whole flow would run and `touched` would show how far.
+      transcribeRecording: async () => {
+        touched.push("deepgram");
+        return { utterances: [{ start: 0, channel: 0, transcript: "owner words" }], channelCount: 2 };
+      },
+      judgeContentLoss: async () => {
+        touched.push("judge");
+        return { contentLoss: false, note: null };
+      },
+      analyzeCallTranscript: async () => {
+        touched.push("analysis");
+        return { summary: "s", sentiment: "neutral" };
+      },
+    });
+    const supabase = deps.getSupabase();
+    const realStorage = supabase.storage;
+    supabase.storage = {
+      from: (bucket) => {
+        touched.push("storage");
+        return realStorage.from(bucket);
+      },
+    };
+    const res = await handleRetranscribe({ callId: "c1", deps });
+    assert.deepEqual(res, { ok: true, retranscribed: false, reason: "owner-call" });
+    assert.deepEqual(touched, [], "an owner call must reach no external service");
+    assert.equal(captured.judgeArgs, null);
+    assert.equal(captured.applyReanalysis, null);
+    assert.equal(captured.retryFn, null);
+    assert.equal(sentry.events.length, 0);
+  });
+
+  it("SCRUM-587: the owner marker short-circuits the row preconditions — no delayed retry, no page", async () => {
+    const sparseOwnerRows = {
+      "no stored recording": { recording_storage_path: null },
+      // No transcript and no ended_at is the shape that schedules the delayed
+      // self-retry (and pages if the call-end write never lands) for any other
+      // call; an owner row must skip all of that.
+      "empty transcript with no ended_at": { transcript: null, ended_at: null },
+    };
+    for (const [label, patch] of Object.entries(sparseOwnerRows)) {
+      const { deps, captured, sentry } = makeDeps({
+        row: { ...DEFAULT_ROW, metadata: OWNER_METADATA, ...patch },
+      });
+      const res = await handleRetranscribe({ callId: "c1", deps });
+      assert.deepEqual(res, { ok: true, retranscribed: false, reason: "owner-call" }, label);
+      assert.equal(captured.retryFn, null, `${label}: an owner call must not schedule the retry`);
+      assert.equal(captured.transcribeArgs, null, label);
+      assert.equal(sentry.events.length, 0, label);
+    }
+  });
+
+  it("SCRUM-587: RACE — an owner call whose call-end write lands before the delayed retry is skipped on the retry pass", async () => {
+    // First pass: the recording webhook beat the call-end write, so the row has
+    // no transcript, no ended_at and no call_type yet — the one delayed retry is
+    // scheduled exactly as for any call. completeCallRecord then writes
+    // transcript + ended_at + call_type in ONE update, before the retry fires.
+    const racingRow = { ...DEFAULT_ROW, transcript: null, ended_at: null };
+    const { deps, captured, sentry } = makeDeps({ row: racingRow });
+    const first = await handleRetranscribe({ callId: "c1", deps });
+    assert.equal(first.reason, "no-prior-transcript-retrying");
+    assert.equal(typeof captured.retryFn, "function");
+
+    racingRow.transcript = "User: what's on today\nAI: two jobs";
+    racingRow.ended_at = "2026-07-16T00:00:00Z";
+    racingRow.metadata = OWNER_METADATA;
+    captured.retryFn();
+    await new Promise((r) => setImmediate(r));
+
+    assert.equal(captured.transcribeArgs, null, "the retry pass must not call Deepgram");
+    assert.equal(captured.applyReanalysis, null, "the retry pass must not overwrite the owner summary");
+    assert.equal(sentry.events.length, 0);
+  });
+
+  // The marker is strict: the literal "owner" under the snake_case key
+  // `call_type`. NULL metadata, an absent key, any other value, a look-alike
+  // spelling, or owner_auth alone (a CUSTOMER call that failed the PIN gate
+  // carries owner_auth but no call_type) re-transcribe exactly as before.
+  const NOT_OWNER_METADATA = {
+    "NULL metadata": null,
+    "metadata without a call_type": { voice_provider: "self_hosted" },
+    "call_type NULL": { voice_provider: "self_hosted", call_type: null },
+    "another call_type": { voice_provider: "self_hosted", call_type: "customer" },
+    'a capitalised "Owner"': { voice_provider: "self_hosted", call_type: "Owner" },
+    'an upper-case "OWNER"': { voice_provider: "self_hosted", call_type: "OWNER" },
+    'a padded " owner"': { voice_provider: "self_hosted", call_type: " owner" },
+    'a look-alike "owner_test"': { voice_provider: "self_hosted", call_type: "owner_test" },
+    'an array ["owner"]': { voice_provider: "self_hosted", call_type: ["owner"] },
+    "owner_auth alone (a customer call that failed the PIN gate)": {
+      voice_provider: "self_hosted",
+      owner_auth: "locked",
+    },
+  };
+  for (const [label, metadata] of Object.entries(NOT_OWNER_METADATA)) {
+    it(`SCRUM-587: ${label} is not an owner call — re-transcribes as today`, async () => {
+      const { deps, captured } = makeDeps({ row: { ...DEFAULT_ROW, metadata } });
+      const res = await handleRetranscribe({ callId: "c1", deps });
+      assert.deepEqual(res, { ok: true, retranscribed: true });
+      assert.ok(captured.transcribeArgs, "Deepgram must run for a non-owner call");
+      assert.ok(captured.applyReanalysis, "the re-analysis must be applied for a non-owner call");
+    });
+  }
 });
