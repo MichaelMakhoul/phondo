@@ -37,6 +37,7 @@ import {
   clinikoCancelExternal,
 } from "@/lib/calendar/cliniko-booking";
 import { reconcileClinikoOrg } from "@/lib/calendar/cliniko-reconcile";
+import { serviceTypeQuestion, isServiceTypeQuestion } from "@/lib/calendar/service-type-question";
 import {
   handleCheckAvailability,
   handleBookAppointment,
@@ -49,8 +50,11 @@ const CTX = { client: {}, businessId: "b-1", integrationId: "int-1", organizatio
 const OK = { kind: "ok", ctx: CTX } as never;
 const NONE = { kind: "none" } as never;
 
-/** Permissive table-aware admin mock: singles resolve per-table rows, lists resolve []. */
-function fakeAdmin(rows: Record<string, Record<string, unknown> | null> = {}) {
+/** Permissive table-aware admin mock: singles resolve per-table rows, lists resolve per-table lists (default []). */
+function fakeAdmin(
+  rows: Record<string, Record<string, unknown> | null> = {},
+  lists: Record<string, unknown[]> = {}
+) {
   const from = (table: string) => {
     const builder: Record<string, unknown> = {};
     Object.assign(builder, {
@@ -70,7 +74,7 @@ function fakeAdmin(rows: Record<string, Record<string, unknown> | null> = {}) {
       limit: () => builder,
       single: async () => ({ data: rows[table] ?? null, error: null }),
       maybeSingle: async () => ({ data: rows[table] ?? null, error: null }),
-      then: (resolve: (v: unknown) => void) => resolve({ data: [], error: null }),
+      then: (resolve: (v: unknown) => void) => resolve({ data: lists[table] ?? [], error: null }),
     });
     return builder;
   };
@@ -99,6 +103,17 @@ describe("check_availability dispatch", () => {
     expect(clinikoCheckAvailability).not.toHaveBeenCalled();
     // Built-in path: no service types, no date -> asks for the date.
     expect(res.message).toContain("What date");
+  });
+
+  it("built-in path asks which type with the shared question when the org has types and none was given", async () => {
+    vi.mocked(getActiveClinikoIntegration).mockResolvedValue(NONE);
+    vi.mocked(createAdminClient).mockReturnValue(
+      fakeAdmin({}, { service_types: [{ id: "st-1", name: "Check-up", duration_minutes: 30 }] }) as never
+    );
+    const res = await handleCheckAvailability(ORG, { date: "2026-07-07" });
+    // SCRUM-586: the owner assistant recognises this reply as a clarification, not times.
+    expect(res).toEqual({ success: true, message: serviceTypeQuestion("- Check-up (30 min)") });
+    expect(isServiceTypeQuestion(res.message)).toBe(true);
   });
 });
 

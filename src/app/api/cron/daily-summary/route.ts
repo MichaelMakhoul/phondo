@@ -7,6 +7,7 @@ import {
   type NotificationSendResult,
 } from "@/lib/notifications/notification-service";
 import * as Sentry from "@sentry/nextjs";
+import { isOwnerCallMetadata } from "@/lib/owner-assistant/owner-call";
 
 // SCRUM-447: every org × up to 3 lookback days of sequential queries + email
 // sends. Vercel's default function duration would cut the run mid-loop —
@@ -96,7 +97,7 @@ export async function GET(req: NextRequest) {
   // send yesterday + recover day-3 in one run).
   let sent = 0; // yesterday's summaries
   let recovered = 0; // older lookback days whose summary finally went out
-  let skipped = 0; // zero-call org-days + sends skipped by preference (every channel off)
+  let skipped = 0; // zero-customer-call org-days + sends skipped by preference (every channel off)
   let deduped = 0; // idempotent skips (yesterday's claim already held)
   let failed = 0;
 
@@ -146,7 +147,7 @@ export async function GET(req: NextRequest) {
         // Query calls for this local date in the org's timezone
         const { data: calls, error: callsError } = await (supabase as any)
           .from("calls")
-          .select("id, status, is_spam, duration_seconds, action_taken")
+          .select("id, status, is_spam, duration_seconds, action_taken, metadata")
           .eq("organization_id", org.id)
           .gte("created_at", start)
           .lt("created_at", end);
@@ -157,24 +158,27 @@ export async function GET(req: NextRequest) {
           continue;
         }
 
-        const allCalls = calls ?? [];
-        if (allCalls.length === 0) {
+        // SCRUM-586: the owner ringing their own assistant is not a customer call.
+        // Filtered in JS on purpose: a SQL metadata->>'call_type' <> 'owner' would drop
+        // NULL-metadata rows (the mock DB can't catch that regression).
+        const customerCalls = (calls ?? []).filter((c: any) => !isOwnerCallMetadata(c.metadata));
+        if (customerCalls.length === 0) {
           skipped++;
           continue;
         }
 
-        const totalCalls = allCalls.length;
-        const answeredCalls = allCalls.filter(
+        const totalCalls = customerCalls.length;
+        const answeredCalls = customerCalls.filter(
           (c: any) => c.status === "completed" && !c.is_spam
         ).length;
-        const missedCalls = allCalls.filter(
+        const missedCalls = customerCalls.filter(
           (c: any) => c.status === "no-answer" || c.status === "busy"
         ).length;
-        const appointmentsBooked = allCalls.filter(
+        const appointmentsBooked = customerCalls.filter(
           (c: any) => c.action_taken === "appointment_booked"
         ).length;
 
-        const completedWithDuration = allCalls.filter(
+        const completedWithDuration = customerCalls.filter(
           (c: any) => c.status === "completed" && c.duration_seconds != null
         );
         const averageCallDuration =
@@ -287,7 +291,7 @@ export async function GET(req: NextRequest) {
   }
 
   console.log(
-    `[DailySummary] Sent ${sent} summaries, ${recovered} recovered (missed days), ${skipped} skipped (no calls), ${deduped} deduped (already sent), ${failed} failed`
+    `[DailySummary] Sent ${sent} summaries, ${recovered} recovered (missed days), ${skipped} skipped (no customer calls), ${deduped} deduped (already sent), ${failed} failed`
   );
 
   return NextResponse.json({ sent, recovered, skipped, deduped, failed });

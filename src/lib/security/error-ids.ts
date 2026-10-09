@@ -236,6 +236,32 @@ export const SENTRY_REASONS = {
    *  number, so the number was released and provisioning failed. Recurring
    *  hits mean new numbers cannot be made call-ready. */
   PHONE_NUMBER_WEBHOOK_CONFIG_FAILED: "phone-number-webhook-config-failed",
+
+  // ─── reschedule legs + owner assistant (SCRUM-586) ──────────────────
+  /** A reschedule leg was orphaned: the old booking was freed (or its free
+   *  committed behind an error), no new leg exists, AND restoring the old one
+   *  failed — the customer now has no active booking. Raised by
+   *  performRescheduleLeg for EVERY caller: the `source` extra says which
+   *  (dashboard_reschedule / owner_voice) and the `bug` tag keeps the caller's
+   *  page identity. Fix by hand in the dashboard: restore the old booking or
+   *  rebook it. */
+  RESCHEDULE_LEG_ORPHANED: "reschedule-leg-orphaned",
+
+  /** The internal tool-call route refused an owner_* tool: the request carried no
+   *  envelope owner authority (`ownerVerified: true` from the voice server's PIN
+   *  gate) or was not a production call. Customer sessions are never offered these
+   *  tools, so any hit is a security signal (forged or prompt-injected call, or a
+   *  voice-server bug) — check the call and the voice-server logs. */
+  OWNER_TOOL_REFUSED: "owner-tool-refused",
+
+  /** The owner-line PIN was locked (too many wrong PINs) but the alert email to
+   *  the owner could not be sent — the owner won't know someone is guessing
+   *  their PIN. Error level: a security notification was wanted and nothing
+   *  went out. The call-completed route still answers 200; no stamp is written,
+   *  so a reprocessed call may retry the email (at most one per org per 15
+   *  minutes). Check the call-completed logs for the cause and tell the owner
+   *  by hand. */
+  OWNER_PIN_LOCK_EMAIL_FAILED: "owner-pin-lock-email-failed",
 } as const;
 
 export type SentryReason = (typeof SENTRY_REASONS)[keyof typeof SENTRY_REASONS];

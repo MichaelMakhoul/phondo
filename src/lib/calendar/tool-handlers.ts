@@ -32,6 +32,7 @@ import {
 } from "@/lib/calendar/cliniko-booking";
 import { reconcileClinikoOrg } from "@/lib/calendar/cliniko-reconcile";
 import { generateConfirmationCode } from "@/lib/calendar/confirmation-code";
+import { serviceTypeQuestion } from "@/lib/calendar/service-type-question";
 import { namesMatch } from "@/lib/calendar/name-match";
 import { validateOrgScopedRefs } from "@/lib/calendar/validate-org-scoped-refs";
 import { MAX_BOOKING_HORIZON_MS } from "@/lib/calendar/appointment-lifecycle";
@@ -79,7 +80,7 @@ export interface TrustedCallContext {
 // dashboard reschedule path). Re-exported here so existing imports/tests are stable.
 export { resolveRescheduleIdentity };
 
-interface ToolResult {
+export interface ToolResult {
   success: boolean;
   message: string;
   data?: Record<string, unknown>;
@@ -102,7 +103,7 @@ interface ToolResult {
  * business non-success. Callers that catch an exception should also capture it
  * to Sentry for the exact cause.
  */
-function errorResult(message: string): ToolResult {
+export function errorResult(message: string): ToolResult {
   return { success: false, error: true, message };
 }
 
@@ -1339,10 +1340,7 @@ export async function handleCheckAvailability(
   } else if (cachedServiceTypes.length > 0) {
     // No service_type_id — org has service types configured, prompt caller to pick
     const list = cachedServiceTypes.map(st => `- ${st.name} (${st.duration_minutes} min)`).join("\n");
-    return {
-      success: true,
-      message: `Before I check availability, what type of appointment would you like to book?\n\nAvailable appointment types:\n${list}\n\nPlease ask the caller which type they'd like to book.`,
-    };
+    return { success: true, message: serviceTypeQuestion(list) };
   }
 
   if (!date) {
@@ -1819,7 +1817,8 @@ export async function handleCancelAppointment(
   };
 }
 
-async function cancelSingleAppointment(
+// SCRUM-586: exported for the owner assistant's owner_cancel_appointment.
+export async function cancelSingleAppointment(
   supabase: any,
   organizationId: string,
   appointment: any,
@@ -1828,7 +1827,17 @@ async function cancelSingleAppointment(
   // marked `rescheduled` (a distinct lifecycle state, not a cancellation) and must
   // NOT send the caller a "your appointment is cancelled" SMS for what is a move —
   // the new booking's confirmation already covers it.
-  opts?: { terminalStatus?: "cancelled" | "rescheduled"; suppressSms?: boolean }
+  // SCRUM-586: `requireActive` (owner assistant only; other callers unchanged) makes
+  // the status write org-scoped and conditional on the row still being
+  // confirmed/pending, so a move or cancel that landed after the caller's lookup is
+  // never overwritten. 0 rows → `{ success:false, data:{ notActive:true } }`, a
+  // business non-success: nothing cancelled, refreshed or texted.
+  // NOTE: requireActive is checked at the LOCAL write, i.e. AFTER the Cal.com /
+  // Cliniko cancellation below has already gone out. The owner path never gets here
+  // with an external booking (it refuses those first); a future caller combining
+  // requireActive with an external provider must handle a 0-row result whose
+  // external cancel already happened.
+  opts?: { terminalStatus?: "cancelled" | "rescheduled"; suppressSms?: boolean; requireActive?: boolean }
 ): Promise<ToolResult> {
   try {
     // For Cal.com appointments, try external cancellation first
@@ -1876,16 +1885,30 @@ async function cancelSingleAppointment(
 
     // Update DB status to the requested terminal state (default: cancelled). Either
     // way the row leaves the confirmed/pending allowlist, so its slot frees.
-    const { error: cancelDbError } = await (supabase as any)
+    let cancelWrite = (supabase as any)
       .from("appointments")
       .update({ status: opts?.terminalStatus ?? "cancelled" })
       .eq("id", appointment.id);
+    if (opts?.requireActive) {
+      cancelWrite = cancelWrite
+        .eq("organization_id", organizationId)
+        .in("status", ["confirmed", "pending"])
+        .select("id");
+    }
+    const { data: cancelledRows, error: cancelDbError } = await cancelWrite;
 
     if (cancelDbError) {
       console.error("Failed to update appointment status:", cancelDbError);
       return errorResult(
         "I'm having trouble cancelling the appointment right now. Would you like me to have someone call you back to help with this?"
       );
+    }
+    if (opts?.requireActive && (!Array.isArray(cancelledRows) || cancelledRows.length === 0)) {
+      return {
+        success: false,
+        message: "That appointment is no longer active, so nothing was cancelled.",
+        data: { notActive: true },
+      };
     }
 
     // Invalidate voice server schedule cache after the response (SCRUM-410: bare

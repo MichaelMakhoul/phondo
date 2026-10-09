@@ -7,12 +7,18 @@ import {
   sendMissedCallNotification,
   sendFailedCallNotification,
   sendUnsuccessfulCallNotification,
+  sendOwnerPinLockedNotification,
 } from "@/lib/notifications/notification-service";
 import { classifyCallNotification } from "@/lib/notifications/classify-call";
 import { humanizeEndedReason } from "@/lib/notifications/humanize-ended-reason";
 import { sendMissedCallTextBack } from "@/lib/sms/caller-sms";
 import { deliverWebhooks } from "@/lib/integrations/webhook-delivery";
-import { withRateLimit } from "@/lib/security/rate-limiter";
+import { withRateLimit, rateLimitDistributed } from "@/lib/security/rate-limiter";
+import { maskPhoneForOwner } from "@/lib/owner-assistant/mask-phone";
+import { formatOwnerLockTime } from "@/lib/owner-assistant/lock-email-time";
+import { isOwnerCallMetadata } from "@/lib/owner-assistant/owner-call";
+import { pageSentry } from "@/lib/observability/page-sentry";
+import { SENTRY_REASONS } from "@/lib/security/error-ids";
 
 function verifyInternalSecret(request: Request): boolean {
   const secret = process.env.INTERNAL_API_SECRET;
@@ -36,7 +42,7 @@ interface CallCompletedPayload {
   organizationId: string;
   // Null when the phone number had no assistant assigned (kill-switch
   // fallback / mid-onboarding / etc.) — the webhook still fires for billing
-  // and notification purposes, just without the assistant-name lookup at line 261.
+  // and notification purposes, just without the assistant-name lookup at step 5.
   assistantId: string | null;
   callerPhone: string;
   status: string;
@@ -48,6 +54,134 @@ interface CallCompletedPayload {
   collectedData?: Record<string, unknown>;
   successEvaluation?: string;
   unansweredQuestions?: string[];
+}
+
+/**
+ * SCRUM-586: stamp calls.metadata.owner_lock_emailed_at once the lockout email
+ * has gone out, so a reprocessed call is not emailed twice. Best-effort and
+ * never throws — the email is already sent, and a failed stamp must neither turn
+ * that into a failure nor take the rest of the route down with it.
+ *
+ * Re-reads calls.metadata immediately before the write and merges ONLY this key.
+ * The route's first read is stale by now (the spam merge, and the voice server's
+ * own post-call writers, have touched the row since) and writing that copy back
+ * would silently undo them. If the re-read fails no stamp is written at all: the
+ * cost is a possible repeat email for a reprocessed call, never lost call data.
+ */
+async function stampOwnerLockEmailed(
+  supabase: ReturnType<typeof createAdminClient>,
+  callId: string
+): Promise<void> {
+  const stampFailed = "[Internal] Could not stamp owner_lock_emailed_at — a reprocessed call could repeat the lockout email:";
+  try {
+    const { data: fresh, error: readError } = await (supabase as any)
+      .from("calls")
+      .select("metadata")
+      .eq("id", callId)
+      .single();
+    if (readError) {
+      console.error(stampFailed, { callId, stage: "re-read", error: readError });
+      return;
+    }
+    const { error: writeError } = await (supabase as any)
+      .from("calls")
+      .update({ metadata: { ...(fresh?.metadata || {}), owner_lock_emailed_at: new Date().toISOString() } })
+      .eq("id", callId);
+    if (writeError) {
+      console.error(stampFailed, { callId, stage: "write", error: writeError });
+    }
+  } catch (err) {
+    console.error(stampFailed, { callId, stage: "unexpected", error: err });
+  }
+}
+
+/**
+ * SCRUM-586: the org's IANA timezone for the lockout email's "when", read here
+ * only because the spam analysis (step 1) did not supply one — it never looked
+ * (no caller number), its lookup failed, or the column is empty. Never throws: a
+ * failed read is logged and returns undefined, and the email then reads in the
+ * default zone (formatOwnerLockTime), never the server's. Dropping a security
+ * alert over a timezone would be the worse failure.
+ */
+async function readOrgTimezoneOnce(
+  supabase: ReturnType<typeof createAdminClient>,
+  organizationId: string
+): Promise<string | undefined> {
+  const failed = "[Internal] Could not read the org timezone for the PIN-lockout email — it will read in the default zone:";
+  try {
+    const { data, error } = await (supabase as any)
+      .from("organizations")
+      .select("timezone")
+      .eq("id", organizationId)
+      .single();
+    if (error) {
+      console.error(failed, { organizationId, error });
+      return undefined;
+    }
+    return data?.timezone || undefined;
+  } catch (err) {
+    console.error(failed, { organizationId, error: err });
+    return undefined;
+  }
+}
+
+/**
+ * SCRUM-586: email the business owner that their assistant-line PIN is locked,
+ * then stamp the call so a reprocessed call does not repeat it. Never throws.
+ *
+ * - "sent"      — the owner was emailed (and the call stamped, best-effort)
+ * - "skipped"   — nothing to send (the public demo org has no owner); NOT stamped
+ * - "throttled" — another lockout for this org was emailed <15 min ago; NOT sent,
+ *   NOT stamped
+ * - "failed"    — the owner could not be emailed. This pages [ALERT:error]: they
+ *   do not know someone is guessing their PIN. NOT stamped, so it can still go.
+ *
+ * Only the masked number reaches the sender — never the raw caller number, and
+ * the PIN is never in the voice server's payload to begin with. The time is when
+ * the locked call STARTED (`startedAt`: this route runs after the call ends, and the
+ * owner matches the email against their phone's call log), and it reaches the sender
+ * already written in the org's zone ("Thursday 15 October at 3:04 pm"): the zone the
+ * spam analysis read if there was one (`knownTimezone`), else one read of
+ * organizations.timezone; an empty or unusable zone reads as Sydney.
+ */
+async function emailOwnerPinLockOnce(
+  supabase: ReturnType<typeof createAdminClient>,
+  call: {
+    callId: string;
+    organizationId: string;
+    callerPhone: string | undefined;
+    knownTimezone: string | undefined;
+    startedAt: Date;
+  }
+): Promise<"sent" | "skipped" | "throttled" | "failed"> {
+  const { callId, organizationId, callerPhone, knownTimezone, startedAt } = call;
+  let outcome: "sent" | "skipped";
+  try {
+    const rl = await rateLimitDistributed(supabase, organizationId, "owner-lock-email", "ownerLockEmail");
+    if (!rl.allowed) {
+      console.warn("[Internal] PIN-lockout email throttled — at most one per org per 15 minutes:", { organizationId, callId });
+      return "throttled";
+    }
+    const timezone = knownTimezone || (await readOrgTimezoneOnce(supabase, organizationId));
+    outcome = await sendOwnerPinLockedNotification({
+      organizationId,
+      callId,
+      callerPhoneMasked: maskPhoneForOwner(callerPhone || ""),
+      localTime: formatOwnerLockTime(startedAt, timezone),
+    });
+  } catch (err) {
+    pageSentry({
+      service: "next-api",
+      reason: SENTRY_REASONS.OWNER_PIN_LOCK_EMAIL_FAILED,
+      level: "error",
+      err,
+      message: "owner PIN lockout email failed — the owner does not know their PIN was locked",
+      extras: { organizationId, callId },
+    });
+    return "failed";
+  }
+  if (outcome === "sent") await stampOwnerLockEmailed(supabase, callId);
+  return outcome;
 }
 
 /**
@@ -103,16 +237,48 @@ export async function POST(request: Request) {
 
   const supabase = createAdminClient();
 
+  // SCRUM-586: read the call's stored metadata up front, for the owner-call and
+  // PIN-lockout decisions only (the spam merge at step 2 re-reads right before
+  // its write — this copy is stale by then). An OWNER call — the business owner
+  // ringing their own assistant — is marked by the voice server's
+  // completeCallRecord as metadata.call_type = 'owner' BEFORE this route is
+  // called (see the ordering note at step 2). It is not a customer interaction:
+  // no spam scoring, no missed/failed/unsuccessful alert (that would email the
+  // owner about their own call), no caller text-back, no call.completed /
+  // call.missed webhook. Billing still counts it. Read from the DB, never the
+  // payload. A failed read falls back to the customer pipeline — dropping a
+  // customer alert is the worse failure. The same row carries the PIN outcome
+  // (metadata.owner_auth) read for the lockout email at step 4c.
+  let storedMetadata: Record<string, unknown> | null = null;
+  if (callId) {
+    const { data: existingCall, error: fetchError } = await (supabase as any)
+      .from("calls")
+      .select("metadata")
+      .eq("id", callId)
+      .single();
+    if (fetchError) {
+      console.error("[Internal] Failed to fetch existing call metadata — owner-call and PIN-lockout-email checks skipped:", {
+        callId, error: fetchError,
+      });
+    } else {
+      storedMetadata = (existingCall?.metadata || {}) as Record<string, unknown>;
+    }
+  }
+  const isOwnerCall = isOwnerCallMetadata(storedMetadata);
+
   // 1. Run spam analysis
   let spamAnalysis = null;
   let spamAnalysisFailed = false;
-  if (callerPhone) {
+  // The org's timezone as the spam analysis' org lookup read it (undefined when that
+  // lookup did not run or failed, or the column is empty) — hoisted so the PIN-lockout
+  // email at step 4c can quote the owner's local time without a second query.
+  let orgTimezone: string | undefined;
+  if (callerPhone && !isOwnerCall) {
     // The timing heuristic needs the ORG's timezone (scoring "unusual hours"
     // in server-UTC penalized every AU business-hours call — SCRUM-418), and
     // phone-format analysis needs the org's country (defaulting to US rules
     // mis-scored AU numbers). Fail-soft: on lookup error both stay undefined —
     // the timing signal is dropped and country falls back to US.
-    let orgTimezone: string | undefined;
     let orgCountry: string | undefined;
     const { data: orgRow, error: orgError } = await (supabase as any)
       .from("organizations")
@@ -171,6 +337,11 @@ export async function POST(request: Request) {
   // after await completeCallRecord() in server.js cleanupSession(), so metadata
   // is already written by the time this route runs. Do NOT parallelize those calls.
   if (callId && spamAnalysis) {
+    // Read the metadata RIGHT before the write, never reuse the hoisted copy: the
+    // spam analysis ran in between, and another post-call writer (e.g. the voice
+    // server's re-transcription stamping transcript_source) may have merged into
+    // the same JSON since — writing the stale copy back would silently undo it.
+    // (SCRUM-586 final review; same pattern as stampOwnerLockEmailed.)
     const { data: existingCall, error: fetchError } = await (supabase as any)
       .from("calls")
       .select("metadata")
@@ -288,7 +459,7 @@ export async function POST(request: Request) {
   // one channel was attempted and succeeded, "skipped" when every channel was
   // disabled by preference (previously misreported here as "sent").
   let notificationStatus: "sent" | "skipped" | "failed" = "skipped";
-  if (!spamAnalysis?.isSpam) {
+  if (!spamAnalysis?.isSpam && !isOwnerCall) {
     try {
       if (notificationKind === "failed") {
         notificationStatus = await sendFailedCallNotification({
@@ -357,44 +528,79 @@ export async function POST(request: Request) {
     }
   }
 
-  // 5. Deliver webhooks to user integrations
-  let assistantName: string | null = null;
-  if (assistantId) {
-    const { data: assistantRecord, error: assistantError } = await (supabase as any)
-      .from("assistants")
-      .select("name")
-      .eq("id", assistantId)
-      .single();
-    if (assistantError) {
-      console.error("[Internal] Failed to look up assistant name for webhook:", { assistantId, error: assistantError });
-    }
-    if (assistantRecord) assistantName = assistantRecord.name;
+  // 4c. SCRUM-586: PIN lockout email. A caller from the registered owner mobile
+  // who tripped the owner-line lockout (too many wrong PINs; the owner saving a
+  // new PIN clears it) CONTINUED AS A CUSTOMER call — call_type is not 'owner',
+  // so every step above and below applies to it unchanged. Additionally the
+  // owner is emailed ONCE per locked call, deduped by metadata.owner_lock_emailed_at
+  // (stamped after a successful send), and at most once per org per 15 minutes —
+  // a guesser who keeps redialling is throttled, not emailed per call.
+  //
+  // It goes out HERE, after the step-2 write, never between that write's metadata
+  // read and the write itself: a Resend round trip in that gap would stretch the
+  // read-modify-write window to ~1 s. It is not spam-gated (a PIN guesser's call
+  // can look like spam and the owner should still hear about it), and a failure
+  // pages and never fails the route. Reads the DB row (storedMetadata), never the
+  // payload. The email quotes the time the call STARTED (now minus its duration) in
+  // the ORG's timezone (the one step 1 read, else one read here), never the server's
+  // — see emailOwnerPinLockOnce.
+  let ownerLockEmail: "sent" | "skipped" | "throttled" | "failed" | undefined;
+  if (callId && storedMetadata?.owner_auth === "locked" && !storedMetadata.owner_lock_emailed_at) {
+    ownerLockEmail = await emailOwnerPinLockOnce(supabase, {
+      callId,
+      organizationId,
+      callerPhone,
+      knownTimezone: orgTimezone,
+      startedAt: new Date(Date.now() - durationSeconds * 1000),
+    });
   }
 
-  // Map "failed" status to "call.missed" webhook event since there is no
-  // "call.failed" event type — from the customer's perspective, a failed
-  // call is functionally equivalent to a missed one.
-  const webhookEvent = (status === "failed" || status === "missed")
-    ? "call.missed" as const
-    : "call.completed" as const;
-
-  // after() so webhook delivery survives Vercel's post-response freeze (SCRUM-410).
-  runAfterResponse(async () => {
-    try {
-      await deliverWebhooks(organizationId, webhookEvent, {
-        callId: callId || "unknown",
-        caller: callerPhone || "Unknown",
-        transcript,
-        duration: durationSeconds,
-        assistantName,
-        outcome: status,
-      });
-    } catch (err) {
-      console.error("[Internal] Webhook delivery failed:", {
-        organizationId, callId: callId || "unknown", webhookEvent, error: err,
-      });
+  // 5. Deliver webhooks to user integrations
+  // SCRUM-586: an owner call is not a customer event for integrations.
+  if (!isOwnerCall) {
+    let assistantName: string | null = null;
+    if (assistantId) {
+      const { data: assistantRecord, error: assistantError } = await (supabase as any)
+        .from("assistants")
+        .select("name")
+        .eq("id", assistantId)
+        .single();
+      if (assistantError) {
+        console.error("[Internal] Failed to look up assistant name for webhook:", { assistantId, error: assistantError });
+      }
+      if (assistantRecord) assistantName = assistantRecord.name;
     }
-  });
 
-  return NextResponse.json({ received: true, notificationStatus });
+    // Map "failed" status to "call.missed" webhook event since there is no
+    // "call.failed" event type — from the customer's perspective, a failed
+    // call is functionally equivalent to a missed one.
+    const webhookEvent = (status === "failed" || status === "missed")
+      ? "call.missed" as const
+      : "call.completed" as const;
+
+    // after() so webhook delivery survives Vercel's post-response freeze (SCRUM-410).
+    runAfterResponse(async () => {
+      try {
+        await deliverWebhooks(organizationId, webhookEvent, {
+          callId: callId || "unknown",
+          caller: callerPhone || "Unknown",
+          transcript,
+          duration: durationSeconds,
+          assistantName,
+          outcome: status,
+        });
+      } catch (err) {
+        console.error("[Internal] Webhook delivery failed:", {
+          organizationId, callId: callId || "unknown", webhookEvent, error: err,
+        });
+      }
+    });
+  }
+
+  return NextResponse.json({
+    received: true,
+    notificationStatus,
+    ...(isOwnerCall && { ownerCall: true }),
+    ...(ownerLockEmail && { ownerLockEmail }),
+  });
 }
