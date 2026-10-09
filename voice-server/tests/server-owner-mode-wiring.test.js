@@ -47,9 +47,11 @@ describe("SCRUM-587: owner session wiring", () => {
     const gateIdx = src.lastIndexOf("if (!session.ownerMode) {", rulesIdx);
     assert.ok(gateIdx > 0 && rulesIdx - gateIdx < 800, "customer CRITICAL RULES must be gated on !session.ownerMode");
   });
+  // That every owner tool call reaches the runner and no customer guard runs is proven by
+  // running the callbacks ("Gemini callbacks, run for real" below); this pins only the order.
   it("Gemini onToolCall hands owner calls to the runner BEFORE any customer guard", () => {
     const toolCallIdx = src.indexOf('logToolCall("[GeminiLive] Tool call", toolCall.name, toolCall.args);');
-    const runnerIdx = src.indexOf("if (session.ownerMode) {\n                    if (session) session._toolCallInFlight = true;\n                    try {\n                      return await runOwnerToolCall(session, toolCall, { executeToolCall, scheduleCache });\n                    } finally {\n                      if (session) session._toolCallInFlight = false;\n                    }", toolCallIdx);
+    const runnerIdx = src.indexOf("return await runOwnerToolCall(session, toolCall, {", toolCallIdx);
     const funnelIdx = src.indexOf("session.hasUnfinishedBooking(toolCall.args?.reason)", toolCallIdx);
     assert.ok(toolCallIdx > 0 && runnerIdx > toolCallIdx && runnerIdx < funnelIdx, `order: log=${toolCallIdx} runner=${runnerIdx} funnel=${funnelIdx}`);
   });
@@ -190,7 +192,7 @@ const fakeSentry = (calls) => ({
 const { CallSession } = require("../call-session");
 const { buildOwnerPrompt, buildOwnerGreeting, buildOwnerGeminiSuffix } = require("../lib/owner-prompt");
 const { buildOwnerTools } = require("../lib/owner-tools");
-const { runOwnerToolCall, buildOwnerCallSummary, settleOwnerToolRuns } = require("../lib/owner-tool-runner");
+const { runOwnerToolCall, buildOwnerCallSummary, settleOwnerToolRuns, noteCancelledOwnerToolCalls, CANCELLED_BEFORE_SENT_MESSAGE } = require("../lib/owner-tool-runner");
 const { noteAssistantSpeech, noteAssistantTurnEnd, noteOwnerSpeech } = require("../lib/owner-turn-stamps");
 const { forwardingFallbackEligible } = require("../lib/transfer-eligibility");
 const { maskPhone } = require("../lib/mask-phone");
@@ -488,6 +490,7 @@ function makeGeminiCallbacks(session, o = {}) {
     noteAssistantSpeech,
     noteAssistantTurnEnd,
     noteOwnerSpeech,
+    noteCancelledOwnerToolCalls,
     console: recordingConsole(lines),
   };
   const cbs = runSlice({ from: "onAudio: (twilioBase64) => {", to: "onError: (err) => {", scope, wrap: (code) => `return {\n${code}\n};` });
@@ -512,8 +515,13 @@ describe("SCRUM-587: Gemini callbacks, run for real", () => {
       const run = calls.filter((c) => c[0] === "runOwnerToolCall").at(-1);
       assert.equal(run[1], s);
       assert.equal(run[2], toolCall);
-      assert.deepEqual(Object.keys(run[3]).sort(), ["executeToolCall", "scheduleCache"]);
+      assert.deepEqual(Object.keys(run[3]).sort(), ["executeToolCall", "scheduleCache", "sendText"]);
     }
+    // sendText reaches the live model session (SF4: a write Gemini cancelled after it went out).
+    const injected = [];
+    s.geminiSession = { sendText: (text) => injected.push(text) };
+    calls.filter((c) => c[0] === "runOwnerToolCall").at(-1)[3].sendText("hello");
+    assert.deepEqual(injected, ["hello"]);
     assert.deepEqual(guardCalls, [], "no customer guard ran");
     assert.deepEqual(calls.filter((c) => c[0] === "executeToolCall"), [], "server.js never calls the executor itself on an owner call");
     assert.equal(s.toolCallAudit.length, 1, "server.js adds no customer audit entries");
@@ -725,6 +733,39 @@ describe("SCRUM-587: Gemini callbacks, run for real", () => {
     for (let i = 0; i < 3; i++) { await new Promise((r) => setImmediate(r)); t.mock.timers.tick(100); }
     await confirm;
     assert.equal(executed.at(-1).confirmed, true);
+  });
+});
+
+// ─── Gemini cancels an owner tool call (silent-failure lens SF4) ────────────
+describe("SCRUM-587: Gemini's toolCallCancellation, run for real", () => {
+  it("records the cancelled ids on an owner session; a customer session is untouched", () => {
+    const s = makeSession({ owner: true });
+    makeGeminiCallbacks(s).cbs.onToolCallCancellation(["g-1", "g-2"]);
+    assert.deepEqual([...s.ownerCancelledToolCallIds], ["g-1", "g-2"]);
+    const customer = makeSession({ owner: false });
+    makeGeminiCallbacks(customer).cbs.onToolCallCancellation(["g-1"]);
+    assert.equal(customer.ownerCancelledToolCallIds, null, "customer calls ignore cancellations, as before");
+  });
+
+  it("end to end: the owner says 'no, hang on' over a confirm that is waiting for an answer — the stamp lands, Gemini cancels, PR B never sees the confirm", async (t) => {
+    const s = makeSession({ owner: true });
+    const executed = [];
+    const executeToolCall = async (name, args) => { executed.push(args); return args.confirmed === true ? CANCELLED : NEEDS_CONFIRMATION; };
+    const { cbs } = makeGeminiCallbacks(s, { runOwnerToolCall, executeToolCall });
+    t.mock.method(console, "warn", () => {});
+    await cbs.onToolCall({ id: "g-0", name: "owner_cancel_appointment", args: { appointment_id: "a1" } });
+    await sleep(3);
+    cbs.onAudio("AAAA"); cbs.onTurnComplete(); // the read-back
+    await sleep(3);
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const confirm = cbs.onToolCall({ id: "g-1", name: "owner_cancel_appointment", args: { appointment_id: "a1", confirmed: true } }); // eager: no answer yet
+    for (let i = 0; i < 2; i++) { await new Promise((r) => setImmediate(r)); t.mock.timers.tick(100); }
+    cbs.onTranscriptIn("no, hang on — the other Smith"); // stamped as owner speech…
+    cbs.onToolCallCancellation(["g-1"]); // …and the barge-in cancels the call
+    for (let i = 0; i < 3; i++) { await new Promise((r) => setImmediate(r)); t.mock.timers.tick(100); }
+    const ret = await confirm;
+    assert.equal(ret.message, CANCELLED_BEFORE_SENT_MESSAGE);
+    assert.deepEqual(executed.map((a) => a.confirmed), [undefined], "only the read-back request reached PR B");
   });
 });
 

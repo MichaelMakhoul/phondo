@@ -51,6 +51,8 @@ const WRITE_UNCONFIRMED_MESSAGE =
   "I'm having trouble with that right now, so I can't confirm the change went through. Please check the dashboard, or try again in a moment.";
 /** What a session that is not an owner session hears (PR B's refusal wording). */
 const NOT_AN_OWNER_CALL_MESSAGE = "That isn't available on this call.";
+/** A write Gemini cancelled before it went out (Gemini drops this response; it is the record). */
+const CANCELLED_BEFORE_SENT_MESSAGE = "Not done: that call was cancelled before it went out, so nothing was changed.";
 
 /**
  * The receptionist's failure lines that reach an owner session through the
@@ -367,6 +369,28 @@ function describeOwnerToolCall(name, args, message, successful) {
 }
 
 /**
+ * Gemini cancels the tool calls the owner talks over (toolCallCancellation;
+ * server.js hands the ids here). A write whose id is recorded is never sent;
+ * one already on its way gets its real result told to the model, which has
+ * dropped the function response and would answer as if nothing changed.
+ * @param {any} session
+ * @param {unknown} ids
+ */
+function noteCancelledOwnerToolCalls(session, ids) {
+  if (!session || session.ownerMode !== true || !Array.isArray(ids)) return;
+  if (!(session.ownerCancelledToolCallIds instanceof Set)) session.ownerCancelledToolCallIds = new Set();
+  for (const id of ids) if (typeof id === "string" && id) session.ownerCancelledToolCallIds.add(id);
+}
+
+/**
+ * @param {any} session
+ * @param {string|null} id - the model's tool call id (Gemini's; the classic loop passes none)
+ */
+function wasCancelled(session, id) {
+  return id !== null && session.ownerCancelledToolCallIds instanceof Set && session.ownerCancelledToolCallIds.has(id);
+}
+
+/**
  * The session's owner tool calls still running (lazily created).
  * @param {any} session
  * @returns {Set<Promise<unknown>>}
@@ -381,9 +405,10 @@ function ownerToolRunsInFlight(session) {
  * session while it runs, so cleanup can let one the owner hung up on land
  * before it writes the call's summary (settleOwnerToolRuns).
  * @param {any} session - CallSession with ownerMode === true (set only from a PIN-verified stream token)
- * @param {{ name: string, args?: Record<string, any> }} toolCall
- * @param {{ executeToolCall: Function, scheduleCache: { invalidate: (orgId: string) => void }, now?: () => number }} deps
- *   `now` stamps the audit entries (default Date.now).
+ * @param {{ id?: string, name: string, args?: Record<string, any> }} toolCall - `id`: the model's call id (Gemini), for cancellations
+ * @param {{ executeToolCall: Function, scheduleCache: { invalidate: (orgId: string) => void }, now?: () => number, sendText?: (text: string) => void }} deps
+ *   `now` stamps the audit entries (default Date.now); `sendText` tells the model something mid-call
+ *   (the Gemini session's), used when a write it cancelled had already gone out.
  * @returns {Promise<{ message: string, data?: unknown, __endCall?: true }>} the WHOLE result the model
  *   gets (message + PR B's data) — gemini-live.js sends the object, the classic loop JSON-encodes it.
  */
@@ -429,8 +454,8 @@ async function settleOwnerToolRuns(session, timeoutMs = OWNER_CLEANUP_WAIT_MS) {
 
 /**
  * @param {any} session
- * @param {{ name: string, args?: Record<string, any> }} toolCall
- * @param {{ executeToolCall: Function, scheduleCache: { invalidate: (orgId: string) => void }, now?: () => number }} deps
+ * @param {{ id?: string, name: string, args?: Record<string, any> }} toolCall
+ * @param {{ executeToolCall: Function, scheduleCache: { invalidate: (orgId: string) => void }, now?: () => number, sendText?: (text: string) => void }} deps
  * @returns {Promise<{ message: string, data?: unknown, __endCall?: true }>}
  */
 async function runOneOwnerToolCall(session, toolCall, deps) {
@@ -484,7 +509,18 @@ async function runOneOwnerToolCall(session, toolCall, deps) {
     return { message: NO_CALL_RECORD_MESSAGE };
   }
 
+  // A write the owner talked over (Gemini cancelled it) is never sent — checked
+  // again after the gate, whose settle wait is exactly when a barge-in lands.
+  const callId = typeof toolCall?.id === "string" && toolCall.id ? toolCall.id : null;
+  const isWrite = OWNER_WRITE_TOOL_NAMES.includes(name);
+  const refuseCancelled = () => {
+    console.warn(`[OwnerTools] ${name} was cancelled (the owner talked over it) before it went out — not sent. callSid=${session.callSid}`);
+    audit.push({ name: "owner_tool_cancelled", tool: name, successful: false, at: now() });
+    return { message: CANCELLED_BEFORE_SENT_MESSAGE };
+  };
+  if (isWrite && wasCancelled(session, callId)) return refuseCancelled();
   const forwardArgs = await applyConfirmationGate(session, name, args, audit, now);
+  if (isWrite && wasCancelled(session, callId)) return refuseCancelled();
 
   /** @type {unknown} */
   let result;
@@ -518,7 +554,25 @@ async function runOneOwnerToolCall(session, toolCall, deps) {
     console.error(`[ALERT:error] [OwnerTools] ${name} finished after the call record was completed — outcome=${outcomeUnknown ? "unknown" : outcomeLabel(outcomeOf(r))} is not in the stored summary (org=${session.organizationId}, callSid=${session.callSid})`);
   }
 
-  if (OWNER_WRITE_TOOL_NAMES.includes(name) && outcomeOf(r) === "needs_confirmation") {
+  // Gemini cancelled this call while it was out: it dropped the response, so it
+  // never heard this read-back — and a confirmed change it would think undone
+  // is told to it (tool name and outcome code only: PR B's prose quotes customers).
+  const cancelledInFlight = isWrite && wasCancelled(session, callId);
+  if (cancelledInFlight && forwardArgs.confirmed === true && (successful || outcomeUnknown)) {
+    const outcome = outcomeUnknown ? "unknown" : outcomeLabel(outcomeOf(r));
+    const notice = successful
+      ? `SYSTEM NOTICE (not the owner speaking): the ${name} call that was interrupted had already gone through — data.outcome is "${outcome}", so the change HAS been made, and the customer has NOT been notified. Tell the owner it went through.`
+      : `SYSTEM NOTICE (not the owner speaking): the ${name} call that was interrupted had already been sent and its result never came back, so it may have gone through. Tell the owner, and check with owner_list_appointments before changing anything else.`;
+    try {
+      if (typeof deps.sendText !== "function") throw new Error("no way to reach the model");
+      deps.sendText(notice);
+      console.warn(`[OwnerTools] ${name} was cancelled after it had gone out (outcome=${outcome}) — told the model the real result. callSid=${session.callSid}`);
+    } catch (err) {
+      console.error(`[ALERT:error] [OwnerTools] ${name} was cancelled after it had gone out (outcome=${outcome}) and the model could not be told — the owner may think nothing changed (org=${session.organizationId}, callSid=${session.callSid}): ${messageOf(err)}`);
+    }
+  }
+
+  if (OWNER_WRITE_TOOL_NAMES.includes(name) && outcomeOf(r) === "needs_confirmation" && !cancelledInFlight) {
     const key = confirmationKey(name, forwardArgs);
     if (key !== null) {
       pendingConfirmations(session).set(key, { at: Date.now(), seq: session.assistantTurnSeq });
@@ -568,11 +622,13 @@ function buildOwnerCallSummary(audit) {
 
 module.exports = {
   OWNER_MAX_TOOL_CALLS,
+  CANCELLED_BEFORE_SENT_MESSAGE,
   CONFIRM_SETTLE_MS,
   CONFIRM_POLL_MS,
   OWNER_CLEANUP_WAIT_MS,
   runOwnerToolCall,
   settleOwnerToolRuns,
+  noteCancelledOwnerToolCalls,
   buildOwnerCallSummary,
   describeOwnerToolCall,
   ownerResultSucceeded,

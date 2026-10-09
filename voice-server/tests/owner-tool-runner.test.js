@@ -17,7 +17,7 @@ global.fetch = async (url, init) => {
   return fetchImpl(url, init);
 };
 
-const { runOwnerToolCall, buildOwnerCallSummary, OWNER_MAX_TOOL_CALLS, OWNER_CLEANUP_WAIT_MS, describeOwnerToolCall, settleOwnerToolRuns } = require("../lib/owner-tool-runner");
+const { runOwnerToolCall, buildOwnerCallSummary, OWNER_MAX_TOOL_CALLS, OWNER_CLEANUP_WAIT_MS, CANCELLED_BEFORE_SENT_MESSAGE, describeOwnerToolCall, settleOwnerToolRuns, noteCancelledOwnerToolCalls } = require("../lib/owner-tool-runner");
 const { executeToolCall } = require("../services/tool-executor");
 
 // SCRUM-587 — the owner tool path replaces the customer guard chain (spec §5).
@@ -1152,6 +1152,120 @@ describe("settleOwnerToolRuns — cleanup's bounded wait for owner tool calls in
     });
     assert.equal(alerts(unknown).length, 1);
     assert.ok(alerts(unknown)[0].text.includes("outcome=unknown"), alerts(unknown)[0].text);
+  });
+});
+
+// ─── Gemini cancels a tool call the owner talked over (silent-failure lens SF4) ─────
+// toolCallCancellation used to be ignored: a barge-in ("no, hang on — the other Smith")
+// was stamped as owner speech, satisfied a confirm waiting in the settle window, and PR B
+// cancelled the job while the model, which had dropped the call, answered as if nothing changed.
+describe("runOwnerToolCall — Gemini cancelled the call (the owner talked over it)", () => {
+  const cancelCall = (id, args = { appointment_id: "a1", confirmed: true }) => ({ id, name: "owner_cancel_appointment", args });
+  it("a write cancelled before it runs is never sent — refused, warned, audited", async () => {
+    const s = makeSession(); const d = makeDeps(CANCELLED);
+    armConfirmed(s, "owner_cancel_appointment|a1");
+    noteCancelledOwnerToolCalls(s, ["g-1"]);
+    let ret;
+    const lines = await captureConsole(async () => { ret = await runOwnerToolCall(s, cancelCall("g-1"), d.deps); });
+    assert.equal(d.calls.length, 0, "never sent to PR B");
+    assert.deepEqual(ret, { message: CANCELLED_BEFORE_SENT_MESSAGE });
+    assert.deepEqual(auditFor(s, "owner_tool_cancelled").map((e) => [e.tool, e.successful]), [["owner_cancel_appointment", false]]);
+    assert.equal(lines.filter((l) => l.level === "warn").length, 1);
+    assert.ok(lines[0].text.includes("callSid=CA1") && !lines[0].text.includes("a1"), lines[0].text);
+    assert.equal(s.ownerPendingConfirmations.has("owner_cancel_appointment|a1"), true, "the read-back is not spent by a call that never ran");
+    assert.equal(buildOwnerCallSummary(s.toolCallAudit), "Owner call: no changes made.");
+  });
+  it("a cancellation that lands while the confirm waits for the owner's answer: the barge-in is stamped, but the write is still never sent", async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const s = makeSession(); const d = makeDeps((name, args) => (args.confirmed === true ? CANCELLED : NEEDS_CONFIRMATION));
+    await captureConsole(() => runOwnerToolCall(s, { id: "g-0", name: "owner_cancel_appointment", args: { appointment_id: "a1" } }, d.deps));
+    assistantTurn(s); // the read-back; the confirm comes before any answer is stamped
+    let done = false;
+    const confirm = captureConsole(() => runOwnerToolCall(s, cancelCall("g-1"), d.deps)).then((l) => { done = true; return l; });
+    await flush();
+    t.mock.timers.tick(100); await flush();
+    ownerSpeaks(s); // "no, hang on — the other Smith": a stamp all the same…
+    noteCancelledOwnerToolCalls(s, ["g-1"]); // …and Gemini cancels the call it was answering
+    for (let i = 0; i < 3 && !done; i++) { t.mock.timers.tick(100); await flush(); }
+    await confirm;
+    assert.deepEqual(d.calls.map((c) => c.args.confirmed), [undefined], "only the read-back request ever reached PR B");
+    assert.equal(auditFor(s, "owner_tool_cancelled").length, 1);
+  });
+  it("reads, end_call and calls with another id are untouched by a cancellation", async () => {
+    const s = makeSession();
+    noteCancelledOwnerToolCalls(s, ["g-9"]);
+    const d = makeDeps({ message: "ok", data: { count: 0 } });
+    await runOwnerToolCall(s, { id: "g-9", name: "owner_list_appointments", args: { range: "today" } }, d.deps);
+    assert.equal(d.calls.length, 1, "a read Gemini cancelled is harmless: it still runs");
+    armConfirmed(s, "owner_cancel_appointment|a1");
+    const w = makeDeps(CANCELLED);
+    await runOwnerToolCall(s, cancelCall("g-10"), w.deps);
+    assert.equal(w.calls.length, 1, "another call's cancellation never blocks this one");
+    assert.equal(w.calls[0].args.confirmed, true);
+  });
+  it("a confirmed write cancelled AFTER it went out: the model is told the real result (tool + outcome only), logged with the callSid", async () => {
+    const s = makeSession();
+    armConfirmed(s, "owner_cancel_appointment|a1");
+    let release;
+    const deps = { executeToolCall: () => new Promise((resolve) => { release = resolve; }), scheduleCache: { invalidate: () => {} }, sendText: (text) => told.push(text) };
+    const told = [];
+    let ret;
+    const lines = await captureConsole(async () => {
+      const run = runOwnerToolCall(s, cancelCall("g-1"), deps);
+      await flush();
+      noteCancelledOwnerToolCalls(s, ["g-1"]); // the barge-in lands while PR B is cancelling the job
+      release(CANCELLED);
+      ret = await run;
+    });
+    assert.deepEqual(ret, { message: CANCELLED.message, data: CANCELLED.data });
+    assert.equal(told.length, 1);
+    assert.ok(told[0].includes("owner_cancel_appointment") && told[0].includes('data.outcome is "cancelled"') && told[0].includes("HAS been made"), told[0]);
+    assert.ok(!told[0].includes("Bob Lee") && !told[0].includes("a1"), "never PR B's prose or an argument in a user-turn message");
+    assert.equal(alerts(lines).length, 0);
+    const warned = lines.filter((l) => l.level === "warn");
+    assert.equal(warned.length, 1);
+    assert.ok(warned[0].text.includes("callSid=CA1") && warned[0].text.includes("outcome=cancelled"), warned[0].text);
+    assert.equal(buildOwnerCallSummary(s.toolCallAudit), "Owner call: Cancelled Bob Lee's job on Friday, October 16 at 3:00 PM.", "the change is in the record");
+  });
+  it("…and one whose answer never came back is reported as possibly done", async () => {
+    const s = makeSession();
+    armConfirmed(s, "owner_cancel_appointment|a1");
+    const told = [];
+    const deps = { executeToolCall: async () => { noteCancelledOwnerToolCalls(s, ["g-1"]); return { message: "I'm having a little trouble right now. Could you give me a moment?" }; }, scheduleCache: { invalidate: () => {} }, sendText: (text) => told.push(text) };
+    await captureConsole(() => runOwnerToolCall(s, cancelCall("g-1"), deps));
+    assert.equal(told.length, 1);
+    assert.ok(told[0].includes("may have gone through") && told[0].includes("owner_list_appointments"), told[0]);
+  });
+  it("a cancelled write that changed nothing (refused by PR B, or the read-back request) tells the model nothing — and its read-back never arms the gate", async () => {
+    const told = [];
+    const s = makeSession();
+    const notFound = { success: false, message: "I can't find that job.", data: { outcome: "not_found", customer_notified: false } };
+    armConfirmed(s, "owner_cancel_appointment|a1");
+    await captureConsole(() => runOwnerToolCall(s, cancelCall("g-1"), { executeToolCall: async () => { noteCancelledOwnerToolCalls(s, ["g-1"]); return notFound; }, scheduleCache: { invalidate: () => {} }, sendText: (t) => told.push(t) }));
+    const s2 = makeSession();
+    await captureConsole(() => runOwnerToolCall(s2, cancelCall("g-2", { appointment_id: "a1" }), { executeToolCall: async () => { noteCancelledOwnerToolCalls(s2, ["g-2"]); return NEEDS_CONFIRMATION; }, scheduleCache: { invalidate: () => {} }, sendText: (t) => told.push(t) }));
+    assert.deepEqual(told, []);
+    assert.ok(!(s2.ownerPendingConfirmations instanceof Map) || !s2.ownerPendingConfirmations.has("owner_cancel_appointment|a1"), "the model never heard that read-back, so it can't be answered");
+  });
+  it("a change the model can't be told about pages (ids only)", async () => {
+    for (const sendText of [undefined, () => { throw new Error("ws closed"); }]) {
+      const s = makeSession();
+      armConfirmed(s, "owner_cancel_appointment|a1");
+      const lines = await captureConsole(() => runOwnerToolCall(s, cancelCall("g-1"), { executeToolCall: async () => { noteCancelledOwnerToolCalls(s, ["g-1"]); return CANCELLED; }, scheduleCache: { invalidate: () => {} }, sendText }));
+      const paged = alerts(lines);
+      assert.equal(paged.length, 1, String(sendText));
+      assert.ok(paged[0].text.includes("callSid=CA1") && paged[0].text.includes("org=org-1") && !paged[0].text.includes("Bob Lee"), paged[0].text);
+    }
+  });
+  it("records only string ids, only on an owner session", () => {
+    const s = makeSession();
+    noteCancelledOwnerToolCalls(s, ["g-1", "", 7, null, { id: "x" }, "g-2"]);
+    assert.deepEqual([...s.ownerCancelledToolCallIds], ["g-1", "g-2"]);
+    for (const bad of [undefined, null, "g-1", { ids: ["g-1"] }]) noteCancelledOwnerToolCalls(makeSession(), bad);
+    const customer = makeSession({ ownerMode: false });
+    noteCancelledOwnerToolCalls(customer, ["g-1"]);
+    assert.equal(customer.ownerCancelledToolCallIds, undefined, "a customer session is never touched");
+    noteCancelledOwnerToolCalls(null, ["g-1"]);
   });
 });
 

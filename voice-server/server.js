@@ -146,7 +146,7 @@ const { mintStreamToken, verifyStreamToken, withoutOwnerAccess } = require("./li
 // bypasses the customer guards, and the turn clock its confirmation gate reads.
 const { buildOwnerPrompt, buildOwnerGreeting, buildOwnerGeminiSuffix } = require("./lib/owner-prompt");
 const { buildOwnerTools } = require("./lib/owner-tools");
-const { runOwnerToolCall, buildOwnerCallSummary, settleOwnerToolRuns } = require("./lib/owner-tool-runner");
+const { runOwnerToolCall, buildOwnerCallSummary, settleOwnerToolRuns, noteCancelledOwnerToolCalls } = require("./lib/owner-tool-runner");
 const { noteAssistantSpeech, noteAssistantTurnEnd, noteOwnerSpeech } = require("./lib/owner-turn-stamps");
 
 // Mirror of API-layer E164_REGEX. Defense-in-depth at the dialer so a bad
@@ -2565,11 +2565,12 @@ wss.on("connection", (twilioWs) => {
                   // goes through the runner, and its result — message AND data —
                   // is the function response, whole. In flight exactly as the
                   // customer path below, so the goodbye-loop auto-end can't
-                  // close the call mid-write.
+                  // close the call mid-write. sendText: a write Gemini cancelled
+                  // after it had gone out is reported to the model (SF4).
                   if (session.ownerMode) {
                     if (session) session._toolCallInFlight = true;
                     try {
-                      return await runOwnerToolCall(session, toolCall, { executeToolCall, scheduleCache });
+                      return await runOwnerToolCall(session, toolCall, { executeToolCall, scheduleCache, sendText: (text) => session?.geminiSession?.sendText(text) });
                     } finally {
                       if (session) session._toolCallInFlight = false;
                     }
@@ -3128,6 +3129,12 @@ wss.on("connection", (twilioWs) => {
 
                     pendingAiTranscript = "";
                   }
+                },
+                // SCRUM-587: Gemini cancelled these tool calls — the owner talked
+                // over them. An owner write not yet sent never will be, and one
+                // already out has its real result told to the model (lib/owner-tool-runner.js).
+                onToolCallCancellation: (ids) => {
+                  if (session?.ownerMode) noteCancelledOwnerToolCalls(session, ids);
                 },
                 onError: (err) => {
                   // A failure was already recorded (e.g. the setup watchdog) —

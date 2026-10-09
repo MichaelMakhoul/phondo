@@ -40,7 +40,7 @@ process.env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "test";
 
 const { createOpenAIRealtimeSession } = require("../services/openai-realtime");
 const { CallSession } = require("../call-session");
-const { runOwnerToolCall } = require("../lib/owner-tool-runner");
+const { runOwnerToolCall, noteCancelledOwnerToolCalls } = require("../lib/owner-tool-runner");
 const { noteAssistantSpeech, noteAssistantTurnEnd, noteOwnerSpeech } = require("../lib/owner-turn-stamps");
 
 const src = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
@@ -93,7 +93,7 @@ function serverCallbacks(session, executeToolCall) {
     RESCHEDULE_SUCCESS_SIGNAL: /moved/, applyRescheduleToLedger: () => ({ moved: false }), CANCEL_NUDGE: "",
     logTranscript: () => {}, pendingUserTranscript: "", pendingAiTranscript: "",
     detectPhantomAction: () => null, validateToolResponse: async () => ({ accurate: true }), DEBUG_TRANSCRIPTS: false,
-    noteAssistantSpeech, noteAssistantTurnEnd, noteOwnerSpeech,
+    noteAssistantSpeech, noteAssistantTurnEnd, noteOwnerSpeech, noteCancelledOwnerToolCalls,
     console: { log: (...a) => lines.push(a.join(" ")), warn: (...a) => lines.push(a.join(" ")), error: (...a) => lines.push(a.join(" ")), info() {}, debug() {} },
   };
   return runSlice({ from: "onAudio: (twilioBase64) => {", to: "onError: (err) => {", scope, wrap: (code) => `return {\n${code}\n};` });
