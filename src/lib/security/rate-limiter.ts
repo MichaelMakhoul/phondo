@@ -218,6 +218,15 @@ export const rateLimitConfigs = {
     windowMs: 60 * 60 * 1000,
     maxRequests: 200,
   },
+  // SCRUM-586: the owner's PIN-lockout email — at most one per org per 15 minutes
+  // (key "<orgId>:owner-lock-email"), so a PIN guesser redialling can't flood the
+  // owner's inbox. FAIL-OPEN (no costControl): during a Supabase brownout it falls
+  // back to the per-instance Map and pages RATE_LIMIT_DISTRIBUTED_FAILED — dropping
+  // a security alert on a DB blip is the worse failure.
+  ownerLockEmail: {
+    windowMs: 15 * 60 * 1000,
+    maxRequests: 1,
+  },
 } as const;
 
 export type RateLimitType = keyof typeof rateLimitConfigs;

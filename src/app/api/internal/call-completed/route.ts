@@ -13,7 +13,7 @@ import { classifyCallNotification } from "@/lib/notifications/classify-call";
 import { humanizeEndedReason } from "@/lib/notifications/humanize-ended-reason";
 import { sendMissedCallTextBack } from "@/lib/sms/caller-sms";
 import { deliverWebhooks } from "@/lib/integrations/webhook-delivery";
-import { withRateLimit } from "@/lib/security/rate-limiter";
+import { withRateLimit, rateLimitDistributed } from "@/lib/security/rate-limiter";
 import { maskPhoneForOwner } from "@/lib/owner-assistant/mask-phone";
 import { formatOwnerLockTime } from "@/lib/owner-assistant/lock-email-time";
 import { pageSentry } from "@/lib/observability/page-sentry";
@@ -128,9 +128,11 @@ async function readOrgTimezoneOnce(
  * SCRUM-586: email the business owner that their assistant-line PIN is locked,
  * then stamp the call so a reprocessed call does not repeat it. Never throws.
  *
- * - "sent"    — the owner was emailed (and the call stamped, best-effort)
- * - "skipped" — nothing to send (the public demo org has no owner); NOT stamped
- * - "failed"  — the owner could not be emailed. This pages [ALERT:error]: they
+ * - "sent"      — the owner was emailed (and the call stamped, best-effort)
+ * - "skipped"   — nothing to send (the public demo org has no owner); NOT stamped
+ * - "throttled" — another lockout for this org was emailed <15 min ago; NOT sent,
+ *   NOT stamped
+ * - "failed"    — the owner could not be emailed. This pages [ALERT:error]: they
  *   do not know someone is guessing their PIN. NOT stamped, so it can still go.
  *
  * Only the masked number reaches the sender — never the raw caller number, and
@@ -147,10 +149,15 @@ async function emailOwnerPinLockOnce(
     callerPhone: string | undefined;
     knownTimezone: string | undefined;
   }
-): Promise<"sent" | "skipped" | "failed"> {
+): Promise<"sent" | "skipped" | "throttled" | "failed"> {
   const { callId, organizationId, callerPhone, knownTimezone } = call;
   let outcome: "sent" | "skipped";
   try {
+    const rl = await rateLimitDistributed(supabase, organizationId, "owner-lock-email", "ownerLockEmail");
+    if (!rl.allowed) {
+      console.warn("[Internal] PIN-lockout email throttled — at most one per org per 15 minutes:", { organizationId, callId });
+      return "throttled";
+    }
     const timezone = knownTimezone || (await readOrgTimezoneOnce(supabase, organizationId));
     outcome = await sendOwnerPinLockedNotification({
       organizationId,
@@ -507,7 +514,8 @@ export async function POST(request: Request) {
   // new PIN clears it) CONTINUED AS A CUSTOMER call — call_type is not 'owner',
   // so every step above and below applies to it unchanged. Additionally the
   // owner is emailed ONCE per locked call, deduped by metadata.owner_lock_emailed_at
-  // (stamped after a successful send).
+  // (stamped after a successful send), and at most once per org per 15 minutes —
+  // a guesser who keeps redialling is throttled, not emailed per call.
   //
   // It goes out HERE, after the step-2 write, never between the hoisted metadata
   // read and that write: a Resend round trip in that gap would stretch the
@@ -516,7 +524,7 @@ export async function POST(request: Request) {
   // pages and never fails the route. Reads the DB row (storedMetadata), never the
   // payload. The email quotes the time in the ORG's timezone (the one step 1 read, else
   // one read here), never the server's — see emailOwnerPinLockOnce.
-  let ownerLockEmail: "sent" | "skipped" | "failed" | undefined;
+  let ownerLockEmail: "sent" | "skipped" | "throttled" | "failed" | undefined;
   if (callId && storedMetadata?.owner_auth === "locked" && !storedMetadata.owner_lock_emailed_at) {
     ownerLockEmail = await emailOwnerPinLockOnce(supabase, { callId, organizationId, callerPhone, knownTimezone: orgTimezone });
   }

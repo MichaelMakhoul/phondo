@@ -55,6 +55,7 @@ vi.mock("@/lib/sms/caller-sms", () => ({ sendMissedCallTextBack: vi.fn() }));
 vi.mock("@/lib/integrations/webhook-delivery", () => ({ deliverWebhooks: vi.fn() }));
 vi.mock("@/lib/security/rate-limiter", () => ({
   withRateLimit: vi.fn(() => ({ allowed: true, headers: {} })),
+  rateLimitDistributed: vi.fn(),
 }));
 
 import { sendMissedCallNotification } from "@/lib/notifications/notification-service";

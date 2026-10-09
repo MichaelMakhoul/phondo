@@ -5,9 +5,9 @@ import type { Mock } from "vitest";
 // lockout CONTINUED AS A CUSTOMER CALL (calls.metadata.owner_auth === "locked",
 // call_type NOT "owner"). The normal customer pipeline runs unchanged, PLUS one
 // lockout email to the owner, deduped per call by the owner_lock_emailed_at
-// stamp. "failed"/"verified" send nothing. A send failure is paged
-// ([ALERT:error]) and never fails the route. Flags come from the DB row, never
-// the payload.
+// stamp and throttled to one per org per 15 minutes. "failed"/"verified" send
+// nothing. A send failure is paged ([ALERT:error]) and never fails the route.
+// Flags come from the DB row, never the payload.
 //
 // ORDER (ruled after the owner-call review): the email goes out AFTER the
 // spam-merge write (step 2), never between the hoisted metadata read and that
@@ -103,7 +103,11 @@ vi.mock("@/lib/notifications/notification-service", () => ({
 }));
 vi.mock("@/lib/sms/caller-sms", () => ({ sendMissedCallTextBack: vi.fn() }));
 vi.mock("@/lib/integrations/webhook-delivery", () => ({ deliverWebhooks: vi.fn() }));
-vi.mock("@/lib/security/rate-limiter", () => ({ withRateLimit: vi.fn(() => ({ allowed: true, headers: {} })) }));
+vi.mock("@/lib/security/rate-limiter", () => ({
+  withRateLimit: vi.fn(() => ({ allowed: true, headers: {} })),
+  // The per-org lockout-email throttle: allowed unless a test says otherwise.
+  rateLimitDistributed: vi.fn(async () => ({ allowed: true })),
+}));
 // pageSentry stays REAL (wrapped in a spy) so the failure test can read the [ALERT:error]
 // line it emits — @sentry/nextjs is off in production (SCRUM-320), that line is the page.
 // withScope is a no-op so its Sentry leg stays silent.
@@ -117,6 +121,7 @@ import { analyzeCall, type SpamAnalysisResult } from "@/lib/spam/spam-detector";
 import { sendUnsuccessfulCallNotification, sendOwnerPinLockedNotification } from "@/lib/notifications/notification-service";
 import { deliverWebhooks } from "@/lib/integrations/webhook-delivery";
 import { pageSentry } from "@/lib/observability/page-sentry";
+import { rateLimitDistributed } from "@/lib/security/rate-limiter";
 import { POST } from "@/app/api/internal/call-completed/route";
 
 const SECRET = "owner-pin-locked-test-secret";
@@ -209,8 +214,13 @@ describe("POST /api/internal/call-completed — PIN lockout email (SCRUM-586)", 
 
   it("sends AFTER the spam-merge write — never between the hoisted read and that write — then re-reads before stamping", async () => {
     db.metadata = { owner_auth: "locked" };
+    vi.mocked(rateLimitDistributed).mockImplementationOnce(async () => {
+      db.events.push("limit:owner-lock-email");
+      return { allowed: true } as Awaited<ReturnType<typeof rateLimitDistributed>>;
+    });
     await POST(completedCall());
-    expect(db.events).toEqual(["read:calls", "update:calls", "send:lock-email", "read:calls", "update:stamp"]);
+    // The per-org throttle is consulted first, before anything is sent.
+    expect(db.events).toEqual(["read:calls", "update:calls", "limit:owner-lock-email", "send:lock-email", "read:calls", "update:stamp"]);
     // The step-2 write is the unchanged customer merge: it carries no stamp.
     const merge = callUpdates().find((u) => !isStamp(u))!;
     expect(merge.payload).toMatchObject({ is_spam: false, spam_score: 0 });
@@ -320,6 +330,41 @@ describe("POST /api/internal/call-completed — PIN lockout email (SCRUM-586)", 
     expect(alerts[0]).toContain("organizationId=org-1");
     expect(alerts[0]).toContain(`callId=${CALL_ID}`);
     expect(alerts[0]).not.toMatch(/412345137/);
+  });
+
+  it("a second lockout for the org within 15 minutes is throttled: not sent, not stamped, not paged — the customer pipeline is untouched", async () => {
+    db.metadata = { owner_auth: "locked" };
+    vi.mocked(rateLimitDistributed).mockResolvedValueOnce({ allowed: false } as Awaited<ReturnType<typeof rateLimitDistributed>>);
+    const res = await POST(completedCall());
+    expect(res.status).toBe(200);
+    expect((await res.json()).ownerLockEmail).toBe("throttled");
+    // One bucket per org (not per call), on the 1-per-15-minutes profile.
+    expect(rateLimitDistributed).toHaveBeenCalledTimes(1);
+    expect(rateLimitDistributed).toHaveBeenCalledWith(expect.anything(), "org-1", "owner-lock-email", "ownerLockEmail");
+    expect(sendOwnerPinLockedNotification).not.toHaveBeenCalled();
+    expect(stamps()).toHaveLength(0);
+    expect(pageSentry).not.toHaveBeenCalled();
+    expect(db.events).toEqual(["read:calls", "update:calls"]);
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining("throttled"), expect.objectContaining({ organizationId: "org-1", callId: CALL_ID }),
+    );
+    expect(sendUnsuccessfulCallNotification).toHaveBeenCalledTimes(1);
+    expect(deliverWebhooks).toHaveBeenCalledTimes(1);
+  });
+
+  it("the throttle is checked before the org timezone is read, so a throttled call costs no extra query", async () => {
+    db.metadata = { owner_auth: "locked" };
+    vi.mocked(rateLimitDistributed).mockResolvedValueOnce({ allowed: false } as Awaited<ReturnType<typeof rateLimitDistributed>>);
+    // Withheld number: no spam analysis, so only the email path would read organizations.
+    const res = await POST(completedCall({ callerPhone: "" }));
+    expect((await res.json()).ownerLockEmail).toBe("throttled");
+    expect(db.orgReads).toEqual([]);
+  });
+
+  it("only a locked call consults the throttle: a 'failed' PIN outcome never spends the org's slot", async () => {
+    db.metadata = { owner_auth: "failed" };
+    await POST(completedCall());
+    expect(rateLimitDistributed).not.toHaveBeenCalled();
   });
 
   it("'skipped' (demo org) is reported and not stamped, so a later real owner would still be told", async () => {
