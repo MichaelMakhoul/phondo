@@ -103,7 +103,7 @@ describe("POST /api/internal/call-completed — owner calls (SCRUM-586)", () => 
     expect(sendUnsuccessfulCallNotification).toHaveBeenCalledTimes(1);
     expect(sendMissedCallTextBack).toHaveBeenCalledTimes(1);
     expect(deliverWebhooks).toHaveBeenCalledWith("org-1", "call.completed", expect.objectContaining({ callId: CALL_ID, assistantName: "Copperline" }));
-    // The spam-result merge still preserves existing metadata (hoisted read).
+    // The spam-result merge still preserves existing metadata (re-read right before the write).
     const callUpdate = adminState.updates.find((u) => u.table === "calls")!;
     expect(callUpdate.payload).toMatchObject({ is_spam: false });
     expect((callUpdate.payload as any).metadata.spam_analysis).toBeDefined();

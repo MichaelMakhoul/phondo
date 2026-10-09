@@ -237,19 +237,19 @@ export async function POST(request: Request) {
 
   const supabase = createAdminClient();
 
-  // SCRUM-586: read the call's stored metadata up front (one query, reused by the
-  // spam merge below). An OWNER call — the business owner ringing their own
-  // assistant — is marked by the voice server's completeCallRecord as
-  // metadata.call_type = 'owner' BEFORE this route is called (see the ordering
-  // note at step 2). It is not a customer interaction: no spam scoring, no
-  // missed/failed/unsuccessful alert (that would email the owner about their
-  // own call), no caller text-back, no call.completed / call.missed webhook. Billing still
-  // counts it. Read from the DB, never the payload. A failed read falls back to
-  // the customer pipeline — dropping a customer alert is the worse failure. The
-  // same row carries the PIN outcome (metadata.owner_auth) read for the lockout
-  // email at step 4c.
+  // SCRUM-586: read the call's stored metadata up front, for the owner-call and
+  // PIN-lockout decisions only (the spam merge at step 2 re-reads right before
+  // its write — this copy is stale by then). An OWNER call — the business owner
+  // ringing their own assistant — is marked by the voice server's
+  // completeCallRecord as metadata.call_type = 'owner' BEFORE this route is
+  // called (see the ordering note at step 2). It is not a customer interaction:
+  // no spam scoring, no missed/failed/unsuccessful alert (that would email the
+  // owner about their own call), no caller text-back, no call.completed /
+  // call.missed webhook. Billing still counts it. Read from the DB, never the
+  // payload. A failed read falls back to the customer pipeline — dropping a
+  // customer alert is the worse failure. The same row carries the PIN outcome
+  // (metadata.owner_auth) read for the lockout email at step 4c.
   let storedMetadata: Record<string, unknown> | null = null;
-  let metadataFetchFailed = false;
   if (callId) {
     const { data: existingCall, error: fetchError } = await (supabase as any)
       .from("calls")
@@ -257,10 +257,9 @@ export async function POST(request: Request) {
       .eq("id", callId)
       .single();
     if (fetchError) {
-      console.error("[Internal] Failed to fetch existing call metadata — owner-call and PIN-lockout-email checks skipped, metadata merge skipped to avoid data loss:", {
+      console.error("[Internal] Failed to fetch existing call metadata — owner-call and PIN-lockout-email checks skipped:", {
         callId, error: fetchError,
       });
-      metadataFetchFailed = true;
     } else {
       storedMetadata = (existingCall?.metadata || {}) as Record<string, unknown>;
     }
@@ -338,8 +337,24 @@ export async function POST(request: Request) {
   // after await completeCallRecord() in server.js cleanupSession(), so metadata
   // is already written by the time this route runs. Do NOT parallelize those calls.
   if (callId && spamAnalysis) {
-    // SCRUM-586: the metadata read moved above (shared with the owner check).
-    const existingMetadata = metadataFetchFailed ? null : (storedMetadata ?? {});
+    // Read the metadata RIGHT before the write, never reuse the hoisted copy: the
+    // spam analysis ran in between, and another post-call writer (e.g. the voice
+    // server's re-transcription stamping transcript_source) may have merged into
+    // the same JSON since — writing the stale copy back would silently undo it.
+    // (SCRUM-586 final review; same pattern as stampOwnerLockEmailed.)
+    const { data: existingCall, error: fetchError } = await (supabase as any)
+      .from("calls")
+      .select("metadata")
+      .eq("id", callId)
+      .single();
+
+    if (fetchError) {
+      console.error("[Internal] Failed to fetch existing call metadata — skipping metadata merge to avoid data loss:", {
+        callId, error: fetchError,
+      });
+    }
+
+    const existingMetadata = fetchError ? null : (existingCall?.metadata || {});
     // If metadata fetch failed, still update spam columns but skip metadata merge
     const updatePayload: Record<string, unknown> = {
       is_spam: spamAnalysis.isSpam,
@@ -521,8 +536,8 @@ export async function POST(request: Request) {
   // (stamped after a successful send), and at most once per org per 15 minutes —
   // a guesser who keeps redialling is throttled, not emailed per call.
   //
-  // It goes out HERE, after the step-2 write, never between the hoisted metadata
-  // read and that write: a Resend round trip in that gap would stretch the
+  // It goes out HERE, after the step-2 write, never between that write's metadata
+  // read and the write itself: a Resend round trip in that gap would stretch the
   // read-modify-write window to ~1 s. It is not spam-gated (a PIN guesser's call
   // can look like spam and the owner should still hear about it), and a failure
   // pages and never fails the route. Reads the DB row (storedMetadata), never the

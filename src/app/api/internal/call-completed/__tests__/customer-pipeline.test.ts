@@ -133,7 +133,11 @@ describe("POST /api/internal/call-completed — customer pipeline with a callId 
 
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ received: true, notificationStatus: "sent" });
-    expect(callReads()).toEqual([{ table: "calls", op: "select", arg: "metadata", filters: [["id", CALL_ID]] }]);
+    // Two reads of the same row (SCRUM-586 final review): the hoisted one decides owner call /
+    // PIN lockout, and the merge re-reads right before its write — the pre-SCRUM-586 exposure,
+    // so a writer that lands during the spam analysis is not overwritten by a stale copy.
+    const metadataRead = { table: "calls", op: "select", arg: "metadata", filters: [["id", CALL_ID]] };
+    expect(callReads()).toEqual([metadataRead, metadataRead]);
     expect(callUpdates()).toEqual([{
       table: "calls",
       op: "update",

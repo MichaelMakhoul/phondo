@@ -10,10 +10,12 @@ import type { Mock } from "vitest";
 // Flags come from the DB row, never the payload.
 //
 // ORDER (ruled after the owner-call review): the email goes out AFTER the
-// spam-merge write (step 2), never between the hoisted metadata read and that
-// write — a Resend round trip there would stretch the read-modify-write window
-// to ~1 s. The stamp is then written from a FRESH re-read that merges only its
-// own key, so a stale copy is never written back over a concurrent writer.
+// spam-merge write (step 2), never between that write's metadata read and the
+// write itself — a Resend round trip there would stretch the read-modify-write
+// window to ~1 s. The hoisted read (first) only decides owner/locked; the merge
+// re-reads right before its write (final review), and the stamp is written from
+// a FRESH re-read that merges only its own key, so a stale copy is never written
+// back over a concurrent writer.
 
 vi.mock("@/lib/utils/after-response", () => ({ runAfterResponse: vi.fn((work: () => Promise<unknown>) => { void work(); }) }));
 
@@ -212,7 +214,7 @@ describe("POST /api/internal/call-completed — PIN lockout email (SCRUM-586)", 
     });
   });
 
-  it("sends AFTER the spam-merge write — never between the hoisted read and that write — then re-reads before stamping", async () => {
+  it("sends AFTER the spam-merge write — never between that write's re-read and the write — then re-reads before stamping", async () => {
     db.metadata = { owner_auth: "locked" };
     vi.mocked(rateLimitDistributed).mockImplementationOnce(async () => {
       db.events.push("limit:owner-lock-email");
@@ -220,7 +222,8 @@ describe("POST /api/internal/call-completed — PIN lockout email (SCRUM-586)", 
     });
     await POST(completedCall());
     // The per-org throttle is consulted first, before anything is sent.
-    expect(db.events).toEqual(["read:calls", "update:calls", "limit:owner-lock-email", "send:lock-email", "read:calls", "update:stamp"]);
+    // hoisted read (owner/locked decision), the merge's own re-read + write, then the email.
+    expect(db.events).toEqual(["read:calls", "read:calls", "update:calls", "limit:owner-lock-email", "send:lock-email", "read:calls", "update:stamp"]);
     // The step-2 write is the unchanged customer merge: it carries no stamp.
     const merge = callUpdates().find((u) => !isStamp(u))!;
     expect(merge.payload).toMatchObject({ is_spam: false, spam_score: 0 });
@@ -232,13 +235,13 @@ describe("POST /api/internal/call-completed — PIN lockout email (SCRUM-586)", 
     db.metadata = { owner_auth: "locked", ended_reason: "hangup" };
     sendThatRacesAWriter();
     await POST(completedCall());
-    expect(db.reads).toHaveLength(2);
-    expect(db.reads[1]).toMatchObject({ transcript_source: "deepgram" }); // the re-read saw the racing write
+    expect(db.reads).toHaveLength(3); // hoisted, the merge's re-read, the stamp's re-read
+    expect(db.reads[2]).toMatchObject({ transcript_source: "deepgram" }); // the stamp's re-read saw the racing write
     const stamp = stamps()[0];
     expect(Object.keys(stamp.payload)).toEqual(["metadata"]); // no other column rewritten
     const { owner_lock_emailed_at, ...rest } = stamp.payload.metadata;
     expect(owner_lock_emailed_at).toMatch(ISO);
-    expect(rest).toEqual(db.reads[1]); // exactly the fresh copy + the one key
+    expect(rest).toEqual(db.reads[2]); // exactly the fresh copy + the one key
     // Net: nothing the other writer added, nor the spam merge, was lost.
     expect(db.metadata).toMatchObject({
       owner_auth: "locked", transcript_source: "deepgram", spam_analysis: { recommendation: "allow" },
@@ -344,7 +347,7 @@ describe("POST /api/internal/call-completed — PIN lockout email (SCRUM-586)", 
     expect(sendOwnerPinLockedNotification).not.toHaveBeenCalled();
     expect(stamps()).toHaveLength(0);
     expect(pageSentry).not.toHaveBeenCalled();
-    expect(db.events).toEqual(["read:calls", "update:calls"]);
+    expect(db.events).toEqual(["read:calls", "read:calls", "update:calls"]);
     expect(console.warn).toHaveBeenCalledWith(
       expect.stringContaining("throttled"), expect.objectContaining({ organizationId: "org-1", callId: CALL_ID }),
     );
@@ -464,7 +467,7 @@ describe("POST /api/internal/call-completed — PIN lockout email (SCRUM-586)", 
   describe("the stamp is best-effort: the email already went out, so nothing here may turn 'sent' into a failure", () => {
     it("a failed fresh re-read writes NO stamp (never a stale write-back), logs it, and still reports 'sent'", async () => {
       db.metadata = { owner_auth: "locked" };
-      db.failCallRead = 2;
+      db.failCallRead = 3; // 1 = hoisted, 2 = the merge's re-read, 3 = the stamp's re-read
       const res = await POST(completedCall());
       expect(res.status).toBe(200);
       expect((await res.json()).ownerLockEmail).toBe("sent");
@@ -477,7 +480,7 @@ describe("POST /api/internal/call-completed — PIN lockout email (SCRUM-586)", 
 
     it("a thrown re-read is contained: 200, 'sent', no stamp, and no false 'email failed' page", async () => {
       db.metadata = { owner_auth: "locked" };
-      db.throwCallRead = 2;
+      db.throwCallRead = 3; // the stamp's re-read
       const res = await POST(completedCall());
       expect(res.status).toBe(200);
       expect((await res.json()).ownerLockEmail).toBe("sent");
