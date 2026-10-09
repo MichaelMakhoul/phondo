@@ -100,6 +100,17 @@ describe("owner_* authority (SCRUM-586)", () => {
     expect(handleOwnerCancelAppointment).toHaveBeenCalledWith(ORG, { appointment_id: APPT, confirmed: false, reason: "no longer needed" }, { callId: CALL_ID });
   });
 
+  it("both write tools take only the boolean true as `confirmed` (\"true\" and 1 arrive as false)", async () => {
+    // Step 6 found Boolean(raw.confirmed) on the reschedule branch alone survived the
+    // cancel-only pin above; 1 also covers a loose `== true`.
+    for (const confirmed of ["true", 1]) {
+      await post({ ...base, ownerVerified: true, functionName: "owner_reschedule_appointment", arguments: { appointment_id: APPT, new_datetime: "2026-10-20T09:00", confirmed } });
+      await post({ ...base, ownerVerified: true, functionName: "owner_cancel_appointment", arguments: { appointment_id: APPT, confirmed } });
+    }
+    expect(vi.mocked(handleOwnerRescheduleAppointment).mock.calls.map((c) => c[1].confirmed)).toEqual([false, false]);
+    expect(vi.mocked(handleOwnerCancelAppointment).mock.calls.map((c) => c[1].confirmed)).toEqual([false, false]);
+  });
+
   it("forwards a handler's error:true flag (SCRUM-509) and 200", async () => {
     const res = await post({ ...base, ownerVerified: true, functionName: "owner_cancel_appointment", arguments: { appointment_id: APPT, confirmed: true } });
     expect(res.status).toBe(200);
