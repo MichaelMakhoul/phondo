@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { PIN_REGEX, isValidPin } from "@/lib/owner-assistant/pin-rules";
+import { PIN_REGEX, isValidPin, isWeakPin } from "@/lib/owner-assistant/pin-rules";
 import { generatePinSalt, hashPin, verifyPin } from "@/lib/owner-assistant/pin";
 
 // Cross-PR contract (spec §1, §9): the voice server's lib/owner-auth.js (PR C)
@@ -25,6 +25,68 @@ describe("PIN rules", () => {
 
   it("exposes the same regex the route and the card use", () => {
     expect(PIN_REGEX.source).toBe("^\\d{4,8}$");
+  });
+});
+
+// Tradie mobiles are public and caller ID can be spoofed, so the PIN is the
+// real second factor: the guesses an attacker tries first must be refused.
+describe("weak PIN rule", () => {
+  it.each(["0000", "1111", "7777", "000000", "999999", "88888888"])(
+    "rejects %s — one digit repeated",
+    (pin) => {
+      expect(isWeakPin(pin)).toBe(true);
+    },
+  );
+
+  it.each(["1234", "0123", "2345", "6789", "12345", "123456", "012345", "1234567", "12345678", "23456789"])(
+    "rejects %s — a straight ascending run",
+    (pin) => {
+      expect(isWeakPin(pin)).toBe(true);
+    },
+  );
+
+  it.each(["4321", "3210", "9876", "98765", "654321", "7654321", "87654321", "98765432"])(
+    "rejects %s — a straight descending run",
+    (pin) => {
+      expect(isWeakPin(pin)).toBe(true);
+    },
+  );
+
+  it.each(["121212", "7878", "909090", "12121212", "393939", "12121", "1212121"])(
+    "rejects %s — a repeated 2-digit pair",
+    (pin) => {
+      expect(isWeakPin(pin)).toBe(true);
+    },
+  );
+
+  it.each(["1212", "1004", "2000", "2580", "6969", "1122", "1313", "4545", "5683", "0852"])(
+    "rejects %s — on the common-PIN list",
+    (pin) => {
+      expect(isWeakPin(pin)).toBe(true);
+    },
+  );
+
+  it.each([
+    "1739",
+    "805214",
+    "40271958",
+    "9753", // steps of two, not one
+    "1235", // a run broken at the end
+    "2346",
+    "4320",
+    "1243",
+    "1213", // a pair repeated, then broken
+    "121213",
+    "12124",
+    "112233", // pairs of digits, but not one pair repeated
+  ])("accepts %s", (pin) => {
+    expect(isWeakPin(pin)).toBe(false);
+  });
+
+  it("treats the common list as exact matches, not substrings", () => {
+    expect(isWeakPin("2580")).toBe(true);
+    expect(isWeakPin("25801")).toBe(false);
+    expect(isWeakPin("92580")).toBe(false);
   });
 });
 
