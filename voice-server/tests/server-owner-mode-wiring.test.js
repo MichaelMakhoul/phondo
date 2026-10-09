@@ -80,10 +80,9 @@ describe("SCRUM-587: owner session wiring", () => {
     const writeIdx = cleanup.indexOf("await completeCallRecord(s.callRecordId, {");
     assert.ok(writeIdx >= 0 && writeIdx < cleanup.indexOf("notifyCallCompleted(INTERNAL_API_URL, INTERNAL_API_SECRET, {"), "PR B reads call_type from the DB — the record must be written (awaited) before the webhook");
   });
-  it("counts enough owner gates that a dropped one is visible", () => {
-    const n = (src.match(/session\.ownerMode|s\.ownerMode/g) || []).length;
-    assert.ok(n >= 16, `expected ≥16 owner-mode gates in server.js, got ${n}`);
-  });
+  // (A "≥16 owner gates" count used to sit here. A count can't tell which gate went missing,
+  // and every gate is now run for real below: prompt, pipeline, Gemini assembly and
+  // callbacks, the classic loop, post-call, the start hop and the eval-pipeline exclusion.)
 });
 
 // ─── Controller overrides — source pins ─────────────────────────────────────
@@ -114,14 +113,16 @@ describe("SCRUM-587: owner session — controller-override pins", () => {
     assert.match(src, /const _testPipeline = session\.ownerMode \? null : resolveTestPipeline\(session\.orgPhoneNumber\);/);
   });
 
-  it("the turn/speech stamps are wired at exactly these sites (a new site would double-count turns)", () => {
+  // Each stamp site is run for real below (Gemini onAudio / onInterrupted / onTurnComplete /
+  // onTranscriptIn, the classic reply and STT final); this pins only that every site is gated.
+  it("every turn/speech stamp site is gated on owner mode", () => {
     assert.match(src, /require\("\.\/lib\/owner-turn-stamps"\)/);
-    assert.equal((src.match(/noteAssistantSpeech\(session\)/g) || []).length, 2, "Gemini onAudio + classic reply sentence — assistant AUDIO only, never transcription");
-    assert.equal((src.match(/noteAssistantTurnEnd\(session\)/g) || []).length, 3, "Gemini onInterrupted + onTurnComplete, classic after the reply");
-    assert.equal((src.match(/noteOwnerSpeech\(session, /g) || []).length, 2, "Gemini input transcription + classic STT final");
+    let sites = 0;
     for (const m of src.matchAll(/^.*note(?:AssistantSpeech|AssistantTurnEnd|OwnerSpeech)\(session.*$/gm)) {
+      sites += 1;
       assert.match(m[0], /if \(session\??\.ownerMode(?: && [^\n]*?)?\) note/, `ungated stamp site: ${m[0].trim()}`);
     }
+    assert.ok(sites > 0, "the scan found the stamp sites");
   });
 
   it("server.js never writes the gate's clock directly, and CallSession only declares it (never reset mid-call)", () => {
@@ -492,7 +493,7 @@ function makeGeminiCallbacks(session, o = {}) {
     pendingUserTranscript: "",
     pendingAiTranscript: "",
     detectPhantomAction: (...a) => { calls.push(["detectPhantomAction", ...a]); return null; },
-    validateToolResponse: async () => { calls.push(["validateToolResponse"]); return { accurate: true }; },
+    validateToolResponse: async (...a) => { calls.push(["validateToolResponse", ...a]); return { accurate: true }; },
     DEBUG_TRANSCRIPTS: false,
     noteAssistantSpeech,
     noteAssistantTurnEnd,
@@ -1076,7 +1077,7 @@ function makeCleanup(session, o = {}) {
     buildToolOutcomeDigest: () => "",
     DEBUG_TRANSCRIPTS: false,
     maybeEmitUnhappyCall: () => calls.push(["maybeEmitUnhappyCall"]),
-    netLiveOutcome: () => 0,
+    netLiveOutcome: o.netLive || (() => 0),
     setReasonTag: () => {},
     SENTRY_REASONS: { BOOKING_STATE_MISMATCH: "booking-state-mismatch" },
     detectAndRedact: o.detectAndRedact || ((t) => ({ piiFound: false, redacted: t })),
@@ -1430,5 +1431,96 @@ describe("SCRUM-587: a transfer reconnect keeps the PIN-gate stamp, never owner 
     const plain = new CallSession("CA-3");
     plain.restoreFrom({ messages: [] });
     assert.equal(plain.ownerAuth, null);
+  });
+});
+
+// ─── Coverage (final review, test lens): customer paths through hunks the owner work edited ───
+describe("SCRUM-587: customer paths through hunks the owner work edited, run for real", () => {
+  it("cleanupSession: action_taken is appointment_booked for a customer with a live booking (tool audit OR the classic ledger), null without one, owner_call for an owner", async () => {
+    const cases = [
+      ["tool audit net-live > 0", { netLive: () => 1 }, null, "appointment_booked"],
+      ["classic confirmedBookings fallback", {}, new Map([["k", { code: "123456" }]]), "appointment_booked"],
+      ["no booking", {}, null, null],
+    ];
+    for (const [label, o, ledger, expected] of cases) {
+      const s = endedCall(makeSession({ owner: false }));
+      if (ledger) s.confirmedBookings = ledger;
+      const { cleanupSession, calls } = makeCleanup(s, o);
+      await cleanupSession();
+      assert.equal(calls.find((c) => c[0] === "completeCallRecord")[2].actionTaken, expected, label);
+    }
+    const owner = endedCall(makeSession({ owner: true }));
+    owner.confirmedBookings = new Map([["k", {}]]);
+    const { cleanupSession, calls } = makeCleanup(owner, { netLive: () => 1 });
+    await cleanupSession();
+    assert.equal(calls.find((c) => c[0] === "completeCallRecord")[2].actionTaken, "owner_call");
+  });
+
+  it("Gemini turn-complete: a customer turn right after a tool result still reaches the Tier-2 validator (with the tool, its result and what was said)", async () => {
+    const customer = makeSession({ owner: false });
+    customer._lastToolResult = { name: "check_availability", message: "9 a.m. or 10 a.m. on Friday.", at: Date.now() };
+    const c = makeGeminiCallbacks(customer);
+    c.cbs.onTranscriptOut("We have 9 a.m. or 10 a.m. on Friday.");
+    c.cbs.onTurnComplete();
+    const v = c.calls.filter((x) => x[0] === "validateToolResponse");
+    assert.equal(v.length, 1);
+    assert.deepEqual(v[0][1], { toolName: "check_availability", toolResult: "9 a.m. or 10 a.m. on Friday.", spokenResponse: "We have 9 a.m. or 10 a.m. on Friday." });
+    assert.equal(customer._lastToolResult, null, "consumed");
+  });
+
+  it("classic transfer hand-off: a customer call that failed the PIN gate carries owner_auth into the saved state, and is never labelled an owner call", async () => {
+    const s = makeSession({ owner: false, ownerAuth: "locked" });
+    const c = makeClassic({
+      executeToolCall: async () => ({ message: "Connecting you to Dave.", action: "transfer", transferTo: "+61400000555", transferAttempt: { targetName: "Dave" }, transferTargetName: "Dave", allDestinations: [], destinationIndex: 0 }),
+      steps: [{ tools: [{ name: "transfer_call", arguments: "{}" }] }],
+    });
+    await c.handleUserSpeech(s, twilio, "put me through to Dave");
+    const saved = c.calls.find((x) => x[0] === "saveForTransfer");
+    assert.ok(saved, "the transfer was handed off");
+    assert.equal(saved[2].ownerAuth, "locked");
+    assert.equal(saved[2].callType, null);
+    // …and the reconnect (CallSession.restoreFrom) reads the same key back, without ever making it an owner session.
+    const reconnected = new CallSession("CA-customer");
+    reconnected.restoreFrom(saved[2]);
+    assert.equal(reconnected.ownerAuth, "locked");
+    assert.equal(reconnected.ownerMode, false);
+  });
+
+  it("the stream start copies owner mode from the server-side token only — and only the literal true", () => {
+    const hop = (tokenData) => {
+      const session = new CallSession("CA-1");
+      const lines = [];
+      runSlice({
+        from: "          session.callerPhone = callerPhone;\n",
+        to: "          sessions.set(streamSid, session);",
+        scope: { session, tokenData, callerPhone: "+61400000001", callSid: "CA-1", console: recordingConsole(lines) },
+      });
+      return { session, lines };
+    };
+    const owner = hop({ ownerMode: true, ownerAuth: "verified", ownerFirstName: "Dave" });
+    assert.deepEqual([owner.session.ownerMode, owner.session.ownerAuth, owner.session.ownerFirstName], [true, "verified", "Dave"]);
+    assert.deepEqual(owner.lines, ["log| [OwnerPin] Owner session for callSid=CA-1"]);
+    for (const tokenData of [{ ownerMode: "true", ownerAuth: "verified" }, { ownerMode: 1 }, {}]) {
+      const r = hop(tokenData);
+      assert.equal(r.session.ownerMode, false, JSON.stringify(tokenData));
+      assert.deepEqual(r.lines, []);
+    }
+    const locked = hop({ ownerMode: false, ownerAuth: "locked" });
+    assert.deepEqual([locked.session.ownerMode, locked.session.ownerAuth, locked.session.ownerFirstName], [false, "locked", null]);
+  });
+
+  it("an owner call never takes the eval test-pipeline override; a customer call still does", () => {
+    const pick = (owner) => {
+      let consulted = 0;
+      const { _testPipeline } = runSlice({
+        from: "const _testPipeline = session.ownerMode",
+        to: "if (_testPipeline && !KNOWN_TEST_PIPELINES.has(_testPipeline)) {",
+        scope: { session: makeSession({ owner }), resolveTestPipeline: () => { consulted += 1; return "openai-realtime"; } },
+        names: ["_testPipeline"],
+      });
+      return { _testPipeline, consulted };
+    };
+    assert.deepEqual(pick(true), { _testPipeline: null, consulted: 0 });
+    assert.deepEqual(pick(false), { _testPipeline: "openai-realtime", consulted: 1 });
   });
 });

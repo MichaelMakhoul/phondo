@@ -20,6 +20,7 @@ process.env.GEMINI_API_KEY = "test-key";
 process.env.INTERNAL_API_URL = process.env.INTERNAL_API_URL || "http://localhost:3000";
 process.env.INTERNAL_API_SECRET = process.env.INTERNAL_API_SECRET || "test-secret";
 const { createGeminiSession } = require("../services/gemini-live");
+const { buildOwnerTools } = require("../lib/owner-tools");
 
 function makeSession(callbacks, tools = []) {
   createGeminiSession(
@@ -28,6 +29,54 @@ function makeSession(callbacks, tools = []) {
   );
   return created[created.length - 1];
 }
+
+const settle = () => new Promise((r) => setImmediate(r));
+
+// Final review, test lens: the Gemini adapter is unchanged by PR C, yet the owner flow rides on
+// two of its behaviours no test pinned — (1) a tool result's `data` (appointment ids, a write's
+// data.outcome) reaches the model, and (2) `confirmed` is declared to Gemini as a BOOLEAN (PR B
+// treats the string "true" as needs_confirmation, so a string would mean no write ever happens).
+test("an owner tool's result goes to Gemini WHOLE — message and data (the appointment ids ride in data)", async () => {
+  const result = { message: "1 job today.", data: { count: 1, appointments: [{ appointment_id: "a1", when: "Friday at 3 PM" }] } };
+  const ws = makeSession({ onToolCall: async () => result });
+  ws.emit("open");
+  ws.emit("message", JSON.stringify({ setupComplete: {} }));
+  ws.emit("message", JSON.stringify({ toolCall: { functionCalls: [{ id: "t1", name: "owner_list_appointments", args: { range: "today" } }] } }));
+  await settle();
+  const frame = ws.sent.find((m) => m.toolResponse);
+  assert.ok(frame, "no toolResponse sent");
+  assert.deepEqual(frame.toolResponse.functionResponses, [{ id: "t1", name: "owner_list_appointments", response: { result } }]);
+});
+
+test("a write's outcome reaches Gemini too, and a plain string result is wrapped as { message }", async () => {
+  const outcomes = {
+    owner_cancel_appointment: { message: "Cancelled.", data: { outcome: "cancelled", customer_notified: false } },
+    get_current_datetime: "It is Thursday 15 October, 1:30 am.",
+  };
+  const ws = makeSession({ onToolCall: async ({ name }) => outcomes[name] });
+  ws.emit("open");
+  ws.emit("message", JSON.stringify({ setupComplete: {} }));
+  ws.emit("message", JSON.stringify({ toolCall: { functionCalls: [
+    { id: "t1", name: "owner_cancel_appointment", args: { appointment_id: "a1", confirmed: true } },
+    { id: "t2", name: "get_current_datetime", args: {} },
+  ] } }));
+  await settle();
+  const [cancel, now] = ws.sent.find((m) => m.toolResponse).toolResponse.functionResponses;
+  assert.deepEqual(cancel.response.result.data, { outcome: "cancelled", customer_notified: false });
+  assert.deepEqual(now.response.result, { message: "It is Thursday 15 October, 1:30 am." });
+});
+
+test("the owner tools are declared to Gemini with the types PR B's gate depends on: confirmed is a BOOLEAN, range an enum", () => {
+  const ws = makeSession({}, buildOwnerTools());
+  ws.emit("open");
+  const setup = ws.sent.find((m) => m.setup);
+  const decls = Object.fromEntries(setup.setup.tools[0].functionDeclarations.map((d) => [d.name, d]));
+  assert.deepEqual(Object.keys(decls).sort(), ["check_availability", "end_call", "get_current_datetime", "owner_cancel_appointment", "owner_list_appointments", "owner_list_messages", "owner_reschedule_appointment"]);
+  assert.equal(decls.owner_cancel_appointment.parameters.properties.confirmed.type, "BOOLEAN");
+  assert.equal(decls.owner_reschedule_appointment.parameters.properties.confirmed.type, "BOOLEAN");
+  assert.deepEqual(decls.owner_list_appointments.parameters.properties.range.enum, ["today", "tomorrow", "this_week", "date"]);
+  assert.deepEqual(decls.owner_reschedule_appointment.parameters.required, ["appointment_id", "new_datetime"]);
+});
 
 // Silent-failure lens SF4: toolCallCancellation was only logged, so an owner write the owner
 // talked over still ran. The adapter now hands the cancelled ids to the call site.
