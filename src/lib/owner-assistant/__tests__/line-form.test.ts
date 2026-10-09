@@ -128,6 +128,47 @@ describe("validateOwnerLineForm — PIN shape", () => {
   });
 });
 
+// The card sets no maxLength on the PIN inputs, so a paste reaches the validator
+// whole. A browser would otherwise cut "402719583" down to the valid, strong
+// "40271958" — a PIN the owner never chose and cannot know. It must be refused.
+describe("validateOwnerLineForm — a PIN pasted past the maximum length", () => {
+  const PASTES = ["402719583", "4027195830", "40271958305", "40271958305172839405", "7".repeat(64)];
+
+  it.each(PASTES.map((paste) => [paste.length, paste] as const))(
+    "rejects a pasted %i-digit PIN with the format error, not a truncated 8-digit one (first save)",
+    (_digits, paste) => {
+      // Pasted into both fields, so the confirmation matches: only the length is wrong.
+      expect(validateOwnerLineForm({ phone: PHONE, pin: paste, pinConfirm: paste }, FIRST_SAVE)).toEqual({
+        pin: PIN_FORMAT_MESSAGE,
+      });
+    },
+  );
+
+  it.each(PASTES.map((paste) => [paste.length, paste] as const))(
+    "rejects a pasted %i-digit PIN the same way when resetting an existing line",
+    (_digits, paste) => {
+      expect(validateOwnerLineForm({ phone: PHONE, pin: paste, pinConfirm: paste }, EXISTING)).toEqual({
+        pin: PIN_FORMAT_MESSAGE,
+      });
+    },
+  );
+
+  it("accepts 8 digits and refuses the 9th: the first 8 of a paste would have passed, which is why truncating is unsafe", () => {
+    const eight = "40271958";
+    expect(validateOwnerLineForm({ phone: PHONE, pin: eight, pinConfirm: eight }, FIRST_SAVE)).toEqual({});
+    expect(validateOwnerLineForm({ phone: PHONE, pin: `${eight}3`, pinConfirm: `${eight}3` }, FIRST_SAVE)).toEqual({
+      pin: PIN_FORMAT_MESSAGE,
+    });
+  });
+
+  it("does not let a paste hide behind a matching truncation: a long PIN with an 8-digit confirm is a mismatch too", () => {
+    expect(validateOwnerLineForm({ phone: PHONE, pin: "402719583", pinConfirm: "40271958" }, FIRST_SAVE)).toEqual({
+      pin: PIN_FORMAT_MESSAGE,
+      pinConfirm: PIN_MISMATCH_MESSAGE,
+    });
+  });
+});
+
 describe("validateOwnerLineForm — a line that is already set up", () => {
   it("lets a blank PIN through to keep the current one", () => {
     expect(validateOwnerLineForm({ phone: PHONE, pin: "", pinConfirm: "" }, EXISTING)).toEqual({});

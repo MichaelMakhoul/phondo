@@ -48,6 +48,11 @@ export function phoneExampleFor(country: SupportedCountry): string {
  * isWeakPin is only meaningful for a PIN that already passed isValidPin (it
  * returns true for "", "1", "12", "123"), so the format is checked first and a
  * half-typed PIN is never reported as weak.
+ *
+ * The card puts no maxLength on the PIN inputs: a browser would silently cut a
+ * pasted 9+ digit PIN down to a valid-looking 8-digit one the owner never
+ * chose. The whole value reaches this check and gets the format error, so
+ * nothing here may truncate, slice or trim a PIN before testing it.
  */
 export function validateOwnerLineForm(
   { phone, pin, pinConfirm }: OwnerLineValues,

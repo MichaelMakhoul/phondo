@@ -64,6 +64,12 @@ describe("Owner line card — client bundle and PIN hygiene", () => {
     expect(cardSource.match(/autoComplete="new-password"/g)).toHaveLength(2);
   });
 
+  it("puts no length cap on the PIN inputs, so a pasted long PIN is rejected, not silently truncated", () => {
+    // maxLength would let the browser cut "402719583" down to the valid, strong
+    // "40271958" — a PIN the owner never chose. validateOwnerLineForm rejects it.
+    expect(cardSource).not.toMatch(/maxLength\s*=/);
+  });
+
   it("never renders, interpolates or logs the PIN", () => {
     // Not as JSX text, not inside a template literal …
     expect(cardSource).not.toMatch(/>\s*\{pin(Confirm)?\}\s*</);
@@ -74,5 +80,25 @@ describe("Owner line card — client bundle and PIN hygiene", () => {
     for (const call of consoleCalls) {
       expect(call).not.toMatch(/\bpin\b|pinConfirm|\bbody\b/i);
     }
+  });
+});
+
+describe("Owner line card — copy that must stay true", () => {
+  // JSX text wraps across lines in source, so compare on collapsed whitespace.
+  const cardText = cardSource.replace(/\s+/g, " ");
+
+  it("says assistant calls follow the call-recording setting, never that every call is recorded", () => {
+    // recording_consent_mode='never' skips recording (voice-server/server.js), so
+    // an unconditional "are recorded" is false for those orgs.
+    expect(cardText).toContain("Calls to your assistant follow your call-recording setting, like every other call.");
+    expect(cardText).not.toMatch(/are recorded/);
+  });
+
+  it("describes the lockout the PIN flow really has", () => {
+    // 5 wrong tries per 15 minutes (20 per day), an email on lockout, and saving
+    // a new PIN clears the lock.
+    expect(cardText).toContain(
+      "It only works from the mobile above. After too many wrong PINs the line locks and we email you — saving a new PIN unlocks it.",
+    );
   });
 });

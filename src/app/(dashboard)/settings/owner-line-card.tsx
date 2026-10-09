@@ -15,8 +15,8 @@ import { useToast } from "@/components/ui/use-toast";
 import { Loader2, Smartphone } from "lucide-react";
 import type { SupportedCountry } from "@/lib/phone/normalize";
 import { formatPhoneNumber } from "@/lib/utils";
-// Client component: only the dependency-free modules, never ../pin (Node crypto).
-import { PIN_MAX_LENGTH } from "@/lib/owner-assistant/pin-rules";
+// Client component: only dependency-free modules (line-form imports just
+// pin-rules and the phone normaliser), never ../pin (Node crypto).
 import {
   PIN_CONFIRM_ONLY_MESSAGE,
   PIN_RULE_TEXT,
@@ -55,6 +55,11 @@ function logRequestFailure(action: string, err: unknown) {
  * the owner rings from and a 4–8 digit PIN. The PIN is write-only: the server
  * stores a hash and this card never shows it again. Validation lives in
  * @/lib/owner-assistant/line-form so it can be unit-tested.
+ *
+ * The PIN inputs deliberately have no maxLength: a browser would silently cut a
+ * pasted 9+ digit PIN down to a valid-looking 8-digit one the owner never
+ * chose. The value is kept whole and validateOwnerLineForm rejects it with the
+ * format error on Save.
  */
 export function OwnerLineCard({ country, phondoNumber, initial }: OwnerLineCardProps) {
   const [configured, setConfigured] = useState(initial.configured);
@@ -221,7 +226,6 @@ export function OwnerLineCard({ country, phondoNumber, initial }: OwnerLineCardP
               type="password"
               inputMode="numeric"
               autoComplete="new-password"
-              maxLength={PIN_MAX_LENGTH}
               value={pin}
               onChange={(e) => {
                 setPin(e.target.value);
@@ -247,7 +251,6 @@ export function OwnerLineCard({ country, phondoNumber, initial }: OwnerLineCardP
               type="password"
               inputMode="numeric"
               autoComplete="new-password"
-              maxLength={PIN_MAX_LENGTH}
               value={pinConfirm}
               onChange={(e) => {
                 setPinConfirm(e.target.value);
@@ -296,14 +299,17 @@ export function OwnerLineCard({ country, phondoNumber, initial }: OwnerLineCardP
         )}
 
         <div className="space-y-1 text-xs text-muted-foreground">
-          <p>Calls to your assistant are recorded, like every call your receptionist takes.</p>
+          <p>Calls to your assistant follow your call-recording setting, like every other call.</p>
           {phondoNumber && (
             <p>
               Save <span className="font-medium text-foreground">{formatPhoneNumber(phondoNumber, country)}</span> as a
               contact so your phone&apos;s call screening doesn&apos;t answer it.
             </p>
           )}
-          <p>A PIN is a small secret: keep it to yourself, and it only works from the mobile above.</p>
+          <p>
+            It only works from the mobile above. After too many wrong PINs the line locks and we email you — saving a
+            new PIN unlocks it.
+          </p>
         </div>
 
         <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-between">
