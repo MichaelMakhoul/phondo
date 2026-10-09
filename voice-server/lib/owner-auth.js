@@ -4,8 +4,8 @@
  * SCRUM-587 — owner-assistant PIN auth (spec §1, §9).
  *
  * Pure helpers (no I/O, NO logging — the PIN must never reach a log line) plus
- * the persisted lockout (countPinAttempt / recordPinFailure / resetPinAttempts),
- * which take the service-role Supabase client so the counters live in Postgres
+ * the persisted lockout (countPinAttempt / resetPinAttempts), which take the
+ * service-role Supabase client so the counters live in Postgres
  * (rate_limit_buckets) and survive a scale-to-zero restart.
  *
  * Digest contract with PR A (Settings API): scryptSync(pin, pin_salt, 32) with
@@ -17,20 +17,22 @@
  * Lockout. Caller ID is spoofable, so the PIN is the only secret and guessing is
  * capped twice, per org AND PIN generation (PR A rotates pin_salt on every PIN
  * save, so saving a new PIN starts both counters from zero):
- *  - 5 tries per 15 minutes. Every attempt counts BEFORE the PIN is checked, and
- *    a correct PIN clears it (resetPinAttempts), so the owner's own logins never
- *    use it up.
- *  - 10 wrong PINs per 24 hours. Only a PIN that FAILED the check counts
- *    (recordPinFailure), and a correct PIN never clears it, so the owner logging
- *    in cannot refill an attacker's budget. It clears only by time (24 hours
- *    after the first wrong PIN) or by saving a new PIN.
+ *  - 5 tries per 15 minutes. A correct PIN clears it (resetPinAttempts), so the
+ *    owner's own logins never use it up.
+ *  - 20 tries per 24 hours, right or wrong (an owner needs two to six a day). A
+ *    correct PIN does not clear it: only time (24 hours after the first try) or
+ *    saving a new PIN does, so no number of owner logins can refill an
+ *    attacker's budget.
+ * Both are counted atomically in Postgres BEFORE the PIN is checked
+ * (countPinAttempt), so parallel calls cannot slip past either cap, and there is
+ * no follow-up write to skip or lose. Any database error locks the PIN.
  * The 15 minute window alone would still allow 480 guesses a day.
  */
 const crypto = require("crypto");
 
 const OWNER_PIN_MAX_ATTEMPTS = 5;            // tries per org + PIN generation per 15 min (cleared by a correct PIN)
 const OWNER_PIN_WINDOW_MS = 15 * 60 * 1000;
-const OWNER_PIN_DAY_MAX_ATTEMPTS = 10;       // WRONG PINs per org + PIN generation per 24 h (never cleared by a correct PIN)
+const OWNER_PIN_DAY_MAX_ATTEMPTS = 20;       // tries, right or wrong, per org + PIN generation per 24 h (never cleared by a correct PIN)
 const OWNER_PIN_DAY_WINDOW_MS = 24 * 60 * 60 * 1000;
 const OWNER_PIN_MAX_PER_CALL = 3;            // Gather round-trips in ONE call
 const PIN_LENGTH_MIN = 4;
@@ -204,9 +206,9 @@ function bucketKeys(organizationId, pinSalt) {
 }
 
 /**
- * One atomic increment of a rate-limit bucket (the 15 minute tries or the 24 hour
- * wrong PINs); resolves to its post-increment count. Throws an Error on an RPC
- * error, no row, or a count that is not a finite number.
+ * One atomic increment of a rate-limit bucket (the 15 minute or the 24 hour
+ * tries); resolves to its post-increment count. Throws an Error on an RPC error,
+ * no row, or a count that is not a finite number.
  * @param {{ rpc: Function }} supabase
  * @param {string} key @param {number} windowMs @param {number} maxRequests
  * @returns {Promise<number>}
@@ -221,35 +223,17 @@ async function bumpBucket(supabase, key, windowMs, maxRequests) {
 }
 
 /**
- * The wrong PINs on record in this PIN generation's 24 hour window. A READ: only
- * recordPinFailure counts. No row, or a window that has ended, is 0. Throws an
- * Error when the read fails or the row is unusable (a count that is not a finite
- * number, a reset_time that is not a date).
- * @param {{ from: Function }} supabase
- * @param {string} dayKey
- * @returns {Promise<number>}
- */
-async function readDayFailures(supabase, dayKey) {
-  const { data, error } = await supabase.from(RATE_LIMIT_TABLE).select("count, reset_time").eq("key", dayKey).maybeSingle();
-  if (error) throw toError(error, `${RATE_LIMIT_TABLE} read failed`);
-  if (!data) return 0;
-  const windowEndsAt = typeof data.reset_time === "string" ? Date.parse(data.reset_time) : NaN;
-  if (!Number.isFinite(data.count) || Number.isNaN(windowEndsAt)) throw new Error(`${RATE_LIMIT_TABLE} returned an unusable row`);
-  return windowEndsAt <= Date.now() ? 0 : data.count;
-}
-
-/**
- * Gate ONE attempt, BEFORE the PIN is checked (a guessing caller burns the budget
- * even on a lucky final guess). In order: (1) bump the 15 minute bucket by RPC, 5
- * tries per window; (2) only if that one is not exhausted, READ the 24 hour row —
- * 10 wrong PINs per window. The 24 hour row is never incremented here (only
- * recordPinFailure does that, after a failed check), and a locked 15 minute
- * attempt never touches it at all. `count` is the 15 minute count when unlocked,
+ * Count ONE attempt, BEFORE the PIN is checked (a guessing caller burns the budget
+ * even on a lucky final guess). Two atomic RPC increments, in order: (1) the 15
+ * minute bucket, 5 tries per window; (2) only if that one is not exhausted, so a
+ * caller hammering a lockout cannot burn the owner's daily budget, the 24 hour
+ * bucket, 20 tries per window, which counts every attempt, right or wrong. Both
+ * are awaited before this resolves. `count` is the 15 minute count when unlocked,
  * and the count of the window that locked otherwise (`window` says which).
- * Fail CLOSED: an RPC or read error, an empty result, an unusable count or row, a
- * throw, or a bad organizationId / pinSalt ⇒ locked with reason "rpc-error" so the
- * route handler can page it; `error` is always an Error.
- * @param {{ supabase?: { rpc: Function, from: Function }, organizationId?: unknown, pinSalt?: unknown } | null | undefined} args
+ * Fail CLOSED: an RPC error, an empty result, an unusable count, a throw, or a bad
+ * organizationId / pinSalt ⇒ locked with reason "rpc-error" so the route handler
+ * can page it; `error` is always an Error.
+ * @param {{ supabase?: { rpc: Function }, organizationId?: unknown, pinSalt?: unknown } | null | undefined} args
  * @returns {Promise<{ locked: boolean, count?: number, reason: "ok"|"exhausted"|"rpc-error", window?: "15m"|"24h", error?: Error }>}
  */
 async function countPinAttempt(args) {
@@ -258,8 +242,8 @@ async function countPinAttempt(args) {
     const keys = bucketKeys(organizationId, pinSalt);
     const count = await bumpBucket(supabase, keys.short, OWNER_PIN_WINDOW_MS, OWNER_PIN_MAX_ATTEMPTS);
     if (count > OWNER_PIN_MAX_ATTEMPTS) return { locked: true, reason: "exhausted", window: "15m", count };
-    const wrongPins = await readDayFailures(supabase, keys.day);
-    if (wrongPins >= OWNER_PIN_DAY_MAX_ATTEMPTS) return { locked: true, reason: "exhausted", window: "24h", count: wrongPins };
+    const dayCount = await bumpBucket(supabase, keys.day, OWNER_PIN_DAY_WINDOW_MS, OWNER_PIN_DAY_MAX_ATTEMPTS);
+    if (dayCount > OWNER_PIN_DAY_MAX_ATTEMPTS) return { locked: true, reason: "exhausted", window: "24h", count: dayCount };
     return { locked: false, reason: "ok", count };
   } catch (err) {
     return { locked: true, reason: "rpc-error", error: toError(err, `${RATE_LIMIT_RPC} failed`) };
@@ -267,31 +251,11 @@ async function countPinAttempt(args) {
 }
 
 /**
- * Record ONE wrong PIN on the 24 hour row (10 per window). Call it, and await it,
- * only after a PIN FAILED the check: nothing else ever increments that row, and a
- * correct PIN never clears it. Never throws; `ok: false` (with an Error) means the
- * failure was NOT recorded, so the caller should alert. `count` is the number of
- * wrong PINs on record after this one.
- * @param {{ supabase?: { rpc: Function }, organizationId?: unknown, pinSalt?: unknown } | null | undefined} args
- * @returns {Promise<{ ok: boolean, count?: number, error?: Error }>}
- */
-async function recordPinFailure(args) {
-  try {
-    const { supabase, organizationId, pinSalt } = args || {};
-    const keys = bucketKeys(organizationId, pinSalt);
-    const count = await bumpBucket(supabase, keys.day, OWNER_PIN_DAY_WINDOW_MS, OWNER_PIN_DAY_MAX_ATTEMPTS);
-    return { ok: true, count };
-  } catch (err) {
-    return { ok: false, error: toError(err, `${RATE_LIMIT_RPC} failed`) };
-  }
-}
-
-/**
  * Clear the 15 minute window after a VERIFIED PIN, so the owner's own successes
  * never use up the 5 tries per 15 minutes. It deletes ONLY the 15 minute row and
- * NEVER touches the 24 hour row: wrong PINs stay counted toward the daily cap
- * however often the owner logs in. Never throws; the caller fires and forgets it,
- * so a failure costs one attempt of the 15 minute budget, never a call.
+ * NEVER touches the 24 hour row: tries stay counted toward the daily cap however
+ * often the owner logs in. Never throws; the caller fires and forgets it, so a
+ * failure costs one attempt of the 15 minute budget, never a call.
  * @param {{ supabase?: { from: Function }, organizationId?: unknown, pinSalt?: unknown } | null | undefined} args
  * @returns {Promise<{ ok: boolean, error?: Error }>}
  */
@@ -321,6 +285,5 @@ module.exports = {
   getEmbeddedOwnerAccess,
   isOwnerCall,
   countPinAttempt,
-  recordPinFailure,
   resetPinAttempts,
 };

@@ -17,18 +17,17 @@ const KEY_24H = "owner-pin-day:org-1:00112233";
 const ARGS = { organizationId: "org-1", pinSalt: SALT };
 
 const bucketRow = (count) => ({ data: [{ count, reset_time: "2026-10-09T00:00:00Z" }], error: null });
-// The 24 hour row as the table read returns it. resetsInMs is relative to the real clock: > 0 = window still running.
-const dayRow = (count, resetsInMs = 3600000) => ({ data: { count, reset_time: new Date(Date.now() + resetsInMs).toISOString() }, error: null });
-const noDayRow = { data: null, error: null };
+// Different answers for the 15 minute and the 24 hour bucket.
+const perBucket = ({ short, day }) => (args) => (args.p_key.startsWith("owner-pin-day:") ? day : short);
 
 // A fake service-role client that records every interaction and never touches a network.
-//   rpc(args, n)              result of the n-th check_rate_limit_bucket call
-//   read({ column, value })   result of select("count, reset_time").eq(column, value).maybeSingle()
-//   del({ column, value })    result of delete().eq(column, value)
-// An Error as a result is thrown instead, like a network failure.
-function fakeClient({ rpc = () => bucketRow(1), read = () => noDayRow, del = () => ({ error: null }) } = {}) {
+//   rpc(args, n)            result of the n-th check_rate_limit_bucket call
+//   del({ column, value })  result of from(table).delete().eq(column, value)
+// An Error as a result is thrown instead, like a network failure. `fromCalls` lists every table the
+// client was asked for: countPinAttempt must leave it empty (it has no select() to offer either).
+function fakeClient({ rpc = () => bucketRow(1), del = () => ({ error: null }) } = {}) {
   const rpcCalls = [];
-  const reads = [];
+  const fromCalls = [];
   const deletes = [];
   const settle = (result) => {
     if (result instanceof Error) throw result;
@@ -36,40 +35,24 @@ function fakeClient({ rpc = () => bucketRow(1), read = () => noDayRow, del = () 
   };
   return {
     rpcCalls,
-    reads,
+    fromCalls,
     deletes,
     rpc: async (fn, args) => {
       rpcCalls.push({ fn, args });
       return settle(rpc(args, rpcCalls.length));
     },
-    from: (table) => ({
-      select: (columns) => ({
-        eq: (column, value) => ({
-          maybeSingle: async () => {
-            reads.push({ table, columns, column, value });
-            return settle(read({ column, value }));
+    from: (table) => {
+      fromCalls.push(table);
+      return {
+        delete: () => ({
+          eq: async (column, value) => {
+            deletes.push({ table, column, value });
+            return settle(del({ column, value }));
           },
         }),
-      }),
-      delete: () => ({
-        eq: async (column, value) => {
-          deletes.push({ table, column, value });
-          return settle(del({ column, value }));
-        },
-      }),
-    }),
+      };
+    },
   };
-}
-
-// Pin Date.now() while fn runs, so a window boundary can be tested to the millisecond.
-async function atFixedTime(isoTime, fn) {
-  const original = Date.now;
-  Date.now = () => Date.parse(isoTime);
-  try {
-    return await fn();
-  } finally {
-    Date.now = original;
-  }
 }
 
 describe("normalisePinInput", () => {
@@ -151,56 +134,54 @@ describe("isOwnerCall", () => {
   });
 });
 
-// Fix round 2: the 15 minute bucket is bumped by RPC on EVERY attempt (before verifying) and is
-// cleared by a correct PIN. The 24 hour row counts only WRONG PINs (recordPinFailure), is only READ
-// here, and a correct PIN never clears it — so the owner logging in cannot refill an attacker's budget.
+// Fix round 3: BOTH windows are atomic RPC increments, made inside countPinAttempt BEFORE the PIN is
+// checked. The 15 minute one is cleared by a correct PIN; the 24 hour one counts every attempt, right or
+// wrong, and nothing but time (or a new pin_salt) clears it. There is no read-then-write step to race.
 describe("countPinAttempt (persisted lockout)", () => {
-  it("bumps the 15 minute bucket by RPC and only READS the 24 hour row — it never increments it", async () => {
-    const sb = fakeClient({ rpc: () => bucketRow(1), read: () => noDayRow });
+  it("bumps the 15 minute bucket and then the 24 hour bucket, both by RPC, and touches no table", async () => {
+    const sb = fakeClient();
     const r = await oa.countPinAttempt({ supabase: sb, ...ARGS });
-    assert.deepEqual(sb.rpcCalls, [{ fn: "check_rate_limit_bucket", args: { p_key: KEY_15M, p_window_ms: 900000, p_max_requests: 5 } }]);
-    assert.deepEqual(sb.reads, [{ table: "rate_limit_buckets", columns: "count, reset_time", column: "key", value: KEY_24H }]);
-    assert.deepEqual(sb.deletes, []);
+    assert.deepEqual(sb.rpcCalls, [
+      { fn: "check_rate_limit_bucket", args: { p_key: KEY_15M, p_window_ms: 900000, p_max_requests: 5 } },
+      { fn: "check_rate_limit_bucket", args: { p_key: KEY_24H, p_window_ms: 86400000, p_max_requests: 20 } },
+    ]);
+    assert.deepEqual(sb.fromCalls, []);
     assert.deepEqual(r, { locked: false, reason: "ok", count: 1 });
   });
+  it("awaits both increments, one after the other, before it resolves — so both are counted before any PIN is checked", async () => {
+    const order = [];
+    const sb = fakeClient({
+      rpc: async (args) => {
+        order.push(`start ${args.p_key}`);
+        await new Promise((resolve) => setImmediate(resolve));
+        order.push(`end ${args.p_key}`);
+        return bucketRow(1);
+      },
+    });
+    await oa.countPinAttempt({ supabase: sb, ...ARGS });
+    order.push("resolved: the route may now check the PIN");
+    assert.deepEqual(order, [`start ${KEY_15M}`, `end ${KEY_15M}`, `start ${KEY_24H}`, `end ${KEY_24H}`, "resolved: the route may now check the PIN"]);
+  });
   it("reports the 15 minute count when it is not locked", async () => {
-    const r = await oa.countPinAttempt({ supabase: fakeClient({ rpc: () => bucketRow(3), read: () => dayRow(7) }), ...ARGS });
+    const r = await oa.countPinAttempt({ supabase: fakeClient({ rpc: perBucket({ short: bucketRow(3), day: bucketRow(7) }) }), ...ARGS });
     assert.deepEqual(r, { locked: false, reason: "ok", count: 3 });
   });
-  it("is exhausted once the post-increment 15 minute count passes 5, and then never reads the day row", async () => {
+  it("is exhausted once the post-increment 15 minute count passes 5, and then leaves the 24 hour bucket alone", async () => {
     const at5 = fakeClient({ rpc: () => bucketRow(5) });
     assert.equal((await oa.countPinAttempt({ supabase: at5, ...ARGS })).locked, false);
-    assert.equal(at5.reads.length, 1);
+    assert.equal(at5.rpcCalls.length, 2);
     const at6 = fakeClient({ rpc: () => bucketRow(6) });
     const r = await oa.countPinAttempt({ supabase: at6, ...ARGS });
     assert.deepEqual(r, { locked: true, reason: "exhausted", window: "15m", count: 6 });
-    assert.equal(at6.rpcCalls.length, 1);
-    assert.equal(at6.reads.length, 0);
+    assert.deepEqual(at6.rpcCalls.map((c) => c.args.p_key), [KEY_15M]);
   });
-  it("is exhausted once 10 wrong PINs are on the 24 hour row, and never bumps that bucket itself", async () => {
-    for (const [wrongPins, locked] of [[0, false], [1, false], [9, false], [10, true], [11, true]]) {
-      const sb = fakeClient({ read: () => dayRow(wrongPins) });
+  it("is exhausted once the post-increment 24 hour count passes 20", async () => {
+    for (const [dayCount, locked] of [[1, false], [19, false], [20, false], [21, true], [22, true]]) {
+      const sb = fakeClient({ rpc: perBucket({ short: bucketRow(2), day: bucketRow(dayCount) }) });
       const r = await oa.countPinAttempt({ supabase: sb, ...ARGS });
-      assert.deepEqual(r, locked ? { locked: true, reason: "exhausted", window: "24h", count: wrongPins } : { locked: false, reason: "ok", count: 1 }, `${wrongPins} wrong PINs`);
-      assert.deepEqual(sb.rpcCalls.map((c) => c.args.p_key), [KEY_15M], `${wrongPins} wrong PINs: only the 15 minute bucket is bumped`);
+      assert.deepEqual(r, locked ? { locked: true, reason: "exhausted", window: "24h", count: dayCount } : { locked: false, reason: "ok", count: 2 }, `day count ${dayCount}`);
+      assert.equal(sb.rpcCalls.length, 2, `day count ${dayCount}`);
     }
-  });
-  it("counts a missing or expired 24 hour row as zero, to the millisecond", async () => {
-    await atFixedTime("2026-10-10T12:00:00.000Z", async () => {
-      const row = (resetTime) => () => ({ data: { count: 10, reset_time: resetTime }, error: null });
-      for (const [name, read, locked] of [
-        ["no row", () => noDayRow, false],
-        ["window ended a second ago", row("2026-10-10T11:59:59.000Z"), false],
-        ["window ends exactly now", row("2026-10-10T12:00:00.000Z"), false],
-        ["window ends in a millisecond", row("2026-10-10T12:00:00.001Z"), true],
-        ["window ends tomorrow", row("2026-10-11T12:00:00.000Z"), true],
-        ["PostgREST timestamp format", row("2026-10-11T12:00:00+00:00"), true],
-      ]) {
-        const r = await oa.countPinAttempt({ supabase: fakeClient({ read }), ...ARGS });
-        assert.equal(r.locked, locked, name);
-        assert.equal(r.reason, locked ? "exhausted" : "ok", name);
-      }
-    });
   });
   it("tolerates a single-object RPC shape", async () => {
     const r = await oa.countPinAttempt({ supabase: fakeClient({ rpc: () => ({ data: { count: 2 }, error: null }) }), ...ARGS });
@@ -209,74 +190,54 @@ describe("countPinAttempt (persisted lockout)", () => {
   it("keys both buckets by PIN generation: a new pin_salt starts fresh ones, only its first 8 chars count", async () => {
     const rotated = fakeClient();
     await oa.countPinAttempt({ supabase: rotated, organizationId: "org-1", pinSalt: "ffeeddcc" + SALT.slice(8) });
-    assert.equal(rotated.rpcCalls[0].args.p_key, "owner-pin:org-1:ffeeddcc");
-    assert.equal(rotated.reads[0].value, "owner-pin-day:org-1:ffeeddcc");
+    assert.deepEqual(rotated.rpcCalls.map((c) => c.args.p_key), ["owner-pin:org-1:ffeeddcc", "owner-pin-day:org-1:ffeeddcc"]);
     const sameGeneration = fakeClient();
     await oa.countPinAttempt({ supabase: sameGeneration, organizationId: "org-1", pinSalt: "00112233" + "f".repeat(24) });
-    assert.equal(sameGeneration.rpcCalls[0].args.p_key, KEY_15M);
-    assert.equal(sameGeneration.reads[0].value, KEY_24H);
+    assert.deepEqual(sameGeneration.rpcCalls.map((c) => c.args.p_key), [KEY_15M, KEY_24H]);
     const otherOrg = fakeClient();
     await oa.countPinAttempt({ supabase: otherOrg, organizationId: "org-2", pinSalt: SALT });
-    assert.equal(otherOrg.rpcCalls[0].args.p_key, "owner-pin:org-2:00112233");
-    assert.equal(otherOrg.reads[0].value, "owner-pin-day:org-2:00112233");
+    assert.deepEqual(otherOrg.rpcCalls.map((c) => c.args.p_key), ["owner-pin:org-2:00112233", "owner-pin-day:org-2:00112233"]);
   });
-  it("fails CLOSED on an RPC error, an empty result or a throw in the 15 minute bucket, without reading the day row", async () => {
-    for (const [name, rpc] of [
-      ["rpc error", () => ({ data: null, error: { message: "boom", code: "42501" } })],
-      ["empty array", () => ({ data: [], error: null })],
-      ["null data", () => ({ data: null, error: null })],
-      ["throw", () => new Error("network")],
+  it("fails CLOSED on an RPC error, an empty result or a throw — on either call", async () => {
+    const boom = { data: null, error: { message: "boom", code: "42501" } };
+    const noRows = { data: [], error: null };
+    const noData = { data: null, error: null };
+    for (const [name, rpc, rpcCalls] of [
+      ["15m rpc error", () => boom, 1],
+      ["15m empty array", () => noRows, 1],
+      ["15m null data", () => noData, 1],
+      ["15m throw", () => new Error("network"), 1],
+      ["24h rpc error", perBucket({ short: bucketRow(1), day: boom }), 2],
+      ["24h empty array", perBucket({ short: bucketRow(1), day: noRows }), 2],
+      ["24h null data", perBucket({ short: bucketRow(1), day: noData }), 2],
+      ["24h throw", perBucket({ short: bucketRow(1), day: new Error("network") }), 2],
     ]) {
       const sb = fakeClient({ rpc });
       const r = await oa.countPinAttempt({ supabase: sb, ...ARGS });
       assert.equal(r.locked, true, name);
       assert.equal(r.reason, "rpc-error", name);
       assert.ok(r.error instanceof Error, name);
-      assert.equal(sb.reads.length, 0, `${name}: a locked attempt must not read the day row`);
+      assert.equal(sb.rpcCalls.length, rpcCalls, name);
     }
   });
-  it("fails CLOSED on a 15 minute count that is not a finite number", async () => {
+  it("fails CLOSED on a count that is not a finite number — on either call", async () => {
     for (const count of [undefined, null, "6", NaN, Infinity, -Infinity]) {
-      const r = await oa.countPinAttempt({ supabase: fakeClient({ rpc: () => bucketRow(count) }), ...ARGS });
-      assert.equal(r.locked, true, `count=${String(count)} must lock`);
-      assert.equal(r.reason, "rpc-error", `count=${String(count)} is a malformed reply`);
-    }
-  });
-  it("fails CLOSED when the 24 hour row cannot be read (an error result or a throw)", async () => {
-    for (const [name, read] of [
-      ["error result", () => ({ data: null, error: { message: "boom", code: "42501" } })],
-      ["throw", () => new Error("network")],
-    ]) {
-      const sb = fakeClient({ read });
-      const r = await oa.countPinAttempt({ supabase: sb, ...ARGS });
-      assert.equal(r.locked, true, name);
-      assert.equal(r.reason, "rpc-error", name);
-      assert.ok(r.error instanceof Error, name);
-      assert.equal(sb.rpcCalls.length, 1, `${name}: the 15 minute bump had already happened`);
-    }
-  });
-  it("fails CLOSED on a 24 hour row whose count or reset_time is unusable", async () => {
-    const future = new Date(Date.now() + 3600000).toISOString();
-    for (const [name, data] of [
-      ["count as a string", { count: "10", reset_time: future }],
-      ["count NaN", { count: NaN, reset_time: future }],
-      ["count missing", { reset_time: future }],
-      ["reset_time garbage", { count: 3, reset_time: "not a date" }],
-      ["reset_time null", { count: 3, reset_time: null }],
-      ["reset_time missing", { count: 3 }],
-      // Date.parse(2030) is the year 2030: only the typeof guard stops a bare number from passing as a date.
-      ["reset_time a number", { count: 3, reset_time: 2030 }],
-    ]) {
-      const r = await oa.countPinAttempt({ supabase: fakeClient({ read: () => ({ data, error: null }) }), ...ARGS });
-      assert.equal(r.locked, true, name);
-      assert.equal(r.reason, "rpc-error", name);
-      assert.ok(r.error instanceof Error, name);
+      for (const bucket of ["short", "day"]) {
+        const answers = { short: bucketRow(1), day: bucketRow(1), [bucket]: bucketRow(count) };
+        const r = await oa.countPinAttempt({ supabase: fakeClient({ rpc: perBucket(answers) }), ...ARGS });
+        assert.equal(r.locked, true, `${bucket} count=${String(count)} must lock`);
+        assert.equal(r.reason, "rpc-error", `${bucket} count=${String(count)} is a malformed reply`);
+      }
     }
   });
   it("still honours the RPC error when data also arrives", async () => {
     const r = await oa.countPinAttempt({ supabase: fakeClient({ rpc: () => ({ data: [{ count: 1 }], error: { message: "late" } }) }), ...ARGS });
     assert.equal(r.locked, true);
     assert.equal(r.reason, "rpc-error");
+  });
+  it("needs nothing but rpc: a client that offers no table access at all works", async () => {
+    const rpcOnly = { rpc: async () => bucketRow(1) };
+    assert.deepEqual(await oa.countPinAttempt({ supabase: rpcOnly, ...ARGS }), { locked: false, reason: "ok", count: 1 });
   });
 });
 
@@ -292,13 +253,13 @@ describe("ownerAssistantEnabled", () => {
 
 // ─── Additions beyond the task-1 brief ──────────────────────────────────────
 // Branches the brief's own tests leave unpinned (each would survive a mutation),
-// plus the hardening fixes found while self-reviewing, plus fix rounds 1 and 2.
+// plus the hardening fixes found while self-reviewing, plus fix rounds 1 to 3.
 
 describe("exported lockout constants — beyond the brief", () => {
   it("pins the numbers the route handler and the persisted lockout share", () => {
     assert.equal(oa.OWNER_PIN_MAX_ATTEMPTS, 5);
     assert.equal(oa.OWNER_PIN_WINDOW_MS, 900000);
-    assert.equal(oa.OWNER_PIN_DAY_MAX_ATTEMPTS, 10);
+    assert.equal(oa.OWNER_PIN_DAY_MAX_ATTEMPTS, 20);
     assert.equal(oa.OWNER_PIN_DAY_WINDOW_MS, 86400000);
     assert.equal(oa.OWNER_PIN_MAX_PER_CALL, 3);
   });
@@ -460,33 +421,31 @@ describe("isOwnerCall — beyond the brief", () => {
 
 // Fix round 1 (R4, R5): arguments are validated before any key is built, and every returned error is an Error.
 describe("countPinAttempt — arguments and errors", () => {
-  it("fails CLOSED, with no RPC and no read, when the PIN generation is unknown (pinSalt not a string of 8+ chars)", async () => {
+  it("fails CLOSED, with no RPC at all, when the PIN generation is unknown (pinSalt not a string of 8+ chars)", async () => {
     for (const pinSalt of [undefined, null, "", "abcdefg", 12345678, ["00112233"]]) {
       const sb = fakeClient();
       const r = await oa.countPinAttempt({ supabase: sb, organizationId: "org-1", pinSalt });
       assert.equal(r.locked, true, String(pinSalt));
       assert.equal(r.reason, "rpc-error", String(pinSalt));
       assert.ok(r.error instanceof Error, String(pinSalt));
-      assert.equal(sb.rpcCalls.length + sb.reads.length, 0, String(pinSalt));
+      assert.equal(sb.rpcCalls.length, 0, String(pinSalt));
     }
     const exactlyEight = fakeClient();
     assert.equal((await oa.countPinAttempt({ supabase: exactlyEight, organizationId: "org-1", pinSalt: "abcdefgh" })).locked, false);
-    assert.equal(exactlyEight.rpcCalls[0].args.p_key, "owner-pin:org-1:abcdefgh");
-    assert.equal(exactlyEight.reads[0].value, "owner-pin-day:org-1:abcdefgh");
+    assert.deepEqual(exactlyEight.rpcCalls.map((c) => c.args.p_key), ["owner-pin:org-1:abcdefgh", "owner-pin-day:org-1:abcdefgh"]);
   });
-  it("fails CLOSED, with no RPC and no read, when organizationId is not a non-empty string — never an 'owner-pin:undefined' key", async () => {
+  it("fails CLOSED, with no RPC, when organizationId is not a non-empty string — never an 'owner-pin:undefined' key", async () => {
     for (const organizationId of [undefined, null, "", "   ", 42, {}]) {
       const sb = fakeClient();
       const r = await oa.countPinAttempt({ supabase: sb, organizationId, pinSalt: SALT });
       assert.equal(r.locked, true, String(organizationId));
       assert.equal(r.reason, "rpc-error", String(organizationId));
       assert.ok(r.error instanceof Error, String(organizationId));
-      assert.equal(sb.rpcCalls.length + sb.reads.length, 0, String(organizationId));
+      assert.equal(sb.rpcCalls.length, 0, String(organizationId));
     }
   });
   it("fails CLOSED when the client itself is unusable or no arguments are given", async () => {
-    const rpcOnly = { rpc: async () => bucketRow(1) }; // the 24 hour read has no `from`
-    for (const args of [{ supabase: undefined, ...ARGS }, { supabase: {}, ...ARGS }, { supabase: rpcOnly, ...ARGS }, undefined, null]) {
+    for (const args of [{ supabase: undefined, ...ARGS }, { supabase: {}, ...ARGS }, undefined, null]) {
       const r = await oa.countPinAttempt(args);
       assert.equal(r.locked, true);
       assert.equal(r.reason, "rpc-error");
@@ -497,24 +456,21 @@ describe("countPinAttempt — arguments and errors", () => {
       assert.match((await oa.countPinAttempt(args)).error.message, /organizationId/);
     }
   });
-  it("wraps a PostgREST error object in an Error that keeps the original as its cause, on the RPC and on the read", async () => {
+  it("wraps a PostgREST error object in an Error that keeps the original as its cause, on either call", async () => {
     const pg = { code: "42501", message: "permission denied for function check_rate_limit_bucket", details: null, hint: null };
-    const viaRpc = await oa.countPinAttempt({ supabase: fakeClient({ rpc: () => ({ data: null, error: pg }) }), ...ARGS });
-    assert.ok(viaRpc.error instanceof Error);
-    assert.equal(viaRpc.error.message, pg.message);
-    assert.equal(viaRpc.error.cause, pg);
-    const pgRead = { code: "42501", message: "permission denied for table rate_limit_buckets", details: null, hint: null };
-    const viaRead = await oa.countPinAttempt({ supabase: fakeClient({ read: () => ({ data: null, error: pgRead }) }), ...ARGS });
-    assert.ok(viaRead.error instanceof Error);
-    assert.equal(viaRead.error.message, pgRead.message);
-    assert.equal(viaRead.error.cause, pgRead);
+    const on15m = await oa.countPinAttempt({ supabase: fakeClient({ rpc: () => ({ data: null, error: pg }) }), ...ARGS });
+    assert.ok(on15m.error instanceof Error);
+    assert.equal(on15m.error.message, pg.message);
+    assert.equal(on15m.error.cause, pg);
+    const on24h = await oa.countPinAttempt({ supabase: fakeClient({ rpc: perBucket({ short: bucketRow(1), day: { data: null, error: pg } }) }), ...ARGS });
+    assert.ok(on24h.error instanceof Error);
+    assert.equal(on24h.error.message, pg.message);
+    assert.equal(on24h.error.cause, pg);
   });
-  it("hands a thrown Error back as itself, and gives a message-less error object a message", async () => {
+  it("hands a thrown Error back as itself on either call, and gives a message-less error object a message", async () => {
     const thrown = new Error("network");
-    const t = await oa.countPinAttempt({ supabase: fakeClient({ rpc: () => thrown }), ...ARGS });
-    assert.equal(t.error, thrown);
-    const readThrown = await oa.countPinAttempt({ supabase: fakeClient({ read: () => thrown }), ...ARGS });
-    assert.equal(readThrown.error, thrown);
+    assert.equal((await oa.countPinAttempt({ supabase: fakeClient({ rpc: () => thrown }), ...ARGS })).error, thrown);
+    assert.equal((await oa.countPinAttempt({ supabase: fakeClient({ rpc: perBucket({ short: bucketRow(1), day: thrown }) }), ...ARGS })).error, thrown);
     const bare = { code: "XX000" };
     const m = await oa.countPinAttempt({ supabase: fakeClient({ rpc: () => ({ data: null, error: bare }) }), ...ARGS });
     assert.ok(m.error instanceof Error);
@@ -523,81 +479,8 @@ describe("countPinAttempt — arguments and errors", () => {
   });
 });
 
-// Fix round 2: a WRONG PIN is recorded on the 24 hour row — by this function and nowhere else.
-describe("recordPinFailure", () => {
-  it("bumps exactly the 24 hour bucket by RPC and reports its post-increment count", async () => {
-    const sb = fakeClient({ rpc: () => bucketRow(4) });
-    const r = await oa.recordPinFailure({ supabase: sb, ...ARGS });
-    assert.deepEqual(r, { ok: true, count: 4 });
-    assert.deepEqual(sb.rpcCalls, [{ fn: "check_rate_limit_bucket", args: { p_key: KEY_24H, p_window_ms: 86400000, p_max_requests: 10 } }]);
-    assert.deepEqual(sb.reads, []);
-    assert.deepEqual(sb.deletes, []);
-  });
-  it("tolerates a single-object RPC shape", async () => {
-    assert.deepEqual(await oa.recordPinFailure({ supabase: fakeClient({ rpc: () => ({ data: { count: 2 }, error: null }) }), ...ARGS }), { ok: true, count: 2 });
-  });
-  it("keys the bucket by PIN generation, like countPinAttempt reads it", async () => {
-    const rotated = fakeClient();
-    await oa.recordPinFailure({ supabase: rotated, organizationId: "org-7", pinSalt: "ffeeddcc" + SALT.slice(8) });
-    assert.equal(rotated.rpcCalls[0].args.p_key, "owner-pin-day:org-7:ffeeddcc");
-    const read = fakeClient();
-    await oa.countPinAttempt({ supabase: read, organizationId: "org-7", pinSalt: "ffeeddcc" + SALT.slice(8) });
-    assert.equal(read.reads[0].value, rotated.rpcCalls[0].args.p_key);
-  });
-  it("reports ok:false with an Error on an RPC error, an empty result, an unusable count or a throw", async () => {
-    for (const [name, rpc] of [
-      ["rpc error", () => ({ data: null, error: { message: "boom", code: "42501" } })],
-      ["empty array", () => ({ data: [], error: null })],
-      ["null data", () => ({ data: null, error: null })],
-      ["count NaN", () => bucketRow(NaN)],
-      ["count a string", () => bucketRow("3")],
-      ["count missing", () => bucketRow(undefined)],
-      ["throw", () => new Error("network")],
-    ]) {
-      const r = await oa.recordPinFailure({ supabase: fakeClient({ rpc }), ...ARGS });
-      assert.equal(r.ok, false, name);
-      assert.ok(r.error instanceof Error, name);
-      assert.equal(r.count, undefined, name);
-    }
-  });
-  it("wraps a PostgREST error object in an Error that keeps the original as its cause", async () => {
-    const pg = { code: "42501", message: "permission denied for function check_rate_limit_bucket", details: null, hint: null };
-    const r = await oa.recordPinFailure({ supabase: fakeClient({ rpc: () => ({ data: null, error: pg }) }), ...ARGS });
-    assert.equal(r.error.message, pg.message);
-    assert.equal(r.error.cause, pg);
-    const thrown = new Error("network");
-    assert.equal((await oa.recordPinFailure({ supabase: fakeClient({ rpc: () => thrown }), ...ARGS })).error, thrown);
-  });
-  it("never throws: no RPC for a bad organizationId or pinSalt, and a closed result for an unusable client or no arguments", async () => {
-    for (const bad of [
-      { organizationId: undefined, pinSalt: SALT },
-      { organizationId: "", pinSalt: SALT },
-      { organizationId: "   ", pinSalt: SALT },
-      { organizationId: 42, pinSalt: SALT },
-      { organizationId: "org-1", pinSalt: undefined },
-      { organizationId: "org-1", pinSalt: "" },
-      { organizationId: "org-1", pinSalt: "abcdefg" },
-      { organizationId: "org-1", pinSalt: 12345678 },
-    ]) {
-      const sb = fakeClient();
-      const r = await oa.recordPinFailure({ supabase: sb, ...bad });
-      assert.equal(r.ok, false, JSON.stringify(bad));
-      assert.ok(r.error instanceof Error, JSON.stringify(bad));
-      assert.equal(sb.rpcCalls.length, 0, JSON.stringify(bad));
-    }
-    for (const args of [{ supabase: undefined, ...ARGS }, { supabase: {}, ...ARGS }, undefined, null]) {
-      const r = await oa.recordPinFailure(args);
-      assert.equal(r.ok, false);
-      assert.ok(r.error instanceof Error);
-    }
-    for (const args of [undefined, null]) {
-      assert.match((await oa.recordPinFailure(args)).error.message, /organizationId/);
-    }
-  });
-});
-
-// Fix round 2: a correct PIN clears the 15 minute window ONLY. The 24 hour row is never touched here,
-// so wrong PINs stay on record however often the owner logs in.
+// A correct PIN clears the 15 minute window ONLY. The 24 hour bucket is never touched here, so tries stay
+// counted toward the daily cap however often the owner logs in.
 describe("resetPinAttempts", () => {
   it("deletes exactly the 15 minute row of this org + PIN generation, and never the 24 hour row", async () => {
     const sb = fakeClient();
@@ -605,14 +488,13 @@ describe("resetPinAttempts", () => {
     assert.deepEqual(r, { ok: true });
     assert.deepEqual(sb.deletes, [{ table: "rate_limit_buckets", column: "key", value: KEY_15M }]);
     assert.deepEqual(sb.rpcCalls, []);
-    assert.deepEqual(sb.reads, []);
   });
-  it("targets the very key countPinAttempt increments", async () => {
+  it("targets the very key countPinAttempt increments first", async () => {
     const counted = fakeClient();
     await oa.countPinAttempt({ supabase: counted, organizationId: "org-9", pinSalt: SALT });
     const sb = fakeClient();
     await oa.resetPinAttempts({ supabase: sb, organizationId: "org-9", pinSalt: SALT });
-    assert.deepEqual(sb.deletes.map((d) => d.value), counted.rpcCalls.map((c) => c.args.p_key));
+    assert.deepEqual(sb.deletes.map((d) => d.value), [counted.rpcCalls[0].args.p_key]);
   });
   it("reports ok:false with an Error (the PostgREST error as its cause) when the delete is rejected", async () => {
     const pg = { code: "42501", message: "permission denied for table rate_limit_buckets", details: null, hint: null };
@@ -658,14 +540,13 @@ describe("resetPinAttempts", () => {
   });
 });
 
-// The fakes above prove each call in isolation. This replays whole sequences of owner and attacker
-// attempts against an in-memory table with the RPC's upsert semantics (real clock, real windows), the way
-// the route handler will drive the functions: count -> check the PIN -> reset on a right one, record on a wrong one.
+// The fakes above prove each call in isolation. This replays whole sequences of PIN entries against an
+// in-memory table with the RPC's atomic upsert semantics (real clock, real windows), the way the route
+// will drive the functions: count the entry -> check the PIN -> a correct PIN clears the 15 minute window.
 describe("the two windows together", () => {
   function memoryBuckets() {
     const rows = new Map(); // key -> { count, resetMs }
     const writes = []; // every mutation, in order: { op: "bump" | "delete", key }
-    const asRow = (row) => ({ count: row.count, reset_time: new Date(row.resetMs).toISOString() });
     return {
       rows,
       writes,
@@ -676,12 +557,11 @@ describe("the two windows together", () => {
         const next = !row || row.resetMs < now ? { count: 1, resetMs: now + p_window_ms } : { count: row.count + 1, resetMs: row.resetMs };
         rows.set(p_key, next);
         writes.push({ op: "bump", key: p_key });
-        return { data: [asRow(next)], error: null };
+        return { data: [{ count: next.count, reset_time: new Date(next.resetMs).toISOString() }], error: null };
       },
       from(table) {
         assert.equal(table, "rate_limit_buckets");
         return {
-          select: () => ({ eq: (_column, key) => ({ maybeSingle: async () => ({ data: rows.has(key) ? asRow(rows.get(key)) : null, error: null }) }) }),
           delete: () => ({
             eq: async (_column, key) => {
               rows.delete(key);
@@ -693,67 +573,73 @@ describe("the two windows together", () => {
       },
     };
   }
-  async function correctPin(db) {
+  async function enterPin(db, { correct }) {
     const gate = await oa.countPinAttempt({ supabase: db, ...ARGS });
-    if (!gate.locked) await oa.resetPinAttempts({ supabase: db, ...ARGS });
-    return gate;
-  }
-  async function wrongPin(db) {
-    const gate = await oa.countPinAttempt({ supabase: db, ...ARGS });
-    if (!gate.locked) await oa.recordPinFailure({ supabase: db, ...ARGS });
+    if (!gate.locked && correct) await oa.resetPinAttempts({ supabase: db, ...ARGS });
     return gate;
   }
 
-  it("allows 5 tries per 15 minutes, locks the 6th before it is checked, and records only checked wrong PINs", async () => {
+  it("allows 5 tries per 15 minutes and locks the 6th, right or wrong, without spending the daily budget on it", async () => {
     const db = memoryBuckets();
-    for (let i = 1; i <= 5; i++) assert.equal((await wrongPin(db)).locked, false, `try ${i}`);
-    assert.deepEqual(await wrongPin(db), { locked: true, reason: "exhausted", window: "15m", count: 6 });
-    assert.equal(db.rows.get(KEY_24H).count, 5, "the locked 6th try was never checked, so it is not a wrong PIN on record");
+    for (let i = 1; i <= 5; i++) assert.equal((await enterPin(db, { correct: false })).locked, false, `try ${i}`);
+    assert.deepEqual(await enterPin(db, { correct: false }), { locked: true, reason: "exhausted", window: "15m", count: 6 });
+    assert.equal(db.rows.get(KEY_24H).count, 5, "the locked 6th try was not counted against the day");
   });
-  it("lets a correct PIN clear the 15 minute window, and leaves the wrong PINs on record", async () => {
+  it("lets a correct PIN clear the 15 minute window and nothing else", async () => {
     const db = memoryBuckets();
-    for (let i = 0; i < 4; i++) await wrongPin(db);
+    for (let i = 0; i < 4; i++) await enterPin(db, { correct: false });
     assert.equal(db.rows.get(KEY_15M).count, 4);
-    assert.equal((await correctPin(db)).locked, false);
+    assert.equal((await enterPin(db, { correct: true })).locked, false);
     assert.equal(db.rows.has(KEY_15M), false, "cleared by the correct PIN");
-    assert.equal(db.rows.get(KEY_24H).count, 4, "wrong PINs stay on record");
+    assert.equal(db.rows.get(KEY_24H).count, 5, "the login is one of today's 20 tries");
   });
-  it("caps wrong PINs at 10 per 24 hours however often the owner logs in between", async () => {
+  it("caps tries at 20 per 24 hours, right or wrong, however often a correct PIN clears the 15 minute window", async () => {
     const db = memoryBuckets();
-    let wrong = 0;
-    while (wrong < 10) {
-      for (let i = 0; i < 4 && wrong < 10; i++) {
-        assert.equal((await wrongPin(db)).locked, false, `wrong PIN #${wrong + 1} still gets checked`);
-        wrong++;
-      }
+    for (let round = 1; round <= 4; round++) {
+      for (let i = 1; i <= 4; i++) assert.equal((await enterPin(db, { correct: false })).locked, false, `round ${round} wrong PIN ${i}`);
       // The owner logs in between the attacker's bursts: this clears the 15 minute window, as it should.
-      if (wrong < 10) assert.equal((await correctPin(db)).locked, false);
+      assert.equal((await enterPin(db, { correct: true })).locked, false, `round ${round} login`);
     }
-    assert.deepEqual(await wrongPin(db), { locked: true, reason: "exhausted", window: "24h", count: 10 });
-    assert.equal(db.rows.get(KEY_24H).count, 10);
-    assert.equal(db.writes.some((w) => w.op === "delete" && w.key === KEY_24H), false, "no owner login ever cleared the 24 hour row");
-    // The owner is locked out too until the window ends, or until a new PIN (a new pin_salt) is saved.
-    assert.equal((await correctPin(db)).window, "24h");
+    assert.equal(db.rows.get(KEY_24H).count, 20);
+    assert.deepEqual(await enterPin(db, { correct: false }), { locked: true, reason: "exhausted", window: "24h", count: 21 });
+    assert.equal(db.writes.some((w) => w.op === "delete" && w.key === KEY_24H), false, "nothing ever cleared the 24 hour bucket");
+    // The owner is locked out too, until the window ends or a new PIN (a new pin_salt) is saved.
+    assert.equal((await enterPin(db, { correct: true })).window, "24h");
     assert.equal((await oa.countPinAttempt({ supabase: db, organizationId: "org-1", pinSalt: "ffeeddcc" + SALT.slice(8) })).locked, false);
   });
-  it("never lets a success touch the 24 hour bucket", async () => {
+  it("counts successes against the daily budget too, and a reset never gives it back", async () => {
     const db = memoryBuckets();
-    for (let i = 0; i < 20; i++) assert.equal((await correctPin(db)).locked, false, `login ${i + 1}`);
-    assert.deepEqual([...db.rows.keys()], [], "each login cleared its own 15 minute row, and no 24 hour row ever existed");
-    assert.equal(db.writes.some((w) => w.key === KEY_24H), false);
+    for (let i = 1; i <= 20; i++) assert.equal((await enterPin(db, { correct: true })).locked, false, `login ${i}`);
+    assert.equal(db.rows.has(KEY_15M), false, "each login cleared the 15 minute window");
+    assert.equal(db.rows.get(KEY_24H).count, 20, "...and used one of today's 20 tries");
+    assert.deepEqual(await enterPin(db, { correct: true }), { locked: true, reason: "exhausted", window: "24h", count: 21 });
+    assert.equal(db.writes.some((w) => w.op === "delete" && w.key === KEY_24H), false);
   });
-  it("lets the 24 hour window end by time alone, after which the next wrong PIN starts a fresh one", async () => {
+  it("lets parallel attempts through no more than 5 at a time and no more than 20 a day", async () => {
+    const burst = memoryBuckets();
+    const results = await Promise.all(Array.from({ length: 12 }, () => oa.countPinAttempt({ supabase: burst, ...ARGS })));
+    assert.equal(results.filter((r) => !r.locked).length, 5, "12 parallel attempts, 5 let through");
+    const day = memoryBuckets();
+    let allowed = 0;
+    for (let round = 0; round < 8; round++) {
+      const bursts = await Promise.all(Array.from({ length: 5 }, () => oa.countPinAttempt({ supabase: day, ...ARGS })));
+      allowed += bursts.filter((r) => !r.locked).length;
+      await oa.resetPinAttempts({ supabase: day, ...ARGS }); // a correct PIN clears the 15 minute window between bursts
+    }
+    assert.equal(allowed, 20, "8 bursts of 5 in parallel, exactly 20 let through");
+  });
+  it("lets the 24 hour window end by time alone, after which the next entry starts a fresh one", async () => {
     const db = memoryBuckets();
-    db.rows.set(KEY_24H, { count: 10, resetMs: Date.now() + 3600000 });
-    assert.equal((await wrongPin(db)).window, "24h");
-    db.rows.set(KEY_24H, { count: 10, resetMs: Date.now() - 1000 });
-    assert.equal((await wrongPin(db)).locked, false);
+    db.rows.set(KEY_24H, { count: 20, resetMs: Date.now() + 3600000 });
+    assert.equal((await enterPin(db, { correct: false })).window, "24h");
+    db.rows.set(KEY_24H, { count: 21, resetMs: Date.now() - 1000 });
+    assert.equal((await enterPin(db, { correct: false })).locked, false);
     assert.equal(db.rows.get(KEY_24H).count, 1, "a new window started at 1");
   });
 });
 
-// The fakes above can only prove what we asked of them. These run the REAL supabase-js builders
-// against a stubbed fetch (no network) to pin the requests that would reach PostgREST.
+// The fakes can only prove what we asked of them. These run the REAL supabase-js builders against a
+// stubbed fetch (no network) to pin the requests that would reach PostgREST.
 describe("against the real supabase-js client with a stubbed fetch", () => {
   const { createClient } = require("@supabase/supabase-js");
   function stubbedClient(respond) {
@@ -772,53 +658,36 @@ describe("against the real supabase-js client with a stubbed fetch", () => {
   }
   const json = (status, body) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
   const denied = (what) => ({ code: "42501", message: `permission denied for ${what}`, details: null, hint: null });
-  const inAnHour = () => new Date(Date.now() + 3600000).toISOString();
+  const row = (count) => [{ count, reset_time: "2026-10-10T00:15:00+00:00" }];
 
-  it("countPinAttempt POSTs the 15 minute RPC, then GETs the 24 hour row — and never writes the day key", async () => {
-    const { client, requests } = stubbedClient((req) => (req.method === "POST" ? json(200, [{ count: 2, reset_time: "2026-10-09T00:15:00+00:00" }]) : json(200, [])));
+  it("countPinAttempt POSTs the 15 minute RPC, then the 24 hour RPC — and nothing else", async () => {
+    const { client, requests } = stubbedClient((_req, n) => json(200, row(n === 1 ? 2 : 7)));
     const r = await oa.countPinAttempt({ supabase: client, ...ARGS });
     assert.deepEqual(r, { locked: false, reason: "ok", count: 2 });
-    assert.deepEqual(requests.map((q) => `${q.method} ${q.url.pathname}`), ["POST /rest/v1/rpc/check_rate_limit_bucket", "GET /rest/v1/rate_limit_buckets"]);
-    assert.deepEqual(JSON.parse(requests[0].body), { p_key: KEY_15M, p_window_ms: 900000, p_max_requests: 5 });
-    assert.equal(requests[1].url.searchParams.get("select"), "count,reset_time");
-    assert.equal(requests[1].url.searchParams.get("key"), `eq.${KEY_24H}`);
+    assert.deepEqual(requests.map((q) => `${q.method} ${q.url.pathname}`), Array(2).fill("POST /rest/v1/rpc/check_rate_limit_bucket"));
+    assert.deepEqual(requests.map((q) => JSON.parse(q.body)), [
+      { p_key: KEY_15M, p_window_ms: 900000, p_max_requests: 5 },
+      { p_key: KEY_24H, p_window_ms: 86400000, p_max_requests: 20 },
+    ]);
   });
-  it("countPinAttempt reads a 24 hour row at the cap as locked, and an expired one as zero", async () => {
-    const at = (row) => stubbedClient((req) => (req.method === "POST" ? json(200, [{ count: 1, reset_time: inAnHour() }]) : json(200, [row]))).client;
-    const capped = await oa.countPinAttempt({ supabase: at({ count: 10, reset_time: inAnHour() }), ...ARGS });
-    assert.deepEqual(capped, { locked: true, reason: "exhausted", window: "24h", count: 10 });
-    const expired = await oa.countPinAttempt({ supabase: at({ count: 10, reset_time: "2000-01-01T00:00:00+00:00" }), ...ARGS });
-    assert.deepEqual(expired, { locked: false, reason: "ok", count: 1 });
+  it("countPinAttempt locks on a 24 hour count of 21, and not on 20", async () => {
+    const at = (dayCount) => stubbedClient((_req, n) => json(200, row(n === 1 ? 1 : dayCount))).client;
+    assert.deepEqual(await oa.countPinAttempt({ supabase: at(20), ...ARGS }), { locked: false, reason: "ok", count: 1 });
+    assert.deepEqual(await oa.countPinAttempt({ supabase: at(21), ...ARGS }), { locked: true, reason: "exhausted", window: "24h", count: 21 });
   });
-  it("countPinAttempt turns a PostgREST permission error on the RPC, or on the day read, into a locked Error", async () => {
-    const rpcDenied = stubbedClient(() => json(403, denied("function check_rate_limit_bucket")));
-    const a = await oa.countPinAttempt({ supabase: rpcDenied.client, ...ARGS });
+  it("countPinAttempt turns a PostgREST permission error on either RPC into a locked Error", async () => {
+    const first = stubbedClient(() => json(403, denied("function check_rate_limit_bucket")));
+    const a = await oa.countPinAttempt({ supabase: first.client, ...ARGS });
     assert.equal(a.locked, true);
     assert.equal(a.reason, "rpc-error");
     assert.ok(a.error instanceof Error);
     assert.match(a.error.message, /permission denied/);
-    assert.equal(rpcDenied.requests.length, 1, "no day read after a failed bump");
-    const readDenied = stubbedClient((req) => (req.method === "POST" ? json(200, [{ count: 1, reset_time: inAnHour() }]) : json(403, denied("table rate_limit_buckets"))));
-    const b = await oa.countPinAttempt({ supabase: readDenied.client, ...ARGS });
+    assert.equal(first.requests.length, 1, "no 24 hour bump after a failed 15 minute bump");
+    const second = stubbedClient((_req, n) => (n === 1 ? json(200, row(1)) : json(403, denied("function check_rate_limit_bucket"))));
+    const b = await oa.countPinAttempt({ supabase: second.client, ...ARGS });
     assert.equal(b.locked, true);
     assert.equal(b.reason, "rpc-error");
     assert.ok(b.error instanceof Error);
-    assert.match(b.error.message, /permission denied for table/);
-  });
-  it("recordPinFailure POSTs ONE RPC, for the 24 hour key only", async () => {
-    const { client, requests } = stubbedClient(() => json(200, [{ count: 3, reset_time: inAnHour() }]));
-    const r = await oa.recordPinFailure({ supabase: client, ...ARGS });
-    assert.deepEqual(r, { ok: true, count: 3 });
-    assert.equal(requests.length, 1);
-    assert.equal(`${requests[0].method} ${requests[0].url.pathname}`, "POST /rest/v1/rpc/check_rate_limit_bucket");
-    assert.deepEqual(JSON.parse(requests[0].body), { p_key: KEY_24H, p_window_ms: 86400000, p_max_requests: 10 });
-  });
-  it("recordPinFailure turns a rejected RPC into ok:false with an Error", async () => {
-    const { client } = stubbedClient(() => json(403, denied("function check_rate_limit_bucket")));
-    const r = await oa.recordPinFailure({ supabase: client, ...ARGS });
-    assert.equal(r.ok, false);
-    assert.ok(r.error instanceof Error);
-    assert.match(r.error.message, /permission denied/);
   });
   it("resetPinAttempts sends ONE DELETE on rate_limit_buckets for the 15 minute key only — nothing names the day key", async () => {
     const { client, requests } = stubbedClient(() => new Response(null, { status: 204 }));
@@ -836,6 +705,28 @@ describe("against the real supabase-js client with a stubbed fetch", () => {
     assert.equal(r.ok, false);
     assert.ok(r.error instanceof Error);
     assert.match(r.error.message, /permission denied/);
+  });
+});
+
+// Fix round 3: counting is two atomic RPCs and nothing else. A table read before the PIN check would be a
+// check-then-act step that parallel calls can pass together; a follow-up write after a failed check would
+// leave a guess uncounted whenever it failed or was skipped.
+describe("the lockout has no read-then-write step", () => {
+  const srcText = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "lib", "owner-auth.js"), "utf8");
+  it("countPinAttempt makes RPC calls only: no .from( / .select( / .maybeSingle( in it", () => {
+    const body = srcText.match(/async function countPinAttempt\(args\) \{[\s\S]*?\n\}\n/);
+    assert.ok(body, "countPinAttempt not found in the source");
+    assert.doesNotMatch(body[0], /\.from\(|\.select\(|\.maybeSingle\(/);
+    assert.match(body[0], /bumpBucket\(supabase, keys\.short,[\s\S]*bumpBucket\(supabase, keys\.day,/);
+  });
+  it("the module reads no table at all: its only .from( is resetPinAttempts' delete of the 15 minute key", () => {
+    assert.doesNotMatch(srcText, /\.select\(|\.maybeSingle\(/);
+    assert.equal((srcText.match(/(?<!Buffer)\.from\(/g) || []).length, 1); // Buffer.from is not a table
+    assert.match(srcText, /\.from\(RATE_LIMIT_TABLE\)\.delete\(\)\.eq\("key", keys\.short\)/);
+  });
+  it("no longer exports a failure-recording path", () => {
+    assert.equal("recordPinFailure" in oa, false);
+    assert.deepEqual(Object.keys(oa).filter((name) => /record|read/i.test(name)), []);
   });
 });
 
