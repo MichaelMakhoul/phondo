@@ -146,7 +146,7 @@ export async function GET(req: NextRequest) {
         // Query calls for this local date in the org's timezone
         const { data: calls, error: callsError } = await (supabase as any)
           .from("calls")
-          .select("id, status, is_spam, duration_seconds, action_taken")
+          .select("id, status, is_spam, duration_seconds, action_taken, metadata")
           .eq("organization_id", org.id)
           .gte("created_at", start)
           .lt("created_at", end);
@@ -157,7 +157,8 @@ export async function GET(req: NextRequest) {
           continue;
         }
 
-        const allCalls = calls ?? [];
+        // SCRUM-586: the owner ringing their own assistant is not a customer call.
+        const allCalls = (calls ?? []).filter((c: any) => (c.metadata?.call_type ?? null) !== "owner");
         if (allCalls.length === 0) {
           skipped++;
           continue;
