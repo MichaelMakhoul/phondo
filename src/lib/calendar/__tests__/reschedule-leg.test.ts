@@ -3,6 +3,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 // SCRUM-586: the reschedule-leg orchestration lifted out of the dashboard PATCH
 // route so the owner assistant moves jobs through the SAME free → insert →
 // link → rollback sequence. Pinned here once; both callers only map outcomes.
+// An orphaned old leg is paged HERE for every caller (pageSentry's [ALERT:error]
+// line; @sentry/nextjs has no DSN in production), and a free that errored is
+// re-read so a free that committed behind a lost response is undone.
 
 // Records each Sentry scope and the messages captured while it is active, so a
 // test can assert the page's level/tag (not just that some message was sent).
@@ -59,6 +62,7 @@ function builder(table: string) {
   b.update = (payload: unknown) => { ctx.op = "update"; ctx.payload = payload; return b; };
   b.insert = (payload: unknown) => { ctx.op = "insert"; ctx.payload = payload; return b; };
   b.single = async () => { db.log.push(ctx); return db.next(`${table}.${ctx.op}`); };
+  b.maybeSingle = b.single;
   b.then = (resolve: (v: Res) => unknown, reject?: (e: unknown) => unknown) => {
     db.log.push(ctx);
     return Promise.resolve(db.next(`${table}.${ctx.op}`)).then(resolve, reject);
@@ -192,7 +196,7 @@ describe("performRescheduleLeg", () => {
     expect(out).toEqual({ ok: false, reason: "insert_failed", error: { message: "nope", code: "XX000" } });
   });
 
-  it("pages Sentry and returns orphaned when the rollback restores 0 rows", async () => {
+  it("pages on-call and returns orphaned when the rollback restores 0 rows", async () => {
     db.queues["appointments.update"] = [{ data: [{ id: OLD }], error: null }, { data: [], error: null }];
     db.queues["appointments.insert"] = [{ data: null, error: { message: "nope", code: "XX000" } }];
     const out = await performRescheduleLeg(supabase, { orgId: ORG, oldId: OLD, before, updates, leg: ownerLeg });
@@ -218,10 +222,12 @@ describe("performRescheduleLeg", () => {
     expect(db.log.map((o) => o.op)).toEqual(["update", "insert", "insert"]);
   });
 
-  it("stops at the free step on free_failed (no insert, no rollback)", async () => {
+  it("stops at the free step on free_failed: one re-read of the old row, no insert, no rollback", async () => {
     db.queues["appointments.update"] = [{ data: null, error: { message: "boom", code: "08006" } }];
+    db.queues["appointments.select"] = [{ data: { status: "confirmed" }, error: null }]; // the free never committed
     await performRescheduleLeg(supabase, { orgId: ORG, oldId: OLD, before, updates, leg: ownerLeg });
-    expect(db.log.map((o) => o.op)).toEqual(["update"]);
+    expect(db.log.map((o) => o.op)).toEqual(["update", "select"]);
+    expect(sentryState.pages).toEqual([]);
   });
 
   it("restores a pending row to pending — the prior status, not a hard-coded confirmed", async () => {
@@ -270,17 +276,31 @@ describe("performRescheduleLeg", () => {
     expect(sentryState.pages).toHaveLength(1);
   });
 
-  // ── The orphan page's identity ──────────────────────────────────────────────
+  // ── The orphan page: one per orphan, for every caller ───────────────────────
 
-  it("the default orphan page is error-level, tagged bug=reschedule_rollback_failed, and carries the leg's source", async () => {
-    db.queues["appointments.update"] = [{ data: [{ id: OLD }], error: null }, { data: [], error: null }];
+  /** The [ALERT:*] lines pageSentry printed — the production page (Sentry is off there). */
+  const alertLines = () =>
+    vi.mocked(console.error).mock.calls.map((c) => String(c[0])).filter((line) => line.startsWith("[ALERT:"));
+
+  it("the default orphan page is ONE [ALERT:error] line: reason, bug tag, the leg's source and both error codes", async () => {
+    db.queues["appointments.update"] = [{ data: [{ id: OLD }], error: null }, { data: null, error: { message: "conn reset", code: "08006" } }];
     db.queues["appointments.insert"] = [{ data: null, error: { message: "nope", code: "XX000" } }];
     await performRescheduleLeg(supabase, { orgId: ORG, oldId: OLD, before, updates, leg: ownerLeg });
+    const lines = alertLines();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(/^\[ALERT:error\] \[next-api\] Reschedule rollback failed \(orphaned old leg\) \| /);
+    for (const pair of [
+      "reason=reschedule-leg-orphaned", "bug=reschedule_rollback_failed", `orgId=${ORG}`, `oldId=${OLD}`,
+      "source=owner_voice", `callId=${CALL}`, "insErrCode=XX000", "rbErrCode=08006",
+    ]) {
+      expect(lines[0]).toContain(pair);
+    }
+    // The Sentry leg carries the same identity (dormant in production, kept for parity).
     expect(sentryState.pages).toEqual([
       {
         level: "error",
-        tags: { bug: "reschedule_rollback_failed" },
-        extras: { orgId: ORG, oldId: OLD, source: "owner_voice" },
+        tags: { service: "next-api", reason: "reschedule-leg-orphaned", bug: "reschedule_rollback_failed" },
+        extras: { orgId: ORG, oldId: OLD, source: "owner_voice", callId: CALL, insErrCode: "XX000", rbErrCode: "08006" },
         messages: ["Reschedule rollback failed (orphaned old leg)"],
       },
     ]);
@@ -297,13 +317,111 @@ describe("performRescheduleLeg", () => {
         message: "Dashboard reschedule rollback failed (orphaned old leg)",
       },
     });
+    const lines = alertLines();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("[ALERT:error] [next-api] Dashboard reschedule rollback failed (orphaned old leg) | ");
+    expect(lines[0]).toContain("reason=reschedule-leg-orphaned");
+    expect(lines[0]).toContain("bug=dashboard_reschedule_rollback_failed");
+    expect(lines[0]).toContain("source=dashboard_reschedule");
+    expect(lines[0]).not.toContain("callId=");
     expect(sentryState.pages).toEqual([
       {
         level: "error",
-        tags: { bug: "dashboard_reschedule_rollback_failed" },
-        extras: { orgId: ORG, oldId: OLD, source: "dashboard_reschedule" },
+        tags: { service: "next-api", reason: "reschedule-leg-orphaned", bug: "dashboard_reschedule_rollback_failed" },
+        extras: { orgId: ORG, oldId: OLD, source: "dashboard_reschedule", insErrCode: "XX000", rbErrCode: undefined },
         messages: ["Dashboard reschedule rollback failed (orphaned old leg)"],
       },
     ]);
+  });
+
+  it("no page on any outcome that keeps the customer's booking", async () => {
+    const runs: Array<() => void> = [
+      () => { db.queues["appointments.update"] = [{ data: [{ id: OLD }], error: null }]; db.queues["appointments.insert"] = [{ data: { id: NEW }, error: null }]; },
+      () => { db.queues["appointments.update"] = [{ data: [], error: null }]; },
+      () => { db.queues["appointments.update"] = [{ data: [{ id: OLD }], error: null }, { data: [{ id: OLD }], error: null }]; db.queues["appointments.insert"] = [{ data: null, error: { message: "overlap", code: "23P01" } }]; },
+      () => { db.queues["appointments.update"] = [{ data: [{ id: OLD }], error: null }, { data: [{ id: OLD }], error: null }]; db.queues["appointments.insert"] = [{ data: null, error: { message: "nope", code: "XX000" } }]; },
+    ];
+    for (const arrange of runs) {
+      db.reset();
+      arrange();
+      await performRescheduleLeg(supabase, { orgId: ORG, oldId: OLD, before, updates, leg: ownerLeg });
+    }
+    expect(alertLines()).toEqual([]);
+    expect(sentryState.pages).toEqual([]);
+  });
+
+  // ── A free that errored, but may have committed (lost response) ──────────────
+
+  const FREE_ERR = { message: "TypeError: fetch failed", code: "" };
+  const freeFails = () => { db.queues["appointments.update"] = [{ data: null, error: FREE_ERR }]; };
+
+  it("re-reads the old row org-scoped; a free that did NOT commit is plain free_failed (no rollback)", async () => {
+    freeFails();
+    db.queues["appointments.select"] = [{ data: { status: "confirmed" }, error: null }];
+    const out = await performRescheduleLeg(supabase, { orgId: ORG, oldId: OLD, before, updates, leg: ownerLeg });
+    expect(out).toEqual({ ok: false, reason: "free_failed", error: FREE_ERR });
+    const reread = db.log[1];
+    expect(reread.op).toBe("select");
+    expect(reread.filters.find((f) => f.name === "select")?.args).toEqual(["status"]);
+    expect(updatesOf(reread)).toEqual({ id: OLD, organization_id: ORG });
+    expect(db.log.map((o) => o.op)).toEqual(["update", "select"]);
+  });
+
+  it("a free that committed behind the error (row now `rescheduled`, no newer leg) is restored → free_failed, no page", async () => {
+    freeFails();
+    db.queues["appointments.select"] = [
+      { data: { status: "rescheduled" }, error: null }, // the re-read
+      { data: [], error: null }, // no leg points back at it
+    ];
+    db.queues["appointments.update"].push({ data: [{ id: OLD }], error: null }); // the restore
+    const out = await performRescheduleLeg(supabase, { orgId: ORG, oldId: OLD, before: { ...before, status: "pending" }, updates, leg: ownerLeg });
+    expect(out).toEqual({ ok: false, reason: "free_failed", error: FREE_ERR });
+    expect(db.log.map((o) => o.op)).toEqual(["update", "select", "select", "update"]);
+    const [, , successorLookup, restore] = db.log;
+    expect(updatesOf(successorLookup)).toEqual({ rescheduled_from_id: OLD, organization_id: ORG });
+    expect(restore.payload).toEqual({ status: "pending" }); // its prior status
+    expect(updatesOf(restore)).toEqual({ id: OLD, organization_id: ORG, status: "rescheduled" }); // only a row WE froze
+    expect(restore.filters.find((f) => f.name === "select")?.args).toEqual(["id"]);
+    expect(db.log.filter((o) => o.op === "insert")).toHaveLength(0);
+    expect(alertLines()).toEqual([]);
+  });
+
+  it("a committed free whose restore fails is orphaned and paged (free error code, not an insert's)", async () => {
+    freeFails();
+    db.queues["appointments.select"] = [{ data: { status: "rescheduled" }, error: null }, { data: [], error: null }];
+    db.queues["appointments.update"].push({ data: [], error: null }); // the restore finds nothing to restore
+    const out = await performRescheduleLeg(supabase, { orgId: ORG, oldId: OLD, before, updates, leg: ownerLeg });
+    expect(out).toEqual({ ok: false, reason: "orphaned", error: FREE_ERR });
+    const lines = alertLines();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("reason=reschedule-leg-orphaned");
+    expect(lines[0]).toContain("source=owner_voice");
+    expect(lines[0]).not.toContain("insErrCode");
+    expect(sentryState.pages).toHaveLength(1);
+  });
+
+  it("never revives a row another move superseded: `rescheduled` WITH a newer leg is free_failed, untouched", async () => {
+    freeFails();
+    db.queues["appointments.select"] = [{ data: { status: "rescheduled" }, error: null }, { data: [{ id: NEW }], error: null }];
+    const out = await performRescheduleLeg(supabase, { orgId: ORG, oldId: OLD, before, updates, leg: ownerLeg });
+    expect(out).toEqual({ ok: false, reason: "free_failed", error: FREE_ERR });
+    expect(db.log.map((o) => o.op)).toEqual(["update", "select", "select"]);
+    expect(alertLines()).toEqual([]);
+  });
+
+  it("a re-read or newer-leg lookup that fails is logged and reported free_failed — nothing restored on a guess", async () => {
+    freeFails();
+    db.queues["appointments.select"] = [{ data: null, error: { message: "down", code: "08006" } }];
+    expect(await performRescheduleLeg(supabase, { orgId: ORG, oldId: OLD, before, updates, leg: ownerLeg })).toMatchObject({ reason: "free_failed" });
+    expect(db.log.map((o) => o.op)).toEqual(["update", "select"]);
+
+    db.reset();
+    freeFails();
+    db.queues["appointments.select"] = [{ data: { status: "rescheduled" }, error: null }, { data: null, error: { message: "down", code: "08006" } }];
+    expect(await performRescheduleLeg(supabase, { orgId: ORG, oldId: OLD, before, updates, leg: ownerLeg })).toMatchObject({ reason: "free_failed" });
+    expect(db.log.map((o) => o.op)).toEqual(["update", "select", "select"]);
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining("[reschedule-leg]"), expect.objectContaining({ orgId: ORG, oldId: OLD, error: { message: "down", code: "08006" } }),
+    );
   });
 });

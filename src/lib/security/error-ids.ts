@@ -237,13 +237,15 @@ export const SENTRY_REASONS = {
    *  hits mean new numbers cannot be made call-ready. */
   PHONE_NUMBER_WEBHOOK_CONFIG_FAILED: "phone-number-webhook-config-failed",
 
-  // ─── owner assistant (SCRUM-586) ────────────────────────────────────
-  /** The business owner moved a booking by phone; the old booking was freed,
-   *  the new one failed to insert, AND restoring the old one failed — the
-   *  customer now has no active booking. The reschedule core's own page goes
-   *  to Sentry only (no DSN in production), so this is the alertable line.
-   *  Fix by hand in the dashboard: restore the old booking or rebook it. */
-  OWNER_RESCHEDULE_ORPHANED: "owner-reschedule-orphaned",
+  // ─── reschedule legs + owner assistant (SCRUM-586) ──────────────────
+  /** A reschedule leg was orphaned: the old booking was freed (or its free
+   *  committed behind an error), no new leg exists, AND restoring the old one
+   *  failed — the customer now has no active booking. Raised by
+   *  performRescheduleLeg for EVERY caller: the `source` extra says which
+   *  (dashboard_reschedule / owner_voice) and the `bug` tag keeps the caller's
+   *  page identity. Fix by hand in the dashboard: restore the old booking or
+   *  rebook it. */
+  RESCHEDULE_LEG_ORPHANED: "reschedule-leg-orphaned",
 
   /** The internal tool-call route refused an owner_* tool: the request carried no
    *  envelope owner authority (`ownerVerified: true` from the voice server's PIN

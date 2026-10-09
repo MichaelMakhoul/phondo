@@ -8,8 +8,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 // metadata.source owner_voice + call_id, audit event actor staff / channel voice /
 // call_id, customer_notified:false with the cancel SMS suppressed, slot conflict ⇒
 // alternatives (never a "which type?" question), genuine faults ⇒ error:true in
-// owner wording, an orphaned leg ⇒ an [ALERT:error] line, every time read and
-// written in the org's own zone.
+// owner wording, an orphaned leg paged once (by the reschedule core, not again
+// here), every time read and written in the org's own zone.
 
 vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: vi.fn() }));
 vi.mock("@/lib/security/rate-limiter", () => ({ rateLimitDistributed: vi.fn(async () => ({ allowed: true })) }));
@@ -366,16 +366,16 @@ describe("owner_reschedule_appointment", () => {
     expect(recordAppointmentEvent).not.toHaveBeenCalled();
   });
 
-  it("an orphaned leg raises an [ALERT:error] line with its own reason (the Grafana pager keys on it)", async () => {
+  it("an orphaned leg is paged once, by the reschedule core — the handler raises no second page", async () => {
+    // performRescheduleLeg (mocked here) pages every orphan itself: reschedule-leg.test.ts
+    // pins that page, and the integration test shows exactly one on the owner path.
     const errors = silence("error");
     vi.mocked(performRescheduleLeg).mockResolvedValueOnce({ ok: false, reason: "orphaned", error: { message: "x", code: "57014" } });
-    await handleOwnerRescheduleAppointment(ORG, { appointment_id: APPT, new_datetime: NEW_TIME, confirmed: true }, ctx);
-    const alerts = errors.mock.calls.map((c) => String(c[0])).filter((line) => line.startsWith("[ALERT:error]"));
-    expect(alerts).toHaveLength(1);
-    expect(alerts[0]).toContain("reason=owner-reschedule-orphaned");
-    expect(alerts[0]).toContain(`organizationId=${ORG}`);
-    expect(alerts[0]).toContain(`appointmentId=${APPT}`);
-    expect(alerts[0]).toContain(`callId=${CALL}`);
+    const r = await handleOwnerRescheduleAppointment(ORG, { appointment_id: APPT, new_datetime: NEW_TIME, confirmed: true }, ctx);
+    expect(r).toMatchObject({ success: false, error: true });
+    expect(r.message).toContain("needs a manual check in the dashboard");
+    const alerts = errors.mock.calls.map((c) => String(c[0])).filter((line) => line.startsWith("[ALERT:"));
+    expect(alerts).toEqual([]);
   });
 
   it("parses, reads back and looks for alternatives in the org's own zone", async () => {

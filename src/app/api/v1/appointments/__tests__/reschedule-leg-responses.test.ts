@@ -7,7 +7,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 // route and must hold unchanged after it — every outcome keeps its HTTP status
 // and body, the leg row keeps its manual/dashboard provenance, and an orphaned
 // rollback keeps its Sentry page identity (Sentry groups the page by its
-// message; alert rules may filter on the tag).
+// message; alert rules may filter on the tag). Ruled change (final review S2): the
+// core now raises that page through pageSentry, so the dashboard's orphan finally
+// reaches the [ALERT:error] pager (Sentry has no DSN in production), and a free
+// that errored is re-read so one that committed anyway is restored.
 
 const sentryState = vi.hoisted(() => {
   type Page = {
@@ -133,6 +136,14 @@ const FREED: Res = { data: [{ id: APPT_ID }], error: null };
 const RESTORED: Res = { data: [{ id: APPT_ID }], error: null };
 
 const writes = () => db.log.filter((o) => o.table === "appointments" && o.op !== "select");
+/** The [ALERT:*] lines pageSentry printed — what pages on-call in production. */
+const alertLines = () =>
+  vi.mocked(console.error).mock.calls.map((c) => String(c[0])).filter((line) => line.startsWith("[ALERT:"));
+const DASHBOARD_PAGE = {
+  level: "error",
+  tags: { service: "next-api", reason: "reschedule-leg-orphaned", bug: "dashboard_reschedule_rollback_failed" },
+  messages: ["Dashboard reschedule rollback failed (orphaned old leg)"],
+};
 
 async function moveAppointment() {
   const res = await PATCH(
@@ -283,14 +294,17 @@ describe("PATCH /appointments/[id] — reschedule-leg responses (SCRUM-586 chara
       error: "We couldn't complete the move and couldn't restore the original appointment — it needs manual review.",
     });
     expect(sentryState.pages).toEqual([
-      {
-        level: "error",
-        tags: { bug: "dashboard_reschedule_rollback_failed" },
-        extras: expect.objectContaining({ orgId: ORG, oldId: APPT_ID }),
-        messages: ["Dashboard reschedule rollback failed (orphaned old leg)"],
-      },
+      { ...DASHBOARD_PAGE, extras: expect.objectContaining({ orgId: ORG, oldId: APPT_ID, source: "dashboard_reschedule" }) },
     ]);
     expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+    // The page that actually reaches on-call in production.
+    const lines = alertLines();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("[ALERT:error] [next-api] Dashboard reschedule rollback failed (orphaned old leg)");
+    expect(lines[0]).toContain("reason=reschedule-leg-orphaned");
+    expect(lines[0]).toContain("bug=dashboard_reschedule_rollback_failed");
+    expect(lines[0]).toContain(`oldId=${APPT_ID}`);
+    expect(lines[0]).toContain("source=dashboard_reschedule");
   });
 
   it("a rollback that errors → the same manual-review response and page", async () => {
@@ -302,7 +316,44 @@ describe("PATCH /appointments/[id] — reschedule-leg responses (SCRUM-586 chara
     expect(status).toBe(500);
     expect(body.error).toMatch(/needs manual review/);
     expect(sentryState.pages).toHaveLength(1);
-    expect(sentryState.pages[0].tags).toEqual({ bug: "dashboard_reschedule_rollback_failed" });
-    expect(sentryState.pages[0].messages).toEqual(["Dashboard reschedule rollback failed (orphaned old leg)"]);
+    expect(sentryState.pages[0].tags).toEqual(DASHBOARD_PAGE.tags);
+    expect(sentryState.pages[0].messages).toEqual(DASHBOARD_PAGE.messages);
+    expect(alertLines()).toHaveLength(1);
+  });
+
+  it("a free that errored but committed (lost response) is restored → the same 500 'Failed to reschedule', no page", async () => {
+    db.queues["appointments.update"] = [{ data: null, error: { message: "TypeError: fetch failed" } }, RESTORED];
+    db.queues["appointments.select"].push(
+      { data: { status: "rescheduled" }, error: null }, // the re-read: the free DID land
+      { data: [], error: null }, // and no newer leg points at it
+    );
+
+    const { status, body } = await moveAppointment();
+
+    expect(status).toBe(500);
+    expect(body).toEqual({ error: "Failed to reschedule appointment" });
+    const [free, restore, ...rest] = writes();
+    expect(rest).toHaveLength(0); // nothing inserted
+    expect(free.payload).toEqual({ status: "rescheduled" });
+    expect(restore.payload).toEqual({ status: "confirmed" });
+    expect(restore.eqs).toEqual([["id", APPT_ID], ["organization_id", ORG], ["status", "rescheduled"]]);
+    expect(sentryState.pages).toHaveLength(0);
+    expect(alertLines()).toEqual([]);
+  });
+
+  it("a committed-but-lost free whose restore fails → 500 manual-review + the dashboard's page", async () => {
+    db.queues["appointments.update"] = [{ data: null, error: { message: "TypeError: fetch failed" } }, { data: [], error: null }];
+    db.queues["appointments.select"].push({ data: { status: "rescheduled" }, error: null }, { data: [], error: null });
+
+    const { status, body } = await moveAppointment();
+
+    expect(status).toBe(500);
+    expect(body).toEqual({
+      error: "We couldn't complete the move and couldn't restore the original appointment — it needs manual review.",
+    });
+    expect(sentryState.pages).toEqual([
+      { ...DASHBOARD_PAGE, extras: expect.objectContaining({ orgId: ORG, oldId: APPT_ID, source: "dashboard_reschedule" }) },
+    ]);
+    expect(alertLines()).toHaveLength(1);
   });
 });

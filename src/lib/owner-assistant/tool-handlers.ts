@@ -23,8 +23,6 @@ import { isServiceTypeQuestion } from "@/lib/calendar/service-type-question";
 import { diffAppointmentFields, recordAppointmentEvent } from "@/lib/appointments/events";
 import { rateLimitDistributed } from "@/lib/security/rate-limiter";
 import { isValidUUID } from "@/lib/security/validation";
-import { SENTRY_REASONS } from "@/lib/security/error-ids";
-import { pageSentry } from "@/lib/observability/page-sentry";
 import { runAfterResponse } from "@/lib/utils/after-response";
 import { invalidateVoiceScheduleCache } from "@/lib/voice-cache/invalidate";
 import {
@@ -553,22 +551,16 @@ export async function handleOwnerRescheduleAppointment(
         };
       }
       case "orphaned":
-        // Old leg freed, new leg not inserted, rollback failed: the customer has no
-        // active booking. The core's page reaches Sentry only (no DSN in production),
-        // so raise the [ALERT:error] line the Grafana pager keys on here.
-        pageSentry({
-          service: "next-api",
-          reason: SENTRY_REASONS.OWNER_RESCHEDULE_ORPHANED,
-          level: "error",
-          message: "Owner reschedule rollback failed — the customer has no active booking",
-          extras: { organizationId, appointmentId: before.id, callId: ctx.callId, dbErrorCode: outcome.error.code },
-        });
+        // Old leg freed, no new leg, restore failed: the customer has no active
+        // booking. performRescheduleLeg has already paged on-call ([ALERT:error],
+        // source owner_voice), so this only tells the owner.
         return errorResult(
           `I couldn't move the job and couldn't restore the original either — ${customer}'s ${from} job needs a manual check in the dashboard.`
         );
       case "free_failed":
-        // A lost response can leave the old booking freed with no new leg, so this
-        // must not claim the booking is unchanged.
+        // The core restores a free that committed behind the error, but if it could
+        // not even look, the booking may be freed with no new leg — so this must not
+        // claim the booking is unchanged.
         return errorResult("I couldn't move that booking — something went wrong on our side. Please check it in the dashboard.");
       case "insert_failed":
         // The core restored the old booking.

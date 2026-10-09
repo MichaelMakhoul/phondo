@@ -276,7 +276,7 @@ async function rescheduleViaLeg(
         return NextResponse.json({ error: "This time conflicts with another appointment" }, { status: 409 });
       case "orphaned":
         // Distinct from the look-alike "time conflicts" 409 — staff must know the
-        // appointment needs manual review (the core already paged Sentry).
+        // appointment needs manual review (the core has paged on-call).
         return NextResponse.json(
           { error: "We couldn't complete the move and couldn't restore the original appointment — it needs manual review." },
           { status: 500 }
