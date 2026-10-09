@@ -15,11 +15,41 @@ type Res = { data: unknown; error: { message?: string; code?: string } | null; c
 type Op = { table: string; filters: Array<{ name: string; args: unknown[] }> };
 
 const db = { log: [] as Op[], queues: {} as Record<string, Res[]> };
+// PostgREST returns ONLY the columns the query selected. Project the queued rows through the
+// recorded select list so a column dropped from the handler's select comes back undefined.
+function splitCols(cols: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let cur = "";
+  for (const ch of cols) {
+    if (ch === "(") depth++;
+    if (ch === ")") depth--;
+    if (ch === "," && depth === 0) { out.push(cur.trim()); cur = ""; } else cur += ch;
+  }
+  if (cur.trim()) out.push(cur.trim());
+  return out;
+}
+function project(row: Record<string, unknown>, cols: string): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const part of splitCols(cols)) {
+    const key = part.split("(")[0].trim();
+    out[key] = part.includes("(") ? (row[key] ?? null) : row[key];
+  }
+  return out;
+}
 function fakeAdmin() {
   return {
     from: (table: string) => {
       const ctx: Op = { table, filters: [] };
-      const res = () => db.queues[table]?.shift() ?? { data: [], error: null, count: 0 };
+      const res = (): Res => {
+        const r = db.queues[table]?.shift() ?? { data: [], error: null, count: 0 };
+        const sel = ctx.filters.find((f) => f.name === "select")?.args[0];
+        if (typeof sel !== "string" || !r.data) return r;
+        const data = Array.isArray(r.data)
+          ? r.data.map((row) => project(row as Record<string, unknown>, sel))
+          : project(r.data as Record<string, unknown>, sel);
+        return { ...r, data };
+      };
       const b: any = {};
       for (const name of ["select", "eq", "in", "not", "gte", "lt", "order", "limit"]) {
         b[name] = (...args: unknown[]) => { ctx.filters.push({ name, args }); return b; };

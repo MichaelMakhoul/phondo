@@ -260,6 +260,13 @@ describe("owner_reschedule_appointment", () => {
     expect(recordAppointmentEvent).not.toHaveBeenCalled();
   });
 
+  it("a slot clash looks for alternatives with the job's own practitioner too", async () => {
+    queueBefore(1, { ...BEFORE, practitioner_id: "prac-7", practitioners: { name: "Dave" } });
+    vi.mocked(performRescheduleLeg).mockResolvedValueOnce({ ok: false, reason: "conflict" });
+    await handleOwnerRescheduleAppointment(ORG, { appointment_id: APPT, new_datetime: NEW_TIME, confirmed: true }, ctx);
+    expect(handleCheckAvailability).toHaveBeenCalledWith(ORG, { date: "2026-10-17", service_type_id: "svc-1", practitioner_id: "prac-7" });
+  });
+
   it("a slot clash is still reported when the alternatives lookup fails or has nothing to offer", async () => {
     const warn = silence("warn");
     queueBefore(2);

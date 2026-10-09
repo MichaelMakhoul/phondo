@@ -93,13 +93,16 @@ function makeBuilder(table: string) {
   const op: Op = { table, op: "select", eqs: [], ins: [] };
   const b: Record<string, unknown> = {};
   const chain = () => b;
+  let selected = false; // did the chain ask PostgREST for rows back?
   const resolve = (): Res => {
     db.log.push(op);
     if (table === "org_members") return { data: { organization_id: ORG }, error: null };
-    return db.queues[`${table}.${op.op}`]?.shift() ?? { data: null, error: null };
+    const res = db.queues[`${table}.${op.op}`]?.shift() ?? { data: null, error: null };
+    // supabase-js returns no rows for an update()/insert() that never chained .select() (data:null).
+    return op.op === "select" || selected ? res : { data: null, error: res.error };
   };
   Object.assign(b, {
-    select: chain, order: chain, limit: chain, is: chain, not: chain, or: chain,
+    select: () => { selected = true; return b; }, order: chain, limit: chain, is: chain, not: chain, or: chain,
     eq: (col: string, val: unknown) => { op.eqs.push([col, val]); return b; },
     in: (col: string, val: unknown) => { op.ins.push([col, val]); return b; },
     update: (payload: unknown) => { op.op = "update"; op.payload = payload; return b; },

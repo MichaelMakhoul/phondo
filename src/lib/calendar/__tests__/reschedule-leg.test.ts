@@ -61,11 +61,19 @@ function builder(table: string) {
   b.select = (...args: unknown[]) => { ctx.filters.push({ name: "select", args }); return b; };
   b.update = (payload: unknown) => { ctx.op = "update"; ctx.payload = payload; return b; };
   b.insert = (payload: unknown) => { ctx.op = "insert"; ctx.payload = payload; return b; };
-  b.single = async () => { db.log.push(ctx); return db.next(`${table}.${ctx.op}`); };
+  // supabase-js returns NO rows for an update()/insert() that never chained .select() (data:null).
+  // Model that, so dropping .select("id") from the free or the rollback step reads as "0 rows
+  // freed" / "0 rows restored", exactly as it would in production.
+  const settle = (): Res => {
+    const res = db.next(`${table}.${ctx.op}`);
+    const returnsRows = ctx.op === "select" || ctx.filters.some((f) => f.name === "select");
+    return returnsRows ? res : { data: null, error: res.error };
+  };
+  b.single = async () => { db.log.push(ctx); return settle(); };
   b.maybeSingle = b.single;
   b.then = (resolve: (v: Res) => unknown, reject?: (e: unknown) => unknown) => {
     db.log.push(ctx);
-    return Promise.resolve(db.next(`${table}.${ctx.op}`)).then(resolve, reject);
+    return Promise.resolve(settle()).then(resolve, reject);
   };
   return b;
 }
