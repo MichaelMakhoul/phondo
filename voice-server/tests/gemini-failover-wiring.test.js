@@ -23,7 +23,7 @@ const path = require("node:path");
 const serverSrc = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
 
 process.env.OPENAI_API_KEY = process.env.OPENAI_API_KEY || "test-key";
-const { _test } = require("../services/openai-realtime");
+const { _test, resolveOpenAIRealtimeModel } = require("../services/openai-realtime");
 
 describe("SCRUM-535 wiring (source introspection)", () => {
   it("the default (non-override) production factory is the failover wrapper, not bare createGeminiSession", () => {
@@ -55,23 +55,35 @@ describe("SCRUM-535 wiring (source introspection)", () => {
     );
   });
 
-  it("the metadata model literal matches the adapter's actual default", () => {
-    // "gpt-realtime-2.1" exists in two modules: server.js's _failoverModel
-    // (recorded in calls.metadata) and PROVIDERS.openai's url() default (the
-    // model actually dialed). Nothing else enforces the coupling — this does.
+  it("the metadata model comes from the adapter's own resolver — no second literal to drift (SCRUM-588)", () => {
+    // server.js records _failoverModel in calls.metadata; PROVIDERS.openai's
+    // url() is the model actually dialed. Both must read the ONE default in
+    // openai-realtime.js — a duplicated literal is how they drift apart.
+    assert.match(
+      serverSrc,
+      /const _failoverModel = resolveOpenAIRealtimeModel\(\);/,
+      "_failoverModel must come from openai-realtime's resolveOpenAIRealtimeModel()"
+    );
+    assert.doesNotMatch(
+      serverSrc,
+      /OPENAI_REALTIME_MODEL \|\| "/,
+      "server.js must not carry its own OpenAI Realtime default literal"
+    );
+  });
+
+  it("the resolver and the dialed URL agree — default and env override", () => {
     const prevEnv = process.env.OPENAI_REALTIME_MODEL;
-    delete process.env.OPENAI_REALTIME_MODEL;
+    const modelInUrl = () => /model=([^&]+)$/.exec(_test.PROVIDERS.openai.url())?.[1];
     try {
-      const url = _test.PROVIDERS.openai.url();
-      const adapterDefault = /model=([^&]+)$/.exec(url)?.[1];
-      assert.ok(adapterDefault, `could not extract model from ${url}`);
-      assert.match(
-        serverSrc,
-        new RegExp(`process\\.env\\.OPENAI_REALTIME_MODEL \\|\\| "${adapterDefault.replace(/\./g, "\\.")}"`),
-        `server.js's _failoverModel default must be "${adapterDefault}" — metadata must record the model the call actually used`
-      );
+      delete process.env.OPENAI_REALTIME_MODEL;
+      assert.equal(resolveOpenAIRealtimeModel(), "gpt-realtime-2.1");
+      assert.equal(modelInUrl(), resolveOpenAIRealtimeModel());
+      process.env.OPENAI_REALTIME_MODEL = "gpt-realtime-test";
+      assert.equal(resolveOpenAIRealtimeModel(), "gpt-realtime-test");
+      assert.equal(modelInUrl(), "gpt-realtime-test");
     } finally {
       if (prevEnv !== undefined) process.env.OPENAI_REALTIME_MODEL = prevEnv;
+      else delete process.env.OPENAI_REALTIME_MODEL;
     }
   });
 });

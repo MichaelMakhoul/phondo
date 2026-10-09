@@ -1,10 +1,20 @@
-// LLM provider configuration — supports OpenAI, Anthropic, and Gemini
-// Set LLM_PROVIDER env var to switch: "anthropic" (default), "openai", "gemini"
+// LLM provider configuration for the classic (fallback) voice pipeline —
+// supports OpenAI, Anthropic, and Gemini.
+// Set LLM_PROVIDER env var to switch: "openai" (default), "anthropic", "gemini";
+// LLM_MODEL overrides the provider's default model.
 const { DEBUG_TRANSCRIPTS } = require("../lib/log-transcript");
+const { openAIChatParams, claudeLatencyParams } = require("../lib/model-params");
 const LLM_PROVIDER = process.env.LLM_PROVIDER || "openai";
 
+// SCRUM-588: defaults were re-measured against their successors on the exact
+// streaming request below (tools included); a successor whose median
+// time-to-first-token was >300ms worse even at its lowest reasoning setting
+// stayed out of the default — this is a live voice path.
 const PROVIDER_CONFIG = {
   openai: {
+    // Kept: gpt-6-luna at reasoning_effort "none" was +353ms (text) / +476ms
+    // (tool call) slower to first token (pooled medians, 2026-10-09).
+    // LLM_MODEL=gpt-6-luna works — openAIChatParams shapes the request.
     defaultModel: "gpt-4.1-mini",
     apiKeyEnv: "OPENAI_API_KEY",
     name: "OpenAI",
@@ -13,7 +23,10 @@ const PROVIDER_CONFIG = {
     authHeader: (key) => ({ Authorization: `Bearer ${key}` }),
   },
   gemini: {
-    defaultModel: "gemini-3.5-flash", // SCRUM-533: 3.5 is GA; fallback-pipeline path only
+    // SCRUM-533: 3.5 is GA; fallback-pipeline path only. Kept by SCRUM-588:
+    // gemini-3.8-flash was 1.2-2.2s slower to first token at every reasoning
+    // level it accepts (pooled medians, 2026-10-09).
+    defaultModel: "gemini-3.5-flash",
     apiKeyEnv: "GEMINI_API_KEY",
     name: "Gemini",
     type: "openai-compat",
@@ -21,7 +34,10 @@ const PROVIDER_CONFIG = {
     authHeader: (key) => ({ Authorization: `Bearer ${key}` }),
   },
   anthropic: {
-    defaultModel: "claude-haiku-4-5-20251001",
+    // SCRUM-588: Haiku 5.5 with thinking disabled — +151ms (text) / +204ms
+    // (tool call) to first token vs Haiku 4.5, at a tenth of the price.
+    // LLM_MODEL=claude-haiku-4-5-20251001 reverts; it accepts the same request.
+    defaultModel: "claude-haiku-5-5",
     apiKeyEnv: "ANTHROPIC_API_KEY",
     name: "Anthropic",
     type: "anthropic",
@@ -160,6 +176,64 @@ function parseAnthropicResponse(data) {
   return { type: "content", content: text };
 }
 
+// ─── Request bodies ─────────────────────────────────────────────────────────
+
+/**
+ * Anthropic Messages body. No temperature: Haiku 5.5 rejects any non-default
+ * value (400 "`temperature` is deprecated for this model"), so it is dropped
+ * for every Claude model — on the Haiku 4.5 revert lever that means its
+ * default (1.0) instead of the old 0.7. Haiku runs with thinking disabled
+ * (claudeLatencyParams): this is a live voice turn, and the OpenAI-format
+ * history kept between turns has nowhere to carry thinking blocks.
+ * @param {string} model
+ * @param {string} system
+ * @param {object[]} anthropicMsgs - output of toAnthropicMessages
+ * @param {object[]|undefined} openaiTools
+ * @param {boolean} stream
+ * @returns {Record<string, any>}
+ */
+function buildAnthropicBody(model, system, anthropicMsgs, openaiTools, stream) {
+  /** @type {Record<string, any>} */
+  const body = {
+    model,
+    system: system || undefined,
+    messages: anthropicMsgs,
+    max_tokens: openaiTools?.length > 0 ? 300 : 150,
+    ...claudeLatencyParams(model),
+  };
+  if (stream) body.stream = true;
+  const tools = toAnthropicTools(openaiTools);
+  if (tools) body.tools = tools;
+  return body;
+}
+
+/**
+ * OpenAI-compatible chat-completions body (OpenAI and Gemini). The token cap,
+ * temperature and reasoning fields follow the model family (openAIChatParams):
+ * an OpenAI reasoning model 400s on `max_tokens` and only takes tools at
+ * reasoning_effort "none"; gpt-4.x and Gemini keep the classic shape.
+ * @param {string} model
+ * @param {object[]} messages
+ * @param {{ tools?: object[], tool_choice?: string }|undefined} options
+ * @param {boolean} stream
+ * @returns {Record<string, any>}
+ */
+function buildOpenAICompatBody(model, messages, options, stream) {
+  const hasTools = options?.tools?.length > 0;
+  /** @type {Record<string, any>} */
+  const body = {
+    model,
+    messages,
+    ...openAIChatParams(model, { maxTokens: hasTools ? 300 : 150, temperature: 0.7 }),
+    stream,
+  };
+  if (hasTools) {
+    body.tools = options.tools;
+    body.tool_choice = options.tool_choice || "auto";
+  }
+  return body;
+}
+
 // ─── Sentence splitting ─────────────────────────────────────────────────────
 
 const SENTENCE_BREAK = /(?<=[.!?])\s+/;
@@ -184,30 +258,11 @@ async function getChatResponse(apiKey, messages, options) {
     const { system, messages: anthropicMsgs } = toAnthropicMessages(messages);
     fetchUrl = config.baseUrl;
     headers = { ...config.authHeader(resolvedKey), "Content-Type": "application/json" };
-    body = {
-      model,
-      system: system || undefined,
-      messages: anthropicMsgs,
-      max_tokens: options?.tools?.length > 0 ? 300 : 150,
-      temperature: 0.7,
-    };
-    const tools = toAnthropicTools(options?.tools);
-    if (tools) body.tools = tools;
+    body = buildAnthropicBody(model, system, anthropicMsgs, options?.tools, false);
   } else {
     fetchUrl = config.baseUrl;
     headers = { ...config.authHeader(resolvedKey), "Content-Type": "application/json" };
-    body = {
-      model,
-      messages,
-      max_tokens: 150,
-      temperature: 0.7,
-      stream: false,
-    };
-    if (options?.tools?.length > 0) {
-      body.tools = options.tools;
-      body.tool_choice = options.tool_choice || "auto";
-      body.max_tokens = 300;
-    }
+    body = buildOpenAICompatBody(model, messages, options, false);
   }
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
@@ -279,31 +334,11 @@ async function streamChatResponse(apiKey, messages, options) {
     const { system, messages: anthropicMsgs } = toAnthropicMessages(messages);
     fetchUrl = config.baseUrl;
     headers = { ...config.authHeader(resolvedKey), "Content-Type": "application/json" };
-    body = {
-      model,
-      system: system || undefined,
-      messages: anthropicMsgs,
-      max_tokens: options?.tools?.length > 0 ? 300 : 150,
-      temperature: 0.7,
-      stream: true,
-    };
-    const tools = toAnthropicTools(options?.tools);
-    if (tools) body.tools = tools;
+    body = buildAnthropicBody(model, system, anthropicMsgs, options?.tools, true);
   } else {
     fetchUrl = config.baseUrl;
     headers = { ...config.authHeader(resolvedKey), "Content-Type": "application/json" };
-    body = {
-      model,
-      messages,
-      max_tokens: 150,
-      temperature: 0.7,
-      stream: true,
-    };
-    if (options?.tools?.length > 0) {
-      body.tools = options.tools;
-      body.tool_choice = options.tool_choice || "auto";
-      body.max_tokens = 300;
-    }
+    body = buildOpenAICompatBody(model, messages, options, true);
   }
 
   // Retry loop for rate limits
@@ -546,5 +581,8 @@ module.exports = {
   // the message/tool shaping logic. These do not read module-level `config`.
   toAnthropicMessages, toAnthropicTools,
   // Exported for testing only
-  _test: { toAnthropicMessages, toAnthropicTools, parseAnthropicResponse, processSentenceBuffer },
+  _test: {
+    toAnthropicMessages, toAnthropicTools, parseAnthropicResponse, processSentenceBuffer,
+    buildAnthropicBody, buildOpenAICompatBody,
+  },
 };

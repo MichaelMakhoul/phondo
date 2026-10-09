@@ -8,6 +8,7 @@ const assert = require("node:assert/strict");
 // the fail-open posture — this function must not hide errors).
 
 let origApiKey;
+let origAnalysisModel;
 let origFetch;
 
 /** Fake fetch returning a JSON-mode chat completion with the given object. */
@@ -32,13 +33,17 @@ function mockJudge(responseObj, capture) {
 describe("judgeTranscriptContentLoss (SCRUM-553)", () => {
   beforeEach(() => {
     origApiKey = process.env.OPENAI_API_KEY;
+    origAnalysisModel = process.env.ANALYSIS_MODEL;
     origFetch = globalThis.fetch;
     process.env.OPENAI_API_KEY = "test-key";
+    delete process.env.ANALYSIS_MODEL; // pin the code default, whatever the shell has
   });
 
   afterEach(() => {
     if (origApiKey === undefined) delete process.env.OPENAI_API_KEY;
     else process.env.OPENAI_API_KEY = origApiKey;
+    if (origAnalysisModel === undefined) delete process.env.ANALYSIS_MODEL;
+    else process.env.ANALYSIS_MODEL = origAnalysisModel;
     globalThis.fetch = origFetch;
   });
 
@@ -64,7 +69,13 @@ describe("judgeTranscriptContentLoss (SCRUM-553)", () => {
     assert.match(system, /garbled text still proves the caller SAID something/);
     // 500, not 200: positive verdicts carry a note — a tight cap concentrates
     // truncation on exactly the verdicts the guard exists to deliver.
-    assert.equal(capture.body.max_tokens, 500);
+    // SCRUM-588: the default (gpt-6-luna) takes the cap as
+    // max_completion_tokens and 400s on max_tokens; reasoning_effort "none"
+    // keeps hidden reasoning tokens from eating it.
+    assert.equal(capture.body.model, "gpt-6-luna");
+    assert.equal(capture.body.max_completion_tokens, 500);
+    assert.equal(capture.body.max_tokens, undefined);
+    assert.equal(capture.body.reasoning_effort, "none");
   });
 
   it("maps a clean verdict and normalizes an empty note to null", async () => {

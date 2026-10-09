@@ -9,25 +9,31 @@
  */
 
 const { Sentry } = require("../lib/sentry");
+const { openAIChatParams } = require("../lib/model-params");
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-// SCRUM-533: mini, not nano — this runs AFTER hangup (off the latency path)
-// and writes exactly the text the owner reads in the dashboard: summary,
-// caller name, success evaluation, collected details. Weakest-tier output on
-// the most-visible surface was the wrong trade; cost is fractions of a cent.
-const ANALYSIS_MODEL = "gpt-4.1-mini";
-// SCRUM-370: when the raw transcript carries the STT mis-detection signature
-// (non-Latin scripts where the caller most likely spoke a Latin-script or
-// Arabic language), recover with a stronger model. Post-call batch step, so the
-// marginal cost is negligible.
-const CLEANUP_MODEL_GARBLED = "gpt-4.1-mini";
+// Runs AFTER hangup (off the latency path) and writes exactly the text the
+// owner reads in the dashboard: summary, caller name, success evaluation,
+// collected details — output quality outranks cost here (why SCRUM-533 moved
+// it off nano). SCRUM-588: gpt-6-luna, two generations newer than
+// gpt-4.1-mini at a quarter of the price. It is a reasoning model:
+// openAIChatParams sends max_completion_tokens + reasoning_effort "none" (it
+// 400s on max_tokens). ANALYSIS_MODEL is the revert lever for all three calls
+// below — "gpt-4.1-mini" gets the classic request shape back.
+const ANALYSIS_MODEL = process.env.ANALYSIS_MODEL || "gpt-6-luna";
+// SCRUM-370: transcripts carrying the STT mis-detection signature (non-Latin
+// scripts where the caller most likely spoke a Latin-script or Arabic
+// language) get their own routing: the longer timeout below always, and a
+// stronger model whenever ANALYSIS_MODEL is a weaker tier. Today both are the
+// same model; the constant stays so that routing remains a one-line change.
+const CLEANUP_MODEL_GARBLED = ANALYSIS_MODEL;
 
 // Non-Latin script ranges that signal STT language mis-routing (or a genuinely
-// non-English call that nano recovers poorly). Covers the scripts plausible for
+// non-English call that a cheap model recovers poorly). Covers the scripts plausible for
 // AU/US callers: Greek, Cyrillic, Hebrew, Arabic, Devanagari, Bengali, Tamil,
 // Thai, Hiragana/Katakana, CJK, Hangul, and half-width Katakana. Latin
 // (incl. accents/diacritics) and emoji are intentionally excluded so they don't
-// force the pricier model.
+// force the garbled-transcript route.
 const GARBLE_SIGNATURE = new RegExp(
   "[" +
     "\\u0370-\\u03FF" + // Greek
@@ -94,6 +100,7 @@ async function callOpenAI({ system, user, maxTokens, model, timeoutMs }) {
     throw new Error("OPENAI_API_KEY not set");
   }
 
+  const resolvedModel = model || ANALYSIS_MODEL;
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     signal: AbortSignal.timeout(timeoutMs || 20_000),
@@ -102,13 +109,12 @@ async function callOpenAI({ system, user, maxTokens, model, timeoutMs }) {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model: model || ANALYSIS_MODEL,
+      model: resolvedModel,
       messages: [
         { role: "system", content: system },
         { role: "user", content: user },
       ],
-      max_tokens: maxTokens,
-      temperature: 0.1,
+      ...openAIChatParams(resolvedModel, { maxTokens, temperature: 0.1 }),
       response_format: { type: "json_object" },
       stream: false,
     }),
@@ -202,10 +208,10 @@ async function analyzeCleanup(transcript, language) {
     const langHint = language
       ? `\n\nCONTEXT: The business's configured language is "${language}", so "${language}" is the most likely language for callers — use it to disambiguate mis-detected (random CJK/Hindi/Cyrillic/Arabic) characters when the intended text is unclear. This is a recovery hint only: NEVER translate a turn out of the language it was actually spoken in.`
       : "";
-    // Garbled / non-Latin transcripts route to the stronger model AND get a
+    // Garbled / non-Latin transcripts route to CLEANUP_MODEL_GARBLED AND get a
     // longer timeout — they emit more output (recovered text + "original") and
-    // the slower model would otherwise risk silently timing out on exactly the
-    // calls this is meant to help.
+    // would otherwise risk silently timing out on exactly the calls this is
+    // meant to help.
     const garbled = containsNonLatinScript(transcript);
     const sliced = transcript.slice(0, 6000);
     const parsed = await callOpenAI({
@@ -339,8 +345,8 @@ Return ONLY JSON: {"content_loss": boolean, "note": "one short sentence IN ENGLI
 async function judgeTranscriptContentLoss(priorTranscript, replacementTranscript) {
   // 24k chars per side (not the analysis prompts' 6k): this is a COMPARISON —
   // both sides must cover the same span of the call, and B is by design tighter
-  // than A, so a short window structurally hides late-call loss. gpt-4.1-mini's
-  // context makes this trivial; cost stays sub-cent.
+  // than A, so a short window structurally hides late-call loss. The analysis
+  // model's context makes this trivial; cost stays sub-cent.
   const parsed = await callOpenAI({
     system: CONTENT_LOSS_PROMPT,
     user:

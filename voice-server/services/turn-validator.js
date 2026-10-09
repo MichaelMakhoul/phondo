@@ -5,17 +5,27 @@
  * Catches: wrong dates, wrong times, wrong practitioner names, and any
  * fabricated details that the regex-based Tier 1 detector can't catch.
  *
- * Cost: ~$0.001 per validation. Only fires on turns after tool results
- * (typically 2-5 per call = ~$0.005 total per call).
+ * Cost: ~$0.0001 per validation on Haiku 5.5. Only fires on turns after tool
+ * results (typically 2-5 per call).
  *
- * Latency: ~200-500ms. Runs AFTER the turn completes (audio already sent),
+ * Latency: ~0.6s for a clean verdict, ~1.3s when it writes a discrepancy note
+ * (measured 2026-10-09). Runs AFTER the turn completes (audio already sent),
  * so no caller-facing latency. Correction is injected into Gemini's next turn.
  */
 
 const { DEBUG_TRANSCRIPTS } = require("../lib/log-transcript");
+const { claudeLatencyParams, claudeResponseText } = require("../lib/model-params");
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
-const VALIDATOR_MODEL = "claude-haiku-4-5-20251001";
+// SCRUM-588: Haiku 5.5 — 10× cheaper than Haiku 4.5 and, with thinking
+// disabled, within ~70ms of its latency (probed). VALIDATOR_MODEL is the
+// revert lever: "claude-haiku-4-5-20251001" accepts the same request.
+const VALIDATOR_MODEL = process.env.VALIDATOR_MODEL || "claude-haiku-5-5";
+// Haiku 5.5's tokenizer counts the same text as ~30% more tokens and its
+// discrepancy notes run longer: a three-field mismatch used 120 of the old 150
+// (Haiku 4.5: ~78). A truncated note would still flag the turn but reach
+// Gemini as "Unknown discrepancy", so leave real headroom.
+const VALIDATOR_MAX_TOKENS = 300;
 
 /**
  * Validate that Sophie's spoken response accurately reflects the tool result.
@@ -48,7 +58,10 @@ async function validateToolResponse({ toolName, toolResult, spokenResponse }) {
       },
       body: JSON.stringify({
         model: VALIDATOR_MODEL,
-        max_tokens: 150,
+        max_tokens: VALIDATOR_MAX_TOKENS,
+        // Thinking off: with Haiku 5.5's default (adaptive) thinking the reply
+        // can START with a thinking block and spend the token cap on it.
+        ...claudeLatencyParams(VALIDATOR_MODEL),
         messages: [{
           role: "user",
           content: `You are a quality checker for an AI receptionist. Compare the tool result against what the AI told the caller. Report ONLY factual mismatches — ignore phrasing differences.
@@ -78,8 +91,15 @@ OR
       return { accurate: true };
     }
 
-    const data = /** @type {{ content?: Array<{ text?: string }> }} */ (await res.json());
-    const text = data.content?.[0]?.text?.trim() || "";
+    const data = /** @type {{ content?: unknown, stop_reason?: string }} */ (await res.json());
+    // By block TYPE, never content[0]: on a model that thinks, content[0] is a
+    // thinking block, and reading it as "no text" would pass EVERY turn as
+    // accurate — this layer silently switched off (probed on Haiku 5.5).
+    const text = claudeResponseText(data.content).trim();
+    if (!text) {
+      console.warn(`[TurnValidator] No text in ${VALIDATOR_MODEL} response (stop_reason=${data.stop_reason ?? "unknown"}) — skipping validation`);
+      return { accurate: true };
+    }
 
     // Parse the JSON response
     try {

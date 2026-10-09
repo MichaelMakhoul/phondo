@@ -647,7 +647,7 @@ describe("extractBusinessInfoWithLLM (SCRUM-532) — stubbed-fetch E2E", () => {
       faqs: Array.from({ length: 30 }, (_, i) => ({ question: `Q${i}?`, answer: "a".repeat(3000) })),
     };
     (oversized as Record<string, unknown>).staff = Array.from({ length: 30 }, (_, i) => ({ name: `P${i}` }));
-    stubAnthropic({ content: [{ text: JSON.stringify(oversized) }] });
+    stubAnthropic({ content: [{ type: "text", text: JSON.stringify(oversized) }] });
     const info = (await extractBusinessInfoWithLLM([page(1, 100)]))!;
     expect(info.name!.length).toBeLessThanOrEqual(201);
     expect(info.about!.length).toBeLessThanOrEqual(601);
@@ -669,13 +669,13 @@ describe("extractBusinessInfoWithLLM (SCRUM-532) — stubbed-fetch E2E", () => {
 
   it("valid-JSON-but-not-an-object output returns NULL (review finding: was classified as success)", async () => {
     for (const junk of ['[]', '"just text"', '42', 'null', 'true']) {
-      stubAnthropic({ content: [{ text: junk }] });
+      stubAnthropic({ content: [{ type: "text", text: junk }] });
       expect(await extractBusinessInfoWithLLM([page(1, 100)]), junk).toBeNull();
     }
   });
 
   it("pins the request: untrusted-data prompt line, faqs+summary in the schema, max_tokens ≥ 8000, page text in the user message", async () => {
-    const fetchMock = stubAnthropic({ content: [{ text: "{}" }] });
+    const fetchMock = stubAnthropic({ content: [{ type: "text", text: "{}" }] });
     await extractBusinessInfoWithLLM([page(1, 100)]);
     const req = JSON.parse((fetchMock.mock.calls[0] as unknown as [string, { body: string }])[1].body);
     // Deleting the data-not-instructions line silently removes an injection control.
@@ -687,6 +687,36 @@ describe("extractBusinessInfoWithLLM (SCRUM-532) — stubbed-fetch E2E", () => {
     // all get raw-fallback.
     expect(req.max_tokens).toBeGreaterThanOrEqual(8000);
     expect(req.messages[0].content).toContain("page-1");
+  });
+
+  it("SCRUM-588: Haiku 5.5 with thinking disabled and no sampling params (it 400s on temperature)", async () => {
+    const fetchMock = stubAnthropic({ content: [{ type: "text", text: "{}" }] });
+    await extractBusinessInfoWithLLM([page(1, 100)]);
+    const req = JSON.parse((fetchMock.mock.calls[0] as unknown as [string, { body: string }])[1].body);
+    expect(req.model).toBe("claude-haiku-5-5");
+    // Hidden thinking tokens would come out of the JSON budget pinned above.
+    expect(req.thinking).toEqual({ type: "disabled" });
+    expect(req.temperature).toBeUndefined();
+  });
+
+  it("SCRUM-588: reads the text block by TYPE — a leading thinking block is not 'empty content'", async () => {
+    // Haiku 5.5 thinks by default; with content[0] read positionally every
+    // import came back null (raw-fallback) in the live probe.
+    stubAnthropic({
+      content: [
+        { type: "thinking", thinking: "", signature: "sig" },
+        { type: "text", text: JSON.stringify({ name: "Harbour Dental", about: "A family dental practice." }) },
+      ],
+    });
+    const info = await extractBusinessInfoWithLLM([page(1, 100)]);
+    expect(info).not.toBeNull();
+    expect(info!.name).toBe("Harbour Dental");
+    expect(info!.about).toBe("A family dental practice.");
+  });
+
+  it("SCRUM-588: a thinking-only response (no text block) is a FAILED read — null, not an empty success", async () => {
+    stubAnthropic({ content: [{ type: "thinking", thinking: "", signature: "sig" }], stop_reason: "max_tokens" });
+    expect(await extractBusinessInfoWithLLM([page(1, 100)])).toBeNull();
   });
 });
 
