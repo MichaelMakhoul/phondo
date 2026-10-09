@@ -118,7 +118,7 @@ describe("SCRUM-587: owner session — controller-override pins", () => {
     assert.equal((src.match(/noteAssistantTurnEnd\(session\)/g) || []).length, 3, "Gemini onInterrupted + onTurnComplete, classic after the reply");
     assert.equal((src.match(/noteOwnerSpeech\(session, /g) || []).length, 2, "Gemini input transcription + classic STT final");
     for (const m of src.matchAll(/^.*note(?:AssistantSpeech|AssistantTurnEnd|OwnerSpeech)\(session.*$/gm)) {
-      assert.match(m[0], /if \(session\??\.ownerMode\) note/, `ungated stamp site: ${m[0].trim()}`);
+      assert.match(m[0], /if \(session\??\.ownerMode(?: && [^\n]*?)?\) note/, `ungated stamp site: ${m[0].trim()}`);
     }
   });
 
@@ -565,6 +565,25 @@ describe("SCRUM-587: Gemini callbacks, run for real", () => {
     assert.equal(s.assistantTurnSeq, 2, "interrupted + turnComplete of one turn is ONE turn");
     cbs.onTurnComplete(); // a tool-call-only turn (no audio, no transcription)
     assert.equal(s.assistantTurnSeq, 2);
+  });
+
+  it("owner turn clock (realtime failover): a response that ends in tool calls is not a turn — its spoken follow-up counts once", () => {
+    const s = makeSession({ owner: true });
+    const { cbs } = makeGeminiCallbacks(s);
+    cbs.onAudio("AAAA"); // "one moment" …
+    cbs.onTurnComplete({ endedWithToolCalls: true }); // … said with a tool call: the adapter runs it next
+    assert.equal(s.assistantTurnSeq, 0, "not the end of the assistant's turn");
+    cbs.onAudio("BBBB"); // the follow-up, spoken after the tool result
+    cbs.onTurnComplete({ endedWithToolCalls: false });
+    assert.equal(s.assistantTurnSeq, 1, "filler + follow-up: one turn");
+    cbs.onAudio("CCCC");
+    cbs.onTurnComplete(); // Gemini passes nothing: a spoken turn counts as before
+    assert.equal(s.assistantTurnSeq, 2);
+    const customer = makeSession({ owner: false });
+    const c = makeGeminiCallbacks(customer);
+    c.cbs.onAudio("AAAA"); c.cbs.onTranscriptOut("You're all set for Friday."); c.cbs.onTurnComplete({ endedWithToolCalls: true });
+    assert.equal(customer.assistantTurnSeq, 0, "customers are never stamped");
+    assert.equal(c.calls.filter((x) => x[0] === "detectPhantomAction").length, 1, "a customer turn still runs its turn-complete guards, whatever the adapter passes");
   });
 
   it("reviewer probes: output transcription never makes a turn spoken — a late fragment can't double-count or count a tool-call-only turn", async () => {

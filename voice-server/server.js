@@ -2961,7 +2961,7 @@ wss.on("connection", (twilioWs) => {
                     twilioWs.send(JSON.stringify({ event: "clear", streamSid: session.streamSid }));
                   }
                 },
-                onTurnComplete: () => {
+                onTurnComplete: (turnInfo) => {
                   // Guard: session may be null if Gemini delivers buffered events after cleanup
                   if (!session) {
                     pendingUserTranscript = "";
@@ -2970,7 +2970,9 @@ wss.on("connection", (twilioWs) => {
                   }
                   // SCRUM-587: one assistant turn on the confirmation gate's clock —
                   // only if it produced speech (a tool-call-only turn is not one).
-                  if (session.ownerMode) noteAssistantTurnEnd(session);
+                  // A realtime-failover response that ends in tool calls is not the
+                  // end of the turn: its spoken follow-up is (Gemini's semantics).
+                  if (session.ownerMode && turnInfo?.endedWithToolCalls !== true) noteAssistantTurnEnd(session);
                   // Flush accumulated transcripts as complete messages
                   if (pendingUserTranscript.trim()) {
                     session.addMessage("user", pendingUserTranscript.trim());

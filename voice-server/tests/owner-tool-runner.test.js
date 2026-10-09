@@ -202,10 +202,21 @@ describe("runOwnerToolCall", () => {
   });
   it(`caps at ${OWNER_MAX_TOOL_CALLS} tool calls per call but still lets end_call through`, async () => {
     const s = makeSession(); const d = makeDeps((name) => (name === "end_call" ? { message: "Ending the call. Goodbye.", __endCall: true } : { message: "ok", data: { count: 0 } }));
-    for (let i = 0; i < OWNER_MAX_TOOL_CALLS; i++) await runOwnerToolCall(s, { name: "owner_list_messages", args: {} }, d.deps);
-    const capped = await runOwnerToolCall(s, { name: "owner_list_messages", args: {} }, d.deps);
+    let capped;
+    const underCap = await captureConsole(async () => {
+      for (let i = 0; i < OWNER_MAX_TOOL_CALLS; i++) await runOwnerToolCall(s, { name: "owner_list_messages", args: {} }, d.deps);
+    });
+    assert.deepEqual(alerts(underCap), [], "no page below the cap");
+    const hit = await captureConsole(async () => { capped = await runOwnerToolCall(s, { name: "owner_list_messages", args: {} }, d.deps); });
     assert.match(capped.message, /TOOL LIMIT REACHED/); assert.equal(d.calls.length, OWNER_MAX_TOOL_CALLS);
     assert.equal(auditFor(s, "owner_tool_cap").length, 1);
+    // SF1: the hit pages (ids only) — from here the owner can't do anything more on the call.
+    assert.equal(alerts(hit).length, 1, hit.map((l) => l.text).join("\n"));
+    assert.equal(alerts(hit)[0].level, "error");
+    for (const id of ["callSid=CA1", "org=org-1"]) assert.ok(alerts(hit)[0].text.includes(id), id);
+    const again = await captureConsole(async () => { await runOwnerToolCall(s, { name: "owner_list_appointments", args: { range: "today" } }, d.deps); });
+    assert.deepEqual(alerts(again), [], "one page per call: later capped calls only warn");
+    assert.equal(again.filter((l) => l.level === "warn").length, 1);
     const end = await runOwnerToolCall(s, { name: "end_call", args: { reason: "owner finished" } }, d.deps);
     assert.equal(end.__endCall, true); assert.equal(d.calls.length, OWNER_MAX_TOOL_CALLS + 1);
   });
@@ -527,6 +538,50 @@ describe("runOwnerToolCall — structural confirmation gate", () => {
     assert.equal(gate.length, 1); assert.equal(gate[0].tool, "owner_cancel_appointment"); assert.equal(gate[0].successful, false);
     assert.equal(d.invalidations, 0);
     assert.equal(lines.filter((l) => l.level === "warn").length, 1);
+    assert.deepEqual(alerts(lines), [], "a first refusal never pages");
+  });
+  // Silent-failure lens SF1: a broken turn clock (as the realtime failover had) refuses
+  // every owner write with only a warning. A first refusal is normal (the model jumped
+  // ahead, or the "yes" was never stamped) and PR B re-arms the key with its read-back;
+  // the same key refused again after that re-arm pages.
+  it("a key refused once only warns; refused AGAIN after PR B re-armed it, the gate pages once — ids only", async () => {
+    const s = makeSession(); const d = makeDeps(prB);
+    const ID = "appt-ZQ-1";
+    await run(s, d, "owner_cancel_appointment", { appointment_id: ID }); // arms
+    await confirmCancel(s, d, ID); // no read-back turn yet: refused; PR B answers with the read-back (re-armed)
+    assert.equal(d.calls.at(-1).args.confirmed, false);
+    assert.deepEqual(alerts(lines), []);
+    assert.equal(lines.filter((l) => l.level === "warn").length, 1);
+    await confirmCancel(s, d, ID); // refused again after that re-arm
+    assert.equal(d.calls.at(-1).args.confirmed, false);
+    const paged = alerts(lines);
+    assert.equal(paged.length, 1, lines.map((l) => l.text).join("\n"));
+    assert.equal(paged[0].level, "error");
+    for (const id of ["callSid=CA1", "org=org-1", "owner_cancel_appointment"]) assert.ok(paged[0].text.includes(id), `${id} missing: ${paged[0].text}`);
+    assert.ok(!paged[0].text.includes(ID), "never a tool argument in a log line");
+    assert.equal(lines.filter((l) => l.level === "warn").length, 1, "the page replaces the warning, it does not add to it");
+  });
+  it("a key refused twice WITHOUT a re-arm in between (PR B answered something else) only warns", async () => {
+    const s = makeSession();
+    const NOT_FOUND = { success: false, message: "I can't find that job.", data: { outcome: "not_found", customer_notified: false } };
+    let n = 0;
+    const d = makeDeps(() => ((n += 1) === 1 ? NEEDS_CONFIRMATION : NOT_FOUND));
+    await run(s, d, "owner_cancel_appointment", { appointment_id: "a1" }); // arms
+    await confirmCancel(s, d); // refused; PR B: not_found — nothing re-armed
+    await confirmCancel(s, d); // refused again
+    assert.deepEqual(alerts(lines), []);
+    assert.equal(lines.filter((l) => l.level === "warn").length, 2);
+  });
+  it("a re-armed key the owner then confirms goes through, and a later refusal of it starts over (warns, no page)", async () => {
+    const s = makeSession(); const d = makeDeps(prB);
+    await run(s, d, "owner_cancel_appointment", { appointment_id: "a1" });
+    await confirmCancel(s, d); // refused → re-armed
+    assistantTurn(s); ownerSpeaks(s); // the read-back, then "yes"
+    await confirmCancel(s, d);
+    assert.equal(d.calls.at(-1).args.confirmed, true);
+    await confirmCancel(s, d); // a duplicate confirm: nothing pending any more, so refused — a first refusal again
+    assert.equal(d.calls.at(-1).args.confirmed, false);
+    assert.deepEqual(alerts(lines), []);
   });
   it("PR B's needs_confirmation arms { at, seq } (Map created lazily), keyed tool|appointment_id[|new_datetime]", async () => {
     for (const initial of [undefined, null]) {

@@ -394,7 +394,9 @@ function createInputTranscriptTracker(commit) {
 /**
  * Create a Realtime session against one of PROVIDERS. Mirrors createGeminiSession.
  * @param {{systemPrompt:string, tools:object[], voiceName?:string, language?:string, triggerGreeting?:boolean}} config
- * @param {object} callbacks - onAudio, onToolCall, onTranscriptIn, onTranscriptOut, onInterrupted, onTurnComplete, onError, onClose
+ * @param {object} callbacks - onAudio, onToolCall, onTranscriptIn, onTranscriptOut, onInterrupted, onTurnComplete, onError, onClose.
+ *   SCRUM-587: on response.done, onTurnComplete gets `{ endedWithToolCalls }` — true when the
+ *   response's tool calls are about to run (and a follow-up response will be requested).
  * @param {{tag: string, apiKeyEnv: string, url: () => string, buildSessionConfig: (config: object) => object}} [provider] - one of PROVIDERS
  */
 function createRealtimeSession(config, callbacks, provider = PROVIDERS.openai) {
@@ -676,7 +678,13 @@ function createRealtimeSession(config, callbacks, provider = PROVIDERS.openai) {
       case "response.done": {
         gate.done();
         clearWatchdog();
-        callbacks.onTurnComplete?.();
+        // SCRUM-587: whether this response ends in tool calls that run next
+        // (below, then a follow-up response). Gemini's blocking semantics: such
+        // a response is not the end of the assistant's turn — its spoken
+        // follow-up is — so the owner confirmation gate does not count a
+        // filler said with a confirm call as the turn after the read-back. A
+        // cancelled response's calls are dropped, so it never ends in any.
+        callbacks.onTurnComplete?.({ endedWithToolCalls: msg.response?.status !== "cancelled" && pendingTools.length > 0 });
         resetTurnAudio();
 
         // Close the call only after the GOODBYE response (not the tool-call one).

@@ -186,9 +186,6 @@ describe("functionOutputFor (SCRUM-587) — what the model reads back for a tool
     assert.equal(functionOutputFor("schedule_callback", { message: "" }), "");
   });
 
-  it("the tool loop submits functionOutputFor's output", () => {
-    const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "services", "openai-realtime.js"), "utf8");
-    assert.match(src, /let out = functionOutputFor\(t\.name, result\);/);
-    assert.doesNotMatch(src, /let out = typeof result === "string"/, "the old message-only line is gone");
-  });
+  // That the tool loop really submits this output is proven by driving the adapter
+  // itself (fake ws, real server.js callbacks, real runner): tests/server-owner-failover.test.js.
 });

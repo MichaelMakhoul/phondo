@@ -204,6 +204,17 @@ function pendingConfirmations(session) {
 }
 
 /**
+ * Keys the gate has refused a confirm for, each mapped to whether PR B's
+ * read-back has re-armed it since — so a refusal after that re-arm can page.
+ * @param {any} session
+ * @returns {Map<string, boolean>}
+ */
+function confirmRefusals(session) {
+  if (!(session.ownerConfirmRefusals instanceof Map)) session.ownerConfirmRefusals = new Map();
+  return session.ownerConfirmRefusals;
+}
+
+/**
  * @param {unknown} v
  * @returns {v is number}
  */
@@ -260,7 +271,7 @@ function readBackVerdict(session, entry) {
  * synchronous step as the passing check — before the executor is awaited —
  * so confirmations Gemini runs in parallel (waiting or not) can't share
  * either. Otherwise it goes on as confirmed:false and PR B answers with the
- * read-back.
+ * read-back; a key refused again after that re-arm pages.
  * @param {any} session
  * @param {string} name
  * @param {Record<string, any>} args
@@ -282,12 +293,23 @@ async function applyConfirmationGate(session, name, args, audit, now) {
   }
   if (verdict === "answered" && key !== null) {
     pendingConfirmations(session).delete(key);
+    confirmRefusals(session).delete(key); // the re-arm, if any, has been answered
     session.ownerConfirmSpentSpeechAt = session.lastOwnerSpeechAt;
     if (waited > 0) console.log(`[OwnerTools] ${name}: the owner's answer was stamped within ${waited} ms of the confirm — forwarded as confirmed. callSid=${session.callSid}`);
     return args;
   }
   audit.push({ name: "owner_confirm_gate", tool: name, successful: false, at: now() });
-  console.warn(`[OwnerTools] ${name} came with confirmed=true but no read-back of that change has been answered by the owner — forwarded as confirmed=false. callSid=${session.callSid}`);
+  // A first refusal is the model confirming without a read-back, or a "yes"
+  // that was never stamped: PR B answers confirmed:false with the read-back
+  // again, which re-arms the key. Refused AGAIN after that re-arm, the gate
+  // may be turning away a change the owner did confirm (a broken turn clock,
+  // as on a pipeline failover) — that pages, ids only.
+  if (key !== null && confirmRefusals(session).get(key) === true) {
+    console.error(`[ALERT:error] [OwnerTools] ${name}: a confirmation re-armed by PR B's read-back was refused again — the gate may be blocking a change the owner confirmed (org=${session.organizationId}, callSid=${session.callSid})`);
+  } else {
+    console.warn(`[OwnerTools] ${name} came with confirmed=true but no read-back of that change has been answered by the owner — forwarded as confirmed=false. callSid=${session.callSid}`);
+  }
+  if (key !== null) confirmRefusals(session).set(key, false);
   return { ...args, confirmed: false };
 }
 
@@ -365,7 +387,13 @@ async function runOwnerToolCall(session, toolCall, deps) {
   if (name !== "end_call") {
     session.ownerToolCalls = (Number.isInteger(session.ownerToolCalls) ? session.ownerToolCalls : 0) + 1;
     if (session.ownerToolCalls > OWNER_MAX_TOOL_CALLS) {
-      console.warn(`[OwnerTools] Tool cap (${OWNER_MAX_TOOL_CALLS}) reached. callSid=${session.callSid}`);
+      // The first call over the cap pages (ids only): from here on the owner
+      // can't do anything more on this call. Later ones only warn.
+      if (session.ownerToolCalls === OWNER_MAX_TOOL_CALLS + 1) {
+        console.error(`[ALERT:error] [OwnerTools] owner tool cap (${OWNER_MAX_TOOL_CALLS}) hit — no more owner tools on this call (org=${session.organizationId}, callSid=${session.callSid})`);
+      } else {
+        console.warn(`[OwnerTools] Tool cap (${OWNER_MAX_TOOL_CALLS}) reached. callSid=${session.callSid}`);
+      }
       audit.push({ name: "owner_tool_cap", successful: false, at: now() });
       return { message: "TOOL LIMIT REACHED for this call. Do not call any more tools. Tell the owner you've hit the limit for this call and they can ring back for anything else, then say goodbye and call end_call." };
     }
@@ -410,7 +438,11 @@ async function runOwnerToolCall(session, toolCall, deps) {
 
   if (OWNER_WRITE_TOOL_NAMES.includes(name) && outcomeOf(r) === "needs_confirmation") {
     const key = confirmationKey(name, forwardArgs);
-    if (key !== null) pendingConfirmations(session).set(key, { at: Date.now(), seq: session.assistantTurnSeq });
+    if (key !== null) {
+      pendingConfirmations(session).set(key, { at: Date.now(), seq: session.assistantTurnSeq });
+      // A key the gate refused is re-armed by this read-back (see applyConfirmationGate).
+      if (confirmRefusals(session).has(key)) confirmRefusals(session).set(key, true);
+    }
   }
 
   // A real change frees/takes a slot that OTHER sessions for this org may have

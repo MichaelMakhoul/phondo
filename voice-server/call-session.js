@@ -61,6 +61,7 @@ class CallSession {
     this.lastOwnerSpeechAt = 0;          // first fragment of the owner's latest utterance
     this.ownerPendingConfirmations = null; // Map of armed read-backs (the runner creates it)
     this.ownerConfirmSpentSpeechAt = null; // the utterance that last confirmed a write
+    this.ownerConfirmRefusals = null;      // Map key → re-armed since the gate refused it? (the runner creates it)
 
     // Call context — populated by loadCallContext()/loadTestCallContext() in
     // server.js once the stream connects (not known at construction). Declared
