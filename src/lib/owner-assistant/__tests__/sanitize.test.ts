@@ -244,8 +244,10 @@ describe("sanitizeCustomerText: text hidden from people but readable by a model"
       expect(sanitizeCustomerText("a\ud83d\ude00b", 80)).toBe("a\u{1F600}b");
     });
 
-    it("removes unassigned code points and noncharacters", () => {
-      expectEachDeleted([0x0378, 0x0379, 0xfdd0, 0xfffe, 0xffff, 0x10ffff]);
+    // Noncharacters only: they are permanently Cn, whereas an unassigned code point can be
+    // assigned by a later Unicode version in the runtime's ICU and turn this pin red.
+    it("removes noncharacters (permanently unassigned)", () => {
+      expectEachDeleted([0xfdd0, 0xfdef, 0xfffe, 0xffff, 0x1fffe, 0x10ffff]);
     });
   });
 

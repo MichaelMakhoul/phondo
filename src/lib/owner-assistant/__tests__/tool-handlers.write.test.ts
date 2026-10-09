@@ -119,6 +119,7 @@ describe("owner_reschedule_appointment", () => {
     expect(r.data).toMatchObject({ outcome: "needs_confirmation", appointment_id: APPT, customer_notified: false });
     expect(performRescheduleLeg).not.toHaveBeenCalled();
     expect(recordAppointmentEvent).not.toHaveBeenCalled();
+    expect(rateLimitDistributed).not.toHaveBeenCalled(); // a read-back is free
   });
 
   it("only the JSON boolean true confirms: \"true\", 1, \"yes\", null and a missing flag all read back", async () => {
@@ -129,6 +130,7 @@ describe("owner_reschedule_appointment", () => {
       expect((r.data as any).outcome).toBe("needs_confirmation");
     }
     expect(performRescheduleLeg).not.toHaveBeenCalled();
+    expect(rateLimitDistributed).not.toHaveBeenCalled(); // a read-back is free
   });
 
   it("looks the job up org-scoped and active-only; a missing row is 'can't find' with no mutation", async () => {
@@ -441,6 +443,7 @@ describe("owner_cancel_appointment", () => {
     expect(r.data).toMatchObject({ outcome: "needs_confirmation", appointment_id: APPT, customer_notified: false });
     expect(cancelSingleAppointment).not.toHaveBeenCalled();
     expect(recordAppointmentEvent).not.toHaveBeenCalled();
+    expect(rateLimitDistributed).not.toHaveBeenCalled(); // a read-back is free
   });
 
   it("only the JSON boolean true confirms: \"true\", 1, \"yes\", null and a missing flag all read back", async () => {
@@ -451,6 +454,7 @@ describe("owner_cancel_appointment", () => {
       expect((r.data as any).outcome).toBe("needs_confirmation");
     }
     expect(cancelSingleAppointment).not.toHaveBeenCalled();
+    expect(rateLimitDistributed).not.toHaveBeenCalled(); // a read-back is free
   });
 
   it("cancels through cancelSingleAppointment with the owner's reason and audits actor staff / channel voice / call_id", async () => {

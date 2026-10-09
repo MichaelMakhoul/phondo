@@ -107,6 +107,9 @@ describe("performRescheduleLeg", () => {
 
     expect(out).toEqual({ ok: true, inserted: { id: NEW, start_time: updates.start_time } });
     const [free, insert] = db.log;
+    // .select("id") is what makes PostgREST return the freed rows; without it a real
+    // free reads as 0 rows ("not_active") even when it succeeded.
+    expect(free.filters.find((f) => f.name === "select")?.args).toEqual(["id"]);
     expect(free.op).toBe("update");
     expect(free.payload).toEqual({ status: "rescheduled" });
     expect(updatesOf(free)).toEqual({ id: OLD, organization_id: ORG });
@@ -161,6 +164,8 @@ describe("performRescheduleLeg", () => {
     const out = await performRescheduleLeg(supabase, { orgId: ORG, oldId: OLD, before, updates, leg: ownerLeg });
     expect(out).toEqual({ ok: false, reason: "conflict" });
     const rollback = db.log[2];
+    // Same for the rollback: without .select("id") a real restore would read as orphaned.
+    expect(rollback.filters.find((f) => f.name === "select")?.args).toEqual(["id"]);
     expect(rollback.op).toBe("update");
     expect(rollback.payload).toEqual({ status: "confirmed" });
     // Only revive a row WE froze.
