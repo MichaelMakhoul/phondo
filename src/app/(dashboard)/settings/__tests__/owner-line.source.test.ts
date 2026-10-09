@@ -40,6 +40,19 @@ describe("Settings page — owner line wiring", () => {
     expect(reads[0][1].trim()).toBe('"phone_e164, pin_length, enabled"');
   });
 
+  // The page reads with the user-bound client, where RLS lets a member of
+  // several orgs see all of their orgs' rows. Without the explicit org filter
+  // the owner_access read could surface another org's line (or fail
+  // .maybeSingle() on two rows), and the phone_numbers read could hand back
+  // another org's number for the "save this contact" hint.
+  it.each(["owner_access", "phone_numbers"])("scopes the %s read to the signed-in org", (table) => {
+    const start = pageSource.indexOf(`.from("${table}")`);
+    expect(start, `no .from("${table}") read`).toBeGreaterThan(-1);
+    const end = pageSource.indexOf(".maybeSingle()", start);
+    expect(end, `the ${table} read does not end in .maybeSingle()`).toBeGreaterThan(start);
+    expect(pageSource.slice(start, end)).toMatch(/\.eq\("organization_id", organization\.id\)/);
+  });
+
   it("shows the card only to the org owner, and only while the UI flag is on", () => {
     expect(pageSource).toMatch(
       /const showOwnerLine\s*=\s*membership\.role === "owner"\s*&&\s*isOwnerAssistantUiEnabled\(\)/,
@@ -131,6 +144,49 @@ describe("Owner line card — client bundle and PIN hygiene", () => {
     for (const call of consoleCalls) {
       expect(call).not.toMatch(/\bpin\b|pinConfirm|\bbody\b/i);
     }
+    // … and the PIN state is bound to an input's `value` and nothing else: not a
+    // title, aria-label, data-* or any other attribute the DOM would expose.
+    const pinAttributes = [...cardSource.matchAll(/([\w-]+)=\{\s*pin(?:Confirm)?\s*\}/g)].map((match) => match[1]);
+    expect(pinAttributes).toEqual(["value", "value"]);
+  });
+});
+
+describe("Owner line card — save wiring", () => {
+  // handleSave's body: from its signature to the first closing brace at its own
+  // indent (nested blocks sit deeper).
+  const saveStart = cardSource.indexOf("const handleSave = async () => {");
+  const saveEnd = cardSource.indexOf("\n  };\n", saveStart);
+  const save = cardSource.slice(saveStart, saveEnd);
+
+  it("finds handleSave", () => {
+    expect(saveStart).toBeGreaterThan(-1);
+    expect(saveEnd).toBeGreaterThan(saveStart);
+  });
+
+  it("validates, and stops on any error, before it sends anything", () => {
+    const validate = save.indexOf("validateOwnerLineForm(");
+    const stop = save.indexOf("if (Object.keys(found).length > 0) return;");
+    const request = save.indexOf("fetch(");
+    expect(validate).toBeGreaterThan(-1);
+    expect(stop).toBeGreaterThan(validate);
+    expect(request).toBeGreaterThan(stop);
+  });
+
+  it('builds the PUT body with buildSaveBody, never a raw object that would send pin: ""', () => {
+    // The API reads a missing pin as "keep the stored one" and rejects "" as malformed.
+    expect(save).toContain("body: JSON.stringify(buildSaveBody({ phone, pin, enabled })),");
+    expect(save).not.toMatch(/JSON\.stringify\(\{/);
+  });
+
+  it("clears the PIN fields only on the success path, so a failed save can be retried without retyping", () => {
+    const failed = save.indexOf("if (!res.ok) {");
+    const clearPin = save.indexOf('setPin("");');
+    const clearConfirm = save.indexOf('setPinConfirm("");');
+    const savedToast = save.indexOf('title: "Assistant line saved"');
+    expect(failed).toBeGreaterThan(-1);
+    expect(clearPin).toBeGreaterThan(failed);
+    expect(clearConfirm).toBeGreaterThan(failed);
+    expect(savedToast).toBeGreaterThan(clearConfirm);
   });
 });
 
