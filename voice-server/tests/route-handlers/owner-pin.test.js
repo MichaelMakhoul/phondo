@@ -158,7 +158,7 @@ function assertLockedAlert(h, lines, window) {
   const alerts = lines.filter((l) => l.includes("[ALERT:error] [OwnerPin]"));
   assert.equal(alerts.length, 1, lines.join("\n"));
   assert.ok(alerts[0].startsWith(`error| [ALERT:error] [OwnerPin] owner line locked (window=${window})`), alerts[0]);
-  for (const part of ["CA1", maskPhone("+61255550000"), maskPhone("+61400000001")]) assert.ok(alerts[0].includes(part), `${part} missing: ${alerts[0]}`);
+  for (const part of ["CA1", "org=org-1", maskPhone("+61255550000"), maskPhone("+61400000001")]) assert.ok(alerts[0].includes(part), `${part} missing: ${alerts[0]}`);
   for (const raw of ["+61255550000", "+61400000001"]) assert.ok(!lines.some((l) => l.includes(raw)), `the raw number ${raw} was logged`);
   assert.ok(!lines.some((l) => l.startsWith("warn| ")), "a tripped lock is paged, not warned");
   assert.equal(h.state.captured.length, 1);
@@ -167,6 +167,7 @@ function assertLockedAlert(h, lines, window) {
   assert.equal(scope._tags.service, "owner_pin");
   assert.equal(scope._level, "error");
   assert.equal(scope._extras.callSid, "CA1");
+  assert.equal(scope._extras.organizationId, "org-1", "the page names the org whose line locked");
   assert.doesNotMatch(util.inspect(scope, { depth: 8 }), /\+61255550000|\+61400000001/);
 }
 

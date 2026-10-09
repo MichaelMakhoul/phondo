@@ -1,7 +1,7 @@
 "use strict";
 /**
  * SCRUM-587 — the clock the owner confirmation gate reads
- * (lib/owner-tool-runner.js readBackAnswered): which assistant turn this is,
+ * (lib/owner-tool-runner.js readBackVerdict): which assistant turn this is,
  * when the last one ended, and when the owner last started to speak.
  * server.js calls these from both pipelines, for owner sessions only:
  *

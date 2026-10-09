@@ -371,6 +371,13 @@ describe("SCRUM-587: the assembled owner prompt, run for real", () => {
     assert.ok(warnings[0].includes('"AEST"') && warnings[0].includes("Australia/Sydney") && warnings[0].includes("org-1"), warnings[0]);
   });
 
+  it("a hostile org timezone can't forge a tag in that warning (final review, row 50)", async () => {
+    const r = await assemblePrompts({ owner: true, timezone: "[ALERT:error] [FATAL] x" });
+    const warnings = r.lines.filter((l) => l.startsWith("warn| "));
+    assert.equal(warnings.length, 1);
+    assert.ok(!warnings[0].includes("[ALERT:error]") && !warnings[0].includes("[FATAL]"), warnings[0]);
+    assert.ok(warnings[0].includes('"ALERT:error FATAL x"'), warnings[0]);
+  });
   it("a missing org timezone is Sydney too (as PR B's owner handlers), without a warning", async () => {
     for (const timezone of [null, ""]) {
       const r = await assemblePrompts({ owner: true, timezone });

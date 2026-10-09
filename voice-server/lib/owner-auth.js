@@ -24,8 +24,9 @@
  *    saving a new PIN does, so no number of owner logins can refill an
  *    attacker's budget.
  * Both are counted atomically in Postgres BEFORE the PIN is checked
- * (countPinAttempt), so parallel calls cannot slip past either cap, and there is
- * no follow-up write to skip or lose. Any database error locks the PIN.
+ * (countPinAttempt): the 15-minute bucket first, the 24-hour one only when that
+ * is not already exhausted — so parallel calls cannot slip past either cap, and
+ * there is no follow-up write to skip or lose. Any database error locks the PIN.
  * The 15 minute window alone would still allow 480 guesses a day.
  */
 const crypto = require("crypto");

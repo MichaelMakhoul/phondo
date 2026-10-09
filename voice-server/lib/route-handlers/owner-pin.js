@@ -336,8 +336,8 @@ async function handleOwnerPin(req, res, { deps }) {
         // Page the lock itself: PR B's lockout email needs the calls row made at
         // stream start, which a guesser who hangs up during the <Say> never creates.
         const lockedWindow = bucket.window || "unknown";
-        console.error(`[ALERT:error] [OwnerPin] owner line locked (window=${lockedWindow}) — continuing as a customer call (called=${maskPhone(called)}, from=${maskPhone(from)}, callSid=${callSid})`);
-        page(Sentry, new Error(`owner line locked (window=${lockedWindow})`), { callSid, calledMasked: maskPhone(called), fromMasked: maskPhone(from), stage: "locked" });
+        console.error(`[ALERT:error] [OwnerPin] owner line locked (window=${lockedWindow}) — continuing as a customer call (org=${organizationId}, called=${maskPhone(called)}, from=${maskPhone(from)}, callSid=${callSid})`);
+        page(Sentry, new Error(`owner line locked (window=${lockedWindow})`), { callSid, organizationId, calledMasked: maskPhone(called), fromMasked: maskPhone(from), stage: "locked" });
       } else {
         console.error(`[ALERT:error] [OwnerPin] PIN lockout check (check_rate_limit_bucket) failed; failing CLOSED as a customer call stamped "error" (org=${organizationId}, callSid=${callSid}):`, messageOf(bucket && bucket.error));
         page(Sentry, bucket && bucket.error, { callSid, organizationId, stage: "count" });

@@ -2133,7 +2133,7 @@ wss.on("connection", (twilioWs) => {
             try {
               ownerToday = new Intl.DateTimeFormat("en-CA", { timeZone: ownerTz }).format(new Date());
             } catch {
-              console.warn(`[OwnerPrompt] org timezone ${JSON.stringify(String(ownerTz)).slice(0, 60)} is not a valid IANA zone — using Australia/Sydney (org=${context.organizationId})`);
+              console.warn(`[OwnerPrompt] org timezone ${JSON.stringify(String(ownerTz)).replace(/[\[\]]/g, "").slice(0, 60)} is not a valid IANA zone — using Australia/Sydney (org=${context.organizationId})`);
               ownerTz = "Australia/Sydney";
               ownerToday = new Intl.DateTimeFormat("en-CA", { timeZone: ownerTz }).format(new Date());
             }

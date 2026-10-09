@@ -28,16 +28,21 @@ function fakeSupabase({ member, memberError, profile, profileError, throwOn } = 
   const calls = [];
   const selects = [];
   const limits = [];
+  const orders = [];
+  const ops = []; // the chain, in call order: ["order", table] / ["limit", table]
   return {
     calls,
     selects,
     limits,
+    orders,
+    ops,
     from: (table) => {
       const chain = {
         _filters: [],
         select: (cols) => { selects.push({ table, cols }); return chain; },
         eq: (col, val) => { chain._filters.push([col, val]); return chain; },
-        limit: (n) => { limits.push({ table, n }); return chain; },
+        order: (col, opts) => { orders.push({ table, col, opts }); ops.push(["order", table]); return chain; },
+        limit: (n) => { limits.push({ table, n }); ops.push(["limit", table]); return chain; },
         maybeSingle: async () => {
           calls.push({ table, filters: chain._filters });
           if (throwOn === table) throw new Error(`${table} exploded`);
@@ -75,6 +80,13 @@ describe("loadOwnerFirstName", () => {
     const sb = fakeSupabase({ member: { user_id: "u1" }, profile: { full_name: "Dave Smith" } });
     await loadOwnerFirstName("org-1", { supabase: sb });
     assert.deepEqual(sb.limits, [{ table: "org_members", n: 1 }]);
+  });
+  // Final review, row 7: with two owners, "the first row" was whatever order Postgres returned.
+  it("of several owners, takes the longest-standing one: ordered by created_at ascending, before the limit", async () => {
+    const sb = fakeSupabase({ member: { user_id: "u1" }, profile: { full_name: "Dave Smith" } });
+    await loadOwnerFirstName("org-1", { supabase: sb });
+    assert.deepEqual(sb.orders, [{ table: "org_members", col: "created_at", opts: { ascending: true } }]);
+    assert.deepEqual(sb.ops, [["order", "org_members"], ["limit", "org_members"]]);
   });
   it("reads only the columns it needs (no email or other profile fields)", async () => {
     const sb = fakeSupabase({ member: { user_id: "u1" }, profile: { full_name: "Dave Smith" } });

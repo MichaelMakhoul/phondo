@@ -51,7 +51,7 @@ class CallSession {
     this.ownerFirstName = null;    // greeting + caller_name on owner calls
     this.ownerToolCalls = 0;       // per-call cap, lib/owner-tool-runner.js
     // SCRUM-587: the owner confirmation gate's clock (lib/owner-tool-runner.js
-    // readBackAnswered), moved ONLY by lib/owner-turn-stamps.js on owner
+    // readBackVerdict), moved ONLY by lib/owner-turn-stamps.js on owner
     // sessions. The turn count only ever goes up — never reset mid-call, or an
     // expired read-back could match again. 0 / null = fail-closed defaults.
     this.assistantTurnSeq = 0;           // assistant turns that produced speech

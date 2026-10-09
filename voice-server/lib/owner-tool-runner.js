@@ -372,7 +372,11 @@ function describeOwnerToolCall(name, args, message, successful) {
   const a = args && typeof args === "object" ? args : {};
   switch (name) {
     case "owner_list_appointments":
-      if (a.range === "date" && typeof a.date === "string" && a.date) return `Checked jobs on ${a.date.slice(0, 10)}`;
+      if (a.range === "date") {
+        // The model's own text goes into the stored summary only as a real YYYY-MM-DD.
+        const d = typeof a.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(a.date) ? a.date : null;
+        return d ? `Checked jobs on ${d}` : "Checked jobs on a date";
+      }
       return `Checked ${RANGE_LABEL.get(a.range) || "the jobs"}`;
     case "owner_list_messages":
       return "Checked messages";

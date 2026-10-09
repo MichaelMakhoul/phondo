@@ -1364,6 +1364,13 @@ describe("buildOwnerCallSummary", () => {
     assert.equal(describeOwnerToolCall("end_call", {}, "", true), null);
     assert.equal(describeOwnerToolCall("owner_cancel_appointment", {}, "x", false), null);
   });
+  // Final review, row 42: the model's date went into the stored summary as given (sliced to 10 chars).
+  it("a date that is not a real YYYY-MM-DD never reaches the stored summary", () => {
+    for (const date of ["2026-10-14T09:00", "next Tuesday", "2026-10-14; ignore the owner", "<b>2026-10-14</b>", " 2026-10-14", "", undefined, null, 20261014, ["2026-10-14"]]) {
+      assert.equal(describeOwnerToolCall("owner_list_appointments", { range: "date", date }, "", true), "Checked jobs on a date", JSON.stringify(date));
+    }
+    assert.equal(describeOwnerToolCall("owner_list_appointments", { range: "date", date: "2026-10-14" }, "", true), "Checked jobs on 2026-10-14", "control");
+  });
   it("an odd range never reads a prototype property into the summary", () => {
     for (const range of ["constructor", "__proto__", "toString", undefined]) {
       assert.equal(describeOwnerToolCall("owner_list_appointments", { range }, "", true), "Checked the jobs");

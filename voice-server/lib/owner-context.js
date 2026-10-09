@@ -42,6 +42,9 @@ async function loadOwnerFirstName(organizationId, deps = {}) {
       .select("user_id")
       .eq("organization_id", organizationId)
       .eq("role", "owner")
+      // The longest-standing owner: "the first owner row" must not depend on
+      // the order Postgres happens to return an org with two owners in.
+      .order("created_at", { ascending: true })
       .limit(1)
       .maybeSingle();
     if (memberErr) return failSoft("org_members lookup", memberErr);
