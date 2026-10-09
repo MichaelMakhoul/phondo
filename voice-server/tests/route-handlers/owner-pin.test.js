@@ -218,15 +218,36 @@ describe("handleOwnerPin", () => {
   });
 
   describe("outcomes (spec §1)", () => {
-    it("hangs up, with a logged error, when the phone record vanished mid-call (spec §8)", async () => {
-      const h = makeHarness({ phone: null, body: { Digits: PIN } });
-      const lines = await run(h);
-      assertTwiml(h.res);
-      assert.equal(h.res.body, ownerPin.HANGUP_TWIML);
-      assert.equal(h.state.tokens.length, 0);
-      assert.equal(h.state.rpc.length, 0);
-      assert.deepEqual(h.state.lookups, [{ called: "+61255550000", opts: { callSid: "CA1" } }]);
-      assert.ok(lines.some((l) => l.startsWith("error| ") && l.includes("No phone record") && l.includes("CA1")), lines.join("\n"));
+    // Controller ruling (overrides the plan's "a missing phone record hangs up" for this
+    // route): the number resolved at /twiml seconds earlier, so a null record here is
+    // almost certainly a transient DB error. Fail OPEN exactly as /twiml does on a null
+    // record: issueStreamToken(called, from, undefined, null) and the plain stream.
+    it("no phone record at the PIN step → the receptionist exactly as /twiml on a null record (no <Say>, no owner extras) + one [ALERT:error] + Sentry", async (t) => {
+      const verify = t.mock.method(ownerAuth, "verifyPin");
+      for (const body of [{ Digits: PIN }, { Digits: WRONG }, {}]) {
+        const h = makeHarness({ phone: null, body });
+        const lines = await run(h);
+        assertTwiml(h.res);
+        assert.equal(h.res.body, ownerPin.buildConnectStreamTwiml({ wsUrl: WS_URL, token: "tok1", escapeXml }), "the plain stream, never a hang-up");
+        assert.equal(h.state.tokens.length, 1);
+        const [token] = h.state.tokens;
+        assert.deepEqual([token.called, token.from, token.reconnect, token.phoneRecord, token.extra], ["+61255550000", "+61400000001", undefined, null, {}]);
+        assert.deepEqual(h.state.lookups, [{ called: "+61255550000", opts: { callSid: "CA1" } }]);
+        assert.equal(h.state.rpc.length + h.state.updates.length + h.state.deletes.length + h.state.names.length, 0);
+        const alerts = lines.filter((l) => l.includes("[ALERT:error] [OwnerPin]"));
+        assert.equal(alerts.length, 1, lines.join("\n"));
+        assert.ok(alerts[0].startsWith("error| [ALERT:error] [OwnerPin] phone lookup returned no record at the PIN step — continuing as a normal call"), alerts[0]);
+        for (const part of ["CA1", maskPhone("+61255550000"), maskPhone("+61400000001")]) assert.ok(alerts[0].includes(part), `${part} missing: ${alerts[0]}`);
+        for (const raw of ["+61255550000", "+61400000001"]) assert.ok(!lines.some((l) => l.includes(raw)), `the raw number ${raw} was logged`);
+        assert.equal(h.state.captured.length, 1);
+        assert.ok(h.state.captured[0] instanceof Error);
+        const [scope] = h.state.scopes;
+        assert.equal(scope._tags.service, "owner_pin");
+        assert.equal(scope._level, "error");
+        assert.equal(scope._extras.callSid, "CA1");
+        assert.doesNotMatch(util.inspect(scope, { depth: 8 }), /\+61255550000|\+61400000001/);
+      }
+      assert.equal(verify.mock.callCount(), 0);
     });
 
     it("no input → the receptionist: nothing counted or verified, no owner_auth stamp, no <Say>", async (t) => {
@@ -520,13 +541,15 @@ describe("handleOwnerPin", () => {
       assert.ok(lines.some((l) => l.includes("[ALERT:error] [OwnerPin]")), lines.join("\n"));
     });
 
-    it("a phone lookup that throws hangs up: there is no org to continue as", async () => {
+    it("a phone lookup that throws fails open like a null record: the plain stream, no owner extras, [ALERT:error] + Sentry", async () => {
       const h = makeHarness({ body: { Digits: PIN }, lookupRejects: true });
       const lines = await run(h);
       assertTwiml(h.res);
-      assert.equal(h.res.body, ownerPin.HANGUP_TWIML);
-      assert.equal(h.state.tokens.length, 0);
-      assert.ok(lines.some((l) => l.includes("[ALERT:error] [OwnerPin]") && l.includes("lookup exploded")), lines.join("\n"));
+      assert.equal(h.res.body, ownerPin.buildConnectStreamTwiml({ wsUrl: WS_URL, token: "tok1", escapeXml }));
+      assert.deepEqual(h.state.tokens.map((x) => [x.phoneRecord, x.extra]), [[null, {}]]);
+      assert.equal(h.state.rpc.length, 0);
+      assert.ok(lines.some((l) => l.startsWith("error| [ALERT:error] [OwnerPin]") && l.includes("lookup exploded")), lines.join("\n"));
+      assert.equal(h.state.captured.length, 1);
     });
   });
 
@@ -544,6 +567,8 @@ describe("handleOwnerPin", () => {
       { body: { Digits: PIN }, delete: { message: "permission denied" } },
       { body: { Digits: PIN }, failToken: (extra) => extra && extra.ownerMode === true },
       { body: { Digits: PIN, ForwardedFrom: "+61299990000" } },
+      { body: { Digits: PIN }, phone: null },
+      { body: { SpeechResult: SAID_PIN }, lookupRejects: true },
     ];
     for (const s of scenarios) {
       const label = JSON.stringify({ body: s.body, query: s.query, count: s.count, rpcThrows: s.rpcThrows });

@@ -25,8 +25,8 @@
  * BEFORE it is checked, so a lucky guess made while locked still fails. A
  * wrong-length entry can never match, so it only uses up one of the call's three
  * tries and is not counted. Owner mode fails closed: every fault ends in the
- * receptionist (or a hang-up when there is no org to answer for), never in the
- * owner session.
+ * receptionist (a hang-up only when not even that TwiML can be built), never in
+ * the owner session.
  */
 const ownerAuth = require("../owner-auth");
 
@@ -186,7 +186,10 @@ async function ownerFirstNameWithin(loadOwnerFirstName, organizationId, callSid)
 
 /**
  * POST /twiml/owner-pin (Twilio-signed by the server.js route). Outcomes (spec §1):
- *   no phone record ⇒ <Hangup/> (§8: no org to answer for)
+ *   no phone record (almost certainly a transient DB error: /twiml resolved the
+ *     number seconds earlier) ⇒ [ALERT:error] + the receptionist exactly as
+ *     /twiml on a null record (plain stream, no owner extras). Controller ruling;
+ *     it overrides spec §8's hang-up for this route.
  *   caller no longer the owner, or the flag is off ⇒ the receptionist, stamped "failed"
  *   no input ⇒ the receptionist, unstamped
  *   wrong length, or a wrong PIN ⇒ re-Gather while tries remain, else
@@ -195,7 +198,7 @@ async function ownerFirstNameWithin(loadOwnerFirstName, organizationId, callSid)
  *     "Continuing as a normal call." ⇒ the receptionist, stamped "locked"
  *   right PIN ⇒ the owner stream: { ownerMode: true, ownerAuth: "verified", ownerFirstName }
  * Always sends exactly one TwiML response and never rejects: a fault falls back
- * to the receptionist, or to a hang-up when no phone record was loaded.
+ * to the receptionist, and to a hang-up only if that TwiML cannot be built.
  *
  * @param {{ body?: Record<string, any>, query?: Record<string, any> }} req
  * @param {{ type: (t: string) => any, send: (b: string) => any }} res
@@ -238,8 +241,14 @@ async function handleOwnerPin(req, res, { deps }) {
   try {
     phoneRecord = await lookupPhoneNumber(called, { callSid });
     if (!phoneRecord) {
-      console.error(`[OwnerPin] No phone record for ${called} at the PIN action (callSid=${callSid}); hanging up`);
-      return send(HANGUP_TWIML);
+      // The same number resolved at /twiml seconds ago, so this is almost certainly
+      // a transient DB error (lookupPhoneNumber returns null for those too). Fail
+      // OPEN exactly as /twiml does on a null record: the plain stream, no owner
+      // extras (the start handler loads the call context itself). Controller
+      // ruling; it overrides the plan's "a missing phone record hangs up".
+      console.error(`[ALERT:error] [OwnerPin] phone lookup returned no record at the PIN step — continuing as a normal call (called=${maskPhone(called)}, from=${maskPhone(from)}, callSid=${callSid})`);
+      page(Sentry, new Error("phone lookup returned no record at the PIN step"), { callSid, calledMasked: maskPhone(called), fromMasked: maskPhone(from), stage: "lookup" });
+      return receptionist({});
     }
     organizationId = phoneRecord.organization_id;
     const country = phoneRecord.organizations && phoneRecord.organizations.country;
@@ -298,13 +307,15 @@ async function handleOwnerPin(req, res, { deps }) {
     return send(buildConnectStreamTwiml({ wsUrl, token, escapeXml }));
   } catch (err) {
     // Nothing above should throw. If something does, Twilio is still owed TwiML:
-    // the receptionist when the org is known, else a hang-up. Never owner mode.
+    // the receptionist, never owner mode. With the phone record loaded the owner
+    // gate was entered, so the call is stamped "failed"; without one (the lookup
+    // itself failed) it is /twiml's null-record call. A hang-up only if not even
+    // that TwiML can be built.
     console.error(`[ALERT:error] [OwnerPin] PIN action failed; answering as a customer call, or hanging up if that fails too (org=${organizationId}, callSid=${callSid}):`, messageOf(err));
     page(Sentry, err, { callSid, organizationId, stage: "handler" });
     if (sent) return;
     try {
-      if (!phoneRecord) throw new Error("no phone record to continue the call with");
-      receptionist({ ownerAuth: "failed" }, SAY_CONTINUE);
+      receptionist(phoneRecord ? { ownerAuth: "failed" } : {}, SAY_CONTINUE);
     } catch (fallbackErr) {
       console.error(`[OwnerPin] Could not continue as a customer call; hanging up (callSid=${callSid}):`, messageOf(fallbackErr));
       try {
