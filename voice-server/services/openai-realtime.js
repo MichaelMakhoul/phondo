@@ -240,6 +240,25 @@ function buildGrokSessionConfig({ systemPrompt, tools, voiceName, language }) {
 }
 
 /**
+ * SCRUM-535: this default also serves as the Gemini Live failover model, so
+ * keep it current — a stale default here means outages are handled by a
+ * superseded model and the SCRUM-378 A/B benchmarks against it too.
+ * SCRUM-588: the ONE home of the default — server.js records the failover
+ * model in calls.metadata through resolveOpenAIRealtimeModel() instead of a
+ * second literal that could drift from the model actually dialed.
+ */
+const DEFAULT_OPENAI_REALTIME_MODEL = "gpt-realtime-2.1";
+
+/**
+ * The OpenAI Realtime model to dial. Read per call so a model env change
+ * doesn't need a process restart (the eval workflow flips it between calls).
+ * @returns {string}
+ */
+function resolveOpenAIRealtimeModel() {
+  return process.env.OPENAI_REALTIME_MODEL || DEFAULT_OPENAI_REALTIME_MODEL;
+}
+
+/**
  * The two OpenAI-Realtime-protocol providers this adapter can drive. URLs are
  * resolved at session-creation time so a model env change doesn't need a
  * process restart (the eval workflow flips these between test calls).
@@ -248,10 +267,7 @@ const PROVIDERS = {
   openai: {
     tag: "OpenAIRealtime",
     apiKeyEnv: "OPENAI_API_KEY",
-    // SCRUM-535: this default also serves as the Gemini Live failover model,
-    // so keep it current — a stale default here means outages are handled by
-    // a superseded model and the SCRUM-378 A/B benchmarks against it too.
-    url: () => `wss://api.openai.com/v1/realtime?model=${process.env.OPENAI_REALTIME_MODEL || "gpt-realtime-2.1"}`,
+    url: () => `wss://api.openai.com/v1/realtime?model=${resolveOpenAIRealtimeModel()}`,
     buildSessionConfig,
   },
   grok: {
@@ -822,6 +838,7 @@ function createGrokRealtimeSession(config, callbacks) {
 module.exports = {
   createOpenAIRealtimeSession,
   createGrokRealtimeSession,
+  resolveOpenAIRealtimeModel,
   _test: {
     toRealtimeTools,
     buildSessionConfig,

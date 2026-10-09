@@ -1,5 +1,6 @@
 /**
- * Gemini 3.1 Flash Live — WebSocket client for real-time voice AI.
+ * Gemini Live (default model: Gemini 3.8 Live) — WebSocket client for
+ * real-time voice AI.
  *
  * Replaces the Deepgram STT → OpenAI LLM → Deepgram TTS pipeline with
  * a single audio-to-audio model. Handles session setup, audio streaming,
@@ -29,7 +30,11 @@ let customVadFallbackAlerted = false;
 const { Sentry } = require("../lib/sentry");
 const { logTranscript } = require("../lib/log-transcript");
 
-const GEMINI_MODEL = process.env.GEMINI_LIVE_MODEL || "models/gemini-3.1-flash-live-preview";
+// SCRUM-588: Gemini 3.8 Live is Google's GA default Live model; 3.1 Flash Live
+// Preview is now listed as legacy. GEMINI_LIVE_MODEL is the revert lever —
+// "models/gemini-3.1-flash-live-preview" restores the previous model, and the
+// setup below is accepted by both (probed 2026-10-09).
+const GEMINI_MODEL = process.env.GEMINI_LIVE_MODEL || "models/gemini-3.8-live";
 const GEMINI_ENDPOINT = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
 
 /**
@@ -43,6 +48,14 @@ function convertToolsToGemini(openaiTools) {
       name: t.function.name,
       description: t.function.description,
       parameters: convertSchemaToGemini(t.function.parameters),
+      // SCRUM-588: Gemini 3.8 Live makes function calls NON_BLOCKING by
+      // default — it ends its turn the moment it calls a tool and speaks again
+      // when the result lands. Probed: an extra turnComplete per tool call, and
+      // after end_call an extra "I've ended the call." spoken into the close
+      // drain. Every turn-level guard in the voice server (Tier-1/Tier-2
+      // validation, goodbye loop, greeting guard, end_call drain) assumes the
+      // sequential semantics 3.1 has, so pin them. 3.1 accepts the field too.
+      behavior: "BLOCKING",
     }));
 }
 
@@ -284,9 +297,12 @@ function createGeminiSession(config, callbacks) {
     const setupMsg = {
       setup: {
         model: GEMINI_MODEL,
+        // SCRUM-588: no sampling params. Google deprecated temperature/top_p/
+        // top_k on 2026-07-21 (Gemini 3 default 1.0; lower values "may lead to
+        // unexpected behavior"). Setup was accepted with and without the old
+        // 0.7 on both 3.8 Live and the 3.1 revert model.
         generationConfig: {
           responseModalities: ["AUDIO"],
-          temperature: 0.7,
           speechConfig: {
             voiceConfig: {
               prebuiltVoiceConfig: {
@@ -343,7 +359,8 @@ function createGeminiSession(config, callbacks) {
   /**
    * Ask Gemini to speak its first message.
    * NOTE: clientContent is BLOCKED on gemini-3.1-flash-live-preview (causes
-   * 1007). realtimeInput.text is the correct way to send text on 3.1.
+   * 1007) — still the revert model. realtimeInput.text works on 3.1 and on
+   * 3.8 Live, so it stays the one way text is sent (here and in sendText).
    * Ref: https://ai.google.dev/api/live (realtimeInput.text field)
    * @param {string} [reason] - "initial" or "retrigger" (SCRUM-576)
    * @returns {boolean} whether the trigger was actually sent
@@ -750,6 +767,8 @@ function createGeminiSession(config, callbacks) {
 module.exports = {
   createGeminiSession,
   convertToolsToGemini,
+  // The model actually dialed (env override applied) — for startup/test-call logs.
+  GEMINI_MODEL,
   // Exposed for unit tests only (no network needed).
   _test: { armSetupWatchdog, resolveSetupTimeoutMs, DEFAULT_SETUP_TIMEOUT_MS },
 };

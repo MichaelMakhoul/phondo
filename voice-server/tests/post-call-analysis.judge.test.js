@@ -8,6 +8,7 @@ const assert = require("node:assert/strict");
 // the fail-open posture — this function must not hide errors).
 
 let origApiKey;
+let origAnalysisModel;
 let origFetch;
 
 /** Fake fetch returning a JSON-mode chat completion with the given object. */
@@ -32,13 +33,17 @@ function mockJudge(responseObj, capture) {
 describe("judgeTranscriptContentLoss (SCRUM-553)", () => {
   beforeEach(() => {
     origApiKey = process.env.OPENAI_API_KEY;
+    origAnalysisModel = process.env.ANALYSIS_MODEL;
     origFetch = globalThis.fetch;
     process.env.OPENAI_API_KEY = "test-key";
+    delete process.env.ANALYSIS_MODEL; // pin the code default, whatever the shell has
   });
 
   afterEach(() => {
     if (origApiKey === undefined) delete process.env.OPENAI_API_KEY;
     else process.env.OPENAI_API_KEY = origApiKey;
+    if (origAnalysisModel === undefined) delete process.env.ANALYSIS_MODEL;
+    else process.env.ANALYSIS_MODEL = origAnalysisModel;
     globalThis.fetch = origFetch;
   });
 
@@ -64,7 +69,13 @@ describe("judgeTranscriptContentLoss (SCRUM-553)", () => {
     assert.match(system, /garbled text still proves the caller SAID something/);
     // 500, not 200: positive verdicts carry a note — a tight cap concentrates
     // truncation on exactly the verdicts the guard exists to deliver.
-    assert.equal(capture.body.max_tokens, 500);
+    // SCRUM-588: the default (gpt-6-luna) takes the cap as
+    // max_completion_tokens and 400s on max_tokens; reasoning_effort "none"
+    // keeps hidden reasoning tokens from eating it.
+    assert.equal(capture.body.model, "gpt-6-luna");
+    assert.equal(capture.body.max_completion_tokens, 500);
+    assert.equal(capture.body.max_tokens, undefined);
+    assert.equal(capture.body.reasoning_effort, "none");
   });
 
   it("maps a clean verdict and normalizes an empty note to null", async () => {
@@ -120,6 +131,58 @@ describe("judgeTranscriptContentLoss (SCRUM-553)", () => {
         json: () => Promise.resolve({ choices: [{ message: { content: "" } }] }),
       });
     await assert.rejects(() => getJudge()("User: a", "User: b"), /empty content/);
+  });
+
+  // SCRUM-588: a reasoning model that spends the whole cap on hidden reasoning
+  // answers finish_reason "length" with EMPTY content. That is the benign
+  // truncation the callers already handle (cleanup: warn; retranscribe judge:
+  // fail closed), not an unexplained empty reply — so length is checked first.
+  for (const [label, content] of [["empty content", ""], ["null content", null], ["partial content", '{"content_loss": tr']]) {
+    it(`finish_reason "length" with ${label} → tagged isMaxTokensTruncation`, async () => {
+      globalThis.fetch = () =>
+        Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ choices: [{ finish_reason: "length", message: { content } }] }),
+        });
+      await assert.rejects(
+        () => getJudge()("User: a", "User: b"),
+        (err) => {
+          assert.equal(err.isMaxTokensTruncation, true);
+          assert.match(err.message, /max_tokens \(truncated\)/);
+          return true;
+        },
+      );
+    });
+  }
+
+  it("empty content names finish_reason, refusal and reasoning_tokens — never the content or refusal text", async () => {
+    globalThis.fetch = () =>
+      Promise.resolve({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            choices: [{ finish_reason: "stop", message: { content: null, refusal: "I won't summarise Maria Lopez's call." } }],
+            usage: { completion_tokens: 12, completion_tokens_details: { reasoning_tokens: 0 } },
+          }),
+      });
+    await assert.rejects(
+      () => getJudge()("User: a", "User: b"),
+      (err) => {
+        assert.equal(err.isMaxTokensTruncation, undefined, "a refusal is not a truncation — it must page");
+        assert.match(err.message, /empty content \(finish_reason=stop, refusal=true, reasoning_tokens=0\)/);
+        assert.doesNotMatch(err.message, /Maria|summarise/);
+        return true;
+      },
+    );
+  });
+
+  it("empty content without usage still says what it knows", async () => {
+    globalThis.fetch = () =>
+      Promise.resolve({ ok: true, json: () => Promise.resolve({ choices: [{ message: { content: "" } }] }) });
+    await assert.rejects(
+      () => getJudge()("User: a", "User: b"),
+      /empty content \(finish_reason=unknown, refusal=false, reasoning_tokens=unknown\)/,
+    );
   });
 
   it("THROWS when OPENAI_API_KEY is unset — never a silent no-verdict", async () => {
