@@ -462,7 +462,7 @@ describe("owner_cancel_appointment", () => {
     expect(r.success).toBe(true);
     expect(r.error).toBeUndefined();
     expect(cancelSingleAppointment).toHaveBeenCalledWith(
-      expect.anything(), ORG, expect.objectContaining({ id: APPT }), "customer rang to cancel", { suppressSms: true }
+      expect.anything(), ORG, expect.objectContaining({ id: APPT }), "customer rang to cancel", { suppressSms: true, requireActive: true }
     );
     expect(recordAppointmentEvent).toHaveBeenCalledTimes(1);
     expect(recordAppointmentEvent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
@@ -522,7 +522,23 @@ describe("owner_cancel_appointment", () => {
   it("never texts the customer: phase 1 cancels with suppressSms, so customer_notified:false stays true", async () => {
     await handleOwnerCancelAppointment(ORG, { appointment_id: APPT, confirmed: true }, ctx);
     expect(cancelSingleAppointment).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(cancelSingleAppointment).mock.calls[0][4]).toEqual({ suppressSms: true });
+    expect(vi.mocked(cancelSingleAppointment).mock.calls[0][4]).toEqual({ suppressSms: true, requireActive: true });
+  });
+
+  it("a booking that changed since the lookup is 'already changed', not cancelled: no audit, not an error", async () => {
+    // cancelSingleAppointment's requireActive write matched 0 rows (a move landed in between).
+    vi.mocked(cancelSingleAppointment).mockResolvedValueOnce({
+      success: false,
+      message: "That appointment is no longer active, so nothing was cancelled.",
+      data: { notActive: true },
+    });
+    const r = await handleOwnerCancelAppointment(ORG, { appointment_id: APPT, confirmed: true }, ctx);
+    expect(r).toEqual({
+      success: false,
+      message: "That booking has already changed — I haven't cancelled anything.",
+      data: { outcome: "not_found", appointment_id: APPT, customer_notified: false },
+    });
+    expect(recordAppointmentEvent).not.toHaveBeenCalled();
   });
 
   it("a failed cancel is an owner-worded genuine error — never the customer-facing callback offer — with no audit event", async () => {

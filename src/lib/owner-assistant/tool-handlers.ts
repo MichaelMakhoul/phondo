@@ -341,6 +341,8 @@ const NOT_NOTIFIED = " The customer has NOT been notified — I can read you the
 const RATE_LIMITED_MSG = "There have been several changes in a row just now — give it a minute and try again.";
 const SLOT_TAKEN_NO_ALTERNATIVES_MSG = "That time's taken — want to try another time?";
 const CANCEL_FAULT_MSG = "I couldn't cancel that booking — something went wrong on our side. Please check it in the dashboard.";
+/** A move or cancel landed between the lookup and the cancel: nothing was cancelled. */
+const ALREADY_CHANGED_MSG = "That booking has already changed — I haven't cancelled anything.";
 const DEFAULT_CANCEL_REASON = "Cancelled by the business owner by phone";
 /** Same bound the customer cancel path puts on a reason (sanitizeString(reason, 500)). */
 const REASON_MAX = 500;
@@ -651,11 +653,23 @@ export async function handleOwnerCancelAppointment(
   const reason = sanitizeCustomerText(args.reason, REASON_MAX) ?? DEFAULT_CANCEL_REASON;
   // Frees the row and refreshes the voice schedule cache (only Phondo's own bookings
   // get this far). suppressSms: phase 1 never texts the customer, which is what
-  // customer_notified:false promises. Its failure replies are worded for a caller
-  // ("…someone call you back"), so the owner gets their own wording; the cause is
-  // already logged inside cancelSingleAppointment.
-  const result = await cancelSingleAppointment(supabase, organizationId, appt, reason, { suppressSms: true });
-  if (!result.success) return errorResult(CANCEL_FAULT_MSG);
+  // customer_notified:false promises. requireActive: the write is org-scoped and only
+  // lands while the row is still confirmed/pending, so a move that slipped in since
+  // the lookup is not overwritten (and the owner is not told "Cancelled" while the
+  // moved booking stays live). Its failure replies are worded for a caller ("…someone
+  // call you back"), so the owner gets their own wording; the cause is already logged
+  // inside cancelSingleAppointment.
+  const result = await cancelSingleAppointment(supabase, organizationId, appt, reason, { suppressSms: true, requireActive: true });
+  if (!result.success) {
+    if (result.data?.notActive === true) {
+      return {
+        success: false,
+        message: ALREADY_CHANGED_MSG,
+        data: cancelData({ outcome: "not_found", appointment_id: appt.id, customer_notified: false }),
+      };
+    }
+    return errorResult(CANCEL_FAULT_MSG);
+  }
 
   await recordAppointmentEvent(supabase, {
     appointmentId: appt.id,

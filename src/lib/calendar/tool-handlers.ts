@@ -1827,7 +1827,12 @@ export async function cancelSingleAppointment(
   // marked `rescheduled` (a distinct lifecycle state, not a cancellation) and must
   // NOT send the caller a "your appointment is cancelled" SMS for what is a move —
   // the new booking's confirmation already covers it.
-  opts?: { terminalStatus?: "cancelled" | "rescheduled"; suppressSms?: boolean }
+  // SCRUM-586: `requireActive` (owner assistant only; other callers unchanged) makes
+  // the status write org-scoped and conditional on the row still being
+  // confirmed/pending, so a move or cancel that landed after the caller's lookup is
+  // never overwritten. 0 rows → `{ success:false, data:{ notActive:true } }`, a
+  // business non-success: nothing cancelled, refreshed or texted.
+  opts?: { terminalStatus?: "cancelled" | "rescheduled"; suppressSms?: boolean; requireActive?: boolean }
 ): Promise<ToolResult> {
   try {
     // For Cal.com appointments, try external cancellation first
@@ -1875,16 +1880,30 @@ export async function cancelSingleAppointment(
 
     // Update DB status to the requested terminal state (default: cancelled). Either
     // way the row leaves the confirmed/pending allowlist, so its slot frees.
-    const { error: cancelDbError } = await (supabase as any)
+    let cancelWrite = (supabase as any)
       .from("appointments")
       .update({ status: opts?.terminalStatus ?? "cancelled" })
       .eq("id", appointment.id);
+    if (opts?.requireActive) {
+      cancelWrite = cancelWrite
+        .eq("organization_id", organizationId)
+        .in("status", ["confirmed", "pending"])
+        .select("id");
+    }
+    const { data: cancelledRows, error: cancelDbError } = await cancelWrite;
 
     if (cancelDbError) {
       console.error("Failed to update appointment status:", cancelDbError);
       return errorResult(
         "I'm having trouble cancelling the appointment right now. Would you like me to have someone call you back to help with this?"
       );
+    }
+    if (opts?.requireActive && (!Array.isArray(cancelledRows) || cancelledRows.length === 0)) {
+      return {
+        success: false,
+        message: "That appointment is no longer active, so nothing was cancelled.",
+        data: { notActive: true },
+      };
     }
 
     // Invalidate voice server schedule cache after the response (SCRUM-410: bare
