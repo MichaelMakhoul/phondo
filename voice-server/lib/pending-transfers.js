@@ -108,6 +108,7 @@ async function finishTransferredCall(savedState, outcome) {
     : { outcome };
 
   // Complete call record (retry up to 2 times on failure)
+  let recordWritten = false;
   if (savedState.callRecordId) {
     const MAX_RETRIES = 2;
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
@@ -128,6 +129,7 @@ async function finishTransferredCall(savedState, outcome) {
           callType: isOwnerCall ? "owner" : null,
           ownerAuth,
         });
+        recordWritten = true;
         break;
       } catch (err) {
         if (attempt < MAX_RETRIES) {
@@ -145,7 +147,11 @@ async function finishTransferredCall(savedState, outcome) {
   }
 
   // Notify Next.js app
-  if (INTERNAL_API_URL && INTERNAL_API_SECRET && savedState.organizationId) {
+  if (isOwnerCall && !recordWritten) {
+    // SCRUM-587: same rule as cleanupSession — without call_type="owner" in
+    // the row PR B would process the owner's call as a customer's. Page (ids only).
+    console.error(`[ALERT:error] [OwnerCall] owner call record not written — call-completed webhook skipped (callSid=${savedState.callSid}, callId=${savedState.callRecordId}, org=${savedState.organizationId})`);
+  } else if (INTERNAL_API_URL && INTERNAL_API_SECRET && savedState.organizationId) {
     try {
       await notifyCallCompleted(INTERNAL_API_URL, INTERNAL_API_SECRET, {
         callId: savedState.callRecordId,

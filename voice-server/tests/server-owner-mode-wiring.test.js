@@ -49,7 +49,7 @@ describe("SCRUM-587: owner session wiring", () => {
   });
   it("Gemini onToolCall hands owner calls to the runner BEFORE any customer guard", () => {
     const toolCallIdx = src.indexOf('logToolCall("[GeminiLive] Tool call", toolCall.name, toolCall.args);');
-    const runnerIdx = src.indexOf("if (session.ownerMode) {\n                    return runOwnerToolCall(session, toolCall, { executeToolCall, scheduleCache });", toolCallIdx);
+    const runnerIdx = src.indexOf("if (session.ownerMode) {\n                    if (session) session._toolCallInFlight = true;\n                    try {\n                      return await runOwnerToolCall(session, toolCall, { executeToolCall, scheduleCache });\n                    } finally {\n                      if (session) session._toolCallInFlight = false;\n                    }", toolCallIdx);
     const funnelIdx = src.indexOf("session.hasUnfinishedBooking(toolCall.args?.reason)", toolCallIdx);
     assert.ok(toolCallIdx > 0 && runnerIdx > toolCallIdx && runnerIdx < funnelIdx, `order: log=${toolCallIdx} runner=${runnerIdx} funnel=${funnelIdx}`);
   });
@@ -69,7 +69,8 @@ describe("SCRUM-587: owner session wiring", () => {
   it("post-call: no phantom scan, no OpenAI analysis, deterministic summary, owner stamps — and the DB write precedes the webhook", () => {
     assert.match(cleanup, /const phantomActions = s\.ownerMode \? \[\] : detectPostCallPhantoms\(s\.fullTranscriptMessages, s\.toolCallAudit\);/);
     assert.match(cleanup, /if \(!s\.ownerMode && transcript && durationSeconds > 5\) \{/);
-    assert.match(cleanup, /summary: s\.ownerMode \? buildOwnerCallSummary\(s\.toolCallAudit \|\| \[\]\) : \(analysis\?\.summary \|\| null\),/);
+    assert.match(cleanup, /let ownerSummary = s\.ownerMode \? buildOwnerCallSummary\(s\.toolCallAudit \|\| \[\]\) : null;/);
+    assert.match(cleanup, /summary: s\.ownerMode \? ownerSummary : \(analysis\?\.summary \|\| null\),/);
     assert.match(cleanup, /callerName: s\.ownerMode \? \(s\.ownerFirstName \|\| "Owner"\) : \(analysis\?\.callerName \|\| null\),/);
     assert.match(cleanup, /actionTaken: s\.ownerMode\s*\?\s*"owner_call"/);
     assert.match(cleanup, /callType: s\.ownerMode \? "owner" : null,/);
@@ -203,11 +204,11 @@ const { buildLanguageLockDirective } = runSlice({
 });
 
 const SERVICE_TYPES = [{ id: "st-1", name: "Blocked drain", duration_minutes: 60 }];
-function makeContext() {
+function makeContext({ timezone = "Australia/Sydney" } = {}) {
   return {
     organizationId: "org-1",
     assistantId: "asst-1",
-    organization: { name: "Copperline Plumbing", timezone: "Australia/Sydney", country: "AU", businessState: "NSW", recordingConsentMode: "auto", recording_disclosure_text: null, industry: "home_services" },
+    organization: { name: "Copperline Plumbing", timezone, country: "AU", businessState: "NSW", recordingConsentMode: "auto", recording_disclosure_text: null, industry: "home_services" },
     assistant: { voiceId: "v1", language: "en", promptConfig: { fields: [] }, settings: {} },
     knowledgeBase: "",
     serviceTypes: SERVICE_TYPES,
@@ -263,8 +264,8 @@ function fakeSupabase(queries) {
 }
 
 /** start event: prompt → schedule snapshot → (Gemini) prompt assembly, all real server.js text. */
-async function assemblePrompts({ owner, ownerAuth }) {
-  const context = makeContext();
+async function assemblePrompts({ owner, ownerAuth, timezone }) {
+  const context = makeContext({ timezone });
   const session = makeSession({ owner, ownerAuth });
   const lines = [];
   const calls = [];
@@ -356,6 +357,30 @@ describe("SCRUM-587: the assembled owner prompt, run for real", () => {
     assert.equal(r.scheduleSnapshot, null);
     assert.equal(r.session.scheduleSnapshot, null);
     assert.deepEqual(r.calls.filter((c) => /^(scheduleCache|loadScheduleSnapshot|buildSystemPrompt)/.test(c[0])), []);
+  });
+
+  it("a malformed org timezone ('AEST') never kills the owner's call: Sydney's date and zone, and one warning", async () => {
+    const r = await assemblePrompts({ owner: true, timezone: "AEST" });
+    assert.equal(r.classicPrompt, buildOwnerPrompt({
+      orgName: "Copperline Plumbing", ownerFirstName: "Dave", timezone: "Australia/Sydney", todayStr: "2026-10-15", serviceTypes: SERVICE_TYPES, practitioners: [],
+    }));
+    const warnings = r.lines.filter((l) => l.startsWith("warn| "));
+    assert.equal(warnings.length, 1, r.lines.join("\n"));
+    assert.ok(warnings[0].includes('"AEST"') && warnings[0].includes("Australia/Sydney") && warnings[0].includes("org-1"), warnings[0]);
+  });
+
+  it("a missing org timezone is Sydney too (as PR B's owner handlers), without a warning", async () => {
+    for (const timezone of [null, ""]) {
+      const r = await assemblePrompts({ owner: true, timezone });
+      assert.ok(r.classicPrompt.includes("Today is Thursday 2026-10-15 (Australia/Sydney)."), String(timezone));
+      assert.deepEqual(r.lines.filter((l) => l.startsWith("warn| ")), []);
+    }
+  });
+
+  it("customers never evaluate the owner date at all — a malformed zone changes nothing for them", async () => {
+    const r = await assemblePrompts({ owner: false, timezone: "AEST" });
+    assert.ok(r.classicPrompt.startsWith("CUSTOMER PROMPT"));
+    assert.deepEqual(r.lines.filter((l) => l.includes("[OwnerPrompt]")), []);
   });
 
   it("Gemini: the system prompt is the owner prompt + the first-message line + the owner suffix, and the suffix is the LAST text", async () => {
@@ -478,7 +503,8 @@ describe("SCRUM-587: Gemini callbacks, run for real", () => {
     s.rememberDetails = () => { guardCalls.push("rememberDetails"); };
     s.toolCallAudit.push({ name: "check_availability", successful: true, at: 1 }); // would trip the end_call funnel
     const ownerResult = { message: "owner says", data: { outcome: "cancelled" }, __endCall: true };
-    const { cbs, calls } = makeGeminiCallbacks(s, { ownerResult });
+    const inFlight = [];
+    const { cbs, calls } = makeGeminiCallbacks(s, { runOwnerToolCall: async (...a) => { calls.push(["runOwnerToolCall", ...a]); inFlight.push(s._toolCallInFlight); return ownerResult; } });
     for (const name of ["end_call", "owner_cancel_appointment", "cancel_appointment", "book_appointment", "transfer_call", "check_availability"]) {
       const toolCall = { id: `t-${name}`, name, args: { appointment_id: "a1", reason: "booking_complete" } };
       const ret = await cbs.onToolCall(toolCall);
@@ -492,7 +518,25 @@ describe("SCRUM-587: Gemini callbacks, run for real", () => {
     assert.deepEqual(calls.filter((c) => c[0] === "executeToolCall"), [], "server.js never calls the executor itself on an owner call");
     assert.equal(s.toolCallAudit.length, 1, "server.js adds no customer audit entries");
     assert.equal(s._lastToolResult, undefined, "the Tier-2 validator is never armed");
-    assert.equal(s._toolCallInFlight, undefined);
+    assert.ok(inFlight.length === 6 && inFlight.every((v) => v === true), "in flight while the runner runs");
+    assert.equal(s._toolCallInFlight, false, "cleared after");
+  });
+
+  it("an owner write in flight holds off the goodbye-loop auto-end, and the flag clears even if the runner throws", async () => {
+    const s = makeSession({ owner: true });
+    let release;
+    const { cbs, calls, lines } = makeGeminiCallbacks(s, { runOwnerToolCall: () => new Promise((resolve) => { release = resolve; }) });
+    const write = cbs.onToolCall({ id: "t1", name: "owner_cancel_appointment", args: { appointment_id: "a1", confirmed: true } });
+    for (let i = 0; i < 3; i++) { cbs.onAudio("AAAA"); cbs.onTranscriptOut("Goodbye, have a great day!"); cbs.onTurnComplete(); }
+    assert.ok(lines.some((l) => l.includes("[GoodbyeLoop] Skipping auto-end — tool call in flight")), lines.join("\n"));
+    assert.deepEqual(calls.filter((c) => c[0] === "twilio.close"), [], "the call was not closed mid-write");
+    release({ message: "done", data: { outcome: "cancelled" } });
+    await write;
+    assert.equal(s._toolCallInFlight, false);
+    const t = makeSession({ owner: true });
+    const thrower = makeGeminiCallbacks(t, { runOwnerToolCall: async () => { throw new Error("boom"); } });
+    await assert.rejects(thrower.cbs.onToolCall({ id: "t2", name: "owner_list_messages", args: {} }), /boom/);
+    assert.equal(t._toolCallInFlight, false, "cleared in finally");
   });
 
   it("a customer call still meets the end_call funnel and the cancel gate (unchanged)", async () => {
@@ -904,9 +948,16 @@ function makeCleanup(session, o = {}) {
     netLiveOutcome: () => 0,
     setReasonTag: () => {},
     SENTRY_REASONS: { BOOKING_STATE_MISMATCH: "booking-state-mismatch" },
-    detectAndRedact: (t) => ({ piiFound: false, redacted: t }),
+    detectAndRedact: o.detectAndRedact || ((t) => ({ piiFound: false, redacted: t })),
     redactObject: (x) => ({ piiFound: false, redacted: x }),
-    completeCallRecord: async (id, fields) => { calls.push(["completeCallRecord", id, fields]); await sleep(5); calls.push(["completeCallRecord:done"]); },
+    completeCallRecord: async (id, fields) => {
+      calls.push(["completeCallRecord", id, fields]);
+      await sleep(5);
+      if ((o.failWrites || 0) > calls.filter((c) => c[0] === "completeCallRecord").length - 1) throw new Error("db write failed: connection reset");
+      calls.push(["completeCallRecord:done"]);
+    },
+    // The owner retry's back-off, without real waiting.
+    setTimeout: (fn, ms) => { calls.push(["retry-delay", ms]); fn(); },
     notifyCallCompleted: async (url, secret, payload) => { calls.push(["notifyCallCompleted", payload]); },
     INTERNAL_API_URL: "http://next.internal",
     INTERNAL_API_SECRET: "secret",
@@ -977,6 +1028,78 @@ describe("SCRUM-587: post-call (cleanupSession), run for real", () => {
       assert.ok(!body.includes("callType"), "a customer webhook body never carries callType");
       assert.equal(body.includes("ownerAuth"), ownerAuth !== null, String(ownerAuth));
     }
+  });
+});
+
+describe("SCRUM-587: post-call — an owner record that can't be written never reaches PR B as a customer call", () => {
+  const ALERT = "[ALERT:error]";
+  it("a failed owner write is retried once; when the retry lands, the webhook goes and nothing pages", async () => {
+    const s = endedCall(makeSession({ owner: true }));
+    const { cleanupSession, calls, lines } = makeCleanup(s, { failWrites: 1 });
+    await cleanupSession();
+    assert.equal(calls.filter((c) => c[0] === "completeCallRecord").length, 2);
+    assert.deepEqual(calls.filter((c) => c[0] === "retry-delay").map((c) => c[1]), [1000]);
+    assert.equal(calls.filter((c) => c[0] === "notifyCallCompleted").length, 1);
+    assert.deepEqual(lines.filter((l) => l.includes(ALERT)), []);
+  });
+
+  it("an owner write that fails twice skips the webhook and pages once — ids only", async () => {
+    const s = endedCall(makeSession({ owner: true }));
+    s.toolCallAudit.push({ name: "owner_cancel_appointment", successful: true, at: 1, ownerDetail: "Cancelled Bob Lee's job on Friday." });
+    const { cleanupSession, calls, lines } = makeCleanup(s, { failWrites: 2 });
+    await cleanupSession();
+    assert.equal(calls.filter((c) => c[0] === "completeCallRecord").length, 2, "one retry, no more");
+    assert.deepEqual(calls.filter((c) => c[0] === "notifyCallCompleted"), [], "PR B never sees the owner's call as a customer call");
+    const alerts = lines.filter((l) => l.includes(ALERT));
+    assert.equal(alerts.length, 1, lines.join("\n"));
+    for (const id of ["CA-owner", "call-1", "org-1"]) assert.ok(alerts[0].includes(id), `${id} missing: ${alerts[0]}`);
+    for (const secret of ["Bob Lee", "Cancel", "+61400000001", "connection reset"]) assert.ok(!alerts[0].includes(secret), `${secret} leaked: ${alerts[0]}`);
+  });
+
+  it("an owner call with no call record at all skips the webhook and pages once", async () => {
+    const s = endedCall(makeSession({ owner: true }));
+    s.callRecordId = null;
+    const { cleanupSession, calls, lines } = makeCleanup(s);
+    await cleanupSession();
+    assert.deepEqual(calls.filter((c) => c[0] === "completeCallRecord" || c[0] === "notifyCallCompleted"), []);
+    assert.equal(lines.filter((l) => l.includes(ALERT)).length, 1);
+  });
+
+  it("customer calls are unchanged: one attempt, no retry, and the webhook still goes", async () => {
+    for (const ownerAuth of [null, "locked"]) {
+      const s = endedCall(makeSession({ owner: false, ownerAuth }));
+      const { cleanupSession, calls, lines } = makeCleanup(s, { failWrites: 1 });
+      await cleanupSession();
+      assert.equal(calls.filter((c) => c[0] === "completeCallRecord").length, 1, String(ownerAuth));
+      assert.deepEqual(calls.filter((c) => c[0] === "retry-delay"), []);
+      assert.equal(calls.filter((c) => c[0] === "notifyCallCompleted").length, 1, String(ownerAuth));
+      assert.deepEqual(lines.filter((l) => l.includes(ALERT)), []);
+    }
+  });
+});
+
+describe("SCRUM-587: post-call — the owner summary gets the org's PII redaction", () => {
+  const { detectAndRedact } = require("../lib/pii-detector");
+  const DETAIL = "Moved Bob Lee (bob@example.com) to Friday 9 am";
+  it("redaction on: the summary is redacted like the transcript before it is stored", async () => {
+    const s = endedCall(makeSession({ owner: true }));
+    s.piiRedactionEnabled = true;
+    s.toolCallAudit.push({ name: "owner_reschedule_appointment", successful: true, at: 1, ownerDetail: DETAIL });
+    const { cleanupSession, calls } = makeCleanup(s, { detectAndRedact });
+    await cleanupSession();
+    const fields = calls.find((c) => c[0] === "completeCallRecord")[2];
+    assert.equal(fields.summary, detectAndRedact(`Owner call: ${DETAIL}.`).redacted);
+    assert.ok(fields.summary.includes("[REDACTED-EMAIL]") && !fields.summary.includes("bob@example.com"), fields.summary);
+    assert.equal(fields.piiRedacted, true);
+  });
+  it("redaction off: the summary is stored as built", async () => {
+    const s = endedCall(makeSession({ owner: true }));
+    s.toolCallAudit.push({ name: "owner_reschedule_appointment", successful: true, at: 1, ownerDetail: DETAIL });
+    const { cleanupSession, calls } = makeCleanup(s, { detectAndRedact });
+    await cleanupSession();
+    const fields = calls.find((c) => c[0] === "completeCallRecord")[2];
+    assert.equal(fields.summary, `Owner call: ${DETAIL}.`);
+    assert.equal(fields.piiRedacted, false);
   });
 });
 

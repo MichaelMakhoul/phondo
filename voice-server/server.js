@@ -1644,6 +1644,11 @@ wss.on("connection", (twilioWs) => {
       }
     }
 
+    // SCRUM-587: an owner call's summary is built from its tool audit (no
+    // OpenAI) and, with the org's PII redaction on, redacted like the
+    // transcript below before it is stored.
+    let ownerSummary = s.ownerMode ? buildOwnerCallSummary(s.toolCallAudit || []) : null;
+
     // PII redaction — runs after analysis, before anything is persisted
     let piiRedacted = false;
     if (s.piiRedactionEnabled) {
@@ -1651,6 +1656,13 @@ wss.on("connection", (twilioWs) => {
       if (transcriptResult.piiFound) {
         transcript = transcriptResult.redacted;
         piiRedacted = true;
+      }
+      if (ownerSummary) {
+        const ownerSummaryResult = detectAndRedact(ownerSummary);
+        if (ownerSummaryResult.piiFound) {
+          ownerSummary = ownerSummaryResult.redacted;
+          piiRedacted = true;
+        }
       }
       if (analysis?.summary) {
         const summaryResult = detectAndRedact(analysis.summary);
@@ -1681,48 +1693,57 @@ wss.on("connection", (twilioWs) => {
     }
 
     // Complete call record if we have one
+    // SCRUM-587: PR B tells an owner call from a customer one by THIS row
+    // (call_type), so an owner call's write gets one retry, and if the row
+    // still isn't written the webhook below is skipped. Customer calls: one
+    // attempt, exactly as before.
+    let recordWritten = false;
     if (s.callRecordId) {
-      try {
-        await completeCallRecord(s.callRecordId, {
-          status: callStatus,
-          durationSeconds,
-          transcript,
-          summary: s.ownerMode ? buildOwnerCallSummary(s.toolCallAudit || []) : (analysis?.summary || null),
-          callerName: s.ownerMode ? (s.ownerFirstName || "Owner") : (analysis?.callerName || null),
-          collectedData: analysis?.collectedData || null,
-          successEvaluation: analysis?.successEvaluation || null,
-          recordingDisclosurePlayed: s.recordingDisclosurePlayed || false,
-          recordingDisclosureFailed: s.recordingDisclosureFailed || false,
-          transferAttempt: s.transferAttempt || null,
-          callerState: s.callerState || null,
-          consentReason: s.consentReason || null,
-          pipelineFailover: s.pipelineFailover || null,
-          sentiment: analysis?.sentiment || null,
-          piiRedacted,
-          cleanedTranscript: analysis?.cleanedTranscript ?? null,
-          // SCRUM-498: daily summary + analytics count
-          // action_taken="appointment_booked". The tool audit is the ground
-          // truth on the Gemini/realtime paths (reschedules deliberately
-          // excluded); the CLASSIC pipeline's tool loop doesn't write the
-          // audit, so fall back to its confirmedBookings map (review P2 —
-          // classic bookings were otherwise silently uncounted).
-          // SCRUM-559: net-live, not "a book succeeded somewhere" — the
-          // incident call was recorded failed AND "appointment_booked" (the
-          // booking had been cancelled). confirmedBookings already clears on
-          // cancel, so the classic fallback is naturally net-aware.
-          actionTaken: s.ownerMode
-            ? "owner_call"
-            : netLiveOutcome(s.toolCallAudit || []) > 0 || (s.confirmedBookings?.size ?? 0) > 0
-              ? "appointment_booked"
-              : null,
-          // SCRUM-587: written BEFORE notifyCallCompleted (below) — PR B reads
-          // call_type from the row. owner_auth also marks a customer call that
-          // failed the PIN gate.
-          callType: s.ownerMode ? "owner" : null,
-          ownerAuth: s.ownerAuth || null,
-        });
-      } catch (err) {
-        console.error("[Cleanup] Failed to complete call record:", err);
+      for (let attempt = 1; !recordWritten && attempt <= (s.ownerMode ? 2 : 1); attempt++) {
+        if (attempt > 1) await new Promise((resolve) => setTimeout(resolve, 1000));
+        try {
+          await completeCallRecord(s.callRecordId, {
+            status: callStatus,
+            durationSeconds,
+            transcript,
+            summary: s.ownerMode ? ownerSummary : (analysis?.summary || null),
+            callerName: s.ownerMode ? (s.ownerFirstName || "Owner") : (analysis?.callerName || null),
+            collectedData: analysis?.collectedData || null,
+            successEvaluation: analysis?.successEvaluation || null,
+            recordingDisclosurePlayed: s.recordingDisclosurePlayed || false,
+            recordingDisclosureFailed: s.recordingDisclosureFailed || false,
+            transferAttempt: s.transferAttempt || null,
+            callerState: s.callerState || null,
+            consentReason: s.consentReason || null,
+            pipelineFailover: s.pipelineFailover || null,
+            sentiment: analysis?.sentiment || null,
+            piiRedacted,
+            cleanedTranscript: analysis?.cleanedTranscript ?? null,
+            // SCRUM-498: daily summary + analytics count
+            // action_taken="appointment_booked". The tool audit is the ground
+            // truth on the Gemini/realtime paths (reschedules deliberately
+            // excluded); the CLASSIC pipeline's tool loop doesn't write the
+            // audit, so fall back to its confirmedBookings map (review P2 —
+            // classic bookings were otherwise silently uncounted).
+            // SCRUM-559: net-live, not "a book succeeded somewhere" — the
+            // incident call was recorded failed AND "appointment_booked" (the
+            // booking had been cancelled). confirmedBookings already clears on
+            // cancel, so the classic fallback is naturally net-aware.
+            actionTaken: s.ownerMode
+              ? "owner_call"
+              : netLiveOutcome(s.toolCallAudit || []) > 0 || (s.confirmedBookings?.size ?? 0) > 0
+                ? "appointment_booked"
+                : null,
+            // SCRUM-587: written BEFORE notifyCallCompleted (below) — PR B reads
+            // call_type from the row. owner_auth also marks a customer call that
+            // failed the PIN gate.
+            callType: s.ownerMode ? "owner" : null,
+            ownerAuth: s.ownerAuth || null,
+          });
+          recordWritten = true;
+        } catch (err) {
+          console.error("[Cleanup] Failed to complete call record:", err);
+        }
       }
     } else if (durationSeconds > 0) {
       console.error("[Cleanup] Call completed with no database record — call data is lost:", {
@@ -1734,7 +1755,12 @@ wss.on("connection", (twilioWs) => {
     }
 
     // Notify the Next.js app for spam analysis, billing, notifications, webhooks
-    if (INTERNAL_API_URL && INTERNAL_API_SECRET && s.organizationId) {
+    if (s.ownerMode && !recordWritten) {
+      // SCRUM-587: without call_type="owner" in the row, PR B would process the
+      // owner's call as a customer's — customer alerts, the org webhook carrying
+      // the owner's transcript, the daily summary. Page instead (ids only).
+      console.error(`[ALERT:error] [OwnerCall] owner call record not written — call-completed webhook skipped (callSid=${s.callSid}, callId=${s.callRecordId}, org=${s.organizationId})`);
+    } else if (INTERNAL_API_URL && INTERNAL_API_SECRET && s.organizationId) {
       notifyCallCompleted(INTERNAL_API_URL, INTERNAL_API_SECRET, {
         callId: s.callRecordId,
         organizationId: s.organizationId,
@@ -2086,14 +2112,26 @@ wss.on("connection", (twilioWs) => {
           // gets lib/owner-prompt.js instead — the customer prompt's privacy,
           // name-collection and booking rules contradict owner use (spec §2).
           // Its "Today is <weekday> <date>" is the ORG-local date: a server-UTC
-          // date is a day behind until 10-11 a.m. in Sydney.
-          const ownerTz = context.organization.timezone || "UTC";
+          // date is a day behind until 10-11 a.m. in Sydney. A missing zone is
+          // Sydney, as in PR B's owner handlers; a malformed one ("AEST") must
+          // never kill the owner's call at setup, so it falls back the same way.
+          let ownerTz = context.organization.timezone || "Australia/Sydney";
+          let ownerToday = "";
+          if (session.ownerMode) {
+            try {
+              ownerToday = new Intl.DateTimeFormat("en-CA", { timeZone: ownerTz }).format(new Date());
+            } catch {
+              console.warn(`[OwnerPrompt] org timezone ${JSON.stringify(String(ownerTz)).slice(0, 60)} is not a valid IANA zone — using Australia/Sydney (org=${context.organizationId})`);
+              ownerTz = "Australia/Sydney";
+              ownerToday = new Intl.DateTimeFormat("en-CA", { timeZone: ownerTz }).format(new Date());
+            }
+          }
           const systemPrompt = session.ownerMode
             ? buildOwnerPrompt({
                 orgName: context.organization.name,
                 ownerFirstName: session.ownerFirstName,
                 timezone: ownerTz,
-                todayStr: new Intl.DateTimeFormat("en-CA", { timeZone: ownerTz }).format(new Date()),
+                todayStr: ownerToday,
                 serviceTypes: context.serviceTypes || [],
                 practitioners: [],
               })
@@ -2522,9 +2560,16 @@ wss.on("connection", (twilioWs) => {
                   // lib/owner-tool-runner.js for why each one would misfire.
                   // Every owner tool call (end_call and parallel calls included)
                   // goes through the runner, and its result — message AND data —
-                  // is the function response, whole.
+                  // is the function response, whole. In flight exactly as the
+                  // customer path below, so the goodbye-loop auto-end can't
+                  // close the call mid-write.
                   if (session.ownerMode) {
-                    return runOwnerToolCall(session, toolCall, { executeToolCall, scheduleCache });
+                    if (session) session._toolCallInFlight = true;
+                    try {
+                      return await runOwnerToolCall(session, toolCall, { executeToolCall, scheduleCache });
+                    } finally {
+                      if (session) session._toolCallInFlight = false;
+                    }
                   }
 
                   // SCRUM-373: block end_call when a booking was started but never
