@@ -19,6 +19,7 @@ import {
 import { pickName, MAX_BOOKING_HORIZON_MS } from "@/lib/calendar/appointment-lifecycle";
 import { partitionRescheduleChanges } from "@/lib/calendar/reschedule-core";
 import { performRescheduleLeg } from "@/lib/calendar/reschedule-leg";
+import { isServiceTypeQuestion } from "@/lib/calendar/service-type-question";
 import { diffAppointmentFields, recordAppointmentEvent, type AppointmentSnapshot } from "@/lib/appointments/events";
 import { rateLimitDistributed } from "@/lib/security/rate-limiter";
 import { isValidUUID } from "@/lib/security/validation";
@@ -288,7 +289,14 @@ export async function handleOwnerListMessages(organizationId: string): Promise<T
 // ─── Write tools ─────────────────────────────────────────────────────────────
 
 export interface OwnerRescheduleData {
-  outcome: "rescheduled" | "needs_confirmation" | "not_found" | "slot_taken" | "invalid_time" | "rate_limited";
+  outcome:
+    | "rescheduled"
+    | "needs_confirmation"
+    | "not_found"
+    | "external_calendar"
+    | "slot_taken"
+    | "invalid_time"
+    | "rate_limited";
   /** The id the owner referred to (the old leg). */
   appointment_id?: string;
   /** On success: the new leg — use this id for any further change to the job. */
@@ -299,12 +307,12 @@ export interface OwnerRescheduleData {
   from?: string;
   /** Spoken form of the requested time (formatWhen). */
   to?: string;
-  /** On slot_taken: the availability message for that day ("" when there is none). */
+  /** On slot_taken: the free times that day, when the calendar could list them (absent otherwise). */
   alternatives?: string;
   customer_notified: false;
 }
 export interface OwnerCancelData {
-  outcome: "cancelled" | "needs_confirmation" | "not_found" | "rate_limited";
+  outcome: "cancelled" | "needs_confirmation" | "not_found" | "external_calendar" | "rate_limited";
   appointment_id?: string;
   customer_name?: string;
   customer_phone?: string | null;
@@ -314,19 +322,53 @@ export interface OwnerCancelData {
 }
 
 const NOT_FOUND_MSG = "I can't find that job. It may have already been moved or cancelled.";
-// SCRUM-264: customer SMS is paused platform-wide, so no change made here reaches
-// the customer. Revisit (and the `customer_notified` literal type) when it is enabled.
+// Phase 1 never contacts the customer: a reschedule sends nothing and a cancel runs
+// with suppressSms, so this stays true even once caller SMS is switched back on
+// (SCRUM-264). Revisit it, and the `customer_notified` literal type, when customer
+// notification is added.
 const NOT_NOTIFIED = " The customer has NOT been notified — I can read you their number if you want to let them know.";
 const RATE_LIMITED_MSG = "There have been several changes in a row just now — give it a minute and try again.";
+const SLOT_TAKEN_NO_ALTERNATIVES_MSG = "That time's taken — want to try another time?";
+const CANCEL_FAULT_MSG = "I couldn't cancel that booking — something went wrong on our side. Please check it in the dashboard.";
 const DEFAULT_CANCEL_REASON = "Cancelled by the business owner by phone";
 /** Same bound the customer cancel path puts on a reason (sanitizeString(reason, 500)). */
 const REASON_MAX = 500;
 /** The column default, for a row that somehow has no duration. */
 const DEFAULT_DURATION_MINUTES = 30;
 
+/**
+ * The owner tools change only Phondo's own bookings. Anything else lives in a diary
+ * Phondo doesn't own — moving or freeing the local copy would leave the real diary
+ * out of step — so it is refused and the owner changes it there.
+ */
+const OWNER_EDITABLE_PROVIDERS: ReadonlySet<string> = new Set(["internal", "manual"]);
+/** The external providers allowed by the appointments.provider CHECK (migration 00159). */
+const EXTERNAL_DIARY_NAMES: ReadonlyMap<string, string> = new Map([
+  ["cliniko", "Cliniko"],
+  ["cal_com", "Cal.com"],
+  ["google_calendar", "Google Calendar"],
+  ["calendly", "Calendly"],
+]);
+
+/** Null when the owner tools may change this booking; otherwise what to tell the owner. */
+function externalDiaryRefusal(organizationId: string, row: any): string | null {
+  if (OWNER_EDITABLE_PROVIDERS.has(row.provider)) return null;
+  let diary = EXTERNAL_DIARY_NAMES.get(row.provider);
+  if (!diary) {
+    // A provider newer than this list: refuse (fail closed) and say so in the logs.
+    console.warn("[owner-assistant] unrecognised appointment provider — treated as an external diary:", {
+      organizationId,
+      appointmentId: row.id,
+      provider: row.provider,
+    });
+    diary = "external calendar";
+  }
+  return `That booking lives in your ${diary} diary, so I haven't touched it — please change it there.`;
+}
+
 // Everything the reschedule core carries onto the new leg (status included — its
-// rollback restores before.status), plus what cancelSingleAppointment reads to
-// reach Cal.com / Cliniko (external_id, provider, metadata).
+// rollback restores before.status); `provider` for externalDiaryRefusal; and the
+// external_id / metadata that cancelSingleAppointment reads.
 const OWNER_BEFORE_COLS =
   "id, organization_id, external_id, provider, metadata, confirmation_code, " +
   "attendee_name, attendee_first_name, attendee_last_name, attendee_phone, attendee_email, " +
@@ -408,6 +450,14 @@ export async function handleOwnerRescheduleAppointment(
   if (before === null) {
     return { success: false, message: NOT_FOUND_MSG, data: rescheduleData({ outcome: "not_found", customer_notified: false }) };
   }
+  const external = externalDiaryRefusal(organizationId, before);
+  if (external) {
+    return {
+      success: false,
+      message: external,
+      data: rescheduleData({ outcome: "external_calendar", appointment_id: before.id, customer_notified: false }),
+    };
+  }
 
   const oldStart = new Date(before.start_time);
   const newStart = parseOwnerLocalDatetime(args.new_datetime, tz);
@@ -468,14 +518,20 @@ export async function handleOwnerRescheduleAppointment(
           data: rescheduleData({ outcome: "not_found", appointment_id: before.id, customer_notified: false }),
         };
       case "conflict": {
-        let alternatives = "";
+        let alternatives: string | undefined;
+        let askedForType = false;
         try {
           const avail = await handleCheckAvailability(organizationId, {
             date: toLocalIsoMinute(newStart, tz).slice(0, 10),
             service_type_id: before.service_type_id ?? undefined,
             practitioner_id: before.practitioner_id ?? undefined,
           });
-          if (avail.success) alternatives = avail.message;
+          if (avail.success) {
+            // A job with no type (or a type Cliniko doesn't know) gets a "which
+            // type?" question back instead of free times — never read that out.
+            if (isServiceTypeQuestion(avail.message)) askedForType = true;
+            else alternatives = avail.message || undefined;
+          }
         } catch (err) {
           console.warn("[owner-assistant] alternatives lookup failed (non-fatal):", {
             organizationId,
@@ -484,8 +540,17 @@ export async function handleOwnerRescheduleAppointment(
         }
         return {
           success: false,
-          message: `${to} clashes with another job, so nothing was changed.${alternatives ? ` ${alternatives}` : ""}`,
-          data: rescheduleData({ outcome: "slot_taken", appointment_id: before.id, from, to, alternatives, customer_notified: false }),
+          message: askedForType
+            ? SLOT_TAKEN_NO_ALTERNATIVES_MSG
+            : `${to} clashes with another job, so nothing was changed.${alternatives ? ` ${alternatives}` : ""}`,
+          data: rescheduleData({
+            outcome: "slot_taken",
+            appointment_id: before.id,
+            from,
+            to,
+            ...(alternatives ? { alternatives } : {}),
+            customer_notified: false,
+          }),
         };
       }
       case "orphaned":
@@ -563,6 +628,14 @@ export async function handleOwnerCancelAppointment(
   if (appt === null) {
     return { success: false, message: NOT_FOUND_MSG, data: cancelData({ outcome: "not_found", customer_notified: false }) };
   }
+  const external = externalDiaryRefusal(organizationId, appt);
+  if (external) {
+    return {
+      success: false,
+      message: external,
+      data: cancelData({ outcome: "external_calendar", appointment_id: appt.id, customer_notified: false }),
+    };
+  }
 
   const when = formatWhen(new Date(appt.start_time), tz);
   const customer = sanitizeCustomerText(appt.attendee_name, NAME_MAX) ?? "the customer";
@@ -583,13 +656,15 @@ export async function handleOwnerCancelAppointment(
     };
   }
 
-  // Model-supplied: one bounded line before it reaches Cal.com / Cliniko and the audit log.
+  // Model-supplied: one bounded line before it reaches the booking row and the audit log.
   const reason = sanitizeCustomerText(args.reason, REASON_MAX) ?? DEFAULT_CANCEL_REASON;
-  // Propagates to Cal.com / Cliniko, frees the row, invalidates the voice cache;
-  // its customer SMS path is paused (SCRUM-264). A failure comes back as-is
-  // (errorResult for genuine faults) so the model never claims a cancel it didn't get.
-  const result = await cancelSingleAppointment(supabase, organizationId, appt, reason);
-  if (!result.success) return result;
+  // Frees the row and refreshes the voice schedule cache (only Phondo's own bookings
+  // get this far). suppressSms: phase 1 never texts the customer, which is what
+  // customer_notified:false promises. Its failure replies are worded for a caller
+  // ("…someone call you back"), so the owner gets their own wording; the cause is
+  // already logged inside cancelSingleAppointment.
+  const result = await cancelSingleAppointment(supabase, organizationId, appt, reason, { suppressSms: true });
+  if (!result.success) return errorResult(CANCEL_FAULT_MSG);
 
   await recordAppointmentEvent(supabase, {
     appointmentId: appt.id,

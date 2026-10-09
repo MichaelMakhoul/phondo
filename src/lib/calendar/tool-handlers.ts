@@ -32,6 +32,7 @@ import {
 } from "@/lib/calendar/cliniko-booking";
 import { reconcileClinikoOrg } from "@/lib/calendar/cliniko-reconcile";
 import { generateConfirmationCode } from "@/lib/calendar/confirmation-code";
+import { serviceTypeQuestion } from "@/lib/calendar/service-type-question";
 import { namesMatch } from "@/lib/calendar/name-match";
 import { validateOrgScopedRefs } from "@/lib/calendar/validate-org-scoped-refs";
 import { MAX_BOOKING_HORIZON_MS } from "@/lib/calendar/appointment-lifecycle";
@@ -1339,10 +1340,7 @@ export async function handleCheckAvailability(
   } else if (cachedServiceTypes.length > 0) {
     // No service_type_id — org has service types configured, prompt caller to pick
     const list = cachedServiceTypes.map(st => `- ${st.name} (${st.duration_minutes} min)`).join("\n");
-    return {
-      success: true,
-      message: `Before I check availability, what type of appointment would you like to book?\n\nAvailable appointment types:\n${list}\n\nPlease ask the caller which type they'd like to book.`,
-    };
+    return { success: true, message: serviceTypeQuestion(list) };
   }
 
   if (!date) {

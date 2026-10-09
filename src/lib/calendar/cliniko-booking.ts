@@ -43,6 +43,7 @@ import {
   type ClinikoResolution,
 } from "./cliniko";
 import { findOrCreateClinikoPatient } from "./cliniko-patients";
+import { serviceTypeQuestion } from "./service-type-question";
 import { generateConfirmationCode } from "./confirmation-code";
 import { reconcileClinikoOrg } from "./cliniko-reconcile";
 import { mergeIntegrationSettings } from "./cliniko-settings";
@@ -389,10 +390,7 @@ function serviceTypePrompt(types: LinkedServiceType[]): ToolResult {
     };
   }
   const list = types.map((t) => `- ${t.name} (${t.duration_minutes} min)`).join("\n");
-  return {
-    success: true,
-    message: `Before I check availability, what type of appointment would you like to book?\n\nAvailable appointment types:\n${list}\n\nPlease ask the caller which type they'd like to book.`,
-  };
+  return { success: true, message: serviceTypeQuestion(list) };
 }
 
 export async function clinikoCheckAvailability(
