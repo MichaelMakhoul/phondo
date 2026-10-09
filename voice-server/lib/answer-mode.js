@@ -133,6 +133,13 @@ function getEmbeddedSubscription(phoneRecord) {
 }
 
 /**
+ * SCRUM-587: the errors an owner_access embed gets while the database can't
+ * serve it — no relationship or table yet (migration 00171 not applied:
+ * PGRST200 / 42P01), a missing column (42703), or no grant (42501).
+ */
+const OWNER_EMBED_SCHEMA_ERRORS = ["PGRST200", "42P01", "42703", "42501"];
+
+/**
  * Single phone_numbers lookup used by /twiml to avoid redundant DB queries.
  * Returns the combined data needed by isAiEnabled, getAnswerMode, getPhoneNumberContext,
  * and loadCallContext — or null if not found.
@@ -151,16 +158,30 @@ async function lookupPhoneNumber(calledNumber, opts = {}) {
     // the migration cannot make PostgREST reject this select for EVERY call.
     // pin_hash/pin_salt are withheld from `authenticated` by column grant;
     // this runs on the service-role client (getSupabase), which may read them.
-    const orgColumns = ["name, country, recording_consent_mode, business_state, recording_disclosure_text"];
-    if (subscriptionGateEnabled()) orgColumns.push("subscriptions(status, trial_end, service_ended_at, current_period_end)");
-    if (ownerAssistantEnabled()) orgColumns.push("owner_access(phone_e164, pin_hash, pin_salt, pin_length, enabled)");
-    const orgEmbed = `organizations(${orgColumns.join(", ")})`;
-    const { data: phone, error } = await supabase
+    const withOwner = ownerAssistantEnabled();
+    /** @param {boolean} owner */
+    const selectFor = (owner) => {
+      const orgColumns = ["name, country, recording_consent_mode, business_state, recording_disclosure_text"];
+      if (subscriptionGateEnabled()) orgColumns.push("subscriptions(status, trial_end, service_ended_at, current_period_end)");
+      if (owner) orgColumns.push("owner_access(phone_e164, pin_hash, pin_salt, pin_length, enabled)");
+      return `id, organization_id, assistant_id, ai_enabled, fallback_forward_number, user_phone_number, forwarding_status, source_type, organizations(${orgColumns.join(", ")})`;
+    };
+    /** @param {string} columns */
+    const lookup = (columns) => supabase
       .from("phone_numbers")
-      .select(`id, organization_id, assistant_id, ai_enabled, fallback_forward_number, user_phone_number, forwarding_status, source_type, ${orgEmbed}`)
+      .select(columns)
       .eq("phone_number", calledNumber)
       .eq("is_active", true)
       .single();
+    let { data: phone, error } = await lookup(selectFor(withOwner));
+    // SCRUM-587: a deploy ahead of migration 00171 (or a grant that withholds
+    // owner_access) makes PostgREST reject the embedded select for EVERY call,
+    // which would then fail open as "no record". Retry without the embed so the
+    // customer call keeps its record; the owner assistant stays dark meanwhile.
+    if (error && withOwner && OWNER_EMBED_SCHEMA_ERRORS.includes(error.code)) {
+      console.error("[ALERT:error] [AnswerMode] owner_access embed rejected (" + error.code + ") — retrying without it; the owner assistant is dark until migration 00171/grants are fixed");
+      ({ data: phone, error } = await lookup(selectFor(false)));
+    }
 
     if (error || !phone) {
       if (error && error.code !== "PGRST116") {
