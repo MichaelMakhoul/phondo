@@ -7,7 +7,7 @@
  */
 export const PIN_MIN_LENGTH = 4;
 export const PIN_MAX_LENGTH = 8;
-export const PIN_REGEX = /^\d{4,8}$/;
+export const PIN_REGEX = new RegExp(`^\\d{${PIN_MIN_LENGTH},${PIN_MAX_LENGTH}}$`);
 
 export function isValidPin(pin: unknown): pin is string {
   return typeof pin === "string" && PIN_REGEX.test(pin);
@@ -65,3 +65,15 @@ export function isWeakPin(pin: string): boolean {
  */
 export const WEAK_PIN_MESSAGE =
   "Choose a PIN that's harder to guess — avoid repeats, runs like 1234, and common PINs.";
+
+/**
+ * How the PIN rule is worded to a person. ASCII digits only: PIN_REGEX has no
+ * Unicode digits, so the copy names 0–9 rather than just "digits".
+ */
+export const PIN_RULE_TEXT = `${PIN_MIN_LENGTH}–${PIN_MAX_LENGTH} digits (0–9)`;
+
+/**
+ * The one user-facing refusal for a PIN of the wrong shape. Shared like
+ * WEAK_PIN_MESSAGE: the API's 400 body and the Settings card's inline error.
+ */
+export const PIN_FORMAT_MESSAGE = `PIN must be ${PIN_RULE_TEXT}`;

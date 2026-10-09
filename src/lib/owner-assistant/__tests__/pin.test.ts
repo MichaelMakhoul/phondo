@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { PIN_REGEX, isValidPin, isWeakPin } from "@/lib/owner-assistant/pin-rules";
+import {
+  PIN_MAX_LENGTH,
+  PIN_MIN_LENGTH,
+  PIN_REGEX,
+  isValidPin,
+  isWeakPin,
+} from "@/lib/owner-assistant/pin-rules";
 import { generatePinSalt, hashPin, verifyPin } from "@/lib/owner-assistant/pin";
 
 // Cross-PR contract (spec §1, §9): the voice server's lib/owner-auth.js (PR C)
@@ -25,6 +31,13 @@ describe("PIN rules", () => {
 
   it("exposes the same regex the route and the card use", () => {
     expect(PIN_REGEX.source).toBe("^\\d{4,8}$");
+  });
+
+  it("follows the exported length bounds, so the regex and the constants cannot drift apart", () => {
+    expect(isValidPin("0".repeat(PIN_MIN_LENGTH))).toBe(true);
+    expect(isValidPin("0".repeat(PIN_MIN_LENGTH - 1))).toBe(false);
+    expect(isValidPin("0".repeat(PIN_MAX_LENGTH))).toBe(true);
+    expect(isValidPin("0".repeat(PIN_MAX_LENGTH + 1))).toBe(false);
   });
 });
 

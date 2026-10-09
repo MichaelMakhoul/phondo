@@ -4,9 +4,9 @@ import { createClient } from "@/lib/supabase/server";
 import { BusinessSettingsForm } from "./business-settings-form";
 import { BrandingForm } from "./branding-form";
 import { DeleteAccountCard } from "./delete-account-card";
-import { OwnerLineCard, type OwnerLineInitial } from "./owner-line-card";
+import { OwnerLineCard } from "./owner-line-card";
 import { isOwnerAssistantUiEnabled } from "@/lib/feature-flags";
-import { resolveOwnerLineInitial } from "@/lib/owner-assistant/line-form";
+import { resolveOwnerLineInitial, type OwnerLineInitial } from "@/lib/owner-assistant/line-form";
 
 export const metadata: Metadata = {
   title: "Settings | Phondo",

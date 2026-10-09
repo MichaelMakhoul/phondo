@@ -145,6 +145,8 @@ vi.mock("@/lib/supabase/admin", () => ({
 import { GET, PUT, DELETE } from "@/app/api/v1/owner-access/route";
 import { rateLimitDistributed } from "@/lib/security/rate-limiter";
 import { verifyPin } from "@/lib/owner-assistant/pin";
+import { PIN_FORMAT_MESSAGE } from "@/lib/owner-assistant/pin-rules";
+import { PHONE_MAX_LENGTH } from "@/lib/owner-assistant/line-form";
 
 const EXISTING = {
   id: "row-1",
@@ -293,6 +295,8 @@ describe("PUT /api/v1/owner-access", () => {
   it("creates the row: E.164 phone, fresh salt, scrypt hash that verifies, pin_length, created_by", async () => {
     const res = await PUT(putRequest({ phone: "0412 345 678", pin: PIN }));
     expect(res.status).toBe(200);
+    // The pre-save read that decides first-save vs patch is scoped to the caller's org too.
+    expect(calls.eqs).toContainEqual({ op: "read", col: "organization_id", val: "org-1" });
     expect(calls.upsert).toMatchObject({
       organization_id: "org-1",
       created_by: "user-1",
@@ -362,6 +366,7 @@ describe("PUT /api/v1/owner-access", () => {
     expect(res.status).toBe(200);
     expect(calls.upsert).toBeUndefined();
     expect(calls.update).toEqual({ enabled: false });
+    expect(calls.eqs).toContainEqual({ op: "read", col: "organization_id", val: "org-1" });
     expect(calls.eqs).toContainEqual({ op: "update", col: "organization_id", val: "org-1" });
     expect(await res.json()).toMatchObject({ configured: true, pinLength: 6, enabled: false });
   });
@@ -415,7 +420,7 @@ describe("PUT /api/v1/owner-access", () => {
     for (const pin of ["12", "123456789", "12ab", "１２３４"]) {
       const res = await PUT(putRequest({ phone: "0412 345 678", pin }));
       expect(res.status).toBe(400);
-      expect((await res.json()).error).toMatch(/4 to 8 digits/);
+      expect((await res.json()).error).toBe(PIN_FORMAT_MESSAGE);
     }
     expect(calls.upsert).toBeUndefined();
   });
@@ -424,7 +429,7 @@ describe("PUT /api/v1/owner-access", () => {
     for (const pin of [9753, null, ["9753"], { pin: "9753" }]) {
       const res = await PUT(putRequest({ phone: "0412 345 678", pin }));
       expect(res.status).toBe(400);
-      expect((await res.json()).error).toMatch(/4 to 8 digits/);
+      expect((await res.json()).error).toBe(PIN_FORMAT_MESSAGE);
     }
     expect(calls.upsert).toBeUndefined();
   });
@@ -455,7 +460,7 @@ describe("PUT /api/v1/owner-access", () => {
       for (const pin of ["111", "123", "111111111"]) {
         const res = await PUT(putRequest({ phone: "0412 345 678", pin }));
         expect(res.status).toBe(400);
-        expect((await res.json()).error).toMatch(/4 to 8 digits/);
+        expect((await res.json()).error).toBe(PIN_FORMAT_MESSAGE);
       }
       expect(calls.upsert).toBeUndefined();
     });
@@ -474,6 +479,39 @@ describe("PUT /api/v1/owner-access", () => {
     expect(res.status).toBe(400);
     expect((await res.json()).error).toMatch(/Mobile number/);
     expect(calls.upsert).toBeUndefined();
+  });
+
+  // The card refuses an entry past PHONE_MAX_LENGTH with its own message; the
+  // API holds the same line, measured on the trimmed value because the card
+  // sends phone.trim(). The normaliser keeps only the digits, so a pasted
+  // sentence around a real number is a valid entry up to the cap.
+  describe("phone length cap", () => {
+    const padded = (length: number) => "0412 345 678".padEnd(length, ".");
+
+    it("accepts a pasted sentence around a real number", async () => {
+      const res = await PUT(putRequest({ phone: "Mobile: 0412 345 678 (personal, not the office)", pin: PIN }));
+      expect(res.status).toBe(200);
+      expect(calls.upsert).toMatchObject({ phone_e164: "+61412345678" });
+    });
+
+    it("accepts an entry of exactly the cap", async () => {
+      const res = await PUT(putRequest({ phone: padded(PHONE_MAX_LENGTH), pin: PIN }));
+      expect(res.status).toBe(200);
+      expect(calls.upsert).toMatchObject({ phone_e164: "+61412345678" });
+    });
+
+    it("refuses an entry one character past the cap and writes nothing", async () => {
+      const res = await PUT(putRequest({ phone: padded(PHONE_MAX_LENGTH + 1), pin: PIN }));
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: "Invalid request." });
+      expect(calls.upsert).toBeUndefined();
+    });
+
+    it("does not count surrounding whitespace toward the cap", async () => {
+      const res = await PUT(putRequest({ phone: `  ${padded(PHONE_MAX_LENGTH)}  `, pin: PIN }));
+      expect(res.status).toBe(200);
+      expect(calls.upsert).toMatchObject({ phone_e164: "+61412345678" });
+    });
   });
 
   it("validates the phone against the org's own country", async () => {

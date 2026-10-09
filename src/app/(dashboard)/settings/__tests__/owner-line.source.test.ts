@@ -10,8 +10,24 @@ import { join } from "path";
 // what lives outside it and would fail silently if it regressed.
 
 const SETTINGS_DIR = join(process.cwd(), "src/app/(dashboard)/settings");
+const OWNER_ASSISTANT_DIR = join(process.cwd(), "src/lib/owner-assistant");
 const pageSource = readFileSync(join(SETTINGS_DIR, "page.tsx"), "utf-8");
 const cardSource = readFileSync(join(SETTINGS_DIR, "owner-line-card.tsx"), "utf-8");
+const lineFormSource = readFileSync(join(OWNER_ASSISTANT_DIR, "line-form.ts"), "utf-8");
+const pinRulesSource = readFileSync(join(OWNER_ASSISTANT_DIR, "pin-rules.ts"), "utf-8");
+
+// Every module a source file pulls in: static imports, `export … from`,
+// side-effect imports, dynamic import() and require(). Comments are dropped
+// first so prose that mentions a module cannot count as, or hide, an import.
+function importSpecifiers(source: string): string[] {
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  const found = [
+    ...code.matchAll(/\bfrom\s+["']([^"']+)["']/g),
+    ...code.matchAll(/\bimport\s+["']([^"']+)["']/g),
+    ...code.matchAll(/\b(?:import|require)\s*\(\s*["']([^"']+)["']\s*\)/g),
+  ].map((match) => match[1]);
+  return [...new Set(found)].sort();
+}
 
 describe("Settings page — owner line wiring", () => {
   it("selects explicit non-secret columns from owner_access, never *", () => {
@@ -76,6 +92,18 @@ describe("Owner line card — client bundle and PIN hygiene", () => {
     expect(cardSource).not.toMatch(/owner-assistant\/pin["']/);
   });
 
+  // Everything the card imports lands in the browser bundle. line-form.ts is the
+  // card's logic and pin-rules.ts is shared with the API route, so each is held
+  // to a fixed import list: an extra one (above all ./pin, which pulls in Node
+  // crypto) fails here instead of in a client build.
+  it("keeps line-form.ts importing only the phone normaliser and pin-rules", () => {
+    expect(importSpecifiers(lineFormSource)).toEqual(["@/lib/owner-assistant/pin-rules", "@/lib/phone/normalize"]);
+  });
+
+  it("keeps pin-rules.ts free of imports altogether", () => {
+    expect(importSpecifiers(pinRulesSource)).toEqual([]);
+  });
+
   it("never reads the server-only UI flag (it is always false in the browser)", () => {
     expect(cardSource).not.toContain("isOwnerAssistantUiEnabled");
     expect(cardSource).not.toContain("OWNER_ASSISTANT_UI_ENABLED");
@@ -123,6 +151,19 @@ describe("Owner line card — copy that must stay true", () => {
     expect(cardText).toContain(
       "It only works from the mobile above. After too many wrong PINs the line locks and we email you — saving a new PIN unlocks it.",
     );
+  });
+});
+
+describe("Owner line card — the pause switch", () => {
+  const cardText = cardSource.replace(/\s+/g, " ");
+
+  it("says an unsaved toggle is not applied yet, and ties that notice to the switch for screen readers", () => {
+    expect(cardText).toContain("const enabledPending = enabled !== savedEnabled;");
+    expect(cardText).toMatch(/\{enabledPending && \( <p id="owner-line-enabled-pending"/);
+    expect(cardText).toContain("Not applied yet — press Save changes.");
+    expect(cardText).not.toContain("click Save changes");
+    // The switch's description includes the notice, so assistive tech announces it with the switch.
+    expect(cardText).toMatch(/aria-describedby=\{[^}]*owner-line-enabled-pending[^}]*\}/);
   });
 });
 

@@ -6,7 +6,8 @@ import { getPrimaryMembership } from "@/lib/auth/membership";
 import { rateLimitDistributed } from "@/lib/security/rate-limiter";
 import { getOrgCountry, validatePhone } from "@/lib/phone/validate-for-org";
 import { isOwnerAssistantUiEnabled } from "@/lib/feature-flags";
-import { PIN_REGEX, WEAK_PIN_MESSAGE, isWeakPin } from "@/lib/owner-assistant/pin-rules";
+import { PIN_FORMAT_MESSAGE, PIN_REGEX, WEAK_PIN_MESSAGE, isWeakPin } from "@/lib/owner-assistant/pin-rules";
+import { PHONE_MAX_LENGTH } from "@/lib/owner-assistant/line-form";
 import { generatePinSalt, hashPin } from "@/lib/owner-assistant/pin";
 
 /**
@@ -20,18 +21,18 @@ import { generatePinSalt, hashPin } from "@/lib/owner-assistant/pin";
  */
 
 /** The only columns this route ever selects. pin_hash / pin_salt stay in the DB. */
-const PUBLIC_COLUMNS = "id, phone_e164, pin_length, enabled, last_verified_at, updated_at";
+const PUBLIC_COLUMNS = "phone_e164, pin_length, enabled, last_verified_at, updated_at";
 
-const PIN_ERROR = "PIN must be 4 to 8 digits.";
-
+// The phone cap and the PIN wording are the Settings card's too (line-form's
+// PHONE_MAX_LENGTH, pin-rules' PIN_FORMAT_MESSAGE), so both sides refuse the
+// same entries and word the PIN refusal the same way.
 const putSchema = z.object({
-  phone: z.string().trim().min(1).max(32).optional(),
-  pin: z.string().regex(PIN_REGEX, PIN_ERROR).optional(),
+  phone: z.string().trim().min(1).max(PHONE_MAX_LENGTH).optional(),
+  pin: z.string().regex(PIN_REGEX, PIN_FORMAT_MESSAGE).optional(),
   enabled: z.boolean().optional(),
 });
 
 interface OwnerAccessRow {
-  id: string;
   phone_e164: string;
   pin_length: number;
   enabled: boolean;
@@ -151,7 +152,7 @@ export async function PUT(request: Request) {
     const parsed = putSchema.safeParse(await request.json().catch(() => null));
     if (!parsed.success) {
       const pinIssue = parsed.error.issues.some((i) => i.path[0] === "pin");
-      return NextResponse.json({ error: pinIssue ? PIN_ERROR : "Invalid request." }, { status: 400 });
+      return NextResponse.json({ error: pinIssue ? PIN_FORMAT_MESSAGE : "Invalid request." }, { status: 400 });
     }
     const { phone, pin, enabled } = parsed.data;
 

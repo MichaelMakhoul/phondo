@@ -10,16 +10,32 @@
  * the browser bundle.
  */
 import { parsePhoneToE164, type SupportedCountry } from "@/lib/phone/normalize";
-import { WEAK_PIN_MESSAGE, isValidPin, isWeakPin } from "@/lib/owner-assistant/pin-rules";
+import {
+  PIN_FORMAT_MESSAGE,
+  PIN_RULE_TEXT,
+  WEAK_PIN_MESSAGE,
+  isValidPin,
+  isWeakPin,
+} from "@/lib/owner-assistant/pin-rules";
 
-/** How the card words the PIN rule. ASCII digits only: PIN_REGEX has no Unicode digits. */
-export const PIN_RULE_TEXT = "4–8 digits (0–9)";
+// The PIN copy lives in pin-rules (the API shares it); re-exported so the card
+// and its tests keep importing all of the form's wording from here.
+export { PIN_FORMAT_MESSAGE, PIN_RULE_TEXT };
 
 export const PIN_REQUIRED_MESSAGE = `Choose a PIN of ${PIN_RULE_TEXT}`;
-export const PIN_FORMAT_MESSAGE = `PIN must be ${PIN_RULE_TEXT}`;
 export const PIN_MISMATCH_MESSAGE = "PINs don't match";
 export const PIN_CONFIRM_ONLY_MESSAGE =
   "Enter your new PIN here too, or clear the confirmation to keep your current PIN";
+
+/**
+ * The longest phone entry, after trimming, that the card sends and the API
+ * accepts (the route's zod cap is this same constant). Generous on purpose: the
+ * normaliser strips everything but the digits, so a pasted "Mobile: 0412 345
+ * 678 (personal)" is a valid entry. The card refuses past it with
+ * PHONE_TOO_LONG_MESSAGE rather than letting the API answer a generic 400.
+ */
+export const PHONE_MAX_LENGTH = 64;
+export const PHONE_TOO_LONG_MESSAGE = "That phone number looks too long.";
 
 /** What the Settings page hands the card for a line it read successfully. */
 export interface OwnerLineInitial {
@@ -70,7 +86,10 @@ export function validateOwnerLineForm(
 ): OwnerLineErrors {
   const errors: OwnerLineErrors = {};
 
-  if (!parsePhoneToE164(phone, country)) {
+  // The card sends phone.trim() (buildSaveBody), so the cap is on the trimmed value.
+  if (phone.trim().length > PHONE_MAX_LENGTH) {
+    errors.phone = PHONE_TOO_LONG_MESSAGE;
+  } else if (!parsePhoneToE164(phone, country)) {
     errors.phone = `Enter a valid mobile number (e.g., ${phoneExampleFor(country)})`;
   }
 

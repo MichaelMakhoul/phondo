@@ -1,8 +1,14 @@
 import { describe, it, expect } from "vitest";
 import { parsePhoneToE164 } from "@/lib/phone/normalize";
-import { WEAK_PIN_MESSAGE } from "@/lib/owner-assistant/pin-rules";
+import {
+  PIN_FORMAT_MESSAGE as RULES_PIN_FORMAT_MESSAGE,
+  PIN_RULE_TEXT as RULES_PIN_RULE_TEXT,
+  WEAK_PIN_MESSAGE,
+} from "@/lib/owner-assistant/pin-rules";
 import {
   LOAD_FAILED_MESSAGE,
+  PHONE_MAX_LENGTH,
+  PHONE_TOO_LONG_MESSAGE,
   PIN_CONFIRM_ONLY_MESSAGE,
   PIN_FORMAT_MESSAGE,
   PIN_MISMATCH_MESSAGE,
@@ -26,7 +32,12 @@ describe("PIN copy", () => {
   it('says "4–8 digits (0–9)" — PIN_REGEX is ASCII-only, so the copy names the digits', () => {
     expect(PIN_RULE_TEXT).toBe("4–8 digits (0–9)");
     expect(PIN_REQUIRED_MESSAGE).toContain(PIN_RULE_TEXT);
-    expect(PIN_FORMAT_MESSAGE).toContain(PIN_RULE_TEXT);
+    expect(PIN_FORMAT_MESSAGE).toBe("PIN must be 4–8 digits (0–9)");
+  });
+
+  it("re-exports the copy pin-rules owns, so the API's 400 and the card's inline error read the same", () => {
+    expect(PIN_RULE_TEXT).toBe(RULES_PIN_RULE_TEXT);
+    expect(PIN_FORMAT_MESSAGE).toBe(RULES_PIN_FORMAT_MESSAGE);
   });
 });
 
@@ -73,6 +84,43 @@ describe("validateOwnerLineForm — first save", () => {
   // two can't drift: the card must not refuse what the API would accept.
   it("accepts a compact E.164 number from another country, as the API does", () => {
     expect(validateOwnerLineForm({ phone: "+447911123456", pin: PIN, pinConfirm: PIN }, FIRST_SAVE)).toEqual({});
+  });
+});
+
+// The card sends phone.trim() and the API caps the trimmed value at the same
+// PHONE_MAX_LENGTH (route.parity.test.ts holds the two to it). The normaliser
+// keeps only the digits, so everything around a pasted number is noise.
+describe("validateOwnerLineForm — the phone length cap", () => {
+  const padded = (length: number) => PHONE.padEnd(length, ".");
+  const check = (phone: string) => validateOwnerLineForm({ phone, pin: PIN, pinConfirm: PIN }, FIRST_SAVE);
+
+  it("is 64 characters, with the agreed message", () => {
+    expect(PHONE_MAX_LENGTH).toBe(64);
+    expect(PHONE_TOO_LONG_MESSAGE).toBe("That phone number looks too long.");
+  });
+
+  it("accepts a pasted sentence around a real number", () => {
+    expect(check("Mobile: 0412 345 678 (personal, not the office)")).toEqual({});
+  });
+
+  it("accepts an entry of exactly the cap", () => {
+    expect(padded(PHONE_MAX_LENGTH)).toHaveLength(PHONE_MAX_LENGTH);
+    expect(check(padded(PHONE_MAX_LENGTH))).toEqual({});
+  });
+
+  it("refuses an entry one character past the cap with the too-long message", () => {
+    expect(padded(PHONE_MAX_LENGTH + 1)).toHaveLength(PHONE_MAX_LENGTH + 1);
+    expect(check(padded(PHONE_MAX_LENGTH + 1))).toEqual({ phone: PHONE_TOO_LONG_MESSAGE });
+  });
+
+  it("says too long, not 'invalid', for a long entry that holds no number at all", () => {
+    expect(check("x".repeat(PHONE_MAX_LENGTH + 1))).toEqual({ phone: PHONE_TOO_LONG_MESSAGE });
+  });
+
+  it("measures the trimmed entry, because that is what buildSaveBody sends", () => {
+    const surrounded = `  ${padded(PHONE_MAX_LENGTH)}  `;
+    expect(check(surrounded)).toEqual({});
+    expect(buildSaveBody({ phone: surrounded, pin: PIN, enabled: true }).phone).toHaveLength(PHONE_MAX_LENGTH);
   });
 });
 

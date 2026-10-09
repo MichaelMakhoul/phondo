@@ -30,9 +30,6 @@ import {
   type OwnerLineInitial,
 } from "@/lib/owner-assistant/line-form";
 
-// The Settings page imports the type from here.
-export type { OwnerLineInitial };
-
 interface OwnerLineCardProps {
   country: SupportedCountry;
   /** The org's Phondo number (E.164) for the save-as-a-contact hint; null until one is provisioned. */
@@ -120,6 +117,8 @@ function OwnerLineForm({ country, phondoNumber, initial }: OwnerLineFormProps) {
   const { toast } = useToast();
 
   const busy = saving || removing;
+  // The pause/resume switch has moved but Save hasn't run yet.
+  const enabledPending = enabled !== savedEnabled;
   const phoneExample = phoneExampleFor(country);
   const pinHint =
     configured && pinLength
@@ -327,15 +326,17 @@ function OwnerLineForm({ country, phondoNumber, initial }: OwnerLineFormProps) {
               <p id="owner-line-enabled-help" className="text-xs text-muted-foreground">
                 Paused keeps your number and PIN but skips the PIN prompt until you turn it back on.
               </p>
-              {enabled !== savedEnabled && (
-                <p className="text-xs font-medium">Not applied yet — click Save changes.</p>
+              {enabledPending && (
+                <p id="owner-line-enabled-pending" className="text-xs font-medium">Not applied yet — press Save changes.</p>
               )}
             </div>
             <Switch
               id="owner-line-enabled"
               checked={enabled}
               onCheckedChange={setEnabled}
-              aria-describedby="owner-line-enabled-help"
+              aria-describedby={
+                enabledPending ? "owner-line-enabled-help owner-line-enabled-pending" : "owner-line-enabled-help"
+              }
               disabled={busy}
             />
           </div>
