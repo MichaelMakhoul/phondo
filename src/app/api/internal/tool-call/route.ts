@@ -9,12 +9,24 @@ import {
   handleUpdateAppointmentDetails,
   handleRescheduleAppointment,
   handleLookupAppointment,
+  errorResult,
+  type ToolResult,
   type TrustedCallContext,
 } from "@/lib/calendar/tool-handlers";
 import { handleScheduleCallback } from "@/lib/callbacks/tool-handler";
 import { getActiveServiceTypes } from "@/lib/service-types";
 import { withRateLimit } from "@/lib/security/rate-limiter";
 import { resolveCallerId, sanitizeCollectedDetails } from "@/lib/calendar/appointment-verification";
+import * as Sentry from "@sentry/nextjs";
+import {
+  OWNER_TOOL_NAMES,
+  handleOwnerListAppointments,
+  handleOwnerListMessages,
+  handleOwnerRescheduleAppointment,
+  handleOwnerCancelAppointment,
+  type OwnerCallContext,
+  type OwnerToolName,
+} from "@/lib/owner-assistant/tool-handlers";
 
 function verifyInternalSecret(request: Request): boolean {
   const secret = process.env.INTERNAL_API_SECRET;
@@ -64,6 +76,24 @@ interface ToolCallPayload {
    * so cancel/reschedule don't re-ask. Never forwarded to book_appointment.
    */
   collectedDetails?: Record<string, unknown>;
+  /**
+   * SCRUM-586: the voice server sets this ONLY on a session that passed the
+   * owner PIN gate (`session.ownerMode`), never in test mode — a top-level
+   * envelope field the model can never reach. Together with a production
+   * callId it is the sole authority for the owner_* tools.
+   */
+  ownerVerified?: boolean;
+}
+
+/**
+ * SCRUM-586: what the owner hears when an owner handler THROWS (e.g. an invalid
+ * IANA zone stored on the org) — never the customer-worded catch-all below.
+ */
+const OWNER_FAULT_MESSAGE = "Something went wrong on our side — please try again or check the dashboard.";
+
+/** A model argument as a string; anything else reads as absent. */
+function str(v: unknown): string | undefined {
+  return typeof v === "string" ? v : undefined;
 }
 
 /**
@@ -156,6 +186,74 @@ export async function POST(request: Request) {
     collectedDetails ? { ...trusted, collectedDetails } : trusted;
 
   try {
+    // SCRUM-586: owner tools. Authority is the ENVELOPE flag + a production
+    // call — never anything in `arguments`. A customer session can't reach
+    // these (they're not declared to its model), but the route refuses anyway.
+    // Every owner_* name returns from this block, so none reaches the customer
+    // switch below (which plucks explicit fields and never forwards `ownerVerified`).
+    if ((OWNER_TOOL_NAMES as readonly string[]).includes(functionName)) {
+      if (payload.ownerVerified !== true || !isProductionCall) {
+        console.error("[ToolCall] owner tool REFUSED — no owner authority on this call", {
+          functionName, organizationId, ownerVerified: payload.ownerVerified === true, isProductionCall,
+        });
+        Sentry.captureMessage("owner tool called without owner authority", {
+          level: "error",
+          extra: { functionName, organizationId, isProductionCall },
+        });
+        return NextResponse.json(
+          { success: false, error: true, message: "That isn't available on this call." },
+          { status: 403 }
+        );
+      }
+      const ownerCtx: OwnerCallContext = { callId: payload.callId as string };
+      const raw = (args || {}) as Record<string, unknown>;
+      let ownerResult: ToolResult;
+      try {
+        // No default: the switch is exhaustive over OwnerToolName, so a new
+        // OWNER_TOOL_NAMES entry without a case here fails to compile instead
+        // of silently landing on another tool.
+        switch (functionName as OwnerToolName) {
+          case "owner_list_appointments":
+            ownerResult = await handleOwnerListAppointments(organizationId, { range: str(raw.range), date: str(raw.date) });
+            break;
+          case "owner_list_messages":
+            ownerResult = await handleOwnerListMessages(organizationId);
+            break;
+          case "owner_reschedule_appointment":
+            ownerResult = await handleOwnerRescheduleAppointment(
+              organizationId,
+              { appointment_id: str(raw.appointment_id), new_datetime: str(raw.new_datetime), confirmed: raw.confirmed === true },
+              ownerCtx
+            );
+            break;
+          case "owner_cancel_appointment":
+            ownerResult = await handleOwnerCancelAppointment(
+              organizationId,
+              { appointment_id: str(raw.appointment_id), confirmed: raw.confirmed === true, reason: str(raw.reason) },
+              ownerCtx
+            );
+            break;
+        }
+      } catch (err) {
+        // A throw gets the owner's wording at HTTP 200 + error:true: the voice
+        // server swaps ANY non-2xx body for its customer-worded fallback, and
+        // error:true still raises its [ALERT:error] (SCRUM-509).
+        console.error("[ToolCall] owner tool threw:", {
+          functionName,
+          organizationId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        Sentry.captureException(err, { extra: { functionName, organizationId } });
+        ownerResult = errorResult(OWNER_FAULT_MESSAGE);
+      }
+      return NextResponse.json({
+        success: ownerResult.success,
+        message: ownerResult.message,
+        ...(ownerResult.data && { data: ownerResult.data }),
+        ...(ownerResult.error === true && { error: true }),
+      });
+    }
+
     let result;
 
     switch (functionName) {
