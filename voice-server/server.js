@@ -135,6 +135,13 @@ const { timingSafeEqualStr } = require("./lib/timing-safe");
 const { buildFallbackDisclosureSay } = require("./lib/fallback-dial-consent");
 const { getPollyVoice } = require("./lib/polly-voice");
 const killSwitch = require("./lib/route-handlers/kill-switch");
+// SCRUM-587: owner assistant — PIN front door (lib/route-handlers/owner-pin.js)
+// and the pure helpers it shares with the /twiml owner check.
+const { getEmbeddedOwnerAccess, isOwnerCall, ownerAssistantEnabled, pinLengthOf } = require("./lib/owner-auth");
+const { handleOwnerPin, buildOwnerPinGatherTwiml, gatherLanguageFor, HANGUP_TWIML } = require("./lib/route-handlers/owner-pin");
+const { loadOwnerFirstName } = require("./lib/owner-context");
+// SCRUM-587: nonce'd stream tokens + the owner_access strip for pendingTokens.
+const { mintStreamToken, verifyStreamToken, withoutOwnerAccess } = require("./lib/stream-token");
 
 // Mirror of API-layer E164_REGEX. Defense-in-depth at the dialer so a bad
 // value introduced via direct SQL or a future bug can't be sent to Twilio.
@@ -313,11 +320,30 @@ function validateTwilioSignature(req) {
 const pendingTokens = new Map();
 const TOKEN_TTL_MS = 30_000;
 
-function issueStreamToken(calledNumber, callerPhone, reconnectCallSid, phoneRecord) {
-  const ts = Date.now().toString();
-  const hmac = crypto.createHmac("sha256", WS_SECRET).update(ts).digest("hex");
-  const token = `${ts}.${hmac}`;
-  pendingTokens.set(token, { issuedAt: Date.now(), calledNumber, callerPhone, reconnectCallSid, phoneRecord });
+/**
+ * @param {string} calledNumber
+ * @param {string} callerPhone
+ * @param {string} [reconnectCallSid]
+ * @param {any} [phoneRecord]
+ * @param {{ ownerMode?: boolean, ownerAuth?: "verified"|"locked"|"failed"|null, ownerFirstName?: string|null }} [extra]
+ *   SCRUM-587: owner-mode flags live HERE (server-side) — the TwiML parameter
+ *   stays an opaque HMAC token, so a client can never assert owner mode.
+ */
+function issueStreamToken(calledNumber, callerPhone, reconnectCallSid, phoneRecord, extra = {}) {
+  // SCRUM-587: `${ts}.${nonce}.${hmac}` — the random nonce keeps two tokens
+  // issued in the same millisecond apart (see lib/stream-token.js).
+  const token = mintStreamToken(WS_SECRET);
+  pendingTokens.set(token, {
+    issuedAt: Date.now(),
+    calledNumber,
+    callerPhone,
+    reconnectCallSid,
+    // SCRUM-587: never the owner's PIN hash/salt (embedded by lookupPhoneNumber while the flag is on).
+    phoneRecord: withoutOwnerAccess(phoneRecord),
+    ownerMode: extra.ownerMode === true,
+    ownerAuth: typeof extra.ownerAuth === "string" ? extra.ownerAuth : null,
+    ownerFirstName: typeof extra.ownerFirstName === "string" ? extra.ownerFirstName : null,
+  });
   return token;
 }
 
@@ -331,14 +357,16 @@ function consumeStreamToken(token) {
     const entry = pendingTokens.get(token);
     pendingTokens.delete(token); // single-use
     if (Date.now() - entry.issuedAt > TOKEN_TTL_MS) return null;
-    const [ts, hmac] = token.split(".");
-    if (!ts || !hmac) return null;
-    const expected = crypto.createHmac("sha256", WS_SECRET).update(ts).digest("hex");
-    const hmacBuf = Buffer.from(hmac);
-    const expectedBuf = Buffer.from(expected);
-    if (hmacBuf.length !== expectedBuf.length) return null;
-    if (!crypto.timingSafeEqual(hmacBuf, expectedBuf)) return null;
-    return { calledNumber: entry.calledNumber, callerPhone: entry.callerPhone, reconnectCallSid: entry.reconnectCallSid, phoneRecord: entry.phoneRecord };
+    if (!verifyStreamToken(WS_SECRET, token)) return null;
+    return {
+      calledNumber: entry.calledNumber,
+      callerPhone: entry.callerPhone,
+      reconnectCallSid: entry.reconnectCallSid,
+      phoneRecord: entry.phoneRecord,
+      ownerMode: entry.ownerMode === true,
+      ownerAuth: entry.ownerAuth || null,
+      ownerFirstName: entry.ownerFirstName || null,
+    };
   } catch (err) {
     console.error("[Auth] Token verification threw unexpectedly — if this repeats, all calls will be rejected:", err);
     return null;
@@ -432,6 +460,39 @@ app.post("/twiml", async (req, res) => {
     console.log(`[DemoLine] Accepted demo-line call from=${maskPhone(from)}`);
   }
 
+  // SCRUM-587: owner assistant (spec §1). Caller ID is necessary, never
+  // sufficient (spoofable, SCRUM-414) — a PIN <Gather> follows, collected by
+  // Twilio BEFORE the AI connects so the digits never reach the recording,
+  // the transcript or the analysis. Placed after the kill switch + demo gate
+  // and BEFORE ring-first, so an owner whose ring-first target is their own
+  // mobile doesn't ring themselves. Fails toward a customer call on any defect.
+  try {
+    const ownerAccess = getEmbeddedOwnerAccess(phoneRecord);
+    if (isOwnerCall({ from, forwardedFrom: req.body.ForwardedFrom, ownerAccess, enabled: ownerAssistantEnabled() })) {
+      console.log(`[OwnerPin] Owner caller ID matched for ${called} (from=${maskPhone(from)}) — gathering PIN`);
+      return res.type("text/xml").send(buildOwnerPinGatherTwiml({
+        publicUrl: PUBLIC_URL,
+        pollyVoice: getPollyVoice(phoneRecord?.organizations?.country),
+        pinLength: pinLengthOf(ownerAccess),
+        attempt: 1,
+        retry: false,
+        language: gatherLanguageFor(phoneRecord?.organizations?.country),
+        escapeXml,
+      }));
+    }
+  } catch (err) {
+    console.error("[ALERT:error] [OwnerPin] owner check failed — continuing as a customer call:", err.message);
+    try {
+      Sentry.withScope((scope) => {
+        scope.setTag("service", "owner_pin");
+        scope.setExtras({ calledMasked: maskPhone(called), callSid: reqCallSid });
+        Sentry.captureException(err);
+      });
+    } catch (sentryErr) {
+      console.error("[OwnerPin] Sentry capture failed (suppressed):", sentryErr.message);
+    }
+  }
+
   // Check if this assistant uses ring-first mode
   try {
     const answerMode = await getAnswerMode(called, phoneRecord);
@@ -498,6 +559,41 @@ app.post("/twiml", async (req, res) => {
     </Stream>
   </Connect>
 </Response>`);
+});
+
+// SCRUM-587: real deps for the owner-PIN action handler (mirrors makeKillSwitchDeps).
+function makeOwnerPinDeps() {
+  return {
+    lookupPhoneNumber,
+    supabase: getSupabase(),
+    loadOwnerFirstName,
+    issueStreamToken,
+    Sentry,
+    maskPhone,
+    escapeXml,
+    getPollyVoice,
+    publicUrl: PUBLIC_URL,
+    wsUrl: WS_URL,
+  };
+}
+
+// SCRUM-587: Twilio posts the <Gather> result here (Digits / SpeechResult).
+// Signed like every other Twilio webhook; everything else lives in the
+// injectable handler so each outcome is unit-tested without live env.
+app.post("/twiml/owner-pin", async (req, res) => {
+  if (!validateTwilioSignature(req)) {
+    console.warn("[OwnerPin] Rejected request — invalid Twilio signature");
+    return res.status(403).send("Forbidden");
+  }
+  try {
+    await handleOwnerPin(req, res, { deps: makeOwnerPinDeps() });
+  } catch (err) {
+    // Last-resort net: the handler never throws by design; if it does, hang up
+    // rather than leave Twilio waiting on a 500 (which would play its error tone).
+    // The message only, never the error object (the handler's own log rule).
+    console.error("[ALERT:error] [OwnerPin] handler threw:", err && err.message);
+    if (!res.headersSent) res.type("text/xml").send(HANGUP_TWIML);
+  }
 });
 
 /**
@@ -1799,6 +1895,12 @@ wss.on("connection", (twilioWs) => {
           session = new CallSession(callSid);
           session.streamSid = streamSid;
           session.callerPhone = callerPhone;
+          // SCRUM-587: owner mode comes ONLY from the server-side token (set by
+          // /twiml/owner-pin after a verified PIN) — never from client params.
+          session.ownerMode = tokenData.ownerMode === true;
+          session.ownerAuth = tokenData.ownerAuth || null;
+          session.ownerFirstName = tokenData.ownerFirstName || null;
+          if (session.ownerMode) console.log(`[OwnerPin] Owner session for callSid=${callSid}`);
           sessions.set(streamSid, session);
           console.log(`[Twilio] Stream started — callSid=${callSid} streamSid=${streamSid} called=${calledNumber} from=${maskPhone(callerPhone)}`);
 
