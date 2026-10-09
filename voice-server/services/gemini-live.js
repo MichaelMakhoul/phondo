@@ -78,6 +78,8 @@ function convertSchemaToGemini(schema) {
  * @param {function} callbacks.onTranscriptOut - (text: string) => void — AI's speech transcription
  * @param {function} callbacks.onInterrupted - () => void — user barged in
  * @param {function} callbacks.onTurnComplete - () => void — AI finished speaking
+ * @param {function} [callbacks.onToolCallCancellation] - (ids: string[]) => void — Gemini cancelled these
+ *   tool calls (the caller interrupted while they ran); their function responses are dropped
  * @param {function} callbacks.onError - (err: Error) => void
  * @param {function} [callbacks.onSetupComplete] - () => void — Gemini acked setup; the failover window (SCRUM-535) is closed
  * @param {function} [callbacks.onSetupTimeout] - (err: Error) => void — setup
@@ -614,6 +616,14 @@ function createGeminiSession(config, callbacks) {
     // Tool call cancellation (user interrupted during tool execution)
     if (msg.toolCallCancellation) {
       console.log(`[GeminiLive] Tool calls cancelled: ${msg.toolCallCancellation.ids?.join(", ")}`);
+      // SCRUM-587: tell the call site, so an owner write the caller talked
+      // over is never sent (and one already sent is reported to the model).
+      const ids = Array.isArray(msg.toolCallCancellation.ids) ? msg.toolCallCancellation.ids : [];
+      try {
+        callbacks.onToolCallCancellation?.(ids);
+      } catch (err) {
+        console.error("[GeminiLive] onToolCallCancellation threw:", err.message);
+      }
       return;
     }
 
