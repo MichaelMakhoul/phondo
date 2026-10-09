@@ -17,7 +17,7 @@ global.fetch = async (url, init) => {
   return fetchImpl(url, init);
 };
 
-const { runOwnerToolCall, buildOwnerCallSummary, OWNER_MAX_TOOL_CALLS, OWNER_CLEANUP_WAIT_MS, CANCELLED_BEFORE_SENT_MESSAGE, describeOwnerToolCall, settleOwnerToolRuns, noteCancelledOwnerToolCalls } = require("../lib/owner-tool-runner");
+const { runOwnerToolCall, buildOwnerCallSummary, OWNER_MAX_TOOL_CALLS, OWNER_CLEANUP_WAIT_MS, CANCELLED_BEFORE_SENT_MESSAGE, LOOP_EXHAUSTED_MESSAGE, describeOwnerToolCall, settleOwnerToolRuns, noteCancelledOwnerToolCalls, ownerToolLoopReply } = require("../lib/owner-tool-runner");
 const { executeToolCall } = require("../services/tool-executor");
 
 // SCRUM-587 — the owner tool path replaces the customer guard chain (spec §5).
@@ -1266,6 +1266,67 @@ describe("runOwnerToolCall — Gemini cancelled the call (the owner talked over 
     noteCancelledOwnerToolCalls(customer, ["g-1"]);
     assert.equal(customer.ownerCancelledToolCallIds, undefined, "a customer session is never touched");
     noteCancelledOwnerToolCalls(null, ["g-1"]);
+  });
+});
+
+// ─── The classic loop runs out of rounds on an owner turn (silent-failure lens SF5) ──
+describe("ownerToolLoopReply — what the owner hears when the classic tool loop runs out", () => {
+  it("the last owner tool's own message — a successful change logged at error level, anything else warned", async () => {
+    const s = makeSession();
+    armConfirmed(s, "owner_cancel_appointment|a1");
+    const ret = await runOwnerToolCall(s, { name: "owner_cancel_appointment", args: { appointment_id: "a1", confirmed: true } }, makeDeps(CANCELLED).deps);
+    let reply;
+    const lines = await captureConsole(() => { reply = ownerToolLoopReply(s, { name: "owner_cancel_appointment", ret }); });
+    assert.equal(reply, CANCELLED.message);
+    assert.deepEqual(lines.map((l) => l.level), ["error"]);
+    assert.ok(lines[0].text.includes("owner_cancel_appointment") && lines[0].text.includes("callSid=CA1") && !lines[0].text.includes("Bob Lee"), lines[0].text);
+    const list = await runOwnerToolCall(s, { name: "owner_list_messages", args: {} }, makeDeps({ success: true, message: "No messages waiting.", data: {} }).deps);
+    const listed = await captureConsole(() => { reply = ownerToolLoopReply(s, { name: "owner_list_messages", ret: list }); });
+    assert.equal(reply, "No messages waiting.");
+    assert.deepEqual(listed.map((l) => l.level), ["warn"]);
+    const failed = await captureConsole(async () => {
+      const r = await runOwnerToolCall(s, { name: "owner_list_appointments", args: { range: "today" } }, makeDeps({ message: TIMEOUT_STALL }).deps);
+      reply = ownerToolLoopReply(s, { name: "owner_list_appointments", ret: r });
+    });
+    assert.equal(reply, READ_FAILED_LINE, "an owner-worded failure line is fit to say");
+    assert.deepEqual(alerts(failed), []);
+  });
+  it("never reads out a reply written for the model: PR B's read-back request, the cap, a blocked name, a cancelled write — or nothing at all", async () => {
+    const s = makeSession();
+    const readBack = await runOwnerToolCall(s, { name: "owner_cancel_appointment", args: { appointment_id: "a1" } }, makeDeps(NEEDS_CONFIRMATION).deps);
+    const capped = makeSession({ ownerToolCalls: OWNER_MAX_TOOL_CALLS + 1 });
+    let cap; let blocked; let cancelled;
+    await captureConsole(async () => {
+      cap = await runOwnerToolCall(capped, { name: "owner_list_messages", args: {} }, makeDeps({ message: "ok", data: {} }).deps);
+      blocked = await runOwnerToolCall(s, { name: "book_appointment", args: {} }, makeDeps({ message: "ok" }).deps);
+      noteCancelledOwnerToolCalls(s, ["g-1"]);
+      cancelled = await runOwnerToolCall(s, { id: "g-1", name: "owner_cancel_appointment", args: { appointment_id: "a1", confirmed: true } }, makeDeps(CANCELLED).deps);
+    });
+    assert.match(cap.message, /TOOL LIMIT REACHED/);
+    for (const [label, last] of [
+      ["PR B's read-back request", { name: "owner_cancel_appointment", ret: readBack }],
+      ["the cap", { name: "owner_list_messages", ret: cap }],
+      ["a blocked name", { name: "book_appointment", ret: blocked }],
+      ["a cancelled write", { name: "owner_cancel_appointment", ret: cancelled }],
+      ["an empty message", { name: "owner_list_messages", ret: { message: "  " } }],
+      ["no owner tool this turn", null],
+    ]) {
+      let reply;
+      const lines = await captureConsole(() => { reply = ownerToolLoopReply(s, last); });
+      assert.equal(reply, LOOP_EXHAUSTED_MESSAGE, label);
+      assert.deepEqual(lines.map((l) => l.level), ["warn"], `${label}: no change was made, so only a warning`);
+    }
+    assert.ok(!/repeat|say that again|pardon/i.test(LOOP_EXHAUSTED_MESSAGE), "never a request to repeat");
+  });
+  it("a confirmed write PR B turned down is said as PR B worded it, and only warned (no change was made)", async () => {
+    const s = makeSession();
+    armConfirmed(s, "owner_cancel_appointment|a1");
+    const notFound = { success: false, message: "I can't find that job. It may have already been moved or cancelled.", data: { outcome: "not_found", customer_notified: false } };
+    const ret = await runOwnerToolCall(s, { name: "owner_cancel_appointment", args: { appointment_id: "a1", confirmed: true } }, makeDeps(notFound).deps);
+    let reply;
+    const lines = await captureConsole(() => { reply = ownerToolLoopReply(s, { name: "owner_cancel_appointment", ret }); });
+    assert.equal(reply, notFound.message);
+    assert.deepEqual(lines.map((l) => l.level), ["warn"]);
   });
 });
 

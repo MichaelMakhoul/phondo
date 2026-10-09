@@ -113,6 +113,23 @@ function sleep(ms) {
 const noCallRecordAlerted = new WeakSet();
 
 /**
+ * Replies written for the model, not for the owner's ears (the tool cap, a
+ * blocked name, a cancelled write): the classic loop's fallback never reads
+ * one out. Kept off the object itself, which reaches the model whole.
+ * @type {WeakSet<object>}
+ */
+const modelOnlyReplies = new WeakSet();
+/** @param {string} message */
+function modelOnly(message) {
+  const ret = { message };
+  modelOnlyReplies.add(ret);
+  return ret;
+}
+
+/** What an owner hears when the classic tool loop runs out with no tool message fit to say. */
+const LOOP_EXHAUSTED_MESSAGE = "Sorry — I couldn't finish that just now. Please check the dashboard.";
+
+/**
  * A model-supplied tool name, made safe to log and to echo: no line breaks and
  * no brackets, so it can never forge a second log line or an [ALERT:…] tag.
  * @param {unknown} name
@@ -479,7 +496,7 @@ async function runOneOwnerToolCall(session, toolCall, deps) {
     const tool = safeToolName(name);
     console.warn(`[OwnerTools] Blocked non-owner tool ${tool}. callSid=${session.callSid}`);
     audit.push({ name: "owner_tool_blocked", successful: false, at: now(), tool });
-    return { message: `${tool} isn't available on an owner call. Use the owner tools, or tell the owner what you can't do on this call.` };
+    return modelOnly(`${tool} isn't available on an owner call. Use the owner tools, or tell the owner what you can't do on this call.`);
   }
 
   if (name !== "end_call") {
@@ -493,7 +510,7 @@ async function runOneOwnerToolCall(session, toolCall, deps) {
         console.warn(`[OwnerTools] Tool cap (${OWNER_MAX_TOOL_CALLS}) reached. callSid=${session.callSid}`);
       }
       audit.push({ name: "owner_tool_cap", successful: false, at: now() });
-      return { message: "TOOL LIMIT REACHED for this call. Do not call any more tools. Tell the owner you've hit the limit for this call and they can ring back for anything else, then say goodbye and call end_call." };
+      return modelOnly("TOOL LIMIT REACHED for this call. Do not call any more tools. Tell the owner you've hit the limit for this call and they can ring back for anything else, then say goodbye and call end_call.");
     }
   }
 
@@ -516,7 +533,7 @@ async function runOneOwnerToolCall(session, toolCall, deps) {
   const refuseCancelled = () => {
     console.warn(`[OwnerTools] ${name} was cancelled (the owner talked over it) before it went out — not sent. callSid=${session.callSid}`);
     audit.push({ name: "owner_tool_cancelled", tool: name, successful: false, at: now() });
-    return { message: CANCELLED_BEFORE_SENT_MESSAGE };
+    return modelOnly(CANCELLED_BEFORE_SENT_MESSAGE);
   };
   if (isWrite && wasCancelled(session, callId)) return refuseCancelled();
   const forwardArgs = await applyConfirmationGate(session, name, args, audit, now);
@@ -600,6 +617,31 @@ async function runOneOwnerToolCall(session, toolCall, deps) {
 }
 
 /**
+ * SF5: the classic loop's reply when an owner turn uses up its tool rounds
+ * (OWNER_MAX_TOOL_CALLS) — never the receptionist's "could you repeat that?",
+ * which after a change invites a second, duplicate request. The owner hears
+ * the last owner tool's own message (a cancel's result, say), unless it was
+ * written for the model (PR B's read-back request, the cap, a refusal): then a
+ * plain line. Logged at error level when that last call was a successful
+ * write — the owner heard the change only through this fallback.
+ * @param {any} session
+ * @param {{ name: string, ret: { message: string, data?: any } } | null} last - the turn's last owner tool call
+ * @returns {string}
+ */
+function ownerToolLoopReply(session, last) {
+  const ret = last ? last.ret : null;
+  const speakable = Boolean(ret) && typeof ret.message === "string" && ret.message.trim() !== ""
+    && !modelOnlyReplies.has(ret) && outcomeOf(ret) !== "needs_confirmation";
+  const wroteChange = Boolean(last) && OWNER_WRITE_TOOL_NAMES.includes(last.name) && ownerResultSucceeded(last.name, ret);
+  if (wroteChange) {
+    console.error(`[OwnerTools] the classic tool loop ran out (${OWNER_MAX_TOOL_CALLS} rounds) right after a successful ${last.name} — the owner heard its result, not a model reply (org=${session.organizationId}, callSid=${session.callSid})`);
+  } else {
+    console.warn(`[OwnerTools] the classic tool loop ran out (${OWNER_MAX_TOOL_CALLS} rounds) — the owner heard ${speakable ? "the last tool's message" : "the fallback line"}. callSid=${session.callSid}`);
+  }
+  return speakable ? ret.message : LOOP_EXHAUSTED_MESSAGE;
+}
+
+/**
  * Deterministic post-call summary (no LLM): successful, described calls in
  * order, consecutive repeats collapsed — and, when a confirmed change's result
  * never came back, that it could not be confirmed (never "no changes made").
@@ -623,12 +665,14 @@ function buildOwnerCallSummary(audit) {
 module.exports = {
   OWNER_MAX_TOOL_CALLS,
   CANCELLED_BEFORE_SENT_MESSAGE,
+  LOOP_EXHAUSTED_MESSAGE,
   CONFIRM_SETTLE_MS,
   CONFIRM_POLL_MS,
   OWNER_CLEANUP_WAIT_MS,
   runOwnerToolCall,
   settleOwnerToolRuns,
   noteCancelledOwnerToolCalls,
+  ownerToolLoopReply,
   buildOwnerCallSummary,
   describeOwnerToolCall,
   ownerResultSucceeded,

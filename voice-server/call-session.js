@@ -65,6 +65,10 @@ class CallSession {
     this.ownerToolRunsInFlight = null;     // Set of owner tool calls still running (the runner creates it)
     this.ownerToolRunsSettled = false;     // cleanup stopped waiting for them: a write finishing later pages
     this.ownerCancelledToolCallIds = null; // Set of tool call ids Gemini cancelled (the runner creates it)
+    // SCRUM-587: an owner who hangs up during setup is not paged as a lost
+    // call record (server.js cleanupSession) — these say which case it was.
+    this.callRecordRequested = false;      // stream setup reached createCallRecord
+    this.streamStoppedByCaller = false;    // Twilio's "stop" arrived (the caller hung up)
 
     // Call context — populated by loadCallContext()/loadTestCallContext() in
     // server.js once the stream connects (not known at construction). Declared

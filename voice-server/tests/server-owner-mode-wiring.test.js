@@ -192,7 +192,7 @@ const fakeSentry = (calls) => ({
 const { CallSession } = require("../call-session");
 const { buildOwnerPrompt, buildOwnerGreeting, buildOwnerGeminiSuffix } = require("../lib/owner-prompt");
 const { buildOwnerTools } = require("../lib/owner-tools");
-const { runOwnerToolCall, buildOwnerCallSummary, settleOwnerToolRuns, noteCancelledOwnerToolCalls, CANCELLED_BEFORE_SENT_MESSAGE } = require("../lib/owner-tool-runner");
+const { runOwnerToolCall, buildOwnerCallSummary, settleOwnerToolRuns, noteCancelledOwnerToolCalls, ownerToolLoopReply, CANCELLED_BEFORE_SENT_MESSAGE, LOOP_EXHAUSTED_MESSAGE, OWNER_MAX_TOOL_CALLS } = require("../lib/owner-tool-runner");
 const { noteAssistantSpeech, noteAssistantTurnEnd, noteOwnerSpeech } = require("../lib/owner-turn-stamps");
 const { forwardingFallbackEligible } = require("../lib/transfer-eligibility");
 const { maskPhone } = require("../lib/mask-phone");
@@ -849,6 +849,8 @@ function makeClassic(o = {}) {
     scheduleCache: { invalidate: () => {}, applyDelta: () => {} },
     noteAssistantSpeech,
     noteAssistantTurnEnd,
+    OWNER_MAX_TOOL_CALLS,
+    ownerToolLoopReply,
     getErrorMsg: (lang, key) => `ERR:${key}`,
     detectExpectedInput: () => "general",
     logTranscript: () => {},
@@ -974,7 +976,7 @@ describe("SCRUM-587: classic pipeline, run for real", () => {
     await c2.handleUserSpeech(err, twilio, "cancel Bob's job on Friday");
     assert.equal(err.assistantTurnSeq, 0, "an apology is not a read-back");
     const loop = makeSession({ owner: true });
-    const c3 = makeClassic({ steps: [1, 2, 3].map(() => ({ tools: [{ name: "owner_list_messages", arguments: "{}" }] })) });
+    const c3 = makeClassic({ steps: Array.from({ length: OWNER_MAX_TOOL_CALLS }, () => ({ tools: [{ name: "owner_list_messages", arguments: "{}" }] })) });
     await c3.handleUserSpeech(loop, twilio, "any messages for me today?");
     assert.equal(loop.assistantTurnSeq, 0, "the loop-exhausted fallback is not a read-back");
   });
@@ -986,6 +988,68 @@ describe("SCRUM-587: classic pipeline, run for real", () => {
     assert.match(toolMessages(s)[0].content, /^DO NOT CANCEL YET/);
     assert.deepEqual(c.calls.filter((x) => x[0] === "runOwnerToolCall" || x[0] === "executeToolCall"), []);
     assert.equal(s.assistantTurnSeq, 0);
+  });
+});
+
+// ─── Classic: an owner turn gets the owner tool cap (silent-failure lens SF5) ──
+describe("SCRUM-587: classic owner turns get the owner tool cap, and never hear 'could you repeat that?'", () => {
+  const listRound = () => ({ tools: [{ name: "owner_list_messages", arguments: "{}" }] });
+  const spokenBy = (c) => c.calls.filter((x) => x[0] === "sendTTS").map((x) => x[1]);
+  it("a normal list → availability → read-back request in ONE turn reaches the model's reply (the customer cap of 3 rounds cut it off)", async (t) => {
+    t.mock.method(console, "warn", () => {});
+    const s = makeSession({ owner: true });
+    const executeToolCall = async (name) => (name === "owner_reschedule_appointment" ? { success: false, message: "Read this back…", data: { outcome: "needs_confirmation", customer_notified: false } } : { success: true, message: "ok", data: {} });
+    const c = makeClassic({
+      runOwnerToolCall,
+      executeToolCall,
+      steps: [
+        { tools: [{ name: "owner_list_appointments", arguments: '{"range":"today"}' }] },
+        { tools: [{ name: "check_availability", arguments: '{"date":"2026-10-16"}' }] },
+        { tools: [{ name: "owner_reschedule_appointment", arguments: '{"appointment_id":"a1","new_datetime":"2026-10-16T09:00"}' }] },
+        { content: "Bob Lee from Thursday 2 p.m. to Friday 9 a.m. — shall I move it?" },
+      ],
+    });
+    await c.handleUserSpeech(s, twilio, "move Bob's job to Friday at 9");
+    assert.deepEqual(c.steps, [], "all four rounds ran");
+    assert.ok(spokenBy(c).includes("Bob Lee from Thursday 2 p.m. to Friday 9 a.m. — shall I move it?"));
+    assert.ok(!spokenBy(c).includes("ERR:repeatRequest"));
+  });
+  it("customers keep the 3-round cap and its 'could you repeat that?' (unchanged)", async () => {
+    const s = makeSession({ owner: false });
+    const c = makeClassic({ steps: [1, 2, 3].map(() => ({ tools: [{ name: "check_availability", arguments: '{"date":"2026-10-16"}' }] })) });
+    await c.handleUserSpeech(s, twilio, "what's free on Friday?");
+    assert.equal(c.calls.filter((x) => x[0] === "llm").length, 3);
+    assert.equal(spokenBy(c).at(-1), "ERR:repeatRequest");
+    assert.ok(c.lines.some((l) => l.includes("[Pipeline] Tool call loop exhausted after 3 iterations")), c.lines.join("\n"));
+  });
+  it(`an owner turn that runs out (${OWNER_MAX_TOOL_CALLS} rounds) right after a successful change: the owner hears its result, and it is logged at error level`, async (t) => {
+    const errors = [];
+    t.mock.method(console, "error", (...a) => errors.push(util.format(...a)));
+    t.mock.method(console, "warn", () => {});
+    const s = makeSession({ owner: true });
+    const at = Date.now(); // the owner has answered the read-back of a1
+    s.ownerPendingConfirmations = new Map([["owner_cancel_appointment|a1", { at: at - 3000, seq: 0 }]]);
+    s.assistantTurnSeq = 1; s.lastAssistantTurnAt = at - 1000; s.lastAssistantSpeechAt = at - 1500; s.lastOwnerSpeechAt = at - 500;
+    const steps = Array.from({ length: OWNER_MAX_TOOL_CALLS - 1 }, listRound);
+    steps.push({ tools: [{ name: "owner_cancel_appointment", arguments: '{"appointment_id":"a1","confirmed":true}' }] });
+    const executeToolCall = async (name) => (name === "owner_cancel_appointment" ? CANCELLED : { success: true, message: "No messages waiting.", data: { callbacks: [], calls: [] } });
+    const c = makeClassic({ runOwnerToolCall, executeToolCall, steps });
+    await c.handleUserSpeech(s, twilio, "yes");
+    assert.deepEqual(c.steps, []);
+    assert.equal(c.calls.filter((x) => x[0] === "llm").length, OWNER_MAX_TOOL_CALLS, "the loop stops at the owner cap");
+    assert.equal(spokenBy(c).at(-1), CANCELLED.message, "the owner hears the change, not a request to repeat it");
+    assert.ok(!spokenBy(c).includes("ERR:repeatRequest"));
+    assert.equal(errors.filter((l) => l.includes("right after a successful owner_cancel_appointment")).length, 1, errors.join("\n"));
+    assert.ok(c.lines.some((l) => l.includes(`Tool call loop exhausted after ${OWNER_MAX_TOOL_CALLS} iterations`)));
+  });
+  it("a last result written for the model (PR B's read-back request) is never read out: the owner hears a plain line", async (t) => {
+    t.mock.method(console, "warn", () => {});
+    const s = makeSession({ owner: true });
+    const steps = Array.from({ length: OWNER_MAX_TOOL_CALLS }, () => ({ tools: [{ name: "owner_cancel_appointment", arguments: '{"appointment_id":"a1"}' }] }));
+    const c = makeClassic({ runOwnerToolCall, executeToolCall: async () => NEEDS_CONFIRMATION, steps });
+    await c.handleUserSpeech(s, twilio, "cancel Bob's job");
+    assert.equal(spokenBy(c).at(-1), LOOP_EXHAUSTED_MESSAGE);
+    assert.ok(!spokenBy(c).includes(NEEDS_CONFIRMATION.message));
   });
 });
 
@@ -1136,6 +1200,82 @@ describe("SCRUM-587: post-call — an owner record that can't be written never r
       assert.equal(calls.filter((c) => c[0] === "notifyCallCompleted").length, 1, String(ownerAuth));
       assert.deepEqual(lines.filter((l) => l.includes(ALERT)), []);
     }
+  });
+});
+
+// ─── The owner hangs up during stream setup (silent-failure lens SF6) ──────────
+describe("SCRUM-587: post-call — an owner who hangs up during setup is not a lost call record", () => {
+  const ALERT = "[ALERT:error]";
+  it("the caller stopped the stream before setup reached the call record: one warning (ids only), no page, no webhook", async () => {
+    const s = endedCall(makeSession({ owner: true }));
+    s.callRecordId = null; s.streamStoppedByCaller = true; s.callRecordRequested = false;
+    const { cleanupSession, calls, lines } = makeCleanup(s);
+    await cleanupSession();
+    assert.deepEqual(lines.filter((l) => l.includes(ALERT)), []);
+    const warned = lines.filter((l) => l.startsWith("warn| [OwnerCall]"));
+    assert.equal(warned.length, 1, lines.join("\n"));
+    for (const id of ["callSid=CA-owner", "org=org-1"]) assert.ok(warned[0].includes(id), warned[0]);
+    assert.deepEqual(calls.filter((c) => c[0] === "completeCallRecord" || c[0] === "notifyCallCompleted"), []);
+  });
+  it("still pages for a setup or record fault: the record was being created, or the server ended the stream", async () => {
+    for (const [label, stopped, requested] of [["hung up while the record was being created", true, true], ["the server closed the stream (setup failed)", false, false], ["setup failed after asking for the record", false, true]]) {
+      const s = endedCall(makeSession({ owner: true }));
+      s.callRecordId = null; s.streamStoppedByCaller = stopped; s.callRecordRequested = requested;
+      const { cleanupSession, lines } = makeCleanup(s);
+      await cleanupSession();
+      assert.equal(lines.filter((l) => l.includes(ALERT)).length, 1, label);
+    }
+  });
+  it("a written owner record or a customer call never sees either line", async () => {
+    const owner = endedCall(makeSession({ owner: true }));
+    owner.streamStoppedByCaller = true; // a normal hang-up after setup
+    owner.callRecordRequested = true;
+    const o = makeCleanup(owner);
+    await o.cleanupSession();
+    assert.deepEqual(o.lines.filter((l) => l.includes("[OwnerCall]")), []);
+    const customer = endedCall(makeSession({ owner: false }));
+    customer.callRecordId = null; customer.streamStoppedByCaller = true;
+    const c = makeCleanup(customer);
+    await c.cleanupSession();
+    assert.deepEqual(c.lines.filter((l) => l.includes("[OwnerCall]") || l.includes(ALERT)), []);
+  });
+  it("Twilio's stop marks the session as the caller's before cleanup runs (server.js, run for real)", async () => {
+    const s = makeSession({ owner: true });
+    const seen = [];
+    const stop = runSlice({
+      from: 'case "stop": {',
+      to: "\n      }\n    } catch (err) {",
+      scope: { session: s, cleanupSession: async () => { seen.push(s.streamStoppedByCaller); }, console: recordingConsole([]) },
+      wrap: (code) => `return async () => { switch ("stop") {\n${code}\n} };`,
+    });
+    await stop();
+    assert.deepEqual(seen, [true]);
+    const none = runSlice({
+      from: 'case "stop": {',
+      to: "\n      }\n    } catch (err) {",
+      scope: { session: null, cleanupSession: async () => {}, console: recordingConsole([]) },
+      wrap: (code) => `return async () => { switch ("stop") {\n${code}\n} };`,
+    });
+    await none(); // no session yet: nothing to mark, no throw
+  });
+  it("setup marks the session BEFORE it awaits createCallRecord (server.js, run for real)", async () => {
+    const s = makeSession({ owner: true });
+    s.callRecordId = null;
+    const seen = [];
+    const create = runSlice({
+      from: "// Create call record in database",
+      to: "// ── Pipeline selection",
+      scope: {
+        session: s, context: makeContext(), callerPhone: s.callerPhone, callSid: s.callSid,
+        createCallRecord: async () => { seen.push(s.callRecordRequested); throw new Error("insert failed"); },
+        console: recordingConsole([]),
+      },
+      wrap: (code) => `return async () => {\n${code}\n};`,
+    });
+    assert.equal(s.callRecordRequested, false);
+    await create();
+    assert.deepEqual(seen, [true], "marked before the insert was awaited");
+    assert.equal(s.callRecordId, null, "the insert failed: a fault cleanup pages on");
   });
 });
 

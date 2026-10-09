@@ -146,7 +146,7 @@ const { mintStreamToken, verifyStreamToken, withoutOwnerAccess } = require("./li
 // bypasses the customer guards, and the turn clock its confirmation gate reads.
 const { buildOwnerPrompt, buildOwnerGreeting, buildOwnerGeminiSuffix } = require("./lib/owner-prompt");
 const { buildOwnerTools } = require("./lib/owner-tools");
-const { runOwnerToolCall, buildOwnerCallSummary, settleOwnerToolRuns, noteCancelledOwnerToolCalls } = require("./lib/owner-tool-runner");
+const { runOwnerToolCall, buildOwnerCallSummary, settleOwnerToolRuns, noteCancelledOwnerToolCalls, ownerToolLoopReply, OWNER_MAX_TOOL_CALLS } = require("./lib/owner-tool-runner");
 const { noteAssistantSpeech, noteAssistantTurnEnd, noteOwnerSpeech } = require("./lib/owner-turn-stamps");
 
 // Mirror of API-layer E164_REGEX. Defense-in-depth at the dialer so a bad
@@ -1761,8 +1761,14 @@ wss.on("connection", (twilioWs) => {
     if (s.ownerMode && !recordWritten) {
       // SCRUM-587: without call_type="owner" in the row, PR B would process the
       // owner's call as a customer's — customer alerts, the org webhook carrying
-      // the owner's transcript, the daily summary. Page instead (ids only).
-      console.error(`[ALERT:error] [OwnerCall] owner call record not written — call-completed webhook skipped (callSid=${s.callSid}, callId=${s.callRecordId}, org=${s.organizationId})`);
+      // the owner's transcript, the daily summary. Page instead (ids only) —
+      // unless the owner simply hung up before setup reached the call record
+      // (SF6): nothing failed, and there is no record to complete.
+      if (s.streamStoppedByCaller && !s.callRecordRequested) {
+        console.warn(`[OwnerCall] owner hung up during call setup, before the call record was created — no record to complete, call-completed webhook skipped (callSid=${s.callSid}, org=${s.organizationId})`);
+      } else {
+        console.error(`[ALERT:error] [OwnerCall] owner call record not written — call-completed webhook skipped (callSid=${s.callSid}, callId=${s.callRecordId}, org=${s.organizationId})`);
+      }
     } else if (INTERNAL_API_URL && INTERNAL_API_SECRET && s.organizationId) {
       notifyCallCompleted(INTERNAL_API_URL, INTERNAL_API_SECRET, {
         callId: s.callRecordId,
@@ -2270,6 +2276,9 @@ wss.on("connection", (twilioWs) => {
           }
 
           // Create call record in database
+          // SCRUM-587 (SF6): setup has reached the record — an owner call that
+          // ends without one from here on is a fault (cleanup pages on it).
+          if (session) session.callRecordRequested = true;
           try {
             const callRecordId = await createCallRecord({
               orgId: context.organizationId,
@@ -3420,6 +3429,8 @@ wss.on("connection", (twilioWs) => {
 
         case "stop": {
           console.log(`[Twilio] Stream stopped — callSid=${session?.callSid}`);
+          // SCRUM-587 (SF6): the caller ended the stream (hung up) — cleanup's owner-record page needs to know.
+          if (session) session.streamStoppedByCaller = true;
           await cleanupSession();
           break;
         }
@@ -3658,7 +3669,14 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
     // Track whether a filler has been sent this turn — only ONE filler per turn
     let fillerSentThisTurn = false;
 
-    for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
+    // SCRUM-587 (SF5): an owner's normal list → availability → reschedule is
+    // three tool rounds on its own, so owner turns get the owner tool cap. The
+    // turn's last owner tool call is what the owner hears if even that runs out.
+    const maxToolIterations = session.ownerMode ? OWNER_MAX_TOOL_CALLS : MAX_TOOL_ITERATIONS;
+    /** @type {{ name: string, ret: { message: string, data?: unknown } } | null} */
+    let lastOwnerTool = null;
+
+    for (let i = 0; i < maxToolIterations; i++) {
       const t0 = Date.now();
 
       const sentenceQueue = [];
@@ -3760,6 +3778,7 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
           // message AND data go back to the model as the tool message.
           if (session.ownerMode) {
             const ownerRet = await runOwnerToolCall(session, { name: fnName, args: fnArgs }, { executeToolCall, scheduleCache });
+            lastOwnerTool = { name: fnName, ret: ownerRet };
             session.messages.push({
               role: "tool",
               tool_call_id: toolCall.id,
@@ -4033,7 +4052,10 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
     if (!reply) {
       hold.stop();
       reply = getErrorMsg(session.language, "repeatRequest");
-      console.warn(`[Pipeline] Tool call loop exhausted after ${MAX_TOOL_ITERATIONS} iterations (callSid=${session.callSid})`);
+      console.warn(`[Pipeline] Tool call loop exhausted after ${maxToolIterations} iterations (callSid=${session.callSid})`);
+      // SCRUM-587 (SF5): an owner never hears "could you repeat that?" — after
+      // a change it invites a duplicate request — but the last tool's own words.
+      if (session.ownerMode) reply = ownerToolLoopReply(session, lastOwnerTool);
       await sendTTS(session, twilioWs, reply);
     }
 
