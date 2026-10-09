@@ -355,6 +355,23 @@ describe("handleOwnerPin", () => {
       }
     });
 
+    // Mutation gate (Task 12, override a): the real verifyPin always resolves to a boolean, so only
+    // a verdict of another kind pins "only the boolean true is a match" — the rule that makes a
+    // dropped `await` (a pending Promise, which is truthy) fail closed instead of letting any PIN in.
+    it("only the boolean true from verifyPin is a match: any other truthy verdict is a wrong PIN", async (t) => {
+      let verdict;
+      t.mock.method(ownerAuth, "verifyPin", async () => verdict);
+      for (const v of [1, "true", "yes", {}, [true]]) {
+        verdict = v;
+        const h = makeHarness({ body: { Digits: PIN }, query: { attempt: "1" } });
+        await run(h);
+        assertTwiml(h.res);
+        assert.equal(h.state.tokens.length, 0, `verdict ${util.inspect(v)} issued a token`);
+        assert.equal(h.res.body, regather(2), util.inspect(v));
+        assert.equal(h.state.deletes.length + h.state.updates.length + h.state.names.length, 0, `verdict ${util.inspect(v)} ran the verified path`);
+      }
+    });
+
     it("third wrong PIN in the call → 'Continuing as a normal call' + the receptionist, stamped failed", async () => {
       const h = makeHarness({ body: { Digits: WRONG }, query: { attempt: "3" } });
       await run(h);
