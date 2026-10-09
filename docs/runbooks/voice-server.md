@@ -22,7 +22,9 @@ incident as the worked example throughout.
 
 ### Pipelines (per call)
 
-- **Production**: Gemini 3.1 Flash Live (`VOICE_PIPELINE=gemini-live`).
+- **Production**: Gemini Live (`VOICE_PIPELINE=gemini-live`), model
+  `models/gemini-3.8-live` since SCRUM-588 — the startup log line
+  `Voice pipeline: gemini-live (Gemini Live: …)` names the model in use.
 - **Fallback**: classic Deepgram STT → OpenAI → Deepgram TTS (automatic when
   `GEMINI_API_KEY` missing; or `VOICE_PIPELINE=classic`).
 - **Eval overrides (SCRUM-378)**: `TEST_PIPELINE_OVERRIDES="<number>:<pipeline>"`
@@ -211,6 +213,8 @@ see below for what that costs a caller.
 | Back to production | `fly secrets set VOICE_PIPELINE=gemini-live -a phondo-voice` |
 | Route ONE number to a test pipeline | `fly secrets set 'TEST_PIPELINE_OVERRIDES=+61238205672:grok-realtime' -a phondo-voice` |
 | Kill all eval overrides | `fly secrets unset TEST_PIPELINE_OVERRIDES -a phondo-voice` |
+| Revert the voice model (SCRUM-588) | `fly secrets set GEMINI_LIVE_MODEL=models/gemini-3.1-flash-live-preview -a phondo-voice` |
+| Revert post-call analysis / Tier-2 validator models | `fly secrets set ANALYSIS_MODEL=gpt-4.1-mini VALIDATOR_MODEL=claude-haiku-4-5-20251001 -a phondo-voice` |
 | Per-number AI off (calls forward instead) | `phone_numbers.ai_enabled=false` in DB / dashboard toggle |
 
 Proof of which pipeline a call ran (tool/transcript logs say `[GeminiLive]` on
