@@ -112,6 +112,52 @@ describe("loadOwnerFirstName", () => {
     }
   });
 
+  describe("titles", () => {
+    const nameOf = (full_name) => loadOwnerFirstName("org-1", { supabase: fakeSupabase({ member: { user_id: "u1" }, profile: { full_name } }) });
+
+    it("skips a leading title and returns the next word", async () => {
+      assert.equal(await nameOf("Dr Sarah Jones"), "Sarah");
+      assert.equal(await nameOf("Mrs. Brown"), "Brown");
+      assert.equal(await nameOf("  Prof   Higgins "), "Higgins");
+    });
+    it("matches every title case-insensitively, with or without the dot, and keeps the name's own casing", async () => {
+      assert.equal(await nameOf("dr. sarah"), "sarah");
+      for (const t of ["Dr", "Mr", "Mrs", "Ms", "Miss", "Prof"]) {
+        for (const form of [t, `${t}.`, t.toUpperCase(), `${t.toLowerCase()}.`]) assert.equal(await nameOf(`${form} Sarah`), "Sarah", form);
+      }
+    });
+    it("skips stacked titles", async () => {
+      assert.equal(await nameOf("Prof Dr Jane Doe"), "Jane");
+    });
+    it("returns null when only a title is left, so the greeting says 'Hi there'", async () => {
+      for (const t of ["Prof", "Dr", "dr.", "MRS", "Ms.", "Miss", "Dr Mr", "  Prof  "]) assert.equal(await nameOf(t), null, t);
+    });
+    it("keeps a first name that merely starts or ends like a title", async () => {
+      assert.equal(await nameOf("Drew Smith"), "Drew");
+      // "Amr" is a common Arabic first name; it ends in "mr", so an unanchored title pattern would swallow it.
+      for (const n of ["Drake", "Missy", "Mister", "Professor", "Msgr", "Mrs.Smith", "Amr", "Adams", "Williams"]) assert.equal(await nameOf(`${n} Jones`), n, n);
+    });
+    it("still caps the word after a title at 40 characters", async () => {
+      assert.equal(await nameOf(`Dr ${"A".repeat(80)}`), "A".repeat(40));
+    });
+    it("treats a title with nothing after it as a plain miss: nothing is logged", async () => {
+      assert.equal(await nameOf("Prof"), null);
+      assert.equal(logged(), 0);
+    });
+    it("agrees with the owner greeting about what a title is", async () => {
+      // The loader and lib/owner-prompt.js each carry the title list; this fails if they drift apart.
+      const { buildOwnerGreeting } = require("../lib/owner-prompt");
+      const candidates = ["Dr", "Mr", "Mrs", "Ms", "Miss", "Prof", "Mx", "Sir", "Dame", "Rev", "Hon", "Doctor", "Professor", "Mister", "Drew", "Missy", "Amr", "Adams", "Williams"];
+      for (const w of candidates) {
+        for (const form of [w, `${w}.`, w.toUpperCase(), w.toLowerCase()]) {
+          const loaderSkips = (await nameOf(`${form} Sarah`)) === "Sarah";
+          const greetingSkips = buildOwnerGreeting(`${form} Sarah`) === "Hi Sarah, what do you need?";
+          assert.equal(loaderSkips, greetingSkips, `${form}: the loader and the greeting must agree`);
+        }
+      }
+    });
+  });
+
   describe("logging", () => {
     it("logs nothing on success — the name is personal data", async () => {
       const sb = fakeSupabase({ member: { user_id: "u1" }, profile: { full_name: "Dave Smith" } });

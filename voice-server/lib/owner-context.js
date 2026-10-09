@@ -3,6 +3,13 @@
 const { getSupabase } = require("./supabase");
 
 /**
+ * Honorifics that are not a first name. lib/owner-prompt.js carries the same
+ * list for the greeting; tests/owner-context.test.js fails if the two drift.
+ * No `g` flag: .test() must stay stateless.
+ */
+const TITLE = /^(?:dr|mr|mrs|ms|miss|prof)\.?$/i;
+
+/**
  * The soft exit for a query that errored or threw: warn, then give up the name.
  * Logs the step and the error MESSAGE only, never the error object or any row,
  * so the owner's name and user id cannot reach the logs. A plain miss (no owner
@@ -18,6 +25,8 @@ function failSoft(step, err) {
 
 /**
  * SCRUM-587: first name for the owner greeting ("Hi Dave, what do you need?").
+ * A leading title (Dr, Mr, Mrs, Ms, Miss, Prof, any case, dot optional) is
+ * skipped: "Dr Sarah Jones" → "Sarah"; a title alone → null.
  * org_members.user_id references auth.users, which PostgREST can't embed
  * through, so two small queries. Fail-SOFT: any miss or error → null → the
  * greeting says "Hi there". Only runs on a verified owner call.
@@ -44,7 +53,8 @@ async function loadOwnerFirstName(organizationId, deps = {}) {
       .maybeSingle();
     if (profileErr) return failSoft("user_profiles lookup", profileErr);
     if (!profile || typeof profile.full_name !== "string") return null;
-    const first = profile.full_name.trim().split(/\s+/)[0];
+    // "Dr Sarah Jones" is Sarah, not "Dr"; a title with nothing after it is a miss.
+    const first = profile.full_name.trim().split(/\s+/).find((word) => !TITLE.test(word));
     return first ? first.slice(0, 40) : null;
   } catch (err) {
     return failSoft("loadOwnerFirstName", err);

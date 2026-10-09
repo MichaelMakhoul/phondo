@@ -317,8 +317,8 @@ describe("buildOwnerPrompt — owner name and titles", () => {
   it("falls back to 'the business owner' when only a title is left", () => {
     for (const t of ["Dr", "dr.", "MR", "Mrs.", "Ms", "Miss", "Prof", "Prof."]) assert.equal(said(t), "the business owner", t);
   });
-  it("keeps a name that merely starts like a title", () => {
-    for (const n of ["Drake", "Mrs.Smith", "Missy", "Professor", "Msgr"]) assert.equal(said(n), n);
+  it("keeps a name that merely starts or ends like a title", () => {
+    for (const n of ["Drake", "Mrs.Smith", "Missy", "Professor", "Msgr", "Amr", "Adams", "Williams"]) assert.equal(said(n), n);
   });
 });
 
@@ -338,8 +338,8 @@ describe("buildOwnerGreeting — titles and hostile names", () => {
   it("says 'there' when only a title is left (the loader hands over one word, so 'Dr' alone is real)", () => {
     for (const t of ["Dr", "dr.", "DR", "Mr", "Mrs", "MRS.", "Ms", "ms.", "Miss", "MISS", "Prof", "prof.", "Dr Mr"]) assert.equal(buildOwnerGreeting(t), there, t);
   });
-  it("keeps a name that merely starts like a title", () => {
-    for (const n of ["Drake", "Mrs.Smith", "Missy", "Professor", "Msgr", "Mister"]) assert.equal(buildOwnerGreeting(n), hi(n), n);
+  it("keeps a name that merely starts or ends like a title", () => {
+    for (const n of ["Drake", "Mrs.Smith", "Missy", "Professor", "Msgr", "Mister", "Amr", "Adams", "Williams"]) assert.equal(buildOwnerGreeting(n), hi(n), n);
   });
   it("is always one clean line, whatever the name holds", () => {
     const g = buildOwnerGreeting("Da\nve\u{2028}\u{200b}\u{202e}\u{e0041}\x85");
