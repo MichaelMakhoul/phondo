@@ -47,6 +47,8 @@ function makeHarness(o = {}) {
     rpc: async (fn, args) => {
       state.rpc.push({ fn, args });
       state.events.push(`rpc:${args.p_key}`);
+      if (o.onRpc) o.onRpc(args);
+      if (o.rpcPending) return new Promise(() => {}); // a stalled round-trip
       await new Promise((r) => setImmediate(r));
       state.events.push(`rpc-done:${args.p_key}`);
       if (o.rpcThrows) throw new Error("rpc down");
@@ -115,9 +117,10 @@ async function run(h) {
   }
   let guard;
   try {
-    const timedOut = new Promise((resolve) => { guard = setTimeout(resolve, 3000, "timed-out"); });
+    // 5 s: longer than any race inside the handler (3000 ms lockout check, 1500 ms name).
+    const timedOut = new Promise((resolve) => { guard = setTimeout(resolve, 5000, "timed-out"); });
     const outcome = await Promise.race([ownerPin.handleOwnerPin(h.req, h.res, { deps: h.deps }), timedOut]);
-    assert.notEqual(outcome, "timed-out", "handleOwnerPin did not answer within 3 s: it waited on something it must not");
+    assert.notEqual(outcome, "timed-out", "handleOwnerPin did not answer within 5 s: it waited on something it must not");
     for (let i = 0; i < 5; i++) await turn();
   } finally {
     clearTimeout(guard);
@@ -143,6 +146,36 @@ function assertTwiml(res) {
   assert.equal(res.contentType, "text/xml");
   assert.match(res.body, /^<\?xml version="1\.0" encoding="UTF-8"\?>\n<Response>\n[\s\S]*\n<\/Response>$/);
   assert.doesNotMatch(res.body, /&(?!(?:amp|lt|gt|quot|apos);)/, "a raw & in the TwiML");
+}
+
+/**
+ * A tripped lock pages (fix round 1, ruling a): exactly one
+ * "[ALERT:error] [OwnerPin] owner line locked (window=…)" line carrying the
+ * callSid and masked numbers (never a raw one), no warn line, and one Sentry
+ * capture tagged owner_pin / error.
+ */
+function assertLockedAlert(h, lines, window) {
+  const alerts = lines.filter((l) => l.includes("[ALERT:error] [OwnerPin]"));
+  assert.equal(alerts.length, 1, lines.join("\n"));
+  assert.ok(alerts[0].startsWith(`error| [ALERT:error] [OwnerPin] owner line locked (window=${window})`), alerts[0]);
+  for (const part of ["CA1", maskPhone("+61255550000"), maskPhone("+61400000001")]) assert.ok(alerts[0].includes(part), `${part} missing: ${alerts[0]}`);
+  for (const raw of ["+61255550000", "+61400000001"]) assert.ok(!lines.some((l) => l.includes(raw)), `the raw number ${raw} was logged`);
+  assert.ok(!lines.some((l) => l.startsWith("warn| ")), "a tripped lock is paged, not warned");
+  assert.equal(h.state.captured.length, 1);
+  assert.ok(h.state.captured[0] instanceof Error && h.state.captured[0].message.includes(`window=${window}`), String(h.state.captured[0]));
+  const [scope] = h.state.scopes;
+  assert.equal(scope._tags.service, "owner_pin");
+  assert.equal(scope._level, "error");
+  assert.equal(scope._extras.callSid, "CA1");
+  assert.doesNotMatch(util.inspect(scope, { depth: 8 }), /\+61255550000|\+61400000001/);
+}
+
+/** The lockout CHECK failed (RPC error, timeout, malformed result): one "[ALERT:error] [OwnerPin] PIN lockout check …" line, no "owner line locked". */
+function assertLockoutCheckAlert(lines) {
+  const alerts = lines.filter((l) => l.includes("[ALERT:error] [OwnerPin]"));
+  assert.equal(alerts.length, 1, lines.join("\n"));
+  assert.ok(alerts[0].startsWith("error| [ALERT:error] [OwnerPin] PIN lockout check (check_rate_limit_bucket) failed"), alerts[0]);
+  return alerts[0];
 }
 
 const continueSay = `<Say voice="Polly.Nicole">${ownerPin.SAY_CONTINUE}</Say>`;
@@ -250,15 +283,19 @@ describe("handleOwnerPin", () => {
       assert.equal(verify.mock.callCount(), 0);
     });
 
-    it("no input → the receptionist: nothing counted or verified, no owner_auth stamp, no <Say>", async (t) => {
+    it("no input → the receptionist, nothing counted or verified, no <Say>: unstamped on the first try, stamped failed after a wrong one", async (t) => {
       const verify = t.mock.method(ownerAuth, "verifyPin");
-      for (const body of [{ Digits: "", SpeechResult: "" }, {}, { Digits: "#" }, { SpeechResult: "um, hello?" }]) {
-        const h = makeHarness({ body, query: { attempt: "2" } });
-        await run(h);
-        assertTwiml(h.res);
-        assert.equal(h.state.rpc.length, 0, JSON.stringify(body));
-        assert.deepEqual(extras(h), [{}]);
-        assert.equal(h.res.body, ownerPin.buildConnectStreamTwiml({ wsUrl: WS_URL, token: "tok1", escapeXml }));
+      // attempt > 1 proves at least one wrong entry on this call (fix round 1, ruling c).
+      for (const [query, stamp] of [[{}, {}], [{ attempt: "1" }, {}], [{ attempt: "2" }, { ownerAuth: "failed" }], [{ attempt: "3" }, { ownerAuth: "failed" }]]) {
+        for (const body of [{ Digits: "", SpeechResult: "" }, {}, { Digits: "#" }, { SpeechResult: "um, hello?" }]) {
+          const h = makeHarness({ body, query });
+          await run(h);
+          const label = `${JSON.stringify(query)} ${JSON.stringify(body)}`;
+          assertTwiml(h.res);
+          assert.equal(h.state.rpc.length, 0, label);
+          assert.deepEqual(extras(h), [stamp], label);
+          assert.equal(h.res.body, ownerPin.buildConnectStreamTwiml({ wsUrl: WS_URL, token: "tok1", escapeXml }), label);
+        }
       }
       assert.equal(verify.mock.callCount(), 0);
     });
@@ -346,7 +383,7 @@ describe("handleOwnerPin", () => {
       assert.equal(verify.mock.callCount(), 0);
     });
 
-    it("15-minute window exhausted → locked, right PIN or wrong: never verified, the 24-hour window untouched, no page", async (t) => {
+    it("15-minute window exhausted → locked, right PIN or wrong: never verified, the 24-hour window untouched, and the lock pages", async (t) => {
       const verify = t.mock.method(ownerAuth, "verifyPin");
       for (const digits of [PIN, WRONG]) {
         const h = makeHarness({ body: { Digits: digits }, count: 6 });
@@ -356,21 +393,23 @@ describe("handleOwnerPin", () => {
         assert.deepEqual(extras(h), [{ ownerAuth: "locked" }]);
         assert.ok(h.res.body.includes(`${continueSay}\n  <Connect>`), h.res.body);
         assert.equal(h.state.deletes.length + h.state.updates.length + h.state.names.length, 0);
-        assert.ok(!lines.some((l) => l.includes("[ALERT:")), "a lockout is not an infrastructure fault");
-        assert.equal(h.state.captured.length, 0);
+        // A guesser who hangs up during "Continuing as a normal call." leaves no calls row
+        // for PR B's lockout email, so the lock itself must page (fix round 1, ruling a).
+        assertLockedAlert(h, lines, "15m");
       }
       assert.equal(verify.mock.callCount(), 0);
     });
 
-    it("24-hour window exhausted → locked even with the right PIN", async (t) => {
+    it("24-hour window exhausted → locked even with the right PIN, and the lock pages", async (t) => {
       const verify = t.mock.method(ownerAuth, "verifyPin");
       const h = makeHarness({ body: { Digits: PIN }, dayCount: 21 });
-      await run(h);
+      const lines = await run(h);
       assertTwiml(h.res);
       assert.deepEqual(h.state.rpc.map((r) => r.args.p_key), [KEY_15M, KEY_24H]);
       assert.deepEqual(extras(h), [{ ownerAuth: "locked" }]);
       assert.ok(h.res.body.includes(continueSay));
       assert.equal(h.state.deletes.length, 0);
+      assertLockedAlert(h, lines, "24h");
       assert.equal(verify.mock.callCount(), 0);
     });
 
@@ -388,20 +427,64 @@ describe("handleOwnerPin", () => {
       assert.equal(scope._tags.service, "owner_pin");
       assert.equal(scope._level, "error");
       assert.deepEqual([scope._extras.callSid, scope._extras.organizationId], ["CA1", "org-1"]);
-      assert.ok(lines.some((l) => l.startsWith("error| [ALERT:error] [OwnerPin]") && l.includes("check_rate_limit_bucket") && l.includes("rpc down")), lines.join("\n"));
+      assert.ok(assertLockoutCheckAlert(lines).includes("rpc down"));
     });
 
-    it("anything but an explicit 'not locked' from the lockout check is locked and paged", async (t) => {
+    it("a lockout check that stalls is abandoned after 3000 ms: locked, paged like an RPC error, never verified", async (t) => {
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+      const lines = [];
+      for (const m of LOG_METHODS) t.mock.method(console, m, (...a) => lines.push(`${m}| ${a.map((x) => (typeof x === "string" ? x : util.inspect(x))).join(" ")}`));
+      const verify = t.mock.method(ownerAuth, "verifyPin");
+      let rpcStarted;
+      const started = new Promise((resolve) => { rpcStarted = resolve; });
+      const h = makeHarness({ body: { Digits: PIN }, rpcPending: true, onRpc: (args) => rpcStarted(args.p_key) });
+      const done = ownerPin.handleOwnerPin(h.req, h.res, { deps: h.deps });
+      assert.equal(await started, KEY_15M);
+      try {
+        t.mock.timers.tick(2999);
+        for (let i = 0; i < 10; i++) await turn();
+        assert.equal(h.res.body, null, "gave up on the lockout check before 3000 ms");
+      } finally {
+        t.mock.timers.tick(1);
+      }
+      assert.equal(await settles(done, 3000), true, "the caller must be answered once the 3000 ms budget is spent");
+      assertTwiml(h.res);
+      assert.deepEqual(extras(h), [{ ownerAuth: "locked" }]);
+      assert.ok(h.res.body.includes(`${continueSay}\n  <Connect>`), h.res.body);
+      assert.equal(verify.mock.callCount(), 0);
+      assert.ok(assertLockoutCheckAlert(lines).includes("3000 ms"));
+      assert.equal(h.state.captured.length, 1);
+      assert.match(h.state.captured[0].message, /timed out after 3000 ms/);
+    });
+
+    it("clears the 3000 ms lockout and 1500 ms name race timers once each race settles", async (t) => {
+      const set = t.mock.method(globalThis, "setTimeout");
+      const clear = t.mock.method(globalThis, "clearTimeout");
+      const h = makeHarness({ body: { Digits: PIN } });
+      await run(h);
+      assert.deepEqual(extras(h), [VERIFIED]);
+      const cleared = new Set(clear.mock.calls.map((c) => c.arguments[0]));
+      for (const ms of [3000, 1500]) {
+        const handles = set.mock.calls.filter((c) => c.arguments[1] === ms).map((c) => c.result);
+        assert.equal(handles.length, 1, `one ${ms} ms race timer`);
+        assert.ok(cleared.has(handles[0]), `the ${ms} ms race timer outlived its race`);
+      }
+    });
+
+    it("anything but an explicit 'not locked' from the lockout check (or a rejection) is locked and paged as a failed check", async (t) => {
       const verify = t.mock.method(ownerAuth, "verifyPin");
       let result;
-      t.mock.method(ownerAuth, "countPinAttempt", async () => result);
-      for (const r of [undefined, null, { reason: "ok" }, { locked: "false", reason: "ok" }, { locked: 0, reason: "ok" }]) {
+      t.mock.method(ownerAuth, "countPinAttempt", async () => {
+        if (result instanceof Error) throw result;
+        return result;
+      });
+      for (const r of [undefined, null, { reason: "ok" }, { locked: "false", reason: "ok" }, { locked: 0, reason: "ok" }, new Error("lockout defect")]) {
         result = r;
         const h = makeHarness({ body: { Digits: PIN } });
         const lines = await run(h);
         assertTwiml(h.res);
         assert.deepEqual(extras(h), [{ ownerAuth: "locked" }], util.inspect(r));
-        assert.ok(lines.some((l) => l.startsWith("error| [ALERT:error] [OwnerPin]")), util.inspect(r));
+        assertLockoutCheckAlert(lines);
         assert.equal(h.state.captured.length, 1, util.inspect(r));
       }
       assert.equal(verify.mock.callCount(), 0);
@@ -563,7 +646,9 @@ describe("handleOwnerPin", () => {
       { body: { Digits: "48261" }, query: { attempt: "1" } },
       { body: { Digits: "48261" }, query: { attempt: "3" } },
       { body: { Digits: PIN }, count: 6 },
+      { body: { SpeechResult: SAID_PIN }, dayCount: 21 },
       { body: { Digits: PIN }, rpcThrows: true },
+      { body: {}, query: { attempt: "2" } },
       { body: { Digits: PIN }, delete: { message: "permission denied" } },
       { body: { Digits: PIN }, failToken: (extra) => extra && extra.ownerMode === true },
       { body: { Digits: PIN, ForwardedFrom: "+61299990000" } },

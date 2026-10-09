@@ -21,12 +21,13 @@
  * trusts ForwardedFrom, and the per-call attempt counter rides on the action URL
  * as ?attempt=N, which Twilio signs together with the rest of the URL.
  *
- * A PIN entry of the right length is counted in BOTH persisted lockout windows
- * BEFORE it is checked, so a lucky guess made while locked still fails. A
- * wrong-length entry can never match, so it only uses up one of the call's three
- * tries and is not counted. Owner mode fails closed: every fault ends in the
- * receptionist (a hang-up only when not even that TwiML can be built), never in
- * the owner session.
+ * A PIN entry of the right length is counted in the persisted lockout windows
+ * BEFORE it is checked (the 15-minute window, then the 24-hour one unless the
+ * 15-minute window is already exhausted), so a lucky guess made while locked
+ * still fails. A wrong-length entry can never match, so it only uses up one of
+ * the call's three tries and is not counted. Owner mode fails closed: every
+ * fault ends in the receptionist (a hang-up only when not even that TwiML can
+ * be built), never in the owner session.
  */
 const ownerAuth = require("../owner-auth");
 
@@ -38,6 +39,8 @@ const HANGUP_TWIML = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Han
 /** How long a verified owner's call waits for their first name before the greeting goes without it. */
 const OWNER_NAME_TIMEOUT_MS = 1500;
 const NAME_TIMED_OUT = Symbol("owner name lookup timed out");
+/** How long the lockout RPCs may take before the attempt counts as locked (fail closed). */
+const LOCKOUT_CHECK_TIMEOUT_MS = 3000;
 
 /** @param {string|null|undefined} country ISO-3166-1 alpha-2 */
 function gatherLanguageFor(country) {
@@ -155,6 +158,33 @@ function afterVerifiedPin({ supabase, Sentry, organizationId, pinSalt, callSid }
 }
 
 /**
+ * countPinAttempt raced against LOCKOUT_CHECK_TIMEOUT_MS: a stalled RPC must not
+ * hold Twilio's webhook until its 15-second limit. A timeout, or a rejection
+ * (countPinAttempt never rejects; one would be a defect), resolves like an RPC
+ * error: locked with reason "rpc-error", so the caller pages it and fails CLOSED.
+ * @param {{ supabase: any, organizationId: string, pinSalt: unknown }} args
+ * @returns {Promise<any>} countPinAttempt's result, or the synthetic locked one
+ */
+async function countPinAttemptWithin(args) {
+  /** @type {ReturnType<typeof setTimeout> | undefined} */
+  let timer;
+  const timedOut = new Promise((resolve) => {
+    timer = setTimeout(() => resolve({
+      locked: true,
+      reason: "rpc-error",
+      error: new Error(`check_rate_limit_bucket timed out after ${LOCKOUT_CHECK_TIMEOUT_MS} ms`),
+    }), LOCKOUT_CHECK_TIMEOUT_MS);
+  });
+  try {
+    return await Promise.race([Promise.resolve().then(() => ownerAuth.countPinAttempt(args)), timedOut]);
+  } catch (err) {
+    return { locked: true, reason: "rpc-error", error: err instanceof Error ? err : new Error(messageOf(err)) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * The owner's first name for the greeting, or null. Raced against
  * OWNER_NAME_TIMEOUT_MS: Twilio is waiting on this webhook, so a stalled
  * Supabase request costs the greeting its name, never the call.
@@ -191,10 +221,13 @@ async function ownerFirstNameWithin(loadOwnerFirstName, organizationId, callSid)
  *     /twiml on a null record (plain stream, no owner extras). Controller ruling;
  *     it overrides spec §8's hang-up for this route.
  *   caller no longer the owner, or the flag is off ⇒ the receptionist, stamped "failed"
- *   no input ⇒ the receptionist, unstamped
+ *   no input ⇒ the receptionist; stamped "failed" after a wrong try on this call
+ *     (attempt > 1), else unstamped
  *   wrong length, or a wrong PIN ⇒ re-Gather while tries remain, else
  *     "Continuing as a normal call." ⇒ the receptionist, stamped "failed"
- *   lockout (either window, or the lockout check failing) ⇒
+ *   a tripped lock (either window) ⇒ [ALERT:error] "owner line locked" + Sentry;
+ *   the lockout check failing, timing out (3000 ms) or returning anything but
+ *     an explicit "not locked" ⇒ [ALERT:error] + Sentry; either way
  *     "Continuing as a normal call." ⇒ the receptionist, stamped "locked"
  *   right PIN ⇒ the owner stream: { ownerMode: true, ownerAuth: "verified", ownerFirstName }
  * Always sends exactly one TwiML response and never rejects: a fault falls back
@@ -265,8 +298,10 @@ async function handleOwnerPin(req, res, { deps }) {
     const pinLength = ownerAuth.pinLengthOf(access);
     const pin = ownerAuth.normalisePinInput({ digits: body.Digits, speechResult: body.SpeechResult });
     if (pin === "") {
+      // Silence (or no digits) is "stay on the line for the receptionist". After a
+      // wrong try on this call (attempt > 1 proves one), stamp it "failed".
       console.log(`[OwnerPin] No PIN entered (attempt ${attempt}, callSid=${callSid}); continuing as a customer call`);
-      return receptionist({});
+      return receptionist(attempt > 1 ? { ownerAuth: "failed" } : {});
     }
 
     /** A wrong try: gather again while the call has tries left, else the receptionist. @param {string} what */
@@ -283,15 +318,22 @@ async function handleOwnerPin(req, res, { deps }) {
     // persisted windows: it only uses up one of this call's tries.
     if (pin.length !== pinLength) return wrongTry("PIN entry of the wrong length");
 
-    // Counted BEFORE it is checked, in both windows (spec §1, Task 1 rulings).
-    // Anything but an explicit "not locked" is locked: an RPC fault fails CLOSED.
-    const bucket = await ownerAuth.countPinAttempt({ supabase, organizationId, pinSalt: access.pin_salt });
+    // Counted BEFORE it is checked (spec §1, Task 1 rulings): the 15-minute
+    // window, then the 24-hour one unless the 15-minute window is already
+    // exhausted. Anything but an explicit "not locked" is locked: a fault or a
+    // stall (3000 ms) fails CLOSED.
+    const bucket = await countPinAttemptWithin({ supabase, organizationId, pinSalt: access.pin_salt });
     if (!bucket || bucket.locked !== false) {
-      if (!bucket || bucket.reason !== "exhausted") {
+      if (bucket && bucket.reason === "exhausted") {
+        // Page the lock itself: PR B's lockout email needs the calls row made at
+        // stream start, which a guesser who hangs up during the <Say> never creates.
+        const lockedWindow = bucket.window || "unknown";
+        console.error(`[ALERT:error] [OwnerPin] owner line locked (window=${lockedWindow}) — continuing as a customer call (called=${maskPhone(called)}, from=${maskPhone(from)}, callSid=${callSid})`);
+        page(Sentry, new Error(`owner line locked (window=${lockedWindow})`), { callSid, calledMasked: maskPhone(called), fromMasked: maskPhone(from), stage: "locked" });
+      } else {
         console.error(`[ALERT:error] [OwnerPin] PIN lockout check (check_rate_limit_bucket) failed; failing CLOSED, treated as locked (org=${organizationId}, callSid=${callSid}):`, messageOf(bucket && bucket.error));
         page(Sentry, bucket && bucket.error, { callSid, organizationId, stage: "count" });
       }
-      console.warn(`[OwnerPin] PIN locked (${bucket ? bucket.reason : "no result"}, window=${(bucket && bucket.window) || "n/a"}, count=${(bucket && bucket.count) ?? "n/a"}); continuing as a customer call (callSid=${callSid})`);
       return receptionist({ ownerAuth: "locked" }, SAY_CONTINUE);
     }
 
