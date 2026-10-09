@@ -9,7 +9,7 @@ import { sendAppointmentConfirmationSMS } from "@/lib/sms/caller-sms";
 import {
   assembleLifecycle,
   LIFECYCLE_COLS,
-  pickName,
+  snapshotForAudit,
   type LifecycleLeg,
 } from "@/lib/calendar/appointment-lifecycle";
 import {
@@ -23,7 +23,6 @@ import {
   diffAppointmentFields,
   classifyEditEvent,
   recordAppointmentEvent,
-  type AppointmentSnapshot,
 } from "@/lib/appointments/events";
 import { z } from "zod";
 
@@ -33,21 +32,6 @@ const BEFORE_COLS =
   "id, attendee_name, attendee_first_name, attendee_last_name, attendee_phone, attendee_email, " +
   "notes, start_time, end_time, duration_minutes, status, service_type_id, practitioner_id, " +
   "service_types(name), practitioners(name)";
-
-// SCRUM-398: project an appointment row (with embedded practitioner/service names)
-// into the normalized snapshot the audit diff compares.
-function toSnapshot(row: any): AppointmentSnapshot {
-  return {
-    name: row.attendee_name ?? null,
-    phone: row.attendee_phone ?? null,
-    email: row.attendee_email ?? null,
-    notes: row.notes ?? null,
-    startTime: row.start_time ?? null,
-    status: row.status ?? null,
-    practitioner: pickName(row.practitioners),
-    service: pickName(row.service_types),
-  };
-}
 
 interface Membership {
   organization_id: string;
@@ -315,7 +299,7 @@ async function rescheduleViaLeg(
     // same save, an `edited` event ON the new leg so that detail change still shows.
     try {
       const admin = createAdminClient();
-      const allChanges = diffAppointmentFields(toSnapshot(before), toSnapshot(inserted));
+      const allChanges = diffAppointmentFields(snapshotForAudit(before), snapshotForAudit(inserted));
       const { legWorthy, inPlace } = partitionRescheduleChanges(allChanges);
       await recordAppointmentEvent(admin, {
         appointmentId: inserted.id,
@@ -520,7 +504,7 @@ export async function PATCH(
     // SCRUM-398: record the in-place edit as an audit event. Best-effort, via the
     // admin client (the table is service-role-write-only), in after() so it never
     // delays or breaks the response. The diff compares resolved (name) values.
-    const changes = diffAppointmentFields(toSnapshot(before), toSnapshot(updated));
+    const changes = diffAppointmentFields(snapshotForAudit(before), snapshotForAudit(updated));
     if (changes.length > 0) {
       after(async () => {
         try {

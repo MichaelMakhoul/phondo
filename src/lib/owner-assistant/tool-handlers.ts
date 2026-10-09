@@ -16,11 +16,11 @@ import {
   handleCheckAvailability,
   type ToolResult,
 } from "@/lib/calendar/tool-handlers";
-import { pickName, MAX_BOOKING_HORIZON_MS } from "@/lib/calendar/appointment-lifecycle";
+import { pickName, snapshotForAudit, MAX_BOOKING_HORIZON_MS } from "@/lib/calendar/appointment-lifecycle";
 import { partitionRescheduleChanges } from "@/lib/calendar/reschedule-core";
 import { performRescheduleLeg } from "@/lib/calendar/reschedule-leg";
 import { isServiceTypeQuestion } from "@/lib/calendar/service-type-question";
-import { diffAppointmentFields, recordAppointmentEvent, type AppointmentSnapshot } from "@/lib/appointments/events";
+import { diffAppointmentFields, recordAppointmentEvent } from "@/lib/appointments/events";
 import { rateLimitDistributed } from "@/lib/security/rate-limiter";
 import { isValidUUID } from "@/lib/security/validation";
 import { SENTRY_REASONS } from "@/lib/security/error-ids";
@@ -37,6 +37,7 @@ import {
   formatWhen,
 } from "./time";
 import { sanitizeCustomerText } from "./sanitize";
+import { isOwnerCallMetadata } from "./owner-call";
 
 export const OWNER_TOOL_NAMES = [
   "owner_list_appointments",
@@ -258,7 +259,7 @@ export async function handleOwnerListMessages(organizationId: string): Promise<T
   const customerCalls: OwnerCallItem[] = [];
   for (const c of calls ?? []) {
     if (customerCalls.length === MESSAGES_LIMIT) break;
-    if ((c.metadata?.call_type ?? null) === "owner") continue;
+    if (isOwnerCallMetadata(c.metadata)) continue;
     const summary = sanitizeCustomerText(c.summary, TEXT_MAX);
     if (!summary) continue;
     customerCalls.push({
@@ -422,20 +423,6 @@ async function loadOwnerAppointment(
   return row ?? null;
 }
 
-// Same projection as the dashboard PATCH route's toSnapshot: the audit diff input.
-function toSnapshot(row: any): AppointmentSnapshot {
-  return {
-    name: row.attendee_name ?? null,
-    phone: row.attendee_phone ?? null,
-    email: row.attendee_email ?? null,
-    notes: row.notes ?? null,
-    startTime: row.start_time ?? null,
-    status: row.status ?? null,
-    practitioner: pickName(row.practitioners),
-    service: pickName(row.service_types),
-  };
-}
-
 export async function handleOwnerRescheduleAppointment(
   organizationId: string,
   args: { appointment_id?: string; new_datetime?: string; confirmed?: unknown },
@@ -586,7 +573,7 @@ export async function handleOwnerRescheduleAppointment(
     }
   });
   // Audit on the NEW leg (the history renders the move from the leg itself).
-  const { legWorthy } = partitionRescheduleChanges(diffAppointmentFields(toSnapshot(before), toSnapshot(inserted)));
+  const { legWorthy } = partitionRescheduleChanges(diffAppointmentFields(snapshotForAudit(before), snapshotForAudit(inserted)));
   await recordAppointmentEvent(supabase, {
     appointmentId: inserted.id,
     organizationId,

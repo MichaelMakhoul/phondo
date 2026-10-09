@@ -64,8 +64,7 @@ const data = { organizationId: ORG, callId: "0f1e2d3c-4b5a-4c6d-8e9f-0a1b2c3d4e5
 
 type Sent = { from: string; to: string; subject: string; html: string };
 const lastSent = () => resendSend.mock.calls[0][0] as Sent;
-// The email's visible words: tags dropped, whitespace (incl. the narrow no-break
-// space toLocaleString() emits before AM/PM) collapsed to single spaces.
+// The email's visible words: tags dropped, whitespace collapsed to single spaces.
 const words = (s: string) => s.replace(/<[^>]+>/g, "").replace(/\s+/g, " ");
 
 beforeEach(() => {

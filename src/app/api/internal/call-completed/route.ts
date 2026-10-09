@@ -16,6 +16,7 @@ import { deliverWebhooks } from "@/lib/integrations/webhook-delivery";
 import { withRateLimit, rateLimitDistributed } from "@/lib/security/rate-limiter";
 import { maskPhoneForOwner } from "@/lib/owner-assistant/mask-phone";
 import { formatOwnerLockTime } from "@/lib/owner-assistant/lock-email-time";
+import { isOwnerCallMetadata } from "@/lib/owner-assistant/owner-call";
 import { pageSentry } from "@/lib/observability/page-sentry";
 import { SENTRY_REASONS } from "@/lib/security/error-ids";
 
@@ -41,7 +42,7 @@ interface CallCompletedPayload {
   organizationId: string;
   // Null when the phone number had no assistant assigned (kill-switch
   // fallback / mid-onboarding / etc.) — the webhook still fires for billing
-  // and notification purposes, just without the assistant-name lookup at line 261.
+  // and notification purposes, just without the assistant-name lookup at step 5.
   assistantId: string | null;
   callerPhone: string;
   status: string;
@@ -242,7 +243,7 @@ export async function POST(request: Request) {
   // metadata.call_type = 'owner' BEFORE this route is called (see the ordering
   // note at step 2). It is not a customer interaction: no spam scoring, no
   // missed/failed/unsuccessful alert (that would email the owner about their
-  // own call), no caller text-back, no call.completed webhook. Billing still
+  // own call), no caller text-back, no call.completed / call.missed webhook. Billing still
   // counts it. Read from the DB, never the payload. A failed read falls back to
   // the customer pipeline — dropping a customer alert is the worse failure. The
   // same row carries the PIN outcome (metadata.owner_auth) read for the lockout
@@ -264,7 +265,7 @@ export async function POST(request: Request) {
       storedMetadata = (existingCall?.metadata || {}) as Record<string, unknown>;
     }
   }
-  const isOwnerCall = storedMetadata?.call_type === "owner";
+  const isOwnerCall = isOwnerCallMetadata(storedMetadata);
 
   // 1. Run spam analysis
   let spamAnalysis = null;
