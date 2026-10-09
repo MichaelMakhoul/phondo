@@ -231,7 +231,8 @@ export async function POST(request: Request) {
             ownerResult = await handleOwnerListAppointments(organizationId, { range: str(raw.range), date: str(raw.date) });
             break;
           case "owner_list_messages":
-            ownerResult = await handleOwnerListMessages(organizationId);
+            // The envelope callId lets the handler leave the owner's own live call out.
+            ownerResult = await handleOwnerListMessages(organizationId, ownerCtx);
             break;
           case "owner_reschedule_appointment":
             ownerResult = await handleOwnerRescheduleAppointment(

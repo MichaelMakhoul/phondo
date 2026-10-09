@@ -221,8 +221,10 @@ export const rateLimitConfigs = {
   // SCRUM-586: the owner's PIN-lockout email — at most one per org per 15 minutes
   // (key "<orgId>:owner-lock-email"), so a PIN guesser redialling can't flood the
   // owner's inbox. FAIL-OPEN (no costControl): during a Supabase brownout it falls
-  // back to the per-instance Map and pages RATE_LIMIT_DISTRIBUTED_FAILED — dropping
-  // a security alert on a DB blip is the worse failure.
+  // back to the per-instance Map — dropping a security alert on a DB blip is the
+  // worse failure. That fallback is only a console.error plus a
+  // RATE_LIMIT_DISTRIBUTED_FAILED Sentry capture (dormant: no DSN in production);
+  // it raises no [ALERT] line.
   ownerLockEmail: {
     windowMs: 15 * 60 * 1000,
     maxRequests: 1,

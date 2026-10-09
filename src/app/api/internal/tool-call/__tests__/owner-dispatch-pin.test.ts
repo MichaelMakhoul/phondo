@@ -142,7 +142,8 @@ describe("owner_* authority (SCRUM-586)", () => {
     await post({ ...base, ownerVerified: true, functionName: "owner_list_appointments", arguments: { range: "date", date: "2026-10-20", extra: "ignored" } });
     expect(handleOwnerListAppointments).toHaveBeenCalledWith(ORG, { range: "date", date: "2026-10-20" });
     await post({ ...base, ownerVerified: true, functionName: "owner_list_messages", arguments: {} });
-    expect(handleOwnerListMessages).toHaveBeenCalledWith(ORG);
+    // The envelope callId, so the handler can leave the owner's own live call out of "today's calls".
+    expect(handleOwnerListMessages).toHaveBeenCalledWith(ORG, { callId: CALL_ID });
   });
 
   it("ownerVerified changes nothing for customer tools", async () => {

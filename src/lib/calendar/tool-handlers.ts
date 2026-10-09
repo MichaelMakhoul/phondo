@@ -1832,6 +1832,11 @@ export async function cancelSingleAppointment(
   // confirmed/pending, so a move or cancel that landed after the caller's lookup is
   // never overwritten. 0 rows → `{ success:false, data:{ notActive:true } }`, a
   // business non-success: nothing cancelled, refreshed or texted.
+  // NOTE: requireActive is checked at the LOCAL write, i.e. AFTER the Cal.com /
+  // Cliniko cancellation below has already gone out. The owner path never gets here
+  // with an external booking (it refuses those first); a future caller combining
+  // requireActive with an external provider must handle a 0-row result whose
+  // external cancel already happened.
   opts?: { terminalStatus?: "cancelled" | "rescheduled"; suppressSms?: boolean; requireActive?: boolean }
 ): Promise<ToolResult> {
   try {

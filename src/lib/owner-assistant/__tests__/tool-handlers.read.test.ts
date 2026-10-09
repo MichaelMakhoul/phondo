@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // SCRUM-586: owner read tools. Pins: org scoping in the SQL, active-only
-// statuses, org-local day bounds, ids in `data`, owner calls and spam calls
-// filtered out of "messages" (a summary-less customer call is still listed and
-// counted), honest counts when a list is capped, customer-written text flattened
+// statuses, org-local day bounds, ids in `data`, owner calls (the owner's own live
+// call by id, in the query) and spam calls filtered out of "messages" (a summary-less
+// or in-progress customer call is still listed and counted), honest counts when a
+// list is capped, customer-written text flattened
 // and capped before it reaches the model, DB faults → errorResult (error:true).
 
 vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: vi.fn() }));
@@ -43,15 +44,20 @@ function fakeAdmin() {
       const ctx: Op = { table, filters: [] };
       const res = (): Res => {
         const r = db.queues[table]?.shift() ?? { data: [], error: null, count: 0 };
+        let rows = r.data;
+        // A `neq` filter is applied by PostgREST: the excluded rows never come back.
+        for (const [col, val] of filter(ctx, "neq")) {
+          if (Array.isArray(rows)) rows = rows.filter((row) => (row as Record<string, unknown>)[col as string] !== val);
+        }
         const sel = ctx.filters.find((f) => f.name === "select")?.args[0];
-        if (typeof sel !== "string" || !r.data) return r;
-        const data = Array.isArray(r.data)
-          ? r.data.map((row) => project(row as Record<string, unknown>, sel))
-          : project(r.data as Record<string, unknown>, sel);
+        if (typeof sel !== "string" || !rows) return { ...r, data: rows };
+        const data = Array.isArray(rows)
+          ? rows.map((row) => project(row as Record<string, unknown>, sel))
+          : project(rows as Record<string, unknown>, sel);
         return { ...r, data };
       };
       const b: any = {};
-      for (const name of ["select", "eq", "in", "not", "gte", "lt", "order", "limit"]) {
+      for (const name of ["select", "eq", "neq", "in", "not", "gte", "lt", "order", "limit"]) {
         b[name] = (...args: unknown[]) => { ctx.filters.push({ name, args }); return b; };
       }
       b.single = async () => { db.log.push(ctx); return res(); };
@@ -387,6 +393,78 @@ describe("owner_list_messages", () => {
     expect(r.message).toContain("2 customer calls today:");
     expect(r.message).toContain("- Thursday, October 15 at 1:00 PM: Unknown caller (+61400000002) — No message — short or missed call");
     expect(r.message).not.toContain("Owner checked tomorrow");
+  });
+
+  it("leaves the owner's own live call out IN THE QUERY: its row exists mid-call, unmarked until the call ends", async () => {
+    const OWN_CALL = "0f1e2d3c-4b5a-4c6d-8e9f-0a1b2c3d4e5f";
+    // The voice server creates the row at stream start (status in-progress, no summary, and
+    // metadata without call_type: "owner" is only written when the call ends).
+    const ownLive = { id: OWN_CALL, caller_name: null, caller_phone: "+61499999999", summary: null, status: "in-progress", created_at: "2026-10-15T02:59:00+00:00", metadata: { voice_provider: "self_hosted" } };
+    const customer = { id: "c-1", caller_name: "Sue", caller_phone: "+61400000003", summary: "Blocked drain", status: "completed", created_at: "2026-10-15T01:30:00+00:00", metadata: {} };
+    db.queues.callback_requests = [{ data: [], error: null }];
+    db.queues.calls = [{ data: [ownLive, customer], error: null }];
+
+    const r = await handleOwnerListMessages(ORG, { callId: OWN_CALL });
+
+    const cq = db.log.find((o) => o.table === "calls")!;
+    expect(filter(cq, "neq")).toEqual([["id", OWN_CALL]]);
+    expect(filter(cq, "eq")).toEqual([["organization_id", ORG]]); // alongside, not instead of, the org scope
+    expect((r.data as any).calls.map((c: any) => c.call_id)).toEqual(["c-1"]);
+    expect(r.message).toContain("1 customer call today:");
+    expect(r.message).not.toContain("+61499999999");
+    expect(r.message).not.toContain("On a call right now");
+  });
+
+  it("without a usable call id nothing is excluded (no neq): the handler never guesses which call is the owner's", async () => {
+    for (const ctx of [undefined, { callId: "" }]) {
+      db.queues.organizations = [{ data: { timezone: TZ }, error: null }];
+      db.queues.callback_requests = [{ data: [], error: null }];
+      db.queues.calls = [{ data: [], error: null }];
+      db.log = [];
+      await handleOwnerListMessages(ORG, ctx);
+      expect(filter(db.log.find((o) => o.table === "calls")!, "neq")).toEqual([]);
+    }
+  });
+
+  it("a customer who is on a call right now is listed and counted as one, labelled as such — not as a missed call", async () => {
+    db.queues.callback_requests = [{ data: [], error: null }];
+    db.queues.calls = [{
+      data: [
+        { id: "c-live", caller_name: null, caller_phone: "+61400000021", summary: null, status: "in-progress", created_at: "2026-10-15T02:58:00+00:00", metadata: { voice_provider: "self_hosted" } },
+        { id: "c-missed", caller_name: null, caller_phone: "+61400000022", summary: null, status: "completed", created_at: "2026-10-15T02:00:00+00:00", metadata: {} },
+        { id: "c-stuck", caller_name: "Ann", caller_phone: null, summary: "Wants a quote", status: "in-progress", created_at: "2026-10-15T01:00:00+00:00", metadata: {} },
+      ],
+      error: null,
+    }];
+
+    const r = await handleOwnerListMessages(ORG, { callId: "0f1e2d3c-4b5a-4c6d-8e9f-0a1b2c3d4e5f" });
+
+    const cq = db.log.find((o) => o.table === "calls")!;
+    expect(String(filter(cq, "select")[0][0]).split(",").map((c) => c.trim())).toContain("status");
+    expect((r.data as any).calls.map((c: any) => [c.call_id, c.summary])).toEqual([
+      ["c-live", "On a call right now"],
+      ["c-missed", "No message — short or missed call"],
+      ["c-stuck", "Wants a quote"], // a summary always wins over a placeholder
+    ]);
+    expect(r.message).toContain("3 customer calls today:");
+    expect(r.message).toContain("- Thursday, October 15 at 1:58 PM: Unknown caller (+61400000021) — On a call right now");
+  });
+
+  it("a full 30-call window of only the owner's own calls never reads 'At least 0': it says none were in the window", async () => {
+    db.queues.callback_requests = [{ data: [], error: null }];
+    db.queues.calls = [{
+      data: Array.from({ length: 30 }, (_, i) => ({
+        id: `c-owner-${i + 1}`, caller_name: null, caller_phone: "+61499999999", summary: "Owner checked the diary", status: "completed",
+        created_at: "2026-10-15T01:00:00+00:00", metadata: { call_type: "owner" },
+      })),
+      error: null,
+    }];
+
+    const r = await handleOwnerListMessages(ORG);
+
+    expect(r.message).toBe("0 callbacks waiting.\nNo customer calls among the latest 30 calls today.");
+    expect(r.message).not.toMatch(/at least 0/i);
+    expect((r.data as any).calls).toEqual([]);
   });
 
   it("says so when there is nothing", async () => {

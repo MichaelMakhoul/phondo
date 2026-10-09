@@ -89,6 +89,11 @@ describe("the owner's callId is the envelope's, never the model's", () => {
     expect(vi.mocked(handleOwnerRescheduleAppointment).mock.calls[0][2]).toEqual({ callId: CALL_ID });
   });
 
+  it("owner_list_messages gets the envelope callId too (to leave the owner's own call out), never a smuggled one", async () => {
+    await post({ ...base, callId: CALL_ID, ownerVerified: true, functionName: "owner_list_messages", arguments: { callId: SMUGGLED, call_id: SMUGGLED } });
+    expect(handleOwnerListMessages).toHaveBeenCalledWith(ORG, { callId: CALL_ID });
+  });
+
   it("a callId in `arguments` is not a production call by itself", async () => {
     const res = await post({ ...base, ownerVerified: true, functionName: "owner_cancel_appointment", arguments: { appointment_id: APPT, confirmed: true, callId: SMUGGLED } });
     expect(res.status).toBe(403);

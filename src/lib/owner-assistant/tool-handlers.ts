@@ -90,8 +90,9 @@ export interface OwnerCallItem {
   at: string;
   caller_name: string | null;
   caller_phone: string | null;
-  /** The post-call summary, or "No message — short or missed call" when there is none
-   *  (a missed or very short call, or the post-call analysis failed). */
+  /** The post-call summary; without one, "On a call right now" while the call is still
+   *  in progress, else "No message — short or missed call" (a missed or very short call,
+   *  or the post-call analysis failed). */
   summary: string;
 }
 export interface OwnerListMessagesData {
@@ -107,6 +108,8 @@ const MESSAGES_LIMIT = 10;
 const CALLS_FETCH_LIMIT = 30;
 /** A customer call with no (printable) summary: missed, too short to analyse, or analysis failed. */
 const NO_SUMMARY = "No message — short or missed call";
+/** A customer call still under way (calls.status "in-progress"): no summary exists yet. */
+const ON_A_CALL = "On a call right now";
 /**
  * Caps for customer-written text in tool results (see sanitizeCustomerText). Service
  * and practitioner names are org-controlled, but get the same treatment: it is free.
@@ -213,7 +216,14 @@ export async function handleOwnerListAppointments(
   };
 }
 
-export async function handleOwnerListMessages(organizationId: string): Promise<ToolResult> {
+/**
+ * `ctx` is the owner's own call (the route passes the envelope callId, as for the write
+ * tools). Its row already exists while the owner is asking — status "in-progress", no
+ * summary, and not yet marked call_type "owner" (completeCallRecord writes that when the
+ * call ends) — so it is excluded by id in the query; without it, the owner would hear their
+ * own call read back as a customer's.
+ */
+export async function handleOwnerListMessages(organizationId: string, ctx?: OwnerCallContext): Promise<ToolResult> {
   const supabase = createAdminClient();
   const tz = await getOrgTimezone(supabase, organizationId);
   if (!tz) return errorResult(TROUBLE);
@@ -231,15 +241,21 @@ export async function handleOwnerListMessages(organizationId: string): Promise<T
     return errorResult(TROUBLE);
   }
 
-  const { data: calls, error: callErr } = await (supabase as any)
+  let callsQuery = (supabase as any)
     .from("calls")
-    .select("id, caller_name, caller_phone, summary, created_at, metadata")
+    .select("id, caller_name, caller_phone, summary, status, created_at, metadata")
     .eq("organization_id", organizationId)
     // Spam is not a message. `IS NOT TRUE` (PostgREST `is_spam=not.is.true`) keeps both
     // false and NULL rows, and doing it in SQL stops spam crowding the fetch window.
     .not("is_spam", "is", true)
     .gte("created_at", today.start)
-    .lt("created_at", today.end)
+    .lt("created_at", today.end);
+  // The owner's own live call (see the JSDoc), left out in the same query so it never
+  // takes a slot in the fetch window either.
+  if (typeof ctx?.callId === "string" && ctx.callId.length > 0) {
+    callsQuery = callsQuery.neq("id", ctx.callId);
+  }
+  const { data: calls, error: callErr } = await callsQuery
     .order("created_at", { ascending: false })
     .limit(CALLS_FETCH_LIMIT);
   if (callErr) {
@@ -261,15 +277,15 @@ export async function handleOwnerListMessages(organizationId: string): Promise<T
   const cbTotal = typeof cbCount === "number" ? cbCount : callbacks.length;
 
   // The owner's own calls are not messages. Every other call today is: a missed or
-  // short call (or one whose post-call analysis failed) has no summary but is still a
-  // customer who rang, so it is listed and counted rather than dropped.
+  // short call (or one whose post-call analysis failed, or one still under way) has no
+  // summary but is still a customer who rang, so it is listed and counted rather than dropped.
   const customerRows = (calls ?? []).filter((c: any) => !isOwnerCallMetadata(c.metadata));
   const customerCalls: OwnerCallItem[] = customerRows.slice(0, MESSAGES_LIMIT).map((c: any) => ({
     call_id: c.id,
     at: formatWhen(new Date(c.created_at), tz),
     caller_name: sanitizeCustomerText(c.caller_name, NAME_MAX),
     caller_phone: sanitizeCustomerText(c.caller_phone, PHONE_MAX),
-    summary: sanitizeCustomerText(c.summary, TEXT_MAX) ?? NO_SUMMARY,
+    summary: sanitizeCustomerText(c.summary, TEXT_MAX) ?? (c.status === "in-progress" ? ON_A_CALL : NO_SUMMARY),
   }));
   const callTotal = customerRows.length;
   // A full fetch window means today may hold more calls than were fetched.
@@ -287,10 +303,16 @@ export async function handleOwnerListMessages(organizationId: string): Promise<T
   for (const c of callbacks) {
     lines.push(`- ${c.caller_name} (${c.caller_phone}), ${c.urgency} urgency: ${c.reason}${c.requested ? ` — wants ${c.requested}` : ""} (received ${c.received})`);
   }
-  lines.push(
-    `${callsSaturated ? "At least " : ""}${callTotal} customer ${callTotal === 1 ? "call" : "calls"} today` +
-      `${callTotal > customerCalls.length ? ` (newest ${customerCalls.length} listed)` : ""}${customerCalls.length ? ":" : "."}`
-  );
+  if (callsSaturated && callTotal === 0) {
+    // Every fetched row was the owner's own: older customer calls today may exist beyond
+    // the window, so say what was looked at rather than "no customer calls" or "at least 0".
+    lines.push(`No customer calls among the latest ${CALLS_FETCH_LIMIT} calls today.`);
+  } else {
+    lines.push(
+      `${callsSaturated ? "At least " : ""}${callTotal} customer ${callTotal === 1 ? "call" : "calls"} today` +
+        `${callTotal > customerCalls.length ? ` (newest ${customerCalls.length} listed)` : ""}${customerCalls.length ? ":" : "."}`
+    );
+  }
   for (const c of customerCalls) {
     lines.push(`- ${c.at}: ${c.caller_name ?? "Unknown caller"}${c.caller_phone ? ` (${c.caller_phone})` : ""} — ${c.summary}`);
   }
