@@ -58,7 +58,7 @@ const ownerToolDefinitions = [
     function: {
       name: "owner_reschedule_appointment",
       description:
-        "Move ONE existing job to a new time. First read the exact job and the new time back to the owner and get a clear yes, THEN call with confirmed=true. The result's data.outcome is rescheduled | needs_confirmation | not_found | slot_taken | invalid_time | rate_limited | external_calendar — only 'rescheduled' means it happened; after it, use data.new_appointment_id for any further change to that job. The customer is NOT notified.",
+        "Move ONE existing job to a new time, in two calls. First call WITHOUT confirmed: nothing changes, and data.outcome is needs_confirmation with the read-back — the job's current and new times in data.from and data.to. Read that back to the owner and get a clear yes, THEN call again with confirmed=true. The result's data.outcome is rescheduled | needs_confirmation | not_found | slot_taken | invalid_time | rate_limited | external_calendar — only 'rescheduled' means it happened; after it, use data.new_appointment_id for any further change to that job. The customer is NOT notified.",
       parameters: {
         type: "object",
         properties: {
@@ -81,7 +81,7 @@ const ownerToolDefinitions = [
     function: {
       name: "owner_cancel_appointment",
       description:
-        "Cancel ONE existing job. First read the exact job back to the owner and get a clear yes, THEN call with confirmed=true. The result's data.outcome is cancelled | needs_confirmation | not_found | rate_limited | external_calendar — only 'cancelled' means it happened. The customer is NOT notified.",
+        "Cancel ONE existing job, in two calls. First call WITHOUT confirmed: nothing changes, and data.outcome is needs_confirmation with the read-back — the job's time in data.when. Read that back to the owner and get a clear yes, THEN call again with confirmed=true. The result's data.outcome is cancelled | needs_confirmation | not_found | rate_limited | external_calendar — only 'cancelled' means it happened. The customer is NOT notified.",
       parameters: {
         type: "object",
         properties: {
@@ -122,7 +122,7 @@ const ownerCheckAvailabilityDefinition = {
         },
         practitioner_id: {
           type: "string",
-          description: "Optional — normally leave it out to see free times across all staff. Never put a name here.",
+          description: "Optional. Leave this out to see free times across all staff. Never put a name here.",
         },
       },
       required: ["date"],

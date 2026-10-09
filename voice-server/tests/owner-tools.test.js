@@ -49,6 +49,15 @@ describe("owner tool declarations", () => {
     assert.ok(byName.owner_cancel_appointment.description.includes("cancelled | needs_confirmation | not_found | rate_limited"));
     assert.deepEqual([...ot.OWNER_SUCCESS_OUTCOMES].sort(), ["cancelled", "rescheduled"]);
   });
+  it("each write describes PR B's two-call flow: WITHOUT confirmed first for the read-back (data.from/to, data.when), confirmed=true only after the owner's yes", () => {
+    for (const [tool, times] of [["owner_reschedule_appointment", "data.from and data.to"], ["owner_cancel_appointment", "data.when"]]) {
+      const d = byName[tool].description;
+      assert.ok(d.includes("First call WITHOUT confirmed: nothing changes, and data.outcome is needs_confirmation with the read-back"), tool);
+      assert.ok(d.includes(times), `${tool}: ${times}`);
+      assert.ok(d.indexOf("WITHOUT confirmed") < d.indexOf("confirmed=true"), `${tool}: the unconfirmed call comes first`);
+      assert.ok(d.includes("get a clear yes, THEN call again with confirmed=true"), tool);
+    }
+  });
   it("lists PR B's external_calendar outcome too — a business non-success, never a success outcome", () => {
     assert.ok(byName.owner_reschedule_appointment.description.includes("external_calendar"));
     assert.ok(byName.owner_cancel_appointment.description.includes("external_calendar"));
@@ -72,7 +81,7 @@ describe("owner check_availability declaration", () => {
     const prompt = buildOwnerPrompt({ orgName: "Copperline Plumbing", timezone: "Australia/Sydney", todayStr: "2026-10-12", serviceTypes: [{ id: "st-1", name: "Blocked drain", duration_minutes: 60 }] });
     assert.ok(prompt.includes("SERVICE TYPES"), "the label the declaration names must exist in the owner prompt");
     assert.ok(!owner.parameters.required.includes("practitioner_id"));
-    assert.match(owner.parameters.properties.practitioner_id.description, /optional/i);
+    assert.equal(owner.parameters.properties.practitioner_id.description, "Optional. Leave this out to see free times across all staff. Never put a name here.");
   });
   it("keeps the customer parameter schema exactly, so tool-executor's handler and PR B's route are unchanged", () => {
     const shape = (fn) => Object.fromEntries(Object.entries(fn.parameters.properties).map(([k, v]) => [k, { type: v.type, enum: v.enum }]));
