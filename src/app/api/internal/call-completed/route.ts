@@ -103,10 +103,38 @@ export async function POST(request: Request) {
 
   const supabase = createAdminClient();
 
+  // SCRUM-586: read the call's stored metadata up front (one query, reused by the
+  // spam merge below). An OWNER call — the business owner ringing their own
+  // assistant — is marked by the voice server's completeCallRecord as
+  // metadata.call_type = 'owner' BEFORE this route is called (see the ordering
+  // note at step 2). It is not a customer interaction: no spam scoring, no
+  // missed/failed/unsuccessful alert (that would email the owner about their
+  // own call), no caller text-back, no call.completed webhook. Billing still
+  // counts it. Read from the DB, never the payload. A failed read falls back to
+  // the customer pipeline — dropping a customer alert is the worse failure.
+  let storedMetadata: Record<string, unknown> | null = null;
+  let metadataFetchFailed = false;
+  if (callId) {
+    const { data: existingCall, error: fetchError } = await (supabase as any)
+      .from("calls")
+      .select("metadata")
+      .eq("id", callId)
+      .single();
+    if (fetchError) {
+      console.error("[Internal] Failed to fetch existing call metadata — owner-call check skipped, metadata merge skipped to avoid data loss:", {
+        callId, error: fetchError,
+      });
+      metadataFetchFailed = true;
+    } else {
+      storedMetadata = (existingCall?.metadata || {}) as Record<string, unknown>;
+    }
+  }
+  const isOwnerCall = storedMetadata?.call_type === "owner";
+
   // 1. Run spam analysis
   let spamAnalysis = null;
   let spamAnalysisFailed = false;
-  if (callerPhone) {
+  if (callerPhone && !isOwnerCall) {
     // The timing heuristic needs the ORG's timezone (scoring "unusual hours"
     // in server-UTC penalized every AU business-hours call — SCRUM-418), and
     // phone-format analysis needs the org's country (defaulting to US rules
@@ -171,19 +199,8 @@ export async function POST(request: Request) {
   // after await completeCallRecord() in server.js cleanupSession(), so metadata
   // is already written by the time this route runs. Do NOT parallelize those calls.
   if (callId && spamAnalysis) {
-    const { data: existingCall, error: fetchError } = await (supabase as any)
-      .from("calls")
-      .select("metadata")
-      .eq("id", callId)
-      .single();
-
-    if (fetchError) {
-      console.error("[Internal] Failed to fetch existing call metadata — skipping metadata merge to avoid data loss:", {
-        callId, error: fetchError,
-      });
-    }
-
-    const existingMetadata = fetchError ? null : (existingCall?.metadata || {});
+    // SCRUM-586: the metadata read moved above (shared with the owner check).
+    const existingMetadata = metadataFetchFailed ? null : (storedMetadata ?? {});
     // If metadata fetch failed, still update spam columns but skip metadata merge
     const updatePayload: Record<string, unknown> = {
       is_spam: spamAnalysis.isSpam,
@@ -288,7 +305,7 @@ export async function POST(request: Request) {
   // one channel was attempted and succeeded, "skipped" when every channel was
   // disabled by preference (previously misreported here as "sent").
   let notificationStatus: "sent" | "skipped" | "failed" = "skipped";
-  if (!spamAnalysis?.isSpam) {
+  if (!spamAnalysis?.isSpam && !isOwnerCall) {
     try {
       if (notificationKind === "failed") {
         notificationStatus = await sendFailedCallNotification({
@@ -358,43 +375,46 @@ export async function POST(request: Request) {
   }
 
   // 5. Deliver webhooks to user integrations
-  let assistantName: string | null = null;
-  if (assistantId) {
-    const { data: assistantRecord, error: assistantError } = await (supabase as any)
-      .from("assistants")
-      .select("name")
-      .eq("id", assistantId)
-      .single();
-    if (assistantError) {
-      console.error("[Internal] Failed to look up assistant name for webhook:", { assistantId, error: assistantError });
+  // SCRUM-586: an owner call is not a customer event for integrations.
+  if (!isOwnerCall) {
+    let assistantName: string | null = null;
+    if (assistantId) {
+      const { data: assistantRecord, error: assistantError } = await (supabase as any)
+        .from("assistants")
+        .select("name")
+        .eq("id", assistantId)
+        .single();
+      if (assistantError) {
+        console.error("[Internal] Failed to look up assistant name for webhook:", { assistantId, error: assistantError });
+      }
+      if (assistantRecord) assistantName = assistantRecord.name;
     }
-    if (assistantRecord) assistantName = assistantRecord.name;
+
+    // Map "failed" status to "call.missed" webhook event since there is no
+    // "call.failed" event type — from the customer's perspective, a failed
+    // call is functionally equivalent to a missed one.
+    const webhookEvent = (status === "failed" || status === "missed")
+      ? "call.missed" as const
+      : "call.completed" as const;
+
+    // after() so webhook delivery survives Vercel's post-response freeze (SCRUM-410).
+    runAfterResponse(async () => {
+      try {
+        await deliverWebhooks(organizationId, webhookEvent, {
+          callId: callId || "unknown",
+          caller: callerPhone || "Unknown",
+          transcript,
+          duration: durationSeconds,
+          assistantName,
+          outcome: status,
+        });
+      } catch (err) {
+        console.error("[Internal] Webhook delivery failed:", {
+          organizationId, callId: callId || "unknown", webhookEvent, error: err,
+        });
+      }
+    });
   }
 
-  // Map "failed" status to "call.missed" webhook event since there is no
-  // "call.failed" event type — from the customer's perspective, a failed
-  // call is functionally equivalent to a missed one.
-  const webhookEvent = (status === "failed" || status === "missed")
-    ? "call.missed" as const
-    : "call.completed" as const;
-
-  // after() so webhook delivery survives Vercel's post-response freeze (SCRUM-410).
-  runAfterResponse(async () => {
-    try {
-      await deliverWebhooks(organizationId, webhookEvent, {
-        callId: callId || "unknown",
-        caller: callerPhone || "Unknown",
-        transcript,
-        duration: durationSeconds,
-        assistantName,
-        outcome: status,
-      });
-    } catch (err) {
-      console.error("[Internal] Webhook delivery failed:", {
-        organizationId, callId: callId || "unknown", webhookEvent, error: err,
-      });
-    }
-  });
-
-  return NextResponse.json({ received: true, notificationStatus });
+  return NextResponse.json({ received: true, notificationStatus, ...(isOwnerCall && { ownerCall: true }) });
 }
