@@ -718,6 +718,27 @@ describe("extractBusinessInfoWithLLM (SCRUM-532) — stubbed-fetch E2E", () => {
     stubAnthropic({ content: [{ type: "thinking", thinking: "", signature: "sig" }], stop_reason: "max_tokens" });
     expect(await extractBusinessInfoWithLLM([page(1, 100)])).toBeNull();
   });
+
+  // Unreadable Haiku 5.5 responses fail LOUDLY: null (→ raw-fallback) plus a
+  // warning carrying the stop_reason, so a cap spent thinking or a refusal is
+  // diagnosable from the log alone.
+  const UNREADABLE: Array<[string, unknown, string]> = [
+    ["thinking-only, cap spent on thinking", { content: [{ type: "thinking", thinking: "", signature: "s" }], stop_reason: "max_tokens" }, "max_tokens"],
+    ["refusal with empty content", { content: [], stop_reason: "refusal", stop_details: { type: "refusal", category: "general_harms" } }, "refusal"],
+    ["text block present but empty", { content: [{ type: "text", text: "" }], stop_reason: "end_turn" }, "end_turn"],
+  ];
+  for (const [name, body, reason] of UNREADABLE) {
+    it(`SCRUM-588: ${name} → null + a warning carrying stop_reason=${reason}`, async () => {
+      stubAnthropic(body);
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        expect(await extractBusinessInfoWithLLM([page(1, 100)])).toBeNull();
+        expect(warn).toHaveBeenCalledWith("[LLM Extract] Anthropic returned empty content", { stopReason: reason });
+      } finally {
+        warn.mockRestore();
+      }
+    });
+  }
 });
 
 // ── SCRUM-534: staff extraction (display-only) ──────────────────────────

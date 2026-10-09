@@ -24,23 +24,42 @@ function isOpenAIReasoningModel(model) {
 }
 
 /**
+ * The reasoning models whose effort scale goes down to "none": GPT-5.1 and
+ * later point releases, and GPT-6+ (gpt-6-luna). gpt-5 / gpt-5-mini / -nano
+ * bottom out at "minimal" and the o-series at "low" — both 400 on "none".
+ * @param {string} model
+ * @returns {boolean}
+ */
+function acceptsReasoningEffortNone(model) {
+  return /^gpt-(5\.[1-9]\d*|[6-9](\.\d+)?|[1-9]\d+(\.\d+)?)(?=$|[-.])/i.test(String(model || ""));
+}
+
+/**
  * Token-cap, sampling and reasoning fields for a chat-completions body.
  *
- * Reasoning models get `reasoning_effort: "none"` (the lowest level from
- * GPT-5.1 on; gpt-6-luna rejects "minimal"): no hidden reasoning tokens eating
- * the cap and leaving `content` empty, function calling allowed on chat
- * completions (gpt-6-luna only supports tools there at "none"), and the only
- * level at which a non-default temperature is accepted — at its default
- * effort gpt-6-luna 400s on any temperature but 1. Raising the effort means
- * dropping `temperature`.
+ * - GPT-5.1+/GPT-6+ get `reasoning_effort: "none"` (gpt-6-luna rejects
+ *   "minimal"): no hidden reasoning tokens eating the cap and leaving
+ *   `content` empty, function calling allowed on chat completions (gpt-6-luna
+ *   only supports tools there at "none"), and the only level at which a
+ *   non-default temperature is accepted — at its default effort gpt-6-luna
+ *   400s on any temperature but 1. Raising the effort means dropping
+ *   `temperature`.
+ * - Older reasoning models (gpt-5, gpt-5-mini/nano, o-series) get
+ *   `max_completion_tokens` ONLY: they reject "none" and any non-default
+ *   temperature, so they run at their default effort.
+ * - Everything else (gpt-4.x, Gemini on the compat endpoint) keeps
+ *   `max_tokens` + `temperature`.
  *
  * @param {string} model
  * @param {{ maxTokens: number, temperature: number }} opts
  * @returns {Record<string, number|string>}
  */
 function openAIChatParams(model, { maxTokens, temperature }) {
-  if (isOpenAIReasoningModel(model)) {
+  if (acceptsReasoningEffortNone(model)) {
     return { max_completion_tokens: maxTokens, reasoning_effort: "none", temperature };
+  }
+  if (isOpenAIReasoningModel(model)) {
+    return { max_completion_tokens: maxTokens };
   }
   return { max_tokens: maxTokens, temperature };
 }
@@ -78,4 +97,10 @@ function claudeResponseText(content) {
   return block ? block.text : "";
 }
 
-module.exports = { isOpenAIReasoningModel, openAIChatParams, claudeLatencyParams, claudeResponseText };
+module.exports = {
+  isOpenAIReasoningModel,
+  acceptsReasoningEffortNone,
+  openAIChatParams,
+  claudeLatencyParams,
+  claudeResponseText,
+};

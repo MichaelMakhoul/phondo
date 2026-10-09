@@ -115,3 +115,12 @@ test("server.js logs the model actually in use — no hardcoded version string",
   assert.match(serverSrc, /\(Gemini Live: \$\{GEMINI_MODEL\}\)/, "startup log must print GEMINI_MODEL");
   assert.match(serverSrc, /\[TestGeminiLive\] Initializing Gemini Live \(\$\{GEMINI_MODEL\}\)/, "test-call log must print GEMINI_MODEL");
 });
+
+test("the revert model gets the SAME setup as the default except `model` — no model-specific branches", () => {
+  // GEMINI_LIVE_MODEL must revert to the exact setup probed on 3.1
+  // (2026-10-09), not merely to a different model string.
+  const { setup: def } = setupFor(undefined);
+  const { setup: rev } = setupFor("models/gemini-3.1-flash-live-preview");
+  assert.equal(rev.model, "models/gemini-3.1-flash-live-preview");
+  assert.deepEqual({ ...rev, model: undefined }, { ...def, model: undefined });
+});

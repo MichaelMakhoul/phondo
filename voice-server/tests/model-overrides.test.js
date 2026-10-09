@@ -151,15 +151,22 @@ describe("VALIDATOR_MODEL — mid-call Tier-2 validator", () => {
     assert.deepEqual(await validateToolResponse(ARGS), { accurate: false, discrepancy: "time is 9:30 not 10am" });
   });
 
-  it("no text block at all: fails open, but LOUDLY (stop_reason in the warning)", async (t) => {
+  it("no text block at all: fails open, and the 3rd in a row raises an [ALERT:warning] Grafana pages on", async (t) => {
     const { validateToolResponse } = freshWithEnv("../services/turn-validator", { ANTHROPIC_API_KEY: "test-key", VALIDATOR_MODEL: undefined });
     const warn = t.mock.method(console, "warn", () => {});
+    const alertLines = () => warn.mock.calls.map((c) => String(c.arguments[0])).filter((l) => l.startsWith("[ALERT:"));
     globalThis.fetch = captureAnthropic({}, [{ type: "thinking", thinking: "", signature: "sig" }], "max_tokens");
-    assert.deepEqual(await validateToolResponse(ARGS), { accurate: true });
+    for (let i = 0; i < 2; i++) assert.deepEqual(await validateToolResponse(ARGS), { accurate: true });
+    assert.equal(alertLines().length, 0, "one or two unreadable verdicts are a blip, not an outage");
     assert.ok(
-      warn.mock.calls.some((c) => /No text in claude-haiku-5-5 response \(stop_reason=max_tokens\)/.test(String(c.arguments[0]))),
-      "a validator that can't read its own answer must say so"
+      warn.mock.calls.some((c) => /No usable verdict \(.*model=claude-haiku-5-5.*stop_reason=max_tokens/.test(String(c.arguments[0]))),
+      "every unreadable verdict still leaves a trace with the model and stop_reason"
     );
+    assert.deepEqual(await validateToolResponse(ARGS), { accurate: true });
+    const [line] = alertLines();
+    assert.match(line, /^\[ALERT:warning\] \[tier2_validator\] Tier-2 validator producing no verdicts \(3 unreadable in a row\) — validation OFF/);
+    assert.match(line, /model=claude-haiku-5-5/);
+    assert.match(line, /stop_reason=max_tokens/);
   });
 });
 
@@ -268,6 +275,19 @@ describe("CR_LLM_MODEL — ConversationRelay test pipeline", () => {
     assert.equal(capture.body.model, "claude-haiku-5-5");
     assert.deepEqual(capture.body.thinking, { type: "disabled" });
     assert.equal(capture.body.temperature, undefined);
+  });
+
+  it("CR_LLM_MODEL=claude-haiku-4-5-20251001 (the revert) gets thinking disabled, no temperature, and a full body", async () => {
+    const chat = freshWithEnv("../services/claude-chat", { CR_LLM_MODEL: "claude-haiku-4-5-20251001", ANTHROPIC_API_KEY: "test-key" });
+    const capture = {};
+    globalThis.fetch = captureStream(capture);
+    await chat.streamClaudeResponse([{ role: "system", content: "sys" }, { role: "user", content: "hi" }]);
+    assert.equal(capture.body.model, "claude-haiku-4-5-20251001");
+    assert.deepEqual(capture.body.thinking, { type: "disabled" });
+    assert.equal(capture.body.temperature, undefined);
+    assert.equal(capture.body.stream, true);
+    assert.equal(capture.body.system, "sys");
+    assert.deepEqual(capture.body.messages, [{ role: "user", content: "hi" }]);
   });
 
   it("a tier swap (CR_LLM_MODEL=claude-sonnet-5-5) sends neither knob, so it never 400s", async () => {

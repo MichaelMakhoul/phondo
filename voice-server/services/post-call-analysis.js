@@ -125,17 +125,17 @@ async function callOpenAI({ system, user, maxTokens, model, timeoutMs }) {
     throw new Error(`OpenAI ${res.status}: ${text}`);
   }
 
-  const data = /** @type {{ choices?: Array<{ finish_reason?: string; message?: { content?: string } }> }} */ (
-    await res.json()
-  );
+  const data = /** @type {{
+    choices?: Array<{ finish_reason?: string; message?: { content?: string | null; refusal?: string | null } }>;
+    usage?: { completion_tokens_details?: { reasoning_tokens?: number } };
+  }} */ (await res.json());
   const choice = data.choices?.[0];
   const finishReason = choice?.finish_reason;
   const content = choice?.message?.content;
 
-  if (!content) {
-    throw new Error("OpenAI returned empty content");
-  }
-
+  // Checked BEFORE empty content (SCRUM-588): a reasoning model that spends
+  // the whole cap on hidden reasoning returns finish_reason "length" with NO
+  // content — the same benign truncation, not an unexplained empty reply.
   if (finishReason === "length") {
     // SCRUM-502: tag the ONLY benign truncation so the caller can downgrade it
     // without substring-matching err.message — a 4xx error body can itself
@@ -146,6 +146,16 @@ async function callOpenAI({ system, user, maxTokens, model, timeoutMs }) {
     );
     err.isMaxTokensTruncation = true;
     throw err;
+  }
+
+  if (!content) {
+    // Shape only — never the content or the refusal text (either can
+    // paraphrase the caller), and this message reaches the Sentry line.
+    const reasoningTokens = data.usage?.completion_tokens_details?.reasoning_tokens;
+    throw new Error(
+      `OpenAI returned empty content (finish_reason=${finishReason ?? "unknown"}, ` +
+        `refusal=${Boolean(choice?.message?.refusal)}, reasoning_tokens=${reasoningTokens ?? "unknown"})`,
+    );
   }
 
   return JSON.parse(content);
