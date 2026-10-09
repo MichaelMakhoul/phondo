@@ -1,0 +1,210 @@
+import { describe, it, expect } from "vitest";
+import { parsePhoneToE164 } from "@/lib/phone/normalize";
+import { WEAK_PIN_MESSAGE } from "@/lib/owner-assistant/pin-rules";
+import {
+  PIN_CONFIRM_ONLY_MESSAGE,
+  PIN_FORMAT_MESSAGE,
+  PIN_MISMATCH_MESSAGE,
+  PIN_REQUIRED_MESSAGE,
+  PIN_RULE_TEXT,
+  buildSaveBody,
+  phoneExampleFor,
+  serverErrorMessage,
+  validateOwnerLineForm,
+} from "@/lib/owner-assistant/line-form";
+
+// A strong PIN: not a repeat, a run, a repeated pair or on the common list.
+const PIN = "9753";
+const PHONE = "0412 345 678";
+
+const FIRST_SAVE = { country: "AU", configured: false } as const;
+const EXISTING = { country: "AU", configured: true } as const;
+
+describe("PIN copy", () => {
+  it('says "4–8 digits (0–9)" — PIN_REGEX is ASCII-only, so the copy names the digits', () => {
+    expect(PIN_RULE_TEXT).toBe("4–8 digits (0–9)");
+    expect(PIN_REQUIRED_MESSAGE).toContain(PIN_RULE_TEXT);
+    expect(PIN_FORMAT_MESSAGE).toContain(PIN_RULE_TEXT);
+  });
+});
+
+describe("validateOwnerLineForm — first save", () => {
+  it("accepts a valid mobile with a matching strong PIN", () => {
+    expect(validateOwnerLineForm({ phone: PHONE, pin: PIN, pinConfirm: PIN }, FIRST_SAVE)).toEqual({});
+  });
+
+  it("asks for a PIN when none is entered, and only the phone and PIN fields complain", () => {
+    expect(validateOwnerLineForm({ phone: "", pin: "", pinConfirm: "" }, FIRST_SAVE)).toEqual({
+      phone: expect.stringContaining("Enter a valid mobile number"),
+      pin: PIN_REQUIRED_MESSAGE,
+    });
+  });
+
+  it("still asks for a PIN when only the confirmation was typed", () => {
+    expect(validateOwnerLineForm({ phone: PHONE, pin: "", pinConfirm: PIN }, FIRST_SAVE)).toEqual({
+      pin: PIN_REQUIRED_MESSAGE,
+    });
+  });
+
+  it.each(["04", "abc", "0412 345 67", "+44 7911 123456", "1234 5678"])(
+    "rejects the phone %j and names the AU example",
+    (phone) => {
+      const errors = validateOwnerLineForm({ phone, pin: PIN, pinConfirm: PIN }, FIRST_SAVE);
+      expect(errors.phone).toContain("0412 345 678");
+      expect(errors.pin).toBeUndefined();
+      expect(errors.pinConfirm).toBeUndefined();
+    },
+  );
+
+  it("names the US example for a US org, and accepts US formats", () => {
+    const us = { country: "US", configured: false } as const;
+    expect(validateOwnerLineForm({ phone: "123", pin: PIN, pinConfirm: PIN }, us).phone).toContain("+14155551234");
+    expect(validateOwnerLineForm({ phone: "415-555-1234", pin: PIN, pinConfirm: PIN }, us)).toEqual({});
+  });
+
+  it("accepts a phone already in E.164, with stray spaces around it", () => {
+    expect(validateOwnerLineForm({ phone: " +61412345678 ", pin: PIN, pinConfirm: PIN }, FIRST_SAVE)).toEqual({});
+  });
+
+  // The card and the API both validate with parsePhoneToE164, whose documented
+  // escape hatch is a compact E.164 number from another country. Pinned so the
+  // two can't drift: the card must not refuse what the API would accept.
+  it("accepts a compact E.164 number from another country, as the API does", () => {
+    expect(validateOwnerLineForm({ phone: "+447911123456", pin: PIN, pinConfirm: PIN }, FIRST_SAVE)).toEqual({});
+  });
+});
+
+describe("validateOwnerLineForm — PIN shape", () => {
+  // isWeakPin returns true for these, so a wrong check order would call a
+  // half-typed PIN "weak". They must be reported as too short instead.
+  it.each(["1", "12", "123"])("reports the half-typed %j as the wrong length, never as weak", (pin) => {
+    const errors = validateOwnerLineForm({ phone: PHONE, pin, pinConfirm: pin }, FIRST_SAVE);
+    expect(errors.pin).toBe(PIN_FORMAT_MESSAGE);
+    expect(errors.pin).not.toBe(WEAK_PIN_MESSAGE);
+  });
+
+  it.each([
+    ["too long", "123456789"],
+    ["letters", "12a4"],
+    ["a leading space", " 9753"],
+    ["a trailing newline", "9753\n"],
+    ["Arabic-Indic digits", "٩٧٥٣"],
+    ["full-width digits", "９７５３"],
+    ["a decimal point", "97.53"],
+  ])("rejects a PIN with %s", (_label, pin) => {
+    expect(validateOwnerLineForm({ phone: PHONE, pin, pinConfirm: pin }, FIRST_SAVE).pin).toBe(PIN_FORMAT_MESSAGE);
+  });
+
+  it.each(["1234", "0000", "4321", "121212", "2580", "12345678", "11111111", "5683"])(
+    "refuses the guessable PIN %s with the shared weak-PIN message",
+    (pin) => {
+      expect(validateOwnerLineForm({ phone: PHONE, pin, pinConfirm: pin }, FIRST_SAVE)).toEqual({
+        pin: WEAK_PIN_MESSAGE,
+      });
+    },
+  );
+
+  it.each(["9753", "1739", "805214", "40271958"])("accepts the strong PIN %s", (pin) => {
+    expect(validateOwnerLineForm({ phone: PHONE, pin, pinConfirm: pin }, FIRST_SAVE)).toEqual({});
+  });
+
+  it("flags a mismatched confirmation on the confirm field, not the PIN field", () => {
+    expect(validateOwnerLineForm({ phone: PHONE, pin: PIN, pinConfirm: "9754" }, FIRST_SAVE)).toEqual({
+      pinConfirm: PIN_MISMATCH_MESSAGE,
+    });
+  });
+
+  it("flags an empty confirmation as a mismatch", () => {
+    expect(validateOwnerLineForm({ phone: PHONE, pin: PIN, pinConfirm: "" }, FIRST_SAVE)).toEqual({
+      pinConfirm: PIN_MISMATCH_MESSAGE,
+    });
+  });
+
+  it("reports a weak PIN and a mismatch together so both can be fixed in one pass", () => {
+    expect(validateOwnerLineForm({ phone: PHONE, pin: "1234", pinConfirm: PIN }, FIRST_SAVE)).toEqual({
+      pin: WEAK_PIN_MESSAGE,
+      pinConfirm: PIN_MISMATCH_MESSAGE,
+    });
+  });
+});
+
+describe("validateOwnerLineForm — a line that is already set up", () => {
+  it("lets a blank PIN through to keep the current one", () => {
+    expect(validateOwnerLineForm({ phone: PHONE, pin: "", pinConfirm: "" }, EXISTING)).toEqual({});
+  });
+
+  it("still validates the phone when the PIN is kept", () => {
+    const errors = validateOwnerLineForm({ phone: "04", pin: "", pinConfirm: "" }, EXISTING);
+    expect(Object.keys(errors)).toEqual(["phone"]);
+  });
+
+  it("refuses a lone confirmation, which would otherwise keep the old PIN while looking like a reset", () => {
+    expect(validateOwnerLineForm({ phone: PHONE, pin: "", pinConfirm: PIN }, EXISTING)).toEqual({
+      pin: PIN_CONFIRM_ONLY_MESSAGE,
+    });
+  });
+
+  it("accepts a new matching strong PIN", () => {
+    expect(validateOwnerLineForm({ phone: PHONE, pin: "40271958", pinConfirm: "40271958" }, EXISTING)).toEqual({});
+  });
+
+  it("holds a reset PIN to the same weak-PIN and mismatch rules", () => {
+    expect(validateOwnerLineForm({ phone: PHONE, pin: "0000", pinConfirm: "0000" }, EXISTING)).toEqual({
+      pin: WEAK_PIN_MESSAGE,
+    });
+    expect(validateOwnerLineForm({ phone: PHONE, pin: PIN, pinConfirm: "" }, EXISTING)).toEqual({
+      pinConfirm: PIN_MISMATCH_MESSAGE,
+    });
+  });
+});
+
+describe("phoneExampleFor", () => {
+  it("gives each country an example its own validator accepts", () => {
+    expect(phoneExampleFor("AU")).toBe("0412 345 678");
+    expect(phoneExampleFor("US")).toBe("+14155551234");
+    expect(parsePhoneToE164(phoneExampleFor("AU"), "AU")).toBe("+61412345678");
+    expect(parsePhoneToE164(phoneExampleFor("US"), "US")).toBe("+14155551234");
+  });
+});
+
+describe("buildSaveBody", () => {
+  it("omits the PIN when it is blank, so the API keeps the stored one", () => {
+    const body = buildSaveBody({ phone: PHONE, pin: "", enabled: true });
+    expect(body).toEqual({ phone: PHONE, enabled: true });
+    expect("pin" in body).toBe(false);
+  });
+
+  it("includes the PIN when one was entered", () => {
+    expect(buildSaveBody({ phone: PHONE, pin: PIN, enabled: true })).toEqual({ phone: PHONE, enabled: true, pin: PIN });
+  });
+
+  it("trims the phone and carries a paused line through", () => {
+    expect(buildSaveBody({ phone: "  +61412345678 ", pin: "", enabled: false })).toEqual({
+      phone: "+61412345678",
+      enabled: false,
+    });
+  });
+});
+
+describe("serverErrorMessage", () => {
+  const FALLBACK = "Failed to save settings. Please try again.";
+
+  it("returns the API's message", () => {
+    expect(serverErrorMessage({ error: "Too many changes — try again in a minute." }, FALLBACK)).toBe(
+      "Too many changes — try again in a minute.",
+    );
+  });
+
+  it.each([
+    ["null (an unparseable body)", null],
+    ["undefined", undefined],
+    ["a string", "boom"],
+    ["an object without error", { message: "boom" }],
+    ["an empty error", { error: "" }],
+    ["a blank error", { error: "   " }],
+    ["a non-string error", { error: { code: 42 } }],
+    ["a numeric error", { error: 500 }],
+  ])("falls back for %s", (_label, body) => {
+    expect(serverErrorMessage(body, FALLBACK)).toBe(FALLBACK);
+  });
+});

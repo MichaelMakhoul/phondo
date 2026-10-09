@@ -57,3 +57,11 @@ export function isWeakPin(pin: string): boolean {
     [...pin].every((digit, i) => digit === pin[i % 2])
   );
 }
+
+/**
+ * The one user-facing refusal for a guessable PIN. The API returns it as the
+ * 400 body and the Settings card shows it inline before submitting, so the two
+ * can never word it differently.
+ */
+export const WEAK_PIN_MESSAGE =
+  "Choose a PIN that's harder to guess — avoid repeats, runs like 1234, and common PINs.";

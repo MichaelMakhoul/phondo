@@ -6,7 +6,7 @@ import { getPrimaryMembership } from "@/lib/auth/membership";
 import { rateLimitDistributed } from "@/lib/security/rate-limiter";
 import { getOrgCountry, validatePhone } from "@/lib/phone/validate-for-org";
 import { isOwnerAssistantUiEnabled } from "@/lib/feature-flags";
-import { PIN_REGEX, isWeakPin } from "@/lib/owner-assistant/pin-rules";
+import { PIN_REGEX, WEAK_PIN_MESSAGE, isWeakPin } from "@/lib/owner-assistant/pin-rules";
 import { generatePinSalt, hashPin } from "@/lib/owner-assistant/pin";
 
 /**
@@ -23,7 +23,6 @@ import { generatePinSalt, hashPin } from "@/lib/owner-assistant/pin";
 const PUBLIC_COLUMNS = "id, phone_e164, pin_length, enabled, last_verified_at, updated_at";
 
 const PIN_ERROR = "PIN must be 4 to 8 digits.";
-const WEAK_PIN_ERROR = "Choose a PIN that's harder to guess — avoid repeats, runs like 1234, and common PINs.";
 
 const putSchema = z.object({
   phone: z.string().trim().min(1).max(32).optional(),
@@ -160,7 +159,7 @@ export async function PUT(request: Request) {
     // real second factor: refuse the guesses an attacker tries first. After the
     // format check above, before anything is read or written.
     if (pin !== undefined && isWeakPin(pin)) {
-      return NextResponse.json({ error: WEAK_PIN_ERROR }, { status: 400 });
+      return NextResponse.json({ error: WEAK_PIN_MESSAGE }, { status: 400 });
     }
 
     // The first save needs both halves; later patches may send any subset.
