@@ -576,6 +576,15 @@ describe("SCRUM-587: /twiml/owner-pin route, run for real", () => {
     assert.deepEqual(callNames(fd), ["validateTwilioSignature"]);
   });
 
+  // Mutation gate (Task 12, row 11): the "never logged" source pin only looks for the words Digits
+  // and SpeechResult, so logging the whole body here passed every test. A genuine Twilio post that
+  // fails the signature check (a PUBLIC_URL mismatch) still carries the owner's real PIN.
+  it("an unsigned request logs one fixed line: nothing from its body", async () => {
+    const fd = makeFrontDoor({ signatureValid: false });
+    await fd.routes["/twiml/owner-pin"](twimlReq({ Digits: PIN, SpeechResult: "four eight two six one five" }), fakeRes());
+    assert.deepEqual(fd.lines, ["warn| [OwnerPin] Rejected request — invalid Twilio signature"]);
+  });
+
   it("a signed request reaches handleOwnerPin with the full real-deps bundle", async () => {
     const fd = makeFrontDoor();
     const req = twimlReq({ Digits: PIN });
