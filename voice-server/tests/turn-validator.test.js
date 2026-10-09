@@ -7,10 +7,12 @@
  * yields no verdict used to look exactly like a clean pass — a bad
  * VALIDATOR_MODEL, a rejected request field, a reply that is all thinking, a
  * refusal or plain prose would switch the layer off fleet-wide with nothing
- * but a console line. lib/sentry.js turns Sentry.captureMessage into the
- * [ALERT:*] lines Grafana pages on, so these tests pin, per exit:
+ * but a console line. lib/sentry.js turns Sentry.captureMessage into
+ * [ALERT:<level>] lines, and the phondo-voice Grafana rules page only on
+ * [ALERT:error] (and [FATAL]) — nothing matches [ALERT:warning]. So these
+ * tests pin, per exit:
  *   - config failures (400/401/403/404, missing key) → [ALERT:error] at once;
- *   - everything else → a plain trace, then [ALERT:warning] from the 3rd
+ *   - everything else → a plain trace, then [ALERT:error] from the 3rd
  *     unreadable verdict in a row, repeating until a verdict is READ again;
  *   - none of it ever logs model output or caller words.
  */
@@ -116,7 +118,7 @@ describe("config failures page at once — [ALERT:error], validation OFF", () =>
   });
 });
 
-describe("unreadable verdicts — trace each, page from the 3rd in a row", () => {
+describe("unreadable verdicts — trace each, page ([ALERT:error]) from the 3rd in a row", () => {
   // Each exit below is a 2xx (or transport) failure that used to be a silent
   // or console-only pass.
   const EXITS = [
@@ -131,7 +133,7 @@ describe("unreadable verdicts — trace each, page from the 3rd in a row", () =>
   ];
 
   for (const [name, arrange, traceRe] of EXITS) {
-    it(`${name}: fails open, leaves a trace, and the 3rd in a row is an [ALERT:warning]`, async (t) => {
+    it(`${name}: fails open, leaves a trace, and the 3rd in a row is an [ALERT:error]`, async (t) => {
       const validate = loadValidator();
       const logs = captureLogs(t);
       arrange();
@@ -139,7 +141,8 @@ describe("unreadable verdicts — trace each, page from the 3rd in a row", () =>
       assert.equal(logs.alerts().length, 0, "one or two are a blip, not an outage");
       assert.ok(logs.lines.some((l) => traceRe.test(l)), `trace missing for ${name}: ${logs.lines.join(" | ")}`);
       assert.deepEqual(await validate(ARGS), { accurate: true });
-      const [line] = logs.alerts("warning");
+      const [line] = logs.alerts("error");
+      assert.equal(logs.alerts("warning").length, 0, "Grafana pages on nothing at warning level");
       assert.match(line ?? "", /Tier-2 validator producing no verdicts \(3 unreadable in a row\) — validation OFF/);
     });
   }
@@ -166,9 +169,9 @@ describe("unreadable verdicts — trace each, page from the 3rd in a row", () =>
     await validate(ARGS);
     assert.equal(logs.alerts().length, 0, "2 + reset + 2 must not page");
     await validate(ARGS);
-    assert.equal(logs.alerts("warning").length, 1, "the 3rd after the reset pages");
+    assert.equal(logs.alerts("error").length, 1, "the 3rd after the reset pages");
     await validate(ARGS);
-    assert.equal(logs.alerts("warning").length, 2, "and it keeps paging while it stays unreadable");
+    assert.equal(logs.alerts("error").length, 2, "and it keeps paging while it stays unreadable");
   });
 });
 

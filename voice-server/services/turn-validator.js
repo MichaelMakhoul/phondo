@@ -44,14 +44,15 @@ let unreadableStreak = 0;
 
 /**
  * The ONE exit for "no usable verdict". It still fails open — the validator
- * must never block a call — but never quietly: with lib/sentry.js, Grafana
- * pages only on [ALERT:*] lines, and every exit here used to be a bare
- * console.warn (or nothing at all), so the layer could be off fleet-wide
+ * must never block a call — but never quietly: every exit here used to be a
+ * bare console.warn (or nothing at all), so the layer could be off fleet-wide
  * with nobody told.
  *
- * Config failures page at once ([ALERT:error]); anything else pages
- * ([ALERT:warning]) from the third unreadable verdict in a row. Both repeat
- * for every further failure, so the alert stays firing until it is fixed.
+ * Both tiers alert at ERROR level, because the phondo-voice Grafana rules
+ * page on [ALERT:error] (and [FATAL]) — nothing matches [ALERT:warning].
+ * Config failures alert at once; any other unreadable verdict alerts from
+ * the third in a row. Both repeat for every further failure, so the alert
+ * stays firing until it is fixed.
  *
  * @param {{ cause: string, config?: boolean, status?: number, stopReason?: string, errorType?: string, errorMessage?: string }} info
  *   Shape only — NEVER model output, tool results or caller words.
@@ -68,15 +69,14 @@ function noVerdict(info) {
     error_message: info.errorMessage,
     unreadable_in_a_row: unreadableStreak,
   };
-  const level = info.config ? "error" : unreadableStreak >= UNREADABLE_ALERT_AFTER ? "warning" : null;
-  if (level) {
+  if (info.config || unreadableStreak >= UNREADABLE_ALERT_AFTER) {
     const what = info.config
       ? info.status !== undefined ? `HTTP ${info.status}` : info.cause
       : `${unreadableStreak} unreadable in a row`;
     Sentry.withScope((scope) => {
       scope.setTag("service", "tier2_validator");
       scope.setExtras(details);
-      Sentry.captureMessage(`Tier-2 validator producing no verdicts (${what}) — validation OFF`, level);
+      Sentry.captureMessage(`Tier-2 validator producing no verdicts (${what}) — validation OFF`, "error");
     });
   } else {
     const shown = Object.entries(details)

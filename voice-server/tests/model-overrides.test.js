@@ -151,10 +151,12 @@ describe("VALIDATOR_MODEL — mid-call Tier-2 validator", () => {
     assert.deepEqual(await validateToolResponse(ARGS), { accurate: false, discrepancy: "time is 9:30 not 10am" });
   });
 
-  it("no text block at all: fails open, and the 3rd in a row raises an [ALERT:warning] Grafana pages on", async (t) => {
+  it("no text block at all: fails open, and the 3rd in a row raises an [ALERT:error] (the level Grafana pages on)", async (t) => {
     const { validateToolResponse } = freshWithEnv("../services/turn-validator", { ANTHROPIC_API_KEY: "test-key", VALIDATOR_MODEL: undefined });
     const warn = t.mock.method(console, "warn", () => {});
-    const alertLines = () => warn.mock.calls.map((c) => String(c.arguments[0])).filter((l) => l.startsWith("[ALERT:"));
+    const error = t.mock.method(console, "error", () => {});
+    const alertLines = () =>
+      [...warn.mock.calls, ...error.mock.calls].map((c) => String(c.arguments[0])).filter((l) => l.startsWith("[ALERT:"));
     globalThis.fetch = captureAnthropic({}, [{ type: "thinking", thinking: "", signature: "sig" }], "max_tokens");
     for (let i = 0; i < 2; i++) assert.deepEqual(await validateToolResponse(ARGS), { accurate: true });
     assert.equal(alertLines().length, 0, "one or two unreadable verdicts are a blip, not an outage");
@@ -164,7 +166,7 @@ describe("VALIDATOR_MODEL — mid-call Tier-2 validator", () => {
     );
     assert.deepEqual(await validateToolResponse(ARGS), { accurate: true });
     const [line] = alertLines();
-    assert.match(line, /^\[ALERT:warning\] \[tier2_validator\] Tier-2 validator producing no verdicts \(3 unreadable in a row\) — validation OFF/);
+    assert.match(line, /^\[ALERT:error\] \[tier2_validator\] Tier-2 validator producing no verdicts \(3 unreadable in a row\) — validation OFF/);
     assert.match(line, /model=claude-haiku-5-5/);
     assert.match(line, /stop_reason=max_tokens/);
   });

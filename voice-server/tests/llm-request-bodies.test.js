@@ -1,10 +1,10 @@
 "use strict";
 
 /**
- * SCRUM-588 — the classic pipeline's FULL request bodies, for every
- * (provider × stream × tools) combination. server.js only ever calls
- * streamChatResponse, so the streaming body is the live one; the
- * non-streaming path is pinned alongside so the two can't drift.
+ * SCRUM-588 — the classic pipeline's FULL request bodies for every provider
+ * (openai default + the gpt-6-luna lever, anthropic, gemini) × stream × tools.
+ * server.js only ever calls streamChatResponse, so the streaming body is the
+ * live one; the non-streaming path is pinned alongside so the two can't drift.
  */
 const { describe, it, afterEach } = require("node:test");
 const assert = require("node:assert/strict");
@@ -76,6 +76,22 @@ describe("classic LLM request bodies — streaming (the live path) and non-strea
         assert.equal(sink.body.max_completion_tokens, withTools ? 300 : 150);
         assert.equal(sink.body.reasoning_effort, "none");
         assert.deepEqual(sink.body.tools, withTools ? TOOLS : undefined);
+      });
+
+      it(`gemini default (gemini-3.5-flash), ${label}: classic body on the OpenAI-compatible endpoint`, async () => {
+        const llm = freshWithEnv("../services/openai-llm", { LLM_PROVIDER: "gemini", LLM_MODEL: undefined, GEMINI_API_KEY: "k" });
+        const sink = {};
+        globalThis.fetch = capture(sink, { streamBody: OPENAI_SSE, jsonBody: { choices: [{ message: { content: "Nine." } }] } });
+        await call(llm, stream, options);
+        assert.equal(sink.body.model, "gemini-3.5-flash");
+        assert.equal(sink.body.stream, stream, "stream flag must match the call path");
+        assert.deepEqual(sink.body.messages, MESSAGES);
+        assert.equal(sink.body.max_tokens, withTools ? 300 : 150);
+        assert.equal(sink.body.temperature, 0.7);
+        assert.equal(sink.body.reasoning_effort, undefined);
+        assert.equal(sink.body.max_completion_tokens, undefined);
+        assert.deepEqual(sink.body.tools, withTools ? TOOLS : undefined);
+        assert.equal(sink.body.tool_choice, withTools ? "auto" : undefined);
       });
 
       it(`anthropic default, ${label}: system + messages + thinking off`, async () => {

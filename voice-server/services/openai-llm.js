@@ -210,8 +210,10 @@ function buildAnthropicBody(model, system, anthropicMsgs, openaiTools, stream) {
 /**
  * OpenAI-compatible chat-completions body (OpenAI and Gemini). The token cap,
  * temperature and reasoning fields follow the model family (openAIChatParams):
- * an OpenAI reasoning model 400s on `max_tokens` and only takes tools at
- * reasoning_effort "none"; gpt-4.x and Gemini keep the classic shape.
+ * every OpenAI reasoning model 400s on `max_tokens`; GPT-5.1+/6+ are sent
+ * reasoning_effort "none" (gpt-6-luna only takes tools on chat completions
+ * at that level), older reasoning models get the cap alone and run at their
+ * default effort; gpt-4.x and Gemini keep the classic shape.
  * @param {string} model
  * @param {object[]} messages
  * @param {{ tools?: object[], tool_choice?: string }|undefined} options
