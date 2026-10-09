@@ -146,7 +146,7 @@ const { mintStreamToken, verifyStreamToken, withoutOwnerAccess } = require("./li
 // bypasses the customer guards, and the turn clock its confirmation gate reads.
 const { buildOwnerPrompt, buildOwnerGreeting, buildOwnerGeminiSuffix } = require("./lib/owner-prompt");
 const { buildOwnerTools } = require("./lib/owner-tools");
-const { runOwnerToolCall, buildOwnerCallSummary } = require("./lib/owner-tool-runner");
+const { runOwnerToolCall, buildOwnerCallSummary, settleOwnerToolRuns } = require("./lib/owner-tool-runner");
 const { noteAssistantSpeech, noteAssistantTurnEnd, noteOwnerSpeech } = require("./lib/owner-turn-stamps");
 
 // Mirror of API-layer E164_REGEX. Defense-in-depth at the dialer so a bad
@@ -1646,7 +1646,10 @@ wss.on("connection", (twilioWs) => {
 
     // SCRUM-587: an owner call's summary is built from its tool audit (no
     // OpenAI) and, with the org's PII redaction on, redacted like the
-    // transcript below before it is stored.
+    // transcript below before it is stored. An owner tool call still running
+    // (the owner hung up right after "yes") gets a bounded wait first, so the
+    // summary names a change that lands instead of "no changes made".
+    if (s.ownerMode) await settleOwnerToolRuns(s);
     let ownerSummary = s.ownerMode ? buildOwnerCallSummary(s.toolCallAudit || []) : null;
 
     // PII redaction — runs after analysis, before anything is persisted

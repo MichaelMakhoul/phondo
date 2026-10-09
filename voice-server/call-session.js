@@ -62,6 +62,8 @@ class CallSession {
     this.ownerPendingConfirmations = null; // Map of armed read-backs (the runner creates it)
     this.ownerConfirmSpentSpeechAt = null; // the utterance that last confirmed a write
     this.ownerConfirmRefusals = null;      // Map key → re-armed since the gate refused it? (the runner creates it)
+    this.ownerToolRunsInFlight = null;     // Set of owner tool calls still running (the runner creates it)
+    this.ownerToolRunsSettled = false;     // cleanup stopped waiting for them: a write finishing later pages
 
     // Call context — populated by loadCallContext()/loadTestCallContext() in
     // server.js once the stream connects (not known at construction). Declared

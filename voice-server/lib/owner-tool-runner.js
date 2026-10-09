@@ -87,6 +87,21 @@ const RANGE_LABEL = new Map([
 const CONFIRM_SETTLE_MS = 1500;
 const CONFIRM_POLL_MS = 100;
 
+/**
+ * How long cleanup waits for owner tool calls still running when the call
+ * ends (the owner hung up right after "yes"): the settle wait plus a slow PR B
+ * round trip, well inside the executor's own 15 s timeout.
+ */
+const OWNER_CLEANUP_WAIT_MS = 8000;
+
+/** What the summary says when a confirmed change's result never came back (it may have gone through). */
+const UNCONFIRMED_CHANGE_SUMMARY = "a change could not be confirmed — check the dashboard";
+
+/** An outcome code that is safe to log (PR B's vocabulary is snake_case words). @param {unknown} outcome */
+function outcomeLabel(outcome) {
+  return typeof outcome === "string" && /^[a-z_]{1,32}$/.test(outcome) ? outcome : "unknown";
+}
+
 /** @param {number} ms */
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -352,7 +367,19 @@ function describeOwnerToolCall(name, args, message, successful) {
 }
 
 /**
- * Run one model tool call of an owner session.
+ * The session's owner tool calls still running (lazily created).
+ * @param {any} session
+ * @returns {Set<Promise<unknown>>}
+ */
+function ownerToolRunsInFlight(session) {
+  if (!(session.ownerToolRunsInFlight instanceof Set)) session.ownerToolRunsInFlight = new Set();
+  return session.ownerToolRunsInFlight;
+}
+
+/**
+ * Run one model tool call of an owner session. Every call is tracked on the
+ * session while it runs, so cleanup can let one the owner hung up on land
+ * before it writes the call's summary (settleOwnerToolRuns).
  * @param {any} session - CallSession with ownerMode === true (set only from a PIN-verified stream token)
  * @param {{ name: string, args?: Record<string, any> }} toolCall
  * @param {{ executeToolCall: Function, scheduleCache: { invalidate: (orgId: string) => void }, now?: () => number }} deps
@@ -361,6 +388,52 @@ function describeOwnerToolCall(name, args, message, successful) {
  *   gets (message + PR B's data) — gemini-live.js sends the object, the classic loop JSON-encodes it.
  */
 async function runOwnerToolCall(session, toolCall, deps) {
+  const run = runOneOwnerToolCall(session, toolCall, deps);
+  const runs = ownerToolRunsInFlight(session);
+  runs.add(run);
+  try {
+    return await run;
+  } finally {
+    runs.delete(run);
+  }
+}
+
+/**
+ * Cleanup's wait for the owner tool calls still running when the call ends:
+ * until they all finish (calls started meanwhile included) or timeoutMs
+ * passes. Then the session is marked settled — a confirmed write that
+ * finishes after this missed the stored summary, and pages.
+ * @param {any} session
+ * @param {number} [timeoutMs]
+ * @returns {Promise<void>}
+ */
+async function settleOwnerToolRuns(session, timeoutMs = OWNER_CLEANUP_WAIT_MS) {
+  /** @type {ReturnType<typeof setTimeout>|undefined} */
+  let timer;
+  const budget = new Promise((resolve) => { timer = setTimeout(() => resolve("timeout"), timeoutMs); });
+  try {
+    for (;;) {
+      const runs = session.ownerToolRunsInFlight instanceof Set ? [...session.ownerToolRunsInFlight] : [];
+      if (!runs.length) break;
+      const outcome = await Promise.race([Promise.allSettled(runs).then(() => "settled"), budget]);
+      if (outcome === "timeout") {
+        console.warn(`[OwnerTools] ${runs.length} owner tool call(s) still running ${timeoutMs} ms after the call ended — the summary is written without them (org=${session.organizationId}, callSid=${session.callSid})`);
+        break;
+      }
+    }
+  } finally {
+    clearTimeout(timer);
+    session.ownerToolRunsSettled = true;
+  }
+}
+
+/**
+ * @param {any} session
+ * @param {{ name: string, args?: Record<string, any> }} toolCall
+ * @param {{ executeToolCall: Function, scheduleCache: { invalidate: (orgId: string) => void }, now?: () => number }} deps
+ * @returns {Promise<{ message: string, data?: unknown, __endCall?: true }>}
+ */
+async function runOneOwnerToolCall(session, toolCall, deps) {
   const { executeToolCall, scheduleCache, now = Date.now } = deps;
   const name = typeof toolCall?.name === "string" ? toolCall.name : "";
   const rawArgs = toolCall?.args;
@@ -434,7 +507,16 @@ async function runOwnerToolCall(session, toolCall, deps) {
 
   const r = asResult(result);
   const successful = ownerResultSucceeded(name, r);
-  audit.push({ name, successful, at: now(), ownerDetail: describeOwnerToolCall(name, forwardArgs, r.message, successful) });
+  // A confirmed write whose answer never came back (no data: a throw, a
+  // timeout, a non-2xx) may still have gone through: the summary says so
+  // instead of "no changes made". An unconfirmed one can't have changed anything.
+  const outcomeUnknown = OWNER_WRITE_TOOL_NAMES.includes(name) && forwardArgs.confirmed === true && !successful
+    && r.data === undefined && (failedInTransit(r) || r.message === WRITE_UNCONFIRMED_MESSAGE);
+  audit.push({ name, successful, at: now(), ownerDetail: describeOwnerToolCall(name, forwardArgs, r.message, successful), ...(outcomeUnknown && { outcomeUnknown: true }) });
+  if (session.ownerToolRunsSettled === true && OWNER_WRITE_TOOL_NAMES.includes(name) && forwardArgs.confirmed === true) {
+    // The owner hung up and cleanup stopped waiting: the stored summary does not have this.
+    console.error(`[ALERT:error] [OwnerTools] ${name} finished after the call record was completed — outcome=${outcomeUnknown ? "unknown" : outcomeLabel(outcomeOf(r))} is not in the stored summary (org=${session.organizationId}, callSid=${session.callSid})`);
+  }
 
   if (OWNER_WRITE_TOOL_NAMES.includes(name) && outcomeOf(r) === "needs_confirmation") {
     const key = confirmationKey(name, forwardArgs);
@@ -465,19 +547,33 @@ async function runOwnerToolCall(session, toolCall, deps) {
 
 /**
  * Deterministic post-call summary (no LLM): successful, described calls in
- * order, consecutive repeats collapsed.
- * @param {Array<{ successful?: boolean, ownerDetail?: string|null }>|undefined} audit
+ * order, consecutive repeats collapsed — and, when a confirmed change's result
+ * never came back, that it could not be confirmed (never "no changes made").
+ * @param {Array<{ successful?: boolean, ownerDetail?: string|null, outcomeUnknown?: boolean }>|undefined} audit
  * @returns {string}
  */
 function buildOwnerCallSummary(audit) {
   /** @type {string[]} */
   const parts = [];
+  let unconfirmed = false;
   for (const e of Array.isArray(audit) ? audit : []) {
+    if (e && e.outcomeUnknown === true) unconfirmed = true;
     if (!e || !e.successful || !e.ownerDetail) continue;
     const detail = String(e.ownerDetail).replace(/[.!?]+$/, "");
     if (parts[parts.length - 1] !== detail) parts.push(detail);
   }
+  if (unconfirmed) parts.push(UNCONFIRMED_CHANGE_SUMMARY);
   return parts.length ? `Owner call: ${parts.join("; ")}.` : "Owner call: no changes made.";
 }
 
-module.exports = { OWNER_MAX_TOOL_CALLS, CONFIRM_SETTLE_MS, CONFIRM_POLL_MS, runOwnerToolCall, buildOwnerCallSummary, describeOwnerToolCall, ownerResultSucceeded };
+module.exports = {
+  OWNER_MAX_TOOL_CALLS,
+  CONFIRM_SETTLE_MS,
+  CONFIRM_POLL_MS,
+  OWNER_CLEANUP_WAIT_MS,
+  runOwnerToolCall,
+  settleOwnerToolRuns,
+  buildOwnerCallSummary,
+  describeOwnerToolCall,
+  ownerResultSucceeded,
+};

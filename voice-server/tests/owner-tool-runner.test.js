@@ -17,7 +17,7 @@ global.fetch = async (url, init) => {
   return fetchImpl(url, init);
 };
 
-const { runOwnerToolCall, buildOwnerCallSummary, OWNER_MAX_TOOL_CALLS, describeOwnerToolCall } = require("../lib/owner-tool-runner");
+const { runOwnerToolCall, buildOwnerCallSummary, OWNER_MAX_TOOL_CALLS, OWNER_CLEANUP_WAIT_MS, describeOwnerToolCall, settleOwnerToolRuns } = require("../lib/owner-tool-runner");
 const { executeToolCall } = require("../services/tool-executor");
 
 // SCRUM-587 — the owner tool path replaces the customer guard chain (spec §5).
@@ -1010,6 +1010,151 @@ describe("runOwnerToolCall — PR B's data, not prose, decides", () => {
   });
 });
 
+// ─── The owner hangs up while a change is in flight (silent-failure lens SF2) ─────
+// cleanupSession builds the call's summary from the audit. A confirmed write still
+// running then (the owner hung up right after "yes") must land in it, and one whose
+// result never came back must not be recorded as "no changes made".
+const UNCONFIRMED = "a change could not be confirmed — check the dashboard";
+describe("runOwnerToolCall — a confirmed change whose result never came back", () => {
+  const CONFIRM = { appointment_id: "a1", confirmed: true };
+  for (const { label, deps } of [
+    { label: "the executor threw", deps: () => ({ executeToolCall: async () => { throw new Error("socket hang up"); }, scheduleCache: { invalidate: () => {} } }) },
+    { label: "a timeout (the receptionist stall)", deps: () => makeDeps({ message: TIMEOUT_STALL }).deps },
+    { label: "an empty result", deps: () => makeDeps(undefined).deps },
+  ]) {
+    it(`${label}: audited outcome-unknown, so the summary says it could not be confirmed`, async () => {
+      const s = makeSession();
+      armConfirmed(s, "owner_cancel_appointment|a1");
+      await captureConsole(() => runOwnerToolCall(s, { name: "owner_cancel_appointment", args: CONFIRM }, deps()));
+      const entry = auditFor(s, "owner_cancel_appointment")[0];
+      assert.equal(entry.successful, false);
+      assert.equal(entry.outcomeUnknown, true);
+      assert.equal(buildOwnerCallSummary(s.toolCallAudit), `Owner call: ${UNCONFIRMED}.`);
+    });
+  }
+  it("with the real executor: a non-2xx on a confirmed write is outcome-unknown too (its line says it may have gone through)", async () => {
+    const s = makeSession();
+    armConfirmed(s, "owner_cancel_appointment|a1");
+    fetchImpl = async () => ({ ok: false, status: 504, text: async () => "<html>Gateway Timeout</html>" });
+    let ret;
+    await captureConsole(async () => { ret = await runOwnerToolCall(s, { name: "owner_cancel_appointment", args: CONFIRM }, { executeToolCall, scheduleCache: { invalidate: () => {} } }); });
+    assert.deepEqual(ret, { message: WRITE_UNCONFIRMED_LINE });
+    assert.equal(auditFor(s, "owner_cancel_appointment")[0].outcomeUnknown, true);
+  });
+  it("PR B's own answers are known outcomes: a refusal, a fault it reports, a non-success outcome — never outcome-unknown", async () => {
+    for (const result of [
+      { success: false, error: true, message: "That isn't available on this call." },
+      { success: false, error: true, message: "I couldn't move that job just now. Bob Lee is still booked for Friday at 3 PM." },
+      { success: false, message: "I can't find that job.", data: { outcome: "not_found", customer_notified: false } },
+      CANCELLED,
+    ]) {
+      const s = makeSession();
+      armConfirmed(s, "owner_cancel_appointment|a1");
+      await captureConsole(() => runOwnerToolCall(s, { name: "owner_cancel_appointment", args: CONFIRM }, makeDeps(result).deps));
+      assert.equal(auditFor(s, "owner_cancel_appointment")[0].outcomeUnknown, undefined, result.message);
+    }
+  });
+  it("an unconfirmed write (the read-back request) or a read that failed in transit can't have changed anything", async () => {
+    const s = makeSession();
+    await captureConsole(async () => {
+      await runOwnerToolCall(s, { name: "owner_cancel_appointment", args: { appointment_id: "a1" } }, makeDeps({ message: TIMEOUT_STALL }).deps);
+      await runOwnerToolCall(s, { name: "owner_list_appointments", args: { range: "today" } }, makeDeps({ message: TIMEOUT_STALL }).deps);
+    });
+    assert.ok(s.toolCallAudit.every((e) => e.outcomeUnknown === undefined), JSON.stringify(s.toolCallAudit));
+    assert.equal(buildOwnerCallSummary(s.toolCallAudit), "Owner call: no changes made.");
+  });
+});
+
+describe("settleOwnerToolRuns — cleanup's bounded wait for owner tool calls in flight", () => {
+  /** A deps bundle whose executor blocks until release(result). */
+  function blockingDeps() {
+    const pending = [];
+    const deps = { executeToolCall: () => new Promise((resolve) => { pending.push(resolve); }), scheduleCache: { invalidate: () => {} } };
+    return { deps, release: (result) => pending.shift()(result), get waiting() { return pending.length; } };
+  }
+  it("every owner tool call is tracked while it runs — and untracked after, even when the executor throws", async () => {
+    const s = makeSession();
+    const b = blockingDeps();
+    const run = runOwnerToolCall(s, { name: "owner_list_messages", args: {} }, b.deps);
+    await flush();
+    assert.equal(s.ownerToolRunsInFlight.size, 1);
+    b.release({ message: "ok", data: {} });
+    await run;
+    assert.equal(s.ownerToolRunsInFlight.size, 0);
+    await captureConsole(() => runOwnerToolCall(s, { name: "owner_list_messages", args: {} }, { executeToolCall: async () => { throw new Error("boom"); }, scheduleCache: { invalidate: () => {} } }));
+    assert.equal(s.ownerToolRunsInFlight.size, 0);
+  });
+  it("nothing in flight: returns at once and marks the session settled", async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const s = makeSession();
+    await settleOwnerToolRuns(s);
+    assert.equal(s.ownerToolRunsSettled, true);
+  });
+  it("waits for a confirmed write in flight — and for a call started while it waits — so the summary has the change", async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const s = makeSession();
+    armConfirmed(s, "owner_cancel_appointment|a1");
+    const b = blockingDeps();
+    let lines = [];
+    const first = runOwnerToolCall(s, { name: "owner_cancel_appointment", args: { appointment_id: "a1", confirmed: true } }, b.deps);
+    await flush();
+    let settled = false;
+    const wait = settleOwnerToolRuns(s).then(() => { settled = true; });
+    const second = runOwnerToolCall(s, { name: "owner_list_messages", args: {} }, b.deps); // started while cleanup waits
+    await flush();
+    t.mock.timers.tick(OWNER_CLEANUP_WAIT_MS - 100);
+    await flush();
+    assert.equal(settled, false, "still waiting inside the budget");
+    lines = await captureConsole(async () => { b.release(CANCELLED); await first; await flush(); });
+    assert.equal(settled, false, "the call started meanwhile is still running");
+    b.release({ message: "ok", data: {} });
+    await second; await wait;
+    assert.equal(buildOwnerCallSummary(s.toolCallAudit), "Owner call: Cancelled Bob Lee's job on Friday, October 16 at 3:00 PM; Checked messages.");
+    assert.deepEqual(alerts(lines), [], "it finished inside the wait: nothing to page");
+  });
+  it(`gives up after ${OWNER_CLEANUP_WAIT_MS} ms (one warning, ids only); the confirmed write that lands later pages once`, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const s = makeSession();
+    armConfirmed(s, "owner_cancel_appointment|appt-ZQ-1");
+    const b = blockingDeps();
+    const write = runOwnerToolCall(s, { name: "owner_cancel_appointment", args: { appointment_id: "appt-ZQ-1", confirmed: true } }, b.deps);
+    await flush();
+    let settled = false;
+    const waited = await captureConsole(async () => {
+      const wait = settleOwnerToolRuns(s).then(() => { settled = true; });
+      await flush();
+      t.mock.timers.tick(OWNER_CLEANUP_WAIT_MS - 1);
+      await flush();
+      assert.equal(settled, false, "1 ms before the budget runs out");
+      t.mock.timers.tick(1);
+      await wait;
+    });
+    assert.equal(s.ownerToolRunsSettled, true);
+    assert.equal(waited.filter((l) => l.level === "warn").length, 1);
+    assert.deepEqual(alerts(waited), []);
+    const late = await captureConsole(async () => { b.release(CANCELLED); await write; });
+    const paged = alerts(late);
+    assert.equal(paged.length, 1, late.map((l) => l.text).join("\n"));
+    for (const part of ["owner_cancel_appointment", "outcome=cancelled", "org=org-1", "callSid=CA1"]) assert.ok(paged[0].text.includes(part), `${part}: ${paged[0].text}`);
+    assert.ok(!paged[0].text.includes("appt-ZQ-1") && !paged[0].text.includes("Bob Lee"), "ids of the call only — never a tool argument or customer text");
+  });
+  it("after the wait, only a CONFIRMED write pages when it lands: a read-back request or a read does not", async () => {
+    const s = makeSession();
+    await settleOwnerToolRuns(s);
+    const lines = await captureConsole(async () => {
+      await runOwnerToolCall(s, { name: "owner_cancel_appointment", args: { appointment_id: "a1" } }, makeDeps(NEEDS_CONFIRMATION).deps);
+      await runOwnerToolCall(s, { name: "owner_list_messages", args: {} }, makeDeps({ message: "ok", data: {} }).deps);
+    });
+    assert.deepEqual(alerts(lines), []);
+    const unknown = await captureConsole(async () => {
+      assistantTurn(s); ownerSpeaks(s);
+      await runOwnerToolCall(s, { name: "owner_cancel_appointment", args: { appointment_id: "a1", confirmed: true } }, makeDeps({ message: TIMEOUT_STALL }).deps);
+    });
+    assert.equal(alerts(unknown).length, 1);
+    assert.ok(alerts(unknown)[0].text.includes("outcome=unknown"), alerts(unknown)[0].text);
+  });
+});
+
 describe("buildOwnerCallSummary", () => {
   it("joins successful, described calls in order and dedupes consecutive repeats", () => {
     const audit = [
@@ -1020,6 +1165,16 @@ describe("buildOwnerCallSummary", () => {
       { name: "end_call", successful: true, at: 5, ownerDetail: null },
     ];
     assert.equal(buildOwnerCallSummary(audit), "Owner call: Checked today's jobs; Moved Jane Smith's 2:00 pm Thursday job to Friday 9:00 am.");
+  });
+  it("a confirmed change that could not be confirmed is never 'no changes made' — alone, or after the changes that did land", () => {
+    const unknown = { name: "owner_cancel_appointment", successful: false, ownerDetail: null, outcomeUnknown: true };
+    assert.equal(buildOwnerCallSummary([unknown]), "Owner call: a change could not be confirmed — check the dashboard.");
+    assert.equal(buildOwnerCallSummary([
+      { name: "owner_list_appointments", successful: true, ownerDetail: "Checked today's jobs" },
+      unknown,
+      { name: "owner_reschedule_appointment", successful: true, ownerDetail: "Moved Jane Smith's job to Friday 9:00 am." },
+      { ...unknown, name: "owner_reschedule_appointment" },
+    ]), "Owner call: Checked today's jobs; Moved Jane Smith's job to Friday 9:00 am; a change could not be confirmed — check the dashboard.");
   });
   it("says so when nothing happened", () => {
     assert.equal(buildOwnerCallSummary([]), "Owner call: no changes made.");

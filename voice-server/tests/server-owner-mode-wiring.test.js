@@ -190,7 +190,7 @@ const fakeSentry = (calls) => ({
 const { CallSession } = require("../call-session");
 const { buildOwnerPrompt, buildOwnerGreeting, buildOwnerGeminiSuffix } = require("../lib/owner-prompt");
 const { buildOwnerTools } = require("../lib/owner-tools");
-const { runOwnerToolCall, buildOwnerCallSummary } = require("../lib/owner-tool-runner");
+const { runOwnerToolCall, buildOwnerCallSummary, settleOwnerToolRuns } = require("../lib/owner-tool-runner");
 const { noteAssistantSpeech, noteAssistantTurnEnd, noteOwnerSpeech } = require("../lib/owner-turn-stamps");
 const { forwardingFallbackEligible } = require("../lib/transfer-eligibility");
 const { maskPhone } = require("../lib/mask-phone");
@@ -982,6 +982,7 @@ function makeCleanup(session, o = {}) {
     INTERNAL_API_SECRET: "secret",
     maskPhone,
     buildOwnerCallSummary,
+    settleOwnerToolRuns: o.settleOwnerToolRuns || settleOwnerToolRuns,
     console: recordingConsole(lines),
   };
   const { cleanupSession } = runSlice({ from: "async function cleanupSession() {", to: 'twilioWs.on("message", async (raw) => {', scope, names: ["cleanupSession"] });
@@ -1094,6 +1095,112 @@ describe("SCRUM-587: post-call — an owner record that can't be written never r
       assert.equal(calls.filter((c) => c[0] === "notifyCallCompleted").length, 1, String(ownerAuth));
       assert.deepEqual(lines.filter((l) => l.includes(ALERT)), []);
     }
+  });
+});
+
+// ─── The owner hangs up while a change is in flight (silent-failure lens SF2) ───
+describe("SCRUM-587: post-call — the owner hangs up while a change is in flight", () => {
+  const STALL = "I'm having a little trouble right now. Could you give me a moment?";
+  /** The gate's clock as server.js leaves it once the owner has answered a read-back of a1. */
+  function answeredReadBack(s) {
+    const t = Date.now();
+    s.ownerPendingConfirmations = new Map([["owner_cancel_appointment|a1", { at: t - 3000, seq: 0 }]]);
+    s.assistantTurnSeq = 1; s.lastAssistantTurnAt = t - 1000; s.lastAssistantSpeechAt = t - 1500; s.lastOwnerSpeechAt = t - 500;
+  }
+  /** An executor whose answer the test hands over. */
+  function heldExecutor() {
+    let release;
+    const executeToolCall = () => new Promise((resolve) => { release = resolve; });
+    return { executeToolCall, release: (r) => release(r) };
+  }
+  /** Captures the real console (the runner logs there, not through the slices' stand-ins). */
+  function globalConsole(t) {
+    const lines = [];
+    for (const level of ["log", "warn", "error"]) t.mock.method(console, level, (...a) => lines.push(`${level}| ${util.format(...a)}`));
+    return lines;
+  }
+
+  it("Gemini: cleanup waits for the confirmed write in flight, so the stored summary names the change that landed", async (t) => {
+    const logged = globalConsole(t);
+    const s = endedCall(makeSession({ owner: true }));
+    answeredReadBack(s);
+    const held = heldExecutor();
+    const { cbs } = makeGeminiCallbacks(s, { runOwnerToolCall, executeToolCall: held.executeToolCall });
+    const inFlight = cbs.onToolCall({ id: "t1", name: "owner_cancel_appointment", args: { appointment_id: "a1", confirmed: true } });
+    await sleep(5);
+    assert.equal(s._toolCallInFlight, true, "precondition: the write is in flight");
+    const { cleanupSession, calls } = makeCleanup(s);
+    const cleanup = cleanupSession(); // the owner hangs up right after "yes"
+    await sleep(10);
+    assert.equal(calls.some((c) => c[0] === "completeCallRecord"), false, "the record is not finalised while the write is still running");
+    held.release(CANCELLED);
+    assert.equal((await inFlight).data.outcome, "cancelled");
+    await cleanup;
+    assert.equal(calls.find((c) => c[0] === "completeCallRecord")[2].summary, "Owner call: Cancelled Bob Lee's job on Friday, October 16 at 3:00 PM.");
+    assert.deepEqual(logged.filter((l) => l.includes("[ALERT:error]")), [], "it landed inside the wait: nothing to page");
+  });
+
+  it("classic: the same wait covers a write the classic tool loop has in flight", async () => {
+    const s = endedCall(makeSession({ owner: true }));
+    answeredReadBack(s);
+    const held = heldExecutor();
+    const c = makeClassic({
+      runOwnerToolCall,
+      executeToolCall: held.executeToolCall,
+      steps: [{ tools: [{ name: "owner_cancel_appointment", arguments: '{"appointment_id":"a1","confirmed":true}' }] }, { content: "Done." }],
+    });
+    const turn = c.handleUserSpeech(s, twilio, "yes");
+    await sleep(5);
+    assert.equal(s.ownerToolRunsInFlight.size, 1, "precondition: the write is in flight");
+    const { cleanupSession, calls } = makeCleanup(s);
+    const cleanup = cleanupSession();
+    await sleep(10);
+    assert.equal(calls.some((x) => x[0] === "completeCallRecord"), false);
+    held.release(CANCELLED);
+    await cleanup;
+    assert.equal(calls.find((x) => x[0] === "completeCallRecord")[2].summary, "Owner call: Cancelled Bob Lee's job on Friday, October 16 at 3:00 PM.");
+    await turn;
+  });
+
+  it("a confirmed write whose answer never came back is stored as 'could not be confirmed', never 'no changes made'", async (t) => {
+    globalConsole(t);
+    const s = endedCall(makeSession({ owner: true }));
+    answeredReadBack(s);
+    const { cbs } = makeGeminiCallbacks(s, { runOwnerToolCall, executeToolCall: async () => ({ message: STALL }) });
+    await cbs.onToolCall({ id: "t1", name: "owner_cancel_appointment", args: { appointment_id: "a1", confirmed: true } });
+    const { cleanupSession, calls } = makeCleanup(s);
+    await cleanupSession();
+    assert.equal(calls.find((c) => c[0] === "completeCallRecord")[2].summary, "Owner call: a change could not be confirmed — check the dashboard.");
+  });
+
+  it("a write still running when the wait runs out: the record is written without it, and its late landing pages — ids only", async (t) => {
+    const logged = globalConsole(t);
+    const s = endedCall(makeSession({ owner: true }));
+    answeredReadBack(s);
+    const held = heldExecutor();
+    const { cbs } = makeGeminiCallbacks(s, { runOwnerToolCall, executeToolCall: held.executeToolCall });
+    const inFlight = cbs.onToolCall({ id: "t1", name: "owner_cancel_appointment", args: { appointment_id: "a1", confirmed: true } });
+    await sleep(5);
+    // A 20 ms budget stands in for the 8 s one (the budget itself: tests/owner-tool-runner.test.js).
+    const { cleanupSession, calls } = makeCleanup(s, { settleOwnerToolRuns: (session) => settleOwnerToolRuns(session, 20) });
+    await cleanupSession();
+    assert.equal(calls.find((c) => c[0] === "completeCallRecord")[2].summary, "Owner call: no changes made.", "written without the write that is still out");
+    assert.equal(calls.filter((c) => c[0] === "notifyCallCompleted").length, 1);
+    held.release(CANCELLED);
+    await inFlight;
+    const paged = logged.filter((l) => l.includes("[ALERT:error]"));
+    assert.equal(paged.length, 1, logged.join("\n"));
+    for (const part of ["owner_cancel_appointment", "outcome=cancelled", "callSid=CA-owner", "org=org-1"]) assert.ok(paged[0].includes(part), `${part}: ${paged[0]}`);
+    assert.ok(!paged[0].includes("Bob Lee"));
+  });
+
+  it("customer cleanup never waits on owner tool calls", async () => {
+    const s = endedCall(makeSession({ owner: false }));
+    let consulted = 0;
+    const { cleanupSession, calls } = makeCleanup(s, { analysis: { summary: "Caller asked to cancel." }, settleOwnerToolRuns: async () => { consulted += 1; } });
+    await cleanupSession();
+    assert.equal(consulted, 0);
+    assert.equal(calls.find((c) => c[0] === "completeCallRecord")[2].summary, "Caller asked to cancel.");
   });
 });
 
