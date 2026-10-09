@@ -60,4 +60,36 @@ describe("PIN hashing", () => {
     expect(verifyPin("1234", SALT, "zz")).toBe(false);
     expect(verifyPin("1234", SALT, KAT_1234.slice(0, 60))).toBe(false);
   });
+
+  // Buffer.from(hash, "hex") silently stops at the first non-hex character, so
+  // a length check on the DECODED bytes accepts the right digest with junk
+  // attached. The stored string's shape is checked BEFORE decoding. Every case
+  // below uses the correct PIN and salt, so only the hash text can make it fail.
+  it.each([
+    { label: "one stray hex char appended (65 chars)", hash: KAT_1234 + "f" },
+    { label: "non-hex junk appended", hash: KAT_1234 + "zz" },
+    { label: "a trailing newline", hash: KAT_1234 + "\n" },
+    { label: "a trailing space", hash: KAT_1234 + " " },
+    { label: "a leading space", hash: " " + KAT_1234 },
+    { label: "64 non-hex characters", hash: "z".repeat(64) },
+  ])("rejects the right PIN against a stored hash with $label", ({ hash }) => {
+    expect(verifyPin("1234", SALT, hash)).toBe(false);
+  });
+
+  it.each([
+    { label: "undefined", hash: undefined },
+    { label: "null", hash: null },
+    { label: "a number", hash: 1234 },
+    { label: "an object", hash: {} },
+    { label: "an array holding the digest", hash: [KAT_1234] },
+    { label: "an object stringifying to the digest", hash: { toString: () => KAT_1234 } },
+    { label: "the raw digest Buffer", hash: Buffer.from(KAT_1234, "hex") },
+  ])("returns false instead of throwing when the stored hash is $label", ({ hash }) => {
+    expect(verifyPin("1234", SALT, hash as any)).toBe(false);
+  });
+
+  it("still verifies the right digest when its hex text is uppercase (same bytes)", () => {
+    expect(verifyPin("1234", SALT, KAT_1234.toUpperCase())).toBe(true);
+    expect(verifyPin("1235", SALT, KAT_1234.toUpperCase())).toBe(false);
+  });
 });
