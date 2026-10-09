@@ -375,8 +375,9 @@ describe("POST /api/internal/call-completed — PIN lockout email (SCRUM-586)", 
     expect(pageSentry).not.toHaveBeenCalled();
   });
 
-  describe("the email quotes the ORG's local time, never the server's", () => {
-    // Thursday 15 Oct 2026, 04:04 UTC: 3:04 pm in Sydney (AEDT, UTC+11), 12:04 pm in Perth (UTC+8).
+  describe("the email quotes the ORG's local time the call started, never the server's", () => {
+    // The route runs when the call ENDS: Thursday 15 Oct 2026, 04:04 UTC. completedCall() lasted
+    // 90 s, so it started at 04:02:30 UTC — 3:02 pm in Sydney (AEDT, UTC+11), 12:02 pm in Perth (UTC+8).
     const NOW = new Date("2026-10-15T04:04:00Z");
     const sentTime = () => vi.mocked(sendOwnerPinLockedNotification).mock.calls[0][0].localTime;
 
@@ -389,12 +390,17 @@ describe("POST /api/internal/call-completed — PIN lockout email (SCRUM-586)", 
     });
 
     it.each([
-      ["Australia/Sydney", "Thursday 15 October at 3:04 pm"],
-      ["Australia/Perth", "Thursday 15 October at 12:04 pm"],
+      ["Australia/Sydney", "Thursday 15 October at 3:02 pm"],
+      ["Australia/Perth", "Thursday 15 October at 12:02 pm"],
     ])("a %s org is told %s", async (timezone, expected) => {
       db.orgRow = { timezone, country: "AU" };
       expect((await (await POST(completedCall())).json()).ownerLockEmail).toBe("sent");
       expect(sentTime()).toBe(expected);
+    });
+
+    it("dates the email at the call's START, not when the route runs: a 10-minute call that ended 3:04 pm started 2:54 pm", async () => {
+      expect((await (await POST(completedCall({ durationSeconds: 600 }))).json()).ownerLockEmail).toBe("sent");
+      expect(sentTime()).toBe("Thursday 15 October at 2:54 pm");
     });
 
     it.each([
@@ -404,14 +410,14 @@ describe("POST /api/internal/call-completed — PIN lockout email (SCRUM-586)", 
     ])("a %s org timezone falls back to Sydney", async (_label, timezone) => {
       db.orgRow = { timezone, country: "AU" };
       expect((await (await POST(completedCall())).json()).ownerLockEmail).toBe("sent");
-      expect(sentTime()).toBe("Thursday 15 October at 3:04 pm");
+      expect(sentTime()).toBe("Thursday 15 October at 3:02 pm");
     });
 
     it("reuses the timezone the spam analysis already read: one organizations read in total", async () => {
       db.orgRow = { timezone: "Australia/Perth", country: "AU" };
       await POST(completedCall());
       expect(db.orgReads).toEqual(["timezone, country"]);
-      expect(sentTime()).toBe("Thursday 15 October at 12:04 pm");
+      expect(sentTime()).toBe("Thursday 15 October at 12:02 pm");
     });
 
     it("reads organizations.timezone once itself when the spam path never looked (withheld number)", async () => {
@@ -419,7 +425,7 @@ describe("POST /api/internal/call-completed — PIN lockout email (SCRUM-586)", 
       await POST(completedCall({ callerPhone: "" }));
       expect(analyzeCall).not.toHaveBeenCalled();
       expect(db.orgReads).toEqual(["timezone"]);
-      expect(sentTime()).toBe("Thursday 15 October at 12:04 pm");
+      expect(sentTime()).toBe("Thursday 15 October at 12:02 pm");
     });
 
     it("still emails when the org lookup fails everywhere: Sydney time, logged, never the server's zone", async () => {
@@ -428,7 +434,7 @@ describe("POST /api/internal/call-completed — PIN lockout email (SCRUM-586)", 
       expect(res.status).toBe(200);
       expect((await res.json()).ownerLockEmail).toBe("sent");
       expect(db.orgReads).toEqual(["timezone, country", "timezone"]);
-      expect(sentTime()).toBe("Thursday 15 October at 3:04 pm");
+      expect(sentTime()).toBe("Thursday 15 October at 3:02 pm");
       expect(console.error).toHaveBeenCalledWith(
         expect.stringContaining("PIN-lockout email"), expect.objectContaining({ organizationId: "org-1" }),
       );
@@ -439,7 +445,7 @@ describe("POST /api/internal/call-completed — PIN lockout email (SCRUM-586)", 
       db.orgRow = null; // the read resolves with no row and no error
       const res = await POST(completedCall({ callerPhone: "" }));
       expect((await res.json()).ownerLockEmail).toBe("sent");
-      expect(sentTime()).toBe("Thursday 15 October at 3:04 pm");
+      expect(sentTime()).toBe("Thursday 15 October at 3:02 pm");
     });
 
     it("a thrown org read (the only one, with a withheld number) is contained: still emailed, Sydney time, logged, not paged", async () => {
@@ -447,7 +453,7 @@ describe("POST /api/internal/call-completed — PIN lockout email (SCRUM-586)", 
       const res = await POST(completedCall({ callerPhone: "" }));
       expect(res.status).toBe(200);
       expect((await res.json()).ownerLockEmail).toBe("sent");
-      expect(sentTime()).toBe("Thursday 15 October at 3:04 pm");
+      expect(sentTime()).toBe("Thursday 15 October at 3:02 pm");
       expect(console.error).toHaveBeenCalledWith(
         expect.stringContaining("PIN-lockout email"), expect.objectContaining({ organizationId: "org-1" }),
       );

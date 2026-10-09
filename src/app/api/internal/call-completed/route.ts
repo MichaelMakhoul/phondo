@@ -136,9 +136,11 @@ async function readOrgTimezoneOnce(
  *   do not know someone is guessing their PIN. NOT stamped, so it can still go.
  *
  * Only the masked number reaches the sender — never the raw caller number, and
- * the PIN is never in the voice server's payload to begin with. The time reaches
- * it already written in the org's zone ("Thursday 15 October at 3:04 pm"): the
- * zone the spam analysis read if there was one (`knownTimezone`), else one read of
+ * the PIN is never in the voice server's payload to begin with. The time is when
+ * the locked call STARTED (`startedAt`: this route runs after the call ends, and the
+ * owner matches the email against their phone's call log), and it reaches the sender
+ * already written in the org's zone ("Thursday 15 October at 3:04 pm"): the zone the
+ * spam analysis read if there was one (`knownTimezone`), else one read of
  * organizations.timezone; an empty or unusable zone reads as Sydney.
  */
 async function emailOwnerPinLockOnce(
@@ -148,9 +150,10 @@ async function emailOwnerPinLockOnce(
     organizationId: string;
     callerPhone: string | undefined;
     knownTimezone: string | undefined;
+    startedAt: Date;
   }
 ): Promise<"sent" | "skipped" | "throttled" | "failed"> {
-  const { callId, organizationId, callerPhone, knownTimezone } = call;
+  const { callId, organizationId, callerPhone, knownTimezone, startedAt } = call;
   let outcome: "sent" | "skipped";
   try {
     const rl = await rateLimitDistributed(supabase, organizationId, "owner-lock-email", "ownerLockEmail");
@@ -163,7 +166,7 @@ async function emailOwnerPinLockOnce(
       organizationId,
       callId,
       callerPhoneMasked: maskPhoneForOwner(callerPhone || ""),
-      localTime: formatOwnerLockTime(new Date(), timezone),
+      localTime: formatOwnerLockTime(startedAt, timezone),
     });
   } catch (err) {
     pageSentry({
@@ -522,11 +525,18 @@ export async function POST(request: Request) {
   // read-modify-write window to ~1 s. It is not spam-gated (a PIN guesser's call
   // can look like spam and the owner should still hear about it), and a failure
   // pages and never fails the route. Reads the DB row (storedMetadata), never the
-  // payload. The email quotes the time in the ORG's timezone (the one step 1 read, else
-  // one read here), never the server's — see emailOwnerPinLockOnce.
+  // payload. The email quotes the time the call STARTED (now minus its duration) in
+  // the ORG's timezone (the one step 1 read, else one read here), never the server's
+  // — see emailOwnerPinLockOnce.
   let ownerLockEmail: "sent" | "skipped" | "throttled" | "failed" | undefined;
   if (callId && storedMetadata?.owner_auth === "locked" && !storedMetadata.owner_lock_emailed_at) {
-    ownerLockEmail = await emailOwnerPinLockOnce(supabase, { callId, organizationId, callerPhone, knownTimezone: orgTimezone });
+    ownerLockEmail = await emailOwnerPinLockOnce(supabase, {
+      callId,
+      organizationId,
+      callerPhone,
+      knownTimezone: orgTimezone,
+      startedAt: new Date(Date.now() - durationSeconds * 1000),
+    });
   }
 
   // 5. Deliver webhooks to user integrations
