@@ -7,12 +7,16 @@ import {
   sendMissedCallNotification,
   sendFailedCallNotification,
   sendUnsuccessfulCallNotification,
+  sendOwnerPinLockedNotification,
 } from "@/lib/notifications/notification-service";
 import { classifyCallNotification } from "@/lib/notifications/classify-call";
 import { humanizeEndedReason } from "@/lib/notifications/humanize-ended-reason";
 import { sendMissedCallTextBack } from "@/lib/sms/caller-sms";
 import { deliverWebhooks } from "@/lib/integrations/webhook-delivery";
 import { withRateLimit } from "@/lib/security/rate-limiter";
+import { maskPhoneForOwner } from "@/lib/owner-assistant/mask-phone";
+import { pageSentry } from "@/lib/observability/page-sentry";
+import { SENTRY_REASONS } from "@/lib/security/error-ids";
 
 function verifyInternalSecret(request: Request): boolean {
   const secret = process.env.INTERNAL_API_SECRET;
@@ -48,6 +52,85 @@ interface CallCompletedPayload {
   collectedData?: Record<string, unknown>;
   successEvaluation?: string;
   unansweredQuestions?: string[];
+}
+
+/**
+ * SCRUM-586: stamp calls.metadata.owner_lock_emailed_at once the lockout email
+ * has gone out, so a reprocessed call is not emailed twice. Best-effort and
+ * never throws — the email is already sent, and a failed stamp must neither turn
+ * that into a failure nor take the rest of the route down with it.
+ *
+ * Re-reads calls.metadata immediately before the write and merges ONLY this key.
+ * The route's first read is stale by now (the spam merge, and the voice server's
+ * own post-call writers, have touched the row since) and writing that copy back
+ * would silently undo them. If the re-read fails no stamp is written at all: the
+ * cost is a possible repeat email for a reprocessed call, never lost call data.
+ */
+async function stampOwnerLockEmailed(
+  supabase: ReturnType<typeof createAdminClient>,
+  callId: string
+): Promise<void> {
+  const stampFailed = "[Internal] Could not stamp owner_lock_emailed_at — a reprocessed call could repeat the lockout email:";
+  try {
+    const { data: fresh, error: readError } = await (supabase as any)
+      .from("calls")
+      .select("metadata")
+      .eq("id", callId)
+      .single();
+    if (readError) {
+      console.error(stampFailed, { callId, stage: "re-read", error: readError });
+      return;
+    }
+    const { error: writeError } = await (supabase as any)
+      .from("calls")
+      .update({ metadata: { ...(fresh?.metadata || {}), owner_lock_emailed_at: new Date().toISOString() } })
+      .eq("id", callId);
+    if (writeError) {
+      console.error(stampFailed, { callId, stage: "write", error: writeError });
+    }
+  } catch (err) {
+    console.error(stampFailed, { callId, stage: "unexpected", error: err });
+  }
+}
+
+/**
+ * SCRUM-586: email the business owner that their assistant-line PIN is locked,
+ * then stamp the call so a reprocessed call does not repeat it. Never throws.
+ *
+ * - "sent"    — the owner was emailed (and the call stamped, best-effort)
+ * - "skipped" — nothing to send (the public demo org has no owner); NOT stamped
+ * - "failed"  — the owner could not be emailed. This pages [ALERT:error]: they
+ *   do not know someone is guessing their PIN. NOT stamped, so it can still go.
+ *
+ * Only the masked number reaches the sender — never the raw caller number, and
+ * the PIN is never in the voice server's payload to begin with.
+ */
+async function emailOwnerPinLockOnce(
+  supabase: ReturnType<typeof createAdminClient>,
+  call: { callId: string; organizationId: string; callerPhone: string | undefined }
+): Promise<"sent" | "skipped" | "failed"> {
+  const { callId, organizationId, callerPhone } = call;
+  let outcome: "sent" | "skipped";
+  try {
+    outcome = await sendOwnerPinLockedNotification({
+      organizationId,
+      callId,
+      callerPhoneMasked: maskPhoneForOwner(callerPhone || ""),
+      timestamp: new Date(),
+    });
+  } catch (err) {
+    pageSentry({
+      service: "next-api",
+      reason: SENTRY_REASONS.OWNER_PIN_LOCK_EMAIL_FAILED,
+      level: "error",
+      err,
+      message: "owner PIN lockout email failed — the owner does not know their PIN was locked",
+      extras: { organizationId, callId },
+    });
+    return "failed";
+  }
+  if (outcome === "sent") await stampOwnerLockEmailed(supabase, callId);
+  return outcome;
 }
 
 /**
@@ -111,7 +194,9 @@ export async function POST(request: Request) {
   // missed/failed/unsuccessful alert (that would email the owner about their
   // own call), no caller text-back, no call.completed webhook. Billing still
   // counts it. Read from the DB, never the payload. A failed read falls back to
-  // the customer pipeline — dropping a customer alert is the worse failure.
+  // the customer pipeline — dropping a customer alert is the worse failure. The
+  // same row carries the PIN outcome (metadata.owner_auth) read for the lockout
+  // email at step 4c.
   let storedMetadata: Record<string, unknown> | null = null;
   let metadataFetchFailed = false;
   if (callId) {
@@ -121,7 +206,7 @@ export async function POST(request: Request) {
       .eq("id", callId)
       .single();
     if (fetchError) {
-      console.error("[Internal] Failed to fetch existing call metadata — owner-call check skipped, metadata merge skipped to avoid data loss:", {
+      console.error("[Internal] Failed to fetch existing call metadata — owner-call and PIN-lockout-email checks skipped, metadata merge skipped to avoid data loss:", {
         callId, error: fetchError,
       });
       metadataFetchFailed = true;
@@ -374,6 +459,24 @@ export async function POST(request: Request) {
     }
   }
 
+  // 4c. SCRUM-586: PIN lockout email. A caller from the registered owner mobile
+  // who tripped the owner-line lockout (too many wrong PINs; the owner saving a
+  // new PIN clears it) CONTINUED AS A CUSTOMER call — call_type is not 'owner',
+  // so every step above and below applies to it unchanged. Additionally the
+  // owner is emailed ONCE per locked call, deduped by metadata.owner_lock_emailed_at
+  // (stamped after a successful send).
+  //
+  // It goes out HERE, after the step-2 write, never between the hoisted metadata
+  // read and that write: a Resend round trip in that gap would stretch the
+  // read-modify-write window to ~1 s. It is not spam-gated (a PIN guesser's call
+  // can look like spam and the owner should still hear about it), and a failure
+  // pages and never fails the route. Reads the DB row (storedMetadata), never the
+  // payload.
+  let ownerLockEmail: "sent" | "skipped" | "failed" | undefined;
+  if (callId && storedMetadata?.owner_auth === "locked" && !storedMetadata.owner_lock_emailed_at) {
+    ownerLockEmail = await emailOwnerPinLockOnce(supabase, { callId, organizationId, callerPhone });
+  }
+
   // 5. Deliver webhooks to user integrations
   // SCRUM-586: an owner call is not a customer event for integrations.
   if (!isOwnerCall) {
@@ -416,5 +519,10 @@ export async function POST(request: Request) {
     });
   }
 
-  return NextResponse.json({ received: true, notificationStatus, ...(isOwnerCall && { ownerCall: true }) });
+  return NextResponse.json({
+    received: true,
+    notificationStatus,
+    ...(isOwnerCall && { ownerCall: true }),
+    ...(ownerLockEmail && { ownerLockEmail }),
+  });
 }

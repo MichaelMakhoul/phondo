@@ -251,6 +251,13 @@ export const SENTRY_REASONS = {
    *  tools, so any hit is a security signal (forged or prompt-injected call, or a
    *  voice-server bug) — check the call and the voice-server logs. */
   OWNER_TOOL_REFUSED: "owner-tool-refused",
+
+  /** The owner-line PIN was locked (too many wrong PINs) but the alert email to
+   *  the owner could not be sent — the owner won't know someone is guessing
+   *  their PIN. Error level: a security notification was wanted and nothing
+   *  went out. The call-completed route still answers 200, so nothing re-sends
+   *  it: check the call-completed logs for the cause and tell the owner by hand. */
+  OWNER_PIN_LOCK_EMAIL_FAILED: "owner-pin-lock-email-failed",
 } as const;
 
 export type SentryReason = (typeof SENTRY_REASONS)[keyof typeof SENTRY_REASONS];

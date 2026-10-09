@@ -49,6 +49,7 @@ vi.mock("@/lib/notifications/notification-service", () => ({
   sendMissedCallNotification: vi.fn(),
   sendFailedCallNotification: vi.fn(),
   sendUnsuccessfulCallNotification: vi.fn(),
+  sendOwnerPinLockedNotification: vi.fn(),
 }));
 vi.mock("@/lib/sms/caller-sms", () => ({ sendMissedCallTextBack: vi.fn() }));
 vi.mock("@/lib/integrations/webhook-delivery", () => ({ deliverWebhooks: vi.fn() }));

@@ -839,6 +839,50 @@ export async function sendUnsuccessfulCallNotification(
   return settleChannels("unsuccessful-call", data.organizationId, channels, droppedChannels);
 }
 
+export interface OwnerPinLockedNotificationData {
+  organizationId: string;
+  callId: string;
+  /** Already masked (maskPhoneForOwner) — this function never sees the raw number. */
+  callerPhoneMasked: string;
+  timestamp: Date;
+}
+
+/**
+ * SCRUM-586: the owner-line PIN lockout alert. A caller from the registered
+ * owner mobile entered the wrong PIN too many times (5 tries per 15 minutes —
+ * cleared by a correct PIN — or 20 per 24 hours), so the owner line locked and
+ * the call carried on as a normal customer call: either the owner fumbling or
+ * someone with their caller ID guessing. A security alert, so there is no
+ * preference or plan gate, and it goes to the OWNER only
+ * (getOrganizationOwnerEmail, like billing): only the owner role can change the
+ * PIN in Settings → Your assistant line, and saving a new PIN is what unlocks
+ * the line at once. Same honest settle semantics as every other owner alert —
+ * no owner email ⇒ throws.
+ */
+export async function sendOwnerPinLockedNotification(
+  data: OwnerPinLockedNotificationData
+): Promise<NotificationSendResult> {
+  if (skipDemoOrg("owner-pin-locked", data.organizationId)) return "skipped";
+
+  const email = await getOrganizationOwnerEmail(data.organizationId);
+  const channels: Promise<void>[] = [];
+  const droppedChannels: string[] = [];
+  if (!email) {
+    droppedChannels.push("owner-email");
+  } else {
+    channels.push(sendEmail({
+      to: email,
+      subject: "Your assistant line PIN is locked",
+      template: "owner-pin-locked",
+      data: {
+        callerPhoneMasked: data.callerPhoneMasked,
+        timestamp: data.timestamp.toLocaleString(),
+      },
+    }));
+  }
+  return settleChannels("owner-pin-locked", data.organizationId, channels, droppedChannels);
+}
+
 /**
  * Format an appointment date in the org's timezone, unambiguously.
  *
@@ -1440,6 +1484,17 @@ function generateEmailHtml(template: string, data: Record<string, any>): string 
       </table>
       <p><strong>Consider calling them back.</strong></p>
       <p><a href="${escapeHtml(d.dashboardLink || (process.env.NEXT_PUBLIC_APP_URL || "https://phondo.ai") + "/calls")}">View the full call</a></p>
+    `,
+    // SCRUM-586 — owner-line PIN lockout alert. Keep the copy true to the lock
+    // rule: 5 tries per 15 minutes (cleared by a correct PIN) plus 20 per
+    // 24 hours, and saving a new PIN unlocks at once — so never describe the
+    // lock as a flat 15 minutes. No promise of a text to the caller either
+    // (customer SMS is paused, SCRUM-264).
+    "owner-pin-locked": (d) => `
+      <h2 style="color: #dc2626;">Your assistant line PIN is locked</h2>
+      <p>Someone rang your assistant line from <strong>${d.callerPhoneMasked}</strong> at ${d.timestamp} and entered the wrong PIN too many times, so the owner line is locked.</p>
+      <p><strong>If this wasn't you, set a new PIN</strong> in Settings → Your assistant line: that unlocks it straight away and the old PIN stops working.</p>
+      <p>If it was you, it unlocks by itself after 15 minutes (or after 24 hours if there were too many tries in one day). Until then, calls from that number are answered as normal customer calls.</p>
     `,
     "appointment-booked": (d) => `
       <h2>New Appointment Booked</h2>
