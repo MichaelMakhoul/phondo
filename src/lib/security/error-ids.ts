@@ -244,6 +244,13 @@ export const SENTRY_REASONS = {
    *  to Sentry only (no DSN in production), so this is the alertable line.
    *  Fix by hand in the dashboard: restore the old booking or rebook it. */
   OWNER_RESCHEDULE_ORPHANED: "owner-reschedule-orphaned",
+
+  /** The internal tool-call route refused an owner_* tool: the request carried no
+   *  envelope owner authority (`ownerVerified: true` from the voice server's PIN
+   *  gate) or was not a production call. Customer sessions are never offered these
+   *  tools, so any hit is a security signal (forged or prompt-injected call, or a
+   *  voice-server bug) — check the call and the voice-server logs. */
+  OWNER_TOOL_REFUSED: "owner-tool-refused",
 } as const;
 
 export type SentryReason = (typeof SENTRY_REASONS)[keyof typeof SENTRY_REASONS];

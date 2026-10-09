@@ -28,7 +28,8 @@ vi.mock("@/lib/owner-assistant/tool-handlers", () => ({
 vi.mock("@/lib/callbacks/tool-handler", () => ({ handleScheduleCallback: vi.fn(async () => ({ success: true, message: "cb" })) }));
 vi.mock("@/lib/service-types", () => ({ getActiveServiceTypes: vi.fn(async () => []) }));
 vi.mock("@/lib/security/rate-limiter", () => ({ withRateLimit: vi.fn(() => ({ allowed: true, headers: {} })) }));
-vi.mock("@sentry/nextjs", () => ({ captureMessage: vi.fn(), captureException: vi.fn() }));
+// withScope is a no-op: pageSentry's Sentry leg stays silent, its [ALERT:*] console line is what the pins read.
+vi.mock("@sentry/nextjs", () => ({ captureMessage: vi.fn(), captureException: vi.fn(), withScope: vi.fn() }));
 
 import * as Sentry from "@sentry/nextjs";
 import { POST } from "../route";
@@ -44,6 +45,8 @@ const ORG = "11111111-2222-4333-a444-555555555555";
 const CALL_ID = "0f1e2d3c-4b5a-4c6d-8e9f-0a1b2c3d4e5f";
 const APPT = "44444444-5555-4666-8777-888888888888";
 const SECRET = "owner-dispatch-pin-secret";
+/** A model-argument value that must never reach a log line. */
+const ARG_CANARY = "arg-canary-5b1e";
 
 function post(payload: Record<string, unknown>) {
   return POST(new Request("http://voice.internal/api/internal/tool-call", {
@@ -68,11 +71,29 @@ describe("owner_* authority (SCRUM-586)", () => {
   });
 
   it("refuses with 403 + error:true when ownerVerified is absent", async () => {
-    const res = await post({ ...base, functionName: "owner_list_appointments", arguments: { range: "today" } });
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ success: false, error: true, message: "That isn't available on this call." });
-    expect(handleOwnerListAppointments).not.toHaveBeenCalled();
-    expect(Sentry.captureMessage).toHaveBeenCalledWith("owner tool called without owner authority", expect.objectContaining({ level: "error" }));
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const res = await post({ ...base, functionName: "owner_list_appointments", arguments: { range: "today", date: ARG_CANARY } });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ success: false, error: true, message: "That isn't available on this call." });
+      expect(handleOwnerListAppointments).not.toHaveBeenCalled();
+      // A refusal is a security signal, so the route pages it itself: one [ALERT:error]
+      // line (Sentry is off in production, SCRUM-320) naming the reason and the tool,
+      // never the model's arguments.
+      const alerts = errors.mock.calls.map((c) => String(c[0])).filter((line) => line.startsWith("[ALERT:error]"));
+      expect(alerts).toHaveLength(1);
+      expect(alerts[0]).toContain("reason=owner-tool-refused");
+      expect(alerts[0]).toContain("functionName=owner_list_appointments");
+      expect(alerts[0]).toContain("hasCallId=true");
+      expect(alerts[0]).toContain("ownerVerifiedType=undefined");
+      expect(alerts[0]).not.toContain(ARG_CANARY);
+      expect(alerts[0]).not.toContain("arguments");
+      // Nothing else logged on the refusal carries the arguments either.
+      const logged = errors.mock.calls.map((c) => c.map((a) => (typeof a === "string" ? a : JSON.stringify(a))).join(" "));
+      expect(logged.filter((line) => line.includes(ARG_CANARY))).toEqual([]);
+    } finally {
+      errors.mockRestore();
+    }
   });
 
   it("refuses when ownerVerified is anything but the boolean true", async () => {

@@ -18,6 +18,8 @@ import { getActiveServiceTypes } from "@/lib/service-types";
 import { withRateLimit } from "@/lib/security/rate-limiter";
 import { resolveCallerId, sanitizeCollectedDetails } from "@/lib/calendar/appointment-verification";
 import * as Sentry from "@sentry/nextjs";
+import { pageSentry } from "@/lib/observability/page-sentry";
+import { SENTRY_REASONS } from "@/lib/security/error-ids";
 import {
   OWNER_TOOL_NAMES,
   handleOwnerListAppointments,
@@ -196,9 +198,20 @@ export async function POST(request: Request) {
         console.error("[ToolCall] owner tool REFUSED — no owner authority on this call", {
           functionName, organizationId, ownerVerified: payload.ownerVerified === true, isProductionCall,
         });
-        Sentry.captureMessage("owner tool called without owner authority", {
+        // A refusal is a security signal, so the route pages it itself: pageSentry's
+        // [ALERT:error] line is the alertable one (@sentry/nextjs is off in
+        // production, SCRUM-320). Never put the model's `arguments` in the extras.
+        pageSentry({
+          service: "next-api",
+          reason: SENTRY_REASONS.OWNER_TOOL_REFUSED,
           level: "error",
-          extra: { functionName, organizationId, isProductionCall },
+          message: "owner tool called without owner authority",
+          extras: {
+            functionName,
+            organizationId,
+            hasCallId: Boolean(payload.callId),
+            ownerVerifiedType: typeof payload.ownerVerified,
+          },
         });
         return NextResponse.json(
           { success: false, error: true, message: "That isn't available on this call." },
