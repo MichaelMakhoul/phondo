@@ -28,12 +28,19 @@ const db: {
   failCallRead: number | null;
   throwCallRead: number | null;
   failStampWrite: boolean;
+  /** The organizations row every org read returns, the error to return instead, and the select list of each read. */
+  orgRow: Record<string, unknown> | null;
+  orgError: unknown;
+  /** Make every organizations read THROW instead of returning (a client/network fault). */
+  throwOrgRead: boolean;
+  orgReads: string[];
   updates: Update[];
   /** calls reads, calls writes and the lockout send, in the order they happened. */
   events: string[];
   rpc: Mock;
 } = {
   metadata: null, reads: [], failCallRead: null, throwCallRead: null, failStampWrite: false,
+  orgRow: { timezone: "Australia/Sydney", country: "AU" }, orgError: null, throwOrgRead: false, orgReads: [],
   updates: [], events: [], rpc: vi.fn(async () => ({ data: true, error: null })),
 };
 
@@ -47,8 +54,9 @@ vi.mock("@/lib/supabase/admin", () => ({
   createAdminClient: vi.fn(() => ({
     from: (table: string) => {
       let pending: Update | null = null;
+      let selected = "";
       const chain: any = {
-        select: () => chain,
+        select: (cols?: string) => { selected = cols ?? ""; return chain; },
         eq: () => chain,
         update: (payload: unknown) => { pending = { table, payload }; return chain; },
         single: async () => {
@@ -61,7 +69,11 @@ vi.mock("@/lib/supabase/admin", () => ({
             db.reads.push(snapshot);
             return { data: { metadata: snapshot }, error: null };
           }
-          if (table === "organizations") return { data: { timezone: "Australia/Sydney", country: "AU" }, error: null };
+          if (table === "organizations") {
+            db.orgReads.push(selected);
+            if (db.throwOrgRead) throw new Error("socket hang up");
+            return db.orgError ? { data: null, error: db.orgError } : { data: db.orgRow, error: null };
+          }
           if (table === "assistants") return { data: { name: "Copperline" }, error: null };
           return { data: null, error: { message: `unexpected table ${table}` } };
         },
@@ -142,6 +154,10 @@ beforeEach(() => {
   db.failCallRead = null;
   db.throwCallRead = null;
   db.failStampWrite = false;
+  db.orgRow = { timezone: "Australia/Sydney", country: "AU" };
+  db.orgError = null;
+  db.throwOrgRead = false;
+  db.orgReads = [];
   db.updates = [];
   db.events = [];
   db.rpc.mockClear();
@@ -159,6 +175,8 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.useRealTimers();
+  vi.unstubAllEnvs();
 });
 
 describe("POST /api/internal/call-completed — PIN lockout email (SCRUM-586)", () => {
@@ -176,7 +194,7 @@ describe("POST /api/internal/call-completed — PIN lockout email (SCRUM-586)", 
     // Exactly one lockout email, masked, keyed to this call.
     expect(sendOwnerPinLockedNotification).toHaveBeenCalledTimes(1);
     expect(sendOwnerPinLockedNotification).toHaveBeenCalledWith({
-      organizationId: "org-1", callId: CALL_ID, callerPhoneMasked: "04xx xxx 137", timestamp: expect.any(Date),
+      organizationId: "org-1", callId: CALL_ID, callerPhoneMasked: "04xx xxx 137", localTime: expect.any(String),
     });
     // The full number never reaches the sender.
     expect(JSON.stringify(vi.mocked(sendOwnerPinLockedNotification).mock.calls)).not.toMatch(/412345137/);
@@ -310,6 +328,86 @@ describe("POST /api/internal/call-completed — PIN lockout email (SCRUM-586)", 
     expect((await (await POST(completedCall())).json()).ownerLockEmail).toBe("skipped");
     expect(stamps()).toHaveLength(0);
     expect(pageSentry).not.toHaveBeenCalled();
+  });
+
+  describe("the email quotes the ORG's local time, never the server's", () => {
+    // Thursday 15 Oct 2026, 04:04 UTC: 3:04 pm in Sydney (AEDT, UTC+11), 12:04 pm in Perth (UTC+8).
+    const NOW = new Date("2026-10-15T04:04:00Z");
+    const sentTime = () => vi.mocked(sendOwnerPinLockedNotification).mock.calls[0][0].localTime;
+
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(NOW);
+      // The suite machine may itself run on Sydney time, which would hide a fallback to the server's zone.
+      vi.stubEnv("TZ", "Pacific/Honolulu");
+      db.metadata = { owner_auth: "locked" };
+    });
+
+    it.each([
+      ["Australia/Sydney", "Thursday 15 October at 3:04 pm"],
+      ["Australia/Perth", "Thursday 15 October at 12:04 pm"],
+    ])("a %s org is told %s", async (timezone, expected) => {
+      db.orgRow = { timezone, country: "AU" };
+      expect((await (await POST(completedCall())).json()).ownerLockEmail).toBe("sent");
+      expect(sentTime()).toBe(expected);
+    });
+
+    it.each([
+      ["null", null],
+      ["empty", ""],
+      ["not a time zone", "Not/AZone"],
+    ])("a %s org timezone falls back to Sydney", async (_label, timezone) => {
+      db.orgRow = { timezone, country: "AU" };
+      expect((await (await POST(completedCall())).json()).ownerLockEmail).toBe("sent");
+      expect(sentTime()).toBe("Thursday 15 October at 3:04 pm");
+    });
+
+    it("reuses the timezone the spam analysis already read: one organizations read in total", async () => {
+      db.orgRow = { timezone: "Australia/Perth", country: "AU" };
+      await POST(completedCall());
+      expect(db.orgReads).toEqual(["timezone, country"]);
+      expect(sentTime()).toBe("Thursday 15 October at 12:04 pm");
+    });
+
+    it("reads organizations.timezone once itself when the spam path never looked (withheld number)", async () => {
+      db.orgRow = { timezone: "Australia/Perth", country: "AU" };
+      await POST(completedCall({ callerPhone: "" }));
+      expect(analyzeCall).not.toHaveBeenCalled();
+      expect(db.orgReads).toEqual(["timezone"]);
+      expect(sentTime()).toBe("Thursday 15 October at 12:04 pm");
+    });
+
+    it("still emails when the org lookup fails everywhere: Sydney time, logged, never the server's zone", async () => {
+      db.orgError = { message: "connection refused", code: "08006" };
+      const res = await POST(completedCall());
+      expect(res.status).toBe(200);
+      expect((await res.json()).ownerLockEmail).toBe("sent");
+      expect(db.orgReads).toEqual(["timezone, country", "timezone"]);
+      expect(sentTime()).toBe("Thursday 15 October at 3:04 pm");
+      expect(console.error).toHaveBeenCalledWith(
+        expect.stringContaining("PIN-lockout email"), expect.objectContaining({ organizationId: "org-1" }),
+      );
+      expect(pageSentry).not.toHaveBeenCalled();
+    });
+
+    it("a missing org row reads as Sydney too", async () => {
+      db.orgRow = null; // the read resolves with no row and no error
+      const res = await POST(completedCall({ callerPhone: "" }));
+      expect((await res.json()).ownerLockEmail).toBe("sent");
+      expect(sentTime()).toBe("Thursday 15 October at 3:04 pm");
+    });
+
+    it("a thrown org read (the only one, with a withheld number) is contained: still emailed, Sydney time, logged, not paged", async () => {
+      db.throwOrgRead = true;
+      const res = await POST(completedCall({ callerPhone: "" }));
+      expect(res.status).toBe(200);
+      expect((await res.json()).ownerLockEmail).toBe("sent");
+      expect(sentTime()).toBe("Thursday 15 October at 3:04 pm");
+      expect(console.error).toHaveBeenCalledWith(
+        expect.stringContaining("PIN-lockout email"), expect.objectContaining({ organizationId: "org-1" }),
+      );
+      expect(pageSentry).not.toHaveBeenCalled();
+    });
   });
 
   describe("the stamp is best-effort: the email already went out, so nothing here may turn 'sent' into a failure", () => {

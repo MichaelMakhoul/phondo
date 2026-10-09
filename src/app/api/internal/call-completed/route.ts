@@ -15,6 +15,7 @@ import { sendMissedCallTextBack } from "@/lib/sms/caller-sms";
 import { deliverWebhooks } from "@/lib/integrations/webhook-delivery";
 import { withRateLimit } from "@/lib/security/rate-limiter";
 import { maskPhoneForOwner } from "@/lib/owner-assistant/mask-phone";
+import { formatOwnerLockTime } from "@/lib/owner-assistant/lock-email-time";
 import { pageSentry } from "@/lib/observability/page-sentry";
 import { SENTRY_REASONS } from "@/lib/security/error-ids";
 
@@ -94,6 +95,36 @@ async function stampOwnerLockEmailed(
 }
 
 /**
+ * SCRUM-586: the org's IANA timezone for the lockout email's "when", read here
+ * only because the spam analysis (step 1) did not supply one — it never looked
+ * (no caller number), its lookup failed, or the column is empty. Never throws: a
+ * failed read is logged and returns undefined, and the email then reads in the
+ * default zone (formatOwnerLockTime), never the server's. Dropping a security
+ * alert over a timezone would be the worse failure.
+ */
+async function readOrgTimezoneOnce(
+  supabase: ReturnType<typeof createAdminClient>,
+  organizationId: string
+): Promise<string | undefined> {
+  const failed = "[Internal] Could not read the org timezone for the PIN-lockout email — it will read in the default zone:";
+  try {
+    const { data, error } = await (supabase as any)
+      .from("organizations")
+      .select("timezone")
+      .eq("id", organizationId)
+      .single();
+    if (error) {
+      console.error(failed, { organizationId, error });
+      return undefined;
+    }
+    return data?.timezone || undefined;
+  } catch (err) {
+    console.error(failed, { organizationId, error: err });
+    return undefined;
+  }
+}
+
+/**
  * SCRUM-586: email the business owner that their assistant-line PIN is locked,
  * then stamp the call so a reprocessed call does not repeat it. Never throws.
  *
@@ -103,20 +134,29 @@ async function stampOwnerLockEmailed(
  *   do not know someone is guessing their PIN. NOT stamped, so it can still go.
  *
  * Only the masked number reaches the sender — never the raw caller number, and
- * the PIN is never in the voice server's payload to begin with.
+ * the PIN is never in the voice server's payload to begin with. The time reaches
+ * it already written in the org's zone ("Thursday 15 October at 3:04 pm"): the
+ * zone the spam analysis read if there was one (`knownTimezone`), else one read of
+ * organizations.timezone; an empty or unusable zone reads as Sydney.
  */
 async function emailOwnerPinLockOnce(
   supabase: ReturnType<typeof createAdminClient>,
-  call: { callId: string; organizationId: string; callerPhone: string | undefined }
+  call: {
+    callId: string;
+    organizationId: string;
+    callerPhone: string | undefined;
+    knownTimezone: string | undefined;
+  }
 ): Promise<"sent" | "skipped" | "failed"> {
-  const { callId, organizationId, callerPhone } = call;
+  const { callId, organizationId, callerPhone, knownTimezone } = call;
   let outcome: "sent" | "skipped";
   try {
+    const timezone = knownTimezone || (await readOrgTimezoneOnce(supabase, organizationId));
     outcome = await sendOwnerPinLockedNotification({
       organizationId,
       callId,
       callerPhoneMasked: maskPhoneForOwner(callerPhone || ""),
-      timestamp: new Date(),
+      localTime: formatOwnerLockTime(new Date(), timezone),
     });
   } catch (err) {
     pageSentry({
@@ -219,13 +259,16 @@ export async function POST(request: Request) {
   // 1. Run spam analysis
   let spamAnalysis = null;
   let spamAnalysisFailed = false;
+  // The org's timezone as the spam analysis' org lookup read it (undefined when that
+  // lookup did not run or failed, or the column is empty) — hoisted so the PIN-lockout
+  // email at step 4c can quote the owner's local time without a second query.
+  let orgTimezone: string | undefined;
   if (callerPhone && !isOwnerCall) {
     // The timing heuristic needs the ORG's timezone (scoring "unusual hours"
     // in server-UTC penalized every AU business-hours call — SCRUM-418), and
     // phone-format analysis needs the org's country (defaulting to US rules
     // mis-scored AU numbers). Fail-soft: on lookup error both stay undefined —
     // the timing signal is dropped and country falls back to US.
-    let orgTimezone: string | undefined;
     let orgCountry: string | undefined;
     const { data: orgRow, error: orgError } = await (supabase as any)
       .from("organizations")
@@ -471,10 +514,11 @@ export async function POST(request: Request) {
   // read-modify-write window to ~1 s. It is not spam-gated (a PIN guesser's call
   // can look like spam and the owner should still hear about it), and a failure
   // pages and never fails the route. Reads the DB row (storedMetadata), never the
-  // payload.
+  // payload. The email quotes the time in the ORG's timezone (the one step 1 read, else
+  // one read here), never the server's — see emailOwnerPinLockOnce.
   let ownerLockEmail: "sent" | "skipped" | "failed" | undefined;
   if (callId && storedMetadata?.owner_auth === "locked" && !storedMetadata.owner_lock_emailed_at) {
-    ownerLockEmail = await emailOwnerPinLockOnce(supabase, { callId, organizationId, callerPhone });
+    ownerLockEmail = await emailOwnerPinLockOnce(supabase, { callId, organizationId, callerPhone, knownTimezone: orgTimezone });
   }
 
   // 5. Deliver webhooks to user integrations

@@ -844,7 +844,9 @@ export interface OwnerPinLockedNotificationData {
   callId: string;
   /** Already masked (maskPhoneForOwner) — this function never sees the raw number. */
   callerPhoneMasked: string;
-  timestamp: Date;
+  /** Already written in the ORG's timezone (formatOwnerLockTime), e.g. "Thursday 15 October at
+   *  3:04 pm" — this function formats no clock of its own, so it cannot fall back to server time. */
+  localTime: string;
 }
 
 /**
@@ -876,7 +878,7 @@ export async function sendOwnerPinLockedNotification(
       template: "owner-pin-locked",
       data: {
         callerPhoneMasked: data.callerPhoneMasked,
-        timestamp: data.timestamp.toLocaleString(),
+        localTime: data.localTime,
       },
     }));
   }
@@ -1489,10 +1491,11 @@ function generateEmailHtml(template: string, data: Record<string, any>): string 
     // rule: 5 tries per 15 minutes (cleared by a correct PIN) plus 20 per
     // 24 hours, and saving a new PIN unlocks at once — so never describe the
     // lock as a flat 15 minutes. No promise of a text to the caller either
-    // (customer SMS is paused, SCRUM-264).
+    // (customer SMS is paused, SCRUM-264). localTime arrives already written in
+    // the org's zone ("Thursday 15 October at 3:04 pm"), hence "on <time>".
     "owner-pin-locked": (d) => `
       <h2 style="color: #dc2626;">Your assistant line PIN is locked</h2>
-      <p>Someone rang your assistant line from <strong>${d.callerPhoneMasked}</strong> at ${d.timestamp} and entered the wrong PIN too many times, so the owner line is locked.</p>
+      <p>Someone rang your assistant line from <strong>${d.callerPhoneMasked}</strong> on ${d.localTime} and entered the wrong PIN too many times, so the owner line is locked.</p>
       <p><strong>If this wasn't you, set a new PIN</strong> in Settings → Your assistant line: that unlocks it straight away and the old PIN stops working.</p>
       <p>If it was you, it unlocks by itself after 15 minutes (or after 24 hours if there were too many tries in one day). Until then, calls from that number are answered as normal customer calls.</p>
     `,

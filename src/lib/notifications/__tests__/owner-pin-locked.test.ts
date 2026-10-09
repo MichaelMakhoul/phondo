@@ -59,7 +59,8 @@ function fakeAdmin(tables: Record<string, SingleResult>) {
 }
 
 const ORG = "11111111-2222-4333-a444-555555555555";
-const data = { organizationId: ORG, callId: "0f1e2d3c-4b5a-4c6d-8e9f-0a1b2c3d4e5f", callerPhoneMasked: "04xx xxx 137", timestamp: new Date("2026-10-15T03:00:00Z") };
+// The route hands the sender the time already formatted in the ORG's zone (formatOwnerLockTime).
+const data = { organizationId: ORG, callId: "0f1e2d3c-4b5a-4c6d-8e9f-0a1b2c3d4e5f", callerPhoneMasked: "04xx xxx 137", localTime: "Thursday 15 October at 3:04 pm" };
 
 type Sent = { from: string; to: string; subject: string; html: string };
 const lastSent = () => resendSend.mock.calls[0][0] as Sent;
@@ -93,15 +94,21 @@ describe("sendOwnerPinLockedNotification (SCRUM-586)", () => {
   it("tells the owner what really happened and how to undo it (5/15min + 20/24h lock, new PIN unlocks)", async () => {
     await sendOwnerPinLockedNotification(data);
     const text = words(lastSent().html);
-    expect(text).toContain(words(
-      `Someone rang your assistant line from 04xx xxx 137 at ${data.timestamp.toLocaleString()} and entered the wrong PIN too many times, so the owner line is locked.`,
-    ));
+    expect(text).toContain(
+      "Someone rang your assistant line from 04xx xxx 137 on Thursday 15 October at 3:04 pm and entered the wrong PIN too many times, so the owner line is locked.",
+    );
     expect(text).toContain(
       "If this wasn't you, set a new PIN in Settings → Your assistant line: that unlocks it straight away and the old PIN stops working.",
     );
     expect(text).toContain(
       "If it was you, it unlocks by itself after 15 minutes (or after 24 hours if there were too many tries in one day). Until then, calls from that number are answered as normal customer calls.",
     );
+  });
+
+  it("quotes the org-local time it is handed verbatim — it formats no clock of its own, so it can never fall back to server time", async () => {
+    await sendOwnerPinLockedNotification({ ...data, localTime: "Friday 2 January at 9:15 am" });
+    expect(words(lastSent().html)).toContain("from 04xx xxx 137 on Friday 2 January at 9:15 am and entered");
+    expect(lastSent().html).not.toContain("Thursday 15 October");
   });
 
   it("never states the old, wrong lock rule", async () => {
