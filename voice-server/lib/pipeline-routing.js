@@ -40,4 +40,23 @@ function resolveTestPipeline(calledNumber, overridesRaw = process.env.TEST_PIPEL
   return null;
 }
 
-module.exports = { resolveTestPipeline, normNumber, KNOWN_TEST_PIPELINES };
+/** SCRUM-587: the pipelines the server actually implements for INBOUND owner calls. */
+const OWNER_PIPELINES = new Set(["classic", "gemini-live"]);
+
+/**
+ * SCRUM-587: pipeline for OWNER calls only. Unset → the global VOICE_PIPELINE;
+ * a known value is honoured; a typo warns and falls back, so a bad secret can
+ * never leave owner calls without a pipeline. Read at CALL time.
+ * @param {string} [ownerRaw]
+ * @param {string} [globalPipeline]
+ * @returns {string}
+ */
+function resolveOwnerPipeline(ownerRaw = process.env.OWNER_PIPELINE, globalPipeline = process.env.VOICE_PIPELINE || "classic") {
+  const v = String(ownerRaw || "").trim();
+  if (!v) return globalPipeline;
+  if (OWNER_PIPELINES.has(v)) return v;
+  console.warn(`[Pipeline] OWNER_PIPELINE="${v}" is not a known pipeline (${[...OWNER_PIPELINES].join(", ")}) — owner calls use ${globalPipeline}`);
+  return globalPipeline;
+}
+
+module.exports = { resolveTestPipeline, normNumber, KNOWN_TEST_PIPELINES, resolveOwnerPipeline, OWNER_PIPELINES };
