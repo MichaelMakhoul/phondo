@@ -21,9 +21,17 @@ const { runOwnerToolCall, buildOwnerCallSummary, OWNER_MAX_TOOL_CALLS, describeO
 const { executeToolCall } = require("../services/tool-executor");
 
 // SCRUM-587 — the owner tool path replaces the customer guard chain (spec §5).
+// The turn/speech stamps start as Task 10 declares them on CallSession.
 function makeSession(overrides = {}) {
-  return { callSid: "CA1", organizationId: "org-1", assistantId: "asst-1", callRecordId: "call-1", ownerMode: true, organization: { timezone: "Australia/Sydney" }, callerPhone: "+61400000001", orgPhoneNumber: "+61255550000", telephonyProvider: "twilio", toolCallAudit: [], ownerToolCalls: 0, ...overrides };
+  return { callSid: "CA1", organizationId: "org-1", assistantId: "asst-1", callRecordId: "call-1", ownerMode: true, organization: { timezone: "Australia/Sydney" }, callerPhone: "+61400000001", orgPhoneNumber: "+61255550000", telephonyProvider: "twilio", toolCallAudit: [], ownerToolCalls: 0, assistantTurnSeq: 0, lastAssistantTurnAt: 0, lastOwnerSpeechAt: 0, ...overrides };
 }
+let lastStamp = 0;
+/** A Date.now()-based stamp like server.js's, strictly later than the previous one. */
+const stamp = () => (lastStamp = Math.max(Date.now(), lastStamp + 1));
+/** Task 10's stamps, by hand: an assistant turn (e.g. the read-back) completes or is interrupted. */
+function assistantTurn(s) { s.assistantTurnSeq += 1; s.lastAssistantTurnAt = stamp(); }
+/** Task 10's stamp, by hand: the owner speaks. */
+function ownerSpeaks(s) { s.lastOwnerSpeechAt = stamp(); }
 function makeDeps(resultFor) {
   const calls = []; const invalidated = []; let t = 1000;
   const deps = {
@@ -47,10 +55,11 @@ async function captureConsole(fn) {
 }
 const alerts = (lines) => lines.filter((l) => l.text.includes("[ALERT:error]"));
 const auditFor = (s, name) => s.toolCallAudit.filter((e) => e.name === name);
-/** Arm the confirmation gate by hand: a read-back the owner has answered since. */
+/** Arm the confirmation gate by hand: one read-back turn since the arm, then the owner spoke. */
 function armConfirmed(s, key) {
-  s.ownerPendingConfirmations = new Map([[key, { at: 1 }]]);
-  s.lastOwnerSpeechAt = 2;
+  s.ownerPendingConfirmations = new Map([[key, { at: stamp(), seq: s.assistantTurnSeq }]]);
+  assistantTurn(s);
+  ownerSpeaks(s);
 }
 
 const RESCHEDULED = { message: "Moved Jane Smith's 2:00 pm Thursday job to Friday 9:00 am. The customer has NOT been notified.", data: { outcome: "rescheduled", customer_notified: false } };
@@ -440,7 +449,7 @@ describe("runOwnerToolCall — faults inside the runner", () => {
     const s = makeSession(); const d = makeDeps((name, args) => (args.confirmed === true ? reveal : { ...RESCHEDULE_NEEDS_CONFIRMATION, message: "Read back Zelda Quixote" }));
     const lines = await captureConsole(async () => {
       await runOwnerToolCall(s, { name: "owner_reschedule_appointment", args: { appointment_id: SECRET_ID, new_datetime: SECRET_DT, confirmed: true } }, d.deps);
-      s.lastOwnerSpeechAt = Date.now() + 1000;
+      assistantTurn(s); ownerSpeaks(s);
       await runOwnerToolCall(s, { name: "owner_reschedule_appointment", args: { appointment_id: SECRET_ID, new_datetime: SECRET_DT, confirmed: true } }, d.deps);
       await runOwnerToolCall(s, { name: "owner_list_messages", args: { note: "Zelda Quixote" } }, makeDeps({ message: "Zelda Quixote called", data: { callbacks: [] } }).deps);
       await runOwnerToolCall(s, { name: "book_appointment", args: { first_name: "Zelda" } }, d.deps);
@@ -472,6 +481,22 @@ describe("runOwnerToolCall — structural confirmation gate", () => {
   let lines;
   beforeEach(() => { lines = []; });
   const run = (s, d, name, args) => captureConsole(() => runOwnerToolCall(s, { name, args }, d.deps)).then((l) => { lines.push(...l); });
+  const confirmCancel = (s, d, id = "a1") => run(s, d, "owner_cancel_appointment", { appointment_id: id, confirmed: true });
+  /**
+   * Arm a1 through PR B, then set Task 10's stamps relative to the arm's own:
+   * `turns` assistant turns since, the last one ending at +turnEndsAfterArm ms,
+   * the owner's speech at +spokeAfterArm ms. Returns what the confirm forwarded.
+   */
+  async function confirmAfter(spokeAfterArm, { turns = 1, turnEndsAfterArm = 10 } = {}) {
+    const s = makeSession(); const d = makeDeps(prB);
+    await run(s, d, "owner_cancel_appointment", { appointment_id: "a1" });
+    const entry = s.ownerPendingConfirmations.get(CANCEL_KEY);
+    s.assistantTurnSeq = entry.seq + turns;
+    s.lastAssistantTurnAt = entry.at + turnEndsAfterArm;
+    s.lastOwnerSpeechAt = entry.at + spokeAfterArm;
+    await confirmCancel(s, d);
+    return d.calls.at(-1).args.confirmed;
+  }
 
   it("a confirmed write with no pending read-back is forwarded with confirmed:false and audited as gated", async () => {
     const s = makeSession(); const d = makeDeps(prB);
@@ -482,57 +507,175 @@ describe("runOwnerToolCall — structural confirmation gate", () => {
     assert.equal(d.invalidations, 0);
     assert.equal(lines.filter((l) => l.level === "warn").length, 1);
   });
-  it("PR B's needs_confirmation arms a pending entry (Map created lazily), keyed tool|appointment_id[|new_datetime]", async () => {
+  it("PR B's needs_confirmation arms { at, seq } (Map created lazily), keyed tool|appointment_id[|new_datetime]", async () => {
     for (const initial of [undefined, null]) {
-      const s = makeSession({ ownerPendingConfirmations: initial }); const d = makeDeps(prB);
+      const s = makeSession({ ownerPendingConfirmations: initial, assistantTurnSeq: 7 }); const d = makeDeps(prB);
       const before = Date.now();
       await run(s, d, "owner_cancel_appointment", { appointment_id: "a1" });
       await run(s, d, "owner_reschedule_appointment", { appointment_id: "a1", new_datetime: "2026-10-16T09:00" });
       assert.ok(s.ownerPendingConfirmations instanceof Map);
       assert.deepEqual([...s.ownerPendingConfirmations.keys()].sort(), [CANCEL_KEY, RESCHEDULE_KEY].sort());
-      for (const entry of s.ownerPendingConfirmations.values()) assert.ok(entry.at >= before && entry.at <= Date.now(), "stamped with Date.now()");
+      for (const entry of s.ownerPendingConfirmations.values()) {
+        assert.ok(entry.at >= before && entry.at <= Date.now(), "stamped with Date.now()");
+        assert.equal(entry.seq, 7, "the assistant turn count at the arm");
+      }
       assert.deepEqual(d.calls.map((c) => c.args.confirmed), [undefined, undefined], "an unconfirmed write is forwarded unchanged");
       assert.equal(auditFor(s, "owner_confirm_gate").length, 0);
     }
   });
-  it("a pending read-back the owner hasn't spoken after is not a yes", async () => {
+  it("the right sequence — one read-back turn since the arm, then the owner speaks — goes through as-is, once", async () => {
     const s = makeSession(); const d = makeDeps(prB);
     await run(s, d, "owner_cancel_appointment", { appointment_id: "a1" });
-    const at = s.ownerPendingConfirmations.get(CANCEL_KEY).at;
-    for (const spokeAt of [undefined, 0, at - 1, at]) {
-      s.lastOwnerSpeechAt = spokeAt;
-      await run(s, d, "owner_cancel_appointment", { appointment_id: "a1", confirmed: true });
-      assert.equal(d.calls.at(-1).args.confirmed, false, `spoke at ${spokeAt}, read-back at ${at}`);
-    }
-    assert.equal(auditFor(s, "owner_confirm_gate").length, 4);
-    assert.equal(d.invalidations, 0);
-  });
-  it("a non-number speech stamp never opens the gate", async () => {
-    const s = makeSession(); const d = makeDeps(prB);
-    await run(s, d, "owner_cancel_appointment", { appointment_id: "a1" });
-    const at = s.ownerPendingConfirmations.get(CANCEL_KEY).at;
-    for (const spokeAt of [String(at + 1000), NaN, { valueOf: () => at + 1000 }, [at + 1000], true]) {
-      s.lastOwnerSpeechAt = spokeAt;
-      await run(s, d, "owner_cancel_appointment", { appointment_id: "a1", confirmed: true });
-      assert.equal(d.calls.at(-1).args.confirmed, false, String(spokeAt));
-    }
-  });
-  it("pending read-back + owner speech after it → the confirmed write goes through as-is, once", async () => {
-    const s = makeSession(); const d = makeDeps(prB);
-    await run(s, d, "owner_cancel_appointment", { appointment_id: "a1" });
-    s.lastOwnerSpeechAt = s.ownerPendingConfirmations.get(CANCEL_KEY).at + 1;
+    assistantTurn(s); // "Shall I cancel Bob Lee's 3 pm Friday job?"
+    ownerSpeaks(s); //   "Yes."
     const args = { appointment_id: "a1", confirmed: true, reason: "owner asked" };
     await run(s, d, "owner_cancel_appointment", args);
     assert.deepEqual(d.calls[1].args, { appointment_id: "a1", confirmed: true, reason: "owner asked" });
     assert.equal(auditFor(s, "owner_confirm_gate").length, 0);
     assert.equal(auditFor(s, "owner_cancel_appointment").at(-1).successful, true);
     assert.equal(s.ownerPendingConfirmations.has(CANCEL_KEY), false, "the entry is spent");
+    assert.equal(s.ownerConfirmSpentSpeechAt, s.lastOwnerSpeechAt, "the utterance is spent");
     assert.equal(d.invalidations, 1);
+  });
+  it("owner speech from before the read-back turn ended is not a yes (late transcription, echo, barge-in)", async () => {
+    assert.equal(await confirmAfter(-1), false, "spoke before the arm");
+    assert.equal(await confirmAfter(5), false, "spoke during the read-back turn");
+    assert.equal(await confirmAfter(10), false, "spoke the instant the read-back turn ended");
+    assert.equal(await confirmAfter(11), true, "control: spoke just after it ended");
+  });
+  it("a turn-end stamp older than the arm never lets earlier speech through (backstop)", async () => {
+    assert.equal(await confirmAfter(-5, { turnEndsAfterArm: -10 }), false);
+  });
+  it("no read-back turn yet — the confirm comes before the assistant has said anything since the arm → refused", async () => {
+    assert.equal(await confirmAfter(20, { turns: 0 }), false);
+  });
+  it("two or more assistant turns since the arm → the read-back has expired", async () => {
+    assert.equal(await confirmAfter(20, { turns: 2 }), false);
+    assert.equal(await confirmAfter(20, { turns: 3 }), false);
+  });
+  it("a declined read-back can't be confirmed later: 'no', the assistant answers, the owner talks on, then a confirm → refused", async () => {
+    const s = makeSession(); const d = makeDeps(prB);
+    await run(s, d, "owner_cancel_appointment", { appointment_id: "a1" });
+    assistantTurn(s); // "Shall I cancel Bob Lee's 3 pm Friday job?"
+    ownerSpeaks(s); //   "No, leave it."
+    assistantTurn(s); // "OK, I'll leave it."
+    ownerSpeaks(s); //   "What else is on tomorrow?"
+    await confirmCancel(s, d);
+    assert.equal(d.calls.at(-1).args.confirmed, false);
+    assert.equal(auditFor(s, "owner_confirm_gate").length, 1);
+    assert.equal(d.invalidations, 0);
+  });
+  it("missing or non-number turn and speech stamps refuse (fail closed until Task 10 stamps them)", async () => {
+    const BREAKS = [
+      ["assistantTurnSeq missing", (s) => { delete s.assistantTurnSeq; }],
+      ["assistantTurnSeq a string", (s) => { s.assistantTurnSeq = String(s.assistantTurnSeq); }],
+      ["lastAssistantTurnAt missing", (s) => { delete s.lastAssistantTurnAt; }],
+      ["lastAssistantTurnAt null", (s) => { s.lastAssistantTurnAt = null; }],
+      ["lastAssistantTurnAt NaN", (s) => { s.lastAssistantTurnAt = NaN; }],
+      ["lastOwnerSpeechAt missing", (s) => { delete s.lastOwnerSpeechAt; }],
+      ["lastOwnerSpeechAt a string", (s) => { s.lastOwnerSpeechAt = String(s.lastOwnerSpeechAt); }],
+      ["lastOwnerSpeechAt an object", (s) => { const v = s.lastOwnerSpeechAt; s.lastOwnerSpeechAt = { valueOf: () => v }; }],
+      ["lastOwnerSpeechAt an array", (s) => { s.lastOwnerSpeechAt = [s.lastOwnerSpeechAt]; }],
+      ["lastOwnerSpeechAt true", (s) => { s.lastOwnerSpeechAt = true; s.lastAssistantTurnAt = 0; }],
+      ["lastOwnerSpeechAt Infinity", (s) => { s.lastOwnerSpeechAt = Infinity; }],
+    ];
+    for (const [label, breakIt] of BREAKS) {
+      const s = makeSession(); const d = makeDeps(prB);
+      await run(s, d, "owner_cancel_appointment", { appointment_id: "a1" });
+      assistantTurn(s); ownerSpeaks(s);
+      breakIt(s);
+      await confirmCancel(s, d);
+      assert.equal(d.calls.at(-1).args.confirmed, false, label);
+    }
+    // Armed while the turn counter was not yet a number: that entry never confirms.
+    const s = makeSession({ assistantTurnSeq: null }); const d = makeDeps(prB);
+    await run(s, d, "owner_cancel_appointment", { appointment_id: "a1" });
+    s.assistantTurnSeq = 1; s.lastAssistantTurnAt = stamp(); ownerSpeaks(s);
+    await confirmCancel(s, d);
+    assert.equal(d.calls.at(-1).args.confirmed, false, "armed while assistantTurnSeq was null");
+    // A pending entry the runner didn't write (no numeric `at`) never confirms either.
+    for (const at of ["0", undefined, null]) {
+      const s2 = makeSession(); const d2 = makeDeps(prB);
+      s2.ownerPendingConfirmations = new Map([[CANCEL_KEY, { at, seq: 0 }]]);
+      assistantTurn(s2); ownerSpeaks(s2);
+      await confirmCancel(s2, d2);
+      assert.equal(d2.calls.at(-1).args.confirmed, false, `entry at=${String(at)}`);
+    }
+  });
+  it("one utterance confirms at most one write: four read-backs, one 'yes', four parallel confirms → only the first goes through", async () => {
+    const s = makeSession();
+    const d = makeDeps(async (name, args) => { await new Promise((r) => setTimeout(r, 5)); return prB(name, args); });
+    const ids = ["a1", "a2", "a3", "a4"];
+    await captureConsole(() => Promise.all(ids.map((id) => runOwnerToolCall(s, { name: "owner_cancel_appointment", args: { appointment_id: id } }, d.deps))));
+    assert.equal(s.ownerPendingConfirmations.size, 4);
+    assistantTurn(s); // all four read back in one turn
+    ownerSpeaks(s); //   one "yes"
+    await captureConsole(() => Promise.all(ids.map((id) => runOwnerToolCall(s, { name: "owner_cancel_appointment", args: { appointment_id: id, confirmed: true } }, d.deps))));
+    assert.deepEqual(d.calls.slice(4).map((c) => c.args.confirmed), [true, false, false, false]);
+    assert.equal(s.ownerConfirmSpentSpeechAt, s.lastOwnerSpeechAt);
+    assert.equal(auditFor(s, "owner_confirm_gate").length, 3);
+  });
+  it("the same utterance can't confirm a second write; a re-armed one needs its own read-back turn and a new utterance", async () => {
+    const s = makeSession(); const d = makeDeps(prB);
+    await run(s, d, "owner_cancel_appointment", { appointment_id: "a1" });
+    await run(s, d, "owner_cancel_appointment", { appointment_id: "a2" });
+    assistantTurn(s); ownerSpeaks(s); // both read back; "yes"
+    await confirmCancel(s, d, "a1");
+    assert.equal(d.calls.at(-1).args.confirmed, true);
+    await confirmCancel(s, d, "a2"); // the same "yes" again (PR B re-arms a2 with the read-back)
+    assert.equal(d.calls.at(-1).args.confirmed, false, "the utterance is spent");
+    ownerSpeaks(s); // a new utterance, but no read-back turn since a2 was re-armed
+    await confirmCancel(s, d, "a2");
+    assert.equal(d.calls.at(-1).args.confirmed, false);
+    assistantTurn(s); ownerSpeaks(s); // a2's read-back, then "yes"
+    await confirmCancel(s, d, "a2");
+    assert.equal(d.calls.at(-1).args.confirmed, true);
+    assert.equal(s.ownerConfirmSpentSpeechAt, s.lastOwnerSpeechAt);
+  });
+  it("a second, later utterance can confirm the other job read back in the same turn", async () => {
+    const s = makeSession(); const d = makeDeps(prB);
+    await run(s, d, "owner_cancel_appointment", { appointment_id: "a1" });
+    await run(s, d, "owner_cancel_appointment", { appointment_id: "a2" });
+    assistantTurn(s); ownerSpeaks(s); // both read back; "yes, that one"
+    await confirmCancel(s, d, "a1");
+    ownerSpeaks(s); // "and the other one too"
+    await confirmCancel(s, d, "a2");
+    assert.deepEqual(d.calls.slice(2).map((c) => c.args.confirmed), [true, true]);
+  });
+  it("a spent-utterance stamp: unset (undefined/null) doesn't block; anything not a number refuses", async () => {
+    for (const spent of [undefined, null, 0]) {
+      const s = makeSession({ ownerConfirmSpentSpeechAt: spent }); const d = makeDeps(prB);
+      await run(s, d, "owner_cancel_appointment", { appointment_id: "a1" });
+      assistantTurn(s); ownerSpeaks(s);
+      await confirmCancel(s, d);
+      assert.equal(d.calls.at(-1).args.confirmed, true, String(spent));
+    }
+    for (const spent of ["0", { valueOf: () => 0 }, NaN]) {
+      const s = makeSession({ ownerConfirmSpentSpeechAt: spent }); const d = makeDeps(prB);
+      await run(s, d, "owner_cancel_appointment", { appointment_id: "a1" });
+      assistantTurn(s); ownerSpeaks(s);
+      await confirmCancel(s, d);
+      assert.equal(d.calls.at(-1).args.confirmed, false, String(spent));
+    }
+  });
+  it("a confirmed value other than the boolean true goes on as confirmed:false; an absent one stays absent", async () => {
+    for (const confirmed of ["true", 1, "yes", null, false, {}, [true]]) {
+      const s = makeSession(); const d = makeDeps(prB);
+      await run(s, d, "owner_cancel_appointment", { appointment_id: "a1", confirmed });
+      assert.equal(d.calls[0].args.confirmed, false, JSON.stringify(confirmed));
+      assert.equal(d.calls[0].args.appointment_id, "a1");
+      assert.equal(auditFor(s, "owner_confirm_gate").length, 0, "a normalisation, not a gate trip");
+    }
+    const s = makeSession(); const d = makeDeps(prB);
+    await run(s, d, "owner_cancel_appointment", { appointment_id: "a1" });
+    await run(s, d, "owner_reschedule_appointment", { appointment_id: "a1", new_datetime: "2026-10-16T09:00", confirmed: undefined });
+    assert.equal("confirmed" in d.calls[0].args, false);
+    assert.equal(d.calls[1].args.confirmed, undefined);
   });
   it("a reschedule read-back authorises exactly that job AND that new time", async () => {
     const s = makeSession(); const d = makeDeps(prB);
     await run(s, d, "owner_reschedule_appointment", { appointment_id: "a1", new_datetime: "2026-10-16T09:00" });
-    s.lastOwnerSpeechAt = Date.now() + 1000;
+    assistantTurn(s); ownerSpeaks(s);
     await run(s, d, "owner_reschedule_appointment", { appointment_id: "a1", new_datetime: "2026-10-16T10:00", confirmed: true });
     assert.equal(d.calls.at(-1).args.confirmed, false, "different new_datetime");
     await run(s, d, "owner_reschedule_appointment", { appointment_id: "a2", new_datetime: "2026-10-16T09:00", confirmed: true });
@@ -545,34 +688,44 @@ describe("runOwnerToolCall — structural confirmation gate", () => {
   it("a cancel read-back for a job doesn't authorise a different job, or a reschedule of the same job (and vice versa)", async () => {
     const s = makeSession(); const d = makeDeps(prB);
     await run(s, d, "owner_cancel_appointment", { appointment_id: "a1" });
-    s.lastOwnerSpeechAt = Date.now() + 1000;
+    assistantTurn(s); ownerSpeaks(s);
     await run(s, d, "owner_cancel_appointment", { appointment_id: "a2", confirmed: true });
     assert.equal(d.calls.at(-1).args.confirmed, false, "different appointment_id");
     await run(s, d, "owner_reschedule_appointment", { appointment_id: "a1", new_datetime: "2026-10-16T09:00", confirmed: true });
     assert.equal(d.calls.at(-1).args.confirmed, false, "cancel read-back used for a reschedule");
     const s2 = makeSession(); const d2 = makeDeps(prB);
     await run(s2, d2, "owner_reschedule_appointment", { appointment_id: "a1", new_datetime: "2026-10-16T09:00" });
-    s2.lastOwnerSpeechAt = Date.now() + 1000;
+    assistantTurn(s2); ownerSpeaks(s2);
     await run(s2, d2, "owner_cancel_appointment", { appointment_id: "a1", confirmed: true });
     assert.equal(d2.calls.at(-1).args.confirmed, false, "reschedule read-back used for a cancel");
   });
   it("the entry is cleared after a confirmed forward — a second confirmed call needs a fresh read-back", async () => {
     const s = makeSession(); const d = makeDeps(prB);
     await run(s, d, "owner_cancel_appointment", { appointment_id: "a1" });
-    s.lastOwnerSpeechAt = Date.now() + 1000;
-    await run(s, d, "owner_cancel_appointment", { appointment_id: "a1", confirmed: true });
+    assistantTurn(s); ownerSpeaks(s);
+    await confirmCancel(s, d);
     assert.equal(d.calls.at(-1).args.confirmed, true);
     assert.equal(s.ownerPendingConfirmations.size, 0);
-    s.lastOwnerSpeechAt = Date.now() + 2000;
-    await run(s, d, "owner_cancel_appointment", { appointment_id: "a1", confirmed: true });
+    assistantTurn(s); ownerSpeaks(s);
+    await confirmCancel(s, d);
     assert.equal(d.calls.at(-1).args.confirmed, false);
     assert.equal(auditFor(s, "owner_confirm_gate").length, 1);
+  });
+  it("a used read-back can't be reused by a later utterance (no assistant turn in between)", async () => {
+    const s = makeSession(); const d = makeDeps(prB);
+    await run(s, d, "owner_cancel_appointment", { appointment_id: "a1" });
+    assistantTurn(s); ownerSpeaks(s);
+    await confirmCancel(s, d);
+    assert.equal(d.calls.at(-1).args.confirmed, true);
+    ownerSpeaks(s); // "…and thanks"
+    await confirmCancel(s, d);
+    assert.equal(d.calls.at(-1).args.confirmed, false);
   });
   it("two confirmed calls for one read-back in the same model turn (run in parallel) → only one goes through", async () => {
     const s = makeSession();
     const d = makeDeps(async (name, args) => { await new Promise((r) => setTimeout(r, 5)); return prB(name, args); });
     await run(s, d, "owner_cancel_appointment", { appointment_id: "a1" });
-    s.lastOwnerSpeechAt = Date.now() + 1000;
+    assistantTurn(s); ownerSpeaks(s);
     await captureConsole(() => Promise.all([
       runOwnerToolCall(s, { name: "owner_cancel_appointment", args: { appointment_id: "a1", confirmed: true } }, d.deps),
       runOwnerToolCall(s, { name: "owner_cancel_appointment", args: { appointment_id: "a1", confirmed: true } }, d.deps),
@@ -580,7 +733,7 @@ describe("runOwnerToolCall — structural confirmation gate", () => {
     assert.deepEqual(d.calls.slice(1).map((c) => c.args.confirmed).sort(), [false, true]);
   });
   it("a confirmed write and its own read-back requested in the same turn → the confirm is gated", async () => {
-    const s = makeSession(); s.lastOwnerSpeechAt = Date.now() + 60_000; // the owner spoke, but before nothing was pending
+    const s = makeSession(); assistantTurn(s); ownerSpeaks(s); // the owner spoke, but nothing was pending yet
     const d = makeDeps(prB);
     await captureConsole(() => Promise.all([
       runOwnerToolCall(s, { name: "owner_cancel_appointment", args: { appointment_id: "a1" } }, d.deps),
@@ -592,7 +745,7 @@ describe("runOwnerToolCall — structural confirmation gate", () => {
     const s = makeSession();
     const d = makeDeps((name, args) => (args.confirmed === true ? RESCHEDULED : RESCHEDULE_NEEDS_CONFIRMATION));
     await run(s, d, "owner_reschedule_appointment", { appointment_id: "a1", new_datetime: "2026-10-16T09:00|x" });
-    s.lastOwnerSpeechAt = Date.now() + 1000;
+    assistantTurn(s); ownerSpeaks(s);
     await run(s, d, "owner_reschedule_appointment", { appointment_id: "a1|2026-10-16T09:00", new_datetime: "x", confirmed: true });
     assert.equal(d.calls.at(-1).args.confirmed, false);
   });
@@ -600,13 +753,13 @@ describe("runOwnerToolCall — structural confirmation gate", () => {
     for (const args of [{ appointment_id: 7 }, { appointment_id: { id: "a1" } }, { appointment_id: ["a1"] }, { appointment_id: "" }, {}]) {
       const s = makeSession(); const d = makeDeps(prB);
       await run(s, d, "owner_cancel_appointment", { ...args });
-      s.lastOwnerSpeechAt = Date.now() + 1000;
+      assistantTurn(s); ownerSpeaks(s);
       await run(s, d, "owner_cancel_appointment", { ...args, confirmed: true });
       assert.equal(d.calls.at(-1).args.confirmed, false, JSON.stringify(args));
     }
     const s = makeSession(); const d = makeDeps(prB);
     await run(s, d, "owner_reschedule_appointment", { appointment_id: "a1", new_datetime: 202610160900 });
-    s.lastOwnerSpeechAt = Date.now() + 1000;
+    assistantTurn(s); ownerSpeaks(s);
     await run(s, d, "owner_reschedule_appointment", { appointment_id: "a1", new_datetime: 202610160900, confirmed: true });
     assert.equal(d.calls.at(-1).args.confirmed, false);
   });
@@ -619,15 +772,47 @@ describe("runOwnerToolCall — structural confirmation gate", () => {
     assert.equal(auditFor(s, "owner_confirm_gate").length, 0);
     assert.ok(!(s.ownerPendingConfirmations instanceof Map) || s.ownerPendingConfirmations.size === 0);
   });
-  it("end to end: gated confirm → read-back → owner speaks → confirm goes through → summary names the change", async () => {
+  it("end to end: gated confirm → read-back turn → owner speaks → confirm goes through → summary names the change", async () => {
     const s = makeSession(); const d = makeDeps(prB);
     await run(s, d, "owner_cancel_appointment", { appointment_id: "a1", confirmed: true }); // eager model, no read-back yet
     assert.equal(d.calls[0].args.confirmed, false);
-    s.lastOwnerSpeechAt = Date.now() + 1000; // "yes, cancel it"
+    assistantTurn(s); // the read-back PR B just handed over
+    ownerSpeaks(s); //   "yes, cancel it"
     const ret = await runOwnerToolCall(s, { name: "owner_cancel_appointment", args: { appointment_id: "a1", confirmed: true } }, d.deps);
     assert.equal(d.calls[1].args.confirmed, true);
     assert.equal(ret.data.outcome, "cancelled");
     assert.equal(buildOwnerCallSummary(s.toolCallAudit), "Owner call: Cancelled Bob Lee's job on Friday, October 16 at 3:00 PM.");
+  });
+});
+
+describe("runOwnerToolCall — PR B's data, not prose, decides", () => {
+  it("a committed cancel whose message quotes a failure phrase is a success: audited, cache invalidated, heard verbatim", async () => {
+    const s = makeSession();
+    const quoted = { success: true, message: "Cancelled I'm having a little trouble right now's job on Friday, October 16 at 3:00 PM. The customer has NOT been notified.", data: { outcome: "cancelled", customer_notified: false } };
+    const d = makeDeps(quoted);
+    armConfirmed(s, "owner_cancel_appointment|a1");
+    const ret = await runOwnerToolCall(s, { name: "owner_cancel_appointment", args: { appointment_id: "a1", confirmed: true } }, d.deps);
+    assert.deepEqual(ret, { message: quoted.message, data: quoted.data });
+    assert.equal(s.toolCallAudit[0].successful, true);
+    assert.deepEqual(d.invalidated, ["org-1"]);
+    assert.equal(buildOwnerCallSummary(s.toolCallAudit), "Owner call: Cancelled I'm having a little trouble right now's job on Friday, October 16 at 3:00 PM.");
+  });
+  it("a list quoting a customer's words reaches the owner as PR B wrote it", async () => {
+    for (const name of ["owner_list_messages", "owner_list_appointments"]) {
+      const s = makeSession();
+      const listed = { success: true, message: "1 callback waiting: Bob Lee — \"I'm having a little trouble right now, would you like me to take your information instead?\"", data: { callbacks: [{ reason: "quoted" }], calls: [] } };
+      const ret = await runOwnerToolCall(s, { name, args: { range: "today" } }, makeDeps(listed).deps);
+      assert.deepEqual(ret, { message: listed.message, data: listed.data }, name);
+      assert.equal(s.toolCallAudit[0].successful, true, name);
+    }
+  });
+  it("a read-back quoting a failure phrase is still the read-back, and still arms the gate", async () => {
+    const s = makeSession();
+    const readBack = { ...NEEDS_CONFIRMATION, message: "Read this back and get a clear yes before cancelling: cancel Take Your Information Pty's job on Friday. If the owner confirms, call owner_cancel_appointment again with confirmed=true." };
+    const ret = await runOwnerToolCall(s, { name: "owner_cancel_appointment", args: { appointment_id: "a1" } }, makeDeps(readBack).deps);
+    assert.deepEqual(ret, { message: readBack.message, data: readBack.data });
+    assert.equal(s.toolCallAudit[0].successful, false);
+    assert.ok(s.ownerPendingConfirmations.has("owner_cancel_appointment|a1"));
   });
 });
 
@@ -680,7 +865,7 @@ describe("buildOwnerCallSummary", () => {
       await runOwnerToolCall(s, { name: "owner_list_appointments", args: { range: "tomorrow" } }, d.deps);
       await runOwnerToolCall(s, { name: "transfer_call", args: {} }, d.deps);
       await runOwnerToolCall(s, { name: "owner_reschedule_appointment", args: { appointment_id: "a1", new_datetime: "2026-10-16T09:00", confirmed: true } }, d.deps);
-      s.lastOwnerSpeechAt = Date.now() + 1000;
+      assistantTurn(s); ownerSpeaks(s);
       await runOwnerToolCall(s, { name: "owner_reschedule_appointment", args: { appointment_id: "a1", new_datetime: "2026-10-16T09:00", confirmed: true } }, d.deps);
       await runOwnerToolCall(s, { name: "end_call", args: {} }, d.deps);
     });

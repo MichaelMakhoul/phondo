@@ -18,13 +18,17 @@
  * Added here, because this is the one place that decides what the model hears:
  * - A STRUCTURAL confirmation gate. Customer-written text (callback reasons,
  *   notes, names) comes back through the read tools into the same model that
- *   holds the write tools, so the model's own `confirmed: true` is not enough:
- *   a confirmed write goes through only after PR B handed back a read-back for
- *   that exact change AND the owner has spoken since. Anything else is sent on
- *   as confirmed:false, which makes PR B answer with the read-back again.
+ *   holds the write tools, so the model's own `confirmed: true` is not enough.
+ *   A confirmed write goes through only when PR B handed back a read-back for
+ *   that exact change, exactly ONE assistant turn (the read-back) has ended
+ *   since, and the owner spoke after that turn, with an utterance that hasn't
+ *   already confirmed another write. Anything else is sent on as
+ *   confirmed:false, which makes PR B answer with the read-back again.
  * - Owner wording for failures. The shared executor's receptionist lines (the
  *   "take your information" callback offer, the "give me a moment" stall) are
  *   never said to the owner, and nothing without its result counts as done.
+ * - PR B's data is the verdict. Its messages quote customer-written text, so
+ *   prose is only ever judged on a result that came back without data.
  *
  * Logs carry tool names, ids of the call and outcome codes only — never tool
  * arguments, customer text or results.
@@ -50,7 +54,9 @@ const NOT_AN_OWNER_CALL_MESSAGE = "That isn't available on this call.";
  * shared executor and the customer calendar handlers: the callback offer
  * ("…take your information instead?") of a missing config, a non-2xx for a
  * shared tool, or a calendar fault; and the "having a little trouble right
- * now. Could you give me a moment?" stall of a timeout or fetch error.
+ * now. Could you give me a moment?" stall of a timeout or fetch error. None of
+ * them carries data, and PR B's messages quote customers, so this is only ever
+ * tested on a result without data (failedInTransit).
  */
 const CUSTOMER_FAILURE_LINE = /take your information|having a little trouble right now/i;
 
@@ -108,9 +114,19 @@ function outcomeOf(r) {
 }
 
 /**
+ * A result that came back without data and is empty or one of the
+ * receptionist's failure lines — a fault on the way, never PR B's answer.
+ * @param {{ message: string, data?: any }} r
+ */
+function failedInTransit(r) {
+  return r.data === undefined && (!r.message.trim() || CUSTOMER_FAILURE_LINE.test(r.message));
+}
+
+/**
  * Did this tool call do what it was asked? PR B's write results carry their
- * verdict in data.outcome (never trust prose); an owner read is only a read
- * with its data; the receptionist's failure lines are never a success.
+ * verdict in data.outcome and an owner read is only a read with its data —
+ * prose never overrules either (it quotes customers). The shared tools carry
+ * no data, so for them the receptionist's failure lines are the signal.
  * @param {string} name
  * @param {unknown} result
  * @returns {boolean}
@@ -118,10 +134,9 @@ function outcomeOf(r) {
 function ownerResultSucceeded(name, result) {
   const r = asResult(result);
   if (r.error === true || r.success === false) return false;
-  if (!r.message.trim() || CUSTOMER_FAILURE_LINE.test(r.message)) return false;
   if (OWNER_WRITE_TOOL_NAMES.includes(name)) return OWNER_SUCCESS_OUTCOMES.has(outcomeOf(r));
   if (OWNER_TOOL_NAMES.includes(name)) return r.data !== null && typeof r.data === "object";
-  return true;
+  return !failedInTransit(r);
 }
 
 /**
@@ -132,11 +147,9 @@ function ownerResultSucceeded(name, result) {
  */
 function ownerFacingMessage(name, r, successful) {
   if (successful) return r.message;
-  if (name === "check_availability") {
-    return r.error === true || !r.message.trim() || CUSTOMER_FAILURE_LINE.test(r.message) ? DIARY_UNAVAILABLE_MESSAGE : r.message;
-  }
+  if (name === "check_availability") return r.error === true || failedInTransit(r) ? DIARY_UNAVAILABLE_MESSAGE : r.message;
   const isWrite = OWNER_WRITE_TOOL_NAMES.includes(name);
-  if (!r.message.trim() || CUSTOMER_FAILURE_LINE.test(r.message)) return isWrite ? WRITE_UNCONFIRMED_MESSAGE : READ_FAILED_MESSAGE;
+  if (failedInTransit(r)) return isWrite ? WRITE_UNCONFIRMED_MESSAGE : READ_FAILED_MESSAGE;
   // An owner read that came back without its data failed, whatever the prose
   // says — unless PR B (or the executor's owner-worded non-2xx line) flagged
   // its own non-success, whose words fit ("Which date? …").
@@ -163,8 +176,10 @@ function confirmationKey(name, args) {
 }
 
 /**
+ * Pending read-backs: `at` is Date.now() when PR B's needs_confirmation came
+ * back, `seq` the session's assistant turn count at that moment.
  * @param {any} session
- * @returns {Map<string, { at: number }>}
+ * @returns {Map<string, { at: number, seq: unknown }>}
  */
 function pendingConfirmations(session) {
   if (!(session.ownerPendingConfirmations instanceof Map)) session.ownerPendingConfirmations = new Map();
@@ -172,14 +187,50 @@ function pendingConfirmations(session) {
 }
 
 /**
- * The structural confirmation gate (security ruling). A write arriving with
- * `confirmed: true` — the only value PR B acts on — is forwarded unchanged
- * only when PR B handed back a read-back (needs_confirmation) for this exact
- * key AND the owner has spoken since; the entry is spent before the executor
- * is awaited, so two confirmations in one model turn can't share a read-back.
- * Otherwise it goes on as confirmed:false and PR B answers with the read-back.
- * Both stamps are Date.now(): server.js stamps session.lastOwnerSpeechAt with
- * it, whatever clock a caller injects for the audit.
+ * @param {unknown} v
+ * @returns {v is number}
+ */
+function isStamp(v) {
+  return typeof v === "number" && Number.isFinite(v);
+}
+
+/**
+ * Has the owner answered THIS read-back? server.js (Task 10) stamps the session:
+ * `assistantTurnSeq` + `lastAssistantTurnAt` when an assistant turn completes
+ * or is interrupted, `lastOwnerSpeechAt` when the owner speaks — all Date.now()
+ * based, like the entry. A stamp that is not a finite number refuses.
+ * - Exactly one assistant turn since the arm: that turn is the read-back, and
+ *   any later turn ("OK, I'll leave it") expires the entry, so a declined
+ *   read-back can't be confirmed afterwards.
+ * - The owner spoke after that turn ended (and after the arm itself): a late
+ *   transcription, an echo or a barge-in from before the read-back is no answer.
+ * - That utterance hasn't already confirmed another write.
+ * @param {any} session
+ * @param {{ at: unknown, seq: unknown }} entry
+ * @returns {boolean}
+ */
+function readBackAnswered(session, entry) {
+  const turn = session.assistantTurnSeq;
+  const turnEndedAt = session.lastAssistantTurnAt;
+  const spokeAt = session.lastOwnerSpeechAt;
+  const spent = session.ownerConfirmSpentSpeechAt;
+  const { at, seq } = entry;
+  if (!isStamp(turn) || !isStamp(turnEndedAt) || !isStamp(spokeAt) || !isStamp(seq) || !isStamp(at)) return false;
+  if (turn !== seq + 1) return false;
+  if (!(spokeAt > turnEndedAt && spokeAt > at)) return false;
+  if (spent === undefined || spent === null) return true;
+  return isStamp(spent) && spokeAt > spent;
+}
+
+/**
+ * The structural confirmation gate (security ruling). Only the boolean true is
+ * a yes (PR B's own predicate), so any other `confirmed` goes on as false. A
+ * write arriving with `confirmed: true` is forwarded unchanged only when PR B
+ * handed back a read-back (needs_confirmation) for this exact key and the
+ * owner has answered it (readBackAnswered). The entry and the utterance are
+ * spent before the executor is awaited, so confirmations Gemini runs in
+ * parallel can't share either. Otherwise it goes on as confirmed:false and PR
+ * B answers with the read-back.
  * @param {any} session
  * @param {string} name
  * @param {Record<string, any>} args
@@ -188,13 +239,14 @@ function pendingConfirmations(session) {
  * @returns {Record<string, any>} the arguments to forward
  */
 function applyConfirmationGate(session, name, args, audit, now) {
-  if (!OWNER_WRITE_TOOL_NAMES.includes(name) || args.confirmed !== true) return args;
+  if (!OWNER_WRITE_TOOL_NAMES.includes(name) || args.confirmed === undefined) return args;
+  if (args.confirmed !== true) return { ...args, confirmed: false };
   const pending = pendingConfirmations(session);
   const key = confirmationKey(name, args);
   const entry = key === null ? undefined : pending.get(key);
-  const spokeAt = session.lastOwnerSpeechAt;
-  if (key !== null && entry && typeof spokeAt === "number" && spokeAt > entry.at) {
+  if (key !== null && entry && readBackAnswered(session, entry)) {
     pending.delete(key);
+    session.ownerConfirmSpentSpeechAt = session.lastOwnerSpeechAt;
     return args;
   }
   audit.push({ name: "owner_confirm_gate", tool: name, successful: false, at: now() });
@@ -321,7 +373,7 @@ async function runOwnerToolCall(session, toolCall, deps) {
 
   if (OWNER_WRITE_TOOL_NAMES.includes(name) && outcomeOf(r) === "needs_confirmation") {
     const key = confirmationKey(name, forwardArgs);
-    if (key !== null) pendingConfirmations(session).set(key, { at: Date.now() });
+    if (key !== null) pendingConfirmations(session).set(key, { at: Date.now(), seq: session.assistantTurnSeq });
   }
 
   // A real change frees/takes a slot that OTHER sessions for this org may have
