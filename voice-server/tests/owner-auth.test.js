@@ -417,6 +417,15 @@ describe("isOwnerCall — beyond the brief", () => {
     assert.equal(oa.isOwnerCall({ from: "", ownerAccess: { phone_e164: "", enabled: true }, enabled: true }), false);
     assert.equal(oa.isOwnerCall({ from: "anonymous", ownerAccess: { phone_e164: "anonymous", enabled: true }, enabled: true }), false);
   });
+  // Mutation gate (Task 12, row 2): the E.164 pre-check already turns away "0400000001", so only
+  // valid E.164 numbers that partly match pin the exact compare — a last-9-digits suffix match or
+  // a prefix match would admit each of these.
+  it("matches the registered mobile exactly: never a number that shares its last digits, extends it or is cut short", () => {
+    for (const from of ["+44400000001", "+1400000001", "+861400000001", "+614000000010", "+6140000000"]) {
+      assert.equal(oa.isOwnerCall({ from, ownerAccess: access, enabled: true }), false, from);
+    }
+    assert.equal(oa.isOwnerCall({ from: "+61400000001", ownerAccess: access, enabled: true }), true, "control: the registered mobile itself");
+  });
 });
 
 // Fix round 1 (R4, R5): arguments are validated before any key is built, and every returned error is an Error.
