@@ -20,12 +20,13 @@ import {
 import { useVoiceTest, type TranscriptMessage } from "@/lib/voice-test/use-voice-test";
 import {
   DEMO_INDUSTRIES,
-  DEMO_PHONE_NUMBER,
+  DEMO_PHONE_LINES,
   DEMO_RATE_LIMIT_ERROR,
+  demoIndustryFromSearch,
   formatDemoPhoneDisplay,
   type DemoIndustry,
 } from "@/lib/demo/config";
-import { trackCTAClicked } from "@/lib/analytics";
+import { trackCTAClicked, trackDemoCallStarted } from "@/lib/analytics";
 import { MarketingHeader } from "@/components/marketing/marketing-header";
 import { MarketingFooter } from "@/components/marketing/marketing-footer";
 
@@ -63,14 +64,14 @@ const INDUSTRY_CARDS: {
   },
   {
     id: "home_services",
-    label: "Home Services",
+    label: "Plumber",
     icon: Wrench,
     color: "bg-amber-500/10 text-amber-500",
     description: DEMO_INDUSTRIES.home_services.description,
     suggestions: [
+      "My kitchen sink is leaking",
       "My hot water system isn't working",
-      "Can someone come out today?",
-      "How much do you charge for a service call?",
+      "How much is a call-out?",
     ],
   },
 ];
@@ -104,6 +105,21 @@ function getHeroSubtitle(demoState: DemoState, selectedIndustry: DemoIndustry | 
 export default function DemoPage() {
   const [demoState, setDemoState] = useState<DemoState>("select");
   const [selectedIndustry, setSelectedIndustry] = useState<DemoIndustry | null>(null);
+  // The hero's one-tap persona. Plain /demo stays dental, which is what the
+  // live ads promise; tradie outreach deep-links to ?industry=home_services.
+  // It stays null until the URL has been read: /demo is pre-rendered, and
+  // defaulting to dental there would hand a deep-linked tradie the dental
+  // clinic's phone line until hydration (a tel: link works without JS).
+  const [heroIndustry, setHeroIndustry] = useState<DemoIndustry | null>(null);
+  useEffect(() => {
+    const requested = new URLSearchParams(window.location.search).get("industry");
+    const fromLink = demoIndustryFromSearch(window.location.search);
+    if (requested && !fromLink) {
+      console.warn(`[DemoPage] Unknown ?industry=${requested}; showing the default demo`);
+    }
+    setHeroIndustry(fromLink ?? "dental");
+  }, []);
+  const heroPhoneLine = heroIndustry ? DEMO_PHONE_LINES[heroIndustry] : undefined;
   const [duration, setDuration] = useState(0);
   const [audioSupported, setAudioSupported] = useState(true); // assume true during SSR
   useEffect(() => {
@@ -182,6 +198,7 @@ export default function DemoPage() {
 
   const handleStartDemo = useCallback(
     (industry: DemoIndustry) => {
+      trackDemoCallStarted(industry);
       setSelectedIndustry(industry);
       setDemoState("calling");
       setDuration(0);
@@ -232,14 +249,15 @@ export default function DemoPage() {
             {demoState === "select" && (
               /* SCRUM-570: instant-call hero CTA. Replays showed ads visitors
                  scrolling past three equal industry cards and choosing nothing —
-                 so the primary action starts the dental demo (the ads/flyer
-                 target vertical) with zero decisions; the cards below become
-                 the "tailor it" secondary path. */
+                 so the primary action starts a demo with zero decisions: dental
+                 by default (what the ads promise), or the persona a deep link
+                 asks for (?industry=home_services for tradie outreach). The
+                 cards below are the "tailor it" secondary path. */
               <div className="mt-8">
                 <Button
                   size="lg"
                   className="h-14 gap-2 bg-orange-500 px-10 text-lg text-white hover:bg-orange-600 animate-glow-pulse"
-                  onClick={() => handleStartDemo("dental")}
+                  onClick={() => handleStartDemo(heroIndustry ?? "dental")}
                   disabled={!audioSupported}
                   aria-describedby="hero-demo-cta-note"
                 >
@@ -259,19 +277,29 @@ export default function DemoPage() {
                     action for "hear an AI receptionist" is ringing a number,
                     not granting mic access to an unfamiliar site — so offer a
                     real call as a first-class path. Env-gated: no number
-                    configured → no dead UI. */}
-                {DEMO_PHONE_NUMBER && (
+                    configured → no dead UI. It appears once the persona is
+                    known (after hydration), below the CTA; no slot is
+                    reserved, because a persona without a line (plain /demo,
+                    once the published number answers as the plumber) would
+                    otherwise keep an empty gap under the hero. */}
+                {heroPhoneLine?.number && (
                   <div className="mt-6">
                     <a
-                      href={`tel:${DEMO_PHONE_NUMBER}`}
-                      onClick={() => trackCTAClicked("demo_phone_number", "demo_hero")}
+                      href={`tel:${heroPhoneLine.number}`}
+                      onClick={() =>
+                        // Dental keeps its original event name so existing insights carry on.
+                        trackCTAClicked(
+                          heroIndustry === "dental" ? "demo_phone_number" : `demo_phone_number_${heroIndustry}`,
+                          "demo_hero"
+                        )
+                      }
                       className="inline-flex items-center gap-2 rounded-full border border-slate-600 px-6 py-3 text-sm font-medium text-slate-200 transition-colors hover:border-orange-500 hover:text-white"
                     >
                       <Phone className="h-4 w-4" />
-                      Or ring the demo line: {formatDemoPhoneDisplay(DEMO_PHONE_NUMBER)}
+                      Or ring the demo line: {formatDemoPhoneDisplay(heroPhoneLine.number)}
                     </a>
                     <p className="mt-2 text-xs text-slate-500">
-                      A real phone call — it answers as our demo dental clinic
+                      A real phone call — it answers as {heroPhoneLine.persona}
                     </p>
                   </div>
                 )}

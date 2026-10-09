@@ -15,8 +15,8 @@ export const DEMO_INDUSTRIES = {
   },
   home_services: {
     assistantId: "d0000000-0000-4000-a000-000000000030",
-    name: "Reliable Home Services",
-    description: "Service requests, emergency dispatch, and appointment scheduling",
+    name: "Copperline Plumbing",
+    description: "Leaks, blocked drains, and hot water: books the job and asks for a photo so the plumber brings the right parts",
   },
 } as const;
 
@@ -25,7 +25,15 @@ export const DEMO_RATE_LIMIT_ERROR = "Too many demo calls";
 export type DemoIndustry = keyof typeof DEMO_INDUSTRIES;
 
 export function isDemoIndustry(value: unknown): value is DemoIndustry {
-  return typeof value === "string" && value in DEMO_INDUSTRIES;
+  // Own keys only: `in` also accepts inherited names like "toString", and this
+  // value now arrives from URLs (?industry=) as well as request bodies.
+  return typeof value === "string" && Object.hasOwn(DEMO_INDUSTRIES, value);
+}
+
+/** The `?industry=` deep link (tradie outreach links straight to the plumber), validated. */
+export function demoIndustryFromSearch(search: string): DemoIndustry | null {
+  const value = new URLSearchParams(search).get("industry");
+  return isDemoIndustry(value) ? value : null;
 }
 
 /**
@@ -34,6 +42,24 @@ export function isDemoIndustry(value: unknown): value is DemoIndustry {
  * only after the voice-server demo-line guards are deployed).
  */
 export const DEMO_PHONE_NUMBER = process.env.NEXT_PUBLIC_DEMO_PHONE_NUMBER;
+
+/**
+ * The trades demo line, which answers as Copperline Plumbing. Since migration
+ * 00166, the published line (+61238205672) is that line: its own real org,
+ * re-skinned from Smile Hub Dental, with the same persona text as the browser
+ * plumber. So set this to +61238205672 and UNSET NEXT_PUBLIC_DEMO_PHONE_NUMBER,
+ * or /demo will label the plumber as "our demo dental clinic". Don't point a
+ * number at the demo org itself: demo-org PHONE calls run without test mode,
+ * and test mode's simulated booking reply doesn't match the phone path's
+ * booking-success signal, so every demo booking would audit as failed.
+ */
+export const DEMO_TRADES_PHONE_NUMBER = process.env.NEXT_PUBLIC_DEMO_TRADES_PHONE_NUMBER;
+
+/** Each tap-to-call line, by the demo persona it answers as. */
+export const DEMO_PHONE_LINES: Partial<Record<DemoIndustry, { number: string | undefined; persona: string }>> = {
+  dental: { number: DEMO_PHONE_NUMBER, persona: "our demo dental clinic" },
+  home_services: { number: DEMO_TRADES_PHONE_NUMBER, persona: "our demo plumbing business" },
+};
 
 /** Render an E.164 AU number in familiar local notation; pass through anything else. */
 export function formatDemoPhoneDisplay(e164: string): string {
