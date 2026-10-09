@@ -19,3 +19,17 @@
  * bring SMS back, flip this to `true` AND re-check those backend gates.
  */
 export const SMS_UI_ENABLED = false;
+
+/**
+ * Owner assistant line (SCRUM-585): shows Settings → "Your assistant line"
+ * and opens /api/v1/owner-access. Read server-side only (the Settings page is
+ * a server component; the route reads process.env), so no NEXT_PUBLIC mirror.
+ *
+ * Independent of the voice server's OWNER_ASSISTANT_ENABLED, which gates the
+ * PIN prompt on real calls. Turn that one on first, then this one for the same
+ * orgs so owners can register — never the reverse, or an owner could set a
+ * PIN that nothing honours.
+ */
+export function isOwnerAssistantUiEnabled(): boolean {
+  return process.env.OWNER_ASSISTANT_UI_ENABLED === "true";
+}
