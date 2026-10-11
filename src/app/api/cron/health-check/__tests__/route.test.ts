@@ -97,6 +97,30 @@ describe("GET /api/cron/health-check — voice-server down paging (SCRUM-589)", 
     expect(lines[0]).toContain("HTTP 502");
   });
 
+  it("still pages voice-server-down when the state read fails on the run that first sees the outage", async () => {
+    // The upsert still stores is_healthy=false, so the next run would read
+    // wasHealthy=false and never page — this run has to.
+    db.readError = { message: "connection terminated" };
+    db.current = null;
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      throw new Error("connect ECONNREFUSED");
+    }));
+    const { GET } = await import("../route");
+    const res = await GET(cronRequest());
+
+    expect(res.status).toBe(503);
+    expect(alertLines().map(reasonOf)).toEqual(["health-check-state-read-failed", "voice-server-down"]);
+  });
+
+  it("does not page voice-server-down on a failed state read while the server is healthy", async () => {
+    db.readError = { message: "connection terminated" };
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{\"status\":\"ok\"}", { status: 200 })));
+    const { GET } = await import("../route");
+    await GET(cronRequest());
+
+    expect(alertLines().map(reasonOf)).toEqual(["health-check-state-read-failed"]);
+  });
+
   it("does not page again while the server stays down", async () => {
     db.current = { is_healthy: false, consecutive_failures: 3 };
     vi.stubGlobal("fetch", vi.fn(async () => {

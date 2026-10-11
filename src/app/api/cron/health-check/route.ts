@@ -24,6 +24,21 @@ export const maxDuration = 60;
 // fails — it just takes 30s to say so, once a day.
 const HEALTH_TIMEOUT_MS = 30_000;
 
+/**
+ * SCRUM-589: sendAdminAlert only reaches someone if ADMIN_ALERT_EMAIL or
+ * ADMIN_ALERT_PHONE is set on Vercel; this [ALERT:error] line pages through
+ * Grafana regardless.
+ */
+function pageVoiceServerDown(errorMessage: string): void {
+  pageSentry({
+    service: "next-cron",
+    reason: SENTRY_REASONS.VOICE_SERVER_DOWN,
+    level: "error",
+    message: `voice-server failed its health check: ${errorMessage}`,
+    tags: { cron: "health-check" },
+  });
+}
+
 export async function GET(req: NextRequest) {
   const authFail = requireCronAuth(req, "health-check");
   if (authFail) return authFail;
@@ -126,18 +141,13 @@ export async function GET(req: NextRequest) {
   // 4. Alert on state transitions only (skip if we couldn't read previous state)
   if (!dbReadOk) {
     console.warn("[HealthCheck] Skipping alerts — could not read previous state from DB");
+    // SCRUM-589: the upsert above still stored is_healthy=false, so if this is
+    // the run that first sees the outage, the next run reads wasHealthy=false
+    // and never pages. Page the down state now instead.
+    if (!isHealthy) pageVoiceServerDown(errorMessage);
   } else if (wasHealthy && !isHealthy) {
     console.error(`[HealthCheck] ${SERVICE_NAME} is DOWN:`, errorMessage);
-    // SCRUM-589: sendAdminAlert only reaches someone if ADMIN_ALERT_EMAIL or
-    // ADMIN_ALERT_PHONE is set on Vercel; this line pages through Grafana
-    // regardless.
-    pageSentry({
-      service: "next-cron",
-      reason: SENTRY_REASONS.VOICE_SERVER_DOWN,
-      level: "error",
-      message: `voice-server failed its health check: ${errorMessage}`,
-      tags: { cron: "health-check" },
-    });
+    pageVoiceServerDown(errorMessage);
     await sendAdminAlert(
       "down",
       SERVICE_NAME,

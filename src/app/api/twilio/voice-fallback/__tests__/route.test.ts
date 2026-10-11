@@ -13,6 +13,7 @@ const db = vi.hoisted(() => ({
   throwOnCreate: false,
   phoneRecord: null as Record<string, string> | null,
   inserts: [] as unknown[],
+  signals: [] as unknown[],
 }));
 
 vi.mock("@/lib/supabase/admin", () => ({
@@ -24,14 +25,23 @@ vi.mock("@/lib/supabase/admin", () => ({
           const chain = {
             select: () => chain,
             eq: () => chain,
+            abortSignal: (signal: unknown) => {
+              db.signals.push(signal);
+              return chain;
+            },
             maybeSingle: async () => ({ data: db.phoneRecord, error: null }),
           };
           return chain;
         }
         return {
-          insert: async (row: unknown) => {
+          insert: (row: unknown) => {
             db.inserts.push(row);
-            return { error: null };
+            return {
+              abortSignal: async (signal: unknown) => {
+                db.signals.push(signal);
+                return { error: null };
+              },
+            };
           },
         };
       },
@@ -81,6 +91,7 @@ beforeEach(() => {
   db.throwOnCreate = false;
   db.phoneRecord = { id: "pn-1", organization_id: "org-1", assistant_id: "asst-1" };
   db.inserts = [];
+  db.signals = [];
   process.env.TWILIO_AUTH_TOKEN = "test-auth-token";
   // pushToLoki stays dormant without its credentials, so nothing leaves the test.
   delete process.env.LOKI_PUSH_URL;
@@ -115,6 +126,24 @@ describe("POST /api/twilio/voice-fallback — outage paging (SCRUM-589)", () => 
     expect(alertLines().join("\n")).not.toContain(CALLER.slice(1));
   });
 
+  it("names the failed voice-server path, without its host or query", async () => {
+    const { POST } = await import("../route");
+    await POST(post({ ...FAILED_CALL, ErrorUrl: "https://phondo-voice.fly.dev/twiml/transfer-status?attempt=2" }));
+
+    const [line] = alertLines();
+    expect(line).toContain("errorUrl=/twiml/transfer-status");
+    expect(line).not.toContain("fly.dev");
+    expect(line).not.toContain("attempt=2");
+  });
+
+  it("bounds both Supabase queries with a timeout so a hung DB can't eat the page", async () => {
+    const { POST } = await import("../route");
+    await POST(post(FAILED_CALL));
+
+    expect(db.signals).toHaveLength(2);
+    for (const signal of db.signals) expect(signal).toBeInstanceOf(AbortSignal);
+  });
+
   it("still pages when the called number matches no business", async () => {
     db.phoneRecord = null;
     const { POST } = await import("../route");
@@ -137,6 +166,24 @@ describe("POST /api/twilio/voice-fallback — outage paging (SCRUM-589)", () => 
     const res = await POST(post(FAILED_CALL));
 
     expect(res.status).toBe(403);
+    expect(alertLines()).toEqual([]);
+  });
+
+  it.each([
+    ["no body at all", undefined, undefined],
+    ["a JSON body", "application/json", JSON.stringify({ From: CALLER })],
+  ])("rejects %s with 400 before the signature check, without paging", async (_label, contentType, body) => {
+    const { POST } = await import("../route");
+    const res = await POST(
+      new Request("http://localhost/api/twilio/voice-fallback", {
+        method: "POST",
+        headers: contentType ? { "Content-Type": contentType } : {},
+        body,
+      })
+    );
+
+    expect(res.status).toBe(400);
+    expect(validateRequest).not.toHaveBeenCalled();
     expect(alertLines()).toEqual([]);
   });
 

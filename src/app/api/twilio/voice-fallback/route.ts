@@ -8,6 +8,26 @@ const REJECTED_TWIML = `<?xml version="1.0" encoding="UTF-8"?>
   <Say voice="Polly.Joanna">Sorry, this request could not be processed.</Say>
 </Response>`;
 
+// SCRUM-589: the outage page below is pushed to Loki only once this response
+// has been sent (after()), and Twilio gives up on the fallback after 15s. Bound
+// each query so a hung Supabase can't cost the caller the voicemail or the
+// founder the page.
+const DB_TIMEOUT_MS = 4000;
+
+/**
+ * The path of the voice-server URL Twilio reports as failed (`ErrorUrl`), so a
+ * page tells a full outage (`/twiml`) from one broken flow (an action URL such
+ * as `/twiml/transfer-status`). Path only — no host or query string.
+ */
+function errorUrlPath(errorUrl: string | undefined): string {
+  if (!errorUrl) return "none";
+  try {
+    return new URL(errorUrl).pathname;
+  } catch {
+    return "unparseable";
+  }
+}
+
 /**
  * Validate that the incoming request was actually sent by Twilio.
  * Returns the parsed form params if valid, or null if invalid.
@@ -53,8 +73,23 @@ export async function POST(request: Request) {
     const requestUrl = new URL(request.url);
     const isRecordingDone = requestUrl.searchParams.get("recording") === "done";
 
-    // Parse form data once — used for both validation and business logic
-    const formData = await request.formData();
+    // Parse form data once — used for both validation and business logic.
+    // SCRUM-589: Twilio always posts a form, and this runs BEFORE the signature
+    // check — so an unparseable body is rejected here without paging, or any
+    // internet POST could fire the voice-fallback-failed alert from the catch.
+    let formData: FormData;
+    try {
+      formData = await request.formData();
+    } catch (parseErr) {
+      console.warn(
+        "[VoiceFallback] Unparseable body — rejecting",
+        parseErr instanceof Error ? parseErr.message : parseErr
+      );
+      return new Response(REJECTED_TWIML, {
+        status: 400,
+        headers: { "Content-Type": "text/xml" },
+      });
+    }
     const params: Record<string, string> = {};
     formData.forEach((value, key) => {
       params[key] = value.toString();
@@ -111,19 +146,28 @@ export async function POST(request: Request) {
       service: "next-api",
       reason: SENTRY_REASONS.VOICE_FALLBACK_SERVED,
       level: "error",
-      message: "Caller sent to fallback voicemail — the voice server failed or timed out on /twiml",
-      extras: { errorCode: errorCode || "none", callSid: params.CallSid || "unknown" },
+      message: "Caller sent to fallback voicemail — the voice server failed or timed out on a TwiML request",
+      extras: {
+        errorCode: errorCode || "none",
+        errorUrl: errorUrlPath(params.ErrorUrl),
+        callSid: params.CallSid || "unknown",
+      },
       tags: { route: "voice-fallback" },
     });
 
     // Look up the organization by the called number to log the call
     const supabase = createAdminClient();
-    const { data: phoneRecord } = await (supabase as any)
+    const { data: phoneRecord, error: lookupError } = await (supabase as any)
       .from("phone_numbers")
       .select("id, organization_id, assistant_id")
       .eq("phone_number", called)
       .eq("is_active", true)
+      .abortSignal(AbortSignal.timeout(DB_TIMEOUT_MS))
       .maybeSingle();
+
+    if (lookupError) {
+      console.error("[VoiceFallback] Phone number lookup failed:", lookupError.message);
+    }
 
     if (phoneRecord) {
       // Insert a failed call record so the business sees it in their call log
@@ -138,7 +182,8 @@ export async function POST(request: Request) {
           status: "failed",
           started_at: new Date().toISOString(),
           metadata: { fallback: true, error_code: errorCode || undefined },
-        });
+        })
+        .abortSignal(AbortSignal.timeout(DB_TIMEOUT_MS));
 
       if (insertError) {
         console.error("[VoiceFallback] Failed to insert call record:", insertError);

@@ -116,12 +116,13 @@ When /twiml fails or times out, Twilio falls back to
 temporarily unavailable" + voicemail and a `status: "failed"` row lands in the
 business's call log. Since SCRUM-589 that route pages on every such caller:
 `[ALERT:error] [next-api] … reason=voice-fallback-served` with the Twilio
-`errorCode` and `callSid` (look the call up in the Twilio console; the caller's
-number is never in the line). `reason=voice-fallback-failed` means the fallback
+`errorCode`, the failed `errorUrl` path (`/twiml` = the server is down; an action
+URL such as `/twiml/transfer-status` = one broken flow) and `callSid` (look the
+call up in the Twilio console; the caller's number is never in the line). `reason=voice-fallback-failed` means the fallback
 itself threw (the caller got no voicemail either), and
 `reason=voice-fallback-env-missing` means `TWILIO_AUTH_TOKEN` is unset on Vercel
 (every fallback is rejected). Grafana's `Next.js — error logged` rule emails
-any of them within ~2-3 minutes. The daily health-check cron
+any of them within ~3-4 minutes. The daily health-check cron
 (`src/app/api/cron/health-check`) also pages `reason=voice-server-down` on a
 healthy→down change, but it wakes a stopped machine before probing it, so it
 only catches a server that can't come up at all; its own email/SMS additionally
