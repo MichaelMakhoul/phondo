@@ -138,7 +138,8 @@ export async function POST(request: Request) {
     });
 
     // SCRUM-589: Twilio only lands here when the voice server failed or timed
-    // out on /twiml, so this caller is getting voicemail instead of the AI.
+    // out on a TwiML request (usually /twiml; errorUrl says which), so this
+    // caller is getting voicemail instead of the AI.
     // Page on every one (Grafana emails on the [ALERT:error] line), BEFORE the
     // DB lookup so a Supabase fault can't swallow it. IDs only — never the
     // caller's number.
@@ -188,7 +189,7 @@ export async function POST(request: Request) {
       if (insertError) {
         console.error("[VoiceFallback] Failed to insert call record:", insertError);
       }
-    } else {
+    } else if (!lookupError) {
       console.warn("[VoiceFallback] No phone record found for:", called);
     }
 

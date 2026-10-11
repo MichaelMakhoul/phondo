@@ -239,7 +239,8 @@ export const SENTRY_REASONS = {
 
   // ─── voice outage paging (SCRUM-589) ────────────────────────────────
   /** Twilio fell back to /api/twilio/voice-fallback: the voice server failed
-   *  or timed out on /twiml, so a caller heard "temporarily unavailable" and
+   *  or timed out on a TwiML request (usually /twiml — the `errorUrl` extra
+   *  says which), so a caller heard "temporarily unavailable" and
    *  got voicemail instead of the AI. Every hit is a missed customer call; a
    *  run of them means the voice server is down. */
   VOICE_FALLBACK_SERVED: "voice-fallback-served",

@@ -12,6 +12,7 @@ vi.mock("twilio", () => ({ default: { validateRequest } }));
 const db = vi.hoisted(() => ({
   throwOnCreate: false,
   phoneRecord: null as Record<string, string> | null,
+  lookupError: null as { message: string } | null,
   inserts: [] as unknown[],
   signals: [] as unknown[],
 }));
@@ -29,7 +30,8 @@ vi.mock("@/lib/supabase/admin", () => ({
               db.signals.push(signal);
               return chain;
             },
-            maybeSingle: async () => ({ data: db.phoneRecord, error: null }),
+            maybeSingle: async () =>
+              db.lookupError ? { data: null, error: db.lookupError } : { data: db.phoneRecord, error: null },
           };
           return chain;
         }
@@ -90,6 +92,7 @@ beforeEach(() => {
   validateRequest.mockReturnValue(true);
   db.throwOnCreate = false;
   db.phoneRecord = { id: "pn-1", organization_id: "org-1", assistant_id: "asst-1" };
+  db.lookupError = null;
   db.inserts = [];
   db.signals = [];
   process.env.TWILIO_AUTH_TOKEN = "test-auth-token";
@@ -136,12 +139,26 @@ describe("POST /api/twilio/voice-fallback — outage paging (SCRUM-589)", () => 
     expect(line).not.toContain("attempt=2");
   });
 
-  it("bounds both Supabase queries with a timeout so a hung DB can't eat the page", async () => {
+  it("bounds both Supabase queries with a 4s timeout so a hung DB can't eat the page", async () => {
+    const timeout = vi.spyOn(AbortSignal, "timeout");
     const { POST } = await import("../route");
     await POST(post(FAILED_CALL));
 
-    expect(db.signals).toHaveLength(2);
-    for (const signal of db.signals) expect(signal).toBeInstanceOf(AbortSignal);
+    // 4s each stays inside Twilio's 15s fallback budget even when both stall.
+    expect(timeout.mock.calls).toEqual([[4000], [4000]]);
+    expect(db.signals).toEqual(timeout.mock.results.map((r) => r.value));
+  });
+
+  it("still serves the voicemail when the phone lookup times out, paging only voice-fallback-served", async () => {
+    db.lookupError = { message: "TimeoutError: The operation was aborted due to timeout" };
+    const { POST } = await import("../route");
+    const res = await POST(post(FAILED_CALL));
+
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("temporarily unavailable");
+    expect(alertLines().map(reasonOf)).toEqual(["voice-fallback-served"]);
+    expect(db.inserts).toEqual([]);
+    expect(logged.some((line) => line.includes("No phone record found"))).toBe(false);
   });
 
   it("still pages when the called number matches no business", async () => {
