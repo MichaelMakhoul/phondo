@@ -25,8 +25,9 @@
 # host-cached, took 5.9s.
 #
 # So we stop it ourselves and wake it ourselves. The deploy has already
-# restarted the machine at this point, so the stop costs no additional call
-# disruption. (Based on one measured deploy — if a future deploy shows a pull
+# restarted the machine at this point, so the stop only drains calls begun in
+# the seconds since — worth it at scale-to-zero, where the alternative is a
+# caller paying the pull. (Based on one measured deploy — if a future deploy shows a pull
 # at deploy time instead, this stop becomes unnecessary rather than harmful.)
 set -euo pipefail
 
@@ -40,8 +41,9 @@ cd "$(dirname "$0")"   # fly.toml + Dockerfile live here; deploying from the rep
 echo "→ deploying $APP"
 fly deploy -a "$APP" "$@"
 
-# The ^ anchor skips comment lines that merely mention the setting. A missing
-# key means 0 (Fly's default), so scale-to-zero — and the stop — stay the default.
+# Reads ./fly.toml, so don't pass -c/--config through this script. The ^ anchor
+# skips comment lines that merely mention the setting. A missing key means 0
+# (Fly's default), so scale-to-zero — and the stop — stay the default.
 if grep -Eq '^[[:space:]]*min_machines_running[[:space:]]*=[[:space:]]*[1-9]' fly.toml; then
   always_on=1
 else
@@ -49,7 +51,7 @@ else
 fi
 
 if [ "$always_on" = 1 ]; then
-  echo "→ always-on (min_machines_running >= 1): no stop, so no wake to absorb"
+  echo "→ always-on (min_machines_running >= 1): skipping the stop-and-warm"
   echo "→ checking $APP via $HEALTH_URL"
 else
   echo "→ stopping $APP so the post-deploy image pull is paid here, not by a caller"

@@ -116,8 +116,9 @@ temporarily unavailable" + voicemail and a `status: "failed"` row lands in the
 business's call log. That route only `console.error`s (never reaches Grafana —
 only `pageSentry` lines do), the rules above can't see a dead machine, and the
 daily health-check cron (`src/app/api/cron/health-check`) wakes a stopped machine
-before probing it and emails only if `ADMIN_ALERT_EMAIL`/`ADMIN_ALERT_PHONE` is
-set on Vercel. So you will usually hear about this from a caller. Triage:
+before probing it, and alerts only on a healthy→unhealthy change, and only if
+Vercel has `ADMIN_ALERT_EMAIL` (plus `EMAIL_API_KEY`) or `ADMIN_ALERT_PHONE` (SMS).
+So you will usually hear about this from a caller. Triage:
 1. `fly status -a phondo-voice` — expect `started`, checks `1 passing`. Stopped at
    `min_machines_running = 1` means always-on broke: `fly machine start <id> -a phondo-voice`.
 2. `fly logs -a phondo-voice` — crash, OOM, or no boot line (`Voice pipeline: …`).
@@ -212,8 +213,10 @@ see below for what that costs a caller.
   machine then autostops when idle (~5 min). **Merging changes nothing live** —
   Fly applies `fly.toml` on the next deploy. To apply only the config (none of
   `main`'s undeployed code), redeploy the running image: copy the top image ref
-  from `fly releases -a phondo-voice --image`, then
-  `./voice-server/deploy.sh -i <that ref>` from an up-to-date `main`. **Verify**:
+  from `fly releases -a phondo-voice --image`, then run
+  `./voice-server/deploy.sh -i <that ref>` from a `main` that already has
+  SCRUM-580 (release develop → main first: an older `main` re-deploys 0, and its
+  `deploy.sh` stops the machine). **Verify**:
   `fly config show -a phondo-voice` shows `min_machines_running` 1, and
   `fly status -a phondo-voice` still says `started` 10+ minutes after the last
   call (autostop would have stopped it by ~5). Measured wakes (2026-08-23, syd,
@@ -223,8 +226,9 @@ see below for what that costs a caller.
   cold start is EXPECTED** (first probe races the boot; `grace_period=30s`
   already suppresses status consequences; steady state must show
   `1 passing`). Only investigate if it repeats after boot — or, at
-  `min_machines_running = 1`, if it shows up outside a deploy at all: an always-on
-  machine has no cold starts, so one means a crash, OOM or host migration.
+  `min_machines_running = 1`, if it shows up outside a deploy, a `fly secrets
+  set` or a `fly machine restart`: an always-on machine has no other cold
+  starts, so one means a crash, OOM or host migration.
 - **The public /demo page is exposed today, not at launch.**
   `src/app/(marketing)/demo/page.tsx` is live and taking flyer-QR traffic; its
   browser WebSocket to `/ws/test` wakes the machine the same way an inbound call
