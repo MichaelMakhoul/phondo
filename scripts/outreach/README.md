@@ -81,5 +81,5 @@ node --env-file=.env.local --env-file=scripts/outreach/.env scripts/outreach/dia
 - **Before calling:** check numbers against the national Do Not Call Register. A sole trader's mobile can be registered, and the ACMA offers a free subscription for small lists.
 - **Call log:** every connected call is logged to `~/.phondo-outreach/calls.csv`. Each row records the time zones the hours were checked in, the answering-machine verdict, and any consent note.
 - **Cost:** each call has two Twilio legs, your mobile and theirs, plus answering-machine detection on yours.
-- **Call-backs:** they reach Phondo's AI line. Keep the voice server always-on while calling (see `voice-server/deploy.sh`), and check its call log for anyone asking not to be contacted.
+- **Call-backs:** they reach Phondo's AI line. Keep the voice server always-on while calling (`min_machines_running = 1` in `voice-server/fly.toml`; how to apply and verify it is under "Always-on" in `docs/runbooks/voice-server.md`), and check its call log for anyone asking not to be contacted.
 - **Texts:** keep sending these from your own mobile. Twilio texts show as "Unverified" until sender registration, which needs the ABN.
