@@ -15,8 +15,9 @@ const SERVICE_NAME = "voice-server";
 // would leave no health row and no alert. Silence, not a failure.
 export const maxDuration = 60;
 
-// SCRUM-579: the voice server now scales to zero when idle, so this daily ping
-// is usually the request that wakes it. A cached-image wake takes ~6s; the first
+// SCRUM-579: whenever the voice server scales to zero when idle
+// (min_machines_running = 0; it is 1 while outreach or a pilot runs, SCRUM-580),
+// this daily ping is usually the request that wakes it. A cached-image wake takes ~6s; the first
 // wake after a deploy re-pulls the image and measured ~14s. 10s would have turned
 // a normal cold start into a false "voice server is down" admin alert, so the
 // budget covers the pull case with room to spare. A genuinely dead server still
@@ -127,6 +128,16 @@ export async function GET(req: NextRequest) {
     console.warn("[HealthCheck] Skipping alerts — could not read previous state from DB");
   } else if (wasHealthy && !isHealthy) {
     console.error(`[HealthCheck] ${SERVICE_NAME} is DOWN:`, errorMessage);
+    // SCRUM-589: sendAdminAlert only reaches someone if ADMIN_ALERT_EMAIL or
+    // ADMIN_ALERT_PHONE is set on Vercel; this line pages through Grafana
+    // regardless.
+    pageSentry({
+      service: "next-cron",
+      reason: SENTRY_REASONS.VOICE_SERVER_DOWN,
+      level: "error",
+      message: `voice-server failed its health check: ${errorMessage}`,
+      tags: { cron: "health-check" },
+    });
     await sendAdminAlert(
       "down",
       SERVICE_NAME,

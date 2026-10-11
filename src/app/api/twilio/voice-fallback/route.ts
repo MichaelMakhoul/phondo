@@ -1,4 +1,6 @@
 import { createAdminClient } from "@/lib/supabase/admin";
+import { pageSentry } from "@/lib/observability/page-sentry";
+import { SENTRY_REASONS } from "@/lib/security/error-ids";
 import Twilio from "twilio";
 
 const REJECTED_TWIML = `<?xml version="1.0" encoding="UTF-8"?>
@@ -18,6 +20,13 @@ function validateTwilioSignature(
   const twilioAuthToken = process.env.TWILIO_AUTH_TOKEN;
   if (!twilioAuthToken) {
     console.error("[VoiceFallback] TWILIO_AUTH_TOKEN not configured — cannot validate request");
+    pageSentry({
+      service: "next-api",
+      reason: SENTRY_REASONS.VOICE_FALLBACK_ENV_MISSING,
+      level: "error",
+      message: "TWILIO_AUTH_TOKEN is unset — voice-fallback rejects every call, so callers the voice server failed get no voicemail either",
+      tags: { route: "voice-fallback" },
+    });
     return false;
   }
 
@@ -93,6 +102,20 @@ export async function POST(request: Request) {
       ErrorCode: errorCode,
     });
 
+    // SCRUM-589: Twilio only lands here when the voice server failed or timed
+    // out on /twiml, so this caller is getting voicemail instead of the AI.
+    // Page on every one (Grafana emails on the [ALERT:error] line), BEFORE the
+    // DB lookup so a Supabase fault can't swallow it. IDs only — never the
+    // caller's number.
+    pageSentry({
+      service: "next-api",
+      reason: SENTRY_REASONS.VOICE_FALLBACK_SERVED,
+      level: "error",
+      message: "Caller sent to fallback voicemail — the voice server failed or timed out on /twiml",
+      extras: { errorCode: errorCode || "none", callSid: params.CallSid || "unknown" },
+      tags: { route: "voice-fallback" },
+    });
+
     // Look up the organization by the called number to log the call
     const supabase = createAdminClient();
     const { data: phoneRecord } = await (supabase as any)
@@ -138,6 +161,14 @@ export async function POST(request: Request) {
     });
   } catch (err) {
     console.error("[VoiceFallback] Unhandled error:", err);
+    pageSentry({
+      service: "next-api",
+      reason: SENTRY_REASONS.VOICE_FALLBACK_FAILED,
+      level: "error",
+      err,
+      message: "voice-fallback threw — the caller heard \"technical difficulties\" and got no voicemail",
+      tags: { route: "voice-fallback" },
+    });
 
     // Even on error, return valid TwiML so the caller hears something
     const fallbackTwiml = `<?xml version="1.0" encoding="UTF-8"?>

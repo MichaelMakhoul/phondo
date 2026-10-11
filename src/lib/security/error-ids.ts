@@ -236,6 +236,24 @@ export const SENTRY_REASONS = {
    *  number, so the number was released and provisioning failed. Recurring
    *  hits mean new numbers cannot be made call-ready. */
   PHONE_NUMBER_WEBHOOK_CONFIG_FAILED: "phone-number-webhook-config-failed",
+
+  // ─── voice outage paging (SCRUM-589) ────────────────────────────────
+  /** Twilio fell back to /api/twilio/voice-fallback: the voice server failed
+   *  or timed out on /twiml, so a caller heard "temporarily unavailable" and
+   *  got voicemail instead of the AI. Every hit is a missed customer call; a
+   *  run of them means the voice server is down. */
+  VOICE_FALLBACK_SERVED: "voice-fallback-served",
+  /** The voice-fallback route itself threw, so the caller heard "technical
+   *  difficulties" and got no voicemail either. */
+  VOICE_FALLBACK_FAILED: "voice-fallback-failed",
+  /** TWILIO_AUTH_TOKEN is unset, so the voice-fallback route rejects every
+   *  request — callers the voice server failed get no voicemail either.
+   *  Deployment misconfig. */
+  VOICE_FALLBACK_ENV_MISSING: "voice-fallback-env-missing",
+  /** The daily health-check cron saw the voice server go from healthy to
+   *  unhealthy. Pages regardless of ADMIN_ALERT_EMAIL/ADMIN_ALERT_PHONE, which
+   *  the cron's own email/SMS alert needs. */
+  VOICE_SERVER_DOWN: "voice-server-down",
 } as const;
 
 export type SentryReason = (typeof SENTRY_REASONS)[keyof typeof SENTRY_REASONS];

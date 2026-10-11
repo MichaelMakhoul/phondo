@@ -105,20 +105,28 @@ logs nothing while idle (no heartbeat; `/health` doesn't log), and nothing at al
 while stopped at 0, so NoData is the *normal* state between calls and doesn't
 distinguish "rule broken" from "nobody called". The verification window must
 contain a **known call** (place a test call, note the time, query that window) —
-a merely recent window proves nothing. The flip side: **no rule fires on a dead
-or silent machine** — every rule matches log content and treats NoData as OK.
-See "Voice server down" below.
+a merely recent window proves nothing. The flip side: **no voice-server rule
+fires on a dead or silent machine** — they all match log content and treat
+NoData as OK. The outage signal comes from the web app instead: see "Voice
+server down" below.
 
-### Voice server down — callers hear "temporarily unavailable" (nothing pages today)
+### Voice server down — callers hear "temporarily unavailable" (`reason=voice-fallback-served`)
 When /twiml fails or times out, Twilio falls back to
 `src/app/api/twilio/voice-fallback/route.ts`: the caller hears "our system is
 temporarily unavailable" + voicemail and a `status: "failed"` row lands in the
-business's call log. That route only `console.error`s (never reaches Grafana —
-only `pageSentry` lines do), the rules above can't see a dead machine, and the
-daily health-check cron (`src/app/api/cron/health-check`) wakes a stopped machine
-before probing it, and alerts only on a healthy→unhealthy change, and only if
-Vercel has `ADMIN_ALERT_EMAIL` (plus `EMAIL_API_KEY`) or `ADMIN_ALERT_PHONE` (SMS).
-So you will usually hear about this from a caller. Triage:
+business's call log. Since SCRUM-589 that route pages on every such caller:
+`[ALERT:error] [next-api] … reason=voice-fallback-served` with the Twilio
+`errorCode` and `callSid` (look the call up in the Twilio console; the caller's
+number is never in the line). `reason=voice-fallback-failed` means the fallback
+itself threw (the caller got no voicemail either), and
+`reason=voice-fallback-env-missing` means `TWILIO_AUTH_TOKEN` is unset on Vercel
+(every fallback is rejected). Grafana's `Next.js — error logged` rule emails
+any of them within ~2-3 minutes. The daily health-check cron
+(`src/app/api/cron/health-check`) also pages `reason=voice-server-down` on a
+healthy→down change, but it wakes a stopped machine before probing it, so it
+only catches a server that can't come up at all; its own email/SMS additionally
+needs `ADMIN_ALERT_EMAIL` (plus `EMAIL_API_KEY`) or `ADMIN_ALERT_PHONE` on
+Vercel. Triage:
 1. `fly status -a phondo-voice` — expect `started`, checks `1 passing`. Stopped at
    `min_machines_running = 1` means always-on broke: `fly machine start <id> -a phondo-voice`.
 2. `fly logs -a phondo-voice` — crash, OOM, or no boot line (`Voice pipeline: …`).
