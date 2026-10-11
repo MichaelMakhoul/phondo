@@ -121,8 +121,10 @@ URL such as `/twiml/transfer-status` = one broken flow) and `callSid` (look the
 call up in the Twilio console; the caller's number is never in the line). `reason=voice-fallback-failed` means the fallback
 itself threw (the caller got no voicemail either), and
 `reason=voice-fallback-env-missing` means `TWILIO_AUTH_TOKEN` is unset on Vercel
-(every fallback is rejected). Grafana's `Next.js — error logged` rule emails
-any of them within ~3-4 minutes. The daily health-check cron
+(every fallback is rejected). Grafana's `Voice server down — callers getting
+voicemail` rule (critical, uid `bg0xba28vjkzka`, repeats every 30 min while
+firing) emails on any of them within ~3-4 minutes, alongside the generic
+`Next.js — error logged` rule. The daily health-check cron
 (`src/app/api/cron/health-check`) also pages `reason=voice-server-down` on a
 healthy→down change, but it wakes a stopped machine before probing it, so it
 only catches a server that can't come up at all; its own email/SMS additionally
