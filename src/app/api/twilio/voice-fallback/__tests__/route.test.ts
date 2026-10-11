@@ -64,6 +64,9 @@ const FAILED_CALL = {
   Called: "+61238205672",
   CallSid: "CA0123456789abcdef0123456789abcdef",
   ErrorCode: "11200",
+  // Twilio always sends Caller (the same number as From). It is not a PII-named
+  // key, so a leak of it only shows up if the fixture carries it.
+  Caller: CALLER,
 };
 
 function post(params: Record<string, string>, query = "") {
@@ -226,5 +229,7 @@ describe("POST /api/twilio/voice-fallback — outage paging (SCRUM-589)", () => 
     // The served page goes out before the DB lookup, so it survives the throw.
     expect(lines.map(reasonOf)).toEqual(["voice-fallback-served", "voice-fallback-failed"]);
     for (const line of lines) expect(line).toMatch(/^\[ALERT:error\] \[next-api\] /);
+    // Triage needs the cause of the throw, not just that it threw.
+    expect(lines[1]).toContain("SUPABASE_SERVICE_ROLE_KEY is not set");
   });
 });

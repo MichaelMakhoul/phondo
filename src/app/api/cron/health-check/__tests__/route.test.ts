@@ -121,6 +121,21 @@ describe("GET /api/cron/health-check — voice-server down paging (SCRUM-589)", 
     expect(alertLines().map(reasonOf)).toEqual(["health-check-state-read-failed"]);
   });
 
+  it("pages before it attempts the email/SMS alert", async () => {
+    // sendAdminAlert can hang on a slow provider; the page must already be out.
+    let pagesWhenNotified = -1;
+    sendAdminAlert.mockImplementationOnce(async () => {
+      pagesWhenNotified = alertLines().length;
+    });
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      throw new Error("connect ECONNREFUSED");
+    }));
+    const { GET } = await import("../route");
+    await GET(cronRequest());
+
+    expect(pagesWhenNotified).toBe(1);
+  });
+
   it("does not page again while the server stays down", async () => {
     db.current = { is_healthy: false, consecutive_failures: 3 };
     vi.stubGlobal("fetch", vi.fn(async () => {
@@ -140,5 +155,15 @@ describe("GET /api/cron/health-check — voice-server down paging (SCRUM-589)", 
 
     expect(alertLines()).toEqual([]);
     expect(sendAdminAlert).not.toHaveBeenCalled();
+  });
+
+  it("does not page when the server recovers, and still sends the recovery notice", async () => {
+    db.current = { is_healthy: false, consecutive_failures: 3 };
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{\"status\":\"ok\"}", { status: 200 })));
+    const { GET } = await import("../route");
+    await GET(cronRequest());
+
+    expect(alertLines()).toEqual([]);
+    expect(sendAdminAlert).toHaveBeenCalledWith("recovered", "voice-server", expect.any(String));
   });
 });
