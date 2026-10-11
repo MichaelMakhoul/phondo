@@ -13,7 +13,7 @@ incident as the worked example throughout.
 
 | Piece | Where | Notes |
 |---|---|---|
-| Voice server | Fly.io app `phondo-voice` (syd), `performance-1x`/2GB, autostop/autostart | deploy from `voice-server/` ONLY |
+| Voice server | Fly.io app `phondo-voice` (syd), `performance-1x`/2GB, always-on (`min_machines_running = 1`, SCRUM-580; autostops only if set back to 0) | deploy from `voice-server/` ONLY |
 | Web app + internal API | Vercel (Next.js), auto-deploys on merge to `main` | receives `/api/internal/call-completed` |
 | DB | Supabase (AU) | `calls`, `appointments`, `org_members`, … |
 | Logs | Fly → `fly-log-shipper` app → Grafana Cloud Loki (AU, `grafanacloud-logs`) | shipper must stay scaled to 1 or logs are lost |
@@ -100,12 +100,28 @@ A rule sitting in **Normal (NoData)** for >30 days is more likely broken than
 healthy (that's how 2026-07-02 happened). Quarterly: open each rule, run its
 query over a window known to contain matching lines, confirm non-empty.
 
-**SCRUM-579 caveat** (whenever `min_machines_running = 0`; it is 1 while outreach
-runs, SCRUM-580): the machine ships no Loki
-lines at all while it is stopped, so NoData is then the *normal* steady state and
-no longer distinguishes "rule broken" from "nobody called". The verification
-window must contain a **known call** (place a test call, note the time, query
-that window) — a merely recent window proves nothing.
+**SCRUM-579 caveat** (at either `min_machines_running` setting): the voice server
+logs nothing while idle (no heartbeat; `/health` doesn't log), and nothing at all
+while stopped at 0, so NoData is the *normal* state between calls and doesn't
+distinguish "rule broken" from "nobody called". The verification window must
+contain a **known call** (place a test call, note the time, query that window) —
+a merely recent window proves nothing. The flip side: **no rule fires on a dead
+or silent machine** — every rule matches log content and treats NoData as OK.
+See "Voice server down" below.
+
+### Voice server down — callers hear "temporarily unavailable" (nothing pages today)
+When /twiml fails or times out, Twilio falls back to
+`src/app/api/twilio/voice-fallback/route.ts`: the caller hears "our system is
+temporarily unavailable" + voicemail and a `status: "failed"` row lands in the
+business's call log. That route only `console.error`s (never reaches Grafana —
+only `pageSentry` lines do), the rules above can't see a dead machine, and the
+daily health-check cron (`src/app/api/cron/health-check`) wakes a stopped machine
+before probing it and emails only if `ADMIN_ALERT_EMAIL`/`ADMIN_ALERT_PHONE` is
+set on Vercel. So you will usually hear about this from a caller. Triage:
+1. `fly status -a phondo-voice` — expect `started`, checks `1 passing`. Stopped at
+   `min_machines_running = 1` means always-on broke: `fly machine start <id> -a phondo-voice`.
+2. `fly logs -a phondo-voice` — crash, OOM, or no boot line (`Voice pipeline: …`).
+3. Look for `status: "failed"` rows in the affected businesses' call logs.
 
 ---
 
@@ -149,7 +165,7 @@ works for any provider WS 4xx.
 
 ```bash
 ./voice-server/deploy.sh      # fly deploy (~2-4 min) THEN the mandatory warm — use this, not a bare fly deploy
-fly status -a phondo-voice    # expect state started/stopped, checks passing
+fly status -a phondo-voice    # expect started + checks passing; stopped at min_machines_running = 1 = always-on broken → fly machine start <id> -a phondo-voice
 ```
 
 Args pass through: `./voice-server/deploy.sh --strategy immediate`. A bare
@@ -174,6 +190,10 @@ see below for what that costs a caller.
   straight after a deploy would absorb nothing — the pull would land on the first
   wake after it later autostops, i.e. on whoever calls next. The script reports
   which happened: a wake under 10s was cached, so the pull was not absorbed.
+  **At `min_machines_running = 1` the script skips the stop** (SCRUM-580): with no
+  autostop there is no later wake for a caller to pay, and stopping the only
+  machine would itself drain live calls and leave the line dead for the wake — so
+  it deploys and just checks `/health`.
   The same applies to the **public /demo page**: a browser opening `wss://…/ws/test`
   autostarts the machine exactly like Twilio does, so marketing visitors pay the
   same wake — see the always-on note below.
@@ -185,17 +205,26 @@ see below for what that costs a caller.
   `fly deploy -a phondo-voice -i <registry.fly.io/phondo-voice@sha256:…>`.
 - **Secrets**: `fly secrets set K=V -a phondo-voice` restarts machines
   immediately; add `--stage` to batch several and apply on next deploy.
-- **Always-on while outreach runs (SCRUM-580)**: `min_machines_running = 1`
+- **Always-on while outreach or a pilot runs (SCRUM-580)**: `min_machines_running = 1`
   keeps the performance-1x/2GB machine up 24/7 (~$39/mo), because a caller should
   never pay a 6s wake, let alone the post-deploy 14.5s one. Set it back to 0
   (SCRUM-579) only while no pilot, outreach or marketing push is running; the
-  machine then autostops when idle (~5 min). Measured wakes (2026-08-23, syd,
+  machine then autostops when idle (~5 min). **Merging changes nothing live** —
+  Fly applies `fly.toml` on the next deploy. To apply only the config (none of
+  `main`'s undeployed code), redeploy the running image: copy the top image ref
+  from `fly releases -a phondo-voice --image`, then
+  `./voice-server/deploy.sh -i <that ref>` from an up-to-date `main`. **Verify**:
+  `fly config show -a phondo-voice` shows `min_machines_running` 1, and
+  `fly status -a phondo-voice` still says `started` 10+ minutes after the last
+  call (autostop would have stopped it by ~5). Measured wakes (2026-08-23, syd,
   performance-1x/2GB): **~6s** with the image host-cached, **~14.5s** on the first
   wake after a deploy. The log line
   `Health check 'servicecheck-00-http-3001' … has failed` **once per
   cold start is EXPECTED** (first probe races the boot; `grace_period=30s`
   already suppresses status consequences; steady state must show
-  `1 passing`). Only investigate if it repeats after boot.
+  `1 passing`). Only investigate if it repeats after boot — or, at
+  `min_machines_running = 1`, if it shows up outside a deploy at all: an always-on
+  machine has no cold starts, so one means a crash, OOM or host migration.
 - **The public /demo page is exposed today, not at launch.**
   `src/app/(marketing)/demo/page.tsx` is live and taking flyer-QR traffic; its
   browser WebSocket to `/ws/test` wakes the machine the same way an inbound call

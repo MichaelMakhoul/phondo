@@ -15,15 +15,16 @@ kill_timeout = "20s"
 [http_service]
   internal_port = 3001
   force_https = true
-  # SCRUM-580: ALWAYS-ON while tradie outreach runs. Prospects ring Phondo's line
-  # back after a cold call and try the demo line or /demo, all served by this
-  # machine, and none of them should wait on a wake. Costs ~$39/mo (one
-  # performance-1x/2GB machine up 24/7, idle or not).
+  # SCRUM-580: ALWAYS-ON while tradie outreach or a pilot runs. Prospects ring
+  # Phondo's line back after a cold call and try the demo line or /demo, all
+  # served by this machine, and none of them should wait on a wake. Costs ~$39/mo
+  # (one performance-1x/2GB machine up 24/7, idle or not). Merging this changes
+  # nothing live: Fly applies it on the next deploy (runbook, "Always-on").
   #
   # Going back to 0 (SCRUM-579, scale to zero while idle) is only safe while no
-  # outreach or marketing push is running. Fly's proxy then autostarts the machine
-  # on the inbound Twilio webhook and holds the request open while it boots.
-  # Measured wakes: ~6s with the image host-cached, but ~14.5s on the FIRST wake
+  # pilot or customer line, outreach or marketing push is live. Fly's proxy then
+  # autostarts the machine on the inbound Twilio webhook and holds the request
+  # open while it boots. Measured wakes: ~6s with the image host-cached, but ~14.5s on the FIRST wake
   # after a deploy (the host re-pulls the image). Twilio's read timeout for call
   # HTTP requests is hard-capped at 15s, so that post-deploy wake leaves /twiml
   # almost no budget: the call falls through to the fallback URL and the caller
