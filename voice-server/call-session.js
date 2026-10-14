@@ -41,6 +41,34 @@ class CallSession {
     this.pendingDisclosureInFirstMessage = false;
     this.pendingTransfer = false;
     this.piiRedactionEnabled = false;
+    // SCRUM-587: owner-assistant mode (spec §2). Set on the stream `start`
+    // event from the SERVER-SIDE token only (/twiml/owner-pin verified the PIN);
+    // false for every customer call. ownerAuth also carries "locked"/"failed"/
+    // "error" on a customer call that failed the PIN gate (or whose lockout
+    // check failed) → calls.metadata.owner_auth.
+    this.ownerMode = false;
+    this.ownerAuth = null;         // "verified" | "locked" | "failed" | "error" | null
+    this.ownerFirstName = null;    // greeting + caller_name on owner calls
+    this.ownerToolCalls = 0;       // per-call cap, lib/owner-tool-runner.js
+    // SCRUM-587: the owner confirmation gate's clock (lib/owner-tool-runner.js
+    // readBackVerdict), moved ONLY by lib/owner-turn-stamps.js on owner
+    // sessions. The turn count only ever goes up — never reset mid-call, or an
+    // expired read-back could match again. 0 / null = fail-closed defaults.
+    this.assistantTurnSeq = 0;           // assistant turns that produced speech
+    this.lastAssistantTurnAt = 0;        // Date.now() when the last one ended
+    this.assistantTurnHadSpeech = false; // the current turn has produced audio
+    this.lastAssistantSpeechAt = 0;      // Date.now() of the latest assistant audio (heard after the arm?)
+    this.lastOwnerSpeechAt = 0;          // first fragment of the owner's latest utterance
+    this.ownerPendingConfirmations = null; // Map of armed read-backs (the runner creates it)
+    this.ownerConfirmSpentSpeechAt = null; // the utterance that last confirmed a write
+    this.ownerConfirmRefusals = null;      // Map key → re-armed since the gate refused it? (the runner creates it)
+    this.ownerToolRunsInFlight = null;     // Set of owner tool calls still running (the runner creates it)
+    this.ownerToolRunsSettled = false;     // cleanup stopped waiting for them: a write finishing later pages
+    this.ownerCancelledToolCallIds = null; // Set of tool call ids Gemini cancelled (the runner creates it)
+    // SCRUM-587: an owner who hangs up during setup is not paged as a lost
+    // call record (server.js cleanupSession) — these say which case it was.
+    this.callRecordRequested = false;      // stream setup reached createCallRecord
+    this.streamStoppedByCaller = false;    // Twilio's "stop" arrived (the caller hung up)
 
     // Call context — populated by loadCallContext()/loadTestCallContext() in
     // server.js once the stream connects (not known at construction). Declared
@@ -304,6 +332,10 @@ class CallSession {
     this.transferAttempt = savedState.transferAttempt;
     this.startedAt = savedState.startedAt;
     this.language = savedState.language || "en";
+    // SCRUM-587: a customer call that failed the owner PIN gate keeps its
+    // stamp across the reconnect (calls.metadata.owner_auth → PR B's lockout
+    // email). Owner MODE is never restored: it comes only from a stream token.
+    this.ownerAuth = typeof savedState.ownerAuth === "string" ? savedState.ownerAuth : null;
   }
 
   /**

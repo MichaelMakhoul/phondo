@@ -24,6 +24,7 @@ const { isWithinBusinessHours } = require("../lib/business-hours");
 const { requiresRecordingDisclosureHybrid, getRecordingDisclosureText } = require("../lib/recording-consent");
 const { Sentry } = require("../lib/sentry");
 const { SENTRY_REASONS, setReasonTag } = require("../lib/sentry-reasons");
+const { OWNER_TOOL_NAMES, OWNER_WRITE_TOOL_NAMES } = require("../lib/owner-tools"); // SCRUM-587
 
 const INTERNAL_API_URL = process.env.INTERNAL_API_URL;
 const INTERNAL_API_SECRET = process.env.INTERNAL_API_SECRET;
@@ -42,6 +43,9 @@ const CALENDAR_FUNCTIONS = [
   // book_appointment is actually a name correction. Never appears in the
   // model's tool declarations.
   "update_appointment_attendee",
+  // SCRUM-587: owner-assistant tools — routed through the same internal API;
+  // PR B dispatches them only with the ownerVerified envelope field below.
+  ...OWNER_TOOL_NAMES,
 ];
 
 // SCRUM-452: calendar tools that MUTATE appointment rows. Test/demo calls run
@@ -55,6 +59,7 @@ const CALENDAR_WRITE_FUNCTIONS = [
   "reschedule_appointment",
   "update_appointment", // SCRUM-558: mutates the appointment row — must be simulated in test mode
   "update_appointment_attendee", // SCRUM-557: guard-internal variant of the same mutation
+  ...OWNER_WRITE_TOOL_NAMES, // SCRUM-587: simulated in test mode like every other mutation
 ];
 
 /**
@@ -582,9 +587,12 @@ function resolveAvailabilityFromCache(args, snapshot) {
 /**
  * Execute a tool call by routing to the appropriate handler.
  *
+ * `ownerMode` (SCRUM-587): true only for a PIN-verified owner session — it
+ * becomes the top-level `ownerVerified` envelope field in executeCalendarCall.
+ *
  * @param {string} functionName
  * @param {object} args - parsed arguments from the LLM
- * @param {{ organizationId: string, assistantId: string, callSid?: string, callId?: string, transferRules?: object[], testMode?: boolean, organization?: { timezone?: string, businessHours?: object }, callerPhone?: string, orgPhoneNumber?: string, userPhoneNumber?: string, forwardingStatus?: string, sourceType?: string, transferToForwardedNumber?: boolean, scheduleSnapshot?: object, telephonyProvider?: string, collectedDetails?: Record<string, string> }} context
+ * @param {{ organizationId: string, assistantId: string, callSid?: string, callId?: string, transferRules?: object[], testMode?: boolean, organization?: { timezone?: string, businessHours?: object }, callerPhone?: string, orgPhoneNumber?: string, userPhoneNumber?: string, forwardingStatus?: string, sourceType?: string, transferToForwardedNumber?: boolean, scheduleSnapshot?: object, telephonyProvider?: string, collectedDetails?: Record<string, string>, ownerMode?: boolean }} context
  * @returns {Promise<{ message: string, action?: string, transferTo?: string, transferAttempt?: object, __endCall?: boolean } & Record<string, any>>}
  */
 async function executeToolCall(functionName, args, context) {
@@ -766,6 +774,51 @@ function resolveCollectedDetailsField(context) {
 }
 
 /**
+ * SCRUM-587: what an owner_* tool returns when the internal API answers non-2xx
+ * with no usable `message` (a 429, a platform 5xx page, a 401). Owner-worded:
+ * the customer fallback ("…take your information instead?") would have the
+ * model offer the business owner a callback. A write that failed this way may
+ * still have gone through, so its line never says it didn't.
+ */
+const OWNER_WRITE_TROUBLE_MESSAGE =
+  "I'm having trouble with that right now, so I can't confirm the change went through. Please check the dashboard, or try again in a moment.";
+const OWNER_READ_TROUBLE_MESSAGE =
+  "I'm having trouble with that right now — please try again in a moment, or check the dashboard.";
+
+/**
+ * SCRUM-587: the model-facing `message` of a non-2xx JSON body — PR B's 403 for
+ * an owner_* call without the envelope flag is { success:false, error:true,
+ * message:"That isn't available on this call." } — or null when the body is
+ * not JSON or carries no non-blank string message.
+ * @param {string} text
+ * @returns {string|null}
+ */
+function parseRefusalMessage(text) {
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed.message === "string" && parsed.message.trim() ? parsed.message : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * SCRUM-587: an owner_* tool's result for a non-2xx reply. A refusal message
+ * reaches the model verbatim as a non-success, so it can never claim the change
+ * happened or offer the owner a callback; anything else gets the owner-worded
+ * trouble line. Customer tools keep their fallback exactly as before.
+ * @param {string} functionName - an OWNER_TOOL_NAMES entry
+ * @param {string} text - the (truncated) response body
+ * @returns {{ message: string, success: boolean, error?: boolean }}
+ */
+function ownerToolFailureResult(functionName, text) {
+  const refusal = parseRefusalMessage(text);
+  if (refusal) return { message: refusal, success: false, error: true };
+  const message = OWNER_WRITE_TOOL_NAMES.includes(functionName) ? OWNER_WRITE_TROUBLE_MESSAGE : OWNER_READ_TROUBLE_MESSAGE;
+  return { message, success: false };
+}
+
+/**
  * Execute a calendar tool call via the Next.js internal API.
  */
 async function executeCalendarCall(functionName, args, context) {
@@ -811,6 +864,11 @@ async function executeCalendarCall(functionName, args, context) {
         // SCRUM-506: per-call collected caller details (top-level trusted field,
         // NOT in `arguments`) — handlers backfill a missing verification factor.
         ...resolveCollectedDetailsField(context),
+        // SCRUM-587: owner authority as a TOP-LEVEL, server-set field — never
+        // inside `arguments` (model-controlled), never in test mode, and only
+        // for the boolean true that a PIN-verified stream token put on the
+        // session. Appended last, so every customer body is byte-identical.
+        ...(context.ownerMode === true && !context.testMode && { ownerVerified: true }),
       }),
     });
 
@@ -827,13 +885,16 @@ async function executeCalendarCall(functionName, args, context) {
         scope.setExtra("responseBody", text);
         Sentry.captureException(new Error(`ToolExecutor: internal API error ${res.status} for ${functionName}`));
       });
+      // SCRUM-587: owner_* tools surface PR B's refusal verbatim (after the
+      // alert above) and never get the customer-worded line below.
+      if (OWNER_TOOL_NAMES.includes(functionName)) return ownerToolFailureResult(functionName, text);
       return {
         message:
           "I'm having trouble with that right now. Would you like me to take your information instead?",
       };
     }
 
-    const data = /** @type {{ message?: string, success?: boolean, error?: boolean }} */ (await res.json());
+    const data = /** @type {{ message?: string, success?: boolean, error?: boolean, data?: unknown }} */ (await res.json());
     // SCRUM-509: a tool that fails GRACEFULLY (HTTP 200 + success:false +
     // error:true) is otherwise invisible to alerting. An HTTP error or a timeout
     // already emits [ALERT:error] via the branches above (Sentry shim), but a
@@ -860,6 +921,11 @@ async function executeCalendarCall(functionName, args, context) {
       message: data.message || "The operation completed but returned no message.",
       ...(typeof data.success === "boolean" && { success: data.success }),
       ...(data.error === true && { error: true }),
+      // SCRUM-587: PR B's structured payload (owner tools: data.outcome,
+      // customer_notified, ids) rides along for the owner tool runner to pass
+      // to the model. Additive: customer call sites read only message/success/
+      // error/__endCall/action, so their model input is unchanged.
+      ...(data.data !== undefined && { data: data.data }),
     };
   } catch (err) {
     console.error(`[ToolExecutor] Failed to execute ${functionName}:`, err.message);
@@ -1201,6 +1267,25 @@ function simulateCalendarWrite(functionName, args) {
     return {
       success: true,
       message: `APPOINTMENT DETAILS UPDATED: the existing appointment is unchanged in date and time. The confirmation code is the same. Tell the caller it's fixed — do NOT call book_appointment again and do NOT cancel.`,
+    };
+  }
+  if (functionName === "owner_reschedule_appointment" || functionName === "owner_cancel_appointment") {
+    // SCRUM-587 parity with SCRUM-452: /ws/test sessions never get owner mode,
+    // but every mutating calendar tool has a zero-fetch simulation so no test
+    // path can fall through to the real API. PR B's { message, data } shape and
+    // its confirmed === true gate (a string "true" is not a yes).
+    const verb = functionName === "owner_cancel_appointment" ? "cancelled" : "rescheduled";
+    if (args.confirmed !== true) {
+      return {
+        success: false,
+        message: "Needs confirmation: read the job and the change back to the owner, get a clear yes, then call again with confirmed=true. (Simulated — test mode)",
+        data: { outcome: "needs_confirmation", customer_notified: false },
+      };
+    }
+    return {
+      success: true,
+      message: `Job ${verb}. The customer has NOT been notified. (Simulated — test mode)`,
+      data: { outcome: verb, customer_notified: false },
     };
   }
   if (functionName === "reschedule_appointment") {
