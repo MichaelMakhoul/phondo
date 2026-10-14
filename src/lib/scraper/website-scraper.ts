@@ -601,11 +601,18 @@ export async function extractBusinessInfoWithLLM(
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
-        // Must exceed what FIELD_LIMITS invite (~37k chars ≈ 9k+ tokens), or
-        // the sites this ticket exists for — long FAQ pages — hit
-        // stop_reason max_tokens, truncate the JSON mid-string, and the
-        // RICHEST sites get the WORST output (raw fallback).
+        // SCRUM-588: Haiku 5.5 — 10× cheaper than Haiku 4.5 on prompts up to
+        // 100K tokens (a fuller crawl pays $0.50/$2.50, still half of 4.5).
+        model: 'claude-haiku-5-5',
+        // Haiku 5.5 thinks by default (adaptive): hidden thinking tokens come
+        // out of max_tokens below — on the long-FAQ sites this budget exists
+        // for — and add latency inside the 60s timeout. Haiku 4.5 extracted
+        // without thinking; keep it that way.
+        thinking: { type: 'disabled' },
+        // Must exceed what FIELD_LIMITS invite (~37k chars ≈ 9k+ tokens; Haiku
+        // 5.5's tokenizer counts ~30% more), or the sites this ticket exists
+        // for — long FAQ pages — hit stop_reason max_tokens, truncate the JSON
+        // mid-string, and the RICHEST sites get the WORST output (raw fallback).
         max_tokens: 16_000,
         system: `You are a business information extractor. Given website text, extract structured business details. Return ONLY a JSON object with these fields (all optional, omit if not found):
 - "name": string — the business name
@@ -653,7 +660,11 @@ Only include fields you are confident about. Return {} if no useful info is foun
       return null;
     }
 
-    const content = (data.content as Array<{ text?: string }>)?.[0]?.text;
+    // The TEXT block by type, never content[0]: when a model thinks, content[0]
+    // is a thinking block, and reading it as "empty content" sent every Haiku
+    // 5.5 import to raw-fallback in the SCRUM-588 probe.
+    const content = (data.content as Array<{ type?: string; text?: string }> | undefined)
+      ?.find((block) => block?.type === 'text')?.text;
     if (!content) {
       console.warn('[LLM Extract] Anthropic returned empty content', {
         stopReason: data.stop_reason,

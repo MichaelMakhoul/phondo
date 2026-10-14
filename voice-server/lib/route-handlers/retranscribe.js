@@ -143,6 +143,20 @@ async function handleRetranscribe({ callId, deps, isRetry = false }) {
   if (row.transcript_source === "deepgram") {
     return { ok: true, retranscribed: false, reason: "already-retranscribed" };
   }
+  // SCRUM-587: owner-assistant calls (the business owner on their own line,
+  // spec §5) are never re-transcribed. The transcript is the owner's own
+  // instructions, not caller speech to polish, and applyReanalysis would
+  // overwrite the deterministic owner summary and caller name with an LLM
+  // re-read. Keyed on the DB row, not on anything the Next.js webhook sends:
+  // completeCallRecord stamps call_type in the SAME atomic update as the
+  // transcript and ended_at, so any webhook that finds a transcript also finds
+  // the marker (one that beats the write takes the delayed-retry path below,
+  // whose second pass sees it). Strict "owner" only — NULL metadata or any
+  // other value proceeds exactly as for every other call. Runs before every
+  // external call (storage, Deepgram, the judge, analysis, the write).
+  if (row.metadata && row.metadata.call_type === "owner") {
+    return { ok: true, retranscribed: false, reason: "owner-call" };
+  }
   if (!row.recording_storage_path) {
     return { ok: true, retranscribed: false, reason: "no-recording" };
   }
@@ -287,8 +301,13 @@ async function handleRetranscribe({ callId, deps, isRetry = false }) {
       // undefined, malformed-verdict schema drift) mean the guard is OFF for
       // EVERY call, not this one — rare by nature, so paging them is not
       // per-call noise. Blips (429/5xx/timeouts) stay on console only.
+      // SCRUM-588: a model swap fails the same way on every call — 404
+      // model_not_found, or a 400 whose body names an unsupported parameter
+      // or value (e.g. max_tokens on gpt-6-luna). Other 400s stay per-call.
       const systemic =
-        /^OpenAI 40[13]\b/.test(judgeMsg) ||
+        /^OpenAI 40[134]\b/.test(judgeMsg) ||
+        (/^OpenAI 4\d\d\b/.test(judgeMsg) &&
+          /\b(unsupported_parameter|unsupported_value|model_not_found)\b/.test(judgeMsg)) ||
         judgeMsg.includes("OPENAI_API_KEY not set") ||
         judgeMsg.includes("malformed verdict") ||
         // Wiring defects (dep undefined → "x is not a function") are TypeErrors,
