@@ -3,7 +3,7 @@
 // the order-assembly + projection is extracted here so the correctness-sensitive
 // ordering is unit-tested independently of Supabase.
 
-import type { FieldChange } from "@/lib/appointments/events";
+import type { AppointmentSnapshot, FieldChange } from "@/lib/appointments/events";
 
 export interface LifecycleLeg {
   id: string;
@@ -31,6 +31,22 @@ export function isSupersededStatus(status: string): boolean {
 export function pickName(rel: any): string | null {
   const r = Array.isArray(rel) ? rel[0] : rel;
   return r?.name ?? null;
+}
+
+// SCRUM-398: project an appointment row (with embedded practitioner/service names)
+// into the normalized snapshot the audit diff compares. Shared by the dashboard
+// PATCH route and the owner assistant (SCRUM-586) so both audit the same fields.
+export function snapshotForAudit(row: any): AppointmentSnapshot {
+  return {
+    name: row.attendee_name ?? null,
+    phone: row.attendee_phone ?? null,
+    email: row.attendee_email ?? null,
+    notes: row.notes ?? null,
+    startTime: row.start_time ?? null,
+    status: row.status ?? null,
+    practitioner: pickName(row.practitioners),
+    service: pickName(row.service_types),
+  };
 }
 
 export function deriveChannel(row: { provider?: string | null }): string {

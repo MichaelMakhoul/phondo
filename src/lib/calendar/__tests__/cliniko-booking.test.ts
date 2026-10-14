@@ -46,6 +46,7 @@ import {
   isClinikoOutage,
   type ClinikoContext,
 } from "../cliniko-booking";
+import { serviceTypeQuestion, isServiceTypeQuestion } from "../service-type-question";
 
 const ORG = "33333333-3333-4333-a333-333333333333";
 
@@ -265,6 +266,9 @@ describe("clinikoCheckAvailability", () => {
     expect(res.success).toBe(true);
     expect(res.message).toContain("Check-up");
     expect(res.message).toContain("which type");
+    // SCRUM-586: the shared question, so the owner assistant can recognise it.
+    expect(res.message).toBe(serviceTypeQuestion("- Check-up (30 min)"));
+    expect(isServiceTypeQuestion(res.message)).toBe(true);
   });
 
   it("returns only the requested practitioner's times when practitioner_id is given", async () => {

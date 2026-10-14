@@ -659,3 +659,15 @@ describe("demoCallGlobal profile (SCRUM-340)", () => {
     expect("costControl" in rateLimitConfigs.demoCallGlobal).toBe(false);
   });
 });
+
+describe("ownerLockEmail profile (SCRUM-586)", () => {
+  // The call-completed route throttles the owner's PIN-lockout email by this
+  // profile name, keyed per org.
+  it("is one email per 15 minutes and FAILS OPEN", () => {
+    expect(rateLimitConfigs.ownerLockEmail.maxRequests).toBe(1);
+    expect(rateLimitConfigs.ownerLockEmail.windowMs).toBe(15 * 60 * 1000);
+    // No costControl: a Supabase brownout falls back to the local Map rather than
+    // dropping a security alert to the owner.
+    expect("costControl" in rateLimitConfigs.ownerLockEmail).toBe(false);
+  });
+});

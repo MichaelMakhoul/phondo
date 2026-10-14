@@ -26,8 +26,8 @@ const { applyRescheduleToLedger, RESCHEDULE_SUCCESS_SIGNAL } = require("./lib/re
 const { classifyRebookAttempt, DUPLICATE_REBOOK_MESSAGE, CORRECTION_ERROR_MESSAGE, CANCEL_NUDGE } = require("./lib/rebook-correction"); // SCRUM-557
 const { createCallRecord, completeCallRecord, notifyCallCompleted, applyReanalysis } = require("./lib/call-logger");
 const { calendarToolDefinitions, listServiceTypesToolDefinition, transferToolDefinition, callbackToolDefinition, endCallToolDefinition, executeToolCall } = require("./services/tool-executor");
-const { createGeminiSession } = require("./services/gemini-live");
-const { createOpenAIRealtimeSession, createGrokRealtimeSession } = require("./services/openai-realtime"); // SCRUM-378 eval spike (OpenAI + Grok share the adapter)
+const { createGeminiSession, GEMINI_MODEL } = require("./services/gemini-live");
+const { createOpenAIRealtimeSession, createGrokRealtimeSession, resolveOpenAIRealtimeModel } = require("./services/openai-realtime"); // SCRUM-378 eval spike (OpenAI + Grok share the adapter)
 const { createSessionWithFailover, isFailoverEnabled } = require("./services/gemini-failover"); // SCRUM-535
 const { resolveTestPipeline, KNOWN_TEST_PIPELINES, resolveOwnerPipeline } = require("./lib/pipeline-routing"); // SCRUM-378 per-number test override; SCRUM-587 OWNER_PIPELINE
 const { handleConversationRelayConnection, buildConversationRelayTwiml } = require("./services/conversationrelay"); // SCRUM-378 eval spike (ConversationRelay + Claude)
@@ -2490,7 +2490,9 @@ wss.on("connection", (twilioWs) => {
             // wrapper only ever fires BEFORE Gemini's setupComplete — the
             // caller has heard nothing, so the swap is invisible. Disable
             // with GEMINI_LIVE_FAILOVER=off.
-            const _failoverModel = process.env.OPENAI_REALTIME_MODEL || "gpt-realtime-2.1";
+            // SCRUM-588: the adapter owns the default — metadata records the
+            // model it actually dials, with no second literal to drift.
+            const _failoverModel = resolveOpenAIRealtimeModel();
             const _geminiWithFailover = (cfg, cbs) =>
               createSessionWithFailover(
                 createGeminiSession,
@@ -4563,7 +4565,7 @@ testWss.on("connection", (ws, req) => {
 
       if (useGeminiLive) {
         // ── Gemini Live pipeline for test/demo calls ──────────────
-        console.log("[TestGeminiLive] Initializing Gemini 3.1 Flash Live for test call");
+        console.log(`[TestGeminiLive] Initializing Gemini Live (${GEMINI_MODEL}) for test call`);
 
         // Build tool definitions using the same function as production
         const llmOptions = buildLLMOptions(session);
@@ -5050,8 +5052,9 @@ async function handleTestUserSpeech(session, ws, transcript) {
 // first audio (auth/DNS/connection + first-generation warmup); later sessions
 // are fast. A throwaway mini-turn at startup pays that cost before any caller is
 // on the line — fire-and-forget, non-blocking, ~1 cheap generation per process
-// boot. SCRUM-579: with min_machines_running=0 this now runs on EVERY autostart,
-// not once per deploy, and the first caller after an idle period races it — the
+// boot. SCRUM-579: whenever min_machines_running=0 (it is 1 while outreach or a
+// pilot runs, SCRUM-580) this runs on EVERY autostart, not once per deploy, and the first
+// caller after an idle period races it — the
 // warm-up is fire-and-forget, so a call arriving mid-warm-up still works, it just
 // doesn't get the benefit. The post-deploy warm curl in the runbook is what
 // actually keeps a real caller off the cold path.
@@ -5116,7 +5119,7 @@ initAudioFrontend().then(({ enabled, reason }) => {
 
 server.listen(Number(PORT), "0.0.0.0", () => {
   console.log(`Voice server listening on port ${PORT}`);
-  console.log(`Voice pipeline: ${VOICE_PIPELINE}${VOICE_PIPELINE === "gemini-live" ? " (Gemini 3.1 Flash Live)" : ` (LLM: ${LLM_PROVIDER}/${FULL_MODEL})`}`);
+  console.log(`Voice pipeline: ${VOICE_PIPELINE}${VOICE_PIPELINE === "gemini-live" ? ` (Gemini Live: ${GEMINI_MODEL})` : ` (LLM: ${LLM_PROVIDER}/${FULL_MODEL})`}`);
   console.log(`TwiML endpoint: ${PUBLIC_URL}/twiml`);
   console.log(`WebSocket endpoint: ${WS_URL}`);
   if (TEST_CALL_SECRET) {
