@@ -343,6 +343,29 @@ describe("analyzeCallTranscript", () => {
 
     assert.equal(result, null);
   });
+
+  it("SCRUM-588: cleanup that hits the cap with EMPTY content takes the truncation path (warn), not an [ALERT:error]", async (t) => {
+    // A reasoning model can spend the whole cap thinking: finish_reason
+    // "length" with no content. That is SCRUM-502's benign truncation.
+    const lines = [];
+    t.mock.method(console, "warn", (...a) => lines.push(["warn", a.map(String).join(" ")]));
+    t.mock.method(console, "error", (...a) => lines.push(["error", a.map(String).join(" ")]));
+    globalThis.fetch = function fakeFetch(_url, init) {
+      const body = JSON.parse(init.body);
+      const isStructured = body.messages[0].content.includes("Extract the following information from the transcript");
+      const choice = isStructured
+        ? { finish_reason: "stop", message: { content: JSON.stringify({ summary: "Booked.", sentiment: "neutral" }) } }
+        : { finish_reason: "length", message: { content: "" } };
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ choices: [choice] }) });
+    };
+
+    const result = await getAnalyzer()("This is a long enough transcript to analyze properly.");
+
+    assert.equal(result.summary, "Booked.");
+    assert.equal(result.cleanedTranscript, null);
+    assert.ok(lines.some(([lvl, l]) => lvl === "warn" && /Cleanup skipped/.test(l)), "truncation is a warning");
+    assert.ok(!lines.some(([, l]) => /\[ALERT:error\]/.test(l)), "and must not page as an unexplained empty reply");
+  });
 });
 
 

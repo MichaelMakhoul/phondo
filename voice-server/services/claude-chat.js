@@ -13,16 +13,18 @@
  * toAnthropicTools) so there's one source of truth for the format. Only the
  * transport + SSE decode live here, kept tiny and unit-tested via `_test`.
  *
- * Why Claude Haiku 4.5: strict tool-use (no free-text fabrication of actions —
+ * Why Claude Haiku: strict tool-use (no free-text fabrication of actions —
  * the model emits a real tool_use block or it doesn't), low latency, low cost.
  * Pairs with Twilio ConversationRelay doing Deepgram STT + ElevenLabs TTS.
  */
 
 const { toAnthropicMessages, toAnthropicTools } = require("./openai-llm");
+const { claudeLatencyParams } = require("../lib/model-params");
 
 const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION = "2023-06-01";
-const CR_LLM_MODEL = process.env.CR_LLM_MODEL || "claude-haiku-4-5-20251001";
+// SCRUM-588: Haiku 5.5 (test-only pipeline). CR_LLM_MODEL swaps tiers.
+const CR_LLM_MODEL = process.env.CR_LLM_MODEL || "claude-haiku-5-5";
 
 // Break on sentence-final punctuation across the languages we serve (Latin +
 // Arabic + CJK). Keeps streamed chunks natural for TTS while never splitting
@@ -153,11 +155,12 @@ async function streamClaudeResponse(messages, opts = {}) {
     // stream (→ parse failure → empty args). Voice replies are short otherwise.
     max_tokens: maxTokens || (tools?.length > 0 ? 600 : 200),
     stream: true,
+    // Haiku: thinking off (latency; Haiku 5.5 thinks by default). Other tiers
+    // keep their defaults so a CR_LLM_MODEL swap to compare tiers never 400s.
+    ...claudeLatencyParams(resolvedModel),
   };
-  // temperature is rejected (400) on some newer models (Opus 4.7/4.8). This
-  // pipeline targets Haiku/Sonnet; only send it for those so a CR_LLM_MODEL
-  // swap to compare tiers doesn't 400 every turn.
-  if (/claude-(haiku|sonnet)/i.test(resolvedModel)) body.temperature = 0.7;
+  // No temperature: Haiku 5.5, Sonnet 5.x and Opus 4.7+ all 400 on a
+  // non-default value (SCRUM-588 dropped the old Haiku/Sonnet-only 0.7).
   const anthropicTools = toAnthropicTools(tools);
   if (anthropicTools) body.tools = anthropicTools;
 

@@ -429,6 +429,51 @@ describe("handleRetranscribe (SCRUM-550)", () => {
     assert.match(sentry.events[0].msg, /SYSTEMICALLY failing/);
   });
 
+  // SCRUM-588: what a model swap actually produces (bodies as returned on the
+  // 2026-10-09 probes) fails EVERY call — the guard is off fleet-wide.
+  for (const [label, msg] of [
+    [
+      "404 model_not_found (bad ANALYSIS_MODEL)",
+      'OpenAI 404: {"error":{"message":"The model `gpt-9-nope` does not exist or you do not have access to it.","type":"invalid_request_error","param":null,"code":"model_not_found"}}',
+    ],
+    [
+      "400 unsupported_parameter (max_tokens on gpt-6-luna)",
+      'OpenAI 400: {"error":{"message":"Unsupported parameter: \'max_tokens\' is not supported with this model. Use \'max_completion_tokens\' instead.","type":"invalid_request_error","param":"max_tokens","code":"unsupported_parameter"}}',
+    ],
+    [
+      "400 unsupported_value (temperature 0.1 at default effort)",
+      'OpenAI 400: {"error":{"message":"Unsupported value: \'temperature\' does not support 0.1 with this model. Only the default (1) value is supported.","type":"invalid_request_error","param":"temperature","code":"unsupported_value"}}',
+    ],
+  ]) {
+    it(`SYSTEMIC model-swap failure (${label}) pages retranscribe-failed`, async () => {
+      const { deps, captured, sentry } = makeDeps({
+        judgeContentLoss: async () => {
+          throw new Error(msg);
+        },
+      });
+      const res = await handleRetranscribe({ callId: "c1", deps });
+      assert.deepEqual(res, { ok: true, retranscribed: true }, "Latin-script call still fails open");
+      assert.ok(captured.applyReanalysis);
+      assert.equal(sentry.events.length, 1);
+      assert.equal(sentry.events[0].reason, "retranscribe-failed");
+      assert.match(sentry.events[0].msg, /SYSTEMICALLY failing/);
+    });
+  }
+
+  it("a per-call 400 (context_length_exceeded) is NOT systemic — not every 400 is a guard-off state", async () => {
+    const { deps, captured, sentry } = makeDeps({
+      judgeContentLoss: async () => {
+        throw new Error(
+          'OpenAI 400: {"error":{"message":"This model\'s maximum context length is exceeded.","type":"invalid_request_error","param":"messages","code":"context_length_exceeded"}}',
+        );
+      },
+    });
+    const res = await handleRetranscribe({ callId: "c1", deps });
+    assert.deepEqual(res, { ok: true, retranscribed: true });
+    assert.ok(captured.applyReanalysis);
+    assert.equal(sentry.events.length, 0);
+  });
+
   it("undici network blip (TypeError: fetch failed) is NOT systemic — no page, fails open on Latin", async () => {
     const { deps, captured, sentry } = makeDeps({
       judgeContentLoss: async () => {

@@ -287,8 +287,13 @@ async function handleRetranscribe({ callId, deps, isRetry = false }) {
       // undefined, malformed-verdict schema drift) mean the guard is OFF for
       // EVERY call, not this one — rare by nature, so paging them is not
       // per-call noise. Blips (429/5xx/timeouts) stay on console only.
+      // SCRUM-588: a model swap fails the same way on every call — 404
+      // model_not_found, or a 400 whose body names an unsupported parameter
+      // or value (e.g. max_tokens on gpt-6-luna). Other 400s stay per-call.
       const systemic =
-        /^OpenAI 40[13]\b/.test(judgeMsg) ||
+        /^OpenAI 40[134]\b/.test(judgeMsg) ||
+        (/^OpenAI 4\d\d\b/.test(judgeMsg) &&
+          /\b(unsupported_parameter|unsupported_value|model_not_found)\b/.test(judgeMsg)) ||
         judgeMsg.includes("OPENAI_API_KEY not set") ||
         judgeMsg.includes("malformed verdict") ||
         // Wiring defects (dep undefined → "x is not a function") are TypeErrors,
