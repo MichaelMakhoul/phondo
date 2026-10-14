@@ -315,7 +315,12 @@ describe("main", () => {
   it("never shows the code anywhere but on the call", async () => {
     const h = harness();
     await h.run("0491 570 006", "--call");
-    const shown = [h.output(), ...h.deps.ask.mock.calls.map(([question]) => question)].join("\n");
+    // The output names files under the temp homes, whose random mkdtemp suffix
+    // can itself contain "83" — mask them so only what main() wrote is checked.
+    const shown = [h.output(), ...h.deps.ask.mock.calls.map(([question]) => question)]
+      .join("\n")
+      .replaceAll(ENV_HOME, "<home>")
+      .replaceAll(FAKE_HOME, "<home>");
     expect(shown).not.toMatch(/8\s?3/);
   });
 
