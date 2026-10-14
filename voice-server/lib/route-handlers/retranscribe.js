@@ -143,6 +143,20 @@ async function handleRetranscribe({ callId, deps, isRetry = false }) {
   if (row.transcript_source === "deepgram") {
     return { ok: true, retranscribed: false, reason: "already-retranscribed" };
   }
+  // SCRUM-587: owner-assistant calls (the business owner on their own line,
+  // spec §5) are never re-transcribed. The transcript is the owner's own
+  // instructions, not caller speech to polish, and applyReanalysis would
+  // overwrite the deterministic owner summary and caller name with an LLM
+  // re-read. Keyed on the DB row, not on anything the Next.js webhook sends:
+  // completeCallRecord stamps call_type in the SAME atomic update as the
+  // transcript and ended_at, so any webhook that finds a transcript also finds
+  // the marker (one that beats the write takes the delayed-retry path below,
+  // whose second pass sees it). Strict "owner" only — NULL metadata or any
+  // other value proceeds exactly as for every other call. Runs before every
+  // external call (storage, Deepgram, the judge, analysis, the write).
+  if (row.metadata && row.metadata.call_type === "owner") {
+    return { ok: true, retranscribed: false, reason: "owner-call" };
+  }
   if (!row.recording_storage_path) {
     return { ok: true, retranscribed: false, reason: "no-recording" };
   }
