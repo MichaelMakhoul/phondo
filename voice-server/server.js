@@ -24,6 +24,7 @@ const scheduleCache = require("./lib/schedule-cache");
 const { bookingKey, normalizeDatetime } = require("./lib/booking-key");
 const { applyRescheduleToLedger, RESCHEDULE_SUCCESS_SIGNAL } = require("./lib/reschedule-ledger"); // SCRUM-563
 const { classifyRebookAttempt, DUPLICATE_REBOOK_MESSAGE, CORRECTION_ERROR_MESSAGE, CANCEL_NUDGE } = require("./lib/rebook-correction"); // SCRUM-557
+const { applyBookingPrecheck } = require("./lib/booking-precheck"); // SCRUM-593
 const { createCallRecord, completeCallRecord, notifyCallCompleted, applyReanalysis } = require("./lib/call-logger");
 const { calendarToolDefinitions, listServiceTypesToolDefinition, transferToolDefinition, callbackToolDefinition, endCallToolDefinition, executeToolCall } = require("./services/tool-executor");
 const { createGeminiSession, GEMINI_MODEL } = require("./services/gemini-live");
@@ -2707,6 +2708,26 @@ wss.on("connection", (twilioWs) => {
                     }
                   }
 
+                  // SCRUM-593: before ANY booking change is written, Claude
+                  // checks it against what the caller said and confirmed
+                  // (lib/booking-precheck.js). A hold hands Gemini an
+                  // instruction instead of writing. The in-flight flag keeps
+                  // the goodbye-loop auto-end off while the check runs.
+                  if (session) session._toolCallInFlight = true;
+                  let precheckHold = null;
+                  try {
+                    precheckHold = await applyBookingPrecheck(session, toolCall, {
+                      pendingUser: pendingUserTranscript,
+                      pendingAi: pendingAiTranscript,
+                      promptConfig: context?.assistant?.promptConfig,
+                      audit: true,
+                    });
+                  } finally {
+                    if (session) session._toolCallInFlight = false;
+                  }
+                  if (!session) return { message: "" };
+                  if (precheckHold) return precheckHold;
+
                   // Flag so goodbye-loop auto-end knows a tool call is in progress
                   // and won't close the session mid-execution.
                   if (session) session._toolCallInFlight = true;
@@ -2778,6 +2799,7 @@ wss.on("connection", (twilioWs) => {
                       auditEntry.codeArg = String(toolCall.args?.confirmation_code || "").trim() || undefined;
                     }
                     session.toolCallAudit.push(auditEntry);
+                    if (successful) session.precheckHolds?.delete(toolCall.name); // SCRUM-593: a confirmed write resets its hold count
                   }
 
                   // SCRUM-367 (B): break the name/detail re-confirm loop
@@ -4640,6 +4662,15 @@ testWss.on("connection", (ws, req) => {
                     "DO NOT CANCEL YET. Before cancelling, confirm with the caller: read back which appointment would be cancelled (its date and time) and ask them — in their language — to clearly confirm (yes/no). ONLY if they clearly say yes, call cancel_appointment again with the same details. If they say no or you are unsure, do NOT cancel.",
                 };
               }
+              // SCRUM-593: booking pre-check (test/demo path — parity with production; no tool audit here)
+              const precheckHold = await applyBookingPrecheck(session, toolCall, {
+                pendingUser: pendingUserTranscript,
+                pendingAi: pendingAiTranscript,
+                promptConfig: context?.assistant?.promptConfig,
+                audit: false,
+              });
+              if (!session) return { message: "" };
+              if (precheckHold) return precheckHold;
               session.rememberDetails(toolCall.name, toolCall.args); // SCRUM-506
               const result = await executeToolCall(toolCall.name, toolCall.args, {
                 organizationId: session.organizationId,

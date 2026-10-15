@@ -105,6 +105,12 @@ class CallSession {
     // successful `book_appointment` tool result, flag the call.
     this.toolCallAudit = [];
 
+    // SCRUM-593: booking pre-check holds per tool this call
+    // (lib/booking-precheck.js). A tool held MAX_HOLDS times goes through
+    // unchecked; a successful write of that tool resets its count.
+    /** @type {Map<string, number>} */
+    this.precheckHolds = new Map();
+
     // SCRUM-367: count book_appointment rejections in this call. After a few,
     // registerBookOutcome() escalates the tool-result instruction so the model
     // stops re-asking the caller to repeat the same detail (the prose-only
