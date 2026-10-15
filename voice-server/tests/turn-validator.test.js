@@ -203,12 +203,12 @@ describe("readable verdicts (incl. the shapes Haiku 4.5, the revert model, emits
 });
 
 describe("SCRUM-593: the Tier-2 checker knows today's date", () => {
-  /** Capture the prompt the validator sends. */
-  function capturePrompt() {
+  /** Capture the prompt the validator sends; the stubbed model answers with `verdict`. */
+  function capturePrompt(verdict = '{"accurate": true}') {
     const seen = { prompt: "" };
     globalThis.fetch = async (_url, init) => {
       seen.prompt = JSON.parse(init.body).messages[0].content;
-      return { ok: true, status: 200, json: async () => ({ content: [{ type: "text", text: '{"accurate": true}' }], stop_reason: "end_turn" }) };
+      return { ok: true, status: 200, json: async () => ({ content: [{ type: "text", text: verdict }], stop_reason: "end_turn" }) };
     };
     return seen;
   }
@@ -232,5 +232,15 @@ describe("SCRUM-593: the Tier-2 checker knows today's date", () => {
     const seen = capturePrompt();
     await validate(ARGS);
     assert.match(seen.prompt, /"today", "tomorrow" or a weekday name — are CORRECT when they resolve to the tool's date from NOW/);
+  });
+
+  it("a malformed org timezone degrades NOW to Sydney — the check still runs and its verdict is read", async () => {
+    const validate = loadValidator();
+    // A flagged verdict, not the default accurate one: a fail-open no-verdict
+    // is also { accurate: true }, so only a flagged verdict proves the request went out.
+    const seen = capturePrompt('{"accurate": false, "discrepancy": "x"}');
+    const verdict = await validate({ ...ARGS, timezone: "Not/AZone" });
+    assert.match(seen.prompt, /NOW \(the business's timezone\): Current date and time: .*\(Australia\/Sydney\)/);
+    assert.deepEqual(verdict, { accurate: false, discrepancy: "x" });
   });
 });

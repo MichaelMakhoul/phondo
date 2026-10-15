@@ -15,7 +15,7 @@
 
 const { DEBUG_TRANSCRIPTS } = require("../lib/log-transcript");
 const { claudeLatencyParams, claudeResponseText, readAnthropicError } = require("../lib/model-params");
-const { nowLine } = require("../lib/now-line");
+const { safeNowLine } = require("../lib/now-line");
 const { Sentry } = require("../lib/sentry");
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
@@ -124,7 +124,7 @@ function parseVerdict(text) {
  * @param {string} params.toolName — which tool was called (e.g., "book_appointment")
  * @param {string} params.toolResult — the text result the tool returned
  * @param {string} params.spokenResponse — what Sophie said to the caller (from outputTranscription)
- * @param {string} [params.timezone] - IANA zone of the business (SCRUM-593); defaults to Australia/Sydney
+ * @param {string} [params.timezone] - IANA zone of the business (SCRUM-593); Australia/Sydney when missing or malformed
  * @returns {Promise<{ accurate: boolean, discrepancy?: string }>}
  */
 async function validateToolResponse({ toolName, toolResult, spokenResponse, timezone }) {
@@ -160,7 +160,7 @@ async function validateToolResponse({ toolName, toolResult, spokenResponse, time
 TOOL CALLED: ${toolName}
 TOOL RESULT: "${toolResult}"
 AI SPOKE TO CALLER: "${spokenResponse}"
-NOW (the business's timezone): ${nowLine(timezone || "Australia/Sydney")}
+NOW (the business's timezone): ${safeNowLine(timezone)}
 
 Check for:
 1. Date mismatch (tool says one date, AI says a different date). Relative words the AI used — "today", "tomorrow" or a weekday name — are CORRECT when they resolve to the tool's date from NOW.

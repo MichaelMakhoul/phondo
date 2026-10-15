@@ -35,4 +35,23 @@ function nowLine(timezone, now = new Date()) {
   return `Current date and time: ${dateFormatter.format(now)}, ${timeFormatter.format(now)} (${timezone}). Today's date in YYYY-MM-DD format: ${isoDateFormatter.format(now)}.`;
 }
 
-module.exports = { nowLine };
+/**
+ * nowLine for a business timezone that may be missing or malformed in org
+ * data: falls back to Australia/Sydney instead of throwing, so a bad zone
+ * degrades the NOW anchor rather than switching a checker off (SCRUM-593).
+ * @param {string | undefined | null} timezone
+ * @param {Date} [now]
+ * @returns {string}
+ */
+function safeNowLine(timezone, now = new Date()) {
+  if (timezone) {
+    try {
+      return nowLine(timezone, now);
+    } catch {
+      // invalid IANA zone in org data — fall through to the default
+    }
+  }
+  return nowLine("Australia/Sydney", now);
+}
+
+module.exports = { nowLine, safeNowLine };
