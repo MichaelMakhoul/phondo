@@ -324,7 +324,8 @@ async function requestVerdict(prompt) {
 }
 
 /**
- * Pre-check one tool call. Never throws.
+ * Pre-check one tool call. Never throws. A call with no name or date fields (an
+ * update of only phone, email or notes) proceeds without asking Claude.
  * @param {{
  *   toolName: string,
  *   args: Record<string, unknown>,
@@ -346,6 +347,15 @@ async function precheckBookingWrite(input) {
   if (mode === "off") return PROCEED;
   const started = Date.now();
   try {
+    // Nothing to check: an update that changes only the phone, email or notes carries no name and
+    // no date, so there is nothing to compare with the call, and asking could only produce a false
+    // hold. Not a hold and not a failure: no request, no count, no page. It comes before the hold
+    // cap, so a capped tool with nothing to check is not reported as let through.
+    const details = decisionArgs(input.args);
+    if (Object.keys(details).length === 0) {
+      console.log(`[Precheck] skip ${toolName} (no name/date fields). callSid=${callSid}`);
+      return PROCEED;
+    }
     const held = holds.get(toolName) || 0;
     if (held >= MAX_HOLDS) {
       console.warn(`[Precheck] ${toolName} let through unchecked after ${MAX_HOLDS} holds. callSid=${callSid}`);
@@ -359,7 +369,7 @@ async function precheckBookingWrite(input) {
     const now = safeNowLine(input.timezone, input.now);
     const prompt = buildPrecheckPrompt({
       toolName,
-      args: decisionArgs(input.args),
+      args: details,
       conversation: conversationText(input.messages, input.pendingUser, input.pendingAi),
       now,
       nameMethod: input.nameMethod || "repeat-confirm",

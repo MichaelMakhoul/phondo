@@ -2658,6 +2658,27 @@ wss.on("connection", (twilioWs) => {
                     if (existing) {
                       const verdict = classifyRebookAttempt(existing, toolCall.args);
                       if (verdict.kind === "name-correction") {
+                        // SCRUM-593: the name fix is a booking write too. A re-book with a
+                        // corrected surname is answered here, so it never reaches the main
+                        // check below — check it first; a hold returns before any write.
+                        // audit:false: a booking already stands, and an audited hold would
+                        // read to hasUnfinishedBooking as an unresolved funnel step (a
+                        // successful fix is "book_appointment_corrected", not a resolve), so
+                        // end_call would tell a caller who HAS an appointment that they have none.
+                        if (session) session._toolCallInFlight = true;
+                        let correctionHold = null;
+                        try {
+                          correctionHold = await applyBookingPrecheck(session, toolCall, {
+                            pendingUser: pendingUserTranscript,
+                            pendingAi: pendingAiTranscript,
+                            promptConfig: context?.assistant?.promptConfig,
+                            audit: false,
+                          });
+                        } finally {
+                          if (session) session._toolCallInFlight = false;
+                        }
+                        if (!session) return { message: "" };
+                        if (correctionHold) return correctionHold;
                         console.warn(`[RebookGuard] Name-corrected re-book — updating attendee in place. callSid=${session.callSid}`);
                         let correctionMsg;
                         try {
@@ -2682,6 +2703,7 @@ wss.on("connection", (twilioWs) => {
                         const correctionOk = correctionMsg.startsWith("NAME CORRECTED");
                         session.toolCallAudit.push({ name: "book_appointment_corrected", successful: correctionOk, at: Date.now() });
                         if (correctionOk) {
+                          session.precheckHolds?.delete(toolCall.name); // SCRUM-593: a confirmed fix resets its hold count, as a confirmed booking does
                           session.confirmedBookings.set(reqKey, {
                             ...existing,
                             name: `${toolCall.args.first_name || ""} ${toolCall.args.last_name || ""}`.trim(),
@@ -4682,6 +4704,7 @@ testWss.on("connection", (ws, req) => {
                 organization: session.organization,
                 scheduleSnapshot: session.scheduleSnapshot,
               });
+              if (!(typeof result === "object" && (result?.error || result?.success === false))) session?.precheckHolds?.delete(toolCall.name); // SCRUM-593: parity with production — a confirmed write resets its hold count
               const message = typeof result === "string" ? result : result.message;
               console.log(`[TestGeminiLive] Tool result: "${message.slice(0, 100)}"`);
               return { message };

@@ -492,6 +492,10 @@ function makeGeminiCallbacks(session, o = {}) {
     logTranscript: () => {},
     pendingUserTranscript: "",
     pendingAiTranscript: "",
+    // SCRUM-593: a customer write that passes the guards meets the booking pre-check (server.js names
+    // these two); the default is "no hold". An owner call must never get here — see the first test below.
+    applyBookingPrecheck: async (...a) => { calls.push(["applyBookingPrecheck", ...a]); return o.precheckHold ?? null; },
+    context: { assistant: { promptConfig: { fields: [] } } },
     detectPhantomAction: (...a) => { calls.push(["detectPhantomAction", ...a]); return null; },
     validateToolResponse: async (...a) => { calls.push(["validateToolResponse", ...a]); return { accurate: true }; },
     DEBUG_TRANSCRIPTS: false,
@@ -531,6 +535,7 @@ describe("SCRUM-587: Gemini callbacks, run for real", () => {
     calls.filter((c) => c[0] === "runOwnerToolCall").at(-1)[3].sendText("hello");
     assert.deepEqual(injected, ["hello"]);
     assert.deepEqual(guardCalls, [], "no customer guard ran");
+    assert.deepEqual(calls.filter((c) => c[0] === "applyBookingPrecheck"), [], "nor the booking pre-check (SCRUM-593)");
     assert.deepEqual(calls.filter((c) => c[0] === "executeToolCall"), [], "server.js never calls the executor itself on an owner call");
     assert.equal(s.toolCallAudit.length, 1, "server.js adds no customer audit entries");
     assert.equal(s._lastToolResult, undefined, "the Tier-2 validator is never armed");

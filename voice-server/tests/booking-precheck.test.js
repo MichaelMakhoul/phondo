@@ -129,6 +129,70 @@ describe("which writes are checked", () => {
   });
 });
 
+// An update_appointment that changes only the phone, email or notes carries no name and no date: there
+// is nothing to compare with the call, and asking Claude could only produce a false hold.
+describe("nothing to check", () => {
+  const EMPTY_ARGS = [{ email: "private@example.com" }, { phone: "+61400111222" }, { notes: "gate code 4471" }, { phone: "+61400111222", email: "a@b.co", notes: "x" }, {}, undefined];
+
+  it("an update with no name or date fields makes no request, proceeds, counts no hold and says why", async () => {
+    const m = load();
+    const seen = replyText(FIX);
+    for (const args of EMPTY_ARGS) {
+      logs.length = 0;
+      const holds = new Map();
+      assert.deepEqual(await m.precheckBookingWrite(input({ toolName: "update_appointment", args, holds })), { action: "proceed" }, JSON.stringify(args));
+      assert.equal(holds.size, 0, "no hold is counted");
+      assert.ok(logs.some((l) => /\[Precheck\] skip update_appointment \(no name\/date fields\)\. callSid=CAtest/.test(l)), `${JSON.stringify(args)} is logged as a skip`);
+      assert.ok(!logs.some((l) => /\[Precheck\] (allow|unchecked)|No usable verdict/.test(l)), "and never as a verdict that was read or an unchecked failure");
+    }
+    assert.equal(seen.calls, 0, "Claude is never asked");
+  });
+
+  it("any name or date field, even alone, still makes a request", async () => {
+    const m = load();
+    const withField = [
+      ["book_appointment", { first_name: "Michael" }],
+      ["book_appointment", { last_name: "Makhlouf" }],
+      ["book_appointment", { name: "Michael Makhlouf" }],
+      ["book_appointment", { datetime: "2026-10-15T09:00" }],
+      ["reschedule_appointment", { new_datetime: "2026-10-16T10:00" }],
+      ["reschedule_appointment", { current_date: "2026-10-14" }],
+      ["update_appointment", { first_name: "Michael", last_name: "Makhlouf", email: "a@b.co" }],
+      ["update_appointment", { practitioner_id: "prac-7" }],
+    ];
+    for (const [toolName, args] of withField) {
+      const seen = replyText(ALLOW);
+      assert.deepEqual(await m.precheckBookingWrite(input({ toolName, args })), { action: "proceed" });
+      assert.equal(seen.calls, 1, `${toolName} ${JSON.stringify(args)}`);
+    }
+  });
+
+  it("shadow mode skips too", async () => {
+    const m = load({ mode: "shadow" });
+    const seen = replyText(FIX);
+    assert.deepEqual(await m.precheckBookingWrite(input({ toolName: "update_appointment", args: { email: "a@b.co" } })), { action: "proceed" });
+    assert.equal(seen.calls, 0);
+    assert.ok(logs.some((l) => /\[Precheck\] skip update_appointment/.test(l)));
+  });
+
+  it("a tool already at its hold cap is skipped, not 'let through unchecked' with a warning page", async () => {
+    const m = load();
+    const seen = replyText(FIX);
+    const holds = new Map([["update_appointment", 2]]);
+    assert.deepEqual(await m.precheckBookingWrite(input({ toolName: "update_appointment", args: { email: "a@b.co" }, holds })), { action: "proceed" });
+    assert.equal(seen.calls, 0);
+    assert.ok(logs.some((l) => /\[Precheck\] skip update_appointment/.test(l)));
+    assert.ok(!logs.some((l) => /let through unchecked|let through after|\[ALERT/.test(l)), "nothing was held back, so nothing is reported as let through");
+  });
+
+  it("the skip line carries no caller details", async () => {
+    const m = load();
+    replyText(FIX);
+    await m.precheckBookingWrite(input({ toolName: "update_appointment", args: { email: "private@example.com", phone: "+61400111222", notes: "gate code 4471" } }));
+    assert.doesNotMatch(logs.join("\n"), /private@example\.com|61400111222|4471/);
+  });
+});
+
 describe("verdicts and modes", () => {
   it("allow → proceed", async () => {
     const m = load();

@@ -22,8 +22,8 @@ Gemini already has the rule ("NAME COLLECTION IS MANDATORY … repeat the name b
 ### When it runs
 - **Pipelines:** the Gemini paths only. That means production inbound calls (`server.js` `onToolCall`, ~2566) and the browser test call (`/ws/test`, ~4627), so test calls behave the same as real ones.
 - **Tools:** `book_appointment`, `reschedule_appointment` and `update_appointment`.
-- **Position:** after the existing guards (end-call guard, cancel gate, RebookGuard) and **immediately before `executeToolCall`**. Nothing is written until the check passes.
-- **Skipped for:** owner calls (they return earlier and have their own read-back gate), and every other tool.
+- **Position:** after the existing guards (end-call guard, cancel gate, RebookGuard) and **immediately before `executeToolCall`**. Nothing is written until the check passes. The RebookGuard's name-correction branch (a re-book with a corrected surname becomes an in-place attendee update) is checked too, before that write; its hold is not audited, because a booking already stands and a held fix must not reopen the end-call guard.
+- **Skipped for:** owner calls (they return earlier and have their own read-back gate), every other tool, and a call with no name or date fields (an `update_appointment` that changes only phone, email or notes): there is nothing to compare with the call, so no request, no hold and a `[Precheck] skip` log line.
 
 ### What Claude sees
 1. **The conversation so far.** This is `session.messages` (user and assistant turns, no system prompt) plus the turn still in progress (`pendingUserTranscript` / `pendingAiTranscript`). The text is labelled as Gemini's own transcription, which may contain mishearings and partial letter-spelling.
@@ -48,7 +48,7 @@ The answer is strict JSON, either `{"verdict":"allow","problem":"none"}` or `{"v
   - It does **not** count against the booking-failure loop caps, because the write was never attempted.
 
 ### Limits and failures
-- **Hold limit:** at most **2 holds per write**. The third attempt goes through, with a `[ALERT:warning]`, so a caller is never trapped when Claude can't be satisfied (for example on a garbled transcript). The count resets when that write succeeds.
+- **Hold limit:** at most **2 holds per write**. The third attempt goes through, with a `[ALERT:warning]`, so a caller is never trapped when Claude can't be satisfied (for example on a garbled transcript). The count resets when that write succeeds (on both Gemini paths, and when a name fix succeeds).
 - **When Claude fails:** this covers a timeout over **3 s**, an HTTP error, a missing key, or an unreadable reply. In each case the write **goes through as today** (fail-open) and is logged. A run of failures pages, using the same mechanism the existing checker uses. Logs never contain transcript text (SCRUM-339).
 - **Modes:** `PRECHECK_MODE=enforce` (default), `shadow` (check and log, never hold) or `off`. Changing it is a Fly secret change, with no code deploy.
 - **Model:** `PRECHECK_MODEL`, default `claude-haiku-5-5` with thinking off (the latency settings the validator already uses).

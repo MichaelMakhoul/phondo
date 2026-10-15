@@ -204,14 +204,21 @@ describe("the request contract", () => {
     assert.ok(seen.signal instanceof AbortSignal, "the signal is handed to fetch");
   });
 
-  it("tolerates missing args, an empty conversation and no name method", async () => {
+  it("tolerates an empty conversation and no name method", async () => {
     const m = load();
     const seen = replyText(ALLOW);
-    await m.precheckBookingWrite(input({ args: undefined, messages: [], pendingUser: "", pendingAi: "", nameMethod: undefined }));
+    await m.precheckBookingWrite(input({ messages: [], pendingUser: "", pendingAi: "", nameMethod: undefined }));
     const prompt = seen.body.messages[0].content;
-    assert.match(prompt, /DETAILS THE AI WANTS TO SAVE: \{\}/);
+    assert.match(prompt, /DETAILS THE AI WANTS TO SAVE: \{"first_name"/);
     assert.match(prompt, /\(nothing transcribed yet\)/);
     assert.match(prompt, /the AI must have repeated it back/);
+  });
+
+  it("never sends empty details: missing args are nothing to check, so there is no request at all", async () => {
+    const m = load();
+    const seen = replyText(FIX);
+    assert.deepEqual(await m.precheckBookingWrite(input({ args: undefined })), { action: "proceed" });
+    assert.equal(seen.calls, 0);
   });
 
   it("a truncated call starts on a whole line, right after the omitted marker", async () => {
@@ -402,6 +409,16 @@ describe("server.js glue mapping", () => {
     assert.match(prompt, /CALLER: I need a plumber tomorrow morning\./);
     assert.match(prompt, /CALLER: Two pm works\.\nAI: Moving it now\.$/m);
     assert.ok(logs.some((l) => /callSid=CAglue/.test(l)));
+  });
+
+  it("an update with nothing to check passes straight through the glue: no request, no hold, no audit entry", async () => {
+    const m = load();
+    const seen = replyText(FIX);
+    const s = session();
+    assert.equal(await m.applyBookingPrecheck(s, { name: "update_appointment", args: { email: "a@b.co" } }, { audit: true }), null);
+    assert.equal(seen.calls, 0);
+    assert.equal(s.toolCallAudit.length, 0);
+    assert.equal(s.precheckHolds.size, 0);
   });
 
   it("audit:true on a session with no audit array does not throw", async () => {
