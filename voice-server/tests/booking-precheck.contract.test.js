@@ -96,6 +96,8 @@ const input = (over = {}) => ({
   ...over,
 });
 const FIX = JSON.stringify({ verdict: "fix", problem: "name_unconfirmed" });
+// What the structured-output schema makes the model send for an allow ("none" = no problem).
+const ALLOW = JSON.stringify({ verdict: "allow", problem: "none" });
 const session = (over = {}) => ({
   messages: CONVERSATION,
   organization: { timezone: "Australia/Sydney" },
@@ -117,14 +119,14 @@ describe("hold cap alert", () => {
 describe("the request contract", () => {
   it("the NOW line is in the business's timezone", async () => {
     const m = load();
-    const seen = replyText('{"verdict":"allow"}');
+    const seen = replyText(ALLOW);
     await m.precheckBookingWrite(input({ timezone: "America/New_York" }));
     assert.match(seen.body.messages[0].content, /Current date and time: Wednesday, October 14, 2026, 06:56\sAM \(America\/New_York\)/);
   });
 
   it("posts to the Messages API with the key, the API version and a small token cap", async () => {
     const m = load();
-    const seen = replyText('{"verdict":"allow"}');
+    const seen = replyText(ALLOW);
     await m.precheckBookingWrite(input());
     assert.equal(seen.url, "https://api.anthropic.com/v1/messages");
     assert.equal(seen.headers["x-api-key"], "test-key");
@@ -136,7 +138,7 @@ describe("the request contract", () => {
   // hung Anthropic call would hold the booking (and the caller) indefinitely.
   it("the request carries a 3 s timeout signal", async () => {
     const m = load();
-    const seen = replyText('{"verdict":"allow"}');
+    const seen = replyText(ALLOW);
     const real = AbortSignal.timeout;
     let ms;
     AbortSignal.timeout = (n) => {
@@ -154,7 +156,7 @@ describe("the request contract", () => {
 
   it("tolerates missing args, an empty conversation and no name method", async () => {
     const m = load();
-    const seen = replyText('{"verdict":"allow"}');
+    const seen = replyText(ALLOW);
     await m.precheckBookingWrite(input({ args: undefined, messages: [], pendingUser: "", pendingAi: "", nameMethod: undefined }));
     const prompt = seen.body.messages[0].content;
     assert.match(prompt, /DETAILS THE AI WANTS TO SAVE: \{\}/);
@@ -164,7 +166,7 @@ describe("the request contract", () => {
 
   it("a truncated call starts on a whole line, right after the omitted marker", async () => {
     const m = load();
-    const seen = replyText('{"verdict":"allow"}');
+    const seen = replyText(ALLOW);
     const long = Array.from({ length: 800 }, (_, i) => ({ role: i % 2 ? "user" : "assistant", content: `line ${i} ${"x".repeat(20)}` }));
     await m.precheckBookingWrite(input({ messages: long, pendingUser: "", pendingAi: "" }));
     const after = seen.body.messages[0].content.split("[earlier part of the call omitted]\n")[1];
@@ -271,7 +273,7 @@ describe("failure paging", () => {
 describe("log hygiene on the allow path", () => {
   it("an allow logs no caller words or details either", async () => {
     const m = load();
-    replyText('{"verdict":"allow"}');
+    replyText(ALLOW);
     await m.precheckBookingWrite(input());
     assert.doesNotMatch(logs.join("\n"), /Makhlouf|Michael|plumber|2026-10-15T09/);
   });
@@ -287,7 +289,7 @@ describe("nameVerificationMethod field list", () => {
 describe("server.js glue mapping", () => {
   it("sends this call's own state to Claude", async () => {
     const m = load();
-    const seen = replyText('{"verdict":"allow"}');
+    const seen = replyText(ALLOW);
     const s = session({ organization: { timezone: "America/New_York" }, callSid: "CAglue" });
     await m.applyBookingPrecheck(
       s,

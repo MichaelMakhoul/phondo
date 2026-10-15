@@ -56,6 +56,26 @@ const METHOD_WORDING = {
   "repeat-confirm": "repeated it back",
 };
 
+/**
+ * SCRUM-593: structured outputs — the reply can only be this JSON. With
+ * thinking off, Haiku 5.5 otherwise writes its reasoning before the JSON; those
+ * replies were unreadable and failed open (8/18 in the live replay).
+ * "none" is the problem of an allow; parsePrecheck maps it (like any other
+ * unknown value) to "other" when it arrives on a fix.
+ */
+const VERDICT_FORMAT = {
+  type: "json_schema",
+  schema: {
+    type: "object",
+    properties: {
+      verdict: { type: "string", enum: ["allow", "fix"] },
+      problem: { type: "string", enum: ["none", "name_unconfirmed", "name_mismatch", "date_mismatch", "not_agreed"] },
+    },
+    required: ["verdict", "problem"],
+    additionalProperties: false,
+  },
+};
+
 /** @type {{ action: "proceed" }} */
 const PROCEED = Object.freeze({ action: "proceed" });
 
@@ -75,14 +95,17 @@ function precheckModel() {
 }
 
 /**
- * Lowest-latency request shape per model family: Haiku takes thinking
- * disabled (claudeLatencyParams); Sonnet/Opus 5.5 reject disabled thinking,
- * so they run at low effort instead.
+ * Lowest-latency request shape per model family, both asking for the verdict
+ * schema (VERDICT_FORMAT): Haiku takes thinking disabled (claudeLatencyParams)
+ * and its default effort; Sonnet/Opus 5.5 reject disabled thinking, so they run
+ * at low effort instead.
  * @param {string} model
  * @returns {Record<string, unknown>}
  */
 function precheckModelParams(model) {
-  return /^claude-haiku-/i.test(model) ? claudeLatencyParams(model) : { output_config: { effort: "low" } };
+  return /^claude-haiku-/i.test(model)
+    ? { ...claudeLatencyParams(model), output_config: { format: VERDICT_FORMAT } }
+    : { output_config: { effort: "low", format: VERDICT_FORMAT } };
 }
 
 /**
@@ -149,11 +172,7 @@ Rules — check ONLY these:
 3. AGREEMENT: the caller must have asked for or agreed to this booking or change — not only asked what is free.
 Ignore wording, email, notes, phone number, service, and practitioner (unless the caller asked for one practitioner and a different one is being saved).
 
-Reply with ONLY one JSON object, no markdown:
-{"verdict":"allow"}
-or
-{"verdict":"fix","problem":"name_unconfirmed"|"name_mismatch"|"date_mismatch"|"not_agreed"}
-If you are unsure whether the NAME was confirmed, answer fix with "name_unconfirmed".`;
+Answer with "verdict" and "problem" ("none" when you allow). If you are unsure whether the NAME was confirmed, answer fix with "name_unconfirmed".`;
 }
 
 /**
@@ -161,6 +180,8 @@ If you are unsure whether the NAME was confirmed, answer fix with "name_unconfir
  * @returns {{ verdict: { allow: true } | { allow: false, problem: string } } | { unreadable: "not-json" | "no-verdict" }}
  */
 function parsePrecheck(text) {
+  // With structured outputs (VERDICT_FORMAT) the reply is bare JSON; the fence
+  // strip is a harmless guard for a model or API that ignores the schema.
   const unfenced = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
   /** @type {any} */
   let result;
@@ -170,11 +191,13 @@ function parsePrecheck(text) {
     return { unreadable: "not-json" };
   }
   if (!result || typeof result !== "object") return { unreadable: "no-verdict" };
+  // The schema makes an allow carry problem "none"; whatever it says is ignored.
   if (result.verdict === "allow") return { verdict: { allow: true } };
   if (result.verdict === "fix") {
     // Only the problem CODE is taken from the reply, and only if it is one of
-    // ours — an exact own-key match, so "constructor" and other inherited names
-    // are not codes. Any wording in the reply is ignored (see INSTRUCTIONS).
+    // ours — an exact own-key match, so "none" (the schema's no-problem value),
+    // "constructor" and other inherited names are not codes and become "other".
+    // Any wording in the reply is ignored (see INSTRUCTIONS).
     const problem = typeof result.problem === "string" && Object.hasOwn(INSTRUCTIONS, result.problem) ? result.problem : "other";
     return { verdict: { allow: false, problem } };
   }

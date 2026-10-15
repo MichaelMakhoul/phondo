@@ -38,7 +38,7 @@ Gemini already has the rule ("NAME COLLECTION IS MANDATORY … repeat the name b
 - **Not checked:** wording, optional fields (email, notes), the phone number (caller ID is fine), and the practitioner unless the caller asked for one.
 
 ### What comes back
-The answer is strict JSON, either `{"verdict":"allow"}` or `{"verdict":"fix","problem":"name_unconfirmed|name_mismatch|date_mismatch|not_agreed"}`. Claude is asked for a problem code only, never for wording.
+The answer is strict JSON, either `{"verdict":"allow","problem":"none"}` or `{"verdict":"fix","problem":"name_unconfirmed|name_mismatch|date_mismatch|not_agreed"}`. Claude is asked for a problem code only, never for wording. The request uses structured outputs (`output_config.format`, a `json_schema`), so the reply can only be `{verdict, problem}`: with thinking off, Haiku 5.5 otherwise wrote its reasoning before the JSON, and those replies were unreadable and failed open (8 of 18 in the live replay).
 
 - **allow:** the write runs exactly as it does today.
 - **fix:** nothing is written. Gemini gets the tool result `NOT DONE YET — nothing was saved. <instruction> Then call <tool> again with the confirmed details.` The `<instruction>` is **fixed server-side text chosen by the problem code** (an unrecognised code becomes `other`). For example, for `name_unconfirmed`: *"Read back the name you were about to save — spell the surname letter by letter — and ask the caller to confirm it. Use their correction if they give one."*
