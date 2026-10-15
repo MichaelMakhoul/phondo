@@ -1456,15 +1456,17 @@ describe("SCRUM-587: customer paths through hunks the owner work edited, run for
     assert.equal(calls.find((c) => c[0] === "completeCallRecord")[2].actionTaken, "owner_call");
   });
 
-  it("Gemini turn-complete: a customer turn right after a tool result still reaches the Tier-2 validator (with the tool, its result and what was said)", async () => {
+  it("Gemini turn-complete: a customer turn right after a tool result still reaches the Tier-2 validator (with the tool, its result, what was said and the business's timezone)", async () => {
     const customer = makeSession({ owner: false });
+    // SCRUM-593: not the Sydney fallback, so only the org's own zone can satisfy the assertion below.
+    customer.organization = { timezone: "America/New_York" };
     customer._lastToolResult = { name: "check_availability", message: "9 a.m. or 10 a.m. on Friday.", at: Date.now() };
     const c = makeGeminiCallbacks(customer);
     c.cbs.onTranscriptOut("We have 9 a.m. or 10 a.m. on Friday.");
     c.cbs.onTurnComplete();
     const v = c.calls.filter((x) => x[0] === "validateToolResponse");
     assert.equal(v.length, 1);
-    assert.deepEqual(v[0][1], { toolName: "check_availability", toolResult: "9 a.m. or 10 a.m. on Friday.", spokenResponse: "We have 9 a.m. or 10 a.m. on Friday." });
+    assert.deepEqual(v[0][1], { toolName: "check_availability", toolResult: "9 a.m. or 10 a.m. on Friday.", spokenResponse: "We have 9 a.m. or 10 a.m. on Friday.", timezone: "America/New_York" });
     assert.equal(customer._lastToolResult, null, "consumed");
   });
 

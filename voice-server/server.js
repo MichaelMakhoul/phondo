@@ -3119,6 +3119,7 @@ wss.on("connection", (twilioWs) => {
                           toolName: lastTool.name,
                           toolResult: lastTool.message,
                           spokenResponse: aiTurnText,
+                          timezone: session.organization?.timezone || "Australia/Sydney", // SCRUM-593
                         }).then((validation) => {
                           if (!validation.accurate && session?.geminiSession?.sendText) {
                             console.warn(`[Tier2Validator] Discrepancy in ${lastTool.name}: ${DEBUG_TRANSCRIPTS ? validation.discrepancy : "[redacted]"}. callSid=${session.callSid}`);
