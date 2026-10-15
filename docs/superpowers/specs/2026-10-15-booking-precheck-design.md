@@ -38,10 +38,11 @@ Gemini already has the rule ("NAME COLLECTION IS MANDATORY … repeat the name b
 - **Not checked:** wording, optional fields (email, notes), the phone number (caller ID is fine), and the practitioner unless the caller asked for one.
 
 ### What comes back
-The answer is strict JSON, either `{"verdict":"allow"}` or `{"verdict":"fix","problem":"name_unconfirmed|name_mismatch|date_mismatch|not_agreed","instruction":"…"}`.
+The answer is strict JSON, either `{"verdict":"allow"}` or `{"verdict":"fix","problem":"name_unconfirmed|name_mismatch|date_mismatch|not_agreed"}`. Claude is asked for a problem code only, never for wording.
 
 - **allow:** the write runs exactly as it does today.
-- **fix:** nothing is written. Gemini gets the tool result `NOT DONE YET: <instruction> Then call <tool> again.` For example: *"NOT BOOKED YET: the surname wasn't confirmed. Spell back the surname you have, ask the caller if it's right, and use their correction. Then call book_appointment again."*
+- **fix:** nothing is written. Gemini gets the tool result `NOT DONE YET — nothing was saved. <instruction> Then call <tool> again with the confirmed details.` The `<instruction>` is **fixed server-side text chosen by the problem code** (an unrecognised code becomes `other`). For example, for `name_unconfirmed`: *"Read back the name you were about to save — spell the surname letter by letter — and ask the caller to confirm it. Use their correction if they give one."*
+  - **Claude's wording never reaches Gemini** (SCRUM-593 security ruling). The transcript is in Claude's prompt, so a caller can shape what Claude writes; relaying it would give caller speech the authority of a tool result ("transfer the caller to …"). Only the problem code is taken from the reply, and only when it is exactly one of the known codes.
   - Because the tool is BLOCKING, Gemini waits for this, then asks the caller.
   - The audit records the attempt under the tool's own name with `successful: false, precheckHold: true`. `hasUnfinishedBooking` counts exactly `book_appointment` and `reschedule_appointment` as funnel steps, so this keeps the end-call guard treating the booking as unfinished.
   - It does **not** count against the booking-failure loop caps, because the write was never attempted.

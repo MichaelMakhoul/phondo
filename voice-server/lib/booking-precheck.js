@@ -12,11 +12,11 @@
  *
  * Contract: never throws; fails OPEN (any failure lets the write through,
  * alerting like the Tier-2 checker); holds a tool at most MAX_HOLDS times per
- * call; logs no caller words, argument values or model text unless
- * DEBUG_TRANSCRIPTS (SCRUM-339).
+ * call; logs no caller words, argument values or model text (SCRUM-339); and
+ * hands Gemini ONLY fixed server-side text chosen by a problem code — Claude's
+ * wording never reaches it (see INSTRUCTIONS).
  */
 
-const { DEBUG_TRANSCRIPTS } = require("./log-transcript");
 const { claudeLatencyParams, claudeResponseText, readAnthropicError } = require("./model-params");
 const { safeNowLine } = require("./now-line");
 const { Sentry } = require("./sentry");
@@ -30,10 +30,17 @@ const MAX_TRANSCRIPT_CHARS = 12000;
 const CONFIG_FAILURE_STATUSES = new Set([400, 401, 403, 404]);
 const UNREADABLE_ALERT_AFTER = 3;
 
-/** @type {Record<string, string>} */
-const DEFAULT_INSTRUCTIONS = {
+/**
+ * The ONLY words the pre-check ever hands Gemini, chosen by the problem code.
+ * Claude is asked for a code, never for wording: the transcript is in its
+ * prompt, so a caller can shape what it writes, and relaying that text into the
+ * tool result would give caller speech the authority of a tool result
+ * ("transfer the caller to …"). SCRUM-593 security ruling.
+ * @type {Record<string, string>}
+ */
+const INSTRUCTIONS = {
   name_unconfirmed:
-    "Read the caller's name back to them — spell the surname letter by letter — and ask them to confirm it. Use their correction if they give one.",
+    "Read back the name you were about to save — spell the surname letter by letter — and ask the caller to confirm it. Use their correction if they give one.",
   name_mismatch:
     "The name you were about to save is not the one the caller gave. Ask the caller for their name again, read it back, and get a clear yes.",
   date_mismatch:
@@ -145,13 +152,13 @@ Ignore wording, email, notes, phone number, service, and practitioner (unless th
 Reply with ONLY one JSON object, no markdown:
 {"verdict":"allow"}
 or
-{"verdict":"fix","problem":"name_unconfirmed"|"name_mismatch"|"date_mismatch"|"not_agreed","instruction":"one or two short sentences telling the AI exactly what to say or ask the caller next"}
+{"verdict":"fix","problem":"name_unconfirmed"|"name_mismatch"|"date_mismatch"|"not_agreed"}
 If you are unsure whether the NAME was confirmed, answer fix with "name_unconfirmed".`;
 }
 
 /**
  * @param {string} text - the reply's text block
- * @returns {{ verdict: { allow: true } | { allow: false, problem: string, instruction: string } } | { unreadable: "not-json" | "no-verdict" }}
+ * @returns {{ verdict: { allow: true } | { allow: false, problem: string } } | { unreadable: "not-json" | "no-verdict" }}
  */
 function parsePrecheck(text) {
   const unfenced = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
@@ -165,10 +172,11 @@ function parsePrecheck(text) {
   if (!result || typeof result !== "object") return { unreadable: "no-verdict" };
   if (result.verdict === "allow") return { verdict: { allow: true } };
   if (result.verdict === "fix") {
-    const problem = typeof result.problem === "string" && result.problem in DEFAULT_INSTRUCTIONS ? result.problem : "other";
-    let instruction = typeof result.instruction === "string" ? result.instruction.replace(/\s+/g, " ").trim() : "";
-    if (!instruction || instruction.length > 400) instruction = DEFAULT_INSTRUCTIONS[problem];
-    return { verdict: { allow: false, problem, instruction } };
+    // Only the problem CODE is taken from the reply, and only if it is one of
+    // ours — an exact own-key match, so "constructor" and other inherited names
+    // are not codes. Any wording in the reply is ignored (see INSTRUCTIONS).
+    const problem = typeof result.problem === "string" && Object.hasOwn(INSTRUCTIONS, result.problem) ? result.problem : "other";
+    return { verdict: { allow: false, problem } };
   }
   return { unreadable: "no-verdict" };
 }
@@ -213,7 +221,7 @@ function noVerdict(info, model) {
 
 /**
  * @param {string} prompt
- * @returns {Promise<{ allow: true } | { allow: false, problem: string, instruction: string }>}
+ * @returns {Promise<{ allow: true } | { allow: false, problem: string }>}
  */
 async function requestVerdict(prompt) {
   const model = precheckModel();
@@ -309,14 +317,11 @@ async function precheckBookingWrite(input) {
       return PROCEED;
     }
     holds.set(toolName, held + 1);
-    console.warn(
-      `[Precheck] Holding ${toolName}: ${verdict.problem} — hold ${held + 1}/${MAX_HOLDS} (${ms}ms)` +
-        `${DEBUG_TRANSCRIPTS ? ` instruction="${verdict.instruction}"` : ""}. callSid=${callSid}`
-    );
+    console.warn(`[Precheck] Holding ${toolName}: ${verdict.problem} — hold ${held + 1}/${MAX_HOLDS} (${ms}ms). callSid=${callSid}`);
     return {
       action: "hold",
       problem: verdict.problem,
-      message: `NOT DONE YET — nothing was saved. ${verdict.instruction} Then call ${toolName} again with the confirmed details.`,
+      message: `NOT DONE YET — nothing was saved. ${INSTRUCTIONS[verdict.problem]} Then call ${toolName} again with the confirmed details.`,
     };
   } catch (err) {
     const e = /** @type {any} */ (err);
