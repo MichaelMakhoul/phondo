@@ -28,16 +28,18 @@ const { Sentry } = require("./sentry");
  *   not apply: reschedule's `name` is "for identity verification only"
  *   (services/tool-executor.js), and update_appointment's `datetime` picks this
  *   call's booking (its time changes go through reschedule, SCRUM-558).
+ * - practitioner: the write saves practitioner_id, which goes to Claude as the
+ *   practitioner's NAME (see practitionerName), never the opaque id. Not for
+ *   update_appointment, which cannot change the practitioner.
  * Everything else stays out of the prompt: phone, email, free-text notes,
- * service ids, codes and practitioner ids (opaque ids Claude cannot compare with
- * "Dr Smith"). Less PII sent offshore, and no free text for the checker to
- * misjudge or be steered by.
- * @type {Record<string, { saved: string[], identify: string[] }>}
+ * service ids, codes and the raw practitioner id. Less PII sent offshore, and no
+ * free text for the checker to misjudge or be steered by.
+ * @type {Record<string, { saved: string[], identify: string[], practitioner: boolean }>}
  */
 const DECISION_FIELDS = {
-  book_appointment: { saved: ["first_name", "last_name", "datetime"], identify: [] },
-  reschedule_appointment: { saved: ["new_datetime", "first_name", "last_name"], identify: ["name", "current_datetime", "current_date"] },
-  update_appointment: { saved: ["first_name", "last_name"], identify: ["datetime"] },
+  book_appointment: { saved: ["first_name", "last_name", "datetime"], identify: [], practitioner: true },
+  reschedule_appointment: { saved: ["new_datetime", "first_name", "last_name"], identify: ["name", "current_datetime", "current_date"], practitioner: true },
+  update_appointment: { saved: ["first_name", "last_name"], identify: ["datetime"], practitioner: false },
 };
 const PRECHECKED_TOOLS = new Set(Object.keys(DECISION_FIELDS));
 const MAX_HOLDS = 2;
@@ -46,6 +48,8 @@ const PRECHECK_MAX_TOKENS = 300;
 /** Sonnet/Opus 5.5 cannot disable thinking, and thinking counts against max_tokens: leave room for it. */
 const PRECHECK_MAX_TOKENS_WITH_THINKING = 1024;
 const MAX_TRANSCRIPT_CHARS = 12000;
+/** A staff name is quoted at most this many code points long. */
+const MAX_PRACTITIONER_NAME = 80;
 /** A bad PRECHECK_MODEL (404), a refused request field (400) or a bad key (401/403) fail every check. */
 const CONFIG_FAILURE_STATUSES = new Set([400, 401, 403, 404]);
 const UNREADABLE_ALERT_AFTER = 3;
@@ -174,15 +178,57 @@ function pickArgs(args, keys) {
 }
 
 /**
+ * Org-controlled free text (a staff name, from the dashboard or Cliniko) made
+ * safe to quote in the prompt: one line, bounded. Line breaks and other
+ * controls (C0, DEL, C1 incl. NEL, the Unicode line/paragraph separators)
+ * become one space; characters with no visible form (zero-width, bidi, tags,
+ * lone surrogates) are dropped; the cut is by code point. The treatment
+ * lib/owner-prompt.js gives org names, kept local like that one (prompt-
+ * builder's sanitizeForPrompt is private and weaker).
+ * @param {unknown} value
+ * @returns {string}
+ */
+function promptSafeName(value) {
+  if (typeof value !== "string") return "";
+  const text = value
+    .replace(/[\p{Cc}\p{Zl}\p{Zp}]+/gu, " ")
+    .replace(/[\p{Cf}\p{Cs}\p{Default_Ignorable_Code_Point}]/gu, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return Array.from(text).slice(0, MAX_PRACTITIONER_NAME).join("").trim();
+}
+
+/**
+ * The practitioner a write will save, by name. The model takes practitioner_id
+ * from the PRACTITIONERS ON STAFF list built from this call's schedule snapshot,
+ * so the same list turns it back into the name the caller would have asked for.
+ * An id it cannot resolve (no snapshot, as for a Cliniko org; an unknown id; a
+ * nameless entry) gives "": the field is left out and the check runs as usual.
+ * @param {Record<string, unknown> | undefined} args
+ * @param {unknown} practitioners - session.scheduleSnapshot.practitioners: [{ id, name, ... }]
+ * @returns {string}
+ */
+function practitionerName(args, practitioners) {
+  const id = args && typeof args.practitioner_id === "string" ? args.practitioner_id.trim() : "";
+  if (!id || !Array.isArray(practitioners)) return "";
+  const entry = practitioners.find((/** @type {any} */ p) => p && typeof p === "object" && p.id === id);
+  return entry ? promptSafeName(entry.name) : "";
+}
+
+/**
  * The decision fields of a tool call's args (see DECISION_FIELDS): what it will
  * save, and what only identifies the existing appointment.
  * @param {string} toolName - one of PRECHECKED_TOOLS
  * @param {Record<string, unknown> | undefined} args
+ * @param {unknown} [practitioners] - the call's staff list, to name the practitioner being saved
  * @returns {{ saved: Record<string, unknown>, identify: Record<string, unknown> }}
  */
-function decisionArgs(toolName, args) {
+function decisionArgs(toolName, args, practitioners) {
   const fields = DECISION_FIELDS[toolName];
-  return { saved: pickArgs(args, fields.saved), identify: pickArgs(args, fields.identify) };
+  const saved = pickArgs(args, fields.saved);
+  const practitioner = fields.practitioner ? practitionerName(args, practitioners) : "";
+  if (practitioner) saved.practitioner = practitioner;
+  return { saved, identify: pickArgs(args, fields.identify) };
 }
 
 /**
@@ -270,7 +316,7 @@ Rules — check ONLY these:
 1. NAME (only if DETAILS THAT WILL BE SAVED contain a first or last name): it must be the name the caller gave. After the caller last gave or corrected it, the AI must have ${readBack} and the caller must have clearly agreed (yes, that's right, correct — in any language). If the caller spelled it, the saved spelling must match their letters. A name the caller never clearly gave or never confirmed is NOT confirmed.
 2. DATE/TIME (only a date or time in DETAILS THAT WILL BE SAVED): it must be the slot the caller agreed to. Work out "today", "tomorrow" and weekday names from NOW.
 3. AGREEMENT: the caller must have asked for or agreed to this booking or change — not only asked what is free.
-Ignore wording, email, notes, phone number, service and practitioner.
+Ignore wording, email, notes, phone number, service, and practitioner (unless the caller asked for one practitioner and a different one is being saved).
 
 Answer with "verdict" and "problem" ("none" when you allow). If you are unsure whether the NAME was confirmed, answer fix with "name_unconfirmed".`;
 }
@@ -396,6 +442,7 @@ async function requestVerdict(prompt) {
  *   pendingUser?: string,
  *   pendingAi?: string,
  *   getPending?: () => { user?: unknown, ai?: unknown },
+ *   practitioners?: unknown,
  *   timezone?: string,
  *   nameMethod?: string,
  *   holds: Map<string, number>,
@@ -456,7 +503,7 @@ async function precheckBookingWrite(input) {
     // and asking could only produce a false hold. Not a hold and not a failure: no request, no
     // count, no page. It comes before the hold cap, so a capped tool with nothing to check is not
     // reported as let through.
-    const { saved, identify } = decisionArgs(toolName, input.args);
+    const { saved, identify } = decisionArgs(toolName, input.args, input.practitioners);
     if (Object.keys(saved).length === 0) {
       console.log(`[Precheck] skip ${toolName} (no name or date to save). callSid=${callSid}`);
       return PROCEED;
@@ -529,6 +576,8 @@ async function applyBookingPrecheck(session, toolCall, turn) {
       pendingUser: turn.pendingUser,
       pendingAi: turn.pendingAi,
       getPending: turn.getPending,
+      // The staff list the model took practitioner_id from (PRACTITIONERS ON STAFF).
+      practitioners: session.scheduleSnapshot?.practitioners,
       timezone: session.organization?.timezone,
       nameMethod: nameVerificationMethod(turn.promptConfig),
       holds: session.precheckHolds,

@@ -155,8 +155,8 @@ describe("the request contract", () => {
   });
 
   // Less PII offshore, and no free text (notes) for the checker to misjudge or be steered by. Each
-  // tool sends its OWN decision fields (R22), and never a practitioner id: an opaque id Claude cannot
-  // compare with "Dr Smith" (R25).
+  // tool sends its OWN decision fields (R22). The practitioner goes as a NAME from the call's own staff
+  // list (R28), never the id: an opaque id Claude cannot compare with "Dr Smith".
   it("sends Claude only each tool's decision fields: no phone, email, notes, service, code or practitioner id", async () => {
     const m = load();
     const args = {
@@ -175,16 +175,16 @@ describe("the request contract", () => {
       confirmation_code: "123456",
     };
     const expected = {
-      book_appointment: ['{"first_name":"Michael","last_name":"Makhlouf","datetime":"2026-10-15T09:00"}', null],
+      book_appointment: ['{"first_name":"Michael","last_name":"Makhlouf","datetime":"2026-10-15T09:00","practitioner":"Dr Sarah Lee"}', null],
       reschedule_appointment: [
-        '{"new_datetime":"2026-10-16T10:00","first_name":"Michael","last_name":"Makhlouf"}',
+        '{"new_datetime":"2026-10-16T10:00","first_name":"Michael","last_name":"Makhlouf","practitioner":"Dr Sarah Lee"}',
         '{"name":"Michael Makhlouf","current_datetime":"2026-10-14T09:00","current_date":"2026-10-14"}',
       ],
       update_appointment: ['{"first_name":"Michael","last_name":"Makhlouf"}', '{"datetime":"2026-10-15T09:00"}'],
     };
     for (const [toolName, [saved, identify]] of Object.entries(expected)) {
       const seen = replyText(ALLOW);
-      await m.precheckBookingWrite(input({ toolName, args }));
+      await m.precheckBookingWrite(input({ toolName, args, practitioners: [{ id: "prac-7", name: "Dr Sarah Lee" }] }));
       const body = JSON.stringify(seen.body);
       for (const leaked of ["+61400111222", "private@example.com", "SECRET-NOTE", "4471", "svc-9", "123456", "prac-7", "practitioner_id"]) {
         assert.ok(!body.includes(leaked), `${toolName}: ${leaked} is not sent`);
@@ -424,6 +424,26 @@ describe("server.js glue mapping", () => {
     assert.match(prompt, /CALLER: I need a plumber tomorrow morning\./);
     assert.match(prompt, /CALLER: Two pm works\.\nAI: Moving it now\.$/m);
     assert.ok(logs.some((l) => /callSid=CAglue/.test(l)));
+  });
+
+  // R28: the practitioner is resolved from the staff list the call itself carries — the schedule
+  // snapshot the model took the id from (PRACTITIONERS ON STAFF). No snapshot, no name; never a failure.
+  it("resolves the practitioner's name from the call's own schedule snapshot", async () => {
+    const m = load();
+    let seen = replyText(ALLOW);
+    const s = new CallSession("CAstaff");
+    s.organization = { timezone: "Australia/Sydney" };
+    s.scheduleSnapshot = { slots: {}, appointments: [], practitioners: [{ id: "prac-7", name: "Dr Sarah Lee", serviceTypeIds: [] }] };
+    await m.applyBookingPrecheck(s, { name: "book_appointment", args: { ...ARGS, practitioner_id: "prac-7" } }, { audit: true });
+    assert.match(seen.body.messages[0].content, /^DETAILS THAT WILL BE SAVED: \{"first_name":"Michael","last_name":"Makhlouf","datetime":"2026-10-15T09:00","practitioner":"Dr Sarah Lee"\}$/m);
+    assert.doesNotMatch(JSON.stringify(seen.body), /prac-7/);
+
+    seen = replyText(ALLOW);
+    const noSnapshot = new CallSession("CAcliniko"); // a Cliniko org carries no snapshot
+    noSnapshot.organization = { timezone: "Australia/Sydney" };
+    assert.equal(await m.applyBookingPrecheck(noSnapshot, { name: "book_appointment", args: { ...ARGS, practitioner_id: "prac-7" } }, { audit: true }), null);
+    assert.match(seen.body.messages[0].content, /^DETAILS THAT WILL BE SAVED: \{"first_name":"Michael","last_name":"Makhlouf","datetime":"2026-10-15T09:00"\}$/m);
+    assert.ok(!logs.some((l) => /ALERT|No usable verdict/.test(l)), "an unresolvable practitioner is not a failure");
   });
 
   // R21: the handlers pass a getter over their live pending-transcript buffers, so a fix can be asked
