@@ -21,7 +21,25 @@ const { claudeLatencyParams, claudeResponseText, readAnthropicError } = require(
 const { safeNowLine } = require("./now-line");
 const { Sentry } = require("./sentry");
 
-const PRECHECKED_TOOLS = new Set(["book_appointment", "reschedule_appointment", "update_appointment"]);
+/**
+ * The args the check judges, per tool, in the order Claude sees them.
+ * - saved: what the write will store. Rules 1 (name) and 2 (date/time) apply.
+ * - identify: what only finds the existing appointment, so rules 1 and 2 do
+ *   not apply: reschedule's `name` is "for identity verification only"
+ *   (services/tool-executor.js), and update_appointment's `datetime` picks this
+ *   call's booking (its time changes go through reschedule, SCRUM-558).
+ * Everything else stays out of the prompt: phone, email, free-text notes,
+ * service ids, codes and practitioner ids (opaque ids Claude cannot compare with
+ * "Dr Smith"). Less PII sent offshore, and no free text for the checker to
+ * misjudge or be steered by.
+ * @type {Record<string, { saved: string[], identify: string[] }>}
+ */
+const DECISION_FIELDS = {
+  book_appointment: { saved: ["first_name", "last_name", "datetime"], identify: [] },
+  reschedule_appointment: { saved: ["new_datetime", "first_name", "last_name"], identify: ["name", "current_datetime", "current_date"] },
+  update_appointment: { saved: ["first_name", "last_name"], identify: ["datetime"] },
+};
+const PRECHECKED_TOOLS = new Set(Object.keys(DECISION_FIELDS));
 const MAX_HOLDS = 2;
 const PRECHECK_TIMEOUT_MS = 3000;
 const PRECHECK_MAX_TOKENS = 300;
@@ -138,21 +156,17 @@ function nameVerificationMethod(promptConfig) {
   return v === "spell-out" || v === "read-back-characters" ? v : "repeat-confirm";
 }
 
-/** The booking args the check needs: who, when, and which practitioner. */
-const DECISION_ARG_KEYS = ["first_name", "last_name", "name", "datetime", "new_datetime", "current_datetime", "current_date", "practitioner_id"];
-
 /**
- * Just the decision fields of a tool call's args, in a fixed order. Phone, email,
- * free-text notes, service ids and codes stay out of the prompt: less PII sent
- * offshore, and no free text for the checker to misjudge or be steered by.
+ * Just these keys of a tool call's args, in this order.
  * @param {Record<string, unknown> | undefined} args
+ * @param {string[]} keys
  * @returns {Record<string, unknown>}
  */
-function decisionArgs(args) {
+function pickArgs(args, keys) {
   /** @type {Record<string, unknown>} */
   const out = {};
   if (args && typeof args === "object") {
-    for (const key of DECISION_ARG_KEYS) {
+    for (const key of keys) {
       if (Object.hasOwn(args, key)) out[key] = args[key];
     }
   }
@@ -160,8 +174,20 @@ function decisionArgs(args) {
 }
 
 /**
+ * The decision fields of a tool call's args (see DECISION_FIELDS): what it will
+ * save, and what only identifies the existing appointment.
+ * @param {string} toolName - one of PRECHECKED_TOOLS
+ * @param {Record<string, unknown> | undefined} args
+ * @returns {{ saved: Record<string, unknown>, identify: Record<string, unknown> }}
+ */
+function decisionArgs(toolName, args) {
+  const fields = DECISION_FIELDS[toolName];
+  return { saved: pickArgs(args, fields.saved), identify: pickArgs(args, fields.identify) };
+}
+
+/**
  * The call so far as CALLER/AI lines: system prompt excluded, the turn still
- * in progress appended (Gemini adds it to session.messages only at
+ * in progress appended (Gemini adds it to the transcript only at
  * turnComplete). Keeps the latest MAX_TRANSCRIPT_CHARS.
  * @param {Array<{ role?: string, content?: unknown }>} messages
  * @param {string} [pendingUser]
@@ -190,25 +216,29 @@ function conversationText(messages, pendingUser, pendingAi) {
 }
 
 /**
- * @param {{ toolName: string, args: Record<string, unknown>, conversation: string, now: string, nameMethod: string }} p
+ * @param {{ toolName: string, saved: Record<string, unknown>, identify: Record<string, unknown>, conversation: string, now: string, nameMethod: string }} p
  * @returns {string}
  */
-function buildPrecheckPrompt({ toolName, args, conversation, now, nameMethod }) {
+function buildPrecheckPrompt({ toolName, saved, identify, conversation, now, nameMethod }) {
   const readBack = METHOD_WORDING[nameMethod] || METHOD_WORDING["repeat-confirm"];
+  // A new booking identifies nothing: no section, rather than an empty one about an "existing appointment".
+  const identifyLine = Object.keys(identify).length
+    ? `\nDETAILS THAT ONLY IDENTIFY THE EXISTING APPOINTMENT (rules 1 and 2 do NOT apply to these): ${JSON.stringify(identify)}`
+    : "";
   return `You check a phone receptionist AI's booking change BEFORE it is saved. The AI is about to call ${toolName} with the details below. Decide whether the details are what the caller actually said and confirmed.
 
 NOW (the business's timezone): ${now}
 TOOL: ${toolName}
-DETAILS THE AI WANTS TO SAVE: ${JSON.stringify(args)}
+DETAILS THAT WILL BE SAVED: ${JSON.stringify(saved)}${identifyLine}
 
 CONVERSATION SO FAR (machine transcription of a phone call: CALLER lines can contain mishearings, and a spelled name can appear as separate or missing letters):
 ${conversation || "(nothing transcribed yet)"}
 
 Rules — check ONLY these:
-1. NAME (only if the details contain a first or last name): it must be the name the caller gave. After the caller last gave or corrected it, the AI must have ${readBack} and the caller must have clearly agreed (yes, that's right, correct — in any language). If the caller spelled it, the saved spelling must match their letters. A name the caller never clearly gave or never confirmed is NOT confirmed.
-2. DATE/TIME (datetime, new_datetime): it must be the slot the caller agreed to. Work out "today", "tomorrow" and weekday names from NOW.
+1. NAME (only if DETAILS THAT WILL BE SAVED contain a first or last name): it must be the name the caller gave. After the caller last gave or corrected it, the AI must have ${readBack} and the caller must have clearly agreed (yes, that's right, correct — in any language). If the caller spelled it, the saved spelling must match their letters. A name the caller never clearly gave or never confirmed is NOT confirmed.
+2. DATE/TIME (only a date or time in DETAILS THAT WILL BE SAVED): it must be the slot the caller agreed to. Work out "today", "tomorrow" and weekday names from NOW.
 3. AGREEMENT: the caller must have asked for or agreed to this booking or change — not only asked what is free.
-Ignore wording, email, notes, phone number, service, and practitioner (unless the caller asked for one practitioner and a different one is being saved).
+Ignore wording, email, notes, phone number, service and practitioner.
 
 Answer with "verdict" and "problem" ("none" when you allow). If you are unsure whether the NAME was confirmed, answer fix with "name_unconfirmed".`;
 }
@@ -324,7 +354,7 @@ async function requestVerdict(prompt) {
 }
 
 /**
- * Pre-check one tool call. Never throws. A call with no name or date fields (an
+ * Pre-check one tool call. Never throws. A call that saves no name or date (an
  * update of only phone, email or notes) proceeds without asking Claude.
  * @param {{
  *   toolName: string,
@@ -347,13 +377,14 @@ async function precheckBookingWrite(input) {
   if (mode === "off") return PROCEED;
   const started = Date.now();
   try {
-    // Nothing to check: an update that changes only the phone, email or notes carries no name and
-    // no date, so there is nothing to compare with the call, and asking could only produce a false
-    // hold. Not a hold and not a failure: no request, no count, no page. It comes before the hold
-    // cap, so a capped tool with nothing to check is not reported as let through.
-    const details = decisionArgs(input.args);
-    if (Object.keys(details).length === 0) {
-      console.log(`[Precheck] skip ${toolName} (no name/date fields). callSid=${callSid}`);
+    // Nothing to check: a call that saves no name and no date (an update of only the phone, email
+    // or notes, even one that names its booking's datetime) has nothing to compare with the call,
+    // and asking could only produce a false hold. Not a hold and not a failure: no request, no
+    // count, no page. It comes before the hold cap, so a capped tool with nothing to check is not
+    // reported as let through.
+    const { saved, identify } = decisionArgs(toolName, input.args);
+    if (Object.keys(saved).length === 0) {
+      console.log(`[Precheck] skip ${toolName} (no name or date to save). callSid=${callSid}`);
       return PROCEED;
     }
     const held = holds.get(toolName) || 0;
@@ -369,7 +400,8 @@ async function precheckBookingWrite(input) {
     const now = safeNowLine(input.timezone, input.now);
     const prompt = buildPrecheckPrompt({
       toolName,
-      args: details,
+      saved,
+      identify,
       conversation: conversationText(input.messages, input.pendingUser, input.pendingAi),
       now,
       nameMethod: input.nameMethod || "repeat-confirm",
@@ -424,7 +456,10 @@ async function applyBookingPrecheck(session, toolCall, turn) {
     const result = await precheckBookingWrite({
       toolName: toolCall.name,
       args: toolCall.args || {},
-      messages: session.messages,
+      // The whole call: session.messages keeps only the last 20, and on a longer call the name
+      // read-back and the caller's yes fall out of it (a correct booking then reads as unconfirmed).
+      // restoreFrom (a failed transfer's reconnect) restores only the windowed copy, hence the fallback.
+      messages: session.fullTranscriptMessages?.length ? session.fullTranscriptMessages : session.messages,
       pendingUser: turn.pendingUser,
       pendingAi: turn.pendingAi,
       timezone: session.organization?.timezone,

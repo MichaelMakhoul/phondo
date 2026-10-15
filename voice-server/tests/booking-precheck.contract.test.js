@@ -154,10 +154,11 @@ describe("the request contract", () => {
     }
   });
 
-  // Less PII offshore, and no free text (notes) for the checker to misjudge or be steered by.
-  it("sends Claude only the decision fields: no phone, email, notes or other free text", async () => {
+  // Less PII offshore, and no free text (notes) for the checker to misjudge or be steered by. Each
+  // tool sends its OWN decision fields (R22), and never a practitioner id: an opaque id Claude cannot
+  // compare with "Dr Smith" (R25).
+  it("sends Claude only each tool's decision fields: no phone, email, notes, service, code or practitioner id", async () => {
     const m = load();
-    const seen = replyText(ALLOW);
     const args = {
       first_name: "Michael",
       last_name: "Makhlouf",
@@ -173,15 +174,29 @@ describe("the request contract", () => {
       service_type_id: "svc-9",
       confirmation_code: "123456",
     };
-    await m.precheckBookingWrite(input({ args }));
-    const body = JSON.stringify(seen.body);
-    for (const leaked of ["+61400111222", "private@example.com", "SECRET-NOTE", "4471", "svc-9", "123456"]) {
-      assert.ok(!body.includes(leaked), `${leaked} is not sent`);
+    const expected = {
+      book_appointment: ['{"first_name":"Michael","last_name":"Makhlouf","datetime":"2026-10-15T09:00"}', null],
+      reschedule_appointment: [
+        '{"new_datetime":"2026-10-16T10:00","first_name":"Michael","last_name":"Makhlouf"}',
+        '{"name":"Michael Makhlouf","current_datetime":"2026-10-14T09:00","current_date":"2026-10-14"}',
+      ],
+      update_appointment: ['{"first_name":"Michael","last_name":"Makhlouf"}', '{"datetime":"2026-10-15T09:00"}'],
+    };
+    for (const [toolName, [saved, identify]] of Object.entries(expected)) {
+      const seen = replyText(ALLOW);
+      await m.precheckBookingWrite(input({ toolName, args }));
+      const body = JSON.stringify(seen.body);
+      for (const leaked of ["+61400111222", "private@example.com", "SECRET-NOTE", "4471", "svc-9", "123456", "prac-7", "practitioner_id"]) {
+        assert.ok(!body.includes(leaked), `${toolName}: ${leaked} is not sent`);
+      }
+      const prompt = seen.body.messages[0].content;
+      const lines = prompt.split("\n").filter((l) => /^DETAILS THAT /.test(l));
+      assert.deepEqual(
+        lines,
+        [`DETAILS THAT WILL BE SAVED: ${saved}`, ...(identify ? [`DETAILS THAT ONLY IDENTIFY THE EXISTING APPOINTMENT (rules 1 and 2 do NOT apply to these): ${identify}`] : [])],
+        toolName
+      );
     }
-    assert.match(
-      seen.body.messages[0].content,
-      /DETAILS THE AI WANTS TO SAVE: \{"first_name":"Michael","last_name":"Makhlouf","name":"Michael Makhlouf","datetime":"2026-10-15T09:00","new_datetime":"2026-10-16T10:00","current_datetime":"2026-10-14T09:00","current_date":"2026-10-14","practitioner_id":"prac-7"\}/
-    );
   });
 
   // The line the whole "fail open on slow" promise rests on: without a timeout a
@@ -209,7 +224,7 @@ describe("the request contract", () => {
     const seen = replyText(ALLOW);
     await m.precheckBookingWrite(input({ messages: [], pendingUser: "", pendingAi: "", nameMethod: undefined }));
     const prompt = seen.body.messages[0].content;
-    assert.match(prompt, /DETAILS THE AI WANTS TO SAVE: \{"first_name"/);
+    assert.match(prompt, /DETAILS THAT WILL BE SAVED: \{"first_name"/);
     assert.match(prompt, /\(nothing transcribed yet\)/);
     assert.match(prompt, /the AI must have repeated it back/);
   });
@@ -403,12 +418,65 @@ describe("server.js glue mapping", () => {
     );
     const prompt = seen.body.messages[0].content;
     assert.match(prompt, /TOOL: reschedule_appointment/);
-    assert.match(prompt, /DETAILS THE AI WANTS TO SAVE: \{"new_datetime":"2026-10-16T14:00"\}/);
+    assert.match(prompt, /DETAILS THAT WILL BE SAVED: \{"new_datetime":"2026-10-16T14:00"\}/);
     assert.match(prompt, /\(America\/New_York\)/);
     assert.match(prompt, /the AI must have spelled it back letter by letter/);
     assert.match(prompt, /CALLER: I need a plumber tomorrow morning\./);
     assert.match(prompt, /CALLER: Two pm works\.\nAI: Moving it now\.$/m);
     assert.ok(logs.some((l) => /callSid=CAglue/.test(l)));
+  });
+
+  // R19: session.messages is a sliding window (system prompt + the last 20). On a longer call the
+  // name read-back and the caller's "yes" fall out of it, and the check then holds a CORRECT booking
+  // as unconfirmed. The check reads the unwindowed transcript instead.
+  it("sees the whole call, not the 20-message window: an early name confirmation still reaches Claude", async () => {
+    const m = load();
+    const seen = replyText(ALLOW);
+    const s = new CallSession("CAlong");
+    s.organization = { timezone: "Australia/Sydney" };
+    s.addMessage("system", "SECRET SYSTEM PROMPT");
+    s.addMessage("assistant", "Can I get your surname?");
+    s.addMessage("user", "Makhoul. M-A-K-H-O-U-L.");
+    s.addMessage("assistant", "So that's M-A-K-H-O-U-L, is that right?");
+    s.addMessage("user", "Yes, that's right.");
+    for (let i = 1; i <= 10; i++) {
+      s.addMessage("assistant", `Question ${i} about the job?`);
+      s.addMessage("user", `Answer ${i}.`);
+    }
+    assert.ok(!s.messages.some((x) => /M-A-K-H-O-U-L, is that right/.test(String(x.content))), "precondition: the window has dropped the read-back");
+    await m.applyBookingPrecheck(s, { name: "book_appointment", args: ARGS }, { pendingUser: "", pendingAi: "Booking that now.", audit: true });
+    const prompt = seen.body.messages[0].content;
+    assert.match(prompt, /AI: Can I get your surname\?\nCALLER: Makhoul\. M-A-K-H-O-U-L\.\nAI: So that's M-A-K-H-O-U-L, is that right\?\nCALLER: Yes, that's right\./, "the early read-back and the caller's yes");
+    assert.match(prompt, /CALLER: Answer 10\.\nAI: Booking that now\.$/m, "and the latest turn");
+    assert.doesNotMatch(prompt, /SECRET SYSTEM PROMPT/);
+    assert.doesNotMatch(prompt, /earlier part of the call omitted/, "a call this short is sent whole");
+  });
+
+  it("the whole call still keeps only its latest 12,000 characters, after the omitted marker", async () => {
+    const m = load();
+    const seen = replyText(ALLOW);
+    const s = new CallSession("CAhuge");
+    s.organization = { timezone: "Australia/Sydney" };
+    for (let i = 0; i < 800; i++) s.addMessage(i % 2 ? "user" : "assistant", `line ${i} ${"x".repeat(20)}`);
+    await m.applyBookingPrecheck(s, { name: "book_appointment", args: ARGS }, { audit: true });
+    const conversation = seen.body.messages[0].content.split("CONVERSATION SO FAR")[1].split("\nRules")[0];
+    assert.match(conversation, /\n\[earlier part of the call omitted\]\n(CALLER|AI): line \d+ x+\n/);
+    assert.match(conversation, /CALLER: line 799 x+\n$/);
+    assert.ok(conversation.length < 12200, `capped (${conversation.length} chars)`);
+  });
+
+  // A failed transfer reconnects with restoreFrom, which restores the windowed messages but not the
+  // unwindowed transcript: until something new is said, the windowed copy is all there is.
+  it("falls back to the windowed messages when the unwindowed transcript is empty", async () => {
+    const m = load();
+    const seen = replyText(ALLOW);
+    const s = new CallSession("CArestored");
+    s.restoreFrom({ messages: CONVERSATION, organization: { timezone: "Australia/Sydney" } });
+    assert.equal(s.fullTranscriptMessages.length, 0, "precondition: restoreFrom leaves the unwindowed transcript empty");
+    await m.applyBookingPrecheck(s, { name: "book_appointment", args: ARGS }, { audit: true });
+    const prompt = seen.body.messages[0].content;
+    assert.match(prompt, /AI: Thanks for calling\. How can I help\?\nCALLER: I need a plumber tomorrow morning\./);
+    assert.doesNotMatch(prompt, /nothing transcribed yet/);
   });
 
   it("an update with nothing to check passes straight through the glue: no request, no hold, no audit entry", async () => {

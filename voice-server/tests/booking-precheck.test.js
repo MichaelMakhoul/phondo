@@ -142,23 +142,42 @@ describe("nothing to check", () => {
       const holds = new Map();
       assert.deepEqual(await m.precheckBookingWrite(input({ toolName: "update_appointment", args, holds })), { action: "proceed" }, JSON.stringify(args));
       assert.equal(holds.size, 0, "no hold is counted");
-      assert.ok(logs.some((l) => /\[Precheck\] skip update_appointment \(no name\/date fields\)\. callSid=CAtest/.test(l)), `${JSON.stringify(args)} is logged as a skip`);
+      assert.ok(logs.some((l) => /\[Precheck\] skip update_appointment \(no name or date to save\)\. callSid=CAtest/.test(l)), `${JSON.stringify(args)} is logged as a skip`);
       assert.ok(!logs.some((l) => /\[Precheck\] (allow|unchecked)|No usable verdict/.test(l)), "and never as a verdict that was read or an unchecked failure");
     }
     assert.equal(seen.calls, 0, "Claude is never asked");
   });
 
-  it("any name or date field, even alone, still makes a request", async () => {
+  // R22: the skip asks whether anything the check judges will be SAVED. Fields that only find the
+  // existing appointment (an update's datetime, a reschedule's name and current time) and fields that
+  // are never sent (a practitioner id, a name on a booking, which has no such arg) are not that.
+  it("a call that saves no name or date is skipped, even when it identifies the appointment", async () => {
+    const m = load();
+    const seen = replyText(FIX);
+    for (const [toolName, args] of [
+      ["update_appointment", { datetime: "2026-10-15T09:00", email: "new@example.com" }],
+      ["update_appointment", { datetime: "2026-10-15T09:00" }],
+      ["update_appointment", { practitioner_id: "prac-7" }],
+      ["reschedule_appointment", { name: "Michael Makhoul", current_date: "2026-10-14", phone: "+61400111222" }],
+      ["book_appointment", { name: "Michael Makhlouf", practitioner_id: "prac-7" }],
+    ]) {
+      logs.length = 0;
+      assert.deepEqual(await m.precheckBookingWrite(input({ toolName, args })), { action: "proceed" }, `${toolName} ${JSON.stringify(args)}`);
+      assert.ok(logs.some((l) => new RegExp(`\\[Precheck\\] skip ${toolName} \\(no name or date to save\\)\\. callSid=CAtest`).test(l)), `${toolName} ${JSON.stringify(args)} is a skip`);
+    }
+    assert.equal(seen.calls, 0, "Claude is never asked");
+  });
+
+  it("any name or date that will be saved, even alone, still makes a request", async () => {
     const m = load();
     const withField = [
       ["book_appointment", { first_name: "Michael" }],
       ["book_appointment", { last_name: "Makhlouf" }],
-      ["book_appointment", { name: "Michael Makhlouf" }],
       ["book_appointment", { datetime: "2026-10-15T09:00" }],
       ["reschedule_appointment", { new_datetime: "2026-10-16T10:00" }],
-      ["reschedule_appointment", { current_date: "2026-10-14" }],
+      ["reschedule_appointment", { first_name: "Michael", current_date: "2026-10-14" }],
       ["update_appointment", { first_name: "Michael", last_name: "Makhlouf", email: "a@b.co" }],
-      ["update_appointment", { practitioner_id: "prac-7" }],
+      ["update_appointment", { last_name: "Makhoul", datetime: "2026-10-15T09:00" }],
     ];
     for (const [toolName, args] of withField) {
       const seen = replyText(ALLOW);
@@ -460,7 +479,8 @@ describe("the request", () => {
     const prompt = seen.body.messages[0].content;
     assert.match(prompt, /NOW \(the business's timezone\): Current date and time: Wednesday, October 14, 2026, 09:56\sPM \(Australia\/Sydney\)/);
     assert.match(prompt, /TOOL: book_appointment/);
-    assert.match(prompt, /DETAILS THE AI WANTS TO SAVE: \{"first_name":"Michael","last_name":"Makhlouf","datetime":"2026-10-15T09:00"\}/);
+    assert.match(prompt, /^DETAILS THAT WILL BE SAVED: \{"first_name":"Michael","last_name":"Makhlouf","datetime":"2026-10-15T09:00"\}$/m);
+    assert.doesNotMatch(prompt, /ONLY IDENTIFY/, "a new booking identifies no existing appointment");
     assert.match(prompt, /the AI must have spelled it back letter by letter/);
     assert.match(prompt, /AI: Thanks for calling\. How can I help\?\nCALLER: I need a plumber tomorrow morning\./);
     assert.match(prompt, /CALLER: Morning is good\.\nAI: Let me book that for you\.$/m, "the in-progress turn comes last");
@@ -472,6 +492,52 @@ describe("the request", () => {
       "the closing instruction; the schema, not the prompt, shapes the reply"
     );
     assert.doesNotMatch(prompt, /Reply with ONLY one JSON object/);
+  });
+
+  // R22: reschedule's `name` is "for identity verification only" (tool-executor.js), and an update's
+  // datetime only picks this call's booking. Under the saved details, rule 1 would demand a read-back
+  // and a yes for them, and hold a correct change.
+  describe("saved details vs details that only identify the existing appointment", () => {
+    const IDENTIFY = "DETAILS THAT ONLY IDENTIFY THE EXISTING APPOINTMENT \\(rules 1 and 2 do NOT apply to these\\)";
+
+    it("a reschedule's identity name and current time go only in the identify section", async () => {
+      const m = load();
+      const seen = replyText(ALLOW);
+      const args = { name: "Michael Makhoul", current_datetime: "2026-10-14T09:00", current_date: "2026-10-14", new_datetime: "2026-10-16T10:00", phone: "+61400111222" };
+      await m.precheckBookingWrite(input({ toolName: "reschedule_appointment", args }));
+      const prompt = seen.body.messages[0].content;
+      assert.match(prompt, /^DETAILS THAT WILL BE SAVED: \{"new_datetime":"2026-10-16T10:00"\}$/m);
+      assert.match(prompt, new RegExp(`^${IDENTIFY}: \\{"name":"Michael Makhoul","current_datetime":"2026-10-14T09:00","current_date":"2026-10-14"\\}$`, "m"));
+    });
+
+    it("a reschedule that renames saves the new name and time; the old name only identifies", async () => {
+      const m = load();
+      const seen = replyText(ALLOW);
+      const args = { name: "Michael Makhlouf", first_name: "Michael", last_name: "Makhoul", new_datetime: "2026-10-16T10:00", current_date: "2026-10-14" };
+      await m.precheckBookingWrite(input({ toolName: "reschedule_appointment", args }));
+      const prompt = seen.body.messages[0].content;
+      assert.match(prompt, /^DETAILS THAT WILL BE SAVED: \{"new_datetime":"2026-10-16T10:00","first_name":"Michael","last_name":"Makhoul"\}$/m);
+      assert.match(prompt, new RegExp(`^${IDENTIFY}: \\{"name":"Michael Makhlouf","current_date":"2026-10-14"\\}$`, "m"));
+    });
+
+    it("an update saves the corrected name; its datetime only identifies the booking", async () => {
+      const m = load();
+      const seen = replyText(ALLOW);
+      await m.precheckBookingWrite(input({ toolName: "update_appointment", args: { datetime: "2026-10-15T09:00", first_name: "Michael", last_name: "Makhoul", email: "a@b.co" } }));
+      const prompt = seen.body.messages[0].content;
+      assert.match(prompt, /^DETAILS THAT WILL BE SAVED: \{"first_name":"Michael","last_name":"Makhoul"\}$/m);
+      assert.match(prompt, new RegExp(`^${IDENTIFY}: \\{"datetime":"2026-10-15T09:00"\\}$`, "m"));
+    });
+
+    it("rules 1 and 2 judge the saved details only", async () => {
+      const m = load();
+      const seen = replyText(ALLOW);
+      await m.precheckBookingWrite(input());
+      const prompt = seen.body.messages[0].content;
+      assert.match(prompt, /^1\. NAME \(only if DETAILS THAT WILL BE SAVED contain a first or last name\): /m);
+      assert.match(prompt, /^2\. DATE\/TIME \(only a date or time in DETAILS THAT WILL BE SAVED\): /m);
+      assert.doesNotMatch(prompt, /DETAILS THE AI WANTS TO SAVE/);
+    });
   });
 
   it("Haiku runs with thinking disabled; other models at low effort; both ask for the verdict schema", async () => {
