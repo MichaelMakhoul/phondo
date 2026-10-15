@@ -25,6 +25,8 @@ const PRECHECKED_TOOLS = new Set(["book_appointment", "reschedule_appointment", 
 const MAX_HOLDS = 2;
 const PRECHECK_TIMEOUT_MS = 3000;
 const PRECHECK_MAX_TOKENS = 300;
+/** Sonnet/Opus 5.5 cannot disable thinking, and thinking counts against max_tokens: leave room for it. */
+const PRECHECK_MAX_TOKENS_WITH_THINKING = 1024;
 const MAX_TRANSCRIPT_CHARS = 12000;
 /** A bad PRECHECK_MODEL (404), a refused request field (400) or a bad key (401/403) fail every check. */
 const CONFIG_FAILURE_STATUSES = new Set([400, 401, 403, 404]);
@@ -83,10 +85,25 @@ const PROCEED = Object.freeze({ action: "proceed" });
 // by a verdict that could actually be read.
 let unreadableStreak = 0;
 
-/** @returns {"enforce" | "shadow" | "off"} */
+// An unrecognised PRECHECK_MODE is reported once per process (see precheckMode).
+let warnedUnknownMode = false;
+
+/**
+ * Unset, empty and "enforce" enforce. An unrecognised value ("disabled", "false")
+ * ALSO enforces, but says so once: an operator who typed it believes the check
+ * is off or shadowed, and must find out from the log rather than from a hold.
+ * @returns {"enforce" | "shadow" | "off"}
+ */
 function precheckMode() {
-  const v = String(process.env.PRECHECK_MODE || "").trim().toLowerCase();
-  return v === "shadow" || v === "off" ? v : "enforce";
+  const raw = String(process.env.PRECHECK_MODE || "").trim();
+  const v = raw.toLowerCase();
+  if (v === "shadow" || v === "off") return v;
+  if (raw && v !== "enforce" && !warnedUnknownMode) {
+    warnedUnknownMode = true;
+    // Operator config, not caller data, so the value is safe to log.
+    console.warn(`[Precheck] unknown PRECHECK_MODE="${raw}" — enforcing`);
+  }
+  return "enforce";
 }
 
 /** @returns {string} */
@@ -96,16 +113,16 @@ function precheckModel() {
 
 /**
  * Lowest-latency request shape per model family, both asking for the verdict
- * schema (VERDICT_FORMAT): Haiku takes thinking disabled (claudeLatencyParams)
- * and its default effort; Sonnet/Opus 5.5 reject disabled thinking, so they run
- * at low effort instead.
+ * schema (VERDICT_FORMAT): Haiku takes thinking disabled (claudeLatencyParams),
+ * its default effort and a small token cap; Sonnet/Opus 5.5 reject disabled
+ * thinking, so they run at low effort with a cap that leaves room for it.
  * @param {string} model
  * @returns {Record<string, unknown>}
  */
 function precheckModelParams(model) {
   return /^claude-haiku-/i.test(model)
-    ? { ...claudeLatencyParams(model), output_config: { format: VERDICT_FORMAT } }
-    : { output_config: { effort: "low", format: VERDICT_FORMAT } };
+    ? { max_tokens: PRECHECK_MAX_TOKENS, ...claudeLatencyParams(model), output_config: { format: VERDICT_FORMAT } }
+    : { max_tokens: PRECHECK_MAX_TOKENS_WITH_THINKING, output_config: { effort: "low", format: VERDICT_FORMAT } };
 }
 
 /**
@@ -119,6 +136,27 @@ function nameVerificationMethod(promptConfig) {
   const field = fields.find((/** @type {any} */ f) => f && (f.id === "first_name" || f.id === "full_name"));
   const v = field?.verification;
   return v === "spell-out" || v === "read-back-characters" ? v : "repeat-confirm";
+}
+
+/** The booking args the check needs: who, when, and which practitioner. */
+const DECISION_ARG_KEYS = ["first_name", "last_name", "name", "datetime", "new_datetime", "current_datetime", "current_date", "practitioner_id"];
+
+/**
+ * Just the decision fields of a tool call's args, in a fixed order. Phone, email,
+ * free-text notes, service ids and codes stay out of the prompt: less PII sent
+ * offshore, and no free text for the checker to misjudge or be steered by.
+ * @param {Record<string, unknown> | undefined} args
+ * @returns {Record<string, unknown>}
+ */
+function decisionArgs(args) {
+  /** @type {Record<string, unknown>} */
+  const out = {};
+  if (args && typeof args === "object") {
+    for (const key of DECISION_ARG_KEYS) {
+      if (Object.hasOwn(args, key)) out[key] = args[key];
+    }
+  }
+  return out;
 }
 
 /**
@@ -207,10 +245,12 @@ function parsePrecheck(text) {
 /**
  * The ONE exit for "no usable verdict": the write goes through, never
  * quietly. Config failures page at once; anything else from the 3rd in a row.
- * @param {{ cause: string, config?: boolean, status?: number, stopReason?: string, errorType?: string, errorMessage?: string }} info
- *   Shape only — never model output, tool args or caller words.
+ * The result is allow:true but unchecked:true, so callers never log it as a
+ * verdict that was read.
+ * @param {{ cause: string, config?: boolean, status?: number, stopReason?: string, errorType?: string, errorMessage?: string, ms?: number }} info
+ *   Shape only (ms is a number) — never model output, tool args or caller words.
  * @param {string} model
- * @returns {{ allow: true }}
+ * @returns {{ allow: true, unchecked: true }}
  */
 function noVerdict(info, model) {
   unreadableStreak++;
@@ -222,6 +262,7 @@ function noVerdict(info, model) {
     error_type: info.errorType,
     error_message: info.errorMessage,
     unreadable_in_a_row: unreadableStreak,
+    ms: info.ms,
   };
   if (info.config || unreadableStreak >= UNREADABLE_ALERT_AFTER) {
     const what = info.config
@@ -239,24 +280,26 @@ function noVerdict(info, model) {
       .join(" ");
     console.warn(`[Precheck] No usable verdict (${shown}) — letting the write through`);
   }
-  return { allow: true };
+  return { allow: true, unchecked: true };
 }
 
 /**
  * @param {string} prompt
- * @returns {Promise<{ allow: true } | { allow: false, problem: string }>}
+ * @returns {Promise<{ allow: true, unchecked?: true } | { allow: false, problem: string }>}
  */
 async function requestVerdict(prompt) {
   const model = precheckModel();
+  const started = Date.now();
+  /** Every way out without a verdict, timed from the request start. */
+  const failed = (/** @type {Parameters<typeof noVerdict>[0]} */ info) => noVerdict({ ...info, ms: Date.now() - started }, model);
   const key = process.env.ANTHROPIC_API_KEY;
-  if (!key) return noVerdict({ cause: "ANTHROPIC_API_KEY not set", config: true }, model);
+  if (!key) return failed({ cause: "ANTHROPIC_API_KEY not set", config: true });
   try {
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01" },
       body: JSON.stringify({
         model,
-        max_tokens: PRECHECK_MAX_TOKENS,
         ...precheckModelParams(model),
         messages: [{ role: "user", content: prompt }],
       }),
@@ -264,25 +307,19 @@ async function requestVerdict(prompt) {
     });
     if (!res.ok) {
       const { errorType, errorMessage } = await readAnthropicError(res);
-      return noVerdict(
-        { cause: "http-error", status: res.status, config: CONFIG_FAILURE_STATUSES.has(res.status), errorType, errorMessage },
-        model
-      );
+      return failed({ cause: "http-error", status: res.status, config: CONFIG_FAILURE_STATUSES.has(res.status), errorType, errorMessage });
     }
     const data = /** @type {{ content?: unknown, stop_reason?: string }} */ (await res.json());
     const text = claudeResponseText(data.content).trim();
-    if (!text) return noVerdict({ cause: "no-text", stopReason: data.stop_reason ?? "unknown" }, model);
+    if (!text) return failed({ cause: "no-text", stopReason: data.stop_reason ?? "unknown" });
     const parsed = parsePrecheck(text);
-    if ("unreadable" in parsed) return noVerdict({ cause: parsed.unreadable, stopReason: data.stop_reason ?? "unknown" }, model);
+    if ("unreadable" in parsed) return failed({ cause: parsed.unreadable, stopReason: data.stop_reason ?? "unknown" });
     unreadableStreak = 0;
     return parsed.verdict;
   } catch (err) {
     const e = /** @type {any} */ (err);
     const name = e && e.name ? e.name : "Error";
-    return noVerdict(
-      { cause: "request-failed", errorType: name, errorMessage: name === "SyntaxError" ? "response body is not JSON" : String(e && e.message).slice(0, 200) },
-      model
-    );
+    return failed({ cause: "request-failed", errorType: name, errorMessage: name === "SyntaxError" ? "response body is not JSON" : String(e && e.message).slice(0, 200) });
   }
 }
 
@@ -307,6 +344,7 @@ async function precheckBookingWrite(input) {
   if (!PRECHECKED_TOOLS.has(toolName)) return PROCEED;
   const mode = precheckMode();
   if (mode === "off") return PROCEED;
+  const started = Date.now();
   try {
     const held = holds.get(toolName) || 0;
     if (held >= MAX_HOLDS) {
@@ -321,34 +359,39 @@ async function precheckBookingWrite(input) {
     const now = safeNowLine(input.timezone, input.now);
     const prompt = buildPrecheckPrompt({
       toolName,
-      args: input.args || {},
+      args: decisionArgs(input.args),
       conversation: conversationText(input.messages, input.pendingUser, input.pendingAi),
       now,
       nameMethod: input.nameMethod || "repeat-confirm",
     });
-    const started = Date.now();
     const verdict = await requestVerdict(prompt);
     const ms = Date.now() - started;
     // `=== true`, not a bare truthiness check: jsconfig has no strictNullChecks,
     // where a boolean discriminant only narrows the union through a comparison.
     if (verdict.allow === true) {
-      console.log(`[Precheck] allow ${toolName} (${ms}ms). callSid=${callSid}`);
+      // "unchecked" = no verdict could be read (noVerdict already logged or paged why). Logging
+      // that as "allow" would count writes nobody checked as checked ones.
+      console.log(`[Precheck] ${verdict.unchecked ? "unchecked" : "allow"} ${toolName} (${ms}ms). callSid=${callSid}`);
       return PROCEED;
     }
     if (mode === "shadow") {
       console.warn(`[Precheck] (shadow) would hold ${toolName}: ${verdict.problem} (${ms}ms). callSid=${callSid}`);
       return PROCEED;
     }
-    holds.set(toolName, held + 1);
-    console.warn(`[Precheck] Holding ${toolName}: ${verdict.problem} — hold ${held + 1}/${MAX_HOLDS} (${ms}ms). callSid=${callSid}`);
+    // Read the count again: another check of this tool may have held while we awaited.
+    const count = (holds.get(toolName) || 0) + 1;
+    holds.set(toolName, count);
+    console.warn(`[Precheck] Holding ${toolName}: ${verdict.problem} — hold ${count}/${MAX_HOLDS} (${ms}ms). callSid=${callSid}`);
     return {
       action: "hold",
       problem: verdict.problem,
       message: `NOT DONE YET — nothing was saved. ${INSTRUCTIONS[verdict.problem]} Then call ${toolName} again with the confirmed details.`,
     };
   } catch (err) {
+    // Fails open THROUGH noVerdict like every other way of not getting a verdict, so an
+    // unexpected error counts toward the streak and pages from the third in a row.
     const e = /** @type {any} */ (err);
-    console.error(`[Precheck] Unexpected error — letting ${toolName} through: ${e && e.message}. callSid=${callSid}`);
+    noVerdict({ cause: "unexpected-error", errorType: e?.name, errorMessage: String(e?.message).slice(0, 200), ms: Date.now() - started }, precheckModel());
     return PROCEED;
   }
 }
@@ -365,24 +408,36 @@ async function precheckBookingWrite(input) {
  * @returns {Promise<{ message: string } | null>}
  */
 async function applyBookingPrecheck(session, toolCall, turn) {
-  if (!PRECHECKED_TOOLS.has(toolCall.name)) return null;
-  if (!(session.precheckHolds instanceof Map)) session.precheckHolds = new Map();
-  const result = await precheckBookingWrite({
-    toolName: toolCall.name,
-    args: toolCall.args || {},
-    messages: session.messages,
-    pendingUser: turn.pendingUser,
-    pendingAi: turn.pendingAi,
-    timezone: session.organization?.timezone,
-    nameMethod: nameVerificationMethod(turn.promptConfig),
-    holds: session.precheckHolds,
-    callSid: session.callSid,
-  });
-  if (result.action !== "hold") return null;
-  if (turn.audit && Array.isArray(session.toolCallAudit)) {
-    session.toolCallAudit.push({ name: toolCall.name, successful: false, precheckHold: true, at: Date.now() });
+  try {
+    if (!PRECHECKED_TOOLS.has(toolCall.name)) return null;
+    if (!(session.precheckHolds instanceof Map)) session.precheckHolds = new Map();
+    const result = await precheckBookingWrite({
+      toolName: toolCall.name,
+      args: toolCall.args || {},
+      messages: session.messages,
+      pendingUser: turn.pendingUser,
+      pendingAi: turn.pendingAi,
+      timezone: session.organization?.timezone,
+      nameMethod: nameVerificationMethod(turn.promptConfig),
+      holds: session.precheckHolds,
+      callSid: session.callSid,
+    });
+    if (result.action !== "hold") return null;
+    if (turn.audit && Array.isArray(session.toolCallAudit)) {
+      session.toolCallAudit.push({ name: toolCall.name, successful: false, precheckHold: true, at: Date.now() });
+    }
+    return { message: result.message };
+  } catch (err) {
+    // Runs in front of a booking write inside the tool handler: never throw into it. One page
+    // (no error message: it could carry caller words), and the write goes through unchecked.
+    const e = /** @type {any} */ (err);
+    Sentry.withScope((scope) => {
+      scope.setTag("service", "booking_precheck");
+      scope.setExtras({ callSid: session?.callSid, toolName: toolCall?.name, errorType: e && e.name ? e.name : "Error" });
+      Sentry.captureMessage("Booking pre-check glue threw — write went through unchecked", "error");
+    });
+    return null;
   }
-  return { message: result.message };
 }
 
 module.exports = {
@@ -391,6 +446,4 @@ module.exports = {
   nameVerificationMethod,
   PRECHECKED_TOOLS,
   MAX_HOLDS,
-  // Exposed for unit tests only.
-  _test: { parsePrecheck, conversationText, buildPrecheckPrompt, UNREADABLE_ALERT_AFTER },
 };

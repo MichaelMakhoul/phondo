@@ -15,18 +15,23 @@ const assert = require("node:assert/strict");
 const { nowLine, safeNowLine } = require("../lib/now-line");
 const { _test } = require("../services/tool-executor");
 
+// Depending on the ICU build (CI runs Node 20) the space before AM/PM is U+0020, U+202F
+// (narrow no-break) or U+00A0. The production line is whatever Intl gives; the tests compare
+// it after normalising that one character.
+const norm = (/** @type {string} */ s) => s.replace(/[\u202f\u00a0]/g, " ");
+
 describe("nowLine", () => {
   it("words the business's local date and time like get_current_datetime", () => {
     // 2026-10-14T10:56Z = Wednesday 9:56 PM in Sydney (AEDT, UTC+11).
     assert.equal(
-      nowLine("Australia/Sydney", new Date("2026-10-14T10:56:00Z")),
+      norm(nowLine("Australia/Sydney", new Date("2026-10-14T10:56:00Z"))),
       "Current date and time: Wednesday, October 14, 2026, 09:56 PM (Australia/Sydney). Today's date in YYYY-MM-DD format: 2026-10-14."
     );
   });
 
   it("follows the zone, not the server clock", () => {
     assert.equal(
-      nowLine("America/New_York", new Date("2026-10-14T10:56:00Z")),
+      norm(nowLine("America/New_York", new Date("2026-10-14T10:56:00Z"))),
       "Current date and time: Wednesday, October 14, 2026, 06:56 AM (America/New_York). Today's date in YYYY-MM-DD format: 2026-10-14."
     );
   });
@@ -35,7 +40,7 @@ describe("nowLine", () => {
     const { message } = _test.resolveCurrentDatetime("Australia/Sydney");
     assert.match(
       message,
-      /^Current date and time: [A-Z][a-z]+day, [A-Z][a-z]+ \d{1,2}, \d{4}, \d{2}:\d{2} (AM|PM) \(Australia\/Sydney\)\. Today's date in YYYY-MM-DD format: \d{4}-\d{2}-\d{2}\.$/
+      /^Current date and time: [A-Z][a-z]+day, [A-Z][a-z]+ \d{1,2}, \d{4}, \d{2}:\d{2}\s(AM|PM) \(Australia\/Sydney\)\. Today's date in YYYY-MM-DD format: \d{4}-\d{2}-\d{2}\.$/
     );
   });
 });
@@ -47,7 +52,7 @@ describe("nowLine across midnight — the date follows the business, not the ser
   it("is already Thursday in Sydney while UTC and New York are still on Wednesday", () => {
     // 2026-10-14T21:30Z = Thursday 15 Oct 8:30 AM in Sydney (AEDT, UTC+11).
     assert.equal(
-      nowLine("Australia/Sydney", new Date("2026-10-14T21:30:00Z")),
+      norm(nowLine("Australia/Sydney", new Date("2026-10-14T21:30:00Z"))),
       "Current date and time: Thursday, October 15, 2026, 08:30 AM (Australia/Sydney). Today's date in YYYY-MM-DD format: 2026-10-15."
     );
   });
@@ -55,7 +60,7 @@ describe("nowLine across midnight — the date follows the business, not the ser
   it("is still Tuesday in New York while UTC and Sydney are already on Wednesday", () => {
     // 2026-10-14T02:00Z = Tuesday 13 Oct 10:00 PM in New York (EDT, UTC-4).
     assert.equal(
-      nowLine("America/New_York", new Date("2026-10-14T02:00:00Z")),
+      norm(nowLine("America/New_York", new Date("2026-10-14T02:00:00Z"))),
       "Current date and time: Tuesday, October 13, 2026, 10:00 PM (America/New_York). Today's date in YYYY-MM-DD format: 2026-10-13."
     );
   });

@@ -134,6 +134,8 @@ describe("verdicts and modes", () => {
     const m = load();
     replyText(ALLOW);
     assert.deepEqual(await m.precheckBookingWrite(input()), { action: "proceed" });
+    assert.ok(logs.some((l) => /\[Precheck\] allow book_appointment \(\d+ms\)\. callSid=CAtest/.test(l)), "a verdict that was read is logged as allow");
+    assert.ok(!logs.some((l) => /\[Precheck\] unchecked/.test(l)), "...and never as unchecked");
   });
 
   it("fix (enforce, the default) → hold with the problem's FIXED instruction and a call-again, never the model's words", async () => {
@@ -183,8 +185,9 @@ describe("verdicts and modes", () => {
       logs.length = 0;
       replyText(reply);
       assert.deepEqual(await m.precheckBookingWrite(input()), { action: "proceed" }, reply);
-      // A fail-open also returns proceed (and logs "allow"); only an unreadable reply logs a no-verdict line.
-      assert.ok(!logs.some((l) => /No usable verdict|no verdicts/.test(l)), `${reply} is read as an allow, not as an unreadable reply`);
+      // A fail-open also returns proceed; only a reply that was READ logs "allow" (an unreadable one logs "unchecked").
+      assert.ok(logs.some((l) => /\[Precheck\] allow book_appointment/.test(l)), `${reply} is read as an allow`);
+      assert.ok(!logs.some((l) => /\[Precheck\] unchecked|No usable verdict/.test(l)), `${reply} is not an unreadable reply`);
     }
   });
 
@@ -258,6 +261,39 @@ describe("verdicts and modes", () => {
     replyText(FIX);
     assert.equal((await m.precheckBookingWrite(input())).action, "hold");
   });
+
+  it("PRECHECK_MODE is trimmed and case-insensitive: ' SHADOW ' means shadow", async () => {
+    const m = load({ mode: " SHADOW " });
+    replyText(FIX);
+    assert.deepEqual(await m.precheckBookingWrite(input()), { action: "proceed" });
+    assert.ok(logs.some((l) => /\[Precheck\] \(shadow\) would hold book_appointment/.test(l)));
+    assert.ok(!logs.some((l) => /unknown PRECHECK_MODE/.test(l)), "a recognised value does not warn");
+  });
+
+  it("an unknown PRECHECK_MODE enforces, and warns once per process", async () => {
+    for (const mode of ["disabled", "false"]) {
+      logs.length = 0;
+      const m = load({ mode });
+      replyText(FIX);
+      assert.equal((await m.precheckBookingWrite(input())).action, "hold", mode);
+      assert.equal((await m.precheckBookingWrite(input())).action, "hold", mode);
+      assert.deepEqual(
+        logs.filter((l) => /unknown PRECHECK_MODE/.test(l)),
+        [`[Precheck] unknown PRECHECK_MODE="${mode}" — enforcing`],
+        "once, not on every check"
+      );
+    }
+  });
+
+  it("an unset, empty or explicit 'enforce' PRECHECK_MODE enforces without a warning", async () => {
+    for (const mode of [undefined, "", "   ", "enforce", "ENFORCE"]) {
+      logs.length = 0;
+      const m = load({ mode });
+      replyText(FIX);
+      assert.equal((await m.precheckBookingWrite(input())).action, "hold", JSON.stringify(mode));
+      assert.ok(!logs.some((l) => /unknown PRECHECK_MODE/.test(l)), `${JSON.stringify(mode)} is not a typo`);
+    }
+  });
 });
 
 describe("hold cap", () => {
@@ -278,6 +314,18 @@ describe("hold cap", () => {
     replyText(FIX);
     const holds = new Map([["book_appointment", 2]]);
     assert.equal((await m.precheckBookingWrite(input({ toolName: "reschedule_appointment", holds }))).action, "hold");
+  });
+
+  it("two checks in flight at once both count: the hold count is read fresh after the await", async () => {
+    const m = load();
+    replyText(FIX);
+    const holds = new Map();
+    const [a, b] = await Promise.all([m.precheckBookingWrite(input({ holds })), m.precheckBookingWrite(input({ holds }))]);
+    assert.equal(a.action, "hold");
+    assert.equal(b.action, "hold");
+    assert.equal(holds.get("book_appointment"), 2, "neither hold was lost");
+    const counters = logs.map((l) => l.match(/Holding book_appointment: .* — hold (\d)\/2/)).filter(Boolean).map((x) => x[1]).sort();
+    assert.deepEqual(counters, ["1", "2"], "and the log counts them 1 and 2, not 1 and 1");
   });
 
   it("shadow mode never counts a hold", async () => {
@@ -346,7 +394,7 @@ describe("the request", () => {
     const seen = replyText(ALLOW);
     await m.precheckBookingWrite(input({ nameMethod: "spell-out" }));
     const prompt = seen.body.messages[0].content;
-    assert.match(prompt, /NOW \(the business's timezone\): Current date and time: Wednesday, October 14, 2026, 09:56 PM \(Australia\/Sydney\)/);
+    assert.match(prompt, /NOW \(the business's timezone\): Current date and time: Wednesday, October 14, 2026, 09:56\sPM \(Australia\/Sydney\)/);
     assert.match(prompt, /TOOL: book_appointment/);
     assert.match(prompt, /DETAILS THE AI WANTS TO SAVE: \{"first_name":"Michael","last_name":"Makhlouf","datetime":"2026-10-15T09:00"\}/);
     assert.match(prompt, /the AI must have spelled it back letter by letter/);

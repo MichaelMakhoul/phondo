@@ -301,6 +301,8 @@ Claude-Session: https://claude.ai/code/session_01WsMvFfmjCv3mhYEfJW5MQB"
 
 ### Task 2: The booking pre-check module
 
+> Superseded in places by controller Rulings 5, 7–12 (see the SDD ledger) — the module in lib/booking-precheck.js is authoritative.
+
 **Files:**
 - Create: `voice-server/lib/booking-precheck.js`, `voice-server/tests/booking-precheck.test.js`
 
