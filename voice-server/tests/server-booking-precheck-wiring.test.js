@@ -22,15 +22,18 @@ const inbound = src.slice(inboundStart, src.indexOf("onToolCallCancellation", in
 const testStart = src.indexOf("onToolCall: async (toolCall) => {", inboundStart + 1);
 const testPath = src.slice(testStart, src.indexOf("onTranscriptIn", testStart));
 
-const CHECK = "await applyBookingPrecheck(session, toolCall, {";
+const CHECK = "await applyBookingPrecheck(s, toolCall, {";
 /** Every pre-check call in the inbound handler, in source order: the name-correction branch's, then the main write path's. */
 const inboundChecks = [];
 for (let i = inbound.indexOf(CHECK); i >= 0; i = inbound.indexOf(CHECK, i + 1)) inboundChecks.push(i);
 const [correctionCheck, mainCheck] = inboundChecks;
 
+// R21: each handler hands the check a getter over its own live transcript buffers, not a snapshot.
+const LIVE_TURN = /getPending: \(\) => \(\{ user: pendingUserTranscript, ai: pendingAiTranscript \}\),\s*promptConfig: context\?\.assistant\?\.promptConfig,/;
+
 describe("SCRUM-593: booking pre-check wiring", () => {
   it("imports the module", () => {
-    assert.match(src, /const \{ applyBookingPrecheck \} = require\("\.\/lib\/booking-precheck"\);/);
+    assert.match(src, /const \{ applyBookingPrecheck, PRECHECKED_TOOLS \} = require\("\.\/lib\/booking-precheck"\);/);
   });
 
   it("inbound: one check for the main write path and one for the RebookGuard's name-correction branch", () => {
@@ -42,10 +45,21 @@ describe("SCRUM-593: booking pre-check wiring", () => {
     assert.ok(call > 0, "inbound handler calls applyBookingPrecheck");
     assert.ok(inbound.indexOf("runOwnerToolCall(") < call, "owner calls return first");
     assert.ok(inbound.indexOf("DUPLICATE_REBOOK_MESSAGE") < call, "after the RebookGuard");
-    assert.ok(call < inbound.indexOf("session.rememberDetails(toolCall.name, toolCall.args)"), "before details are remembered");
+    assert.ok(call < inbound.indexOf("s.rememberDetails(toolCall.name, toolCall.args)"), "before details are remembered");
     assert.ok(call < inbound.indexOf("result = await executeToolCall(toolCall.name"), "before the write");
-    assert.match(inbound.slice(call), /pendingUser: pendingUserTranscript,\s*pendingAi: pendingAiTranscript,\s*promptConfig: context\?\.assistant\?\.promptConfig,\s*audit: true,/);
-    assert.match(inbound, /if \(!session\) return \{ message: "" \};\s*if \(precheckHold\) return precheckHold;/);
+    assert.match(inbound.slice(call, call + 400), LIVE_TURN);
+    assert.match(inbound.slice(call, call + 400), /audit: true,/);
+  });
+
+  // R20: cleanup nulls `session` when the call ends. Both checks run on a session captured before them,
+  // so an allowed write still happens; it is captured once, before the RebookGuard, after the guards.
+  it("inbound: the session is captured once, before either check", () => {
+    const capture = inbound.indexOf("const s = session;");
+    assert.ok(capture > 0, "captured");
+    assert.equal(inbound.indexOf("const s = session;", capture + 1), -1, "once");
+    assert.ok(capture > inbound.indexOf("runOwnerToolCall(") && capture < correctionCheck, "after the owner return, before the first check");
+    assert.match(inbound.slice(correctionCheck), /^await applyBookingPrecheck\(s, toolCall, \{/);
+    assert.match(inbound.slice(mainCheck), /^await applyBookingPrecheck\(s, toolCall, \{/);
   });
 
   // The name fix is a write too: a re-book with a corrected surname is answered inside the
@@ -60,8 +74,8 @@ describe("SCRUM-593: booking pre-check wiring", () => {
     // audit:false — a booking already stands. An audited hold would read to hasUnfinishedBooking as an
     // unresolved funnel step (a successful fix is "book_appointment_corrected", not a resolve), and the
     // caller would be told at end_call that they have NO appointment.
-    assert.match(block, /pendingUser: pendingUserTranscript,\s*pendingAi: pendingAiTranscript,\s*promptConfig: context\?\.assistant\?\.promptConfig,\s*audit: false,/);
-    assert.match(block, /if \(!session\) return \{ message: "" \};\s*if \(correctionHold\) return correctionHold;/);
+    assert.match(block, LIVE_TURN);
+    assert.match(block, /audit: false,/);
   });
 
   it("inbound: the goodbye auto-end stays off while either check runs", () => {
@@ -75,16 +89,25 @@ describe("SCRUM-593: booking pre-check wiring", () => {
 
   it("inbound: a successful write — or a successful name fix — resets that tool's hold count", () => {
     assert.match(inbound, /if \(successful\) session\.precheckHolds\?\.delete\(toolCall\.name\);/);
-    assert.match(inbound, /if \(correctionOk\) \{\s*session\.precheckHolds\?\.delete\(toolCall\.name\);/);
+    assert.match(inbound, /if \(correctionOk\) \{\s*s\.precheckHolds\?\.delete\(toolCall\.name\);/);
   });
 
-  it("/ws/test: runs before the write, without auditing", () => {
-    const call = testPath.indexOf("await applyBookingPrecheck(session, toolCall, {");
+  it("/ws/test: runs before the write, without auditing, on a session captured before it", () => {
+    const call = testPath.indexOf(CHECK);
     assert.ok(call > 0, "test handler calls applyBookingPrecheck");
-    assert.ok(call < testPath.indexOf("session.rememberDetails(toolCall.name, toolCall.args)"), "before details are remembered");
+    assert.ok(testPath.indexOf("const s = session;") < call, "the session is captured before the check");
+    assert.ok(call < testPath.indexOf("s.rememberDetails(toolCall.name, toolCall.args)"), "before details are remembered");
     assert.ok(call < testPath.indexOf("executeToolCall(toolCall.name"), "before the write");
-    assert.match(testPath, /pendingUser: pendingUserTranscript,\s*pendingAi: pendingAiTranscript,\s*promptConfig: context\?\.assistant\?\.promptConfig,\s*audit: false,/);
-    assert.match(testPath, /if \(!session\) return \{ message: "" \};\s*if \(precheckHold\) return precheckHold;/);
+    assert.match(testPath, LIVE_TURN);
+    assert.match(testPath.slice(call, call + 400), /audit: false,/);
+  });
+
+  // R23: the public website demo's writes are all simulated and its prompt has no pre-booking read-back
+  // by design, so the check is skipped there by the shared demo-org constant, never a copy of the id.
+  it("/ws/test: the public demo is recognised by the shared DEMO_ORG_ID", () => {
+    const demo = testPath.indexOf("s.organizationId === DEMO_ORG_ID");
+    assert.ok(demo > 0 && demo < testPath.indexOf(CHECK), "decided before the check");
+    assert.doesNotMatch(testPath, /d0000000-0000-4000-a000-000000000001/);
   });
 
   it("/ws/test: a successful write resets that tool's hold count, after the write (parity with production)", () => {
@@ -120,7 +143,8 @@ const { CallSession } = require("../call-session");
 const { bookingKey, normalizeDatetime } = require("../lib/booking-key");
 const { classifyRebookAttempt, DUPLICATE_REBOOK_MESSAGE, CORRECTION_ERROR_MESSAGE, CANCEL_NUDGE } = require("../lib/rebook-correction");
 const { RESCHEDULE_SUCCESS_SIGNAL, applyRescheduleToLedger } = require("../lib/reschedule-ledger");
-const { applyBookingPrecheck } = require("../lib/booking-precheck");
+const { applyBookingPrecheck, PRECHECKED_TOOLS } = require("../lib/booking-precheck");
+const { DEMO_ORG_ID } = require("../lib/session-limits");
 
 const SAVED_ENV = { key: process.env.ANTHROPIC_API_KEY, mode: process.env.PRECHECK_MODE };
 const realFetch = globalThis.fetch;
@@ -162,17 +186,28 @@ const hold = (problem = "name_unconfirmed") => stubClaude("fix", problem);
 /**
  * Claude, held open: look at the handler while the check is in flight, then release().
  * asked(pending) waits until the handler has asked Claude — and FAILS, rather than hangs, if the
- * handler finishes without ever asking (a check that was removed or bypassed).
+ * handler finishes without ever asking (a check that was removed or bypassed). Only the FIRST request
+ * is held; any later one (a re-check) is answered at once with the next of `later` ([verdict, problem]).
  */
-function gatedClaude(verdict = "allow", problem = "none") {
+function gatedClaude(verdict = "allow", problem = "none", ...later) {
+  const seen = { calls: 0, prompts: /** @type {string[]} */ ([]) };
   let release = () => {};
   let arrived = () => {};
   const started = new Promise((resolve) => { arrived = resolve; });
-  globalThis.fetch = () => new Promise((resolve) => {
-    release = () => resolve(verdictReply(verdict, problem));
-    arrived();
-  });
+  globalThis.fetch = (_url, init) => {
+    seen.calls++;
+    seen.prompts.push(JSON.parse(init.body).messages[0].content);
+    if (seen.calls > 1) {
+      const [v, p] = later[Math.min(seen.calls - 2, later.length - 1)] || [verdict, problem];
+      return Promise.resolve(verdictReply(v, p));
+    }
+    return new Promise((resolve) => {
+      release = () => resolve(verdictReply(verdict, problem));
+      arrived();
+    });
+  };
   return {
+    seen,
     release: () => release(),
     async asked(pending) {
       const first = await Promise.race([started.then(() => "asked"), pending.then(() => "finished", () => "finished")]);
@@ -233,25 +268,30 @@ function inboundHandlers(session, o = {}) {
   return { ...h, calls, lines, written };
 }
 
-/** The /ws/test handler's onToolCall (up to onTranscriptIn). */
+/** The /ws/test handler's onToolCall and the transcript buffers it reads (up to onInterrupted). */
 function testPathHandlers(session, o = {}) {
   const calls = [];
+  const lines = [];
   const first = src.indexOf("onToolCall: async (toolCall) => {");
   const from = src.indexOf("onToolCall: async (toolCall) => {", first + 1);
-  const to = src.indexOf("onTranscriptIn", from);
+  const to = src.indexOf("onInterrupted: () => {", from);
   assert.ok(from > first && to > from, "the /ws/test onToolCall is in server.js");
   const scope = {
+    ws: { readyState: 1, send() {} },
+    WebSocket: { OPEN: 1 },
     logToolCall() {},
     executeToolCall: o.executeToolCall || (async (name) => { calls.push(["executeToolCall", name]); return { message: "simulated ok" }; }),
     applyBookingPrecheck: o.applyBookingPrecheck || applyBookingPrecheck,
+    PRECHECKED_TOOLS,
+    DEMO_ORG_ID,
     context: NAME_METHOD_CONTEXT,
     pendingUserTranscript: "yes, that is right",
     pendingAiTranscript: "one moment",
-    console: recordingConsole([]),
+    console: recordingConsole(lines),
   };
   const h = evalCallbacks(src.slice(from, to), scope, session);
   const written = () => calls.filter((c) => c[0] === "executeToolCall").map((c) => c[1]);
-  return { ...h, calls, written };
+  return { ...h, calls, lines, written };
 }
 
 function makeSession() {
@@ -438,13 +478,52 @@ describe("SCRUM-593: the real inbound handler, run against stubs", () => {
       assert.equal(s._toolCallInFlight, false);
     });
 
-    it("writes nothing if the session is torn down during the check", async () => {
-      allow();
+    // R20: before the check, the fix was written in the dispatch tick, so a caller who hung up right
+    // after "let me fix that" still got it. A fix the check ALLOWS must not be lost to that hang-up.
+    it("an ALLOWED fix is still written if the call ends during the check, through the captured session", async () => {
+      const claude = gatedClaude("allow", "none");
       const s = withConfirmedBooking(makeSession());
-      const h = inboundHandlers(s, { applyBookingPrecheck: async (...a) => { const r = await applyBookingPrecheck(...a); h.killSession(); return r; } });
-      const ret = await h.cbs.onToolCall({ id: "t1", ...BOOK });
-      assert.deepEqual(ret, { message: "" });
+      const contexts = [];
+      const h = inboundHandlers(s, { executeToolCall: async (name, args, ctx) => { h.calls.push(["executeToolCall", name, args]); contexts.push(ctx); return CORRECTED; } });
+      const pending = h.cbs.onToolCall({ id: "t1", ...BOOK });
+      await claude.asked(pending);
+      h.killSession(); // cleanup ran: the handler's `session` is null now
+      claude.release();
+      assert.deepEqual(await pending, { message: CORRECTED.message });
+      assert.deepEqual(h.written(), ["update_appointment_attendee"]);
+      assert.equal(contexts[0].organizationId, "org-1");
+      assert.equal(contexts[0].callSid, "CAhandler");
+      assert.equal(contexts[0].callId, "call-1");
+      assert.equal([...s.confirmedBookings.values()][0].name, "John Makhoul", "its bookkeeping lands on the captured session, without throwing");
+      assert.ok(h.lines.some((l) => l.includes("[Precheck] session ended during the check — writing the allowed book_appointment anyway. callSid=CAhandler")));
+    });
+
+    it("a HELD fix is dropped if the call ends during the check: nothing written, an empty result", async () => {
+      const claude = gatedClaude("fix", "name_unconfirmed");
+      const s = withConfirmedBooking(makeSession());
+      const h = inboundHandlers(s);
+      const pending = h.cbs.onToolCall({ id: "t1", ...BOOK });
+      await claude.asked(pending);
+      h.killSession();
+      claude.release();
+      assert.deepEqual(await pending, { message: "" });
       assert.deepEqual(h.written(), []);
+      assert.ok(!h.lines.some((l) => l.includes("writing the allowed")));
+    });
+
+    // R21: the caller's "yes" can be transcribed after the tool call it confirmed.
+    it("a late yes: caller words arriving during a held check trigger one re-check, and its allow writes the fix", async () => {
+      const claude = gatedClaude("fix", "name_unconfirmed", ["allow", "none"]);
+      const s = withConfirmedBooking(makeSession());
+      const h = inboundHandlers(s, { executeToolCall: async (name, args) => { h.calls.push(["executeToolCall", name, args]); return CORRECTED; } });
+      const pending = h.cbs.onToolCall({ id: "t1", ...BOOK });
+      await claude.asked(pending);
+      h.cbs.onTranscriptIn("Yes, M-A-K-H-O-U-L.");
+      claude.release();
+      assert.deepEqual(await pending, { message: CORRECTED.message });
+      assert.equal(claude.seen.calls, 2, "one re-check");
+      assert.match(claude.seen.prompts[1], /CALLER: Yes, M-A-K-H-O-U-L\.$/m, "with the words that arrived");
+      assert.deepEqual(h.written(), ["update_appointment_attendee"]);
     });
 
     it("clears the flag even if the glue throws", async () => {
@@ -480,13 +559,87 @@ describe("SCRUM-593: the real inbound handler, run against stubs", () => {
     assert.equal(s._toolCallInFlight, false);
   });
 
-  it("writes nothing if the session is torn down during the main check", async () => {
-    allow();
+  // R20: before the check, the write started in the dispatch tick, so a caller who hung up right after
+  // "let me book that" still got the booking. A write the check ALLOWS must not be lost to that hang-up.
+  it("an ALLOWED write still happens if the call ends during the check, through the captured session", async () => {
+    const claude = gatedClaude("allow", "none");
     const s = makeSession();
-    const h = inboundHandlers(s, { applyBookingPrecheck: async (...a) => { const r = await applyBookingPrecheck(...a); h.killSession(); return r; } });
-    const ret = await h.cbs.onToolCall({ id: "t1", ...BOOK });
-    assert.deepEqual(ret, { message: "" });
+    s.transferRules = [{ id: "rule-1" }];
+    s.orgPhoneNumber = "+61255550000";
+    const writes = [];
+    const h = inboundHandlers(s, { executeToolCall: async (name, args, ctx) => { writes.push({ name, args, ctx }); return { message: "Moved it.", success: true }; } });
+    const call = { name: "reschedule_appointment", args: { name: "John Makhoul", phone: "+61400000001", new_datetime: "2026-10-21T10:00:00", current_datetime: WHEN } };
+    const pending = h.cbs.onToolCall({ id: "t1", ...call });
+    await claude.asked(pending);
+    h.killSession(); // cleanup ran: the handler's `session` is null...
+    s.destroy(); // ...and the session itself was wiped
+    claude.release();
+    const ret = await pending;
+    assert.equal(writes.length, 1, "the allowed write happened");
+    assert.equal(writes[0].name, "reschedule_appointment");
+    const ctx = writes[0].ctx;
+    assert.deepEqual(
+      [ctx.organizationId, ctx.assistantId, ctx.callSid, ctx.callId, ctx.callerPhone, ctx.orgPhoneNumber, ctx.telephonyProvider],
+      ["org-1", "asst-1", "CAhandler", "call-1", "+61400000001", "+61255550000", "twilio"],
+      "its context is read from the captured session"
+    );
+    assert.deepEqual(ctx.transferRules, [{ id: "rule-1" }]);
+    assert.deepEqual(ctx.collectedDetails, { name: "John Makhoul", phone: "+61400000001" }, "the details were remembered on the captured session first");
+    assert.equal(ret.message, "Moved it.", "the post-write bookkeeping, guarded on the live session, is skipped without throwing");
+    assert.equal(s._lastToolResult, undefined, "nothing is armed on a session that has ended");
+    assert.ok(h.lines.some((l) => l.includes("[Precheck] session ended during the check — writing the allowed reschedule_appointment anyway. callSid=CAhandler")));
+  });
+
+  it("a HELD write is dropped if the call ends during the check: nothing written, an empty result", async () => {
+    const claude = gatedClaude("fix", "name_unconfirmed");
+    const s = makeSession();
+    const h = inboundHandlers(s);
+    const pending = h.cbs.onToolCall({ id: "t1", ...BOOK });
+    await claude.asked(pending);
+    h.killSession();
+    claude.release();
+    assert.deepEqual(await pending, { message: "" });
     assert.deepEqual(h.written(), [], "no write after teardown");
+    assert.ok(!h.lines.some((l) => l.includes("writing the allowed")));
+  });
+
+  it("a session that is still live logs no teardown line", async () => {
+    allow();
+    const h = inboundHandlers(makeSession());
+    await h.cbs.onToolCall({ id: "t1", ...BOOK });
+    assert.deepEqual(h.written(), ["book_appointment"]);
+    assert.ok(!h.lines.some((l) => l.includes("session ended during the check")));
+  });
+
+  // R21: the caller's "yes" can be transcribed after the tool call it confirmed (SCRUM-587).
+  it("a late yes: caller words arriving during a held check trigger one re-check, and its allow writes", async () => {
+    const claude = gatedClaude("fix", "name_unconfirmed", ["allow", "none"]);
+    const s = makeSession();
+    const h = inboundHandlers(s);
+    const pending = h.cbs.onToolCall({ id: "t1", ...BOOK });
+    await claude.asked(pending);
+    h.cbs.onTranscriptIn("Yes, that's right.");
+    claude.release();
+    await pending;
+    assert.equal(claude.seen.calls, 2, "one re-check");
+    assert.doesNotMatch(claude.seen.prompts[0], /Yes, that's right/);
+    assert.match(claude.seen.prompts[1], /CALLER: Yes, that's right\.$/m, "with the words that arrived");
+    assert.deepEqual(h.written(), ["book_appointment"]);
+    assert.equal(s.precheckHolds.size, 0, "no hold was counted");
+    assert.deepEqual(s.toolCallAudit.filter((t) => t.precheckHold), [], "nor audited");
+  });
+
+  it("no caller words during a held check: no re-check, the hold stands", async () => {
+    const claude = gatedClaude("fix", "name_unconfirmed", ["allow", "none"]);
+    const s = makeSession();
+    const h = inboundHandlers(s);
+    const pending = h.cbs.onToolCall({ id: "t1", ...BOOK });
+    await claude.asked(pending);
+    h.cbs.onTranscriptOut("One moment."); // the AI's own words are no reason to ask again
+    claude.release();
+    assert.match((await pending).message, /^NOT DONE YET/);
+    assert.equal(claude.seen.calls, 1);
+    assert.deepEqual(h.written(), []);
   });
 
   it("clears the flag even if the glue throws", async () => {
@@ -606,12 +759,72 @@ describe("SCRUM-593: the real /ws/test handler, run against stubs", () => {
     assert.deepEqual(await holdsAfter({ message: "boom", error: "internal" }), { book_appointment: 1, reschedule_appointment: 1 });
   });
 
-  it("writes nothing if the session is torn down during the check", async () => {
-    allow();
+  // R20, parity with production: an allowed write still happens after a teardown mid-check.
+  it("an ALLOWED write still happens if the call ends during the check, through the captured session", async () => {
+    const claude = gatedClaude("allow", "none");
     const s = makeSession();
-    const h = testPathHandlers(s, { applyBookingPrecheck: async (...a) => { const r = await applyBookingPrecheck(...a); h.killSession(); return r; } });
-    const ret = await h.cbs.onToolCall({ id: "t1", ...BOOK });
-    assert.deepEqual(ret, { message: "" });
+    const contexts = [];
+    const h = testPathHandlers(s, { executeToolCall: async (name, _args, ctx) => { h.calls.push(["executeToolCall", name]); contexts.push(ctx); return { message: "simulated ok" }; } });
+    const pending = h.cbs.onToolCall({ id: "t1", ...BOOK });
+    await claude.asked(pending);
+    h.killSession();
+    claude.release();
+    assert.deepEqual(await pending, { message: "simulated ok" });
+    assert.deepEqual(h.written(), ["book_appointment"]);
+    assert.deepEqual([contexts[0].organizationId, contexts[0].assistantId, contexts[0].callSid, contexts[0].testMode], ["org-1", "asst-1", "CAhandler", true]);
+    assert.ok(h.lines.some((l) => l.includes("[Precheck] session ended during the check — writing the allowed book_appointment anyway. callSid=CAhandler")));
+  });
+
+  it("a HELD write is dropped if the call ends during the check: nothing written, an empty result", async () => {
+    const claude = gatedClaude("fix", "name_unconfirmed");
+    const s = makeSession();
+    const h = testPathHandlers(s);
+    const pending = h.cbs.onToolCall({ id: "t1", ...BOOK });
+    await claude.asked(pending);
+    h.killSession();
+    claude.release();
+    assert.deepEqual(await pending, { message: "" });
     assert.deepEqual(h.written(), []);
+  });
+
+  // R21: the getter reads this handler's own buffers.
+  it("a late yes: caller words arriving during a held check trigger one re-check, and its allow writes", async () => {
+    const claude = gatedClaude("fix", "name_unconfirmed", ["allow", "none"]);
+    const s = makeSession();
+    const h = testPathHandlers(s);
+    const pending = h.cbs.onToolCall({ id: "t1", ...BOOK });
+    await claude.asked(pending);
+    h.cbs.onTranscriptIn(" — and the surname is spelled M-A-K-H-O-U-L, yes.");
+    claude.release();
+    assert.deepEqual(await pending, { message: "simulated ok" });
+    assert.equal(claude.seen.calls, 2, "one re-check");
+    assert.match(claude.seen.prompts[1], /CALLER: yes, that is right — and the surname is spelled M-A-K-H-O-U-L, yes\.\nAI: one moment$/m);
+    assert.deepEqual(h.written(), ["book_appointment"]);
+  });
+
+  // R23: the public website demo (DEMO_ORG_ID) simulates every write and, to fit its 3-minute cap, has
+  // no pre-booking read-back by design: checking it would hold every booking and protect nothing.
+  it("the public website demo is not checked: no request, the simulated write happens, the skip is logged", async () => {
+    const claude = hold("name_unconfirmed");
+    const s = makeSession();
+    s.organizationId = DEMO_ORG_ID;
+    const h = testPathHandlers(s);
+    assert.deepEqual(await h.cbs.onToolCall({ id: "t1", ...BOOK }), { message: "simulated ok" });
+    assert.equal(claude.calls, 0, "Claude is never asked");
+    assert.deepEqual(h.written(), ["book_appointment"]);
+    assert.deepEqual(s.precheckHolds.size, 0);
+    assert.ok(h.lines.some((l) => l === "[Precheck] skip book_appointment (public demo). callSid=CAhandler"), h.lines.join("\n"));
+    await h.cbs.onToolCall({ id: "t2", name: "check_availability", args: { date: "2026-10-20" } });
+    assert.equal(h.lines.filter((l) => l.includes("(public demo)")).length, 1, "only a write the check covers is reported as skipped");
+  });
+
+  it("a dashboard test call for a real organization is still checked", async () => {
+    const claude = hold("name_unconfirmed");
+    const s = makeSession(); // org-1
+    const h = testPathHandlers(s);
+    assert.match((await h.cbs.onToolCall({ id: "t1", ...BOOK })).message, /^NOT DONE YET/);
+    assert.equal(claude.calls, 1);
+    assert.deepEqual(h.written(), []);
+    assert.ok(!h.lines.some((l) => l.includes("(public demo)")));
   });
 });

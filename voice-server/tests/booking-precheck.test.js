@@ -379,6 +379,111 @@ describe("verdicts and modes", () => {
   });
 });
 
+// R21: Gemini's transcription of the caller has no guaranteed order against its tool calls (SCRUM-587),
+// so the "yes" that confirmed a booking can land after the call it confirmed. A fix verdict is asked
+// again ONCE when the caller's words changed during the check; an allow never waits for anything.
+describe("a late yes: one re-check on a fix when the caller spoke during the check", () => {
+  /** Claude answers each request with the next reply, after running that step's side effect (words arriving mid-check). */
+  function sequence(steps) {
+    const seen = { calls: 0, prompts: /** @type {string[]} */ ([]) };
+    globalThis.fetch = async (_url, init) => {
+      const step = steps[Math.min(seen.calls, steps.length - 1)];
+      seen.calls++;
+      seen.prompts.push(JSON.parse(init.body).messages[0].content);
+      if (step.during) step.during();
+      return { ok: true, status: 200, json: async () => ({ content: [{ type: "text", text: step.reply }], stop_reason: "end_turn" }) };
+    };
+    return seen;
+  }
+  const live = () => {
+    const turn = { user: "", ai: "Let me book that for you." };
+    return { turn, getPending: () => ({ user: turn.user, ai: turn.ai }) };
+  };
+
+  it("caller words arriving during a held check trigger exactly one re-check, and its allow proceeds", async () => {
+    const m = load();
+    const { turn, getPending } = live();
+    const holds = new Map();
+    const seen = sequence([{ reply: FIX, during: () => { turn.user = "Yes, that's right."; } }, { reply: ALLOW }]);
+    assert.deepEqual(await m.precheckBookingWrite(input({ pendingUser: undefined, pendingAi: undefined, getPending, holds })), { action: "proceed" });
+    assert.equal(seen.calls, 2, "one re-check");
+    assert.doesNotMatch(seen.prompts[0], /Yes, that's right/, "the first check could not have seen it");
+    assert.match(seen.prompts[1], /CALLER: Yes, that's right\.\nAI: Let me book that for you\.$/m, "the re-check sees the fresh words");
+    assert.equal(holds.size, 0, "no hold was counted");
+    assert.ok(logs.some((l) => /\[Precheck\] caller spoke during the check — re-checking book_appointment once\. callSid=CAtest/.test(l)));
+    assert.ok(logs.some((l) => /\[Precheck\] allow book_appointment \(\d+ms\)/.test(l)));
+    assert.doesNotMatch(logs.join("\n"), /Yes, that's right/, "no caller words in the logs");
+  });
+
+  it("no new caller words: no re-check, the hold stands", async () => {
+    const m = load();
+    const { getPending } = live();
+    const seen = sequence([{ reply: FIX }, { reply: ALLOW }]);
+    const r = await m.precheckBookingWrite(input({ getPending }));
+    assert.equal(r.action, "hold");
+    assert.equal(seen.calls, 1);
+    assert.ok(!logs.some((l) => /re-checking/.test(l)));
+  });
+
+  it("an allow is never re-checked, whatever the caller said meanwhile", async () => {
+    const m = load();
+    const { turn, getPending } = live();
+    const seen = sequence([{ reply: ALLOW, during: () => { turn.user = "Actually, wait."; } }, { reply: FIX }]);
+    assert.deepEqual(await m.precheckBookingWrite(input({ getPending })), { action: "proceed" });
+    assert.equal(seen.calls, 1);
+  });
+
+  it("at most one re-check: a second fix holds once, even if the caller keeps talking", async () => {
+    const m = load();
+    const { turn, getPending } = live();
+    const holds = new Map();
+    const seen = sequence([
+      { reply: FIX, during: () => { turn.user = "Um"; } },
+      { reply: FIX, during: () => { turn.user = "Um, no, it's Makhoul"; } },
+      { reply: ALLOW },
+    ]);
+    const r = await m.precheckBookingWrite(input({ getPending, holds }));
+    assert.equal(r.action, "hold");
+    assert.equal(seen.calls, 2, "never a third request");
+    assert.equal(holds.get("book_appointment"), 1, "one hold, not two");
+  });
+
+  it("only the caller's words count: the AI's own words changing is no reason to ask again", async () => {
+    const m = load();
+    const { turn, getPending } = live();
+    const seen = sequence([{ reply: FIX, during: () => { turn.ai += " One moment."; } }, { reply: ALLOW }]);
+    assert.equal((await m.precheckBookingWrite(input({ getPending }))).action, "hold");
+    assert.equal(seen.calls, 1);
+  });
+
+  it("a caller line that reaches the transcript during the check counts too (the turn completed meanwhile)", async () => {
+    const m = load();
+    const { getPending } = live();
+    const messages = [...CONVERSATION];
+    const seen = sequence([{ reply: FIX, during: () => { messages.push({ role: "user", content: "Yes." }); } }, { reply: ALLOW }]);
+    assert.deepEqual(await m.precheckBookingWrite(input({ messages, getPending })), { action: "proceed" });
+    assert.equal(seen.calls, 2);
+    assert.match(seen.prompts[1], /CALLER: Yes\.\nAI: Let me book that for you\.$/m);
+  });
+
+  it("the same words moving from the turn in progress into the transcript are not new words", async () => {
+    const m = load();
+    const turn = { user: "Yes.", ai: "" };
+    const messages = [...CONVERSATION];
+    const getPending = () => ({ user: turn.user, ai: turn.ai });
+    const seen = sequence([{ reply: FIX, during: () => { messages.push({ role: "user", content: "Yes." }); turn.user = ""; } }, { reply: ALLOW }]);
+    assert.equal((await m.precheckBookingWrite(input({ messages, getPending }))).action, "hold");
+    assert.equal(seen.calls, 1);
+  });
+
+  it("without a getter (static pending text) a fix is never re-checked", async () => {
+    const m = load();
+    const seen = sequence([{ reply: FIX }, { reply: ALLOW }]);
+    assert.equal((await m.precheckBookingWrite(input())).action, "hold");
+    assert.equal(seen.calls, 1);
+  });
+});
+
 describe("hold cap", () => {
   it("holds a tool twice, then lets the third attempt through with a warning", async () => {
     const m = load();

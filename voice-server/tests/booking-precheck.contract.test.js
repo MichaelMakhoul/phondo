@@ -426,6 +426,34 @@ describe("server.js glue mapping", () => {
     assert.ok(logs.some((l) => /callSid=CAglue/.test(l)));
   });
 
+  // R21: the handlers pass a getter over their live pending-transcript buffers, so a fix can be asked
+  // again with words that arrived during the check.
+  it("reads the turn in progress through the handler's getter, live, and re-checks a fix once with what arrived", async () => {
+    const m = load();
+    const turn = { user: "Two pm", ai: "Moving it now." };
+    const prompts = [];
+    let call = 0;
+    globalThis.fetch = async (_url, init) => {
+      prompts.push(JSON.parse(init.body).messages[0].content);
+      call++;
+      if (call === 1) turn.user = "Two pm works, yes.";
+      const text = call === 1 ? FIX : ALLOW;
+      return { ok: true, status: 200, json: async () => ({ content: [{ type: "text", text }], stop_reason: "end_turn" }) };
+    };
+    const s = session();
+    const r = await m.applyBookingPrecheck(
+      s,
+      { name: "reschedule_appointment", args: { new_datetime: "2026-10-16T14:00" } },
+      { pendingUser: "stale static text", getPending: () => ({ user: turn.user, ai: turn.ai }), audit: true }
+    );
+    assert.equal(r, null, "the re-check allowed it: go ahead and write");
+    assert.equal(prompts.length, 2);
+    assert.match(prompts[0], /CALLER: Two pm\nAI: Moving it now\.$/m, "the getter wins over static text");
+    assert.match(prompts[1], /CALLER: Two pm works, yes\.\nAI: Moving it now\.$/m);
+    assert.doesNotMatch(prompts.join("\n"), /stale static text/);
+    assert.equal(s.toolCallAudit.length, 0, "nothing held, nothing audited");
+  });
+
   // R19: session.messages is a sliding window (system prompt + the last 20). On a longer call the
   // name read-back and the caller's "yes" fall out of it, and the check then holds a CORRECT booking
   // as unconfirmed. The check reads the unwindowed transcript instead.

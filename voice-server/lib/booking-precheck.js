@@ -216,6 +216,38 @@ function conversationText(messages, pendingUser, pendingAi) {
 }
 
 /**
+ * Everything the caller has said so far, one line per turn: the transcript's
+ * caller lines, then the turn in progress. If it changes while a check runs,
+ * the caller spoke during it. The same words moving from the turn in progress
+ * into the transcript (the turn completed) are not a change.
+ * @param {Array<{ role?: string, content?: unknown }>} messages
+ * @param {string} pendingUser
+ * @returns {string}
+ */
+function callerWords(messages, pendingUser) {
+  /** @type {string[]} */
+  const lines = [];
+  for (const m of Array.isArray(messages) ? messages : []) {
+    const text = m && m.role === "user" && typeof m.content === "string" ? m.content.trim() : "";
+    if (text) lines.push(text);
+  }
+  const u = pendingUser.trim();
+  if (u) lines.push(u);
+  return lines.join("\n");
+}
+
+/**
+ * The turn still in progress: read live through the handler's getter when it
+ * passed one, else the static text.
+ * @param {PrecheckInput} input
+ * @returns {{ user: string, ai: string }}
+ */
+function turnInProgress(input) {
+  const p = typeof input.getPending === "function" ? input.getPending() : { user: input.pendingUser, ai: input.pendingAi };
+  return { user: typeof p?.user === "string" ? p.user : "", ai: typeof p?.ai === "string" ? p.ai : "" };
+}
+
+/**
  * @param {{ toolName: string, saved: Record<string, unknown>, identify: Record<string, unknown>, conversation: string, now: string, nameMethod: string }} p
  * @returns {string}
  */
@@ -354,20 +386,62 @@ async function requestVerdict(prompt) {
 }
 
 /**
- * Pre-check one tool call. Never throws. A call that saves no name or date (an
- * update of only phone, email or notes) proceeds without asking Claude.
- * @param {{
+ * One tool call to pre-check. The turn in progress comes from getPending when
+ * it is given (read live, so a fix can be asked again with words that arrived
+ * during the check), else from the static pendingUser/pendingAi.
+ * @typedef {{
  *   toolName: string,
  *   args: Record<string, unknown>,
  *   messages: Array<{ role?: string, content?: unknown }>,
  *   pendingUser?: string,
  *   pendingAi?: string,
+ *   getPending?: () => { user?: unknown, ai?: unknown },
  *   timezone?: string,
  *   nameMethod?: string,
  *   holds: Map<string, number>,
  *   callSid?: string,
  *   now?: Date,
- * }} input
+ * }} PrecheckInput
+ */
+
+/**
+ * Claude's verdict on one write. On a fix, asks ONCE more if the caller spoke
+ * during the check: Gemini's transcription of their words has no guaranteed
+ * order against its tool calls (SCRUM-587), so the "yes" that confirmed a
+ * booking can land after the call it confirmed. An allow never waits for that,
+ * and the re-check's answer, whatever it is, is final.
+ * @param {PrecheckInput} input
+ * @param {Record<string, unknown>} saved
+ * @param {Record<string, unknown>} identify
+ * @returns {Promise<{ allow: true, unchecked?: true } | { allow: false, problem: string }>}
+ */
+async function decide(input, saved, identify) {
+  const now = safeNowLine(input.timezone, input.now);
+  const ask = (/** @type {{ user: string, ai: string }} */ turn) =>
+    requestVerdict(
+      buildPrecheckPrompt({
+        toolName: input.toolName,
+        saved,
+        identify,
+        conversation: conversationText(input.messages, turn.user, turn.ai),
+        now,
+        nameMethod: input.nameMethod || "repeat-confirm",
+      })
+    );
+  const turn = turnInProgress(input);
+  const heard = callerWords(input.messages, turn.user);
+  const verdict = await ask(turn);
+  if (verdict.allow === true) return verdict;
+  const fresh = turnInProgress(input);
+  if (callerWords(input.messages, fresh.user) === heard) return verdict;
+  console.log(`[Precheck] caller spoke during the check — re-checking ${input.toolName} once. callSid=${input.callSid}`);
+  return ask(fresh);
+}
+
+/**
+ * Pre-check one tool call. Never throws. A call that saves no name or date (an
+ * update of only phone, email or notes) proceeds without asking Claude.
+ * @param {PrecheckInput} input
  * @returns {Promise<{ action: "proceed" } | { action: "hold", problem: string, message: string }>}
  */
 async function precheckBookingWrite(input) {
@@ -397,16 +471,7 @@ async function precheckBookingWrite(input) {
       });
       return PROCEED;
     }
-    const now = safeNowLine(input.timezone, input.now);
-    const prompt = buildPrecheckPrompt({
-      toolName,
-      saved,
-      identify,
-      conversation: conversationText(input.messages, input.pendingUser, input.pendingAi),
-      now,
-      nameMethod: input.nameMethod || "repeat-confirm",
-    });
-    const verdict = await requestVerdict(prompt);
+    const verdict = await decide(input, saved, identify);
     const ms = Date.now() - started;
     // `=== true`, not a bare truthiness check: jsconfig has no strictNullChecks,
     // where a boolean discriminant only narrows the union through a comparison.
@@ -446,7 +511,8 @@ async function precheckBookingWrite(input) {
  * the result to hand Gemini. null = go ahead and write.
  * @param {any} session - CallSession
  * @param {{ name: string, args?: Record<string, unknown> }} toolCall
- * @param {{ pendingUser?: string, pendingAi?: string, promptConfig?: any, audit?: boolean }} turn
+ * @param {{ pendingUser?: string, pendingAi?: string, getPending?: () => { user?: unknown, ai?: unknown }, promptConfig?: any, audit?: boolean }} turn
+ *   getPending - the handler's live transcript buffers (preferred over the static pendingUser/pendingAi)
  * @returns {Promise<{ message: string } | null>}
  */
 async function applyBookingPrecheck(session, toolCall, turn) {
@@ -462,6 +528,7 @@ async function applyBookingPrecheck(session, toolCall, turn) {
       messages: session.fullTranscriptMessages?.length ? session.fullTranscriptMessages : session.messages,
       pendingUser: turn.pendingUser,
       pendingAi: turn.pendingAi,
+      getPending: turn.getPending,
       timezone: session.organization?.timezone,
       nameMethod: nameVerificationMethod(turn.promptConfig),
       holds: session.precheckHolds,
