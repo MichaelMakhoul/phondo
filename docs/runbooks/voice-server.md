@@ -281,9 +281,16 @@ Spec: `docs/superpowers/specs/2026-10-15-booking-precheck-design.md`.
 **Modes** (`PRECHECK_MODE`):
 - unset or `enforce` (default): checks and holds;
 - `shadow`: checks and logs what it would have done (the first verdict; no re-check), never holding or delaying a write;
-- `off`, also `disabled`, `false`, `0` or `no` (any case): no check at all.
+- `off`, also `disabled`, `disable`, `false`, `0`, `no`, `n`, `none`, `skip`, `bypass` or `stop` (trimmed, any case): no check at all.
 
-Any other value warns once (`[Precheck] unknown PRECHECK_MODE="…" — enforcing`) and enforces.
+Any other value (`on`, `true` and `yes` included) ENFORCES, warns once (`[Precheck] unknown PRECHECK_MODE="…" — enforcing`) and pages at boot (below).
+
+**At boot**, right after the `Voice pipeline:` line, the server logs what the check will do:
+`[Precheck] mode=<enforce|shadow|off> model=<model> key=<set|MISSING|unset>`. `MISSING` means the check is
+on but `ANTHROPIC_API_KEY` is not set; `unset` means it is off and the key does not matter. Two settings
+that silently defeat the check page at boot, once each:
+- `[ALERT:error] [booking_precheck] PRECHECK_MODE is not recognised: the booking pre-check is ENFORCING | … mode_value="…"`. Someone typed a mode we don't know. Fix the secret if they meant off or shadow.
+- `[ALERT:error] [booking_precheck] Booking pre-check is on but ANTHROPIC_API_KEY is not set: writes go through unchecked`. Every booking write goes through unchecked until the key is set.
 
 **Kill switch:** `fly secrets set PRECHECK_MODE=off -a phondo-voice`. Setting a secret
 restarts the always-on machine: a live call gets the 15 s shutdown drain and is then
@@ -308,13 +315,19 @@ the code. `PRECHECK_MODE` does not switch it back.
 | `[Precheck] caller spoke during the check — re-checking <tool> once` | the caller's words grew during a held check (a late "yes"), so it asked again |
 | `[Precheck] re-check failed — holding on the first verdict <tool>: <problem>` | that second ask got no verdict, so the first verdict's hold stands (the failure still counts toward the page below) |
 | `[Precheck] session ended during the check — writing the allowed <tool> anyway` | the caller hung up mid-check; the allowed write still happened |
-| `[Precheck] <tool> let through unchecked after 2 holds` | the hold cap let it through (also `[ALERT:warning] [booking_precheck]`) |
+| `[Precheck] <tool> let through unchecked after 2 holds` | the hold cap let it through; this pages (see below) |
+| `[Precheck] held <tool> dropped — call ended during the check` | the caller hung up mid-check on a write the check held; nothing was written |
+| `[Precheck] practitioner not resolved — rule 4 not applied` | the write saves a practitioner the call's staff list can't name (no snapshot, as for a Cliniko org, or an unknown id), so the practitioner rule could not be checked |
+| `[NowLine] org timezone "<zone>" is not a valid IANA zone — using Australia/Sydney` | the org's timezone is malformed; "today"/"tomorrow" are judged against Sydney's date until it is fixed (once per bad value per process) |
 
 **Pages:** `[ALERT:error] [booking_precheck] Booking pre-check producing no verdicts (…) — writes go through unchecked`.
-- It fires at once on a config failure: `ANTHROPIC_API_KEY not set`, or HTTP 400/401/403/404 (a bad key, model or request field). Otherwise it fires from the 3rd failed check in a row.
+- It fires at once on a config failure: `ANTHROPIC_API_KEY not set`, or HTTP 400/401/403/404 (a bad key, model or request field).
+- It also fires from the 3rd failed check in a row (`(<n> unreadable in a row)`).
+- Intermittent failures page too: `(<n> of the last <m> checks unreadable)` fires once 3 of the last 10 checks have failed, for example two failures in every three checks. It fires once per failed check while that holds.
 - Bookings keep working, but unchecked. Triage from the line's `cause=`, `status=` and `error_type=`. For a bad model, `fly secrets unset PRECHECK_MODEL -a phondo-voice`.
 - A page that ends `— held on the first verdict` came from a failed re-check: that write was held, not let through.
-- `[ALERT:error] [booking_precheck] Booking pre-check glue threw — write went through unchecked` is a code bug: one write went through unchecked.
+- `[ALERT:error] [booking_precheck] Booking pre-check glue threw — write went through unchecked` is a code bug: one write went through unchecked. Its `stack=` shows up to 3 frames of where it threw.
+- `[ALERT:error] [booking_precheck] Booking pre-check: <tool> let through unchecked after 2 holds | … reason=precheck-hold-cap`: the check held one write twice in a call and let the third attempt through unchecked, so the caller is never trapped. One page is a caller the check could not satisfy. Several in a short time mean it is holding correct bookings: look at the `Holding … <problem>` lines, and step down to `shadow` if needed.
 
 Loki: `{fly_app_name="phondo-voice"} |= "[Precheck]"`.
 

@@ -26,7 +26,7 @@ Gemini already has the rule ("NAME COLLECTION IS MANDATORY … repeat the name b
 - **If the call ends during the check:** the handler holds the session it started with. A write the check **allowed** still happens, as it did when the write started in the same tick as the tool call (`[Precheck] session ended during the check — writing the allowed <tool> anyway`); a held write is dropped.
 - **Skipped for:**
   - owner calls (they return earlier and have their own read-back gate) and every other tool;
-  - a call that saves no name or date (an `update_appointment` that changes only phone, email or notes, even one that names its booking's `datetime`): there is nothing to compare with the call, so no request, no hold and a `[Precheck] skip <tool> (no name or date to save)` line;
+  - a call that saves no name or date (an `update_appointment` that changes only phone, email or notes, even one that names its booking's `datetime`): there is nothing to compare with the call, so no request, no hold and a `[Precheck] skip <tool> (no name or date to save)` line. A blank value (`""`, whitespace or `null`) counts as absent, as the writers treat it;
   - the **public website demo** (`/ws/test` with `DEMO_ORG_ID`): every write there is simulated, and its prompt has no pre-booking read-back by design (3-minute cap), so a check would protect nothing and hold its bookings (`[Precheck] skip <tool> (public demo)`).
 
 ### What Claude sees
@@ -63,14 +63,14 @@ The answer is strict JSON, either `{"verdict":"allow","problem":"none"}` or `{"v
   - **Claude's wording never reaches Gemini** (SCRUM-593 security ruling). The transcript is in Claude's prompt, so a caller can shape what Claude writes; relaying it would give caller speech the authority of a tool result ("transfer the caller to …"). Only the problem code is taken from the reply, and only when it is exactly one of the known codes.
   - **A late "yes":** Gemini's transcription of the caller has no guaranteed order against its tool calls (SCRUM-587), so the yes that confirmed a booking can land after the call. On a fix, if the caller's words **grew** during the check, the check asks **once** more with them. Words that shrank or changed are no new evidence: cleanup clears the turn in progress, for example. In that case the first verdict stands. Shadow mode never re-checks; it logs the first verdict. A re-check that reads a verdict is final. One that produces none (an error, a timeout, an unreadable reply) **holds on the first verdict** (`[Precheck] re-check failed — holding on the first verdict <tool>: <problem>`): a real verdict already found a problem, and failing open there could save the data it caught. That failure still counts toward the run that pages, and if it pages, the page says it held on the first verdict. An allow never waits for any of this.
   - Because the tool is BLOCKING, Gemini waits for this, then asks the caller.
-  - The audit records the attempt under the tool's own name with `successful: false, precheckHold: true`. `hasUnfinishedBooking` counts exactly `book_appointment` and `reschedule_appointment` as funnel steps, so this keeps the end-call guard treating the booking as unfinished.
+  - The audit records the attempt under the tool's own name with `successful: false, precheckHold: true`. `hasUnfinishedBooking` counts exactly `book_appointment` and `reschedule_appointment` as funnel steps, so this keeps the end-call guard treating the booking as unfinished. When the open step is a reschedule, held or failed (`CallSession.lastFunnelStep()`), the guard's nudge says the caller's existing appointment is unchanged, rather than "NO appointment … call book_appointment now".
   - It does **not** count against the booking-failure loop caps, because the write was never attempted.
   - It clears the Tier-2 checker's last tool result, so the read-back it asks for is never judged against an older result from the last 10 s.
 
 ### Limits and failures
-- **Hold limit:** at most **2 holds per write**. The third attempt goes through, with a `[ALERT:warning]`, so a caller is never trapped when Claude can't be satisfied (for example on a garbled transcript). The count resets when that write succeeds (on both Gemini paths, and when a name fix succeeds).
-- **When Claude fails:** this covers a timeout over **3 s**, an HTTP error, a missing key, or an unreadable reply. In each case the write **goes through as today** (fail-open) and is logged as `unchecked`. A run of failures pages, using the same mechanism the existing checker uses. Logs never contain transcript text (SCRUM-339).
-- **Modes:** `PRECHECK_MODE=enforce` (default), `shadow` or `off`. `shadow` checks and logs the first verdict when it lands (no re-check), and never holds or delays a write. `off` also accepts `disabled`, `false`, `0` and `no`, so the kill switch fails toward off; any other unknown value warns once and enforces. Changing it is a Fly secret change, with no code deploy.
+- **Hold limit:** at most **2 holds per write**. The third attempt goes through, with an `[ALERT:error]` page (reason `precheck-hold-cap`), so a caller is never trapped when Claude can't be satisfied (for example on a garbled transcript). The count resets when that write succeeds (on both Gemini paths, and when a name fix succeeds).
+- **When Claude fails:** this covers a timeout over **3 s**, an HTTP error, a missing key, or an unreadable reply. In each case the write **goes through as today** (fail-open) and is logged as `unchecked`. Failures page through the same mechanism the existing checker uses: a config failure at once, the 3rd in a row, and 3 failures among the last 10 checks (intermittent ones). Logs never contain transcript text (SCRUM-339).
+- **Modes:** `PRECHECK_MODE=enforce` (default), `shadow` or `off`. `shadow` checks and logs the first verdict when it lands (no re-check), and never holds or delays a write. `off` also accepts `disabled`, `disable`, `false`, `0`, `no`, `n`, `none`, `skip`, `bypass` and `stop`, so the kill switch fails toward off. Any other unknown value enforces, warns once and pages at boot. At boot the server logs `[Precheck] mode=… model=… key=set|MISSING|unset`, and it pages for a missing `ANTHROPIC_API_KEY` while the check is on. Changing it is a Fly secret change, with no code deploy.
 - **Model:** `PRECHECK_MODEL`, default `claude-haiku-5-5` with thinking off (the latency settings the validator already uses).
 
 ### Cost and delay
@@ -136,10 +136,16 @@ The Tier-2 checker (`services/turn-validator.js`) is never told today's date, so
 
 ## 8. Files
 
-- **New:** `voice-server/lib/booking-precheck.js` (the Claude request, verdict parsing, mode, and hold counter keyed per session and tool), plus its tests.
-- `voice-server/server.js`: called in both Gemini `onToolCall` handlers, just before `executeToolCall`.
+- **New:** `voice-server/lib/booking-precheck.js` (the Claude request, verdict parsing, modes and the boot report, the hold counter, paging), plus its tests.
+- **New:** `voice-server/lib/now-line.js`: the shared "now" line. It holds `nowLine` and `safeNowLine`, which falls back to Sydney and warns once per bad org zone. `get_current_datetime` (`services/tool-executor.js`), the Tier-2 checker and the pre-check all use it.
+- `voice-server/server.js`:
+  - both Gemini `onToolCall` handlers, just before `executeToolCall`: the check, the session held through it, and the public-demo skip;
+  - the reschedule-aware end_call nudge;
+  - the boot report in the listen callback.
+- `voice-server/call-session.js`: `precheckHolds` and `lastFunnelStep()`.
+- `voice-server/lib/model-params.js`: `readAnthropicError`, shared with the Tier-2 checker.
+- `voice-server/lib/sentry-reasons.js`: `PRECHECK_HOLD_CAP` (`precheck-hold-cap`).
 - `voice-server/services/turn-validator.js` and its call site: the "now" line.
-- `voice-server/services/tool-executor.js`: export the "now" formatter for reuse.
 - `voice-server/.env.example`: `PRECHECK_MODE`, `PRECHECK_MODEL`.
 
 **Estimate:** 1–2 days including review. Owner deploy needed.
