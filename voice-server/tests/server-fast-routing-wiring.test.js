@@ -181,13 +181,16 @@ function classicTop({ effectivePipeline, sessionPipeline = effectivePipeline, ow
   const session = makeSession({ owner, calledNumber: DEMO });
   session.effectivePipeline = sessionPipeline;
   let fastPathAtSttOpen = "not opened";
+  /** Which STT the block opened: "nova" (openDeepgramStream) or "flux" (Task 5's startFastPath). */
+  let stt = null;
   runSlice({
     from: "// ── Classic pipeline (Deepgram STT + OpenAI LLM + Deepgram TTS) ──",
     to: "// Recording disclosure + greeting — pre-synthesize disclosure while STT connects",
     scope: {
       session,
       effectivePipeline,
-      openDeepgramStream: () => { fastPathAtSttOpen = session.fastPath; return { readyState: 1 }; },
+      openDeepgramStream: () => { fastPathAtSttOpen = session.fastPath; stt = "nova"; return { readyState: 1 }; },
+      startFastPath: () => { fastPathAtSttOpen = session.fastPath; stt = "flux"; },
       DEEPGRAM_API_KEY: "dg",
       logTranscript: () => {},
       handleUserSpeech: async () => {},
@@ -198,7 +201,7 @@ function classicTop({ effectivePipeline, sessionPipeline = effectivePipeline, ow
       console: recordingConsole([]),
     },
   });
-  return { session, fastPathAtSttOpen };
+  return { session, fastPathAtSttOpen, stt };
 }
 
 describe("SCRUM-594: the classic block flags the fast variant, run for real", () => {
@@ -206,11 +209,13 @@ describe("SCRUM-594: the classic block flags the fast variant, run for real", ()
     const fast = classicTop({ effectivePipeline: "classic-fast" });
     assert.equal(fast.session.fastPath, true);
     assert.equal(fast.fastPathAtSttOpen, true);
+    assert.equal(fast.stt, "flux", "the fast path starts Flux (Task 5), not Nova");
     assert.equal(fast.session.effectivePipeline, "classic-fast");
     for (const p of ["classic", "gemini-live"]) {
       const r = classicTop({ effectivePipeline: p });
       assert.equal(r.session.fastPath, false, p);
       assert.equal(r.fastPathAtSttOpen, false, p);
+      assert.equal(r.stt, "nova", p);
     }
   });
 
@@ -218,6 +223,7 @@ describe("SCRUM-594: the classic block flags the fast variant, run for real", ()
     const r = classicTop({ effectivePipeline: "classic-fast", owner: true });
     assert.equal(r.session.fastPath, false);
     assert.equal(r.fastPathAtSttOpen, false);
+    assert.equal(r.stt, "nova");
     assert.equal(r.session.effectivePipeline, "classic", "recorded as the classic call it is");
   });
 
@@ -257,6 +263,7 @@ async function runCleanup(session, { demoLine = (n) => n === DEMO } = {}) {
     buildOwnerCallSummary,
     settleOwnerToolRuns,
     isDemoLineNumber: demoLine,
+    closeFastPath: () => {}, // these sessions never started the fast path (no fastState)
     console: recordingConsole(lines),
   };
   const { cleanupSession } = runSlice({ from: "async function cleanupSession() {", to: 'twilioWs.on("message", async (raw) => {', scope, names: ["cleanupSession"] });

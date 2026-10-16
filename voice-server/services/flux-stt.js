@@ -265,7 +265,10 @@ function openFluxStream(apiKey, callbacks = {}, options = {}) {
     ws = new WebSocket(buildFluxUrl(options), { headers: { Authorization: `Token ${apiKey}` } });
   } catch (err) {
     failConnect(guard, err, onClose);
-    return deadStream({ send: false, close: undefined, configure: false, forceEndTurn: false }, { readyState: WebSocket.CLOSED });
+    // Typed against FluxStream, so a method added to the handle without its dead stub fails the typecheck.
+    /** @type {Record<Exclude<keyof FluxStream, "readyState">, any>} */
+    const deadReturns = { send: false, close: undefined, configure: false, forceEndTurn: false };
+    return deadStream(deadReturns, { readyState: WebSocket.CLOSED });
   }
   const pinger = createPinger(ws);
 

@@ -798,6 +798,7 @@ function makeClassicStt(session) {
       session,
       effectivePipeline: "classic", // SCRUM-594: the classic block's first statement reads it
       openDeepgramStream: (key, cbs) => { callbacks = cbs; return { readyState: 1 }; },
+      startFastPath: () => assert.fail("SCRUM-594: a classic call never starts the fast path"),
       DEEPGRAM_API_KEY: "dg",
       logTranscript: () => {},
       handleUserSpeech: async () => {},
@@ -822,6 +823,7 @@ function classicGreeting(session) {
       getRecordingDisclosureText: () => "This call is recorded.",
       synthesizeSpeech: (...a) => { calls.push(["synthesizeSpeech", a[1]]); return Promise.resolve(null); },
       DEEPGRAM_API_KEY: "dg",
+      FAST_DEEPGRAM_HOST: "api.au.deepgram.com", // SCRUM-594: read on the fast path only
       getGreeting: () => "Thanks for calling Copperline Plumbing!",
       buildOwnerGreeting,
       console: recordingConsole([]),
@@ -888,6 +890,7 @@ function makeClassic(o = {}) {
     END_CALL_PLAYBACK_CAP_MS: 50,
     END_CALL_TAIL_MS: 5,
     WebSocket: { OPEN: 1 },
+    fastFlush: () => assert.fail("SCRUM-594: a classic turn never flushes an Aura stream"),
     console: recordingConsole(lines),
   };
   const fns = runSlice({
@@ -1113,6 +1116,7 @@ function makeCleanup(session, o = {}) {
     buildOwnerCallSummary,
     settleOwnerToolRuns: o.settleOwnerToolRuns || settleOwnerToolRuns,
     isDemoLineNumber: () => false, // SCRUM-594: metadata.pipeline is for demo-line calls only
+    closeFastPath: () => assert.fail("SCRUM-594: a classic call has no fast path to close"),
     console: recordingConsole(lines),
   };
   const { cleanupSession } = runSlice({ from: "async function cleanupSession() {", to: 'twilioWs.on("message", async (raw) => {', scope, names: ["cleanupSession"] });

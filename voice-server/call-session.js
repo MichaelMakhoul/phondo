@@ -4,6 +4,24 @@ const { logTranscript } = require("./lib/log-transcript");
 
 const MAX_MESSAGES = 21; // system prompt + up to 20 messages (user/assistant turns + tool call/result messages)
 
+/**
+ * SCRUM-594: the fast path's per-call audio bookkeeping. server.js owns it (the
+ * "Fast classic pipeline" section); null on every other call.
+ * @typedef {Object} FastPathState
+ * @property {string} speakingText - every word sent to TTS since the player last went idle (the turn engine's echo filter reads it)
+ * @property {boolean} unmarked - audio reached the player since its last mark
+ * @property {boolean} unflushed - text went to the Aura stream since the last flush
+ * @property {number|null} pendingFlushSeq - the latest flush still waiting for its Flushed
+ * @property {number} flushedSeq - the highest Flushed sequence id seen (-1 before any)
+ * @property {Array<{ seq: number, done: () => void }>} flushWaiters - waits for a Flushed (the end_call hang-up)
+ * @property {Array<() => void>} quietWaiters - waits for Aura to go quiet (a refused flush)
+ * @property {ReturnType<typeof setTimeout>|null} quietTimer - ends an utterance whose Flushed never comes
+ * @property {ReturnType<typeof setTimeout>|null} fluxOpenTimer - Flux must open before it fires
+ * @property {boolean} ttsFellBack - the Aura stream failed: REST for the rest of the call
+ * @property {boolean} flushRefusalLogged - a refused flush is logged once per call
+ * @property {boolean} closed - cleanup has run: late callbacks do nothing
+ */
+
 class CallSession {
   constructor(callSid) {
     this.callSid = callSid;
@@ -46,6 +64,18 @@ class CallSession {
     // SCRUM-594: the fast path's audio player (lib/fast-player.js); null on every other call.
     /** @type {import("./lib/fast-player").FastPlayer|null} */
     this.fastPlayer = null;
+    // SCRUM-594: the fast path's Aura-2 WebSocket TTS (services/aura-stream.js).
+    // Null on every other call, and once the stream has failed: sendTTS then
+    // speaks over REST for the rest of the call.
+    /** @type {import("./services/aura-stream").AuraStream|null} */
+    this.fastTts = null;
+    // SCRUM-594: the fast path's Flux turn engine (lib/fast-turns.js); null on
+    // every other call, and once Flux has fallen back to Nova.
+    /** @type {import("./lib/fast-turns").FastTurnEngine|null} */
+    this.fastTurns = null;
+    // SCRUM-594: the fast path's audio and flush bookkeeping (server.js).
+    /** @type {FastPathState|null} */
+    this.fastState = null;
     // SCRUM-594: optional — resolves once the call's queued speech has played.
     // The classic end_call hang-up (server.js hangUpAfterEndCall) awaits it
     // instead of its sendTTS-duration estimate. The fast path sets it: its

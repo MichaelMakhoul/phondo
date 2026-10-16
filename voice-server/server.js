@@ -31,6 +31,14 @@ const { createOpenAIRealtimeSession, createGrokRealtimeSession, resolveOpenAIRea
 const { createSessionWithFailover, isFailoverEnabled } = require("./services/gemini-failover"); // SCRUM-535
 const { resolveTestPipeline, KNOWN_TEST_PIPELINES, resolveOwnerPipeline, resolveCallPipeline } = require("./lib/pipeline-routing"); // SCRUM-378 per-number test override; SCRUM-587 OWNER_PIPELINE; SCRUM-594 DEMO_LINE_PIPELINE
 const { checkEndCallGuard } = require("./lib/end-call-guard"); // SCRUM-594: the SCRUM-373 end_call guard for the classic pipeline
+// SCRUM-594: the fast classic pipeline (DEMO_LINE_PIPELINE=classic-fast, spec 4.8):
+// Flux STT and its turn engine, the Aura stream and the player that carries it
+// to Twilio. These clients never capture to Sentry; server.js does.
+const { openFluxStream, fluxConfigFromEnv } = require("./services/flux-stt");
+const { openAuraStream } = require("./services/aura-stream");
+const { DEFAULT_HOST } = require("./services/deepgram-ws-common");
+const { createFastPlayer } = require("./lib/fast-player");
+const { createFastTurnEngine } = require("./lib/fast-turns");
 const { handleConversationRelayConnection, buildConversationRelayTwiml } = require("./services/conversationrelay"); // SCRUM-378 eval spike (ConversationRelay + Claude)
 const { validateToolResponse } = require("./services/turn-validator");
 const { detectPhantomAction, detectPostCallPhantoms, summarizePhantoms, netLiveOutcome, buildToolOutcomeDigest } = require("./lib/action-claim-detector"); // SCRUM-381 live + SCRUM-383 post-call + SCRUM-559 cancel-aware state checks
@@ -1546,6 +1554,10 @@ wss.on("connection", (twilioWs) => {
     const s = session;
     session = null;
     sessions.delete(s.streamSid);
+
+    // SCRUM-594 (spec 4.8.10): the fast path's sockets and timers go first: a
+    // Flux handle still CONNECTING would otherwise leak (our pings keep it alive).
+    if (s.fastState) closeFastPath(s);
 
     // Unsubscribe from schedule cache events
     if (s._cacheUnsub) {
@@ -3278,54 +3290,62 @@ wss.on("connection", (twilioWs) => {
           // recorded as the classic call it is.
           session.fastPath = !session.ownerMode && effectivePipeline === "classic-fast";
           if (!session.fastPath) session.effectivePipeline = "classic";
-          session.deepgramWs = openDeepgramStream(DEEPGRAM_API_KEY, {
-            language: session.language,
-            onTranscript: ({ transcript, isFinal }) => {
-              if (!isFinal) return;
-              // Echo suppression: drop STT transcripts that arrive while AI is speaking.
-              // Allow through: substantial speech (>2 words) or known interrupt phrases.
-              const INTERRUPT_RE = /^(stop|wait|hold on|no|cancel|nevermind|never mind|excuse me|hello|hey)\b/i;
-              if (session.isSpeaking && transcript.trim().split(/\s+/).length <= 2 && !INTERRUPT_RE.test(transcript.trim())) {
-                logTranscript("[STT] Dropped (echo suppression while AI speaking)", transcript);
-                return;
-              }
-              logTranscript("[STT] Final", transcript);
-              // SCRUM-587: the owner spoke (confirmation-gate clock; once per utterance).
-              if (session.ownerMode) noteOwnerSpeech(session, transcript);
-              session.bufferTranscript(transcript, (combined, inputType) => {
-                logTranscript("[STT] Buffered", combined);
-                session.queueOrProcess(combined, (text) => handleUserSpeech(session, twilioWs, text, inputType));
-              });
-            },
-            onUtteranceEnd: () => {
-              session.flushBuffer();
-            },
-            onError: (err) => {
-              console.error("[STT] Error:", err);
-              if (session) {
-                session.callFailed = true;
-                session.endedReason = "stt-error";
-              }
-              sendTTS(session, twilioWs, getErrorMsg(session.language, "technicalDifficulty"))
-                .catch((ttsErr) => {
-                  console.error("[STT] Failed to send error message to caller:", ttsErr);
-                })
-                .finally(() => {
-                  // Disconnect after delivering the error message
-                  setTimeout(() => twilioWs.close(), 2000);
+          // Nova-3 with today's callbacks: the classic STT, and the fast path's
+          // fallback whenever Flux cannot serve the call (spec 4.8.1).
+          const openClassicStt = () => {
+            session.deepgramWs = openDeepgramStream(DEEPGRAM_API_KEY, {
+              language: session.language,
+              onTranscript: ({ transcript, isFinal }) => {
+                if (!isFinal) return;
+                // Echo suppression: drop STT transcripts that arrive while AI is speaking.
+                // Allow through: substantial speech (>2 words) or known interrupt phrases.
+                const INTERRUPT_RE = /^(stop|wait|hold on|no|cancel|nevermind|never mind|excuse me|hello|hey)\b/i;
+                if (session.isSpeaking && transcript.trim().split(/\s+/).length <= 2 && !INTERRUPT_RE.test(transcript.trim())) {
+                  logTranscript("[STT] Dropped (echo suppression while AI speaking)", transcript);
+                  return;
+                }
+                logTranscript("[STT] Final", transcript);
+                // SCRUM-587: the owner spoke (confirmation-gate clock; once per utterance).
+                if (session.ownerMode) noteOwnerSpeech(session, transcript);
+                session.bufferTranscript(transcript, (combined, inputType) => {
+                  logTranscript("[STT] Buffered", combined);
+                  session.queueOrProcess(combined, (text) => handleUserSpeech(session, twilioWs, text, inputType));
                 });
-            },
-            onClose: (code) => {
-              if (code !== 1000 && code !== 1005 && session && !session.callFailed) {
-                console.error(`[STT] Connection lost during active call (callSid=${session.callSid})`);
-                session.callFailed = true;
-                session.endedReason = "stt-connection-lost";
-                sendTTS(session, twilioWs, getErrorMsg(session.language, "troubleRepeat"))
-                  .catch((ttsErr) => console.error("[STT] Failed to send reconnect message:", ttsErr))
-                  .finally(() => setTimeout(() => twilioWs.close(), 3000));
-              }
-            },
-          }, { industry: session.organization?.industry });
+              },
+              onUtteranceEnd: () => {
+                session.flushBuffer();
+              },
+              onError: (err) => {
+                console.error("[STT] Error:", err);
+                if (session) {
+                  session.callFailed = true;
+                  session.endedReason = "stt-error";
+                }
+                sendTTS(session, twilioWs, getErrorMsg(session.language, "technicalDifficulty"))
+                  .catch((ttsErr) => {
+                    console.error("[STT] Failed to send error message to caller:", ttsErr);
+                  })
+                  .finally(() => {
+                    // Disconnect after delivering the error message
+                    setTimeout(() => twilioWs.close(), 2000);
+                  });
+              },
+              onClose: (code) => {
+                if (code !== 1000 && code !== 1005 && session && !session.callFailed) {
+                  console.error(`[STT] Connection lost during active call (callSid=${session.callSid})`);
+                  session.callFailed = true;
+                  session.endedReason = "stt-connection-lost";
+                  sendTTS(session, twilioWs, getErrorMsg(session.language, "troubleRepeat"))
+                    .catch((ttsErr) => console.error("[STT] Failed to send reconnect message:", ttsErr))
+                    .finally(() => setTimeout(() => twilioWs.close(), 3000));
+                }
+              },
+            }, { industry: session.organization?.industry });
+          };
+          // SCRUM-594: the fast path starts Flux (and its turn engine), the Aura
+          // stream and the player instead; every other call opens Nova as before.
+          if (session.fastPath) startFastPath(session, twilioWs, openClassicStt);
+          else openClassicStt();
 
           // Recording disclosure + greeting — pre-synthesize disclosure while STT connects
           // SCRUM-587: no spoken disclosure on owner calls (as on the Gemini path).
@@ -3353,6 +3373,8 @@ wss.on("connection", (twilioWs) => {
             );
             disclosureAudioPromise = synthesizeSpeech(DEEPGRAM_API_KEY, disclosureText, {
               voice: session.deepgramVoice,
+              // SCRUM-594: the fast path pre-synthesises on the AU host (spec 4.8.1)
+              ...(session.fastPath ? { host: FAST_DEEPGRAM_HOST } : {}),
             }).catch((err) => {
               console.error("[Recording] Disclosure pre-synthesis failed:", err);
               return null;
@@ -3365,6 +3387,7 @@ wss.on("connection", (twilioWs) => {
             : getGreeting(context.assistant, context.organization.name, { isAfterHours, afterHoursConfig });
           const greetingAudioPromise = synthesizeSpeech(DEEPGRAM_API_KEY, stripMarkdown(greeting), {
             voice: session.deepgramVoice,
+            ...(session.fastPath ? { host: FAST_DEEPGRAM_HOST } : {}),
           }).catch((err) => {
             console.error("[TTS] Greeting pre-synthesis failed:", err);
             return null;
@@ -3391,6 +3414,10 @@ wss.on("connection", (twilioWs) => {
               console.warn("[Recording] Disclosure pre-synthesis failed — falling back to synchronous TTS");
               try {
                 await sendTTS(session, twilioWs, disclosureText);
+                // SCRUM-594: on the fast path that went out on the Aura stream. Its
+                // audio must reach Twilio before the pre-synthesised greeting's
+                // frames below, or the two would interleave.
+                if (session.fastPath) await settleFastAudio(session);
                 session.recordingDisclosurePlayed = true;
                 session.addMessage("assistant", disclosureText);
               } catch (fallbackErr) {
@@ -3418,6 +3445,7 @@ wss.on("connection", (twilioWs) => {
             // Fallback: synthesize greeting normally if pre-synth failed
             try {
               await sendTTS(session, twilioWs, greeting);
+              if (session.fastPath) fastFlush(session); // SCRUM-594: release the greeting's last words (spec 4.8.4)
               session.addMessage("assistant", greeting);
             } catch (err) {
               console.error("[TTS] Greeting fallback also failed:", err);
@@ -3455,6 +3483,9 @@ wss.on("connection", (twilioWs) => {
           // TTS playback finished for a marked chunk
           if (session && msg.mark && msg.mark.name === "tts-done") {
             session.isSpeaking = false;
+          } else if (session?.fastPlayer && typeof msg.mark?.name === "string" && msg.mark.name.startsWith("fast-")) {
+            // SCRUM-594 (spec 4.8.6): the fast player's marks; isSpeaking follows what it still has playing.
+            onFastMark(session, msg.mark.name);
           }
           break;
         }
@@ -3505,6 +3536,24 @@ wss.on("connection", (twilioWs) => {
 // leave Twilio's buffer before the stream closes (which ends the call).
 const END_CALL_PLAYBACK_CAP_MS = 8000;
 const END_CALL_TAIL_MS = 500;
+
+// SCRUM-594: the fast classic pipeline (spec 4.8). Out here, beside the
+// end_call timings, so the tests that run server.js text inject their own.
+// Flux, the Aura stream and the fast path's greeting pre-synthesis use
+// Deepgram's Sydney host (~25 ms away vs ~335 ms for api.deepgram.com); the
+// existing Nova and REST paths stay where they are.
+const FAST_DEEPGRAM_HOST = process.env.FAST_DEEPGRAM_HOST || DEFAULT_HOST;
+// Flux must be open by then, or the call falls back to Nova.
+const FLUX_OPEN_TIMEOUT_MS = 3000;
+// What sendTTS returns for text on the Aura stream (estimated ms per character):
+// the audio streams in later, so callers that wait on a duration get an estimate.
+const FAST_TTS_MS_PER_CHAR = 70;
+// The end_call hang-up waits at most this long for the Flushed that ends the goodbye's audio.
+const FAST_FLUSHED_WAIT_MS = 3000;
+// ... then for the player to go idle: its byte estimate of playback plus this.
+const FAST_IDLE_CAP_MS = 2000;
+// Aura silent this long ends the utterance even with no Flushed (a flush the budget refused).
+const FAST_AUDIO_QUIET_MS = 500;
 
 /**
  * Build LLM options with tools based on session capabilities.
@@ -3701,9 +3750,18 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
   // Play hold audio while AI processes. SCRUM-594: holdPlaying lets an end_call
   // hang-up stop hold audio that is still looping — and only then, because
   // every stop() sends a Twilio clear, which would cut speech already queued.
+  // On the fast path that clear is sendClear's full stop (the player and the
+  // Aura stream too), so only the first stop there does anything: a later
+  // round's first words must not cut what this turn already said.
   const holdAudio = startHoldAudio(session, twilioWs, "twilio");
   let holdPlaying = true;
-  const hold = { stop: () => { holdPlaying = false; holdAudio.stop(); } };
+  const hold = {
+    stop: () => {
+      if (session.fastPath && !holdPlaying) return;
+      holdPlaying = false;
+      holdAudio.stop();
+    },
+  };
 
   try {
     session.addMessage("user", transcript);
@@ -3757,7 +3815,10 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
           holdStopped = true;
           const msgs = FILLER_MESSAGES[session.language] || FILLER_MESSAGES.en;
           console.log(`[Filler] "${msgs.waiting}"`);
-          ttsChain = ttsChain.then(async () => { await speak(msgs.waiting); }).catch((err) => {
+          ttsChain = ttsChain.then(async () => {
+            await speak(msgs.waiting);
+            if (session.fastPath) fastFlush(session); // SCRUM-594: a flush point (spec 4.8.4)
+          }).catch((err) => {
             console.error("[Filler] TTS error:", err.message);
           });
         }
@@ -3791,6 +3852,7 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
         reply = result.content;
         // Wait for all queued TTS to finish playing
         await ttsChain;
+        if (session.fastPath) fastFlush(session); // SCRUM-594: a flush point, the end of the reply (spec 4.8.4)
         // SCRUM-587: the reply has been spoken — one assistant turn on the owner
         // confirmation gate's clock (an error apology or the loop-exhausted
         // fallback is not a read-back, so neither path below counts one).
@@ -3830,6 +3892,9 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
             console.error("[Filler] TTS error:", err.message);
           });
         }
+        // SCRUM-594: a flush point (spec 4.8.4): this round's words and its filler
+        // go out while the tools run.
+        if (session.fastPath) ttsChain = ttsChain.then(() => { fastFlush(session); });
         turnTtsChains.push(ttsChain);
 
         // SCRUM-594: the nudge for an end_call blocked in this batch. A second
@@ -4076,6 +4141,7 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
           if (toolResult.action === "transfer" && toolResult.transferTo) {
             hold.stop();
             await sendTTS(session, twilioWs, resultMessage);
+            if (session.fastPath) fastFlush(session); // SCRUM-594: a flush point (spec 4.8.4)
             session.addMessage("assistant", resultMessage);
 
             // Save session for potential reconnection on no-answer
@@ -4165,6 +4231,7 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
       // a change it invites a duplicate request — but the last tool's own words.
       if (session.ownerMode) reply = ownerToolLoopReply(session, lastOwnerTool);
       await sendTTS(session, twilioWs, reply);
+      if (session.fastPath) fastFlush(session); // SCRUM-594: a flush point (spec 4.8.4)
     }
 
     session.addMessage("assistant", reply);
@@ -4194,6 +4261,7 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
     }
     try {
       await sendTTS(session, twilioWs, getErrorMsg(session.language, "troubleRepeat"));
+      if (session.fastPath) fastFlush(session); // SCRUM-594: a flush point (spec 4.8.4)
     } catch (ttsErr) {
       console.error("[Pipeline] Failed to send error message to caller:", ttsErr);
     }
@@ -4274,6 +4342,9 @@ function stripMarkdown(text) {
 }
 
 async function sendTTS(session, twilioWs, text) {
+  // SCRUM-594 (spec 4.8.3): the fast path speaks on its Aura stream while that
+  // is open; REST below otherwise, as on every other call.
+  if (session?.fastTts?.isOpen()) return speakFast(session, text);
   const t0 = Date.now();
   const cleanText = stripMarkdown(text);
   const audioBuffer = await synthesizeSpeech(DEEPGRAM_API_KEY, cleanText, {
@@ -4322,12 +4393,18 @@ async function sendTTS(session, twilioWs, text) {
  */
 function sendClear(session, twilioWs) {
   if (twilioWs.readyState !== WebSocket.OPEN) return;
-  twilioWs.send(
-    JSON.stringify({
-      event: "clear",
-      streamSid: session.streamSid,
-    })
-  );
+  if (session.fastPlayer) {
+    // SCRUM-594 (spec 4.8.5): the fast path stops its player (which sends the
+    // Twilio clear) and the Aura stream too.
+    stopFastAudio(session);
+  } else {
+    twilioWs.send(
+      JSON.stringify({
+        event: "clear",
+        streamSid: session.streamSid,
+      })
+    );
+  }
   console.log("[Barge-in] Cleared Twilio audio buffer");
 }
 
@@ -4393,6 +4470,578 @@ function startHoldAudio(session, ws, mode) {
       }
     },
   };
+}
+
+// ── Fast classic pipeline (SCRUM-594, spec 4.8) ──────────────────────────────
+// The demo line's DEMO_LINE_PIPELINE=classic-fast variant of the classic
+// handler. Flux and its turn engine hear the caller (instead of Nova and the
+// debounce buffer), and the Aura WebSocket stream speaks through a player that
+// tracks Twilio's marks (instead of a REST request per sentence). Every part
+// degrades to today's component on failure: Flux to Nova, the stream to REST.
+// The clients report failures through callbacks; this section logs them and
+// captures them with a `service` tag (never a reason tag).
+
+/**
+ * Write one message to the Twilio media stream. A stream that is no longer
+ * open drops it (the caller is gone), so this never throws for that.
+ * @param {WebSocket} twilioWs
+ * @param {object} message
+ */
+function sendTwilioJson(twilioWs, message) {
+  if (twilioWs.readyState === WebSocket.OPEN) twilioWs.send(JSON.stringify(message));
+}
+
+/**
+ * Report a fast-path failure to Sentry, tagged with the service that failed.
+ * The caller logs its own line. No caller words: `what` is ours.
+ * @param {CallSession} session
+ * @param {string} service - "flux-stt" | "aura-stream" | "fast-turns"
+ * @param {string} what
+ * @param {unknown} err
+ */
+function captureFastFailure(session, service, what, err) {
+  const error = err instanceof Error ? err : new Error(String(err));
+  Sentry.withScope((scope) => {
+    scope.setTag("service", service);
+    scope.setExtras({ callSid: session.callSid, organizationId: session.organizationId, what });
+    Sentry.captureException(error);
+  });
+}
+
+/** @returns {import("./call-session").FastPathState} */
+function newFastPathState() {
+  return {
+    speakingText: "",
+    unmarked: false,
+    unflushed: false,
+    pendingFlushSeq: null,
+    flushedSeq: -1,
+    flushWaiters: [],
+    quietWaiters: [],
+    quietTimer: null,
+    fluxOpenTimer: null,
+    ttsFellBack: false,
+    flushRefusalLogged: false,
+    closed: false,
+  };
+}
+
+/**
+ * Spec 4.8.1: start the fast path's STT and TTS at the top of the classic
+ * block, instead of Nova. The Aura stream and its player open beside Flux, and
+ * each half degrades on its own: the STT to Nova with today's callbacks
+ * (`openClassicStt`), the TTS to REST.
+ *
+ * @param {CallSession} session
+ * @param {WebSocket} twilioWs
+ * @param {() => void} openClassicStt - opens Nova-3 with today's callbacks into session.deepgramWs
+ */
+function startFastPath(session, twilioWs, openClassicStt) {
+  session.fastState = newFastPathState();
+  // The end_call hang-up waits on this instead of its sendTTS estimate.
+  session.awaitPlaybackEnd = () => awaitFastPlaybackEnd(session);
+  console.log(`[FastPath] Flux STT and the Aura stream on ${FAST_DEEPGRAM_HOST} (callSid=${session.callSid})`);
+  try {
+    openFastTts(session, twilioWs);
+  } catch (err) {
+    fallBackToRestTts(session, "setup failed", err);
+  }
+  try {
+    openFastStt(session, twilioWs, openClassicStt);
+  } catch (err) {
+    fallBackToNova(session, twilioWs, openClassicStt, "setup failed", err);
+  }
+}
+
+/**
+ * The Aura stream (spec 4.2) and the player that carries its audio to Twilio
+ * (spec 4.3). Warnings are logged only: CLEARED_TIMEOUT is the client's own
+ * backstop doing its job, EXCESSIVE_FLUSH a refused flush (both tolerated).
+ * @param {CallSession} session
+ * @param {WebSocket} twilioWs
+ */
+function openFastTts(session, twilioWs) {
+  session.fastPlayer = createFastPlayer({ sendJson: (message) => sendTwilioJson(twilioWs, message), streamSid: session.streamSid });
+  session.fastTts = openAuraStream(DEEPGRAM_API_KEY, {
+    voice: session.deepgramVoice || undefined,
+    host: FAST_DEEPGRAM_HOST,
+    onAudio: (audio) => onFastAudio(session, audio),
+    onFlushed: (seq) => onFastFlushed(session, seq),
+    onWarning: (warning) => {
+      console.warn(`[FastPath] Aura warning ${warning.code || "-"}: ${String(warning.message).slice(0, 120)} (callSid=${session.callSid})`);
+    },
+    onError: (err) => fallBackToRestTts(session, "stream error", err),
+    onClose: (code, reason, info) => {
+      if (info.initiatedByUs) return;
+      fallBackToRestTts(session, `stream closed (${code})`, new Error(`Aura stream closed unexpectedly: ${code} ${String(reason).slice(0, 80)}`));
+    },
+  });
+}
+
+/**
+ * Spec 4.8.3: the Aura stream failed. The rest of the call speaks over REST
+ * (sendTTS's classic path): one log line and one capture, however many errors
+ * and closes follow. The hang-up goes back to its sendTTS estimate.
+ * @param {CallSession} session
+ * @param {string} reason - for the log, never caller words
+ * @param {unknown} err
+ */
+function fallBackToRestTts(session, reason, err) {
+  const state = session.fastState;
+  if (!state || state.closed || state.ttsFellBack) return;
+  state.ttsFellBack = true;
+  const tts = session.fastTts;
+  session.fastTts = null;
+  session.awaitPlaybackEnd = null;
+  if (tts) {
+    try {
+      tts.close();
+    } catch (closeErr) {
+      console.warn(`[FastPath] Closing the failed Aura stream threw (callSid=${session.callSid}): ${closeErr.message}`);
+    }
+  }
+  console.warn(`[FastPath] Aura stream unavailable — falling back to REST TTS (${reason}, callSid=${session.callSid})`);
+  captureFastFailure(session, "aura-stream", `Aura stream unavailable: ${reason}`, err);
+}
+
+/**
+ * Flux with the turn engine on its events (spec 4.1, 4.6, 4.8.1): a fresh
+ * engine for this connection, reset again when it opens. Flux must open within
+ * FLUX_OPEN_TIMEOUT_MS; an error, or a close we did not ask for, before or
+ * after that, hands the call to Nova.
+ * @param {CallSession} session
+ * @param {WebSocket} twilioWs
+ * @param {() => void} openClassicStt
+ */
+function openFastStt(session, twilioWs, openClassicStt) {
+  const state = /** @type {import("./call-session").FastPathState} */ (session.fastState);
+  const config = fluxConfigFromEnv();
+  const engine = createFastTurnEngine({
+    getState: () => fastTurnState(session),
+    actions: fastTurnActions(session, twilioWs),
+    speculationEnabled: false,
+  });
+  session.fastTurns = engine;
+  let opened = false;
+  /** @type {(reason: string, err: unknown) => void} */
+  const fallBack = (reason, err) => fallBackToNova(session, twilioWs, openClassicStt, reason, err);
+  session.deepgramWs = openFluxStream(DEEPGRAM_API_KEY, {
+    onOpen: () => {
+      opened = true;
+      if (state.fluxOpenTimer) clearTimeout(state.fluxOpenTimer);
+      state.fluxOpenTimer = null;
+      engine.reset(); // turn indexes start again at 0 on a new connection
+      console.log(`[FastPath] Flux connected (callSid=${session.callSid})`);
+    },
+    onTurnInfo: (evt) => engine.onTurnInfo(evt),
+    onError: (err) => fallBack(opened ? "error" : "error before open", err),
+    onClose: (code, reason, info) => {
+      if (info.initiatedByUs) return;
+      fallBack(opened ? `closed mid-call (${code})` : `closed before open (${code})`, new Error(`Flux closed unexpectedly: ${code} ${String(reason).slice(0, 80)}`));
+    },
+    onWarning: (warning) => {
+      console.warn(`[FastPath] Flux ${warning.type} ${warning.code || "-"}: ${String(warning.message).slice(0, 120)} (callSid=${session.callSid})`);
+    },
+  }, { host: FAST_DEEPGRAM_HOST, industry: session.organization?.industry, ...config });
+  state.fluxOpenTimer = setTimeout(() => {
+    state.fluxOpenTimer = null;
+    if (!opened) fallBack(`no open within ${FLUX_OPEN_TIMEOUT_MS} ms`, new Error(`Flux did not open within ${FLUX_OPEN_TIMEOUT_MS} ms`));
+  }, FLUX_OPEN_TIMEOUT_MS);
+}
+
+/**
+ * Spec 4.8.1: Flux cannot serve the call. Open Nova with today's callbacks
+ * and mark the call degraded: the Aura stream stays, and turns now come
+ * through Nova and the debounce buffer. Once per call, and never after
+ * cleanup or once the Twilio stream is going away.
+ * @param {CallSession} session
+ * @param {WebSocket} twilioWs
+ * @param {() => void} openClassicStt
+ * @param {string} reason - for the log, never caller words
+ * @param {unknown} err
+ */
+function fallBackToNova(session, twilioWs, openClassicStt, reason, err) {
+  const state = session.fastState;
+  if (session.fastPath !== true || !state || state.closed || twilioWs.readyState !== WebSocket.OPEN) return;
+  session.fastPath = "degraded-stt";
+  if (state.fluxOpenTimer) clearTimeout(state.fluxOpenTimer);
+  state.fluxOpenTimer = null;
+  const flux = session.deepgramWs;
+  session.deepgramWs = null;
+  session.fastTurns = null;
+  if (flux) {
+    try {
+      flux.close();
+    } catch (closeErr) {
+      console.warn(`[FastPath] Closing Flux threw (callSid=${session.callSid}): ${closeErr.message}`);
+    }
+  }
+  console.warn(`[FastPath] Flux unavailable — falling back to Nova (${reason}, callSid=${session.callSid})`);
+  captureFastFailure(session, "flux-stt", `Flux unavailable: ${reason}`, err);
+  openClassicStt();
+}
+
+/**
+ * What the turn engine reads on every Flux event (spec 4.6). aiSpeaking is the
+ * player OR session.isSpeaking, which covers the REST greeting and disclosure;
+ * processing never counts a draft.
+ * @param {CallSession} session
+ * @returns {import("./lib/fast-turns").FastTurnState}
+ */
+function fastTurnState(session) {
+  return {
+    aiSpeaking: (session.fastPlayer?.isPlaying() ?? false) || session.isSpeaking,
+    processing: session.isProcessing,
+    expectedInputType: session._expectedInputType,
+    aiSpeakingText: session.fastState?.speakingText ?? "",
+  };
+}
+
+/**
+ * The turn engine's actions (spec 4.6). Each one catches its own errors: one
+ * thrown back into the engine would reach Flux's onError, and that hands the
+ * call to Nova for nothing.
+ * @param {CallSession} session
+ * @param {WebSocket} twilioWs
+ * @returns {import("./lib/fast-turns").FastTurnActions}
+ */
+function fastTurnActions(session, twilioWs) {
+  /**
+   * @param {string} name
+   * @param {(...args: any[]) => void} action
+   * @returns {(...args: any[]) => void}
+   */
+  const guarded = (name, action) => (...args) => {
+    try {
+      action(...args);
+    } catch (err) {
+      console.error(`[FastTurn] ${name} failed (callSid=${session.callSid}): ${err?.message || err}`);
+      captureFastFailure(session, "fast-turns", `turn action ${name} failed`, err);
+    }
+  };
+  return {
+    commit: guarded("commit", (transcript) => commitFastTurn(session, twilioWs, transcript)),
+    bargeIn: guarded("bargeIn", () => fastBargeIn(session)),
+    dropEcho: guarded("dropEcho", (transcript) => logTranscript("[STT] Dropped (echo suppression while AI speaking)", transcript)),
+    bufferStructured: guarded("bufferStructured", (transcript) => bufferFastTurn(session, twilioWs, transcript)),
+  };
+}
+
+/**
+ * A Flux turn is over: answer it, or queue it behind the turn in flight.
+ * @param {CallSession} session
+ * @param {WebSocket} twilioWs
+ * @param {string} transcript
+ */
+function commitFastTurn(session, twilioWs, transcript) {
+  logTranscript("[STT] Final", transcript);
+  session.queueOrProcess(transcript, (text) => handleUserSpeech(session, twilioWs, text, "general"));
+}
+
+/**
+ * A final while structured input is expected (a phone number, a spelled name):
+ * through the classic debounce buffer, which merges what Flux splits into turns.
+ * @param {CallSession} session
+ * @param {WebSocket} twilioWs
+ * @param {string} transcript
+ */
+function bufferFastTurn(session, twilioWs, transcript) {
+  logTranscript("[STT] Final", transcript);
+  session.bufferTranscript(transcript, (combined, inputType) => {
+    logTranscript("[STT] Buffered", combined);
+    session.queueOrProcess(combined, (text) => handleUserSpeech(session, twilioWs, text, inputType));
+  });
+}
+
+/**
+ * Spec 4.8.8: the caller talks over the AI. Its audio stops at once.
+ * @param {CallSession} session
+ */
+function fastBargeIn(session) {
+  stopFastAudio(session);
+  console.log(`[Barge-in] (fast) Stopped the AI's audio (callSid=${session.callSid})`);
+}
+
+/**
+ * Spec 4.8.3: speak on the Aura stream. The text goes out at once, with a
+ * trailing space, so Aura releases each finished sentence without waiting for
+ * a flush (the next flush point releases the rest).
+ * @param {CallSession} session
+ * @param {string} text
+ * @returns {number} estimated playback ms (FAST_TTS_MS_PER_CHAR per character); 0 when nothing was sent
+ */
+function speakFast(session, text) {
+  const clean = stripMarkdown(text);
+  const state = session.fastState;
+  if (!state || !session.fastTts?.speak(clean)) return 0;
+  state.speakingText = state.speakingText ? `${state.speakingText} ${clean}` : clean;
+  state.unflushed = true;
+  return clean.length * FAST_TTS_MS_PER_CHAR;
+}
+
+/**
+ * Spec 4.8.4: flush the Aura stream at a flush point. A refusal (the client's
+ * budget of 18 a minute) is tolerated: finished sentences are released by
+ * their trailing space anyway, and the audio-quiet timer ends the utterance.
+ * Never throws.
+ * @param {CallSession} session
+ * @returns {number|null} the sequence id of the Flushed to expect; null when refused or not streaming
+ */
+function fastFlush(session) {
+  const state = session.fastState;
+  const tts = session.fastTts;
+  if (!state || state.closed || !tts?.isOpen()) return null;
+  state.unflushed = false;
+  let seq = null;
+  try {
+    seq = tts.flush();
+  } catch (err) {
+    console.warn(`[FastPath] Aura flush threw (callSid=${session.callSid}): ${err.message}`);
+    return null;
+  }
+  if (seq === null) {
+    if (!state.flushRefusalLogged) {
+      state.flushRefusalLogged = true;
+      console.warn(`[FastPath] Aura flush refused (${tts.flushesInLastMinute()} in the last minute) — relying on sentence release (callSid=${session.callSid})`);
+    }
+    return null;
+  }
+  state.pendingFlushSeq = seq;
+  return seq;
+}
+
+/**
+ * Aura audio for the caller: through the player to Twilio.
+ * @param {CallSession} session
+ * @param {Buffer} audio
+ */
+function onFastAudio(session, audio) {
+  const state = session.fastState;
+  if (!state || state.closed || !session.fastPlayer) return;
+  session.fastPlayer.push(audio);
+  session.isSpeaking = true;
+  state.unmarked = true;
+  armFastQuietTimer(session);
+}
+
+/**
+ * Aura finished the audio of one flush: the player marks it (spec 4.3), and
+ * whoever waits for that flush (the hang-up) goes on.
+ * @param {CallSession} session
+ * @param {number|null} seq
+ */
+function onFastFlushed(session, seq) {
+  const state = session.fastState;
+  if (!state || state.closed) return;
+  if (state.unmarked) endFastUtterance(session);
+  const done = Number.isInteger(seq) ? /** @type {number} */ (seq) : state.pendingFlushSeq;
+  if (done !== null) state.flushedSeq = Math.max(state.flushedSeq, done);
+  if (state.pendingFlushSeq !== null && state.flushedSeq >= state.pendingFlushSeq) state.pendingFlushSeq = null;
+  for (const waiter of [...state.flushWaiters]) {
+    if (waiter.seq <= state.flushedSeq) waiter.done();
+  }
+}
+
+/**
+ * The player marks what it has sent; Twilio echoes the mark once it has played.
+ * @param {CallSession} session
+ */
+function endFastUtterance(session) {
+  session.fastPlayer?.endUtterance();
+  if (session.fastState) session.fastState.unmarked = false;
+}
+
+/**
+ * (Re)start the audio-quiet timer: no Aura audio for FAST_AUDIO_QUIET_MS ends
+ * the utterance even when its Flushed never comes (a flush the budget refused).
+ * Without that, isPlaying() would stay true and the turn engine would take
+ * every short answer for echo.
+ * @param {CallSession} session
+ */
+function armFastQuietTimer(session) {
+  const state = session.fastState;
+  if (!state || state.closed) return;
+  if (state.quietTimer) clearTimeout(state.quietTimer);
+  state.quietTimer = setTimeout(() => {
+    state.quietTimer = null;
+    if (state.closed) return;
+    if (state.unmarked) endFastUtterance(session);
+    for (const resolve of state.quietWaiters.splice(0)) resolve();
+  }, FAST_AUDIO_QUIET_MS);
+}
+
+/**
+ * Spec 4.8.6: Twilio echoed one of the player's marks. isSpeaking follows what
+ * the player still has playing, and once it is idle the echo filter's text
+ * starts afresh.
+ * @param {CallSession} session
+ * @param {string} name
+ */
+function onFastMark(session, name) {
+  const player = session.fastPlayer;
+  if (!player) return;
+  player.onMark(name);
+  session.isSpeaking = player.isPlaying();
+  if (!session.isSpeaking && session.fastState) session.fastState.speakingText = "";
+}
+
+/**
+ * Stop the AI's audio now: the player (a Twilio `clear`, and its marks) and,
+ * while Aura may still owe audio for text already sent, the Aura stream (a
+ * Clear; on an idle stream it was never probed, and a Cleared that never came
+ * would drop the next reply's first audio). Never throws.
+ * @param {CallSession} session
+ */
+function stopFastAudio(session) {
+  const state = session.fastState;
+  const player = session.fastPlayer;
+  const owed = Boolean(state?.speakingText) || Boolean(player?.isPlaying());
+  session.isSpeaking = false;
+  if (state) {
+    state.speakingText = "";
+    state.unmarked = false;
+    state.unflushed = false;
+    // A Clear discards pending flushes: their Flushed never comes.
+    state.pendingFlushSeq = null;
+    for (const waiter of [...state.flushWaiters]) waiter.done();
+  }
+  if (player) {
+    try {
+      player.stop();
+    } catch (err) {
+      console.warn(`[FastPath] Stopping the player threw (callSid=${session.callSid}): ${err.message}`);
+    }
+  }
+  if (owed && session.fastTts?.isOpen()) {
+    try {
+      session.fastTts.clear();
+    } catch (err) {
+      console.warn(`[FastPath] Clearing the Aura stream threw (callSid=${session.callSid}): ${err.message}`);
+    }
+  }
+}
+
+/**
+ * Wait (at most FAST_FLUSHED_WAIT_MS) for the Flushed with sequence id `seq`.
+ * @param {CallSession} session
+ * @param {number} seq
+ * @returns {Promise<void>}
+ */
+function waitForFastFlushed(session, seq) {
+  const state = session.fastState;
+  if (!state || state.closed || state.flushedSeq >= seq) return Promise.resolve();
+  return new Promise((resolve) => {
+    /** @type {ReturnType<typeof setTimeout> | undefined} */
+    let timer;
+    const waiter = {
+      seq,
+      done: () => {
+        clearTimeout(timer);
+        state.flushWaiters = state.flushWaiters.filter((w) => w !== waiter);
+        resolve();
+      },
+    };
+    timer = setTimeout(waiter.done, FAST_FLUSHED_WAIT_MS);
+    state.flushWaiters.push(waiter);
+  });
+}
+
+/**
+ * Wait (at most FAST_FLUSHED_WAIT_MS) until no Aura audio has arrived for
+ * FAST_AUDIO_QUIET_MS: the end of the audio when there is no Flushed to wait for.
+ * @param {CallSession} session
+ * @returns {Promise<void>}
+ */
+function waitForFastAudioQuiet(session) {
+  const state = session.fastState;
+  if (!state || state.closed) return Promise.resolve();
+  return new Promise((resolve) => {
+    /** @type {ReturnType<typeof setTimeout> | undefined} */
+    let cap;
+    const finish = () => {
+      clearTimeout(cap);
+      state.quietWaiters = state.quietWaiters.filter((w) => w !== finish);
+      resolve();
+    };
+    cap = setTimeout(finish, FAST_FLUSHED_WAIT_MS);
+    state.quietWaiters.push(finish);
+    armFastQuietTimer(session); // quiet from now on, if no audio comes at all
+  });
+}
+
+/**
+ * Wait until the audio for everything sent to the Aura stream has reached the
+ * player: flush, then that flush's Flushed (a flush the budget refused has
+ * none: then until Aura goes quiet), and mark it. Both waits are bounded by
+ * FAST_FLUSHED_WAIT_MS. Resolves at once when not streaming; never rejects.
+ * @param {CallSession} session
+ * @returns {Promise<void>}
+ */
+async function settleFastAudio(session) {
+  const state = session.fastState;
+  if (!state || state.closed || !session.fastTts?.isOpen()) return;
+  let seq = state.pendingFlushSeq;
+  let refused = false;
+  if (state.unflushed) {
+    const flushed = fastFlush(session);
+    if (flushed === null) refused = true;
+    else seq = flushed;
+  }
+  if (refused) await waitForFastAudioQuiet(session);
+  else if (seq !== null) await waitForFastFlushed(session, seq);
+  if (state.unmarked && !state.closed) endFastUtterance(session);
+}
+
+/**
+ * session.awaitPlaybackEnd on the fast path (the end_call hang-up's playback
+ * signal): every word is out (settleFastAudio), then the player has played it
+ * (its marks; at most its byte estimate plus FAST_IDLE_CAP_MS). Rejects when
+ * the stream is not open: the hang-up then waits out its sendTTS estimate.
+ * @param {CallSession} session
+ * @returns {Promise<void>}
+ */
+async function awaitFastPlaybackEnd(session) {
+  const player = session.fastPlayer;
+  if (!player || !session.fastTts?.isOpen()) throw new Error("the Aura stream is not open");
+  await settleFastAudio(session);
+  await player.whenIdle(FAST_IDLE_CAP_MS);
+}
+
+/**
+ * Spec 4.8.10: end the fast path at cleanup. Flux is closed whatever its state
+ * (a CONNECTING handle would leak: our pings keep it alive), then the Aura
+ * stream, the player (releasing its whenIdle timers) and every wait still
+ * pending. Idempotent; never throws.
+ * @param {CallSession} session
+ */
+function closeFastPath(session) {
+  const state = session.fastState;
+  if (!state || state.closed) return;
+  state.closed = true;
+  if (state.fluxOpenTimer) clearTimeout(state.fluxOpenTimer);
+  if (state.quietTimer) clearTimeout(state.quietTimer);
+  state.fluxOpenTimer = null;
+  state.quietTimer = null;
+  /** @type {Array<[string, () => void]>} */
+  const steps = [];
+  // After a fallback, deepgramWs is Nova: destroy() closes it, as on any classic call.
+  if (session.fastPath === true && session.deepgramWs) {
+    const flux = session.deepgramWs;
+    steps.push(["Flux", () => flux.close()]);
+  }
+  const tts = session.fastTts;
+  if (tts) steps.push(["the Aura stream", () => tts.close()]);
+  const player = session.fastPlayer;
+  if (player) steps.push(["the player", () => player.stop()]);
+  for (const [what, step] of steps) {
+    try {
+      step();
+    } catch (err) {
+      console.warn(`[FastPath] Closing ${what} threw at cleanup (callSid=${session.callSid}): ${err?.message || err}`);
+    }
+  }
+  for (const waiter of [...state.flushWaiters]) waiter.done();
+  for (const resolve of state.quietWaiters.splice(0)) resolve();
 }
 
 // --- Test Call WebSocket (/ws/test) ---

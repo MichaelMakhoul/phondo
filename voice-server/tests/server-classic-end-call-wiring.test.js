@@ -158,6 +158,7 @@ function makeClassic(o = {}) {
     END_CALL_TAIL_MS: o.tailMs ?? 30,
     WebSocket: { OPEN: 1 },
     Date: o.clock ? { now: o.clock } : Date,
+    fastFlush: () => assert.fail("SCRUM-594: a classic turn never flushes an Aura stream"),
     console: recordingConsole(lines),
   };
   const { handleUserSpeech } = runSlice({
@@ -311,6 +312,31 @@ describe("SCRUM-594: classic end_call hangs up", () => {
     assert.equal(c.llmCalls(), 2, "the model reads the nudge");
     assert.equal(alerts.filter((l) => l.includes("[ALERT:")).length, 1, alerts.join("\n"));
     assert.ok(!alerts.some((l) => l.includes("end_call allowed on unfinished booking after nudge")));
+  });
+
+  it("a block holds for its own batch only: once a later round books, that round's end_call hangs up", async (t) => {
+    captureConsole(t);
+    const s = makeSession();
+    s.toolCallAudit.push({ name: "check_availability", successful: true, at: 1 }); // a booking was started …
+    const c = makeClassic({
+      ttsMs: 5,
+      tailMs: 5,
+      toolResults: { book_appointment: { success: true, message: "Booked! Your confirmation code is 482913." } },
+      steps: [
+        { tools: [END("done")] },
+        { sentences: ["Booking that now."], tools: [{ name: "book_appointment", args: { datetime: "2026-10-20T10:00:00" } }] },
+        { sentences: ["You're booked. Goodbye!"], tools: [END("booking complete")] },
+      ],
+    });
+    await c.handleUserSpeech(s, "book me in for Tuesday at ten, thanks, bye");
+    assert.equal(c.llmCalls(), 3);
+    assert.deepEqual(c.closes(), [[1000, "end_call"]], "a round-one block must not veto the end_call after the booking succeeded");
+    const endCallIds = s.messages.filter((m) => m.role === "assistant" && m.tool_calls).flatMap((m) => m.tool_calls)
+      .filter((tc) => tc.function.name === "end_call").map((tc) => tc.id);
+    const endCallResults = s.messages.filter((m) => m.role === "tool" && endCallIds.includes(m.tool_call_id)).map((m) => m.content);
+    assert.equal(endCallResults.length, 2);
+    assert.equal(endCallResults[0], END_CALL_BLOCKED_MESSAGE);
+    assert.notEqual(endCallResults.at(-1), END_CALL_BLOCKED_MESSAGE);
   });
 
   it("speech from an EARLIER round of the turn is waited for too, and a silent end_call response still gets its goodbye", async () => {

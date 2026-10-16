@@ -227,10 +227,10 @@ function openAuraStream(apiKey, options = {}) {
     ws = new WebSocket(buildAuraUrl(options), { headers: { Authorization: `Token ${apiKey}` } });
   } catch (err) {
     rejectReady(failConnect(guard, err, onClose));
-    return deadStream(
-      { isOpen: false, speak: false, flush: null, flushesInLastMinute: 0, clear: false, close: undefined },
-      { ready },
-    );
+    // Typed against AuraStream, so a method added to the handle without its dead stub fails the typecheck.
+    /** @type {Record<Exclude<keyof AuraStream, "ready">, any>} */
+    const deadReturns = { isOpen: false, speak: false, flush: null, flushesInLastMinute: 0, clear: false, close: undefined };
+    return deadStream(deadReturns, { ready });
   }
   const pinger = createPinger(ws);
 
