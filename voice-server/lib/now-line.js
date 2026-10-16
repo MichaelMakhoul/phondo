@@ -35,10 +35,16 @@ function nowLine(timezone, now = new Date()) {
   return `Current date and time: ${dateFormatter.format(now)}, ${timeFormatter.format(now)} (${timezone}). Today's date in YYYY-MM-DD format: ${isoDateFormatter.format(now)}.`;
 }
 
+// Bad org zones already reported: one warning per distinct value per process, not one per check.
+/** @type {Set<string>} */
+const warnedZones = new Set();
+
 /**
  * nowLine for a business timezone that may be missing or malformed in org
  * data: falls back to Australia/Sydney instead of throwing, so a bad zone
  * degrades the NOW anchor rather than switching a checker off (SCRUM-593).
+ * A malformed zone says so, once per distinct value: otherwise that org's
+ * "today" and "tomorrow" are judged against Sydney's date in silence.
  * @param {string | undefined | null} timezone
  * @param {Date} [now]
  * @returns {string}
@@ -48,7 +54,13 @@ function safeNowLine(timezone, now = new Date()) {
     try {
       return nowLine(timezone, now);
     } catch {
-      // invalid IANA zone in org data — fall through to the default
+      const raw = String(timezone);
+      if (!warnedZones.has(raw)) {
+        warnedZones.add(raw);
+        // Org data, echoed as server.js does: JSON-quoted (one line), no brackets, capped.
+        const shown = JSON.stringify(raw).replace(/[\[\]]/g, "").slice(0, 60);
+        console.warn(`[NowLine] org timezone ${shown} is not a valid IANA zone — using Australia/Sydney`);
+      }
     }
   }
   return nowLine("Australia/Sydney", now);

@@ -10,7 +10,7 @@ process.env.TELNYX_API_KEY = process.env.TELNYX_API_KEY || "test-key";
 process.env.INTERNAL_API_URL = process.env.INTERNAL_API_URL || "http://localhost:3000";
 process.env.INTERNAL_API_SECRET = process.env.INTERNAL_API_SECRET || "test-secret";
 
-const { describe, it } = require("node:test");
+const { describe, it, beforeEach, afterEach } = require("node:test");
 const assert = require("node:assert/strict");
 const { nowLine, safeNowLine } = require("../lib/now-line");
 const { _test } = require("../services/tool-executor");
@@ -69,6 +69,10 @@ describe("nowLine across midnight — the date follows the business, not the ser
 describe("safeNowLine", () => {
   const AT = new Date("2026-10-14T10:56:00Z");
   const SYDNEY_LINE = nowLine("Australia/Sydney", AT);
+  // A bad zone now warns (SF-L1, below); keep this suite's output clean.
+  const realWarn = console.warn;
+  beforeEach(() => { console.warn = () => {}; });
+  afterEach(() => { console.warn = realWarn; });
 
   for (const [what, zone] of [
     ["a malformed zone", "Not/AZone"],
@@ -85,5 +89,54 @@ describe("safeNowLine", () => {
   it("passes a valid zone straight through", () => {
     assert.equal(safeNowLine("America/New_York", AT), nowLine("America/New_York", AT));
     assert.match(safeNowLine("America/New_York", AT), /\(America\/New_York\)/);
+  });
+});
+
+// SF-L1: a malformed org timezone used to fall back to Sydney in silence, so an org whose data was broken
+// got "today"/"tomorrow" judged against Sydney's date with nothing in the logs. It warns once per distinct
+// bad value (not per check), echoed JSON-quoted, bracket-stripped and capped.
+describe("safeNowLine warns about a bad org timezone", () => {
+  const AT = new Date("2026-10-14T10:56:00Z");
+  let warnings = [];
+  const realWarn = console.warn;
+  /** A fresh module: the "already warned" memory is per process. */
+  const fresh = () => {
+    delete require.cache[require.resolve("../lib/now-line")];
+    return require("../lib/now-line");
+  };
+  beforeEach(() => {
+    warnings = [];
+    console.warn = (...a) => warnings.push(a.join(" "));
+  });
+  afterEach(() => {
+    console.warn = realWarn;
+  });
+
+  it("once for a repeated bad zone, then once more for a second one", () => {
+    const { safeNowLine: safe } = fresh();
+    for (let i = 0; i < 3; i++) safe("Not/AZone", AT);
+    assert.deepEqual(warnings, ['[NowLine] org timezone "Not/AZone" is not a valid IANA zone — using Australia/Sydney']);
+    safe("AEST", AT);
+    safe("Not/AZone", AT);
+    assert.deepEqual(warnings, [
+      '[NowLine] org timezone "Not/AZone" is not a valid IANA zone — using Australia/Sydney',
+      '[NowLine] org timezone "AEST" is not a valid IANA zone — using Australia/Sydney',
+    ]);
+  });
+
+  it("never for a valid or a missing zone", () => {
+    const { safeNowLine: safe } = fresh();
+    for (const zone of ["America/New_York", "Australia/Sydney", "", null, undefined]) safe(zone, AT);
+    assert.deepEqual(warnings, []);
+  });
+
+  it("echoes the value on one line, bracket-stripped and capped at 60 characters", () => {
+    const { safeNowLine: safe } = fresh();
+    safe("[ALERT:error]\nBad/Zone" + "x".repeat(80), AT);
+    assert.equal(warnings.length, 1);
+    const shown = /org timezone (.*) is not a valid IANA zone/.exec(warnings[0])[1];
+    assert.equal(shown.length, 60);
+    assert.ok(shown.startsWith('"ALERT:error\\nBad/Zone'), shown);
+    assert.doesNotMatch(shown, /[[\]\n]/, "no bracket or line break in the echo");
   });
 });

@@ -239,8 +239,18 @@ describe("SCRUM-593: the Tier-2 checker knows today's date", () => {
     // A flagged verdict, not the default accurate one: a fail-open no-verdict
     // is also { accurate: true }, so only a flagged verdict proves the request went out.
     const seen = capturePrompt('{"accurate": false, "discrepancy": "x"}');
-    const verdict = await validate({ ...ARGS, timezone: "Not/AZone" });
+    const realWarn = console.warn;
+    const warnings = [];
+    console.warn = (...a) => warnings.push(a.join(" "));
+    let verdict;
+    try {
+      verdict = await validate({ ...ARGS, timezone: "Not/AZone" });
+    } finally {
+      console.warn = realWarn;
+    }
     assert.match(seen.prompt, /NOW \(the business's timezone\): Current date and time: .*\(Australia\/Sydney\)/);
     assert.deepEqual(verdict, { accurate: false, discrepancy: "x" });
+    // SF-L1: and the fallback is said, not silent.
+    assert.deepEqual(warnings.filter((l) => l.startsWith("[NowLine]")), ['[NowLine] org timezone "Not/AZone" is not a valid IANA zone — using Australia/Sydney']);
   });
 });

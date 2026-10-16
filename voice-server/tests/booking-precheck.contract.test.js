@@ -295,6 +295,59 @@ describe("failure paging", () => {
     assert.ok(logs.some((l) => /\[ALERT:error\].*error_type=not_found_error error_message=model: claude-nope/.test(l)));
   });
 
+  // SF-M3: paging counted only CONSECUTIVE no-verdicts, and any readable verdict reset the count, so a check
+  // failing 2 times in 3 never paged. A rolling window of the last 10 checks pages from 3 failures in it.
+  describe("intermittent failures page through a rolling window of the last 10 checks", () => {
+    const unreadable = () => replyText("not a verdict");
+    const pages = () => logs.filter((l) => l.startsWith("[ALERT:"));
+
+    it("two failures in every three checks page at the third failure", async () => {
+      const m = load();
+      unreadable();
+      await m.precheckBookingWrite(input());
+      await m.precheckBookingWrite(input());
+      replyText(ALLOW);
+      await m.precheckBookingWrite(input());
+      assert.deepEqual(pages(), [], "two failures: quiet");
+      unreadable();
+      assert.deepEqual(await m.precheckBookingWrite(input()), { action: "proceed" }, "still fails open");
+      assert.equal(pages().length, 1, pages().join("\n"));
+      assert.match(pages()[0], /^\[ALERT:error\] \[booking_precheck\] Booking pre-check producing no verdicts \(3 of the last 4 checks unreadable\) — writes go through unchecked \| /);
+    });
+
+    it("keeps paging while the window holds 3 failures, once per failed check", async () => {
+      const m = load();
+      for (const reply of ["x", "x", ALLOW, "x", "x", ALLOW, "x"]) {
+        replyText(reply);
+        await m.precheckBookingWrite(input());
+      }
+      assert.deepEqual(
+        pages().map((l) => /\(([^)]*)\)/.exec(l)[1]),
+        ["3 of the last 4 checks unreadable", "4 of the last 5 checks unreadable", "5 of the last 7 checks unreadable"]
+      );
+    });
+
+    it("a failure that is also the third in a row pages once, worded as the run", async () => {
+      const m = load();
+      unreadable();
+      for (let i = 0; i < 3; i++) await m.precheckBookingWrite(input());
+      assert.equal(pages().length, 1, pages().join("\n"));
+      assert.match(pages()[0], /\(3 unreadable in a row\)/);
+    });
+
+    it("only the last 10 checks count: older failures roll out", async () => {
+      const m = load();
+      unreadable();
+      await m.precheckBookingWrite(input());
+      await m.precheckBookingWrite(input());
+      replyText(ALLOW);
+      for (let i = 0; i < 9; i++) await m.precheckBookingWrite(input());
+      unreadable();
+      await m.precheckBookingWrite(input());
+      assert.deepEqual(pages(), [], "1 failure in the last 10 checks: the first two have rolled out");
+    });
+  });
+
   // A thrown fetch counts toward the streak like every other no-verdict.
   it("network failures count toward the streak and page from the third", async () => {
     const m = load();

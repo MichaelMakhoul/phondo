@@ -892,6 +892,8 @@ describe("fail-open", () => {
     assert.ok(logs.some((l) => /\[ALERT:error\].*3 unreadable in a row/.test(l)));
   });
 
+  // The in-a-row trigger only: this exact sequence (3 failures in the last 4 checks) now pages through the
+  // rolling window instead (SF-M3, see "failure paging" in the contract tests).
   it("a readable verdict resets the unreadable streak", async () => {
     const m = load();
     replyText("prose");
@@ -901,7 +903,8 @@ describe("fail-open", () => {
     await m.precheckBookingWrite(input());
     replyText("prose");
     await m.precheckBookingWrite(input());
-    assert.ok(!logs.some((l) => /\[ALERT:error\]/.test(l)));
+    assert.ok(!logs.some((l) => /unreadable in a row/.test(l)), "the allow broke the run: never 3 in a row");
+    assert.ok(logs.some((l) => /\(3 of the last 4 checks unreadable\)/.test(l)), "the rolling window pages instead");
   });
 
   it("a bad timezone string still checks, against Sydney", async () => {

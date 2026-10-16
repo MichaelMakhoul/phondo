@@ -57,6 +57,9 @@ const MAX_PRACTITIONER_NAME = 80;
 /** A bad PRECHECK_MODEL (404), a refused request field (400) or a bad key (401/403) fail every check. */
 const CONFIG_FAILURE_STATUSES = new Set([400, 401, 403, 404]);
 const UNREADABLE_ALERT_AFTER = 3;
+/** Intermittent failures: the last RECENT_CHECKS checks, paging from RECENT_ALERT_AFTER no-verdicts among them. */
+const RECENT_CHECKS = 10;
+const RECENT_ALERT_AFTER = 3;
 /** What a no-verdict does to the write: the usual fail-open, or a hold on a fix already read. */
 const LET_THROUGH = "letting the write through";
 const HOLD_ON_FIRST = "holding on the first verdict";
@@ -126,6 +129,18 @@ const PROCEED = Object.freeze({ action: "proceed" });
 // Checks in a row that produced no usable verdict (process-wide). Reset only
 // by a verdict that could actually be read.
 let unreadableStreak = 0;
+
+// The last RECENT_CHECKS checks, oldest first (process-wide): true = no usable
+// verdict. The streak alone never paged a check failing 2 times in 3: every
+// readable verdict in between reset it.
+/** @type {boolean[]} */
+const recentChecks = [];
+
+/** @param {boolean} failed */
+function recordCheck(failed) {
+  recentChecks.push(failed);
+  if (recentChecks.length > RECENT_CHECKS) recentChecks.shift();
+}
 
 // An unrecognised PRECHECK_MODE is reported once per process (see precheckMode).
 let warnedUnknownMode = false;
@@ -510,6 +525,8 @@ function parsePrecheck(text) {
  */
 function noVerdict(info, model, outcome = LET_THROUGH) {
   unreadableStreak++;
+  recordCheck(true);
+  const failedRecently = recentChecks.filter(Boolean).length;
   const details = {
     model,
     cause: info.cause,
@@ -520,10 +537,14 @@ function noVerdict(info, model, outcome = LET_THROUGH) {
     unreadable_in_a_row: unreadableStreak,
     ms: info.ms,
   };
-  if (info.config || unreadableStreak >= UNREADABLE_ALERT_AFTER) {
+  const inARow = unreadableStreak >= UNREADABLE_ALERT_AFTER;
+  // One page per failed check, whichever trigger fired: config, a run in a row, or the window.
+  if (info.config || inARow || failedRecently >= RECENT_ALERT_AFTER) {
     const what = info.config
       ? info.status !== undefined ? `HTTP ${info.status}` : info.cause
-      : `${unreadableStreak} unreadable in a row`;
+      : inARow
+        ? `${unreadableStreak} unreadable in a row`
+        : `${failedRecently} of the last ${recentChecks.length} checks unreadable`;
     // What happened to THIS write: a failed re-check held on the first verdict.
     const result = outcome === HOLD_ON_FIRST ? "held on the first verdict" : "writes go through unchecked";
     Sentry.withScope((scope) => {
@@ -574,6 +595,7 @@ async function requestVerdict(prompt, outcome = LET_THROUGH) {
     const parsed = parsePrecheck(text);
     if ("unreadable" in parsed) return failed({ cause: parsed.unreadable, stopReason: data.stop_reason ?? "unknown" });
     unreadableStreak = 0;
+    recordCheck(false);
     return parsed.verdict;
   } catch (err) {
     const e = /** @type {any} */ (err);
