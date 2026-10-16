@@ -33,6 +33,25 @@ class CallSession {
     // provider because Gemini never completed setup. Shape:
     // { from, to, reason, model } — persisted into calls.metadata.
     this.pipelineFailover = null;
+    // SCRUM-594: the pipeline this call runs on, set at pipeline selection in
+    // server.js ("classic" once a Gemini selection falls back for a missing
+    // key). Null on a transfer reconnect, which never selects. Demo-line calls
+    // record it in calls.metadata.pipeline.
+    /** @type {string|null} */
+    this.effectivePipeline = null;
+    // SCRUM-594: the demo line's fast classic variant (DEMO_LINE_PIPELINE=classic-fast).
+    // "degraded-stt" once its Flux STT has fallen back to Nova (spec §4.8).
+    /** @type {boolean|"degraded-stt"} */
+    this.fastPath = false;
+    // SCRUM-594: the fast path's audio player (lib/fast-player.js); null on every other call.
+    /** @type {import("./lib/fast-player").FastPlayer|null} */
+    this.fastPlayer = null;
+    // SCRUM-594: optional — resolves once the call's queued speech has played.
+    // The classic end_call hang-up (server.js hangUpAfterEndCall) awaits it
+    // instead of its sendTTS-duration estimate. The fast path sets it: its
+    // streaming player has its own flush/mark sequence. Null: the estimate.
+    /** @type {(() => Promise<void>)|null} */
+    this.awaitPlaybackEnd = null;
     this.recordingDisclosurePlayed = false;
     this.recordingDisclosureFailed = false;
     // SCRUM-424: the disclosure was woven into Gemini's first message but its

@@ -29,7 +29,8 @@ const { calendarToolDefinitions, listServiceTypesToolDefinition, transferToolDef
 const { createGeminiSession, GEMINI_MODEL } = require("./services/gemini-live");
 const { createOpenAIRealtimeSession, createGrokRealtimeSession, resolveOpenAIRealtimeModel } = require("./services/openai-realtime"); // SCRUM-378 eval spike (OpenAI + Grok share the adapter)
 const { createSessionWithFailover, isFailoverEnabled } = require("./services/gemini-failover"); // SCRUM-535
-const { resolveTestPipeline, KNOWN_TEST_PIPELINES, resolveOwnerPipeline } = require("./lib/pipeline-routing"); // SCRUM-378 per-number test override; SCRUM-587 OWNER_PIPELINE
+const { resolveTestPipeline, KNOWN_TEST_PIPELINES, resolveOwnerPipeline, resolveCallPipeline } = require("./lib/pipeline-routing"); // SCRUM-378 per-number test override; SCRUM-587 OWNER_PIPELINE; SCRUM-594 DEMO_LINE_PIPELINE
+const { checkEndCallGuard } = require("./lib/end-call-guard"); // SCRUM-594: the SCRUM-373 end_call guard for the classic pipeline
 const { handleConversationRelayConnection, buildConversationRelayTwiml } = require("./services/conversationrelay"); // SCRUM-378 eval spike (ConversationRelay + Claude)
 const { validateToolResponse } = require("./services/turn-validator");
 const { detectPhantomAction, detectPostCallPhantoms, summarizePhantoms, netLiveOutcome, buildToolOutcomeDigest } = require("./lib/action-claim-detector"); // SCRUM-381 live + SCRUM-383 post-call + SCRUM-559 cancel-aware state checks
@@ -229,6 +230,8 @@ const ERROR_MESSAGES = {
     repeatRequest: "I apologize, I'm having trouble processing that. Could you repeat what you said?",
     troubleRepeat: "I'm sorry, I'm having a little trouble right now. Could you repeat that?",
     transferFailed: (name) => `I'm sorry, ${name} wasn't available right now. Would you like me to take a message, or is there something else I can help you with?`,
+    // SCRUM-594: spoken when the model ends a classic call without saying goodbye itself
+    goodbye: "Thanks for calling — goodbye.",
   },
   es: {
     notConfigured: "Lo sentimos, este número no está configurado actualmente. Por favor intente más tarde.",
@@ -236,6 +239,7 @@ const ERROR_MESSAGES = {
     repeatRequest: "Disculpe, tuve problemas procesando eso. ¿Podría repetirlo?",
     troubleRepeat: "Lo siento, estoy teniendo un pequeño problema. ¿Podría repetir eso?",
     transferFailed: (name) => `Lo siento, ${name} no está disponible en este momento. ¿Le gustaría dejar un mensaje, o hay algo más en lo que pueda ayudarle?`,
+    goodbye: "Gracias por llamar. ¡Adiós!",
   },
 };
 
@@ -1722,6 +1726,10 @@ wss.on("connection", (twilioWs) => {
             callerState: s.callerState || null,
             consentReason: s.consentReason || null,
             pipelineFailover: s.pipelineFailover || null,
+            // SCRUM-594: which pipeline served a demo-line customer call (the
+            // DEMO_LINE_PIPELINE comparison). Null on every other call, so they
+            // write no new metadata (tests/call-logger-metadata.test.js).
+            pipeline: !s.ownerMode && isDemoLineNumber(s.orgPhoneNumber) ? s.effectivePipeline : null,
             sentiment: analysis?.sentiment || null,
             piiRedacted,
             cleanedTranscript: analysis?.cleanedTranscript ?? null,
@@ -2299,7 +2307,20 @@ wss.on("connection", (twilioWs) => {
           // ── Pipeline selection ───────────────────────────────────────────
           // SCRUM-587: owner calls may run a different pipeline (OWNER_PIPELINE),
           // resolved once per call; the key check follows the EFFECTIVE pipeline.
-          const effectivePipeline = session.ownerMode ? resolveOwnerPipeline() : VOICE_PIPELINE;
+          // SCRUM-594: a customer call to the published demo line may be moved by
+          // DEMO_LINE_PIPELINE (read on every call); every other customer call
+          // follows VOICE_PIPELINE as before. Owner calls never reach the switch.
+          const effectivePipeline = session.ownerMode
+            ? resolveOwnerPipeline()
+            : resolveCallPipeline({
+                calledNumber,
+                ownerMode: session.ownerMode,
+                language: session.language,
+                globalPipeline: VOICE_PIPELINE,
+                demoLinePipeline: process.env.DEMO_LINE_PIPELINE,
+                isDemoLine: isDemoLineNumber,
+              });
+          session.effectivePipeline = effectivePipeline;
           if (effectivePipeline === "gemini-live" && !process.env.GEMINI_API_KEY) {
             console.error("[GeminiLive] pipeline=gemini-live but GEMINI_API_KEY not set — falling back to classic pipeline");
           }
@@ -3251,6 +3272,12 @@ wss.on("connection", (twilioWs) => {
           }
 
           // ── Classic pipeline (Deepgram STT + OpenAI LLM + Deepgram TTS) ──
+          // SCRUM-594: fastPath marks the demo line's fast variant
+          // (DEMO_LINE_PIPELINE=classic-fast) before any STT opens. A Gemini
+          // selection that fell back for a missing key lands here too, and is
+          // recorded as the classic call it is.
+          session.fastPath = effectivePipeline === "classic-fast";
+          if (!session.fastPath) session.effectivePipeline = "classic";
           session.deepgramWs = openDeepgramStream(DEEPGRAM_API_KEY, {
             language: session.language,
             onTranscript: ({ transcript, isFinal }) => {
@@ -3473,6 +3500,12 @@ wss.on("connection", (twilioWs) => {
   });
 });
 
+// SCRUM-594: classic end_call hang-up timing (hangUpAfterEndCall). The turn's
+// speech gets at most this long to play, then a short tail lets the last audio
+// leave Twilio's buffer before the stream closes (which ends the call).
+const END_CALL_PLAYBACK_CAP_MS = 8000;
+const END_CALL_TAIL_MS = 500;
+
 /**
  * Build LLM options with tools based on session capabilities.
  * @param {CallSession} session
@@ -3662,8 +3695,12 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
     session.isSpeaking = false;
   }
 
-  // Play hold audio while AI processes
-  const hold = startHoldAudio(session, twilioWs, "twilio");
+  // Play hold audio while AI processes. SCRUM-594: holdPlaying lets an end_call
+  // hang-up stop hold audio that is still looping — and only then, because
+  // every stop() sends a Twilio clear, which would cut speech already queued.
+  const holdAudio = startHoldAudio(session, twilioWs, "twilio");
+  let holdPlaying = true;
+  const hold = { stop: () => { holdPlaying = false; holdAudio.stop(); } };
 
   try {
     session.addMessage("user", transcript);
@@ -3673,6 +3710,16 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
 
     // Track whether a filler has been sent this turn — only ONE filler per turn
     let fillerSentThisTurn = false;
+
+    // SCRUM-594: an allowed end_call (or an owner tool result carrying
+    // __endCall) ends the turn and then the call; the model is not asked again.
+    let endCall = false;
+    // Playback length of everything sent to TTS this turn (sendTTS returns it):
+    // the hang-up waits this long before closing the stream.
+    let turnSpokenMs = 0;
+    const speak = async (text) => { const ms = await sendTTS(session, twilioWs, text); turnSpokenMs += ms; };
+    /** @type {Promise<void>[]} each tool round's TTS chain — the hang-up waits until all of it is sent */
+    const turnTtsChains = [];
 
     // SCRUM-587 (SF5): an owner's normal list → availability → reschedule is
     // three tool rounds on its own, so owner turns get the owner tool cap. The
@@ -3702,7 +3749,7 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
           holdStopped = true;
           const msgs = FILLER_MESSAGES[session.language] || FILLER_MESSAGES.en;
           console.log(`[Filler] "${msgs.waiting}"`);
-          ttsChain = ttsChain.then(async () => { await sendTTS(session, twilioWs, msgs.waiting); }).catch((err) => {
+          ttsChain = ttsChain.then(async () => { await speak(msgs.waiting); }).catch((err) => {
             console.error("[Filler] TTS error:", err.message);
           });
         }
@@ -3720,7 +3767,7 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
           }
           // Chain TTS calls so they play in order
           ttsChain = ttsChain.then(async () => {
-            await sendTTS(session, twilioWs, sentence);
+            await speak(sentence);
             // SCRUM-587: a reply sentence reached the caller — this turn produced speech.
             if (session.ownerMode) noteAssistantSpeech(session);
           }).catch((err) => {
@@ -3757,21 +3804,23 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
         // Add the assistant's tool call message to conversation
         session.messages.push(result.message);
 
-        // Play ONE tool-specific filler — only if no filler was sent yet this turn
-        if (!fillerSentThisTurn) {
+        // Play ONE tool-specific filler — only if no filler was sent yet this turn.
+        // SCRUM-594: never when the model only calls end_call: that response is
+        // its goodbye, and "One moment." would be the last thing the caller hears.
+        const toolNames = toolCalls.map(tc => tc.function.name);
+        if (!fillerSentThisTurn && !toolNames.every((n) => n === "end_call")) {
           fillerSentThisTurn = true;
           if (!holdStopped) {
             hold.stop();
             holdStopped = true;
           }
-          const toolNames = toolCalls.map(tc => tc.function.name);
           const toolFiller = getToolFiller(session.language || "en", toolNames);
           console.log(`[Filler] "${toolFiller}" (tools: ${toolNames.join(", ")})`);
-          // (async wrapper discards sendTTS's duration return — ttsChain is Promise<void>)
-          ttsChain = ttsChain.then(async () => { await sendTTS(session, twilioWs, toolFiller); }).catch((err) => {
+          ttsChain = ttsChain.then(async () => { await speak(toolFiller); }).catch((err) => {
             console.error("[Filler] TTS error:", err.message);
           });
         }
+        turnTtsChains.push(ttsChain);
 
         // Execute each tool call and add results
         for (const toolCall of toolCalls) {
@@ -3789,7 +3838,21 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
               tool_call_id: toolCall.id,
               content: ownerRet.data !== undefined ? JSON.stringify({ message: ownerRet.message, data: ownerRet.data }) : ownerRet.message,
             });
+            // SCRUM-594: an owner's end_call hangs up like a customer's (the
+            // customer booking guard below does not apply to owner calls).
+            if (ownerRet.__endCall === true) endCall = true;
             continue;
+          }
+
+          // SCRUM-594: SCRUM-373's end_call booking guard, as on the Gemini path
+          // (lib/end-call-guard.js). A blocked end_call gets the nudge as its
+          // result and the model is asked again; an allowed one runs below.
+          if (fnName === "end_call") {
+            const verdict = checkEndCallGuard(session, fnArgs?.reason);
+            if (!verdict.allow) {
+              session.messages.push({ role: "tool", tool_call_id: toolCall.id, content: verdict.message });
+              continue;
+            }
           }
 
           // SCRUM-372: cancel-confirmation gate (classic pipeline — mirrors Gemini path)
@@ -4047,6 +4110,27 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
             tool_call_id: toolCall.id,
             content: resultMessage,
           });
+          // SCRUM-594: the executor's end_call sentinel. Classic used to ignore
+          // it, so the model kept talking and the line stayed open. The rest of
+          // the batch still runs; the call ends after it.
+          if (toolResult.__endCall === true) endCall = true;
+        }
+
+        if (endCall) {
+          // SCRUM-594: no further LLM call. The caller last hears this
+          // response's own words; when it said nothing, a short goodbye.
+          if (holdPlaying) hold.stop();
+          await Promise.all(turnTtsChains); // every earlier round's audio goes out first
+          reply = sentenceQueue.join(" ");
+          if (!reply) {
+            reply = getErrorMsg(session.language, "goodbye");
+            try {
+              await speak(reply);
+            } catch (err) {
+              console.error(`[EndCall] Goodbye TTS failed — hanging up without it (callSid=${session.callSid}):`, err.message);
+            }
+          }
+          break;
         }
 
         // Continue loop — LLM will process tool results
@@ -4065,6 +4149,13 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
     }
 
     session.addMessage("assistant", reply);
+
+    // SCRUM-594: recorded above BEFORE the close — cleanup reads the transcript
+    // as soon as the socket closes.
+    if (endCall) {
+      await hangUpAfterEndCall(session, twilioWs, turnSpokenMs);
+      return;
+    }
 
     // Detect what input the AI is expecting next and adapt buffering
     const nextInputType = detectExpectedInput(reply);
@@ -4090,6 +4181,58 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
   } finally {
     session.isProcessing = false;
     session.drainPending((text) => handleUserSpeech(session, twilioWs, text));
+  }
+}
+
+/**
+ * SCRUM-594: end a classic call after an allowed end_call, once the turn's
+ * speech has played. Twilio plays the media we push in real time, and closing
+ * the media stream ends the call (<Connect><Stream>), so closing at once would
+ * cut the goodbye off.
+ *
+ * The playback wait is `session.awaitPlaybackEnd()` when the session sets it,
+ * otherwise `spokenMs`. The fast path sets the hook because its streaming
+ * player needs its own flush/mark sequence to know its audio is out. Either
+ * way the wait is capped at END_CALL_PLAYBACK_CAP_MS, then END_CALL_TAIL_MS
+ * more before the close. Never throws.
+ *
+ * @param {CallSession} session
+ * @param {WebSocket} twilioWs - the Twilio media-stream socket
+ * @param {number} spokenMs - summed playback length (ms) of everything sendTTS sent this turn
+ * @returns {Promise<void>}
+ */
+async function hangUpAfterEndCall(session, twilioWs, spokenMs) {
+  // Stamped before the wait: a caller who hangs up over the goodbye still
+  // ended a call the AI was ending (cleanup reads this when the socket closes).
+  session.endedReason = "end_call_tool";
+  const startedAt = Date.now();
+  let played = false;
+  if (typeof session.awaitPlaybackEnd === "function") {
+    /** @type {ReturnType<typeof setTimeout> | undefined} */
+    let capTimer;
+    try {
+      await Promise.race([
+        session.awaitPlaybackEnd(),
+        new Promise((resolve) => { capTimer = setTimeout(resolve, END_CALL_PLAYBACK_CAP_MS); }),
+      ]);
+      played = true;
+    } catch (err) {
+      console.warn(`[EndCall] Playback signal failed — waiting out the estimate instead (callSid=${session.callSid}): ${err?.message || err}`);
+    } finally {
+      clearTimeout(capTimer);
+    }
+  }
+  const remainingMs = played ? 0 : Math.min(spokenMs, END_CALL_PLAYBACK_CAP_MS) - (Date.now() - startedAt);
+  if (remainingMs > 0) await new Promise((resolve) => setTimeout(resolve, remainingMs));
+  await new Promise((resolve) => setTimeout(resolve, END_CALL_TAIL_MS));
+  // Whatever the caller said over the goodbye is not answered: handleUserSpeech's
+  // finally would otherwise dispatch it (drainPending) as the call closes.
+  session._pendingTranscript = null;
+  console.log(`[EndCall] Hanging up after end_call — waited ${Date.now() - startedAt}ms for playback (callSid=${session.callSid})`);
+  try {
+    if (twilioWs.readyState === WebSocket.OPEN) twilioWs.close(1000, "end_call");
+  } catch (err) {
+    console.warn(`[EndCall] Error closing the Twilio stream (callSid=${session.callSid}):`, err);
   }
 }
 

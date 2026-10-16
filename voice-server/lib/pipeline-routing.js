@@ -59,4 +59,77 @@ function resolveOwnerPipeline(ownerRaw = process.env.OWNER_PIPELINE, globalPipel
   return globalPipeline;
 }
 
-module.exports = { resolveTestPipeline, normNumber, KNOWN_TEST_PIPELINES, resolveOwnerPipeline, OWNER_PIPELINES };
+/**
+ * SCRUM-594: the values DEMO_LINE_PIPELINE accepts. "classic-fast" is the fast
+ * classic variant (Flux STT, Claude, streaming Aura TTS); "classic" and
+ * "gemini-live" pin the demo line to either existing pipeline.
+ */
+const DEMO_LINE_PIPELINES = new Set(["classic-fast", "classic", "gemini-live"]);
+
+/** Unrecognised DEMO_LINE_PIPELINE values already reported: one warning per value, not one per call. */
+const warnedDemoLinePipelines = new Set();
+
+/**
+ * SCRUM-594: DEMO_LINE_PIPELINE, validated. Read at CALL time (the default
+ * reads the environment on every call), so tests can vary it, and setting the
+ * Fly secret (which restarts the machine) needs no code change.
+ * @param {string|null} [raw] - defaults to process.env.DEMO_LINE_PIPELINE
+ * @returns {"classic-fast"|"classic"|"gemini-live"|null} null when unset, blank or unrecognised: the demo line follows VOICE_PIPELINE
+ */
+function readDemoLinePipeline(raw = process.env.DEMO_LINE_PIPELINE) {
+  const value = String(raw ?? "").trim();
+  if (!value) return null;
+  if (DEMO_LINE_PIPELINES.has(value)) return /** @type {"classic-fast"|"classic"|"gemini-live"} */ (value);
+  if (!warnedDemoLinePipelines.has(value)) {
+    warnedDemoLinePipelines.add(value);
+    console.warn(`[PipelineRouting] DEMO_LINE_PIPELINE "${value.slice(0, 40)}" not recognised — ignoring (expected one of: ${[...DEMO_LINE_PIPELINES].join(", ")})`);
+  }
+  return null;
+}
+
+/**
+ * SCRUM-594: the pipeline for one inbound customer call. Only the published
+ * demo line can be switched (DEMO_LINE_PIPELINE), and only for an English
+ * assistant (Flux STT is English-only). Every other call follows the global
+ * pipeline exactly as before. Owner calls are routed by resolveOwnerPipeline()
+ * and never reach this; one that does gets the global, never the switch.
+ *
+ * @param {{ calledNumber?: string|null, ownerMode?: boolean, language?: string|null, globalPipeline?: string, demoLinePipeline?: string|null, isDemoLine?: (calledNumber: string|null|undefined) => boolean }} [opts]
+ *   calledNumber - the business line the caller dialled;
+ *   ownerMode - a PIN-verified owner session;
+ *   language - the assistant's language (missing means "en", the server default);
+ *   globalPipeline - VOICE_PIPELINE (default: the environment's, else "classic"); any value but "gemini-live" runs classic;
+ *   demoLinePipeline - DEMO_LINE_PIPELINE (default: the environment's, read at call time);
+ *   isDemoLine - whether a number is the published demo line (server.js passes lib/demo-line's isDemoLineNumber; default: never)
+ * @returns {"gemini-live"|"classic"|"classic-fast"}
+ */
+function resolveCallPipeline({
+  calledNumber = null,
+  ownerMode = false,
+  language = "en",
+  globalPipeline = process.env.VOICE_PIPELINE || "classic",
+  demoLinePipeline = process.env.DEMO_LINE_PIPELINE,
+  isDemoLine = () => false,
+} = {}) {
+  const global = globalPipeline === "gemini-live" ? "gemini-live" : "classic";
+  if (ownerMode || !isDemoLine(calledNumber)) return global;
+  const override = readDemoLinePipeline(demoLinePipeline);
+  if (!override) return global;
+  const lang = language || "en";
+  if (lang !== "en") {
+    console.log(`[PipelineRouting] DEMO_LINE_PIPELINE=${override} ignored — the assistant's language is "${lang}" and the switch is English-only. The demo line uses ${global}.`);
+    return global;
+  }
+  return override;
+}
+
+module.exports = {
+  resolveTestPipeline,
+  normNumber,
+  KNOWN_TEST_PIPELINES,
+  resolveOwnerPipeline,
+  OWNER_PIPELINES,
+  resolveCallPipeline,
+  readDemoLinePipeline,
+  DEMO_LINE_PIPELINES,
+};

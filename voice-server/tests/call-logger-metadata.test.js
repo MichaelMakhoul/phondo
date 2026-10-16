@@ -82,3 +82,34 @@ test("a healthy call (pipelineFailover null, no other extras) writes NO metadata
     "an unconditional metadata write would clobber webhook-written keys"
   );
 });
+
+// SCRUM-594: the DEMO_LINE_PIPELINE comparison — which pipeline served a
+// demo-line call. server.js passes null for every other call, which (as with
+// pipelineFailover above) must write no metadata at all.
+test("pipeline is merged into calls.metadata alongside voice_provider", async () => {
+  updates.length = 0;
+  await completeCallRecord("call-3", {
+    status: "completed",
+    durationSeconds: 42,
+    transcript: [],
+    pipelineFailover: null,
+    pipeline: "classic-fast",
+  });
+  const record = updates.find((u) => u.table === "calls");
+  assert.ok(record, "calls row must be updated");
+  assert.deepEqual(record.payload.metadata, { voice_provider: "self_hosted", pipeline: "classic-fast" });
+});
+
+test("a call with pipeline null writes NO metadata key", async () => {
+  updates.length = 0;
+  await completeCallRecord("call-4", {
+    status: "completed",
+    durationSeconds: 42,
+    transcript: [],
+    pipelineFailover: null,
+    pipeline: null, // what server.js passes on every non-demo-line call
+  });
+  const record = updates.find((u) => u.table === "calls");
+  assert.ok(record, "calls row must be updated");
+  assert.equal("metadata" in record.payload, false);
+});

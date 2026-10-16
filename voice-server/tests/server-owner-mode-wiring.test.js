@@ -34,7 +34,9 @@ describe("SCRUM-587: owner session wiring", () => {
     assert.match(src, /if \(!session\.ownerMode && !clinikoOwnsAvailability && \(session\.calendarEnabled \|\| session\.serviceTypes\?\.length > 0\)\)/);
   });
   it("owner calls pick their pipeline via OWNER_PIPELINE", () => {
-    assert.match(src, /const effectivePipeline = session\.ownerMode \? resolveOwnerPipeline\(\) : VOICE_PIPELINE;/);
+    // SCRUM-594: customer calls now go through resolveCallPipeline (the demo-line
+    // switch, VOICE_PIPELINE otherwise); the owner branch is unchanged.
+    assert.match(src, /const effectivePipeline = session\.ownerMode\s*\?\s*resolveOwnerPipeline\(\)\s*:\s*resolveCallPipeline\(\{[^}]*globalPipeline: VOICE_PIPELINE,/);
     assert.ok((src.match(/effectivePipeline === "gemini-live"/g) || []).length >= 2, "both pipeline-selection checks must use effectivePipeline");
   });
   it("Gemini: owner tools, owner greeting, no disclosure, owner suffix", () => {
@@ -197,6 +199,8 @@ const { runOwnerToolCall, buildOwnerCallSummary, settleOwnerToolRuns, noteCancel
 const { noteAssistantSpeech, noteAssistantTurnEnd, noteOwnerSpeech } = require("../lib/owner-turn-stamps");
 const { forwardingFallbackEligible } = require("../lib/transfer-eligibility");
 const { maskPhone } = require("../lib/mask-phone");
+const { resolveCallPipeline } = require("../lib/pipeline-routing");
+const { checkEndCallGuard } = require("../lib/end-call-guard");
 const toolExecutor = require("../services/tool-executor");
 
 const { buildLanguageLockDirective } = runSlice({
@@ -440,6 +444,11 @@ describe("SCRUM-587: pipeline selection, run for real", () => {
       scope: {
         session: makeSession({ owner }),
         resolveOwnerPipeline: () => { resolved += 1; return ownerPipeline; },
+        // SCRUM-594: customer calls go through the real resolver; a number that
+        // isn't the demo line follows VOICE_PIPELINE exactly as before.
+        resolveCallPipeline,
+        calledNumber: "+61255550000",
+        isDemoLineNumber: () => false,
         VOICE_PIPELINE: voicePipeline,
         process: { env: geminiKey ? { GEMINI_API_KEY: geminiKey } : {} },
         console: recordingConsole(lines),
@@ -787,6 +796,7 @@ function makeClassicStt(session) {
     to: "// Recording disclosure + greeting — pre-synthesize disclosure while STT connects",
     scope: {
       session,
+      effectivePipeline: "classic", // SCRUM-594: the classic block's first statement reads it
       openDeepgramStream: (key, cbs) => { callbacks = cbs; return { readyState: 1 }; },
       DEEPGRAM_API_KEY: "dg",
       logTranscript: () => {},
@@ -872,6 +882,12 @@ function makeClassic(o = {}) {
     RESCHEDULE_SUCCESS_SIGNAL: /moved/,
     applyRescheduleToLedger: () => ({ moved: false }),
     saveForTransfer: (...a) => calls.push(["saveForTransfer", ...a]),
+    // SCRUM-594: the classic end_call guard and hang-up (run for real in
+    // server-classic-end-call-wiring.test.js).
+    checkEndCallGuard,
+    END_CALL_PLAYBACK_CAP_MS: 50,
+    END_CALL_TAIL_MS: 5,
+    WebSocket: { OPEN: 1 },
     console: recordingConsole(lines),
   };
   const fns = runSlice({
@@ -1096,6 +1112,7 @@ function makeCleanup(session, o = {}) {
     maskPhone,
     buildOwnerCallSummary,
     settleOwnerToolRuns: o.settleOwnerToolRuns || settleOwnerToolRuns,
+    isDemoLineNumber: () => false, // SCRUM-594: metadata.pipeline is for demo-line calls only
     console: recordingConsole(lines),
   };
   const { cleanupSession } = runSlice({ from: "async function cleanupSession() {", to: 'twilioWs.on("message", async (raw) => {', scope, names: ["cleanupSession"] });
