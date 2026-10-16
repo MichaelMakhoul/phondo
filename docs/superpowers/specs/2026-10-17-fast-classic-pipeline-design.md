@@ -99,7 +99,8 @@ The demo line should be answered by Deepgram hearing and Claude Haiku 5.5 thinki
 
 ### 4.4 Clause chunking in `services/claude-chat.js` (modified)
 - **Option `chunking: "clause"`:** the **first** emitted chunk of a response may end at a clause boundary. That is `,` `;` `:` `—` `–` **followed by whitespace**, once the chunk has 3 or more words. Later chunks use the existing sentence break.
-- **The whitespace rule** keeps "9:30" and "1,500" whole. A tool-call response's preamble that has no final punctuation is still spoken: it is flushed before the tool call is returned, a known gap in openai-llm that claude-chat must not copy.
+- **The whitespace rule** keeps "9:30" and "1,500" whole.
+- **In clause mode only,** the buffered tail is also flushed before a `tool_calls` result is returned. Today claude-chat drops it in every mode: even a punctuated final sentence is lost, because SENTENCE_BREAK needs trailing whitespace. That makes every "let me check…" preamble vanish. Default mode keeps today's behaviour (ruling R7: ConversationRelay is eval-only; fixing it there is a follow-up).
 - **Without the option,** behaviour is unchanged (ConversationRelay uses it).
 
 ### 4.5 `lib/speculative-reply.js`: draft on `EagerEndOfTurn`, commit on `EndOfTurn`
