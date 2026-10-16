@@ -236,13 +236,14 @@ describe("the request contract", () => {
     assert.equal(seen.calls, 0);
   });
 
-  it("a truncated call starts on a whole line, right after the omitted marker", async () => {
+  it("a cut call is whole lines on both sides of the omitted-middle marker", async () => {
     const m = load();
     const seen = replyText(ALLOW);
     const long = Array.from({ length: 800 }, (_, i) => ({ role: i % 2 ? "user" : "assistant", content: `line ${i} ${"x".repeat(20)}` }));
     await m.precheckBookingWrite(input({ messages: long, pendingUser: "", pendingAi: "" }));
-    const after = seen.body.messages[0].content.split("[earlier part of the call omitted]\n")[1];
-    assert.match(after, /^(CALLER|AI): line \d+ x+\n/);
+    const [before, after] = seen.body.messages[0].content.split("\n[middle of the call omitted]\n");
+    assert.match(before, /\n(CALLER|AI): line \d+ x{20}$/);
+    assert.match(after, /^(CALLER|AI): line \d+ x{20}\n/);
   });
 });
 
@@ -430,9 +431,11 @@ describe("server.js glue mapping", () => {
   // passes its correction flag through so the hold does not tell Gemini that nothing was saved.
   it("passes the name-correction flag through: that hold says the booking still stands", async () => {
     const m = load();
-    replyText(FIX);
+    const seen = replyText(FIX);
     const fix = await m.applyBookingPrecheck(session(), { name: "book_appointment", args: ARGS }, { correction: true, audit: false });
     assert.match(fix.message, /^NOT CHANGED YET — the existing booking still stands exactly as it was\. Read back the name/);
+    assert.match(seen.body.messages[0].content, /^You check a phone receptionist AI's change BEFORE it is saved\. The AI already booked this caller/, "and Claude is told it is a name correction (R34a)");
+    assert.match(seen.body.messages[0].content, /^TOOL: book_appointment \(name correction on the booking already made in this call\)$/m);
     const fresh = await m.applyBookingPrecheck(session(), { name: "book_appointment", args: ARGS }, { audit: false });
     assert.match(fresh.message, /^NOT DONE YET — nothing was saved\. Read back the name/, "control: a new booking");
   });
@@ -508,10 +511,11 @@ describe("server.js glue mapping", () => {
     assert.match(prompt, /AI: Can I get your surname\?\nCALLER: Makhoul\. M-A-K-H-O-U-L\.\nAI: So that's M-A-K-H-O-U-L, is that right\?\nCALLER: Yes, that's right\./, "the early read-back and the caller's yes");
     assert.match(prompt, /CALLER: Answer 10\.\nAI: Booking that now\.$/m, "and the latest turn");
     assert.doesNotMatch(prompt, /SECRET SYSTEM PROMPT/);
-    assert.doesNotMatch(prompt, /earlier part of the call omitted/, "a call this short is sent whole");
+    assert.doesNotMatch(prompt, /call omitted/, "a call this short is sent whole");
   });
 
-  it("the whole call still keeps only its latest 12,000 characters, after the omitted marker", async () => {
+  // R34b: over the cap the whole call keeps its start (where the name is usually confirmed) and its end.
+  it("the whole call over 12,000 characters keeps its first 3,000 and last 9,000, around one marker", async () => {
     const m = load();
     const seen = replyText(ALLOW);
     const s = new CallSession("CAhuge");
@@ -519,9 +523,11 @@ describe("server.js glue mapping", () => {
     for (let i = 0; i < 800; i++) s.addMessage(i % 2 ? "user" : "assistant", `line ${i} ${"x".repeat(20)}`);
     await m.applyBookingPrecheck(s, { name: "book_appointment", args: ARGS }, { audit: true });
     const conversation = seen.body.messages[0].content.split("CONVERSATION SO FAR")[1].split("\nRules")[0];
-    assert.match(conversation, /\n\[earlier part of the call omitted\]\n(CALLER|AI): line \d+ x+\n/);
-    assert.match(conversation, /CALLER: line 799 x+\n$/);
-    assert.ok(conversation.length < 12200, `capped (${conversation.length} chars)`);
+    assert.match(conversation, /\):\nAI: line 0 x+\nCALLER: line 1 x+\n/, "the start");
+    assert.match(conversation, /\n\[middle of the call omitted\]\n(CALLER|AI): line \d+ x+\n/);
+    assert.equal(conversation.split("[middle of the call omitted]").length - 1, 1);
+    assert.match(conversation, /CALLER: line 799 x+\n$/, "the end");
+    assert.ok(conversation.length < 12250, `capped (${conversation.length} chars)`);
   });
 
   // A failed transfer reconnects with restoreFrom, which restores the windowed messages but not the

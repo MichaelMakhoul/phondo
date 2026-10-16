@@ -905,6 +905,10 @@ describe("the request", () => {
       await m.precheckBookingWrite(input({ args: { ...ARGS, datetime: "tomorrow at 9" } }));
       prompt = seen.body.messages[0].content;
       assert.match(prompt, /^DETAILS THAT WILL BE SAVED: \{"first_name":"Michael","last_name":"Makhlouf","datetime":"tomorrow at 9"\}$/m);
+      seen = replyText(ALLOW);
+      await m.precheckBookingWrite(input({ args: { ...ARGS, datetime: "2026-10-17T09:00:00+11:00" } }));
+      prompt = seen.body.messages[0].content;
+      assert.match(prompt, /^DETAILS THAT WILL BE SAVED: \{"first_name":"Michael","last_name":"Makhlouf","datetime":"2026-10-17T09:00:00\+11:00"\}$/m, "an absolute instant is not spelled out");
     });
 
     it("rules 1 and 2 judge the saved details only", async () => {
@@ -1020,6 +1024,42 @@ describe("the request", () => {
     });
   });
 
+  // R34a: a name correction re-sends book_appointment with the corrected surname while the booking stands.
+  // Told only that the AI "is about to call book_appointment", Claude compared the args with the OLD booked
+  // name and held a correct, confirmed fix as name_mismatch (live replay, 3 of 3).
+  describe("a name correction says it is one", () => {
+    const PLAIN_OPENING = "You check a phone receptionist AI's booking change BEFORE it is saved. The AI is about to call book_appointment with the details below. Decide whether the details are what the caller actually said and confirmed.";
+    const CORRECTION_OPENING =
+      "You check a phone receptionist AI's change BEFORE it is saved. The AI already booked this caller earlier in this call and is about to CORRECT the caller's name on that booking (same appointment, same time). Decide whether the corrected name is what the caller said and confirmed.";
+    const CORRECTION_TOOL = "TOOL: book_appointment (name correction on the booking already made in this call)";
+    const promptFor = async (over) => {
+      const m = load();
+      const seen = replyText(ALLOW);
+      await m.precheckBookingWrite(input(over));
+      return seen.body.messages[0].content;
+    };
+
+    it("its opening and TOOL line say so, and nothing else changes", async () => {
+      const corrected = await promptFor({ correction: true });
+      const lines = corrected.split("\n");
+      assert.equal(lines[0], CORRECTION_OPENING);
+      assert.ok(lines.includes(CORRECTION_TOOL), "the TOOL line");
+      const plain = await promptFor({});
+      assert.equal(corrected.replace(CORRECTION_OPENING, PLAIN_OPENING).replace(CORRECTION_TOOL, "TOOL: book_appointment"), plain, "the rest of the prompt is the same");
+    });
+
+    it("without the flag, or on any other tool, the prompt keeps its plain opening and TOOL line", async () => {
+      for (const over of [{}, { correction: false }, { toolName: "reschedule_appointment", args: { new_datetime: "2026-10-16T10:00" }, correction: true }]) {
+        const prompt = await promptFor(over);
+        const toolName = over.toolName || "book_appointment";
+        const lines = prompt.split("\n");
+        assert.equal(lines[0], PLAIN_OPENING.replace("book_appointment", toolName), JSON.stringify(over));
+        assert.ok(lines.includes(`TOOL: ${toolName}`), JSON.stringify(over));
+        assert.doesNotMatch(prompt, /CORRECT the caller's name|name correction on the booking/, JSON.stringify(over));
+      }
+    });
+  });
+
   it("Haiku runs with thinking disabled; other models at low effort; both ask for the verdict schema", async () => {
     let m = load();
     let seen = replyText(ALLOW);
@@ -1036,15 +1076,55 @@ describe("the request", () => {
     assert.deepEqual(seen.body.output_config, { effort: "low", format: VERDICT_FORMAT }, "structured outputs at low effort");
   });
 
-  it("keeps only the latest part of a very long call", async () => {
-    const m = load();
-    const seen = replyText(ALLOW);
-    const long = Array.from({ length: 800 }, (_, i) => ({ role: i % 2 ? "user" : "assistant", content: `line ${i} ${"x".repeat(20)}` }));
-    await m.precheckBookingWrite(input({ messages: long, pendingUser: "", pendingAi: "" }));
-    const prompt = seen.body.messages[0].content;
-    assert.match(prompt, /\[earlier part of the call omitted\]/);
-    assert.match(prompt, /line 799 x+/);
-    assert.doesNotMatch(prompt, /line 0 x/);
+  // R34b: the name is usually confirmed EARLY. A tail-only cap dropped that confirmation from a ~15k-char
+  // call and held a correct booking as name_unconfirmed (live replay, 3 of 3).
+  describe("a call over 12,000 characters keeps its first 3,000 and its last 9,000", () => {
+    const MARKER = "[middle of the call omitted]";
+    const EARLY = "AI: Can I get your surname?\nCALLER: Makhoul. M-A-K-H-O-U-L.\nAI: So that's M-A-K-H-O-U-L, is that right?\nCALLER: Yes, that's right.";
+    /** About 15,000 characters: the name read back and confirmed first, filler, then the latest turns. */
+    const longCall = () => [
+      { role: "assistant", content: "Can I get your surname?" },
+      { role: "user", content: "Makhoul. M-A-K-H-O-U-L." },
+      { role: "assistant", content: "So that's M-A-K-H-O-U-L, is that right?" },
+      { role: "user", content: "Yes, that's right." },
+      ...Array.from({ length: 280 }, (_, i) => ({ role: i % 2 ? "user" : "assistant", content: `filler ${i} ${"x".repeat(40)}` })),
+      { role: "assistant", content: "Tomorrow at 9 then?" },
+      { role: "user", content: "Yes, book it." },
+    ];
+    const conversationOf = (prompt) => /CONVERSATION SO FAR \([^\n]*\):\n([\s\S]*?)\n\nRules — check ONLY these:/.exec(prompt)[1];
+    const send = async (messages) => {
+      const m = load();
+      const seen = replyText(ALLOW);
+      await m.precheckBookingWrite(input({ messages, pendingUser: "Morning is good.", pendingAi: "Booking that now." }));
+      return conversationOf(seen.body.messages[0].content);
+    };
+
+    it("the early read-back and yes survive, and so do the latest turns", async () => {
+      const whole = longCall().map((x) => `${x.role === "user" ? "CALLER" : "AI"}: ${x.content}`).join("\n");
+      assert.ok(whole.length > 14000, `precondition: a long call (${whole.length})`);
+      const conversation = await send(longCall());
+      assert.ok(conversation.startsWith(EARLY + "\n"), "the start of the call, with the name confirmed");
+      assert.ok(conversation.endsWith("AI: Tomorrow at 9 then?\nCALLER: Yes, book it.\nCALLER: Morning is good.\nAI: Booking that now."), "the end of the call");
+      assert.equal(conversation.split(MARKER).length - 1, 1, "one marker");
+      assert.doesNotMatch(conversation, /earlier part of the call omitted/);
+    });
+
+    it("cuts on whole lines: 3,000 characters at most before the marker, 9,000 after, nearly all used", async () => {
+      const conversation = await send(longCall());
+      const [head, tail] = conversation.split(`\n${MARKER}\n`);
+      assert.ok(head.length <= 3000 && head.length > 2900, `head ${head.length}`);
+      assert.ok(tail.length <= 9000 && tail.length > 8900, `tail ${tail.length}`);
+      const original = new Set(longCall().map((x) => `${x.role === "user" ? "CALLER" : "AI"}: ${x.content}`));
+      assert.ok(original.has(head.split("\n").at(-1)), "the line before the marker is whole");
+      assert.ok(original.has(tail.split("\n")[0]), "the line after the marker is whole");
+      assert.ok(conversation.length <= 12000 + MARKER.length + 2, `${conversation.length} chars`);
+    });
+
+    it("a call under the cap is sent whole, with no marker", async () => {
+      const conversation = await send(longCall().slice(0, 40));
+      assert.ok(conversation.startsWith(EARLY));
+      assert.doesNotMatch(conversation, /call omitted/);
+    });
   });
 });
 
@@ -1086,17 +1166,21 @@ describe("spokenDateTime", () => {
     assert.equal(m.spokenDateTime("2026-10-17T13:00"), "2026-10-17T13:00 = Saturday, October 17, 2026, 1:00 PM");
   });
 
-  it("keeps the value as given (seconds, a zone suffix) and reads only its wall-clock fields", () => {
+  // R35: the writer appends the business's offset only to a NAIVE value; one that carries Z or ±HH:MM is
+  // already an absolute instant (src/lib/calendar/tool-handlers.ts, ensureTimezoneOffset). Its digits are
+  // not the business's wall clock, so it is sent as given, never spelled out.
+  it("keeps seconds and fractions as given; a value with a zone suffix stays raw", () => {
     const m = load();
     assert.equal(m.spokenDateTime("2026-10-17T09:00:00"), "2026-10-17T09:00:00 = Saturday, October 17, 2026, 9:00 AM");
     assert.equal(m.spokenDateTime("2026-10-17T09:00:45.123"), "2026-10-17T09:00:45.123 = Saturday, October 17, 2026, 9:00 AM");
-    assert.equal(m.spokenDateTime("2026-10-17T23:30:00Z"), "2026-10-17T23:30:00Z = Saturday, October 17, 2026, 11:30 PM", "no conversion out of UTC");
-    assert.equal(m.spokenDateTime("2026-10-17T09:00:00+11:00"), "2026-10-17T09:00:00+11:00 = Saturday, October 17, 2026, 9:00 AM");
+    for (const instant of ["2026-10-17T23:30:00Z", "2026-10-17T23:30Z", "2026-10-17T09:00:00.5z", "2026-10-17T09:00:00+11:00", "2026-10-17T09:00-05:00"]) {
+      assert.equal(m.spokenDateTime(instant), instant, instant);
+    }
   });
 
   it("leaves anything it cannot read as a real date and time unchanged", () => {
     const m = load();
-    for (const raw of ["tomorrow at 9", "2026-10-17", "2026-10-17 09:00", "17/10/2026T09:00", "2026-02-30T09:00", "2026-13-01T09:00", "2026-10-17T24:00", "2026-10-17T09:60", "", " 2026-10-17T09:00"]) {
+    for (const raw of ["tomorrow at 9", "2026-10-17", "2026-10-17 09:00", "17/10/2026T09:00", "2026-02-30T09:00", "2026-13-01T09:00", "2026-10-17T24:00", "2026-10-17T09:60", "", " 2026-10-17T09:00", "2026-10-17T09:00 tomorrow", "2026-10-17T09:00:0", "2026-10-17T09:00:00."]) {
       assert.equal(m.spokenDateTime(raw), raw, JSON.stringify(raw));
     }
     for (const other of [undefined, null, 42, { at: "2026-10-17T09:00" }]) assert.equal(m.spokenDateTime(other), other);

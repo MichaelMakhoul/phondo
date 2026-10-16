@@ -491,6 +491,9 @@ describe("SCRUM-593: the real inbound handler, run against stubs", () => {
       assert.equal(claude.calls, 1);
       assert.match(claude.prompts[0], /CALLER: Yes, Makhoul, with an O\.\nAI: Let me fix that for you\.$/m, "the turn still in progress");
       assert.match(claude.prompts[0], /spelled it back letter by letter/, "the assistant's name-confirmation method");
+      // R34a: Claude is told this is a name fix on a booking that stands, not a second booking.
+      assert.match(claude.prompts[0], /^You check a phone receptionist AI's change BEFORE it is saved\. The AI already booked this caller earlier in this call and is about to CORRECT the caller's name/);
+      assert.match(claude.prompts[0], /^TOOL: book_appointment \(name correction on the booking already made in this call\)$/m);
     });
 
     it("a failed fix keeps the hold count", async () => {
@@ -698,7 +701,8 @@ describe("SCRUM-593: the real inbound handler, run against stubs", () => {
     await h.cbs.onToolCall({ id: "t1", ...BOOK });
     assert.equal(claude.calls, 1);
     const prompt = claude.prompts[0];
-    assert.match(prompt, /TOOL: book_appointment/);
+    assert.match(prompt, /^TOOL: book_appointment$/m, "a plain booking: no correction wording (R34a)");
+    assert.match(prompt, /^You check a phone receptionist AI's booking change BEFORE it is saved\. The AI is about to call book_appointment/);
     assert.match(prompt, /CALLER: Can I book a plumber for Tuesday at 3pm\?/, "the call so far");
     assert.match(prompt, /CALLER: Yes, that is right\.\nAI: One moment, booking that now\.$/m, "the turn still in progress");
     assert.match(prompt, /spelled it back letter by letter/, "the assistant's name-confirmation method");

@@ -49,6 +49,8 @@ const PRECHECK_MAX_TOKENS = 300;
 /** Sonnet/Opus 5.5 cannot disable thinking, and thinking counts against max_tokens: leave room for it. */
 const PRECHECK_MAX_TOKENS_WITH_THINKING = 1024;
 const MAX_TRANSCRIPT_CHARS = 12000;
+/** Of a call longer than MAX_TRANSCRIPT_CHARS, this much of its START is kept (the rest of the cap is its end). */
+const TRANSCRIPT_HEAD_CHARS = 3000;
 /** A staff name is quoted at most this many code points long. */
 const MAX_PRACTITIONER_NAME = 80;
 /** A bad PRECHECK_MODEL (404), a refused request field (400) or a bad key (401/403) fail every check. */
@@ -185,8 +187,13 @@ function nameVerificationMethod(promptConfig) {
 
 const WEEKDAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-/** An ISO date-time's wall-clock fields, at the start of the value (seconds or a zone may follow). */
-const ISO_WALL_CLOCK = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/;
+/**
+ * A NAIVE local ISO date-time (optional seconds and fraction, nothing after).
+ * The writer appends the business's offset only to such a value; one with Z or
+ * +/-HH:MM is an absolute instant to it (src/lib/calendar/tool-handlers.ts,
+ * ensureTimezoneOffset), so its digits are not the business's wall clock.
+ */
+const ISO_WALL_CLOCK = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?$/;
 /** The saved fields that hold a date and time, spelled out for Claude (see spokenDateTime). */
 const SPOKEN_DATE_FIELDS = ["datetime", "new_datetime"];
 
@@ -290,7 +297,10 @@ function decisionArgs(toolName, args, practitioners) {
 /**
  * The call so far as CALLER/AI lines: system prompt excluded, the turn still
  * in progress appended (Gemini adds it to the transcript only at
- * turnComplete). Keeps the latest MAX_TRANSCRIPT_CHARS.
+ * turnComplete). A call longer than MAX_TRANSCRIPT_CHARS keeps its first
+ * 3,000 characters and its last 9,000, in whole lines around one
+ * "[middle of the call omitted]" line: the name is usually confirmed early,
+ * and a tail-only cut held a correct booking as unconfirmed (live replay).
  * @param {Array<{ role?: string, content?: unknown }>} messages
  * @param {string} [pendingUser]
  * @param {string} [pendingAi]
@@ -308,13 +318,39 @@ function conversationText(messages, pendingUser, pendingAi) {
   if (u) lines.push(`CALLER: ${u}`);
   const a = typeof pendingAi === "string" ? pendingAi.trim() : "";
   if (a) lines.push(`AI: ${a}`);
-  let out = lines.join("\n");
-  if (out.length > MAX_TRANSCRIPT_CHARS) {
-    out = out.slice(out.length - MAX_TRANSCRIPT_CHARS);
-    const nl = out.indexOf("\n");
-    out = "[earlier part of the call omitted]\n" + (nl >= 0 ? out.slice(nl + 1) : out);
-  }
-  return out;
+  const out = lines.join("\n");
+  if (out.length <= MAX_TRANSCRIPT_CHARS) return out;
+  const head = wholeLinesFromStart(out, TRANSCRIPT_HEAD_CHARS);
+  const tail = wholeLinesFromEnd(out, MAX_TRANSCRIPT_CHARS - TRANSCRIPT_HEAD_CHARS);
+  return `${head}\n[middle of the call omitted]\n${tail}`;
+}
+
+/**
+ * The longest run of whole lines within the first n characters (a single
+ * longer line is cut).
+ * @param {string} text
+ * @param {number} n
+ * @returns {string}
+ */
+function wholeLinesFromStart(text, n) {
+  if (text.length <= n || text[n] === "\n") return text.slice(0, n);
+  const nl = text.lastIndexOf("\n", n - 1);
+  return nl > 0 ? text.slice(0, nl) : text.slice(0, n);
+}
+
+/**
+ * The longest run of whole lines within the last n characters (a single
+ * longer line is cut).
+ * @param {string} text
+ * @param {number} n
+ * @returns {string}
+ */
+function wholeLinesFromEnd(text, n) {
+  if (text.length <= n) return text;
+  const start = text.length - n;
+  if (text[start - 1] === "\n") return text.slice(start);
+  const nl = text.indexOf("\n", start);
+  return nl >= 0 ? text.slice(nl + 1) : text.slice(start);
 }
 
 /**
@@ -350,19 +386,25 @@ function turnInProgress(input) {
 }
 
 /**
- * @param {{ toolName: string, saved: Record<string, unknown>, identify: Record<string, unknown>, conversation: string, now: string, nameMethod: string }} p
+ * @param {{ toolName: string, saved: Record<string, unknown>, identify: Record<string, unknown>, conversation: string, now: string, nameMethod: string, nameCorrection?: boolean }} p
+ *   nameCorrection - the RebookGuard's fix of the name on this call's booking: without saying so, the
+ *   re-sent book_appointment read as a second booking and its corrected name as a mismatch with the old one
  * @returns {string}
  */
-function buildPrecheckPrompt({ toolName, saved, identify, conversation, now, nameMethod }) {
+function buildPrecheckPrompt({ toolName, saved, identify, conversation, now, nameMethod, nameCorrection }) {
   const readBack = METHOD_WORDING[nameMethod] || METHOD_WORDING["repeat-confirm"];
+  const opening = nameCorrection
+    ? "You check a phone receptionist AI's change BEFORE it is saved. The AI already booked this caller earlier in this call and is about to CORRECT the caller's name on that booking (same appointment, same time). Decide whether the corrected name is what the caller said and confirmed."
+    : `You check a phone receptionist AI's booking change BEFORE it is saved. The AI is about to call ${toolName} with the details below. Decide whether the details are what the caller actually said and confirmed.`;
+  const tool = nameCorrection ? `${toolName} (name correction on the booking already made in this call)` : toolName;
   // A new booking identifies nothing: no section, rather than an empty one about an "existing appointment".
   const identifyLine = Object.keys(identify).length
     ? `\nDETAILS THAT ONLY IDENTIFY THE EXISTING APPOINTMENT (rules 1 and 2 do NOT apply to these): ${JSON.stringify(identify)}`
     : "";
-  return `You check a phone receptionist AI's booking change BEFORE it is saved. The AI is about to call ${toolName} with the details below. Decide whether the details are what the caller actually said and confirmed.
+  return `${opening}
 
 NOW (the business's timezone): ${now}
-TOOL: ${toolName}
+TOOL: ${tool}
 DETAILS THAT WILL BE SAVED: ${JSON.stringify(saved)}${identifyLine}
 
 CONVERSATION SO FAR (machine transcription of a phone call: CALLER lines can contain mishearings, and a spelled name can appear as separate or missing letters):
@@ -542,6 +584,7 @@ async function decide(input, saved, identify, recheck) {
         conversation: conversationText(input.messages, turn.user, turn.ai),
         now,
         nameMethod: input.nameMethod || "repeat-confirm",
+        nameCorrection: input.toolName === "book_appointment" && input.correction === true,
       }),
       outcome
     );
