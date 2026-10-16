@@ -1333,3 +1333,13 @@ describe("purity", () => {
     }
   });
 });
+
+it("isLikelyEcho: a restated phrase with a number the AI never said is a correction, not an echo", () => {
+  assert.equal(isLikelyEcho("Friday at ten fifteen AM", "I have Friday at ten thirty AM available."), false);
+  assert.equal(isLikelyEcho("Friday the 17th at 11:30 AM", "How about Friday the 17th at 10:30 AM?"), false);
+});
+
+it("isLikelyEcho: the AI's own sentence with the same numbers is still an echo", () => {
+  assert.equal(isLikelyEcho("Friday at ten thirty AM available", "I have Friday at ten thirty AM available."), true);
+  assert.equal(isLikelyEcho("Friday the 17th at 10:30 AM", "How about Friday the 17th at 10:30 AM?"), true);
+});

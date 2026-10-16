@@ -118,20 +118,28 @@ The demo line should be answered by Deepgram hearing and Claude Haiku 5.5 thinki
 - **Abort** happens on `TurnResumed`, a new `StartOfTurn` for a different turn, a non-adoptable commit, barge-in or call cleanup.
 
 ### 4.6 `lib/fast-turns.js`: the Flux turn engine (pure)
-- **Signature:** `createFastTurnEngine({ getState, actions })`.
-  - `getState()` returns `{ aiSpeaking, processing, expectedInputType }`.
-  - `actions` are `speculate(transcript, turnIndex)`, `cancelSpeculation(reason)`, `commit(transcript, turnIndex, trigger)`, `bargeIn()`, `dropEcho(transcript)` and `bufferStructured(transcript)`.
-- **Its one method** is `onTurnInfo(evt)`.
+- **Signature:** `createFastTurnEngine({ getState, actions, speculationEnabled })` returns `{ onTurnInfo(evt), reset() }`.
+  - `getState()` returns `{ aiSpeaking, processing, expectedInputType, aiSpeakingText }`.
+  - `actions` are `speculate`, `cancelSpeculation`, `commit`, `bargeIn`, `dropEcho` and `bufferStructured`.
+  - The engine is pure: no timers, I/O or console.
 - **Rules:**
-  1. Ignore empty transcripts.
-  2. On `StartOfTurn` for a new `turnIndex`, cancel any draft from another turn.
-  3. While `aiSpeaking || processing`, the **first** `Update`/`StartOfTurn` in a turn whose transcript has 3 or more words, or matches `INTERRUPT_RE`, triggers `bargeIn()` once per turn. `INTERRUPT_RE` is the classic echo rule's words, `/^(stop|wait|hold on|no|cancel|nevermind|never mind|excuse me|hello|hey)\b/i`.
-  4. On `EagerEndOfTurn`: if speculation is enabled, and `!aiSpeaking && !processing && expectedInputType === "general"`, call `speculate`.
+  1. Ignore empty transcripts. The exception is TurnResumed, which always cancels.
+  2. An event for a different `turnIndex` cancels any other turn's draft. An EndOfTurn for a turn that already ended is dropped (dedupe). `reset()` clears this state; use it on each new Flux connection.
+  3. **Barge-in.** While `aiSpeaking || processing`, a transcript of 3 or more words, or one matching `INTERRUPT_RE`, triggers `bargeIn()` at most once per turn. It is evaluated on `Update`/`StartOfTurn` and again at `EndOfTurn`.
+     - **Speakerphone echo filter:** when `aiSpeaking`, a candidate is NOT a barge-in if all of these hold:
+       - it has 3 or more normalised words
+       - 80% or more of its tokens appear in `aiSpeakingText` (everything sent to TTS since the player last went idle)
+       - a contiguous run of 3 or more tokens matches
+       - it contains no number the AI didn't say
+     - Normalisation folds case, punctuation, a.m./p.m. and numerals.
+     - The filter fails open when the text is missing, and never applies when the state is processing-only.
+  4. On `EagerEndOfTurn`, call `speculate` only if speculation is enabled, `!aiSpeaking && !processing`, and `expectedInputType === "general"`.
   5. On `TurnResumed`, call `cancelSpeculation("resumed")`.
-  6. On `EndOfTurn`:
-     - If `aiSpeaking` and the transcript is 2 words or fewer and doesn't match `INTERRUPT_RE`, call `dropEcho` and cancel. This mirrors classic S:3258-3264.
-     - Else if `expectedInputType !== "general"`, call `cancelSpeculation` then `bufferStructured(transcript)`. That reuses `CallSession.bufferTranscript` with its debounce and validation, so digit strings or spelled names split across Flux turns are merged.
-     - Else call `commit(transcript, turnIndex, trigger)`.
+  6. On `EndOfTurn`, in this order:
+     - echo drop (`aiSpeaking`, 2 words or fewer, no interrupt word)
+     - the rule-3 barge-in check
+     - then either `bufferStructured` (non-general type) or `commit(transcript, turnIndex, trigger)`
+     - The answer runs in a `finally`, so a throwing `bargeIn` can't lose the caller's turn.
 
 ### 4.7 `lib/end-call-guard.js` and hang-up for all classic calls (bug fix)
 - **The bug:** classic never honours `end_call`. `__endCall` is ignored, so the model keeps talking and the line stays open (map §7).

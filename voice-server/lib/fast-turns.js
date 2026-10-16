@@ -13,7 +13,7 @@
  * Input
  *   - onTurnInfo({ event, turnIndex, transcript, trigger }): what services/flux-stt.js
  *     delivers. `transcript` is cumulative for the turn (not a delta). Flux increments
- *     `turnIndex` right after each EndOfTurn. It also documents that an EndOfTurn carries
+ *     `turnIndex` right after each EndOfTurn. Flux's docs also state that an EndOfTurn carries
  *     the words of the EagerEndOfTurn before it unless a TurnResumed came in between; the
  *     one exception is ForceEndTurn (trigger "manual"), which supersedes the eager state
  *     with no TurnResumed (flux-aura-api.md A.6). The engine does not rely on that
@@ -268,11 +268,23 @@ function hasSharedRun(a, b, length) {
  * @param {unknown} aiText - everything sent to TTS since the player last went idle
  * @returns {boolean}
  */
+/**
+ * True when a normalised token is a number: digits, or a number word from the tables above.
+ * @param {string} token - one output token of speechTokens
+ * @returns {boolean}
+ */
+function isNumberToken(token) {
+  return /^\d/.test(token) || (token !== "" && (NUMBER_ONES.includes(token) || NUMBER_TENS.includes(token)));
+}
+
 function isLikelyEcho(candidate, aiText) {
   const said = speechTokens(candidate);
   if (said.length < ECHO_MIN_WORDS) return false;
   const spoken = speechTokens(aiText);
   const known = new Set(spoken);
+  // A number the AI never said means a person correcting it ("ten fifteen" against
+  // the AI's "ten thirty"), never an echo: let it barge in.
+  if (said.some((token) => isNumberToken(token) && !known.has(token))) return false;
   const shared = said.filter((token) => known.has(token)).length;
   if (shared * 100 < said.length * ECHO_MIN_OVERLAP_PERCENT) return false;
   return hasSharedRun(said, spoken, ECHO_MIN_RUN);
