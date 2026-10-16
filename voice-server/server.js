@@ -33,12 +33,15 @@ const { resolveTestPipeline, KNOWN_TEST_PIPELINES, resolveOwnerPipeline, resolve
 const { checkEndCallGuard } = require("./lib/end-call-guard"); // SCRUM-594: the SCRUM-373 end_call guard for the classic pipeline
 // SCRUM-594: the fast classic pipeline (DEMO_LINE_PIPELINE=classic-fast, spec 4.8):
 // Flux STT and its turn engine, the Aura stream and the player that carries it
-// to Twilio. These clients never capture to Sentry; server.js does.
+// to Twilio, speculative drafts, and Claude with clause chunking. These modules
+// never capture to Sentry; server.js does.
 const { openFluxStream, fluxConfigFromEnv } = require("./services/flux-stt");
 const { openAuraStream } = require("./services/aura-stream");
 const { DEFAULT_HOST } = require("./services/deepgram-ws-common");
 const { createFastPlayer } = require("./lib/fast-player");
 const { createFastTurnEngine } = require("./lib/fast-turns");
+const { startSpeculativeReply } = require("./lib/speculative-reply");
+const { streamClaudeResponse } = require("./services/claude-chat");
 const { handleConversationRelayConnection, buildConversationRelayTwiml } = require("./services/conversationrelay"); // SCRUM-378 eval spike (ConversationRelay + Claude)
 const { validateToolResponse } = require("./services/turn-validator");
 const { detectPhantomAction, detectPostCallPhantoms, summarizePhantoms, netLiveOutcome, buildToolOutcomeDigest } = require("./lib/action-claim-detector"); // SCRUM-381 live + SCRUM-383 post-call + SCRUM-559 cancel-aware state checks
@@ -1555,9 +1558,12 @@ wss.on("connection", (twilioWs) => {
     session = null;
     sessions.delete(s.streamSid);
 
-    // SCRUM-594 (spec 4.8.10): the fast path's sockets and timers go first: a
-    // Flux handle still CONNECTING would otherwise leak (our pings keep it alive).
+    // SCRUM-594 (spec 4.8.10): the fast path's sockets, timers, draft and turn
+    // go first: a Flux handle still CONNECTING would otherwise leak (our pings
+    // keep it alive). Then its latency summary (spec 4.8.9: [FastCall], and
+    // calls.metadata.fastPath below).
     if (s.fastState) closeFastPath(s);
+    const fastPathSummary = s.fastStats ? summarizeFastCall(s) : null;
 
     // Unsubscribe from schedule cache events
     if (s._cacheUnsub) {
@@ -1742,6 +1748,8 @@ wss.on("connection", (twilioWs) => {
             // DEMO_LINE_PIPELINE comparison). Null on every other call, so they
             // write no new metadata (tests/call-logger-metadata.test.js).
             pipeline: !s.ownerMode && isDemoLineNumber(s.orgPhoneNumber) ? s.effectivePipeline : null,
+            // SCRUM-594: the fast path's latency summary; null on every other call.
+            fastPath: fastPathSummary,
             sentiment: analysis?.sentiment || null,
             piiRedacted,
             cleanedTranscript: analysis?.cleanedTranscript ?? null,
@@ -3543,6 +3551,11 @@ const END_CALL_TAIL_MS = 500;
 // Deepgram's Sydney host (~25 ms away vs ~335 ms for api.deepgram.com); the
 // existing Nova and REST paths stay where they are.
 const FAST_DEEPGRAM_HOST = process.env.FAST_DEEPGRAM_HOST || DEFAULT_HOST;
+// The fast path's LLM: always Claude (services/claude-chat.js), whatever LLM_PROVIDER says.
+const FAST_LLM_MODEL = process.env.FAST_LLM_MODEL || "claude-haiku-5-5";
+// A live fast LLM call's limit. Passing a signal turns off claude-chat's own
+// 15 s timeout, so the turn's signal carries this one.
+const FAST_LLM_TIMEOUT_MS = 15_000;
 // Flux must be open by then, or the call falls back to Nova.
 const FLUX_OPEN_TIMEOUT_MS = 3000;
 // What sendTTS returns for text on the Aura stream (estimated ms per character):
@@ -3762,8 +3775,15 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
       holdAudio.stop();
     },
   };
+  // SCRUM-594 (spec 4.8.7): the fast path's turn: the draft it adopts, and the
+  // abort a barge-in calls (session.currentTurn).
+  /** @type {import("./call-session").FastTurn|null} */
+  let fastTurn = null;
 
   try {
+    // Decided BEFORE the user message is added: isAdoptable compares the
+    // messages array the draft started from, length included.
+    fastTurn = session.fastPath ? beginFastTurn(session, transcript) : null;
     session.addMessage("user", transcript);
 
     const llmOptions = buildLLMOptions(session, { includeTransfer: true });
@@ -3798,6 +3818,8 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
       const t0 = Date.now();
 
       const sentenceQueue = [];
+      // SCRUM-594: a barge-in during the last round's tools ends the turn here (never mid-tool).
+      if (fastTurn) startFastRound(fastTurn, sentenceQueue);
       let ttsChain = Promise.resolve();
       let holdStopped = false;
 
@@ -3809,7 +3831,8 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
         || NO_FILLER_RE.test(trimmedTranscript)
         || trimmedTranscript.length <= NO_FILLER_MAX_LEN;
       const fillerTimer = skipFiller ? null : setTimeout(() => {
-        if (!holdStopped && !fillerSentThisTurn) {
+        // SCRUM-594: never after a barge-in (or the end) of the fast turn.
+        if (!holdStopped && !fillerSentThisTurn && !fastTurn?.over) {
           fillerSentThisTurn = true;
           hold.stop();
           holdStopped = true;
@@ -3824,27 +3847,37 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
         }
       }, 1500);
 
-      const result = await streamChatResponse(LLM_API_KEY, session.messages, {
-        ...llmOptions,
-        onSentence: (sentence) => {
-          if (fillerTimer) clearTimeout(fillerTimer);
-          sentenceQueue.push(sentence);
-          // Stop hold audio before first TTS sentence
-          if (!holdStopped) {
-            hold.stop();
-            holdStopped = true;
-          }
-          // Chain TTS calls so they play in order
-          ttsChain = ttsChain.then(async () => {
-            await speak(sentence);
-            // SCRUM-587: a reply sentence reached the caller — this turn produced speech.
-            if (session.ownerMode) noteAssistantSpeech(session);
-          }).catch((err) => {
-            session.isSpeaking = false;
-            console.error("[StreamTTS] Error sending sentence:", err.message);
-          });
-        },
-      });
+      /** @param {string} sentence */
+      const onSentence = (sentence) => {
+        if (fastTurn) {
+          // SCRUM-594: nothing more is said once a barge-in has ended the turn.
+          if (fastTurn.over) return;
+          noteFastLlmOutput(fastTurn);
+        }
+        if (fillerTimer) clearTimeout(fillerTimer);
+        sentenceQueue.push(sentence);
+        // Stop hold audio before first TTS sentence
+        if (!holdStopped) {
+          hold.stop();
+          holdStopped = true;
+        }
+        // Chain TTS calls so they play in order
+        ttsChain = ttsChain.then(async () => {
+          if (fastTurn?.over) return;
+          await speak(sentence);
+          // SCRUM-587: a reply sentence reached the caller — this turn produced speech.
+          if (session.ownerMode) noteAssistantSpeech(session);
+        }).catch((err) => {
+          session.isSpeaking = false;
+          console.error("[StreamTTS] Error sending sentence:", err.message);
+        });
+      };
+      // SCRUM-594 (spec 4.8.7): the fast path asks Claude (clause chunking, the
+      // turn's signal), or adopts the turn's draft in round 0.
+      const result = fastTurn
+        ? await fastLlmResponse(session, fastTurn, i, llmOptions, onSentence)
+        : await streamChatResponse(LLM_API_KEY, session.messages, { ...llmOptions, onSentence });
+      if (fastTurn) noteFastLlmOutput(fastTurn); // a tool call with no words before it
 
       if (fillerTimer) clearTimeout(fillerTimer);
 
@@ -3873,6 +3906,14 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
 
         // Add the assistant's tool call message to conversation
         session.messages.push(result.message);
+        // SCRUM-594: this response's words are in that message now: an abort
+        // from here on has nothing new to record. And on the fast path, what it
+        // said before the tool call (clause mode speaks it) is the turn's
+        // filler: a canned one after it would say the same thing twice.
+        if (fastTurn) {
+          fastTurn.chunks = [];
+          if (sentenceQueue.length > 0) fillerSentThisTurn = true;
+        }
 
         // Play ONE tool-specific filler — only if no filler was sent yet this turn.
         // SCRUM-594: never in a batch that calls end_call: that response carries
@@ -4204,6 +4245,7 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
         if (endCall) {
           // SCRUM-594: no further LLM call. The caller last hears this
           // response's own words; when it said nothing, a short goodbye.
+          if (fastTurn) fastTurn.ending = true; // a barge-in leaves the goodbye alone
           if (holdPlaying) hold.stop();
           await Promise.all(turnTtsChains); // every earlier round's audio goes out first
           reply = sentenceQueue.join(" ");
@@ -4250,6 +4292,13 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
       console.log(`[InputDetect] Next expected: ${nextInputType}`);
     }
   } catch (err) {
+    // SCRUM-594 (spec 4.8.7): a barge-in ended the fast turn. No apology, the
+    // caller's words stay, and so does what the AI had already said.
+    if (fastTurn?.ctl.signal.aborted) {
+      if (holdPlaying) hold.stop();
+      recordAbortedFastTurn(session, fastTurn);
+      return;
+    }
     hold.stop();
     const errorSource = err.message?.includes("OpenAI") ? "llm"
       : err.message?.includes("Deepgram TTS") ? "tts"
@@ -4266,6 +4315,7 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
       console.error("[Pipeline] Failed to send error message to caller:", ttsErr);
     }
   } finally {
+    if (fastTurn) endFastTurn(session, fastTurn);
     session.isProcessing = false;
     session.drainPending((text) => handleUserSpeech(session, twilioWs, text));
   }
@@ -4526,6 +4576,11 @@ function newFastPathState() {
   };
 }
 
+/** @returns {import("./call-session").FastCallStats} */
+function newFastCallStats() {
+  return { turns: 0, specAdopted: 0, specDiscarded: 0, eotToAudioMs: [], eager: null, pending: null, current: null };
+}
+
 /**
  * Spec 4.8.1: start the fast path's STT and TTS at the top of the classic
  * block, instead of Nova. The Aura stream and its player open beside Flux, and
@@ -4538,6 +4593,7 @@ function newFastPathState() {
  */
 function startFastPath(session, twilioWs, openClassicStt) {
   session.fastState = newFastPathState();
+  session.fastStats = newFastCallStats();
   // The end_call hang-up waits on this instead of its sendTTS estimate.
   session.awaitPlaybackEnd = () => awaitFastPlaybackEnd(session);
   console.log(`[FastPath] Flux STT and the Aura stream on ${FAST_DEEPGRAM_HOST} (callSid=${session.callSid})`);
@@ -4619,7 +4675,8 @@ function openFastStt(session, twilioWs, openClassicStt) {
   const engine = createFastTurnEngine({
     getState: () => fastTurnState(session),
     actions: fastTurnActions(session, twilioWs),
-    speculationEnabled: false,
+    // FLUX_EAGER_EOT_THRESHOLD=off asks Flux for no EagerEndOfTurn: no drafts.
+    speculationEnabled: config.eagerEotThreshold !== null,
   });
   session.fastTurns = engine;
   let opened = false;
@@ -4669,6 +4726,7 @@ function fallBackToNova(session, twilioWs, openClassicStt, reason, err) {
   const flux = session.deepgramWs;
   session.deepgramWs = null;
   session.fastTurns = null;
+  dropFastDraft(session, "stt-fallback"); // Nova turns never adopt one
   if (flux) {
     try {
       flux.close();
@@ -4720,7 +4778,9 @@ function fastTurnActions(session, twilioWs) {
     }
   };
   return {
-    commit: guarded("commit", (transcript) => commitFastTurn(session, twilioWs, transcript)),
+    speculate: guarded("speculate", (transcript, turnIndex) => startFastDraft(session, transcript, turnIndex)),
+    cancelSpeculation: guarded("cancelSpeculation", (reason) => dropFastDraft(session, reason)),
+    commit: guarded("commit", (transcript, turnIndex, trigger) => commitFastTurn(session, twilioWs, transcript, turnIndex, trigger)),
     bargeIn: guarded("bargeIn", () => fastBargeIn(session)),
     dropEcho: guarded("dropEcho", (transcript) => logTranscript("[STT] Dropped (echo suppression while AI speaking)", transcript)),
     bufferStructured: guarded("bufferStructured", (transcript) => bufferFastTurn(session, twilioWs, transcript)),
@@ -4728,12 +4788,67 @@ function fastTurnActions(session, twilioWs) {
 }
 
 /**
- * A Flux turn is over: answer it, or queue it behind the turn in flight.
+ * Spec 4.5: start a draft reply on Flux's EagerEndOfTurn, replacing any the
+ * session still holds. The draft reads the conversation and never writes it,
+ * and never runs a tool; it is asked with the turn's own tools and model, so
+ * the turn can adopt its result.
+ * @param {CallSession} session
+ * @param {string} transcript
+ * @param {number} turnIndex
+ */
+function startFastDraft(session, transcript, turnIndex) {
+  dropFastDraft(session, "replaced");
+  session.speculation = startSpeculativeReply({
+    llm: streamClaudeResponse,
+    messages: session.messages,
+    transcript,
+    llmOptions: { ...buildLLMOptions(session, { includeTransfer: true }), model: FAST_LLM_MODEL },
+    turnKey: turnIndex,
+  });
+  if (session.fastStats) session.fastStats.eager = { turnIndex, at: Date.now() };
+}
+
+/**
+ * Abort the session's draft, if it holds one (spec 4.5: resumed, a new turn,
+ * echo, structured input, a commit for other words, barge-in, cleanup).
+ * @param {CallSession} session
+ * @param {string} reason
+ */
+function dropFastDraft(session, reason) {
+  const draft = session.speculation;
+  if (!draft) return;
+  session.speculation = null;
+  draft.abort(reason);
+  if (session.fastStats) session.fastStats.specDiscarded += 1;
+}
+
+/**
+ * A turn's latency record, stamped as it goes ([FastTurn]).
+ * @param {string} trigger
+ * @param {number|null} eagerAt
+ * @returns {import("./call-session").FastTurnRecord}
+ */
+function newFastTurnRecord(trigger, eagerAt) {
+  return { eotAt: Date.now(), trigger, eagerAt, drafted: eagerAt !== null, spec: "none", llmAt: null, speakAt: null, audioAt: null, logged: false };
+}
+
+/**
+ * A Flux turn is over: answer it, or queue it behind the turn in flight
+ * (CallSession.queueOrProcess). A draft for other words, or another turn, can
+ * never be adopted: it is aborted now. One for these words waits for the turn,
+ * which makes the final call (isAdoptable, before the user message is added).
  * @param {CallSession} session
  * @param {WebSocket} twilioWs
  * @param {string} transcript
+ * @param {number} turnIndex
+ * @param {string|null} trigger
  */
-function commitFastTurn(session, twilioWs, transcript) {
+function commitFastTurn(session, twilioWs, transcript, turnIndex, trigger) {
+  const stats = session.fastStats;
+  const eager = stats?.eager && stats.eager.turnIndex === turnIndex ? stats.eager : null;
+  if (stats) stats.pending = newFastTurnRecord(trigger || "model", eager ? eager.at : null);
+  const draft = session.speculation;
+  if (draft && (draft.turnKey !== turnIndex || draft.transcript !== transcript)) dropFastDraft(session, "other words");
   logTranscript("[STT] Final", transcript);
   session.queueOrProcess(transcript, (text) => handleUserSpeech(session, twilioWs, text, "general"));
 }
@@ -4746,6 +4861,8 @@ function commitFastTurn(session, twilioWs, transcript) {
  * @param {string} transcript
  */
 function bufferFastTurn(session, twilioWs, transcript) {
+  // The turn's clock starts at the caller's last piece, so the debounce counts.
+  if (session.fastStats) session.fastStats.pending = newFastTurnRecord("buffered", null);
   logTranscript("[STT] Final", transcript);
   session.bufferTranscript(transcript, (combined, inputType) => {
     logTranscript("[STT] Buffered", combined);
@@ -4754,12 +4871,203 @@ function bufferFastTurn(session, twilioWs, transcript) {
 }
 
 /**
- * Spec 4.8.8: the caller talks over the AI. Its audio stops at once.
+ * Spec 4.8.8: the caller talks over the AI. Its audio stops (the player and
+ * Aura), the turn in flight is aborted (never mid-tool: the turn checks before
+ * its next LLM round) and so is any draft, adopted or not. A turn that is
+ * ending the call keeps its goodbye: what the caller says over it would not be
+ * answered anyway (the hang-up drops it).
  * @param {CallSession} session
  */
 function fastBargeIn(session) {
+  const turn = session.currentTurn;
+  if (turn?.ending) {
+    console.log(`[Barge-in] (fast) ignored — the AI is ending the call (callSid=${session.callSid})`);
+    return;
+  }
   stopFastAudio(session);
-  console.log(`[Barge-in] (fast) Stopped the AI's audio (callSid=${session.callSid})`);
+  turn?.abort("barge-in");
+  dropFastDraft(session, "barge-in");
+  console.log(`[Barge-in] (fast) Stopped the AI's audio${turn ? " and its reply" : ""} (callSid=${session.callSid})`);
+}
+
+/**
+ * Spec 4.8.7: open the fast path's turn in handleUserSpeech, BEFORE the user
+ * message is added: a draft is adopted only if it answers this very
+ * conversation (the same messages array, at the same length) and these very
+ * words (isAdoptable). Any other draft is aborted. The turn is exposed as
+ * session.currentTurn so a barge-in can abort it.
+ * @param {CallSession} session
+ * @param {string} transcript - what the turn answers
+ * @returns {import("./call-session").FastTurn}
+ */
+function beginFastTurn(session, transcript) {
+  const stats = session.fastStats || (session.fastStats = newFastCallStats());
+  // The turn before ended without audio (aborted, an error, REST): its line now.
+  if (stats.current && !stats.current.logged) logFastTurn(session, stats.current);
+  // A Nova turn (after a fallback) or a drained queue has no Flux commit: its clock starts here.
+  const record = stats.pending || newFastTurnRecord("buffered", null);
+  stats.pending = null;
+  stats.current = record;
+  stats.turns += 1;
+  /** @type {import("./lib/speculative-reply").SpeculativeReply|null} */
+  let draft = session.speculation;
+  session.speculation = null;
+  if (draft && draft.isAdoptable(session.messages, transcript)) {
+    record.spec = "adopted";
+    stats.specAdopted += 1;
+  } else {
+    if (draft) {
+      draft.abort("not adoptable");
+      stats.specDiscarded += 1;
+    }
+    if (record.drafted) record.spec = "discarded";
+    draft = null;
+  }
+  const ctl = new AbortController();
+  /** @type {import("./call-session").FastTurn} */
+  const turn = {
+    ctl,
+    draft,
+    record,
+    chunks: [],
+    ending: false,
+    over: false,
+    abortReason: null,
+    abort(reason = "abort") {
+      turn.over = true;
+      if (!ctl.signal.aborted) {
+        turn.abortReason = reason;
+        ctl.abort(fastAbortError(reason));
+      }
+      turn.draft?.abort(reason); // an adopted draft streams on its own signal
+    },
+  };
+  session.currentTurn = turn;
+  return turn;
+}
+
+/**
+ * An AbortError naming why the turn was stopped.
+ * @param {string} [reason]
+ * @returns {Error}
+ */
+function fastAbortError(reason) {
+  return Object.assign(new Error(`fast turn aborted: ${reason || "abort"}`), { name: "AbortError" });
+}
+
+/**
+ * Spec 4.8.7: the top of each round of the fast turn's tool loop. A barge-in
+ * that came while the last round's tools ran ends the turn here, never during
+ * a tool, and the round's chunks start afresh.
+ * @param {import("./call-session").FastTurn} turn
+ * @param {string[]} chunks - the round's sentence queue
+ */
+function startFastRound(turn, chunks) {
+  if (turn.ctl.signal.aborted) throw fastAbortError("barge-in");
+  turn.chunks = chunks;
+}
+
+/**
+ * Spec 4.8.7: the fast path's LLM response for one round: in round 0 the
+ * adopted draft (its buffered chunks replay through onSentence at once), else
+ * a live Claude call with clause chunking on the turn's signal. A signal
+ * replaces claude-chat's own 15 s timeout, so the turn's carries one too.
+ * @param {CallSession} session
+ * @param {import("./call-session").FastTurn} turn
+ * @param {number} round
+ * @param {Record<string, any>} llmOptions
+ * @param {(sentence: string) => void} onSentence
+ * @returns {Promise<any>} { type: "content" } or { type: "tool_calls" }; rejects with an AbortError when the turn was aborted
+ */
+async function fastLlmResponse(session, turn, round, llmOptions, onSentence) {
+  const result = round === 0 && turn.draft
+    ? await turn.draft.adopt(onSentence)
+    : await streamClaudeResponse(session.messages, {
+      ...llmOptions,
+      onSentence,
+      chunking: "clause",
+      signal: AbortSignal.any([turn.ctl.signal, AbortSignal.timeout(FAST_LLM_TIMEOUT_MS)]),
+      model: FAST_LLM_MODEL,
+    });
+  if (result.type === "aborted") throw fastAbortError("draft aborted");
+  return result;
+}
+
+/**
+ * The LLM's first output for the fast turn (eot_to_llm): its first text, or a
+ * tool call that came with none.
+ * @param {import("./call-session").FastTurn} turn
+ */
+function noteFastLlmOutput(turn) {
+  if (turn.record.llmAt === null) turn.record.llmAt = Date.now();
+}
+
+/**
+ * Spec 4.8.7: a barge-in ended the turn. No apology, and the caller's words
+ * stay. What the LLM response in flight had already sent to TTS is recorded,
+ * plus "…", so the next turn knows what the caller heard. A response that had
+ * said nothing records nothing (its round's tool_use / tool_result messages
+ * are already in the conversation).
+ * @param {CallSession} session
+ * @param {import("./call-session").FastTurn} turn
+ */
+function recordAbortedFastTurn(session, turn) {
+  const heard = turn.chunks.join(" ").trim();
+  if (heard) session.addMessage("assistant", `${heard}…`);
+  console.log(`[FastTurn] Reply stopped (${turn.abortReason || "abort"}) — ${heard ? "kept what was said" : "nothing was said yet"} (callSid=${session.callSid})`);
+}
+
+/**
+ * The fast turn is over (finally): no more fillers or chunks from it, and the
+ * session's abort handle is cleared.
+ * @param {CallSession} session
+ * @param {import("./call-session").FastTurn} turn
+ */
+function endFastTurn(session, turn) {
+  turn.over = true;
+  if (session.currentTurn === turn) session.currentTurn = null;
+}
+
+/**
+ * Spec 4.8.9: one committed turn's latency line, once. No words: ids, times
+ * and enums only. eot_to_llm runs to the reply's first text, eot_to_audio to
+ * its first audio handed to the player, eager_lead from the EagerEndOfTurn
+ * whose draft the turn could adopt to the EndOfTurn.
+ * @param {CallSession} session
+ * @param {import("./call-session").FastTurnRecord} record
+ */
+function logFastTurn(session, record) {
+  if (record.logged) return;
+  record.logged = true;
+  /** @type {(from: number|null, to: number|null) => string} */
+  const span = (from, to) => (from === null || to === null ? "-" : String(Math.max(0, Math.round(to - from))));
+  if (record.audioAt !== null && session.fastStats) session.fastStats.eotToAudioMs.push(Math.max(0, record.audioAt - record.eotAt));
+  console.log(`[FastTurn] callSid=${session.callSid} trigger=${record.trigger} spec=${record.spec} eot_to_llm=${span(record.eotAt, record.llmAt)} eot_to_audio=${span(record.eotAt, record.audioAt)} eager_lead=${span(record.eagerAt, record.eotAt)}`);
+}
+
+/**
+ * Spec 4.8.9: the call's [FastCall] line at cleanup, and the same summary for
+ * calls.metadata.fastPath.
+ * @param {CallSession} session
+ * @returns {{ turns: number, eotToAudioP50: number|null, eotToAudioP90: number|null, specAdopted: number, specDiscarded: number, stt: "flux"|"nova-fallback", tts: "stream"|"rest-fallback" }}
+ */
+function summarizeFastCall(session) {
+  const stats = session.fastStats || newFastCallStats();
+  if (stats.current && !stats.current.logged) logFastTurn(session, stats.current);
+  const samples = [...stats.eotToAudioMs].sort((a, b) => a - b);
+  /** @type {(p: number) => number|null} the nearest-rank percentile */
+  const percentile = (p) => (samples.length === 0 ? null : Math.round(samples[Math.ceil((p / 100) * samples.length) - 1]));
+  const summary = {
+    turns: stats.turns,
+    eotToAudioP50: percentile(50),
+    eotToAudioP90: percentile(90),
+    specAdopted: stats.specAdopted,
+    specDiscarded: stats.specDiscarded,
+    stt: /** @type {"flux"|"nova-fallback"} */ (session.fastPath === "degraded-stt" ? "nova-fallback" : "flux"),
+    tts: /** @type {"stream"|"rest-fallback"} */ (session.fastState?.ttsFellBack ? "rest-fallback" : "stream"),
+  };
+  console.log(`[FastCall] callSid=${session.callSid} turns=${summary.turns} eot_to_audio_p50=${summary.eotToAudioP50 ?? "-"} p90=${summary.eotToAudioP90 ?? "-"} spec_adopted=${summary.specAdopted} spec_discarded=${summary.specDiscarded} stt=${summary.stt} tts=${summary.tts}`);
+  return summary;
 }
 
 /**
@@ -4776,6 +5084,8 @@ function speakFast(session, text) {
   if (!state || !session.fastTts?.speak(clean)) return 0;
   state.speakingText = state.speakingText ? `${state.speakingText} ${clean}` : clean;
   state.unflushed = true;
+  const record = session.fastStats?.current;
+  if (record && record.speakAt === null) record.speakAt = Date.now();
   return clean.length * FAST_TTS_MS_PER_CHAR;
 }
 
@@ -4822,6 +5132,12 @@ function onFastAudio(session, audio) {
   session.isSpeaking = true;
   state.unmarked = true;
   armFastQuietTimer(session);
+  // The turn's first audio: its [FastTurn] line has everything now.
+  const record = session.fastStats?.current;
+  if (record && record.speakAt !== null && record.audioAt === null) {
+    record.audioAt = Date.now();
+    logFastTurn(session, record);
+  }
 }
 
 /**
@@ -5042,6 +5358,9 @@ function closeFastPath(session) {
   }
   for (const waiter of [...state.flushWaiters]) waiter.done();
   for (const resolve of state.quietWaiters.splice(0)) resolve();
+  // Nobody will hear them: stop paying for them.
+  dropFastDraft(session, "cleanup");
+  session.currentTurn?.abort("cleanup");
 }
 
 // --- Test Call WebSocket (/ws/test) ---

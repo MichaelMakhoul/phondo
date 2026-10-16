@@ -22,6 +22,43 @@ const MAX_MESSAGES = 21; // system prompt + up to 20 messages (user/assistant tu
  * @property {boolean} closed - cleanup has run: late callbacks do nothing
  */
 
+/**
+ * SCRUM-594: one committed turn's latency stamps, for its [FastTurn] line.
+ * Times are Date.now() ms; null until they happen.
+ * @typedef {Object} FastTurnRecord
+ * @property {number} eotAt - the caller's EndOfTurn (for a Nova or buffered turn: when it reached handleUserSpeech)
+ * @property {string} trigger - Flux's EndOfTurn trigger ("model", "timeout", ...), or "buffered"
+ * @property {number|null} eagerAt - the EagerEndOfTurn whose draft this turn could adopt
+ * @property {boolean} drafted - a draft was started for this turn
+ * @property {"adopted"|"discarded"|"none"} spec
+ * @property {number|null} llmAt - the reply's first text from the LLM
+ * @property {number|null} speakAt - the turn's first words sent to TTS
+ * @property {number|null} audioAt - the turn's first audio handed to the player
+ * @property {boolean} logged
+ *
+ * SCRUM-594: the fast path's per-call latency summary ([FastCall], calls.metadata.fastPath).
+ * @typedef {Object} FastCallStats
+ * @property {number} turns - turns answered
+ * @property {number} specAdopted
+ * @property {number} specDiscarded
+ * @property {number[]} eotToAudioMs - one per turn that produced audio
+ * @property {{ turnIndex: number, at: number }|null} eager - the latest draft's turn and start
+ * @property {FastTurnRecord|null} pending - committed, not yet picked up by handleUserSpeech
+ * @property {FastTurnRecord|null} current - the turn handleUserSpeech answered last
+ *
+ * SCRUM-594: the fast path's turn in flight (server.js beginFastTurn). Its
+ * abort() is what a barge-in calls.
+ * @typedef {Object} FastTurn
+ * @property {AbortController} ctl - aborted by a barge-in or cleanup; the LLM call's signal
+ * @property {import("./lib/speculative-reply").SpeculativeReply|null} draft - the adopted draft, if any
+ * @property {FastTurnRecord} record
+ * @property {string[]} chunks - what the LLM response in flight has sent to TTS (recorded, plus "…", on an abort)
+ * @property {boolean} ending - the turn is ending the call: a barge-in leaves its goodbye alone
+ * @property {boolean} over - aborted or finished: late fillers and chunks are dropped
+ * @property {string|null} abortReason - "barge-in" or "cleanup" once aborted
+ * @property {(reason?: string) => void} abort
+ */
+
 class CallSession {
   constructor(callSid) {
     this.callSid = callSid;
@@ -76,6 +113,16 @@ class CallSession {
     // SCRUM-594: the fast path's audio and flush bookkeeping (server.js).
     /** @type {FastPathState|null} */
     this.fastState = null;
+    // SCRUM-594: the fast path's turn in flight; a barge-in calls its abort().
+    /** @type {FastTurn|null} */
+    this.currentTurn = null;
+    // SCRUM-594: the speculative draft started on Flux's EagerEndOfTurn
+    // (lib/speculative-reply.js), until the turn adopts or discards it.
+    /** @type {import("./lib/speculative-reply").SpeculativeReply|null} */
+    this.speculation = null;
+    // SCRUM-594: the fast path's latency record ([FastTurn], [FastCall]).
+    /** @type {FastCallStats|null} */
+    this.fastStats = null;
     // SCRUM-594: optional — resolves once the call's queued speech has played.
     // The classic end_call hang-up (server.js hangUpAfterEndCall) awaits it
     // instead of its sendTTS-duration estimate. The fast path sets it: its

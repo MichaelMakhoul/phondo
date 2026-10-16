@@ -34,6 +34,7 @@ const { noteAssistantSpeech, noteAssistantTurnEnd } = require("../lib/owner-turn
 const { checkEndCallGuard } = require("../lib/end-call-guard");
 const { createFastPlayer } = require("../lib/fast-player");
 const { createFastTurnEngine } = require("../lib/fast-turns");
+const { startSpeculativeReply } = require("../lib/speculative-reply");
 const { maskPhone } = require("../lib/mask-phone");
 
 const src = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
@@ -61,6 +62,14 @@ function recordingConsole(lines) {
   return { log: rec("log"), info: rec("info"), warn: rec("warn"), error: rec("error"), debug: rec("debug") };
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/** Poll until `cond()` holds. */
+async function until(cond, what, ms = 2000) {
+  const t0 = Date.now();
+  while (!cond()) {
+    if (Date.now() - t0 > ms) throw new Error(`timed out waiting for ${what}`);
+    await sleep(2);
+  }
+}
 /** Let pending promise callbacks and immediates run. */
 const settle = async (rounds = 3) => {
   for (let i = 0; i < rounds; i++) await new Promise((r) => setImmediate(r));
@@ -198,6 +207,7 @@ function makeFast(o = {}) {
     DEEPGRAM_API_KEY: "dg-key",
     synthesizeSpeech: async (key, text, options) => {
       calls.push(["synthesizeSpeech", text, options]);
+      if (o.restDelayMs) await sleep(o.restDelayMs);
       if (o.restFails) throw new Error("Deepgram TTS error 500");
       return Buffer.alloc(o.restBytes ?? 800, 0x7f);
     },
@@ -240,6 +250,10 @@ function makeFast(o = {}) {
     },
     createFastPlayer,
     createFastTurnEngine: (opts) => { engines.push(opts); return createFastTurnEngine(opts); },
+    startSpeculativeReply,
+    streamClaudeResponse: (messages, opts) => llm(messages, opts, "claude"),
+    FAST_LLM_MODEL: "claude-haiku-5-5",
+    FAST_LLM_TIMEOUT_MS: o.llmTimeoutMs ?? 15_000,
     FAST_DEEPGRAM_HOST: AU_HOST,
     FLUX_OPEN_TIMEOUT_MS: o.fluxOpenTimeoutMs ?? 40,
     FAST_TTS_MS_PER_CHAR: 70,
@@ -248,11 +262,13 @@ function makeFast(o = {}) {
     FAST_AUDIO_QUIET_MS: o.quietMs ?? 25,
     console: recordingConsole(lines),
   };
+  const names = ["handleUserSpeech", "sendTTS", "sendClear", "startFastPath", "closeFastPath", "onFastMark", "settleFastAudio", "fastFlush", "summarizeFastCall"];
   const fns = runSlice({
     from: "function buildLLMOptions(session, { includeTransfer = false } = {}) {",
     to: "// --- Test Call WebSocket (/ws/test) ---",
     scope,
-    names: ["handleUserSpeech", "sendTTS", "sendClear", "startFastPath", "closeFastPath", "onFastMark", "settleFastAudio", "fastFlush"],
+    // A name server.js does not define comes back undefined, so only the tests that use it fail.
+    wrap: (code) => `${code}\nreturn { ${names.map((n) => `${n}: typeof ${n} === "undefined" ? undefined : ${n}`).join(", ")} };`,
   });
 
   /** Start the fast path on `session` as the classic block does; Nova is a recording stub. */
@@ -472,6 +488,18 @@ describe("SCRUM-594 4.8.1: the fast path's STT and TTS at call start", () => {
     assert.equal(s.fastPath, "degraded-stt");
     assert.equal(h.lastFlux().handle.closes, 1);
     assert.equal(s.fastTurns, null);
+    h.closeFastPath(s);
+  });
+
+  it("a fallback mid-call also aborts the draft in flight (Nova turns never adopt one)", async () => {
+    const h = makeFast({ steps: [{ firstDelayMs: 5000, content: "never" }] });
+    const s = h.start(makeSession());
+    h.fluxOpens();
+    h.turn("EagerEndOfTurn", 0, "Can I book for Friday?");
+    await settle();
+    h.lastFlux().callbacks.onClose(1011, "internal error", { initiatedByUs: false });
+    assert.equal(h.llmCalls[0].opts.signal.aborted, true);
+    assert.equal(s.speculation, null);
     h.closeFastPath(s);
   });
 
@@ -976,6 +1004,7 @@ describe("SCRUM-594 4.8.10: cleanup", () => {
         settleOwnerToolRuns,
         isDemoLineNumber: () => true,
         closeFastPath: h.closeFastPath,
+        summarizeFastCall: h.summarizeFastCall,
         console: recordingConsole(h.lines),
       },
       names: ["cleanupSession"],
@@ -984,5 +1013,624 @@ describe("SCRUM-594 4.8.10: cleanup", () => {
     assert.equal(h.lastFlux().handle.closes, 1);
     assert.equal(h.lastAura().handle.closes, 1);
     assert.equal(records.length, 1);
+  });
+});
+
+// ─── 4.8.7: the fast turn (Claude, clause chunking, drafts, aborts) ─────────
+
+describe("SCRUM-594 4.8.7: handleUserSpeech on the fast path", () => {
+  it("the live call is Claude with clause chunking, the turn's signal and FAST_LLM_MODEL (never streamChatResponse); the turn exposes its abort while it runs", async () => {
+    const h = makeFast({ steps: [{ firstDelayMs: 20, sentences: ["Sure,", "Tuesday at ten works."], content: "Sure, Tuesday at ten works." }] });
+    const s = h.start(makeSession());
+    const turn = h.handleUserSpeech(s, h.twilioWs, "Can I come in Tuesday at ten?");
+    await settle();
+    assert.equal(typeof s.currentTurn?.abort, "function", "session.currentTurn = { abort } while the turn runs");
+    await turn;
+    assert.equal(h.llmCalls.length, 1);
+    const [call] = h.llmCalls;
+    assert.equal(call.which, "claude");
+    assert.equal(call.opts.chunking, "clause");
+    assert.equal(call.opts.model, "claude-haiku-5-5");
+    assert.ok(call.opts.signal instanceof AbortSignal);
+    assert.ok(call.opts.tools.some((t) => t.function.name === "book_appointment"), "the turn's tools");
+    assert.deepEqual(call.messages.at(-1), { role: "user", content: "Can I come in Tuesday at ten?" });
+    assert.deepEqual(h.lastAura().handle.spoken, ["Sure,", "Tuesday at ten works."]);
+    assert.equal(s.currentTurn, null, "gone once the turn is over");
+    h.closeFastPath(s);
+  });
+
+  it("a classic call still uses streamChatResponse", async () => {
+    const h = makeFast({ steps: [{ sentences: ["Hi."], content: "Hi." }] });
+    const s = makeSession();
+    await h.handleUserSpeech(s, h.twilioWs, "Hello there, anyone home?");
+    assert.equal(h.llmCalls[0].which, "chat");
+    assert.equal(s.currentTurn, null);
+    clearTimeout(s._speakingTimeout);
+  });
+
+  it("a live call that hangs is cut at FAST_LLM_TIMEOUT_MS and handled like any LLM failure: an apology, the user message dropped", async () => {
+    const h = makeFast({ llmTimeoutMs: 30, steps: [{ hang: true }] });
+    const s = h.start(makeSession());
+    await within(h.handleUserSpeech(s, h.twilioWs, "Hello, is anyone there?"), 2000, "the turn, cut at the 30 ms limit");
+    assert.deepEqual(h.lastAura().handle.spoken, ["ERR:troubleRepeat"]);
+    assert.deepEqual(s.messages.slice(1), [], "dropped, as on the classic path");
+    assert.ok(h.lines.some((l) => l.startsWith("error| [Pipeline]")), h.lines.join("\n"));
+    h.closeFastPath(s);
+  });
+
+  it("the model's own words before a tool call stand in for the canned tool filler (said once, not twice)", async () => {
+    const h = makeFast({
+      toolResults: { book_appointment: { success: true, message: "Booked! Your confirmation code is 482913." } },
+      steps: [
+        { sentences: ["One moment, let me book that for you."], tools: [{ name: "book_appointment", args: { datetime: "2026-10-20T10:00:00" } }] },
+        { sentences: ["You're booked for Tuesday at ten."], content: "You're booked for Tuesday at ten." },
+      ],
+    });
+    const s = h.start(makeSession());
+    await h.handleUserSpeech(s, h.twilioWs, "Yes, book me in please.");
+    assert.deepEqual(h.lastAura().handle.spoken, ["One moment, let me book that for you.", "You're booked for Tuesday at ten."]);
+    h.closeFastPath(s);
+  });
+
+  it("with no words before the tool call, the canned filler still covers the wait", async () => {
+    const h = makeFast({
+      toolResults: { book_appointment: { success: true, message: "Booked! Your confirmation code is 482913." } },
+      steps: [
+        { tools: [{ name: "book_appointment", args: { datetime: "2026-10-20T10:00:00" } }] },
+        { sentences: ["You're booked."], content: "You're booked." },
+      ],
+    });
+    const s = h.start(makeSession());
+    await h.handleUserSpeech(s, h.twilioWs, "Yes, book me in please.");
+    assert.deepEqual(h.lastAura().handle.spoken, ["Let me book that for you.", "You're booked."]);
+    h.closeFastPath(s);
+  });
+});
+
+describe("SCRUM-594 4.8.7 + addendum: speculative drafts", () => {
+  it("an adoptable draft is adopted: one LLM call in all, nothing spoken before the commit, its chunks spoken at once", async () => {
+    const h = makeFast({ steps: [{ sentences: ["Sure, Tuesday at ten works."], content: "Sure, Tuesday at ten works." }] });
+    const s = h.start(makeSession());
+    h.fluxOpens();
+    h.turn("StartOfTurn", 0, "Can I");
+    h.turn("EagerEndOfTurn", 0, "Can I come in Tuesday at ten?");
+    await settle();
+    assert.equal(h.llmCalls.length, 1, "the draft starts at the eager end of turn");
+    assert.equal(h.llmCalls[0].which, "claude");
+    assert.equal(h.llmCalls[0].opts.chunking, "clause");
+    assert.equal(h.llmCalls[0].opts.model, "claude-haiku-5-5");
+    assert.deepEqual(h.llmCalls[0].messages.at(-1), { role: "user", content: "Can I come in Tuesday at ten?" });
+    assert.equal(h.engines[0].getState().processing, false, "a draft is not processing");
+    assert.deepEqual(h.lastAura().handle.spoken, []);
+    assert.deepEqual(s.messages.slice(1), [], "a draft never touches the conversation");
+    h.turn("EndOfTurn", 0, "Can I come in Tuesday at ten?");
+    await until(() => !s.isProcessing, "the turn");
+    assert.equal(h.llmCalls.length, 1, "no second LLM call");
+    assert.deepEqual(h.lastAura().handle.spoken, ["Sure, Tuesday at ten works."]);
+    assert.deepEqual(s.messages.slice(1).map((m) => [m.role, m.content]), [["user", "Can I come in Tuesday at ten?"], ["assistant", "Sure, Tuesday at ten works."]]);
+    assert.equal(s.speculation, null);
+    h.closeFastPath(s);
+  });
+
+  it("a draft for other words is discarded at the commit: aborted, and the turn calls the LLM live", async () => {
+    const h = makeFast({ steps: [{ firstDelayMs: 300, sentences: ["Sure."], content: "Sure." }, { sentences: ["Ten it is."], content: "Ten it is." }] });
+    const s = h.start(makeSession());
+    h.fluxOpens();
+    h.turn("EagerEndOfTurn", 0, "Tuesday");
+    await settle();
+    const draftSignal = h.llmCalls[0].opts.signal;
+    h.turn("EndOfTurn", 0, "Tuesday at ten"); // a ForceEndTurn can do this with no TurnResumed
+    assert.equal(draftSignal.aborted, true);
+    await until(() => !s.isProcessing, "the turn");
+    assert.equal(h.llmCalls.length, 2);
+    assert.deepEqual(h.llmCalls[1].messages.at(-1), { role: "user", content: "Tuesday at ten" });
+    assert.deepEqual(h.lastAura().handle.spoken, ["Ten it is."]);
+    h.closeFastPath(s);
+  });
+
+  it("a draft for other words is aborted at the commit even when the turn has to queue", async () => {
+    const h = makeFast({ steps: [{ firstDelayMs: 300, sentences: ["Sure."], content: "Sure." }] });
+    const s = h.start(makeSession());
+    h.fluxOpens();
+    h.turn("EagerEndOfTurn", 0, "Tuesday");
+    await settle();
+    s.isProcessing = true; // a turn in flight: the commit queues
+    h.turn("EndOfTurn", 0, "Tuesday please"); // two words: no barge-in, so only the commit can drop it
+    assert.equal(h.llmCalls[0].opts.signal.aborted, true, "not left running until the queued turn starts");
+    assert.equal(s.speculation, null);
+    assert.equal(s._pendingTranscript, "Tuesday please");
+    h.closeFastPath(s);
+  });
+
+  it("a draft whose conversation changed since it started is not adopted: aborted, and the turn calls the LLM live", async () => {
+    const h = makeFast({ steps: [{ firstDelayMs: 300, sentences: ["Stale."], content: "Stale." }, { sentences: ["Fresh."], content: "Fresh." }] });
+    const s = h.start(makeSession());
+    h.fluxOpens();
+    h.turn("EagerEndOfTurn", 0, "Can I book a cleaning?");
+    await settle();
+    s.addMessage("system", "The schedule changed."); // the draft no longer answers this conversation
+    h.turn("EndOfTurn", 0, "Can I book a cleaning?");
+    assert.equal(h.llmCalls[0].opts.signal.aborted, true);
+    await until(() => !s.isProcessing, "the turn");
+    assert.equal(h.llmCalls.length, 2);
+    assert.deepEqual(h.lastAura().handle.spoken, ["Fresh."]);
+    h.closeFastPath(s);
+  });
+
+  it("TurnResumed cancels the draft", async () => {
+    const h = makeFast({ steps: [{ firstDelayMs: 300, sentences: ["Sure."], content: "Sure." }] });
+    const s = h.start(makeSession());
+    h.fluxOpens();
+    h.turn("EagerEndOfTurn", 0, "I want to");
+    await settle();
+    h.turn("TurnResumed", 0, "I want to book");
+    assert.equal(h.llmCalls[0].opts.signal.aborted, true);
+    assert.equal(s.speculation, null);
+    h.closeFastPath(s);
+  });
+
+  it("a draft that fails after it was adopted is an LLM failure: an apology, the user message dropped", async (t) => {
+    t.mock.method(console, "warn", () => {}); // speculative-reply's own warning (a lib module: the global console)
+    const h = makeFast({ steps: [{ firstDelayMs: 40, throws: "Anthropic API error 529 (overloaded_error: Overloaded)" }] });
+    const s = h.start(makeSession());
+    h.fluxOpens();
+    h.turn("EagerEndOfTurn", 0, "Do you do Saturdays?");
+    await settle();
+    h.turn("EndOfTurn", 0, "Do you do Saturdays?");
+    await until(() => !s.isProcessing, "the turn");
+    assert.equal(h.llmCalls.length, 1, "adopted, so not asked again");
+    assert.deepEqual(h.lastAura().handle.spoken, ["ERR:troubleRepeat"]);
+    assert.deepEqual(s.messages.slice(1), []);
+    h.closeFastPath(s);
+  });
+
+  it("speculation off (FLUX_EAGER_EOT_THRESHOLD=off): the engine never drafts", async () => {
+    const h = makeFast({ fluxConfig: { eotThreshold: 0.7, eagerEotThreshold: null, eotTimeoutMs: 5000 } });
+    const s = h.start(makeSession());
+    assert.equal(h.engines[0].speculationEnabled, false);
+    assert.equal(h.lastFlux().options.eagerEotThreshold, null);
+    h.fluxOpens();
+    h.turn("EagerEndOfTurn", 0, "Can I book?");
+    await settle();
+    assert.equal(h.llmCalls.length, 0);
+    h.closeFastPath(s);
+  });
+
+  it("speculation on by default: the engine is told so (a boolean)", () => {
+    const h = makeFast();
+    const s = h.start(makeSession());
+    assert.equal(h.engines[0].speculationEnabled, true);
+    h.closeFastPath(s);
+  });
+});
+
+// ─── 4.8.8: barge-in ────────────────────────────────────────────────────────
+
+describe("SCRUM-594 4.8.8: barge-in", () => {
+  it("stops the player (Twilio clear), Clears Aura and aborts the turn: no apology, the caller's words kept with what the AI had said plus '…'", async () => {
+    const h = makeFast({
+      steps: [
+        { sentences: ["Sure, I can help with that,", "we have openings on Tuesday and Wednesday."], gapMs: 300, content: "unused" },
+        { sentences: ["Wednesday it is."], content: "Wednesday it is." },
+      ],
+    });
+    const s = h.start(makeSession());
+    h.fluxOpens();
+    h.turn("EndOfTurn", 0, "I'd like to book a cleaning");
+    await until(() => h.lastAura().handle.spoken.length === 1, "the first clause");
+    h.audio(2); // it is playing
+    const signal = h.llmCalls[0].opts.signal;
+    const clears = h.twilio("clear").length;
+    h.turn("StartOfTurn", 1, "no wait");
+    assert.equal(signal.aborted, true, "the turn's LLM call is aborted");
+    assert.equal(h.twilio("clear").length, clears + 1, "the player's Twilio clear");
+    assert.equal(h.lastAura().handle.clears, 1);
+    assert.equal(s.fastPlayer.isPlaying(), false);
+    assert.equal(s.isSpeaking, false);
+    await until(() => !s.isProcessing, "the aborted turn");
+    assert.ok(h.lines.some((l) => l.startsWith("log| [Barge-in] (fast)")), h.lines.join("\n"));
+    assert.deepEqual(s.messages.slice(1).map((m) => [m.role, m.content]), [["user", "I'd like to book a cleaning"], ["assistant", "Sure, I can help with that,…"]]);
+    assert.ok(!h.lastAura().handle.spoken.includes("ERR:troubleRepeat"), "no apology");
+    // The caller finishes; the next turn sees the conversation as the caller heard it.
+    h.turn("EndOfTurn", 1, "no wait, make it Wednesday");
+    await until(() => h.llmCalls.length === 2 && !s.isProcessing, "the next turn");
+    assert.deepEqual(h.llmCalls[1].messages.slice(1).map((m) => m.content), ["I'd like to book a cleaning", "Sure, I can help with that,…", "no wait, make it Wednesday"]);
+    h.closeFastPath(s);
+  });
+
+  it("aborts an adopted draft that is still streaming: what it had said is kept, plus '…'", async () => {
+    const h = makeFast({ steps: [{ sentences: ["Sure, let me see,", "we have Tuesday at ten or Wednesday at two."], gapMs: 300, content: "unused" }] });
+    const s = h.start(makeSession());
+    h.fluxOpens();
+    h.turn("EagerEndOfTurn", 0, "Do you have anything next week?");
+    await settle();
+    h.turn("EndOfTurn", 0, "Do you have anything next week?");
+    await until(() => h.lastAura().handle.spoken.length === 1, "the replayed first clause");
+    h.turn("Update", 1, "sorry actually I meant this week");
+    assert.equal(h.llmCalls[0].opts.signal.aborted, true, "the adopted draft's own request is cancelled");
+    await until(() => !s.isProcessing, "the aborted turn");
+    assert.deepEqual(s.messages.slice(1).map((m) => [m.role, m.content]), [["user", "Do you have anything next week?"], ["assistant", "Sure, let me see,…"]]);
+    assert.deepEqual(h.lastAura().handle.spoken, ["Sure, let me see,"]);
+    h.closeFastPath(s);
+  });
+
+  it("after a barge-in no sentence still queued behind REST synthesis is spoken (the stream fell back to REST)", async () => {
+    const h = makeFast({ restDelayMs: 150, steps: [{ sentences: ["First part,", "second part."], gapMs: 5, hang: true }] });
+    const s = h.start(makeSession());
+    h.lastAura().options.onError(new Error("aura down")); // REST from here on
+    h.fluxOpens();
+    h.turn("EndOfTurn", 0, "Tell me about your prices");
+    await until(() => h.llmCalls.length === 1 && h.calls.some((c) => c[0] === "synthesizeSpeech"), "chunk one synthesising");
+    await sleep(20); // chunk two is queued behind it
+    h.turn("Update", 1, "never mind just tell me the hours");
+    await until(() => !s.isProcessing, "the aborted turn");
+    await sleep(200); // past chunk one's synthesis
+    assert.deepEqual(h.calls.filter((c) => c[0] === "synthesizeSpeech").map((c) => c[1]), ["First part,"]);
+    clearTimeout(s._speakingTimeout);
+    h.closeFastPath(s);
+  });
+
+  it("survives a player and an Aura stream that throw (the Twilio socket went away mid-call): the turn is still aborted", async () => {
+    const h = makeFast({ steps: [{ firstDelayMs: 5000, content: "never" }] });
+    const s = h.start(makeSession());
+    h.fluxOpens();
+    h.turn("EndOfTurn", 0, "Do you take new patients?");
+    await settle();
+    await h.sendTTS(s, h.twilioWs, "One moment."); // Aura owes audio: the barge-in will Clear it
+    s.fastPlayer.stop = () => { throw new Error("socket closed"); };
+    h.lastAura().handle.clear = () => { throw new Error("socket closed"); };
+    h.turn("Update", 1, "sorry what about Saturdays then");
+    assert.equal(h.llmCalls[0].opts.signal.aborted, true);
+    assert.equal(h.sentry.length, 0, "handled inside the barge-in, not by the action guard");
+    assert.ok(h.lines.some((l) => l.startsWith("warn| [FastPath] Stopping the player threw")), h.lines.join("\n"));
+    assert.ok(h.lines.some((l) => l.startsWith("warn| [FastPath] Clearing the Aura stream threw")), h.lines.join("\n"));
+    await until(() => !s.isProcessing, "the aborted turn");
+    s.fastPlayer = null; // the throwing stop would only be logged again at cleanup
+    h.closeFastPath(s);
+  });
+
+  it("also aborts a draft the session holds", async () => {
+    const h = makeFast({ steps: [{ firstDelayMs: 5000, content: "never" }] });
+    const s = h.start(makeSession());
+    h.fluxOpens();
+    h.turn("EagerEndOfTurn", 0, "I was wondering");
+    await settle();
+    s.isProcessing = true; // a turn in flight (e.g. one drained from the queue)
+    h.turn("Update", 0, "I was wondering whether you could");
+    assert.equal(h.llmCalls[0].opts.signal.aborted, true);
+    assert.equal(s.speculation, null);
+    h.closeFastPath(s);
+  });
+
+  it("an EndOfTurn over a turn in flight: barge-in aborts it, the commit queues behind it and is answered next", async () => {
+    const h = makeFast({ steps: [{ firstDelayMs: 5000, content: "never" }, { sentences: ["Sure, Wednesday."], content: "Sure, Wednesday." }] });
+    const s = h.start(makeSession());
+    h.fluxOpens();
+    h.turn("EndOfTurn", 0, "Can I book for Tuesday?");
+    await settle();
+    h.turn("EndOfTurn", 1, "actually make that Wednesday instead"); // no Update first: the EndOfTurn does both
+    await until(() => h.llmCalls.length === 2 && !s.isProcessing, "the queued turn");
+    assert.equal(h.llmCalls[0].opts.signal.aborted, true);
+    // Nothing was spoken in the aborted turn, so nothing is recorded for it: two user turns in a row
+    // (the Messages API joins consecutive same-role turns).
+    assert.deepEqual(h.llmCalls[1].messages.slice(1).map((m) => [m.role, m.content]), [["user", "Can I book for Tuesday?"], ["user", "actually make that Wednesday instead"]]);
+    assert.deepEqual(h.lastAura().handle.spoken, ["Sure, Wednesday."]);
+    h.closeFastPath(s);
+  });
+
+  it("never mid-tool: the tool finishes, its tool_use and tool_result stay, and no further LLM round is asked", async () => {
+    /** @type {(() => void) | undefined} */
+    let release;
+    const h = makeFast({
+      onTool: () => new Promise((r) => { release = () => r(undefined); }),
+      steps: [{ sentences: ["Let me check that for you."], tools: [{ name: "check_availability", args: { date: "2026-10-20" } }] }],
+    });
+    const s = h.start(makeSession());
+    h.fluxOpens();
+    h.turn("EndOfTurn", 0, "Is Tuesday free at all?");
+    await until(() => typeof release === "function", "the tool call");
+    h.turn("Update", 1, "actually forget it I will call back"); // processing: barge-in
+    assert.equal(s.currentTurn?.ctl.signal.aborted, true, "the turn is aborted");
+    /** @type {() => void} */ (release)();
+    await until(() => !s.isProcessing, "the turn");
+    assert.equal(h.calls.filter((c) => c[0] === "executeToolCall").length, 1, "the tool ran to the end");
+    assert.equal(h.llmCalls.length, 1, "no LLM round after the abort");
+    assert.deepEqual(s.messages.slice(1).map((m) => m.role), ["user", "assistant", "tool"], "a booking made there is still known to the next turn");
+    assert.equal(s.messages[2].tool_calls[0].function.name, "check_availability");
+    assert.equal(s.messages[3].content, "check_availability ok");
+    h.closeFastPath(s);
+  });
+
+  it("no filler is spoken after a barge-in has ended the turn", async () => {
+    const h = makeFast({ steps: [{ firstDelayMs: 5000, content: "never" }] });
+    const s = h.start(makeSession());
+    h.fluxOpens();
+    h.turn("EndOfTurn", 0, "What time do you open tomorrow?");
+    await settle();
+    h.turn("Update", 1, "hold on a second please");
+    await until(() => !s.isProcessing, "the aborted turn");
+    await sleep(1600); // past the 1.5 s waiting-filler timer
+    assert.deepEqual(h.lastAura().handle.spoken, []);
+    h.closeFastPath(s);
+  });
+
+  it("a goodbye is never barged in on: the call is ending, and speech over it is not answered anyway", async () => {
+    const h = makeFast({ tailMs: 5, steps: [{ sentences: ["You're welcome, goodbye!"], tools: [{ name: "end_call", args: { reason: "caller finished" } }] }] });
+    const s = h.start(makeSession());
+    h.fluxOpens();
+    h.turn("EndOfTurn", 0, "That's all, thanks");
+    await until(() => s.endedReason === "end_call_tool", "the hang-up wait");
+    h.audio(2);
+    h.turn("Update", 1, "okay thank you so much bye");
+    assert.equal(h.lastAura().handle.clears, 0, "the goodbye plays on");
+    assert.ok(h.lines.some((l) => l.includes("[Barge-in] (fast) ignored")), h.lines.join("\n"));
+    for (const seq of h.lastAura().handle.flushes) h.lastAura().options.onFlushed(seq);
+    await settle();
+    echoMarks(h, s);
+    await until(() => h.calls.some((c) => c[0] === "twilio.close"), "the hang-up");
+    h.closeFastPath(s);
+  });
+
+  it("with no turn in flight (the reply is still playing) it stops the audio, and the commit after it is answered", async () => {
+    const h = makeFast({ steps: [{ sentences: ["We open at nine."], content: "We open at nine." }, { sentences: ["Sure."], content: "Sure." }] });
+    const s = h.start(makeSession());
+    h.fluxOpens();
+    h.turn("EndOfTurn", 0, "When do you open?");
+    await until(() => !s.isProcessing, "the first turn");
+    h.audio(3, 0); // still playing
+    h.turn("EndOfTurn", 1, "and what about Saturdays");
+    assert.equal(h.lastAura().handle.clears, 1);
+    await until(() => h.llmCalls.length === 2 && !s.isProcessing, "the second turn");
+    h.closeFastPath(s);
+  });
+
+  it("a structured final goes through the debounce buffer, then the fast turn", async () => {
+    const h = makeFast({ steps: [{ sentences: ["Got it."], content: "Got it." }] });
+    const s = h.start(makeSession());
+    h.fluxOpens();
+    s.setExpectedInputType("phone");
+    const buffered = [];
+    // The real debounce is pinned in its own suite: here it calls back after 60 ms.
+    s.bufferTranscript = (text, cb) => { buffered.push(text); setTimeout(() => cb(text, "phone"), 60); };
+    h.turn("EndOfTurn", 0, "0412 345 678");
+    await until(() => h.llmCalls.length === 1 && !s.isProcessing, "the turn");
+    assert.deepEqual(buffered, ["0412 345 678"]);
+    assert.deepEqual(h.lastAura().handle.spoken, ["Got it."]);
+    h.audio(1, 0);
+    const line = h.lines.find((l) => l.includes("[FastTurn] callSid")) || "";
+    assert.match(line, /trigger=buffered spec=none /);
+    assert.ok(Number(/eot_to_llm=(\d+)/.exec(line)?.[1]) >= 55, `the clock starts at the caller's EndOfTurn, so the debounce counts: ${line}`);
+    h.closeFastPath(s);
+  });
+});
+
+// ─── 4.8.9: latency logs and calls.metadata.fastPath ────────────────────────
+
+describe("SCRUM-594 4.8.9: [FastTurn], [FastCall] and calls.metadata.fastPath", () => {
+  it("[FastTurn] per committed turn: trigger, spec, eot_to_llm, eot_to_audio, eager_lead — and no caller or model words in any log line", async () => {
+    const h = makeFast({ steps: [{ sentences: ["Sure, Tuesday at ten works."], content: "Sure, Tuesday at ten works." }] });
+    const s = h.start(makeSession());
+    h.fluxOpens();
+    h.turn("EagerEndOfTurn", 0, "Can I come in Tuesday at ten?");
+    await sleep(15);
+    h.turn("EndOfTurn", 0, "Can I come in Tuesday at ten?");
+    await until(() => !s.isProcessing, "the turn");
+    await sleep(10);
+    h.audio(1, 0); // the turn's first audio
+    const lines = h.lines.filter((l) => l.includes("[FastTurn]"));
+    assert.equal(lines.length, 1, h.lines.join("\n"));
+    const m = lines[0].match(/^log\| \[FastTurn\] callSid=CA-fast trigger=model spec=adopted eot_to_llm=(\d+) eot_to_audio=(\d+) eager_lead=(\d+)$/);
+    assert.ok(m, lines[0]);
+    assert.ok(Number(m[2]) >= 10, `eot_to_audio runs to the first audio byte: ${m[2]}`);
+    assert.ok(Number(m[3]) >= 15, `eager_lead is EagerEndOfTurn to EndOfTurn: ${m[3]}`);
+    const all = h.lines.join("\n");
+    for (const words of ["Tuesday", "Sure", "come in"]) assert.ok(!all.includes(words), `no "${words}" in the logs`);
+    h.closeFastPath(s);
+  });
+
+  it("a turn with no draft says spec=none; a discarded draft says spec=discarded; a turn without audio logs eot_to_audio=- when the next one starts", async () => {
+    const h = makeFast({
+      steps: [
+        { sentences: ["One."], content: "One." },
+        { firstDelayMs: 300, content: "draft" },
+        { sentences: ["Two."], content: "Two." },
+      ],
+    });
+    const s = h.start(makeSession());
+    h.fluxOpens();
+    h.turn("EndOfTurn", 0, "first question here");
+    await until(() => !s.isProcessing, "turn 0");
+    h.turn("EagerEndOfTurn", 1, "second");
+    await settle();
+    h.turn("EndOfTurn", 1, "second question");
+    await until(() => !s.isProcessing && h.llmCalls.length === 3, "turn 1");
+    h.audio(1, 0);
+    const lines = h.lines.filter((l) => l.includes("[FastTurn]"));
+    assert.equal(lines.length, 2, h.lines.join("\n"));
+    assert.match(lines[0], /trigger=model spec=none eot_to_llm=\d+ eot_to_audio=- eager_lead=-$/);
+    assert.match(lines[1], /trigger=model spec=discarded eot_to_llm=\d+ eot_to_audio=\d+ eager_lead=\d+$/);
+    h.closeFastPath(s);
+    const summary = h.summarizeFastCall(s);
+    assert.equal(summary.specDiscarded, 1);
+    assert.equal(summary.specAdopted, 0);
+    assert.equal(summary.turns, 2);
+  });
+
+  it("eot_to_llm runs to the LLM's first output: a tool call with no words counts, not the text after the tool", async () => {
+    const h = makeFast({
+      onTool: () => sleep(80),
+      steps: [{ tools: [{ name: "check_availability", args: {} }] }, { sentences: ["Ten is free."], content: "Ten is free." }],
+    });
+    const s = h.start(makeSession());
+    h.fluxOpens();
+    h.turn("EndOfTurn", 0, "Is Tuesday free at all?");
+    await until(() => !s.isProcessing, "the turn");
+    h.audio(1, 0);
+    const line = h.lines.find((l) => l.includes("[FastTurn] callSid"));
+    const llm = Number(/eot_to_llm=(\d+)/.exec(line || "")?.[1]);
+    assert.ok(llm < 60, `eot_to_llm=${llm}: stamped at the tool call, not after the 80 ms tool (${line})`);
+    h.closeFastPath(s);
+    // And for text: the first chunk, not the end of the stream.
+    const t = makeFast({ steps: [{ sentences: ["Sure,", "ten is free."], gapMs: 80, content: "Sure, ten is free." }] });
+    const ts = t.start(makeSession());
+    t.fluxOpens();
+    t.turn("EndOfTurn", 0, "Is ten free on Tuesday?");
+    await until(() => !ts.isProcessing, "the text turn");
+    t.audio(1, 0);
+    const textLine = t.lines.find((l) => l.includes("[FastTurn] callSid"));
+    const textLlm = Number(/eot_to_llm=(\d+)/.exec(textLine || "")?.[1]);
+    assert.ok(textLlm < 60, `eot_to_llm=${textLlm}: the first chunk, not the stream's end 160 ms later (${textLine})`);
+    t.closeFastPath(ts);
+  });
+
+  it("after a Nova fallback, turns still take the fast LLM and the stream; [FastTurn] says trigger=buffered", async () => {
+    const h = makeFast({ steps: [{ sentences: ["Hi there."], content: "Hi there." }] });
+    const s = h.start(makeSession());
+    h.lastFlux().callbacks.onError(new Error("boom"));
+    await h.handleUserSpeech(s, h.twilioWs, "Hello, can you hear me?"); // as Nova's buffer calls it
+    assert.equal(h.llmCalls[0].which, "claude");
+    assert.deepEqual(h.lastAura().handle.spoken, ["Hi there."]);
+    h.audio(1, 0);
+    assert.ok(h.lines.some((l) => /\[FastTurn\] callSid=CA-fast trigger=buffered spec=none eot_to_llm=\d+ eot_to_audio=\d+ eager_lead=-$/.test(l)), h.lines.join("\n"));
+    h.closeFastPath(s);
+  });
+
+  it("[FastCall] at cleanup, and the same summary in calls.metadata.fastPath (null on every other call)", async () => {
+    const h = makeFast({ steps: [{ sentences: ["Sure."], content: "Sure." }, { sentences: ["Okay."], content: "Okay." }] });
+    const s = h.start(makeSession());
+    h.fluxOpens();
+    h.turn("EagerEndOfTurn", 0, "Can I book a cleaning?");
+    await settle();
+    h.turn("EndOfTurn", 0, "Can I book a cleaning?");
+    await until(() => !s.isProcessing, "turn 0");
+    h.audio(1, 0);
+    h.turn("EndOfTurn", 1, "Tuesday morning please");
+    await until(() => !s.isProcessing && h.llmCalls.length === 2, "turn 1");
+    h.audio(1, 1);
+    s.startedAt = Date.now() - 60_000;
+    const records = [];
+    const runCleanup = (session) => runSlice({
+      from: "async function cleanupSession() {",
+      to: 'twilioWs.on("message", async (raw) => {',
+      scope: {
+        session,
+        cleaningUp: false,
+        sessions: new Map(),
+        Sentry: { withScope: (fn) => fn({ setTag() {}, setExtras() {}, setExtra() {}, setLevel() {} }), captureMessage() {}, captureException() {} },
+        detectPostCallPhantoms: () => [],
+        summarizePhantoms: () => ({ bugTag: "x", reason: "x" }),
+        analyzeCallTranscript: async () => null,
+        buildToolOutcomeDigest: () => "",
+        DEBUG_TRANSCRIPTS: false,
+        maybeEmitUnhappyCall: () => {},
+        netLiveOutcome: () => 0,
+        setReasonTag: () => {},
+        SENTRY_REASONS: { BOOKING_STATE_MISMATCH: "booking-state-mismatch" },
+        detectAndRedact: (t) => ({ piiFound: false, redacted: t }),
+        redactObject: (x) => ({ piiFound: false, redacted: x }),
+        completeCallRecord: async (id, fields) => { records.push(fields); },
+        setTimeout: (fn) => fn(),
+        notifyCallCompleted: async () => {},
+        INTERNAL_API_URL: "http://next.internal",
+        INTERNAL_API_SECRET: "secret",
+        maskPhone,
+        buildOwnerCallSummary,
+        settleOwnerToolRuns,
+        isDemoLineNumber: () => true,
+        closeFastPath: h.closeFastPath,
+        summarizeFastCall: h.summarizeFastCall,
+        console: recordingConsole(h.lines),
+      },
+      names: ["cleanupSession"],
+    }).cleanupSession();
+    await runCleanup(s);
+    const fastPath = records[0].fastPath;
+    assert.equal(fastPath.turns, 2);
+    assert.equal(fastPath.specAdopted, 1);
+    assert.equal(fastPath.specDiscarded, 0);
+    assert.equal(fastPath.stt, "flux");
+    assert.equal(fastPath.tts, "stream");
+    assert.ok(Number.isInteger(fastPath.eotToAudioP50) && Number.isInteger(fastPath.eotToAudioP90) && fastPath.eotToAudioP90 >= fastPath.eotToAudioP50, JSON.stringify(fastPath));
+    const line = h.lines.find((l) => l.includes("[FastCall]"));
+    assert.equal(line, `log| [FastCall] callSid=CA-fast turns=2 eot_to_audio_p50=${fastPath.eotToAudioP50} p90=${fastPath.eotToAudioP90} spec_adopted=1 spec_discarded=0 stt=flux tts=stream`);
+    // A classic call writes no fastPath metadata.
+    const classic = makeSession();
+    classic.startedAt = Date.now() - 60_000;
+    await runCleanup(classic);
+    assert.equal(records[1].fastPath, null);
+  });
+
+  it("p50 and p90 are nearest-rank percentiles of the turns' eot_to_audio", () => {
+    const h = makeFast();
+    const s = h.start(makeSession());
+    h.closeFastPath(s);
+    /** @type {any} */ (s.fastStats).eotToAudioMs = [300, 100, 200, 500, 400, 900, 600, 800, 700, 1000];
+    const summary = h.summarizeFastCall(s);
+    assert.equal(summary.eotToAudioP50, 500);
+    assert.equal(summary.eotToAudioP90, 900);
+  });
+
+  it("the summary names the fallbacks: stt=nova-fallback, tts=rest-fallback; no samples gives null percentiles", () => {
+    const h = makeFast();
+    const s = h.start(makeSession());
+    h.lastFlux().callbacks.onError(new Error("flux down"));
+    h.lastAura().options.onError(new Error("aura down"));
+    h.closeFastPath(s);
+    assert.deepEqual(h.summarizeFastCall(s), { turns: 0, eotToAudioP50: null, eotToAudioP90: null, specAdopted: 0, specDiscarded: 0, stt: "nova-fallback", tts: "rest-fallback" });
+    assert.ok(h.lines.includes("log| [FastCall] callSid=CA-fast turns=0 eot_to_audio_p50=- p90=- spec_adopted=0 spec_discarded=0 stt=nova-fallback tts=rest-fallback"), h.lines.join("\n"));
+  });
+});
+
+// ─── 4.8.10: cleanup, the turn side ─────────────────────────────────────────
+
+describe("SCRUM-594 4.8.10: cleanup ends drafts and the turn in flight", () => {
+  it("aborts a draft", async () => {
+    const h = makeFast({ steps: [{ firstDelayMs: 5000, content: "never" }] });
+    const s = h.start(makeSession());
+    h.fluxOpens();
+    h.turn("EagerEndOfTurn", 0, "I need to cancel my appointment");
+    await settle();
+    h.closeFastPath(s);
+    assert.equal(h.llmCalls[0].opts.signal.aborted, true);
+    assert.equal(s.speculation, null);
+  });
+
+  it("aborts the turn in flight (nobody will hear it)", async () => {
+    const h = makeFast({ steps: [{ firstDelayMs: 5000, content: "never" }] });
+    const s = h.start(makeSession());
+    h.fluxOpens();
+    h.turn("EndOfTurn", 0, "I need to cancel my appointment");
+    await settle();
+    h.closeFastPath(s);
+    assert.equal(h.llmCalls[0].opts.signal.aborted, true);
+    await until(() => !s.isProcessing, "the aborted turn");
+    assert.ok(h.lines.some((l) => l.startsWith("log| [FastTurn] Reply stopped (cleanup) — nothing was said yet")), h.lines.join("\n"));
+  });
+});
+
+describe("SCRUM-594 fast turns — source pins", () => {
+  it("the fast LLM is Claude, FAST_LLM_MODEL defaults to Haiku 5.5, and a live call carries its own 15 s limit", () => {
+    assert.match(src, /const \{ startSpeculativeReply \} = require\("\.\/lib\/speculative-reply"\);/);
+    assert.match(src, /const \{ streamClaudeResponse \} = require\("\.\/services\/claude-chat"\);/);
+    assert.match(src, /^const FAST_LLM_MODEL = process\.env\.FAST_LLM_MODEL \|\| "claude-haiku-5-5";$/m);
+    assert.match(src, /^const FAST_LLM_TIMEOUT_MS = 15_000;$/m);
+    assert.match(src, /signal: AbortSignal\.any\(\[turn\.ctl\.signal, AbortSignal\.timeout\(FAST_LLM_TIMEOUT_MS\)\]\)/);
+  });
+
+  it("the adoption decision is taken before the user message is added (isAdoptable compares the array the draft saw)", () => {
+    const hus = src.slice(src.indexOf("async function handleUserSpeech("), src.indexOf("async function hangUpAfterEndCall("));
+    const begin = hus.indexOf("fastTurn = session.fastPath ? beginFastTurn(session, transcript) : null;");
+    assert.ok(begin > 0 && begin < hus.indexOf('session.addMessage("user", transcript);'));
+  });
+
+  it("one tool loop: the fast path did not duplicate it", () => {
+    assert.equal((src.match(/session\.toolCallAudit\.push\(auditEntry\)/g) || []).length, 2, "Gemini + classic");
+    assert.equal((src.match(/checkEndCallGuard\(/g) || []).length, 1);
+  });
+
+  it("call-logger merges the fast-path summary into calls.metadata", () => {
+    const logger = fs.readFileSync(path.join(__dirname, "..", "lib", "call-logger.js"), "utf8");
+    assert.match(logger, /\.\.\.\(fastPath && \{ fastPath \}\),/);
+    assert.match(cleanup, /fastPath: fastPathSummary,/);
   });
 });

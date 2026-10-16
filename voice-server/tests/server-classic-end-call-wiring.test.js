@@ -159,6 +159,7 @@ function makeClassic(o = {}) {
     WebSocket: { OPEN: 1 },
     Date: o.clock ? { now: o.clock } : Date,
     fastFlush: () => assert.fail("SCRUM-594: a classic turn never flushes an Aura stream"),
+    beginFastTurn: () => assert.fail("SCRUM-594: a classic turn is never a fast turn"),
     console: recordingConsole(lines),
   };
   const { handleUserSpeech } = runSlice({
