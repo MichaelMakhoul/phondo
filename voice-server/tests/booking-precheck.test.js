@@ -108,7 +108,7 @@ const VERDICT_FORMAT = {
     type: "object",
     properties: {
       verdict: { type: "string", enum: ["allow", "fix"] },
-      problem: { type: "string", enum: ["none", "name_unconfirmed", "name_mismatch", "date_mismatch", "not_agreed"] },
+      problem: { type: "string", enum: ["none", "name_unconfirmed", "name_mismatch", "date_mismatch", "practitioner_mismatch", "not_agreed"] },
     },
     required: ["verdict", "problem"],
     additionalProperties: false,
@@ -260,6 +260,21 @@ describe("verdicts and modes", () => {
     }
   });
 
+  // R31: a practitioner mismatch has its own code; mapped to "other" or name_mismatch, Gemini would be told
+  // to confirm the booking in general or to ask the caller for their NAME again.
+  it("practitioner_mismatch holds with its own fixed instruction, never 'other'", async () => {
+    const m = load();
+    for (const [toolName, args, opening] of [
+      ["book_appointment", ARGS, "NOT DONE YET — nothing was saved."],
+      ["reschedule_appointment", { new_datetime: "2026-10-16T10:00", practitioner_id: "prac-3" }, "NOT CHANGED YET — the existing booking still stands exactly as it was."],
+    ]) {
+      replyText(JSON.stringify({ verdict: "fix", problem: "practitioner_mismatch" }));
+      const r = await m.precheckBookingWrite(input({ toolName, args }));
+      assert.equal(r.problem, "practitioner_mismatch", toolName);
+      assert.equal(r.message, `${opening} The practitioner you were about to book is not the one the caller asked for. Confirm with the caller which practitioner they want. Then call ${toolName} again with the confirmed details.`, toolName);
+    }
+  });
+
   it("an unknown problem code becomes 'other' with its fixed instruction", async () => {
     const m = load();
     replyText('{"verdict":"fix","problem":"weird"}');
@@ -298,6 +313,7 @@ describe("verdicts and modes", () => {
       name_unconfirmed: "Read back the name you were about to save — spell the surname letter by letter — and ask the caller to confirm it. Use their correction if they give one.",
       name_mismatch: "The name you were about to save is not the one the caller gave. Ask the caller for their name again, read it back, and get a clear yes.",
       date_mismatch: "The date or time you were about to save is not the one the caller agreed to. Confirm the day and time with the caller.",
+      practitioner_mismatch: "The practitioner you were about to book is not the one the caller asked for. Confirm with the caller which practitioner they want.",
       not_agreed: "The caller has not agreed to this yet. Tell them the details and ask whether they want to go ahead.",
       other: "Confirm the booking details with the caller before saving them.",
     };
@@ -402,7 +418,10 @@ describe("verdicts and modes", () => {
 // so the "yes" that confirmed a booking can land after the call it confirmed. A fix verdict is asked
 // again ONCE when the caller's words changed during the check; an allow never waits for anything.
 describe("a late yes: one re-check on a fix when the caller spoke during the check", () => {
-  /** Claude answers each request with the next reply, after running that step's side effect (words arriving mid-check). */
+  /**
+   * Claude answers each request with the next step, after running that step's side effect (words
+   * arriving mid-check): a text reply, or `respond()` for any other outcome (an HTTP error, a throw).
+   */
   function sequence(steps) {
     const seen = { calls: 0, prompts: /** @type {string[]} */ ([]) };
     globalThis.fetch = async (_url, init) => {
@@ -410,6 +429,7 @@ describe("a late yes: one re-check on a fix when the caller spoke during the che
       seen.calls++;
       seen.prompts.push(JSON.parse(init.body).messages[0].content);
       if (step.during) step.during();
+      if (step.respond) return step.respond();
       return { ok: true, status: 200, json: async () => ({ content: [{ type: "text", text: step.reply }], stop_reason: "end_turn" }) };
     };
     return seen;
@@ -500,6 +520,81 @@ describe("a late yes: one re-check on a fix when the caller spoke during the che
     const seen = sequence([{ reply: FIX }, { reply: ALLOW }]);
     assert.equal((await m.precheckBookingWrite(input())).action, "hold");
     assert.equal(seen.calls, 1);
+  });
+
+  it("a re-check that reads a different problem holds with the re-check's problem", async () => {
+    const m = load();
+    const { turn, getPending } = live();
+    sequence([{ reply: JSON.stringify({ verdict: "fix", problem: "date_mismatch" }), during: () => { turn.user = "Tuesday, and it's Makhlouf."; } }, { reply: FIX }]);
+    const r = await m.precheckBookingWrite(input({ getPending }));
+    assert.equal(r.problem, "name_unconfirmed", "a readable re-check is final");
+  });
+
+  // R30: once a real verdict has found a problem, a re-check that produces no verdict must not turn it
+  // into a write: failing open there could save the very data the first verdict caught.
+  describe("a re-check that fails holds on the FIRST verdict", () => {
+    const DATE_FIX = JSON.stringify({ verdict: "fix", problem: "date_mismatch" });
+    const DATE_HOLD = "NOT DONE YET — nothing was saved. The date or time you were about to save is not the one the caller agreed to. Confirm the day and time with the caller. Then call book_appointment again with the confirmed details.";
+    const HELD_LINE = "[Precheck] re-check failed — holding on the first verdict book_appointment: date_mismatch. callSid=CAtest";
+    const unreadable = () => ({ ok: true, status: 200, json: async () => ({ content: [{ type: "text", text: "I think it is fine" }], stop_reason: "end_turn" }) });
+    const failures = [
+      ["an HTTP 500", () => ({ ok: false, status: 500, json: async () => ({ type: "error", error: { type: "api_error", message: "x" } }) }), false],
+      ["a timeout", () => { throw Object.assign(new Error("The operation was aborted due to timeout"), { name: "TimeoutError" }); }, false],
+      ["an unreadable reply", unreadable, false],
+      ["a bad key (HTTP 401)", () => ({ ok: false, status: 401, json: async () => ({ type: "error", error: { type: "authentication_error", message: "bad key" } }) }), true],
+    ];
+    for (const [what, respond, pagesAtOnce] of failures) {
+      it(`${what}: holds with the first problem's text, never fails open`, async () => {
+        const m = load();
+        const { turn, getPending } = live();
+        const holds = new Map();
+        const seen = sequence([{ reply: DATE_FIX, during: () => { turn.user = "Yes, Tuesday."; } }, { respond }]);
+        const r = await m.precheckBookingWrite(input({ getPending, holds }));
+        assert.equal(seen.calls, 2, "the re-check was made");
+        assert.deepEqual([r.action, r.problem, r.message], ["hold", "date_mismatch", DATE_HOLD]);
+        assert.equal(holds.get("book_appointment"), 1, "counted as the hold it is");
+        assert.ok(logs.includes(HELD_LINE), logs.join("\n"));
+        assert.ok(!logs.some((l) => /letting the write through|\[Precheck\] (unchecked|allow) /.test(l)), "never reported as let through");
+        if (pagesAtOnce) assert.ok(logs.some((l) => /\[ALERT:error\] \[booking_precheck\].*\(HTTP 401\)/.test(l)), "a config failure still pages at once");
+        else assert.ok(logs.some((l) => /^\[Precheck\] No usable verdict \(.*\) — holding on the first verdict$/.test(l)), "the quiet no-verdict line says what happened");
+      });
+    }
+
+    it("the failure still counts toward the unreadable streak, and a run of them pages", async () => {
+      const m = load();
+      const { turn, getPending } = live();
+      sequence([{ reply: DATE_FIX, during: () => { turn.user = "Yes."; } }, { respond: unreadable }]);
+      assert.equal((await m.precheckBookingWrite(input({ getPending }))).action, "hold");
+      replyText("still not a verdict");
+      await m.precheckBookingWrite(input());
+      assert.ok(!logs.some((l) => /\[ALERT:error\]/.test(l)), "two in a row: quiet");
+      await m.precheckBookingWrite(input());
+      assert.ok(logs.some((l) => /\[ALERT:error\] \[booking_precheck\].*3 unreadable in a row/.test(l)), "the re-check's failure was the first of three");
+    });
+
+    it("a turn that cannot be read for the re-check holds on the first verdict too, reported as an unexpected error", async () => {
+      const m = load();
+      let reads = 0;
+      const getPending = () => {
+        if (++reads > 1) throw new TypeError("buffer gone");
+        return { user: "", ai: "" };
+      };
+      const seen = sequence([{ reply: DATE_FIX }, { reply: ALLOW }]);
+      const r = await m.precheckBookingWrite(input({ getPending }));
+      assert.deepEqual([r.action, r.problem, r.message], ["hold", "date_mismatch", DATE_HOLD]);
+      assert.equal(seen.calls, 1);
+      assert.ok(logs.some((l) => /^\[Precheck\] No usable verdict \(.*cause=unexpected-error error_type=TypeError.*\) — holding on the first verdict$/.test(l)), logs.join("\n"));
+      assert.ok(logs.includes(HELD_LINE));
+    });
+
+    it("shadow mode reports the first verdict's would-be hold when its re-check fails", async () => {
+      const m = load({ mode: "shadow" });
+      const { turn, getPending } = live();
+      sequence([{ reply: DATE_FIX, during: () => { turn.user = "Yes."; } }, { respond: unreadable }]);
+      assert.deepEqual(await m.precheckBookingWrite(input({ getPending })), { action: "proceed" });
+      await waitFor(() => logs.some((l) => /^\[Precheck\] \(shadow\) would hold book_appointment: date_mismatch /.test(l)));
+      assert.ok(logs.includes(HELD_LINE));
+    });
   });
 });
 
@@ -857,7 +952,7 @@ describe("the request", () => {
       const m = load();
       const seen = replyText(ALLOW);
       await m.precheckBookingWrite(input());
-      assert.match(seen.body.messages[0].content, /^Ignore wording, email, notes, phone number, service, and practitioner \(unless the caller asked for one practitioner and a different one is being saved\)\.$/m);
+      assert.match(seen.body.messages[0].content, /^Ignore wording, email, notes, phone number, service, and practitioner \(unless the caller asked for one practitioner and a different one is being saved: then answer fix with "practitioner_mismatch"\)\.$/m);
     });
   });
 

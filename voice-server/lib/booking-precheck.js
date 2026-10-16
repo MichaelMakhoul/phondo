@@ -54,6 +54,9 @@ const MAX_PRACTITIONER_NAME = 80;
 /** A bad PRECHECK_MODEL (404), a refused request field (400) or a bad key (401/403) fail every check. */
 const CONFIG_FAILURE_STATUSES = new Set([400, 401, 403, 404]);
 const UNREADABLE_ALERT_AFTER = 3;
+/** What a no-verdict does to the write: the usual fail-open, or a hold on a fix already read. */
+const LET_THROUGH = "letting the write through";
+const HOLD_ON_FIRST = "holding on the first verdict";
 
 /**
  * The ONLY words the pre-check ever hands Gemini, chosen by the problem code.
@@ -70,6 +73,8 @@ const INSTRUCTIONS = {
     "The name you were about to save is not the one the caller gave. Ask the caller for their name again, read it back, and get a clear yes.",
   date_mismatch:
     "The date or time you were about to save is not the one the caller agreed to. Confirm the day and time with the caller.",
+  practitioner_mismatch:
+    "The practitioner you were about to book is not the one the caller asked for. Confirm with the caller which practitioner they want.",
   not_agreed: "The caller has not agreed to this yet. Tell them the details and ask whether they want to go ahead.",
   other: "Confirm the booking details with the caller before saving them.",
 };
@@ -105,7 +110,7 @@ const VERDICT_FORMAT = {
     type: "object",
     properties: {
       verdict: { type: "string", enum: ["allow", "fix"] },
-      problem: { type: "string", enum: ["none", "name_unconfirmed", "name_mismatch", "date_mismatch", "not_agreed"] },
+      problem: { type: "string", enum: ["none", "name_unconfirmed", "name_mismatch", "date_mismatch", "practitioner_mismatch", "not_agreed"] },
     },
     required: ["verdict", "problem"],
     additionalProperties: false,
@@ -334,7 +339,7 @@ Rules — check ONLY these:
 1. NAME (only if DETAILS THAT WILL BE SAVED contain a first or last name): it must be the name the caller gave. After the caller last gave or corrected it, the AI must have ${readBack} and the caller must have clearly agreed (yes, that's right, correct — in any language). If the caller spelled it, the saved spelling must match their letters. A name the caller never clearly gave or never confirmed is NOT confirmed.
 2. DATE/TIME (only a date or time in DETAILS THAT WILL BE SAVED): it must be the slot the caller agreed to. Work out "today", "tomorrow" and weekday names from NOW.
 3. AGREEMENT: the caller must have asked for or agreed to this booking or change — not only asked what is free.
-Ignore wording, email, notes, phone number, service, and practitioner (unless the caller asked for one practitioner and a different one is being saved).
+Ignore wording, email, notes, phone number, service, and practitioner (unless the caller asked for one practitioner and a different one is being saved: then answer fix with "practitioner_mismatch").
 
 Answer with "verdict" and "problem" ("none" when you allow). If you are unsure whether the NAME was confirmed, answer fix with "name_unconfirmed".`;
 }
@@ -369,16 +374,17 @@ function parsePrecheck(text) {
 }
 
 /**
- * The ONE exit for "no usable verdict": the write goes through, never
- * quietly. Config failures page at once; anything else from the 3rd in a row.
- * The result is allow:true but unchecked:true, so callers never log it as a
- * verdict that was read.
+ * The ONE exit for "no usable verdict": never quiet. Config failures page at
+ * once; anything else from the 3rd in a row. The result is allow:true but
+ * unchecked:true, so callers never log it as a verdict that was read. The write
+ * goes through, except after a fix verdict (a failed re-check holds on it).
  * @param {{ cause: string, config?: boolean, status?: number, stopReason?: string, errorType?: string, errorMessage?: string, ms?: number }} info
  *   Shape only (ms is a number) — never model output, tool args or caller words.
  * @param {string} model
+ * @param {string} [outcome] - what happens to the write, for the log line
  * @returns {{ allow: true, unchecked: true }}
  */
-function noVerdict(info, model) {
+function noVerdict(info, model, outcome = LET_THROUGH) {
   unreadableStreak++;
   const details = {
     model,
@@ -404,20 +410,21 @@ function noVerdict(info, model) {
       .filter(([, v]) => v !== undefined)
       .map(([k, v]) => `${k}=${v}`)
       .join(" ");
-    console.warn(`[Precheck] No usable verdict (${shown}) — letting the write through`);
+    console.warn(`[Precheck] No usable verdict (${shown}) — ${outcome}`);
   }
   return { allow: true, unchecked: true };
 }
 
 /**
  * @param {string} prompt
+ * @param {string} [outcome] - what happens to the write if no verdict comes back (see noVerdict)
  * @returns {Promise<{ allow: true, unchecked?: true } | { allow: false, problem: string }>}
  */
-async function requestVerdict(prompt) {
+async function requestVerdict(prompt, outcome = LET_THROUGH) {
   const model = precheckModel();
   const started = Date.now();
   /** Every way out without a verdict, timed from the request start. */
-  const failed = (/** @type {Parameters<typeof noVerdict>[0]} */ info) => noVerdict({ ...info, ms: Date.now() - started }, model);
+  const failed = (/** @type {Parameters<typeof noVerdict>[0]} */ info) => noVerdict({ ...info, ms: Date.now() - started }, model, outcome);
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key) return failed({ cause: "ANTHROPIC_API_KEY not set", config: true });
   try {
@@ -475,8 +482,11 @@ async function requestVerdict(prompt) {
  * Claude's verdict on one write. On a fix, asks ONCE more if the caller spoke
  * during the check: Gemini's transcription of their words has no guaranteed
  * order against its tool calls (SCRUM-587), so the "yes" that confirmed a
- * booking can land after the call it confirmed. An allow never waits for that,
- * and the re-check's answer, whatever it is, is final.
+ * booking can land after the call it confirmed. An allow never waits for that.
+ * A re-check that reads a verdict is final. One that produces none (an error,
+ * a timeout, an unreadable reply) holds on the first verdict: a real verdict
+ * already found a problem, and failing open there could save the very data it
+ * caught. That failure still counts and pages like any other.
  * @param {PrecheckInput} input
  * @param {Record<string, unknown>} saved
  * @param {Record<string, unknown>} identify
@@ -484,7 +494,7 @@ async function requestVerdict(prompt) {
  */
 async function decide(input, saved, identify) {
   const now = safeNowLine(input.timezone, input.now);
-  const ask = (/** @type {{ user: string, ai: string }} */ turn) =>
+  const ask = (/** @type {{ user: string, ai: string }} */ turn, /** @type {string} */ outcome = LET_THROUGH) =>
     requestVerdict(
       buildPrecheckPrompt({
         toolName: input.toolName,
@@ -493,16 +503,27 @@ async function decide(input, saved, identify) {
         conversation: conversationText(input.messages, turn.user, turn.ai),
         now,
         nameMethod: input.nameMethod || "repeat-confirm",
-      })
+      }),
+      outcome
     );
   const turn = turnInProgress(input);
   const heard = callerWords(input.messages, turn.user);
   const verdict = await ask(turn);
   if (verdict.allow === true) return verdict;
-  const fresh = turnInProgress(input);
-  if (callerWords(input.messages, fresh.user) === heard) return verdict;
-  console.log(`[Precheck] caller spoke during the check — re-checking ${input.toolName} once. callSid=${input.callSid}`);
-  return ask(fresh);
+  // A real verdict found a problem: from here nothing may turn it into a write.
+  const recheckStarted = Date.now();
+  try {
+    const fresh = turnInProgress(input);
+    if (callerWords(input.messages, fresh.user) === heard) return verdict;
+    console.log(`[Precheck] caller spoke during the check — re-checking ${input.toolName} once. callSid=${input.callSid}`);
+    const second = await ask(fresh, HOLD_ON_FIRST);
+    if (!(second.allow === true && second.unchecked)) return second;
+  } catch (err) {
+    const e = /** @type {any} */ (err);
+    noVerdict({ cause: "unexpected-error", errorType: e?.name, errorMessage: String(e?.message).slice(0, 200), ms: Date.now() - recheckStarted }, precheckModel(), HOLD_ON_FIRST);
+  }
+  console.warn(`[Precheck] re-check failed — holding on the first verdict ${input.toolName}: ${verdict.problem}. callSid=${input.callSid}`);
+  return verdict;
 }
 
 /**

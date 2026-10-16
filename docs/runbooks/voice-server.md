@@ -306,6 +306,7 @@ the code. `PRECHECK_MODE` does not switch it back.
 | `[Precheck] skip <tool> (public demo)` | the website demo (`/ws/test`, demo org) is never checked |
 | `[Precheck] (shadow) would hold <tool>: <problem>` | shadow mode: the would-be hold; the write went ahead |
 | `[Precheck] caller spoke during the check — re-checking <tool> once` | a late "yes" landed during a held check, so it asked again |
+| `[Precheck] re-check failed — holding on the first verdict <tool>: <problem>` | that second ask got no verdict, so the first verdict's hold stands (the failure still counts toward the page below) |
 | `[Precheck] session ended during the check — writing the allowed <tool> anyway` | the caller hung up mid-check; the allowed write still happened |
 | `[Precheck] <tool> let through unchecked after 2 holds` | the hold cap let it through (also `[ALERT:warning] [booking_precheck]`) |
 
