@@ -25,10 +25,13 @@ const net = require("node:net");
 const { performance } = require("node:perf_hooks");
 const { WebSocketServer } = require("ws");
 
-const { openAuraStream, buildAuraUrl, splitForSpeak, DEFAULT_HOST, DEFAULT_VOICE, PING_INTERVAL_MS, MAX_SPEAK_CHARS, FLUSH_BUDGET, FLUSH_WINDOW_MS } = require("../services/aura-stream");
+const { openAuraStream, buildAuraUrl, splitForSpeak, DEFAULT_VOICE, MAX_SPEAK_CHARS, FLUSH_BUDGET, FLUSH_WINDOW_MS, CLEARED_BACKSTOP_MS } = require("../services/aura-stream");
+const { DEFAULT_HOST, PING_INTERVAL_MS } = require("../services/deepgram-ws-common");
 
 const realSetInterval = globalThis.setInterval;
 const realClearInterval = globalThis.clearInterval;
+const realSetTimeout = globalThis.setTimeout;
+const realClearTimeout = globalThis.clearTimeout;
 
 // ── What the fake Deepgram says (shapes from the probes) ────────────────────
 const METADATA = {
@@ -169,6 +172,53 @@ function interceptPingInterval(t) {
     return realClearInterval(timer);
   });
   return { created, cleared };
+}
+
+/**
+ * Capture the setTimeout timers armed INSIDE `during(fn)` instead of scheduling
+ * them, so a test can read their delay and fire them on demand. Every other
+ * timer (ws's own, node:test's) passes straight through.
+ */
+function captureTimers(t) {
+  const created = [];
+  const cleared = [];
+  let capturing = false;
+  t.mock.method(globalThis, "setTimeout", (fn, ms, ...rest) => {
+    if (!capturing) return realSetTimeout(fn, ms, ...rest);
+    const timer = {
+      fn,
+      ms,
+      unrefd: false,
+      unref() {
+        timer.unrefd = true;
+        return timer;
+      },
+      ref() {
+        return timer;
+      },
+    };
+    created.push(timer);
+    return timer;
+  });
+  t.mock.method(globalThis, "clearTimeout", (timer) => {
+    if (timer && created.includes(timer)) {
+      cleared.push(timer);
+      return undefined;
+    }
+    return realClearTimeout(timer);
+  });
+  return {
+    created,
+    cleared,
+    during(fn) {
+      capturing = true;
+      try {
+        return fn();
+      } finally {
+        capturing = false;
+      }
+    },
+  };
 }
 
 /** A Date.now the test owns. */
@@ -702,6 +752,180 @@ test("clear: two Clears in flight keep suppressing until BOTH are acknowledged",
   assert.deepEqual(events.audio, [Y]);
 });
 
+test("Cleared backstop: a Clear arms ONE unref'd ~750 ms timer, and the ack disarms it", async (t) => {
+  assert.equal(CLEARED_BACKSTOP_MS, 750, "observed acks took 16-67 ms; 750 ms is the give-up point");
+  const timers = captureTimers(t);
+  const server = await startFakeAura(t);
+  const { handle, events } = openClient(t, server);
+  await handle.ready;
+  server.script = (c, msg) => {
+    if (msg.type === "Clear") c.socket.send(JSON.stringify(CLEARED));
+  };
+
+  assert.equal(timers.during(() => handle.clear()), true);
+  assert.equal(timers.created.length, 1);
+  assert.equal(timers.created[0].ms, 750);
+  assert.equal(timers.created[0].unrefd, true, "a backstop must never keep the process alive");
+
+  await until(() => events.cleared === 1, "Cleared");
+  assert.deepEqual(timers.cleared, timers.created, "the ack disarms the backstop");
+  assert.deepEqual(events.warnings, []);
+});
+
+test("Cleared backstop: with NO ack, audio stays dropped until the timer fires, then flows again, with a CLEARED_TIMEOUT warning", async (t) => {
+  const timers = captureTimers(t);
+  const server = await startFakeAura(t);
+  const { handle, events } = openClient(t, server);
+  await handle.ready;
+  const conn = await server.connection();
+  // The server never answers this Clear (a Clear on an idle Aura was never probed).
+
+  timers.during(() => handle.clear());
+  const STALE = audioFrame(40, 0xe1);
+  const FRESH = audioFrame(40, 0xe2);
+  conn.socket.send(STALE);
+  conn.socket.send(JSON.stringify(EXCESSIVE_FLUSH)); // a marker the client never suppresses: once it lands, STALE was handled
+  await until(() => events.warnings.length === 1, "the marker warning");
+  assert.deepEqual(events.audio, [], "dropped while the ack is outstanding");
+
+  timers.created[0].fn(); // ~750 ms pass with no Cleared
+  assert.deepEqual(events.warnings.map((w) => w.code), ["EXCESSIVE_FLUSH", "CLEARED_TIMEOUT"]);
+  assert.match(events.warnings[1].message, /Cleared/);
+  assert.equal(events.cleared, 0, "the backstop is not an ack");
+
+  conn.socket.send(FRESH);
+  await until(() => events.audio.length === 1, "audio after the backstop");
+  assert.deepEqual(events.audio, [FRESH]);
+  assert.deepEqual(events.errors, []);
+});
+
+test("Cleared backstop: two Clears but ONE ack: the ack disarms the OLDEST timer, the other still ends the suppression", async (t) => {
+  const timers = captureTimers(t);
+  const server = await startFakeAura(t);
+  const { handle, events } = openClient(t, server);
+  await handle.ready;
+  const conn = await server.connection();
+  const X = audioFrame(40, 0xf1);
+  const Y = audioFrame(40, 0xf2);
+  let clears = 0;
+  server.script = (c, msg) => {
+    if (msg.type !== "Clear") return;
+    clears += 1;
+    if (clears === 1) {
+      c.socket.send(JSON.stringify(CLEARED));
+      c.socket.send(X); // after the one ack, but the second Clear is unanswered: still the interrupted reply
+      c.socket.send(JSON.stringify(EXCESSIVE_FLUSH)); // marker
+    }
+  };
+
+  timers.during(() => {
+    handle.clear();
+    handle.clear();
+  });
+  assert.equal(timers.created.length, 2);
+  await until(() => events.cleared === 1 && events.warnings.length === 1, "one ack + the marker");
+
+  assert.deepEqual(timers.cleared, [timers.created[0]], "the ack disarmed the OLDEST backstop only");
+  assert.deepEqual(events.audio, [], "X is still dropped: one Clear is unanswered");
+
+  timers.created[1].fn(); // the unanswered Clear's backstop
+  assert.deepEqual(events.warnings.map((w) => w.code), ["EXCESSIVE_FLUSH", "CLEARED_TIMEOUT"]);
+  conn.socket.send(Y);
+  await until(() => events.audio.length === 1, "audio after the backstop");
+  assert.deepEqual(events.audio, [Y]);
+});
+
+test("Cleared backstop: when it fires it gives up on EVERY outstanding Clear (other timers disarmed, one warning)", async (t) => {
+  const timers = captureTimers(t);
+  const server = await startFakeAura(t);
+  const { handle, events } = openClient(t, server);
+  await handle.ready;
+  const conn = await server.connection();
+
+  timers.during(() => {
+    handle.clear();
+    handle.clear();
+    handle.clear();
+  });
+  assert.equal(timers.created.length, 3);
+  timers.created[0].fn();
+
+  assert.ok(timers.cleared.includes(timers.created[1]) && timers.cleared.includes(timers.created[2]), "the later backstops are disarmed");
+  assert.deepEqual(events.warnings.map((w) => w.code), ["CLEARED_TIMEOUT"], "exactly one warning, not one per Clear");
+
+  const AFTER = audioFrame(40, 0xe3);
+  conn.socket.send(AFTER);
+  await until(() => events.audio.length === 1, "audio after the backstop");
+  assert.deepEqual(events.audio, [AFTER], "all three Clears are written off, not just one");
+});
+
+test("Cleared backstop: a late ack after the backstop is harmless (onCleared still fires, nothing else changes)", async (t) => {
+  const timers = captureTimers(t);
+  const server = await startFakeAura(t);
+  const { handle, events } = openClient(t, server);
+  await handle.ready;
+  const conn = await server.connection();
+
+  timers.during(() => handle.clear());
+  timers.created[0].fn();
+  conn.socket.send(JSON.stringify(CLEARED)); // arrives 900 ms late
+  const AFTER = audioFrame(40, 0xe4);
+  conn.socket.send(AFTER);
+  await until(() => events.cleared === 1 && events.audio.length === 1, "late ack + audio");
+
+  assert.deepEqual(events.audio, [AFTER]);
+  assert.deepEqual(events.warnings.map((w) => w.code), ["CLEARED_TIMEOUT"]);
+});
+
+test("Cleared backstop: the timer is disarmed on our close() and on a server close, so nothing fires into a torn-down call", async (t) => {
+  const timers = captureTimers(t);
+  const server = await startFakeAura(t);
+
+  const ours = openClient(t, server);
+  await ours.handle.ready;
+  timers.during(() => ours.handle.clear());
+  assert.equal(timers.created.length, 1);
+  ours.handle.close();
+  assert.deepEqual(timers.cleared, timers.created, "disarmed synchronously by close()");
+  await until(() => ours.events.closes.length === 1, "our close");
+
+  const theirs = openClient(t, server);
+  await theirs.handle.ready;
+  const conn = await server.connection(1);
+  timers.during(() => theirs.handle.clear());
+  assert.equal(timers.created.length, 2);
+  conn.socket.close(1011, "server went away");
+  await until(() => theirs.events.closes.length === 1, "server close");
+  assert.deepEqual(timers.cleared, timers.created, "disarmed by the close event");
+  assert.deepEqual([...ours.events.warnings, ...theirs.events.warnings], []);
+});
+
+test("Cleared backstop: a Clear that was never sent (socket not open) arms no timer", async (t) => {
+  const timers = captureTimers(t);
+  const server = await startFakeAura(t);
+  const { handle } = openClient(t, server);
+  assert.equal(timers.during(() => handle.clear()), false, "still connecting");
+  assert.equal(timers.created.length, 0);
+  await handle.ready;
+});
+
+test("a Flushed between our Clear and its Cleared belongs to the interrupted reply and is dropped; a later one is delivered", async (t) => {
+  const server = await startFakeAura(t);
+  const { handle, events } = openClient(t, server);
+  await handle.ready;
+  server.script = (c, msg) => {
+    if (msg.type !== "Clear") return;
+    c.socket.send(JSON.stringify(flushed(7))); // finished generating just before the Clear landed: stale
+    c.socket.send(JSON.stringify(CLEARED));
+    c.socket.send(JSON.stringify(flushed(9))); // the next reply
+  };
+
+  handle.clear();
+  await until(() => events.cleared === 1 && events.flushed.length >= 1, "Cleared + a Flushed");
+  await settle();
+  assert.deepEqual(events.flushed, [9], "Flushed(7) never reached onFlushed");
+});
+
 test("clear on a socket that is not open sends nothing and does NOT arm suppression", async (t) => {
   const server = await startFakeAura(t);
   const { handle, events } = openClient(t, server);
@@ -815,6 +1039,18 @@ test("after our own close(), late frames are ignored (no audio into a torn-down 
 });
 
 // ── Keepalive ───────────────────────────────────────────────────────────────
+
+test("keepalive: closing while still CONNECTING never creates a ping timer", async (t) => {
+  const timers = interceptPingInterval(t);
+  const server = await startFakeAura(t);
+  const { handle, events } = openClient(t, server);
+  handle.close();
+  await until(() => events.closes.length === 1, "onClose");
+  await settle();
+
+  assert.equal(timers.created.length, 0, "the timer starts on open, not at construction");
+  await assert.rejects(handle.ready, /closed/i);
+});
 
 test("keepalive: a WebSocket ping every 30 s, started on open, and never a JSON KeepAlive (an unknown type closes the socket with 1008)", async (t) => {
   assert.equal(PING_INTERVAL_MS, 30_000);

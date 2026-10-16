@@ -20,7 +20,8 @@ const net = require("node:net");
 const { performance } = require("node:perf_hooks");
 const { WebSocketServer } = require("ws");
 
-const { openFluxStream, fluxConfigFromEnv, buildFluxUrl, FLUX_DEFAULTS, DEFAULT_HOST, PING_INTERVAL_MS, _test } = require("../services/flux-stt");
+const { openFluxStream, fluxConfigFromEnv, buildFluxUrl, FLUX_DEFAULTS, _test } = require("../services/flux-stt");
+const { DEFAULT_HOST, PING_INTERVAL_MS } = require("../services/deepgram-ws-common");
 const { buildKeytermsParam } = require("../services/deepgram-stt");
 
 const realSetInterval = globalThis.setInterval;
@@ -160,12 +161,14 @@ function interceptPingInterval(t) {
 
 test("buildFluxUrl: exact params in the exact order, AU host over wss by default", () => {
   assert.equal(DEFAULT_HOST, "api.au.deepgram.com");
+  const url = buildFluxUrl({});
   assert.equal(
-    buildFluxUrl({}),
+    url.split("&keyterm=")[0],
     "wss://api.au.deepgram.com/v2/listen?model=flux-general-en&encoding=mulaw&sample_rate=8000" +
-      "&eot_threshold=0.7&eager_eot_threshold=0.4&eot_timeout_ms=5000&mip_opt_out=true" +
-      buildKeytermsParam(undefined),
+      "&eot_threshold=0.7&eager_eot_threshold=0.4&eot_timeout_ms=5000&mip_opt_out=true",
+    "everything before the keyterms is exact (the keyterms have their own test)",
   );
+  assert.ok(url.includes("&keyterm="), "the common keyterms follow");
 });
 
 test("buildFluxUrl: carries mip_opt_out=true on every variant (privacy: no model-improvement retention)", () => {
@@ -186,9 +189,21 @@ test("buildFluxUrl: only Flux-legal params (unknown params are an HTTP 400 on /v
   }
 });
 
-test("buildFluxUrl: keyterms reuse buildKeytermsParam(industry) and come last", () => {
+test("buildFluxUrl: keyterms are plain terms (Flux has no weights), none repeated, multi-word terms whole", () => {
+  for (const industry of [undefined, "dental", "medical", "legal", "home_services", "real_estate"]) {
+    const values = new URL(buildFluxUrl({ industry })).searchParams.getAll("keyterm");
+    assert.ok(values.length > 0, String(industry));
+    assert.deepEqual(values.filter((v) => v.includes(":")), [], `${industry}: Flux docs say "Do not append a weight" (appointment:2)`);
+    assert.equal(new Set(values).size, values.length, `${industry}: a repeated keyterm: ${values.join(", ")}`);
+  }
+  const dental = new URL(buildFluxUrl({ industry: "dental" })).searchParams.getAll("keyterm");
+  assert.ok(dental.includes("root canal"), "a multi-word term stays ONE value");
+  assert.equal(dental.filter((v) => v === "appointment").length, 1, "dental repeats appointment once the boosts are stripped");
+});
+
+test("buildFluxUrl: keyterms reuse buildKeytermsParam(industry, { weights: false }) and come last", () => {
   const url = buildFluxUrl({ industry: "dental" });
-  assert.ok(url.endsWith(buildKeytermsParam("dental")), url);
+  assert.ok(url.endsWith(buildKeytermsParam("dental", { weights: false })), url);
   const names = [...new URL(url).searchParams.keys()];
   assert.deepEqual(names.slice(0, 7), ["model", "encoding", "sample_rate", "eot_threshold", "eager_eot_threshold", "eot_timeout_ms", "mip_opt_out"]);
   assert.ok(names.slice(7).length > 0 && names.slice(7).every((n) => n === "keyterm"));
@@ -693,6 +708,45 @@ test("keepalive: a failed connection never leaves a ping timer behind", async (t
   openFluxStream("test-key", { onError: () => {}, onClose: (code) => closes.push(code) }, { host: `127.0.0.1:${port}`, scheme: "ws" });
   await until(() => closes.length === 1, "onClose");
   assert.equal(timers.created.length - timers.cleared.length, 0);
+});
+
+test("keepalive: closing from INSIDE onOpen still clears the ping timer (it exists before onOpen runs)", async (t) => {
+  const timers = interceptPingInterval(t);
+  const server = await startFakeDeepgram(t);
+  const closes = [];
+  /** What the timers looked like the instant close() returned inside onOpen. */
+  let atReturn = null;
+  const handle = openFluxStream(
+    "test-key",
+    {
+      onOpen: () => {
+        handle.close();
+        atReturn = { created: timers.created.length, cleared: timers.cleared.length };
+      },
+      onError: () => {},
+      onClose: (code, reason, info) => closes.push(info),
+    },
+    { host: server.host, scheme: "ws" },
+  );
+  t.after(() => handle.close());
+  await until(() => closes.length === 1, "onClose");
+
+  assert.deepEqual(atReturn, { created: 1, cleared: 1 }, "cleared synchronously by that close(), not left to the close event");
+  assert.deepEqual(timers.cleared, timers.created);
+  assert.equal(closes[0].initiatedByUs, true);
+});
+
+test("keepalive: closing while still CONNECTING never creates a ping timer", async (t) => {
+  const timers = interceptPingInterval(t);
+  const server = await startFakeDeepgram(t);
+  const { handle, events } = openClient(t, server);
+  assert.equal(handle.readyState, 0);
+  handle.close();
+  await until(() => events.closes.length === 1, "onClose");
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(timers.created.length, 0, "the timer starts on open, not at construction");
+  assert.equal(events.opens, 0);
 });
 
 // ── Control messages ────────────────────────────────────────────────────────

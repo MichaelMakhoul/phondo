@@ -13,6 +13,9 @@
  *    a WebSocket ping (the server drops a silent client after 60 s). Never add
  *    a JSON keepalive here.
  *  - `Error` frames carry `description` (+ `code`), not `message`.
+ *  - Keyterms are PLAIN terms: the docs say "Do not append a weight" (the
+ *    Nova-style `appointment:2`), so the URL asks buildKeytermsParam for
+ *    `{ weights: false }`, which also collapses the duplicates the strip makes.
  *  - A Flux socket closes with code 1005 both after a clean CloseStream and
  *    after a fatal Error, so a bare close code says nothing. `onClose` reports
  *    whether WE initiated the close; treat any close we did not initiate as
@@ -29,12 +32,9 @@
 
 const WebSocket = require("ws");
 const { buildKeytermsParam } = require("./deepgram-stt");
+const { DEFAULT_HOST, resolveScheme, createCallbackGuard, failConnect, deadStream, createPinger } = require("./deepgram-ws-common");
 
-/** Sydney endpoint, same API key. From Sydney the RTT is ~25 ms vs ~335 ms to api.deepgram.com (Virginia). */
-const DEFAULT_HOST = "api.au.deepgram.com";
 const FLUX_MODEL = "flux-general-en";
-/** Flux drops a client that sends neither audio nor a WS ping for 60 s; ping at half that. */
-const PING_INTERVAL_MS = 30_000;
 
 /**
  * Defaults for the turn-detection knobs (spec 4.1). The eager default is 0.4;
@@ -44,9 +44,6 @@ const PING_INTERVAL_MS = 30_000;
 const FLUX_DEFAULTS = Object.freeze({ eotThreshold: 0.7, eagerEotThreshold: 0.4, eotTimeoutMs: 5000 });
 
 const TURN_EVENTS = new Set(["StartOfTurn", "Update", "EagerEndOfTurn", "TurnResumed", "EndOfTurn"]);
-
-/** Plaintext ws:// exists for the loopback fake used in tests; the API key rides the upgrade headers. */
-const LOOPBACK_HOST_RE = /^(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?$/;
 
 /**
  * @typedef {Object} FluxTurnEvent
@@ -97,27 +94,17 @@ function floatParam(n) {
 }
 
 /**
- * @param {string|undefined} scheme
- * @param {string} host
- * @returns {"ws"|"wss"}
- */
-function resolveScheme(scheme, host) {
-  if (scheme === undefined || scheme === "wss") return "wss";
-  if (scheme === "ws" && LOOPBACK_HOST_RE.test(host)) return "ws";
-  throw new Error(`[FluxSTT] refusing scheme ${JSON.stringify(scheme)} for host ${JSON.stringify(host)}: plaintext ws is for loopback test servers only`);
-}
-
-/**
  * The Flux connection URL. Param order and set are exactly: model, encoding,
  * sample_rate, eot_threshold, eager_eot_threshold (omitted when null),
- * eot_timeout_ms, mip_opt_out=true, then the keyterms. Anything else is a 400.
+ * eot_timeout_ms, mip_opt_out=true, then the keyterms (plain, de-duplicated).
+ * Anything else is a 400.
  *
  * @param {FluxOptions} [options]
  * @returns {string}
  */
 function buildFluxUrl(options = {}) {
   const host = options.host || DEFAULT_HOST;
-  const scheme = resolveScheme(options.scheme, host);
+  const scheme = resolveScheme(options.scheme, host, "FluxSTT");
   const eot = finiteOr(options.eotThreshold, FLUX_DEFAULTS.eotThreshold);
   const eager = options.eagerEotThreshold === null ? null : finiteOr(options.eagerEotThreshold, FLUX_DEFAULTS.eagerEotThreshold);
   const timeoutMs = finiteOr(options.eotTimeoutMs, FLUX_DEFAULTS.eotTimeoutMs);
@@ -131,7 +118,7 @@ function buildFluxUrl(options = {}) {
     `eot_timeout_ms=${timeoutMs}`,
     "mip_opt_out=true",
   ];
-  return `${scheme}://${host}/v2/listen?${params.join("&")}${buildKeytermsParam(options.industry)}`;
+  return `${scheme}://${host}/v2/listen?${params.join("&")}${buildKeytermsParam(options.industry, { weights: false })}`;
 }
 
 // ── Env config ──────────────────────────────────────────────────────────────
@@ -232,11 +219,6 @@ function fluxConfigFromEnv(env = process.env) {
  * @property {() => boolean} forceEndTurn
  */
 
-/** @param {unknown} err */
-function describeError(err) {
-  return err instanceof Error ? err.message : String(err);
-}
-
 /**
  * An `Error` frame. Flux uses `description` (+ `code`); the Nova-3 client's
  * `message` field does not exist here.
@@ -246,22 +228,6 @@ function describeError(err) {
 function errorFromFrame(frame) {
   const detail = frame.description || frame.code || "unknown error";
   return Object.assign(new Error(`Flux error: ${detail}`), frame.code ? { code: frame.code } : {});
-}
-
-/**
- * Handle for a stream that could not even be constructed: always CLOSED, inert.
- * @returns {FluxStream}
- */
-function deadStream() {
-  return {
-    get readyState() {
-      return WebSocket.CLOSED;
-    },
-    send: () => false,
-    close() {},
-    configure: () => false,
-    forceEndTurn: () => false,
-  };
 }
 
 /**
@@ -289,54 +255,19 @@ function openFluxStream(apiKey, callbacks = {}, options = {}) {
   const { onOpen, onTurnInfo, onError, onClose, onWarning } = callbacks;
 
   let closedByUs = false;
-  /** @type {ReturnType<typeof setInterval>|null} */
-  let pingTimer = null;
   const warnedEvents = new Set();
-
-  /** @param {Error} err */
-  function reportError(err) {
-    if (typeof onError !== "function") {
-      console.error(`[FluxSTT] ${err.message} (no onError handler)`);
-      return;
-    }
-    try {
-      onError(err);
-    } catch (handlerErr) {
-      console.error(`[FluxSTT] onError callback threw: ${describeError(handlerErr)}`);
-    }
-  }
-
-  /**
-   * @param {((...args: any[]) => void)|undefined} callback
-   * @param {...any} args
-   */
-  function invoke(callback, ...args) {
-    if (typeof callback !== "function") return;
-    try {
-      callback(...args);
-    } catch (err) {
-      reportError(err instanceof Error ? err : new Error(String(err)));
-    }
-  }
+  const guard = createCallbackGuard("FluxSTT", onError);
+  const { reportError, invoke } = guard;
 
   /** @type {WebSocket} */
   let ws;
   try {
     ws = new WebSocket(buildFluxUrl(options), { headers: { Authorization: `Token ${apiKey}` } });
   } catch (err) {
-    // Asynchronous, so the caller can finish wiring up before it hears about it.
-    setImmediate(() => {
-      reportError(err instanceof Error ? err : new Error(String(err)));
-      invoke(onClose, 1006, "", { initiatedByUs: false });
-    });
-    return deadStream();
+    failConnect(guard, err, onClose);
+    return deadStream({ send: false, close: undefined, configure: false, forceEndTurn: false }, { readyState: WebSocket.CLOSED });
   }
-
-  function stopPing() {
-    if (pingTimer === null) return;
-    clearInterval(pingTimer);
-    pingTimer = null;
-  }
+  const pinger = createPinger(ws);
 
   /** @param {any} frame */
   function handleTurnInfo(frame) {
@@ -371,11 +302,8 @@ function openFluxStream(apiKey, callbacks = {}, options = {}) {
   }
 
   ws.on("open", () => {
-    // Created before onOpen so a close() from inside onOpen still clears it.
-    pingTimer = setInterval(() => {
-      if (ws.readyState === WebSocket.OPEN) ws.ping();
-    }, PING_INTERVAL_MS);
-    if (typeof pingTimer.unref === "function") pingTimer.unref();
+    // Armed before onOpen so a close() from inside onOpen still clears it.
+    pinger.start();
     invoke(onOpen);
   });
 
@@ -415,7 +343,7 @@ function openFluxStream(apiKey, callbacks = {}, options = {}) {
   });
 
   ws.on("close", (code, reason) => {
-    stopPing();
+    pinger.stop();
     invoke(onClose, code, reason ? reason.toString() : "", { initiatedByUs: closedByUs });
   });
 
@@ -442,7 +370,7 @@ function openFluxStream(apiKey, callbacks = {}, options = {}) {
 
     /** Send CloseStream, then close the socket. Idempotent. */
     close() {
-      stopPing();
+      pinger.stop();
       if (closedByUs) return;
       const state = ws.readyState;
       if (state === WebSocket.OPEN) {
@@ -475,7 +403,5 @@ module.exports = {
   fluxConfigFromEnv,
   buildFluxUrl,
   FLUX_DEFAULTS,
-  DEFAULT_HOST,
-  PING_INTERVAL_MS,
   _test: { resetConfigWarnings: () => warnedConfig.clear() },
 };

@@ -39,20 +39,31 @@ const INDUSTRY_KEYWORDS = {
   ],
 };
 
+/** The ":<boost>" suffix every entry in INDUSTRY_KEYWORDS carries. */
+const TRAILING_BOOST_RE = /:\d+(?:\.\d+)?$/;
+
 /**
- * Build the keyterm query parameter for Deepgram Nova-3.
- * Nova-3 uses `keyterm` instead of `keywords` (Nova-2).
+ * Build the keyterm query parameter for Deepgram.
+ * Nova-3 uses `keyterm` instead of `keywords` (Nova-2) and takes `word:boost`.
+ * Flux takes PLAIN terms only (its docs: "Do not append a weight"), so the Flux
+ * URL passes `{ weights: false }`: each term loses its trailing ":<boost>"
+ * BEFORE encoding, and terms the strip makes identical (the common
+ * "appointment:1.5" and dental's "appointment:2") collapse to one.
+ * The default output is unchanged byte for byte: the Nova call sites pass no
+ * options.
  * @param {string} [industry] - Industry key from org settings
+ * @param {{ weights?: boolean }} [options] - weights: false for Flux; default true is the Nova-3 output
  * @returns {string} URL-encoded keyterm param, or empty string
  */
-function buildKeytermsParam(industry) {
+function buildKeytermsParam(industry, { weights = true } = {}) {
   const keywords = [...(INDUSTRY_KEYWORDS._common || [])];
   if (industry && INDUSTRY_KEYWORDS[industry]) {
     keywords.push(...INDUSTRY_KEYWORDS[industry]);
   }
   if (keywords.length === 0) return "";
   // Nova-3 format: &keyterm=word:boost&keyterm=word2:boost2
-  return keywords.map((kw) => `&keyterm=${encodeURIComponent(kw)}`).join("");
+  const terms = weights ? keywords : [...new Set(keywords.map((kw) => kw.replace(TRAILING_BOOST_RE, "")))];
+  return terms.map((kw) => `&keyterm=${encodeURIComponent(kw)}`).join("");
 }
 
 /**
