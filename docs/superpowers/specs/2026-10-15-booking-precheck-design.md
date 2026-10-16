@@ -20,41 +20,59 @@ Gemini already has the rule ("NAME COLLECTION IS MANDATORY … repeat the name b
 ## 2. Design
 
 ### When it runs
-- **Pipelines:** the Gemini paths only. That means production inbound calls (`server.js` `onToolCall`, ~2566) and the browser test call (`/ws/test`, ~4627), so test calls behave the same as real ones.
+- **Pipelines:** the Gemini paths only. That means production inbound calls (`server.js` `onToolCall`, ~2567) and the browser test call (`/ws/test`, ~4691), so dashboard test calls behave the same as real ones.
 - **Tools:** `book_appointment`, `reschedule_appointment` and `update_appointment`.
 - **Position:** after the existing guards (end-call guard, cancel gate, RebookGuard) and **immediately before `executeToolCall`**. Nothing is written until the check passes. The RebookGuard's name-correction branch (a re-book with a corrected surname becomes an in-place attendee update) is checked too, before that write; its hold is not audited, because a booking already stands and a held fix must not reopen the end-call guard.
-- **Skipped for:** owner calls (they return earlier and have their own read-back gate), every other tool, and a call with no name or date fields (an `update_appointment` that changes only phone, email or notes): there is nothing to compare with the call, so no request, no hold and a `[Precheck] skip` log line.
+- **If the call ends during the check:** the handler holds the session it started with. A write the check **allowed** still happens, as it did when the write started in the same tick as the tool call (`[Precheck] session ended during the check — writing the allowed <tool> anyway`); a held write is dropped.
+- **Skipped for:**
+  - owner calls (they return earlier and have their own read-back gate) and every other tool;
+  - a call that saves no name or date (an `update_appointment` that changes only phone, email or notes, even one that names its booking's `datetime`): there is nothing to compare with the call, so no request, no hold and a `[Precheck] skip <tool> (no name or date to save)` line;
+  - the **public website demo** (`/ws/test` with `DEMO_ORG_ID`): every write there is simulated, and its prompt has no pre-booking read-back by design (3-minute cap), so a check would protect nothing and hold its bookings (`[Precheck] skip <tool> (public demo)`).
 
 ### What Claude sees
-1. **The conversation so far.** This is `session.messages` (user and assistant turns, no system prompt) plus the turn still in progress (`pendingUserTranscript` / `pendingAiTranscript`). The text is labelled as Gemini's own transcription, which may contain mishearings and partial letter-spelling.
-2. **The change Gemini wants to make:** the tool name and its arguments. For a booking that's the names, `datetime`, `phone`, practitioner and service; for a reschedule it's the current and new times.
-3. **"Now"** in the business's timezone (weekday, date, time, zone), formatted the same way `get_current_datetime` does it (`services/tool-executor.js` ~481).
+1. **The whole call so far:** the session's unwindowed transcript (`fullTranscriptMessages`: user and assistant turns, no system prompt), latest 12,000 characters, plus the turn still in progress, read live from the handler's transcript buffers. `session.messages` keeps only the last 20 messages, so on a longer call the name read-back and the caller's yes would fall out of it; it is used only while the unwindowed transcript is empty (a failed transfer's reconnect restores just the window). The text is labelled as Gemini's own transcription, which may contain mishearings and partial letter-spelling.
+2. **The change Gemini wants to make:** the tool name and only that tool's decision fields, in two sections:
+
+   | Tool | DETAILS THAT WILL BE SAVED | DETAILS THAT ONLY IDENTIFY THE EXISTING APPOINTMENT |
+   |---|---|---|
+   | `book_appointment` | `first_name`, `last_name`, `datetime`, `practitioner` | (none: the section is left out) |
+   | `reschedule_appointment` | `new_datetime`, `first_name`, `last_name`, `practitioner` | `name`, `current_datetime`, `current_date` |
+   | `update_appointment` | `first_name`, `last_name` (the corrected values) | `datetime` (it picks this call's booking; time changes go through reschedule, SCRUM-558) |
+
+   - Rules 1 and 2 below judge the saved section only. Reschedule's `name` is "for identity verification only" (`tool-executor.js`), so judging it as a name being saved would hold a correct change.
+   - **`practitioner` is a name, never the raw `practitioner_id`.** The id is resolved against the call's own staff list (`session.scheduleSnapshot.practitioners`, the list the model took the id from), quoted as one line (controls and line separators become a space, invisible characters are dropped, at most 80 characters), and left out when it cannot be resolved (an unknown id, or no snapshot, as for a Cliniko org). It is never logged.
+   - **Never sent:** phone, email, notes, service ids, confirmation codes or the raw practitioner id. Less PII offshore, and no free text for the checker to misjudge or be steered by.
+3. **"Now"** in the business's timezone (weekday, date, time, zone), formatted the same way `get_current_datetime` does it (`services/tool-executor.js` ~454).
 4. **The business's name-confirmation method** from the assistant's prompt config: `spell-out`, `read-back-characters` or `repeat-confirm` (the default).
 
 ### What Claude checks
-- **Name:** the first and last name being saved are the ones the caller gave. Since the caller last corrected them, the AI must have read them back using the business's method and the caller must have said yes. If the caller spelled the name, the saved spelling matches their letters.
-- **Date and time:** the slot being saved is the one the caller agreed to, with "today", "tomorrow" and "Friday" worked out from *now*.
+- **Name** (saved details only): the first and last name being saved are the ones the caller gave. Since the caller last corrected them, the AI must have read them back using the business's method and the caller must have said yes. If the caller spelled the name, the saved spelling matches their letters.
+- **Date and time** (saved details only): the slot being saved is the one the caller agreed to, with "today", "tomorrow" and "Friday" worked out from *now*.
 - **Agreement:** the caller actually agreed to this booking or change, not just asked what's free.
-- **Not checked:** wording, optional fields (email, notes), the phone number (caller ID is fine), and the practitioner unless the caller asked for one.
+- **Not checked:** wording, optional fields (email, notes), the phone number (caller ID is fine), the details that only identify the existing appointment, and the practitioner unless the caller asked for one and a different one is being saved.
 
 ### What comes back
 The answer is strict JSON, either `{"verdict":"allow","problem":"none"}` or `{"verdict":"fix","problem":"name_unconfirmed|name_mismatch|date_mismatch|not_agreed"}`. Claude is asked for a problem code only, never for wording. The request uses structured outputs (`output_config.format`, a `json_schema`), so the reply can only be `{verdict, problem}`: with thinking off, Haiku 5.5 otherwise wrote its reasoning before the JSON, and those replies were unreadable and failed open (8 of 18 in the live replay).
 
 - **allow:** the write runs exactly as it does today.
-- **fix:** nothing is written. Gemini gets the tool result `NOT DONE YET — nothing was saved. <instruction> Then call <tool> again with the confirmed details.` The `<instruction>` is **fixed server-side text chosen by the problem code** (an unrecognised code becomes `other`). For example, for `name_unconfirmed`: *"Read back the name you were about to save — spell the surname letter by letter — and ask the caller to confirm it. Use their correction if they give one."*
+- **fix:** nothing is written. Gemini gets the tool result `<opening> <instruction> Then call <tool> again with the confirmed details.` Both parts are **fixed server-side text**:
+  - `<opening>` is chosen by the write. A new booking gets `NOT DONE YET — nothing was saved.` A reschedule, an update and the RebookGuard's name fix (held while a booking already stands) get `NOT CHANGED YET — the existing booking still stands exactly as it was.`, so Gemini never tells a booked caller they have nothing.
+  - `<instruction>` is chosen by the problem code (an unrecognised code becomes `other`). For example, for `name_unconfirmed`: *"Read back the name you were about to save — spell the surname letter by letter — and ask the caller to confirm it. Use their correction if they give one."*
   - **Claude's wording never reaches Gemini** (SCRUM-593 security ruling). The transcript is in Claude's prompt, so a caller can shape what Claude writes; relaying it would give caller speech the authority of a tool result ("transfer the caller to …"). Only the problem code is taken from the reply, and only when it is exactly one of the known codes.
+  - **A late "yes":** Gemini's transcription of the caller has no guaranteed order against its tool calls (SCRUM-587), so the yes that confirmed a booking can land after the call. On a fix, if the caller's words changed during the check, the check asks **once** more with them; that answer is final. An allow never waits for this.
   - Because the tool is BLOCKING, Gemini waits for this, then asks the caller.
   - The audit records the attempt under the tool's own name with `successful: false, precheckHold: true`. `hasUnfinishedBooking` counts exactly `book_appointment` and `reschedule_appointment` as funnel steps, so this keeps the end-call guard treating the booking as unfinished.
   - It does **not** count against the booking-failure loop caps, because the write was never attempted.
+  - It clears the Tier-2 checker's last tool result, so the read-back it asks for is never judged against an older result from the last 10 s.
 
 ### Limits and failures
 - **Hold limit:** at most **2 holds per write**. The third attempt goes through, with a `[ALERT:warning]`, so a caller is never trapped when Claude can't be satisfied (for example on a garbled transcript). The count resets when that write succeeds (on both Gemini paths, and when a name fix succeeds).
-- **When Claude fails:** this covers a timeout over **3 s**, an HTTP error, a missing key, or an unreadable reply. In each case the write **goes through as today** (fail-open) and is logged. A run of failures pages, using the same mechanism the existing checker uses. Logs never contain transcript text (SCRUM-339).
-- **Modes:** `PRECHECK_MODE=enforce` (default), `shadow` (check and log, never hold) or `off`. Changing it is a Fly secret change, with no code deploy.
+- **When Claude fails:** this covers a timeout over **3 s**, an HTTP error, a missing key, or an unreadable reply. In each case the write **goes through as today** (fail-open) and is logged as `unchecked`. A run of failures pages, using the same mechanism the existing checker uses. Logs never contain transcript text (SCRUM-339).
+- **Modes:** `PRECHECK_MODE=enforce` (default), `shadow` or `off`. `shadow` checks and logs the would-be verdict when it lands, and never holds or delays a write. `off` also accepts `disabled`, `false`, `0` and `no`, so the kill switch fails toward off; any other unknown value warns once and enforces. Changing it is a Fly secret change, with no code deploy.
 - **Model:** `PRECHECK_MODEL`, default `claude-haiku-5-5` with thinking off (the latency settings the validator already uses).
 
 ### Cost and delay
-- **Delay:** about 0.7–1.5 s, added only at the booking moment, after Gemini's "let me book that" filler. The rest of the call is unchanged.
+- **Delay:** about 0.7–1.5 s, added only at the booking moment, after Gemini's "let me book that" filler. A hold where the caller spoke during the check can take one more request. The rest of the call is unchanged.
 - **Cost:** under 0.1¢ per check, around 0.2¢ per booking call. It runs on the Anthropic account the app already uses.
 
 ## 3. Fix the existing after-the-fact checker
@@ -80,7 +98,7 @@ The Tier-2 checker (`services/turn-validator.js`) is never told today's date, so
 ## 6. Testing and rollout
 
 - **Unit tests** (`lib/booking-precheck.js`):
-  - the request contains "now", the confirmation method, the arguments and the transcript (system prompt excluded);
+  - the request contains "now", the confirmation method, each tool's decision fields (saved vs identify-only, the practitioner by name) and the whole transcript (system prompt excluded);
   - JSON parsing works;
   - timeout, error and garbage replies all mean allow;
   - `shadow` and `off` modes work;
