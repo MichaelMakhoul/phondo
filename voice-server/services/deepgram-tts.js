@@ -23,7 +23,8 @@ async function synthesizeSpeech(apiKey, text, options) {
     `model=${voice}` +
     "&encoding=mulaw" +
     "&sample_rate=8000" +
-    "&container=none";
+    "&container=none" +
+    "&mip_opt_out=true"; // SCRUM-595: no training on what the AI says to callers
 
   const res = await fetch(url, {
     method: "POST",

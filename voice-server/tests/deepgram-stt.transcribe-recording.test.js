@@ -40,9 +40,10 @@ describe("transcribeRecording (SCRUM-550)", () => {
     assert.equal(calls.length, 1);
     const { url, init } = calls[0];
     assert.ok(url.startsWith("https://api.deepgram.com/v1/listen?"), url);
-    for (const p of ["model=nova-3", "multichannel=true", "utterances=true", "punctuate=true", "smart_format=true", "language=en"]) {
+    for (const p of ["model=nova-3", "multichannel=true", "utterances=true", "punctuate=true", "smart_format=true", "language=en", "mip_opt_out=true"]) {
       assert.ok(url.includes(p), `missing ${p} in ${url}`);
     }
+    assert.equal(new URL(url).searchParams.get("mip_opt_out"), "true", `mip_opt_out must be its own param in ${url}`);
     assert.ok(url.includes("keyterm="), "expected industry keyterms");
     assert.equal(init.method, "POST");
     assert.equal(init.headers.Authorization, "Token KEY123");

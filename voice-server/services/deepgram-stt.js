@@ -98,6 +98,9 @@ function openDeepgramStream(apiKey, { onTranscript, onUtteranceEnd, onError, onC
     "&interim_results=true" +
     "&endpointing=300" +
     "&utterance_end_ms=1000" +
+    // SCRUM-595: keep caller audio out of Deepgram's Model Improvement Program —
+    // our privacy policy promises providers may not train on customer data.
+    "&mip_opt_out=true" +
     keytermsParam;
 
   const ws = new WebSocket(url, {
@@ -182,6 +185,7 @@ async function transcribeRecording(apiKey, audio, options = {}) {
     PRERECORDED_URL +
     "?model=nova-3&multichannel=true&utterances=true&punctuate=true&smart_format=true" +
     `&language=${lang}` +
+    "&mip_opt_out=true" + // SCRUM-595: no training on call recordings
     buildKeytermsParam(industry);
 
   const res = await fetch(url, {
