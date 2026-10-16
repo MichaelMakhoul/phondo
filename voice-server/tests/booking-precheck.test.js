@@ -138,7 +138,20 @@ describe("which writes are checked", () => {
 // An update_appointment that changes only the phone, email or notes carries no name and no date: there
 // is nothing to compare with the call, and asking Claude could only produce a false hold.
 describe("nothing to check", () => {
-  const EMPTY_ARGS = [{ email: "private@example.com" }, { phone: "+61400111222" }, { notes: "gate code 4471" }, { phone: "+61400111222", email: "a@b.co", notes: "x" }, {}, undefined];
+  // Blank values are absent: the writers ignore an empty or whitespace name (`?.trim()` / `||`), and the
+  // model does send empty optional args. Counted as "will be saved", they made email- and phone-only
+  // updates look like unconfirmed names, and held them.
+  const EMPTY_ARGS = [
+    { email: "private@example.com" },
+    { phone: "+61400111222" },
+    { notes: "gate code 4471" },
+    { phone: "+61400111222", email: "a@b.co", notes: "x" },
+    {},
+    undefined,
+    { first_name: "", last_name: "", phone: "+61400111222" },
+    { first_name: "  ", last_name: null, email: "a@b.co" },
+    { first_name: undefined, last_name: "\t", notes: "x" },
+  ];
 
   it("an update with no name or date fields makes no request, proceeds, counts no hold and says why", async () => {
     const m = load();
@@ -172,6 +185,15 @@ describe("nothing to check", () => {
       assert.ok(logs.some((l) => new RegExp(`\\[Precheck\\] skip ${toolName} \\(no name or date to save\\)\\. callSid=CAtest`).test(l)), `${toolName} ${JSON.stringify(args)} is a skip`);
     }
     assert.equal(seen.calls, 0, "Claude is never asked");
+  });
+
+  it("blank names on a reschedule are not saved: only its new time is judged, and the blanks never appear", async () => {
+    const m = load();
+    const seen = replyText(ALLOW);
+    await m.precheckBookingWrite(input({ toolName: "reschedule_appointment", args: { new_datetime: "2026-10-23T10:00", first_name: "", last_name: "   ", name: null, phone: "+61400111222" } }));
+    const prompt = seen.body.messages[0].content;
+    assert.match(prompt, /^DETAILS THAT WILL BE SAVED: \{"new_datetime":"2026-10-23T10:00 = Friday, October 23, 2026, 10:00 AM"\}$/m);
+    assert.doesNotMatch(prompt, /ONLY IDENTIFY|"first_name"|"last_name"|"name"/, "blank and null fields are left out of both sections");
   });
 
   it("any name or date that will be saved, even alone, still makes a request", async () => {
@@ -363,8 +385,9 @@ describe("verdicts and modes", () => {
 
   // R25: the kill switch fails toward OFF for the obvious negatives, so an operator who types
   // PRECHECK_MODE=false in a hurry gets what they meant.
-  it("the obvious negatives switch it off too: disabled, false, 0, no — trimmed, any case, without a warning", async () => {
-    for (const mode of ["disabled", "false", "0", "no", " NO ", "False", "DISABLED"]) {
+  // SF-M2: a kill switch typed in a hurry must fail toward OFF for any obvious negative.
+  it("the obvious negatives switch it off too — trimmed, any case, without a warning", async () => {
+    for (const mode of ["disabled", "disable", "false", "0", "no", "n", "none", "skip", "bypass", "stop", " NO ", "False", "DISABLED", " Skip ", "STOP"]) {
       logs.length = 0;
       const m = load({ mode });
       const seen = replyText(FIX);
@@ -389,7 +412,7 @@ describe("verdicts and modes", () => {
   });
 
   it("an unknown PRECHECK_MODE enforces, and warns once per process", async () => {
-    for (const mode of ["enforced", "on", "true", "yes", "disable"]) {
+    for (const mode of ["enforced", "on", "true", "yes", "1", "kill"]) {
       logs.length = 0;
       const m = load({ mode });
       replyText(FIX);
@@ -631,6 +654,61 @@ describe("a late yes: one re-check on a fix when the caller spoke during the che
       assert.equal(seen.calls, 1);
       assert.ok(!logs.some((l) => /holding on the first verdict/.test(l)));
     });
+  });
+});
+
+// SF-M2: what the check will do is said once at boot, and the two settings that silently defeat it page:
+// an unrecognised PRECHECK_MODE (it ENFORCES while the operator likely meant something else) and a missing
+// ANTHROPIC_API_KEY while the check is on (every write goes through unchecked).
+describe("reportPrecheckConfig (once, at boot)", () => {
+  const boot = (env) => {
+    const m = load(env);
+    logs.length = 0;
+    m.reportPrecheckConfig();
+    return { lines: logs.filter((l) => l.startsWith("[Precheck] mode=")), pages: logs.filter((l) => l.startsWith("[ALERT:")) };
+  };
+
+  it("logs the mode, the model and whether the key is set", () => {
+    assert.deepEqual(boot({}).lines, ["[Precheck] mode=enforce model=claude-haiku-5-5 key=set"]);
+    assert.deepEqual(boot({ mode: "shadow" }).lines, ["[Precheck] mode=shadow model=claude-haiku-5-5 key=set"]);
+    assert.deepEqual(boot({ mode: "off" }).lines, ["[Precheck] mode=off model=claude-haiku-5-5 key=set"]);
+    assert.deepEqual(boot({ mode: " Disabled " }).lines, ["[Precheck] mode=off model=claude-haiku-5-5 key=set"], "an alias reports as off");
+    assert.deepEqual(boot({ model: "claude-sonnet-5-5" }).lines, ["[Precheck] mode=enforce model=claude-sonnet-5-5 key=set"]);
+    for (const env of [{}, { mode: "shadow" }, { mode: "off" }]) assert.deepEqual(boot(env).pages, [], JSON.stringify(env));
+  });
+
+  it("pages once for an unrecognised PRECHECK_MODE: it is ENFORCING, with the value echoed safely", () => {
+    let r = boot({ mode: "disabeld" });
+    assert.deepEqual(r.lines, ["[Precheck] mode=enforce model=claude-haiku-5-5 key=set"]);
+    assert.equal(r.pages.length, 1, r.pages.join("\n"));
+    assert.match(r.pages[0], /^\[ALERT:error\] \[booking_precheck\] PRECHECK_MODE is not recognised: the booking pre-check is ENFORCING \| /);
+    assert.match(r.pages[0], / mode_value="disabeld"(\s|$)/);
+    r = boot({ mode: "[ALERT:fatal] off]" });
+    assert.match(r.pages[0], / mode_value="ALERT:fatal off"(\s|$)/, "brackets stripped: the echo cannot forge a marker");
+    r = boot({ mode: "x".repeat(60) });
+    const echoed = /mode_value=(\S+)/.exec(r.pages[0])[1];
+    assert.equal(echoed.length, 40, `capped at 40 characters: ${echoed}`);
+  });
+
+  it("pages for a missing ANTHROPIC_API_KEY while the check is on, and says key=MISSING", () => {
+    for (const mode of [undefined, "shadow"]) {
+      const r = boot({ mode, noKey: true });
+      assert.deepEqual(r.lines, [`[Precheck] mode=${mode || "enforce"} model=claude-haiku-5-5 key=MISSING`]);
+      assert.equal(r.pages.length, 1, r.pages.join("\n"));
+      assert.match(r.pages[0], /^\[ALERT:error\] \[booking_precheck\] Booking pre-check is on but ANTHROPIC_API_KEY is not set: writes go through unchecked( \||$)/);
+    }
+  });
+
+  it("no page when the check is off, even with no key: key=unset", () => {
+    const r = boot({ mode: "off", noKey: true });
+    assert.deepEqual(r.lines, ["[Precheck] mode=off model=claude-haiku-5-5 key=unset"]);
+    assert.deepEqual(r.pages, []);
+  });
+
+  it("an unknown mode with no key pages for both, once each", () => {
+    const r = boot({ mode: "disabeld", noKey: true });
+    assert.deepEqual(r.lines, ["[Precheck] mode=enforce model=claude-haiku-5-5 key=MISSING"]);
+    assert.equal(r.pages.length, 2, r.pages.join("\n"));
   });
 });
 

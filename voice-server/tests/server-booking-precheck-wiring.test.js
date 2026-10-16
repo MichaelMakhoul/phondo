@@ -33,7 +33,16 @@ const LIVE_TURN = /getPending: \(\) => \(\{ user: pendingUserTranscript, ai: pen
 
 describe("SCRUM-593: booking pre-check wiring", () => {
   it("imports the module", () => {
-    assert.match(src, /const \{ applyBookingPrecheck, PRECHECKED_TOOLS, precheckMode \} = require\("\.\/lib\/booking-precheck"\);/);
+    assert.match(src, /const \{ applyBookingPrecheck, PRECHECKED_TOOLS, precheckMode, reportPrecheckConfig \} = require\("\.\/lib\/booking-precheck"\);/);
+  });
+
+  // SF-M2: the pre-check's mode, model and key state are said at boot, right where the voice pipeline is.
+  it("the listen callback reports the pre-check's config right after the voice pipeline line", () => {
+    const listen = src.indexOf('server.listen(Number(PORT), "0.0.0.0", () => {');
+    assert.ok(listen > 0, "found the listen callback");
+    const body = src.slice(listen, src.indexOf("\n});", listen));
+    assert.match(body, /console\.log\(`Voice pipeline: [^\n]*\n\s*reportPrecheckConfig\(\); \/\/ SCRUM-593/);
+    assert.equal(src.split("reportPrecheckConfig()").length - 1, 1, "called once, at boot");
   });
 
   it("inbound: one check for the main write path and one for the RebookGuard's name-correction branch", () => {

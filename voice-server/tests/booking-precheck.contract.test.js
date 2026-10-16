@@ -114,11 +114,18 @@ const session = (over = {}) => ({
 });
 
 describe("hold cap alert", () => {
-  it("the capped third attempt raises an [ALERT:warning] under the booking_precheck tag", async () => {
+  // SF-M1: no Grafana rule pages on [ALERT:warning], so a check holding EVERY booking until the cap lets it
+  // through went unnoticed. Error level, with its own reason for the alert rule.
+  it("the capped third attempt PAGES: [ALERT:error] under the booking_precheck tag, reason precheck-hold-cap", async () => {
     const m = load();
-    replyText(FIX);
-    await m.precheckBookingWrite(input({ holds: new Map([["book_appointment", 2]]) }));
-    assert.ok(logs.some((l) => /\[ALERT:warning\] \[booking_precheck\] Booking pre-check: book_appointment let through after 2 holds/.test(l)));
+    const seen = replyText(FIX);
+    assert.deepEqual(await m.precheckBookingWrite(input({ holds: new Map([["book_appointment", 2]]) })), { action: "proceed" });
+    assert.equal(seen.calls, 0, "the capped attempt is not re-checked");
+    const pages = logs.filter((l) => l.startsWith("[ALERT:"));
+    assert.equal(pages.length, 1, pages.join("\n"));
+    assert.match(pages[0], /^\[ALERT:error\] \[booking_precheck\] Booking pre-check: book_appointment let through unchecked after 2 holds \| /);
+    assert.match(pages[0], /\breason=precheck-hold-cap\b/);
+    assert.match(pages[0], /\bcallSid=CAtest toolName=book_appointment holds=2\b/);
   });
 });
 

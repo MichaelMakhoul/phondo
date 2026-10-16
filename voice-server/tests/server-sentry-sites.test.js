@@ -312,6 +312,9 @@ const REASON_LEVELS = Object.freeze({
   "retranscribe-content-loss": "warning",
   // SCRUM-559: caller left believing in a nonexistent appointment — pages.
   "booking-state-mismatch": "error",
+  // SCRUM-593: the booking pre-check let a write through UNCHECKED at its hold cap — pages, so a
+  // check that over-holds correct bookings cannot go unnoticed. Lives in lib/booking-precheck.js.
+  "precheck-hold-cap": "error",
 });
 const REASONS = Object.freeze(Object.keys(REASON_LEVELS));
 
@@ -657,6 +660,23 @@ describe("server.js Sentry sites — contract tests (SCRUM-273)", () => {
         "retranscribe-content-loss": () => emitRetranscribeContentLoss({ callId: "p10" }),
         "booking-state-mismatch": () =>
           emitBookingStateMismatch({ callSid: "p11", organizationId: "org-p11" }),
+        // The real module, not a replica: a third attempt at the hold cap.
+        "precheck-hold-cap": async () => {
+          const saved = process.env.PRECHECK_MODE;
+          delete process.env.PRECHECK_MODE;
+          try {
+            await require("../lib/booking-precheck").precheckBookingWrite({
+              toolName: "book_appointment",
+              args: { first_name: "A", last_name: "B", datetime: "2026-10-17T09:00" },
+              messages: [],
+              holds: new Map([["book_appointment", 2]]),
+              callSid: "p12",
+            });
+          } finally {
+            if (saved === undefined) delete process.env.PRECHECK_MODE;
+            else process.env.PRECHECK_MODE = saved;
+          }
+        },
       };
       // Every REASON must have a probe — surfacing missing coverage instead
       // of silently skipping.
@@ -677,7 +697,7 @@ describe("server.js Sentry sites — contract tests (SCRUM-273)", () => {
       }
     });
 
-    it("exactly four reasons use level=error — others are warning", () => {
+    it("exactly five reasons use level=error — others are warning", () => {
       // fail-open: customer intent (AI paused) silently violated.
       // voicemail-recording-save-failed (SCRUM-212): the safety-net write
       // behind the Supabase recording pipeline failed and Twilio won't
@@ -687,12 +707,15 @@ describe("server.js Sentry sites — contract tests (SCRUM-273)", () => {
       // systemic, not per-call noise.
       // booking-state-mismatch (SCRUM-559): the caller hung up believing
       // in an appointment that does not exist — a human must call back.
+      // precheck-hold-cap (SCRUM-593): a booking write went through UNCHECKED
+      // at the pre-check's hold cap; many of them mean it holds correct bookings.
       const errorReasons = REASONS.filter((r) => REASON_LEVELS[r] === "error");
       assert.deepEqual(errorReasons, [
         "fail-open",
         "voicemail-recording-save-failed",
         "retranscribe-lookup-rejected",
         "booking-state-mismatch",
+        "precheck-hold-cap",
       ]);
     });
   });
@@ -729,7 +752,9 @@ describe("server.js Sentry sites — contract tests (SCRUM-273)", () => {
       path.join(__dirname, "..", "lib", "route-handlers", "retranscribe.js"),
       "utf8",
     );
-    const productionSources = [serverSource, killSwitchSource, unhappySource, retranscribeSource];
+    // SCRUM-593: lib/booking-precheck.js pages at its hold cap (precheck-hold-cap).
+    const precheckSource = fs.readFileSync(path.join(__dirname, "..", "lib", "booking-precheck.js"), "utf8");
+    const productionSources = [serverSource, killSwitchSource, unhappySource, retranscribeSource, precheckSource];
     const { SENTRY_REASONS } = require("../lib/sentry-reasons");
 
     /**
@@ -783,7 +808,7 @@ describe("server.js Sentry sites — contract tests (SCRUM-273)", () => {
       );
     });
 
-    it("production contains 13 reason-tagged call sites (6 kill-switch + 3 server + 1 unhappy-call + 3 retranscribe)", () => {
+    it("production contains 14 reason-tagged call sites (6 kill-switch + 3 server + 1 unhappy-call + 3 retranscribe + 1 booking-precheck)", () => {
       // SCRUM-287 consolidated provider mirrors: log-failed, fail-open,
       // and voicemail-greeting-lookup-failed each fire from ONE site
       // that parameterizes provider (twilio|telnyx). fallback-finalise-
@@ -802,6 +827,7 @@ describe("server.js Sentry sites — contract tests (SCRUM-273)", () => {
       const killSwitchCount = countReasonSites(killSwitchSource);
       const unhappyCount = countReasonSites(unhappySource);
       const retranscribeCount = countReasonSites(retranscribeSource);
+      const precheckCount = countReasonSites(precheckSource);
       assert.equal(
         serverCount,
         3,
@@ -822,10 +848,11 @@ describe("server.js Sentry sites — contract tests (SCRUM-273)", () => {
         3,
         `expected 3 reason-tagged sites in lib/route-handlers/retranscribe.js (page + pageLookupRejected + pageContentLoss), found ${retranscribeCount}`,
       );
+      assert.equal(precheckCount, 1, `expected 1 reason-tagged site in lib/booking-precheck.js (the hold cap), found ${precheckCount}`);
       assert.equal(
-        serverCount + killSwitchCount + unhappyCount + retranscribeCount,
-        13,
-        `expected 13 reason-tagged Sentry sites total — update this test deliberately when sites are added/removed`,
+        serverCount + killSwitchCount + unhappyCount + retranscribeCount + precheckCount,
+        14,
+        `expected 14 reason-tagged Sentry sites total — update this test deliberately when sites are added/removed`,
       );
     });
 

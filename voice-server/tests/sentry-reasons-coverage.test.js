@@ -33,6 +33,7 @@ const MIGRATED_FILES = [
   "lib/route-handlers/kill-switch.js",
   "services/tool-executor.js",
   "server.js",
+  "lib/booking-precheck.js", // SCRUM-593: the hold-cap page
 ];
 
 const INLINE_RE = /\w+\.setTag\("reason",\s*"([^"]+)"\)/g;

@@ -21,6 +21,7 @@
 const { claudeLatencyParams, claudeResponseText, readAnthropicError } = require("./model-params");
 const { safeNowLine } = require("./now-line");
 const { Sentry } = require("./sentry");
+const { SENTRY_REASONS, setReasonTag } = require("./sentry-reasons");
 
 /**
  * The args the check judges, per tool, in the order Claude sees them.
@@ -128,16 +129,30 @@ let unreadableStreak = 0;
 
 // An unrecognised PRECHECK_MODE is reported once per process (see precheckMode).
 let warnedUnknownMode = false;
+// The raw PRECHECK_MODE when it is not one we know, for the boot report (reportPrecheckConfig).
+let unknownModeRaw = "";
 
 /** "off" and the obvious negatives: the kill switch fails toward off however it was typed. */
-const OFF_MODES = new Set(["off", "disabled", "false", "0", "no"]);
+const OFF_MODES = new Set(["off", "disabled", "disable", "false", "0", "no", "n", "none", "skip", "bypass", "stop"]);
 
 /**
- * Unset, empty and "enforce" enforce; "shadow" shadows; "off", "disabled",
- * "false", "0" and "no" switch the check off (trimmed, any case). Any other
- * value ALSO enforces, but says so once: an operator who typed it may believe
- * the check is off or shadowed, and must find out from the log rather than
- * from a hold.
+ * An operator-set value, echoed into a log line or page: JSON-quoted (no
+ * line breaks), brackets stripped (it cannot forge an [ALERT:…] marker) and
+ * capped.
+ * @param {unknown} value
+ * @param {number} max
+ * @returns {string}
+ */
+function echoConfig(value, max) {
+  return JSON.stringify(String(value)).replace(/[\[\]]/g, "").slice(0, max);
+}
+
+/**
+ * Unset, empty and "enforce" enforce; "shadow" shadows; "off" and the obvious
+ * negatives (OFF_MODES, trimmed, any case) switch the check off. Any other
+ * value ALSO enforces, and says so: once here, and as a page at boot
+ * (reportPrecheckConfig), because an operator who typed it may believe the
+ * check is off or shadowed.
  * @returns {"enforce" | "shadow" | "off"}
  */
 function precheckMode() {
@@ -145,12 +160,40 @@ function precheckMode() {
   const v = raw.toLowerCase();
   if (v === "shadow") return "shadow";
   if (OFF_MODES.has(v)) return "off";
-  if (raw && v !== "enforce" && !warnedUnknownMode) {
-    warnedUnknownMode = true;
-    // Operator config, not caller data, so the value is safe to log.
-    console.warn(`[Precheck] unknown PRECHECK_MODE="${raw}" — enforcing`);
+  if (raw && v !== "enforce") {
+    unknownModeRaw = raw;
+    if (!warnedUnknownMode) {
+      warnedUnknownMode = true;
+      console.warn(`[Precheck] unknown PRECHECK_MODE=${echoConfig(raw, 40)} — enforcing`);
+    }
   }
   return "enforce";
+}
+
+/**
+ * Says at boot what the pre-check will do, as one line, and pages for the two
+ * settings that silently defeat it: an unrecognised PRECHECK_MODE (the check
+ * ENFORCES while the operator likely meant something else) and a missing
+ * ANTHROPIC_API_KEY while the check is on (every write goes through unchecked).
+ */
+function reportPrecheckConfig() {
+  const mode = precheckMode();
+  const hasKey = Boolean(process.env.ANTHROPIC_API_KEY);
+  const key = hasKey ? "set" : mode === "off" ? "unset" : "MISSING";
+  console.log(`[Precheck] mode=${mode} model=${precheckModel()} key=${key}`);
+  if (unknownModeRaw) {
+    Sentry.withScope((scope) => {
+      scope.setTag("service", "booking_precheck");
+      scope.setExtras({ mode_value: echoConfig(unknownModeRaw, 40) });
+      Sentry.captureMessage("PRECHECK_MODE is not recognised: the booking pre-check is ENFORCING", "error");
+    });
+  }
+  if (key === "MISSING") {
+    Sentry.withScope((scope) => {
+      scope.setTag("service", "booking_precheck");
+      Sentry.captureMessage("Booking pre-check is on but ANTHROPIC_API_KEY is not set: writes go through unchecked", "error");
+    });
+  }
 }
 
 /** @returns {string} */
@@ -231,7 +274,12 @@ function pickArgs(args, keys) {
   const out = {};
   if (args && typeof args === "object") {
     for (const key of keys) {
-      if (Object.hasOwn(args, key)) out[key] = args[key];
+      if (!Object.hasOwn(args, key)) continue;
+      const value = args[key];
+      // Blank is absent, as the writers treat it (`?.trim()` / `||`): the model does send empty
+      // optional args, and a blank name must not read as a name being saved.
+      if (value === undefined || value === null || (typeof value === "string" && !value.trim())) continue;
+      out[key] = value;
     }
   }
   return out;
@@ -646,8 +694,11 @@ async function precheckBookingWrite(input) {
       console.warn(`[Precheck] ${toolName} let through unchecked after ${MAX_HOLDS} holds. callSid=${callSid}`);
       Sentry.withScope((scope) => {
         scope.setTag("service", "booking_precheck");
+        setReasonTag(scope, SENTRY_REASONS.PRECHECK_HOLD_CAP);
         scope.setExtras({ callSid, toolName, holds: held });
-        Sentry.captureMessage(`Booking pre-check: ${toolName} let through after ${MAX_HOLDS} holds`, "warning");
+        // Error, not warning: no alert rule pages on warnings, and a check that holds every
+        // booking until the cap lets it through must not go unnoticed.
+        Sentry.captureMessage(`Booking pre-check: ${toolName} let through unchecked after ${MAX_HOLDS} holds`, "error");
       });
       return PROCEED;
     }
@@ -746,6 +797,7 @@ module.exports = {
   applyBookingPrecheck,
   nameVerificationMethod,
   precheckMode,
+  reportPrecheckConfig,
   spokenDateTime,
   PRECHECKED_TOOLS,
   MAX_HOLDS,

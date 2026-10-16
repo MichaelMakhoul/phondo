@@ -24,7 +24,7 @@ const scheduleCache = require("./lib/schedule-cache");
 const { bookingKey, normalizeDatetime } = require("./lib/booking-key");
 const { applyRescheduleToLedger, RESCHEDULE_SUCCESS_SIGNAL } = require("./lib/reschedule-ledger"); // SCRUM-563
 const { classifyRebookAttempt, DUPLICATE_REBOOK_MESSAGE, CORRECTION_ERROR_MESSAGE, CANCEL_NUDGE } = require("./lib/rebook-correction"); // SCRUM-557
-const { applyBookingPrecheck, PRECHECKED_TOOLS, precheckMode } = require("./lib/booking-precheck"); // SCRUM-593
+const { applyBookingPrecheck, PRECHECKED_TOOLS, precheckMode, reportPrecheckConfig } = require("./lib/booking-precheck"); // SCRUM-593
 const { createCallRecord, completeCallRecord, notifyCallCompleted, applyReanalysis } = require("./lib/call-logger");
 const { calendarToolDefinitions, listServiceTypesToolDefinition, transferToolDefinition, callbackToolDefinition, endCallToolDefinition, executeToolCall } = require("./services/tool-executor");
 const { createGeminiSession, GEMINI_MODEL } = require("./services/gemini-live");
@@ -5205,6 +5205,7 @@ initAudioFrontend().then(({ enabled, reason }) => {
 server.listen(Number(PORT), "0.0.0.0", () => {
   console.log(`Voice server listening on port ${PORT}`);
   console.log(`Voice pipeline: ${VOICE_PIPELINE}${VOICE_PIPELINE === "gemini-live" ? ` (Gemini Live: ${GEMINI_MODEL})` : ` (LLM: ${LLM_PROVIDER}/${FULL_MODEL})`}`);
+  reportPrecheckConfig(); // SCRUM-593: the booking pre-check's mode/model/key, and a page if it is silently defeated
   console.log(`TwiML endpoint: ${PUBLIC_URL}/twiml`);
   console.log(`WebSocket endpoint: ${WS_URL}`);
   if (TEST_CALL_SECRET) {
