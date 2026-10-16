@@ -5,6 +5,7 @@ const {
   MAX_TEST_CALL_DURATION_MS,
   MAX_DEMO_CALL_DURATION_MS,
   getMaxSessionDurationMs,
+  demoCallMinutes,
 } = require("../lib/session-limits");
 
 // SCRUM-363: the public demo gets a tighter session cap than authed test calls.
@@ -26,4 +27,29 @@ test("the demo cap is strictly shorter than the standard cap", () => {
 test("null/undefined org falls back to the standard (non-demo) cap", () => {
   assert.equal(getMaxSessionDurationMs(null), MAX_TEST_CALL_DURATION_MS);
   assert.equal(getMaxSessionDurationMs(undefined), MAX_TEST_CALL_DURATION_MS);
+});
+
+test("DEMO_MAX_CALL_MINUTES: unset or blank keeps 3 minutes", () => {
+  assert.equal(demoCallMinutes(undefined), 3);
+  assert.equal(demoCallMinutes("  "), 3);
+});
+
+test("DEMO_MAX_CALL_MINUTES: a whole number from 1 to 15 is used", () => {
+  assert.equal(demoCallMinutes("8"), 8);
+  assert.equal(demoCallMinutes(" 15 "), 15);
+  assert.equal(demoCallMinutes("1"), 1);
+});
+
+test("DEMO_MAX_CALL_MINUTES: a bad value warns and keeps 3 minutes", () => {
+  const warned = [];
+  const orig = console.warn;
+  console.warn = (m) => warned.push(m);
+  try {
+    for (const bad of ["0", "16", "7.5", "ten", "-3", "[60]"]) assert.equal(demoCallMinutes(bad), 3, bad);
+  } finally {
+    console.warn = orig;
+  }
+  assert.equal(warned.length, 6);
+  assert.match(warned[0], /^\[DemoLine\] DEMO_MAX_CALL_MINUTES "0" is not a whole number from 1 to 15 — using 3 min$/);
+  assert.ok(!warned[5].includes("[60]"));
 });
