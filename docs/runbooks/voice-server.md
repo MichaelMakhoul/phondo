@@ -302,7 +302,7 @@ at a quiet time (no recent `callSid=` in `fly logs`). Back on:
 date and time, so "today"/"tomorrow" are no longer flagged as mismatches) ships with
 the code. `PRECHECK_MODE` does not switch it back.
 
-**Log lines.** Each carries `callSid=` and never caller words, names or values.
+**Log lines.** Per-call lines carry `callSid=`; the boot line and the `[NowLine]` warning do not. None carries caller words, names or values.
 
 | Line | Meaning |
 |---|---|

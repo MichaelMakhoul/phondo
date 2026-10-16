@@ -36,8 +36,11 @@ function nowLine(timezone, now = new Date()) {
 }
 
 // Bad org zones already reported: one warning per distinct value per process, not one per check.
+// Org timezones are tenant-editable text, so the memory is keyed by the capped echo it logs and holds at
+// most MAX_WARNED_ZONES values; past that, a new bad zone is neither remembered nor reported.
 /** @type {Set<string>} */
 const warnedZones = new Set();
+const MAX_WARNED_ZONES = 100;
 
 /**
  * nowLine for a business timezone that may be missing or malformed in org
@@ -54,11 +57,10 @@ function safeNowLine(timezone, now = new Date()) {
     try {
       return nowLine(timezone, now);
     } catch {
-      const raw = String(timezone);
-      if (!warnedZones.has(raw)) {
-        warnedZones.add(raw);
-        // Org data, echoed as server.js does: JSON-quoted (one line), no brackets, capped.
-        const shown = JSON.stringify(raw).replace(/[\[\]]/g, "").slice(0, 60);
+      // Org data, echoed as server.js does: JSON-quoted (one line), no brackets, capped.
+      const shown = JSON.stringify(String(timezone)).replace(/[\[\]]/g, "").slice(0, 60);
+      if (warnedZones.size < MAX_WARNED_ZONES && !warnedZones.has(shown)) {
+        warnedZones.add(shown);
         console.warn(`[NowLine] org timezone ${shown} is not a valid IANA zone — using Australia/Sydney`);
       }
     }

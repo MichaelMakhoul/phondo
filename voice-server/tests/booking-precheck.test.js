@@ -1166,6 +1166,20 @@ describe("the request", () => {
     });
   });
 
+  // The header's two clauses tell Claude how far to trust the transcript: without them a misheard or
+  // half-spelled name reads as a mismatch. A loose regex let either clause be deleted with the suite green.
+  it("the transcript header is pinned word for word", async () => {
+    const m = load();
+    const seen = replyText(ALLOW);
+    await m.precheckBookingWrite(input());
+    assert.ok(
+      seen.body.messages[0].content
+        .split("\n")
+        .includes("CONVERSATION SO FAR (machine transcription of a phone call: CALLER lines can contain mishearings, and a spelled name can appear as separate or missing letters):"),
+      "the header, verbatim"
+    );
+  });
+
   it("Haiku runs with thinking disabled; other models at low effort; both ask for the verdict schema", async () => {
     let m = load();
     let seen = replyText(ALLOW);

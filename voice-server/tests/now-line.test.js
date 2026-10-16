@@ -130,6 +130,21 @@ describe("safeNowLine warns about a bad org timezone", () => {
     assert.deepEqual(warnings, []);
   });
 
+  // Org timezones are tenant-editable text: the "already warned" memory is keyed by the capped echo it
+  // logs, and holds at most 100 values. Past that it neither grows nor warns.
+  it("remembers by the logged echo and at most 100 distinct values: tenant text cannot grow it without bound", () => {
+    const { safeNowLine: safe } = fresh();
+    safe("Bad/" + "z".repeat(70) + "-one", AT);
+    safe("Bad/" + "z".repeat(70) + "-two", AT);
+    assert.equal(warnings.length, 1, "two values that differ only past the 60-character echo are one key");
+    for (let i = 0; i < 150; i++) safe(`Bad/Zone_${i}`, AT);
+    assert.equal(warnings.length, 100, "100 distinct values remembered and reported, then no more");
+    safe("Bad/Zone_0", AT);
+    safe("Another/Bad", AT);
+    assert.equal(warnings.length, 100, "past the cap: no warning, no growth");
+    assert.equal(safe("Another/Bad", AT), nowLine("Australia/Sydney", AT), "and still the Sydney line");
+  });
+
   it("echoes the value on one line, bracket-stripped and capped at 60 characters", () => {
     const { safeNowLine: safe } = fresh();
     safe("[ALERT:error]\nBad/Zone" + "x".repeat(80), AT);

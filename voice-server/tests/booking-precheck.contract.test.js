@@ -335,6 +335,32 @@ describe("failure paging", () => {
       assert.match(pages()[0], /\(3 unreadable in a row\)/);
     });
 
+    it("the window is exactly 10 checks: fail, fail, 8 allows, fail is 2 failures in the last 10, no page", async () => {
+      const m = load();
+      unreadable();
+      await m.precheckBookingWrite(input());
+      await m.precheckBookingWrite(input());
+      replyText(ALLOW);
+      for (let i = 0; i < 8; i++) await m.precheckBookingWrite(input());
+      unreadable();
+      await m.precheckBookingWrite(input());
+      assert.deepEqual(pages(), [], "the first failure is now the 11th check back");
+    });
+
+    it("and the 10th check back still counts: fail, 7 allows, fail, fail pages at the last one", async () => {
+      const m = load();
+      unreadable();
+      await m.precheckBookingWrite(input());
+      replyText(ALLOW);
+      for (let i = 0; i < 7; i++) await m.precheckBookingWrite(input());
+      unreadable();
+      await m.precheckBookingWrite(input());
+      assert.deepEqual(pages(), []);
+      await m.precheckBookingWrite(input());
+      assert.equal(pages().length, 1, pages().join("\n"));
+      assert.match(pages()[0], /\(3 of the last 10 checks unreadable\)/);
+    });
+
     it("only the last 10 checks count: older failures roll out", async () => {
       const m = load();
       unreadable();

@@ -5215,7 +5215,12 @@ initAudioFrontend().then(({ enabled, reason }) => {
 server.listen(Number(PORT), "0.0.0.0", () => {
   console.log(`Voice server listening on port ${PORT}`);
   console.log(`Voice pipeline: ${VOICE_PIPELINE}${VOICE_PIPELINE === "gemini-live" ? ` (Gemini Live: ${GEMINI_MODEL})` : ` (LLM: ${LLM_PROVIDER}/${FULL_MODEL})`}`);
-  reportPrecheckConfig(); // SCRUM-593: the booking pre-check's mode/model/key, and a page if it is silently defeated
+  // A throw here would reach the global handler's process.exit(1): report it and carry on.
+  try {
+    reportPrecheckConfig(); // SCRUM-593: the booking pre-check's mode/model/key, and a page if it is silently defeated
+  } catch (err) {
+    console.error(`[Precheck] boot config report failed: ${err?.name || "Error"}`);
+  }
   console.log(`TwiML endpoint: ${PUBLIC_URL}/twiml`);
   console.log(`WebSocket endpoint: ${WS_URL}`);
   if (TEST_CALL_SECRET) {

@@ -37,12 +37,43 @@ describe("SCRUM-593: booking pre-check wiring", () => {
   });
 
   // SF-M2: the pre-check's mode, model and key state are said at boot, right where the voice pipeline is.
-  it("the listen callback reports the pre-check's config right after the voice pipeline line", () => {
+  // Guarded: a throw there would reach the global handler's process.exit(1) and take the server down.
+  it("the listen callback reports the pre-check's config right after the voice pipeline line, guarded", () => {
     const listen = src.indexOf('server.listen(Number(PORT), "0.0.0.0", () => {');
     assert.ok(listen > 0, "found the listen callback");
     const body = src.slice(listen, src.indexOf("\n});", listen));
-    assert.match(body, /console\.log\(`Voice pipeline: [^\n]*\n\s*reportPrecheckConfig\(\); \/\/ SCRUM-593/);
+    assert.match(
+      body,
+      /console\.log\(`Voice pipeline: [^\n]*\n(?:\s*\/\/[^\n]*\n)*\s*try \{\n\s*reportPrecheckConfig\(\); \/\/ SCRUM-593[^\n]*\n\s*\} catch \(err\) \{\n\s*console\.error\(`\[Precheck\] boot config report failed: /
+    );
     assert.equal(src.split("reportPrecheckConfig()").length - 1, 1, "called once, at boot");
+  });
+
+  it("runs the real listen callback: a boot report that throws is logged by type, and the server carries on", () => {
+    const listen = src.indexOf('server.listen(Number(PORT), "0.0.0.0", () => {');
+    const open = src.indexOf("{", src.indexOf("=>", listen));
+    const body = src.slice(open + 1, src.indexOf("\n});", listen));
+    const lines = [];
+    let warmed = 0;
+    const rec = (...a) => lines.push(a.join(" "));
+    const scope = {
+      PORT: 3001,
+      VOICE_PIPELINE: "gemini-live",
+      GEMINI_MODEL: "gemini-test",
+      LLM_PROVIDER: "openai",
+      FULL_MODEL: "gpt-test",
+      PUBLIC_URL: "https://voice.example",
+      WS_URL: "wss://voice.example",
+      TEST_CALL_SECRET: "",
+      process: { env: {} },
+      warmUpGeminiLive: () => { warmed++; },
+      reportPrecheckConfig: () => { throw new TypeError("SECRET detail"); },
+      console: { log: rec, warn: rec, error: rec },
+    };
+    assert.doesNotThrow(() => new Function(...Object.keys(scope), body)(...Object.values(scope)));
+    assert.ok(lines.includes("[Precheck] boot config report failed: TypeError"), lines.join("\n"));
+    assert.ok(lines.some((l) => l.startsWith("TwiML endpoint:")) && warmed === 1, "the rest of the callback still ran");
+    assert.doesNotMatch(lines.join("\n"), /SECRET/, "the type only, never the message");
   });
 
   it("inbound: one check for the main write path and one for the RebookGuard's name-correction branch", () => {
