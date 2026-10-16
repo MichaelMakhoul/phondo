@@ -204,4 +204,4 @@ async function transcribeRecording(apiKey, audio, options = {}) {
   };
 }
 
-module.exports = { openDeepgramStream, transcribeRecording, INDUSTRY_KEYWORDS, SUPPORTED_STT_LANGUAGES };
+module.exports = { openDeepgramStream, transcribeRecording, buildKeytermsParam, INDUSTRY_KEYWORDS, SUPPORTED_STT_LANGUAGES };
