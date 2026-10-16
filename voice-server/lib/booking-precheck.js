@@ -344,7 +344,8 @@ function practitionerName(args, practitioners) {
  * @param {string} toolName - one of PRECHECKED_TOOLS
  * @param {Record<string, unknown> | undefined} args
  * @param {unknown} [practitioners] - the call's staff list, to name the practitioner being saved
- * @returns {{ saved: Record<string, unknown>, identify: Record<string, unknown> }}
+ * @returns {{ saved: Record<string, unknown>, identify: Record<string, unknown>, practitionerUnresolved: boolean }}
+ *   practitionerUnresolved - a practitioner_id the write will save had no name in the staff list
  */
 function decisionArgs(toolName, args, practitioners) {
   const fields = DECISION_FIELDS[toolName];
@@ -354,7 +355,10 @@ function decisionArgs(toolName, args, practitioners) {
   }
   const practitioner = fields.practitioner ? practitionerName(args, practitioners) : "";
   if (practitioner) saved.practitioner = practitioner;
-  return { saved, identify: pickArgs(args, fields.identify) };
+  // A practitioner the write will save (not blank, as in pickArgs) but that has no name to judge by.
+  const id = args && typeof args === "object" ? args.practitioner_id : undefined;
+  const idGiven = id !== undefined && id !== null && !(typeof id === "string" && !id.trim());
+  return { saved, identify: pickArgs(args, fields.identify), practitionerUnresolved: fields.practitioner && idGiven && !practitioner };
 }
 
 /**
@@ -706,7 +710,7 @@ async function precheckBookingWrite(input) {
     // and asking could only produce a false hold. Not a hold and not a failure: no request, no
     // count, no page. It comes before the hold cap, so a capped tool with nothing to check is not
     // reported as let through.
-    const { saved, identify } = decisionArgs(toolName, input.args, input.practitioners);
+    const { saved, identify, practitionerUnresolved } = decisionArgs(toolName, input.args, input.practitioners);
     if (Object.keys(saved).length === 0) {
       console.log(`[Precheck] skip ${toolName} (no name or date to save). callSid=${callSid}`);
       return PROCEED;
@@ -724,6 +728,9 @@ async function precheckBookingWrite(input) {
       });
       return PROCEED;
     }
+    // No id or name in the line: only that this write's practitioner goes unjudged (no staff list, as
+    // for a Cliniko org, or an id that is not on it).
+    if (practitionerUnresolved) console.log(`[Precheck] practitioner not resolved — rule 4 not applied. callSid=${callSid}`);
     // Started here, so the prompt is built from the call as it stands at the tool call.
     const pending = decide(input, saved, identify, mode === "enforce");
     if (mode === "shadow") {
@@ -805,9 +812,18 @@ async function applyBookingPrecheck(session, toolCall, turn) {
     // Runs in front of a booking write inside the tool handler: never throw into it. One page
     // (no error message: it could carry caller words), and the write goes through unchecked.
     const e = /** @type {any} */ (err);
+    // Where it threw: up to 3 stack frames. The stack opens with "Name: message", which can span
+    // several lines (and a later one can even look like a frame), so those lines are skipped by count.
+    const frames = String(e?.stack)
+      .split("\n")
+      .slice(String(e?.message).split("\n").length)
+      .filter((line) => /^\s+at /.test(line))
+      .slice(0, 3)
+      .map((line) => line.trim())
+      .join(" <- ");
     Sentry.withScope((scope) => {
       scope.setTag("service", "booking_precheck");
-      scope.setExtras({ callSid: session?.callSid, toolName: toolCall?.name, errorType: e && e.name ? e.name : "Error" });
+      scope.setExtras({ callSid: session?.callSid, toolName: toolCall?.name, errorType: e && e.name ? e.name : "Error", stack: frames || undefined });
       Sentry.captureMessage("Booking pre-check glue threw — write went through unchecked", "error");
     });
     return null;

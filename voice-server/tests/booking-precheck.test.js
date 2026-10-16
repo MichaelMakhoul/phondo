@@ -1078,6 +1078,31 @@ describe("the request", () => {
       assert.doesNotMatch(savedLine(seen.body.messages[0].content), /practitioner/);
     });
 
+    // SF-L4: an id that resolves to no name means rule 4 cannot be applied to this write; say so, with
+    // neither the id nor any name.
+    it("an id that resolves to no name is logged, once, without the id: rule 4 is not applied", async () => {
+      const m = load();
+      replyText(ALLOW);
+      await m.precheckBookingWrite(input({ args: { ...ARGS, practitioner_id: "prac-404" }, practitioners: STAFF }));
+      assert.deepEqual(logs.filter((l) => /practitioner not resolved/.test(l)), ["[Precheck] practitioner not resolved — rule 4 not applied. callSid=CAtest"]);
+      assert.doesNotMatch(logs.join("\n"), /prac-404|Sarah|Tom Ng/);
+      for (const [toolName, args, practitioners] of [
+        ["book_appointment", { ...ARGS, practitioner_id: "prac-7" }, STAFF],
+        ["book_appointment", ARGS, STAFF],
+        ["book_appointment", { ...ARGS, practitioner_id: "  " }, STAFF],
+        ["update_appointment", { first_name: "Michael", last_name: "Makhoul", practitioner_id: "prac-404" }, STAFF],
+      ]) {
+        logs.length = 0;
+        replyText(ALLOW);
+        await m.precheckBookingWrite(input({ toolName, args, practitioners }));
+        assert.ok(!logs.some((l) => /practitioner not resolved/.test(l)), `${toolName} ${JSON.stringify(args)}`);
+      }
+      logs.length = 0;
+      replyText(ALLOW);
+      await m.precheckBookingWrite(input({ args: { ...ARGS, practitioner_id: "prac-7" }, practitioners: undefined }));
+      assert.equal(logs.filter((l) => /practitioner not resolved/.test(l)).length, 1, "no staff list (a Cliniko org) cannot resolve either");
+    });
+
     it("the practitioner's name is never logged", async () => {
       const m = load();
       replyText(FIX);
@@ -1207,6 +1232,37 @@ describe("the request", () => {
       assert.doesNotMatch(conversation, /call omitted/);
     });
   });
+});
+
+// R36: the rules block IS the check's decision logic: Claude's verdict is a function of these words. Rule 4 is pinned
+// word for word above, but rules 1-3, the ignore line and the read-back wordings were not, so the sentences added for
+// the two live incidents ("If the caller spelled it, the saved spelling must match their letters." for f57bbfa2; "A
+// name the caller never clearly gave or never confirmed is NOT confirmed." for 43d09f86) and "Work out today,
+// tomorrow and weekday names from NOW" could be deleted with the suite green and the check still logging `allow`.
+// An edit here must be deliberate: update this test AND re-run the live replay (spec section 6).
+describe("the rules block is pinned word for word", () => {
+  const rules = (readBack) =>
+    [
+      "Rules — check ONLY these:",
+      `1. NAME (only if DETAILS THAT WILL BE SAVED contain a first or last name): it must be the name the caller gave. After the caller last gave or corrected it, the AI must have ${readBack} and the caller must have clearly agreed (yes, that's right, correct — in any language). If the caller spelled it, the saved spelling must match their letters. A name the caller never clearly gave or never confirmed is NOT confirmed.`,
+      '2. DATE/TIME (only a date or time in DETAILS THAT WILL BE SAVED): it must be the slot the caller agreed to. Work out "today", "tomorrow" and weekday names from NOW.',
+      "3. AGREEMENT: the caller must have asked for or agreed to this booking or change — not only asked what is free.",
+      '4. PRACTITIONER (only if DETAILS THAT WILL BE SAVED contain a practitioner AND the caller asked for a specific person): the saved practitioner must be the person the caller asked for. Otherwise answer fix with "practitioner_mismatch".',
+      "Ignore wording, email, notes, phone number and service.",
+    ].join("\n");
+  for (const [nameMethod, readBack] of [
+    ["repeat-confirm", "repeated it back"],
+    ["spell-out", "spelled it back letter by letter"],
+    ["read-back-characters", "read it back character by character"],
+  ]) {
+    it(`${nameMethod}: rules 1-4 and the ignore line, verbatim`, async () => {
+      const m = load();
+      const seen = replyText(ALLOW);
+      await m.precheckBookingWrite(input({ nameMethod }));
+      const prompt = seen.body.messages[0].content;
+      assert.equal(prompt.slice(prompt.indexOf("Rules — check ONLY these:"), prompt.indexOf("\n\nAnswer with")), rules(readBack));
+    });
+  }
 });
 
 describe("logs never carry caller words or model text", () => {

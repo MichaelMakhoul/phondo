@@ -2607,9 +2607,14 @@ wss.on("connection", (twilioWs) => {
                         scope.setExtras({ callSid: session.callSid, endCallReason: toolCall.args?.reason || "" });
                         Sentry.captureMessage("end_call blocked — unfinished booking (language-agnostic)", "warning");
                       });
+                      // SCRUM-593: after a held or failed reschedule the caller's existing appointment
+                      // still stands: "NO appointment … call book_appointment now" would be false, and
+                      // would push toward a duplicate or a cancel-and-rebook.
                       return {
                         message:
-                          "CANNOT END CALL YET: a booking was started but book_appointment never returned success, so the caller has NO appointment. Do NOT say it is booked or 'all set'. Either (1) call book_appointment now with the collected details, OR (2) if you cannot complete it, tell the caller — in their language — that you could not finish the booking and call schedule_callback to take a message. Only call end_call AFTER one of those succeeds.",
+                          session.lastFunnelStep() === "reschedule_appointment"
+                            ? "CANNOT END CALL YET: the appointment change was NOT completed — the caller's existing appointment is unchanged. Either call reschedule_appointment again with the confirmed details, or tell the caller — in their language — that you couldn't change it and call schedule_callback to take a message. Only call end_call AFTER one of those succeeds."
+                            : "CANNOT END CALL YET: a booking was started but book_appointment never returned success, so the caller has NO appointment. Do NOT say it is booked or 'all set'. Either (1) call book_appointment now with the collected details, OR (2) if you cannot complete it, tell the caller — in their language — that you could not finish the booking and call schedule_callback to take a message. Only call end_call AFTER one of those succeeds.",
                       };
                     }
                     // Already nudged once — allow end_call so a caller who genuinely
@@ -2686,6 +2691,7 @@ wss.on("connection", (twilioWs) => {
                         }
                         if (correctionHold) {
                           s._lastToolResult = null; // a hold is no tool result (see the main check below)
+                          if (!session) console.warn(`[Precheck] held ${toolCall.name} dropped — call ended during the check. callSid=${s.callSid}`);
                           return session ? correctionHold : { message: "" };
                         }
                         if (!session) console.warn(`[Precheck] session ended during the check — writing the allowed ${toolCall.name} anyway. callSid=${s.callSid}`);
@@ -2763,6 +2769,7 @@ wss.on("connection", (twilioWs) => {
                     // _lastToolResult for 10 s: left set, the read-back the hold asks for
                     // would be judged against an OLDER result and "corrected".
                     s._lastToolResult = null;
+                    if (!session) console.warn(`[Precheck] held ${toolCall.name} dropped — call ended during the check. callSid=${s.callSid}`);
                     return session ? precheckHold : { message: "" };
                   }
                   if (!session) console.warn(`[Precheck] session ended during the check — writing the allowed ${toolCall.name} anyway. callSid=${s.callSid}`);
@@ -4721,7 +4728,10 @@ testWss.on("connection", (ws, req) => {
                   audit: false,
                 });
               }
-              if (precheckHold) return session ? precheckHold : { message: "" };
+              if (precheckHold) {
+                if (!session) console.warn(`[Precheck] held ${toolCall.name} dropped — call ended during the check. callSid=${s.callSid}`);
+                return session ? precheckHold : { message: "" };
+              }
               if (!session) console.warn(`[Precheck] session ended during the check — writing the allowed ${toolCall.name} anyway. callSid=${s.callSid}`);
               s.rememberDetails(toolCall.name, toolCall.args); // SCRUM-506
               const result = await executeToolCall(toolCall.name, toolCall.args, {

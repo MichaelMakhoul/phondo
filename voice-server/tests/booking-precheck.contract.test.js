@@ -665,8 +665,29 @@ describe("server.js glue mapping", () => {
     const pages = logs.filter((l) => /\[ALERT:error\]/.test(l));
     assert.equal(pages.length, 1, "exactly one page");
     assert.match(pages[0], /\[ALERT:error\] \[booking_precheck\] Booking pre-check glue threw — write went through unchecked/);
-    assert.match(pages[0], /callSid=CAtest toolName=book_appointment errorType=RangeError/);
+    assert.match(pages[0], /callSid=CAtest toolName=book_appointment errorType=RangeError stack=at /, "SF-L4: and where it threw");
     assert.doesNotMatch(logs.join("\n"), /SECRET/, "the error message is never logged");
     assert.equal(s.toolCallAudit.length, 0, "nothing was audited");
+  });
+
+  // SF-L4: the page says WHERE the glue threw, by stack frames only. A frame line can never carry the
+  // error's message, but a message with a line break would put its second line where a naive
+  // slice(1, 4) of the stack expects frames, so only lines that ARE frames are kept.
+  it("the glue page carries up to 3 stack frames and never the message, even a multi-line one", async () => {
+    const m = load();
+    replyText(FIX);
+    const s = session();
+    Object.defineProperty(s, "messages", {
+      get() {
+        throw new TypeError("first line\nSECRET caller words on line two\n    at not a frame either");
+      },
+    });
+    assert.equal(await m.applyBookingPrecheck(s, { name: "book_appointment", args: ARGS }, { audit: true }), null);
+    const page = logs.find((l) => /glue threw/.test(l)) || "";
+    const stack = (/ stack=(.*)$/.exec(page) || [])[1] || "";
+    const frames = stack.replace(/\.\.\.\[truncated\]$/, "").split(" <- ");
+    assert.ok(frames.length >= 1 && frames.length <= 3, stack);
+    assert.ok(frames.every((f) => /^at \S/.test(f)), `frames only: ${stack}`);
+    assert.doesNotMatch(page, /SECRET|first line|not a frame/);
   });
 });

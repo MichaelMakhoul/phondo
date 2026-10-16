@@ -138,6 +138,45 @@ describe("SCRUM-593: CallSession", () => {
     assert.ok(s.precheckHolds instanceof Map);
     assert.equal(s.precheckHolds.size, 0);
   });
+
+  // SF-L2: the end_call guard words its nudge by the booking write the open funnel is waiting on.
+  describe("lastFunnelStep: the write an unfinished booking funnel is waiting on", () => {
+    const { CallSession } = require("../call-session");
+    const step = (audit) => {
+      const s = new CallSession("CAtest");
+      s.toolCallAudit = audit;
+      return s.lastFunnelStep();
+    };
+    const book = (at, successful = false) => ({ name: "book_appointment", successful, at });
+    const move = (at, successful = false) => ({ name: "reschedule_appointment", successful, at });
+    const look = (at) => ({ name: "check_availability", successful: true, at });
+
+    it("null with no booking write at all, or only availability checks", () => {
+      assert.equal(step([]), null);
+      assert.equal(step([look(1), look(2)]), null);
+    });
+
+    it("the most recent unresolved write, by time", () => {
+      assert.equal(step([look(1), book(2)]), "book_appointment");
+      assert.equal(step([book(1), move(2)]), "reschedule_appointment");
+      assert.equal(step([move(1), book(2)]), "book_appointment");
+      assert.equal(step([move(2), book(1)]), "reschedule_appointment", "by `at`, not by array order");
+    });
+
+    it("an availability check after a held reschedule does not hide it", () => {
+      assert.equal(step([move(1), look(2)]), "reschedule_appointment");
+    });
+
+    it("a held reschedule after a confirmed booking: the booking stands, the change is what is open", () => {
+      assert.equal(step([book(1, true), move(2)]), "reschedule_appointment");
+    });
+
+    it("writes resolved by a later success (or a callback) are not open", () => {
+      assert.equal(step([move(1), move(2, true)]), null);
+      assert.equal(step([book(1), book(2, true)]), null);
+      assert.equal(step([move(1), { name: "schedule_callback", successful: true, at: 2 }]), null);
+    });
+  });
 });
 
 // ─── Run for real ────────────────────────────────────────────────────────────
@@ -319,6 +358,10 @@ const WHEN = "2026-10-20T15:00:00";
 const BOOK = { name: "book_appointment", args: { first_name: "John", last_name: "Makhoul", datetime: WHEN, phone: "+61400000001" } };
 const END = { name: "end_call", args: { reason: "caller_finished" } }; // a reason that does not mention a booking, so only the tool funnel can block it
 const BOOKED = { message: "Booked. Your confirmation code is 123456. You're all set.", success: true };
+const BOOK_NUDGE =
+  "CANNOT END CALL YET: a booking was started but book_appointment never returned success, so the caller has NO appointment. Do NOT say it is booked or 'all set'. Either (1) call book_appointment now with the collected details, OR (2) if you cannot complete it, tell the caller — in their language — that you could not finish the booking and call schedule_callback to take a message. Only call end_call AFTER one of those succeeds.";
+const RESCHEDULE_NUDGE =
+  "CANNOT END CALL YET: the appointment change was NOT completed — the caller's existing appointment is unchanged. Either call reschedule_appointment again with the confirmed details, or tell the caller — in their language — that you couldn't change it and call schedule_callback to take a message. Only call end_call AFTER one of those succeeds.";
 
 /** A session whose call already booked "John Makhlul" (the misheard surname) a minute ago. */
 function withConfirmedBooking(s) {
@@ -343,6 +386,7 @@ describe("SCRUM-593: the real inbound handler, run against stubs", () => {
     assert.deepEqual(s.toolCallAudit.map((t) => [t.name, t.successful, t.precheckHold]), [["book_appointment", false, true]]);
     assert.equal(s.precheckHolds.get("book_appointment"), 1);
     assert.equal(s._toolCallInFlight, false);
+    assert.ok(!h.lines.some((l) => l.includes("dropped")), "a hold handed to a live call is not a dropped one");
   });
 
   // CallSession#rememberDetails ignores book_appointment (its attendee may be a third party) but keeps the
@@ -408,8 +452,31 @@ describe("SCRUM-593: the real inbound handler, run against stubs", () => {
     const h = inboundHandlers(s);
     await h.cbs.onToolCall({ id: "b1", ...BOOK });
     const end = await h.cbs.onToolCall({ id: "e1", ...END });
-    assert.match(end.message, /^CANNOT END CALL YET/, "the hold's audit entry keeps the booking funnel open");
+    assert.equal(end.message, BOOK_NUDGE, "the hold's audit entry keeps the booking funnel open");
     assert.deepEqual(h.written(), [], "end_call was not executed");
+  });
+
+  // SF-L2: after a held or failed RESCHEDULE the caller still has their existing appointment. "The caller
+  // has NO appointment … call book_appointment now" was false, and pushed toward a duplicate or a cancel+book.
+  it("end_call after a held reschedule says the existing appointment is unchanged, never 'call book_appointment now'", async () => {
+    hold("date_mismatch");
+    const s = makeSession();
+    const h = inboundHandlers(s);
+    await h.cbs.onToolCall({ id: "r1", name: "reschedule_appointment", args: { new_datetime: "2026-10-21T10:00:00", current_datetime: WHEN } });
+    const end = await h.cbs.onToolCall({ id: "e1", ...END });
+    assert.equal(end.message, RESCHEDULE_NUDGE);
+    assert.doesNotMatch(end.message, /book_appointment|NO appointment/);
+    assert.deepEqual(h.written(), []);
+    assert.ok(h.lines.some((l) => l.includes("[HallucinationGuard] Blocking end_call")), "the guard's logging is unchanged");
+  });
+
+  it("end_call after a FAILED reschedule (the write said no) gets the reschedule nudge too", async () => {
+    allow();
+    const s = makeSession();
+    const h = inboundHandlers(s, { executeToolCall: async (name) => { h.calls.push(["executeToolCall", name]); return name === "reschedule_appointment" ? { message: "That time is no longer available.", success: false } : { message: "ok" }; } });
+    await h.cbs.onToolCall({ id: "r1", name: "reschedule_appointment", args: { new_datetime: "2026-10-21T10:00:00", current_datetime: WHEN } });
+    const end = await h.cbs.onToolCall({ id: "e1", ...END });
+    assert.equal(end.message, RESCHEDULE_NUDGE);
   });
 
   it("a successful write clears that tool's hold count; a failed or unconfirmed write keeps it", async () => {
@@ -561,6 +628,7 @@ describe("SCRUM-593: the real inbound handler, run against stubs", () => {
       assert.deepEqual(await pending, { message: "" });
       assert.deepEqual(h.written(), []);
       assert.ok(!h.lines.some((l) => l.includes("writing the allowed")));
+      assert.ok(h.lines.includes("[Precheck] held book_appointment dropped — call ended during the check. callSid=CAhandler"), "SF-L3: the dropped hold leaves a trace");
     });
 
     // R21: the caller's "yes" can be transcribed after the tool call it confirmed.
@@ -653,6 +721,7 @@ describe("SCRUM-593: the real inbound handler, run against stubs", () => {
     assert.deepEqual(await pending, { message: "" });
     assert.deepEqual(h.written(), [], "no write after teardown");
     assert.ok(!h.lines.some((l) => l.includes("writing the allowed")));
+    assert.ok(h.lines.includes("[Precheck] held book_appointment dropped — call ended during the check. callSid=CAhandler"), "SF-L3: the dropped hold leaves a trace");
   });
 
   it("a session that is still live logs no teardown line", async () => {
@@ -839,6 +908,7 @@ describe("SCRUM-593: the real /ws/test handler, run against stubs", () => {
     claude.release();
     assert.deepEqual(await pending, { message: "" });
     assert.deepEqual(h.written(), []);
+    assert.ok(h.lines.includes("[Precheck] held book_appointment dropped — call ended during the check. callSid=CAhandler"), "SF-L3: the dropped hold leaves a trace");
   });
 
   // R21: the getter reads this handler's own buffers.
