@@ -93,7 +93,7 @@ describe("SCRUM-594: demo-line switch — source pins", () => {
     const top = startHandler.indexOf(marker);
     assert.ok(top > 0);
     const block = startHandler.slice(top + marker.length);
-    const flag = block.indexOf('session.fastPath = effectivePipeline === "classic-fast";');
+    const flag = block.indexOf('session.fastPath = !session.ownerMode && effectivePipeline === "classic-fast";');
     assert.ok(flag >= 0, "the classic block sets session.fastPath");
     assert.ok(flag < block.indexOf("openDeepgramStream("), "Task 5 picks the STT from session.fastPath — it must be set first");
     assert.doesNotMatch(block.slice(0, flag), /;\s*$/m, "nothing runs before the flag");
@@ -177,8 +177,8 @@ describe("SCRUM-594: pipeline selection, run for real", () => {
 
 // ─── The classic block's first statement, run for real ──────────────────────
 
-function classicTop({ effectivePipeline, sessionPipeline = effectivePipeline }) {
-  const session = makeSession({ calledNumber: DEMO });
+function classicTop({ effectivePipeline, sessionPipeline = effectivePipeline, owner = false }) {
+  const session = makeSession({ owner, calledNumber: DEMO });
   session.effectivePipeline = sessionPipeline;
   let fastPathAtSttOpen = "not opened";
   runSlice({
@@ -212,6 +212,13 @@ describe("SCRUM-594: the classic block flags the fast variant, run for real", ()
       assert.equal(r.session.fastPath, false, p);
       assert.equal(r.fastPathAtSttOpen, false, p);
     }
+  });
+
+  it("an owner call is never the fast variant, even when its pipeline resolves to classic-fast (a raw VOICE_PIPELINE=classic-fast)", () => {
+    const r = classicTop({ effectivePipeline: "classic-fast", owner: true });
+    assert.equal(r.session.fastPath, false);
+    assert.equal(r.fastPathAtSttOpen, false);
+    assert.equal(r.session.effectivePipeline, "classic", "recorded as the classic call it is");
   });
 
   it("a Gemini selection that fell back to classic (no GEMINI_API_KEY) is recorded as the classic call it is", () => {

@@ -3276,7 +3276,7 @@ wss.on("connection", (twilioWs) => {
           // (DEMO_LINE_PIPELINE=classic-fast) before any STT opens. A Gemini
           // selection that fell back for a missing key lands here too, and is
           // recorded as the classic call it is.
-          session.fastPath = effectivePipeline === "classic-fast";
+          session.fastPath = !session.ownerMode && effectivePipeline === "classic-fast";
           if (!session.fastPath) session.effectivePipeline = "classic";
           session.deepgramWs = openDeepgramStream(DEEPGRAM_API_KEY, {
             language: session.language,
@@ -3686,7 +3686,10 @@ function getToolFiller(lang, toolNames) {
 }
 
 async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush) {
-  if (!session) return;
+  // SCRUM-594: no turn on a closing or closed stream. After an end_call
+  // hang-up (ws sets CLOSING inside close()), a late buffered final must not
+  // start an LLM round nobody will hear.
+  if (!session || twilioWs.readyState !== WebSocket.OPEN) return;
   session.isProcessing = true;
 
   // Barge-in: if assistant is speaking, clear Twilio's audio buffer
@@ -3714,10 +3717,15 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
     // SCRUM-594: an allowed end_call (or an owner tool result carrying
     // __endCall) ends the turn and then the call; the model is not asked again.
     let endCall = false;
-    // Playback length of everything sent to TTS this turn (sendTTS returns it):
-    // the hang-up waits this long before closing the stream.
-    let turnSpokenMs = 0;
-    const speak = async (text) => { const ms = await sendTTS(session, twilioWs, text); turnSpokenMs += ms; };
+    // When the audio sent to TTS this turn will have finished playing. Twilio
+    // plays what we queue in order and in real time (sendTTS returns each
+    // send's length), so audio that has already played is not waited for
+    // again. The hang-up waits until then before closing the stream.
+    let playbackEndsAt = 0;
+    const speak = async (text) => {
+      const ms = await sendTTS(session, twilioWs, text);
+      playbackEndsAt = Math.max(Date.now(), playbackEndsAt) + ms;
+    };
     /** @type {Promise<void>[]} each tool round's TTS chain — the hang-up waits until all of it is sent */
     const turnTtsChains = [];
 
@@ -3805,10 +3813,12 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
         session.messages.push(result.message);
 
         // Play ONE tool-specific filler — only if no filler was sent yet this turn.
-        // SCRUM-594: never when the model only calls end_call: that response is
-        // its goodbye, and "One moment." would be the last thing the caller hears.
+        // SCRUM-594: never in a batch that calls end_call: that response carries
+        // the model's goodbye, and a filler ("One moment.", "Let me book that
+        // for you.") would follow it. If the guard blocks the end_call, the next
+        // round's waiting filler still covers the gap (fillerSentThisTurn stays false).
         const toolNames = toolCalls.map(tc => tc.function.name);
-        if (!fillerSentThisTurn && !toolNames.every((n) => n === "end_call")) {
+        if (!fillerSentThisTurn && !toolNames.includes("end_call")) {
           fillerSentThisTurn = true;
           if (!holdStopped) {
             hold.stop();
@@ -3821,6 +3831,12 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
           });
         }
         turnTtsChains.push(ttsChain);
+
+        // SCRUM-594: the nudge for an end_call blocked in this batch. A second
+        // end_call in the same batch gets it too: asking the guard again would
+        // count a nudge the model has not read yet, and let the call end.
+        /** @type {string|null} */
+        let blockedEndCallMessage = null;
 
         // Execute each tool call and add results
         for (const toolCall of toolCalls) {
@@ -3848,8 +3864,11 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
           // (lib/end-call-guard.js). A blocked end_call gets the nudge as its
           // result and the model is asked again; an allowed one runs below.
           if (fnName === "end_call") {
-            const verdict = checkEndCallGuard(session, fnArgs?.reason);
+            const verdict = blockedEndCallMessage !== null
+              ? { allow: false, message: blockedEndCallMessage }
+              : checkEndCallGuard(session, fnArgs?.reason);
             if (!verdict.allow) {
+              blockedEndCallMessage = verdict.message;
               session.messages.push({ role: "tool", tool_call_id: toolCall.id, content: verdict.message });
               continue;
             }
@@ -4153,7 +4172,7 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
     // SCRUM-594: recorded above BEFORE the close — cleanup reads the transcript
     // as soon as the socket closes.
     if (endCall) {
-      await hangUpAfterEndCall(session, twilioWs, turnSpokenMs);
+      await hangUpAfterEndCall(session, twilioWs, playbackEndsAt);
       return;
     }
 
@@ -4191,17 +4210,17 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
  * cut the goodbye off.
  *
  * The playback wait is `session.awaitPlaybackEnd()` when the session sets it,
- * otherwise `spokenMs`. The fast path sets the hook because its streaming
- * player needs its own flush/mark sequence to know its audio is out. Either
- * way the wait is capped at END_CALL_PLAYBACK_CAP_MS, then END_CALL_TAIL_MS
- * more before the close. Never throws.
+ * otherwise until `playbackEndsAt`. The fast path sets the hook because its
+ * streaming player needs its own flush/mark sequence to know its audio is out.
+ * Either way the wait is capped at END_CALL_PLAYBACK_CAP_MS, then
+ * END_CALL_TAIL_MS more before the close. Never throws.
  *
  * @param {CallSession} session
  * @param {WebSocket} twilioWs - the Twilio media-stream socket
- * @param {number} spokenMs - summed playback length (ms) of everything sendTTS sent this turn
+ * @param {number} playbackEndsAt - when (Date.now() ms) the audio sent to TTS this turn finishes playing
  * @returns {Promise<void>}
  */
-async function hangUpAfterEndCall(session, twilioWs, spokenMs) {
+async function hangUpAfterEndCall(session, twilioWs, playbackEndsAt) {
   // Stamped before the wait: a caller who hangs up over the goodbye still
   // ended a call the AI was ending (cleanup reads this when the socket closes).
   session.endedReason = "end_call_tool";
@@ -4222,7 +4241,7 @@ async function hangUpAfterEndCall(session, twilioWs, spokenMs) {
       clearTimeout(capTimer);
     }
   }
-  const remainingMs = played ? 0 : Math.min(spokenMs, END_CALL_PLAYBACK_CAP_MS) - (Date.now() - startedAt);
+  const remainingMs = played ? 0 : Math.min(playbackEndsAt, startedAt + END_CALL_PLAYBACK_CAP_MS) - Date.now();
   if (remainingMs > 0) await new Promise((resolve) => setTimeout(resolve, remainingMs));
   await new Promise((resolve) => setTimeout(resolve, END_CALL_TAIL_MS));
   // Whatever the caller said over the goodbye is not answered: handleUserSpeech's

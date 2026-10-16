@@ -94,7 +94,8 @@ function makeClassic(o = {}) {
     close: (...a) => {
       calls.push(["twilio.close", ...a]);
       timeline.push({ event: "close", at: Date.now(), lastTranscript: o.session?.fullTranscriptMessages.at(-1)?.content });
-      twilioWs.readyState = 3;
+      if (o.closeThrows) throw new Error("socket write after end");
+      twilioWs.readyState = 2; // CLOSING, set synchronously inside close() — as `ws` does
     },
   };
   const scope = {
@@ -122,14 +123,16 @@ function makeClassic(o = {}) {
       calls.push(["sendTTS", text]);
       await sleep(o.ttsDelay ? o.ttsDelay(text) : 2);
       if (o.ttsFails) throw new Error("tts down");
-      timeline.push({ event: "tts", at: Date.now(), text });
+      const ms = (o.ttsMsFor && o.ttsMsFor(text)) ?? o.ttsMs ?? 40;
+      timeline.push({ event: "tts", at: Date.now(), text, ms });
       if (o.onTts) o.onTts(text, twilioWs);
-      return o.ttsMs ?? 40;
+      return ms;
     },
     executeToolCall: async (name, args, ctx) => {
       calls.push(["executeToolCall", name, args]);
+      if (o.onTool) await o.onTool(name);
       if (name === "end_call") return toolExecutor.executeToolCall(name, args, ctx); // the real sentinel
-      return { success: true, message: `${name} ok` };
+      return (o.toolResults && o.toolResults[name]) || { success: true, message: `${name} ok` };
     },
     runOwnerToolCall,
     scheduleCache: { invalidate: () => {}, applyDelta: () => {} },
@@ -154,6 +157,7 @@ function makeClassic(o = {}) {
     END_CALL_PLAYBACK_CAP_MS: o.capMs ?? 400,
     END_CALL_TAIL_MS: o.tailMs ?? 30,
     WebSocket: { OPEN: 1 },
+    Date: o.clock ? { now: o.clock } : Date,
     console: recordingConsole(lines),
   };
   const { handleUserSpeech } = runSlice({
@@ -174,6 +178,8 @@ function makeClassic(o = {}) {
   };
 }
 const END = (reason = "caller finished") => ({ name: "end_call", args: { reason } });
+/** When the audio in the timeline has finished playing: Twilio plays each send after the one before it, in real time. */
+const playbackEnd = (timeline) => timeline.filter((e) => e.event === "tts").reduce((end, e) => Math.max(e.at, end) + e.ms, 0);
 const toolMessages = (s) => s.messages.filter((m) => m.role === "tool").map((m) => m.content);
 
 describe("SCRUM-594: classic end_call hangs up", () => {
@@ -264,8 +270,47 @@ describe("SCRUM-594: classic end_call hangs up", () => {
     await c.handleUserSpeech(s, "please have someone call me, bye");
     assert.deepEqual(c.calls.filter((x) => x[0] === "executeToolCall").map((x) => x[1]), ["schedule_callback", "end_call"]);
     assert.equal(toolMessages(s).length, 2, "every tool call gets its result");
+    assert.deepEqual(c.spoken(), ["I've passed that on. Bye!"], "no tool filler after the goodbye");
     assert.deepEqual(c.closes(), [[1000, "end_call"]]);
     assert.equal(c.llmCalls(), 1);
+  });
+
+  it("a booking made in the goodbye batch: the caller never hears 'Let me book that for you.' after 'Goodbye!'", async () => {
+    const s = makeSession();
+    const c = makeClassic({
+      ttsMs: 5,
+      tailMs: 5,
+      toolResults: { book_appointment: { success: true, message: "Booked! Your confirmation code is 482913." } },
+      steps: [{ sentences: ["You're booked for Tuesday at ten. Goodbye!"], tools: [{ name: "book_appointment", args: { datetime: "2026-10-20T10:00:00" } }, END("booking complete")] }],
+    });
+    await c.handleUserSpeech(s, "yes please, book it, thanks bye");
+    assert.deepEqual(c.spoken(), ["You're booked for Tuesday at ten. Goodbye!"]);
+    assert.deepEqual(c.closes(), [[1000, "end_call"]]);
+  });
+
+  it("a blocked end_call batch plays no filler either — the next round's waiting filler covers the gap", async (t) => {
+    captureConsole(t);
+    const s = makeSession();
+    s.toolCallAudit.push({ name: "check_availability", successful: true, at: 1 });
+    const c = makeClassic({ ttsMs: 5, tailMs: 5, steps: [{ sentences: ["All done. Bye!"], tools: [{ name: "get_current_datetime" }, END("booking complete")] }, { content: "Actually — I couldn't finish your booking. Shall I take a message?" }] });
+    await c.handleUserSpeech(s, "thanks, bye");
+    assert.deepEqual(toolMessages(s), ["get_current_datetime ok", END_CALL_BLOCKED_MESSAGE], "blocked: a booking was started and never finished");
+    assert.deepEqual(c.spoken(), ["All done. Bye!", "Actually — I couldn't finish your booking. Shall I take a message?"]);
+    assert.deepEqual(c.closes(), []);
+  });
+
+  it("two end_calls in one batch: both get the nudge — the guard is asked once, so its one nudge is never spent unread", async (t) => {
+    const alerts = captureConsole(t);
+    const s = makeSession();
+    s.toolCallAudit.push({ name: "check_availability", successful: true, at: 1 }); // a booking was started …
+    const c = makeClassic({ steps: [{ tools: [END("done"), END("caller left")] }, { content: "Before you go — I couldn't finish that booking. Can I take a message?" }] });
+    await c.handleUserSpeech(s, "bye");
+    assert.deepEqual(toolMessages(s), [END_CALL_BLOCKED_MESSAGE, END_CALL_BLOCKED_MESSAGE]);
+    assert.equal(s.toolCallAudit.filter((e) => e.name === "end_call_blocked").length, 1);
+    assert.deepEqual(c.closes(), []);
+    assert.equal(c.llmCalls(), 2, "the model reads the nudge");
+    assert.equal(alerts.filter((l) => l.includes("[ALERT:")).length, 1, alerts.join("\n"));
+    assert.ok(!alerts.some((l) => l.includes("end_call allowed on unfinished booking after nudge")));
   });
 
   it("speech from an EARLIER round of the turn is waited for too, and a silent end_call response still gets its goodbye", async () => {
@@ -281,8 +326,26 @@ describe("SCRUM-594: classic end_call hangs up", () => {
     const audio = c.timeline.filter((e) => e.event === "tts").map((e) => e.text);
     assert.deepEqual(audio, ["Let me look.", "One moment, let me check that.", "Thanks for calling — goodbye."],
       "the goodbye goes out after the earlier round's audio, never before it — and round one's preamble is not a goodbye");
-    assert.ok(c.closedAt() - c.lastAudioAt() >= 3 * 40 + 20 - SLOP, "every send of the turn is counted");
+    assert.ok(c.closedAt() >= playbackEnd(c.timeline) + 20 - SLOP, "the line stays open until every send of the turn has played, plus the tail");
     assert.equal(c.llmCalls(), 2);
+  });
+
+  it("audio that already played is not waited for again: the wait runs to the end of what is still queued", async () => {
+    const s = makeSession();
+    let skew = 0; // the injected clock: the round-one tool takes a (virtual) second, during which its filler plays out
+    const c = makeClassic({
+      clock: () => Date.now() + skew,
+      ttsMsFor: (text) => (text.startsWith("One moment") ? 300 : 50),
+      tailMs: 20,
+      capMs: 2000,
+      onTool: async (name) => { if (name === "get_current_datetime") { await sleep(10); skew += 1000; } },
+      steps: [{ tools: [{ name: "get_current_datetime" }] }, { tools: [END()] }],
+    });
+    await c.handleUserSpeech(s, "what's today's date? actually, never mind, bye");
+    assert.deepEqual(c.spoken(), ["One moment, let me check that.", "Thanks for calling — goodbye."]);
+    const waited = c.closedAt() - c.lastAudioAt();
+    assert.ok(waited >= 50 + 20 - SLOP, `waited ${waited}ms: the goodbye (50ms) and the tail must play out`);
+    assert.ok(waited < 300, `waited ${waited}ms: the filler's 300ms had already played — a summed estimate would wait ~370ms`);
   });
 
   it("the wait is capped: a long estimate never holds the line open past the cap", async () => {
@@ -351,6 +414,44 @@ describe("SCRUM-594: the hang-up is final", () => {
     await c.handleUserSpeech(s, "bye");
     assert.deepEqual(c.closes(), []);
     assert.equal(s.endedReason, "end_call_tool");
+  });
+
+  it("no turn starts on a closing or closed stream (a final that arrives after the hang-up)", async () => {
+    for (const readyState of [2, 3]) {
+      const s = makeSession();
+      const c = makeClassic({ steps: [] });
+      c.twilioWs.readyState = readyState;
+      await c.handleUserSpeech(s, "hello? are you still there?");
+      assert.deepEqual(c.calls, [], `readyState=${readyState}: no hold audio, no LLM, no TTS`);
+      assert.equal(s.isProcessing, false);
+      assert.equal(s.fullTranscriptMessages.length, 0);
+    }
+  });
+
+  it("after the hang-up the stream is CLOSING, so a late turn does nothing", async () => {
+    const s = makeSession();
+    const c = makeClassic({ ttsMs: 5, tailMs: 5, steps: [{ sentences: ["Bye now!"], tools: [END()] }] });
+    await c.handleUserSpeech(s, "bye");
+    assert.equal(c.twilioWs.readyState, 2);
+    await c.handleUserSpeech(s, "oh, one more thing");
+    assert.equal(c.llmCalls(), 1);
+    assert.equal(c.spoken().length, 1);
+  });
+
+  it("a close that throws is logged, and the speech queued over the goodbye is still not answered", async () => {
+    const s = makeSession();
+    const c = makeClassic({
+      closeThrows: true,
+      ttsMs: 10,
+      tailMs: 5,
+      steps: [{ sentences: ["Take care!"], tools: [END()] }],
+      onTts: () => s.queueOrProcess("wait, wait", (text) => c.handleUserSpeech(s, text)),
+    });
+    await c.handleUserSpeech(s, "bye");
+    await sleep(20); // drainPending dispatches on setImmediate
+    assert.equal(c.twilioWs.readyState, 1, "the throwing close left the stream open");
+    assert.equal(c.llmCalls(), 1, "the queued speech was dropped, not answered");
+    assert.ok(c.lines.some((l) => l.startsWith("warn| [EndCall] Error closing the Twilio stream")), c.lines.join("\n"));
   });
 
   it("a goodbye whose TTS fails still hangs up", async () => {
