@@ -107,7 +107,9 @@ The demo line should be answered by Deepgram hearing and Claude Haiku 5.5 thinki
 - **Signature:** `startSpeculativeReply({ llm, messages, transcript, llmOptions, turnKey })`.
   - It calls `llm([...messages, {role:"user", content: transcript}], {...llmOptions, chunking:"clause", signal, onSentence: buffer})` without touching `session.messages`.
   - It never executes tools. A `tool_calls` result is only stored.
-- **It returns** `{ turnKey, transcript, isAdoptable(currentMessages), adopt(onSentence) → Promise<result>, abort(reason) }`.
+- **It returns** `{ turnKey, transcript, status(), isAdoptable(currentMessages, transcript), adopt(onSentence) → Promise<result>, abort(reason) }`.
+  - Decide adoption by `isAdoptable(...)`, never by `status()`: a failed draft also reports `"done"`.
+  - The draft owns a deadline (`timeoutMs`, default 15000) through `AbortSignal.any([own, AbortSignal.timeout])`. On the deadline, `adopt()` rejects with a `TimeoutError`, which the consumer treats as an LLM failure. `{type:"aborted"}` is reserved for `abort()`.
 - **`isAdoptable`** requires all of:
   - not aborted
   - the same `messages` array object, and the same length as at start
