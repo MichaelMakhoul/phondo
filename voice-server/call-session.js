@@ -105,6 +105,12 @@ class CallSession {
     // successful `book_appointment` tool result, flag the call.
     this.toolCallAudit = [];
 
+    // SCRUM-593: booking pre-check holds per tool this call
+    // (lib/booking-precheck.js). A tool held MAX_HOLDS times goes through
+    // unchecked; a successful write of that tool resets its count.
+    /** @type {Map<string, number>} */
+    this.precheckHolds = new Map();
+
     // SCRUM-367: count book_appointment rejections in this call. After a few,
     // registerBookOutcome() escalates the tool-result instruction so the model
     // stops re-asking the caller to repeat the same detail (the prose-only
@@ -293,6 +299,30 @@ class CallSession {
     // Substring match (not \b-anchored) so snake_case reasons like
     // "booking_complete" / "reschedule_done" match; "cancelled" does not.
     return /(book|reschedul|reserv)/i.test(endCallReason || "") && !everBooked;
+  }
+
+  /**
+   * SCRUM-593: the booking write an unfinished funnel (see hasUnfinishedBooking)
+   * is waiting on: the most recent book_appointment or reschedule_appointment
+   * attempt, by `at`, after the last resolution, or null when there is none
+   * (only availability checks). The end_call guard words its nudge by it: after
+   * a held or failed reschedule the caller's existing appointment still stands.
+   * @returns {"book_appointment" | "reschedule_appointment" | null}
+   */
+  lastFunnelStep() {
+    const audit = this.toolCallAudit || [];
+    const at = (t) => (typeof t.at === "number" ? t.at : 0);
+    // The resolutions hasUnfinishedBooking counts: a successful booking, reschedule or callback.
+    const isResolve = (t) =>
+      (t.name === "book_appointment" || t.name === "reschedule_appointment" || t.name === "schedule_callback") && t.successful;
+    const lastResolveAt = audit.reduce((m, t) => (isResolve(t) ? Math.max(m, at(t)) : m), 0);
+    let last = null;
+    for (const t of audit) {
+      if (t.name !== "book_appointment" && t.name !== "reschedule_appointment") continue;
+      if (at(t) <= lastResolveAt) continue;
+      if (!last || at(t) >= at(last)) last = t;
+    }
+    return last ? last.name : null;
   }
 
   /**

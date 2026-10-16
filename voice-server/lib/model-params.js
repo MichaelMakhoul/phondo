@@ -97,10 +97,29 @@ function claudeResponseText(content) {
   return block ? block.text : "";
 }
 
+/**
+ * Error type + message from an Anthropic error body — never anything else.
+ * Shared by the Tier-2 checker and the booking pre-check (SCRUM-593).
+ * @param {{ json: () => Promise<unknown> }} res
+ * @returns {Promise<{ errorType?: string, errorMessage?: string }>}
+ */
+async function readAnthropicError(res) {
+  try {
+    const body = /** @type {any} */ (await res.json());
+    return {
+      errorType: typeof body?.error?.type === "string" ? body.error.type : undefined,
+      errorMessage: typeof body?.error?.message === "string" ? body.error.message.slice(0, 200) : undefined,
+    };
+  } catch {
+    return {};
+  }
+}
+
 module.exports = {
   isOpenAIReasoningModel,
   acceptsReasoningEffortNone,
   openAIChatParams,
   claudeLatencyParams,
   claudeResponseText,
+  readAnthropicError,
 };

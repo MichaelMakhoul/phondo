@@ -91,6 +91,14 @@ const SENTRY_REASONS = Object.freeze({
    *  appointment that does not exist — page LOUDLY. */
   BOOKING_STATE_MISMATCH: "booking-state-mismatch",
 
+  // ─── booking pre-check (SCRUM-593) ──────────────────────────────────
+  /** The booking pre-check held one write twice in a call, so its hold cap
+   *  let the third attempt through UNCHECKED (a caller is never trapped).
+   *  One is a caller the check could not satisfy; a run of them means the
+   *  check is holding correct bookings. Error level: pages. Lives in
+   *  lib/booking-precheck.js. */
+  PRECHECK_HOLD_CAP: "precheck-hold-cap",
+
   // ─── fallback-dial-consent (recording disclosure) ───────────────────
   /** Recording disclosure can't render because the org row was missing
    *  from the lookup result. */

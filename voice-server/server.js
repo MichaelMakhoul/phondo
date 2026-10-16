@@ -24,6 +24,7 @@ const scheduleCache = require("./lib/schedule-cache");
 const { bookingKey, normalizeDatetime } = require("./lib/booking-key");
 const { applyRescheduleToLedger, RESCHEDULE_SUCCESS_SIGNAL } = require("./lib/reschedule-ledger"); // SCRUM-563
 const { classifyRebookAttempt, DUPLICATE_REBOOK_MESSAGE, CORRECTION_ERROR_MESSAGE, CANCEL_NUDGE } = require("./lib/rebook-correction"); // SCRUM-557
+const { applyBookingPrecheck, PRECHECKED_TOOLS, precheckMode, reportPrecheckConfig } = require("./lib/booking-precheck"); // SCRUM-593
 const { createCallRecord, completeCallRecord, notifyCallCompleted, applyReanalysis } = require("./lib/call-logger");
 const { calendarToolDefinitions, listServiceTypesToolDefinition, transferToolDefinition, callbackToolDefinition, endCallToolDefinition, executeToolCall } = require("./services/tool-executor");
 const { createGeminiSession, GEMINI_MODEL } = require("./services/gemini-live");
@@ -2606,9 +2607,14 @@ wss.on("connection", (twilioWs) => {
                         scope.setExtras({ callSid: session.callSid, endCallReason: toolCall.args?.reason || "" });
                         Sentry.captureMessage("end_call blocked — unfinished booking (language-agnostic)", "warning");
                       });
+                      // SCRUM-593: after a held or failed reschedule the caller's existing appointment
+                      // still stands: "NO appointment … call book_appointment now" would be false, and
+                      // would push toward a duplicate or a cancel-and-rebook.
                       return {
                         message:
-                          "CANNOT END CALL YET: a booking was started but book_appointment never returned success, so the caller has NO appointment. Do NOT say it is booked or 'all set'. Either (1) call book_appointment now with the collected details, OR (2) if you cannot complete it, tell the caller — in their language — that you could not finish the booking and call schedule_callback to take a message. Only call end_call AFTER one of those succeeds.",
+                          session.lastFunnelStep() === "reschedule_appointment"
+                            ? "CANNOT END CALL YET: the appointment change was NOT completed — the caller's existing appointment is unchanged. Either call reschedule_appointment again with the confirmed details, or tell the caller — in their language — that you couldn't change it and call schedule_callback to take a message. Only call end_call AFTER one of those succeeds."
+                            : "CANNOT END CALL YET: a booking was started but book_appointment never returned success, so the caller has NO appointment. Do NOT say it is booked or 'all set'. Either (1) call book_appointment now with the collected details, OR (2) if you cannot complete it, tell the caller — in their language — that you could not finish the booking and call schedule_callback to take a message. Only call end_call AFTER one of those succeeds.",
                       };
                     }
                     // Already nudged once — allow end_call so a caller who genuinely
@@ -2639,6 +2645,13 @@ wss.on("connection", (twilioWs) => {
                     console.log(`[CancelGate] Confirmed — proceeding with cancel_appointment. callSid=${session.callSid}`);
                   }
 
+                  // SCRUM-593: both booking pre-checks below wait up to ~3 s for
+                  // Claude, and cleanup nulls `session` if the call ends meanwhile.
+                  // `s` holds this call's session through them: a write the check
+                  // ALLOWED still happens, as it did when the write started in this
+                  // tick; only a held write is dropped.
+                  const s = session;
+
                   // SCRUM-257: intercept duplicate book_appointment calls.
                   // After a successful booking, Sophie sometimes "second-guesses"
                   // herself and re-calls the tool, producing a different code and
@@ -2657,7 +2670,34 @@ wss.on("connection", (twilioWs) => {
                     if (existing) {
                       const verdict = classifyRebookAttempt(existing, toolCall.args);
                       if (verdict.kind === "name-correction") {
-                        console.warn(`[RebookGuard] Name-corrected re-book — updating attendee in place. callSid=${session.callSid}`);
+                        // SCRUM-593: the name fix is a booking write too. A re-book with a
+                        // corrected surname is answered here, so it never reaches the main
+                        // check below — check it first; a hold returns before any write.
+                        // audit:false: a booking already stands, and an audited hold would
+                        // read to hasUnfinishedBooking as an unresolved funnel step (a
+                        // successful fix is "book_appointment_corrected", not a resolve), so
+                        // end_call would tell a caller who HAS an appointment that they have none.
+                        if (session) session._toolCallInFlight = true;
+                        let correctionHold = null;
+                        try {
+                          correctionHold = await applyBookingPrecheck(s, toolCall, {
+                            getPending: () => ({ user: pendingUserTranscript, ai: pendingAiTranscript }),
+                            promptConfig: context?.assistant?.promptConfig,
+                            audit: false,
+                            correction: true, // its hold must not say "nothing was saved": a booking stands
+                          });
+                        } finally {
+                          if (session) session._toolCallInFlight = false;
+                        }
+                        if (correctionHold) {
+                          s._lastToolResult = null; // a hold is no tool result (see the main check below)
+                          if (!session) console.warn(`[Precheck] held ${toolCall.name} dropped — call ended during the check. callSid=${s.callSid}`);
+                          return session ? correctionHold : { message: "" };
+                        }
+                        if (!session) console.warn(`[Precheck] session ended during the check — writing the allowed ${toolCall.name} anyway. callSid=${s.callSid}`);
+                        // From here on `s`, never `session`: an allowed fix is written, and its
+                        // bookkeeping lands, even if the call ended during the check.
+                        console.warn(`[RebookGuard] Name-corrected re-book — updating attendee in place. callSid=${s.callSid}`);
                         let correctionMsg;
                         try {
                           const corrected = await executeToolCall("update_appointment_attendee", {
@@ -2665,30 +2705,31 @@ wss.on("connection", (twilioWs) => {
                             first_name: toolCall.args.first_name,
                             last_name: toolCall.args.last_name,
                           }, {
-                            organizationId: session.organizationId,
-                            assistantId: session.assistantId,
-                            callSid: session.callSid,
-                            callId: session.callRecordId,
-                            sourceType: session.sourceType,
-                            organization: session.organization,
-                            callerPhone: session.callerPhone,
+                            organizationId: s.organizationId,
+                            assistantId: s.assistantId,
+                            callSid: s.callSid,
+                            callId: s.callRecordId,
+                            sourceType: s.sourceType,
+                            organization: s.organization,
+                            callerPhone: s.callerPhone,
                           });
                           correctionMsg = typeof corrected === "string" ? corrected : corrected.message;
                         } catch (corrErr) {
-                          console.error(`[RebookGuard] attendee correction threw: ${corrErr && corrErr.message} callSid=${session.callSid}`);
+                          console.error(`[RebookGuard] attendee correction threw: ${corrErr && corrErr.message} callSid=${s.callSid}`);
                           correctionMsg = CORRECTION_ERROR_MESSAGE;
                         }
                         const correctionOk = correctionMsg.startsWith("NAME CORRECTED");
-                        session.toolCallAudit.push({ name: "book_appointment_corrected", successful: correctionOk, at: Date.now() });
+                        s.toolCallAudit.push({ name: "book_appointment_corrected", successful: correctionOk, at: Date.now() });
                         if (correctionOk) {
-                          session.confirmedBookings.set(reqKey, {
+                          s.precheckHolds?.delete(toolCall.name); // SCRUM-593: a confirmed fix resets its hold count, as a confirmed booking does
+                          s.confirmedBookings.set(reqKey, {
                             ...existing,
                             name: `${toolCall.args.first_name || ""} ${toolCall.args.last_name || ""}`.trim(),
                           });
                         } else {
                           Sentry.withScope((scope) => {
                             scope.setTag("service", "rebook_guard");
-                            scope.setExtras({ callSid: session.callSid, attemptedDatetime: toolCall.args.datetime });
+                            scope.setExtras({ callSid: s.callSid, attemptedDatetime: toolCall.args.datetime });
                             Sentry.captureMessage("Name-corrected re-book: attendee update FAILED", "warning");
                           });
                         }
@@ -2707,28 +2748,56 @@ wss.on("connection", (twilioWs) => {
                     }
                   }
 
+                  // SCRUM-593: before ANY booking change is written, Claude
+                  // checks it against what the caller said and confirmed
+                  // (lib/booking-precheck.js). A hold hands Gemini an
+                  // instruction instead of writing. The in-flight flag keeps
+                  // the goodbye-loop auto-end off while the check runs.
+                  if (session) session._toolCallInFlight = true;
+                  let precheckHold = null;
+                  try {
+                    precheckHold = await applyBookingPrecheck(s, toolCall, {
+                      getPending: () => ({ user: pendingUserTranscript, ai: pendingAiTranscript }),
+                      promptConfig: context?.assistant?.promptConfig,
+                      audit: true,
+                    });
+                  } finally {
+                    if (session) session._toolCallInFlight = false;
+                  }
+                  if (precheckHold) {
+                    // A hold is no tool result. Tier-2 validates the next AI turn against
+                    // _lastToolResult for 10 s: left set, the read-back the hold asks for
+                    // would be judged against an OLDER result and "corrected".
+                    s._lastToolResult = null;
+                    if (!session) console.warn(`[Precheck] held ${toolCall.name} dropped — call ended during the check. callSid=${s.callSid}`);
+                    return session ? precheckHold : { message: "" };
+                  }
+                  if (!session) console.warn(`[Precheck] session ended during the check — writing the allowed ${toolCall.name} anyway. callSid=${s.callSid}`);
+
                   // Flag so goodbye-loop auto-end knows a tool call is in progress
                   // and won't close the session mid-execution.
+                  // The write reads `s` (see above); everything after it stays
+                  // guarded on the live `session`.
                   if (session) session._toolCallInFlight = true;
-                  session.rememberDetails(toolCall.name, toolCall.args); // SCRUM-506: carry caller details forward this call
+                  s.rememberDetails(toolCall.name, toolCall.args); // SCRUM-506: carry caller details forward this call
                   let result;
                   try {
                     result = await executeToolCall(toolCall.name, toolCall.args, {
-                      organizationId: session.organizationId,
-                      collectedDetails: session.getCollectedDetails(), // SCRUM-506
-                      assistantId: session.assistantId,
-                      callSid: session.callSid,
-                      callId: session.callRecordId,
-                      transferRules: session.transferRules,
-                      userPhoneNumber: session.userPhoneNumber,
-                      forwardingStatus: session.forwardingStatus,
-                      sourceType: session.sourceType,
-                      transferToForwardedNumber: session.transferToForwardedNumber,
-                      organization: session.organization,
-                      callerPhone: session.callerPhone,
-                      orgPhoneNumber: session.orgPhoneNumber,
-                      telephonyProvider: session.telephonyProvider || "twilio",
-                      scheduleSnapshot: session.scheduleSnapshot,
+                      organizationId: s.organizationId,
+                      collectedDetails: s.getCollectedDetails(), // SCRUM-506
+                      assistantId: s.assistantId,
+                      callSid: s.callSid,
+                      callId: s.callRecordId,
+                      transferRules: s.transferRules,
+                      userPhoneNumber: s.userPhoneNumber,
+                      forwardingStatus: s.forwardingStatus,
+                      sourceType: s.sourceType,
+                      transferToForwardedNumber: s.transferToForwardedNumber,
+                      organization: s.organization,
+                      callerPhone: s.callerPhone,
+                      orgPhoneNumber: s.orgPhoneNumber,
+                      telephonyProvider: s.telephonyProvider || "twilio",
+                      scheduleSnapshot: s.scheduleSnapshot,
                     });
                   } finally {
                     if (session) session._toolCallInFlight = false;
@@ -2778,6 +2847,7 @@ wss.on("connection", (twilioWs) => {
                       auditEntry.codeArg = String(toolCall.args?.confirmation_code || "").trim() || undefined;
                     }
                     session.toolCallAudit.push(auditEntry);
+                    if (successful) session.precheckHolds?.delete(toolCall.name); // SCRUM-593: a confirmed write resets its hold count
                   }
 
                   // SCRUM-367 (B): break the name/detail re-confirm loop
@@ -3119,6 +3189,7 @@ wss.on("connection", (twilioWs) => {
                           toolName: lastTool.name,
                           toolResult: lastTool.message,
                           spokenResponse: aiTurnText,
+                          timezone: session.organization?.timezone || "Australia/Sydney", // SCRUM-593
                         }).then((validation) => {
                           if (!validation.accurate && session?.geminiSession?.sendText) {
                             console.warn(`[Tier2Validator] Discrepancy in ${lastTool.name}: ${DEBUG_TRANSCRIPTS ? validation.discrepancy : "[redacted]"}. callSid=${session.callSid}`);
@@ -4639,17 +4710,41 @@ testWss.on("connection", (ws, req) => {
                     "DO NOT CANCEL YET. Before cancelling, confirm with the caller: read back which appointment would be cancelled (its date and time) and ask them — in their language — to clearly confirm (yes/no). ONLY if they clearly say yes, call cancel_appointment again with the same details. If they say no or you are unsure, do NOT cancel.",
                 };
               }
-              session.rememberDetails(toolCall.name, toolCall.args); // SCRUM-506
+              // SCRUM-593: booking pre-check (test/demo path — parity with production; no tool audit here).
+              // `s` holds the session through the check, as in production: an allowed write still
+              // happens if the call ends meanwhile. The public website demo is not checked: every
+              // /ws/test write is simulated, and its prompt has no pre-booking read-back by design
+              // (3-minute cap), so a check would protect nothing and hold its bookings. Dashboard
+              // test calls for real organizations are checked.
+              const s = session;
+              let precheckHold = null;
+              if (s.organizationId === DEMO_ORG_ID) {
+                // With the check off there is nothing to skip.
+                if (PRECHECKED_TOOLS.has(toolCall.name) && precheckMode() !== "off") console.log(`[Precheck] skip ${toolCall.name} (public demo). callSid=${s.callSid}`);
+              } else {
+                precheckHold = await applyBookingPrecheck(s, toolCall, {
+                  getPending: () => ({ user: pendingUserTranscript, ai: pendingAiTranscript }),
+                  promptConfig: context?.assistant?.promptConfig,
+                  audit: false,
+                });
+              }
+              if (precheckHold) {
+                if (!session) console.warn(`[Precheck] held ${toolCall.name} dropped — call ended during the check. callSid=${s.callSid}`);
+                return session ? precheckHold : { message: "" };
+              }
+              if (!session) console.warn(`[Precheck] session ended during the check — writing the allowed ${toolCall.name} anyway. callSid=${s.callSid}`);
+              s.rememberDetails(toolCall.name, toolCall.args); // SCRUM-506
               const result = await executeToolCall(toolCall.name, toolCall.args, {
-                organizationId: session.organizationId,
-                collectedDetails: session.getCollectedDetails(), // SCRUM-506
-                assistantId: session.assistantId,
-                callSid: session.callSid,
+                organizationId: s.organizationId,
+                collectedDetails: s.getCollectedDetails(), // SCRUM-506
+                assistantId: s.assistantId,
+                callSid: s.callSid,
                 transferRules: [],
                 testMode: true,
-                organization: session.organization,
-                scheduleSnapshot: session.scheduleSnapshot,
+                organization: s.organization,
+                scheduleSnapshot: s.scheduleSnapshot,
               });
+              if (!(typeof result === "object" && (result?.error || result?.success === false))) session?.precheckHolds?.delete(toolCall.name); // SCRUM-593: parity with production — a confirmed write resets its hold count
               const message = typeof result === "string" ? result : result.message;
               console.log(`[TestGeminiLive] Tool result: "${message.slice(0, 100)}"`);
               return { message };
@@ -5120,6 +5215,12 @@ initAudioFrontend().then(({ enabled, reason }) => {
 server.listen(Number(PORT), "0.0.0.0", () => {
   console.log(`Voice server listening on port ${PORT}`);
   console.log(`Voice pipeline: ${VOICE_PIPELINE}${VOICE_PIPELINE === "gemini-live" ? ` (Gemini Live: ${GEMINI_MODEL})` : ` (LLM: ${LLM_PROVIDER}/${FULL_MODEL})`}`);
+  // A throw here would reach the global handler's process.exit(1): report it and carry on.
+  try {
+    reportPrecheckConfig(); // SCRUM-593: the booking pre-check's mode/model/key, and a page if it is silently defeated
+  } catch (err) {
+    console.error(`[Precheck] boot config report failed: ${err?.name || "Error"}`);
+  }
   console.log(`TwiML endpoint: ${PUBLIC_URL}/twiml`);
   console.log(`WebSocket endpoint: ${WS_URL}`);
   if (TEST_CALL_SECRET) {

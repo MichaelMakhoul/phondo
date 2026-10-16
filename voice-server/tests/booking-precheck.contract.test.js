@@ -1,0 +1,719 @@
+"use strict";
+
+/**
+ * SCRUM-593 — the booking pre-check's fail-open, paging and request contract.
+ * Companion to booking-precheck.test.js (which pins verdicts, modes, the hold
+ * cap and the fixed hold text); spec:
+ * docs/superpowers/specs/2026-10-15-booking-precheck-design.md.
+ *
+ * Pins the lines that keep the layer SAFE and OBSERVABLE and that could be
+ * deleted or weakened without any other test noticing (found by mutation
+ * testing): the 3 s timeout, the request envelope, the business timezone, the
+ * hold cap's [ALERT:warning], which HTTP statuses page at once, the
+ * booking_precheck service tag (never the Tier-2 checker's), unreadable /
+ * empty / non-JSON replies, "never throws" (the check AND the server.js glue),
+ * log hygiene (SCRUM-339), the token cap per model family, that only the
+ * decision fields are sent, that an unchecked write is logged as "unchecked"
+ * and never as "allow", that every no-verdict counts, pages and carries its ms,
+ * and the glue's mapping of the call's own state into the request and into a
+ * real CallSession's tool audit.
+ *
+ * Every console.* call is captured (see beforeEach), so a run prints nothing.
+ */
+
+const { describe, it, beforeEach, afterEach } = require("node:test");
+const assert = require("node:assert/strict");
+
+const { CallSession } = require("../call-session");
+
+const SAVED = { key: process.env.ANTHROPIC_API_KEY, mode: process.env.PRECHECK_MODE, model: process.env.PRECHECK_MODEL };
+const realFetch = globalThis.fetch;
+const realWarn = console.warn;
+const realError = console.error;
+const realLog = console.log;
+/** @type {string[]} */
+let logs = [];
+
+beforeEach(() => {
+  logs = [];
+  console.warn = (...a) => logs.push(a.join(" "));
+  console.error = (...a) => logs.push(a.join(" "));
+  console.log = (...a) => logs.push(a.join(" "));
+});
+
+afterEach(() => {
+  for (const [envName, v] of [["ANTHROPIC_API_KEY", SAVED.key], ["PRECHECK_MODE", SAVED.mode], ["PRECHECK_MODEL", SAVED.model]]) {
+    if (v === undefined) delete process.env[envName];
+    else process.env[envName] = v;
+  }
+  globalThis.fetch = realFetch;
+  console.warn = realWarn;
+  console.error = realError;
+  console.log = realLog;
+});
+
+/** Fresh module = fresh unreadable streak. */
+function load({ mode, model, noKey = false } = {}) {
+  if (noKey) delete process.env.ANTHROPIC_API_KEY;
+  else process.env.ANTHROPIC_API_KEY = "test-key";
+  if (mode === undefined) delete process.env.PRECHECK_MODE;
+  else process.env.PRECHECK_MODE = mode;
+  if (model === undefined) delete process.env.PRECHECK_MODEL;
+  else process.env.PRECHECK_MODEL = model;
+  const p = require.resolve("../lib/booking-precheck");
+  delete require.cache[p];
+  return require(p);
+}
+
+/** Stub fetch with a 2xx reply carrying one text block; records the request. */
+function replyText(text) {
+  const seen = { calls: 0, body: /** @type {any} */ (null), url: /** @type {any} */ (null), headers: /** @type {any} */ (null), signal: /** @type {any} */ (null) };
+  globalThis.fetch = async (url, init) => {
+    seen.calls++;
+    seen.url = url;
+    seen.headers = init.headers;
+    seen.signal = init.signal;
+    seen.body = JSON.parse(init.body);
+    return { ok: true, status: 200, json: async () => ({ content: [{ type: "text", text }], stop_reason: "end_turn" }) };
+  };
+  return seen;
+}
+
+const CONVERSATION = [
+  { role: "system", content: "SECRET SYSTEM PROMPT" },
+  { role: "assistant", content: "Thanks for calling. How can I help?" },
+  { role: "user", content: "I need a plumber tomorrow morning." },
+  { role: "assistant", content: "Sure. What's your first name?" },
+  { role: "user", content: "Michael." },
+];
+const ARGS = { first_name: "Michael", last_name: "Makhlouf", datetime: "2026-10-15T09:00" };
+const NOW = new Date("2026-10-14T10:56:00Z");
+const input = (over = {}) => ({
+  toolName: "book_appointment",
+  args: ARGS,
+  messages: CONVERSATION,
+  pendingUser: "Morning is good.",
+  pendingAi: "Let me book that for you.",
+  timezone: "Australia/Sydney",
+  nameMethod: "repeat-confirm",
+  holds: new Map(),
+  callSid: "CAtest",
+  now: NOW,
+  ...over,
+});
+const FIX = JSON.stringify({ verdict: "fix", problem: "name_unconfirmed" });
+// What the structured-output schema makes the model send for an allow ("none" = no problem).
+const ALLOW = JSON.stringify({ verdict: "allow", problem: "none" });
+const session = (over = {}) => ({
+  messages: CONVERSATION,
+  organization: { timezone: "Australia/Sydney" },
+  precheckHolds: new Map(),
+  toolCallAudit: [],
+  callSid: "CAtest",
+  ...over,
+});
+
+describe("hold cap alert", () => {
+  // SF-M1: no Grafana rule pages on [ALERT:warning], so a check holding EVERY booking until the cap lets it
+  // through went unnoticed. Error level, with its own reason for the alert rule.
+  it("the capped third attempt PAGES: [ALERT:error] under the booking_precheck tag, reason precheck-hold-cap", async () => {
+    const m = load();
+    const seen = replyText(FIX);
+    assert.deepEqual(await m.precheckBookingWrite(input({ holds: new Map([["book_appointment", 2]]) })), { action: "proceed" });
+    assert.equal(seen.calls, 0, "the capped attempt is not re-checked");
+    const pages = logs.filter((l) => l.startsWith("[ALERT:"));
+    assert.equal(pages.length, 1, pages.join("\n"));
+    assert.match(pages[0], /^\[ALERT:error\] \[booking_precheck\] Booking pre-check: book_appointment let through unchecked after 2 holds \| /);
+    assert.match(pages[0], /\breason=precheck-hold-cap\b/);
+    assert.match(pages[0], /\bcallSid=CAtest toolName=book_appointment holds=2\b/);
+  });
+});
+
+describe("the request contract", () => {
+  it("the NOW line is in the business's timezone", async () => {
+    const m = load();
+    const seen = replyText(ALLOW);
+    await m.precheckBookingWrite(input({ timezone: "America/New_York" }));
+    assert.match(seen.body.messages[0].content, /Current date and time: Wednesday, October 14, 2026, 06:56\sAM \(America\/New_York\)/);
+  });
+
+  it("posts to the Messages API with the key, the API version and a small token cap", async () => {
+    const m = load();
+    const seen = replyText(ALLOW);
+    await m.precheckBookingWrite(input());
+    assert.equal(seen.url, "https://api.anthropic.com/v1/messages");
+    assert.equal(seen.headers["x-api-key"], "test-key");
+    assert.equal(seen.headers["anthropic-version"], "2023-06-01");
+    assert.equal(seen.body.max_tokens, 300);
+  });
+
+  // Sonnet/Opus 5.5 cannot disable thinking and thinking counts against max_tokens.
+  it("the token cap is 300 on Haiku and 1024 where thinking cannot be disabled", async () => {
+    let m = load();
+    let seen = replyText(ALLOW);
+    await m.precheckBookingWrite(input());
+    assert.equal(seen.body.max_tokens, 300, "claude-haiku-5-5 (the default)");
+    for (const model of ["claude-sonnet-5-5", "claude-opus-5-5"]) {
+      m = load({ model });
+      seen = replyText(ALLOW);
+      await m.precheckBookingWrite(input());
+      assert.equal(seen.body.max_tokens, 1024, model);
+    }
+  });
+
+  // Less PII offshore, and no free text (notes) for the checker to misjudge or be steered by. Each
+  // tool sends its OWN decision fields (R22). The practitioner goes as a NAME from the call's own staff
+  // list (R28), never the id: an opaque id Claude cannot compare with "Dr Smith".
+  it("sends Claude only each tool's decision fields: no phone, email, notes, service, code or practitioner id", async () => {
+    const m = load();
+    const args = {
+      first_name: "Michael",
+      last_name: "Makhlouf",
+      name: "Michael Makhlouf",
+      datetime: "2026-10-15T09:00",
+      new_datetime: "2026-10-16T10:00",
+      current_datetime: "2026-10-14T09:00",
+      current_date: "2026-10-14",
+      practitioner_id: "prac-7",
+      phone: "+61400111222",
+      email: "private@example.com",
+      notes: "SECRET-NOTE gate code 4471",
+      service_type_id: "svc-9",
+      confirmation_code: "123456",
+    };
+    const expected = {
+      book_appointment: ['{"first_name":"Michael","last_name":"Makhlouf","datetime":"2026-10-15T09:00 = Thursday, October 15, 2026, 9:00 AM","practitioner":"Dr Sarah Lee"}', null],
+      reschedule_appointment: [
+        '{"new_datetime":"2026-10-16T10:00 = Friday, October 16, 2026, 10:00 AM","first_name":"Michael","last_name":"Makhlouf","practitioner":"Dr Sarah Lee"}',
+        '{"name":"Michael Makhlouf","current_datetime":"2026-10-14T09:00","current_date":"2026-10-14"}',
+      ],
+      update_appointment: ['{"first_name":"Michael","last_name":"Makhlouf"}', '{"datetime":"2026-10-15T09:00"}'],
+    };
+    for (const [toolName, [saved, identify]] of Object.entries(expected)) {
+      const seen = replyText(ALLOW);
+      await m.precheckBookingWrite(input({ toolName, args, practitioners: [{ id: "prac-7", name: "Dr Sarah Lee" }] }));
+      const body = JSON.stringify(seen.body);
+      for (const leaked of ["+61400111222", "private@example.com", "SECRET-NOTE", "4471", "svc-9", "123456", "prac-7", "practitioner_id"]) {
+        assert.ok(!body.includes(leaked), `${toolName}: ${leaked} is not sent`);
+      }
+      const prompt = seen.body.messages[0].content;
+      const lines = prompt.split("\n").filter((l) => /^DETAILS THAT /.test(l));
+      assert.deepEqual(
+        lines,
+        [`DETAILS THAT WILL BE SAVED: ${saved}`, ...(identify ? [`DETAILS THAT ONLY IDENTIFY THE EXISTING APPOINTMENT (rules 1 and 2 do NOT apply to these): ${identify}`] : [])],
+        toolName
+      );
+    }
+  });
+
+  // The line the whole "fail open on slow" promise rests on: without a timeout a
+  // hung Anthropic call would hold the booking (and the caller) indefinitely.
+  it("the request carries a 3 s timeout signal", async () => {
+    const m = load();
+    const seen = replyText(ALLOW);
+    const real = AbortSignal.timeout;
+    let ms;
+    AbortSignal.timeout = (n) => {
+      ms = n;
+      return real.call(AbortSignal, n);
+    };
+    try {
+      await m.precheckBookingWrite(input());
+    } finally {
+      AbortSignal.timeout = real;
+    }
+    assert.equal(ms, 3000);
+    assert.ok(seen.signal instanceof AbortSignal, "the signal is handed to fetch");
+  });
+
+  it("tolerates an empty conversation and no name method", async () => {
+    const m = load();
+    const seen = replyText(ALLOW);
+    await m.precheckBookingWrite(input({ messages: [], pendingUser: "", pendingAi: "", nameMethod: undefined }));
+    const prompt = seen.body.messages[0].content;
+    assert.match(prompt, /DETAILS THAT WILL BE SAVED: \{"first_name"/);
+    assert.match(prompt, /\(nothing transcribed yet\)/);
+    assert.match(prompt, /the AI must have repeated it back/);
+  });
+
+  it("never sends empty details: missing args are nothing to check, so there is no request at all", async () => {
+    const m = load();
+    const seen = replyText(FIX);
+    assert.deepEqual(await m.precheckBookingWrite(input({ args: undefined })), { action: "proceed" });
+    assert.equal(seen.calls, 0);
+  });
+
+  it("a cut call is whole lines on both sides of the omitted-middle marker", async () => {
+    const m = load();
+    const seen = replyText(ALLOW);
+    const long = Array.from({ length: 800 }, (_, i) => ({ role: i % 2 ? "user" : "assistant", content: `line ${i} ${"x".repeat(20)}` }));
+    await m.precheckBookingWrite(input({ messages: long, pendingUser: "", pendingAi: "" }));
+    const [before, after] = seen.body.messages[0].content.split("\n[middle of the call omitted]\n");
+    assert.match(before, /\n(CALLER|AI): line \d+ x{20}$/);
+    assert.match(after, /^(CALLER|AI): line \d+ x{20}\n/);
+  });
+});
+
+describe("failure paging", () => {
+  const httpStatus = (status) => {
+    globalThis.fetch = async () => ({ ok: false, status, json: async () => ({ type: "error", error: { type: "x_error", message: "y" } }) });
+  };
+
+  // A bad key (401/403), a refused request field (400) and a bad model (404)
+  // fail EVERY check the same way, so one is enough to page.
+  for (const status of [400, 401, 403]) {
+    it(`HTTP ${status} pages at once`, async () => {
+      const m = load();
+      httpStatus(status);
+      assert.deepEqual(await m.precheckBookingWrite(input()), { action: "proceed" });
+      assert.ok(logs.some((l) => new RegExp(`\\[ALERT:error\\].*\\(HTTP ${status}\\)`).test(l)));
+    });
+  }
+
+  // ...but a blip at Anthropic (rate limit, 5xx, overloaded) must not page on the first failure.
+  for (const status of [429, 500, 529]) {
+    it(`a transient HTTP ${status} stays quiet on the first failure`, async () => {
+      const m = load();
+      httpStatus(status);
+      assert.deepEqual(await m.precheckBookingWrite(input()), { action: "proceed" });
+      assert.ok(!logs.some((l) => /\[ALERT:error\]/.test(l)));
+    });
+  }
+
+  // Ruling 3: one layer failing must never page as the other.
+  it("pages under its own service tag, never the Tier-2 checker's", async () => {
+    const m = load({ noKey: true });
+    await m.precheckBookingWrite(input());
+    assert.ok(logs.some((l) => /\[ALERT:error\] \[booking_precheck\] Booking pre-check producing no verdicts \(ANTHROPIC_API_KEY not set\)/.test(l)));
+    assert.ok(!logs.some((l) => /tier2_validator/.test(l)));
+  });
+
+  it("the page carries Anthropic's error type and message", async () => {
+    const m = load({ model: "claude-nope" });
+    globalThis.fetch = async () => ({ ok: false, status: 404, json: async () => ({ type: "error", error: { type: "not_found_error", message: "model: claude-nope" } }) });
+    await m.precheckBookingWrite(input());
+    assert.ok(logs.some((l) => /\[ALERT:error\].*error_type=not_found_error error_message=model: claude-nope/.test(l)));
+  });
+
+  // SF-M3: paging counted only CONSECUTIVE no-verdicts, and any readable verdict reset the count, so a check
+  // failing 2 times in 3 never paged. A rolling window of the last 10 checks pages from 3 failures in it.
+  describe("intermittent failures page through a rolling window of the last 10 checks", () => {
+    const unreadable = () => replyText("not a verdict");
+    const pages = () => logs.filter((l) => l.startsWith("[ALERT:"));
+
+    it("two failures in every three checks page at the third failure", async () => {
+      const m = load();
+      unreadable();
+      await m.precheckBookingWrite(input());
+      await m.precheckBookingWrite(input());
+      replyText(ALLOW);
+      await m.precheckBookingWrite(input());
+      assert.deepEqual(pages(), [], "two failures: quiet");
+      unreadable();
+      assert.deepEqual(await m.precheckBookingWrite(input()), { action: "proceed" }, "still fails open");
+      assert.equal(pages().length, 1, pages().join("\n"));
+      assert.match(pages()[0], /^\[ALERT:error\] \[booking_precheck\] Booking pre-check producing no verdicts \(3 of the last 4 checks unreadable\) — writes go through unchecked \| /);
+    });
+
+    it("keeps paging while the window holds 3 failures, once per failed check", async () => {
+      const m = load();
+      for (const reply of ["x", "x", ALLOW, "x", "x", ALLOW, "x"]) {
+        replyText(reply);
+        await m.precheckBookingWrite(input());
+      }
+      assert.deepEqual(
+        pages().map((l) => /\(([^)]*)\)/.exec(l)[1]),
+        ["3 of the last 4 checks unreadable", "4 of the last 5 checks unreadable", "5 of the last 7 checks unreadable"]
+      );
+    });
+
+    it("a failure that is also the third in a row pages once, worded as the run", async () => {
+      const m = load();
+      unreadable();
+      for (let i = 0; i < 3; i++) await m.precheckBookingWrite(input());
+      assert.equal(pages().length, 1, pages().join("\n"));
+      assert.match(pages()[0], /\(3 unreadable in a row\)/);
+    });
+
+    it("the window is exactly 10 checks: fail, fail, 8 allows, fail is 2 failures in the last 10, no page", async () => {
+      const m = load();
+      unreadable();
+      await m.precheckBookingWrite(input());
+      await m.precheckBookingWrite(input());
+      replyText(ALLOW);
+      for (let i = 0; i < 8; i++) await m.precheckBookingWrite(input());
+      unreadable();
+      await m.precheckBookingWrite(input());
+      assert.deepEqual(pages(), [], "the first failure is now the 11th check back");
+    });
+
+    it("and the 10th check back still counts: fail, 7 allows, fail, fail pages at the last one", async () => {
+      const m = load();
+      unreadable();
+      await m.precheckBookingWrite(input());
+      replyText(ALLOW);
+      for (let i = 0; i < 7; i++) await m.precheckBookingWrite(input());
+      unreadable();
+      await m.precheckBookingWrite(input());
+      assert.deepEqual(pages(), []);
+      await m.precheckBookingWrite(input());
+      assert.equal(pages().length, 1, pages().join("\n"));
+      assert.match(pages()[0], /\(3 of the last 10 checks unreadable\)/);
+    });
+
+    it("only the last 10 checks count: older failures roll out", async () => {
+      const m = load();
+      unreadable();
+      await m.precheckBookingWrite(input());
+      await m.precheckBookingWrite(input());
+      replyText(ALLOW);
+      for (let i = 0; i < 9; i++) await m.precheckBookingWrite(input());
+      unreadable();
+      await m.precheckBookingWrite(input());
+      assert.deepEqual(pages(), [], "1 failure in the last 10 checks: the first two have rolled out");
+    });
+  });
+
+  // A thrown fetch counts toward the streak like every other no-verdict.
+  it("network failures count toward the streak and page from the third", async () => {
+    const m = load();
+    globalThis.fetch = async () => {
+      throw Object.assign(new Error("fetch failed"), { name: "TypeError" });
+    };
+    for (let i = 0; i < 2; i++) await m.precheckBookingWrite(input());
+    assert.ok(!logs.some((l) => /\[ALERT:error\]/.test(l)));
+    await m.precheckBookingWrite(input());
+    assert.ok(logs.some((l) => /\[ALERT:error\].*3 unreadable in a row/.test(l)));
+  });
+
+  // SCRUM-339: a SyntaxError from a non-JSON 2xx body quotes the body.
+  it("a 2xx body that is not JSON is reported without quoting it", async () => {
+    const m = load();
+    globalThis.fetch = async () => ({
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw new SyntaxError('Unexpected token \'C\', "Caller Makhlouf s"... is not valid JSON');
+      },
+    });
+    assert.deepEqual(await m.precheckBookingWrite(input()), { action: "proceed" });
+    const all = logs.join("\n");
+    assert.match(all, /response body is not JSON/);
+    assert.doesNotMatch(all, /Makhlouf/);
+  });
+
+  it("valid JSON that is not a verdict is reported as no-verdict, never as allow", async () => {
+    const m = load();
+    for (const reply of ['{"verdict":"maybe"}', "null", "[]", '"allow"', "{}"]) {
+      logs.length = 0;
+      replyText(reply);
+      assert.deepEqual(await m.precheckBookingWrite(input()), { action: "proceed" });
+      assert.ok(logs.some((l) => /cause=no-verdict/.test(l)), reply);
+    }
+  });
+
+  it("a reply with no text block is reported as no-text", async () => {
+    const m = load();
+    globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({ content: [{ type: "thinking", thinking: "hmm" }], stop_reason: "max_tokens" }) });
+    assert.deepEqual(await m.precheckBookingWrite(input()), { action: "proceed" });
+    assert.ok(logs.some((l) => /cause=no-text stop_reason=max_tokens/.test(l)));
+  });
+
+  // The module's headline contract. A throw is a no-verdict like any other: it fails
+  // open THROUGH noVerdict, so it counts toward the streak and pages from the third.
+  it("never throws: a malformed call (no hold map) lets the write through, counted and paged like any no-verdict", async () => {
+    const m = load();
+    const seen = replyText(FIX);
+    for (let i = 0; i < 2; i++) {
+      assert.deepEqual(await m.precheckBookingWrite(input({ holds: undefined })), { action: "proceed" });
+    }
+    assert.equal(seen.calls, 0);
+    assert.ok(logs.some((l) => /No usable verdict \(.*cause=unexpected-error error_type=TypeError.* ms=\d+\) — letting/.test(l)), "a quiet no-verdict line, with its ms");
+    assert.ok(!logs.some((l) => /\[ALERT:error\]/.test(l)), "no page before the third in a row");
+    assert.deepEqual(await m.precheckBookingWrite(input({ holds: undefined })), { action: "proceed" });
+    assert.ok(logs.some((l) => /\[ALERT:error\] \[booking_precheck\].*3 unreadable in a row/.test(l)), "the third pages");
+    assert.ok(!logs.some((l) => /Unexpected error/.test(l)), "no bare console.error that nobody is paged for");
+  });
+
+  it("the no-verdict lines carry the elapsed ms, numeric only, timed from the request start", async () => {
+    const m = load();
+    globalThis.fetch = async () => {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      return { ok: true, status: 200, json: async () => ({ content: [{ type: "text", text: "prose, not a verdict" }], stop_reason: "end_turn" }) };
+    };
+    await m.precheckBookingWrite(input());
+    const quiet = logs.find((l) => /No usable verdict/.test(l)) || "";
+    assert.match(quiet, /No usable verdict \([^)]* ms=\d+\)/, "the quiet line");
+    assert.ok(Number(quiet.match(/ ms=(\d+)\)/)?.[1]) >= 25, "it measured the ~40 ms the reply took");
+    await m.precheckBookingWrite(input());
+    await m.precheckBookingWrite(input());
+    const page = logs.find((l) => /\[ALERT:error\]/.test(l)) || "";
+    assert.match(page, / ms=\d+$/, "the page");
+  });
+});
+
+describe("unchecked is not allow", () => {
+  /** @type {Array<[string, { noKey?: boolean }, (() => void) | null]>} */
+  const scenarios = [
+    ["no API key", { noKey: true }, null],
+    ["HTTP 404", {}, () => { globalThis.fetch = async () => ({ ok: false, status: 404, json: async () => ({ type: "error", error: { type: "not_found_error", message: "m" } }) }); }],
+    ["a network error", {}, () => { globalThis.fetch = async () => { throw Object.assign(new Error("fetch failed"), { name: "TypeError" }); }; }],
+    ["a timeout", {}, () => { globalThis.fetch = async () => { throw Object.assign(new Error("The operation was aborted due to timeout"), { name: "TimeoutError" }); }; }],
+    ["an unreadable reply", {}, () => replyText("I think the name is fine")],
+    ["valid JSON that is not a verdict", {}, () => replyText("{}")],
+    ["a reply with no text block", {}, () => { globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({ content: [{ type: "thinking", thinking: "hmm" }], stop_reason: "max_tokens" }) }); }],
+    ["a 2xx body that is not JSON", {}, () => { globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => { throw new SyntaxError("Unexpected token"); } }); }],
+  ];
+  for (const [what, loadOpts, arrange] of scenarios) {
+    // The spec wants failures logged and runs of them paged; logging an unchecked write
+    // as "allow" would hide exactly that.
+    it(`${what} is logged as unchecked, never as allow`, async () => {
+      const m = load(loadOpts);
+      if (arrange) arrange();
+      assert.deepEqual(await m.precheckBookingWrite(input()), { action: "proceed" });
+      assert.ok(logs.some((l) => /\[Precheck\] unchecked book_appointment \(\d+ms\)\. callSid=CAtest/.test(l)), "logged as unchecked");
+      assert.ok(!logs.some((l) => /\[Precheck\] allow/.test(l)), "never logged as allow");
+    });
+  }
+});
+
+describe("log hygiene on the allow path", () => {
+  it("an allow logs no caller words or details either", async () => {
+    const m = load();
+    replyText(ALLOW);
+    await m.precheckBookingWrite(input());
+    assert.doesNotMatch(logs.join("\n"), /Makhlouf|Michael|plumber|2026-10-15T09/);
+  });
+});
+
+describe("nameVerificationMethod field list", () => {
+  it("skips a null entry in the field list", () => {
+    const m = load();
+    assert.equal(m.nameVerificationMethod({ fields: [null, { id: "first_name", verification: "spell-out" }] }), "spell-out");
+  });
+});
+
+describe("server.js glue mapping", () => {
+  it("sends this call's own state to Claude", async () => {
+    const m = load();
+    const seen = replyText(ALLOW);
+    const s = session({ organization: { timezone: "America/New_York" }, callSid: "CAglue" });
+    await m.applyBookingPrecheck(
+      s,
+      { name: "reschedule_appointment", args: { new_datetime: "2026-10-16T14:00" } },
+      { pendingUser: "Two pm works.", pendingAi: "Moving it now.", promptConfig: { fields: [{ id: "first_name", verification: "spell-out" }] }, audit: true }
+    );
+    const prompt = seen.body.messages[0].content;
+    assert.match(prompt, /TOOL: reschedule_appointment/);
+    assert.match(prompt, /DETAILS THAT WILL BE SAVED: \{"new_datetime":"2026-10-16T14:00 = Friday, October 16, 2026, 2:00 PM"\}/);
+    assert.match(prompt, /\(America\/New_York\)/);
+    assert.match(prompt, /the AI must have spelled it back letter by letter/);
+    assert.match(prompt, /CALLER: I need a plumber tomorrow morning\./);
+    assert.match(prompt, /CALLER: Two pm works\.\nAI: Moving it now\.$/m);
+    assert.ok(logs.some((l) => /callSid=CAglue/.test(l)));
+  });
+
+  // R24: the RebookGuard's name fix is a book_appointment call on a booking that already stands; the glue
+  // passes its correction flag through so the hold does not tell Gemini that nothing was saved.
+  it("passes the name-correction flag through: that hold says the booking still stands", async () => {
+    const m = load();
+    const seen = replyText(FIX);
+    const fix = await m.applyBookingPrecheck(session(), { name: "book_appointment", args: ARGS }, { correction: true, audit: false });
+    assert.match(fix.message, /^NOT CHANGED YET — the existing booking still stands exactly as it was\. Read back the name/);
+    assert.match(seen.body.messages[0].content, /^You check a phone receptionist AI's change BEFORE it is saved\. The AI already booked this caller/, "and Claude is told it is a name correction (R34a)");
+    assert.match(seen.body.messages[0].content, /^TOOL: book_appointment \(name correction on the booking already made in this call\)$/m);
+    const fresh = await m.applyBookingPrecheck(session(), { name: "book_appointment", args: ARGS }, { audit: false });
+    assert.match(fresh.message, /^NOT DONE YET — nothing was saved\. Read back the name/, "control: a new booking");
+  });
+
+  // R28: the practitioner is resolved from the staff list the call itself carries — the schedule
+  // snapshot the model took the id from (PRACTITIONERS ON STAFF). No snapshot, no name; never a failure.
+  it("resolves the practitioner's name from the call's own schedule snapshot", async () => {
+    const m = load();
+    let seen = replyText(ALLOW);
+    const s = new CallSession("CAstaff");
+    s.organization = { timezone: "Australia/Sydney" };
+    s.scheduleSnapshot = { slots: {}, appointments: [], practitioners: [{ id: "prac-7", name: "Dr Sarah Lee", serviceTypeIds: [] }] };
+    await m.applyBookingPrecheck(s, { name: "book_appointment", args: { ...ARGS, practitioner_id: "prac-7" } }, { audit: true });
+    assert.match(seen.body.messages[0].content, /^DETAILS THAT WILL BE SAVED: \{"first_name":"Michael","last_name":"Makhlouf","datetime":"2026-10-15T09:00 = Thursday, October 15, 2026, 9:00 AM","practitioner":"Dr Sarah Lee"\}$/m);
+    assert.doesNotMatch(JSON.stringify(seen.body), /prac-7/);
+
+    seen = replyText(ALLOW);
+    const noSnapshot = new CallSession("CAcliniko"); // a Cliniko org carries no snapshot
+    noSnapshot.organization = { timezone: "Australia/Sydney" };
+    assert.equal(await m.applyBookingPrecheck(noSnapshot, { name: "book_appointment", args: { ...ARGS, practitioner_id: "prac-7" } }, { audit: true }), null);
+    assert.match(seen.body.messages[0].content, /^DETAILS THAT WILL BE SAVED: \{"first_name":"Michael","last_name":"Makhlouf","datetime":"2026-10-15T09:00 = Thursday, October 15, 2026, 9:00 AM"\}$/m);
+    assert.ok(!logs.some((l) => /ALERT|No usable verdict/.test(l)), "an unresolvable practitioner is not a failure");
+  });
+
+  // R21: the handlers pass a getter over their live pending-transcript buffers, so a fix can be asked
+  // again with words that arrived during the check.
+  it("reads the turn in progress through the handler's getter, live, and re-checks a fix once with what arrived", async () => {
+    const m = load();
+    const turn = { user: "Two pm", ai: "Moving it now." };
+    const prompts = [];
+    let call = 0;
+    globalThis.fetch = async (_url, init) => {
+      prompts.push(JSON.parse(init.body).messages[0].content);
+      call++;
+      if (call === 1) turn.user = "Two pm works, yes.";
+      const text = call === 1 ? FIX : ALLOW;
+      return { ok: true, status: 200, json: async () => ({ content: [{ type: "text", text }], stop_reason: "end_turn" }) };
+    };
+    const s = session();
+    const r = await m.applyBookingPrecheck(
+      s,
+      { name: "reschedule_appointment", args: { new_datetime: "2026-10-16T14:00" } },
+      { pendingUser: "stale static text", getPending: () => ({ user: turn.user, ai: turn.ai }), audit: true }
+    );
+    assert.equal(r, null, "the re-check allowed it: go ahead and write");
+    assert.equal(prompts.length, 2);
+    assert.match(prompts[0], /CALLER: Two pm\nAI: Moving it now\.$/m, "the getter wins over static text");
+    assert.match(prompts[1], /CALLER: Two pm works, yes\.\nAI: Moving it now\.$/m);
+    assert.doesNotMatch(prompts.join("\n"), /stale static text/);
+    assert.equal(s.toolCallAudit.length, 0, "nothing held, nothing audited");
+  });
+
+  // R19: session.messages is a sliding window (system prompt + the last 20). On a longer call the
+  // name read-back and the caller's "yes" fall out of it, and the check then holds a CORRECT booking
+  // as unconfirmed. The check reads the unwindowed transcript instead.
+  it("sees the whole call, not the 20-message window: an early name confirmation still reaches Claude", async () => {
+    const m = load();
+    const seen = replyText(ALLOW);
+    const s = new CallSession("CAlong");
+    s.organization = { timezone: "Australia/Sydney" };
+    s.addMessage("system", "SECRET SYSTEM PROMPT");
+    s.addMessage("assistant", "Can I get your surname?");
+    s.addMessage("user", "Makhoul. M-A-K-H-O-U-L.");
+    s.addMessage("assistant", "So that's M-A-K-H-O-U-L, is that right?");
+    s.addMessage("user", "Yes, that's right.");
+    for (let i = 1; i <= 10; i++) {
+      s.addMessage("assistant", `Question ${i} about the job?`);
+      s.addMessage("user", `Answer ${i}.`);
+    }
+    assert.ok(!s.messages.some((x) => /M-A-K-H-O-U-L, is that right/.test(String(x.content))), "precondition: the window has dropped the read-back");
+    await m.applyBookingPrecheck(s, { name: "book_appointment", args: ARGS }, { pendingUser: "", pendingAi: "Booking that now.", audit: true });
+    const prompt = seen.body.messages[0].content;
+    assert.match(prompt, /AI: Can I get your surname\?\nCALLER: Makhoul\. M-A-K-H-O-U-L\.\nAI: So that's M-A-K-H-O-U-L, is that right\?\nCALLER: Yes, that's right\./, "the early read-back and the caller's yes");
+    assert.match(prompt, /CALLER: Answer 10\.\nAI: Booking that now\.$/m, "and the latest turn");
+    assert.doesNotMatch(prompt, /SECRET SYSTEM PROMPT/);
+    assert.doesNotMatch(prompt, /call omitted/, "a call this short is sent whole");
+  });
+
+  // R34b: over the cap the whole call keeps its start (where the name is usually confirmed) and its end.
+  it("the whole call over 12,000 characters keeps its first 3,000 and last 9,000, around one marker", async () => {
+    const m = load();
+    const seen = replyText(ALLOW);
+    const s = new CallSession("CAhuge");
+    s.organization = { timezone: "Australia/Sydney" };
+    for (let i = 0; i < 800; i++) s.addMessage(i % 2 ? "user" : "assistant", `line ${i} ${"x".repeat(20)}`);
+    await m.applyBookingPrecheck(s, { name: "book_appointment", args: ARGS }, { audit: true });
+    const conversation = seen.body.messages[0].content.split("CONVERSATION SO FAR")[1].split("\nRules")[0];
+    assert.match(conversation, /\):\nAI: line 0 x+\nCALLER: line 1 x+\n/, "the start");
+    assert.match(conversation, /\n\[middle of the call omitted\]\n(CALLER|AI): line \d+ x+\n/);
+    assert.equal(conversation.split("[middle of the call omitted]").length - 1, 1);
+    assert.match(conversation, /CALLER: line 799 x+\n$/, "the end");
+    assert.ok(conversation.length < 12250, `capped (${conversation.length} chars)`);
+  });
+
+  // A failed transfer reconnects with restoreFrom, which restores the windowed messages but not the
+  // unwindowed transcript: until something new is said, the windowed copy is all there is.
+  it("falls back to the windowed messages when the unwindowed transcript is empty", async () => {
+    const m = load();
+    const seen = replyText(ALLOW);
+    const s = new CallSession("CArestored");
+    s.restoreFrom({ messages: CONVERSATION, organization: { timezone: "Australia/Sydney" } });
+    assert.equal(s.fullTranscriptMessages.length, 0, "precondition: restoreFrom leaves the unwindowed transcript empty");
+    await m.applyBookingPrecheck(s, { name: "book_appointment", args: ARGS }, { audit: true });
+    const prompt = seen.body.messages[0].content;
+    assert.match(prompt, /AI: Thanks for calling\. How can I help\?\nCALLER: I need a plumber tomorrow morning\./);
+    assert.doesNotMatch(prompt, /nothing transcribed yet/);
+  });
+
+  it("an update with nothing to check passes straight through the glue: no request, no hold, no audit entry", async () => {
+    const m = load();
+    const seen = replyText(FIX);
+    const s = session();
+    assert.equal(await m.applyBookingPrecheck(s, { name: "update_appointment", args: { email: "a@b.co" } }, { audit: true }), null);
+    assert.equal(seen.calls, 0);
+    assert.equal(s.toolCallAudit.length, 0);
+    assert.equal(s.precheckHolds.size, 0);
+  });
+
+  it("audit:true on a session with no audit array does not throw", async () => {
+    const m = load();
+    replyText(FIX);
+    const r = await m.applyBookingPrecheck(session({ toolCallAudit: undefined }), { name: "book_appointment", args: ARGS }, { audit: true });
+    assert.match(r.message, /^NOT DONE YET — nothing was saved\./);
+  });
+
+  // The hold's audit entry is read by CallSession#hasUnfinishedBooking (the end_call guard),
+  // which orders funnel steps by `at`: the entry must be real tool-audit state, not just look like it.
+  it("a hold after check_availability leaves the booking unfinished for a real CallSession", async () => {
+    const m = load();
+    replyText(FIX);
+    const s = new CallSession("CAreal");
+    s.messages = CONVERSATION;
+    s.organization = { timezone: "Australia/Sydney" };
+    s.toolCallAudit.push({ name: "check_availability", successful: true, at: Date.now() - 5000 });
+    const r = await m.applyBookingPrecheck(s, { name: "book_appointment", args: ARGS }, { audit: true });
+    assert.match(r.message, /^NOT DONE YET/);
+    const hold = s.toolCallAudit[s.toolCallAudit.length - 1];
+    assert.equal(hold.name, "book_appointment");
+    assert.equal(typeof hold.at, "number", "the ordering key hasUnfinishedBooking reads");
+    assert.equal(s.hasUnfinishedBooking(), true);
+  });
+
+  it("a hold after an earlier CONFIRMED booking still counts, because its `at` is the newest", async () => {
+    const m = load();
+    replyText(FIX);
+    const s = new CallSession("CAreal2");
+    s.messages = CONVERSATION;
+    s.organization = { timezone: "Australia/Sydney" };
+    s.toolCallAudit.push({ name: "book_appointment", successful: true, at: Date.now() - 60000 });
+    assert.equal(s.hasUnfinishedBooking(), false, "a confirmed booking is a clean exit");
+    await m.applyBookingPrecheck(s, { name: "book_appointment", args: ARGS }, { audit: true });
+    assert.equal(s.hasUnfinishedBooking(), true, "the held second booking is newer than the confirmed one, so the call is unfinished");
+  });
+
+  // The glue runs in front of a booking write inside the tool handler: it must never throw into it.
+  it("never throws: a session whose messages getter throws is paged once and the write goes through", async () => {
+    const m = load();
+    const seen = replyText(FIX);
+    const s = session();
+    Object.defineProperty(s, "messages", {
+      get() {
+        throw new RangeError("boom with SECRET caller words");
+      },
+    });
+    assert.equal(await m.applyBookingPrecheck(s, { name: "book_appointment", args: ARGS }, { audit: true }), null);
+    assert.equal(seen.calls, 0, "no request was made");
+    const pages = logs.filter((l) => /\[ALERT:error\]/.test(l));
+    assert.equal(pages.length, 1, "exactly one page");
+    assert.match(pages[0], /\[ALERT:error\] \[booking_precheck\] Booking pre-check glue threw — write went through unchecked/);
+    assert.match(pages[0], /callSid=CAtest toolName=book_appointment errorType=RangeError stack=at /, "SF-L4: and where it threw");
+    assert.doesNotMatch(logs.join("\n"), /SECRET/, "the error message is never logged");
+    assert.equal(s.toolCallAudit.length, 0, "nothing was audited");
+  });
+
+  // SF-L4: the page says WHERE the glue threw, by stack frames only. A frame line can never carry the
+  // error's message, but a message with a line break would put its second line where a naive
+  // slice(1, 4) of the stack expects frames, so only lines that ARE frames are kept.
+  it("the glue page carries up to 3 stack frames and never the message, even a multi-line one", async () => {
+    const m = load();
+    replyText(FIX);
+    const s = session();
+    Object.defineProperty(s, "messages", {
+      get() {
+        throw new TypeError("first line\nSECRET caller words on line two\n    at not a frame either");
+      },
+    });
+    assert.equal(await m.applyBookingPrecheck(s, { name: "book_appointment", args: ARGS }, { audit: true }), null);
+    const page = logs.find((l) => /glue threw/.test(l)) || "";
+    const stack = (/ stack=(.*)$/.exec(page) || [])[1] || "";
+    const frames = stack.replace(/\.\.\.\[truncated\]$/, "").split(" <- ");
+    assert.ok(frames.length >= 1 && frames.length <= 3, stack);
+    assert.ok(frames.every((f) => /^at \S/.test(f)), `frames only: ${stack}`);
+    assert.doesNotMatch(page, /SECRET|first line|not a frame/);
+  });
+});

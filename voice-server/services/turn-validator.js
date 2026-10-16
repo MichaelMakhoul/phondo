@@ -14,7 +14,8 @@
  */
 
 const { DEBUG_TRANSCRIPTS } = require("../lib/log-transcript");
-const { claudeLatencyParams, claudeResponseText } = require("../lib/model-params");
+const { claudeLatencyParams, claudeResponseText, readAnthropicError } = require("../lib/model-params");
+const { safeNowLine } = require("../lib/now-line");
 const { Sentry } = require("../lib/sentry");
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
@@ -89,23 +90,6 @@ function noVerdict(info) {
 }
 
 /**
- * Error type + message from an Anthropic error body — never anything else.
- * @param {{ json: () => Promise<unknown> }} res
- * @returns {Promise<{ errorType?: string, errorMessage?: string }>}
- */
-async function readApiError(res) {
-  try {
-    const body = /** @type {any} */ (await res.json());
-    return {
-      errorType: typeof body?.error?.type === "string" ? body.error.type : undefined,
-      errorMessage: typeof body?.error?.message === "string" ? body.error.message.slice(0, 200) : undefined,
-    };
-  } catch {
-    return {};
-  }
-}
-
-/**
  * The model's verdict, or why there is none. A string "true"/"false" is not
  * a verdict: the prompt asks for a JSON boolean, and anything else is drift.
  * @param {string} text - the reply's text block
@@ -140,9 +124,10 @@ function parseVerdict(text) {
  * @param {string} params.toolName — which tool was called (e.g., "book_appointment")
  * @param {string} params.toolResult — the text result the tool returned
  * @param {string} params.spokenResponse — what Sophie said to the caller (from outputTranscription)
+ * @param {string} [params.timezone] - IANA zone of the business (SCRUM-593); Australia/Sydney when missing or malformed
  * @returns {Promise<{ accurate: boolean, discrepancy?: string }>}
  */
-async function validateToolResponse({ toolName, toolResult, spokenResponse }) {
+async function validateToolResponse({ toolName, toolResult, spokenResponse, timezone }) {
   // Only validate action tools — skip get_current_datetime, check_availability, etc.
   // (Not a failure: there is nothing to check, so it neither counts nor resets.)
   const actionTools = new Set(["book_appointment", "cancel_appointment", "schedule_callback", "lookup_appointment"]);
@@ -175,9 +160,10 @@ async function validateToolResponse({ toolName, toolResult, spokenResponse }) {
 TOOL CALLED: ${toolName}
 TOOL RESULT: "${toolResult}"
 AI SPOKE TO CALLER: "${spokenResponse}"
+NOW (the business's timezone): ${safeNowLine(timezone)}
 
 Check for:
-1. Date mismatch (tool says one date, AI says different date)
+1. Date mismatch (tool says one date, AI says a different date). Relative words the AI used — "today", "tomorrow" or a weekday name — are CORRECT when they resolve to the tool's date from NOW.
 2. Time mismatch (tool says 10:15, AI says 10:00)
 3. Practitioner/doctor name mismatch
 4. Status mismatch (tool returned error but AI said success, or vice versa)
@@ -193,7 +179,7 @@ OR
     });
 
     if (!res.ok) {
-      const { errorType, errorMessage } = await readApiError(res);
+      const { errorType, errorMessage } = await readAnthropicError(res);
       return noVerdict({
         cause: "http-error",
         status: res.status,

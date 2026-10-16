@@ -260,11 +260,76 @@ see below for what that costs a caller.
 | Kill all eval overrides | `fly secrets unset TEST_PIPELINE_OVERRIDES -a phondo-voice` |
 | Revert the voice model (SCRUM-588) | `fly secrets set GEMINI_LIVE_MODEL=models/gemini-3.1-flash-live-preview -a phondo-voice` |
 | Revert post-call analysis / Tier-2 validator models | `fly secrets set ANALYSIS_MODEL=gpt-4.1-mini VALIDATOR_MODEL=claude-haiku-4-5-20251001 -a phondo-voice` |
+| Booking pre-check off (SCRUM-593) | `fly secrets set PRECHECK_MODE=off -a phondo-voice` (restarts the machine: see [Booking pre-check](#booking-pre-check-scrum-593)) |
 | Per-number AI off (calls forward instead) | `phone_numbers.ai_enabled=false` in DB / dashboard toggle |
 
 Proof of which pipeline a call ran (tool/transcript logs say `[GeminiLive]` on
 several shared paths): the `[Pipeline] TEST override → …` line and the
 adapter's own `[GrokRealtime]`/`[OpenAIRealtime]` lines.
+
+## Booking pre-check (SCRUM-593)
+
+Before a Gemini call writes a booking change (`book_appointment`,
+`reschedule_appointment`, `update_appointment`, and the RebookGuard's name fix),
+Claude (`PRECHECK_MODEL`, default `claude-haiku-5-5`) checks the name, date and
+practitioner against what the caller said and confirmed. On a problem the write is
+held and Gemini is told to confirm with the caller; after 2 holds of one tool in a
+call the next attempt goes through. If Claude is slow (over 3 s) or down, the write
+goes through unchecked (fail-open). The public website demo is never checked.
+Spec: `docs/superpowers/specs/2026-10-15-booking-precheck-design.md`.
+
+**Modes** (`PRECHECK_MODE`):
+- unset or `enforce` (default): checks and holds;
+- `shadow`: checks and logs what it would have done (the first verdict; no re-check), never holding or delaying a write;
+- `off`, also `disabled`, `disable`, `false`, `0`, `no`, `n`, `none`, `skip`, `bypass` or `stop` (trimmed, any case): no check at all.
+
+Any other value (`on`, `true` and `yes` included) ENFORCES, warns once (`[Precheck] unknown PRECHECK_MODE="…" — enforcing`) and pages at boot (below).
+
+**At boot**, right after the `Voice pipeline:` line, the server logs what the check will do:
+`[Precheck] mode=<enforce|shadow|off> model=<model> key=<set|MISSING|unset>`. `MISSING` means the check is
+on but `ANTHROPIC_API_KEY` is not set; `unset` means it is off and the key does not matter. Two settings
+that silently defeat the check page at boot, once each:
+- `[ALERT:error] [booking_precheck] PRECHECK_MODE is not recognised: the booking pre-check is ENFORCING | … mode_value="…"`. Someone typed a mode we don't know. Fix the secret if they meant off or shadow.
+- `[ALERT:error] [booking_precheck] Booking pre-check is on but ANTHROPIC_API_KEY is not set: writes go through unchecked`. Every booking write goes through unchecked until the key is set.
+
+**Kill switch:** `fly secrets set PRECHECK_MODE=off -a phondo-voice`. Setting a secret
+restarts the always-on machine: a live call gets the 15 s shutdown drain and is then
+cut off, and a call that arrives during the restart gets the voicemail fallback. Do it
+at a quiet time (no recent `callSid=` in `fly logs`). Back on:
+`fly secrets unset PRECHECK_MODE -a phondo-voice`.
+
+**Not behind the flag:** the Tier-2 checker's date fix (it now gets the business's
+date and time, so "today"/"tomorrow" are no longer flagged as mismatches) ships with
+the code. `PRECHECK_MODE` does not switch it back.
+
+**Log lines.** Per-call lines carry `callSid=`; the boot line and the `[NowLine]` warning do not. None carries caller words, names or values.
+
+| Line | Meaning |
+|---|---|
+| `[Precheck] allow <tool> (<ms>ms)` | Claude read the call and allowed the write |
+| `[Precheck] Holding <tool>: <problem> — hold n/2 (<ms>ms)` | held: Gemini confirms with the caller, then calls again |
+| `[Precheck] unchecked <tool> (<ms>ms)` | no usable verdict (timeout, HTTP error, unreadable reply), so written unchecked; the cause is on the line before it: `[Precheck] No usable verdict (…)`, or the page below |
+| `[Precheck] skip <tool> (no name or date to save)` | nothing to check (e.g. an email-only update) |
+| `[Precheck] skip <tool> (public demo)` | the website demo (`/ws/test`, demo org) is never checked (no line while the check is off) |
+| `[Precheck] (shadow) would hold <tool>: <problem>` | shadow mode: the would-be hold; the write went ahead |
+| `[Precheck] caller spoke during the check — re-checking <tool> once` | the caller's words grew during a held check (a late "yes"), so it asked again |
+| `[Precheck] re-check failed — holding on the first verdict <tool>: <problem>` | that second ask got no verdict, so the first verdict's hold stands (the failure still counts toward the page below) |
+| `[Precheck] session ended during the check — writing the allowed <tool> anyway` | the caller hung up mid-check; the allowed write still happened |
+| `[Precheck] <tool> let through unchecked after 2 holds` | the hold cap let it through; this pages (see below) |
+| `[Precheck] held <tool> dropped — call ended during the check` | the caller hung up mid-check on a write the check held; nothing was written |
+| `[Precheck] practitioner not resolved — rule 4 not applied` | the write saves a practitioner the call's staff list can't name (no snapshot, as for a Cliniko org, or an unknown id), so the practitioner rule could not be checked |
+| `[NowLine] org timezone "<zone>" is not a valid IANA zone — using Australia/Sydney` | the org's timezone is malformed; "today"/"tomorrow" are judged against Sydney's date until it is fixed (once per bad value per process) |
+
+**Pages:** `[ALERT:error] [booking_precheck] Booking pre-check producing no verdicts (…) — writes go through unchecked`.
+- It fires at once on a config failure: `ANTHROPIC_API_KEY not set`, or HTTP 400/401/403/404 (a bad key, model or request field).
+- It also fires from the 3rd failed check in a row (`(<n> unreadable in a row)`).
+- Intermittent failures page too: `(<n> of the last <m> checks unreadable)` fires once 3 of the last 10 checks have failed, for example two failures in every three checks. It fires once per failed check while that holds.
+- Bookings keep working, but unchecked. Triage from the line's `cause=`, `status=` and `error_type=`. For a bad model, `fly secrets unset PRECHECK_MODEL -a phondo-voice`.
+- A page that ends `— held on the first verdict` came from a failed re-check: that write was held, not let through.
+- `[ALERT:error] [booking_precheck] Booking pre-check glue threw — write went through unchecked` is a code bug: one write went through unchecked. Its `stack=` shows up to 3 frames of where it threw.
+- `[ALERT:error] [booking_precheck] Booking pre-check: <tool> let through unchecked after 2 holds | … reason=precheck-hold-cap`: the check held one write twice in a call and let the third attempt through unchecked, so the caller is never trapped. One page is a caller the check could not satisfy. Several in a short time mean it is holding correct bookings: look at the `Holding … <problem>` lines, and step down to `shadow` if needed.
+
+Loki: `{fly_app_name="phondo-voice"} |= "[Precheck]"`.
 
 ## Log cookbook
 

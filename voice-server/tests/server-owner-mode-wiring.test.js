@@ -492,6 +492,10 @@ function makeGeminiCallbacks(session, o = {}) {
     logTranscript: () => {},
     pendingUserTranscript: "",
     pendingAiTranscript: "",
+    // SCRUM-593: a customer write that passes the guards meets the booking pre-check (server.js names
+    // these two); the default is "no hold". An owner call must never get here — see the first test below.
+    applyBookingPrecheck: async (...a) => { calls.push(["applyBookingPrecheck", ...a]); return o.precheckHold ?? null; },
+    context: { assistant: { promptConfig: { fields: [] } } },
     detectPhantomAction: (...a) => { calls.push(["detectPhantomAction", ...a]); return null; },
     validateToolResponse: async (...a) => { calls.push(["validateToolResponse", ...a]); return { accurate: true }; },
     DEBUG_TRANSCRIPTS: false,
@@ -531,6 +535,7 @@ describe("SCRUM-587: Gemini callbacks, run for real", () => {
     calls.filter((c) => c[0] === "runOwnerToolCall").at(-1)[3].sendText("hello");
     assert.deepEqual(injected, ["hello"]);
     assert.deepEqual(guardCalls, [], "no customer guard ran");
+    assert.deepEqual(calls.filter((c) => c[0] === "applyBookingPrecheck"), [], "nor the booking pre-check (SCRUM-593)");
     assert.deepEqual(calls.filter((c) => c[0] === "executeToolCall"), [], "server.js never calls the executor itself on an owner call");
     assert.equal(s.toolCallAudit.length, 1, "server.js adds no customer audit entries");
     assert.equal(s._lastToolResult, undefined, "the Tier-2 validator is never armed");
@@ -1456,15 +1461,17 @@ describe("SCRUM-587: customer paths through hunks the owner work edited, run for
     assert.equal(calls.find((c) => c[0] === "completeCallRecord")[2].actionTaken, "owner_call");
   });
 
-  it("Gemini turn-complete: a customer turn right after a tool result still reaches the Tier-2 validator (with the tool, its result and what was said)", async () => {
+  it("Gemini turn-complete: a customer turn right after a tool result still reaches the Tier-2 validator (with the tool, its result, what was said and the business's timezone)", async () => {
     const customer = makeSession({ owner: false });
+    // SCRUM-593: not the Sydney fallback, so only the org's own zone can satisfy the assertion below.
+    customer.organization = { timezone: "America/New_York" };
     customer._lastToolResult = { name: "check_availability", message: "9 a.m. or 10 a.m. on Friday.", at: Date.now() };
     const c = makeGeminiCallbacks(customer);
     c.cbs.onTranscriptOut("We have 9 a.m. or 10 a.m. on Friday.");
     c.cbs.onTurnComplete();
     const v = c.calls.filter((x) => x[0] === "validateToolResponse");
     assert.equal(v.length, 1);
-    assert.deepEqual(v[0][1], { toolName: "check_availability", toolResult: "9 a.m. or 10 a.m. on Friday.", spokenResponse: "We have 9 a.m. or 10 a.m. on Friday." });
+    assert.deepEqual(v[0][1], { toolName: "check_availability", toolResult: "9 a.m. or 10 a.m. on Friday.", spokenResponse: "We have 9 a.m. or 10 a.m. on Friday.", timezone: "America/New_York" });
     assert.equal(customer._lastToolResult, null, "consumed");
   });
 

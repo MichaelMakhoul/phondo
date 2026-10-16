@@ -25,6 +25,7 @@ const { requiresRecordingDisclosureHybrid, getRecordingDisclosureText } = requir
 const { Sentry } = require("../lib/sentry");
 const { SENTRY_REASONS, setReasonTag } = require("../lib/sentry-reasons");
 const { OWNER_TOOL_NAMES, OWNER_WRITE_TOOL_NAMES } = require("../lib/owner-tools"); // SCRUM-587
+const { nowLine } = require("../lib/now-line"); // SCRUM-593: shared "now" wording
 
 const INTERNAL_API_URL = process.env.INTERNAL_API_URL;
 const INTERNAL_API_SECRET = process.env.INTERNAL_API_SECRET;
@@ -457,29 +458,7 @@ const endCallToolDefinition = {
  * @returns {{ message: string }}
  */
 function resolveCurrentDatetime(timezone) {
-  const now = new Date();
-  const dateFormatter = new Intl.DateTimeFormat("en-US", {
-    weekday: "long",
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-    timeZone: timezone,
-  });
-  const timeFormatter = new Intl.DateTimeFormat("en-US", {
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h12",
-    timeZone: timezone,
-  });
-  const isoDateFormatter = new Intl.DateTimeFormat("en-CA", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    timeZone: timezone,
-  });
-  return {
-    message: `Current date and time: ${dateFormatter.format(now)}, ${timeFormatter.format(now)} (${timezone}). Today's date in YYYY-MM-DD format: ${isoDateFormatter.format(now)}.`,
-  };
+  return { message: nowLine(timezone) };
 }
 
 /**
