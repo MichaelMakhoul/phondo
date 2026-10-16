@@ -2679,11 +2679,15 @@ wss.on("connection", (twilioWs) => {
                             getPending: () => ({ user: pendingUserTranscript, ai: pendingAiTranscript }),
                             promptConfig: context?.assistant?.promptConfig,
                             audit: false,
+                            correction: true, // its hold must not say "nothing was saved": a booking stands
                           });
                         } finally {
                           if (session) session._toolCallInFlight = false;
                         }
-                        if (correctionHold) return session ? correctionHold : { message: "" };
+                        if (correctionHold) {
+                          s._lastToolResult = null; // a hold is no tool result (see the main check below)
+                          return session ? correctionHold : { message: "" };
+                        }
                         if (!session) console.warn(`[Precheck] session ended during the check — writing the allowed ${toolCall.name} anyway. callSid=${s.callSid}`);
                         // From here on `s`, never `session`: an allowed fix is written, and its
                         // bookkeeping lands, even if the call ended during the check.
@@ -2754,7 +2758,13 @@ wss.on("connection", (twilioWs) => {
                   } finally {
                     if (session) session._toolCallInFlight = false;
                   }
-                  if (precheckHold) return session ? precheckHold : { message: "" };
+                  if (precheckHold) {
+                    // A hold is no tool result. Tier-2 validates the next AI turn against
+                    // _lastToolResult for 10 s: left set, the read-back the hold asks for
+                    // would be judged against an OLDER result and "corrected".
+                    s._lastToolResult = null;
+                    return session ? precheckHold : { message: "" };
+                  }
                   if (!session) console.warn(`[Precheck] session ended during the check — writing the allowed ${toolCall.name} anyway. callSid=${s.callSid}`);
 
                   // Flag so goodbye-loop auto-end knows a tool call is in progress

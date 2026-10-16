@@ -65,6 +65,12 @@ function replyText(text) {
   return seen;
 }
 
+/** A shadow check finishes after the write has gone ahead: let it land, then check. */
+async function waitFor(condition, ticks = 50) {
+  for (let i = 0; i < ticks && !condition(); i++) await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(condition(), `never happened; logs:\n${logs.join("\n")}`);
+}
+
 const CONVERSATION = [
   { role: "system", content: "SECRET SYSTEM PROMPT" },
   { role: "assistant", content: "Thanks for calling. How can I help?" },
@@ -329,7 +335,7 @@ describe("verdicts and modes", () => {
     const m = load({ mode: "shadow" });
     replyText(FIX);
     assert.deepEqual(await m.precheckBookingWrite(input()), { action: "proceed" });
-    assert.ok(logs.some((l) => /\[Precheck\] \(shadow\) would hold book_appointment: name_unconfirmed/.test(l)));
+    await waitFor(() => logs.some((l) => /\[Precheck\] \(shadow\) would hold book_appointment: name_unconfirmed \(\d+ms\)\. callSid=CAtest/.test(l)));
   });
 
   it("off mode never calls Claude", async () => {
@@ -337,6 +343,19 @@ describe("verdicts and modes", () => {
     const seen = replyText(FIX);
     assert.deepEqual(await m.precheckBookingWrite(input()), { action: "proceed" });
     assert.equal(seen.calls, 0);
+  });
+
+  // R25: the kill switch fails toward OFF for the obvious negatives, so an operator who types
+  // PRECHECK_MODE=false in a hurry gets what they meant.
+  it("the obvious negatives switch it off too: disabled, false, 0, no — trimmed, any case, without a warning", async () => {
+    for (const mode of ["disabled", "false", "0", "no", " NO ", "False", "DISABLED"]) {
+      logs.length = 0;
+      const m = load({ mode });
+      const seen = replyText(FIX);
+      assert.deepEqual(await m.precheckBookingWrite(input()), { action: "proceed" }, JSON.stringify(mode));
+      assert.equal(seen.calls, 0, `${JSON.stringify(mode)}: Claude is never asked`);
+      assert.deepEqual(logs, [], `${JSON.stringify(mode)}: no warning, no line`);
+    }
   });
 
   it("an unrecognised PRECHECK_MODE enforces", async () => {
@@ -349,12 +368,12 @@ describe("verdicts and modes", () => {
     const m = load({ mode: " SHADOW " });
     replyText(FIX);
     assert.deepEqual(await m.precheckBookingWrite(input()), { action: "proceed" });
-    assert.ok(logs.some((l) => /\[Precheck\] \(shadow\) would hold book_appointment/.test(l)));
+    await waitFor(() => logs.some((l) => /\[Precheck\] \(shadow\) would hold book_appointment/.test(l)));
     assert.ok(!logs.some((l) => /unknown PRECHECK_MODE/.test(l)), "a recognised value does not warn");
   });
 
   it("an unknown PRECHECK_MODE enforces, and warns once per process", async () => {
-    for (const mode of ["disabled", "false"]) {
+    for (const mode of ["enforced", "on", "true", "yes", "disable"]) {
       logs.length = 0;
       const m = load({ mode });
       replyText(FIX);
@@ -521,7 +540,113 @@ describe("hold cap", () => {
     replyText(FIX);
     const holds = new Map();
     await m.precheckBookingWrite(input({ holds }));
+    await waitFor(() => logs.some((l) => /\(shadow\) would hold/.test(l)));
     assert.equal(holds.size, 0);
+  });
+});
+
+// R24: the hold's opening words are fixed server text chosen by the write, never the model's (Ruling 7).
+// A reschedule, an update or a name fix is held while a booking already stands: "nothing was saved"
+// could make Gemini tell a booked caller that they have no appointment.
+describe("the hold's opening line depends on the write", () => {
+  const NEW = "NOT DONE YET — nothing was saved.";
+  const CHANGE = "NOT CHANGED YET — the existing booking still stands exactly as it was.";
+  const NAME_FIX = "Read back the name you were about to save — spell the surname letter by letter — and ask the caller to confirm it. Use their correction if they give one.";
+
+  for (const [label, toolName, args, correction, opening] of [
+    ["a new booking", "book_appointment", ARGS, undefined, NEW],
+    ["a name fix on a booking that stands (the RebookGuard's correction)", "book_appointment", ARGS, true, CHANGE],
+    ["a reschedule", "reschedule_appointment", { new_datetime: "2026-10-16T10:00", first_name: "Michael", last_name: "Makhoul" }, undefined, CHANGE],
+    ["an update", "update_appointment", { first_name: "Michael", last_name: "Makhoul" }, undefined, CHANGE],
+  ]) {
+    it(`${label}: "${opening.split(" — ")[0]}"`, async () => {
+      const m = load();
+      replyText(FIX);
+      const r = await m.precheckBookingWrite(input({ toolName, args, correction }));
+      assert.equal(r.message, `${opening} ${NAME_FIX} Then call ${toolName} again with the confirmed details.`);
+    });
+  }
+
+  it("a correction flag on a reschedule or an update changes nothing", async () => {
+    const m = load();
+    for (const toolName of ["reschedule_appointment", "update_appointment"]) {
+      replyText(FIX);
+      const r = await m.precheckBookingWrite(input({ toolName, args: { first_name: "Michael", last_name: "Makhoul", new_datetime: "2026-10-16T10:00" }, correction: false }));
+      assert.ok(r.message.startsWith(CHANGE), toolName);
+    }
+  });
+});
+
+// R26: shadow mode only logs what enforce would do, so it must never make a write wait for Claude.
+describe("shadow mode never delays a write", () => {
+  it("proceeds before Claude replies, and logs the would-be hold when the reply lands", async () => {
+    const m = load({ mode: "shadow" });
+    let release = () => {};
+    let asked = () => {};
+    const wasAsked = new Promise((resolve) => { asked = resolve; });
+    globalThis.fetch = () => new Promise((resolve) => {
+      release = () => resolve({ ok: true, status: 200, json: async () => ({ content: [{ type: "text", text: FIX }], stop_reason: "end_turn" }) });
+      asked();
+    });
+    try {
+      const pending = m.precheckBookingWrite(input());
+      await wasAsked;
+      const first = await Promise.race([pending.then(() => "proceeded"), new Promise((resolve) => setTimeout(() => resolve("waited"), 50))]);
+      assert.equal(first, "proceeded", "the write did not wait for Claude");
+      assert.deepEqual(await pending, { action: "proceed" });
+      assert.ok(!logs.some((l) => /\[Precheck\]/.test(l)), "no verdict to log before the reply lands");
+    } finally {
+      release();
+    }
+    await waitFor(() => logs.some((l) => /^\[Precheck\] \(shadow\) would hold book_appointment: name_unconfirmed \(\d+ms\)\. callSid=CAtest$/.test(l)));
+  });
+
+  it("logs a shadow allow, and an unreadable reply as unchecked (paging as in enforce), when they land", async () => {
+    let m = load({ mode: "shadow" });
+    replyText(ALLOW);
+    assert.deepEqual(await m.precheckBookingWrite(input()), { action: "proceed" });
+    await waitFor(() => logs.some((l) => /^\[Precheck\] allow book_appointment \(\d+ms\)\. callSid=CAtest$/.test(l)));
+
+    logs.length = 0;
+    m = load({ mode: "shadow" });
+    replyText("not a verdict");
+    for (let i = 0; i < 3; i++) assert.deepEqual(await m.precheckBookingWrite(input()), { action: "proceed" });
+    await waitFor(() => logs.filter((l) => /^\[Precheck\] unchecked book_appointment/.test(l)).length === 3);
+    assert.ok(logs.some((l) => /\[ALERT:error\] \[booking_precheck\].*3 unreadable in a row/.test(l)), "a run of failures still pages");
+  });
+
+  it("a shadow check that throws is caught and reported like any other failure — never an unhandled rejection", async () => {
+    const m = load({ mode: "shadow" });
+    const seen = replyText(FIX);
+    const unhandled = [];
+    const onUnhandled = (reason) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const getPending = () => { throw new TypeError("a broken getter"); };
+      assert.deepEqual(await m.precheckBookingWrite(input({ getPending })), { action: "proceed" });
+      await waitFor(() => logs.some((l) => /No usable verdict \(.*cause=unexpected-error error_type=TypeError/.test(l)));
+      await new Promise((resolve) => setImmediate(resolve));
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+    assert.deepEqual(unhandled, []);
+    assert.equal(seen.calls, 0);
+  });
+
+  it("a shadow check still re-checks a fix once when the caller spoke during it", async () => {
+    const m = load({ mode: "shadow" });
+    const turn = { user: "", ai: "" };
+    let calls = 0;
+    globalThis.fetch = async () => {
+      calls++;
+      if (calls === 1) turn.user = "Yes, that's right.";
+      const text = calls === 1 ? FIX : ALLOW;
+      return { ok: true, status: 200, json: async () => ({ content: [{ type: "text", text }], stop_reason: "end_turn" }) };
+    };
+    assert.deepEqual(await m.precheckBookingWrite(input({ getPending: () => ({ user: turn.user, ai: turn.ai }) })), { action: "proceed" });
+    await waitFor(() => logs.some((l) => /^\[Precheck\] allow book_appointment/.test(l)));
+    assert.equal(calls, 2);
+    assert.ok(!logs.some((l) => /would hold/.test(l)), "what enforce would have done: allow after the re-check");
   });
 });
 

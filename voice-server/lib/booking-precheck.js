@@ -13,8 +13,9 @@
  * Contract: never throws; fails OPEN (any failure lets the write through,
  * alerting like the Tier-2 checker); holds a tool at most MAX_HOLDS times per
  * call; logs no caller words, argument values or model text (SCRUM-339); and
- * hands Gemini ONLY fixed server-side text chosen by a problem code — Claude's
- * wording never reaches it (see INSTRUCTIONS).
+ * hands Gemini ONLY fixed server-side text chosen by the write and a problem
+ * code — Claude's wording never reaches it (see HOLD_OPENING, INSTRUCTIONS).
+ * Shadow mode never delays a write.
  */
 
 const { claudeLatencyParams, claudeResponseText, readAnthropicError } = require("./model-params");
@@ -73,6 +74,17 @@ const INSTRUCTIONS = {
   other: "Confirm the booking details with the caller before saving them.",
 };
 
+/**
+ * How a hold's tool result opens: fixed server text chosen by the write, never
+ * the model's (Ruling 7). A reschedule, an update or the RebookGuard's name fix
+ * is held while a booking already stands, so "nothing was saved" could make
+ * Gemini tell a booked caller they have no appointment.
+ */
+const HOLD_OPENING = {
+  newBooking: "NOT DONE YET — nothing was saved.",
+  change: "NOT CHANGED YET — the existing booking still stands exactly as it was.",
+};
+
 /** @type {Record<string, string>} */
 const METHOD_WORDING = {
   "spell-out": "spelled it back letter by letter",
@@ -110,16 +122,22 @@ let unreadableStreak = 0;
 // An unrecognised PRECHECK_MODE is reported once per process (see precheckMode).
 let warnedUnknownMode = false;
 
+/** "off" and the obvious negatives: the kill switch fails toward off however it was typed. */
+const OFF_MODES = new Set(["off", "disabled", "false", "0", "no"]);
+
 /**
- * Unset, empty and "enforce" enforce. An unrecognised value ("disabled", "false")
- * ALSO enforces, but says so once: an operator who typed it believes the check
- * is off or shadowed, and must find out from the log rather than from a hold.
+ * Unset, empty and "enforce" enforce; "shadow" shadows; "off", "disabled",
+ * "false", "0" and "no" switch the check off (trimmed, any case). Any other
+ * value ALSO enforces, but says so once: an operator who typed it may believe
+ * the check is off or shadowed, and must find out from the log rather than
+ * from a hold.
  * @returns {"enforce" | "shadow" | "off"}
  */
 function precheckMode() {
   const raw = String(process.env.PRECHECK_MODE || "").trim();
   const v = raw.toLowerCase();
-  if (v === "shadow" || v === "off") return v;
+  if (v === "shadow") return "shadow";
+  if (OFF_MODES.has(v)) return "off";
   if (raw && v !== "enforce" && !warnedUnknownMode) {
     warnedUnknownMode = true;
     // Operator config, not caller data, so the value is safe to log.
@@ -443,12 +461,14 @@ async function requestVerdict(prompt) {
  *   pendingAi?: string,
  *   getPending?: () => { user?: unknown, ai?: unknown },
  *   practitioners?: unknown,
+ *   correction?: boolean,
  *   timezone?: string,
  *   nameMethod?: string,
  *   holds: Map<string, number>,
  *   callSid?: string,
  *   now?: Date,
  * }} PrecheckInput
+ *   correction - a book_appointment that is the RebookGuard's name fix on a booking that stands
  */
 
 /**
@@ -497,6 +517,14 @@ async function precheckBookingWrite(input) {
   const mode = precheckMode();
   if (mode === "off") return PROCEED;
   const started = Date.now();
+  // Fails open THROUGH noVerdict like every other way of not getting a verdict, so an
+  // unexpected error counts toward the streak and pages from the third in a row.
+  const unexpected = (/** @type {any} */ e) =>
+    noVerdict({ cause: "unexpected-error", errorType: e?.name, errorMessage: String(e?.message).slice(0, 200), ms: Date.now() - started }, precheckModel());
+  // "unchecked" = no verdict could be read (noVerdict already logged or paged why). Logging
+  // that as "allow" would count writes nobody checked as checked ones.
+  const logAllow = (/** @type {{ unchecked?: true }} */ verdict) =>
+    console.log(`[Precheck] ${verdict.unchecked ? "unchecked" : "allow"} ${toolName} (${Date.now() - started}ms). callSid=${callSid}`);
   try {
     // Nothing to check: a call that saves no name and no date (an update of only the phone, email
     // or notes, even one that names its booking's datetime) has nothing to compare with the call,
@@ -518,34 +546,39 @@ async function precheckBookingWrite(input) {
       });
       return PROCEED;
     }
-    const verdict = await decide(input, saved, identify);
-    const ms = Date.now() - started;
+    // Started here, so the prompt is built from the call as it stands at the tool call.
+    const pending = decide(input, saved, identify);
+    if (mode === "shadow") {
+      // Shadow only reports what enforce would do, so it never makes the write wait: the
+      // check runs on, and its would-be verdict is logged when it lands.
+      pending
+        .then((verdict) => {
+          // `=== true`: see the enforce branch below.
+          if (verdict.allow === true) logAllow(verdict);
+          else console.warn(`[Precheck] (shadow) would hold ${toolName}: ${verdict.problem} (${Date.now() - started}ms). callSid=${callSid}`);
+        })
+        .catch(unexpected);
+      return PROCEED;
+    }
+    const verdict = await pending;
     // `=== true`, not a bare truthiness check: jsconfig has no strictNullChecks,
     // where a boolean discriminant only narrows the union through a comparison.
     if (verdict.allow === true) {
-      // "unchecked" = no verdict could be read (noVerdict already logged or paged why). Logging
-      // that as "allow" would count writes nobody checked as checked ones.
-      console.log(`[Precheck] ${verdict.unchecked ? "unchecked" : "allow"} ${toolName} (${ms}ms). callSid=${callSid}`);
-      return PROCEED;
-    }
-    if (mode === "shadow") {
-      console.warn(`[Precheck] (shadow) would hold ${toolName}: ${verdict.problem} (${ms}ms). callSid=${callSid}`);
+      logAllow(verdict);
       return PROCEED;
     }
     // Read the count again: another check of this tool may have held while we awaited.
     const count = (holds.get(toolName) || 0) + 1;
     holds.set(toolName, count);
-    console.warn(`[Precheck] Holding ${toolName}: ${verdict.problem} — hold ${count}/${MAX_HOLDS} (${ms}ms). callSid=${callSid}`);
+    console.warn(`[Precheck] Holding ${toolName}: ${verdict.problem} — hold ${count}/${MAX_HOLDS} (${Date.now() - started}ms). callSid=${callSid}`);
+    const opening = toolName === "book_appointment" && !input.correction ? HOLD_OPENING.newBooking : HOLD_OPENING.change;
     return {
       action: "hold",
       problem: verdict.problem,
-      message: `NOT DONE YET — nothing was saved. ${INSTRUCTIONS[verdict.problem]} Then call ${toolName} again with the confirmed details.`,
+      message: `${opening} ${INSTRUCTIONS[verdict.problem]} Then call ${toolName} again with the confirmed details.`,
     };
   } catch (err) {
-    // Fails open THROUGH noVerdict like every other way of not getting a verdict, so an
-    // unexpected error counts toward the streak and pages from the third in a row.
-    const e = /** @type {any} */ (err);
-    noVerdict({ cause: "unexpected-error", errorType: e?.name, errorMessage: String(e?.message).slice(0, 200), ms: Date.now() - started }, precheckModel());
+    unexpected(err);
     return PROCEED;
   }
 }
@@ -558,8 +591,9 @@ async function precheckBookingWrite(input) {
  * the result to hand Gemini. null = go ahead and write.
  * @param {any} session - CallSession
  * @param {{ name: string, args?: Record<string, unknown> }} toolCall
- * @param {{ pendingUser?: string, pendingAi?: string, getPending?: () => { user?: unknown, ai?: unknown }, promptConfig?: any, audit?: boolean }} turn
- *   getPending - the handler's live transcript buffers (preferred over the static pendingUser/pendingAi)
+ * @param {{ pendingUser?: string, pendingAi?: string, getPending?: () => { user?: unknown, ai?: unknown }, promptConfig?: any, audit?: boolean, correction?: boolean }} turn
+ *   getPending - the handler's live transcript buffers (preferred over the static pendingUser/pendingAi);
+ *   correction - the RebookGuard's name fix: its hold says the booking still stands
  * @returns {Promise<{ message: string } | null>}
  */
 async function applyBookingPrecheck(session, toolCall, turn) {
@@ -576,6 +610,7 @@ async function applyBookingPrecheck(session, toolCall, turn) {
       pendingUser: turn.pendingUser,
       pendingAi: turn.pendingAi,
       getPending: turn.getPending,
+      correction: turn.correction === true,
       // The staff list the model took practitioner_id from (PRACTITIONERS ON STAFF).
       practitioners: session.scheduleSnapshot?.practitioners,
       timezone: session.organization?.timezone,

@@ -75,7 +75,7 @@ describe("SCRUM-593: booking pre-check wiring", () => {
     // unresolved funnel step (a successful fix is "book_appointment_corrected", not a resolve), and the
     // caller would be told at end_call that they have NO appointment.
     assert.match(block, LIVE_TURN);
-    assert.match(block, /audit: false,/);
+    assert.match(block, /audit: false,\s*correction: true,/, "its hold says the booking still stands (R24)");
   });
 
   it("inbound: the goodbye auto-end stays off while either check runs", () => {
@@ -256,7 +256,7 @@ function inboundHandlers(session, o = {}) {
     pendingUserTranscript: "",
     pendingAiTranscript: "",
     detectPhantomAction: () => null,
-    validateToolResponse: async () => ({ accurate: true }),
+    validateToolResponse: o.validateToolResponse || (async () => ({ accurate: true })),
     DEBUG_TRANSCRIPTS: false,
     noteAssistantSpeech() {}, noteAssistantTurnEnd() {}, noteOwnerSpeech() {}, noteCancelledOwnerToolCalls() {},
     applyBookingPrecheck: o.applyBookingPrecheck || applyBookingPrecheck,
@@ -363,6 +363,30 @@ describe("SCRUM-593: the real inbound handler, run against stubs", () => {
     assert.deepEqual(h.written(), []);
   });
 
+  // R25 (M1): Tier-2 judges the AI's next turn against the last tool result if it is under 10 s old. A
+  // hold is not a tool result: without clearing it, the read-back a hold asks for would be judged
+  // against an OLDER result (here the availability check) and could be "corrected" mid-confirmation.
+  it("a hold disarms the Tier-2 validator: the read-back it asks for is not judged against an older result", async () => {
+    hold("name_unconfirmed");
+    const s = makeSession();
+    const validated = [];
+    const h = inboundHandlers(s, { validateToolResponse: async (args) => { validated.push(args.toolName); return { accurate: true }; } });
+    s._lastToolResult = { name: "check_availability", message: "Tuesday at 3pm is free.", at: Date.now() };
+    await h.cbs.onToolCall({ id: "t1", ...BOOK });
+    assert.equal(s._lastToolResult, null);
+    h.cbs.onTranscriptOut("Before I book it: that's M-A-K-H-O-U-L, is that right?");
+    h.cbs.onTurnComplete();
+    assert.deepEqual(validated, [], "the read-back is not validated against the availability result");
+
+    allow(); // control: a real write arms the validator with ITS result
+    const t = makeSession();
+    const live = inboundHandlers(t, { validateToolResponse: async (args) => { validated.push(args.toolName); return { accurate: true }; } });
+    await live.cbs.onToolCall({ id: "t2", ...BOOK });
+    live.cbs.onTranscriptOut("You're booked for Tuesday at 3pm.");
+    live.cbs.onTurnComplete();
+    assert.deepEqual(validated, ["book_appointment"]);
+  });
+
   it("end_call after a held booking still gets the CANNOT END CALL YET nudge (and does not without one)", async () => {
     allow();
     const clean = inboundHandlers(makeSession());
@@ -409,7 +433,7 @@ describe("SCRUM-593: the real inbound handler, run against stubs", () => {
       const s = withConfirmedBooking(makeSession());
       const h = inboundHandlers(s);
       const ret = await h.cbs.onToolCall({ id: "t1", ...BOOK });
-      assert.match(ret.message, /^NOT DONE YET — nothing was saved\./);
+      assert.match(ret.message, /^NOT CHANGED YET — the existing booking still stands exactly as it was\. /, "a booking stands: never 'nothing was saved' (R24)");
       assert.deepEqual(h.written(), [], "no attendee update");
       assert.equal([...s.confirmedBookings.values()][0].name, "John Makhlul", "the ledger keeps the old name");
       assert.equal(s.precheckHolds.get("book_appointment"), 1);
@@ -439,6 +463,21 @@ describe("SCRUM-593: the real inbound handler, run against stubs", () => {
 
       await h.cbs.onToolCall({ id: "t3", ...END });
       assert.deepEqual(h.written(), ["update_appointment_attendee", "end_call"], "the call may end: nothing is left unfinished");
+    });
+
+    // R25 (M1): the booking that stands was written seconds ago, so its result is the one Tier-2 holds;
+    // the corrected-name read-back the hold asks for would be "corrected" back to the old name.
+    it("a held fix disarms the Tier-2 validator too", async () => {
+      hold("name_unconfirmed");
+      const s = withConfirmedBooking(makeSession());
+      const validated = [];
+      const h = inboundHandlers(s, { validateToolResponse: async (args) => { validated.push(args.toolName); return { accurate: true }; } });
+      s._lastToolResult = { name: "book_appointment", message: "Booked John Makhlul, Tuesday 3pm. Your confirmation code is 123456.", at: Date.now() };
+      await h.cbs.onToolCall({ id: "t1", ...BOOK });
+      assert.equal(s._lastToolResult, null);
+      h.cbs.onTranscriptOut("Let me check the spelling: M-A-K-H-O-U-L?");
+      h.cbs.onTurnComplete();
+      assert.deepEqual(validated, []);
     });
 
     it("is handed the live pending turn and the assistant's name method, like the main check", async () => {
@@ -673,6 +712,7 @@ describe("SCRUM-593: the real inbound handler, run against stubs", () => {
     ]) {
       const h = inboundHandlers(makeSession());
       const ret = await h.cbs.onToolCall({ id: "t", ...call });
+      assert.match(ret.message, /^NOT CHANGED YET — the existing booking still stands exactly as it was\. /, call.name);
       assert.match(ret.message, new RegExp(`Then call ${call.name} again`));
       assert.deepEqual(h.written(), []);
     }

@@ -426,6 +426,17 @@ describe("server.js glue mapping", () => {
     assert.ok(logs.some((l) => /callSid=CAglue/.test(l)));
   });
 
+  // R24: the RebookGuard's name fix is a book_appointment call on a booking that already stands; the glue
+  // passes its correction flag through so the hold does not tell Gemini that nothing was saved.
+  it("passes the name-correction flag through: that hold says the booking still stands", async () => {
+    const m = load();
+    replyText(FIX);
+    const fix = await m.applyBookingPrecheck(session(), { name: "book_appointment", args: ARGS }, { correction: true, audit: false });
+    assert.match(fix.message, /^NOT CHANGED YET — the existing booking still stands exactly as it was\. Read back the name/);
+    const fresh = await m.applyBookingPrecheck(session(), { name: "book_appointment", args: ARGS }, { audit: false });
+    assert.match(fresh.message, /^NOT DONE YET — nothing was saved\. Read back the name/, "control: a new booking");
+  });
+
   // R28: the practitioner is resolved from the staff list the call itself carries — the schedule
   // snapshot the model took the id from (PRACTITIONERS ON STAFF). No snapshot, no name; never a failure.
   it("resolves the practitioner's name from the call's own schedule snapshot", async () => {
