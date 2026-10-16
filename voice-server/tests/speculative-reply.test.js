@@ -15,10 +15,11 @@
 
 const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert/strict");
+const { getEventListeners } = require("node:events");
 
 const { startSpeculativeReply } = require("../lib/speculative-reply");
 const { streamClaudeResponse } = require("../services/claude-chat");
-const { ev, textTurnEvents, toolTurnEvents, sseResponse, withFakeFetch, installGatedFetch, waitUntil } = require("./anthropic-sse-helpers");
+const { ev, textTurnEvents, toolTurnEvents, sseResponse, withFakeFetch, installGatedFetch, waitUntil, waitUntilTimed } = require("./anthropic-sse-helpers");
 
 const savedKey = process.env.ANTHROPIC_API_KEY;
 before(() => {
@@ -747,6 +748,284 @@ describe("failures other than abort", () => {
     assert.equal(draft.isAdoptable(messages, TRANSCRIPT), false);
     assert.equal(net.signal.aborted, true, "the dead stream is cancelled");
     await assert.rejects(draft.adopt(() => {}), /Overloaded/);
+  });
+});
+
+describe("the draft owns a deadline (R8): a hung call fails, it is never an adoptable success", () => {
+  const TIMEOUT_REASON = () => new DOMException("The operation was aborted due to timeout", "TimeoutError");
+
+  /**
+   * Replace AbortSignal.timeout with a signal the test fires by hand, so the
+   * deadline is deterministic. `requested` records every delay asked for.
+   */
+  function handFiredDeadline(t) {
+    const requested = [];
+    const deadline = new AbortController();
+    t.mock.method(AbortSignal, "timeout", (ms) => {
+      requested.push(ms);
+      return deadline.signal;
+    });
+    return { requested, signal: deadline.signal, fire: () => deadline.abort(TIMEOUT_REASON()) };
+  }
+
+  it("asks for a 15 s deadline by default, and timeoutMs overrides it", async (t) => {
+    const clock = handFiredDeadline(t);
+    withFakeFetch(t, () => sseResponse(textTurnEvents(["Fine."])));
+    const first = start();
+    const second = start({ timeoutMs: 2500 });
+    assert.deepEqual(clock.requested, [15000, 2500]);
+    await waitUntil(() => first.status() === "done" && second.status() === "done");
+  });
+
+  it("rejects a timeoutMs that is not a positive integer, as a TypeError", () => {
+    for (const bad of [0, -1, 1.5, NaN, Infinity, "15000", null, {}]) {
+      assert.throws(() => start({ timeoutMs: bad }), TypeError, `timeoutMs ${String(bad)}`);
+    }
+  });
+
+  it("the signal the llm receives fires at the deadline, carrying the TimeoutError, and abort() still fires it too", async (t) => {
+    const warn = t.mock.method(console, "warn", () => {});
+    const clock = handFiredDeadline(t);
+    const signals = [];
+    const hang = (_messages, options) => {
+      signals.push(options.signal);
+      return new Promise(() => {});
+    };
+    const byDeadline = start({ llm: hang });
+    const byAbort = start({ llm: hang });
+    assert.equal(signals[0].aborted, false);
+    assert.equal(signals[1].aborted, false);
+    byAbort.abort("resumed");
+    assert.equal(signals[1].aborted, true);
+    assert.equal(signals[1].reason.message, "resumed");
+    clock.fire();
+    assert.equal(signals[0].aborted, true);
+    assert.equal(signals[0].reason.name, "TimeoutError");
+    assert.equal(byDeadline.turnKey, 1);
+    assert.equal(warn.mock.callCount(), 1, "the draft that hit its deadline says so once; the aborted one is silent");
+  });
+
+  it("a request that hangs mid-stream fails the draft: not adoptable, adopt() rejects with a TimeoutError, the request is cancelled", async (t) => {
+    const warn = t.mock.method(console, "warn", () => {});
+    const unhandled = trackUnhandled(t);
+    const clock = handFiredDeadline(t);
+    const net = installGatedFetch(t);
+    const messages = freshMessages();
+    const transcript = "My name is Zebediah Quirke";
+    const draft = start({ messages, transcript, turnKey: 12 });
+    await net.called;
+    net.push([ev.messageStart(), ev.textStart(0), ev.textDelta("Sure, I can help, no problem. See")]);
+    await turnEventLoop();
+
+    clock.fire();
+    await waitUntil(() => draft.status() === "done", "the draft to learn it timed out");
+    assert.equal(net.signal.aborted, true, "the hung request is cancelled");
+    assert.equal(draft.isAdoptable(messages, transcript), false);
+
+    const spoken = [];
+    await assert.rejects(
+      draft.adopt((s) => spoken.push(s)),
+      (err) => err.name === "TimeoutError" && /timed out after 15000 ms/.test(err.message),
+    );
+    assert.deepEqual(spoken, [], "a timed-out draft never replays what it had buffered");
+    assert.equal(warn.mock.callCount(), 1);
+    const logged = warn.mock.calls.map((c) => c.arguments.join(" ")).join("\n");
+    assert.match(logged, /turn=12/);
+    assert.match(logged, /TimeoutError/);
+    assert.doesNotMatch(logged, /Zebediah|Quirke|Sure, I can help/);
+    await turnEventLoop();
+    assert.deepEqual(unhandled, []);
+  });
+
+  it("a request that never answers (no response headers) times out the same way", async (t) => {
+    t.mock.method(console, "warn", () => {});
+    const clock = handFiredDeadline(t);
+    const net = installGatedFetch(t, { holdHeaders: true });
+    const messages = freshMessages();
+    const draft = start({ messages });
+    await net.called;
+    clock.fire();
+    await waitUntil(() => draft.status() === "done");
+    assert.equal(draft.isAdoptable(messages, TRANSCRIPT), false);
+    await assert.rejects(draft.adopt(() => assert.fail("nothing to speak")), (err) => err.name === "TimeoutError");
+  });
+
+  it("after adoption: what was already spoken stays spoken, later chunks are not, adopt() rejects with the TimeoutError", async (t) => {
+    t.mock.method(console, "warn", () => {});
+    const clock = handFiredDeadline(t);
+    const net = installGatedFetch(t);
+    const draft = start();
+    await net.called;
+    const spoken = [];
+    const outcome = draft.adopt((s) => spoken.push(s));
+    const settled = outcome.then(
+      () => ({ ok: true }),
+      (err) => ({ ok: false, err }),
+    );
+    net.push([ev.messageStart(), ev.textStart(0), ev.textDelta("First one. Second")]);
+    await waitUntil(() => spoken.length === 1);
+
+    clock.fire();
+    net.push([ev.textDelta(" one. Third one. ")]);
+    const verdict = await settled;
+    assert.equal(verdict.ok, false);
+    assert.equal(verdict.err.name, "TimeoutError");
+    assert.deepEqual(spoken, ["First one."]);
+    assert.equal(draft.status(), "adopted");
+  });
+
+  it("the TimeoutError keeps the deadline signal's reason as its cause", async (t) => {
+    t.mock.method(console, "warn", () => {});
+    const clock = handFiredDeadline(t);
+    const net = installGatedFetch(t);
+    const draft = start();
+    await net.called;
+    clock.fire();
+    await waitUntil(() => draft.status() === "done");
+    await assert.rejects(draft.adopt(() => {}), (err) => err.cause?.name === "TimeoutError");
+  });
+
+  it("the deadline reported by the llm as a plain AbortError is still a failure, not an abort", async (t) => {
+    const warn = t.mock.method(console, "warn", () => {});
+    const clock = handFiredDeadline(t);
+    const messages = freshMessages();
+    const draft = start({
+      messages,
+      llm: (_messages, options) =>
+        new Promise((_resolve, reject) => {
+          options.signal.addEventListener("abort", () => reject(new DOMException("The operation was aborted", "AbortError")), { once: true });
+        }),
+    });
+    clock.fire();
+    await waitUntil(() => draft.status() === "done");
+    assert.notEqual(draft.status(), "aborted");
+    assert.equal(draft.isAdoptable(messages, TRANSCRIPT), false);
+    await assert.rejects(draft.adopt(() => {}), (err) => err.name === "TimeoutError");
+    assert.equal(warn.mock.callCount(), 1);
+  });
+
+  it("a draft that already finished is not affected by the deadline passing afterwards", async (t) => {
+    const warn = t.mock.method(console, "warn", () => {});
+    const clock = handFiredDeadline(t);
+    withFakeFetch(t, () => sseResponse(textTurnEvents(["Sure, I can help. All done."])));
+    const messages = freshMessages();
+    const draft = start({ messages });
+    await waitUntil(() => draft.status() === "done");
+
+    clock.fire();
+    await turnEventLoop();
+    assert.equal(draft.isAdoptable(messages, TRANSCRIPT), true, "the deadline guards the in-flight call, not a finished answer");
+    const spoken = [];
+    const result = await draft.adopt((s) => spoken.push(s));
+    assert.deepEqual(spoken, ["Sure, I can help.", "All done."]);
+    assert.equal(result.type, "content");
+    assert.equal(warn.mock.callCount(), 0);
+  });
+
+  it("an abort() that came first wins over a later deadline: aborted, silent", async (t) => {
+    const warn = t.mock.method(console, "warn", () => {});
+    const clock = handFiredDeadline(t);
+    const net = installGatedFetch(t);
+    const draft = start();
+    await net.called;
+    draft.abort("resumed");
+    clock.fire();
+    await turnEventLoop();
+    assert.equal(draft.status(), "aborted");
+    assert.deepEqual(await draft.adopt(() => assert.fail("must not speak")), { type: "aborted" });
+    assert.equal(warn.mock.callCount(), 0);
+  });
+
+  it("a call that IGNORES its signal still fails at the deadline: the draft is over at once and adopt() does not wait for it", async (t) => {
+    const warn = t.mock.method(console, "warn", () => {});
+    const clock = handFiredDeadline(t);
+    const messages = freshMessages();
+    const hang = () => new Promise(() => {}); // never settles, never looks at its signal (the back-off sleep inside streamClaudeResponse is like this)
+    const idle = start({ messages, llm: hang });
+    const adopted = start({ messages, llm: hang });
+    const settled = adopted.adopt(() => assert.fail("nothing to speak")).then(
+      () => ({ ok: true }),
+      (err) => ({ ok: false, err }),
+    );
+
+    clock.fire();
+    assert.equal(idle.status(), "done", "no waiting for the llm: the status changes in the same tick");
+    assert.equal(idle.isAdoptable(messages, TRANSCRIPT), false);
+    await assert.rejects(idle.adopt(() => assert.fail("nothing to speak")), (err) => err.name === "TimeoutError");
+    const verdict = await settled;
+    assert.equal(verdict.ok, false);
+    assert.equal(verdict.err.name, "TimeoutError");
+    assert.equal(adopted.status(), "adopted");
+    assert.equal(warn.mock.callCount(), 2, "one warning per draft");
+  });
+
+  it("a result that arrives after the deadline is ignored: the draft stays failed and speaks nothing", async (t) => {
+    t.mock.method(console, "warn", () => {});
+    const clock = handFiredDeadline(t);
+    const messages = freshMessages();
+    let finishLate = () => {};
+    const draft = start({
+      messages,
+      llm: (_messages, options) =>
+        new Promise((resolve) => {
+          finishLate = () => {
+            options.onSentence("a late chunk");
+            resolve({ type: "content", content: "a late chunk" });
+          };
+        }),
+    });
+    clock.fire();
+    finishLate();
+    await turnEventLoop();
+    assert.equal(draft.isAdoptable(messages, TRANSCRIPT), false);
+    const spoken = [];
+    await assert.rejects(draft.adopt((s) => spoken.push(s)), (err) => err.name === "TimeoutError");
+    assert.deepEqual(spoken, []);
+  });
+
+  it("the llm still sees the TimeoutError where AbortSignal.any tells dependents AFTER the source's own listeners (Node 20)", async (t) => {
+    t.mock.method(console, "warn", () => {});
+    const clock = handFiredDeadline(t);
+    // Node 20's order: a source's own listeners run first, then its dependents are aborted with its reason.
+    t.mock.method(AbortSignal, "any", (signals) => {
+      const composite = new AbortController();
+      for (const source of signals) source.addEventListener("abort", () => composite.abort(source.reason), { once: true });
+      return composite.signal;
+    });
+    let seen;
+    const draft = start({
+      llm: (_messages, options) => {
+        seen = options.signal;
+        return new Promise(() => {});
+      },
+    });
+    clock.fire();
+    assert.equal(seen.aborted, true);
+    assert.equal(seen.reason.name, "TimeoutError", "the draft's own deadline handler must not abort its controller first");
+    assert.equal(draft.status(), "done");
+  });
+
+  it("a finished draft leaves nothing of its own registered on the deadline signal", async (t) => {
+    const clock = handFiredDeadline(t);
+    withFakeFetch(t, () => sseResponse(textTurnEvents(["Fine."])));
+    const draft = start();
+    const whileRunning = getEventListeners(clock.signal, "abort").length;
+    await waitUntil(() => draft.status() === "done");
+    assert.equal(getEventListeners(clock.signal, "abort").length, whileRunning - 1);
+  });
+
+  it("end to end with a REAL AbortSignal.timeout: a hung request fails after timeoutMs", async (t) => {
+    t.mock.method(console, "warn", () => {});
+    const net = installGatedFetch(t);
+    const messages = freshMessages();
+    const draft = start({ messages, timeoutMs: 25 });
+    await net.called;
+    net.push([ev.messageStart(), ev.textStart(0), ev.textDelta("Sure, I can help")]);
+    await waitUntilTimed(() => draft.status() === "done", "the 25 ms deadline to fail the draft");
+    assert.equal(net.signal.aborted, true);
+    assert.equal(net.signal.reason.name, "TimeoutError");
+    assert.equal(draft.isAdoptable(messages, TRANSCRIPT), false);
+    await assert.rejects(draft.adopt(() => {}), (err) => err.name === "TimeoutError" && /timed out after 25 ms/.test(err.message));
   });
 });
 

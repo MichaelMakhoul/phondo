@@ -21,9 +21,22 @@
  *     adopter, who runs the tools exactly as for a live call.
  *   - The LLM call is injected (`llm`, normally streamClaudeResponse). The draft
  *     owns the AbortController behind the signal that call receives.
- *   - A draft has no timeout of its own: passing a signal to
- *     streamClaudeResponse turns off its default 15 s limit, so whoever starts a
- *     draft must abort it on every path above (and on call cleanup).
+ *   - The draft owns a deadline (SCRUM-594 R8). Passing a signal to
+ *     streamClaudeResponse turns off its built-in 15 s limit, so the signal the
+ *     draft hands over fires on abort() AND after `timeoutMs` (default 15 s). A
+ *     call that hits the deadline FAILS: the draft is not adoptable and adopt()
+ *     rejects with an Error named "TimeoutError", which is what a live call that
+ *     timed out raises. It does not resolve {type:"aborted"}: that is reserved
+ *     for abort(), so a hang can never be mistaken for a barge-in (the caller
+ *     handles "aborted" silently and a rejection with an apology). The deadline
+ *     guards the in-flight call only; an answer that finished in time stays
+ *     adoptable however long the caller keeps talking. The draft enforces the
+ *     deadline itself as well as handing it to `llm`: at the deadline it is over
+ *     (failed, not adoptable, any pending adopt() settles) even if the llm
+ *     ignores its signal, which streamClaudeResponse does while it sleeps
+ *     between retries.
+ *   - Whoever starts a draft must still abort it on every path above (and on
+ *     call cleanup); the deadline is the backstop, not the plan.
  *
  * Logging: one warning when a draft fails for a reason other than abort. It
  * carries the turn key and the error text, never caller words or model text.
@@ -76,6 +89,22 @@ function abortError(reason) {
 }
 
 /**
+ * What adopt() rejects with when the deadline passes. Named like the error a
+ * live call's AbortSignal.timeout raises; the llm's own error is kept as `cause`.
+ * @param {number} ms
+ * @param {unknown} cause
+ * @returns {Error}
+ */
+function timeoutError(ms, cause) {
+  const error = new Error(`speculative reply timed out after ${ms} ms`, { cause });
+  error.name = "TimeoutError";
+  return error;
+}
+
+/** The same limit streamClaudeResponse applies when it is given no signal. */
+const DEFAULT_TIMEOUT_MS = 15_000;
+
+/**
  * Start a speculative reply.
  *
  * `isAdoptable(currentMessages, transcript)` is true only while ALL of these hold:
@@ -91,8 +120,9 @@ function abortError(reason) {
  *     never rejects because of an abort, whether the abort came before the call
  *     or while the stream was being forwarded.
  *   - It rejects only with an error a live call would also have raised: the
- *     LLM call failing, or `onSentence` throwing (the stream is cancelled then).
- *     A second call rejects too: that is a caller bug.
+ *     LLM call failing (a TimeoutError when the deadline passed), or
+ *     `onSentence` throwing (the stream is cancelled then). A second call
+ *     rejects too: that is a caller bug.
  *
  * @param {Object} options
  * @param {(messages: object[], options: Record<string, any>) => Promise<any>} options.llm - the streaming LLM call (streamClaudeResponse)
@@ -100,18 +130,23 @@ function abortError(reason) {
  * @param {string} options.transcript - the eager transcript to answer; must be non-empty
  * @param {Record<string, any>} [options.llmOptions] - passed through to llm (tools, model, maxTokens ...); chunking, signal and onSentence are replaced by the draft's own
  * @param {string | number} [options.turnKey] - opaque id of the turn, exposed as `turnKey` and used in the failure warning
+ * @param {number} [options.timeoutMs] - deadline for the LLM call in whole milliseconds (default 15000); injectable for tests
  * @returns {SpeculativeReply}
  */
 function startSpeculativeReply(options) {
-  const { llm, messages, transcript, llmOptions, turnKey } = options || /** @type {any} */ ({});
+  const { llm, messages, transcript, llmOptions, turnKey, timeoutMs = DEFAULT_TIMEOUT_MS } = options || /** @type {any} */ ({});
   if (typeof llm !== "function") throw new TypeError("startSpeculativeReply: llm must be a function");
   if (!Array.isArray(messages)) throw new TypeError("startSpeculativeReply: messages must be an array");
   if (typeof transcript !== "string" || transcript.trim() === "") {
     throw new TypeError("startSpeculativeReply: transcript must be a non-empty string");
   }
+  if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) {
+    throw new TypeError("startSpeculativeReply: timeoutMs must be a positive whole number of milliseconds");
+  }
 
   const startLength = messages.length;
   const controller = new AbortController();
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
 
   /** Chunks produced before adoption, in order. Dropped on abort or failure: they must never be spoken. */
   let pending = /** @type {string[]} */ ([]);
@@ -128,16 +163,50 @@ function startSpeculativeReply(options) {
   let failure = /** @type {{ error: unknown } | null} */ (null);
 
   /**
-   * Record the first failure and cancel the request so its connection is not left open.
-   * Deliberately not abort(): a failed draft is not an aborted one.
+   * Record the first failure and, unless `cancel` is false, cancel the request so
+   * its connection is not left open. Deliberately not abort(): a failed draft is
+   * not an aborted one. The deadline path passes cancel=false: the timeout signal
+   * has cancelled the request itself, and aborting our controller as well would
+   * race it for the composite signal's abort reason.
    * @param {unknown} error
+   * @param {boolean} [cancel]
    */
-  function fail(error) {
+  function fail(error, cancel = true) {
     if (failure) return;
     failure = { error };
     pending = [];
-    controller.abort();
+    if (cancel) controller.abort();
   }
+
+  /**
+   * A failure on the LLM side: record it, cancel the request (unless `cancel` is
+   * false, see fail), and say so once.
+   * @param {unknown} error
+   * @param {boolean} [cancel]
+   */
+  function failCall(error, cancel = true) {
+    fail(error, cancel);
+    console.warn(`[SpeculativeReply] draft failed turn=${String(turnKey)}: ${describeError(error)}`);
+  }
+
+  /** Resolves when the deadline passes, so adopt() never waits on an llm that ignores its signal. */
+  let expire = () => {};
+  const expired = new Promise((resolve) => {
+    expire = () => resolve(undefined);
+  });
+
+  /**
+   * The deadline passed. Unless the call already finished (or the draft was
+   * aborted or failed), the draft is over NOW: failed, not adoptable, and any
+   * adopt() waiting on it settles, whether or not the llm reacts to its signal.
+   */
+  function onDeadline() {
+    if (settled || aborted || failure) return;
+    settled = true;
+    failCall(timeoutError(timeoutMs, timeoutSignal.reason), false);
+    expire();
+  }
+  timeoutSignal.addEventListener("abort", onDeadline, { once: true });
 
   /**
    * One chunk from the model: buffer it until adoption, forward it after. Silent
@@ -164,7 +233,7 @@ function startSpeculativeReply(options) {
     llm([...messages, { role: "user", content: transcript }], {
       ...llmOptions,
       chunking: "clause",
-      signal: controller.signal,
+      signal: AbortSignal.any([controller.signal, timeoutSignal]),
       onSentence: speak,
     }))();
 
@@ -172,17 +241,21 @@ function startSpeculativeReply(options) {
   const finished = call.then(
     (value) => {
       settled = true;
-      result = value;
+      timeoutSignal.removeEventListener("abort", onDeadline); // do not hold this draft in memory until the timer fires
+      result = value; // ignored if the draft already failed (deliver() checks failure first)
     },
     (error) => {
       settled = true;
-      if (failure) return; // the adopter's callback failed first; the AbortError here is the cancel we caused
-      if (aborted || controller.signal.aborted || /** @type {any} */ (error)?.name === "AbortError") {
+      timeoutSignal.removeEventListener("abort", onDeadline);
+      // The adopter's callback failed first, or the deadline passed first: the
+      // AbortError arriving here is the cancel we caused ourselves.
+      if (failure) return;
+      if (aborted) return; // the caller's own abort() came first
+      if (controller.signal.aborted || /** @type {any} */ (error)?.name === "AbortError") {
         aborted = true;
         return;
       }
-      fail(error);
-      console.warn(`[SpeculativeReply] draft failed turn=${String(turnKey)}: ${describeError(error)}`);
+      failCall(error);
     },
   );
 
@@ -238,7 +311,7 @@ function startSpeculativeReply(options) {
         delivered = true;
         return Promise.reject(failure.error);
       }
-      return finished.then(deliver);
+      return Promise.race([finished, expired]).then(deliver);
     },
 
     abort(reason) {
@@ -250,4 +323,4 @@ function startSpeculativeReply(options) {
   };
 }
 
-module.exports = { startSpeculativeReply };
+module.exports = { startSpeculativeReply, DEFAULT_TIMEOUT_MS };

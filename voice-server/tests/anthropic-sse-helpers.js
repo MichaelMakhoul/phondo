@@ -210,4 +210,17 @@ async function waitUntil(condition, label = "condition") {
   throw new Error(`timed out waiting for ${label}`);
 }
 
-module.exports = { ev, sseFrames, textTurnEvents, toolTurnEvents, sseResponse, withFakeFetch, installGatedFetch, waitUntil };
+/**
+ * Like waitUntil, but bounded by wall-clock time instead of turns of the event
+ * loop: for the one test that needs a REAL timer (AbortSignal.timeout) to fire.
+ * It only waits for something to happen; nothing races it.
+ */
+async function waitUntilTimed(condition, label = "condition", limitMs = 3000) {
+  const started = Date.now();
+  while (!condition()) {
+    if (Date.now() - started > limitMs) throw new Error(`timed out after ${limitMs} ms waiting for ${label}`);
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
+}
+
+module.exports = { ev, sseFrames, textTurnEvents, toolTurnEvents, sseResponse, withFakeFetch, installGatedFetch, waitUntil, waitUntilTimed };
