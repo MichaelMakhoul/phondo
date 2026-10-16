@@ -175,9 +175,9 @@ describe("the request contract", () => {
       confirmation_code: "123456",
     };
     const expected = {
-      book_appointment: ['{"first_name":"Michael","last_name":"Makhlouf","datetime":"2026-10-15T09:00","practitioner":"Dr Sarah Lee"}', null],
+      book_appointment: ['{"first_name":"Michael","last_name":"Makhlouf","datetime":"2026-10-15T09:00 = Thursday, October 15, 2026, 9:00 AM","practitioner":"Dr Sarah Lee"}', null],
       reschedule_appointment: [
-        '{"new_datetime":"2026-10-16T10:00","first_name":"Michael","last_name":"Makhlouf","practitioner":"Dr Sarah Lee"}',
+        '{"new_datetime":"2026-10-16T10:00 = Friday, October 16, 2026, 10:00 AM","first_name":"Michael","last_name":"Makhlouf","practitioner":"Dr Sarah Lee"}',
         '{"name":"Michael Makhlouf","current_datetime":"2026-10-14T09:00","current_date":"2026-10-14"}',
       ],
       update_appointment: ['{"first_name":"Michael","last_name":"Makhlouf"}', '{"datetime":"2026-10-15T09:00"}'],
@@ -418,7 +418,7 @@ describe("server.js glue mapping", () => {
     );
     const prompt = seen.body.messages[0].content;
     assert.match(prompt, /TOOL: reschedule_appointment/);
-    assert.match(prompt, /DETAILS THAT WILL BE SAVED: \{"new_datetime":"2026-10-16T14:00"\}/);
+    assert.match(prompt, /DETAILS THAT WILL BE SAVED: \{"new_datetime":"2026-10-16T14:00 = Friday, October 16, 2026, 2:00 PM"\}/);
     assert.match(prompt, /\(America\/New_York\)/);
     assert.match(prompt, /the AI must have spelled it back letter by letter/);
     assert.match(prompt, /CALLER: I need a plumber tomorrow morning\./);
@@ -446,14 +446,14 @@ describe("server.js glue mapping", () => {
     s.organization = { timezone: "Australia/Sydney" };
     s.scheduleSnapshot = { slots: {}, appointments: [], practitioners: [{ id: "prac-7", name: "Dr Sarah Lee", serviceTypeIds: [] }] };
     await m.applyBookingPrecheck(s, { name: "book_appointment", args: { ...ARGS, practitioner_id: "prac-7" } }, { audit: true });
-    assert.match(seen.body.messages[0].content, /^DETAILS THAT WILL BE SAVED: \{"first_name":"Michael","last_name":"Makhlouf","datetime":"2026-10-15T09:00","practitioner":"Dr Sarah Lee"\}$/m);
+    assert.match(seen.body.messages[0].content, /^DETAILS THAT WILL BE SAVED: \{"first_name":"Michael","last_name":"Makhlouf","datetime":"2026-10-15T09:00 = Thursday, October 15, 2026, 9:00 AM","practitioner":"Dr Sarah Lee"\}$/m);
     assert.doesNotMatch(JSON.stringify(seen.body), /prac-7/);
 
     seen = replyText(ALLOW);
     const noSnapshot = new CallSession("CAcliniko"); // a Cliniko org carries no snapshot
     noSnapshot.organization = { timezone: "Australia/Sydney" };
     assert.equal(await m.applyBookingPrecheck(noSnapshot, { name: "book_appointment", args: { ...ARGS, practitioner_id: "prac-7" } }, { audit: true }), null);
-    assert.match(seen.body.messages[0].content, /^DETAILS THAT WILL BE SAVED: \{"first_name":"Michael","last_name":"Makhlouf","datetime":"2026-10-15T09:00"\}$/m);
+    assert.match(seen.body.messages[0].content, /^DETAILS THAT WILL BE SAVED: \{"first_name":"Michael","last_name":"Makhlouf","datetime":"2026-10-15T09:00 = Thursday, October 15, 2026, 9:00 AM"\}$/m);
     assert.ok(!logs.some((l) => /ALERT|No usable verdict/.test(l)), "an unresolvable practitioner is not a failure");
   });
 

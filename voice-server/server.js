@@ -24,7 +24,7 @@ const scheduleCache = require("./lib/schedule-cache");
 const { bookingKey, normalizeDatetime } = require("./lib/booking-key");
 const { applyRescheduleToLedger, RESCHEDULE_SUCCESS_SIGNAL } = require("./lib/reschedule-ledger"); // SCRUM-563
 const { classifyRebookAttempt, DUPLICATE_REBOOK_MESSAGE, CORRECTION_ERROR_MESSAGE, CANCEL_NUDGE } = require("./lib/rebook-correction"); // SCRUM-557
-const { applyBookingPrecheck, PRECHECKED_TOOLS } = require("./lib/booking-precheck"); // SCRUM-593
+const { applyBookingPrecheck, PRECHECKED_TOOLS, precheckMode } = require("./lib/booking-precheck"); // SCRUM-593
 const { createCallRecord, completeCallRecord, notifyCallCompleted, applyReanalysis } = require("./lib/call-logger");
 const { calendarToolDefinitions, listServiceTypesToolDefinition, transferToolDefinition, callbackToolDefinition, endCallToolDefinition, executeToolCall } = require("./services/tool-executor");
 const { createGeminiSession, GEMINI_MODEL } = require("./services/gemini-live");
@@ -4712,7 +4712,8 @@ testWss.on("connection", (ws, req) => {
               const s = session;
               let precheckHold = null;
               if (s.organizationId === DEMO_ORG_ID) {
-                if (PRECHECKED_TOOLS.has(toolCall.name)) console.log(`[Precheck] skip ${toolCall.name} (public demo). callSid=${s.callSid}`);
+                // With the check off there is nothing to skip.
+                if (PRECHECKED_TOOLS.has(toolCall.name) && precheckMode() !== "off") console.log(`[Precheck] skip ${toolCall.name} (public demo). callSid=${s.callSid}`);
               } else {
                 precheckHold = await applyBookingPrecheck(s, toolCall, {
                   getPending: () => ({ user: pendingUserTranscript, ai: pendingAiTranscript }),

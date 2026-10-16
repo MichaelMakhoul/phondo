@@ -183,6 +183,36 @@ function nameVerificationMethod(promptConfig) {
   return v === "spell-out" || v === "read-back-characters" ? v : "repeat-confirm";
 }
 
+const WEEKDAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+/** An ISO date-time's wall-clock fields, at the start of the value (seconds or a zone may follow). */
+const ISO_WALL_CLOCK = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/;
+/** The saved fields that hold a date and time, spelled out for Claude (see spokenDateTime). */
+const SPOKEN_DATE_FIELDS = ["datetime", "new_datetime"];
+
+/**
+ * A saved ISO date-time with its spoken form beside it:
+ * "2026-10-17T09:00 = Saturday, October 17, 2026, 9:00 AM". Without reasoning,
+ * Haiku missed ISO-date arithmetic in the live replay ("tomorrow, Friday
+ * October 16" was allowed against 2026-10-17T09:00, 3 of 3). Read from the
+ * wall-clock fields alone, with the weekday from Date.UTC on the date: tool
+ * args carry the business's local time, so no zone conversion applies.
+ * Anything that is not a real date and time comes back unchanged.
+ * @param {unknown} value
+ * @returns {unknown}
+ */
+function spokenDateTime(value) {
+  if (typeof value !== "string") return value;
+  const m = ISO_WALL_CLOCK.exec(value);
+  if (!m) return value;
+  const [year, month, day, hour, minute] = m.slice(1).map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  const realDate = date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+  if (!realDate || hour > 23 || minute > 59) return value;
+  const clock = `${hour % 12 === 0 ? 12 : hour % 12}:${String(minute).padStart(2, "0")} ${hour < 12 ? "AM" : "PM"}`;
+  return `${value} = ${WEEKDAY_NAMES[date.getUTCDay()]}, ${MONTH_NAMES[month - 1]} ${day}, ${year}, ${clock}`;
+}
+
 /**
  * Just these keys of a tool call's args, in this order.
  * @param {Record<string, unknown> | undefined} args
@@ -249,6 +279,9 @@ function practitionerName(args, practitioners) {
 function decisionArgs(toolName, args, practitioners) {
   const fields = DECISION_FIELDS[toolName];
   const saved = pickArgs(args, fields.saved);
+  for (const key of SPOKEN_DATE_FIELDS) {
+    if (Object.hasOwn(saved, key)) saved[key] = spokenDateTime(saved[key]);
+  }
   const practitioner = fields.practitioner ? practitionerName(args, practitioners) : "";
   if (practitioner) saved.practitioner = practitioner;
   return { saved, identify: pickArgs(args, fields.identify) };
@@ -285,10 +318,10 @@ function conversationText(messages, pendingUser, pendingAi) {
 }
 
 /**
- * Everything the caller has said so far, one line per turn: the transcript's
- * caller lines, then the turn in progress. If it changes while a check runs,
- * the caller spoke during it. The same words moving from the turn in progress
- * into the transcript (the turn completed) are not a change.
+ * Everything the caller has said so far, one trimmed line per turn: the
+ * transcript's caller lines, then the turn in progress. If it grows while a
+ * check runs, the caller spoke during it. The same words moving from the turn
+ * in progress into the transcript (the turn completed) are not a change.
  * @param {Array<{ role?: string, content?: unknown }>} messages
  * @param {string} pendingUser
  * @returns {string}
@@ -339,7 +372,8 @@ Rules — check ONLY these:
 1. NAME (only if DETAILS THAT WILL BE SAVED contain a first or last name): it must be the name the caller gave. After the caller last gave or corrected it, the AI must have ${readBack} and the caller must have clearly agreed (yes, that's right, correct — in any language). If the caller spelled it, the saved spelling must match their letters. A name the caller never clearly gave or never confirmed is NOT confirmed.
 2. DATE/TIME (only a date or time in DETAILS THAT WILL BE SAVED): it must be the slot the caller agreed to. Work out "today", "tomorrow" and weekday names from NOW.
 3. AGREEMENT: the caller must have asked for or agreed to this booking or change — not only asked what is free.
-Ignore wording, email, notes, phone number, service, and practitioner (unless the caller asked for one practitioner and a different one is being saved: then answer fix with "practitioner_mismatch").
+4. PRACTITIONER (only if DETAILS THAT WILL BE SAVED contain a practitioner AND the caller asked for a specific person): the saved practitioner must be the person the caller asked for. Otherwise answer fix with "practitioner_mismatch".
+Ignore wording, email, notes, phone number and service.
 
 Answer with "verdict" and "problem" ("none" when you allow). If you are unsure whether the NAME was confirmed, answer fix with "name_unconfirmed".`;
 }
@@ -400,10 +434,12 @@ function noVerdict(info, model, outcome = LET_THROUGH) {
     const what = info.config
       ? info.status !== undefined ? `HTTP ${info.status}` : info.cause
       : `${unreadableStreak} unreadable in a row`;
+    // What happened to THIS write: a failed re-check held on the first verdict.
+    const result = outcome === HOLD_ON_FIRST ? "held on the first verdict" : "writes go through unchecked";
     Sentry.withScope((scope) => {
       scope.setTag("service", "booking_precheck");
       scope.setExtras(details);
-      Sentry.captureMessage(`Booking pre-check producing no verdicts (${what}) — writes go through unchecked`, "error");
+      Sentry.captureMessage(`Booking pre-check producing no verdicts (${what}) — ${result}`, "error");
     });
   } else {
     const shown = Object.entries(details)
@@ -479,10 +515,12 @@ async function requestVerdict(prompt, outcome = LET_THROUGH) {
  */
 
 /**
- * Claude's verdict on one write. On a fix, asks ONCE more if the caller spoke
- * during the check: Gemini's transcription of their words has no guaranteed
- * order against its tool calls (SCRUM-587), so the "yes" that confirmed a
- * booking can land after the call it confirmed. An allow never waits for that.
+ * Claude's verdict on one write. On a fix (enforce only), asks ONCE more if
+ * the caller's words grew during the check: Gemini's transcription of them has
+ * no guaranteed order against its tool calls (SCRUM-587), so the "yes" that
+ * confirmed a booking can land after the call it confirmed. Words that shrank
+ * or changed are no new evidence (cleanup clears the turn in progress), so the
+ * first verdict stands. An allow never waits for any of this.
  * A re-check that reads a verdict is final. One that produces none (an error,
  * a timeout, an unreadable reply) holds on the first verdict: a real verdict
  * already found a problem, and failing open there could save the very data it
@@ -490,9 +528,10 @@ async function requestVerdict(prompt, outcome = LET_THROUGH) {
  * @param {PrecheckInput} input
  * @param {Record<string, unknown>} saved
  * @param {Record<string, unknown>} identify
+ * @param {boolean} recheck - false in shadow mode, which logs the first verdict only
  * @returns {Promise<{ allow: true, unchecked?: true } | { allow: false, problem: string }>}
  */
-async function decide(input, saved, identify) {
+async function decide(input, saved, identify, recheck) {
   const now = safeNowLine(input.timezone, input.now);
   const ask = (/** @type {{ user: string, ai: string }} */ turn, /** @type {string} */ outcome = LET_THROUGH) =>
     requestVerdict(
@@ -509,12 +548,14 @@ async function decide(input, saved, identify) {
   const turn = turnInProgress(input);
   const heard = callerWords(input.messages, turn.user);
   const verdict = await ask(turn);
-  if (verdict.allow === true) return verdict;
+  if (verdict.allow === true || !recheck) return verdict;
   // A real verdict found a problem: from here nothing may turn it into a write.
   const recheckStarted = Date.now();
   try {
     const fresh = turnInProgress(input);
-    if (callerWords(input.messages, fresh.user) === heard) return verdict;
+    // callerWords is trimmed line by line, so growth means the same words and more.
+    const heardNow = callerWords(input.messages, fresh.user);
+    if (!(heardNow.length > heard.length && heardNow.startsWith(heard))) return verdict;
     console.log(`[Precheck] caller spoke during the check — re-checking ${input.toolName} once. callSid=${input.callSid}`);
     const second = await ask(fresh, HOLD_ON_FIRST);
     if (!(second.allow === true && second.unchecked)) return second;
@@ -568,7 +609,7 @@ async function precheckBookingWrite(input) {
       return PROCEED;
     }
     // Started here, so the prompt is built from the call as it stands at the tool call.
-    const pending = decide(input, saved, identify);
+    const pending = decide(input, saved, identify, mode === "enforce");
     if (mode === "shadow") {
       // Shadow only reports what enforce would do, so it never makes the write wait: the
       // check runs on, and its would-be verdict is logged when it lands.
@@ -661,6 +702,8 @@ module.exports = {
   precheckBookingWrite,
   applyBookingPrecheck,
   nameVerificationMethod,
+  precheckMode,
+  spokenDateTime,
   PRECHECKED_TOOLS,
   MAX_HOLDS,
 };

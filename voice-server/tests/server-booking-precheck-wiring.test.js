@@ -33,7 +33,7 @@ const LIVE_TURN = /getPending: \(\) => \(\{ user: pendingUserTranscript, ai: pen
 
 describe("SCRUM-593: booking pre-check wiring", () => {
   it("imports the module", () => {
-    assert.match(src, /const \{ applyBookingPrecheck, PRECHECKED_TOOLS \} = require\("\.\/lib\/booking-precheck"\);/);
+    assert.match(src, /const \{ applyBookingPrecheck, PRECHECKED_TOOLS, precheckMode \} = require\("\.\/lib\/booking-precheck"\);/);
   });
 
   it("inbound: one check for the main write path and one for the RebookGuard's name-correction branch", () => {
@@ -143,7 +143,7 @@ const { CallSession } = require("../call-session");
 const { bookingKey, normalizeDatetime } = require("../lib/booking-key");
 const { classifyRebookAttempt, DUPLICATE_REBOOK_MESSAGE, CORRECTION_ERROR_MESSAGE, CANCEL_NUDGE } = require("../lib/rebook-correction");
 const { RESCHEDULE_SUCCESS_SIGNAL, applyRescheduleToLedger } = require("../lib/reschedule-ledger");
-const { applyBookingPrecheck, PRECHECKED_TOOLS } = require("../lib/booking-precheck");
+const { applyBookingPrecheck, PRECHECKED_TOOLS, precheckMode } = require("../lib/booking-precheck");
 const { DEMO_ORG_ID } = require("../lib/session-limits");
 
 const SAVED_ENV = { key: process.env.ANTHROPIC_API_KEY, mode: process.env.PRECHECK_MODE };
@@ -283,6 +283,7 @@ function testPathHandlers(session, o = {}) {
     executeToolCall: o.executeToolCall || (async (name) => { calls.push(["executeToolCall", name]); return { message: "simulated ok" }; }),
     applyBookingPrecheck: o.applyBookingPrecheck || applyBookingPrecheck,
     PRECHECKED_TOOLS,
+    precheckMode,
     DEMO_ORG_ID,
     context: NAME_METHOD_CONTEXT,
     pendingUserTranscript: "yes, that is right",
@@ -856,6 +857,21 @@ describe("SCRUM-593: the real /ws/test handler, run against stubs", () => {
     assert.ok(h.lines.some((l) => l === "[Precheck] skip book_appointment (public demo). callSid=CAhandler"), h.lines.join("\n"));
     await h.cbs.onToolCall({ id: "t2", name: "check_availability", args: { date: "2026-10-20" } });
     assert.equal(h.lines.filter((l) => l.includes("(public demo)")).length, 1, "only a write the check covers is reported as skipped");
+  });
+
+  // R33: with the check switched off there is nothing to skip, so the demo prints no skip line.
+  it("with PRECHECK_MODE off (or an off alias) the public demo prints no skip line", async () => {
+    for (const mode of ["off", "disabled"]) {
+      process.env.PRECHECK_MODE = mode;
+      const claude = hold("name_unconfirmed");
+      const s = makeSession();
+      s.organizationId = DEMO_ORG_ID;
+      const h = testPathHandlers(s);
+      assert.deepEqual(await h.cbs.onToolCall({ id: "t1", ...BOOK }), { message: "simulated ok" }, mode);
+      assert.deepEqual(h.written(), ["book_appointment"], mode);
+      assert.equal(claude.calls, 0, mode);
+      assert.ok(!h.lines.some((l) => l.includes("[Precheck]")), `${mode}: ${h.lines.join(" / ")}`);
+    }
   });
 
   it("a dashboard test call for a real organization is still checked", async () => {

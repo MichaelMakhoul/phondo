@@ -280,7 +280,7 @@ Spec: `docs/superpowers/specs/2026-10-15-booking-precheck-design.md`.
 
 **Modes** (`PRECHECK_MODE`):
 - unset or `enforce` (default): checks and holds;
-- `shadow`: checks and logs what it would have done, never holding or delaying a write;
+- `shadow`: checks and logs what it would have done (the first verdict; no re-check), never holding or delaying a write;
 - `off`, also `disabled`, `false`, `0` or `no` (any case): no check at all.
 
 Any other value warns once (`[Precheck] unknown PRECHECK_MODE="…" — enforcing`) and enforces.
@@ -303,9 +303,9 @@ the code. `PRECHECK_MODE` does not switch it back.
 | `[Precheck] Holding <tool>: <problem> — hold n/2 (<ms>ms)` | held: Gemini confirms with the caller, then calls again |
 | `[Precheck] unchecked <tool> (<ms>ms)` | no usable verdict (timeout, HTTP error, unreadable reply), so written unchecked; the cause is on the line before it: `[Precheck] No usable verdict (…)`, or the page below |
 | `[Precheck] skip <tool> (no name or date to save)` | nothing to check (e.g. an email-only update) |
-| `[Precheck] skip <tool> (public demo)` | the website demo (`/ws/test`, demo org) is never checked |
+| `[Precheck] skip <tool> (public demo)` | the website demo (`/ws/test`, demo org) is never checked (no line while the check is off) |
 | `[Precheck] (shadow) would hold <tool>: <problem>` | shadow mode: the would-be hold; the write went ahead |
-| `[Precheck] caller spoke during the check — re-checking <tool> once` | a late "yes" landed during a held check, so it asked again |
+| `[Precheck] caller spoke during the check — re-checking <tool> once` | the caller's words grew during a held check (a late "yes"), so it asked again |
 | `[Precheck] re-check failed — holding on the first verdict <tool>: <problem>` | that second ask got no verdict, so the first verdict's hold stands (the failure still counts toward the page below) |
 | `[Precheck] session ended during the check — writing the allowed <tool> anyway` | the caller hung up mid-check; the allowed write still happened |
 | `[Precheck] <tool> let through unchecked after 2 holds` | the hold cap let it through (also `[ALERT:warning] [booking_precheck]`) |
@@ -313,6 +313,7 @@ the code. `PRECHECK_MODE` does not switch it back.
 **Pages:** `[ALERT:error] [booking_precheck] Booking pre-check producing no verdicts (…) — writes go through unchecked`.
 - It fires at once on a config failure: `ANTHROPIC_API_KEY not set`, or HTTP 400/401/403/404 (a bad key, model or request field). Otherwise it fires from the 3rd failed check in a row.
 - Bookings keep working, but unchecked. Triage from the line's `cause=`, `status=` and `error_type=`. For a bad model, `fly secrets unset PRECHECK_MODEL -a phondo-voice`.
+- A page that ends `— held on the first verdict` came from a failed re-check: that write was held, not let through.
 - `[ALERT:error] [booking_precheck] Booking pre-check glue threw — write went through unchecked` is a code bug: one write went through unchecked.
 
 Loki: `{fly_app_name="phondo-voice"} |= "[Precheck]"`.
