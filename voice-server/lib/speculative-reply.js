@@ -21,7 +21,7 @@
  *     adopter, who runs the tools exactly as for a live call.
  *   - The LLM call is injected (`llm`, normally streamClaudeResponse). The draft
  *     owns the AbortController behind the signal that call receives.
- *   - The draft owns a deadline (SCRUM-594 R8). Passing a signal to
+ *   - The draft owns a deadline. Passing a signal to
  *     streamClaudeResponse turns off its built-in 15 s limit, so the signal the
  *     draft hands over fires on abort() AND after `timeoutMs` (default 15 s). A
  *     call that hits the deadline FAILS: the draft is not adoptable and adopt()
@@ -38,9 +38,11 @@
  *   - Whoever starts a draft must still abort it on every path above (and on
  *     call cleanup); the deadline is the backstop, not the plan.
  *
- * Logging: one warning when a draft fails for a reason other than abort. It
- * carries the turn key and the error text, never caller words or model text.
- * No error reporting here: the caller decides what is worth reporting.
+ * Logging: one warning when the LLM call fails for a reason other than abort
+ * (the deadline included), carrying the turn key and the error text, never
+ * caller words or model text. A failure of the adopter's own callback is not
+ * logged: adopt() rejects with that error and the adopter owns it. No error
+ * reporting here: the caller decides what is worth reporting.
  */
 
 /**
@@ -105,6 +107,13 @@ function timeoutError(ms, cause) {
 const DEFAULT_TIMEOUT_MS = 15_000;
 
 /**
+ * The longest deadline a draft accepts. Two minutes is far past any phone turn,
+ * and it keeps the value well inside what AbortSignal.timeout takes: it clamps
+ * or throws a RangeError from 2 ** 31 on.
+ */
+const MAX_TIMEOUT_MS = 120_000;
+
+/**
  * Start a speculative reply.
  *
  * `isAdoptable(currentMessages, transcript)` is true only while ALL of these hold:
@@ -114,8 +123,9 @@ const DEFAULT_TIMEOUT_MS = 15_000;
  *   - `transcript === ` the draft's transcript.
  *
  * `adopt(onSentence)` can be called once. It replays the buffered chunks through
- * `onSentence` synchronously and in order, then forwards the live ones, and
- * resolves with the LLM's final result ({type:"content"} or {type:"tool_calls"}).
+ * `onSentence` synchronously and in order (a chunk the producer emits from inside
+ * `onSentence` meanwhile joins the end of the queue), then forwards the live ones,
+ * and resolves with the LLM's final result ({type:"content"} or {type:"tool_calls"}).
  *   - On an aborted draft it resolves {type:"aborted"} and replays nothing. It
  *     never rejects because of an abort, whether the abort came before the call
  *     or while the stream was being forwarded.
@@ -130,7 +140,7 @@ const DEFAULT_TIMEOUT_MS = 15_000;
  * @param {string} options.transcript - the eager transcript to answer; must be non-empty
  * @param {Record<string, any>} [options.llmOptions] - passed through to llm (tools, model, maxTokens ...); chunking, signal and onSentence are replaced by the draft's own
  * @param {string | number} [options.turnKey] - opaque id of the turn, exposed as `turnKey` and used in the failure warning
- * @param {number} [options.timeoutMs] - deadline for the LLM call in whole milliseconds (default 15000); injectable for tests
+ * @param {number} [options.timeoutMs] - deadline for the LLM call in whole milliseconds, 1 to 120000 (default 15000); injectable for tests
  * @returns {SpeculativeReply}
  */
 function startSpeculativeReply(options) {
@@ -140,8 +150,8 @@ function startSpeculativeReply(options) {
   if (typeof transcript !== "string" || transcript.trim() === "") {
     throw new TypeError("startSpeculativeReply: transcript must be a non-empty string");
   }
-  if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) {
-    throw new TypeError("startSpeculativeReply: timeoutMs must be a positive whole number of milliseconds");
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_TIMEOUT_MS) {
+    throw new TypeError(`startSpeculativeReply: timeoutMs must be a whole number of milliseconds from 1 to ${MAX_TIMEOUT_MS}`);
   }
 
   const startLength = messages.length;
@@ -209,23 +219,29 @@ function startSpeculativeReply(options) {
   timeoutSignal.addEventListener("abort", onDeadline, { once: true });
 
   /**
+   * Hand one chunk to the adopter's callback. If it throws (say, the TTS socket
+   * closed) the draft fails: the stream is stopped and adopt() rejects with that
+   * error, as a live call would.
+   * @param {(sentence: string) => void} callback
+   * @param {string} sentence
+   */
+  function deliverTo(callback, sentence) {
+    try {
+      callback(sentence);
+    } catch (error) {
+      fail(error);
+    }
+  }
+
+  /**
    * One chunk from the model: buffer it until adoption, forward it after. Silent
    * once the draft is aborted or failed, even if the LLM keeps producing.
    * @param {string} sentence
    */
   function speak(sentence) {
     if (aborted || failure) return;
-    if (!sink) {
-      pending.push(sentence);
-      return;
-    }
-    try {
-      sink(sentence);
-    } catch (error) {
-      // The adopter's callback broke (say, the TTS socket closed). Stop the
-      // stream; adopt() rejects with this error, as a live call would.
-      fail(error);
-    }
+    if (sink) deliverTo(sink, sentence);
+    else pending.push(sentence);
   }
 
   // An async wrapper so even a synchronous throw from llm becomes a failed draft.
@@ -294,13 +310,14 @@ function startSpeculativeReply(options) {
       if (aborted) return Promise.resolve(abortedResult());
 
       adopted = true;
-      sink = onSentence;
-      const replay = pending;
-      pending = [];
-      for (const sentence of replay) {
-        speak(sentence);
-        if (aborted || failure) break;
+      // Drain what is buffered while `sink` is still unset: a chunk the producer
+      // emits from inside onSentence meanwhile is appended to `pending` and
+      // delivered after the ones before it. Live forwarding starts only once the
+      // queue is empty, so the order never depends on nothing else running.
+      while (pending.length > 0 && !aborted && !failure) {
+        deliverTo(onSentence, /** @type {string} */ (pending.shift()));
       }
+      sink = onSentence;
       // The caller's own abort outranks a failure (as in deliver()), and both settle at once:
       // there is nothing to wait for.
       if (aborted) {
@@ -323,4 +340,4 @@ function startSpeculativeReply(options) {
   };
 }
 
-module.exports = { startSpeculativeReply, DEFAULT_TIMEOUT_MS };
+module.exports = { startSpeculativeReply, DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS };

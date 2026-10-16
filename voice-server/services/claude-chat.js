@@ -41,10 +41,20 @@ const SENTENCE_BREAK = /(?<=[.!?؟،。！？])\s+/;
 // semicolon, colon, em dash (U+2014) or en dash (U+2013) FOLLOWED BY WHITESPACE;
 // requiring the whitespace is what keeps "9:30" and "1,500" in one piece. Only
 // the FIRST chunk of a response may end at a clause boundary, and only once it
-// holds CLAUSE_MIN_WORDS words. Every later chunk uses SENTENCE_BREAK, as before.
+// holds CLAUSE_MIN_WORDS words. Every later chunk uses SENTENCE_BREAK, as before,
+// except that a break right after a common abbreviation is skipped (see below).
 const CLAUSE_BREAK = /[,;:\u2014\u2013](?=\s)/g;
 const CLAUSE_MIN_WORDS = 3;
 const WORD_CHAR = /[\p{L}\p{N}]/u;
+
+// Clause mode only: a sentence break right after one of these is an abbreviation,
+// not the end of a thought, and ending a chunk there would hand TTS a fragment
+// such as "Dr." on its own. The whole last token before the break must match
+// (so "fast." is not "st."), case-insensitively, ignoring leading quotes and
+// brackets. The default mode keeps splitting there, exactly as it always has.
+const ABBREVIATIONS = new Set(["a.m.", "p.m.", "dr.", "mr.", "mrs.", "ms.", "st.", "e.g.", "i.e."]);
+const SENTENCE_BREAK_EVERY = new RegExp(SENTENCE_BREAK.source, "g");
+const LEADING_PUNCTUATION = /^[^\p{L}\p{N}]+/u;
 
 /**
  * @param {"clause"} [chunking] - "clause" for SCRUM-594 clause chunking; unset keeps the original sentence-only behaviour
@@ -75,14 +85,46 @@ function countWords(text) {
   return count;
 }
 
+/** True when the last whitespace-separated token of `text` is one of ABBREVIATIONS. */
+function endsWithAbbreviation(text) {
+  let start = text.length;
+  while (start > 0 && !/\s/.test(text[start - 1])) start--;
+  return ABBREVIATIONS.has(text.slice(start).replace(LEADING_PUNCTUATION, "").toLowerCase());
+}
+
+/** The first sentence break in `buffer` that does not follow an abbreviation (a match with .index and [0]), or null. */
+function nextSentenceBreak(buffer) {
+  for (const match of buffer.matchAll(SENTENCE_BREAK_EVERY)) {
+    if (!endsWithAbbreviation(buffer.slice(0, match.index))) return match;
+  }
+  return null;
+}
+
+/**
+ * Clause-mode counterpart of flushSentences: emit every complete sentence in the
+ * buffer except that a break right after an abbreviation is not a break. Returns
+ * the trailing remainder to keep buffering.
+ */
+function flushClauseSentences(buffer, emit) {
+  let rest = buffer;
+  for (;;) {
+    const sentenceBreak = nextSentenceBreak(rest);
+    if (!sentenceBreak) return rest;
+    const sentence = rest.slice(0, sentenceBreak.index).trim();
+    rest = rest.slice(sentenceBreak.index + sentenceBreak[0].length);
+    if (sentence) emit(sentence);
+  }
+}
+
 /**
  * Where the first chunk of `buffer` ends (clause mode): the earlier of a sentence
- * break (any length, exactly as in the default mode) and the first clause boundary
- * whose chunk already has CLAUSE_MIN_WORDS words. Returns the index just past the
- * chunk, or -1 while the buffer holds no usable boundary yet.
+ * break (any length, exactly as in the default mode, but never right after an
+ * abbreviation) and the first clause boundary whose chunk already has
+ * CLAUSE_MIN_WORDS words. Returns the index just past the chunk, or -1 while the
+ * buffer holds no usable boundary yet.
  */
 function firstChunkEnd(buffer) {
-  const sentence = SENTENCE_BREAK.exec(buffer);
+  const sentence = nextSentenceBreak(buffer);
   const sentenceEnd = sentence ? sentence.index : -1;
   for (const clause of buffer.matchAll(CLAUSE_BREAK)) {
     const end = clause.index + 1;
@@ -94,8 +136,8 @@ function firstChunkEnd(buffer) {
 
 /**
  * Clause-mode counterpart of flushSentences: until the first chunk is out it may
- * end at a clause boundary; afterwards only sentence breaks apply. Returns the
- * trailing remainder to keep buffering.
+ * end at a clause boundary; afterwards only sentence breaks apply (never right
+ * after an abbreviation). Returns the trailing remainder to keep buffering.
  */
 function flushClauseChunks(state, buffer, onSentence) {
   if (!onSentence) return buffer;
@@ -112,7 +154,7 @@ function flushClauseChunks(state, buffer, onSentence) {
       if (chunk) emit(chunk);
     }
   }
-  return flushSentences(rest, emit);
+  return flushClauseSentences(rest, emit);
 }
 
 /**
@@ -223,8 +265,9 @@ async function parseClaudeStream(res, onSentence, chunking) {
  * Stream a Claude response. Mirrors openai-llm.js#streamChatResponse's contract.
  * @param {Array<object>} messages - OpenAI-style messages (system/user/assistant/tool)
  * @param {{ tools?: object[], onSentence?: (s:string)=>void, model?: string, maxTokens?: number, signal?: AbortSignal, chunking?: "clause" }} [opts]
- *   chunking: "clause" lets the first chunk passed to onSentence end at a clause boundary (SCRUM-594) and speaks the
- *   tail of a reply before tool_calls is returned; unset keeps the original sentence-only behaviour
+ *   chunking: "clause" lets the first chunk passed to onSentence end at a clause boundary (SCRUM-594), never ends a
+ *   chunk right after a common abbreviation (Dr., a.m., ...), and speaks the tail of a reply before tool_calls is
+ *   returned; unset keeps the original sentence-only behaviour
  * @returns {Promise<{type:"content", content:string} | {type:"tool_calls", toolCalls:object[], message:object}>}
  */
 async function streamClaudeResponse(messages, opts = {}) {

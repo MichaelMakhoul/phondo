@@ -1,7 +1,7 @@
 "use strict";
 
 /**
- * SCRUM-594 (Task 2): clause-level first chunk in services/claude-chat.js.
+ * SCRUM-594: clause-level first chunk in services/claude-chat.js.
  *
  * `chunking: "clause"` lets the FIRST spoken chunk of a reply end at a clause
  * boundary (one of , ; : em dash en dash, followed by whitespace, once the chunk
@@ -151,6 +151,22 @@ const CLAUSE_CASES = [
   ["Arabic sentence punctuation is unchanged", "مرحبا بكم، كيف أساعدك؟ شكرا", ["مرحبا بكم،", "كيف أساعدك؟", "شكرا"]],
   ["leading whitespace is trimmed", "  Sure thing, I can help, no problem.", ["Sure thing, I can help,", "no problem."]],
   ["a short reply with no punctuation", "Nine is good", ["Nine is good"]],
+  [
+    "no chunk ends after the abbreviation Dr.",
+    "Dr. Smith is in on Thursday, if you like.",
+    ["Dr. Smith is in on Thursday,", "if you like."],
+  ],
+  [
+    "no chunk ends after the abbreviation a.m.",
+    "We can come at 9 a.m. tomorrow, does that suit?",
+    ["We can come at 9 a.m. tomorrow,", "does that suit?"],
+  ],
+  [
+    "an opening bracket or quote does not hide an abbreviation",
+    'Pick a time (e.g. morning), or say "Dr. Lee" please.',
+    ["Pick a time (e.g. morning),", 'or say "Dr. Lee" please.'],
+  ],
+  ["an abbreviation at the very end of a reply is still spoken", "We close at 5 p.m. ", ["We close at 5 p.m."]],
   ["a trailing clause with nothing after it", "Ends with a comma and space, ", ["Ends with a comma and space,"]],
 ];
 
@@ -204,6 +220,43 @@ describe("clause chunking: where the first chunk ends", () => {
   });
 });
 
+describe("clause mode: an abbreviation is not the end of a chunk", () => {
+  const ABBREVIATIONS = ["a.m.", "p.m.", "Dr.", "Mr.", "Mrs.", "Ms.", "St.", "e.g.", "i.e."];
+  const forms = (abbr) => [...new Set([abbr, abbr.toUpperCase(), abbr.toLowerCase(), abbr[0].toUpperCase() + abbr.slice(1).toLowerCase()])];
+
+  for (const abbr of ABBREVIATIONS) {
+    it(`${abbr} in any case, followed by a space, does not end a chunk; the default mode still splits there`, () => {
+      for (const form of forms(abbr)) {
+        const text = `Please ask ${form} Lee about it. Thanks.`;
+        assert.deepEqual(reduce(whole(text), { chunking: "clause" }).chunks, [`Please ask ${form} Lee about it.`, "Thanks."], form);
+        // Default mode is the old behaviour: it does end a chunk right after the abbreviation.
+        assert.deepEqual(reduce(whole(text), {}).chunks, [`Please ask ${form}`, "Lee about it.", "Thanks."], form);
+        assert.deepEqual(reduce(whole(text), {}).chunks, legacyChunks(whole(text)), form);
+      }
+    });
+  }
+
+  it("a word that merely ENDS like an abbreviation is still a sentence end", () => {
+    assert.deepEqual(reduce(whole("We were fast. Then slow."), { chunking: "clause" }).chunks, ["We were fast.", "Then slow."]);
+    assert.deepEqual(reduce(whole("I met Madr. Then left."), { chunking: "clause" }).chunks, ["I met Madr.", "Then left."]);
+    assert.deepEqual(reduce(whole("They gave alms. Then left."), { chunking: "clause" }).chunks, ["They gave alms.", "Then left."]);
+  });
+
+  it("the abbreviation guard applies to later chunks as well, not only the first", () => {
+    const text = "Sure. Dr. Smith will see you at 9 a.m. tomorrow. Anything else?";
+    assert.deepEqual(reduce(whole(text), { chunking: "clause" }).chunks, ["Sure.", "Dr. Smith will see you at 9 a.m. tomorrow.", "Anything else?"]);
+  });
+
+  it("the same chunks come out however the deltas are cut, with the abbreviation split across deltas too", () => {
+    const text = "Dr. Smith will see you at 9 a.m. tomorrow, e.g. after lunch. Thanks.";
+    const expected = reduce(whole(text), { chunking: "clause" }).chunks;
+    assert.deepEqual(expected, ["Dr. Smith will see you at 9 a.m. tomorrow,", "e.g. after lunch.", "Thanks."]);
+    for (const deltas of segmentations(text)) {
+      assert.deepEqual(reduce(deltas, { chunking: "clause" }).chunks, expected, JSON.stringify(deltas));
+    }
+  });
+});
+
 describe("default mode is byte-identical to the pre-SCRUM-594 behaviour (ConversationRelay depends on it)", () => {
   it("chunks match a verbatim copy of the old algorithm for every text and every delta split", () => {
     const extraTexts = [
@@ -233,8 +286,9 @@ describe("default mode is byte-identical to the pre-SCRUM-594 behaviour (Convers
   });
 
   it("a tool turn: whatever the old code did not flush before returning tool_calls is still not flushed", () => {
-    // PINNED CURRENT BEHAVIOUR (see the task-2 report): the unterminated tail before a
-    // tool_use block is dropped in default mode. Clause mode speaks it (tested below).
+    // PINNED CURRENT BEHAVIOUR: the unterminated tail before a tool_use block is dropped
+    // in default mode, and ConversationRelay depends on that, so changing it is a
+    // deliberate decision rather than a side effect. Clause mode speaks it (tested below).
     for (const text of ["Let me check that for you", "Let me check that for you.", "Sure. Let me check that for you."]) {
       for (const deltas of segmentations(text)) {
         const { chunks, result } = reduce(deltas, { tool: true });
@@ -385,7 +439,7 @@ describe("streamClaudeResponse: the chunking option over real SSE and the reques
   });
 
   it("the same tool turn in default mode: the old behaviour (the unterminated preamble is not spoken)", async (t) => {
-    // PINNED CURRENT BEHAVIOUR for ConversationRelay; flipping it is a deliberate decision (see the task-2 report).
+    // PINNED CURRENT BEHAVIOUR for ConversationRelay; flipping it is a deliberate decision, not a side effect.
     withFakeFetch(t, () => sseResponse(toolTurnEvents({ preamble: ["Let me check", " that for you"] })));
     const chunks = [];
     const result = await streamClaudeResponse(MESSAGES, { tools: TOOLS, onSentence: (s) => chunks.push(s) });

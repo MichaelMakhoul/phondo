@@ -1,7 +1,7 @@
 "use strict";
 
 /**
- * SCRUM-594 (Task 2): lib/speculative-reply.js.
+ * SCRUM-594: lib/speculative-reply.js.
  *
  * On Flux's EagerEndOfTurn the fast pipeline starts Claude early as a DRAFT. On
  * the real EndOfTurn it ADOPTS the draft when the caller's words are identical
@@ -17,7 +17,7 @@ const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert/strict");
 const { getEventListeners } = require("node:events");
 
-const { startSpeculativeReply } = require("../lib/speculative-reply");
+const { startSpeculativeReply, MAX_TIMEOUT_MS } = require("../lib/speculative-reply");
 const { streamClaudeResponse } = require("../services/claude-chat");
 const { ev, textTurnEvents, toolTurnEvents, sseResponse, withFakeFetch, installGatedFetch, waitUntil, waitUntilTimed } = require("./anthropic-sse-helpers");
 
@@ -202,6 +202,31 @@ describe("adopt(): replay what is buffered, then stream the rest", () => {
     assert.equal(draft.status(), "adopted");
   });
 
+  it("replay keeps its order even if the producer emits from inside the sink: A, B, then what was emitted meanwhile", () => {
+    let emit = () => {};
+    const draft = start({
+      llm: (_messages, options) => {
+        emit = options.onSentence;
+        emit("A");
+        emit("B");
+        return new Promise(() => {}); // the call stays open
+      },
+    });
+    const spoken = [];
+    draft.adopt((s) => {
+      spoken.push(s);
+      // The producer runs while the replay is still in progress (no reliance on nothing else running meanwhile).
+      if (s === "A") {
+        emit("LIVE-1");
+        emit("LIVE-2");
+      }
+      if (s === "B") emit("LIVE-3");
+    });
+    assert.deepEqual(spoken, ["A", "B", "LIVE-1", "LIVE-2", "LIVE-3"]);
+    emit("LATER");
+    assert.deepEqual(spoken, ["A", "B", "LIVE-1", "LIVE-2", "LIVE-3", "LATER"], "once the replay is over, chunks go straight through");
+  });
+
   it("adopting a draft that already finished replays everything at once and resolves with the result", async (t) => {
     withFakeFetch(t, () => sseResponse(textTurnEvents(["Sure, I can help, no problem. ", "See you at nine."])));
     const draft = start();
@@ -319,7 +344,7 @@ describe("adopt(): replay what is buffered, then stream the rest", () => {
   });
 });
 
-describe("abort outranks a sink failure (R1: an abort never makes adopt() reject)", () => {
+describe("abort outranks a sink failure: an abort never makes adopt() reject", () => {
   it("a sink that aborts the draft and then throws: adopt() resolves aborted", async (t) => {
     const net = installGatedFetch(t);
     const seen = [];
@@ -395,7 +420,7 @@ describe("abort(): stops the fetch through the signal, and an aborted draft stay
 
     const spoken = [];
     const result = await draft.adopt((s) => spoken.push(s));
-    assert.deepEqual(result, { type: "aborted" }, "R1: adopt() after an abort resolves aborted, it never rejects");
+    assert.deepEqual(result, { type: "aborted" }, "adopt() after an abort resolves aborted, it never rejects");
     assert.deepEqual(spoken, [], "an aborted draft is never replayed");
     await turnEventLoop();
     assert.deepEqual(unhandled, []);
@@ -751,7 +776,7 @@ describe("failures other than abort", () => {
   });
 });
 
-describe("the draft owns a deadline (R8): a hung call fails, it is never an adoptable success", () => {
+describe("the draft owns a deadline: a hung call fails, it is never an adoptable success", () => {
   const TIMEOUT_REASON = () => new DOMException("The operation was aborted due to timeout", "TimeoutError");
 
   /**
@@ -777,10 +802,21 @@ describe("the draft owns a deadline (R8): a hung call fails, it is never an adop
     await waitUntil(() => first.status() === "done" && second.status() === "done");
   });
 
-  it("rejects a timeoutMs that is not a positive integer, as a TypeError", () => {
-    for (const bad of [0, -1, 1.5, NaN, Infinity, "15000", null, {}]) {
-      assert.throws(() => start({ timeoutMs: bad }), TypeError, `timeoutMs ${String(bad)}`);
+  it("rejects a timeoutMs that is not a whole number of milliseconds from 1 to 120000, as a TypeError", () => {
+    // 2 ** 31 and above is where AbortSignal.timeout clamps or throws a RangeError on its own; the draft says no first.
+    const bad = [0, -1, 1.5, NaN, Infinity, "15000", null, {}, 120001, 2 ** 31, 2 ** 32, Number.MAX_SAFE_INTEGER];
+    for (const timeoutMs of bad) {
+      assert.throws(() => start({ timeoutMs }), TypeError, `timeoutMs ${String(timeoutMs)}`);
     }
+  });
+
+  it("accepts both ends of the allowed range (1 ms and 120000 ms)", async (t) => {
+    const clock = handFiredDeadline(t);
+    const idle = () => new Promise(() => {});
+    start({ llm: idle, timeoutMs: 1 });
+    start({ llm: idle, timeoutMs: 120000 });
+    assert.deepEqual(clock.requested, [1, 120000]);
+    assert.equal(MAX_TIMEOUT_MS, 120000);
   });
 
   it("the signal the llm receives fires at the deadline, carrying the TimeoutError, and abort() still fires it too", async (t) => {
@@ -934,6 +970,55 @@ describe("the draft owns a deadline (R8): a hung call fails, it is never an adop
     assert.equal(draft.status(), "aborted");
     assert.deepEqual(await draft.adopt(() => assert.fail("must not speak")), { type: "aborted" });
     assert.equal(warn.mock.callCount(), 0);
+  });
+
+  for (const [when, settleFirst] of [["in the same tick", false], ["after the draft settled", true]]) {
+    it(`the deadline fires FIRST, then abort() (barge-in) ${when}: aborted, adopt() resolves {type:"aborted"}, still ONE warning`, async (t) => {
+      const warn = t.mock.method(console, "warn", () => {});
+      const unhandled = trackUnhandled(t);
+      const clock = handFiredDeadline(t);
+      const net = installGatedFetch(t);
+      const messages = freshMessages();
+      const draft = start({ messages });
+      await net.called;
+
+      clock.fire();
+      if (settleFirst) await waitUntil(() => draft.status() === "done");
+      assert.equal(warn.mock.callCount(), 1, "the deadline failed the draft and said so once");
+
+      draft.abort("barge-in");
+      assert.equal(draft.status(), "aborted");
+      assert.equal(draft.isAdoptable(messages, TRANSCRIPT), false);
+      assert.deepEqual(await draft.adopt(() => assert.fail("must not speak")), { type: "aborted" });
+      await turnEventLoop();
+      assert.equal(warn.mock.callCount(), 1, "the abort adds no second warning, and neither does the llm's later AbortError");
+      assert.deepEqual(unhandled, []);
+    });
+  }
+
+  it("a plain API error FIRST, then abort() (barge-in): aborted, adopt() resolves {type:\"aborted\"}, still ONE warning", async (t) => {
+    const warn = t.mock.method(console, "warn", () => {});
+    const unhandled = trackUnhandled(t);
+    const messages = freshMessages();
+    let rejectCall = () => {};
+    const draft = start({
+      messages,
+      llm: () =>
+        new Promise((_resolve, reject) => {
+          rejectCall = () => reject(new Error("Anthropic API error 529 (overloaded_error: Overloaded)"));
+        }),
+    });
+    rejectCall();
+    await waitUntil(() => draft.status() === "done");
+    assert.equal(warn.mock.callCount(), 1, "the API error failed the draft and was reported once");
+
+    draft.abort("barge-in");
+    assert.equal(draft.status(), "aborted");
+    assert.equal(draft.isAdoptable(messages, TRANSCRIPT), false);
+    assert.deepEqual(await draft.adopt(() => assert.fail("must not speak")), { type: "aborted" });
+    await turnEventLoop();
+    assert.equal(warn.mock.callCount(), 1, "the abort adds no second warning");
+    assert.deepEqual(unhandled, []);
   });
 
   it("a call that IGNORES its signal still fails at the deadline: the draft is over at once and adopt() does not wait for it", async (t) => {
