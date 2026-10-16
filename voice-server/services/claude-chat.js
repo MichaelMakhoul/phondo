@@ -16,6 +16,10 @@
  * Why Claude Haiku: strict tool-use (no free-text fabrication of actions —
  * the model emits a real tool_use block or it doesn't), low latency, low cost.
  * Pairs with Twilio ConversationRelay doing Deepgram STT + ElevenLabs TTS.
+ *
+ * Also the LLM of the fast classic pipeline (SCRUM-594), which passes
+ * `chunking: "clause"` so the voice can start on the first clause. Without that
+ * option the behaviour is exactly what ConversationRelay has always had.
  */
 
 const { toAnthropicMessages, toAnthropicTools } = require("./openai-llm");
@@ -31,8 +35,84 @@ const CR_LLM_MODEL = process.env.CR_LLM_MODEL || "claude-haiku-5-5";
 // mid-word. Mirrors the spirit of openai-llm.js's SENTENCE_BREAK.
 const SENTENCE_BREAK = /(?<=[.!?؟،。！？])\s+/;
 
-function makeStreamState() {
-  return { fullContent: "", textBuffer: "", toolUses: {}, hasToolCalls: false };
+// SCRUM-594: clause-level first chunk, opt-in via `chunking: "clause"`.
+// The fast classic pipeline streams TTS, so the voice can start on the first
+// CLAUSE instead of waiting for a whole sentence. A clause boundary is a comma,
+// semicolon, colon, em dash (U+2014) or en dash (U+2013) FOLLOWED BY WHITESPACE;
+// requiring the whitespace is what keeps "9:30" and "1,500" in one piece. Only
+// the FIRST chunk of a response may end at a clause boundary, and only once it
+// holds CLAUSE_MIN_WORDS words. Every later chunk uses SENTENCE_BREAK, as before.
+const CLAUSE_BREAK = /[,;:\u2014\u2013](?=\s)/g;
+const CLAUSE_MIN_WORDS = 3;
+const WORD_CHAR = /[\p{L}\p{N}]/u;
+
+/**
+ * @param {"clause"} [chunking] - "clause" for SCRUM-594 clause chunking; unset keeps the original sentence-only behaviour
+ */
+function makeStreamState(chunking) {
+  const clause = chunking === "clause";
+  return {
+    fullContent: "",
+    textBuffer: "",
+    toolUses: {},
+    hasToolCalls: false,
+    // SCRUM-594. All three are false in the default mode, which keeps it
+    // byte-identical for ConversationRelay.
+    clauseMode: clause,
+    // The first chunk is out: from here on only SENTENCE_BREAK applies.
+    chunkEmitted: false,
+    // Speak the buffered tail of a reply before returning tool_calls (see finalizeClaude).
+    speakToolPreamble: clause,
+  };
+}
+
+/** Words in `text`: whitespace-separated tokens that contain a letter or digit (a bare dash is not a word). */
+function countWords(text) {
+  let count = 0;
+  for (const token of text.split(/\s+/)) {
+    if (WORD_CHAR.test(token)) count++;
+  }
+  return count;
+}
+
+/**
+ * Where the first chunk of `buffer` ends (clause mode): the earlier of a sentence
+ * break (any length, exactly as in the default mode) and the first clause boundary
+ * whose chunk already has CLAUSE_MIN_WORDS words. Returns the index just past the
+ * chunk, or -1 while the buffer holds no usable boundary yet.
+ */
+function firstChunkEnd(buffer) {
+  const sentence = SENTENCE_BREAK.exec(buffer);
+  const sentenceEnd = sentence ? sentence.index : -1;
+  for (const clause of buffer.matchAll(CLAUSE_BREAK)) {
+    const end = clause.index + 1;
+    if (sentenceEnd !== -1 && end > sentenceEnd) break;
+    if (countWords(buffer.slice(0, end)) >= CLAUSE_MIN_WORDS) return end;
+  }
+  return sentenceEnd;
+}
+
+/**
+ * Clause-mode counterpart of flushSentences: until the first chunk is out it may
+ * end at a clause boundary; afterwards only sentence breaks apply. Returns the
+ * trailing remainder to keep buffering.
+ */
+function flushClauseChunks(state, buffer, onSentence) {
+  if (!onSentence) return buffer;
+  const emit = (chunk) => {
+    state.chunkEmitted = true;
+    onSentence(chunk);
+  };
+  let rest = buffer;
+  if (!state.chunkEmitted) {
+    const end = firstChunkEnd(rest);
+    if (end !== -1) {
+      const chunk = rest.slice(0, end).trim();
+      rest = rest.slice(end).trimStart();
+      if (chunk) emit(chunk);
+    }
+  }
+  return flushSentences(rest, emit);
 }
 
 /**
@@ -63,7 +143,9 @@ function handleClaudeEvent(state, ev, onSentence) {
     const delta = ev.delta;
     if (delta?.type === "text_delta") {
       state.fullContent += delta.text;
-      state.textBuffer = flushSentences(state.textBuffer + delta.text, onSentence);
+      state.textBuffer = state.clauseMode
+        ? flushClauseChunks(state, state.textBuffer + delta.text, onSentence)
+        : flushSentences(state.textBuffer + delta.text, onSentence);
     } else if (delta?.type === "input_json_delta") {
       if (state.toolUses[ev.index]) state.toolUses[ev.index].arguments += delta.partial_json;
     }
@@ -79,6 +161,14 @@ function handleClaudeEvent(state, ev, onSentence) {
  */
 function finalizeClaude(state, onSentence) {
   if (state.hasToolCalls) {
+    // SCRUM-594: what the model said before the tool call (the "let me check"
+    // filler) can still be sitting in the buffer here. A text block that ends
+    // right where the tool_use begins has no whitespace after its last sentence,
+    // so SENTENCE_BREAK never fires on it, and that tail is the filler. Clause
+    // mode speaks it before returning, so the caller is not left in silence while
+    // the tool runs. The default mode leaves it unspoken, as it always has
+    // (ConversationRelay): see speakToolPreamble in makeStreamState.
+    if (state.speakToolPreamble && onSentence && state.textBuffer.trim()) onSentence(state.textBuffer.trim());
     const toolCalls = Object.keys(state.toolUses)
       .sort((a, b) => Number(a) - Number(b))
       .map((idx) => {
@@ -94,8 +184,8 @@ function finalizeClaude(state, onSentence) {
   return { type: "content", content: state.fullContent };
 }
 
-async function parseClaudeStream(res, onSentence) {
-  const state = makeStreamState();
+async function parseClaudeStream(res, onSentence, chunking) {
+  const state = makeStreamState(chunking);
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let sseBuffer = "";
@@ -132,13 +222,18 @@ async function parseClaudeStream(res, onSentence) {
 /**
  * Stream a Claude response. Mirrors openai-llm.js#streamChatResponse's contract.
  * @param {Array<object>} messages - OpenAI-style messages (system/user/assistant/tool)
- * @param {{ tools?: object[], onSentence?: (s:string)=>void, model?: string, maxTokens?: number, signal?: AbortSignal }} [opts]
+ * @param {{ tools?: object[], onSentence?: (s:string)=>void, model?: string, maxTokens?: number, signal?: AbortSignal, chunking?: "clause" }} [opts]
+ *   chunking: "clause" lets the first chunk passed to onSentence end at a clause boundary (SCRUM-594) and speaks the
+ *   tail of a reply before tool_calls is returned; unset keeps the original sentence-only behaviour
  * @returns {Promise<{type:"content", content:string} | {type:"tool_calls", toolCalls:object[], message:object}>}
  */
 async function streamClaudeResponse(messages, opts = {}) {
-  const { tools, onSentence, model, maxTokens, signal } = opts;
+  const { tools, onSentence, model, maxTokens, signal, chunking } = opts;
   if (!messages || messages.length === 0) {
     throw new Error("streamClaudeResponse called with empty messages array");
+  }
+  if (chunking != null && chunking !== "clause") {
+    throw new Error(`streamClaudeResponse: unknown chunking mode "${String(chunking)}" (expected "clause" or unset)`);
   }
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error("ANTHROPIC_API_KEY is required for the ConversationRelay (Claude) pipeline");
@@ -200,7 +295,7 @@ async function streamClaudeResponse(messages, opts = {}) {
     } catch { /* body not JSON — omit detail */ }
     throw new Error(`Anthropic API error ${res.status}${detail}`);
   }
-  return parseClaudeStream(res, onSentence);
+  return parseClaudeStream(res, onSentence, chunking);
 }
 
 module.exports = {
