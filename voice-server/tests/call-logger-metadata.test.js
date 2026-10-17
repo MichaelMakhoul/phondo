@@ -82,3 +82,45 @@ test("a healthy call (pipelineFailover null, no other extras) writes NO metadata
     "an unconditional metadata write would clobber webhook-written keys"
   );
 });
+
+// SCRUM-594: the DEMO_LINE_PIPELINE comparison — which pipeline served a
+// demo-line call. server.js passes null for every other call, which (as with
+// pipelineFailover above) must write no metadata at all.
+test("pipeline is merged into calls.metadata alongside voice_provider", async () => {
+  updates.length = 0;
+  await completeCallRecord("call-3", {
+    status: "completed",
+    durationSeconds: 42,
+    transcript: [],
+    pipelineFailover: null,
+    pipeline: "classic-fast",
+  });
+  const record = updates.find((u) => u.table === "calls");
+  assert.ok(record, "calls row must be updated");
+  assert.deepEqual(record.payload.metadata, { voice_provider: "self_hosted", pipeline: "classic-fast" });
+});
+
+test("a call with pipeline null writes NO metadata key", async () => {
+  updates.length = 0;
+  await completeCallRecord("call-4", {
+    status: "completed",
+    durationSeconds: 42,
+    transcript: [],
+    pipelineFailover: null,
+    pipeline: null, // what server.js passes on every non-demo-line call
+  });
+  const record = updates.find((u) => u.table === "calls");
+  assert.ok(record, "calls row must be updated");
+  assert.equal("metadata" in record.payload, false);
+});
+
+// SCRUM-594: the fast path's latency summary ([FastCall]) — on fast-path calls only.
+test("fastPath is merged into calls.metadata; a null fastPath writes no metadata", async () => {
+  updates.length = 0;
+  const fastPath = { turns: 3, eotToAudioP50: 1400, eotToAudioP90: 1900, specAdopted: 2, specDiscarded: 1, stt: "flux", tts: "stream" };
+  await completeCallRecord("call-5", { status: "completed", durationSeconds: 42, transcript: [], pipeline: "classic-fast", fastPath });
+  assert.deepEqual(updates.find((u) => u.table === "calls").payload.metadata, { voice_provider: "self_hosted", pipeline: "classic-fast", fastPath });
+  updates.length = 0;
+  await completeCallRecord("call-6", { status: "completed", durationSeconds: 42, transcript: [], pipelineFailover: null, pipeline: null, fastPath: null });
+  assert.equal("metadata" in updates.find((u) => u.table === "calls").payload, false);
+});

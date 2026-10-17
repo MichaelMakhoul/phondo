@@ -4,11 +4,12 @@
  */
 
 const DEFAULT_VOICE = "aura-2-asteria-en";
+const DEFAULT_HOST = "api.deepgram.com";
 
 /**
  * @param {string} apiKey
  * @param {string} text
- * @param {{ voice?: string }} [options]
+ * @param {{ voice?: string, host?: string }} [options] - host: the Deepgram API host, default api.deepgram.com (SCRUM-594: the fast path passes the AU host)
  * @returns {Promise<Buffer>} Raw mulaw audio bytes
  */
 async function synthesizeSpeech(apiKey, text, options) {
@@ -17,9 +18,10 @@ async function synthesizeSpeech(apiKey, text, options) {
   }
 
   const voice = options?.voice || DEFAULT_VOICE;
+  const host = options?.host || DEFAULT_HOST;
 
   const url =
-    "https://api.deepgram.com/v1/speak?" +
+    `https://${host}/v1/speak?` +
     `model=${voice}` +
     "&encoding=mulaw" +
     "&sample_rate=8000" +
