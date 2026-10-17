@@ -309,6 +309,7 @@ describe("SCRUM-594 PHASE 2 (B4): the fast path's CancelGate — the caller-ID p
     await loop.say(s, "No, don't cancel it, I'll keep it.");
     assert.deepEqual(loop.executed, []);
     assert.ok(loop.lines.some((l) => l.includes("[CancelGate] Holding cancel_appointment pending confirmation (fast path, reason=caller-declined)")), loop.lines.join("\n"));
+    assert.ok(loop.lines.some((l) => l.startsWith("log| [CancelGate] The caller declined — dropped 1 held or confirmed cancel(s) (fast path). callSid=CA-guards")), loop.lines.join("\n"));
   });
 
   it("cancelling one of two bookings this call made keeps the other, and says so", async () => {

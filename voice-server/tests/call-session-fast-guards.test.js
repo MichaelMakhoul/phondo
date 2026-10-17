@@ -73,14 +73,14 @@ describe("CancelGate (B4)", () => {
     const s = new CallSession("CA1");
     assert.equal(s.confirmCancel({}, 1000, { fastPath: true }), false);
     assert.equal(s.confirmCancel({ datetime: "garbled" }, 2000, { fastPath: true }), false);
-    assert.deepEqual(s.confirmFastCancel({}, 3000), { proceed: false, via: null, reason: "no-identifier" });
+    assert.deepEqual(s.confirmFastCancel({}, 3000), { proceed: false, via: null, reason: "no-identifier", dropped: 0 });
   });
 
   it("fast path: once confirmed, a retry for the same booking after the handler asked for a detail is not held again", () => {
     const s = new CallSession("CA1");
     assert.equal(s.confirmCancel(MON, 1000, { fastPath: true, callerTurn: 1 }), false);
     assert.equal(s.confirmCancel(MON, 2000, { fastPath: true, callerTurn: 2 }), true);
-    assert.deepEqual(s.confirmFastCancel(MON_PHONE, 3000, { callerTurn: 3 }), { proceed: true, via: "confirmed", reason: null });
+    assert.deepEqual(s.confirmFastCancel(MON_PHONE, 3000, { callerTurn: 3 }), { proceed: true, via: "confirmed", reason: null, dropped: 0 });
   });
 
   it("fast path: a confirmation never carries to another day through the shared caller-ID phone, nor another time that day", () => {

@@ -420,11 +420,14 @@ class CallSession {
    * confirmed only by the same booking's attempt after the caller has spoken
    * again (`callerTurn`); a confirmed one stays confirmed for exactly that
    * booking across a handler retry. A caller decline at transcript index
-   * `declinedAt` drops every record made before it.
+   * `declinedAt` drops every record made before it (`dropped` counts them, for
+   * the log), and a cancel right after a decline leaves no hold. A held cancel's
+   * retry needs the AI to have spoken after the hold (`assistantAt`: the
+   * read-back), not just the caller.
    * @param {{ phone?: string, date?: string, datetime?: string }} args - the model's own arguments
    * @param {number} nowMs
-   * @param {{ callerTurn?: number, transcriptAt?: number, declinedAt?: number }} [options]
-   * @returns {{ proceed: boolean, via: "confirmed" | "retry" | null, reason: "no-identifier" | "first-attempt" | "awaiting-caller" | "caller-declined" | null }}
+   * @param {{ callerTurn?: number, transcriptAt?: number, declinedAt?: number, assistantAt?: number }} [options]
+   * @returns {{ proceed: boolean, via: "confirmed" | "retry" | null, reason: "no-identifier" | "first-attempt" | "awaiting-caller" | "caller-declined" | null, dropped: number }}
    */
   confirmFastCancel(args, nowMs, options = {}) {
     const keys = [];
@@ -432,15 +435,22 @@ class CallSession {
     if (phone.length >= 6) keys.push("p:" + phone);
     const datePart = String(args?.datetime || args?.date || "").slice(0, 10);
     if (/^\d{4}-\d{2}-\d{2}$/.test(datePart)) keys.push("d:" + datePart);
-    if (keys.length === 0) return { proceed: false, via: null, reason: "no-identifier" }; // never confirms (SCRUM-372)
+    if (keys.length === 0) return { proceed: false, via: null, reason: "no-identifier", dropped: 0 }; // never confirms (SCRUM-372)
     const time = String(args?.datetime || "").slice(0, 16);
     if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(time)) keys.push("t:" + time);
 
     const declinedAt = typeof options.declinedAt === "number" ? options.declinedAt : -1;
-    const live = (/** @type {{ at: number, transcriptAt?: number }} */ rec) =>
-      nowMs - rec.at < 5 * 60 * 1000 && !(typeof rec.transcriptAt === "number" && declinedAt >= rec.transcriptAt);
+    const declinedAfter = (/** @type {{ transcriptAt?: number }} */ rec) => typeof rec.transcriptAt === "number" && declinedAt >= rec.transcriptAt;
+    let dropped = 0;
     for (const map of [this._fastPendingCancels, this._fastConfirmedCancels]) {
-      for (const [id, rec] of map) if (!live(rec)) map.delete(id);
+      for (const [id, rec] of map) {
+        if (declinedAfter(rec)) dropped++;
+        if (declinedAfter(rec) || nowMs - rec.at >= 5 * 60 * 1000) map.delete(id);
+      }
+    }
+    // Right after the caller's no: hold, and leave nothing their next words could confirm.
+    if (typeof options.transcriptAt === "number" && declinedAt === options.transcriptAt - 1) {
+      return { proceed: false, via: null, reason: "caller-declined", dropped };
     }
     const key = (/** @type {string[]} */ ks, /** @type {string} */ kind) => ks.find((k) => k.startsWith(kind));
     const sameBooking = (/** @type {string[]} */ held) => {
@@ -455,25 +465,25 @@ class CallSession {
     const id = /** @type {string} */ (key(keys, "t:") || key(keys, "d:") || key(keys, "p:"));
 
     for (const rec of this._fastConfirmedCancels.values()) {
-      if (exactlySameBooking(rec.keys)) return { proceed: true, via: "confirmed", reason: null }; // the handler wanted a detail
+      if (exactlySameBooking(rec.keys)) return { proceed: true, via: "confirmed", reason: null, dropped }; // the handler wanted a detail
     }
     /** @type {[string, { keys: string[], at: number, callerTurn?: number, transcriptAt?: number }] | null} */
     let held = null;
     for (const entry of this._fastPendingCancels) if (sameBooking(entry[1].keys)) { held = entry; break; }
     if (held) {
       const [heldId, rec] = held;
-      const answered = typeof options.callerTurn !== "number" || typeof rec.callerTurn !== "number" || options.callerTurn > rec.callerTurn;
-      if (answered) {
+      const callerSpoke = typeof options.callerTurn !== "number" || typeof rec.callerTurn !== "number" || options.callerTurn > rec.callerTurn;
+      const aiSpoke = typeof options.assistantAt !== "number" || typeof rec.transcriptAt !== "number" || options.assistantAt >= rec.transcriptAt;
+      if (callerSpoke && aiSpoke) {
         this._fastPendingCancels.delete(heldId);
         this._fastConfirmedCancels.set(id, { keys, at: nowMs, transcriptAt: options.transcriptAt });
-        return { proceed: true, via: "retry", reason: null };
+        return { proceed: true, via: "retry", reason: null, dropped };
       }
       this._fastPendingCancels.set(heldId, { ...rec, keys, at: nowMs });
-      return { proceed: false, via: null, reason: "awaiting-caller" };
+      return { proceed: false, via: null, reason: "awaiting-caller", dropped };
     }
     this._fastPendingCancels.set(id, { keys, at: nowMs, callerTurn: options.callerTurn, transcriptAt: options.transcriptAt });
-    const latestIsDecline = typeof options.transcriptAt === "number" && declinedAt === options.transcriptAt - 1;
-    return { proceed: false, via: null, reason: latestIsDecline ? "caller-declined" : "first-attempt" };
+    return { proceed: false, via: null, reason: "first-attempt", dropped };
   }
 
   /**
@@ -493,9 +503,17 @@ class CallSession {
     const date = String(args.datetime || args.date || "").slice(0, 10);
     const phone = String(args.phone || "").replace(/\D/g, "");
     const id = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(time) ? "t:" + time : /^\d{4}-\d{2}-\d{2}$/.test(date) ? "d:" + date : phone.length >= 6 ? "p:" + phone : null;
+    const day = /^\d{4}-\d{2}-\d{2}$/.test(date) ? "d:" + date : null;
     for (const map of [this._fastPendingCancels, this._fastConfirmedCancels]) {
-      if (id === null) map.clear();
-      else for (const [key, rec] of map) if (key === id || rec.keys.includes(id)) map.delete(key);
+      if (id === null) {
+        map.clear();
+        continue;
+      }
+      for (const [key, rec] of map) {
+        // That booking's records, and that day's date-only ones (a "which one?" retry's confirmation is spent).
+        const dateOnlySameDay = day !== null && rec.keys.includes(day) && !rec.keys.some((k) => k.startsWith("t:"));
+        if (key === id || rec.keys.includes(id) || dateOnlySameDay) map.delete(key);
+      }
     }
   }
 

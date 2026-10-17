@@ -4150,12 +4150,15 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
           }
 
           // SCRUM-372: cancel-confirmation gate (classic pipeline — mirrors Gemini path)
-          /** @type {{ proceed: boolean, via: string|null, reason: string|null }} */
+          /** @type {{ proceed: boolean, via: string|null, reason: string|null, dropped: number }} */
           const cancelGate = fnName !== "cancel_appointment"
-            ? { proceed: true, via: null, reason: null }
+            ? { proceed: true, via: null, reason: null, dropped: 0 }
             : session.bookingGuards
               ? fastCancelGate(session, modelArgs || {}, Date.now())
-              : { proceed: session.confirmCancel(fnArgs || {}, Date.now()), via: null, reason: null };
+              : { proceed: session.confirmCancel(fnArgs || {}, Date.now()), via: null, reason: null, dropped: 0 };
+          if (cancelGate.dropped > 0) {
+            console.log(`[CancelGate] The caller declined — dropped ${cancelGate.dropped} held or confirmed cancel(s) (fast path). callSid=${session.callSid}`);
+          }
           if (cancelGate.proceed && cancelGate.via) {
             console.log(`[CancelGate] Proceeding (fast path, via=${cancelGate.via}). callSid=${session.callSid}`);
           }

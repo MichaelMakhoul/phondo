@@ -193,19 +193,29 @@ function guardState(session) {
   return state;
 }
 
-/** A caller's clear "no" to a cancel: an explicit phrase, or a bare no. */
-const DECLINE_PHRASE = /\b(?:don'?t|do not) (?:want to |need to )?cancel\b|\bleave it\b|\bnever ?mind\b|\bchanged my mind\b|\bforget it\b|\bnot sure\b|\bkeep (?:the|my) (?:booking|appointment)\b/i;
-const BARE_NO = /^\W*(?:no|nope|nah|no thanks?|no thank you|not really)\W*$/i;
+/** "Don't cancel (it)" — a decline even after a yes. */
+const DONT_CANCEL = /\b(?:don'?t|do not) (?:want to |need to )?cancel\b/i;
+const YES_START = /^\W*(?:yes|yeah|yep|yup|sure|ok(?:ay)?|please)\b/i;
+/** Telling the AI to go ahead outweighs a leading "no" ("No worries, go ahead", "No, just cancel it"). */
+const GO_AHEAD = /\b(?:go ahead|cancel (?:it|that|them|both)|please cancel|do it|no worries|no problem)\b/i;
+const NO_AT_EDGE = /^\W*(?:no|nope|nah)\b|\bno\W*$/i;
+const DECLINE_PHRASE = /\b(?:leave it|never ?mind|changed my mind|forget it|not sure|hold on|hang on|wait|keep (?:it(?! handy)|the booking|the appointment|my booking|my appointment))\b/i;
 
 /**
- * Does this caller message take a cancel back? ("No worries, go ahead" and
- * "No, just cancel it" do not.)
+ * Does this caller message take a cancel back? A "no" at either end, or
+ * "leave it / keep it / never mind / wait…", unless they also tell the AI to
+ * go ahead; a message that starts with yes only when it says "don't cancel".
+ * Ambiguous words count as a decline: that costs one more read-back, never a
+ * cancel the caller refused.
  * @param {unknown} text
  * @returns {boolean}
  */
 function declinesCancel(text) {
   if (typeof text !== "string") return false;
-  return DECLINE_PHRASE.test(text) || BARE_NO.test(text.trim());
+  const t = text.trim();
+  if (DONT_CANCEL.test(t)) return true;
+  if (YES_START.test(t) || GO_AHEAD.test(t)) return false;
+  return NO_AT_EDGE.test(t) || DECLINE_PHRASE.test(t);
 }
 
 /**
@@ -225,18 +235,21 @@ function callerTurns(transcript) {
  * @param {import("../call-session").CallSession} session
  * @param {Record<string, any>} modelArgs
  * @param {number} nowMs
- * @returns {{ proceed: boolean, via: "confirmed" | "retry" | null, reason: "no-identifier" | "first-attempt" | "awaiting-caller" | "caller-declined" | null }}
+ * @returns {{ proceed: boolean, via: "confirmed" | "retry" | null, reason: "no-identifier" | "first-attempt" | "awaiting-caller" | "caller-declined" | null, dropped: number }}
  */
 function fastCancelGate(session, modelArgs, nowMs) {
   const transcript = session.fullTranscriptMessages;
   let declinedAt = -1;
+  let assistantAt = -1;
   transcript.forEach((m, i) => {
     if (m.role === "user" && declinesCancel(m.content)) declinedAt = i;
+    if (m.role === "assistant") assistantAt = i;
   });
   return session.confirmFastCancel(modelArgs || {}, nowMs, {
     callerTurn: callerTurns(transcript),
     transcriptAt: transcript.length,
     declinedAt,
+    assistantAt,
   });
 }
 
@@ -432,7 +445,7 @@ function callerIsDone(transcript) {
   if (GOODBYE.test(said) || THATS_ALL.test(said)) return true;
   const asked = transcript[last - 1];
   // "Is that all correct?" is a read-back, not "anything else?".
-  const askedAnythingElse = Boolean(asked && asked.role === "assistant" && /anything else|anything more|\bis that (?:everything|all)\b(?!\s*(?:correct|right|ok(?:ay)?|good|fine))/i.test(String(asked.content)));
+  const askedAnythingElse = Boolean(asked && asked.role === "assistant" && /anything else|anything more|\bis that (?:everything|all)\b(?!\s*,?\s*(?:correct|right|ok(?:ay)?|good|fine|accurate|alright|true))/i.test(String(asked.content)));
   return askedAnythingElse && (DONE_IF_ASKED.test(said) || PLAIN_NO.test(said));
 }
 
