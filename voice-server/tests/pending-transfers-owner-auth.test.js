@@ -116,3 +116,16 @@ describe("finishTransferredCall — the PIN-gate stamp survives a transfer", () 
     assert.equal(calls.find((c) => c[0] === "completeCallRecord")[2].callType, null);
   });
 });
+
+describe("finishTransferredCall — SCRUM-594: the fast path's summary survives a transfer", () => {
+  beforeEach(() => { calls.length = 0; writeFailures = 0; analysis = null; });
+
+  it("writes the summary cleanup attached to the entry, and null without one", async () => {
+    const fastPath = { turns: 2, eotToAudioP50: 1300, eotToAudioP90: 1700, specAdopted: 1, specDiscarded: 0, stt: "flux", tts: "stream" };
+    await finishTransferredCall(savedState({ fastPath }), "answered");
+    assert.deepEqual(calls.find((c) => c[0] === "completeCallRecord")[2].fastPath, fastPath);
+    calls.length = 0;
+    await finishTransferredCall(savedState(), "answered");
+    assert.equal(calls.find((c) => c[0] === "completeCallRecord")[2].fastPath, null);
+  });
+});

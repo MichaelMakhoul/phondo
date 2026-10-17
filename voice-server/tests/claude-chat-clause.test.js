@@ -470,3 +470,47 @@ describe("streamClaudeResponse: the chunking option over real SSE and the reques
     }
   });
 });
+
+// ---- the retry back-off and the caller's signal (Task 5 review, Minor 8) ------
+
+describe("retry back-off and the caller's signal", () => {
+  const rateLimited = (retryAfter) =>
+    new Response(JSON.stringify({ error: { type: "rate_limit_error", message: "slow down" } }), { status: 429, headers: { "retry-after": retryAfter } });
+
+  for (const chunking of [undefined, "clause"]) {
+    it(`an abort during the back-off rejects at once and asks no more (${chunking || "default"} mode)`, async (t) => {
+      const warnings = [];
+      t.mock.method(console, "warn", (...a) => warnings.push(a.join(" ")));
+      const calls = withFakeFetch(t, () => rateLimited("2"));
+      const ctl = new AbortController();
+      const started = Date.now();
+      const pending = streamClaudeResponse(MESSAGES, { signal: ctl.signal, chunking });
+      setTimeout(() => ctl.abort(Object.assign(new Error("barge-in"), { name: "AbortError" })), 20);
+      await assert.rejects(pending, { name: "AbortError", message: "barge-in" });
+      assert.ok(Date.now() - started < 1000, `rejected after ${Date.now() - started} ms: not after the 2 s back-off`);
+      assert.equal(calls.length, 1, "no retry once aborted");
+      assert.equal(warnings.length, 1, warnings.join("\n"));
+    });
+  }
+
+  it("a signal that is already aborted when the back-off starts rejects at once", async (t) => {
+    t.mock.method(console, "warn", () => {});
+    const ctl = new AbortController();
+    const calls = withFakeFetch(t, () => {
+      ctl.abort(Object.assign(new Error("gone"), { name: "AbortError" }));
+      return rateLimited("2");
+    });
+    const started = Date.now();
+    await assert.rejects(streamClaudeResponse(MESSAGES, { signal: ctl.signal }), { message: "gone" });
+    assert.ok(Date.now() - started < 1000);
+    assert.equal(calls.length, 1);
+  });
+
+  it("without an abort the back-off still retries, as before", async (t) => {
+    t.mock.method(console, "warn", () => {});
+    const calls = withFakeFetch(t, (call, index) => (index === 0 ? rateLimited("0") : sseResponse(textTurnEvents(["We open at nine."]))));
+    const result = await streamClaudeResponse(MESSAGES, { signal: new AbortController().signal });
+    assert.deepEqual(result, { type: "content", content: "We open at nine." });
+    assert.equal(calls.length, 2);
+  });
+});

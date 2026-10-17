@@ -160,6 +160,8 @@ function makeClassic(o = {}) {
     Date: o.clock ? { now: o.clock } : Date,
     fastFlush: () => assert.fail("SCRUM-594: a classic turn never flushes an Aura stream"),
     beginFastTurn: () => assert.fail("SCRUM-594: a classic turn is never a fast turn"),
+    fastAudioBusy: () => assert.fail("SCRUM-594: a classic turn never waits for the fast path's audio"),
+    waitForFastTurnStart: () => assert.fail("SCRUM-594: a classic turn never waits for the fast path's audio"),
     console: recordingConsole(lines),
   };
   const { handleUserSpeech } = runSlice({

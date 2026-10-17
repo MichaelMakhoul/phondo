@@ -262,6 +262,34 @@ async function parseClaudeStream(res, onSentence, chunking) {
 }
 
 /**
+ * The retry back-off. With the caller's signal it ends early when that aborts,
+ * rejecting with its reason (a caller who has stopped listening, such as a
+ * barge-in, must not wait out a back-off of up to 5 s); without one it is the
+ * plain sleep it always was.
+ * @param {number} ms
+ * @param {AbortSignal} [signal]
+ * @returns {Promise<void>}
+ */
+function backoff(ms, signal) {
+  if (!signal) return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal.reason);
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+/**
  * Stream a Claude response. Mirrors openai-llm.js#streamChatResponse's contract.
  * @param {Array<object>} messages - OpenAI-style messages (system/user/assistant/tool)
  * @param {{ tools?: object[], onSentence?: (s:string)=>void, model?: string, maxTokens?: number, signal?: AbortSignal, chunking?: "clause" }} [opts]
@@ -321,7 +349,7 @@ async function streamClaudeResponse(messages, opts = {}) {
       const retryAfter = res.headers.get("retry-after");
       const waitMs = Math.min(retryAfter ? Number(retryAfter) * 1000 : 1000 * (attempt + 1), 5000);
       console.warn(`[ClaudeChat] Anthropic ${res.status}, retrying in ${waitMs}ms (attempt ${attempt + 1}/3)`);
-      await new Promise((r) => setTimeout(r, waitMs));
+      await backoff(waitMs, signal);
       continue;
     }
     break;

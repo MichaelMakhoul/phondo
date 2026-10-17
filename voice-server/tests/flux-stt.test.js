@@ -269,6 +269,39 @@ test("readyState mirrors the socket, onOpen fires once, send() delivers binary a
   assert.equal(events.opens, 1);
 });
 
+test("activity stamps for the server's silence watchdog: lastMessageAt counts EVERY frame (empty Updates too), lastSendAt every audio frame sent", async (t) => {
+  const server = await startFakeDeepgram(t);
+  const { handle, events } = openClient(t, server);
+  assert.equal(handle.lastSendAt, 0, "nothing sent yet");
+  const beforeOpen = Date.now();
+  await until(() => events.opens === 1, "onOpen");
+  assert.ok(handle.lastMessageAt >= beforeOpen, "the open counts: a fresh connection is not silent");
+  const conn = await server.connection();
+
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  const sentAt = Date.now();
+  assert.equal(handle.send(Buffer.alloc(160)), true);
+  assert.ok(handle.lastSendAt >= sentAt);
+
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  const heardAt = Date.now();
+  conn.socket.send(JSON.stringify(turnInfo("Update", { transcript: "", words: [] }))); // never delivered to onTurnInfo
+  await until(() => handle.lastMessageAt >= heardAt, "the empty Update's stamp");
+  assert.deepEqual(events.turns, [], "still not delivered");
+
+  const closedAt = handle.lastMessageAt;
+  handle.close();
+  conn.socket.send(JSON.stringify(turnInfo("Update", { transcript: "late" })));
+  await until(() => events.closes.length === 1, "onClose");
+  assert.equal(handle.lastMessageAt, closedAt, "frames after our close() are not activity");
+});
+
+test("a dead handle (it could not even be constructed) reports no activity", () => {
+  const handle = openFluxStream("test-key", { onError() {}, onClose() {} }, { host: "not a valid host" });
+  assert.equal(handle.lastMessageAt, 0);
+  assert.equal(handle.lastSendAt, 0);
+});
+
 // ── Turn events ─────────────────────────────────────────────────────────────
 
 test("TurnInfo: all five events map to {event, turnIndex, transcript, eotConfidence, trigger}", async (t) => {

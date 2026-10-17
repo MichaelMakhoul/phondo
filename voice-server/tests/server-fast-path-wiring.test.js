@@ -18,7 +18,7 @@ process.env.OPENAI_API_KEY = process.env.OPENAI_API_KEY || "test-key";
 process.env.SUPABASE_URL = process.env.SUPABASE_URL || "http://localhost";
 process.env.SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "test";
 
-const { describe, it } = require("node:test");
+const { describe, it, after } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -88,6 +88,16 @@ const abortReason = (signal) =>
   signal.reason instanceof Error ? signal.reason : Object.assign(new Error("This operation was aborted"), { name: "AbortError" });
 
 const AU_HOST = "api.au.deepgram.com";
+
+/**
+ * Every fast path a test starts, so a test that fails before its own cleanup
+ * cannot leave a watchdog timer running and hold the file open.
+ * @type {Array<() => void>}
+ */
+const openFastPaths = [];
+after(() => {
+  for (const close of openFastPaths.splice(0)) close();
+});
 const FRAME = Buffer.alloc(320, 0x7e); // 40 ms of mulaw, the size Aura usually sends
 
 function makeSession() {
@@ -219,7 +229,9 @@ function makeFast(o = {}) {
         readyState: 0,
         frames: [],
         closes: 0,
-        send(buf) { if (this.readyState !== 1) return false; this.frames.push(buf); return true; },
+        lastMessageAt: Date.now(),
+        lastSendAt: 0,
+        send(buf) { if (this.readyState !== 1) return false; this.frames.push(buf); this.lastSendAt = Date.now(); return true; },
         close() { this.closes += 1; this.readyState = 3; },
         configure() { return true; },
         forceEndTurn() { return true; },
@@ -260,9 +272,18 @@ function makeFast(o = {}) {
     FAST_FLUSHED_WAIT_MS: o.flushedWaitMs ?? 120,
     FAST_IDLE_CAP_MS: o.idleCapMs ?? 60,
     FAST_AUDIO_QUIET_MS: o.quietMs ?? 25,
+    FAST_TURN_START_WAIT_MS: o.turnStartWaitMs ?? 2000,
+    FAST_TURN_START_POLL_MS: 5,
+    FAST_LOST_MARK_MS: o.lostMarkMs ?? 60_000,
+    FAST_FLUSH_WATCHDOG_MS: o.flushWatchdogMs ?? 60_000,
+    FLUX_SILENCE_MS: o.fluxSilenceMs ?? 60_000,
+    FLUX_WATCHDOG_TICK_MS: o.fluxTickMs ?? 1000,
+    FAST_DISCLOSURE_MARK: "fast-disclosure",
+    getTransfer: o.getTransfer || (() => null),
     console: recordingConsole(lines),
   };
-  const names = ["handleUserSpeech", "sendTTS", "sendClear", "startFastPath", "closeFastPath", "onFastMark", "settleFastAudio", "fastFlush", "summarizeFastCall"];
+  const names = ["handleUserSpeech", "sendTTS", "sendRestTTS", "sendClear", "startFastPath", "closeFastPath", "onFastMark", "onFastRestMark", "settleFastAudio", "fastFlush", "summarizeFastCall",
+    "beginFastDisclosure", "armFastDisclosureEnd", "endFastDisclosure", "noteFastRestSpeech"];
   const fns = runSlice({
     from: "function buildLLMOptions(session, { includeTransfer = false } = {}) {",
     to: "// --- Test Call WebSocket (/ws/test) ---",
@@ -273,6 +294,10 @@ function makeFast(o = {}) {
 
   /** Start the fast path on `session` as the classic block does; Nova is a recording stub. */
   function start(session) {
+    openFastPaths.push(() => {
+      fns.closeFastPath(session);
+      clearTimeout(session._speakingTimeout); // the REST path's 20 s isSpeaking backstop
+    });
     session.fastPath = true;
     fns.startFastPath(session, twilioWs, () => {
       novaOpens.push(session.callSid);
@@ -396,7 +421,10 @@ function classicStart(h, session, effectivePipeline) {
       session,
       effectivePipeline,
       openDeepgramStream: (key, callbacks, options) => { opened.push({ key, callbacks, options }); return { readyState: 0, nova: true, close() {} }; },
-      startFastPath: h.startFastPath,
+      startFastPath: (...args) => {
+        openFastPaths.push(() => h.closeFastPath(session));
+        return h.startFastPath(...args);
+      },
       DEEPGRAM_API_KEY: "dg-key",
       logTranscript: () => {},
       handleUserSpeech: async () => {},
@@ -590,8 +618,13 @@ describe("SCRUM-594 4.8.1-4.8.2: greeting, disclosure and media on the fast path
         chunkAudioForTwilio,
         WebSocket: { OPEN: 1 },
         sendTTS: h.sendTTS,
+        sendRestTTS: h.sendRestTTS,
         settleFastAudio: h.settleFastAudio,
         fastFlush: h.fastFlush,
+        beginFastDisclosure: h.beginFastDisclosure,
+        armFastDisclosureEnd: h.armFastDisclosureEnd,
+        endFastDisclosure: h.endFastDisclosure,
+        noteFastRestSpeech: h.noteFastRestSpeech,
         setTimeout: () => {}, // the greeting's 20 s isSpeaking backstop
         console: recordingConsole(h.lines),
       },
@@ -599,21 +632,51 @@ describe("SCRUM-594 4.8.1-4.8.2: greeting, disclosure and media on the fast path
     });
   }
 
-  it("a disclosure that falls back to the Aura stream reaches Twilio before the pre-synthesised greeting (never interleaved)", async () => {
+  it("a disclosure that falls back goes over REST even with the Aura stream open (R12d′): its frames, then the greeting's, and it is played only once sent", async () => {
     const h = makeFast();
     const s = h.start(makeSession());
-    const sending = sendGreeting(h, s);
-    await settle();
-    assert.deepEqual(h.lastAura().handle.spoken, ["This call is recorded."]);
-    assert.deepEqual(h.lastAura().handle.flushes, [0]);
-    assert.equal(h.twilio("media").length, 0, "the greeting waits for the disclosure's audio");
-    h.audio(2, 0); // the disclosure's audio, then its Flushed
-    await sending;
+    await sendGreeting(h, s);
+    assert.deepEqual(h.lastAura().handle.spoken, [], "not on the Aura stream");
+    assert.deepEqual(h.calls.filter((c) => c[0] === "synthesizeSpeech").map((c) => c[1]), ["This call is recorded."]);
     const payloads = h.twilio("media").map((m) => Buffer.from(m.media.payload, "base64")[0]);
     const firstGreeting = payloads.indexOf(0x11);
-    assert.ok(firstGreeting > 0 && payloads.slice(0, firstGreeting).every((b) => b === 0x7e) && payloads.slice(firstGreeting).every((b) => b === 0x11),
+    assert.ok(firstGreeting > 0 && payloads.slice(0, firstGreeting).every((b) => b === 0x7f) && payloads.slice(firstGreeting).every((b) => b === 0x11),
       `disclosure frames, then greeting frames: ${payloads.map((b) => b.toString(16)).join(" ")}`);
+    assert.deepEqual(h.marks(), ["tts-done", "fast-disclosure", "tts-done"], "the disclosure's tts-done, its own mark, then the greeting's tts-done");
+    assert.equal(h.engines[0].getState().aiSpeakingText, "This call is recorded. Thanks for calling!", "the echo filter hears both");
     assert.equal(s.recordingDisclosurePlayed, true);
+    assert.equal(s.fastState.disclosureActive, true, "until its mark is back");
+    h.onFastMark(s, "fast-disclosure");
+    assert.equal(s.fastState.disclosureActive, false);
+    clearTimeout(s._speakingTimeout);
+    h.closeFastPath(s);
+  });
+
+  it("a pre-synthesised disclosure on the fast path is not cut until its own mark is back, and the echo filter hears it and the greeting", async () => {
+    const h = makeFast();
+    const s = h.start(makeSession());
+    await sendGreeting(h, s, { disclosureAudio: Buffer.alloc(320, 0x22) });
+    assert.deepEqual(h.marks(), ["tts-done", "fast-disclosure", "tts-done"]);
+    assert.equal(s.recordingDisclosurePlayed, true);
+    assert.equal(s.fastState.disclosureActive, true);
+    assert.equal(h.engines[0].getState().aiSpeakingText, "This call is recorded. Thanks for calling!");
+    const clears = h.twilio("clear").length;
+    h.sendClear(s, h.twilioWs);
+    assert.equal(h.twilio("clear").length, clears, "not cleared");
+    h.onFastMark(s, "fast-disclosure");
+    assert.equal(s.fastState.disclosureActive, false);
+    h.closeFastPath(s);
+  });
+
+  it("a disclosure whose stream closed before its frames went out is not marked played", async () => {
+    const h = makeFast();
+    const s = h.start(makeSession());
+    const sending = sendGreeting(h, s, { greetingAudio: null });
+    h.twilioWs.readyState = 3; // the caller hung up while it synthesised
+    await sending;
+    assert.equal(s.recordingDisclosurePlayed, false);
+    assert.equal(s.recordingDisclosureFailed, true);
+    assert.equal(s.fastState.disclosureActive, false);
     h.closeFastPath(s);
   });
 
@@ -621,8 +684,9 @@ describe("SCRUM-594 4.8.1-4.8.2: greeting, disclosure and media on the fast path
     const h = makeFast();
     const s = h.start(makeSession());
     await sendGreeting(h, s, { disclosureAudio: null, greetingAudio: null });
-    assert.deepEqual(h.lastAura().handle.spoken, ["This call is recorded.", "Thanks for calling!"]);
-    assert.equal(h.lastAura().handle.flushes.length, 2);
+    assert.deepEqual(h.lastAura().handle.spoken, ["Thanks for calling!"]);
+    assert.equal(h.lastAura().handle.flushes.length, 1);
+    clearTimeout(s._speakingTimeout);
     h.closeFastPath(s);
   });
 
@@ -706,7 +770,9 @@ describe("SCRUM-594 4.8.6 + addendum: audio, marks, isSpeaking and the echo filt
     const h = makeFast();
     const s = h.start(makeSession());
     await h.sendTTS(s, h.twilioWs, "Sure, Michael.");
-    h.audio(2, 0);
+    h.audio(2);
+    assert.equal(s.isSpeaking, true, "from its first audio, before any Flushed");
+    h.audio(0, 0);
     assert.equal(h.twilio("media").length, 4, "2 × 320 bytes in 160-byte Twilio frames");
     assert.equal(s.isSpeaking, true);
     assert.deepEqual(h.marks(), ["fast-1"]);
@@ -721,6 +787,7 @@ describe("SCRUM-594 4.8.6 + addendum: audio, marks, isSpeaking and the echo filt
     const getState = h.engines[0].getState;
     await h.sendTTS(s, h.twilioWs, "Sure, Michael.");
     await h.sendTTS(s, h.twilioWs, "I can book that for you.");
+    h.fastFlush(s);
     h.audio(1, 0);
     let state = getState();
     assert.equal(state.aiSpeaking, true);
@@ -753,7 +820,7 @@ describe("SCRUM-594 4.8.6 + addendum: audio, marks, isSpeaking and the echo filt
     const handle = (name, session = s) => runSlice({
       from: 'case "mark": {',
       to: 'case "stop": {',
-      scope: { session, msg: { event: "mark", mark: { name } }, onFastMark: (sess, n) => { seen.push(n); h.onFastMark(sess, n); } },
+      scope: { session, msg: { event: "mark", mark: { name } }, onFastMark: (sess, n) => { seen.push(n); h.onFastMark(sess, n); }, onFastRestMark: h.onFastRestMark },
       wrap: (code) => `switch ("mark") {\n${code}\n}`,
     });
     s.isSpeaking = true;
@@ -765,6 +832,13 @@ describe("SCRUM-594 4.8.6 + addendum: audio, marks, isSpeaking and the echo filt
     const classic = makeSession();
     handle("fast-4", classic);
     assert.deepEqual(seen, ["fast-3"], "a call without a player ignores fast marks");
+    // R12d′: on the fast path a tts-done ends isSpeaking only once no other audio plays.
+    h.noteFastRestSpeech(s, "This call is recorded.", 2000);
+    h.noteFastRestSpeech(s, "Hi, this is Sam.", 2000);
+    handle("tts-done");
+    assert.equal(s.isSpeaking, true, "the greeting is still playing");
+    handle("tts-done");
+    assert.equal(s.isSpeaking, false);
     h.closeFastPath(s);
   });
 
@@ -844,6 +918,7 @@ describe("SCRUM-594 4.8.4: flush points", () => {
     // The filler goes to Aura in the same tick the tool call starts (as on the classic path, which never
     // waits for TTS before a tool), and its flush follows it before the tool's result is back.
     assert.deepEqual(order, ["tool:check_availability", "speak:One moment, let me check that.", "flush", "tool done", "speak:Ten is free.", "flush"]);
+    for (const seq of a.flushes) h.lastAura().options.onFlushed(seq); // Aura is done with that turn
     // The budget runs out: the turn still completes.
     a.refuse = true;
     h.steps.push({ sentences: ["Anything else?"], content: "Anything else?" });
@@ -1221,7 +1296,7 @@ describe("SCRUM-594 4.8.8: barge-in", () => {
     h.audio(2); // it is playing
     const signal = h.llmCalls[0].opts.signal;
     const clears = h.twilio("clear").length;
-    h.turn("StartOfTurn", 1, "no wait");
+    h.turn("Update", 1, "no wait actually");
     assert.equal(signal.aborted, true, "the turn's LLM call is aborted");
     assert.equal(h.twilio("clear").length, clears + 1, "the player's Twilio clear");
     assert.equal(h.lastAura().handle.clears, 1);
@@ -1351,6 +1426,7 @@ describe("SCRUM-594 4.8.8: barge-in", () => {
     await until(() => !s.isProcessing, "the aborted turn");
     await sleep(1600); // past the 1.5 s waiting-filler timer
     assert.deepEqual(h.lastAura().handle.spoken, []);
+    assert.ok(!h.lines.some((l) => l.includes("[Filler]")), "the timer does not even queue it");
     h.closeFastPath(s);
   });
 
@@ -1378,7 +1454,9 @@ describe("SCRUM-594 4.8.8: barge-in", () => {
     h.turn("EndOfTurn", 0, "When do you open?");
     await until(() => !s.isProcessing, "the first turn");
     h.audio(3, 0); // still playing
+    const clears = h.twilio("clear").length;
     h.turn("EndOfTurn", 1, "and what about Saturdays");
+    assert.equal(h.twilio("clear").length, clears + 1, "the player's Twilio clear");
     assert.equal(h.lastAura().handle.clears, 1);
     await until(() => h.llmCalls.length === 2 && !s.isProcessing, "the second turn");
     h.closeFastPath(s);
@@ -1440,6 +1518,7 @@ describe("SCRUM-594 4.8.9: [FastTurn], [FastCall] and calls.metadata.fastPath", 
     h.fluxOpens();
     h.turn("EndOfTurn", 0, "first question here");
     await until(() => !s.isProcessing, "turn 0");
+    h.lastAura().options.onFlushed(0); // Aura is done with turn 0 (and sent no audio)
     h.turn("EagerEndOfTurn", 1, "second");
     await settle();
     h.turn("EndOfTurn", 1, "second question");
@@ -1632,5 +1711,525 @@ describe("SCRUM-594 fast turns — source pins", () => {
     const logger = fs.readFileSync(path.join(__dirname, "..", "lib", "call-logger.js"), "utf8");
     assert.match(logger, /\.\.\.\(fastPath && \{ fastPath \}\),/);
     assert.match(cleanup, /fastPath: fastPathSummary,/);
+  });
+});
+
+// ─── Task 5 review, fix round 1 ─────────────────────────────────────────────
+
+/** A reply on the stream with audio playing; `flushed`: Aura has also sent all of it (its Flushed is back). */
+async function replyPlaying(h, s, text, { flushed = true } = {}) {
+  await h.sendTTS(s, h.twilioWs, text);
+  const seq = h.fastFlush(s);
+  h.audio(2);
+  if (flushed) h.lastAura().options.onFlushed(seq);
+  return seq;
+}
+
+describe("SCRUM-594 review IMPORTANT: Aura owes the words it has not sent audio for yet", () => {
+  it("a mark that returns between a reply's speak and its audio keeps the reply in the echo filter, and a barge-in then Clears Aura", async () => {
+    const h = makeFast();
+    const s = h.start(makeSession());
+    await replyPlaying(h, s, "One moment."); // a filler, all sent
+    assert.deepEqual(h.marks(), ["fast-1"]);
+    await h.sendTTS(s, h.twilioWs, "Tuesday at ten works for us."); // the reply: no audio yet
+    h.onFastMark(s, "fast-1"); // the filler's mark returns: the player is idle
+    assert.equal(s.fastPlayer.isPlaying(), false);
+    assert.match(h.engines[0].getState().aiSpeakingText, /Tuesday at ten works for us\./, "the reply is still owed: its words stay");
+    h.sendClear(s, h.twilioWs);
+    assert.equal(h.lastAura().handle.clears, 1, "the barge-in Clears what Aura still owes");
+    h.closeFastPath(s);
+  });
+
+  it("two marks out: the first echo keeps the text, the second (idle, nothing owed) clears it", async () => {
+    const h = makeFast();
+    const s = h.start(makeSession());
+    await replyPlaying(h, s, "Let me check.");
+    await replyPlaying(h, s, "Ten is free.");
+    assert.deepEqual(h.marks(), ["fast-1", "fast-2"]);
+    h.onFastMark(s, "fast-1");
+    assert.equal(h.engines[0].getState().aiSpeakingText, "Let me check. Ten is free.", "still playing: kept");
+    assert.equal(s.isSpeaking, true);
+    h.onFastMark(s, "fast-2");
+    assert.equal(h.engines[0].getState().aiSpeakingText, "");
+    assert.equal(s.isSpeaking, false);
+    h.closeFastPath(s);
+  });
+
+  it("a Flushed that comes back after the player's last mark clears the text then (nothing plays, nothing owed)", async () => {
+    const h = makeFast({ quietMs: 20 });
+    const s = h.start(makeSession());
+    await h.sendTTS(s, h.twilioWs, "Sure thing.");
+    const seq = h.fastFlush(s);
+    h.audio(1);
+    await until(() => h.marks().length === 1, "the quiet timer's mark");
+    echoMarks(h, s);
+    assert.equal(s.isSpeaking, false);
+    assert.equal(h.engines[0].getState().aiSpeakingText, "Sure thing.", "its Flushed is not back: still owed");
+    h.lastAura().options.onFlushed(seq);
+    assert.equal(h.engines[0].getState().aiSpeakingText, "");
+    assert.equal(s.isSpeaking, false);
+    h.closeFastPath(s);
+  });
+
+  it("a flushed reply whose Flushed is not back is owed too (the Clear covers it)", async () => {
+    const h = makeFast();
+    const s = h.start(makeSession());
+    await replyPlaying(h, s, "Sure, Tuesday works.", { flushed: false });
+    h.sendClear(s, h.twilioWs);
+    assert.equal(h.lastAura().handle.clears, 1);
+    h.closeFastPath(s);
+  });
+});
+
+describe("SCRUM-594 review R12a′/R13: short turns, backchannels and echo on the fast path (run for real)", () => {
+  it('"No worries" while the AI speaks: nothing is cut, nothing is answered', async () => {
+    const h = makeFast();
+    const s = h.start(makeSession());
+    h.fluxOpens();
+    await replyPlaying(h, s, "One moment, let me check that.", { flushed: false });
+    const clears = h.twilio("clear").length;
+    h.turn("StartOfTurn", 0, "No");
+    h.turn("Update", 0, "No worries");
+    h.turn("EndOfTurn", 0, "No worries.");
+    await settle();
+    assert.equal(h.twilio("clear").length, clears, "no barge-in");
+    assert.equal(h.lastAura().handle.clears, 0);
+    assert.equal(h.llmCalls.length, 0, "not answered");
+    assert.ok(h.lines.some((l) => l.startsWith("log| [STT] Dropped (backchannel while the AI is busy)")), h.lines.join("\n"));
+    h.closeFastPath(s);
+  });
+
+  it('"No worries" while the AI is thinking: the turn in flight goes on, nothing is queued', async () => {
+    const h = makeFast({ steps: [{ firstDelayMs: 5000, content: "never" }] });
+    const s = h.start(makeSession());
+    h.fluxOpens();
+    h.turn("EndOfTurn", 0, "Can I book a cleaning please?");
+    await settle();
+    h.turn("StartOfTurn", 1, "No");
+    h.turn("EndOfTurn", 1, "No worries.");
+    assert.equal(h.llmCalls[0].opts.signal.aborted, false, "not aborted");
+    assert.equal(s._pendingTranscript, null, "not queued");
+    h.closeFastPath(s);
+    await until(() => !s.isProcessing, "the turn, aborted by cleanup");
+  });
+
+  it('"No, wait" while the AI speaks: at its end, barge-in (the audio stops, Aura is Cleared) and it is answered', async () => {
+    const h = makeFast({ steps: [{ sentences: ["Of course, take your time."], content: "Of course, take your time." }] });
+    const s = h.start(makeSession());
+    h.fluxOpens();
+    await replyPlaying(h, s, "We have Tuesday at ten or Wednesday at two.", { flushed: false });
+    const clears = h.twilio("clear").length;
+    h.turn("StartOfTurn", 0, "No");
+    h.turn("Update", 0, "No, wait");
+    assert.equal(h.twilio("clear").length, clears, "not on the Update");
+    h.turn("EndOfTurn", 0, "No, wait.");
+    assert.equal(h.twilio("clear").length, clears + 1);
+    assert.equal(h.lastAura().handle.clears, 1);
+    await until(() => h.llmCalls.length === 1 && !s.isProcessing, "the answer");
+    assert.deepEqual(h.llmCalls[0].messages.at(-1), { role: "user", content: "No, wait." });
+    h.closeFastPath(s);
+  });
+
+  it('"stop" while the AI is thinking: the turn in flight is aborted, and "stop" is answered next', async () => {
+    const h = makeFast({ steps: [{ firstDelayMs: 5000, content: "never" }, { sentences: ["Okay."], content: "Okay." }] });
+    const s = h.start(makeSession());
+    h.fluxOpens();
+    h.turn("EndOfTurn", 0, "Can I book a cleaning please?");
+    await settle();
+    h.turn("StartOfTurn", 1, "Stop");
+    assert.equal(h.llmCalls[0].opts.signal.aborted, false, "judged at the end of the turn");
+    h.turn("EndOfTurn", 1, "Stop.");
+    assert.equal(h.llmCalls[0].opts.signal.aborted, true);
+    await until(() => h.llmCalls.length === 2 && !s.isProcessing, "the answer to stop");
+    assert.deepEqual(h.llmCalls[1].messages.at(-1), { role: "user", content: "Stop." });
+    h.closeFastPath(s);
+  });
+
+  it("the AI's own words coming back while it speaks (R13) are dropped: no barge-in, no answer", async () => {
+    const h = makeFast();
+    const s = h.start(makeSession());
+    h.fluxOpens();
+    await replyPlaying(h, s, "I have Friday at ten available. Does that work for you?");
+    const clears = h.twilio("clear").length;
+    h.turn("Update", 0, "I have Friday at ten available");
+    h.turn("EndOfTurn", 0, "I have Friday at ten available.");
+    await settle();
+    assert.equal(h.twilio("clear").length, clears);
+    assert.equal(h.llmCalls.length, 0);
+    assert.ok(h.lines.some((l) => l.startsWith("log| [STT] Dropped (echo-like: the AI's own words coming back)")), h.lines.join("\n"));
+    h.closeFastPath(s);
+  });
+});
+
+describe("SCRUM-594 review R12b′: a fast turn waits for the AI to finish, it never cuts it off", () => {
+  it("a short answer while the reply plays: no clear at the turn's start, and the LLM is asked only once the reply has played", async () => {
+    const h = makeFast({ steps: [{ sentences: ["Great, Tuesday it is."], content: "Great, Tuesday it is." }] });
+    const s = h.start(makeSession());
+    h.fluxOpens();
+    await replyPlaying(h, s, "We have Tuesday or Wednesday. Which suits you?");
+    const clears = h.twilio("clear").length;
+    h.turn("EndOfTurn", 0, "Tuesday."); // a short content answer while the AI speaks: committed, no barge-in
+    await sleep(30);
+    assert.equal(s.isProcessing, true, "the turn has started");
+    assert.equal(h.llmCalls.length, 0, "but waits for the AI's audio");
+    assert.equal(h.twilio("clear").length, clears, "nothing is cut");
+    echoMarks(h, s); // the reply has played
+    await until(() => h.llmCalls.length === 1 && !s.isProcessing, "the answer");
+    assert.equal(h.twilio("clear").length, clears, "still nothing cleared");
+    assert.ok(h.lines.some((l) => /^log\| \[FastTurn\] Waited \d+ ms for the AI to finish before answering/.test(l)), h.lines.join("\n"));
+    h.closeFastPath(s);
+  });
+
+  it("REST audio counts too (isSpeaking: the greeting, or replies after an Aura fallback)", async () => {
+    const h = makeFast({ steps: [{ sentences: ["Hello!"], content: "Hello!" }] });
+    const s = h.start(makeSession());
+    h.lastAura().options.onError(new Error("aura down")); // REST from here on
+    await h.sendTTS(s, h.twilioWs, "Thanks for calling, how can I help?");
+    assert.equal(s.isSpeaking, true);
+    assert.equal(h.engines[0].getState().aiSpeakingText, "Thanks for calling, how can I help?", "the echo filter hears REST audio too");
+    const turn = h.handleUserSpeech(s, h.twilioWs, "Hi there, I need help");
+    await sleep(30);
+    assert.equal(h.llmCalls.length, 0, "waits for the REST audio");
+    s.isSpeaking = false; // its tts-done is back: the classic handler, then onFastRestMark
+    h.onFastRestMark(s);
+    assert.equal(h.engines[0].getState().aiSpeakingText, "", "nothing plays, nothing owed");
+    await within(turn, 1000, "the turn");
+    assert.equal(h.llmCalls.length, 1);
+    clearTimeout(s._speakingTimeout);
+    h.closeFastPath(s);
+  });
+
+  it("words Aura still owes (sent, no audio yet) count too: the turn waits for them to arrive and play", async () => {
+    const h = makeFast({ steps: [{ sentences: ["Sure."], content: "Sure." }] });
+    const s = h.start(makeSession());
+    await h.sendTTS(s, h.twilioWs, "We open at nine.");
+    const seq = h.fastFlush(s); // the last turn's last flush point: no audio, no Flushed yet
+    assert.equal(s.fastPlayer.isPlaying(), false);
+    assert.equal(s.isSpeaking, false);
+    const turn = h.handleUserSpeech(s, h.twilioWs, "Thanks, and on Saturday?");
+    await sleep(30);
+    assert.equal(h.llmCalls.length, 0, "waits for what Aura owes");
+    h.audio(1, seq);
+    await sleep(30);
+    assert.equal(h.llmCalls.length, 0, "then for it to play");
+    echoMarks(h, s);
+    await within(turn, 1000, "the turn");
+    assert.equal(h.llmCalls.length, 1);
+    h.closeFastPath(s);
+  });
+
+  it("a caller who hangs up during the wait is not answered", async () => {
+    const h = makeFast({ steps: [{ sentences: ["Sure."], content: "Sure." }] });
+    const s = h.start(makeSession());
+    await replyPlaying(h, s, "We have Tuesday or Wednesday.");
+    const turn = h.handleUserSpeech(s, h.twilioWs, "Wednesday please, thanks");
+    await sleep(20);
+    h.twilioWs.readyState = 3;
+    echoMarks(h, s);
+    await within(turn, 1000, "the turn");
+    assert.equal(h.llmCalls.length, 0);
+    assert.equal(s.isProcessing, false);
+    h.closeFastPath(s);
+  });
+
+  it("the wait is bounded: the turn starts anyway, and says so", async () => {
+    const h = makeFast({ turnStartWaitMs: 40, steps: [{ sentences: ["Sure."], content: "Sure." }] });
+    const s = h.start(makeSession());
+    await replyPlaying(h, s, "This is a very long reply that never finishes playing.");
+    await within(h.handleUserSpeech(s, h.twilioWs, "Hello, are you still there?"), 1000, "the bounded wait");
+    assert.equal(h.llmCalls.length, 1);
+    assert.ok(h.lines.some((l) => l.startsWith("warn| [FastTurn] The AI was still speaking after")), h.lines.join("\n"));
+    h.closeFastPath(s);
+  });
+
+  it("after a Nova fallback the turn-start clear is still the only barge-in: it clears at once, no wait", async () => {
+    const h = makeFast({ steps: [{ sentences: ["Sure."], content: "Sure." }] });
+    const s = h.start(makeSession());
+    h.lastFlux().callbacks.onError(new Error("flux down"));
+    assert.equal(s.fastPath, "degraded-stt");
+    await replyPlaying(h, s, "We have Tuesday or Wednesday.");
+    const clears = h.twilio("clear").length;
+    const turn = h.handleUserSpeech(s, h.twilioWs, "Wednesday please, thanks");
+    assert.equal(h.twilio("clear").length, clears + 1, "cleared at the turn's start");
+    await turn;
+    assert.equal(h.llmCalls.length, 1);
+    h.closeFastPath(s);
+  });
+});
+
+describe("SCRUM-594 review R12d′: the recording disclosure is never cut, and REST audio is heard by the echo filter", () => {
+  /** The disclosure, pre-synthesised, going out now (as the start handler sends it). */
+  function disclosurePlaying(h, s, ms = 4000) {
+    h.beginFastDisclosure(s);
+    h.noteFastRestSpeech(s, "This call is recorded for quality.", ms);
+    h.armFastDisclosureEnd(s, h.twilioWs, ms);
+  }
+
+  it("while it plays: no barge-in, no clear (hold audio's either), and a turn committed meanwhile waits for it", async () => {
+    const h = makeFast({ steps: [{ sentences: ["Sure, how can I help?"], content: "Sure, how can I help?" }] });
+    const s = h.start(makeSession());
+    h.fluxOpens();
+    disclosurePlaying(h, s);
+    const clears = h.twilio("clear").length;
+    h.turn("Update", 0, "hi I'm calling about my booking");
+    h.sendClear(s, h.twilioWs); // what hold.stop() does
+    assert.equal(h.twilio("clear").length, clears, "nothing clears the disclosure");
+    assert.ok(h.lines.some((l) => l.includes("[Barge-in] (fast) ignored — the recording disclosure is playing")));
+    h.turn("EndOfTurn", 0, "hi I'm calling about my booking for Tuesday");
+    await sleep(30);
+    assert.equal(h.llmCalls.length, 0, "the turn waits for the disclosure");
+    s.isSpeaking = false; // its tts-done (the classic handler) ...
+    h.onFastRestMark(s);
+    await sleep(30);
+    assert.equal(h.llmCalls.length, 0, "... but not its own mark: still waiting");
+    h.onFastMark(s, "fast-disclosure");
+    await until(() => h.llmCalls.length === 1 && !s.isProcessing, "the answer, after the disclosure");
+    h.closeFastPath(s);
+  });
+
+  it("a lost disclosure mark ends the window after its length plus FAST_LOST_MARK_MS", async () => {
+    const h = makeFast({ lostMarkMs: 30 });
+    const s = h.start(makeSession());
+    disclosurePlaying(h, s, 10);
+    assert.equal(s.fastState.disclosureActive, true);
+    await sleep(70);
+    assert.equal(s.fastState.disclosureActive, false);
+    assert.ok(h.lines.some((l) => l.includes("A playback mark (disclosure) never came back")), h.lines.join("\n"));
+    h.closeFastPath(s);
+  });
+
+  it("REST text joins the echo filter's text and clears on tts-done once nothing plays; a fast mark never ends REST audio's isSpeaking", async () => {
+    const h = makeFast();
+    const s = h.start(makeSession());
+    h.noteFastRestSpeech(s, "Thanks for calling Smile Hub, this is Sam.", 3000); // the pre-synthesised greeting
+    assert.match(h.engines[0].getState().aiSpeakingText, /Smile Hub/);
+    await replyPlaying(h, s, "One moment.");
+    h.onFastMark(s, "fast-1"); // the player is idle ...
+    assert.equal(s.isSpeaking, true, "... but the greeting still plays");
+    assert.match(h.engines[0].getState().aiSpeakingText, /Smile Hub/);
+    s.isSpeaking = false; // the classic tts-done handler
+    h.onFastRestMark(s);
+    assert.equal(s.isSpeaking, false);
+    assert.equal(h.engines[0].getState().aiSpeakingText, "");
+    h.closeFastPath(s);
+  });
+
+  it("the disclosure's and the greeting's tts-done: isSpeaking holds until the second", () => {
+    const h = makeFast();
+    const s = h.start(makeSession());
+    h.noteFastRestSpeech(s, "This call is recorded.", 2000);
+    h.noteFastRestSpeech(s, "Hi, this is Sam.", 2000);
+    s.isSpeaking = false;
+    h.onFastRestMark(s);
+    assert.equal(s.isSpeaking, true, "the greeting is still playing");
+    s.isSpeaking = false;
+    h.onFastRestMark(s);
+    assert.equal(s.isSpeaking, false);
+    h.closeFastPath(s);
+  });
+});
+
+describe("SCRUM-594 review minors", () => {
+  it("Minor 1: an aborted turn stops its hold audio (the loop would otherwise run until the call ends)", async () => {
+    const h = makeFast({ holdAudio: true, steps: [{ firstDelayMs: 5000, content: "never" }] });
+    const s = h.start(makeSession());
+    h.fluxOpens();
+    h.turn("EndOfTurn", 0, "What are your opening hours on Saturday?");
+    await settle();
+    const holdFrames = () => h.twilio("media").filter((m) => Buffer.from(m.media.payload, "base64")[0] === 0x55).length;
+    assert.equal(holdFrames(), 2, "the hold audio's first loop");
+    h.turn("Update", 1, "sorry actually never mind that");
+    await until(() => !s.isProcessing, "the aborted turn");
+    await sleep(2100); // past the hold loop's 2 s period
+    assert.equal(holdFrames(), 2, "the loop was stopped");
+    h.closeFastPath(s);
+  });
+
+  it("Minor 3: a player mark that never comes back counts as played after the estimate plus FAST_LOST_MARK_MS (logged once)", async () => {
+    const h = makeFast({ lostMarkMs: 30 });
+    const s = h.start(makeSession());
+    await replyPlaying(h, s, "Sure."); // 80 ms of audio, its mark never echoed
+    assert.equal(s.isSpeaking, true);
+    await sleep(160);
+    assert.equal(s.isSpeaking, false);
+    assert.equal(h.engines[0].getState().aiSpeaking, false, "the engine no longer takes short answers for echo");
+    await replyPlaying(h, s, "Anything else?");
+    assert.equal(h.engines[0].getState().aiSpeaking, true, "new audio plays again");
+    await sleep(160);
+    assert.equal(h.lines.filter((l) => l.includes("A playback mark (player) never came back")).length, 1, "logged once");
+    h.closeFastPath(s);
+  });
+
+  it("Minor 3: a lost REST tts-done is given up on too: isSpeaking and the echo text recover on their own", async () => {
+    const h = makeFast({ lostMarkMs: 20 });
+    const s = h.start(makeSession());
+    h.noteFastRestSpeech(s, "Hi.", 10);
+    assert.equal(h.engines[0].getState().aiSpeaking, true);
+    await sleep(80); // past its estimated end plus FAST_LOST_MARK_MS, with no mark at all
+    assert.equal(s.isSpeaking, false);
+    assert.equal(h.engines[0].getState().aiSpeaking, false);
+    assert.equal(h.engines[0].getState().aiSpeakingText, "");
+    assert.ok(h.lines.some((l) => l.includes("A playback mark (tts-done) never came back")));
+    h.closeFastPath(s);
+  });
+
+  it("Minor 3: a refused flush keeps its words owed only until Aura goes quiet", async () => {
+    const h = makeFast({ quietMs: 20, steps: [{ sentences: ["Sure."], content: "Sure." }] });
+    const s = h.start(makeSession());
+    const a = h.lastAura().handle;
+    await h.sendTTS(s, h.twilioWs, "We open at nine.");
+    a.refuse = true;
+    assert.equal(h.fastFlush(s), null, "the budget refuses it");
+    h.audio(1); // its sentence is released anyway (the trailing space)
+    await until(() => h.marks().length === 1, "the quiet timer's mark");
+    echoMarks(h, s);
+    assert.equal(h.engines[0].getState().aiSpeakingText, "", "Aura went quiet and the audio played: nothing owed");
+    await within(h.handleUserSpeech(s, h.twilioWs, "And on Saturday?"), 1000, "a turn that does not wait");
+    assert.equal(h.llmCalls.length, 1);
+    h.closeFastPath(s);
+  });
+
+  it("Minor 3: a refused flush that never brings audio is not owed forever either", async () => {
+    const h = makeFast({ quietMs: 20, steps: [{ sentences: ["Sure."], content: "Sure." }] });
+    const s = h.start(makeSession());
+    await h.sendTTS(s, h.twilioWs, "Okay.");
+    h.lastAura().handle.refuse = true;
+    h.fastFlush(s);
+    await sleep(60); // Aura stays quiet
+    await within(h.handleUserSpeech(s, h.twilioWs, "Hello? Are you there?"), 1000, "a turn that does not wait");
+    assert.equal(h.llmCalls.length, 1);
+    h.closeFastPath(s);
+  });
+
+  it("a barge-in over REST audio (after an Aura fallback) ends it at once: the turn after it does not wait for its mark", async () => {
+    const h = makeFast({ steps: [{ sentences: ["Sure."], content: "Sure." }] });
+    const s = h.start(makeSession());
+    h.lastAura().options.onError(new Error("aura down")); // REST from here on
+    await h.sendTTS(s, h.twilioWs, "We have Tuesday at ten or Wednesday at two.");
+    h.sendClear(s, h.twilioWs); // the caller talked over it
+    assert.equal(s.isSpeaking, false);
+    assert.equal(h.engines[0].getState().aiSpeaking, false);
+    await within(h.handleUserSpeech(s, h.twilioWs, "Actually, what about Friday?"), 1000, "a turn that does not wait for the cleared audio's mark");
+    assert.equal(h.llmCalls.length, 1);
+    clearTimeout(s._speakingTimeout);
+    h.closeFastPath(s);
+  });
+
+  it("Minor 5: REST audio synthesised for a turn that a barge-in has ended is never SENT (the filler's either)", async () => {
+    const h = makeFast({ restDelayMs: 150, steps: [{ firstDelayMs: 1600, content: "never" }] });
+    const s = h.start(makeSession());
+    h.lastAura().options.onError(new Error("aura down")); // REST from here on
+    h.fluxOpens();
+    h.turn("EndOfTurn", 0, "Can you tell me your opening hours?");
+    await until(() => h.calls.some((c) => c[0] === "synthesizeSpeech"), "the waiting filler synthesising", 3000);
+    h.turn("Update", 1, "never mind just tell me the hours");
+    await until(() => !s.isProcessing, "the aborted turn");
+    await sleep(250); // past the filler's synthesis
+    const restFrames = h.twilio("media").filter((m) => Buffer.from(m.media.payload, "base64")[0] === 0x7f);
+    assert.equal(restFrames.length, 0, "no frame of the stale filler went out");
+    h.closeFastPath(s);
+  });
+
+  it("Minor 6: a Flushed that is overdue with no audio means a stuck stream: REST for the rest of the call", async () => {
+    const h = makeFast({ flushWatchdogMs: 40, steps: [{ sentences: ["Yes, I'm here."], content: "Yes, I'm here." }] });
+    const s = h.start(makeSession());
+    h.fluxOpens();
+    await h.sendTTS(s, h.twilioWs, "Hello there.");
+    h.fastFlush(s);
+    await sleep(80);
+    assert.equal(s.fastTts, null);
+    assert.ok(h.lines.some((l) => l.includes("[FastPath] Aura stream unavailable — falling back to REST TTS (no Flushed and no audio for")), h.lines.join("\n"));
+    assert.equal(h.sentry.length, 1);
+    assert.equal(h.sentry[0].tags.service, "aura-stream");
+    // The dead stream owes nothing any more: the next turn does not wait for it.
+    await within(h.handleUserSpeech(s, h.twilioWs, "Hello, are you there?"), 1000, "the next turn");
+    assert.equal(h.llmCalls.length, 1);
+    assert.equal(h.sentry.length, 1, "one capture");
+    clearTimeout(s._speakingTimeout);
+    h.closeFastPath(s);
+  });
+
+  it("Minor 6: audio still arriving keeps the flush watchdog quiet", async () => {
+    const h = makeFast({ flushWatchdogMs: 40 });
+    const s = h.start(makeSession());
+    h.fluxOpens();
+    await h.sendTTS(s, h.twilioWs, "A long answer.");
+    const seq = h.fastFlush(s);
+    for (let i = 0; i < 6; i++) {
+      await sleep(15);
+      h.audio(1);
+    }
+    h.lastAura().options.onFlushed(seq);
+    await sleep(80);
+    assert.equal(s.fastTts, h.lastAura().handle);
+    assert.equal(h.sentry.length, 0);
+    h.closeFastPath(s);
+  });
+
+  it("Minor 6: no Flux frames for FLUX_SILENCE_MS while audio goes out means a stuck stream: Nova", async () => {
+    const h = makeFast({ fluxSilenceMs: 40, fluxTickMs: 10 });
+    const s = h.start(makeSession());
+    h.fluxOpens();
+    const f = h.lastFlux().handle;
+    f.lastMessageAt = Date.now();
+    for (let i = 0; i < 10 && s.fastPath === true; i++) {
+      f.send(Buffer.alloc(160)); // Twilio's audio keeps going out
+      await sleep(10);
+    }
+    assert.equal(s.fastPath, "degraded-stt");
+    assert.equal(h.novaOpens.length, 1);
+    assert.ok(h.lines.some((l) => /\[FastPath\] Flux unavailable — falling back to Nova \(no frames for \d+ ms while audio went out/.test(l)), h.lines.join("\n"));
+    h.closeFastPath(s);
+  });
+
+  it("Minor 6: frames still arriving, or no audio going out, keep the Flux watchdog quiet", async () => {
+    const h = makeFast({ fluxSilenceMs: 200, fluxTickMs: 10 });
+    const s = h.start(makeSession());
+    h.fluxOpens();
+    const f = h.lastFlux().handle;
+    const started = Date.now();
+    while (Date.now() - started < 320) { // audio goes out for longer than FLUX_SILENCE_MS ...
+      f.send(Buffer.alloc(160));
+      f.lastMessageAt = Date.now(); // ... and Flux answers every frame
+      await sleep(10);
+    }
+    assert.equal(s.fastPath, true, "frames keep coming");
+    f.lastMessageAt = Date.now() - 1000;
+    f.lastSendAt = Date.now() - 1000; // and nothing is being sent: the caller's line went quiet
+    await sleep(60);
+    assert.equal(s.fastPath, true, "not sending audio: nothing to judge");
+    f.send(Buffer.alloc(160)); // the caller's audio goes out again: Flux gets FLUX_SILENCE_MS of it to answer
+    await sleep(25);
+    f.send(Buffer.alloc(160));
+    await sleep(15);
+    assert.equal(s.fastPath, true, "a fresh streak of audio is judged afresh");
+    h.closeFastPath(s);
+  });
+});
+
+describe("SCRUM-594 review Minor 7: the summary survives a transfer", () => {
+  it("cleanup of a leg that is transferring hands its summary to the pending transfer (finishTransferredCall writes it)", async () => {
+    const saved = { callSid: "CA-fast" };
+    const h = makeFast({ getTransfer: (sid) => (sid === "CA-fast" ? saved : null) });
+    const s = h.start(makeSession());
+    s.pendingTransfer = true;
+    const { cleanupSession } = runSlice({
+      from: "async function cleanupSession() {",
+      to: 'twilioWs.on("message", async (raw) => {',
+      scope: { session: s, cleaningUp: false, sessions: new Map(), closeFastPath: h.closeFastPath, summarizeFastCall: h.summarizeFastCall, getTransfer: (sid) => (sid === "CA-fast" ? saved : null), console: recordingConsole(h.lines) },
+      names: ["cleanupSession"],
+    });
+    await cleanupSession();
+    assert.deepEqual(saved.fastPath, { turns: 0, eotToAudioP50: null, eotToAudioP90: null, specAdopted: 0, specDiscarded: 0, stt: "flux", tts: "stream" });
+  });
+
+  it("a leg reconnected after a failed dial writes the first leg's summary", () => {
+    const s = new CallSession("CA-reconnected");
+    s.restoreFrom({ messages: [], fastPath: { turns: 3 } });
+    assert.deepEqual(s.carriedFastPath, { turns: 3 });
+    const plain = new CallSession("CA-plain");
+    plain.restoreFrom({ messages: [] });
+    assert.equal(plain.carriedFastPath, null);
+    assert.match(cleanup, /const fastPathSummary = s\.fastStats \? summarizeFastCall\(s\) : s\.carriedFastPath;/);
   });
 });

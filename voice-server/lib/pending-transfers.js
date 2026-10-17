@@ -124,6 +124,9 @@ async function finishTransferredCall(savedState, outcome) {
           recordingDisclosurePlayed: false,
           recordingDisclosureFailed: false,
           transferAttempt,
+          // SCRUM-594: the fast path's latency summary, attached when the
+          // call's stream closed for the dial (server.js cleanupSession).
+          fastPath: savedState.fastPath || null,
           // SCRUM-587: written BEFORE notifyCallCompleted (below) — PR B reads
           // call_type / owner_auth from the row.
           callType: isOwnerCall ? "owner" : null,

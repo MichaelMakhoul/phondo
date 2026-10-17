@@ -33,8 +33,7 @@
  *     adoptable however long the caller keeps talking. The draft enforces the
  *     deadline itself as well as handing it to `llm`: at the deadline it is over
  *     (failed, not adoptable, any pending adopt() settles) even if the llm
- *     ignores its signal, which streamClaudeResponse does while it sleeps
- *     between retries.
+ *     ignores its signal (an injected one may).
  *   - Whoever starts a draft must still abort it on every path above (and on
  *     call cleanup); the deadline is the backstop, not the plan.
  *

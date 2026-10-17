@@ -892,6 +892,8 @@ function makeClassic(o = {}) {
     WebSocket: { OPEN: 1 },
     fastFlush: () => assert.fail("SCRUM-594: a classic turn never flushes an Aura stream"),
     beginFastTurn: () => assert.fail("SCRUM-594: a classic turn is never a fast turn"),
+    fastAudioBusy: () => assert.fail("SCRUM-594: a classic turn never waits for the fast path's audio"),
+    waitForFastTurnStart: () => assert.fail("SCRUM-594: a classic turn never waits for the fast path's audio"),
     console: recordingConsole(lines),
   };
   const fns = runSlice({
@@ -1119,6 +1121,7 @@ function makeCleanup(session, o = {}) {
     isDemoLineNumber: () => false, // SCRUM-594: metadata.pipeline is for demo-line calls only
     closeFastPath: () => assert.fail("SCRUM-594: a classic call has no fast path to close"),
     summarizeFastCall: () => assert.fail("SCRUM-594: a classic call has no fast-path summary"),
+    getTransfer: () => assert.fail("SCRUM-594: no fast-path summary to hand to a transfer"),
     console: recordingConsole(lines),
   };
   const { cleanupSession } = runSlice({ from: "async function cleanupSession() {", to: 'twilioWs.on("message", async (raw) => {', scope, names: ["cleanupSession"] });

@@ -98,6 +98,22 @@
  *     aborted, and handles `processing` by queueing.
  *   - They are called as methods of the `actions` object, so a class instance works.
  *
+ * The "fast-path" policy (`policy: "fast-path"`; the default policy is everything above)
+ *   What a live phone call needs on top (Task 5 review, rulings R12a′ and R13):
+ *   - A candidate of ECHO_MAX_WORDS words or fewer never barges in on StartOfTurn or Update,
+ *     interrupt word or not: "No" is how "No worries" starts. It is judged at its EndOfTurn.
+ *     Three words or more barge in early, exactly as above.
+ *   - EndOfTurn, in this order:
+ *       - while the AI is speaking OR processing, a backchannel (isBackchannel: "okay",
+ *         "thanks", "no worries" ..., two words or fewer) is no turn: dropEcho(transcript,
+ *         "backchannel"), then cancelSpeculation("backchannel"). On the structured path too.
+ *       - while the AI is speaking, an echo-like final (isLikelyEcho against aiSpeakingText)
+ *         is the AI's own voice coming back: dropEcho(transcript, "echo-like"), then
+ *         cancelSpeculation("echo"). Answering it would have the AI answer itself.
+ *       - otherwise rule 3 (an interrupt word, or substantial speech, barges in) and rule 6's
+ *         answer. The classic echo rule is off: any other short final is a real answer
+ *         ("Tuesday"), and the session holds the turn until the AI has finished speaking.
+ *
  * Speculation off (`speculationEnabled: false`, e.g. FLUX_EAGER_EOT_THRESHOLD=off): the
  * engine never calls speculate or cancelSpeculation, and does not need them.
  *
@@ -132,6 +148,17 @@ const ECHO_MIN_OVERLAP_PERCENT = 80;
 const ECHO_MIN_RUN = 3;
 
 const TURN_EVENTS = new Set(["StartOfTurn", "Update", "EagerEndOfTurn", "TurnResumed", "EndOfTurn"]);
+const POLICIES = new Set(["default", "fast-path"]);
+
+/**
+ * What a caller says to keep the conversation going without taking a turn (ruling R12a′),
+ * in the form backchannelTokens() leaves them, plus the spellings a transcript gives the
+ * same sounds ("all right", "mhm", "uh huh").
+ */
+const BACKCHANNEL_PHRASES = new Set([
+  "okay", "ok", "yeah", "yep", "yes", "sure", "right", "alright", "all right", "cool", "great", "perfect",
+  "thanks", "thank you", "mm hmm", "mhm", "mhmm", "mmhmm", "uh huh", "uhhuh", "no worries", "no problem",
+]);
 const ALWAYS_REQUIRED_ACTIONS = ["commit", "bargeIn", "dropEcho", "bufferStructured"];
 const SPECULATION_ACTIONS = ["speculate", "cancelSpeculation"];
 
@@ -162,7 +189,7 @@ const SPEECH_PIECE = /(\d+):(\d{2})|\d+|\p{L}+/gu;
  * @property {(reason: string) => void} [cancelSpeculation] - cancel the draft, if any (not needed when speculation is off)
  * @property {(transcript: string, turnIndex: number, trigger: string | null) => void} commit - the turn is over: answer it
  * @property {() => void} bargeIn - stop the AI's audio and abort the turn in flight
- * @property {(transcript: string) => void} dropEcho - discard a final that is the AI's own echo
+ * @property {(transcript: string, reason?: string) => void} dropEcho - discard a final that is no turn: the AI's own echo (no reason: the classic rule), or under the "fast-path" policy "backchannel" / "echo-like"
  * @property {(transcript: string) => void} bufferStructured - hand a structured-input final to the session's debounce buffer
  *
  * @typedef {Object} FastTurnEngine
@@ -291,6 +318,33 @@ function isLikelyEcho(candidate, aiText) {
 }
 
 /**
+ * Lower case words, with punctuation (hyphens too: "mm-hmm" is "mm hmm") folded to spaces.
+ * @param {string} text
+ * @returns {string[]}
+ */
+function backchannelTokens(text) {
+  return text.toLowerCase().replace(/[^\p{L}\p{N}\s]+/gu, " ").split(/\s+/).filter(Boolean);
+}
+
+/**
+ * Is `text` only a backchannel ("okay", "thank you", "mm-hmm", "no worries", or two of
+ * them)? Two words or fewer as heard, every word part of a BACKCHANNEL_PHRASES phrase.
+ * @param {unknown} text
+ * @returns {boolean}
+ */
+function isBackchannel(text) {
+  if (typeof text !== "string" || wordCount(text) > ECHO_MAX_WORDS) return false;
+  const tokens = backchannelTokens(text);
+  if (tokens.length === 0) return false;
+  for (let i = 0; i < tokens.length;) {
+    if (i + 1 < tokens.length && BACKCHANNEL_PHRASES.has(`${tokens[i]} ${tokens[i + 1]}`)) i += 2;
+    else if (BACKCHANNEL_PHRASES.has(tokens[i])) i += 1;
+    else return false;
+  }
+  return true;
+}
+
+/**
  * CallSession treats a missing type as "general" (setExpectedInputType), and so does this.
  * @param {string | undefined} type
  * @returns {boolean}
@@ -314,12 +368,15 @@ function isInsubstantial(text) {
  * @param {() => FastTurnState} options.getState - the session's state, read when each event arrives
  * @param {FastTurnActions} options.actions - what the engine asks of the session
  * @param {boolean} [options.speculationEnabled] - false when Flux sends no EagerEndOfTurn (default true)
+ * @param {"default"|"fast-path"} [options.policy] - "fast-path": short candidates are judged at their EndOfTurn, and backchannels and echo-like finals while the AI is busy are dropped (see the module comment); default "default"
  * @returns {FastTurnEngine}
  */
 function createFastTurnEngine(options) {
-  const { getState, actions, speculationEnabled = true } = /** @type {any} */ (options || {});
+  const { getState, actions, speculationEnabled = true, policy = "default" } = /** @type {any} */ (options || {});
   if (typeof getState !== "function") throw new TypeError("createFastTurnEngine: getState must be a function");
   if (typeof speculationEnabled !== "boolean") throw new TypeError("createFastTurnEngine: speculationEnabled must be a boolean");
+  if (!POLICIES.has(policy)) throw new TypeError('createFastTurnEngine: policy must be "default" or "fast-path"');
+  const fastPolicy = policy === "fast-path";
   const offered = /** @type {Record<string, unknown>} */ (actions || {});
   for (const name of speculationEnabled ? [...ALWAYS_REQUIRED_ACTIONS, ...SPECULATION_ACTIONS] : ALWAYS_REQUIRED_ACTIONS) {
     if (typeof offered[name] !== "function") throw new TypeError(`createFastTurnEngine: actions.${name} must be a function`);
@@ -395,7 +452,18 @@ function createFastTurnEngine(options) {
   function endTurn(turnIndex, text, trigger) {
     const state = getState();
     lastEndedTurn = turnIndex;
-    if (state.aiSpeaking && isInsubstantial(text)) {
+    if (fastPolicy) {
+      if ((state.aiSpeaking || state.processing) && isBackchannel(text)) {
+        actions.dropEcho(text, "backchannel");
+        cancelDraft("backchannel");
+        return;
+      }
+      if (state.aiSpeaking && isLikelyEcho(text, state.aiSpeakingText)) {
+        actions.dropEcho(text, "echo-like");
+        cancelDraft("echo");
+        return;
+      }
+    } else if (state.aiSpeaking && isInsubstantial(text)) {
       actions.dropEcho(text);
       cancelDraft("echo");
       return;
@@ -429,7 +497,8 @@ function createFastTurnEngine(options) {
     switch (event) {
       case "StartOfTurn":
       case "Update":
-        considerBargeIn(turnIndex, text, getState());
+        // "fast-path": a short candidate is judged at its EndOfTurn ("No" is how "No worries" starts).
+        if (!fastPolicy || wordCount(text) > ECHO_MAX_WORDS) considerBargeIn(turnIndex, text, getState());
         break;
       case "EagerEndOfTurn":
         considerDraft(turnIndex, text);
@@ -451,4 +520,4 @@ function createFastTurnEngine(options) {
   return { onTurnInfo, reset };
 }
 
-module.exports = { createFastTurnEngine, INTERRUPT_RE, wordCount, isLikelyEcho, speechTokens };
+module.exports = { createFastTurnEngine, INTERRUPT_RE, wordCount, isLikelyEcho, speechTokens, isBackchannel };

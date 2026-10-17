@@ -19,6 +19,19 @@ const MAX_MESSAGES = 21; // system prompt + up to 20 messages (user/assistant tu
  * @property {ReturnType<typeof setTimeout>|null} fluxOpenTimer - Flux must open before it fires
  * @property {boolean} ttsFellBack - the Aura stream failed: REST for the rest of the call
  * @property {boolean} flushRefusalLogged - a refused flush is logged once per call
+ * @property {boolean} flushRefused - the last flush was refused: its text is owed until Aura goes quiet
+ * @property {number} flushSentAt - Date.now() of the last flush sent
+ * @property {ReturnType<typeof setTimeout>|null} flushWatchdog - a Flushed overdue with no audio means a stuck stream
+ * @property {number} lastAudioAt - Date.now() of the last Aura audio
+ * @property {number} markSeq - utterances the player has marked (the lost-mark backstop acts for the latest)
+ * @property {boolean} presumedIdle - the player's last mark never came back: its audio counts as played
+ * @property {boolean} lostMarkLogged - a lost mark is logged once per call
+ * @property {number} restMarks - REST audio (greeting, disclosure, after an Aura fallback) whose tts-done is not back
+ * @property {number} restPlaybackEndsAt - Date.now() estimate of when that REST audio has played
+ * @property {ReturnType<typeof setTimeout>|null} restTimer - gives up on REST tts-done marks still out FAST_LOST_MARK_MS past restPlaybackEndsAt
+ * @property {boolean} disclosureActive - the recording disclosure is playing: nothing may cut it
+ * @property {ReturnType<typeof setTimeout>|null} disclosureTimer - ends the disclosure window if its mark is lost
+ * @property {ReturnType<typeof setInterval>|null} fluxWatchdog - no Flux frames while audio goes out means a stuck stream
  * @property {boolean} closed - cleanup has run: late callbacks do nothing
  */
 
@@ -123,6 +136,10 @@ class CallSession {
     // SCRUM-594: the fast path's latency record ([FastTurn], [FastCall]).
     /** @type {FastCallStats|null} */
     this.fastStats = null;
+    // SCRUM-594: a reconnected leg (after a failed transfer) writes the first
+    // leg's fast-path summary into calls.metadata.fastPath (restoreFrom).
+    /** @type {object|null} */
+    this.carriedFastPath = null;
     // SCRUM-594: optional — resolves once the call's queued speech has played.
     // The classic end_call hang-up (server.js hangUpAfterEndCall) awaits it
     // instead of its sendTTS-duration estimate. The fast path sets it: its
@@ -432,6 +449,9 @@ class CallSession {
     // stamp across the reconnect (calls.metadata.owner_auth → PR B's lockout
     // email). Owner MODE is never restored: it comes only from a stream token.
     this.ownerAuth = typeof savedState.ownerAuth === "string" ? savedState.ownerAuth : null;
+    // SCRUM-594: the first leg's fast-path summary (attached to the entry when
+    // that leg's stream closed for the dial), for this leg's call record.
+    this.carriedFastPath = savedState.fastPath && typeof savedState.fastPath === "object" ? savedState.fastPath : null;
   }
 
   /**

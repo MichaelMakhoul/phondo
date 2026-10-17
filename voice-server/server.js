@@ -1563,7 +1563,8 @@ wss.on("connection", (twilioWs) => {
     // keep it alive). Then its latency summary (spec 4.8.9: [FastCall], and
     // calls.metadata.fastPath below).
     if (s.fastState) closeFastPath(s);
-    const fastPathSummary = s.fastStats ? summarizeFastCall(s) : null;
+    // A reconnected leg after a failed transfer carries the first leg's summary.
+    const fastPathSummary = s.fastStats ? summarizeFastCall(s) : s.carriedFastPath;
 
     // Unsubscribe from schedule cache events
     if (s._cacheUnsub) {
@@ -1575,6 +1576,12 @@ wss.on("connection", (twilioWs) => {
     // the /twiml/transfer-status callback or TTL cleanup will handle it.
     if (s.pendingTransfer) {
       console.log(`[Cleanup] Transfer pending for callSid=${s.callSid} — deferring post-call processing`);
+      // SCRUM-594: whoever writes this call's record later (finishTransferredCall,
+      // or the cleanup of a leg reconnected after a failed dial) writes the summary.
+      if (fastPathSummary) {
+        const saved = getTransfer(s.callSid);
+        if (saved) saved.fastPath = fastPathSummary;
+      }
       s.destroy();
       return;
     }
@@ -3408,11 +3415,17 @@ wss.on("connection", (twilioWs) => {
               const t0 = Date.now();
               const chunks = chunkAudioForTwilio(disclosureAudio);
               session.isSpeaking = true;
+              // SCRUM-594 (R12d′): nothing on the fast path may cut the disclosure off.
+              if (session.fastPath) beginFastDisclosure(session);
               for (const chunk of chunks) {
                 if (twilioWs.readyState !== WebSocket.OPEN) break;
                 twilioWs.send(JSON.stringify({ event: "media", streamSid: session.streamSid, media: { payload: chunk } }));
               }
               twilioWs.send(JSON.stringify({ event: "mark", streamSid: session.streamSid, mark: { name: "tts-done" } }));
+              if (session.fastPath) {
+                noteFastRestSpeech(session, disclosureText, disclosureAudio.length / 8);
+                armFastDisclosureEnd(session, twilioWs, disclosureAudio.length / 8);
+              }
               console.log(`[TTS] Disclosure (pre-synth, ${Date.now() - t0}ms send) ${disclosureAudio.length} bytes`);
               session.recordingDisclosurePlayed = true;
               session.addMessage("assistant", disclosureText);
@@ -3421,14 +3434,21 @@ wss.on("connection", (twilioWs) => {
               // In two-party consent jurisdictions, skipping disclosure is illegal
               console.warn("[Recording] Disclosure pre-synthesis failed — falling back to synchronous TTS");
               try {
-                await sendTTS(session, twilioWs, disclosureText);
-                // SCRUM-594: on the fast path that went out on the Aura stream. Its
-                // audio must reach Twilio before the pre-synthesised greeting's
-                // frames below, or the two would interleave.
-                if (session.fastPath) await settleFastAudio(session);
+                if (session.fastPath) {
+                  // SCRUM-594 (R12d′): over REST on the fast path too. It is legally
+                  // required, and REST knows its frames went out (and before the
+                  // pre-synthesised greeting's); nothing may cut it off.
+                  beginFastDisclosure(session);
+                  const disclosureMs = await sendRestTTS(session, twilioWs, disclosureText);
+                  if (twilioWs.readyState !== WebSocket.OPEN) throw new Error("the Twilio stream closed before the disclosure was sent");
+                  armFastDisclosureEnd(session, twilioWs, disclosureMs);
+                } else {
+                  await sendTTS(session, twilioWs, disclosureText);
+                }
                 session.recordingDisclosurePlayed = true;
                 session.addMessage("assistant", disclosureText);
               } catch (fallbackErr) {
+                if (session.fastPath) endFastDisclosure(session);
                 console.error("[Recording] CRITICAL: Disclosure fallback TTS also failed — cannot play legally required disclosure:", fallbackErr);
                 session.recordingDisclosureFailed = true;
               }
@@ -3445,6 +3465,8 @@ wss.on("connection", (twilioWs) => {
               twilioWs.send(JSON.stringify({ event: "media", streamSid: session.streamSid, media: { payload: chunk } }));
             }
             twilioWs.send(JSON.stringify({ event: "mark", streamSid: session.streamSid, mark: { name: "tts-done" } }));
+            // SCRUM-594 (R12d′): the echo filter hears the greeting too.
+            if (session.fastPath) noteFastRestSpeech(session, greeting, greetingAudio.length / 8);
             // Safety timeout: reset isSpeaking even if mark event is lost
             setTimeout(() => { if (session) session.isSpeaking = false; }, 20000);
             console.log(`[TTS] Greeting (pre-synth, ${Date.now() - t0}ms send) ${greetingAudio.length} bytes`);
@@ -3491,8 +3513,10 @@ wss.on("connection", (twilioWs) => {
           // TTS playback finished for a marked chunk
           if (session && msg.mark && msg.mark.name === "tts-done") {
             session.isSpeaking = false;
-          } else if (session?.fastPlayer && typeof msg.mark?.name === "string" && msg.mark.name.startsWith("fast-")) {
-            // SCRUM-594 (spec 4.8.6): the fast player's marks; isSpeaking follows what it still has playing.
+            // SCRUM-594 (R12d′): on the fast path, isSpeaking holds while other audio still plays.
+            if (session.fastState) onFastRestMark(session);
+          } else if (session?.fastState && typeof msg.mark?.name === "string" && msg.mark.name.startsWith("fast-")) {
+            // SCRUM-594 (spec 4.8.6): the fast player's marks (and the disclosure's); isSpeaking follows what still plays.
             onFastMark(session, msg.mark.name);
           }
           break;
@@ -3567,6 +3591,23 @@ const FAST_FLUSHED_WAIT_MS = 3000;
 const FAST_IDLE_CAP_MS = 2000;
 // Aura silent this long ends the utterance even with no Flushed (a flush the budget refused).
 const FAST_AUDIO_QUIET_MS = 500;
+// A fast turn that starts while the AI is still speaking waits this long at most for it to finish (R12b′) ...
+const FAST_TURN_START_WAIT_MS = 10_000;
+// ... checking this often.
+const FAST_TURN_START_POLL_MS = 20;
+// A playback mark (the player's, a REST tts-done, the disclosure's) this overdue
+// past the audio's estimated end is taken as lost: that audio counts as played.
+const FAST_LOST_MARK_MS = 5000;
+// A flush whose Flushed is this overdue, with no Aura audio either, means a stuck
+// stream: REST for the rest of the call.
+const FAST_FLUSH_WATCHDOG_MS = 3000;
+// Flux answers audio with an Update about every 240 ms: this long without a single
+// frame while audio goes out means a stuck stream, and Nova takes over ...
+const FLUX_SILENCE_MS = 5000;
+// ... checked this often.
+const FLUX_WATCHDOG_TICK_MS = 1000;
+// The mark after the recording disclosure's audio: until it is back, nothing cuts the disclosure.
+const FAST_DISCLOSURE_MARK = "fast-disclosure";
 
 /**
  * Build LLM options with tools based on session capabilities.
@@ -3754,8 +3795,20 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
   if (!session || twilioWs.readyState !== WebSocket.OPEN) return;
   session.isProcessing = true;
 
-  // Barge-in: if assistant is speaking, clear Twilio's audio buffer
-  if (session.isSpeaking) {
+  if (session.fastPath === true) {
+    // SCRUM-594 (R12b′): a fast turn never cuts the AI off at its start. It waits
+    // (at most FAST_TURN_START_WAIT_MS) for the AI's audio to finish: a caller
+    // who really talks over it has already barged in (the turn engine).
+    if (fastAudioBusy(session)) {
+      await waitForFastTurnStart(session);
+      if (twilioWs.readyState !== WebSocket.OPEN) {
+        session.isProcessing = false;
+        return;
+      }
+    }
+  } else if (session.isSpeaking) {
+    // Barge-in: if assistant is speaking, clear Twilio's audio buffer. (On the
+    // fast path with Nova after a fallback, this is still the only barge-in.)
     sendClear(session, twilioWs);
     session.isSpeaking = false;
   }
@@ -3801,7 +3854,8 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
     // again. The hang-up waits until then before closing the stream.
     let playbackEndsAt = 0;
     const speak = async (text) => {
-      const ms = await sendTTS(session, twilioWs, text);
+      // SCRUM-594: a fast turn's REST audio (after an Aura fallback) is not sent once a barge-in has ended the turn.
+      const ms = await sendTTS(session, twilioWs, text, fastTurn ? () => Boolean(fastTurn?.over) : undefined);
       playbackEndsAt = Math.max(Date.now(), playbackEndsAt) + ms;
     };
     /** @type {Promise<void>[]} each tool round's TTS chain — the hang-up waits until all of it is sent */
@@ -3839,6 +3893,7 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
           const msgs = FILLER_MESSAGES[session.language] || FILLER_MESSAGES.en;
           console.log(`[Filler] "${msgs.waiting}"`);
           ttsChain = ttsChain.then(async () => {
+            if (fastTurn?.over) return; // SCRUM-594: not after a barge-in
             await speak(msgs.waiting);
             if (session.fastPath) fastFlush(session); // SCRUM-594: a flush point (spec 4.8.4)
           }).catch((err) => {
@@ -3929,7 +3984,10 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
           }
           const toolFiller = getToolFiller(session.language || "en", toolNames);
           console.log(`[Filler] "${toolFiller}" (tools: ${toolNames.join(", ")})`);
-          ttsChain = ttsChain.then(async () => { await speak(toolFiller); }).catch((err) => {
+          ttsChain = ttsChain.then(async () => {
+            if (fastTurn?.over) return; // SCRUM-594: not after a barge-in
+            await speak(toolFiller);
+          }).catch((err) => {
             console.error("[Filler] TTS error:", err.message);
           });
         }
@@ -4391,16 +4449,38 @@ function stripMarkdown(text) {
   return clean || text.trim(); // fallback to original if stripping removed everything
 }
 
-async function sendTTS(session, twilioWs, text) {
+/**
+ * @param {any} session
+ * @param {WebSocket} twilioWs
+ * @param {string} text
+ * @param {() => boolean} [isStale] - SCRUM-594: the fast turn checks this after
+ *   REST synthesis, before any frame goes out (a barge-in during synthesis)
+ * @returns {Promise<number>} the audio's playback ms (an estimate on the Aura stream)
+ */
+async function sendTTS(session, twilioWs, text, isStale) {
   // SCRUM-594 (spec 4.8.3): the fast path speaks on its Aura stream while that
-  // is open; REST below otherwise, as on every other call.
+  // is open; REST otherwise, as on every other call.
   if (session?.fastTts?.isOpen()) return speakFast(session, text);
+  return sendRestTTS(session, twilioWs, text, isStale);
+}
+
+/**
+ * REST TTS: synthesize the whole text, then send its frames and a "tts-done" mark.
+ * @param {any} session
+ * @param {WebSocket} twilioWs
+ * @param {string} text
+ * @param {() => boolean} [isStale] - true after synthesis: nothing is sent (SCRUM-594)
+ * @returns {Promise<number>} the audio's playback ms (0 when nothing was sent because it went stale)
+ */
+async function sendRestTTS(session, twilioWs, text, isStale) {
   const t0 = Date.now();
   const cleanText = stripMarkdown(text);
   const audioBuffer = await synthesizeSpeech(DEEPGRAM_API_KEY, cleanText, {
     voice: session?.deepgramVoice,
   });
   console.log(`[TTS] (${Date.now() - t0}ms) ${audioBuffer.length} bytes`);
+  // SCRUM-594: the fast turn this was for was barged in on while it synthesised.
+  if (isStale?.()) return 0;
 
   const chunks = chunkAudioForTwilio(audioBuffer);
   session.isSpeaking = true;
@@ -4428,6 +4508,9 @@ async function sendTTS(session, twilioWs, text) {
         mark: { name: "tts-done" },
       })
     );
+    // SCRUM-594 (R12d′): REST audio on the fast path (after an Aura fallback):
+    // the echo filter hears its words, and isSpeaking holds until its mark is back.
+    if (session?.fastState) noteFastRestSpeech(session, cleanText, audioBuffer.length / 8);
   }
 
   // Playback duration in ms (8kHz mulaw = 8 bytes/ms). Chunks are pushed
@@ -4445,8 +4528,11 @@ function sendClear(session, twilioWs) {
   if (twilioWs.readyState !== WebSocket.OPEN) return;
   if (session.fastPlayer) {
     // SCRUM-594 (spec 4.8.5): the fast path stops its player (which sends the
-    // Twilio clear) and the Aura stream too.
-    stopFastAudio(session);
+    // Twilio clear) and the Aura stream too; never the recording disclosure (R12d′).
+    if (!stopFastAudio(session)) {
+      console.log("[FastPath] Kept the recording disclosure playing (no clear)");
+      return;
+    }
   } else {
     twilioWs.send(
       JSON.stringify({
@@ -4572,6 +4658,19 @@ function newFastPathState() {
     fluxOpenTimer: null,
     ttsFellBack: false,
     flushRefusalLogged: false,
+    flushRefused: false,
+    flushSentAt: 0,
+    flushWatchdog: null,
+    lastAudioAt: 0,
+    markSeq: 0,
+    presumedIdle: false,
+    lostMarkLogged: false,
+    restMarks: 0,
+    restPlaybackEndsAt: 0,
+    restTimer: null,
+    disclosureActive: false,
+    disclosureTimer: null,
+    fluxWatchdog: null,
     closed: false,
   };
 }
@@ -4649,6 +4748,13 @@ function fallBackToRestTts(session, reason, err) {
   const tts = session.fastTts;
   session.fastTts = null;
   session.awaitPlaybackEnd = null;
+  // Nothing more will come from it.
+  state.unflushed = false;
+  state.flushRefused = false;
+  state.pendingFlushSeq = null;
+  if (state.flushWatchdog) clearTimeout(state.flushWatchdog);
+  state.flushWatchdog = null;
+  for (const waiter of [...state.flushWaiters]) waiter.done();
   if (tts) {
     try {
       tts.close();
@@ -4677,6 +4783,9 @@ function openFastStt(session, twilioWs, openClassicStt) {
     actions: fastTurnActions(session, twilioWs),
     // FLUX_EAGER_EOT_THRESHOLD=off asks Flux for no EagerEndOfTurn: no drafts.
     speculationEnabled: config.eagerEotThreshold !== null,
+    // R12a′/R13: short candidates are judged at their EndOfTurn ("No" starts "No
+    // worries"), and a backchannel or the AI's own echo while it is busy is no turn.
+    policy: "fast-path",
   });
   session.fastTurns = engine;
   let opened = false;
@@ -4688,6 +4797,7 @@ function openFastStt(session, twilioWs, openClassicStt) {
       if (state.fluxOpenTimer) clearTimeout(state.fluxOpenTimer);
       state.fluxOpenTimer = null;
       engine.reset(); // turn indexes start again at 0 on a new connection
+      startFluxWatchdog(session, fallBack);
       console.log(`[FastPath] Flux connected (callSid=${session.callSid})`);
     },
     onTurnInfo: (evt) => engine.onTurnInfo(evt),
@@ -4723,6 +4833,8 @@ function fallBackToNova(session, twilioWs, openClassicStt, reason, err) {
   session.fastPath = "degraded-stt";
   if (state.fluxOpenTimer) clearTimeout(state.fluxOpenTimer);
   state.fluxOpenTimer = null;
+  if (state.fluxWatchdog) clearInterval(state.fluxWatchdog);
+  state.fluxWatchdog = null;
   const flux = session.deepgramWs;
   session.deepgramWs = null;
   session.fastTurns = null;
@@ -4748,7 +4860,7 @@ function fallBackToNova(session, twilioWs, openClassicStt, reason, err) {
  */
 function fastTurnState(session) {
   return {
-    aiSpeaking: (session.fastPlayer?.isPlaying() ?? false) || session.isSpeaking,
+    aiSpeaking: fastPlayerPlaying(session) || session.isSpeaking,
     processing: session.isProcessing,
     expectedInputType: session._expectedInputType,
     aiSpeakingText: session.fastState?.speakingText ?? "",
@@ -4782,10 +4894,17 @@ function fastTurnActions(session, twilioWs) {
     cancelSpeculation: guarded("cancelSpeculation", (reason) => dropFastDraft(session, reason)),
     commit: guarded("commit", (transcript, turnIndex, trigger) => commitFastTurn(session, twilioWs, transcript, turnIndex, trigger)),
     bargeIn: guarded("bargeIn", () => fastBargeIn(session)),
-    dropEcho: guarded("dropEcho", (transcript) => logTranscript("[STT] Dropped (echo suppression while AI speaking)", transcript)),
+    dropEcho: guarded("dropEcho", (transcript, reason) => logTranscript(FAST_DROP_LABELS[reason] || FAST_DROP_LABELS.echo, transcript)),
     bufferStructured: guarded("bufferStructured", (transcript) => bufferFastTurn(session, twilioWs, transcript)),
   };
 }
+
+/** What the turn engine's dropEcho(transcript, reason) logs, by reason (no caller words: logTranscript). */
+const FAST_DROP_LABELS = {
+  echo: "[STT] Dropped (echo suppression while AI speaking)",
+  "echo-like": "[STT] Dropped (echo-like: the AI's own words coming back)",
+  backchannel: "[STT] Dropped (backchannel while the AI is busy)",
+};
 
 /**
  * Spec 4.5: start a draft reply on Flux's EagerEndOfTurn, replacing any the
@@ -4880,6 +4999,10 @@ function bufferFastTurn(session, twilioWs, transcript) {
  */
 function fastBargeIn(session) {
   const turn = session.currentTurn;
+  if (session.fastState?.disclosureActive) {
+    console.log(`[Barge-in] (fast) ignored — the recording disclosure is playing (callSid=${session.callSid})`);
+    return;
+  }
   if (turn?.ending) {
     console.log(`[Barge-in] (fast) ignored — the AI is ending the call (callSid=${session.callSid})`);
     return;
@@ -5101,7 +5224,6 @@ function fastFlush(session) {
   const state = session.fastState;
   const tts = session.fastTts;
   if (!state || state.closed || !tts?.isOpen()) return null;
-  state.unflushed = false;
   let seq = null;
   try {
     seq = tts.flush();
@@ -5114,10 +5236,40 @@ function fastFlush(session) {
       state.flushRefusalLogged = true;
       console.warn(`[FastPath] Aura flush refused (${tts.flushesInLastMinute()} in the last minute) — relying on sentence release (callSid=${session.callSid})`);
     }
+    // No Flushed will answer for this text: it stays owed until Aura goes quiet.
+    state.flushRefused = true;
+    armFastQuietTimer(session);
     return null;
   }
+  state.unflushed = false;
+  state.flushRefused = false;
   state.pendingFlushSeq = seq;
+  state.flushSentAt = Date.now();
+  armFastFlushWatchdog(session, FAST_FLUSH_WATCHDOG_MS);
   return seq;
+}
+
+/**
+ * Minor 6: a flush whose Flushed is FAST_FLUSH_WATCHDOG_MS overdue, with no Aura
+ * audio in that time either, means a stuck stream: REST for the rest of the call.
+ * Audio still arriving (a long reply) pushes the deadline on.
+ * @param {CallSession} session
+ * @param {number} delayMs
+ */
+function armFastFlushWatchdog(session, delayMs) {
+  const state = session.fastState;
+  if (!state || state.closed) return;
+  if (state.flushWatchdog) clearTimeout(state.flushWatchdog);
+  state.flushWatchdog = setTimeout(() => {
+    state.flushWatchdog = null;
+    if (state.closed || state.pendingFlushSeq === null || !session.fastTts) return;
+    const quietMs = Date.now() - Math.max(state.lastAudioAt, state.flushSentAt);
+    if (quietMs < FAST_FLUSH_WATCHDOG_MS) {
+      armFastFlushWatchdog(session, FAST_FLUSH_WATCHDOG_MS - quietMs);
+      return;
+    }
+    fallBackToRestTts(session, `no Flushed and no audio for ${quietMs} ms`, new Error(`Aura stream stuck: no Flushed and no audio for ${quietMs} ms after a flush`));
+  }, delayMs);
 }
 
 /**
@@ -5131,6 +5283,8 @@ function onFastAudio(session, audio) {
   session.fastPlayer.push(audio);
   session.isSpeaking = true;
   state.unmarked = true;
+  state.presumedIdle = false;
+  state.lastAudioAt = Date.now();
   armFastQuietTimer(session);
   // The turn's first audio: its [FastTurn] line has everything now.
   const record = session.fastStats?.current;
@@ -5152,19 +5306,244 @@ function onFastFlushed(session, seq) {
   if (state.unmarked) endFastUtterance(session);
   const done = Number.isInteger(seq) ? /** @type {number} */ (seq) : state.pendingFlushSeq;
   if (done !== null) state.flushedSeq = Math.max(state.flushedSeq, done);
-  if (state.pendingFlushSeq !== null && state.flushedSeq >= state.pendingFlushSeq) state.pendingFlushSeq = null;
+  if (state.pendingFlushSeq !== null && state.flushedSeq >= state.pendingFlushSeq) {
+    state.pendingFlushSeq = null;
+    if (state.flushWatchdog) clearTimeout(state.flushWatchdog);
+    state.flushWatchdog = null;
+  }
   for (const waiter of [...state.flushWaiters]) {
     if (waiter.seq <= state.flushedSeq) waiter.done();
   }
+  // A Flushed may come back after the player's last mark: once nothing plays
+  // and Aura owes nothing, the echo filter's text starts afresh then.
+  refreshFastSpeaking(session);
 }
 
 /**
  * The player marks what it has sent; Twilio echoes the mark once it has played.
+ * Minor 3, the lost-mark backstop: if the latest mark is still out
+ * FAST_LOST_MARK_MS past the audio's estimated end (the player's byte
+ * estimate), that audio counts as played (logged once per call). Classic has
+ * a 20 s backstop for its tts-done.
  * @param {CallSession} session
  */
 function endFastUtterance(session) {
-  session.fastPlayer?.endUtterance();
-  if (session.fastState) session.fastState.unmarked = false;
+  const player = session.fastPlayer;
+  const state = session.fastState;
+  if (!player || !state) return;
+  player.endUtterance();
+  state.unmarked = false;
+  state.markSeq += 1;
+  const mark = state.markSeq;
+  player.whenIdle(FAST_LOST_MARK_MS).then(() => {
+    if (state.closed || state.markSeq !== mark || state.unmarked || state.presumedIdle || !player.isPlaying()) return;
+    state.presumedIdle = true;
+    noteLostMark(session, "player");
+    refreshFastSpeaking(session);
+  });
+}
+
+/**
+ * @param {CallSession} session
+ * @param {string} what
+ */
+function noteLostMark(session, what) {
+  const state = session.fastState;
+  if (!state || state.lostMarkLogged) return;
+  state.lostMarkLogged = true;
+  console.warn(`[FastPath] A playback mark (${what}) never came back — treating that audio as played (callSid=${session.callSid})`);
+}
+
+/**
+ * The player has audio out that Twilio has not played yet (its marks), unless a
+ * lost mark made us give up on it.
+ * @param {CallSession} session
+ * @returns {boolean}
+ */
+function fastPlayerPlaying(session) {
+  return Boolean(session.fastPlayer?.isPlaying()) && !session.fastState?.presumedIdle;
+}
+
+/**
+ * REST audio (the greeting, the disclosure, sendTTS after an Aura fallback) not
+ * yet played: its tts-done marks are not all back. Lost marks are given up on
+ * FAST_LOST_MARK_MS past its estimated end.
+ * @param {CallSession} session
+ * @returns {boolean}
+ */
+function fastRestPlaying(session) {
+  const state = session.fastState;
+  if (!state || state.restMarks === 0) return false;
+  if (Date.now() > state.restPlaybackEndsAt + FAST_LOST_MARK_MS) {
+    state.restMarks = 0;
+    noteLostMark(session, "tts-done");
+    return false;
+  }
+  return true;
+}
+
+/**
+ * The IMPORTANT fix of the Task 5 review: Aura may still send audio for text it
+ * was given (not flushed yet, or flushed and its Flushed not back). "The player
+ * is idle" does not say that: a reply sent to Aura has no audio for its first
+ * ~50-100 ms.
+ * @param {import("./call-session").FastPathState|null} state
+ * @returns {boolean}
+ */
+function fastAuraOwes(state) {
+  return !!state && (state.unflushed || state.pendingFlushSeq !== null);
+}
+
+/**
+ * isSpeaking on the fast path: the player's audio, or REST audio, still playing.
+ * Once nothing plays and Aura owes nothing, the echo filter's text starts afresh.
+ * @param {CallSession} session
+ */
+function refreshFastSpeaking(session) {
+  const state = session.fastState;
+  session.isSpeaking = fastPlayerPlaying(session) || fastRestPlaying(session);
+  if (state && !session.isSpeaking && !fastAuraOwes(state)) state.speakingText = "";
+}
+
+/**
+ * R12d′: REST audio went to Twilio on the fast path (the greeting, the
+ * disclosure, sendTTS after an Aura fallback). Its words join the echo filter's
+ * text, and isSpeaking holds until its tts-done mark is back.
+ * @param {CallSession} session
+ * @param {string} text
+ * @param {number} ms - its playback length
+ */
+function noteFastRestSpeech(session, text, ms) {
+  const state = session.fastState;
+  if (!state || state.closed) return;
+  state.speakingText = state.speakingText ? `${state.speakingText} ${text}` : text;
+  state.restMarks += 1;
+  state.restPlaybackEndsAt = Math.max(Date.now(), state.restPlaybackEndsAt) + ms;
+  session.isSpeaking = true;
+  // Minor 3: if its tts-done is lost, isSpeaking (and the echo filter's text)
+  // still recover FAST_LOST_MARK_MS past its estimated end.
+  if (state.restTimer) clearTimeout(state.restTimer);
+  state.restTimer = setTimeout(() => {
+    state.restTimer = null;
+    if (!state.closed) refreshFastSpeaking(session);
+  }, state.restPlaybackEndsAt + FAST_LOST_MARK_MS - Date.now() + 1);
+}
+
+/**
+ * A tts-done mark is back on the fast path: one REST audio less. (The classic
+ * handler has already set isSpeaking = false; this puts it back while other
+ * audio still plays: the disclosure's mark returns before the greeting's.)
+ * @param {CallSession} session
+ */
+function onFastRestMark(session) {
+  const state = session.fastState;
+  if (!state) return;
+  state.restMarks = Math.max(0, state.restMarks - 1);
+  refreshFastSpeaking(session);
+}
+
+/**
+ * R12d′: the recording disclosure is going out (either path). Until its audio
+ * has played nothing may cut it: no barge-in, no clear (stopFastAudio), and a
+ * turn that starts meanwhile waits (waitForFastTurnStart).
+ * @param {CallSession} session
+ */
+function beginFastDisclosure(session) {
+  const state = session.fastState;
+  if (!state || state.closed) return;
+  state.disclosureActive = true;
+}
+
+/**
+ * The disclosure's frames are all at Twilio: a mark after them says when it has
+ * played, with a backstop in case the mark is lost.
+ * @param {CallSession} session
+ * @param {WebSocket} twilioWs
+ * @param {number} ms - its playback length
+ */
+function armFastDisclosureEnd(session, twilioWs, ms) {
+  const state = session.fastState;
+  if (!state || state.closed) return;
+  sendTwilioJson(twilioWs, { event: "mark", streamSid: session.streamSid, mark: { name: FAST_DISCLOSURE_MARK } });
+  if (state.disclosureTimer) clearTimeout(state.disclosureTimer);
+  state.disclosureTimer = setTimeout(() => {
+    if (state.disclosureActive) noteLostMark(session, "disclosure");
+    endFastDisclosure(session);
+  }, ms + FAST_LOST_MARK_MS);
+}
+
+/**
+ * @param {CallSession} session
+ */
+function endFastDisclosure(session) {
+  const state = session.fastState;
+  if (!state) return;
+  if (state.disclosureTimer) clearTimeout(state.disclosureTimer);
+  state.disclosureTimer = null;
+  state.disclosureActive = false;
+}
+
+/**
+ * Anything of the AI's still to be heard: playing (the player, REST audio), owed
+ * by Aura, or the disclosure.
+ * @param {CallSession} session
+ * @returns {boolean}
+ */
+function fastAudioBusy(session) {
+  const state = session.fastState;
+  return fastPlayerPlaying(session) || session.isSpeaking || fastRestPlaying(session) || fastAuraOwes(state) || Boolean(state?.disclosureActive);
+}
+
+/**
+ * R12b′: a fast turn starts only once the AI has finished speaking, waiting at
+ * most FAST_TURN_START_WAIT_MS. Nothing is cleared: the turn answers after the
+ * AI's words, never over them. (A turn that waited is one committed while the AI
+ * spoke without a barge-in: a short answer, or one queued behind a reply.)
+ * @param {CallSession} session
+ * @returns {Promise<void>}
+ */
+async function waitForFastTurnStart(session) {
+  const started = Date.now();
+  while (fastAudioBusy(session) && !session.fastState?.closed && Date.now() - started < FAST_TURN_START_WAIT_MS) {
+    await new Promise((resolve) => setTimeout(resolve, FAST_TURN_START_POLL_MS));
+  }
+  const waited = Date.now() - started;
+  if (fastAudioBusy(session)) console.warn(`[FastTurn] The AI was still speaking after ${waited} ms — answering anyway (callSid=${session.callSid})`);
+  else console.log(`[FastTurn] Waited ${waited} ms for the AI to finish before answering (callSid=${session.callSid})`);
+}
+
+/**
+ * Minor 6: Flux answers audio with an Update about every 240 ms. No frame at all
+ * for FLUX_SILENCE_MS while audio still goes out means a stuck stream: Nova.
+ * @param {CallSession} session
+ * @param {(reason: string, err: unknown) => void} fallBack
+ */
+function startFluxWatchdog(session, fallBack) {
+  const state = session.fastState;
+  if (!state || state.closed) return;
+  if (state.fluxWatchdog) clearInterval(state.fluxWatchdog);
+  // Since when audio has been going out without a break: after a pause in the
+  // caller's audio, Flux gets a fair chance to answer the first new frames.
+  let sendingSince = 0;
+  state.fluxWatchdog = setInterval(() => {
+    const flux = session.deepgramWs;
+    if (session.fastPath !== true || state.closed || !flux) {
+      if (state.fluxWatchdog) clearInterval(state.fluxWatchdog);
+      state.fluxWatchdog = null;
+      return;
+    }
+    if (flux.readyState !== WebSocket.OPEN) return;
+    const now = Date.now();
+    if (now - flux.lastSendAt > 2 * FLUX_WATCHDOG_TICK_MS) {
+      sendingSince = 0; // no audio going out: nothing to judge
+      return;
+    }
+    if (sendingSince === 0) sendingSince = now;
+    const silentMs = now - flux.lastMessageAt;
+    if (silentMs > FLUX_SILENCE_MS && now - sendingSince > FLUX_SILENCE_MS) {
+      fallBack(`no frames for ${silentMs} ms while audio went out`, new Error(`Flux stuck: no frames for ${silentMs} ms while audio went out`));
+    }
+  }, FLUX_WATCHDOG_TICK_MS);
 }
 
 /**
@@ -5182,6 +5561,11 @@ function armFastQuietTimer(session) {
     state.quietTimer = null;
     if (state.closed) return;
     if (state.unmarked) endFastUtterance(session);
+    // A refused flush's audio has stopped arriving: Aura owes nothing more for it.
+    if (state.flushRefused) {
+      state.flushRefused = false;
+      state.unflushed = false;
+    }
     for (const resolve of state.quietWaiters.splice(0)) resolve();
   }, FAST_AUDIO_QUIET_MS);
 }
@@ -5194,11 +5578,11 @@ function armFastQuietTimer(session) {
  * @param {string} name
  */
 function onFastMark(session, name) {
-  const player = session.fastPlayer;
-  if (!player) return;
-  player.onMark(name);
-  session.isSpeaking = player.isPlaying();
-  if (!session.isSpeaking && session.fastState) session.fastState.speakingText = "";
+  if (name === FAST_DISCLOSURE_MARK) endFastDisclosure(session);
+  else session.fastPlayer?.onMark(name);
+  // Never just the player's state: REST audio may still play, and text sent to
+  // Aura may have no audio yet (the echo filter keeps hearing it: the IMPORTANT fix).
+  refreshFastSpeaking(session);
 }
 
 /**
@@ -5211,14 +5595,23 @@ function onFastMark(session, name) {
 function stopFastAudio(session) {
   const state = session.fastState;
   const player = session.fastPlayer;
-  const owed = Boolean(state?.speakingText) || Boolean(player?.isPlaying());
+  // R12d′: never the recording disclosure.
+  if (state?.disclosureActive) return false;
+  // Anything the AI was saying (still playing, or still owed by Aura for text
+  // it was given: the IMPORTANT fix) gets an Aura Clear.
+  const owed = fastAuraOwes(state) || Boolean(state?.speakingText) || Boolean(player?.isPlaying());
   session.isSpeaking = false;
   if (state) {
     state.speakingText = "";
     state.unmarked = false;
     state.unflushed = false;
+    state.flushRefused = false;
+    state.presumedIdle = false;
+    state.restMarks = 0; // the Twilio clear drops REST audio too
     // A Clear discards pending flushes: their Flushed never comes.
     state.pendingFlushSeq = null;
+    if (state.flushWatchdog) clearTimeout(state.flushWatchdog);
+    state.flushWatchdog = null;
     for (const waiter of [...state.flushWaiters]) waiter.done();
   }
   if (player) {
@@ -5235,6 +5628,7 @@ function stopFastAudio(session) {
       console.warn(`[FastPath] Clearing the Aura stream threw (callSid=${session.callSid}): ${err.message}`);
     }
   }
+  return true;
 }
 
 /**
@@ -5334,10 +5728,16 @@ function closeFastPath(session) {
   const state = session.fastState;
   if (!state || state.closed) return;
   state.closed = true;
-  if (state.fluxOpenTimer) clearTimeout(state.fluxOpenTimer);
-  if (state.quietTimer) clearTimeout(state.quietTimer);
+  for (const timer of [state.fluxOpenTimer, state.quietTimer, state.flushWatchdog, state.disclosureTimer, state.restTimer]) {
+    if (timer) clearTimeout(timer);
+  }
+  if (state.fluxWatchdog) clearInterval(state.fluxWatchdog);
   state.fluxOpenTimer = null;
   state.quietTimer = null;
+  state.flushWatchdog = null;
+  state.disclosureTimer = null;
+  state.restTimer = null;
+  state.fluxWatchdog = null;
   /** @type {Array<[string, () => void]>} */
   const steps = [];
   // After a fallback, deepgramWs is Nova: destroy() closes it, as on any classic call.

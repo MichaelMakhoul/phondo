@@ -213,6 +213,8 @@ function fluxConfigFromEnv(env = process.env) {
 /**
  * @typedef {Object} FluxStream
  * @property {number} readyState - mirrors the socket: 0 CONNECTING, 1 OPEN, 2 CLOSING, 3 CLOSED
+ * @property {number} lastMessageAt - Date.now() of the socket opening or of the last frame from Flux, whatever its kind (empty Updates included); 0 before. Flux sends an Update about every 240 ms of audio, so a long silence here while audio goes out means a stuck stream
+ * @property {number} lastSendAt - Date.now() of the last audio frame sent; 0 before
  * @property {(audio: Buffer) => boolean} send - false when the socket is not open (the frame is dropped)
  * @property {() => void} close
  * @property {(settings?: object) => boolean} configure
@@ -255,6 +257,8 @@ function openFluxStream(apiKey, callbacks = {}, options = {}) {
   const { onOpen, onTurnInfo, onError, onClose, onWarning } = callbacks;
 
   let closedByUs = false;
+  let lastMessageAt = 0;
+  let lastSendAt = 0;
   const warnedEvents = new Set();
   const guard = createCallbackGuard("FluxSTT", onError);
   const { reportError, invoke } = guard;
@@ -266,9 +270,9 @@ function openFluxStream(apiKey, callbacks = {}, options = {}) {
   } catch (err) {
     failConnect(guard, err, onClose);
     // Typed against FluxStream, so a method added to the handle without its dead stub fails the typecheck.
-    /** @type {Record<Exclude<keyof FluxStream, "readyState">, any>} */
+    /** @type {Record<Exclude<keyof FluxStream, "readyState" | "lastMessageAt" | "lastSendAt">, any>} */
     const deadReturns = { send: false, close: undefined, configure: false, forceEndTurn: false };
-    return deadStream(deadReturns, { readyState: WebSocket.CLOSED });
+    return deadStream(deadReturns, { readyState: WebSocket.CLOSED, lastMessageAt: 0, lastSendAt: 0 });
   }
   const pinger = createPinger(ws);
 
@@ -305,13 +309,16 @@ function openFluxStream(apiKey, callbacks = {}, options = {}) {
   }
 
   ws.on("open", () => {
+    lastMessageAt = Date.now();
     // Armed before onOpen so a close() from inside onOpen still clears it.
     pinger.start();
     invoke(onOpen);
   });
 
   ws.on("message", (data, isBinary) => {
-    if (closedByUs || isBinary) return; // Flux only ever sends JSON text
+    if (closedByUs) return;
+    lastMessageAt = Date.now(); // any frame is a sign of life, delivered or not
+    if (isBinary) return; // Flux only ever sends JSON text
     let frame;
     try {
       frame = JSON.parse(data.toString());
@@ -365,9 +372,18 @@ function openFluxStream(apiKey, callbacks = {}, options = {}) {
       return ws.readyState;
     },
 
+    get lastMessageAt() {
+      return lastMessageAt;
+    },
+
+    get lastSendAt() {
+      return lastSendAt;
+    },
+
     send(audio) {
       if (ws.readyState !== WebSocket.OPEN) return false;
       ws.send(audio);
+      lastSendAt = Date.now();
       return true;
     },
 

@@ -25,7 +25,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const { createFastTurnEngine, INTERRUPT_RE, wordCount, isLikelyEcho, speechTokens } = require("../lib/fast-turns");
+const { createFastTurnEngine, INTERRUPT_RE, wordCount, isLikelyEcho, speechTokens, isBackchannel } = require("../lib/fast-turns");
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -54,7 +54,7 @@ const ACTION_NAMES = ["speculate", "cancelSpeculation", "commit", "bargeIn", "dr
  * An engine wired to a recorder. `calls` is every action call in order, as
  * [name, ...args]. `overrides` replace single actions (a thrower, an absent one).
  */
-function harness({ state = {}, speculationEnabled, actions: overrides = {} } = {}) {
+function harness({ state = {}, speculationEnabled, policy, actions: overrides = {} } = {}) {
   const calls = [];
   const live = { ...IDLE, ...state };
   const actions = {};
@@ -66,6 +66,7 @@ function harness({ state = {}, speculationEnabled, actions: overrides = {} } = {
   Object.assign(actions, overrides);
   const options = { getState: () => ({ ...live }), actions };
   if (speculationEnabled !== undefined) options.speculationEnabled = speculationEnabled;
+  if (policy !== undefined) options.policy = policy;
   const engine = createFastTurnEngine(options);
   /** Events go to the engine; { set } steps change the live session state. */
   const feed = (...steps) => {
@@ -1342,4 +1343,140 @@ it("isLikelyEcho: a restated phrase with a number the AI never said is a correct
 it("isLikelyEcho: the AI's own sentence with the same numbers is still an echo", () => {
   assert.equal(isLikelyEcho("Friday at ten thirty AM available", "I have Friday at ten thirty AM available."), true);
   assert.equal(isLikelyEcho("Friday the 17th at 10:30 AM", "How about Friday the 17th at 10:30 AM?"), true);
+});
+
+// ---------------------------------------------------------------------------
+// 7. The "fast-path" policy (Task 5 review: rulings R12a′ and R13)
+// ---------------------------------------------------------------------------
+
+// What the fast path's session runs. A short candidate is judged when its turn ends;
+// a backchannel while the AI is busy is not a turn; the AI's own echo is not a turn.
+const FAST = (state) => harness({ state, policy: "fast-path" });
+
+describe('the "fast-path" policy', () => {
+  for (const [label, state] of [["processing", PROCESSING], ["speaking", SPEAKING]]) {
+    it(`"No worries" while ${label}: no barge-in on its "No", and the final is dropped as a backchannel`, () => {
+      const h = FAST(state);
+      h.feed(ev("StartOfTurn", 0, "No"), ev("Update", 0, "No worries"));
+      assert.deepEqual(h.calls, [], "the bare No of No worries never barges in");
+      h.feed(ev("EndOfTurn", 0, "No worries."));
+      assert.deepEqual(h.calls, [["dropEcho", "No worries.", "backchannel"], ["cancelSpeculation", "backchannel"]]);
+    });
+  }
+
+  it("the default policy is unchanged: there the No of No worries barges in at once and the final commits", () => {
+    const h = harness({ state: PROCESSING });
+    h.feed(ev("StartOfTurn", 0, "No"), ev("Update", 0, "No worries"), ev("EndOfTurn", 0, "No worries."));
+    assert.deepEqual(h.calls, [["bargeIn"], ["commit", "No worries.", 0, "model"]]);
+  });
+
+  for (const [label, state] of [["speaking", SPEAKING], ["processing", PROCESSING]]) {
+    it(`"No, wait" while ${label}: judged at the end of the turn, then barge-in and commit`, () => {
+      const h = FAST(state);
+      h.feed(ev("StartOfTurn", 0, "No"), ev("Update", 0, "No, wait"));
+      assert.deepEqual(h.calls, []);
+      h.feed(ev("EndOfTurn", 0, "No, wait."));
+      assert.deepEqual(h.calls, [["bargeIn"], ["commit", "No, wait.", 0, "model"]]);
+    });
+
+    it(`"stop" while ${label}: barge-in and commit at the end of the turn`, () => {
+      const h = FAST(state);
+      h.feed(ev("StartOfTurn", 0, "Stop"));
+      assert.deepEqual(h.calls, []);
+      h.feed(ev("EndOfTurn", 0, "Stop."));
+      assert.deepEqual(h.calls, [["bargeIn"], ["commit", "Stop.", 0, "model"]]);
+    });
+  }
+
+  it("every one of the classic interrupt words still barges in, at the end of its turn", () => {
+    for (const said of INTERRUPTS) {
+      const h = FAST(SPEAKING);
+      h.feed(ev("StartOfTurn", 0, said), ev("EndOfTurn", 0, said));
+      assert.deepEqual(h.calls, [["bargeIn"], ["commit", said, 0, "model"]], said);
+    }
+  });
+
+  it("3 or more words still barge in early, on the Update", () => {
+    const h = FAST(SPEAKING);
+    h.feed(ev("Update", 0, "wait a second"));
+    assert.deepEqual(h.calls, [["bargeIn"]]);
+    h.feed(ev("EndOfTurn", 0, "wait a second please"));
+    assert.deepEqual(h.calls, [["bargeIn"], ["commit", "wait a second please", 0, "model"]]);
+  });
+
+  it("a short content final while the AI speaks is answered (the turn waits for the AI, server.js): no barge-in, no echo drop", () => {
+    for (const said of ["Tuesday.", "Ten thirty", "Nope.", "Okay, wait", "Yes please"]) {
+      const h = FAST(SPEAKING);
+      h.feed(ev("EndOfTurn", 0, said));
+      assert.deepEqual(h.calls, [["commit", said, 0, "model"]], said);
+    }
+  });
+
+  it("a backchannel while the AI is idle is an answer: committed", () => {
+    for (const said of ["Okay.", "Yes.", "No worries.", "Thanks!"]) {
+      const h = FAST(IDLE);
+      h.feed(ev("EndOfTurn", 0, said));
+      assert.deepEqual(h.calls, [["commit", said, 0, "model"]], said);
+    }
+  });
+
+  it("a backchannel while busy is dropped on the structured path too (never buffered)", () => {
+    const h = FAST({ ...PROCESSING, expectedInputType: "phone" });
+    h.feed(ev("EndOfTurn", 0, "yeah"));
+    assert.deepEqual(h.calls, [["dropEcho", "yeah", "backchannel"], ["cancelSpeculation", "backchannel"]]);
+    const idle = FAST({ expectedInputType: "phone" });
+    idle.feed(ev("EndOfTurn", 0, "yeah"));
+    assert.deepEqual(idle.calls, [["cancelSpeculation", "structured"], ["bufferStructured", "yeah"]], "idle: buffered as before");
+  });
+
+  it("an echo-like final while the AI speaks is dropped, not answered (R13)", () => {
+    const h = FAST(OFFERING);
+    h.feed(ev("EndOfTurn", 0, "I have Friday at ten available."));
+    assert.deepEqual(h.calls, [["dropEcho", "I have Friday at ten available.", "echo-like"], ["cancelSpeculation", "echo"]]);
+    const base = harness({ state: OFFERING });
+    base.feed(ev("EndOfTurn", 0, "I have Friday at ten available."));
+    assert.deepEqual(base.calls, [["commit", "I have Friday at ten available.", 0, "model"]], "the default policy still commits it");
+  });
+
+  it("an echo-like final with a number the AI never said is a correction: barge-in and commit", () => {
+    const h = FAST(OFFERING);
+    h.feed(ev("EndOfTurn", 0, "Friday at ten fifteen available"));
+    assert.deepEqual(h.calls, [["bargeIn"], ["commit", "Friday at ten fifteen available", 0, "model"]]);
+  });
+
+  it("the echo drop needs the AI's audio: while only processing, the same words barge in and commit", () => {
+    const h = FAST({ processing: true, aiSpeakingText: OFFER });
+    h.feed(ev("EndOfTurn", 0, "I have Friday at ten available."));
+    assert.deepEqual(h.calls, [["bargeIn"], ["commit", "I have Friday at ten available.", 0, "model"]]);
+  });
+
+  it("a dropped final ends its turn: a duplicate EndOfTurn is ignored", () => {
+    const h = FAST(SPEAKING);
+    h.feed(ev("EndOfTurn", 0, "Okay."), ev("EndOfTurn", 0, "Okay."));
+    assert.deepEqual(h.calls, [["dropEcho", "Okay.", "backchannel"], ["cancelSpeculation", "backchannel"]]);
+  });
+
+  it("rejects an unknown policy", () => {
+    const noop = () => {};
+    const actions = { speculate: noop, cancelSpeculation: noop, commit: noop, bargeIn: noop, dropEcho: noop, bufferStructured: noop };
+    assert.throws(() => createFastTurnEngine({ getState: () => ({ ...IDLE }), actions, policy: "fast" }), { name: "TypeError", message: /policy/ });
+  });
+});
+
+describe("isBackchannel", () => {
+  it("the ruled phrases, whatever their case and punctuation", () => {
+    for (const said of ["okay", "OK.", "Ok!", "Yeah.", "yep", "Yes.", "Sure.", "Right.", "Alright.", "All right.", "Cool.", "Great!", "Perfect.", "Thanks.", "Thank you.", "Mm-hmm.", "Mhm.", "Uh-huh.", "No worries.", "No problem!"]) {
+      assert.equal(isBackchannel(said), true, said);
+    }
+  });
+
+  it("two backchannels in a row are one", () => {
+    for (const said of ["Okay, thanks.", "Yeah, sure.", "Okay, great.", "Okay, mm-hmm"]) assert.equal(isBackchannel(said), true, said);
+  });
+
+  it("anything with a word of content, an interrupt, or more than two words is not", () => {
+    for (const said of ["Yes please.", "No.", "No, wait.", "Okay, wait", "Tuesday", "Okay thank you", "thanks so much", "Nope", "Stop", "", "  ", "okayyy"]) {
+      assert.equal(isBackchannel(said), false, JSON.stringify(said));
+    }
+  });
 });

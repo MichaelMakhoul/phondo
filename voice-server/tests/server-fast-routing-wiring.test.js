@@ -265,6 +265,7 @@ async function runCleanup(session, { demoLine = (n) => n === DEMO } = {}) {
     isDemoLineNumber: demoLine,
     closeFastPath: () => {}, // these sessions never started the fast path (no fastState)
     summarizeFastCall: () => null, // ... nor have its latency record (no fastStats)
+    getTransfer: () => null,
     console: recordingConsole(lines),
   };
   const { cleanupSession } = runSlice({ from: "async function cleanupSession() {", to: 'twilioWs.on("message", async (raw) => {', scope, names: ["cleanupSession"] });
