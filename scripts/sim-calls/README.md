@@ -1,0 +1,58 @@
+# Simulated calls (SCRUM-594)
+
+Scripted callers phone the demo line's **real** conversation logic and every
+call is scored against the 14 checkpoints in `docs/call-scorecard.md`. Use it
+before asking anyone to make a test call: phone tests are for what needs a real
+line (hearing, speed, interruptions, audio).
+
+## What is real and what is simulated
+
+| Real | Simulated |
+|---|---|
+| server.js's turn handler (`buildLLMOptions … handleUserSpeech`, loaded with the wiring tests' runtime-slice idiom) and every guard in it | Audio: no STT, no TTS, no barge-in, no turn timing |
+| The call setup: context, system prompt, live schedule, the fast path's voice addendum, disclosure, greeting | The caller: an LLM (`SIM_CALLER_MODEL`) with a goal |
+| Claude Haiku as the fast path calls it (`FAST_LLM_MODEL`, clause chunking) | The caller's STT: a said surname is misheard (`Khoury` → `Curry`/`Corey`), a spelled one arrives as Flux writes it (`K h o u r y.`), as on the 2026-10-17 test calls |
+| The tool executor and the Next.js tool-call route with the real calendar handlers | The database: an in-memory store (`fake-supabase.ts`) seeded from a fixture, with the appointment overlap and unique-code constraints |
+
+Network access is limited to the Anthropic API. The store, notifications, SMS
+and rate limiters are stubs, so a run can never touch production.
+
+## Run it
+
+```bash
+# 1. Capture the demo line's setup (read-only; keep the file out of git — it holds the business's prompt)
+node scripts/sim-calls/capture-fixture.mjs 35cc7464-e4c5-4924-bf39-f5f939824825 .sim-calls/demo-line.json
+
+# 2. Run every scenario three times
+SIM_FIXTURE=.sim-calls/demo-line.json SIM_RUNS=3 SIM_LABEL="my change" \
+  npx vitest run --config scripts/sim-calls/vitest.config.ts
+```
+
+The report lands in `.sim-calls/<timestamp>/report.md` (gitignored), with one
+file per call under `runs/`: transcript, tool calls, diary, verdicts and the
+server log. In a git worktree, point `SIM_ENV_FILE` at a checkout's
+`voice-server/.env` for the API key and the capture's read-only credentials.
+
+| Variable | Default | |
+|---|---|---|
+| `SIM_FIXTURE` | (required) | the captured business |
+| `SIM_SCENARIOS` | all | e.g. `S2,S3` |
+| `SIM_RUNS` | 2 | runs per scenario |
+| `SIM_CONCURRENCY` | 4 | calls at once |
+| `SIM_CALLER_MODEL` | `claude-sonnet-5-5` | the caller |
+| `SIM_JUDGE_MODEL` | `claude-opus-5-5` | the judge |
+| `SIM_NOISE` | `phone` | `none` turns the STT layer off |
+| `SIM_OUT` | `.sim-calls/<timestamp>` | report directory |
+| `SIM_LABEL` | | the report's title |
+| `SIM_ENV_FILE` | `voice-server/.env` | where to find `ANTHROPIC_API_KEY` |
+
+## Scoring
+
+Deterministic checks read the diary and the tool calls; an LLM judge reads the
+transcript. Checkpoints 2 and 6 trust the diary; 7, 11 and 14 take the worse of
+the diary and the judge; the rest are the judge's. 1, 12 and 13 need audio and
+are never scored here.
+
+A run whose turn handler hit an error (a `[Pipeline]` error, a blocked network
+call, a gap in the fake store) is listed under anomalies and fails the vitest
+run: it is a harness problem, not a score.
