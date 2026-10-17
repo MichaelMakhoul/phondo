@@ -63,8 +63,9 @@ interface Call {
   summary: string | null;
   transcript: string | null;
   // SCRUM-550: when a call is re-transcribed, `transcript` holds the accurate
-  // Deepgram version and `raw_transcript` preserves Gemini's original for
-  // comparison; `transcript_source` is 'deepgram' | 'gemini' | null(=legacy).
+  // Deepgram version and `raw_transcript` preserves the live transcript (what
+  // the AI heard during the call) for comparison; `transcript_source` is
+  // 'deepgram' | 'gemini' | null(=legacy).
   raw_transcript: string | null;
   transcript_source: string | null;
   outcome: string | null;
@@ -167,7 +168,7 @@ export function CallDetail({ call: initialCall }: { call: Call }) {
     () => parseCleanedTranscript(call.cleaned_transcript),
     [call.cleaned_transcript],
   );
-  const [transcriptMode, setTranscriptMode] = useState<"raw" | "cleaned" | "gemini">(
+  const [transcriptMode, setTranscriptMode] = useState<"raw" | "cleaned" | "live">(
     cleaned ? "cleaned" : "raw"
   );
   const [editCallerName, setEditCallerName] = useState(call.caller_name || "");
@@ -716,7 +717,7 @@ export function CallDetail({ call: initialCall }: { call: Call }) {
                 {call.transcript_source === "deepgram" && (
                   <span
                     className="text-xs font-normal text-muted-foreground"
-                    title="After the call, the recording was re-transcribed with Deepgram for a more accurate caller transcript. Gemini's original is preserved under 'Gemini original'."
+                    title="After the call, the recording was re-transcribed with Deepgram for a more accurate caller transcript. What the AI heard during the call is kept under 'Live transcript'."
                   >
                     · re-transcribed (Deepgram)
                   </span>
@@ -746,11 +747,11 @@ export function CallDetail({ call: initialCall }: { call: Call }) {
                   {call.raw_transcript && (
                     <Button
                       size="sm"
-                      variant={transcriptMode === "gemini" ? "default" : "outline"}
-                      onClick={() => setTranscriptMode("gemini")}
-                      title="Gemini's original transcript, before re-transcription. Kept for comparison — the caller side may be less accurate here."
+                      variant={transcriptMode === "live" ? "default" : "outline"}
+                      onClick={() => setTranscriptMode("live")}
+                      title="What the AI heard during the call. The re-transcribed version comes from the recording, so the caller's words may be more accurate there."
                     >
-                      Gemini original
+                      Live transcript
                     </Button>
                   )}
                 </div>
@@ -774,7 +775,7 @@ export function CallDetail({ call: initialCall }: { call: Call }) {
                     ))}
                   </div>
                 </ScrollArea>
-              ) : transcriptMode === "gemini" && call.raw_transcript ? (
+              ) : transcriptMode === "live" && call.raw_transcript ? (
                 <ScrollArea className="h-[400px]">
                   <pre className="whitespace-pre-wrap font-sans text-sm">
                     {call.raw_transcript}
