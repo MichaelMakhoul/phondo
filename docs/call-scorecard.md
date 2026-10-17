@@ -50,7 +50,7 @@ Most of these failures are conversation logic, so they don't need a phone call t
 
 ## Simulated calls (no phone), 17 Oct
 
-The same simulator and scoring on both sides, three runs per scripted caller. "Before" is the build you phoned (F2–F4): six callers, 18 calls. "After" is commit 78571f4: seven callers, 21 calls (the seventh, added after F4, cancels a booking from an earlier call). "After" adds the fixes for the four root causes above, plus three more the simulator and F4 found:
+The same simulator and scoring on both sides, three runs per scripted caller. "Before" is the build you phoned (F2–F4): six callers, 18 calls. "After" is commit 11728a1: seven callers, 21 calls (the seventh, added after F4, cancels a booking from an earlier call). "After" adds the fixes for the four root causes above, plus three more the simulator and F4 found:
 - it moves and cancels its own bookings without asking your name again;
 - it doesn't hang up until you've said you're done;
 - after a plain cancel, it no longer calls the call an unfinished booking.
@@ -66,9 +66,9 @@ A cancel now takes one "yes": the AI reads the booking back once, and the system
 | 6 | Moves a booking when asked | 3/3 | ✅ 3/3 | — | — |
 | 7 | Cancels with at most 2 confirmations | 1/3 | ✅ 6/6 | — | ❌ **3 confirmations and asked for the phone** |
 | 8 | Never says anything false about bookings | 13/18 | ✅ 21/21 | ✅ | ❌ **"a booking was started but never completed"** |
-| 9 | Remembers what it did earlier in the call | 3/7 | ✅ 5/5 | ❌ **asked your name again** ("I just told you") | ✅ |
-| 10 | Answers "Sorry?" | 5/5 | ✅ 4/4 |
-| 11 | Short replies, no repeating itself | 3/18 | ⚠️ 7/21 | ⚠️ asked for a time twice | ⚠️ re-confirmations |
+| 9 | Remembers what it did earlier in the call | 3/7 | ✅ 4/4 | ❌ **asked your name again** ("I just told you") | ✅ |
+| 10 | Answers "Sorry?" | 5/5 | ✅ 5/5 |
+| 11 | Short replies, no repeating itself | 3/18 | ⚠️ 11/21 | ⚠️ asked for a time twice | ⚠️ re-confirmations |
 | 14 | Ends properly | 18/18 | ✅ 21/21 |
 | | **Passing on every run** | **4 / 11** | **10 / 11** |
 
