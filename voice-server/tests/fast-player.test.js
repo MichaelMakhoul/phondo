@@ -457,3 +457,70 @@ test("a failing sendJson surfaces to the caller, and the audio after it continue
   player.push(bytes(160, 200));
   assert.deepEqual(frames(sent), [bytes(160, 160)], "the next frame starts right after the lost one, with no replay of bytes 0..99");
 });
+
+// ── remainingMs() (SCRUM-594 R14′) ──────────────────────────────────────────
+// How much of the audio sent since the player was last idle Twilio has still to
+// play: bytes/8 − (now − the first frame), floored at 0. The turn engine uses it to
+// tell the tail of the AI's question from the start of its reply.
+
+test("remainingMs: null until a frame goes out since idle; then bytes/8 − the time since the first frame", () => {
+  const { player, clock } = makePlayer({ start: 10_000 });
+  assert.equal(player.remainingMs(clock.now), null, "nothing sent");
+  player.push(bytes(100)); // held: less than a frame, nothing on the wire
+  assert.equal(player.remainingMs(clock.now), null, "nothing on the wire yet");
+  player.push(bytes(1_500, 100)); // 1600 bytes = 10 frames = 200 ms, sent at 10 000
+  assert.equal(player.remainingMs(clock.now), 200);
+  clock.advance(50);
+  assert.equal(player.remainingMs(clock.now), 150);
+  player.push(bytes(800)); // 100 ms more, queued behind it
+  assert.equal(player.remainingMs(clock.now), 250);
+  assert.equal(player.remainingMs(), 250, "the player's own clock when no time is given");
+  clock.advance(10_000);
+  assert.equal(player.remainingMs(clock.now), 0, "floored at 0, never negative");
+});
+
+test("remainingMs: the tail an endUtterance flushes counts once it is sent", () => {
+  const { player, clock } = makePlayer();
+  player.push(bytes(240)); // one frame out, 80 bytes held
+  assert.equal(player.remainingMs(clock.now), 20);
+  player.endUtterance(); // the 80-byte tail goes out
+  assert.equal(player.remainingMs(clock.now), 30);
+});
+
+test("remainingMs: back to null once the player goes idle (its last mark echoed), and a fresh count after it", () => {
+  const { player, clock } = makePlayer({ start: 0 });
+  player.push(bytes(1_600)); // 200 ms
+  const first = player.endUtterance();
+  player.push(bytes(800)); // 100 ms
+  const second = player.endUtterance();
+  clock.advance(250);
+  player.onMark(first);
+  assert.equal(player.remainingMs(clock.now), 50, "the second is still playing");
+  clock.advance(50);
+  player.onMark(second);
+  assert.equal(player.remainingMs(clock.now), null, "idle");
+  clock.advance(1_000);
+  player.push(bytes(800));
+  assert.equal(player.remainingMs(clock.now), 100, "counted from the next frame, nothing carried over");
+});
+
+test("remainingMs: null after stop() (a barge-in), even with audio still queued", () => {
+  const { player, clock } = makePlayer();
+  player.push(bytes(16_000)); // 2 s
+  player.endUtterance();
+  assert.equal(player.remainingMs(clock.now), 2_000);
+  player.stop();
+  assert.equal(player.remainingMs(clock.now), null);
+  player.push(bytes(160));
+  assert.equal(player.remainingMs(clock.now), 20, "a fresh count after the stop");
+});
+
+test("remainingMs: audio that ran dry and resumed is counted from the late frames (never below bytes/8 − elapsed)", () => {
+  const { player, clock } = makePlayer({ start: 0 });
+  player.push(bytes(800)); // 100 ms at 0: played out by 100
+  clock.advance(500); // the next sentence is late: Twilio played silence from 100 to 500
+  player.push(bytes(16_000)); // 2000 ms more, playing from 500 to 2500
+  clock.advance(100);
+  // bytes/8 − elapsed would say 2100 − 600 = 1500, as if there had been no gap.
+  assert.equal(player.remainingMs(clock.now), 1_900);
+});

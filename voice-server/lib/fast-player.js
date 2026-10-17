@@ -38,6 +38,7 @@ const EMPTY = Buffer.alloc(0);
  * @property {(capMs?: number) => Promise<void>} whenIdle
  * @property {() => void} stop - barge-in: Twilio `clear`, drop everything queued
  * @property {() => { firstAudioAt: number|null, bytesSent: number }} stats
+ * @property {(at?: number) => number|null} remainingMs - ms of the audio sent since the player was last idle that Twilio has still to play (an estimate, never negative); null when nothing was sent since then. `at` defaults to the clock
  */
 
 /**
@@ -66,6 +67,14 @@ function createFastPlayer(options) {
   /** Set by endUtterance(); the next push starts a fresh utterance (so stats() stays readable after the mark). */
   let utteranceEnded = false;
   let waiters = /** @type {Array<{ resolve: () => void, timer: ReturnType<typeof setTimeout> }>} */ ([]);
+  /**
+   * The audio sent since the player was last idle (or stopped), for remainingMs()
+   * (SCRUM-594 R14′): bytes on the wire, and when all of it will have played. Twilio
+   * plays the frames back to back from the first one, so endsAt is that frame's time
+   * + bytes/8 unless the audio ran dry in between (a late sentence): then the late
+   * frames play later, and endsAt moves with them.
+   */
+  let sinceIdle = { bytes: 0, endsAt: 0 };
 
   function isPlaying() {
     return outstanding.length > 0 || unmarkedBytes > 0;
@@ -90,7 +99,10 @@ function createFastPlayer(options) {
   function sendFrame(frame) {
     sendJson({ event: "media", streamSid, media: { payload: frame.toString("base64") } });
     utterance.bytesSent += frame.length;
-    playbackEndsAt = Math.max(playbackEndsAt, now()) + frame.length / BYTES_PER_MS;
+    const t = now();
+    playbackEndsAt = Math.max(playbackEndsAt, t) + frame.length / BYTES_PER_MS;
+    sinceIdle.bytes += frame.length;
+    sinceIdle.endsAt = Math.max(sinceIdle.endsAt, t) + frame.length / BYTES_PER_MS;
   }
 
   return {
@@ -135,7 +147,10 @@ function createFastPlayer(options) {
       // Twilio plays in order, so an echo also proves every earlier mark has
       // played: retire those too, or one lost echo would wedge isPlaying().
       outstanding.splice(0, index + 1);
-      if (!isPlaying()) releaseAll();
+      if (!isPlaying()) {
+        sinceIdle = { bytes: 0, endsAt: 0 };
+        releaseAll();
+      }
       return true;
     },
 
@@ -160,6 +175,7 @@ function createFastPlayer(options) {
       playbackEndsAt = 0;
       utterance = { firstAudioAt: null, bytesSent: 0 };
       utteranceEnded = false;
+      sinceIdle = { bytes: 0, endsAt: 0 };
       releaseAll();
       // Always sent, even when nothing looks queued: Twilio may still hold audio.
       sendJson({ event: "clear", streamSid });
@@ -167,6 +183,11 @@ function createFastPlayer(options) {
 
     stats() {
       return { firstAudioAt: utterance.firstAudioAt, bytesSent: utterance.bytesSent };
+    },
+
+    remainingMs(at = now()) {
+      if (sinceIdle.bytes === 0) return null;
+      return Math.max(0, sinceIdle.endsAt - at);
     },
   };
 }

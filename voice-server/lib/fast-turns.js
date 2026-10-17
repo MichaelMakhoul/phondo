@@ -104,11 +104,14 @@
  *     interrupt word or not: "No" is how "No worries" starts. It is judged at its EndOfTurn.
  *     Three words or more barge in early, exactly as above.
  *   - EndOfTurn, in this order:
- *       - while the AI is speaking and its text ends with a question (endsWithQuestion), a
+ *       - while the AI is speaking, its text ends with a question (endsWithQuestion) and at
+ *         most QUESTION_TAIL_MS of its audio is still to play (aiRemainingMs, a number), a
  *         final of ECHO_MAX_WORDS words or fewer is the answer ("…Shall I book 10 AM?"
- *         "Yes"; R14), backchannel words and content alike: never dropped, it goes to
+ *         "Yes"; R14′), backchannel words and content alike: never dropped, it goes to
  *         rule 6's answer. A backchannel does not barge in ("No worries" never cuts the
- *         question); an interrupt word does, as always.
+ *         question); an interrupt word does, as always. Earlier in the reply, or when what
+ *         is still to play is unknown (REST audio), the rules below apply: a question the
+ *         caller has not heard yet is not what an "okay" answers.
  *       - while the AI is speaking OR processing, a backchannel (isBackchannel: "okay",
  *         "thanks", "no worries" ..., two words or fewer) is no turn: dropEcho(transcript,
  *         "backchannel"), then cancelSpeculation("backchannel"). On the structured path too.
@@ -132,6 +135,14 @@
  * the classic path stays untouched; tests/fast-turns.test.js fails if the two drift.
  */
 const INTERRUPT_RE = /^(stop|wait|hold on|no|cancel|nevermind|never mind|excuse me|hello|hey)\b/i;
+
+/**
+ * R14′: a short final answers the AI's question only in its tail, while at most this
+ * much of the AI's audio is still to play (getState().aiRemainingMs). Earlier, it is
+ * a backchannel over the reply's first sentences, not an answer to a question the
+ * caller has not heard yet.
+ */
+const QUESTION_TAIL_MS = 2000;
 
 /**
  * The classic echo rule drops a final of this many words or fewer while the AI speaks.
@@ -188,6 +199,7 @@ const SPEECH_PIECE = /(\d+):(\d{2})|\d+|\p{L}+/gu;
  * @property {boolean} processing - the AI is still working on an earlier turn
  * @property {string} [expectedInputType] - "general" | "phone" | "email" | "name" | "address" | "date_time"; missing means general
  * @property {string} [aiSpeakingText] - every word sent to TTS since the player last went idle; missing or empty switches the echo filter off
+ * @property {number|null} [aiRemainingMs] - ms of the AI's audio still to play (the player's estimate); null or missing when unknown (REST audio)
  *
  * @typedef {Object} FastTurnActions
  * @property {(transcript: string, turnIndex: number) => void} [speculate] - start a draft reply (not needed when speculation is off)
@@ -360,6 +372,16 @@ function endsWithQuestion(text) {
 }
 
 /**
+ * R14′: is the AI's audio in its last QUESTION_TAIL_MS? Unknown (null, missing: REST
+ * audio) is not.
+ * @param {unknown} remainingMs - getState().aiRemainingMs
+ * @returns {boolean}
+ */
+function inQuestionTail(remainingMs) {
+  return typeof remainingMs === "number" && remainingMs <= QUESTION_TAIL_MS;
+}
+
+/**
  * CallSession treats a missing type as "general" (setExpectedInputType), and so does this.
  * @param {string | undefined} type
  * @returns {boolean}
@@ -469,10 +491,11 @@ function createFastTurnEngine(options) {
     lastEndedTurn = turnIndex;
     let mayBargeIn = true;
     if (fastPolicy) {
-      if (state.aiSpeaking && wordCount(text) <= ECHO_MAX_WORDS && endsWithQuestion(state.aiSpeakingText)) {
-        // R14: the answer to the question the AI is still asking ("…Shall I book 10 AM?"
-        // "Yes"). Answered, never dropped: the session holds the turn until the AI has
-        // finished. A backchannel never cuts the question; an interrupt word still does.
+      if (state.aiSpeaking && wordCount(text) <= ECHO_MAX_WORDS && endsWithQuestion(state.aiSpeakingText) && inQuestionTail(state.aiRemainingMs)) {
+        // R14′: the answer to the question the AI is still asking ("…Shall I book 10 AM?"
+        // "Yes"), heard in its tail. Answered, never dropped: the session holds the turn
+        // until the AI has finished. A backchannel never cuts the question; an interrupt
+        // word still does.
         mayBargeIn = !isBackchannel(text);
       } else {
         if ((state.aiSpeaking || state.processing) && isBackchannel(text)) {
@@ -543,4 +566,4 @@ function createFastTurnEngine(options) {
   return { onTurnInfo, reset };
 }
 
-module.exports = { createFastTurnEngine, INTERRUPT_RE, wordCount, isLikelyEcho, speechTokens, isBackchannel, endsWithQuestion };
+module.exports = { createFastTurnEngine, INTERRUPT_RE, wordCount, isLikelyEcho, speechTokens, isBackchannel, endsWithQuestion, QUESTION_TAIL_MS };

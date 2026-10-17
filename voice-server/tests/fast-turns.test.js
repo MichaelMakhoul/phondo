@@ -1485,8 +1485,9 @@ describe("isBackchannel", () => {
 // 8. The "fast-path" policy: an answer at the end of a question (fix round 2, R14)
 // ---------------------------------------------------------------------------
 
-// The AI is still saying its question when the caller answers it.
-const ASKING = { aiSpeaking: true, aiSpeakingText: "Sure, Tuesday works. Shall I book 10 AM?" };
+// The AI is still saying its question when the caller answers it: the reply ends in a
+// question, and only its tail (1.2 s) is still to play (R14′).
+const ASKING = { aiSpeaking: true, aiSpeakingText: "Sure, Tuesday works. Shall I book 10 AM?", aiRemainingMs: 1_200 };
 
 describe('the "fast-path" policy: a short final while the AI asks a question is its answer (R14)', () => {
   it('"Yes" (and other backchannel words) over "…Shall I book 10 AM?" is committed: not dropped, not a barge-in', () => {
@@ -1507,7 +1508,7 @@ describe('the "fast-path" policy: a short final while the AI asks a question is 
 
   it("the question mark counts past trailing whitespace and closing quotes", () => {
     for (const text of ["Shall I book 10 AM?  ", 'She asked "shall I book 10 AM?"', "Shall I book 10 AM?' \n", "Shall I book 10 AM?\u201D", "Shall I book 10 AM?\u2019", "Shall I book 10 AM?\u00BB"]) {
-      const h = FAST({ aiSpeaking: true, aiSpeakingText: text });
+      const h = FAST({ aiSpeaking: true, aiSpeakingText: text, aiRemainingMs: 1_200 });
       h.feed(ev("EndOfTurn", 0, "Yes."));
       assert.deepEqual(h.calls, [["commit", "Yes.", 0, "model"]], JSON.stringify(text));
     }
@@ -1515,14 +1516,14 @@ describe('the "fast-path" policy: a short final while the AI asks a question is 
 
   it('"Okay" over a statement is still dropped (R12a′), and so is one after a question the AI has gone past', () => {
     for (const text of ["One moment, let me check that.", "Is Tuesday good? Let me check.", "Booked for 10 AM!", ""]) {
-      const h = FAST({ aiSpeaking: true, aiSpeakingText: text });
+      const h = FAST({ aiSpeaking: true, aiSpeakingText: text, aiRemainingMs: 1_200 });
       h.feed(ev("EndOfTurn", 0, "Okay."));
       assert.deepEqual(h.calls, [["dropEcho", "Okay.", "backchannel"], ["cancelSpeculation", "backchannel"]], JSON.stringify(text));
     }
   });
 
   it('"Yes" while processing (the AI not speaking) is still dropped, whatever the text', () => {
-    const h = FAST({ processing: true, aiSpeakingText: "Shall I book 10 AM?" });
+    const h = FAST({ processing: true, aiSpeakingText: "Shall I book 10 AM?", aiRemainingMs: 1_200 });
     h.feed(ev("EndOfTurn", 0, "Yes."));
     assert.deepEqual(h.calls, [["dropEcho", "Yes.", "backchannel"], ["cancelSpeculation", "backchannel"]]);
   });
@@ -1578,5 +1579,59 @@ describe("endsWithQuestion", () => {
     for (const text of ["", "   ", "Booked.", "Is it Tuesday? Let me check.", "AM?!", "AM? (ten)", "AM\u201D", undefined, null, 42]) {
       assert.equal(endsWithQuestion(text), false, JSON.stringify(text));
     }
+  });
+});
+
+describe('the "fast-path" policy: the answer must land in the tail of the question (R14′)', () => {
+  const REPLY = "We have Tuesday at ten or Wednesday at two. Which suits you better?";
+  const DROPPED = (said) => [["dropEcho", said, "backchannel"], ["cancelSpeculation", "backchannel"]];
+
+  it('"Okay" over the first sentence of a reply that ends in a question (4 s still to play) is dropped', () => {
+    const h = FAST({ aiSpeaking: true, aiSpeakingText: REPLY, aiRemainingMs: 4_000 });
+    h.feed(ev("StartOfTurn", 0, "Okay"), ev("EndOfTurn", 0, "Okay."));
+    assert.deepEqual(h.calls, DROPPED("Okay."));
+  });
+
+  it('"Yes" over its tail (1.2 s still to play) is committed', () => {
+    const h = FAST({ aiSpeaking: true, aiSpeakingText: REPLY, aiRemainingMs: 1_200 });
+    h.feed(ev("StartOfTurn", 0, "Yes"), ev("EndOfTurn", 0, "Yes."));
+    assert.deepEqual(h.calls, [["commit", "Yes.", 0, "model"]]);
+  });
+
+  it('"Yes" while what is still to play is unknown (REST audio: the greeting, the disclosure) or large is dropped', () => {
+    const greeting = "This call is recorded. Thanks for calling Copperline Plumbing, how can I help?";
+    for (const aiRemainingMs of [null, undefined, Number.NaN, "1200", 6_000]) {
+      const h = FAST({ aiSpeaking: true, aiSpeakingText: greeting, aiRemainingMs });
+      h.feed(ev("EndOfTurn", 0, "Yes."));
+      assert.deepEqual(h.calls, DROPPED("Yes."), String(aiRemainingMs));
+    }
+  });
+
+  it("the tail is 2 s: exactly 2000 ms still to play is accepted, 2001 is dropped", () => {
+    const at = FAST({ aiSpeaking: true, aiSpeakingText: REPLY, aiRemainingMs: 2_000 });
+    at.feed(ev("EndOfTurn", 0, "Yes."));
+    assert.deepEqual(at.calls, [["commit", "Yes.", 0, "model"]]);
+    const past = FAST({ aiSpeaking: true, aiSpeakingText: REPLY, aiRemainingMs: 2_001 });
+    past.feed(ev("EndOfTurn", 0, "Yes."));
+    assert.deepEqual(past.calls, DROPPED("Yes."));
+    const zero = FAST({ aiSpeaking: true, aiSpeakingText: REPLY, aiRemainingMs: 0 });
+    zero.feed(ev("EndOfTurn", 0, "Yes."));
+    assert.deepEqual(zero.calls, [["commit", "Yes.", 0, "model"]], "its last frame is out and playing");
+  });
+
+  it("interrupt words are unchanged, in the tail or not: barge-in at the end of the turn, then commit", () => {
+    for (const aiRemainingMs of [1_200, 4_000, null]) {
+      for (const said of INTERRUPTS) {
+        const h = FAST({ aiSpeaking: true, aiSpeakingText: REPLY, aiRemainingMs });
+        h.feed(ev("StartOfTurn", 0, said), ev("EndOfTurn", 0, said));
+        assert.deepEqual(h.calls, [["bargeIn"], ["commit", said, 0, "model"]], `${said} at ${aiRemainingMs}`);
+      }
+    }
+  });
+
+  it("content words outside the tail are answered as before (R12a′): only backchannels are dropped there", () => {
+    const h = FAST({ aiSpeaking: true, aiSpeakingText: REPLY, aiRemainingMs: 4_000 });
+    h.feed(ev("EndOfTurn", 0, "Tuesday."));
+    assert.deepEqual(h.calls, [["commit", "Tuesday.", 0, "model"]]);
   });
 });

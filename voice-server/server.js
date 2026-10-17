@@ -4858,7 +4858,9 @@ function fallBackToNova(session, twilioWs, openClassicStt, reason, err) {
 /**
  * What the turn engine reads on every Flux event (spec 4.6). aiSpeaking is the
  * player OR session.isSpeaking, which covers the REST greeting and disclosure;
- * processing never counts a draft.
+ * processing never counts a draft. aiRemainingMs (R14′) is the player's audio
+ * still to play; REST audio is not in the player, so while it plays that is
+ * unknown (null).
  * @param {CallSession} session
  * @returns {import("./lib/fast-turns").FastTurnState}
  */
@@ -4868,6 +4870,7 @@ function fastTurnState(session) {
     processing: session.isProcessing,
     expectedInputType: session._expectedInputType,
     aiSpeakingText: session.fastState?.speakingText ?? "",
+    aiRemainingMs: fastRestPlaying(session) ? null : (session.fastPlayer?.remainingMs(Date.now()) ?? null),
   };
 }
 

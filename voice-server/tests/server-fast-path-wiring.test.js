@@ -809,7 +809,7 @@ describe("SCRUM-594 4.8.6 + addendum: audio, marks, isSpeaking and the echo filt
     s.isSpeaking = false;
     s.isProcessing = true;
     s.setExpectedInputType("phone");
-    assert.deepEqual(h.engines[0].getState(), { aiSpeaking: false, processing: true, expectedInputType: "phone", aiSpeakingText: "" });
+    assert.deepEqual(h.engines[0].getState(), { aiSpeaking: false, processing: true, expectedInputType: "phone", aiSpeakingText: "", aiRemainingMs: null });
     h.closeFastPath(s);
   });
 
@@ -2274,6 +2274,46 @@ describe("SCRUM-594 fix round 2, R14: an answer at the end of a question is kept
     h.fluxOpens();
     await replyPlaying(h, s, "Tuesday works, let me check the times.");
     h.turn("EndOfTurn", 0, "Okay.");
+    await settle();
+    assert.equal(h.llmCalls.length, 0);
+    assert.ok(h.lines.some((l) => l.startsWith("log| [STT] Dropped (backchannel while the AI is busy)")), h.lines.join("\n"));
+    h.closeFastPath(s);
+  });
+});
+
+describe("SCRUM-594 fix round 3, R14′: the answer must land in the tail of the AI's question (run for real)", () => {
+  it("getState().aiRemainingMs: the player's audio still to play; null when nothing was sent since idle, and while REST audio plays", async () => {
+    const h = makeFast();
+    const s = h.start(makeSession());
+    assert.equal(h.engines[0].getState().aiRemainingMs, null, "nothing played yet");
+    await h.sendTTS(s, h.twilioWs, "Shall I book 10 AM?");
+    h.audio(2); // 2 × 320 bytes = 80 ms
+    const remaining = h.engines[0].getState().aiRemainingMs;
+    assert.ok(typeof remaining === "number" && remaining > 0 && remaining <= 80, String(remaining));
+    h.noteFastRestSpeech(s, "Thanks for calling, how can I help?", 3_000); // REST audio is not in the player
+    assert.equal(h.engines[0].getState().aiRemainingMs, null);
+    h.closeFastPath(s);
+  });
+
+  it('"Okay" over the first sentence of a long reply that ends in a question is dropped (its question is 2.8 s away)', async () => {
+    const h = makeFast();
+    const s = h.start(makeSession());
+    h.fluxOpens();
+    await h.sendTTS(s, h.twilioWs, "We have Tuesday at ten or Wednesday at two, and Friday morning too. Which suits you better?");
+    h.audio(70); // 70 × 320 bytes = 2800 ms of audio sent
+    h.turn("EndOfTurn", 0, "Okay.");
+    await settle();
+    assert.equal(h.llmCalls.length, 0);
+    assert.ok(h.lines.some((l) => l.startsWith("log| [STT] Dropped (backchannel while the AI is busy)")), h.lines.join("\n"));
+    h.closeFastPath(s);
+  });
+
+  it('"Yes" over the REST greeting\'s question is dropped: what is still to play is unknown there', async () => {
+    const h = makeFast();
+    const s = h.start(makeSession());
+    h.fluxOpens();
+    h.noteFastRestSpeech(s, "Thanks for calling Copperline Plumbing, how can I help?", 3_000);
+    h.turn("EndOfTurn", 0, "Yes.");
     await settle();
     assert.equal(h.llmCalls.length, 0);
     assert.ok(h.lines.some((l) => l.startsWith("log| [STT] Dropped (backchannel while the AI is busy)")), h.lines.join("\n"));
