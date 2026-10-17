@@ -204,3 +204,56 @@ The demo line should be answered by Deepgram hearing and Claude Haiku 5.5 thinki
 2. **Bench** (scratchpad, not committed): run the real Flux client, turn engine, speculation, `streamClaudeResponse` and Aura stream against the live APIs, using synthetic phone clips (`scratchpad/hearing-ab/aura-2-hyperion-en/u*.ulaw`). Report the median and p90 from the last speech frame to the first audio byte handed to the player.
 3. The 4-lens `/review-and-fix` gate.
 4. **Owner phone test** with `DEMO_LINE_PIPELINE=classic-fast`: spell the surname, ask for "ten AM", a quick "yes", a barge-in, and a goodbye that hangs up. Then compare `[FastTurn]` lines with Gemini calls.
+
+## 7. Files
+
+Every file this branch adds or changes against `origin/develop` (`git diff --name-only origin/develop...HEAD`; 38 files at the docs commit). The operator's guide is the "Fast classic pipeline (SCRUM-594)" section of `docs/runbooks/voice-server.md`. Paths are repo-relative; the bracketed numbers point at the section of this spec that describes the file.
+
+### New modules
+- `voice-server/services/flux-stt.js`: the Deepgram Flux STT client (`openFluxStream`) and the `FLUX_*` env parsing (`fluxConfigFromEnv`) [4.1].
+- `voice-server/services/aura-stream.js`: the Aura-2 WebSocket TTS client (`openAuraStream`): `speak`, `flush`, `clear` and `close`, the flush budget and the `Clear` backstop [4.2].
+- `voice-server/services/deepgram-ws-common.js`: what the two clients share: the AU default host, the ping keepalive, the loopback-only plaintext rule, the callback guard and the dead-handle helper.
+- `voice-server/lib/fast-player.js`: re-frames Aura audio into 20 ms Twilio frames and sends it at once; tracks playback through Twilio marks (`isPlaying`, `whenIdle`, `stop`, `remainingMs`) [4.3].
+- `voice-server/lib/fast-turns.js`: the pure Flux turn engine: drafts, barge-in, backchannel and echo drops, structured input, and the answer at the tail of a question [4.6].
+- `voice-server/lib/speculative-reply.js`: the silent draft reply started on `EagerEndOfTurn`, then adopted on the matching `EndOfTurn` or aborted [4.5].
+- `voice-server/lib/end-call-guard.js`: the SCRUM-373 `end_call` booking guard in shared form, for the classic hang-up [4.7].
+
+### Modified modules
+- `voice-server/server.js`: the `DEMO_LINE_PIPELINE` routing at pipeline selection [3]; the "Fast classic pipeline" section (start-up, the Flux and Aura fallbacks and their watchdogs, turn actions, barge-in, the `[FastTurn]` and `[FastCall]` lines, cleanup); fast routing in `sendTTS`, `sendClear` and the mark handler; the fast turn in `handleUserSpeech`; the classic `end_call` hang-up; `metadata.pipeline` and `metadata.fastPath` [4.7, 4.8].
+- `voice-server/call-session.js`: the fast-path session fields and typedefs (`fastPath`, `fastPlayer`, `fastTts`, `fastTurns`, `fastState`, `currentTurn`, `speculation`, `fastStats`, `effectivePipeline`, `awaitPlaybackEnd`, `carriedFastPath`).
+- `voice-server/lib/pipeline-routing.js`: `resolveCallPipeline`, `readDemoLinePipeline` and `fastPathKeysPresent`: the `DEMO_LINE_PIPELINE` switch, including the fall back to the global pipeline when `classic-fast` lacks its keys [3].
+- `voice-server/lib/call-logger.js`: `completeCallRecord` merges `pipeline` and `fastPath` into `calls.metadata`.
+- `voice-server/lib/pending-transfers.js`: a transferred call keeps its first leg's fast-path summary (`finishTransferredCall`).
+- `voice-server/lib/session-limits.js`: `DEMO_MAX_CALL_MINUTES` (cherry-picked from SCRUM-593, d2b58d5): the demo call limit is adjustable, default 3 minutes. Not part of the feature; it rides along so phone tests are not cut off mid-booking.
+- `voice-server/services/claude-chat.js`: `chunking: "clause"` for `streamClaudeResponse` (first chunk at a clause boundary, an abbreviation guard, the buffered tail spoken before `tool_calls`) and a retry back-off that ends when the caller's signal aborts [4.4].
+- `voice-server/services/deepgram-stt.js`: exports `buildKeytermsParam`, and gives it `{ weights: false }` for the plain keyterms Flux wants.
+- `voice-server/services/deepgram-tts.js`: `synthesizeSpeech` takes a `host` (the fast path passes the AU host for the greeting and disclosure).
+
+### Tests
+New:
+- `voice-server/tests/flux-stt.test.js`: the Flux client against a fake Deepgram socket: URL, events, errors, close semantics, keepalive, env parsing.
+- `voice-server/tests/aura-stream.test.js`: the Aura client against a fake socket: only well-formed messages, the flush budget, `Clear` and its backstop, text splitting.
+- `voice-server/tests/deepgram-ws-common.test.js`: the shared plumbing's contract.
+- `voice-server/tests/deepgram-stt.keyterms.test.js`: Nova keyterms byte-identical to before; Flux keyterms plain and de-duplicated.
+- `voice-server/tests/fast-player.test.js`: framing, marks, `whenIdle`, `stop` and `remainingMs`.
+- `voice-server/tests/fast-turns.test.js`: the turn rules as a table, the echo filter, recorded Flux streams replayed, purity.
+- `voice-server/tests/speculative-reply.test.js`: drafts over a mocked Anthropic stream: adopt, abort, the deadline, replay.
+- `voice-server/tests/claude-chat-clause.test.js`: clause chunking, plus a differential test that the default mode is unchanged.
+- `voice-server/tests/anthropic-sse-helpers.js`: a shared helper, not a `*.test.js` file: Anthropic SSE builders and fake `fetch`.
+- `voice-server/tests/end-call-guard.test.js`: the guard's verdicts, the one-nudge rule, the audit entry, and parity with the Gemini inline guard.
+- `voice-server/tests/server-classic-end-call-wiring.test.js`: the real `handleUserSpeech` text against stubs: an allowed `end_call` closes the line after playback, a blocked one nudges.
+- `voice-server/tests/server-fast-path-wiring.test.js`: the fast path's wiring in `server.js`, as source pins and the real text run against fakes (start-up, fallbacks, barge-in, drafts, watchdogs, the disclosure, latency logs, cleanup).
+- `voice-server/tests/server-fast-routing-wiring.test.js`: the pipeline-selection site and the classic block run for real: the switch, owner calls untouched, `metadata.pipeline`.
+
+Changed:
+- `voice-server/tests/call-logger-metadata.test.js`: `pipeline` and `fastPath` merge into `calls.metadata`, and null writes nothing.
+- `voice-server/tests/pending-transfers-owner-auth.test.js`: the first leg's fast-path summary survives a transfer.
+- `voice-server/tests/pipeline-routing.test.js`: `resolveCallPipeline` and `readDemoLinePipeline`: the switch, owner calls, language, missing keys.
+- `voice-server/tests/server-owner-mode-wiring.test.js`: the harness follows the new pipeline-selection and classic-start code, with guards that a classic call never reaches the fast path.
+- `voice-server/tests/session-limits.test.js`: `DEMO_MAX_CALL_MINUTES` parsing.
+
+### Docs and config
+- `docs/superpowers/specs/2026-10-17-fast-classic-pipeline-design.md`: this spec.
+- `docs/superpowers/plans/2026-10-17-fast-classic-pipeline.md`: the implementation plan.
+- `docs/runbooks/voice-server.md`: the "Fast classic pipeline (SCRUM-594)" section (enable and kill switch, requirements, turn-taking, fallbacks, log lines, phone-test comparison, privacy), and pointers from the pipelines list, the error-logged alert and the kill-switch table.
+- `voice-server/.env.example`: `DEMO_LINE_PIPELINE`, `FAST_DEEPGRAM_HOST`, `FLUX_EOT_THRESHOLD`, `FLUX_EAGER_EOT_THRESHOLD`, `FLUX_EOT_TIMEOUT_MS` and `FAST_LLM_MODEL` (and `DEMO_MAX_CALL_MINUTES`, with the cherry-pick).
