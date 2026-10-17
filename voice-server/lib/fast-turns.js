@@ -104,6 +104,11 @@
  *     interrupt word or not: "No" is how "No worries" starts. It is judged at its EndOfTurn.
  *     Three words or more barge in early, exactly as above.
  *   - EndOfTurn, in this order:
+ *       - while the AI is speaking and its text ends with a question (endsWithQuestion), a
+ *         final of ECHO_MAX_WORDS words or fewer is the answer ("…Shall I book 10 AM?"
+ *         "Yes"; R14), backchannel words and content alike: never dropped, it goes to
+ *         rule 6's answer. A backchannel does not barge in ("No worries" never cuts the
+ *         question); an interrupt word does, as always.
  *       - while the AI is speaking OR processing, a backchannel (isBackchannel: "okay",
  *         "thanks", "no worries" ..., two words or fewer) is no turn: dropEcho(transcript,
  *         "backchannel"), then cancelSpeculation("backchannel"). On the structured path too.
@@ -345,6 +350,16 @@ function isBackchannel(text) {
 }
 
 /**
+ * Does the AI's text end with a question ("…Shall I book 10 AM?")? Trailing whitespace
+ * and closing quotes are skipped; only a question mark counts ("…AM?!" does not).
+ * @param {unknown} text
+ * @returns {boolean}
+ */
+function endsWithQuestion(text) {
+  return typeof text === "string" && text.replace(/["'\u201D\u2019\u00BB\s]+$/u, "").endsWith("?");
+}
+
+/**
  * CallSession treats a missing type as "general" (setExpectedInputType), and so does this.
  * @param {string | undefined} type
  * @returns {boolean}
@@ -368,7 +383,7 @@ function isInsubstantial(text) {
  * @param {() => FastTurnState} options.getState - the session's state, read when each event arrives
  * @param {FastTurnActions} options.actions - what the engine asks of the session
  * @param {boolean} [options.speculationEnabled] - false when Flux sends no EagerEndOfTurn (default true)
- * @param {"default"|"fast-path"} [options.policy] - "fast-path": short candidates are judged at their EndOfTurn, and backchannels and echo-like finals while the AI is busy are dropped (see the module comment); default "default"
+ * @param {"default"|"fast-path"} [options.policy] - "fast-path": short candidates are judged at their EndOfTurn, a short final while the AI asks a question is its answer, and other backchannels and echo-like finals while the AI is busy are dropped (see the module comment); default "default"
  * @returns {FastTurnEngine}
  */
 function createFastTurnEngine(options) {
@@ -452,16 +467,24 @@ function createFastTurnEngine(options) {
   function endTurn(turnIndex, text, trigger) {
     const state = getState();
     lastEndedTurn = turnIndex;
+    let mayBargeIn = true;
     if (fastPolicy) {
-      if ((state.aiSpeaking || state.processing) && isBackchannel(text)) {
-        actions.dropEcho(text, "backchannel");
-        cancelDraft("backchannel");
-        return;
-      }
-      if (state.aiSpeaking && isLikelyEcho(text, state.aiSpeakingText)) {
-        actions.dropEcho(text, "echo-like");
-        cancelDraft("echo");
-        return;
+      if (state.aiSpeaking && wordCount(text) <= ECHO_MAX_WORDS && endsWithQuestion(state.aiSpeakingText)) {
+        // R14: the answer to the question the AI is still asking ("…Shall I book 10 AM?"
+        // "Yes"). Answered, never dropped: the session holds the turn until the AI has
+        // finished. A backchannel never cuts the question; an interrupt word still does.
+        mayBargeIn = !isBackchannel(text);
+      } else {
+        if ((state.aiSpeaking || state.processing) && isBackchannel(text)) {
+          actions.dropEcho(text, "backchannel");
+          cancelDraft("backchannel");
+          return;
+        }
+        if (state.aiSpeaking && isLikelyEcho(text, state.aiSpeakingText)) {
+          actions.dropEcho(text, "echo-like");
+          cancelDraft("echo");
+          return;
+        }
       }
     } else if (state.aiSpeaking && isInsubstantial(text)) {
       actions.dropEcho(text);
@@ -469,7 +492,7 @@ function createFastTurnEngine(options) {
       return;
     }
     try {
-      considerBargeIn(turnIndex, text, state);
+      if (mayBargeIn) considerBargeIn(turnIndex, text, state);
     } finally {
       // Stopping the audio must never cost the caller their turn: it is answered even if bargeIn() threw
       // (the error still reaches the caller of onTurnInfo).
@@ -520,4 +543,4 @@ function createFastTurnEngine(options) {
   return { onTurnInfo, reset };
 }
 
-module.exports = { createFastTurnEngine, INTERRUPT_RE, wordCount, isLikelyEcho, speechTokens, isBackchannel };
+module.exports = { createFastTurnEngine, INTERRUPT_RE, wordCount, isLikelyEcho, speechTokens, isBackchannel, endsWithQuestion };

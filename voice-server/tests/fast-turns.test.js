@@ -25,7 +25,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const { createFastTurnEngine, INTERRUPT_RE, wordCount, isLikelyEcho, speechTokens, isBackchannel } = require("../lib/fast-turns");
+const { createFastTurnEngine, INTERRUPT_RE, wordCount, isLikelyEcho, speechTokens, isBackchannel, endsWithQuestion } = require("../lib/fast-turns");
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1477,6 +1477,106 @@ describe("isBackchannel", () => {
   it("anything with a word of content, an interrupt, or more than two words is not", () => {
     for (const said of ["Yes please.", "No.", "No, wait.", "Okay, wait", "Tuesday", "Okay thank you", "thanks so much", "Nope", "Stop", "", "  ", "okayyy"]) {
       assert.equal(isBackchannel(said), false, JSON.stringify(said));
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 8. The "fast-path" policy: an answer at the end of a question (fix round 2, R14)
+// ---------------------------------------------------------------------------
+
+// The AI is still saying its question when the caller answers it.
+const ASKING = { aiSpeaking: true, aiSpeakingText: "Sure, Tuesday works. Shall I book 10 AM?" };
+
+describe('the "fast-path" policy: a short final while the AI asks a question is its answer (R14)', () => {
+  it('"Yes" (and other backchannel words) over "…Shall I book 10 AM?" is committed: not dropped, not a barge-in', () => {
+    for (const said of ["Yes.", "Yes", "Okay.", "Yeah, sure.", "Sure.", "Perfect!"]) {
+      const h = FAST(ASKING);
+      h.feed(ev("StartOfTurn", 0, said), ev("EndOfTurn", 0, said));
+      assert.deepEqual(h.calls, [["commit", said, 0, "model"]], said);
+    }
+  });
+
+  it("content words alike: \"ten\", \"Michael\", \"Yes please\"", () => {
+    for (const said of ["Ten.", "Michael.", "Yes please.", "Ten thirty"]) {
+      const h = FAST(ASKING);
+      h.feed(ev("EndOfTurn", 0, said));
+      assert.deepEqual(h.calls, [["commit", said, 0, "model"]], said);
+    }
+  });
+
+  it("the question mark counts past trailing whitespace and closing quotes", () => {
+    for (const text of ["Shall I book 10 AM?  ", 'She asked "shall I book 10 AM?"', "Shall I book 10 AM?' \n", "Shall I book 10 AM?\u201D", "Shall I book 10 AM?\u2019", "Shall I book 10 AM?\u00BB"]) {
+      const h = FAST({ aiSpeaking: true, aiSpeakingText: text });
+      h.feed(ev("EndOfTurn", 0, "Yes."));
+      assert.deepEqual(h.calls, [["commit", "Yes.", 0, "model"]], JSON.stringify(text));
+    }
+  });
+
+  it('"Okay" over a statement is still dropped (R12a′), and so is one after a question the AI has gone past', () => {
+    for (const text of ["One moment, let me check that.", "Is Tuesday good? Let me check.", "Booked for 10 AM!", ""]) {
+      const h = FAST({ aiSpeaking: true, aiSpeakingText: text });
+      h.feed(ev("EndOfTurn", 0, "Okay."));
+      assert.deepEqual(h.calls, [["dropEcho", "Okay.", "backchannel"], ["cancelSpeculation", "backchannel"]], JSON.stringify(text));
+    }
+  });
+
+  it('"Yes" while processing (the AI not speaking) is still dropped, whatever the text', () => {
+    const h = FAST({ processing: true, aiSpeakingText: "Shall I book 10 AM?" });
+    h.feed(ev("EndOfTurn", 0, "Yes."));
+    assert.deepEqual(h.calls, [["dropEcho", "Yes.", "backchannel"], ["cancelSpeculation", "backchannel"]]);
+  });
+
+  it("an interrupt word behaves as before: barge-in at the end of its turn, then commit", () => {
+    for (const said of INTERRUPTS) {
+      const h = FAST(ASKING);
+      h.feed(ev("StartOfTurn", 0, said));
+      assert.deepEqual(h.calls, [], said);
+      h.feed(ev("EndOfTurn", 0, said));
+      assert.deepEqual(h.calls, [["bargeIn"], ["commit", said, 0, "model"]], said);
+    }
+  });
+
+  it('a backchannel that starts with "No" ("No worries") is answered, never a barge-in on the question', () => {
+    const h = FAST(ASKING);
+    h.feed(ev("StartOfTurn", 0, "No"), ev("Update", 0, "No worries"), ev("EndOfTurn", 0, "No worries."));
+    assert.deepEqual(h.calls, [["commit", "No worries.", 0, "model"]]);
+  });
+
+  it("3 or more words are judged as before: the question's own words coming back are dropped (R13), the caller's barge in", () => {
+    const echo = FAST(ASKING);
+    echo.feed(ev("EndOfTurn", 0, "Shall I book 10 AM?"));
+    assert.deepEqual(echo.calls, [["dropEcho", "Shall I book 10 AM?", "echo-like"], ["cancelSpeculation", "echo"]]);
+    const real = FAST(ASKING);
+    real.feed(ev("Update", 0, "yes book it"));
+    assert.deepEqual(real.calls, [["bargeIn"]]);
+    real.feed(ev("EndOfTurn", 0, "yes book it please"));
+    assert.deepEqual(real.calls, [["bargeIn"], ["commit", "yes book it please", 0, "model"]]);
+  });
+
+  it("on the structured path the answer is buffered", () => {
+    const h = FAST({ ...ASKING, expectedInputType: "phone" });
+    h.feed(ev("EndOfTurn", 0, "yeah"));
+    assert.deepEqual(h.calls, [["cancelSpeculation", "structured"], ["bufferStructured", "yeah"]]);
+  });
+
+  it("the default policy is unchanged: the classic echo rule still drops a short final after a question", () => {
+    const h = harness({ state: ASKING });
+    h.feed(ev("EndOfTurn", 0, "Yes."));
+    assert.deepEqual(h.calls, [["dropEcho", "Yes."], ["cancelSpeculation", "echo"]]);
+  });
+});
+
+describe("endsWithQuestion", () => {
+  it("a question mark at the end, past whitespace and closing quotes", () => {
+    for (const text of ["Shall I book 10 AM?", "  ok?  ", 'AM?"', "AM?'", "AM?\u201D", "AM?\u2019", "AM?\u00BB", "AM?\"' \n", "?"]) {
+      assert.equal(endsWithQuestion(text), true, JSON.stringify(text));
+    }
+  });
+
+  it("anything else is not", () => {
+    for (const text of ["", "   ", "Booked.", "Is it Tuesday? Let me check.", "AM?!", "AM? (ten)", "AM\u201D", undefined, null, 42]) {
+      assert.equal(endsWithQuestion(text), false, JSON.stringify(text));
     }
   });
 });

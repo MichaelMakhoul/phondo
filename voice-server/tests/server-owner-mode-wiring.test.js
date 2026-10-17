@@ -447,6 +447,7 @@ describe("SCRUM-587: pipeline selection, run for real", () => {
         // SCRUM-594: customer calls go through the real resolver; a number that
         // isn't the demo line follows VOICE_PIPELINE exactly as before.
         resolveCallPipeline,
+        fastPathKeysPresent: () => assert.fail("SCRUM-594: a number that isn't the demo line never asks about the fast path's keys"),
         calledNumber: "+61255550000",
         isDemoLineNumber: () => false,
         VOICE_PIPELINE: voicePipeline,

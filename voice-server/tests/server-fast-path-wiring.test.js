@@ -2247,3 +2247,36 @@ describe("SCRUM-594 review Minor 7: the summary survives a transfer", () => {
     assert.match(cleanup, /const fastPathSummary = s\.fastStats \? summarizeFastCall\(s\) : s\.carriedFastPath;/);
   });
 });
+
+describe("SCRUM-594 fix round 2, R14: an answer at the end of a question is kept (run for real)", () => {
+  it('"Yes" over the tail of "…Shall I book 10 AM?": nothing is cut, and it is answered once the question has played', async () => {
+    const h = makeFast({ steps: [{ sentences: ["Great, you're booked."], content: "Great, you're booked." }] });
+    const s = h.start(makeSession());
+    h.fluxOpens();
+    await replyPlaying(h, s, "Tuesday works. Shall I book 10 AM?");
+    const clears = h.twilio("clear").length;
+    h.turn("StartOfTurn", 0, "Yes");
+    h.turn("EndOfTurn", 0, "Yes.");
+    await sleep(30);
+    assert.equal(h.twilio("clear").length, clears, "the question is not cut");
+    assert.equal(h.lastAura().handle.clears, 0);
+    assert.equal(h.llmCalls.length, 0, "answered only once the question has played");
+    assert.ok(!h.lines.some((l) => l.includes("[STT] Dropped")), h.lines.join("\n"));
+    echoMarks(h, s);
+    await until(() => h.llmCalls.length === 1 && !s.isProcessing, "the answer");
+    assert.deepEqual(h.llmCalls[0].messages.at(-1), { role: "user", content: "Yes." });
+    h.closeFastPath(s);
+  });
+
+  it('"Okay" over a statement is still dropped', async () => {
+    const h = makeFast();
+    const s = h.start(makeSession());
+    h.fluxOpens();
+    await replyPlaying(h, s, "Tuesday works, let me check the times.");
+    h.turn("EndOfTurn", 0, "Okay.");
+    await settle();
+    assert.equal(h.llmCalls.length, 0);
+    assert.ok(h.lines.some((l) => l.startsWith("log| [STT] Dropped (backchannel while the AI is busy)")), h.lines.join("\n"));
+    h.closeFastPath(s);
+  });
+});

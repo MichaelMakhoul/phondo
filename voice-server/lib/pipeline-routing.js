@@ -70,6 +70,20 @@ const DEMO_LINE_PIPELINES = new Set(["classic-fast", "classic", "gemini-live"]);
 const warnedDemoLinePipelines = new Set();
 
 /**
+ * SCRUM-594 (R12c): the keys "classic-fast" cannot run without: Claude
+ * (ANTHROPIC_API_KEY) and Deepgram (DEEPGRAM_API_KEY, for Flux and Aura). An
+ * empty value counts as missing.
+ * @param {Record<string, string|undefined>} [env] - defaults to process.env, read now
+ * @returns {boolean}
+ */
+function fastPathKeysPresent(env = process.env) {
+  return Boolean(env.ANTHROPIC_API_KEY && env.DEEPGRAM_API_KEY);
+}
+
+/** The missing-key fallback is logged once per process, not once per call. */
+let fastPathKeysWarned = false;
+
+/**
  * SCRUM-594: DEMO_LINE_PIPELINE, validated. Read at CALL time (the default
  * reads the environment on every call), so tests can vary it, and setting the
  * Fly secret (which restarts the machine) needs no code change.
@@ -94,13 +108,15 @@ function readDemoLinePipeline(raw = process.env.DEMO_LINE_PIPELINE) {
  * pipeline exactly as before. Owner calls are routed by resolveOwnerPipeline()
  * and never reach this; one that does gets the global, never the switch.
  *
- * @param {{ calledNumber?: string|null, ownerMode?: boolean, language?: string|null, globalPipeline?: string, demoLinePipeline?: string|null, isDemoLine?: (calledNumber: string|null|undefined) => boolean }} [opts]
+ * @param {{ calledNumber?: string|null, ownerMode?: boolean, language?: string|null, globalPipeline?: string, demoLinePipeline?: string|null, isDemoLine?: (calledNumber: string|null|undefined) => boolean, hasFastPathKeys?: () => boolean }} [opts]
  *   calledNumber - the business line the caller dialled;
  *   ownerMode - a PIN-verified owner session;
  *   language - the assistant's language (missing means "en", the server default);
  *   globalPipeline - VOICE_PIPELINE (default: the environment's, else "classic"); any value but "gemini-live" runs classic;
  *   demoLinePipeline - DEMO_LINE_PIPELINE (default: the environment's, read at call time);
- *   isDemoLine - whether a number is the published demo line (server.js passes lib/demo-line's isDemoLineNumber; default: never)
+ *   isDemoLine - whether a number is the published demo line (server.js passes lib/demo-line's isDemoLineNumber; default: never);
+ *   hasFastPathKeys - whether "classic-fast" has its keys, asked only when the call would run it (default: fastPathKeysPresent() on the environment, read at call time).
+ *     Without them the call takes the global pipeline (R12c): the fast variant would apologise on every turn. Logged once per process; never reported to Sentry here.
  * @returns {"gemini-live"|"classic"|"classic-fast"}
  */
 function resolveCallPipeline({
@@ -110,6 +126,7 @@ function resolveCallPipeline({
   globalPipeline = process.env.VOICE_PIPELINE || "classic",
   demoLinePipeline = process.env.DEMO_LINE_PIPELINE,
   isDemoLine = () => false,
+  hasFastPathKeys = () => fastPathKeysPresent(),
 } = {}) {
   const global = globalPipeline === "gemini-live" ? "gemini-live" : "classic";
   if (ownerMode || !isDemoLine(calledNumber)) return global;
@@ -118,6 +135,13 @@ function resolveCallPipeline({
   const lang = language || "en";
   if (lang !== "en") {
     console.log(`[PipelineRouting] DEMO_LINE_PIPELINE=${override} ignored — the assistant's language is "${lang}" and the switch is English-only. The demo line uses ${global}.`);
+    return global;
+  }
+  if (override === "classic-fast" && !hasFastPathKeys()) {
+    if (!fastPathKeysWarned) {
+      fastPathKeysWarned = true;
+      console.warn(`[PipelineRouting] classic-fast needs ANTHROPIC_API_KEY and DEEPGRAM_API_KEY — using ${global}`);
+    }
     return global;
   }
   return override;
@@ -132,4 +156,5 @@ module.exports = {
   resolveCallPipeline,
   readDemoLinePipeline,
   DEMO_LINE_PIPELINES,
+  fastPathKeysPresent,
 };

@@ -21,7 +21,7 @@ const path = require("node:path");
 const util = require("node:util");
 
 const { CallSession } = require("../call-session");
-const { resolveCallPipeline } = require("../lib/pipeline-routing");
+const { resolveCallPipeline, fastPathKeysPresent } = require("../lib/pipeline-routing");
 const { maskPhone } = require("../lib/mask-phone");
 const { buildOwnerCallSummary, settleOwnerToolRuns } = require("../lib/owner-tool-runner");
 
@@ -127,6 +127,7 @@ function select({ owner = false, language = "en", calledNumber = CUSTOMER_LINE, 
       calledNumber,
       resolveOwnerPipeline: () => { calls.push(["resolveOwnerPipeline"]); return ownerPipeline; },
       resolveCallPipeline: (opts) => { calls.push(["resolveCallPipeline", opts]); return resolver(opts); },
+      fastPathKeysPresent,
       isDemoLineNumber: demoLine,
       VOICE_PIPELINE: voicePipeline,
       process: { env },
@@ -138,10 +139,22 @@ function select({ owner = false, language = "en", calledNumber = CUSTOMER_LINE, 
 }
 
 describe("SCRUM-594: pipeline selection, run for real", () => {
-  it("a customer call asks the resolver, with the dialled number, the assistant's language, VOICE_PIPELINE, DEMO_LINE_PIPELINE as read NOW, and the demo-line predicate", () => {
+  it("a customer call asks the resolver, with the dialled number, the assistant's language, VOICE_PIPELINE, DEMO_LINE_PIPELINE as read NOW, the demo-line predicate and the fast-path keys as read when asked", () => {
     const demoLine = (n) => n === DEMO;
-    const r = select({ calledNumber: DEMO, language: "en", voicePipeline: "gemini-live", env: { GEMINI_API_KEY: "k", DEMO_LINE_PIPELINE: "classic-fast" }, demoLine, resolver: () => "classic-fast" });
-    assert.deepEqual(r.calls, [["resolveCallPipeline", { calledNumber: DEMO, ownerMode: false, language: "en", globalPipeline: "gemini-live", demoLinePipeline: "classic-fast", isDemoLine: demoLine }]]);
+    const env = { GEMINI_API_KEY: "k", DEMO_LINE_PIPELINE: "classic-fast", ANTHROPIC_API_KEY: "sk", DEEPGRAM_API_KEY: "dg" };
+    const r = select({ calledNumber: DEMO, language: "en", voicePipeline: "gemini-live", env, demoLine, resolver: () => "classic-fast" });
+    assert.equal(r.calls.length, 1);
+    const [name, { hasFastPathKeys, ...opts }] = r.calls[0];
+    assert.equal(name, "resolveCallPipeline");
+    assert.deepEqual(opts, { calledNumber: DEMO, ownerMode: false, language: "en", globalPipeline: "gemini-live", demoLinePipeline: "classic-fast", isDemoLine: demoLine });
+    // SCRUM-594 R12c: the keys are read from the environment when the resolver asks.
+    assert.equal(typeof hasFastPathKeys, "function");
+    assert.equal(hasFastPathKeys(), true);
+    delete env.ANTHROPIC_API_KEY;
+    assert.equal(hasFastPathKeys(), false);
+    env.ANTHROPIC_API_KEY = "sk";
+    delete env.DEEPGRAM_API_KEY;
+    assert.equal(hasFastPathKeys(), false);
     assert.equal(r.effectivePipeline, "classic-fast");
     assert.equal(r.session.effectivePipeline, "classic-fast", "the session records it (calls.metadata.pipeline, Task 5)");
     assert.deepEqual(r.lines, []);
@@ -156,7 +169,7 @@ describe("SCRUM-594: pipeline selection, run for real", () => {
 
   it("with the real resolver: only the demo line moves, and only for an English assistant", (t) => {
     const consoleLines = captureConsole(t);
-    const env = { GEMINI_API_KEY: "k", DEMO_LINE_PIPELINE: "classic-fast" };
+    const env = { GEMINI_API_KEY: "k", DEMO_LINE_PIPELINE: "classic-fast", ANTHROPIC_API_KEY: "sk", DEEPGRAM_API_KEY: "dg" };
     assert.equal(select({ calledNumber: DEMO, env }).effectivePipeline, "classic-fast");
     assert.equal(select({ calledNumber: CUSTOMER_LINE, env }).effectivePipeline, "gemini-live", "every other number: VOICE_PIPELINE");
     assert.equal(select({ calledNumber: CUSTOMER_LINE, env, voicePipeline: "classic" }).effectivePipeline, "classic");
@@ -165,6 +178,17 @@ describe("SCRUM-594: pipeline selection, run for real", () => {
     assert.equal(select({ calledNumber: DEMO, env: { GEMINI_API_KEY: "k", DEMO_LINE_PIPELINE: "classic" } }).effectivePipeline, "classic", "pinned to classic");
     assert.equal(consoleLines.length, 1, consoleLines.join("\n"));
     assert.match(consoleLines[0], /\[PipelineRouting\] DEMO_LINE_PIPELINE=classic-fast ignored — the assistant's language is "es"/);
+  });
+
+  it("R12c: classic-fast without ANTHROPIC_API_KEY or DEEPGRAM_API_KEY runs the global pipeline instead (logged once per process)", (t) => {
+    const consoleLines = captureConsole(t);
+    const noClaude = select({ calledNumber: DEMO, env: { GEMINI_API_KEY: "k", DEMO_LINE_PIPELINE: "classic-fast", DEEPGRAM_API_KEY: "dg" } });
+    assert.equal(noClaude.effectivePipeline, "gemini-live");
+    assert.equal(noClaude.session.effectivePipeline, "gemini-live", "what the call record says it ran");
+    const noDeepgram = select({ calledNumber: DEMO, voicePipeline: "classic", env: { DEMO_LINE_PIPELINE: "classic-fast", ANTHROPIC_API_KEY: "sk" } });
+    assert.equal(noDeepgram.effectivePipeline, "classic");
+    assert.deepEqual(noClaude.lines, [], "Gemini has its key: no other line");
+    assert.deepEqual(consoleLines, ["warn| [PipelineRouting] classic-fast needs ANTHROPIC_API_KEY and DEEPGRAM_API_KEY — using gemini-live"]);
   });
 
   it("the missing-key fallback still follows the EFFECTIVE pipeline (a demo line pinned to gemini-live without a key)", () => {

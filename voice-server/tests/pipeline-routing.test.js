@@ -9,6 +9,7 @@ const {
   resolveCallPipeline,
   readDemoLinePipeline,
   DEMO_LINE_PIPELINES,
+  fastPathKeysPresent,
 } = require("../lib/pipeline-routing");
 
 // SCRUM-378: per-number pipeline override (eval spike), must be inert in prod.
@@ -129,7 +130,8 @@ describe("resolveCallPipeline / readDemoLinePipeline (SCRUM-594)", () => {
     const value = fn();
     return { value, lines };
   }
-  const call = (o) => resolveCallPipeline({ calledNumber: DEMO, ownerMode: false, language: "en", globalPipeline: "gemini-live", demoLinePipeline: "classic-fast", isDemoLine: isDemo, ...o });
+  // The fast variant's keys are set here: their absence is tested on its own (R12c, below).
+  const call = (o) => resolveCallPipeline({ calledNumber: DEMO, ownerMode: false, language: "en", globalPipeline: "gemini-live", demoLinePipeline: "classic-fast", isDemoLine: isDemo, hasFastPathKeys: () => true, ...o });
 
   it("accepts exactly the three pipelines the server runs", () => {
     assert.deepEqual([...DEMO_LINE_PIPELINES].sort(), ["classic", "classic-fast", "gemini-live"]);
@@ -227,9 +229,12 @@ describe("resolveCallPipeline / readDemoLinePipeline (SCRUM-594)", () => {
   });
 
   it("reads DEMO_LINE_PIPELINE and VOICE_PIPELINE from the environment at CALL time", (t) => {
-    const prev = { demo: process.env.DEMO_LINE_PIPELINE, global: process.env.VOICE_PIPELINE };
+    const prev = { demo: process.env.DEMO_LINE_PIPELINE, global: process.env.VOICE_PIPELINE, anthropic: process.env.ANTHROPIC_API_KEY, deepgram: process.env.DEEPGRAM_API_KEY };
     const restore = (key, v) => { if (v === undefined) delete process.env[key]; else process.env[key] = v; };
     try {
+      // The fast variant's keys are set (their absence is tested on its own, R12c).
+      process.env.ANTHROPIC_API_KEY = "sk-test";
+      process.env.DEEPGRAM_API_KEY = "dg-test";
       const { value } = quiet(t, () => {
         const out = [];
         delete process.env.DEMO_LINE_PIPELINE;
@@ -245,6 +250,8 @@ describe("resolveCallPipeline / readDemoLinePipeline (SCRUM-594)", () => {
     } finally {
       restore("DEMO_LINE_PIPELINE", prev.demo);
       restore("VOICE_PIPELINE", prev.global);
+      restore("ANTHROPIC_API_KEY", prev.anthropic);
+      restore("DEEPGRAM_API_KEY", prev.deepgram);
     }
   });
 
@@ -264,7 +271,7 @@ describe("resolveCallPipeline / readDemoLinePipeline (SCRUM-594)", () => {
           for (const language of ["en", "es", undefined]) {
             for (const globalPipeline of ["gemini-live", "classic", "grok-realtime", ""]) {
               for (const demoLinePipeline of [undefined, "classic-fast", "classic", "gemini-live", "bogus"]) {
-                out.add(resolveCallPipeline({ calledNumber, ownerMode, language, globalPipeline, demoLinePipeline, isDemoLine: isDemo }));
+                out.add(resolveCallPipeline({ calledNumber, ownerMode, language, globalPipeline, demoLinePipeline, isDemoLine: isDemo, hasFastPathKeys: () => true }));
               }
             }
           }
@@ -272,5 +279,90 @@ describe("resolveCallPipeline / readDemoLinePipeline (SCRUM-594)", () => {
       }
     });
     assert.deepEqual([...out].sort(), ["classic", "classic-fast", "gemini-live"]);
+  });
+});
+
+// SCRUM-594 R12c: the fast variant cannot run without Claude (ANTHROPIC_API_KEY) and
+// Deepgram (DEEPGRAM_API_KEY). Without them the demo line takes the global pipeline,
+// instead of apologising on every turn. Logged once per process; the resolver never
+// reports to Sentry.
+describe("resolveCallPipeline: classic-fast without its keys (SCRUM-594 R12c)", () => {
+  const DEMO = "+61238205672";
+  const isDemo = (n) => n === DEMO;
+  function quiet(t, fn) {
+    const lines = [];
+    for (const m of ["log", "warn", "error"]) t.mock.method(console, m, (...a) => lines.push(`${m}| ${a.join(" ")}`));
+    const value = fn();
+    return { value, lines };
+  }
+  const fast = (o) => resolveCallPipeline({ calledNumber: DEMO, language: "en", globalPipeline: "gemini-live", demoLinePipeline: "classic-fast", isDemoLine: isDemo, ...o });
+
+  it("both keys present: the switch applies, silently", (t) => {
+    let asked = 0;
+    const { value, lines } = quiet(t, () => fast({ hasFastPathKeys: () => { asked += 1; return true; } }));
+    assert.equal(value, "classic-fast");
+    assert.equal(asked, 1);
+    assert.deepEqual(lines, []);
+  });
+
+  it("a key missing: the call takes the global pipeline, and it is logged once per process", (t) => {
+    const { value, lines } = quiet(t, () => [
+      fast({ hasFastPathKeys: () => false }),
+      fast({ hasFastPathKeys: () => false, globalPipeline: "classic" }),
+      fast({ hasFastPathKeys: () => false, globalPipeline: "openai-realtime" }),
+    ]);
+    assert.deepEqual(value, ["gemini-live", "classic", "classic"], "the global, normalised as always");
+    assert.deepEqual(lines, ["warn| [PipelineRouting] classic-fast needs ANTHROPIC_API_KEY and DEEPGRAM_API_KEY — using gemini-live"]);
+  });
+
+  it("the keys are asked about only when the call would run classic-fast", (t) => {
+    let asked = 0;
+    const hasFastPathKeys = () => { asked += 1; return false; };
+    const { value } = quiet(t, () => [
+      fast({ hasFastPathKeys, demoLinePipeline: "classic" }),
+      fast({ hasFastPathKeys, demoLinePipeline: "gemini-live", globalPipeline: "classic" }),
+      fast({ hasFastPathKeys, calledNumber: "+61255550000" }),
+      fast({ hasFastPathKeys, ownerMode: true }),
+      fast({ hasFastPathKeys, language: "es" }),
+      fast({ hasFastPathKeys, demoLinePipeline: "bogus-r12c" }),
+    ]);
+    assert.deepEqual(value, ["classic", "gemini-live", "gemini-live", "gemini-live", "gemini-live", "gemini-live"]);
+    assert.equal(asked, 0);
+  });
+
+  it("by default the keys are read from the environment at CALL time: each one missing, empty, or both present", (t) => {
+    const prev = { anthropic: process.env.ANTHROPIC_API_KEY, deepgram: process.env.DEEPGRAM_API_KEY };
+    const restore = (key, v) => { if (v === undefined) delete process.env[key]; else process.env[key] = v; };
+    try {
+      const { value } = quiet(t, () => {
+        const out = [];
+        process.env.ANTHROPIC_API_KEY = "sk-test";
+        process.env.DEEPGRAM_API_KEY = "dg-test";
+        out.push(fast());
+        delete process.env.ANTHROPIC_API_KEY;
+        out.push(fast());
+        process.env.ANTHROPIC_API_KEY = "sk-test";
+        delete process.env.DEEPGRAM_API_KEY;
+        out.push(fast({ globalPipeline: "classic" }));
+        process.env.DEEPGRAM_API_KEY = "";
+        out.push(fast());
+        process.env.DEEPGRAM_API_KEY = "dg-test"; // set again: no restart needed
+        out.push(fast());
+        return out;
+      });
+      assert.deepEqual(value, ["classic-fast", "gemini-live", "classic", "gemini-live", "classic-fast"]);
+    } finally {
+      restore("ANTHROPIC_API_KEY", prev.anthropic);
+      restore("DEEPGRAM_API_KEY", prev.deepgram);
+    }
+  });
+
+  it("fastPathKeysPresent: both keys, neither empty", () => {
+    assert.equal(fastPathKeysPresent({ ANTHROPIC_API_KEY: "sk", DEEPGRAM_API_KEY: "dg" }), true);
+    assert.equal(fastPathKeysPresent({ ANTHROPIC_API_KEY: "sk" }), false);
+    assert.equal(fastPathKeysPresent({ DEEPGRAM_API_KEY: "dg" }), false);
+    assert.equal(fastPathKeysPresent({ ANTHROPIC_API_KEY: "", DEEPGRAM_API_KEY: "dg" }), false);
+    assert.equal(fastPathKeysPresent({ ANTHROPIC_API_KEY: "sk", DEEPGRAM_API_KEY: "" }), false);
+    assert.equal(fastPathKeysPresent({}), false);
   });
 });

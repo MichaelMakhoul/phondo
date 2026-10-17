@@ -29,7 +29,7 @@ const { calendarToolDefinitions, listServiceTypesToolDefinition, transferToolDef
 const { createGeminiSession, GEMINI_MODEL } = require("./services/gemini-live");
 const { createOpenAIRealtimeSession, createGrokRealtimeSession, resolveOpenAIRealtimeModel } = require("./services/openai-realtime"); // SCRUM-378 eval spike (OpenAI + Grok share the adapter)
 const { createSessionWithFailover, isFailoverEnabled } = require("./services/gemini-failover"); // SCRUM-535
-const { resolveTestPipeline, KNOWN_TEST_PIPELINES, resolveOwnerPipeline, resolveCallPipeline } = require("./lib/pipeline-routing"); // SCRUM-378 per-number test override; SCRUM-587 OWNER_PIPELINE; SCRUM-594 DEMO_LINE_PIPELINE
+const { resolveTestPipeline, KNOWN_TEST_PIPELINES, resolveOwnerPipeline, resolveCallPipeline, fastPathKeysPresent } = require("./lib/pipeline-routing"); // SCRUM-378 per-number test override; SCRUM-587 OWNER_PIPELINE; SCRUM-594 DEMO_LINE_PIPELINE
 const { checkEndCallGuard } = require("./lib/end-call-guard"); // SCRUM-594: the SCRUM-373 end_call guard for the classic pipeline
 // SCRUM-594: the fast classic pipeline (DEMO_LINE_PIPELINE=classic-fast, spec 4.8):
 // Flux STT and its turn engine, the Aura stream and the player that carries it
@@ -2337,6 +2337,8 @@ wss.on("connection", (twilioWs) => {
           // SCRUM-594: a customer call to the published demo line may be moved by
           // DEMO_LINE_PIPELINE (read on every call); every other customer call
           // follows VOICE_PIPELINE as before. Owner calls never reach the switch.
+          // classic-fast without ANTHROPIC_API_KEY/DEEPGRAM_API_KEY (read when the
+          // resolver asks) takes VOICE_PIPELINE instead (R12c).
           const effectivePipeline = session.ownerMode
             ? resolveOwnerPipeline()
             : resolveCallPipeline({
@@ -2346,6 +2348,7 @@ wss.on("connection", (twilioWs) => {
                 globalPipeline: VOICE_PIPELINE,
                 demoLinePipeline: process.env.DEMO_LINE_PIPELINE,
                 isDemoLine: isDemoLineNumber,
+                hasFastPathKeys: () => fastPathKeysPresent(process.env),
               });
           session.effectivePipeline = effectivePipeline;
           if (effectivePipeline === "gemini-live" && !process.env.GEMINI_API_KEY) {
@@ -4784,7 +4787,8 @@ function openFastStt(session, twilioWs, openClassicStt) {
     // FLUX_EAGER_EOT_THRESHOLD=off asks Flux for no EagerEndOfTurn: no drafts.
     speculationEnabled: config.eagerEotThreshold !== null,
     // R12a′/R13: short candidates are judged at their EndOfTurn ("No" starts "No
-    // worries"), and a backchannel or the AI's own echo while it is busy is no turn.
+    // worries"), and a backchannel or the AI's own echo while it is busy is no turn,
+    // unless it answers the question the AI is still asking (R14: "…10 AM?" "Yes").
     policy: "fast-path",
   });
   session.fastTurns = engine;
