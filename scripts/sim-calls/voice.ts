@@ -209,7 +209,10 @@ const fastHook = (name: string) => () => {
  */
 export async function startSimCall(o: { calledNumber: string; callerPhone: string; callSid: string }): Promise<SimCall> {
   const logs: string[] = [];
-  return callLogContext.run({ logs }, () => setUpSimCall(o, logs));
+  const call = await callLogContext.run({ logs }, () => setUpSimCall(o, logs));
+  // Lines written while the call was being set up count too (turns are scanned as they run).
+  for (const line of logs) if (ANOMALY.test(line)) call.anomalies.push(line.slice(0, 500));
+  return call;
 }
 
 async function setUpSimCall(o: { calledNumber: string; callerPhone: string; callSid: string }, logs: string[]): Promise<SimCall> {

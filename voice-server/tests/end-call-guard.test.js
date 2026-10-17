@@ -13,7 +13,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const { checkEndCallGuard, END_CALL_BLOCKED_MESSAGE, END_CALL_BLOCKED_RESCHEDULE_MESSAGE } = require("../lib/end-call-guard");
+const { checkEndCallGuard, END_CALL_BLOCKED_MESSAGE, END_CALL_BLOCKED_RESCHEDULE_MESSAGE, END_CALL_BLOCKED_KEPT_MESSAGE } = require("../lib/end-call-guard");
 const { CallSession } = require("../call-session");
 
 const serverSrc = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
@@ -196,5 +196,29 @@ describe("phone test F1: the nudge says what is still open", () => {
       assert.equal(step([book(1), book(2, true)]), null);
       assert.equal(step([move(1), { name: "schedule_callback", successful: true, at: 2 }]), null);
     });
+  });
+});
+
+describe("SCRUM-594 PHASE 2 re-review: the fast path's nudge when this call's booking still stands", () => {
+  it("a held new booking while this call holds one: the nudge says the earlier booking stands, never 'NO appointment'", (t) => {
+    captureConsole(t);
+    const s = session([
+      { name: "book_appointment", successful: true, at: 1 },
+      { name: "book_appointment_held", successful: false, at: 2 }, // a spelling hold on a second booking
+    ]);
+    s.bookingGuards = true;
+    s.confirmedBookings = new Map([["k", { datetime: "2026-10-19T09:00:00", name: "Sami Khoury", at: 1 }]]);
+    const verdict = checkEndCallGuard(s, "caller finished");
+    assert.equal(verdict.allow, false);
+    assert.equal(verdict.message, END_CALL_BLOCKED_KEPT_MESSAGE);
+    assert.match(END_CALL_BLOCKED_KEPT_MESSAGE, /earlier booking from this call still stands/);
+    assert.doesNotMatch(END_CALL_BLOCKED_KEPT_MESSAGE, /NO appointment/);
+  });
+
+  it("Gemini/classic (no guards) keep the old wording", (t) => {
+    captureConsole(t);
+    const s = session([{ name: "book_appointment", successful: true, at: 1 }, { name: "book_appointment", successful: false, at: 2 }]);
+    s.confirmedBookings = new Map([["k", { datetime: "2026-10-19T09:00:00", name: "Sami Khoury", at: 1 }]]);
+    assert.equal(checkEndCallGuard(s, "caller finished").message, END_CALL_BLOCKED_MESSAGE);
   });
 });

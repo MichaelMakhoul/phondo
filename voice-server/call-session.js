@@ -405,7 +405,7 @@ class CallSession {
       return false;
     }
 
-    if (options.fastPath) return this._confirmFastCancel(args, keys, nowMs, options);
+    if (options.fastPath) return this.confirmFastCancel(args, nowMs, options).proceed;
 
     const pending = this._pendingCancel;
     if (pending && nowMs - pending.at < 5 * 60 * 1000 && pending.keys.some((k) => keys.includes(k))) {
@@ -417,19 +417,27 @@ class CallSession {
   }
 
   /**
-   * SCRUM-594 PHASE 2 (B4): confirmCancel on the fast path (see there). Adds
-   * the exact time ("t:") to the keys, and matches per BOOKING: the time when
-   * both attempts carry one, else the date, else any shared key. A remembered
-   * confirmation covers only a retry of exactly the same booking (time, or a
-   * date-only attempt's date), and a held cancel is confirmed only by an
-   * attempt after the caller has spoken again (`callerTurn`).
-   * @param {{ datetime?: string }} args
-   * @param {string[]} keys - the identifiers confirmCancel derived (never empty here)
+   * SCRUM-594 PHASE 2 (B4): the CancelGate on the fast path (see confirmCancel),
+   * with why it proceeded or held. Adds the exact time ("t:") to the keys and
+   * matches per BOOKING: the time when both attempts carry one, else the date,
+   * else any shared key. A remembered confirmation covers only a retry of
+   * exactly the same booking, and a held cancel is confirmed only by an attempt
+   * after the caller has spoken again (`callerTurn`).
+   * @param {{ phone?: string, date?: string, datetime?: string }} args - the model's own arguments
    * @param {number} nowMs
-   * @param {{ callerConfirmed?: boolean, callerTurn?: number }} options
-   * @returns {boolean}
+   * @param {{ callerConfirmed?: boolean, callerTurn?: number }} [options]
+   * @returns {{ proceed: boolean, via: "caller-yes" | "confirmed" | "retry" | null, reason: "no-identifier" | "first-attempt" | "awaiting-caller" | "another-booking" | null }}
    */
-  _confirmFastCancel(args, keys, nowMs, options) {
+  confirmFastCancel(args, nowMs, options = {}) {
+    const keys = [];
+    const phone = String(args?.phone || "").replace(/\D/g, "");
+    if (phone.length >= 6) keys.push("p:" + phone);
+    const datePart = String(args?.datetime || args?.date || "").slice(0, 10);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(datePart)) keys.push("d:" + datePart);
+    if (keys.length === 0) {
+      this._pendingCancel = null; // as confirmCancel: an attempt with no identifier never confirms
+      return { proceed: false, via: null, reason: "no-identifier" };
+    }
     const time = String(args?.datetime || "").slice(0, 16);
     if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(time)) keys.push("t:" + time);
     const fresh = (/** @type {{ keys: string[], at: number } | null} */ rec) => rec !== null && nowMs - rec.at < 5 * 60 * 1000;
@@ -444,16 +452,20 @@ class CallSession {
       return Boolean(key(held, "d:") && key(held, "d:") === key(keys, "d:"));
     };
 
-    if (fresh(this._confirmedCancel) && exactlySameBooking(this._confirmedCancel.keys)) return true; // confirmed; the handler wanted a detail
+    if (fresh(this._confirmedCancel) && exactlySameBooking(this._confirmedCancel.keys)) {
+      return { proceed: true, via: "confirmed", reason: null }; // confirmed; the handler wanted a detail
+    }
     const pending = this._pendingCancel;
     const answered = !pending || typeof options.callerTurn !== "number" || typeof pending.callerTurn !== "number" || options.callerTurn > pending.callerTurn;
-    if (options.callerConfirmed || (fresh(pending) && answered && sameBooking(pending.keys))) {
+    const samePending = fresh(pending) && sameBooking(pending.keys);
+    if (options.callerConfirmed || (samePending && answered)) {
       this._pendingCancel = null;
       this._confirmedCancel = { keys, at: nowMs };
-      return true;
+      return { proceed: true, via: options.callerConfirmed ? "caller-yes" : "retry", reason: null };
     }
-    this._pendingCancel = { keys, at: nowMs, callerTurn: options.callerTurn };
-    return false;
+    const reason = samePending ? "awaiting-caller" : fresh(pending) ? "another-booking" : "first-attempt";
+    this._pendingCancel = { keys, at: nowMs, callerTurn: samePending ? pending.callerTurn : options.callerTurn };
+    return { proceed: false, via: null, reason };
   }
 
   /** SCRUM-594 PHASE 2 (B4): a cancel went through — the next one needs its own confirmation. */
@@ -560,9 +572,10 @@ class CallSession {
     if (t.name === "book_appointment" || t.name === "reschedule_appointment" || t.name === "schedule_callback") return true;
     if (!this.bookingGuards || t.name !== "cancel_appointment") return false;
     const at = (/** @type {{ at?: number }} */ x) => (typeof x.at === "number" ? x.at : 0);
+    // The latest booking WRITE before the cancel (an availability check in between changes nothing).
     let latest = null;
     for (const x of audit) {
-      if (x !== t && this._isFunnelStep(x) && at(x) <= at(t) && (!latest || at(x) >= at(latest))) latest = x;
+      if (x !== t && this._isFunnelStep(x) && x.name !== "check_availability" && at(x) <= at(t) && (!latest || at(x) >= at(latest))) latest = x;
     }
     const day = (/** @type {unknown} */ v) => (typeof v === "string" ? v.slice(0, 10) : "");
     return Boolean(latest && latest.name === "reschedule_appointment" && !latest.successful && day(latest.oldDt) && day(latest.oldDt) === day(t.dt));

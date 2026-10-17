@@ -320,6 +320,48 @@ describe("SCRUM-594 PHASE 2 (B4): a cancel takes the caller-ID phone and the AI'
     assert.ok(toolResults(s)[0].endsWith(CANCEL_KEPT_NUDGE));
   });
 
+  it("re-review: a cancel whose request failed in transport (no success flag) is not a cancel on the fast path", async () => {
+    const s = makeSession();
+    s.confirmedBookings = new Map([[bookingKey({ datetime: "2026-10-19T09:00:00", first_name: "Sami" }), { datetime: "2026-10-19T09:00:00", name: "Sami Khoury", at: 1 }]]);
+    s.addMessage("assistant", "Do you want me to cancel the Monday 9 AM booking?");
+    const loop = makeLoop({
+      steps: [{ tools: [CANCEL] }, { content: "Sorry, I couldn't do that just now." }],
+      results: { cancel_appointment: { message: "I'm having trouble with that right now. Would you like me to take your information instead?" } },
+    });
+    await loop.say(s, "Yes please.");
+    assert.equal(s.confirmedBookings.size, 1, "the booking is still this call's");
+    assert.doesNotMatch(toolResults(s)[0], /NOTE: the caller now has NO appointment/);
+    assert.equal(s.toolCallAudit.find((a) => a.name === "cancel_appointment").successful, false);
+  });
+
+  it("re-review: a fast-path hold says why", async () => {
+    const s = makeSession();
+    const loop = makeLoop({ steps: [{ tools: [CANCEL] }, { content: "Cancel Monday at 9, is that right?" }] });
+    await loop.say(s, "Cancel it.");
+    assert.ok(loop.lines.some((l) => l.startsWith("warn| [CancelGate] Holding cancel_appointment pending confirmation (fast path, reason=first-attempt). callSid=CA-guards")), loop.lines.join("\n"));
+  });
+
+  it("re-review: a second booking redirected to a move, then 'leave it, bye' — the call ends; nothing new is booked", async () => {
+    const s = makeSession();
+    const KHOURY = { name: "book_appointment", args: { ...BOOK.args, last_name: "Khoury" } };
+    const TUESDAY = { name: "book_appointment", args: { ...KHOURY.args, datetime: "2026-10-20T09:00:00" } };
+    const END = { name: "end_call", args: { reason: "caller finished" } };
+    const loop = makeLoop({
+      steps: [
+        { content: "That's K-H-O-U-R-Y?" },
+        { tools: [KHOURY] }, { content: "Booked for Monday at 9." },
+        { tools: [TUESDAY] }, { content: "Do you want to move Monday to Tuesday instead?" },
+        { tools: [END] },
+      ],
+    });
+    await loop.say(s, "Sami Khoury.");
+    await loop.say(s, "Yes.");
+    await loop.say(s, "How about Tuesday?");
+    await loop.say(s, "Actually leave it. Bye!");
+    assert.equal(loop.executed.filter((e) => e.name === "book_appointment").length, 1);
+    assert.equal(s.endedReason, "end_call_tool", toolResults(s).join("\n"));
+  });
+
   it("a session without the guards keeps the old gate and passes no phone", async () => {
     const s = makeSession({ fast: false });
     s.addMessage("assistant", "Do you want me to cancel the Monday 9 AM booking?");

@@ -4149,16 +4149,20 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
           }
 
           // SCRUM-372: cancel-confirmation gate (classic pipeline — mirrors Gemini path)
+          /** @type {{ proceed: boolean, callerConfirmed: boolean, via: string|null, reason: string|null }} */
           const cancelGate = fnName !== "cancel_appointment"
-            ? { proceed: true, callerConfirmed: false }
+            ? { proceed: true, callerConfirmed: false, via: null, reason: null }
             : session.bookingGuards
               ? fastCancelGate(session, modelArgs || {}, Date.now())
-              : { proceed: session.confirmCancel(fnArgs || {}, Date.now()), callerConfirmed: false };
+              : { proceed: session.confirmCancel(fnArgs || {}, Date.now()), callerConfirmed: false, via: null, reason: null };
           if (cancelGate.callerConfirmed) {
             console.log(`[CancelGate] Proceeding on the caller's yes to the AI's own cancel question (fast path). callSid=${session.callSid}`);
+          } else if (cancelGate.proceed && cancelGate.via) {
+            console.log(`[CancelGate] Proceeding (fast path, via=${cancelGate.via}). callSid=${session.callSid}`);
           }
           if (!cancelGate.proceed) {
-            console.warn(`[CancelGate] Holding cancel_appointment pending confirmation (classic). callSid=${session.callSid}`);
+            const why = cancelGate.reason ? `fast path, reason=${cancelGate.reason}` : "classic";
+            console.warn(`[CancelGate] Holding cancel_appointment pending confirmation (${why}). callSid=${session.callSid}`);
             session.toolCallAudit.push({ name: "cancel_appointment_held", successful: false, at: Date.now() });
             session.messages.push({
               role: "tool",
@@ -4176,7 +4180,8 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
             if (guard && guard.hold === true) {
               const count = guard.count ? ` ${guard.count}/${guard.cap}` : "";
               console.warn(`[BookingGuard] Holding book_appointment (${guard.kind}${count}, reason=${guard.reason}). callSid=${session.callSid}`);
-              session.toolCallAudit.push({ name: "book_appointment_held", successful: false, at: Date.now() });
+              // A redirect to a move is not an unfinished booking: this call's booking stands.
+              session.toolCallAudit.push({ name: guard.kind === "second-booking" ? "book_appointment_redirected" : "book_appointment_held", successful: false, at: Date.now() });
               session.messages.push({ role: "tool", tool_call_id: toolCall.id, content: guard.message });
               continue;
             }
@@ -4271,6 +4276,9 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
           // classic booking while post-call phantom detection stays blind.
           if (session.toolCallAudit) {
             let auditSuccessful = !(typeof toolResult === "object" && (toolResult?.error || toolResult?.success === false));
+            // SCRUM-594 PHASE 2 (gate re-review): on the fast path a cancel counts only
+            // when the handler said so — a transport failure carries no success flag.
+            if (session.bookingGuards && fnName === "cancel_appointment" && toolResult?.success !== true) auditSuccessful = false;
             if (auditSuccessful && fnName === "book_appointment") {
               const hasSuccessSignal = /\b(confirmation code|i've booked|you'?re all set|booked your|appointment (?:is|has been) (?:booked|confirmed))\b/i.test(resultMessage);
               if (!hasSuccessSignal) auditSuccessful = false;
@@ -4305,8 +4313,9 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
           }
           // SCRUM-557 (review): authoritative success flag, same reasoning as the
           // Gemini site — the text heuristic nudged on failed cancels.
-          const cancelOk =
-            typeof toolResult === "object" && toolResult !== null && typeof toolResult.success === "boolean"
+          const cancelOk = session.bookingGuards
+            ? toolResult?.success === true // the fast path: never a transport failure's missing flag (gate re-review)
+            : typeof toolResult === "object" && toolResult !== null && typeof toolResult.success === "boolean"
               ? toolResult.success
               : !resultMessage.toLowerCase().includes("error") && !resultMessage.toLowerCase().includes("not found");
           if (fnName === "cancel_appointment" && cancelOk) {
@@ -4314,7 +4323,8 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
             if (session.bookingGuards) {
               // SCRUM-594 PHASE 2: the fast path forgets only the cancelled booking
               // (B3 and B6 read the rest), and says when another one still stands.
-              const { remaining } = forgetCancelledBooking(session.confirmedBookings, fnArgs, normalizeDatetime);
+              const { remaining, clearedAll } = forgetCancelledBooking(session.confirmedBookings, fnArgs, normalizeDatetime);
+              if (clearedAll) console.log(`[BookingGuard] A cancel no booking of this call could be matched to — forgot them all. callSid=${session.callSid}`);
               resultMessage += remaining > 0 ? CANCEL_KEPT_NUDGE : CANCEL_NUDGE;
             } else {
               if (session.confirmedBookings) session.confirmedBookings.clear();

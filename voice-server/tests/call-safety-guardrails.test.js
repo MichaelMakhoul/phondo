@@ -97,6 +97,22 @@ describe("CallSession.hasUnfinishedBooking (SCRUM-373/377)", () => {
     }
   });
 
+  it("re-review: a failed move, an availability check, then the cancel of that booking is still finished", () => {
+    const audit = MOVE_THEN_CANCEL();
+    audit.splice(3, 0, { name: "check_availability", successful: true, at: 350 });
+    const s = fast(audit);
+    assert.equal(s.hasUnfinishedBooking("caller_done"), false);
+    assert.equal(s.lastFunnelStep(), null);
+  });
+
+  it("re-review: a second booking redirected to a move (B3) is not an unfinished booking — this call's booking stands", () => {
+    const s = fast([
+      { name: "book_appointment", successful: true, at: 100 },
+      { name: "book_appointment_redirected", successful: false, at: 200 },
+    ]);
+    assert.equal(s.hasUnfinishedBooking("caller_done"), false);
+  });
+
   it("fast path: cancelling a DIFFERENT booking than the one the failed move was for leaves the move unfinished", () => {
     const audit = MOVE_THEN_CANCEL();
     audit[3].dt = "2026-10-22T14:00";
