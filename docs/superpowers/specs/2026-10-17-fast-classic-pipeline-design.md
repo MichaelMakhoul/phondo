@@ -184,6 +184,26 @@ The demo line should be answered by Deepgram hearing and Claude Haiku 5.5 thinki
    - Persist the same summary to `calls.metadata.fastPath`.
 10. **Cleanup.** Close Flux (CloseStream), Aura (Close), player timers and any draft.
 
+### 4.9 Turn-taking policy and watchdogs (added during review)
+These rules apply on the fast path only; classic and Gemini are unchanged. The ledger records each one with its reasoning.
+
+- **Short interrupts are decided late (R12a′).** A final of 2 words or fewer matching INTERRUPT_RE doesn't barge in at StartOfTurn or Update. It is decided at EndOfTurn, because the bare "No" of "No worries" would otherwise cut the AI off.
+- **Backchannels are dropped (R12a′).** While the AI is speaking or processing, a final made only of backchannel words is dropped, on both the commit and structured paths. The words are: okay, ok, yeah, yep, yes, sure, right, alright, cool, great, perfect, thanks, thank you, mm-hmm, uh-huh, no worries, no problem.
+- **Echoed finals are dropped (R13).** While the AI is speaking, a final that `isLikelyEcho` matches against `aiSpeakingText` is dropped, not committed. Otherwise the LLM would answer its own words.
+- **Answers at the end of a question are kept (R14′).** While the AI is speaking, a final of 2 words or fewer counts as an ANSWER, and is committed, only when both hold:
+  - the reply text ends with "?"
+  - the player's gap-aware remaining playback is 2000 ms or less
+  If the remaining playback is unknown (REST-only playback), the final is dropped.
+- **Queued turns wait (R12b′).** A turn that starts while `player.isPlaying() || session.isSpeaking` waits up to about 10 s for idle before hold audio starts, and skips the turn-start clear. Degraded-stt (Nova) keeps the clear.
+- **The recording disclosure is protected (R12d′).** A `disclosureActive` flag makes the disclosure non-interruptible on both of its paths. The fallback disclosure goes over REST and is marked played only once its frames are sent. REST-spoken text enters `aiSpeakingText`.
+- **Missing keys (R12c).** Classic-fast without ANTHROPIC_API_KEY or DEEPGRAM_API_KEY routes to the global pipeline, with one warning per process.
+- **Echo text while a reply is in flight.** Text stays "owed", so the echo filter remains active, while any audio is unflushed or a flush is pending, not just while the player is playing.
+- **Watchdogs.**
+  - A Flushed overdue by 3 s with no audio switches the call to REST TTS.
+  - No Flux frames for more than 5 s while audio is being sent switches the call to Nova.
+  - A lost `fast-*` mark is treated as idle after the estimated playback plus 5 s.
+- **Abortable back-off.** The claude-chat retry back-off is abortable in every mode.
+
 ## 5. Constraints
 
 - **Fail safe:** a fast-path failure degrades to today's components (Nova, REST TTS) and never leaves silence or ends the call.
