@@ -542,6 +542,11 @@ class CallSession {
     }
     // No booking-funnel tool calls at all — only flag if the end_call reason
     // explicitly claims a booking/reschedule while nothing was ever booked.
+    // SCRUM-594 (phone test F4): on the fast path, not when the call looked up or
+    // cancelled the caller's existing bookings — the model ended a pure cancel
+    // call as "booking complete", the nudge said the caller had NO appointment,
+    // and a callback the caller didn't want was logged.
+    if (this.bookingGuards && audit.some((t) => (t.name === "lookup_appointment" || t.name === "cancel_appointment") && t.successful)) return false;
     const everBooked = audit.some((t) => t.name === "book_appointment" && t.successful);
     // Substring match (not \b-anchored) so snake_case reasons like
     // "booking_complete" / "reschedule_done" match; "cancelled" does not.

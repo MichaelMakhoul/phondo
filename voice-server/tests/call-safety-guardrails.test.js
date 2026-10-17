@@ -97,6 +97,17 @@ describe("CallSession.hasUnfinishedBooking (SCRUM-373/377)", () => {
     }
   });
 
+  it("phone test F4 (fast path): a lookup-and-cancel call the model ends as 'booking complete' is not an unfinished booking", () => {
+    const audit = () => [
+      { name: "lookup_appointment", successful: true, at: 100 },
+      { name: "cancel_appointment", successful: true, at: 200, dt: "2026-10-19T10:00" },
+    ];
+    assert.equal(fast(audit()).hasUnfinishedBooking("booking complete"), false);
+    assert.equal(withAudit(audit()).hasUnfinishedBooking("booking complete"), true, "Gemini/classic: unchanged");
+    assert.equal(fast([]).hasUnfinishedBooking("booking complete"), true, "a bare 'booking complete' with nothing done still blocks");
+    assert.equal(fast([{ name: "lookup_appointment", successful: false, at: 100 }]).hasUnfinishedBooking("booking complete"), true, "a failed lookup proves nothing");
+  });
+
   it("re-review: a failed move, an availability check, then the cancel of that booking is still finished", () => {
     const audit = MOVE_THEN_CANCEL();
     audit.splice(3, 0, { name: "check_availability", successful: true, at: 350 });
