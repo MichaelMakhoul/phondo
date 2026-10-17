@@ -3,8 +3,13 @@ const { validateInput, getBufferConfig, extractSpokenDigits } = require("./lib/i
 const { logTranscript } = require("./lib/log-transcript");
 
 const MAX_MESSAGES = 21; // system prompt + up to 20 messages (user/assistant turns + tool call/result messages)
-/** SCRUM-594 (gate review): the AI's own words claiming it booked something ("I've booked you in…"). */
-const AI_SAID_BOOKED = /\b(?:i['’]?ve|i have|i) (?:just )?(?:booked|made (?:you )?(?:the|a|an|your) (?:booking|appointment))\b|\bbooked (?:you|them|him|her|your \w+) in\b/i;
+/**
+ * SCRUM-594 (gate review): the AI's own words claiming it booked something ("I've
+ * booked you in…", "I've also booked…", "we've scheduled you in…") — not ones
+ * describing a booking the caller has ("I've got you booked in", "I have it
+ * booked") or a callback ("I've booked a callback").
+ */
+const AI_SAID_BOOKED = /\b(?:i['’]?ve|i have|i|we['’]?ve|we have|we) (?:(?!(?:you|them|him|her|it|got)\b)\w+ ){0,3}(?:booked|scheduled|made (?:you )?(?:the|a|an|your) (?:booking|appointment))\b(?! (?:you |them )?(?:a |in a |for a )?call)|\bbooked (?:you|them|him|her|your \w+) in\b/i;
 
 /**
  * SCRUM-594: the fast path's per-call audio bookkeeping. server.js owns it (the
@@ -591,12 +596,21 @@ class CallSession {
     // appointment, and a callback the caller didn't want was logged. A reason
     // claiming a reschedule — or the AI's own "I've booked you in" when nothing
     // was booked — still blocks.
-    const aiSaidBooked = this.fullTranscriptMessages.some((m) => m.role === "assistant" && AI_SAID_BOOKED.test(String(m.content || "")));
-    if (this.bookingGuards && !/reschedul/i.test(endCallReason || "") && this.aboutTheirBooking() && !aiSaidBooked) return false;
+    if (this.bookingGuards && !/reschedul/i.test(endCallReason || "") && this.aboutTheirBooking() && !this._aiSaidBooked()) return false;
     const everBooked = audit.some((t) => t.name === "book_appointment" && t.successful);
     // Substring match (not \b-anchored) so snake_case reasons like
     // "booking_complete" / "reschedule_done" match; "cancelled" does not.
     return /(book|reschedul|reserv)/i.test(endCallReason || "") && !everBooked;
+  }
+
+  /**
+   * SCRUM-594 (gate review): did the AI itself say it booked something? The words
+   * of a reply that also called a tool reach the transcript only after the tool
+   * ran, so the model's own messages are read too.
+   * @returns {boolean}
+   */
+  _aiSaidBooked() {
+    return [...this.fullTranscriptMessages, ...this.messages].some((m) => m?.role === "assistant" && typeof m.content === "string" && AI_SAID_BOOKED.test(m.content));
   }
 
   /**

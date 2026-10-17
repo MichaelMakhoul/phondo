@@ -135,6 +135,22 @@ describe("CallSession.hasUnfinishedBooking (SCRUM-373/377)", () => {
     assert.equal(said(FOUND, "assistant", "You're booked in for Monday at 10.").hasUnfinishedBooking("caller kept their booking"), false);
     assert.equal(said(CANCELLED, "assistant", "Your Monday booking has been cancelled.").hasUnfinishedBooking("booking cancelled"), false);
     assert.equal(said(FOUND, "user", "I've booked a plumber already.").hasUnfinishedBooking("caller kept their booking"), false);
+    // more ways a model claims it booked — and ways it describes what they have
+    for (const claim of ["I've also booked a new appointment for you on Tuesday.", "I've gone ahead and booked Tuesday at 2 for you.", "We've now booked Tuesday at 2 for you.", "I've scheduled you in for Tuesday at 2."]) {
+      assert.equal(said(FOUND, "assistant", claim).hasUnfinishedBooking("booking complete"), true, claim);
+    }
+    for (const line of ["I've got you booked in for Monday at 10.", "I have you booked in for Monday.", "I've scheduled a callback for you."]) {
+      assert.equal(said(FOUND, "assistant", line).hasUnfinishedBooking("caller kept their booking"), false, line);
+    }
+    // the words of a reply that also called a tool are in the model's messages before they reach the transcript
+    const s = fast(FOUND);
+    s.messages.push({ role: "assistant", content: "Done — I've booked you in for Tuesday at 2 PM.", tool_calls: [{ id: "1", type: "function", function: { name: "end_call", arguments: "{}" } }] });
+    s.messages.push({ role: "assistant", content: null, tool_calls: [] });
+    assert.equal(s.hasUnfinishedBooking("booked new appointment for Tuesday 2pm"), true);
+    // …and a claim the model's message window has dropped is still in the transcript
+    const long = fast(FOUND);
+    long.fullTranscriptMessages.push({ role: "assistant", content: "I've booked you in for Tuesday at 2 PM.", at: 1 });
+    assert.equal(long.hasUnfinishedBooking("booked new appointment for Tuesday 2pm"), true);
   });
 
   it("re-review: a failed move, an availability check, then the cancel of that booking is still finished", () => {

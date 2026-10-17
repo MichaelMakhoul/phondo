@@ -201,7 +201,7 @@ const AGREEING_NO = /\b(?:no (?:worries|problems?|dramas?|probs?|stress)|nah,? y
 /** A yes word that still means no: "Yeah nah", "Yeah, no". */
 const YES_BUT_NO = /^\W*(?:yes|yeah|yep|yup|ok(?:ay)?|sure)\W+(?:nah|no)\b/i;
 const NO_AT_EDGE = /^\W*(?:(?:uh|um|er|erm|oh|ah|well|hmm)\W+)*(?:no|nope|nah)\b|\b(?:no|nope|nah)\W*$/i;
-const DECLINE_PHRASE = /\b(?:leave it|never ?mind|changed my mind|forget it|not sure|hold on|hang on|wait|not (?:that|this|the|my)(?: \w+){0,3} one|wrong one|that['’]?s (?:wrong|not (?:it|right|the one))|don['’]?t do (?:it|that)|(?:absolutely|definitely|certainly|of course) not|not at all|rather not|(?<!\b(?:can['’]?t|can ?not|won['’]?t|couldn['’]?t|not|never|unable)(?: \w+){0,3} )keep(?:ing)? (?:it(?! handy)|the booking|the appointment|my booking|my appointment))\b/i;
+const DECLINE_PHRASE = /\b(?:leave it|never ?mind|changed my mind|forget it|not sure|hold on|hang on|wait|not (?:that|this|the|my)(?: \w+){0,3} one|wrong one|that['’]?s (?:wrong|not (?:it|right|the one))|don['’]?t do (?:it|that)|(?:absolutely|definitely|certainly|of course) not|not at all|rather not|(?<!\b(?:can['’]?t|can ?not|won['’]?t|couldn['’]?t|not|never|unable)(?: (?!cancel)\w+){0,3} )keep(?:ing)? (?:it(?! handy)|the booking|the appointment|my booking|my appointment))\b/i;
 /** "No, just cancel it": a no to the other option, and a go-ahead for the booking read back. */
 const NO_JUST_CANCEL_IT = /^\W*(?:no|nope|nah)\W+just cancel (?:it|that)\W*$/i;
 

@@ -26,7 +26,7 @@ const { forwardingFallbackEligible } = require("../lib/transfer-eligibility");
 const { bookingKey, normalizeDatetime } = require("../lib/booking-key");
 const { classifyRebookAttempt, DUPLICATE_REBOOK_MESSAGE, CORRECTION_ERROR_MESSAGE, CANCEL_NUDGE } = require("../lib/rebook-correction");
 const { applyRescheduleToLedger, RESCHEDULE_SUCCESS_SIGNAL } = require("../lib/reschedule-ledger");
-const { checkEndCallGuard } = require("../lib/end-call-guard");
+const { checkEndCallGuard, END_CALL_BLOCKED_NOTHING_NEW_MESSAGE } = require("../lib/end-call-guard");
 const { checkBookingGuards, fastCancelGate, checkCallerDone, withBookedName, noteNameCorrection, forgetCancelledBooking, noteBookingGuardCap, CANCEL_KEPT_NUDGE, SPELLING_HOLD_CAP } = require("../lib/booking-guards");
 
 const src = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
@@ -98,7 +98,8 @@ function makeLoop({ steps, results = {} }) {
         return { type: "content", content: step.content };
       }
       const toolCalls = step.tools.map((t, i) => ({ id: `tc${queue.length}-${i}`, type: "function", function: { name: t.name, arguments: JSON.stringify(t.args || {}) } }));
-      return { type: "tool_calls", toolCalls, message: { role: "assistant", content: null, tool_calls: toolCalls } };
+      if (step.said !== undefined) opts.onSentence(step.said); // words spoken in the same reply as the tool call
+      return { type: "tool_calls", toolCalls, message: { role: "assistant", content: step.said ?? null, tool_calls: toolCalls } };
     },
     startHoldAudio: () => ({ stop: () => {} }),
     sendClear: () => true,
@@ -457,6 +458,16 @@ describe("SCRUM-594 PHASE 2 (B5): the call ends only once the caller is done", (
     assert.match(toolResults(s)[0], /^DON'T END THE CALL YET/);
     assert.deepEqual(loop.executed, [], "end_call never ran");
     assert.equal(s.endedReason, null, closes);
+  });
+
+  it("gate review: 'I've booked you in…' said in the same reply as end_call, on a call that found the caller's booking — held once with the nothing-new nudge", async () => {
+    const s = makeSession();
+    s.toolCallAudit.push({ name: "lookup_appointment", successful: true, found: true, at: 1 });
+    const CLAIM = { name: "end_call", args: { reason: "booked new appointment for Tuesday 2pm" } };
+    const loop = makeLoop({ steps: [{ tools: [CLAIM], said: "Done — I've booked you in for Tuesday at 2 PM. Have a great day!" }, { content: "Sorry — that new booking isn't made yet. Shall I book Tuesday at 2?" }] });
+    await loop.say(s, "Thanks, bye.");
+    assert.equal(toolResults(s)[0], END_CALL_BLOCKED_NOTHING_NEW_MESSAGE);
+    assert.deepEqual(loop.executed, [], "end_call never ran");
   });
 
   it("an end_call after the caller's goodbye runs", async () => {
