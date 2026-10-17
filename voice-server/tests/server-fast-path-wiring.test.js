@@ -2207,6 +2207,20 @@ describe("SCRUM-594 review minors", () => {
   });
 });
 
+describe("SCRUM-594 review: a barge-in's Clear and the flush waits", () => {
+  it("a barge-in releases whoever waits for a Flushed at once: the Clear discards it (reviewer's X6)", async () => {
+    const h = makeFast({ flushedWaitMs: 5000 });
+    const s = h.start(makeSession());
+    await h.sendTTS(s, h.twilioWs, "Goodbye, have a great day.");
+    const settled = h.settleFastAudio(s); // flushes, then waits for that flush's Flushed
+    await settle();
+    assert.deepEqual(h.lastAura().handle.flushes, [0]);
+    h.sendClear(s, h.twilioWs);
+    await within(settled, 200, "the wait, released by the Clear");
+    h.closeFastPath(s);
+  });
+});
+
 describe("SCRUM-594 review Minor 7: the summary survives a transfer", () => {
   it("cleanup of a leg that is transferring hands its summary to the pending transfer (finishTransferredCall writes it)", async () => {
     const saved = { callSid: "CA-fast" };
