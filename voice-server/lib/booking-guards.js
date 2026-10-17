@@ -195,7 +195,7 @@ function guardState(session) {
 }
 
 /** "Don't cancel (it)", or a closing "…don't" — a decline even after a yes. */
-const DONT_CANCEL = /\b(?:don['’]?t|do not) (?:(?:want to |need to )?cancel\b|want (?:it|that|them|this|my \w+) cancel)|\b(?:don['’]?t|do not)\W*$/i;
+const DONT_CANCEL = /\b(?:don['’]?t|do not) (?:(?:want to |need to )?cancel\b|want (?:it|that|them|this|my \w+) cancel)|\b(?:can|could|would) you not cancel\b|\b(?:don['’]?t|do not)\W*$/i;
 /** "No" words that agree: "No worries", "No problem", "No dramas", "Nah yeah". */
 const AGREEING_NO = /\b(?:no (?:worries|problems?|dramas?|probs?|stress)|nah,? yeah)\b/gi;
 /** A yes word that still means no: "Yeah nah", "Yeah, no". */

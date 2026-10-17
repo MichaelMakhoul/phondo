@@ -136,10 +136,10 @@ describe("CallSession.hasUnfinishedBooking (SCRUM-373/377)", () => {
     assert.equal(said(CANCELLED, "assistant", "Your Monday booking has been cancelled.").hasUnfinishedBooking("booking cancelled"), false);
     assert.equal(said(FOUND, "user", "I've booked a plumber already.").hasUnfinishedBooking("caller kept their booking"), false);
     // more ways a model claims it booked — and ways it describes what they have
-    for (const claim of ["I've also booked a new appointment for you on Tuesday.", "I've gone ahead and booked Tuesday at 2 for you.", "We've now booked Tuesday at 2 for you.", "I've scheduled you in for Tuesday at 2."]) {
+    for (const claim of ["I've also booked a new appointment for you on Tuesday.", "I've gone ahead and booked Tuesday at 2 for you.", "We've now booked Tuesday at 2 for you.", "I've scheduled you in for Tuesday at 2.", "I've booked a call-out for Tuesday at 2 PM.", "I've booked a callout for Tuesday."]) {
       assert.equal(said(FOUND, "assistant", claim).hasUnfinishedBooking("booking complete"), true, claim);
     }
-    for (const line of ["I've got you booked in for Monday at 10.", "I have you booked in for Monday.", "I've scheduled a callback for you."]) {
+    for (const line of ["I've got you booked in for Monday at 10.", "I have you booked in for Monday.", "I've scheduled a callback for you.", "Let me see what we have booked for you.", "We have your appointment booked for Monday at 10.", "I've booked a call with Dave for you."]) {
       assert.equal(said(FOUND, "assistant", line).hasUnfinishedBooking("caller kept their booking"), false, line);
     }
     // the words of a reply that also called a tool are in the model's messages before they reach the transcript

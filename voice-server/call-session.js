@@ -5,11 +5,11 @@ const { logTranscript } = require("./lib/log-transcript");
 const MAX_MESSAGES = 21; // system prompt + up to 20 messages (user/assistant turns + tool call/result messages)
 /**
  * SCRUM-594 (gate review): the AI's own words claiming it booked something ("I've
- * booked you in…", "I've also booked…", "we've scheduled you in…") — not ones
- * describing a booking the caller has ("I've got you booked in", "I have it
- * booked") or a callback ("I've booked a callback").
+ * booked you in…", "I've also booked…", "we've scheduled you in…", "I've booked
+ * a call-out…") — not ones describing a booking the caller has ("I've got you
+ * booked in", "what we have booked") or a callback ("I've booked a callback").
  */
-const AI_SAID_BOOKED = /\b(?:i['’]?ve|i have|i|we['’]?ve|we have|we) (?:(?!(?:you|them|him|her|it|got)\b)\w+ ){0,3}(?:booked|scheduled|made (?:you )?(?:the|a|an|your) (?:booking|appointment))\b(?! (?:you |them )?(?:a |in a |for a )?call)|\bbooked (?:you|them|him|her|your \w+) in\b/i;
+const AI_SAID_BOOKED = /(?<!\bwhat )\b(?:i['’]?ve|i have|i|we['’]?ve|we have|we) (?:(?:just|also|now|already|successfully|gone ahead and|went ahead and) )?(?:booked|scheduled|made (?:you )?(?:the|a|an|your) (?:booking|appointment))\b(?! (?:you |them )?(?:a |in a |for a )?call(?![ -]?outs?\b))|\bbooked (?:you|them|him|her|your \w+) in\b/i;
 
 /**
  * SCRUM-594: the fast path's per-call audio bookkeeping. server.js owns it (the
