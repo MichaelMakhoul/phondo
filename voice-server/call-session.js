@@ -283,6 +283,9 @@ class CallSession {
     this._fastPendingCancels = new Map();
     /** @type {Map<string, { keys: string[], at: number, transcriptAt?: number }>} */
     this._fastConfirmedCancels = new Map();
+    // The cancels the caller's latest "no" dropped (their keys), by that no's transcript index.
+    /** @type {{ at: number, keys: string[][] } | null} */
+    this._fastDeclined = null;
 
     // SCRUM-506: per-call carry-forward of the caller's OWN identity/verification
     // details (name/phone/email/date_of_birth), so the AI never re-asks for
@@ -445,13 +448,14 @@ class CallSession {
     let dropped = 0;
     for (const map of [this._fastPendingCancels, this._fastConfirmedCancels]) {
       for (const [id, rec] of map) {
-        if (declinedAfter(rec)) dropped++;
+        if (declinedAfter(rec)) {
+          dropped++;
+          // What the caller said no to, at that no (a different booking right after it is a new cancel).
+          if (!this._fastDeclined || this._fastDeclined.at !== declinedAt) this._fastDeclined = { at: declinedAt, keys: [] };
+          this._fastDeclined.keys.push(rec.keys);
+        }
         if (declinedAfter(rec) || nowMs - rec.at >= 5 * 60 * 1000) map.delete(id);
       }
-    }
-    // Right after the caller's no: hold, and leave nothing their next words could confirm.
-    if (typeof options.transcriptAt === "number" && declinedAt === options.transcriptAt - 1) {
-      return { proceed: false, via: null, reason: "caller-declined", dropped };
     }
     const key = (/** @type {string[]} */ ks, /** @type {string} */ kind) => ks.find((k) => k.startsWith(kind));
     // The same booking only at the same specificity: a phone-only or date-only
@@ -467,6 +471,15 @@ class CallSession {
       return Boolean(key(held, "d:") && key(held, "d:") === key(keys, "d:"));
     };
     const id = /** @type {string} */ (key(keys, "t:") || key(keys, "d:") || key(keys, "p:"));
+
+    // Right after the caller's no: the cancel they refused — or one that can't be
+    // told apart from it — is held, and leaves nothing their next words could
+    // confirm. A different booking ("No, the Tuesday one") is a new cancel.
+    if (typeof options.transcriptAt === "number" && declinedAt === options.transcriptAt - 1) {
+      const refused = this._fastDeclined && this._fastDeclined.at === declinedAt ? this._fastDeclined.keys : [];
+      const different = refused.every((held) => !sameBooking(held) && (key(held, "t:") || key(held, "d:")) && (key(keys, "t:") || key(keys, "d:")));
+      if (refused.length > 0 && !different) return { proceed: false, via: null, reason: "caller-declined", dropped };
+    }
 
     for (const rec of this._fastConfirmedCancels.values()) {
       if (exactlySameBooking(rec.keys)) return { proceed: true, via: "confirmed", reason: null, dropped }; // the handler wanted a detail
@@ -564,11 +577,11 @@ class CallSession {
     }
     // No booking-funnel tool calls at all — only flag if the end_call reason
     // explicitly claims a booking/reschedule while nothing was ever booked.
-    // SCRUM-594 (phone test F4): on the fast path, not when the call looked up or
-    // cancelled the caller's existing bookings — the model ended a pure cancel
-    // call as "booking complete", the nudge said the caller had NO appointment,
-    // and a callback the caller didn't want was logged.
-    if (this.bookingGuards && audit.some((t) => (t.name === "lookup_appointment" || t.name === "cancel_appointment") && t.successful)) return false;
+    // SCRUM-594 (phone test F4): on the fast path, not when the call cancelled one
+    // of the caller's bookings — the model ended a pure cancel call as "booking
+    // complete", the nudge said the caller had NO appointment, and a callback the
+    // caller didn't want was logged. A reason claiming a reschedule still blocks.
+    if (this.bookingGuards && !/reschedul/i.test(endCallReason || "") && audit.some((t) => t.name === "cancel_appointment" && t.successful)) return false;
     const everBooked = audit.some((t) => t.name === "book_appointment" && t.successful);
     // Substring match (not \b-anchored) so snake_case reasons like
     // "booking_complete" / "reschedule_done" match; "cancelled" does not.

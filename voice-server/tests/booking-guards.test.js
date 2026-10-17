@@ -157,6 +157,7 @@ describe("surnameSpellingConfirmed", () => {
     assert.equal(surnameSpellingConfirmed([ai("Got it, K-H-O-U-R-Y. Is the number you're calling from the right one?"), caller("Yes.")], "Khoury").reason, "not-asked");
     assert.equal(surnameSpellingConfirmed([ai("K-H-O-U-R-Y. Could you spell your first name for me?"), caller("Sure.")], "Khoury").reason, "not-asked");
     assert.equal(surnameSpellingConfirmed([ai("K-H-O-U-R-Y. How do you spell your email?"), caller("Sure, it's sami at gmail.")], "Khoury").reason, "not-asked");
+    assert.equal(surnameSpellingConfirmed([ai("K-H-O-U-R-Y. Can you spell that email for me?"), caller("Sure.")], "Khoury").reason, "not-asked");
   });
 
   it("a read-back with no question, answered yes, confirms", () => {
@@ -194,6 +195,8 @@ describe("declinesCancel (a caller's clear no to a cancel)", () => {
     "I don't want to cancel it anymore.", "I'm not sure anymore.", "I've changed my mind.", "Keep the booking please.",
     // re-review 3
     "No, keep it.", "No, don't.", "No, wait.", "No, no.", "Hold on, no.", "Wait.",
+    // final review: a decline can start with a yes word
+    "Yeah nah, leave it.", "Yeah, no, leave it.", "Okay, never mind.", "Please leave it.", "Yes — actually, I've changed my mind.", "Please don't.", "Yeah, no.",
   ]) {
     it(`"${no}" takes it back`, () => assert.equal(declinesCancel(no), true));
   }
@@ -202,6 +205,8 @@ describe("declinesCancel (a caller's clear no to a cancel)", () => {
     "No, just cancel it.", "Yes.", "I'll keep it handy.",
     // re-review 3: a yes is never a decline unless it says "don't cancel"
     "Yes please, I can't keep the appointment.", "Yeah never mind, cancel it.", "Yes, forget it.",
+    // final review: go-ahead words, and a cancel request that starts with no
+    "No dramas.", "No probs, go for it.", "No, I need to cancel my Monday one.",
   ]) {
     it(`"${yes}" does not`, () => assert.equal(declinesCancel(yes), false));
   }
@@ -283,6 +288,19 @@ describe("fastCancelGate (structural: no 'yes' is read off the transcript)", () 
     say(s, "assistant", "Okay, I'll leave it.");
     say(s, "user", "Thanks.");
     assert.equal(fastCancelGate(s, MON_9, 3000).proceed, false, "held as a first attempt again");
+  });
+
+  it("final review: 'No, the Tuesday one' — after a no, a cancel for a different booking is an ordinary first attempt (two asks in all)", () => {
+    const TUE_2 = { datetime: "2026-10-20T14:00:00" };
+    const s = session([caller("Cancel my booking.")]);
+    fastCancelGate(s, MON_9, 1000);
+    say(s, "assistant", "Cancel Monday at 9 AM?");
+    say(s, "user", "No, the Tuesday one.");
+    assert.equal(fastCancelGate(s, MON_9, 2000).reason, "caller-declined", "the declined booking: no hold");
+    assert.equal(fastCancelGate(s, TUE_2, 2001).reason, "first-attempt", "Tuesday: held for its own read-back");
+    say(s, "assistant", "Cancel Tuesday at 2 PM?");
+    say(s, "user", "Yes.");
+    assert.equal(fastCancelGate(s, TUE_2, 3000).proceed, true);
   });
 
   it("re-review 3: a date-only confirmation is spent by that day's cancel — it never covers another booking that day", () => {

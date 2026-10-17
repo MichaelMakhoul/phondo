@@ -106,6 +106,9 @@ describe("CallSession.hasUnfinishedBooking (SCRUM-373/377)", () => {
     assert.equal(withAudit(audit()).hasUnfinishedBooking("booking complete"), true, "Gemini/classic: unchanged");
     assert.equal(fast([]).hasUnfinishedBooking("booking complete"), true, "a bare 'booking complete' with nothing done still blocks");
     assert.equal(fast([{ name: "lookup_appointment", successful: false, at: 100 }]).hasUnfinishedBooking("booking complete"), true, "a failed lookup proves nothing");
+    // final review: only a real cancel, and never a claimed reschedule
+    assert.equal(fast([{ name: "lookup_appointment", successful: true, at: 100 }]).hasUnfinishedBooking("booking complete"), true, "a lookup alone (it may have found nothing)");
+    assert.equal(fast(audit()).hasUnfinishedBooking("rescheduled the booking"), true, "a cancel is not a reschedule");
   });
 
   it("re-review: a failed move, an availability check, then the cancel of that booking is still finished", () => {

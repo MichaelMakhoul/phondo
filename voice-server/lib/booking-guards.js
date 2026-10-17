@@ -130,8 +130,9 @@ function asksToCheckSpelling(content, target) {
   const words = last.trim().split(/\s+/).length;
   // "Is that how you spell it?" — a longer question is the spelling only when it
   // points back at it ("Could you spell your first name?" is another question).
-  if (/\bspell/i.test(last) && /\b(it|that)\b/i.test(last) && !/\bfirst\b/i.test(last)) return words <= 10;
-  return words <= 6 && GENERIC_CHECK.test(last) && !/\bfirst\b/i.test(last);
+  const otherField = /\b(first|email|e-mail|address|street|suburb|number|phone)\b/i.test(last);
+  if (/\bspell/i.test(last) && /\b(it|that)\b/i.test(last) && !otherField) return words <= 10;
+  return words <= 6 && GENERIC_CHECK.test(last) && !otherField;
 }
 
 /**
@@ -193,20 +194,22 @@ function guardState(session) {
   return state;
 }
 
-/** "Don't cancel (it)" — a decline even after a yes. */
-const DONT_CANCEL = /\b(?:don'?t|do not) (?:want to |need to )?cancel\b/i;
-const YES_START = /^\W*(?:yes|yeah|yep|yup|sure|ok(?:ay)?|please)\b/i;
+/** "Don't cancel (it)", or a closing "…don't" — a decline even after a yes. */
+const DONT_CANCEL = /\b(?:don'?t|do not) (?:want to |need to )?cancel\b|\bdon'?t\W*$/i;
 /** Telling the AI to go ahead outweighs a leading "no" ("No worries, go ahead", "No, just cancel it"). */
-const GO_AHEAD = /\b(?:go ahead|cancel (?:it|that|them|both)|please cancel|do it|no worries|no problem)\b/i;
+const GO_AHEAD = /\b(?:go ahead|go for it|cancel (?:it|that|them|both|my|the)|please cancel|do it|no worries|no problem|no dramas|no probs?)\b/i;
+const YES_START = /^\W*(?:yes|yeah|yep|yup|sure|ok(?:ay)?|please)\b/i;
+/** A yes word that still means no: "Yeah nah", "Yeah, no", "…leave it / never mind / changed my mind". */
+const YES_BUT_NO = /^\W*(?:yes|yeah|yep|yup|ok(?:ay)?|sure)\W+(?:nah|no)\b|\b(?:leave it|never ?mind|changed my mind)\b/i;
 const NO_AT_EDGE = /^\W*(?:no|nope|nah)\b|\bno\W*$/i;
 const DECLINE_PHRASE = /\b(?:leave it|never ?mind|changed my mind|forget it|not sure|hold on|hang on|wait|keep (?:it(?! handy)|the booking|the appointment|my booking|my appointment))\b/i;
 
 /**
- * Does this caller message take a cancel back? A "no" at either end, or
- * "leave it / keep it / never mind / wait…", unless they also tell the AI to
- * go ahead; a message that starts with yes only when it says "don't cancel".
- * Ambiguous words count as a decline: that costs one more read-back, never a
- * cancel the caller refused.
+ * Does this caller message take a cancel back? "Don't cancel"; else not when
+ * they tell the AI to go ahead; a message that starts with yes only as "yeah
+ * nah / leave it / never mind"; otherwise a "no" at either end or "leave it /
+ * keep it / never mind / wait…". Ambiguous words count as a decline: that
+ * costs one more read-back, never a cancel the caller refused.
  * @param {unknown} text
  * @returns {boolean}
  */
@@ -214,7 +217,8 @@ function declinesCancel(text) {
   if (typeof text !== "string") return false;
   const t = text.trim();
   if (DONT_CANCEL.test(t)) return true;
-  if (YES_START.test(t) || GO_AHEAD.test(t)) return false;
+  if (GO_AHEAD.test(t)) return false;
+  if (YES_START.test(t)) return YES_BUT_NO.test(t);
   return NO_AT_EDGE.test(t) || DECLINE_PHRASE.test(t);
 }
 
