@@ -516,7 +516,7 @@ describe("SCRUM-594: end_call hang-up — source pins", () => {
     assert.match(src, /^const END_CALL_TAIL_MS = 500;$/m);
   });
   it("the guard runs before the cancel gate and after the owner runner, in the one classic tool loop", () => {
-    const loop = src.indexOf('const fnArgs = parseToolArgs(toolCall, "ToolCall");');
+    const loop = src.indexOf('let fnArgs = parseToolArgs(toolCall, "ToolCall");');
     const runner = src.indexOf("runOwnerToolCall(session, { name: fnName, args: fnArgs }, { executeToolCall, scheduleCache })", loop);
     const guard = src.indexOf('if (fnName === "end_call") {', loop);
     const cancel = src.indexOf('fnName === "cancel_appointment" && !session.confirmCancel(', loop);

@@ -138,6 +138,18 @@ class CallSession {
     // "degraded-stt" once its Flux STT has fallen back to Nova (spec §4.8).
     /** @type {boolean|"degraded-stt"} */
     this.fastPath = false;
+    // SCRUM-594 PHASE 2 (B1): the model's context window — the system prompt
+    // plus the last maxMessages - 1 messages. The fast path keeps the whole call
+    // (server.js applyFastConversationSettings): at 20 messages it lost its own
+    // booking mid-call and told the caller nothing was booked.
+    /** @type {number} */
+    this.maxMessages = MAX_MESSAGES;
+    // SCRUM-594 PHASE 2 (B2–B4): the fast path's booking guards (lib/booking-guards.js);
+    // off on every other call. bookingGuardState counts their holds for this call.
+    /** @type {boolean} */
+    this.bookingGuards = false;
+    /** @type {import("./lib/booking-guards").GuardState} */
+    this.bookingGuardState = { spellingHolds: 0, secondBookingNudged: false, endCallHolds: 0 };
     // SCRUM-594: the fast path's audio player (lib/fast-player.js); null on every other call.
     /** @type {import("./lib/fast-player").FastPlayer|null} */
     this.fastPlayer = null;
@@ -263,7 +275,10 @@ class CallSession {
     // cancel_appointment call in a call is held pending an explicit caller
     // confirmation; only a SECOND call with a matching fingerprint executes.
     // Prevents an irreversible cancel from a single misheard/garbled turn.
-    this._pendingCancel = null; // { fp: string, at: number } | null
+    this._pendingCancel = null; // { keys: string[], at: number } | null
+    // SCRUM-594 PHASE 2 (B4): the fast path's confirmed cancel, kept until the
+    // cancel succeeds (clearCancelConfirmation) or five minutes pass.
+    this._confirmedCancel = null; // { keys: string[], at: number } | null
 
     // SCRUM-506: per-call carry-forward of the caller's OWN identity/verification
     // details (name/phone/email/date_of_birth), so the AI never re-asks for
@@ -358,11 +373,24 @@ class CallSession {
    * identifier (arg-less / garbled — the noisiest, most dangerous case) is
    * ALWAYS held and can NEVER auto-confirm.
    *
+   * SCRUM-594 PHASE 2 (B4), the fast path only (`options.fastPath`), where the
+   * simulated baseline took cancels through four confirmations:
+   *  - `callerConfirmed`: the AI's own "cancel <this>?" was answered yes
+   *    (lib/booking-guards.js cancelConfirmedInTranscript) — that IS the
+   *    confirmation, so the attempt proceeds without a second one.
+   *  - A confirmation is per BOOKING: the date key decides when both attempts
+   *    carry one. The fast path fills every cancel's phone from caller ID, so a
+   *    shared phone no longer says two attempts are about the same booking.
+   *  - A confirmed cancel stays confirmed (for that date, five minutes) when the
+   *    handler sends the model back for a detail, until clearCancelConfirmation.
+   * An attempt with no identifier is held whatever the options say.
+   *
    * @param {{phone?: string, date?: string, datetime?: string}} args
    * @param {number} nowMs - current epoch ms (passed in; Date.now is fine here)
+   * @param {{ callerConfirmed?: boolean, fastPath?: boolean }} [options]
    * @returns {boolean} true to PROCEED with the cancel, false to hold + confirm first
    */
-  confirmCancel(args, nowMs) {
+  confirmCancel(args, nowMs, options = {}) {
     const keys = [];
     const phone = String(args?.phone || "").replace(/\D/g, "");
     if (phone.length >= 6) keys.push("p:" + phone);
@@ -376,13 +404,42 @@ class CallSession {
       return false;
     }
 
+    const fresh = (/** @type {{ keys: string[], at: number } | null} */ rec) => rec !== null && nowMs - rec.at < 5 * 60 * 1000;
+    const sameBooking = (/** @type {string[]} */ held) => {
+      if (options.fastPath) {
+        const heldDate = held.find((k) => k.startsWith("d:"));
+        const date = keys.find((k) => k.startsWith("d:"));
+        if (heldDate && date) return heldDate === date;
+      }
+      return held.some((k) => keys.includes(k));
+    };
+
+    if (options.fastPath) {
+      if (fresh(this._confirmedCancel) && this._confirmedCancel.keys.some((k) => k.startsWith("d:") && keys.includes(k))) {
+        return true; // confirmed already; the handler wanted a detail
+      }
+      if (options.callerConfirmed || (fresh(this._pendingCancel) && sameBooking(this._pendingCancel.keys))) {
+        this._pendingCancel = null;
+        this._confirmedCancel = { keys, at: nowMs };
+        return true;
+      }
+      this._pendingCancel = { keys, at: nowMs };
+      return false;
+    }
+
     const pending = this._pendingCancel;
-    if (pending && nowMs - pending.at < 5 * 60 * 1000 && pending.keys.some((k) => keys.includes(k))) {
+    if (options.callerConfirmed || (fresh(pending) && sameBooking(pending.keys))) {
       this._pendingCancel = null; // shares an identifier with the held attempt — proceed
       return true;
     }
     this._pendingCancel = { keys, at: nowMs };
     return false; // first attempt (or a different/expired one) — hold and confirm
+  }
+
+  /** SCRUM-594 PHASE 2 (B4): a cancel went through — the next one needs its own confirmation. */
+  clearCancelConfirmation() {
+    this._pendingCancel = null;
+    this._confirmedCancel = null;
   }
 
   /**
@@ -533,8 +590,8 @@ class CallSession {
       this.fullTranscriptMessages.push({ role, content, at: Date.now() }); // at: SCRUM-559 temporal claim alignment
     }
     // Sliding window: keep system prompt + last N messages
-    if (this.messages.length > MAX_MESSAGES) {
-      const keep = this.messages.slice(-MAX_MESSAGES + 1);
+    if (this.messages.length > this.maxMessages) {
+      const keep = this.messages.slice(-this.maxMessages + 1);
       // Don't start with an orphaned tool response — find a safe cut point
       let startIdx = 0;
       while (startIdx < keep.length && keep[startIdx].role === "tool") {

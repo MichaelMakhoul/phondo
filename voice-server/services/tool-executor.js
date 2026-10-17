@@ -656,6 +656,14 @@ async function executeToolCall(functionName, args, context) {
  * datetime / sole-upcoming before cancelling — so caller-ID substitution there
  * resolves to the caller's OWN appointment, the same safe semantics as booking.
  *
+ * SCRUM-594 PHASE 2 (B4): `options.cancel` adds cancel_appointment, for the
+ * fast path, where a cancel without a phone came back "I need your phone
+ * number" and the caller was asked for the number they were calling from.
+ * Safe there for the same reason as reschedule: since SCRUM-438 the handler
+ * re-verifies possession against the VERIFIED caller ID (or this call's own
+ * booking), so the substitution can only surface the caller's own bookings,
+ * and the date or datetime the model passes picks between them. lookup stays out.
+ *
  * Only substitutes when caller ID is actually dialable. For a withheld/blocked
  * caller ID, Twilio sends a non-numeric sentinel ("anonymous", "Restricted",
  * "unavailable") or a SIP URI — substituting that would just trip the handler's
@@ -669,10 +677,15 @@ async function executeToolCall(functionName, args, context) {
  * @param {string} functionName
  * @param {object} args - parsed LLM arguments
  * @param {string|undefined} callerPhone - caller ID number, if known
+ * @param {{ cancel?: boolean }} [options] - cancel: cancel_appointment too (the fast path)
  * @returns {object} args, with `phone` defaulted from caller ID when applicable
  */
-function applyCallerIdPhoneFallback(functionName, args, callerPhone) {
-  if (functionName !== "book_appointment" && functionName !== "reschedule_appointment") return args;
+function applyCallerIdPhoneFallback(functionName, args, callerPhone, options = {}) {
+  const covered =
+    functionName === "book_appointment" ||
+    functionName === "reschedule_appointment" ||
+    (options.cancel === true && functionName === "cancel_appointment");
+  if (!covered) return args;
   if (!isDialableCallerId(callerPhone)) return args; // unknown / withheld / SIP
   // SCRUM-518: a NON-EMPTY phone is not the same as a USABLE one. A real call
   // captured `phone: "0.5"`, which is non-empty, so the fallback stood down and
@@ -1321,6 +1334,7 @@ module.exports = {
   callbackToolDefinition,
   endCallToolDefinition,
   executeToolCall,
+  applyCallerIdPhoneFallback, // SCRUM-594 PHASE 2: the fast path fills a cancel's phone before its CancelGate
   _test: {
     getTransferService, resolveCurrentDatetime, resolveAvailabilityFromCache, applyCallerIdPhoneFallback,
     isDialablePhoneArg,

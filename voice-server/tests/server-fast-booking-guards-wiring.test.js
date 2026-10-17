@@ -1,0 +1,352 @@
+"use strict";
+
+// SCRUM-594 PHASE 2: the fast path's booking guards (B2–B4) inside server.js's
+// one classic tool loop, run for real (idiom B: the buildLLMOptions …
+// handleUserSpeech text against stubs, with the REAL guards, CancelGate,
+// booking key, caller-ID fallback and fast-path settings). Pins: a guarded
+// book_appointment never reaches the executor and the model reads why; a
+// spelled-back, confirmed surname books; a second booking is redirected to a
+// move once; a cancel gets the caller-ID phone and the AI's own confirmation;
+// and a session without the guards (classic, Gemini's twin, owner) is untouched.
+
+process.env.INTERNAL_API_URL = process.env.INTERNAL_API_URL || "http://localhost:3000";
+process.env.INTERNAL_API_SECRET = process.env.INTERNAL_API_SECRET || "test-secret";
+process.env.OPENAI_API_KEY = process.env.OPENAI_API_KEY || "test-key";
+process.env.SUPABASE_URL = process.env.SUPABASE_URL || "http://localhost";
+process.env.SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "test";
+
+const { describe, it } = require("node:test");
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+
+const { CallSession } = require("../call-session");
+const toolExecutor = require("../services/tool-executor");
+const { forwardingFallbackEligible } = require("../lib/transfer-eligibility");
+const { bookingKey, normalizeDatetime } = require("../lib/booking-key");
+const { classifyRebookAttempt, DUPLICATE_REBOOK_MESSAGE, CORRECTION_ERROR_MESSAGE, CANCEL_NUDGE } = require("../lib/rebook-correction");
+const { applyRescheduleToLedger, RESCHEDULE_SUCCESS_SIGNAL } = require("../lib/reschedule-ledger");
+const { checkEndCallGuard } = require("../lib/end-call-guard");
+const { checkBookingGuards, cancelConfirmedInTranscript, checkCallerDone, withBookedName, noteNameCorrection, SPELLING_HOLD_CAP } = require("../lib/booking-guards");
+
+const src = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+
+function sliceOf(from, to) {
+  const start = src.indexOf(from);
+  assert.ok(start >= 0, `server.js marker not found: ${JSON.stringify(from)}`);
+  const end = src.indexOf(to, start + from.length);
+  assert.ok(end > start, `server.js end marker not found after ${JSON.stringify(from)}`);
+  return src.slice(start, end);
+}
+function runSlice({ from, to, scope, names }) {
+  const params = Object.keys(scope);
+  return new Function(...params, `${sliceOf(from, to)}\nreturn { ${names.join(", ")} };`)(...params.map((p) => scope[p]));
+}
+
+const { applyFastConversationSettings, FAST_MAX_MESSAGES } = runSlice({
+  from: "const FAST_VOICE_ADDENDUM = [",
+  to: "// Gate B: speculative drafts",
+  scope: {},
+  names: ["applyFastConversationSettings", "FAST_MAX_MESSAGES"],
+});
+
+const CALLER = "+61412555013";
+
+function makeSession({ fast = true } = {}) {
+  const s = new CallSession("CA-guards");
+  s.language = "en";
+  s.organizationId = "org-1";
+  s.assistantId = "asst-1";
+  s.callRecordId = "0f1e2d3c-4b5a-4c6d-8e9f-0a1b2c3d4e5f";
+  s.callerPhone = CALLER;
+  s.calendarEnabled = true;
+  s.serviceTypes = [];
+  s.transferRules = [];
+  s.behaviors = {};
+  s.organization = { timezone: "Australia/Sydney" };
+  s.setSystemPrompt("SYSTEM");
+  if (fast) applyFastConversationSettings(s);
+  return s;
+}
+
+/**
+ * buildLLMOptions … handleUserSpeech with a scripted model: each step is one
+ * response, `content` or `tools`. Tool results come from `results[name]` (an
+ * array is used up one call at a time; default: a success line), and every
+ * executed call is recorded.
+ */
+function makeLoop({ steps, results = {} }) {
+  const executed = [];
+  const queue = [...steps];
+  const lines = [];
+  const rec = (m) => (...a) => lines.push(`${m}| ${a.join(" ")}`);
+  const scope = {
+    calendarToolDefinitions: toolExecutor.calendarToolDefinitions,
+    listServiceTypesToolDefinition: toolExecutor.listServiceTypesToolDefinition,
+    transferToolDefinition: toolExecutor.transferToolDefinition,
+    callbackToolDefinition: toolExecutor.callbackToolDefinition,
+    endCallToolDefinition: toolExecutor.endCallToolDefinition,
+    forwardingFallbackEligible,
+    buildOwnerTools: () => [],
+    DEFAULT_MODEL: "test-model",
+    LLM_API_KEY: "llm",
+    streamChatResponse: async (_key, _messages, opts) => {
+      const step = queue.shift();
+      if (!step) throw new Error("the model was called more often than scripted");
+      if (step.content !== undefined) {
+        opts.onSentence(step.content);
+        return { type: "content", content: step.content };
+      }
+      const toolCalls = step.tools.map((t, i) => ({ id: `tc${queue.length}-${i}`, type: "function", function: { name: t.name, arguments: JSON.stringify(t.args || {}) } }));
+      return { type: "tool_calls", toolCalls, message: { role: "assistant", content: null, tool_calls: toolCalls } };
+    },
+    startHoldAudio: () => ({ stop: () => {} }),
+    sendClear: () => true,
+    sendTTS: async () => 1,
+    executeToolCall: async (name, args) => {
+      executed.push({ name, args });
+      if (name === "end_call") return toolExecutor.executeToolCall(name, args, {}); // the real hang-up sentinel
+      const scripted = Array.isArray(results[name]) ? results[name].shift() : results[name];
+      return scripted || { success: true, message: name === "book_appointment" ? "I've booked your appointment. The appointment is confirmed. Confirmation code 123456." : `${name} ok` };
+    },
+    applyCallerIdPhoneFallback: toolExecutor.applyCallerIdPhoneFallback,
+    checkBookingGuards,
+    cancelConfirmedInTranscript,
+    checkCallerDone,
+    withBookedName,
+    noteNameCorrection,
+    runOwnerToolCall: async () => ({ message: "owner" }),
+    scheduleCache: { invalidate: () => {}, applyDelta: () => {} },
+    noteAssistantSpeech: () => {},
+    noteAssistantTurnEnd: () => {},
+    OWNER_MAX_TOOL_CALLS: 6,
+    ownerToolLoopReply: () => "",
+    getErrorMsg: (_l, key) => key,
+    detectExpectedInput: () => "general",
+    logTranscript: () => {},
+    bookingKey,
+    classifyRebookAttempt,
+    CORRECTION_ERROR_MESSAGE,
+    DUPLICATE_REBOOK_MESSAGE,
+    Sentry: { withScope: (fn) => fn({ setTag() {}, setExtras() {}, setExtra() {}, setLevel() {} }), captureMessage: () => {}, captureException: () => {} },
+    normalizeDatetime,
+    CANCEL_NUDGE,
+    RESCHEDULE_SUCCESS_SIGNAL,
+    applyRescheduleToLedger,
+    saveForTransfer: () => {},
+    checkEndCallGuard,
+    END_CALL_PLAYBACK_CAP_MS: 0,
+    END_CALL_TAIL_MS: 0,
+    WebSocket: { OPEN: 1 },
+    Date,
+    fastFlush: () => assert.fail("a text turn never flushes"),
+    beginFastTurn: () => assert.fail("not a fast turn"),
+    NOT_A_REPLY: Object.freeze({ reply: false }),
+    noteFastTurnFailure: () => assert.fail("not a fast turn"),
+    fastAudioBusy: () => assert.fail("not a fast turn"),
+    waitForFastTurnStart: () => assert.fail("not a fast turn"),
+    console: { log: rec("log"), info: rec("info"), warn: rec("warn"), error: rec("error"), debug: rec("debug") },
+  };
+  const { handleUserSpeech } = runSlice({
+    from: "function buildLLMOptions(session, { includeTransfer = false } = {}) {",
+    to: "/**\n * Synthesize text and stream mulaw chunks back to Twilio.",
+    scope,
+    names: ["handleUserSpeech"],
+  });
+  const ws = { readyState: 1, send: () => {}, close: () => {} };
+  return { say: (s, text) => handleUserSpeech(s, ws, text), executed, lines, left: () => queue.length };
+}
+
+const toolResults = (s) => s.messages.filter((m) => m.role === "tool").map((m) => m.content);
+const BOOK = { name: "book_appointment", args: { datetime: "2026-10-19T09:00:00", first_name: "Sami", last_name: "Curry" } };
+
+describe("SCRUM-594 PHASE 2: the fast path's settings", () => {
+  it("keep the whole call in context and turn the guards on", () => {
+    const s = makeSession();
+    assert.equal(s.maxMessages, FAST_MAX_MESSAGES);
+    assert.equal(s.bookingGuards, true);
+    assert.match(s.messages[0].content, /^SYSTEM\nVOICE STYLE/);
+  });
+});
+
+describe("SCRUM-594 PHASE 2 (B2): no booking until the surname was spelled back and confirmed", () => {
+  it("the baseline's booking — straight after hearing 'Sami Curry' — is held: nothing is booked, the model reads what to spell", async () => {
+    const s = makeSession();
+    s.addMessage("assistant", "Can I get your first and last name?");
+    s.addMessage("user", "It's Sami Curry.");
+    const loop = makeLoop({ steps: [{ tools: [BOOK] }, { content: "Just to check, is that C-U-R-R-Y?" }] });
+    await loop.say(s, "Monday at 9 works.");
+    assert.deepEqual(loop.executed, [], "nothing reached the executor");
+    assert.match(toolResults(s)[0], /^DO NOT BOOK YET.*C-U-R-R-Y/);
+    assert.ok(loop.lines.some((l) => l.startsWith("warn| [BookingGuard] Holding book_appointment (spelling)")), loop.lines.join("\n"));
+    assert.deepEqual(s.toolCallAudit.map((a) => a.name), ["book_appointment_held"]);
+  });
+
+  it("a spelled-back, confirmed surname books", async () => {
+    const s = makeSession();
+    const KHOURY = { name: "book_appointment", args: { ...BOOK.args, last_name: "Khoury" } };
+    const loop = makeLoop({ steps: [{ content: "That's K-H-O-U-R-Y?" }, { tools: [KHOURY] }, { content: "You're booked." }] });
+    await loop.say(s, "It's Sami, K h o u r y.");
+    await loop.say(s, "Yes, that's right.");
+    assert.deepEqual(loop.executed.map((e) => [e.name, e.args.last_name]), [["book_appointment", "Khoury"]]);
+  });
+
+  it(`after ${SPELLING_HOLD_CAP} holds the booking goes through (a misread yes never strands a call)`, async () => {
+    const s = makeSession();
+    const steps = [];
+    for (let i = 0; i < SPELLING_HOLD_CAP; i++) steps.push({ tools: [BOOK] }, { content: "Is that C-U-R-R-Y?" });
+    steps.push({ tools: [BOOK] }, { content: "Booked." });
+    const loop = makeLoop({ steps });
+    for (let i = 0; i <= SPELLING_HOLD_CAP; i++) await loop.say(s, "Mm, book it.");
+    assert.equal(loop.executed.filter((e) => e.name === "book_appointment").length, 1);
+  });
+
+  it("a session without the guards books at once (classic and every other pipeline are unchanged)", async () => {
+    const s = makeSession({ fast: false });
+    const loop = makeLoop({ steps: [{ tools: [BOOK] }, { content: "Booked." }] });
+    await loop.say(s, "Monday at 9.");
+    assert.deepEqual(loop.executed.map((e) => e.name), ["book_appointment"]);
+  });
+});
+
+describe("SCRUM-594 PHASE 2 (B3): a second booking while this call holds one is redirected to a move, once", () => {
+  it("nudged to reschedule_appointment with both times; the model's second try goes through", async () => {
+    const s = makeSession();
+    const KHOURY = { name: "book_appointment", args: { ...BOOK.args, last_name: "Khoury" } };
+    const TUESDAY = { name: "book_appointment", args: { ...KHOURY.args, datetime: "2026-10-20T09:00:00" } };
+    const loop = makeLoop({
+      steps: [
+        { content: "That's K-H-O-U-R-Y?" },
+        { tools: [KHOURY] }, { content: "Booked for Monday at 9." },
+        { tools: [TUESDAY] }, { content: "Do you want to move Monday, or keep both?" },
+        { tools: [TUESDAY] }, { content: "Booked Tuesday too." },
+      ],
+    });
+    await loop.say(s, "Sami Khoury.");
+    await loop.say(s, "Yes.");
+    await loop.say(s, "How about Tuesday?");
+    const nudge = toolResults(s).find((m) => m.startsWith("THIS CALLER ALREADY HAS A BOOKING"));
+    assert.ok(nudge, toolResults(s).join("\n"));
+    assert.match(nudge, /reschedule_appointment/);
+    assert.match(nudge, /current_datetime "2026-10-19T09:00:00", new_datetime "2026-10-20T09:00:00"/);
+    assert.equal(loop.executed.filter((e) => e.name === "book_appointment").length, 1, "Tuesday was not booked on the first try");
+    await loop.say(s, "Keep both, please.");
+    assert.equal(loop.executed.filter((e) => e.name === "book_appointment").length, 2);
+  });
+});
+
+describe("SCRUM-594 PHASE 2 (B4): a cancel takes the caller-ID phone and the AI's own confirmation", () => {
+  const CANCEL = { name: "cancel_appointment", args: { datetime: "2026-10-19T09:00:00", name: "Sami Khoury" } };
+
+  it("the AI asked 'cancel the Monday 9 AM booking?', the caller said yes: cancelled at once, with the caller-ID phone", async () => {
+    const s = makeSession();
+    s.addMessage("assistant", "Do you want me to cancel the Monday 9 AM booking?");
+    const loop = makeLoop({ steps: [{ tools: [CANCEL] }, { content: "It's cancelled." }], results: { cancel_appointment: { success: true, message: "Your appointment has been cancelled." } } });
+    await loop.say(s, "Yes please.");
+    assert.deepEqual(loop.executed, [{ name: "cancel_appointment", args: { ...CANCEL.args, phone: CALLER } }]);
+    assert.ok(!toolResults(s).some((m) => m.startsWith("DO NOT CANCEL YET")));
+  });
+
+  it("without that question the gate still holds once; the retry after the handler's refusal is not held again", async () => {
+    const s = makeSession();
+    const loop = makeLoop({
+      steps: [{ tools: [CANCEL] }, { content: "Cancel Monday at 9, yes?" }, { tools: [CANCEL] }, { content: "What's the name on it?" }, { tools: [CANCEL] }, { content: "Cancelled." }],
+      // The handler wants a detail on the first executed attempt, then cancels.
+      results: { cancel_appointment: [{ success: false, message: "For security, could you confirm the name on the booking before I make that change?" }, { success: true, message: "Your appointment has been cancelled." }] },
+    });
+    await loop.say(s, "Cancel it please.");
+    assert.match(toolResults(s)[0], /^DO NOT CANCEL YET/);
+    await loop.say(s, "Yes.");
+    assert.equal(loop.executed.length, 1, "confirmed: executed");
+    await loop.say(s, "Sami Khoury.");
+    assert.equal(loop.executed.length, 2, "the retry for the same booking was not held a second time");
+    assert.equal(toolResults(s).filter((m) => m.startsWith("DO NOT CANCEL YET")).length, 1);
+  });
+
+  it("a session without the guards keeps the old gate and passes no phone", async () => {
+    const s = makeSession({ fast: false });
+    s.addMessage("assistant", "Do you want me to cancel the Monday 9 AM booking?");
+    const loop = makeLoop({ steps: [{ tools: [CANCEL] }, { content: "Confirm?" }] });
+    await loop.say(s, "Yes please.");
+    assert.deepEqual(loop.executed, [], "held, as before");
+    assert.match(toolResults(s)[0], /^DO NOT CANCEL YET/);
+  });
+
+  it("a successful cancel ends the confirmation: the next cancel needs its own", async () => {
+    const s = makeSession();
+    s.addMessage("assistant", "Do you want me to cancel the Monday 9 AM booking?");
+    const loop = makeLoop({
+      steps: [{ tools: [CANCEL] }, { content: "Cancelled." }, { tools: [CANCEL] }, { content: "Confirm?" }],
+      results: { cancel_appointment: { success: true, message: "Your appointment has been cancelled." } },
+    });
+    await loop.say(s, "Yes.");
+    await loop.say(s, "Cancel it again.");
+    assert.equal(loop.executed.length, 1);
+    assert.match(toolResults(s).at(-1), /^DO NOT CANCEL YET/);
+  });
+});
+
+describe("SCRUM-594 PHASE 2 (B5): the call ends only once the caller is done", () => {
+  const END = { name: "end_call", args: { reason: "caller finished" } }; // (a "booking" reason with nothing booked is SCRUM-373's own block)
+
+  it("an end_call after 'Yep, that's all correct. Thanks.' is held: the model is told to ask for anything else", async () => {
+    const s = makeSession();
+    s.addMessage("assistant", "You're booked for Monday at 9. Is everything correct?");
+    const closes = [];
+    const loop = makeLoop({ steps: [{ tools: [END] }, { content: "Great. Anything else I can help with?" }] });
+    await loop.say(s, "Yep, that's all correct. Thanks.");
+    assert.match(toolResults(s)[0], /^DON'T END THE CALL YET/);
+    assert.deepEqual(loop.executed, [], "end_call never ran");
+    assert.equal(s.endedReason, null, closes);
+  });
+
+  it("an end_call after the caller's goodbye runs", async () => {
+    const s = makeSession();
+    s.addMessage("assistant", "Anything else I can help with?");
+    const loop = makeLoop({ steps: [{ tools: [END] }] });
+    await loop.say(s, "No, that's it. Bye!");
+    assert.deepEqual(loop.executed.map((e) => e.name), ["end_call"]);
+    assert.equal(s.endedReason, "end_call_tool");
+  });
+
+  it("a session without the guards hangs up as before", async () => {
+    const s = makeSession({ fast: false });
+    s.addMessage("assistant", "Is everything correct?");
+    const loop = makeLoop({ steps: [{ tools: [END] }] });
+    await loop.say(s, "Yep, that's all correct. Thanks.");
+    assert.deepEqual(loop.executed.map((e) => e.name), ["end_call"]);
+  });
+});
+
+describe("SCRUM-594 PHASE 2 (B6): changing this call's own booking never asks for the name again", () => {
+  it("a reschedule without `name` carries the booked one; after an update_appointment it carries the corrected one", async () => {
+    const s = makeSession();
+    const KHOURY = { name: "book_appointment", args: { ...BOOK.args, last_name: "Curry" } };
+    const FIX = { name: "update_appointment", args: { last_name: "Khoury" } };
+    const MOVE = { name: "reschedule_appointment", args: { current_datetime: "2026-10-19T09:00:00", new_datetime: "2026-10-20T10:00:00", first_name: "Sami", last_name: "Khoury" } };
+    const loop = makeLoop({
+      steps: [
+        { content: "That's C-U-R-R-Y?" },
+        { tools: [KHOURY] }, { content: "Booked." },
+        { tools: [FIX] }, { content: "Fixed." },
+        { tools: [MOVE] }, { content: "Moved." },
+      ],
+      results: { update_appointment: { success: true, message: "NAME CORRECTED: name is now \"Sami Khoury\"." }, reschedule_appointment: { success: true, message: "Done — I've moved your appointment." } },
+    });
+    await loop.say(s, "Sami Curry.");
+    await loop.say(s, "Yes.");
+    await loop.say(s, "Actually it's Khoury, K-H-O-U-R-Y.");
+    await loop.say(s, "Can we make it Tuesday at 10?");
+    const move = loop.executed.find((e) => e.name === "reschedule_appointment");
+    assert.equal(move.args.name, "Sami Khoury");
+  });
+
+  it("a session without the guards passes the model's arguments untouched", async () => {
+    const s = makeSession({ fast: false });
+    s.confirmedBookings = new Map([[bookingKey(BOOK.args), { datetime: BOOK.args.datetime, name: "Sami Curry", at: 1 }]]);
+    const MOVE = { name: "reschedule_appointment", args: { current_datetime: "2026-10-19T09:00:00", new_datetime: "2026-10-20T10:00:00" } };
+    const loop = makeLoop({ steps: [{ tools: [MOVE] }, { content: "Moved." }] });
+    await loop.say(s, "Tuesday at 10 please.");
+    assert.equal("name" in loop.executed[0].args, false);
+  });
+});

@@ -63,7 +63,7 @@ describe("SCRUM-587: owner session wiring", () => {
   });
   it("classic: owner tools, owner greeting, no disclosure, runner before the cancel gate", () => {
     assert.match(src, /function buildLLMOptions\(session, \{ includeTransfer = false \} = \{\}\) \{\n  if \(session\.ownerMode\) return \{ tools: buildOwnerTools\(\) \};/);
-    const loopIdx = src.indexOf('const fnArgs = parseToolArgs(toolCall, "ToolCall");');
+    const loopIdx = src.indexOf('let fnArgs = parseToolArgs(toolCall, "ToolCall");');
     const runnerIdx = src.indexOf("runOwnerToolCall(session, { name: fnName, args: fnArgs }, { executeToolCall, scheduleCache })", loopIdx);
     const cancelIdx = src.indexOf('fnName === "cancel_appointment" && !session.confirmCancel(', loopIdx);
     assert.ok(loopIdx > 0 && runnerIdx > loopIdx && runnerIdx < cancelIdx, `order: loop=${loopIdx} runner=${runnerIdx} cancel=${cancelIdx}`);

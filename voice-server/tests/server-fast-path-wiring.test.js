@@ -63,8 +63,13 @@ function recordingConsole(lines) {
   return { log: rec("log"), info: rec("info"), warn: rec("warn"), error: rec("error"), debug: rec("debug") };
 }
 
-/** server.js's FAST_VOICE_ADDENDUM (phone test F3/F5), evaluated from its own text. */
-const FAST_VOICE_ADDENDUM = runSlice({ from: "const FAST_VOICE_ADDENDUM = [", to: "// Gate B: speculative drafts", scope: {}, names: ["FAST_VOICE_ADDENDUM"] }).FAST_VOICE_ADDENDUM;
+/** server.js's FAST_VOICE_ADDENDUM (phone test F3/F5) and the fast path's conversation settings (PHASE 2), evaluated from its own text. */
+const { FAST_VOICE_ADDENDUM, FAST_MAX_MESSAGES, applyFastConversationSettings } = runSlice({
+  from: "const FAST_VOICE_ADDENDUM = [",
+  to: "// Gate B: speculative drafts",
+  scope: {},
+  names: ["FAST_VOICE_ADDENDUM", "FAST_MAX_MESSAGES", "applyFastConversationSettings"],
+});
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 /** Poll until `cond()` holds. */
 async function until(cond, what, ms = 2000) {
@@ -443,7 +448,7 @@ function classicStart(h, session, effectivePipeline) {
         return h.startFastPath(...args);
       },
       DEEPGRAM_API_KEY: "dg-key",
-      FAST_VOICE_ADDENDUM,
+      applyFastConversationSettings,
       logTranscript: () => {},
       handleUserSpeech: async () => {},
       twilioWs: h.twilioWs,

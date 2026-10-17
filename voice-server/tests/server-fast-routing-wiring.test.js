@@ -49,8 +49,13 @@ function recordingConsole(lines) {
   return { log: rec("log"), info: rec("info"), warn: rec("warn"), error: rec("error"), debug: rec("debug") };
 }
 
-/** server.js's FAST_VOICE_ADDENDUM (phone test F3/F5), evaluated from its own text. */
-const FAST_VOICE_ADDENDUM = runSlice({ from: "const FAST_VOICE_ADDENDUM = [", to: "// Gate B: speculative drafts", scope: {}, names: ["FAST_VOICE_ADDENDUM"] }).FAST_VOICE_ADDENDUM;
+/** server.js's FAST_VOICE_ADDENDUM (phone test F3/F5) and the fast path's conversation settings (PHASE 2), evaluated from its own text. */
+const { FAST_VOICE_ADDENDUM, FAST_MAX_MESSAGES, applyFastConversationSettings } = runSlice({
+  from: "const FAST_VOICE_ADDENDUM = [",
+  to: "// Gate B: speculative drafts",
+  scope: {},
+  names: ["FAST_VOICE_ADDENDUM", "FAST_MAX_MESSAGES", "applyFastConversationSettings"],
+});
 /** Every line the REAL resolver writes (it logs through the global console). */
 function captureConsole(t) {
   const lines = [];
@@ -222,7 +227,7 @@ function classicTop({ effectivePipeline, sessionPipeline = effectivePipeline, ow
       openDeepgramStream: () => { fastPathAtSttOpen = session.fastPath; stt = "nova"; return { readyState: 1 }; },
       startFastPath: () => { fastPathAtSttOpen = session.fastPath; stt = "flux"; },
       DEEPGRAM_API_KEY: "dg",
-      FAST_VOICE_ADDENDUM,
+      applyFastConversationSettings,
       logTranscript: () => {},
       handleUserSpeech: async () => {},
       twilioWs: { readyState: 1, send: () => {}, close: () => {} },
@@ -266,12 +271,18 @@ describe("SCRUM-594: the classic block flags the fast variant, run for real", ()
   it("phone test F3/F5: a classic-fast call's system prompt ends with the voice-style addendum; no other call's changes", () => {
     const fast = classicTop({ effectivePipeline: "classic-fast", prompt: "BASE PROMPT" });
     assert.deepEqual(fast.session.messages, [{ role: "system", content: `BASE PROMPT\n${FAST_VOICE_ADDENDUM}` }], "amended in place, once");
+    // PHASE 2: the whole call in context (B1) and the booking guards (B2–B4), on the fast path only.
+    assert.equal(fast.session.maxMessages, FAST_MAX_MESSAGES);
+    assert.ok(FAST_MAX_MESSAGES > 100, "a 10-minute call fits");
+    assert.equal(fast.session.bookingGuards, true);
     for (const r of [
       classicTop({ effectivePipeline: "classic", prompt: "BASE PROMPT" }),
       classicTop({ effectivePipeline: "gemini-live", prompt: "BASE PROMPT" }),
       classicTop({ effectivePipeline: "classic-fast", owner: true, prompt: "BASE PROMPT" }),
     ]) {
       assert.deepEqual(r.session.messages, [{ role: "system", content: "BASE PROMPT" }], r.session.effectivePipeline);
+      assert.notEqual(r.session.bookingGuards, true, `${r.session.effectivePipeline}: no booking guards`);
+      assert.notEqual(r.session.maxMessages, FAST_MAX_MESSAGES, `${r.session.effectivePipeline}: the classic window`);
     }
   });
 
@@ -280,12 +291,18 @@ describe("SCRUM-594: the classic block flags the fast variant, run for real", ()
       "Speak in short turns: at most two short sentences (about 25 words), then stop and let the caller answer.",
       "Ask one question at a time.",
       "Never repeat an offer or question you already made in your last reply; if the caller didn't answer it, rephrase briefly or move on.",
-      "If you booked an appointment earlier in this call, use the exact name and time you booked when calling reschedule_appointment or cancel_appointment; do not ask the caller to repeat them.",
+      "If you booked an appointment earlier in this call, use the exact name and time you booked when calling reschedule_appointment or cancel_appointment (pass the full name on the booking as name); do not ask the caller to repeat them.",
+      "Don't ask for anything the caller already told you, and don't offer what they already asked for.",
+      "Ask \"anything else?\" once, when their request is done, not after every answer.",
+      "Say goodbye and end the call only after the caller says goodbye or that they're done.",
+      // PHASE 2 (B2/B3)
+      "Before you book, spell the caller's last name back to them letter by letter (for example \"That's S-M-I-T-H?\") and wait for a yes. Speech recognition often mishears surnames.",
+      "If the caller wants a different time for an appointment you booked on this call, move it with reschedule_appointment; book a second one only if they want two.",
     ]) {
       assert.ok(FAST_VOICE_ADDENDUM.includes(`- ${line}\n`) || FAST_VOICE_ADDENDUM.endsWith(`- ${line}`), line);
     }
     const start = src.slice(src.indexOf('case "start": {'), src.indexOf('case "media": {'));
-    const amended = start.indexOf("if (session.fastPath) session.setSystemPrompt(`${session.messages[0]?.content || \"\"}\\n${FAST_VOICE_ADDENDUM}`);");
+    const amended = start.indexOf("if (session.fastPath) applyFastConversationSettings(session);");
     assert.ok(amended > 0, "the classic block amends the prompt");
     assert.ok(amended > start.indexOf('session.setSystemPrompt(currentPrompt + "\\n" + liveSection);'), "after the live schedule");
     assert.ok(amended > start.indexOf("session.setSystemPrompt(systemPrompt + callerContext);"), "after the prompt and caller history");
