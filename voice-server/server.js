@@ -3656,7 +3656,7 @@ const FAST_VOICE_ADDENDUM = [
   "- If you booked an appointment earlier in this call, use the exact name and time you booked when calling reschedule_appointment or cancel_appointment (pass the full name on the booking as name); do not ask the caller to repeat them.",
   "- If the caller wants a different time for an appointment you booked on this call, move it with reschedule_appointment; book a second one only if they want two.",
   "- When they ask to move it to a day (\"how about Tuesday?\"), offer the times free that day and let them pick one before you move it.",
-  "- When the caller asks to cancel, call cancel_appointment straight away: it tells you when to read the booking back to them for a yes.",
+  "- When the caller asks to cancel, call cancel_appointment straight away, without checking their name again: it tells you when to read the booking back to them for a yes.",
 ].join("\n");
 /** SCRUM-594 PHASE 2 (B1): the fast path's context window — the whole call (a 10-minute call is about 100 messages). */
 const FAST_MAX_MESSAGES = 201;
