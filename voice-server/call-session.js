@@ -417,10 +417,15 @@ class CallSession {
     // resolution in its own right (it books the new slot atomically).
     const isFunnel = (t) =>
       t.name === "book_appointment" || t.name === "check_availability" || t.name === "reschedule_appointment";
+    // A SUCCESSFUL cancel AFTER the last funnel step also resolves it: the caller
+    // chose to drop the booking (e.g. "just cancel the one you booked" after a
+    // failed move), so nothing is left unfinished. An EARLIER cancel still can't
+    // mask a later unfinished step: resolution is by time order below.
     const isResolve = (t) =>
       (t.name === "book_appointment" && t.successful) ||
       (t.name === "reschedule_appointment" && t.successful) ||
-      (t.name === "schedule_callback" && t.successful);
+      (t.name === "schedule_callback" && t.successful) ||
+      (t.name === "cancel_appointment" && t.successful);
     const lastFunnelAt = audit.reduce((m, t) => (isFunnel(t) ? Math.max(m, at(t)) : m), 0);
     const lastResolveAt = audit.reduce((m, t) => (isResolve(t) ? Math.max(m, at(t)) : m), 0);
     if (lastFunnelAt > 0) {
@@ -449,9 +454,10 @@ class CallSession {
   lastFunnelStep() {
     const audit = this.toolCallAudit || [];
     const at = (t) => (typeof t.at === "number" ? t.at : 0);
-    // The resolutions hasUnfinishedBooking counts: a successful booking, reschedule or callback.
+    // The resolutions hasUnfinishedBooking counts: a successful booking, reschedule, callback or cancel.
     const isResolve = (t) =>
-      (t.name === "book_appointment" || t.name === "reschedule_appointment" || t.name === "schedule_callback") && t.successful;
+      (t.name === "book_appointment" || t.name === "reschedule_appointment" || t.name === "schedule_callback" ||
+        t.name === "cancel_appointment") && t.successful;
     const lastResolveAt = audit.reduce((m, t) => (isResolve(t) ? Math.max(m, at(t)) : m), 0);
     let last = null;
     for (const t of audit) {

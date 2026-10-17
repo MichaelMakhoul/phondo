@@ -60,6 +60,27 @@ describe("CallSession.hasUnfinishedBooking (SCRUM-373/377)", () => {
     return s;
   };
 
+  it("false after book → failed reschedule → successful cancel (the caller dropped the booking)", () => {
+    const s = withAudit([
+      { name: "check_availability", successful: true, at: 100 },
+      { name: "book_appointment", successful: true, at: 200 },
+      { name: "reschedule_appointment", successful: false, at: 300 },
+      { name: "cancel_appointment", successful: true, at: 400 },
+    ]);
+    assert.equal(s.hasUnfinishedBooking("caller_done"), false);
+    assert.equal(s.lastFunnelStep(), null);
+  });
+
+  it("a cancel BEFORE a later failed reschedule still leaves it unfinished", () => {
+    const s = withAudit([
+      { name: "book_appointment", successful: true, at: 100 },
+      { name: "cancel_appointment", successful: true, at: 200 },
+      { name: "reschedule_appointment", successful: false, at: 300 },
+    ]);
+    assert.equal(s.hasUnfinishedBooking("caller_done"), true);
+    assert.equal(s.lastFunnelStep(), "reschedule_appointment");
+  });
+
   it("false when a booking completed (check → book success)", () => {
     const s = withAudit([
       { name: "check_availability", successful: true, at: 100 },
