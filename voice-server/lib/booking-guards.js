@@ -110,7 +110,7 @@ function isAffirmative(text) {
 }
 
 /** A short "is that right?" after a read-back — not a question about something else. */
-const GENERIC_CHECK = /\b(right|correct|yes|ok(?:ay)?|spell|spelled|spelling)\b/i;
+const GENERIC_CHECK = /\b(right|correct|yes|ok(?:ay)?)\b/i;
 
 /**
  * Does this AI message ask the caller to check `target`'s spelling? Its LAST

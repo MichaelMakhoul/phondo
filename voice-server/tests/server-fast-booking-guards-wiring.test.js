@@ -382,6 +382,18 @@ describe("SCRUM-594 PHASE 2 (B4): the fast path's CancelGate — the caller-ID p
     assert.equal(s.confirmedBookings?.size || 0, 0);
   });
 
+  it("…nor a success that booked nothing (Cliniko's 'what type of appointment?' question)", async () => {
+    const s = makeSession();
+    const KHOURY = { name: "book_appointment", args: { ...BOOK.args, last_name: "Khoury" } };
+    const loop = makeLoop({
+      steps: [{ content: "That's K-H-O-U-R-Y?" }, { tools: [KHOURY] }, { content: "What type of appointment?" }],
+      results: { book_appointment: { success: true, message: "Before I check availability, what type of appointment would you like?" } },
+    });
+    await loop.say(s, "Sami Khoury.");
+    await loop.say(s, "Yes.");
+    assert.equal(s.confirmedBookings?.size || 0, 0);
+  });
+
   it("…nor a booking result without the handler's success flag, whatever its words", async () => {
     const s = makeSession();
     const KHOURY = { name: "book_appointment", args: { ...BOOK.args, last_name: "Khoury" } };

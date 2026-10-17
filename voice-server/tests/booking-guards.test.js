@@ -156,6 +156,7 @@ describe("surnameSpellingConfirmed", () => {
     assert.equal(surnameSpellingConfirmed([ai("K-H-O-U-R-Y. Is that the correct spelling of your last name?"), caller("Yes.")], "Khoury").confirmed, true);
     assert.equal(surnameSpellingConfirmed([ai("Got it, K-H-O-U-R-Y. Is the number you're calling from the right one?"), caller("Yes.")], "Khoury").reason, "not-asked");
     assert.equal(surnameSpellingConfirmed([ai("K-H-O-U-R-Y. Could you spell your first name for me?"), caller("Sure.")], "Khoury").reason, "not-asked");
+    assert.equal(surnameSpellingConfirmed([ai("K-H-O-U-R-Y. How do you spell your email?"), caller("Sure, it's sami at gmail.")], "Khoury").reason, "not-asked");
   });
 
   it("a read-back with no question, answered yes, confirms", () => {
@@ -293,6 +294,42 @@ describe("fastCancelGate (structural: no 'yes' is read off the transcript)", () 
     assert.equal(fastCancelGate(s, MON, 2000).proceed, true); // the handler: "which one?" — the model picks 9 AM
     s.clearCancelConfirmation({ datetime: "2026-10-19T09:00:00" }); // the 9 AM cancel went through
     assert.equal(fastCancelGate(s, MON, 3000).proceed, false, "the 2 PM needs its own read-back");
+  });
+
+  it("re-review 3 (P1): a cancel first held with only a phone is not confirmed by an attempt that names a booking — that booking gets its own read-back", () => {
+    const PHONE = { phone: "+61412555013" };
+    const TUE_2 = { phone: "+61412555013", datetime: "2026-10-20T14:00:00" };
+    const s = session([caller("I need to cancel my booking.")]);
+    assert.equal(fastCancelGate(s, PHONE, 1000).proceed, false);
+    say(s, "assistant", "Sure, which day is it on?");
+    say(s, "user", "Tuesday.");
+    assert.deepEqual(fastCancelGate(s, TUE_2, 2000), { proceed: false, via: null, reason: "first-attempt", dropped: 0 });
+    say(s, "assistant", "Cancel Tuesday the 20th at 2 PM?");
+    say(s, "user", "Yes.");
+    assert.equal(fastCancelGate(s, TUE_2, 3000).proceed, true);
+    // …and by an attempt that names only the day
+    const t = session([caller("I need to cancel my booking.")]);
+    assert.equal(fastCancelGate(t, PHONE, 1000).proceed, false);
+    say(t, "assistant", "Sure, which day is it on?");
+    say(t, "user", "Tuesday.");
+    assert.equal(fastCancelGate(t, { phone: "+61412555013", date: "2026-10-20" }, 2000).proceed, false);
+  });
+
+  it("re-review 3 (P2): a less specific attempt never rewrites what a held cancel is for", () => {
+    const s = session([caller("Cancel Monday at 9.")]);
+    assert.equal(fastCancelGate(s, MON_9, 1000).proceed, false);
+    assert.equal(fastCancelGate(s, { phone: "+61412555013" }, 1001).proceed, false);
+    say(s, "assistant", "Cancel Monday at 9 AM?");
+    say(s, "user", "Actually it's Tuesday at 2.");
+    assert.equal(fastCancelGate(s, { phone: "+61412555013", datetime: "2026-10-20T14:00:00" }, 2000).proceed, false, "Tuesday was never read back");
+  });
+
+  it("re-review 3 (P1b): a date-only hold is not confirmed by a timed attempt that day", () => {
+    const s = session([caller("Cancel Monday.")]);
+    assert.equal(fastCancelGate(s, { date: "2026-10-19" }, 1000).proceed, false);
+    say(s, "assistant", "Which time on Monday?");
+    say(s, "user", "The 2 PM.");
+    assert.equal(fastCancelGate(s, { datetime: "2026-10-19T14:00:00" }, 2000).proceed, false);
   });
 
   it("says why it held: no identifier, a first attempt, or waiting for the caller", () => {

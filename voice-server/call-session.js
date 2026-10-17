@@ -414,9 +414,10 @@ class CallSession {
   /**
    * SCRUM-594 PHASE 2 (B4): the CancelGate on the fast path (see confirmCancel,
    * and lib/booking-guards.js fastCancelGate, which passes the model's OWN
-   * arguments), with why it proceeded or held. Per BOOKING — the exact time
-   * ("t:") when both attempts carry one, else the date, else a shared phone —
-   * so two cancels in one reply each keep their own hold. A held cancel is
+   * arguments), with why it proceeded or held. Per BOOKING, at the same
+   * specificity — the exact time ("t:"), else the date, else a shared phone —
+   * so two cancels in one reply each keep their own hold, and a phone-only or
+   * date-only hold never confirms a cancel that names a booking. A held cancel is
    * confirmed only by the same booking's attempt after the caller has spoken
    * again (`callerTurn`); a confirmed one stays confirmed for exactly that
    * booking across a handler retry. A caller decline at transcript index
@@ -453,9 +454,12 @@ class CallSession {
       return { proceed: false, via: null, reason: "caller-declined", dropped };
     }
     const key = (/** @type {string[]} */ ks, /** @type {string} */ kind) => ks.find((k) => k.startsWith(kind));
+    // The same booking only at the same specificity: a phone-only or date-only
+    // hold never confirms an attempt that names a booking it didn't (that booking
+    // was never read back).
     const sameBooking = (/** @type {string[]} */ held) => {
-      if (key(held, "t:") && key(keys, "t:")) return key(held, "t:") === key(keys, "t:");
-      if (key(held, "d:") && key(keys, "d:")) return key(held, "d:") === key(keys, "d:");
+      if (key(held, "t:") || key(keys, "t:")) return Boolean(key(held, "t:") && key(held, "t:") === key(keys, "t:"));
+      if (key(held, "d:") || key(keys, "d:")) return Boolean(key(held, "d:") && key(held, "d:") === key(keys, "d:"));
       return held.some((k) => keys.includes(k));
     };
     const exactlySameBooking = (/** @type {string[]} */ held) => {
@@ -479,7 +483,7 @@ class CallSession {
         this._fastConfirmedCancels.set(id, { keys, at: nowMs, transcriptAt: options.transcriptAt });
         return { proceed: true, via: "retry", reason: null, dropped };
       }
-      this._fastPendingCancels.set(heldId, { ...rec, keys, at: nowMs });
+      this._fastPendingCancels.set(heldId, { ...rec, at: nowMs }); // what it's for never changes
       return { proceed: false, via: null, reason: "awaiting-caller", dropped };
     }
     this._fastPendingCancels.set(id, { keys, at: nowMs, callerTurn: options.callerTurn, transcriptAt: options.transcriptAt });

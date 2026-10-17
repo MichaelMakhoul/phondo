@@ -4301,12 +4301,13 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
           }
 
           // SCRUM-257: track confirmed bookings (classic pipeline). SCRUM-594 PHASE 2:
-          // on the fast path only a booking the handler confirmed — "That practitioner
-          // is already booked at this time" is a failure (B3, B6 and the end_call
-          // nudge read this ledger).
-          const bookedOk = session.bookingGuards
-            ? toolResult?.success === true
-            : resultMessage.includes("confirmed") || resultMessage.includes("booked") || resultMessage.includes("confirmation");
+          // on the fast path only a booking the handler confirmed (success === true)
+          // — "That practitioner is already booked at this time" is a failure (B3,
+          // B6 and the end_call nudge read this ledger)…
+          const bookedWords = resultMessage.includes("confirmed") || resultMessage.includes("booked") || resultMessage.includes("confirmation");
+          // (gate review 3) and a success that booked nothing — Cliniko's "Before I
+          // check availability, what type of appointment…?" — is not a booking either.
+          const bookedOk = session.bookingGuards ? toolResult?.success === true && bookedWords : bookedWords;
           if (fnName === "book_appointment" && bookedOk) {
             if (!session.confirmedBookings) session.confirmedBookings = new Map();
             const bookKey = bookingKey(fnArgs);
