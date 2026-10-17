@@ -406,6 +406,21 @@ describe("SCRUM-594 PHASE 2 (B4): the fast path's CancelGate — the caller-ID p
     assert.equal(s.confirmedBookings?.size || 0, 0);
   });
 
+  it("a lookup that found the caller's booking is marked found (fast path only); a no-match lookup is not", async () => {
+    const LOOKUP = { name: "lookup_appointment", args: { name: "Sami Khoury" } };
+    const FOUND = { success: true, message: "I found your appointment: Monday 19 October 2026 at 10:00 am. Is there anything else you'd like to know about it?" };
+    const NO_MATCH = { success: true, message: "I couldn't find a match under that name. Sometimes a name gets misheard on a call — could you spell your last name for me?" };
+    const run = async (fast, result) => {
+      const s = makeSession({ fast });
+      const loop = makeLoop({ steps: [{ tools: [LOOKUP] }, { content: "Monday at 10." }], results: { lookup_appointment: result } });
+      await loop.say(s, "When's my booking?");
+      return s.toolCallAudit.find((a) => a.name === "lookup_appointment");
+    };
+    assert.equal((await run(true, FOUND)).found, true);
+    assert.equal((await run(true, NO_MATCH)).found, undefined);
+    assert.equal((await run(false, FOUND)).found, undefined, "Gemini/classic audit entries are unchanged");
+  });
+
   it("a session without the guards keeps the old gate and passes no phone", async () => {
     const s = makeSession({ fast: false });
     s.addMessage("assistant", "Do you want me to cancel the Monday 9 AM booking?");

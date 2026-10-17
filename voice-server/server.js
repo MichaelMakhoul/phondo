@@ -4297,6 +4297,8 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
             } else if (fnName === "cancel_appointment") {
               auditEntry.dt = normalizeDatetime(fnArgs?.datetime || fnArgs?.date) || undefined;
               auditEntry.codeArg = String(fnArgs?.confirmation_code || "").trim() || undefined;
+            } else if (fnName === "lookup_appointment" && session.bookingGuards && toolResult?.success === true && /^I found (?:your appointment|\d+ upcoming appointments)\b/.test(resultMessage)) {
+              auditEntry.found = true; // SCRUM-594 (F4): the caller has a booking — see hasUnfinishedBooking
             }
             session.toolCallAudit.push(auditEntry);
           }

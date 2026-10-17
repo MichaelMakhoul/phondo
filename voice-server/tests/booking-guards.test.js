@@ -204,6 +204,8 @@ describe("declinesCancel (a caller's clear no to a cancel)", () => {
     // a no to the booking read back, asking for another one
     "No, I mean the one you just booked. Please cancel that.",
     "Yeah nah, it's all good.", "Actually, no.",
+    // confirmation review: "wrong one" is a no to the booking read back
+    "Not that one, the Tuesday one.", "Wrong one — Tuesday.", "That's not the one.", "That's wrong.", "That's not right.", "Don't do it.", "Not the Monday one.",
   ]) {
     it(`"${no}" takes it back`, () => assert.equal(declinesCancel(no), true));
   }
@@ -212,6 +214,7 @@ describe("declinesCancel (a caller's clear no to a cancel)", () => {
     "No, just cancel it.", "Yes.", "I'll keep it handy.", "Yep, that's the one.",
     "Yes please, I can't keep the appointment.",
     "No dramas.", "No probs, go for it.", "Yes, no worries.", "Yeah, no problem.", "Yeah, nah, yeah, go ahead.",
+    "That's right.", "That's the one, yes.",
   ]) {
     it(`"${yes}" does not`, () => assert.equal(declinesCancel(yes), false));
   }
