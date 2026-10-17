@@ -1679,6 +1679,12 @@ describe("the answer must start after the question does (R14″)", () => {
     assert.deepEqual(only.calls, DROPPED);
   });
 
+  it("a later StartOfTurn of the same turn does not move its start", () => {
+    const h = FAST(Q);
+    h.feed({ ...ev("StartOfTurn", 0, "Yes"), receivedAt: 10_100 }, { ...ev("StartOfTurn", 0, "Yes"), receivedAt: 10_900 }, { ...ev("EndOfTurn", 0, "Yes."), receivedAt: 11_200 });
+    assert.deepEqual(h.calls, DROPPED);
+  });
+
   it("each turn has its own start", () => {
     const h = FAST(Q);
     h.feed({ ...ev("StartOfTurn", 0, "Okay"), receivedAt: 10_100 }, { ...ev("EndOfTurn", 0, "Okay."), receivedAt: 10_600 });

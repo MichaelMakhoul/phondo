@@ -1,5 +1,10 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
+
+// Hermetic: the module reads DEMO_MAX_CALL_MINUTES when it loads, so a developer's
+// own setting must not reach the "3 minutes" tests below.
+delete process.env.DEMO_MAX_CALL_MINUTES;
+
 const {
   DEMO_ORG_ID,
   MAX_TEST_CALL_DURATION_MS,
@@ -52,4 +57,20 @@ test("DEMO_MAX_CALL_MINUTES: a bad value warns and keeps 3 minutes", () => {
   assert.equal(warned.length, 6);
   assert.match(warned[0], /^\[DemoLine\] DEMO_MAX_CALL_MINUTES "0" is not a whole number from 1 to 15 — using 3 min$/);
   assert.ok(!warned[5].includes("[60]"));
+});
+
+test("DEMO_MAX_CALL_MINUTES is read when the module loads (the Fly secret sets it; a restart applies it)", () => {
+  const modulePath = require.resolve("../lib/session-limits");
+  const previous = process.env.DEMO_MAX_CALL_MINUTES;
+  try {
+    process.env.DEMO_MAX_CALL_MINUTES = "8";
+    delete require.cache[modulePath];
+    const fresh = require("../lib/session-limits");
+    assert.equal(fresh.MAX_DEMO_CALL_DURATION_MS, 8 * 60 * 1000);
+    assert.equal(fresh.getMaxSessionDurationMs(fresh.DEMO_ORG_ID), 8 * 60 * 1000);
+  } finally {
+    if (previous === undefined) delete process.env.DEMO_MAX_CALL_MINUTES;
+    else process.env.DEMO_MAX_CALL_MINUTES = previous;
+    delete require.cache[modulePath];
+  }
 });
