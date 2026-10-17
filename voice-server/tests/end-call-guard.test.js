@@ -5,13 +5,15 @@
 // These pin the verdicts, the one-nudge rule, the audit entry and the alert
 // levels (Grafana routes on [ALERT:warning] vs [ALERT:error]), and that the
 // port is verbatim: the Gemini inline guard in server.js stays the source text.
+// One deliberate difference (phone test F1): after a failed reschedule the nudge
+// is PR #442's text, which #442 also brings to the Gemini guard on develop.
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const { checkEndCallGuard, END_CALL_BLOCKED_MESSAGE } = require("../lib/end-call-guard");
+const { checkEndCallGuard, END_CALL_BLOCKED_MESSAGE, END_CALL_BLOCKED_RESCHEDULE_MESSAGE } = require("../lib/end-call-guard");
 const { CallSession } = require("../call-session");
 
 const serverSrc = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
@@ -28,6 +30,13 @@ function session(audit = []) {
   return s;
 }
 const FUNNEL = { name: "check_availability", successful: true, at: 1 };
+/** The Gemini inline guard: server.js's end_call branch of onToolCall. */
+function geminiGuardSrc() {
+  const start = serverSrc.indexOf('if (toolCall.name === "end_call" && session.hasUnfinishedBooking(toolCall.args?.reason)) {');
+  const end = serverSrc.indexOf("// SCRUM-372: cancel-confirmation gate", start);
+  assert.ok(start > 0 && end > start, "the Gemini inline guard is still in server.js");
+  return serverSrc.slice(start, end);
+}
 
 describe("SCRUM-594: checkEndCallGuard", () => {
   it("lets a call with no booking flow end — no audit entry, no alert", (t) => {
@@ -90,10 +99,7 @@ describe("SCRUM-594: checkEndCallGuard", () => {
   });
 
   it("is the Gemini guard verbatim: same nudge text, log lines and alert texts and levels", () => {
-    const start = serverSrc.indexOf('if (toolCall.name === "end_call" && session.hasUnfinishedBooking(toolCall.args?.reason)) {');
-    const end = serverSrc.indexOf("// SCRUM-372: cancel-confirmation gate", start);
-    assert.ok(start > 0 && end > start, "the Gemini inline guard is still in server.js");
-    const gemini = serverSrc.slice(start, end);
+    const gemini = geminiGuardSrc();
     const guardSrc = fs.readFileSync(path.join(__dirname, "..", "lib", "end-call-guard.js"), "utf8");
     assert.ok(gemini.includes(JSON.stringify(END_CALL_BLOCKED_MESSAGE)), "the nudge text drifted from the Gemini guard's");
     for (const text of [
@@ -108,5 +114,87 @@ describe("SCRUM-594: checkEndCallGuard", () => {
       assert.ok(guardSrc.includes(text), `lib/end-call-guard.js does not say: ${text}`);
     }
     assert.doesNotMatch(guardSrc, /setReasonTag|setTag\("reason"/, "no reason tag: the server.js census pins 3 reason-tagged sites, and the Gemini guard has none");
+  });
+
+  it("after a failed reschedule: PR #442's text (a deliberate divergence from this branch's Gemini guard until #442 lands)", () => {
+    // Phone test F1: the owner's first fast-path call. The AI booked 9:30, a reschedule
+    // to 10:30 failed, and the nudge's "the caller has NO appointment" had it tell the
+    // caller there was no appointment on the system. Word for word #442's text.
+    assert.equal(
+      END_CALL_BLOCKED_RESCHEDULE_MESSAGE,
+      "CANNOT END CALL YET: the appointment change was NOT completed — the caller's existing appointment is unchanged. Either call reschedule_appointment again with the confirmed details, or tell the caller — in their language — that you couldn't change it and call schedule_callback to take a message. Only call end_call AFTER one of those succeeds.",
+    );
+    const gemini = geminiGuardSrc();
+    if (gemini.includes("session.lastFunnelStep()")) {
+      // #442 has landed (it words the Gemini guard by lastFunnelStep): the two agree again.
+      assert.ok(gemini.includes(JSON.stringify(END_CALL_BLOCKED_RESCHEDULE_MESSAGE)), "the reschedule nudge drifted from the Gemini guard's");
+    } else {
+      // Until then, the Gemini guard here still says NO appointment after a failed reschedule.
+      assert.ok(!gemini.includes("the appointment change was NOT completed"), "a reschedule wording without lastFunnelStep: update this test");
+    }
+  });
+});
+
+describe("phone test F1: the nudge says what is still open", () => {
+  const book = (at, successful = false) => ({ name: "book_appointment", successful, at });
+  const move = (at, successful = false) => ({ name: "reschedule_appointment", successful, at });
+  const look = (at) => ({ name: "check_availability", successful: true, at });
+
+  it("book, then a failed reschedule: the existing appointment is unchanged, never 'NO appointment'", (t) => {
+    const lines = captureConsole(t);
+    const s = session([look(1), book(2, true), move(3)]);
+    const verdict = checkEndCallGuard(s, "caller_done");
+    assert.deepEqual(verdict, { allow: false, message: END_CALL_BLOCKED_RESCHEDULE_MESSAGE });
+    assert.doesNotMatch(verdict.message, /NO appointment/);
+    assert.equal(s.toolCallAudit.at(-1).name, "end_call_blocked", "the same audit entry");
+    assert.equal(lines.length, 2, "the same log line and warning alert");
+    assert.match(lines[1], /^warn\| \[ALERT:warning\] \[hallucination_guard\] end_call blocked/);
+  });
+
+  it("a failed book: the book text", (t) => {
+    captureConsole(t);
+    assert.deepEqual(checkEndCallGuard(session([look(1), book(2)]), "booking_complete"), { allow: false, message: END_CALL_BLOCKED_MESSAGE });
+  });
+
+  it("the latest unresolved write decides, by time: an availability check after a failed reschedule does not hide it", (t) => {
+    captureConsole(t);
+    assert.equal(checkEndCallGuard(session([book(1, true), move(2), look(3)]), "x").message, END_CALL_BLOCKED_RESCHEDULE_MESSAGE);
+    assert.equal(checkEndCallGuard(session([move(1), book(2)]), "x").message, END_CALL_BLOCKED_MESSAGE);
+    assert.equal(checkEndCallGuard(session([book(2), move(3)]), "x").message, END_CALL_BLOCKED_RESCHEDULE_MESSAGE);
+  });
+
+  // Ported from #442 (tests/server-booking-precheck-wiring.test.js), which adds the same method.
+  describe("CallSession.lastFunnelStep: the write an unfinished booking funnel is waiting on", () => {
+    const step = (audit) => {
+      const s = new CallSession("CAtest");
+      s.toolCallAudit = audit;
+      return s.lastFunnelStep();
+    };
+
+    it("null with no booking write at all, or only availability checks", () => {
+      assert.equal(step([]), null);
+      assert.equal(step([look(1), look(2)]), null);
+    });
+
+    it("the most recent unresolved write, by time", () => {
+      assert.equal(step([look(1), book(2)]), "book_appointment");
+      assert.equal(step([book(1), move(2)]), "reschedule_appointment");
+      assert.equal(step([move(1), book(2)]), "book_appointment");
+      assert.equal(step([move(2), book(1)]), "reschedule_appointment", "by `at`, not by array order");
+    });
+
+    it("an availability check after a held reschedule does not hide it", () => {
+      assert.equal(step([move(1), look(2)]), "reschedule_appointment");
+    });
+
+    it("a held reschedule after a confirmed booking: the booking stands, the change is what is open", () => {
+      assert.equal(step([book(1, true), move(2)]), "reschedule_appointment");
+    });
+
+    it("writes resolved by a later success (or a callback) are not open", () => {
+      assert.equal(step([move(1), move(2, true)]), null);
+      assert.equal(step([book(1), book(2, true)]), null);
+      assert.equal(step([move(1), { name: "schedule_callback", successful: true, at: 2 }]), null);
+    });
   });
 });

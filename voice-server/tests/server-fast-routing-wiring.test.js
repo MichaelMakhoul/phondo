@@ -48,6 +48,9 @@ function recordingConsole(lines) {
   const rec = (m) => (...args) => lines.push(`${m}| ${args.map((a) => (typeof a === "string" ? a : util.inspect(a, { depth: 4 }))).join(" ")}`);
   return { log: rec("log"), info: rec("info"), warn: rec("warn"), error: rec("error"), debug: rec("debug") };
 }
+
+/** server.js's FAST_VOICE_ADDENDUM (phone test F3/F5), evaluated from its own text. */
+const FAST_VOICE_ADDENDUM = runSlice({ from: "const FAST_VOICE_ADDENDUM = [", to: "// Gate B: speculative drafts", scope: {}, names: ["FAST_VOICE_ADDENDUM"] }).FAST_VOICE_ADDENDUM;
 /** Every line the REAL resolver writes (it logs through the global console). */
 function captureConsole(t) {
   const lines = [];
@@ -203,9 +206,10 @@ describe("SCRUM-594: pipeline selection, run for real", () => {
 
 // ─── The classic block's first statement, run for real ──────────────────────
 
-function classicTop({ effectivePipeline, sessionPipeline = effectivePipeline, owner = false }) {
+function classicTop({ effectivePipeline, sessionPipeline = effectivePipeline, owner = false, prompt = "You are Dave's receptionist." }) {
   const session = makeSession({ owner, calledNumber: DEMO });
   session.effectivePipeline = sessionPipeline;
+  session.setSystemPrompt(prompt); // the start handler has built it by now (context, caller history, live schedule)
   let fastPathAtSttOpen = "not opened";
   /** Which STT the block opened: "nova" (openDeepgramStream) or "flux" (Task 5's startFastPath). */
   let stt = null;
@@ -218,6 +222,7 @@ function classicTop({ effectivePipeline, sessionPipeline = effectivePipeline, ow
       openDeepgramStream: () => { fastPathAtSttOpen = session.fastPath; stt = "nova"; return { readyState: 1 }; },
       startFastPath: () => { fastPathAtSttOpen = session.fastPath; stt = "flux"; },
       DEEPGRAM_API_KEY: "dg",
+      FAST_VOICE_ADDENDUM,
       logTranscript: () => {},
       handleUserSpeech: async () => {},
       twilioWs: { readyState: 1, send: () => {}, close: () => {} },
@@ -256,6 +261,35 @@ describe("SCRUM-594: the classic block flags the fast variant, run for real", ()
   it("a Gemini selection that fell back to classic (no GEMINI_API_KEY) is recorded as the classic call it is", () => {
     assert.equal(classicTop({ effectivePipeline: "gemini-live" }).session.effectivePipeline, "classic");
     assert.equal(classicTop({ effectivePipeline: "classic" }).session.effectivePipeline, "classic");
+  });
+
+  it("phone test F3/F5: a classic-fast call's system prompt ends with the voice-style addendum; no other call's changes", () => {
+    const fast = classicTop({ effectivePipeline: "classic-fast", prompt: "BASE PROMPT" });
+    assert.deepEqual(fast.session.messages, [{ role: "system", content: `BASE PROMPT\n${FAST_VOICE_ADDENDUM}` }], "amended in place, once");
+    for (const r of [
+      classicTop({ effectivePipeline: "classic", prompt: "BASE PROMPT" }),
+      classicTop({ effectivePipeline: "gemini-live", prompt: "BASE PROMPT" }),
+      classicTop({ effectivePipeline: "classic-fast", owner: true, prompt: "BASE PROMPT" }),
+    ]) {
+      assert.deepEqual(r.session.messages, [{ role: "system", content: "BASE PROMPT" }], r.session.effectivePipeline);
+    }
+  });
+
+  it("phone test F3/F5: the addendum's words, appended after the start handler has built the prompt (live schedule included)", () => {
+    for (const line of [
+      "Speak in short turns: at most two short sentences (about 25 words), then stop and let the caller answer.",
+      "Ask one question at a time.",
+      "Never repeat an offer or question you already made in your last reply; if the caller didn't answer it, rephrase briefly or move on.",
+      "If you booked an appointment earlier in this call, use the exact name and time you booked when calling reschedule_appointment or cancel_appointment; do not ask the caller to repeat them.",
+    ]) {
+      assert.ok(FAST_VOICE_ADDENDUM.includes(`- ${line}\n`) || FAST_VOICE_ADDENDUM.endsWith(`- ${line}`), line);
+    }
+    const start = src.slice(src.indexOf('case "start": {'), src.indexOf('case "media": {'));
+    const amended = start.indexOf("if (session.fastPath) session.setSystemPrompt(`${session.messages[0]?.content || \"\"}\\n${FAST_VOICE_ADDENDUM}`);");
+    assert.ok(amended > 0, "the classic block amends the prompt");
+    assert.ok(amended > start.indexOf('session.setSystemPrompt(currentPrompt + "\\n" + liveSection);'), "after the live schedule");
+    assert.ok(amended > start.indexOf("session.setSystemPrompt(systemPrompt + callerContext);"), "after the prompt and caller history");
+    assert.ok(amended < start.indexOf("startFastPath("), "before Flux opens: no turn is answered without it");
   });
 });
 

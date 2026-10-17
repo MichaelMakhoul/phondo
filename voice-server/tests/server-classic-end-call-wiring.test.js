@@ -27,7 +27,7 @@ const { forwardingFallbackEligible } = require("../lib/transfer-eligibility");
 const { buildOwnerTools } = require("../lib/owner-tools");
 const { runOwnerToolCall, OWNER_MAX_TOOL_CALLS, ownerToolLoopReply } = require("../lib/owner-tool-runner");
 const { noteAssistantSpeech, noteAssistantTurnEnd } = require("../lib/owner-turn-stamps");
-const { checkEndCallGuard, END_CALL_BLOCKED_MESSAGE } = require("../lib/end-call-guard");
+const { checkEndCallGuard, END_CALL_BLOCKED_MESSAGE, END_CALL_BLOCKED_RESCHEDULE_MESSAGE } = require("../lib/end-call-guard");
 
 const src = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
 
@@ -243,6 +243,22 @@ describe("SCRUM-594: classic end_call hangs up", () => {
     assert.ok(!c.calls.some((x) => x[0] === "executeToolCall" && x[1] === "end_call"), "a blocked end_call is never executed");
     assert.deepEqual(c.spoken().at(-1), "Sorry — I couldn't finish that booking. Can I take a message?");
     assert.ok(alerts.some((l) => l.startsWith("warn| [ALERT:warning] [hallucination_guard] end_call blocked")), alerts.join("\n"));
+  });
+
+  it("phone test F1: after a booking and a failed reschedule, the nudge says the appointment is unchanged — never 'NO appointment'", async (t) => {
+    captureConsole(t);
+    const s = makeSession();
+    s.toolCallAudit.push(
+      { name: "check_availability", successful: true, at: 1 },
+      { name: "book_appointment", successful: true, at: 2 }, // 9:30 booked …
+      { name: "reschedule_appointment", successful: false, at: 3 }, // … the move to 10:30 refused
+    );
+    const c = makeClassic({ steps: [{ tools: [END("caller done")] }, { content: "I couldn't move it, but you're still booked for 9:30. Shall I take a message?" }] });
+    await c.handleUserSpeech(s, "okay, thanks, bye");
+    assert.deepEqual(toolMessages(s), [END_CALL_BLOCKED_RESCHEDULE_MESSAGE]);
+    assert.doesNotMatch(toolMessages(s)[0], /NO appointment/);
+    assert.deepEqual(c.closes(), []);
+    assert.equal(c.llmCalls(), 2, "the model reads the nudge");
   });
 
   it("nudge, then allow: the next end_call on the same call hangs up (and pages at error level)", async (t) => {

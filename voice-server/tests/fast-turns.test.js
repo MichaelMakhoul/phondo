@@ -16,6 +16,7 @@
  *   3. the speakerphone echo filter: the engine's use of it, then isLikelyEcho and
  *      speechTokens (the matching) on their own
  *   4. INTERRUPT_RE and wordCount, and their parity with the classic echo rule
+ *      (and, in section 11, the fast path's own interrupt words)
  *   5. recorded Flux streams (flux-aura-api.md A.11) replayed end to end
  *   6. purity: no clock, timers, console or imports
  */
@@ -25,7 +26,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const { createFastTurnEngine, INTERRUPT_RE, wordCount, isLikelyEcho, speechTokens, isBackchannel, endsWithQuestion } = require("../lib/fast-turns");
+const { createFastTurnEngine, INTERRUPT_RE, FAST_INTERRUPT_RE, wordCount, isLikelyEcho, speechTokens, isBackchannel, endsWithQuestion } = require("../lib/fast-turns");
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1888,5 +1889,75 @@ describe("onAiIdle(): a short answer to a long question is committed once the AI
     const h = droppedYes();
     h.engine.reset();
     assert.equal(h.engine.onAiIdle(IDLE_AFTER), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 11. Phone test F2: the fast path's own interrupt words ("Sorry?" over a long reply)
+// ---------------------------------------------------------------------------
+
+describe("the fast path's own interrupt words (phone test F2)", () => {
+  // The owner's first call: "Sorry." over a reply like this one waited for it to finish.
+  const LONG_REPLY = "I'm sorry, I can't make that change, because the details don't match the booking on file. I can take a message so Dave can ring you back and sort out the 10:30 time. Would you like me to do that?";
+  const LONG = { aiSpeaking: true, aiSpeakingText: LONG_REPLY, aiRemainingMs: 9_000, questionAudioStartAt: 4_000 };
+  // One phrase per alternative, each two words or fewer: the interrupt rule, not the word count, lets it through.
+  const FAST_INTERRUPTS = ["Sorry?", "Sorry.", "Sorry what?", "Pardon?", "What?", "Huh?", "Repeat that.", "Say that again?"];
+  // Near misses: the word must be the first, and whole.
+  const NOT_FAST_INTERRUPTS = ["Whatever.", "Sorted.", "Huge.", "Repeat", "Okay, sorry", "Pardonne"];
+
+  it("is a list of its own: INTERRUPT_RE, the classic copy, is unchanged", () => {
+    assert.equal(FAST_INTERRUPT_RE.source, String.raw`^(sorry|pardon|what|huh|say that again|repeat that)\b`);
+    assert.equal(FAST_INTERRUPT_RE.flags, "i");
+    for (const said of FAST_INTERRUPTS) assert.equal(INTERRUPT_RE.test(said), false, said);
+    for (const said of NOT_FAST_INTERRUPTS) assert.equal(FAST_INTERRUPT_RE.test(said), false, said);
+  });
+
+  it('"Sorry?" over a long reply: barge-in at the end of its turn, then it is answered', () => {
+    const h = HEARD(LONG);
+    h.feed(ev("StartOfTurn", 0, "Sorry"), ev("Update", 0, "Sorry?"));
+    assert.deepEqual(h.calls, [], "a short candidate is judged at its EndOfTurn (R12a′)");
+    h.feed(ev("EndOfTurn", 0, "Sorry?"));
+    assert.deepEqual(h.calls, [["bargeIn"], ["commit", "Sorry?", 0, "model"]]);
+  });
+
+  it("every one of them barges in, then is answered: while the AI speaks, thinks, or both", () => {
+    for (const state of [LONG, PROCESSING, BUSY]) {
+      for (const said of FAST_INTERRUPTS) {
+        const h = HEARD(state);
+        h.feed(ev("StartOfTurn", 0, said), ev("EndOfTurn", 0, said));
+        assert.deepEqual(h.calls, [["bargeIn"], ["commit", said, 0, "model"]], `${said} ${JSON.stringify(state)}`);
+      }
+    }
+  });
+
+  it("in the tail of a question too: it cuts the question, then is answered (R14″ lets interrupt words barge in)", () => {
+    for (const said of FAST_INTERRUPTS) {
+      const h = HEARD(ASKING);
+      h.feed(ev("StartOfTurn", 0, said), ev("EndOfTurn", 0, said));
+      assert.deepEqual(h.calls, [["bargeIn"], ["commit", said, 0, "model"]], said);
+    }
+  });
+
+  it('"Sorry" is never dropped: no backchannel, and too short to judge as echo, even when the AI said sorry', () => {
+    for (const said of ["Sorry", "Sorry.", "Sorry?", "Sorry, sorry", "Sorry, yeah"]) assert.equal(isBackchannel(said), false, said);
+    assert.equal(isLikelyEcho("Sorry.", LONG_REPLY), false);
+    const h = HEARD({ aiSpeaking: true, aiSpeakingText: "Sorry about that, let me check.", aiRemainingMs: 1_500, questionAudioStartAt: null });
+    h.feed(ev("EndOfTurn", 0, "Sorry."));
+    assert.deepEqual(h.calls, [["bargeIn"], ["commit", "Sorry.", 0, "model"]]);
+    assert.ok(!h.calls.some((c) => c[0] === "dropEcho"));
+  });
+
+  it("with the AI idle it is just a turn: committed, nothing to barge in on", () => {
+    const h = HEARD(IDLE);
+    h.feed(ev("EndOfTurn", 0, "Sorry?"));
+    assert.deepEqual(h.calls, [["commit", "Sorry?", 0, "model"]]);
+  });
+
+  it("near misses are short content as before: answered after the AI, no barge-in", () => {
+    for (const said of NOT_FAST_INTERRUPTS) {
+      const h = HEARD(LONG);
+      h.feed(ev("EndOfTurn", 0, said));
+      assert.deepEqual(h.calls, [["commit", said, 0, "model"]], said);
+    }
   });
 });

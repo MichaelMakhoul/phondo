@@ -33,11 +33,12 @@
  *      of a turn whose transcript has 3 or more words calls bargeIn(); one of
  *      ECHO_MAX_WORDS words or fewer never does there, interrupt word or not ("No" is
  *      how "No worries" starts: R12a′). On an EndOfTurn that rule 6 does not drop, a
- *      final of 3 or more words, or one that starts with an INTERRUPT_RE word, calls it,
+ *      final of 3 or more words, or one that starts with an interrupt word, calls it,
  *      then the final is answered as in rule 6 (so a processing-only state and a 3+ word
- *      digit final in structured mode are covered). Once per turnIndex (a declined
- *      barge-in is not spent: see bargeIn below), and not when the words are the AI's
- *      own voice coming back (the echo filter).
+ *      digit final in structured mode are covered). The interrupt words are INTERRUPT_RE's
+ *      and FAST_INTERRUPT_RE's ("sorry", "pardon", "what", "huh", "say that again",
+ *      "repeat that"). Once per turnIndex (a declined barge-in is not spent: see bargeIn
+ *      below), and not when the words are the AI's own voice coming back (the echo filter).
  *   4. EagerEndOfTurn, with speculation on and !aiSpeaking && !processing and general
  *      input expected: speculate(transcript, turnIndex).
  *   5. TurnResumed: cancelSpeculation("resumed"). It does not depend on the transcript:
@@ -153,6 +154,23 @@ const QUESTION_TAIL_MS = 2000;
  * began while the caller was hearing the question, not the sentence before it.
  */
 const START_OF_TURN_LAG_MS = 500;
+
+/**
+ * Phone test F2: more ways a caller interrupts on the fast path ("Sorry?" over a long
+ * reply waited up to 10 s for it to finish). Like INTERRUPT_RE's words, they are judged at the end of a short
+ * turn (R12a′): a barge-in, then the turn is answered. INTERRUPT_RE itself stays the
+ * classic copy (its parity with server.js is pinned).
+ */
+const FAST_INTERRUPT_RE = /^(sorry|pardon|what|huh|say that again|repeat that)\b/i;
+
+/**
+ * Is `text` an interruption: INTERRUPT_RE's words, or the fast path's own.
+ * @param {string} text - trimmed
+ * @returns {boolean}
+ */
+function isInterrupt(text) {
+  return INTERRUPT_RE.test(text) || FAST_INTERRUPT_RE.test(text);
+}
 
 /**
  * The classic echo rule drops a final of this many words or fewer while the AI speaks.
@@ -410,7 +428,7 @@ function isStructuredType(type) {
  * @returns {boolean}
  */
 function isInsubstantial(text) {
-  return wordCount(text) <= ECHO_MAX_WORDS && !INTERRUPT_RE.test(text);
+  return wordCount(text) <= ECHO_MAX_WORDS && !isInterrupt(text);
 }
 
 /**
@@ -656,4 +674,4 @@ function createFastTurnEngine(options) {
   return { onTurnInfo, reset, openTurn, onAiIdle };
 }
 
-module.exports = { createFastTurnEngine, INTERRUPT_RE, wordCount, isLikelyEcho, speechTokens, isBackchannel, endsWithQuestion, QUESTION_TAIL_MS, START_OF_TURN_LAG_MS };
+module.exports = { createFastTurnEngine, INTERRUPT_RE, FAST_INTERRUPT_RE, wordCount, isLikelyEcho, speechTokens, isBackchannel, endsWithQuestion, QUESTION_TAIL_MS, START_OF_TURN_LAG_MS };

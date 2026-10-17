@@ -62,6 +62,9 @@ function recordingConsole(lines) {
   const rec = (m) => (...args) => lines.push(`${m}| ${args.map((a) => (typeof a === "string" ? a : util.inspect(a, { depth: 4 }))).join(" ")}`);
   return { log: rec("log"), info: rec("info"), warn: rec("warn"), error: rec("error"), debug: rec("debug") };
 }
+
+/** server.js's FAST_VOICE_ADDENDUM (phone test F3/F5), evaluated from its own text. */
+const FAST_VOICE_ADDENDUM = runSlice({ from: "const FAST_VOICE_ADDENDUM = [", to: "// Gate B: speculative drafts", scope: {}, names: ["FAST_VOICE_ADDENDUM"] }).FAST_VOICE_ADDENDUM;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 /** Poll until `cond()` holds. */
 async function until(cond, what, ms = 2000) {
@@ -440,6 +443,7 @@ function classicStart(h, session, effectivePipeline) {
         return h.startFastPath(...args);
       },
       DEEPGRAM_API_KEY: "dg-key",
+      FAST_VOICE_ADDENDUM,
       logTranscript: () => {},
       handleUserSpeech: async () => {},
       twilioWs: h.twilioWs,
@@ -1844,6 +1848,26 @@ describe("SCRUM-594 review R12a′/R13: short turns, backchannels and echo on th
     assert.equal(h.lastAura().handle.clears, 1);
     await until(() => h.llmCalls.length === 1 && !s.isProcessing, "the answer");
     assert.deepEqual(h.llmCalls[0].messages.at(-1), { role: "user", content: "No, wait." });
+    h.closeFastPath(s);
+  });
+
+  it('phone test F2: "Sorry?" over a long reply that says sorry: barge-in at its end, and it is answered without waiting for the reply', async () => {
+    const h = makeFast({ steps: [{ sentences: ["I can take a message for Dave."], content: "I can take a message for Dave." }] });
+    const s = h.start(makeSession());
+    h.fluxOpens();
+    await replyPlaying(h, s, "I'm sorry, I can't make that change, because the details don't match the booking on file. I can take a message so Dave can ring you back and sort out the 10:30 time. Would you like me to do that?", { flushed: false });
+    const clears = h.twilio("clear").length;
+    h.turn("StartOfTurn", 0, "Sorry");
+    h.turn("Update", 0, "Sorry?");
+    assert.equal(h.twilio("clear").length, clears, "not on the Update");
+    h.turn("EndOfTurn", 0, "Sorry?");
+    assert.equal(h.twilio("clear").length, clears + 1, "the reply stops");
+    assert.equal(h.lastAura().handle.clears, 1);
+    await until(() => h.llmCalls.length === 1 && !s.isProcessing, "the answer", 1_000); // no echo mark: the reply never finished
+    assert.deepEqual(h.llmCalls[0].messages.at(-1), { role: "user", content: "Sorry?" });
+    assert.ok(!h.lines.some((l) => l.includes("[STT] Dropped")), h.lines.join("\n"));
+    h.audio(1);
+    assert.match(String(h.lines.find((l) => l.startsWith("log| [FastTurn] callSid="))), / waited=0$/);
     h.closeFastPath(s);
   });
 
@@ -3454,6 +3478,77 @@ describe("SCRUM-594 gate round 2, N6: the surviving mutants", () => {
     h.audio(1, 2); // ... and the AI asks the same question again
     echoMarks(h, s);
     await until(() => h.lastAura().handle.spoken.filter((t) => t.startsWith("ERR:didntCatch")).length === 2, "a second re-prompt", 1_000);
+    h.closeFastPath(s);
+  });
+});
+
+// ─── Phone test F4: Aura drops letters of a hyphenated spelling ─────────────
+
+describe("phone test F4: a hyphenated spelling reaches TTS as letters with commas; nothing else changes", () => {
+  const spellLettersForTts = runSlice({ from: "function spellLettersForTts(text) {", to: "/**\n * Send clear event", scope: {}, names: ["spellLettersForTts"] }).spellLettersForTts;
+  const SPELLED = "Your last name is spelled M-A-K-H-O-U-L.";
+  const SAID = "Your last name is spelled M, A, K, H, O, U, L.";
+
+  it("letters joined by hyphens become letters joined by commas", () => {
+    assert.equal(spellLettersForTts("M-A-K-H-O-U-L"), "M, A, K, H, O, U, L");
+    assert.equal(spellLettersForTts(SPELLED), SAID);
+    assert.equal(spellLettersForTts("J-O, then K-L-M"), "J, O, then K, L, M", "every run, and two letters are a run");
+    assert.equal(spellLettersForTts("m-a-k"), "m, a, k");
+  });
+
+  it("words, digits and mixed runs are left alone", () => {
+    for (const text of ["9-5", "co-op", "re-book", "0414-141-883", "x-ray", "T-shirt", "e-mail", "A-1", "Plan-B", "9:30-10:30", "M", "Hello there."]) {
+      assert.equal(spellLettersForTts(text), text, text);
+    }
+  });
+
+  it("the Aura stream gets the commas; the echo filter's text and the re-speak segments keep the hyphens", async () => {
+    const h = makeFast();
+    const s = h.start(makeSession());
+    const ms = await h.sendTTS(s, h.twilioWs, SPELLED);
+    assert.deepEqual(h.lastAura().handle.spoken, [SAID]);
+    assert.equal(h.engines[0].getState().aiSpeakingText, SPELLED);
+    assert.deepEqual(s.fastState.auraSegments.map((x) => x.text), [SPELLED]);
+    assert.equal(ms, SPELLED.length * 70, "the estimate is the written text's, as before");
+    h.closeFastPath(s);
+  });
+
+  it("REST TTS gets the commas too: the fast path off the stream, and a classic call (harmless there)", async () => {
+    const h = makeFast({ auraOpen: false });
+    const s = h.start(makeSession());
+    await h.sendTTS(s, h.twilioWs, SPELLED);
+    assert.equal(h.engines[0].getState().aiSpeakingText, SPELLED, "the echo filter hears what was written");
+    const classic = makeSession();
+    await h.sendTTS(classic, h.twilioWs, "That's B-O-B, and 9-5 on weekdays.");
+    assert.deepEqual(h.calls.filter((c) => c[0] === "synthesizeSpeech").map((c) => c[1]), [SAID, "That's B, O, B, and 9-5 on weekdays."]);
+    clearTimeout(s._speakingTimeout); // the REST path's 20 s isSpeaking backstop
+    clearTimeout(classic._speakingTimeout);
+    h.closeFastPath(s);
+  });
+
+  it("a reply that spells: the caller hears every letter, the transcript keeps what the AI wrote", async () => {
+    const h = makeFast({ steps: [{ sentences: ["Sure.", "It's M-A-K-H-O-U-L."], content: "Sure. It's M-A-K-H-O-U-L." }] });
+    const s = h.start(makeSession());
+    h.fluxOpens();
+    h.turn("EndOfTurn", 0, "How is my last name spelled?");
+    await until(() => h.llmCalls.length === 1 && !s.isProcessing, "the reply");
+    assert.deepEqual(h.lastAura().handle.spoken, ["Sure.", "It's M, A, K, H, O, U, L."]);
+    assert.deepEqual(s.messages.at(-1), { role: "assistant", content: "Sure. It's M-A-K-H-O-U-L." });
+    h.closeFastPath(s);
+  });
+
+  it("the spoken letters coming back on a speakerphone are still the AI's own words (R13): dropped, no barge-in", async () => {
+    const h = makeFast();
+    const s = h.start(makeSession());
+    h.fluxOpens();
+    await replyPlaying(h, s, SPELLED);
+    const clears = h.twilio("clear").length;
+    h.turn("Update", 0, "M, A, K, H, O");
+    h.turn("EndOfTurn", 0, "M, A, K, H, O, U, L.");
+    await settle();
+    assert.equal(h.twilio("clear").length, clears);
+    assert.equal(h.llmCalls.length, 0);
+    assert.ok(h.lines.some((l) => l.startsWith("log| [STT] Dropped (echo-like: the AI's own words coming back)")), h.lines.join("\n"));
     h.closeFastPath(s);
   });
 });

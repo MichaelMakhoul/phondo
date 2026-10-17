@@ -439,6 +439,30 @@ class CallSession {
   }
 
   /**
+   * SCRUM-593: the booking write an unfinished funnel (see hasUnfinishedBooking)
+   * is waiting on: the most recent book_appointment or reschedule_appointment
+   * attempt, by `at`, after the last resolution, or null when there is none
+   * (only availability checks). The end_call guard words its nudge by it: after
+   * a held or failed reschedule the caller's existing appointment still stands.
+   * @returns {"book_appointment" | "reschedule_appointment" | null}
+   */
+  lastFunnelStep() {
+    const audit = this.toolCallAudit || [];
+    const at = (t) => (typeof t.at === "number" ? t.at : 0);
+    // The resolutions hasUnfinishedBooking counts: a successful booking, reschedule or callback.
+    const isResolve = (t) =>
+      (t.name === "book_appointment" || t.name === "reschedule_appointment" || t.name === "schedule_callback") && t.successful;
+    const lastResolveAt = audit.reduce((m, t) => (isResolve(t) ? Math.max(m, at(t)) : m), 0);
+    let last = null;
+    for (const t of audit) {
+      if (t.name !== "book_appointment" && t.name !== "reschedule_appointment") continue;
+      if (at(t) <= lastResolveAt) continue;
+      if (!last || at(t) >= at(last)) last = t;
+    }
+    return last ? last.name : null;
+  }
+
+  /**
    * Restore session state saved by `saveForTransfer` (pending-transfers.js)
    * when a failed/no-answer transfer reconnects the caller to the AI. Mirrors
    * the saveForTransfer payload field-for-field.

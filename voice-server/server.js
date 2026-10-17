@@ -3318,6 +3318,9 @@ wss.on("connection", (twilioWs) => {
           // recorded as the classic call it is.
           session.fastPath = !session.ownerMode && effectivePipeline === "classic-fast";
           if (!session.fastPath) session.effectivePipeline = "classic";
+          // SCRUM-594 (phone test F3/F5): short turns, one question at a time, and a booking
+          // made in this call changed with what was booked.
+          if (session.fastPath) session.setSystemPrompt(`${session.messages[0]?.content || ""}\n${FAST_VOICE_ADDENDUM}`);
           // Nova-3 with today's callbacks: the classic STT, and the fast path's
           // fallback whenever Flux cannot serve the call (spec 4.8.1).
           const openClassicStt = () => {
@@ -3634,6 +3637,17 @@ const FAST_QUESTION_MS_PER_CHAR = 95;
 const FAST_RESPEAK_MS_PER_CHAR = 75;
 // Gate M5 (ii): this long without the caller starting a turn after the AI's question, it asks again (once).
 const FAST_REPROMPT_MS = 6000;
+// Phone test F3/F5: how the fast path's Claude speaks. The owner's first call had replies of
+// 12-15 s repeating the same offer, and a reschedule of a same-call booking that asked the
+// caller for the name again (Flux misheard "Sorry?" as "Deville": refused as a mismatch).
+const FAST_VOICE_ADDENDUM = [
+  "VOICE STYLE (this is a phone call):",
+  "- Speak in short turns: at most two short sentences (about 25 words), then stop and let the caller answer.",
+  "- Ask one question at a time.",
+  "- Never repeat an offer or question you already made in your last reply; if the caller didn't answer it, rephrase briefly or move on.",
+  "BOOKINGS MADE ON THIS CALL:",
+  "- If you booked an appointment earlier in this call, use the exact name and time you booked when calling reschedule_appointment or cancel_appointment; do not ask the caller to repeat them.",
+].join("\n");
 // Gate B: speculative drafts (each an LLM call) per Flux turn, and per call. Past either, turns are answered live.
 const FAST_DRAFTS_PER_TURN = 2;
 const FAST_DRAFTS_PER_CALL = 60;
@@ -4529,7 +4543,8 @@ const NOT_A_REPLY = Object.freeze({ reply: false });
 async function sendRestTTS(session, twilioWs, text, isStale) {
   const t0 = Date.now();
   const cleanText = stripMarkdown(text);
-  const audioBuffer = await synthesizeSpeech(DEEPGRAM_API_KEY, cleanText, {
+  // SCRUM-594 (phone test F4): only the words sent to TTS (harmless for classic too).
+  const audioBuffer = await synthesizeSpeech(DEEPGRAM_API_KEY, spellLettersForTts(cleanText), {
     voice: session?.deepgramVoice,
   });
   console.log(`[TTS] (${Date.now() - t0}ms) ${audioBuffer.length} bytes`);
@@ -4573,6 +4588,19 @@ async function sendRestTTS(session, twilioWs, text, isStale) {
   // (SCRUM-424: the setup-timeout apology was truncated mid-sentence by a
   // fixed 2s close).
   return audioBuffer.length / 8;
+}
+
+/**
+ * SCRUM-594 (phone test F4): Aura drops letters of a hyphenated spelling ("M-A-K-H-O-U-L"
+ * was voiced "m a k h o"); with commas it says every one. Only the text sent to TTS is
+ * rewritten: a run of 2 or more single letters joined by hyphens becomes the letters
+ * joined by ", ". Words with longer parts ("co-op", "re-book"), digits ("9-5",
+ * "0414-141-883") and mixed runs are left alone.
+ * @param {string} text
+ * @returns {string}
+ */
+function spellLettersForTts(text) {
+  return text.replace(/\b[A-Za-z](?:-[A-Za-z])+\b/g, (run) => run.split("-").join(", "));
 }
 
 /**
@@ -5454,7 +5482,9 @@ function summarizeFastCall(session) {
 function speakFast(session, text, kind) {
   const clean = stripMarkdown(text);
   const state = session.fastState;
-  if (!state || !session.fastTts?.speak(clean)) return 0;
+  // Phone test F4: Aura drops letters of a hyphenated spelling; the echo filter, the
+  // transcript and the segments keep `clean`.
+  if (!state || !session.fastTts?.speak(spellLettersForTts(clean))) return 0;
   cancelFastReprompt(session); // the AI is talking again
   if (endsWithQuestion(clean)) noteFastQuestion(session, clean);
   state.auraSentChars += clean.length;

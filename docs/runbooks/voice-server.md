@@ -346,7 +346,8 @@ what was said.
   next round. The caller's words are kept and answered, and the AI's side is recorded as what
   it had already said plus "…". One or two words are judged when the caller stops talking:
   an interrupt word first ("stop", "wait", "hold on", "no", "cancel", "never mind",
-  "excuse me", "hello", "hey") cuts in.
+  "excuse me", "hello", "hey", and on this path also "sorry", "pardon", "what", "huh",
+  "say that again", "repeat that") cuts in, and the caller is answered at once.
 - **Backchannels are ignored.** One or two of "okay", "yeah", "yep", "yes", "sure", "right",
   "alright", "cool", "great", "perfect", "thanks", "thank you", "mm-hmm", "uh-huh",
   "no worries" or "no problem", said while the AI is speaking or working, are not a turn: the
@@ -385,7 +386,16 @@ what was said.
   `end_call_tool`. This is a fix for every classic call: they used to ignore `end_call` and
   leave the line open. The SCRUM-373 booking guard applies: with a booking started and not
   finished, the first `end_call` is blocked and Claude is told to finish it
-  (`[HallucinationGuard] Blocking end_call …`).
+  (`[HallucinationGuard] Blocking end_call …`). After a failed reschedule it is told the
+  caller's existing appointment is unchanged, never that there is no appointment.
+- **Short replies.** The fast path adds a voice-style section to the system prompt: at most
+  two short sentences a turn, one question at a time, no repeating the last offer, and a
+  booking made earlier in the call is changed or cancelled with the name and time booked,
+  without asking the caller for them again.
+- **Spelled letters.** Aura drops letters of a hyphenated spelling ("M-A-K-H-O-U-L" came out
+  as five letters), so the words sent to TTS spell them with commas ("M, A, K, …"). The
+  transcript and the conversation keep what Claude wrote. Words ("co-op"), numbers ("9-5")
+  and phone numbers are left alone.
 
 ### Fallbacks and watchdogs
 
@@ -504,7 +514,8 @@ over the AI mid-sentence; say "No worries" while it says "one moment"; say "Hell
 silence; say goodbye; and run it once from a speakerphone. Then compare with a Gemini call:
 
 1. **Hearing.** The transcript has the spelled surname, the time and the numbers right. This
-   is what Gemini got wrong.
+   is what Gemini got wrong. On the call page, "Live transcript" is what the AI heard during
+   the call; the default view is the re-transcription of the recording.
 2. **Speed.** By ear first, then `[FastTurn] eot_to_audio` per turn and the `[FastCall]`
    p50 and p90. Gemini calls log no per-turn timing, so time those by stopwatch or from the
    recording. `eot_to_audio` starts at Flux's end-of-turn, which lands a few hundred ms after

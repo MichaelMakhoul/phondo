@@ -148,6 +148,7 @@ The demo line should be answered by Deepgram hearing and Claude Haiku 5.5 thinki
   - After one nudge it allows and captures at error level.
   - It uses `Sentry.withScope` with `setTag("service","hallucination_guard")`. Don't add `setReasonTag` in server.js: the census pins 3 reason-tagged sites.
 - **Gemini's inline guard stays untouched**, to avoid a conflict with PR #442. Switching Gemini to the helper is a follow-up.
+- **The nudge names what is open (phone test F1).** When the latest unresolved booking write is a reschedule (`CallSession.lastFunnelStep()`, ported verbatim from #442, availability checks skipped), the nudge is #442's text: the change was NOT completed and the caller's existing appointment is unchanged. Otherwise it is the book text. This diverges from the Gemini inline guard on this branch on purpose; #442 makes the same change there, and `tests/end-call-guard.test.js` checks the two agree once it lands.
 - **In `handleUserSpeech`:** when an allowed `end_call` returns `__endCall`:
   1. Push the tool result and stop the tool loop. Do not ask the model again.
   2. If nothing was spoken this turn, speak a short goodbye ("Thanks for calling — goodbye."; localise if a map exists).
@@ -213,6 +214,9 @@ These rules apply on the fast path only; classic and Gemini are unchanged. The l
 - **Latency samples (gate C5).** `[FastTurn]` logs `waited=<ms>`: time queued behind another turn plus R12b″'s wait. A turn that waited is logged but not counted in the p50/p90.
 - **Drafts are capped (gate B).** At most 2 drafts per Flux turn and 60 per call; past either, turns are answered live. Logged once per call.
 - **Abortable back-off.** The claude-chat retry back-off is abortable in every mode.
+- **More interrupt words (phone test F2).** On the fast path "sorry", "pardon", "what", "huh", "say that again" and "repeat that" are interrupt words too (`FAST_INTERRUPT_RE` in lib/fast-turns.js). Like the others they are decided at EndOfTurn (R12a′): a barge-in, then the turn is answered. `INTERRUPT_RE`, the classic copy, is unchanged. "Sorry" is no backchannel, and one or two words are never judged as echo, so it is never dropped.
+- **Voice style (phone test F3, F5).** At classic start a fast call's system prompt gains `FAST_VOICE_ADDENDUM`: at most two short sentences (about 25 words) a turn, one question at a time, no repeating the last reply's offer or question, and a booking made earlier in the call is rescheduled or cancelled with the exact name and time booked, without asking the caller to repeat them. It is appended after the live schedule, before Flux opens.
+- **Spelled letters reach TTS with commas (phone test F4).** Aura drops letters of a hyphenated spelling. `spellLettersForTts` rewrites only the text sent to TTS (the Aura stream and REST `sendTTS`): a run of 2 or more single letters joined by hyphens becomes the letters joined by ", ". The transcript, the assistant message and `aiSpeakingText` keep the written text; the echo filter's tokens are the same either way.
 
 ## 5. Constraints
 
