@@ -10,6 +10,8 @@ export type Scenario = {
   title: string;
   goal: string;
   maxTurns: number;
+  /** Bookings the caller made on an EARLIER call: the nth business day after today, at a local time. */
+  earlierBookings?: Array<{ businessDay: number; time: string }>;
   expect: {
     /** The caller ends up booked (S1, S2, S4, S5) — checkpoint 2 applies. */
     books: boolean;
@@ -99,6 +101,20 @@ export const SCENARIOS: Scenario[] = [
     ].join("\n"),
     maxTurns: 30,
     expect: { books: true, finalActive: 1 },
+  },
+  {
+    id: "S7",
+    title: "Look up and cancel an earlier booking",
+    goal: [
+      "You booked a plumber visit with them on an EARLIER call, for a leaking tap, and you're not sure which day it was.",
+      "Ask them to check what you've got booked. Give your name when asked (spell the surname if they ask you to).",
+      "When they tell you what they found, say your partner already fixed the tap, so please cancel that booking.",
+      "If they ask you to confirm the cancellation, confirm it. Don't book anything new.",
+      "When it's cancelled, say \"That's all, thanks — bye.\"",
+    ].join("\n"),
+    maxTurns: 24,
+    earlierBookings: [{ businessDay: 1, time: "10:00" }],
+    expect: { books: false, finalActive: 0, cancels: true },
   },
   {
     id: "S6",

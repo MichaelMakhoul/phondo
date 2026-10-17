@@ -107,6 +107,61 @@ function seedBusiness(fixture: Fixture): { orgId: string; calledNumber: string }
 }
 
 /** Each call has its own business with an empty diary, so every appointment in it is this caller's. */
+/** "YYYY-MM-DD" of the nth business day (Mon–Fri) after today in `timezone` (n = 1: the next one). */
+function businessDayAfterToday(timezone: string, n: number): string {
+  const day = (d: Date) => new Intl.DateTimeFormat("en-CA", { timeZone: timezone }).format(d);
+  const weekday = (d: Date) => new Intl.DateTimeFormat("en-US", { timeZone: timezone, weekday: "short" }).format(d);
+  let found = 0;
+  for (let i = 1; i < 30; i++) {
+    const d = new Date(Date.now() + i * 86_400_000);
+    if (weekday(d) === "Sat" || weekday(d) === "Sun") continue;
+    if (++found === n) return day(d);
+  }
+  throw new Error("sim: no business day in the next 30 days");
+}
+
+/** The UTC instant of a wall-clock time in `timezone` (two passes settle a DST edge). */
+function zonedInstant(date: string, time: string, timezone: string): Date {
+  const [y, mo, d] = date.split("-").map(Number);
+  const [h, mi] = time.split(":").map(Number);
+  const wanted = Date.UTC(y, mo - 1, d, h, mi);
+  let guess = wanted;
+  for (let pass = 0; pass < 2; pass++) {
+    const parts = Object.fromEntries(
+      new Intl.DateTimeFormat("en-US", { timeZone: timezone, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })
+        .formatToParts(new Date(guess))
+        .map((p) => [p.type, p.value]),
+    );
+    const shown = Date.UTC(+parts.year, +parts.month - 1, +parts.day, +parts.hour, +parts.minute);
+    guess += wanted - shown;
+  }
+  return new Date(guess);
+}
+
+/** A scenario's bookings from an earlier call: the caller's, under their own name and number, no call_id. */
+function seedEarlierBookings(scenario: Scenario, orgId: string, timezone: string): void {
+  for (const b of scenario.earlierBookings || []) {
+    const start = zonedInstant(businessDayAfterToday(timezone, b.businessDay), b.time, timezone);
+    simDb.seed("appointments", [{
+      id: crypto.randomUUID(),
+      organization_id: orgId,
+      provider: "internal",
+      attendee_name: `${PERSONA.firstName} ${PERSONA.lastName}`,
+      attendee_first_name: PERSONA.firstName,
+      attendee_last_name: PERSONA.lastName,
+      attendee_phone: PERSONA.phone,
+      attendee_email: `booking-${crypto.randomUUID()}@noreply.phondo.ai`,
+      start_time: start.toISOString(),
+      end_time: new Date(start.getTime() + 30 * 60_000).toISOString(),
+      duration_minutes: 30,
+      status: "confirmed",
+      confirmation_code: String(crypto.randomInt(100_000, 999_999)),
+      metadata: { source: "ai_receptionist" },
+      call_id: null,
+    }]);
+  }
+}
+
 function activeCount(orgId: string): number {
   return simDb.rows("appointments").filter((r) => r.organization_id === orgId && (r.status === "confirmed" || r.status === "pending")).length;
 }
@@ -135,6 +190,7 @@ async function runCall(o: { scenario: Scenario; run: number; fixture: Fixture; c
   const activeAfterTurn: number[] = [];
   const { orgId, calledNumber } = seedBusiness(o.fixture);
   const timezone = String((o.fixture.organizations?.[0]?.timezone as string) || "Australia/Sydney");
+  seedEarlierBookings(scenario, orgId, timezone);
   const callSid = `CAsim${scenario.id}r${run}${crypto.randomBytes(4).toString("hex")}`;
   const record: CallRecord = {
     scenario,
