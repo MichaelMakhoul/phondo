@@ -43,9 +43,14 @@ const MAX_MESSAGES = 21; // system prompt + up to 20 messages (user/assistant tu
  * @property {number} clearCount - barge-in Clears so far (a re-speak synthesised across one is not sent)
  * @property {ReturnType<typeof setTimeout>|null} auraOpenTimer - gate M3: falls back to REST if Aura does not open in time
  * @property {import("./lib/no-turn-watchdog").NoTurnWatchdog|null} noTurnWatchdog - gate M4b: speech energy with no Flux turn events
- * @property {((reason: string, err: unknown, options?: { callerSpoke?: boolean }) => void)|null} fluxFallBack - hands the call to Nova (set while Flux serves it)
+ * @property {((reason: string, err: unknown, options?: { callerSpoke?: boolean, captureLevel?: string }) => void)|null} fluxFallBack - hands the call to Nova (set while Flux serves it)
  * @property {ReturnType<typeof setTimeout>|null} repromptTimer - gate M5 (ii): asks the AI's question again after a silence
  * @property {string|null} repromptedQuestion - the question last asked again (once per question)
+ * @property {string|null} repromptAwaitingAudio - a re-prompt sent to Aura: recorded in the conversation once its audio starts (a barge-in before that leaves nothing heard)
+ * @property {"log"|"act"} noTurnMode - NO_TURN_WATCHDOG: what a no-turn watchdog trip does (gate N2)
+ * @property {boolean} noTurnLogged - a log-only trip is logged and captured once per call
+ * @property {boolean} notReplyOwed - a filler or an apology went to Aura and its audio may still arrive: no turn's latency (gate N5)
+ * @property {number|null} notReplyFlushSeq - the flush that filler or apology went out with; its Flushed ends notReplyOwed
  * @property {boolean} closed - cleanup has run: late callbacks do nothing
  */
 

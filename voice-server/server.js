@@ -39,7 +39,7 @@ const { openFluxStream, fluxConfigFromEnv } = require("./services/flux-stt");
 const { openAuraStream } = require("./services/aura-stream");
 const { DEFAULT_HOST } = require("./services/deepgram-ws-common");
 const { createFastPlayer } = require("./lib/fast-player");
-const { createFastTurnEngine, endsWithQuestion } = require("./lib/fast-turns");
+const { createFastTurnEngine, endsWithQuestion, isBackchannel, isLikelyEcho } = require("./lib/fast-turns");
 const { createNoTurnWatchdog } = require("./lib/no-turn-watchdog");
 const { startSpeculativeReply } = require("./lib/speculative-reply");
 const { streamClaudeResponse } = require("./services/claude-chat");
@@ -3606,7 +3606,7 @@ const FAST_FLUSHED_WAIT_MS = 3000;
 const FAST_IDLE_CAP_MS = 2000;
 // Aura silent this long ends the utterance even with no Flushed (a flush the budget refused).
 const FAST_AUDIO_QUIET_MS = 500;
-// A fast turn that starts while the AI is still speaking waits this long at most for it to finish (R12b′) ...
+// A fast turn that starts while the AI is still speaking waits this long at most for it to finish (R12b″) ...
 const FAST_TURN_START_WAIT_MS = 10_000;
 // ... checking this often.
 const FAST_TURN_START_POLL_MS = 20;
@@ -3628,9 +3628,10 @@ const AURA_OPEN_TIMEOUT_MS = 3000;
 // Gate C4: R14″'s estimate of the audio Aura still owes ahead of a question, at a slow speech rate:
 // it errs late (an answer must clearly start after the question did), never early.
 const FAST_QUESTION_MS_PER_CHAR = 95;
-// Gate H2: a slow speech rate, so a sentence counts as voiced by a failed Aura stream only with
-// plenty of its audio received: in doubt, it is said again over REST rather than lost.
-const FAST_RESPEAK_MS_PER_CHAR = 95;
+// Gate H2 (round 2, N3): a sentence counts as voiced by a failed Aura stream once this much audio
+// a character was received. Near Aura's real rate (about 66) but above it, so in doubt the last
+// sentence is said again over REST rather than lost; it may repeat a sentence that did play.
+const FAST_RESPEAK_MS_PER_CHAR = 75;
 // Gate M5 (ii): this long without the caller starting a turn after the AI's question, it asks again (once).
 const FAST_REPROMPT_MS = 6000;
 // Gate B: speculative drafts (each an LLM call) per Flux turn, and per call. Past either, turns are answered live.
@@ -3837,7 +3838,7 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
   // On the fast path that clear is sendClear's full stop (the player and the
   // Aura stream too), so only the first stop there does anything: a later
   // round's first words must not cut what this turn already said. A Flux fast
-  // turn starts it after its turn-start wait (R12b′), in the try below.
+  // turn starts it after its turn-start wait (R12b″), in the try below.
   /** @type {{ stop: () => void } | null} */
   let holdAudio = session.fastPath === true ? null : startHoldAudio(session, twilioWs, "twilio");
   let holdPlaying = holdAudio !== null;
@@ -4758,6 +4759,11 @@ function newFastPathState() {
     fluxFallBack: null,
     repromptTimer: null,
     repromptedQuestion: null,
+    repromptAwaitingAudio: null,
+    noTurnMode: "log",
+    noTurnLogged: false,
+    notReplyOwed: false,
+    notReplyFlushSeq: null,
     closed: false,
   };
 }
@@ -4863,6 +4869,8 @@ function fallBackToRestTts(session, reason, err) {
   const unvoiced = fastUnvoicedText(state);
   state.auraSegments = [];
   state.auraHeardSinceFlushedMs = 0;
+  state.notReplyOwed = false;
+  state.notReplyFlushSeq = null;
   // Nothing more will come from it.
   state.unflushed = false;
   state.flushRefused = false;
@@ -4955,10 +4963,11 @@ function openFastStt(session, twilioWs, openClassicStt) {
   });
   session.fastTurns = engine;
   let opened = false;
-  /** @type {(reason: string, err: unknown, options?: { callerSpoke?: boolean }) => void} */
+  /** @type {(reason: string, err: unknown, options?: { callerSpoke?: boolean, captureLevel?: string }) => void} */
   const fallBack = (reason, err, options) => fallBackToNova(session, twilioWs, openClassicStt, reason, err, options);
   state.fluxFallBack = fallBack;
   state.noTurnWatchdog = createNoTurnWatchdog();
+  state.noTurnMode = noTurnWatchdogMode();
   session.deepgramWs = openFluxStream(DEEPGRAM_API_KEY, {
     onOpen: () => {
       opened = true;
@@ -4999,13 +5008,22 @@ function openFastStt(session, twilioWs, openClassicStt) {
  * @param {() => void} openClassicStt
  * @param {string} reason - for the log, never caller words
  * @param {unknown} err
- * @param {{ callerSpoke?: boolean }} [options] - the caller was talking (gate M4b): ask them to say it again
+ * @param {{ callerSpoke?: boolean, captureLevel?: string }} [options] - callerSpoke: the caller was
+ *   talking (gate M4b): ask them to say it again; captureLevel: the capture's Sentry level (default error)
  */
 function fallBackToNova(session, twilioWs, openClassicStt, reason, err, options) {
   const state = session.fastState;
   if (session.fastPath !== true || !state || state.closed || twilioWs.readyState !== WebSocket.OPEN) return;
-  // Gate M4a: the turn Flux had open (the caller mid-sentence) is not lost with it.
+  // Gate M4a: the turn Flux had open (the caller mid-sentence) is not lost with it, unless
+  // the engine would have dropped it (gate N4): a backchannel while the AI is busy, or the
+  // AI's own words coming back while it speaks.
   const open = session.fastTurns?.openTurn() ?? null;
+  const aiSpeaking = fastPlayerPlaying(session) || session.isSpeaking;
+  const openIsNoTurn = Boolean(open?.transcript) && (
+    ((aiSpeaking || session.isProcessing) && isBackchannel(open?.transcript))
+    || (aiSpeaking && isLikelyEcho(open?.transcript, state.speakingText))
+  );
+  cancelFastReprompt(session); // gate N1: no re-prompt on the Nova path
   session.fastPath = "degraded-stt";
   state.fluxFallBack = null;
   state.noTurnWatchdog = null;
@@ -5025,12 +5043,14 @@ function fallBackToNova(session, twilioWs, openClassicStt, reason, err, options)
     }
   }
   console.warn(`[FastPath] Flux unavailable — falling back to Nova (${reason}, callSid=${session.callSid})`);
-  captureFastFailure(session, "flux-stt", `Flux unavailable: ${reason}`, err);
+  captureFastFailure(session, "flux-stt", `Flux unavailable: ${reason}`, err, options?.captureLevel);
   openClassicStt();
-  if (open?.transcript) {
+  if (open?.transcript && openIsNoTurn) {
+    logTranscript("[STT] Dropped (a backchannel or echo Flux left open)", open.transcript);
+  } else if (open?.transcript) {
     console.log(`[FastPath] Answering the turn Flux left open (callSid=${session.callSid})`);
     commitFastTurn(session, twilioWs, open.transcript, open.turnIndex, "stt-fallback");
-  } else if ((open || options?.callerSpoke) && !session.isProcessing) {
+  } else if ((open || options?.callerSpoke) && !session.isProcessing && !fastAudioBusy(session)) {
     // The caller was talking and none of it reached us: ask, rather than leave them in silence.
     const again = getErrorMsg(session.language, "sayAgain");
     console.log(`[FastPath] Asking the caller to say it again after the Flux fallback (callSid=${session.callSid})`);
@@ -5443,6 +5463,10 @@ function speakFast(session, text, kind) {
   state.unflushed = true;
   const record = session.fastStats?.current;
   if (record && record.speakAt === null && kind?.reply !== false) record.speakAt = Date.now();
+  if (kind?.reply === false) {
+    state.notReplyOwed = true; // gate N5: its audio is not the reply's
+    state.notReplyFlushSeq = null;
+  }
   return clean.length * FAST_TTS_MS_PER_CHAR;
 }
 
@@ -5482,6 +5506,7 @@ function fastFlush(session) {
   state.flushRefused = false;
   state.pendingFlushSeq = seq;
   for (const segment of state.auraSegments) if (segment.seq === null) segment.seq = seq;
+  if (state.notReplyOwed && state.notReplyFlushSeq === null) state.notReplyFlushSeq = seq;
   state.flushSentAt = Date.now();
   armFastFlushWatchdog(session, FAST_FLUSH_WATCHDOG_MS);
   return seq;
@@ -5526,9 +5551,14 @@ function onFastAudio(session, audio) {
   state.auraReceivedMs += audio.length / 8; // 8 kHz mulaw: 8 bytes a ms
   state.auraHeardSinceFlushedMs += audio.length / 8;
   armFastQuietTimer(session);
-  // The turn's first audio: its [FastTurn] line has everything now.
+  if (state.repromptAwaitingAudio) {
+    session.addMessage("assistant", state.repromptAwaitingAudio); // gate N1: it is being heard
+    state.repromptAwaitingAudio = null;
+  }
+  // The turn's first audio: its [FastTurn] line has everything now. Gate N5: not while a
+  // filler's or an apology's audio may still be arriving (it comes before the reply's).
   const record = session.fastStats?.current;
-  if (record && record.speakAt !== null && record.audioAt === null) {
+  if (record && record.speakAt !== null && record.audioAt === null && !state.notReplyOwed) {
     record.audioAt = Date.now();
     logFastTurn(session, record);
   }
@@ -5549,6 +5579,11 @@ function onFastFlushed(session, seq) {
   // Gate H2: Aura sends a Flushed after the audio of the text before it: that text is voiced.
   state.auraSegments = state.auraSegments.filter((segment) => segment.seq === null || segment.seq > state.flushedSeq);
   state.auraHeardSinceFlushedMs = 0;
+  // Gate N5: and a filler's or an apology's audio has all arrived.
+  if (state.notReplyFlushSeq !== null && state.flushedSeq >= state.notReplyFlushSeq) {
+    state.notReplyOwed = false;
+    state.notReplyFlushSeq = null;
+  }
   if (state.pendingFlushSeq !== null && state.flushedSeq >= state.pendingFlushSeq) {
     state.pendingFlushSeq = null;
     if (state.flushWatchdog) clearTimeout(state.flushWatchdog);
@@ -5663,13 +5698,40 @@ function noteFastInboundAudio(session, audio) {
   const state = session.fastState;
   const watchdog = state?.noTurnWatchdog;
   if (!state || !watchdog || state.closed || session.fastPath !== true) return;
-  const aiSpeaking = fastPlayerPlaying(session) || session.isSpeaking;
-  if (!watchdog.onAudio(audio, Date.now(), aiSpeaking)) return;
-  state.fluxFallBack?.(
-    "speech but no turns",
-    new Error("Flux reported no turns for the caller's speech (a language it does not transcribe?)"),
-    { callerSpoke: true },
-  );
+  // Gate N2: nothing counts while the AI speaks (its echo) or works (hold audio, thinking).
+  const aiBusy = fastPlayerPlaying(session) || session.isSpeaking || session.isProcessing;
+  if (!watchdog.onAudio(audio, Date.now(), aiBusy)) return;
+  const err = new Error("Flux reported no turns for the caller's speech (a language it does not transcribe?)");
+  if (state.noTurnMode === "act") {
+    // A false trip (a noisy line) must not page: the fallback is captured at warning level.
+    state.fluxFallBack?.("speech but no turns", err, { callerSpoke: true, captureLevel: "warning" });
+    return;
+  }
+  if (state.noTurnLogged) return;
+  state.noTurnLogged = true;
+  console.warn(`[FastPath] no-turn watchdog would fall back (speech but no turns) — log only, NO_TURN_WATCHDOG=act to act (callSid=${session.callSid})`);
+  captureFastFailure(session, "flux-stt", "no-turn watchdog would fall back (speech but no turns)", err, "warning");
+}
+
+/** Gate N2: NO_TURN_WATCHDOG values already reported as not recognised (once each). */
+const warnedNoTurnModes = new Set();
+
+/**
+ * Gate N2: what a no-turn watchdog trip does, from NO_TURN_WATCHDOG, read when the fast
+ * path starts: "log" (the default: log and capture at warning level, once a call) or
+ * "act" (hand the call to Nova). Anything else warns once and logs.
+ * @param {string|undefined} [raw]
+ * @returns {"log"|"act"}
+ */
+function noTurnWatchdogMode(raw = process.env.NO_TURN_WATCHDOG) {
+  const value = String(raw ?? "").trim().toLowerCase();
+  if (value === "" || value === "log") return "log";
+  if (value === "act") return "act";
+  if (!warnedNoTurnModes.has(value)) {
+    warnedNoTurnModes.add(value);
+    console.warn(`[FastPath] NO_TURN_WATCHDOG "${value.slice(0, 20)}" not recognised — logging only (expected log or act)`);
+  }
+  return "log";
 }
 
 /**
@@ -5683,7 +5745,8 @@ function onFastAiIdle(session) {
   const state = session.fastState;
   if (!state || state.closed || session.fastPath !== true) return;
   const committed = session.fastTurns?.onAiIdle({ aiSpeakingText: state.speakingText, questionAudioStartAt: state.questionAudioStartAt }) ?? false;
-  if (committed || session.isProcessing || !endsWithQuestion(state.speakingText)) return;
+  // Gate N1: a caller already talking (a turn Flux has open) is answering.
+  if (committed || session.isProcessing || !endsWithQuestion(state.speakingText) || session.fastTurns?.openTurn()) return;
   const question = lastFastQuestion(state.speakingText);
   // Once per question: the re-prompt ends with the question it asked again.
   if (!question || (state.repromptedQuestion && question.endsWith(state.repromptedQuestion))) return;
@@ -5701,13 +5764,22 @@ function repromptFast(session, question) {
   if (!state) return;
   state.repromptTimer = null;
   const ws = state.twilioWs;
-  if (state.closed || session.isProcessing || fastAudioBusy(session) || !ws || ws.readyState !== WebSocket.OPEN) return;
+  if (state.closed || session.fastPath !== true || session.isProcessing || fastAudioBusy(session) || !ws || ws.readyState !== WebSocket.OPEN) return;
+  if (session.fastTurns?.openTurn()) return; // gate N1: the caller has started talking
   state.repromptedQuestion = question;
   const text = `${getErrorMsg(session.language, "didntCatch")} ${question}`;
   console.log(`[FastTurn] No answer ${FAST_REPROMPT_MS} ms after the AI's question — asking it again (callSid=${session.callSid})`);
-  session.addMessage("assistant", text);
-  sendTTS(session, /** @type {any} */ (ws), text, undefined, NOT_A_REPLY).then(
-    () => { if (session.fastPath) fastFlush(session); },
+  // Gate N1: recorded once heard, as an aborted turn keeps only what was said. On the Aura
+  // stream, at its first audio (a barge-in before that clears it); over REST, once its frames
+  // went out (a barge-in during the synthesis sends none).
+  const viaAura = Boolean(session.fastTts?.isOpen());
+  if (viaAura) state.repromptAwaitingAudio = text;
+  const clears = state.clearCount;
+  sendTTS(session, /** @type {any} */ (ws), text, () => state.closed || state.clearCount !== clears, NOT_A_REPLY).then(
+    (ms) => {
+      if (!viaAura && ms > 0) session.addMessage("assistant", text);
+      if (session.fastPath && ms > 0) fastFlush(session);
+    },
     (err) => console.error(`[FastTurn] Asking the question again failed (callSid=${session.callSid}): ${err?.message || err}`),
   );
 }
@@ -5959,6 +6031,7 @@ function armFastQuietTimer(session) {
       // Gate H2: its sentences were voiced (released by their trailing space).
       state.auraSegments = state.auraSegments.filter((segment) => segment.seq !== null);
       state.auraHeardSinceFlushedMs = 0;
+      if (state.notReplyFlushSeq === null) state.notReplyOwed = false; // gate N5
     }
     for (const resolve of state.quietWaiters.splice(0)) resolve();
   }, FAST_AUDIO_QUIET_MS);
@@ -6002,6 +6075,9 @@ function stopFastAudio(session) {
     state.clearCount += 1;
     state.auraSegments = [];
     state.auraHeardSinceFlushedMs = 0;
+    state.repromptAwaitingAudio = null; // gate N1: cut before any of it played: not recorded
+    state.notReplyOwed = false;
+    state.notReplyFlushSeq = null;
     state.unmarked = false;
     state.unflushed = false;
     state.flushRefused = false;

@@ -298,8 +298,17 @@ pipeline instead. Any other value is ignored, with one warning per value:
 There is no boot line for this switch. To confirm it took effect, call the demo line and
 look for `[FastPath] Flux STT and the Aura stream on api.au.deepgram.com (callSid=…)`, then
 `[FastPath] Flux connected (callSid=…)`. The tuning variables (`FLUX_EOT_THRESHOLD`,
-`FLUX_EAGER_EOT_THRESHOLD`, `FLUX_EOT_TIMEOUT_MS`, `FAST_LLM_MODEL`, `FAST_DEEPGRAM_HOST`)
-are documented in `voice-server/.env.example`.
+`FLUX_EAGER_EOT_THRESHOLD`, `FLUX_EOT_TIMEOUT_MS`, `FAST_LLM_MODEL`, `FAST_DEEPGRAM_HOST`,
+`NO_TURN_WATCHDOG`) are documented in `voice-server/.env.example`.
+
+The no-turn watchdog (speech in the caller's audio but no Flux turns: another language, or a
+noisy line it misjudged) only logs and captures by default (`NO_TURN_WATCHDOG=log`). Once
+its `would fall back` lines have proved trustworthy on real calls, let it act:
+
+```bash
+fly secrets set NO_TURN_WATCHDOG=act -a phondo-voice    # hand such calls to Nova
+fly secrets unset NO_TURN_WATCHDOG -a phondo-voice      # back to log only
+```
 
 ### What a call needs to use it
 
@@ -358,6 +367,8 @@ what was said.
 - **A silence after a question gets one re-prompt.** If the AI finishes on a question and the
   caller says nothing for 6 s, it says "Sorry, I didn't catch that." and the question again,
   once per question (`[FastTurn] No answer 6000 ms after the AI's question — asking it again`).
+  Never while the caller is already talking (a turn Flux has open), and never after a Flux
+  fallback. It is added to the conversation only once its audio is heard.
 - **The recording disclosure cannot be interrupted.** While it plays, a barge-in is ignored
   (`[Barge-in] (fast) ignored — the recording disclosure is playing`), nothing clears the
   audio, and a turn that starts waits. The greeting after it can be interrupted.
@@ -381,16 +392,19 @@ what was said.
 Each half degrades on its own, to the classic component, and never to an ended call. A
 fallback can cost a moment of silence, but no words are lost silently: when Aura fails
 mid-reply, what it was given and never voiced is said again over REST (`[FastPath] Saying
-again over REST the N characters the Aura stream never voiced`), and if that is impossible
+again over REST the N characters the Aura stream never voiced`; it may repeat the last
+sentence, if its audio did arrive but Aura died before confirming it), and if that is impossible
 (the stream is closing, or REST fails too) the next turn is told the caller did not hear it.
 When Flux fails mid-turn, the caller's words so far are answered (`[FastPath] Answering the
-turn Flux left open`, `trigger=stt-fallback`), or, if the turn had started with no words
-yet, the caller is asked to say it again. Each fallback also writes an `[ALERT:error]` line
+turn Flux left open`, `trigger=stt-fallback`), unless the engine would have dropped them (a
+backchannel while the AI is busy, or the AI's own words coming back: `[STT] Dropped (a
+backchannel or echo Flux left open)`), or, if the turn had started with no words yet and the
+AI is not speaking, the caller is asked to say it again. Each fallback also writes an `[ALERT:error]` line
 (the Sentry shim logs captures), so the generic `Voice server — error logged` rule fires.
 
 | Falls back | When | Log lines | Then |
 |---|---|---|---|
-| **Flux → Nova** | Flux does not open within 3 s; a Flux error, or a close we did not ask for, before or after it opens; the stuck-stream watchdog: no frame at all from Flux for 5 s while the caller's audio keeps going out (Flux normally sends one about every 240 ms); or the no-turn watchdog: 3 s of the caller's speech within 8 s, while the AI is silent, with no Flux turn event at all (`speech but no turns`: a language Flux does not transcribe; the caller is asked to say it again) | `[FastPath] Flux unavailable — falling back to Nova (<reason>, callSid=…)` and `[ALERT:error] [flux-stt] … what=Flux unavailable: <reason>` | Nova-3 and the classic debounce buffer for the rest of the call; Aura keeps speaking. `[FastCall]` says `stt=nova-fallback` |
+| **Flux → Nova** | Flux does not open within 3 s; a Flux error, or a close we did not ask for, before or after it opens; the stuck-stream watchdog: no frame at all from Flux for 5 s while the caller's audio keeps going out (Flux normally sends one about every 240 ms); or, with `NO_TURN_WATCHDOG=act` only, the no-turn watchdog: 3 s of the caller's speech within 8 s, while the AI is silent and idle, with no Flux turn event at all (`speech but no turns`: a language Flux does not transcribe; the caller is asked to say it again; captured at warning level, so it does not page). Speech is a frame at 4 times the line's noise floor (its 20th-percentile level over 10 s), and never below RMS 300, so a steady site or van noise does not count | `[FastPath] Flux unavailable — falling back to Nova (<reason>, callSid=…)` and `[ALERT:error] [flux-stt] … what=Flux unavailable: <reason>` | Nova-3 and the classic debounce buffer for the rest of the call; Aura keeps speaking. `[FastCall]` says `stt=nova-fallback` |
 | **Aura → REST** | Aura does not open within 3 s; an Aura error, or a close we did not ask for; or the stuck-stream watchdog: a flush whose `Flushed` is 3 s overdue with no Aura audio in that time | `[FastPath] Aura stream unavailable — falling back to REST TTS (<reason>, callSid=…)` and `[ALERT:error] [aura-stream] … what=Aura stream unavailable: <reason>`. A healthy stream logs `[FastPath] Aura connected` | REST TTS, one request per sentence on the default Deepgram host, for the rest of the call. `[FastCall]` says `tts=rest-fallback` |
 
 Both at once is close to the old classic pipeline, with Claude as its LLM. A turn action that throws
@@ -510,6 +524,11 @@ Watch for:
 - A "yes" said to the sentence before a question is ignored, as it should be, but one said
   very early in a long question is only answered once the question ends: check that this
   feels natural, and that a caller who says nothing gets the one re-prompt after 6 s.
+- `[FastPath] no-turn watchdog would fall back (speech but no turns)`: the caller's audio
+  carried speech Flux reported no turns for. With `NO_TURN_WATCHDOG=log` (the default) that
+  is all that happens. Check these calls: a real non-English or garbled caller means the
+  watchdog is right (consider `NO_TURN_WATCHDOG=act`); a noisy site, van or street with an
+  English caller means it misfired.
 - An echo that is garbled or partial slips past the filter and is answered as if the caller
   said it. If a speakerphone test shows the AI answering itself, that is the case to bring back.
 - The Flux watchdog assumes Flux keeps sending frames through silence. A fallback reading
