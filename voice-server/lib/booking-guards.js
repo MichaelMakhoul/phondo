@@ -195,31 +195,33 @@ function guardState(session) {
 }
 
 /** "Don't cancel (it)", or a closing "…don't" — a decline even after a yes. */
-const DONT_CANCEL = /\b(?:don'?t|do not) (?:want to |need to )?cancel\b|\bdon'?t\W*$/i;
-/** Telling the AI to go ahead outweighs a leading "no" ("No worries, go ahead", "No, just cancel it"). */
-const GO_AHEAD = /\b(?:go ahead|go for it|cancel (?:it|that|them|both|my|the)|please cancel|do it|no worries|no problem|no dramas|no probs?)\b/i;
-const YES_START = /^\W*(?:yes|yeah|yep|yup|sure|ok(?:ay)?|please)\b/i;
-/** A yes word that still means no: "Yeah nah", "Yeah, no", "…leave it / never mind / changed my mind". */
-const YES_BUT_NO = /^\W*(?:yes|yeah|yep|yup|ok(?:ay)?|sure)\W+(?:nah|no)\b|\b(?:leave it|never ?mind|changed my mind)\b/i;
-const NO_AT_EDGE = /^\W*(?:no|nope|nah)\b|\bno\W*$/i;
-const DECLINE_PHRASE = /\b(?:leave it|never ?mind|changed my mind|forget it|not sure|hold on|hang on|wait|keep (?:it(?! handy)|the booking|the appointment|my booking|my appointment))\b/i;
+const DONT_CANCEL = /\b(?:don['’]?t|do not) (?:want to |need to )?cancel\b|\bdon['’]?t\W*$/i;
+/** "No" words that agree: "No worries", "No problem", "No dramas", "Nah yeah". */
+const AGREEING_NO = /\b(?:no (?:worries|problems?|dramas?|probs?|stress)|nah,? yeah)\b/gi;
+/** A yes word that still means no: "Yeah nah", "Yeah, no". */
+const YES_BUT_NO = /^\W*(?:yes|yeah|yep|yup|ok(?:ay)?|sure)\W+(?:nah|no)\b/i;
+const NO_AT_EDGE = /^\W*(?:no|nope|nah)\b|\b(?:no|nope|nah)\W*$/i;
+const DECLINE_PHRASE = /\b(?:leave it|never ?mind|changed my mind|forget it|not sure|hold on|hang on|wait|(?<!\b(?:can['’]?t|can ?not|won['’]?t|couldn['’]?t|not|never) )keep (?:it(?! handy)|the booking|the appointment|my booking|my appointment))\b/i;
+/** "No, just cancel it": a no to the other option, and a go-ahead for the booking read back. */
+const NO_JUST_CANCEL_IT = /^\W*(?:no|nope|nah)\W+just cancel (?:it|that)\W*$/i;
 
 /**
- * Does this caller message take a cancel back? "Don't cancel"; else not when
- * they tell the AI to go ahead; a message that starts with yes only as "yeah
- * nah / leave it / never mind"; otherwise a "no" at either end or "leave it /
- * keep it / never mind / wait…". Ambiguous words count as a decline: that
- * costs one more read-back, never a cancel the caller refused.
+ * Does this caller message take a cancel back? Any sign of a no counts: "don't
+ * (cancel)", "yeah nah", "leave it / keep it / never mind / forget it / wait…",
+ * or a "no" at either end — once the "no" words that agree ("no worries", "nah
+ * yeah") are set aside. A go-ahead never outweighs it ("No, cancel the other
+ * one" is a no to this one); only "No, just cancel it" is a yes. Ambiguous words
+ * count as a decline: that costs one more read-back, never a cancel the caller
+ * refused.
  * @param {unknown} text
  * @returns {boolean}
  */
 function declinesCancel(text) {
   if (typeof text !== "string") return false;
-  const t = text.trim();
-  if (DONT_CANCEL.test(t)) return true;
-  if (GO_AHEAD.test(t)) return false;
-  if (YES_START.test(t)) return YES_BUT_NO.test(t);
-  return NO_AT_EDGE.test(t) || DECLINE_PHRASE.test(t);
+  const t = text.trim().replace(AGREEING_NO, " ");
+  if (DONT_CANCEL.test(t) || YES_BUT_NO.test(t) || DECLINE_PHRASE.test(t)) return true;
+  if (NO_JUST_CANCEL_IT.test(t)) return false;
+  return NO_AT_EDGE.test(t);
 }
 
 /**

@@ -477,8 +477,12 @@ class CallSession {
     // confirm. A different booking ("No, the Tuesday one") is a new cancel.
     if (typeof options.transcriptAt === "number" && declinedAt === options.transcriptAt - 1) {
       const refused = this._fastDeclined && this._fastDeclined.at === declinedAt ? this._fastDeclined.keys : [];
-      const different = refused.every((held) => !sameBooking(held) && (key(held, "t:") || key(held, "d:")) && (key(keys, "t:") || key(keys, "d:")));
-      if (refused.length > 0 && !different) return { proceed: false, via: null, reason: "caller-declined", dropped };
+      // Provably another booking: another day, or the same day at another time.
+      const anotherBooking = (/** @type {string[]} */ no) => {
+        if (key(no, "d:") && key(keys, "d:") && key(no, "d:") !== key(keys, "d:")) return true;
+        return Boolean(key(no, "t:") && key(keys, "t:") && key(no, "t:") !== key(keys, "t:"));
+      };
+      if (refused.length > 0 && !refused.every(anotherBooking)) return { proceed: false, via: null, reason: "caller-declined", dropped };
     }
 
     for (const rec of this._fastConfirmedCancels.values()) {

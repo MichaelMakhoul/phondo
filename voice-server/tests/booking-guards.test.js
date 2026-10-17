@@ -197,16 +197,21 @@ describe("declinesCancel (a caller's clear no to a cancel)", () => {
     "No, keep it.", "No, don't.", "No, wait.", "No, no.", "Hold on, no.", "Wait.",
     // final review: a decline can start with a yes word
     "Yeah nah, leave it.", "Yeah, no, leave it.", "Okay, never mind.", "Please leave it.", "Yes — actually, I've changed my mind.", "Please don't.", "Yeah, no.",
+    // security review: a no that names another booking, and pleasantries never cover a decline
+    "No, cancel the other one.", "No, I need to cancel my Monday one.", "No dramas, but leave it.", "No worries, keep it.",
+    // ambiguous: one more read-back, never a refused cancel
+    "Yes, forget it.", "Yeah never mind, cancel it.",
+    // a no to the booking read back, asking for another one
+    "No, I mean the one you just booked. Please cancel that.",
+    "Yeah nah, it's all good.", "Actually, no.",
   ]) {
     it(`"${no}" takes it back`, () => assert.equal(declinesCancel(no), true));
   }
   for (const yes of [
-    "No worries, go ahead.", "Nah yeah, cancel it.", "No problem, yes please.", "No, I mean the one you just booked. Please cancel that.",
-    "No, just cancel it.", "Yes.", "I'll keep it handy.",
-    // re-review 3: a yes is never a decline unless it says "don't cancel"
-    "Yes please, I can't keep the appointment.", "Yeah never mind, cancel it.", "Yes, forget it.",
-    // final review: go-ahead words, and a cancel request that starts with no
-    "No dramas.", "No probs, go for it.", "No, I need to cancel my Monday one.",
+    "No worries, go ahead.", "Nah yeah, cancel it.", "No problem, yes please.",
+    "No, just cancel it.", "Yes.", "I'll keep it handy.", "Yep, that's the one.",
+    "Yes please, I can't keep the appointment.",
+    "No dramas.", "No probs, go for it.", "Yes, no worries.", "Yeah, no problem.", "Yeah, nah, yeah, go ahead.",
   ]) {
     it(`"${yes}" does not`, () => assert.equal(declinesCancel(yes), false));
   }
@@ -288,6 +293,16 @@ describe("fastCancelGate (structural: no 'yes' is read off the transcript)", () 
     say(s, "assistant", "Okay, I'll leave it.");
     say(s, "user", "Thanks.");
     assert.equal(fastCancelGate(s, MON_9, 3000).proceed, false, "held as a first attempt again");
+  });
+
+  it("security review: after a no, an attempt that overlaps the refused booking (same day, less specific) is not a new cancel", () => {
+    const s = session([caller("Cancel my booking.")]);
+    fastCancelGate(s, MON_9, 1000);
+    say(s, "assistant", "Cancel Monday at 9 AM?");
+    say(s, "user", "No.");
+    assert.equal(fastCancelGate(s, { date: "2026-10-19" }, 2000).reason, "caller-declined");
+    assert.equal(fastCancelGate(s, { phone: "+61412555013" }, 2001).reason, "caller-declined");
+    assert.equal(fastCancelGate(s, { datetime: "2026-10-19T14:00:00" }, 2002).reason, "first-attempt", "another time that day is a different booking");
   });
 
   it("final review: 'No, the Tuesday one' — after a no, a cancel for a different booking is an ordinary first attempt (two asks in all)", () => {
