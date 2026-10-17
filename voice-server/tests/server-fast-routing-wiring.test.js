@@ -298,6 +298,7 @@ describe("SCRUM-594: the classic block flags the fast variant, run for real", ()
       // PHASE 2 (B2/B3)
       "Before you book, spell the caller's last name back to them letter by letter (for example \"That's S-M-I-T-H?\") and wait for a yes. Speech recognition often mishears surnames.",
       "If the caller wants a different time for an appointment you booked on this call, move it with reschedule_appointment; book a second one only if they want two.",
+      "When they ask to move it to a day (\"how about Tuesday?\"), offer the times free that day and let them pick one before you move it.",
     ]) {
       assert.ok(FAST_VOICE_ADDENDUM.includes(`- ${line}\n`) || FAST_VOICE_ADDENDUM.endsWith(`- ${line}`), line);
     }
