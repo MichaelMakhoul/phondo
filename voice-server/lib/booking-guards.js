@@ -1,41 +1,48 @@
 "use strict";
 
 /**
- * SCRUM-594 PHASE 2: the fast path's booking guards (B2–B4).
+ * SCRUM-594 PHASE 2: the fast path's booking guards (B2–B6).
  *
  * The phone tests and the simulated-call baseline (scripts/sim-calls) showed
  * the fast path's Claude booking surnames exactly as the STT heard them —
  * "Curry" for "Khoury" — without ever spelling them back, booking a second
- * appointment where the caller wanted the first one moved, and taking four
- * confirmations to cancel. These are the server-side rules for that, read off
- * the never-windowed transcript (`session.fullTranscriptMessages`):
+ * appointment where the caller wanted the first one moved, taking four
+ * confirmations to cancel, and hanging up on "that's all correct, thanks".
+ * These are the server-side rules for that, read off the never-windowed
+ * transcript (`session.fullTranscriptMessages`):
  *
  *  - B2 spelling: book_appointment is held until the AI has read the surname
- *    back letter by letter and the caller said yes (at most SPELLING_HOLD_CAP
- *    holds a call, so a misread "yes" can never strand a booking).
+ *    back letter by letter, as its question, and the caller said yes.
  *  - B3 second booking: while this call holds a booking, a booking at another
  *    time is redirected to reschedule_appointment once.
- *  - B4 cancel: an explicit "cancel <this>?" the caller said yes to counts as
- *    the CancelGate's confirmation (call-session.js#confirmCancel).
+ *  - B4 cancel: the AI's own "cancel the Monday 9 AM booking?" — its last
+ *    question, naming the day being cancelled — answered with a plain yes is
+ *    the CancelGate's confirmation, once (fastCancelGate). The gate keys on
+ *    the MODEL'S OWN arguments, so a cancel with no identifier is always held.
  *  - B5 hang-up: end_call waits until the caller has said goodbye or that
- *    they're done (at most END_CALL_HOLD_CAP holds a call) — the simulated
- *    calls hung up on "Yep, that's all correct. Thanks." with more to ask.
+ *    they're done.
  *  - B6 own booking: a reschedule or cancel of a booking THIS call made carries
  *    the name it was booked under, so the booking system never asks the caller
  *    for it again (phone test F1: "Sorry?" was heard as "Deville" and the move
  *    was refused).
  *
+ * B2 and B5 step aside after a cap of holds, counted per CALLER TURN (the
+ * model's instant retries can't spend it), so a misread "yes" or "bye" can
+ * never strand a call; server.js logs and alerts when a cap is reached.
+ *
  * Only sessions with `bookingGuards` set get any of this (server.js
  * applyFastConversationSettings): Gemini, classic and owner calls are untouched.
  */
 
-/** How many times one call's bookings are held for spelling before the guard steps aside. */
+const { Sentry } = require("./sentry");
+
+/** Caller turns with a spelling hold before the guard steps aside. */
 const SPELLING_HOLD_CAP = 2;
-/** How many times one call's end_call is held for a goodbye before the guard steps aside. */
+/** Caller turns with an end_call hold before the guard steps aside. */
 const END_CALL_HOLD_CAP = 2;
 
 /** Two or more single letters with separators, as a model or a caller spells a word aloud. */
-const SPELLED_RUN = /(^|[^\p{L}'’])(\p{L}(?:[\s,.\-–—]+\p{L}(?!\p{L}))+)/gu;
+const SPELLED_RUN = /(^|[^\p{L}'’])(\p{L}(?:[\s,.\-–—]+\p{L}(?![\p{L}'’]))+)/gu;
 /** Dotted abbreviations that look like spelled letters ("9 a.m.", "e.g."). */
 const ABBREVIATION = /\b(?:a\.\s?m|p\.\s?m|e\.\s?g|i\.\s?e)\b\.?/gi;
 
@@ -56,6 +63,19 @@ function spelledRuns(text) {
 }
 
 /**
+ * Is `run` the spelling of `target`? A one-letter word run into either end of
+ * a spelling ("Is it a K-H-O-U-R-Y?", "…R-Y, a lovely name") still counts.
+ * @param {string} run
+ * @param {string} target
+ * @returns {boolean}
+ */
+function runSpells(run, target) {
+  if (run === target) return true;
+  if (run.length !== target.length + 1) return false;
+  return (/^[AI]/.test(run) && run.slice(1) === target) || (/[AI]$/.test(run) && run.slice(0, -1) === target);
+}
+
+/**
  * A surname's letters as they are spelled aloud: A–Z only, accents folded,
  * hyphens and apostrophes dropped. Empty when the name has letters outside
  * A–Z (another script): there is nothing the caller could confirm letter by letter.
@@ -70,11 +90,12 @@ function spellableLetters(surname) {
 }
 
 const LEADING_NEGATIVE = /^\W*(no|nope|nah|not|wrong|wait|hang on|hold on)\b/i;
-const NEGATIVE_ANYWHERE = /\b(nah|wrong|incorrect|not (?:right|correct|quite)|isn'?t (?:right|correct)|that'?s not)\b/i;
+const NEGATIVE_ANYWHERE = /\b(nah|wrong|incorrect|not (?:right|correct|quite|sure)|isn'?t (?:right|correct)|that'?s not|(?:definitely|absolutely|certainly) not|hang on|hold on|wait|leave it|don'?t|yeah,? no)\b|(?:^|[,.]\s*)no\s*(?:[,.!]|$)/i;
 const POSITIVE = /\b(yes|yeah|yep|yup|yea|correct|right|exactly|perfect|spot on|that'?s it|you got it|sounds good|good|sure|absolutely|definitely|okay|ok|uh[- ]?huh|mm[- ]?hmm)\b/i;
 
 /**
- * Does the caller's reply say yes to what was just read back?
+ * Does the caller's reply say yes to what was just read back? ("Yes, Khoury,
+ * not Curry" is a yes; "Definitely not", "Okay, hold on", "Yeah, no" are not.)
  * @param {unknown} text
  * @returns {boolean}
  */
@@ -83,6 +104,22 @@ function isAffirmative(text) {
   const t = text.trim();
   if (!t || LEADING_NEGATIVE.test(t) || NEGATIVE_ANYWHERE.test(t)) return false;
   return POSITIVE.test(t);
+}
+
+const PLAIN_YES_START = /^\W*(yes|yeah|yep|yup|yea|correct|sure|please do|go ahead|do it|that'?s right|that'?s the one|please)\b/i;
+const YES_BLOCKERS = /\b(no|not|don'?t|nah|wait|hang on|hold on|actually|but|leave|keep|unsure|maybe|instead|rather)\b/i;
+
+/**
+ * The only yes that confirms an irreversible cancel: short (at most 8 words),
+ * starting with a yes, with nothing that hedges or takes it back.
+ * @param {unknown} text
+ * @returns {boolean}
+ */
+function isPlainYes(text) {
+  if (typeof text !== "string") return false;
+  const t = text.trim();
+  if (!t || t.split(/\s+/).length > 8 || !PLAIN_YES_START.test(t)) return false;
+  return !YES_BLOCKERS.test(t.replace(/\bno worries\b/gi, ""));
 }
 
 /** A short "is that right?" after a read-back — not a question about something else. */
@@ -102,7 +139,7 @@ function asksToCheckSpelling(content, target) {
   const questions = content.match(/[^.!?]*\?/g) || [];
   if (questions.length === 0) return true;
   const last = questions[questions.length - 1];
-  if (spelledRuns(last).includes(target)) return true;
+  if (spelledRuns(last).some((run) => runSpells(run, target))) return true;
   return last.trim().split(/\s+/).length <= 6 && GENERIC_CHECK.test(last);
 }
 
@@ -118,13 +155,14 @@ function surnameSpellingConfirmed(transcript, surname) {
   if (target.length < 2) return { confirmed: true, reason: "not-spellable" };
   for (let i = transcript.length - 1; i >= 0; i--) {
     const m = transcript[i];
-    if (m.role !== "assistant" || !spelledRuns(m.content).includes(target)) continue;
+    if (m.role !== "assistant" || !spelledRuns(m.content).some((run) => runSpells(run, target))) continue;
     if (!asksToCheckSpelling(String(m.content), target)) return { confirmed: false, reason: "not-asked" };
     const reply = transcript.slice(i + 1).find((x) => x.role === "user");
     if (!reply) return { confirmed: false, reason: "awaiting-reply" };
     const replyRuns = spelledRuns(reply.content);
-    if (replyRuns.length > 0 && !replyRuns.includes(target)) return { confirmed: false, reason: "caller-respelled" };
-    if (isAffirmative(reply.content) || replyRuns.includes(target)) return { confirmed: true, reason: "confirmed" };
+    const respelledSame = replyRuns.some((run) => runSpells(run, target));
+    if (replyRuns.length > 0 && !respelledSame) return { confirmed: false, reason: "caller-respelled" };
+    if (isAffirmative(reply.content) || respelledSame) return { confirmed: true, reason: "confirmed" };
     return { confirmed: false, reason: "not-affirmed" };
   }
   return { confirmed: false, reason: "not-read-back" };
@@ -141,28 +179,62 @@ function spellingHoldMessage(surname) {
   return `DO NOT BOOK YET. Read the caller's last name back to them letter by letter, exactly as you will save it — for "${surname}" that is ${letters} — and ask "Is that right?" as its own question, with nothing else in that reply. If they correct it, save their spelling. Call book_appointment again only after they say yes.`;
 }
 
+const WEEKDAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+const MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
+
 /**
- * Did the AI's last words before the caller's last words ask to cancel one
- * thing ("Do you want me to cancel the Monday 9 AM booking?"), and did the
- * caller say yes? A question that offers a choice ("cancel it, or move it?")
- * is not a confirmation.
- * @param {Array<{ role: string, content: unknown }>} transcript - session.fullTranscriptMessages
+ * Does `question` name the day of the booking `args` is about — its weekday,
+ * "the 19th", or "October 19" / "19 October"? (A bare "19" is not enough: it
+ * could be a time.)
+ * @param {string} question
+ * @param {Record<string, any>} args
  * @returns {boolean}
  */
-function cancelConfirmedInTranscript(transcript) {
-  const last = transcript.length - 1;
-  if (last < 1 || transcript[last].role !== "user") return false;
-  const asked = transcript[last - 1];
-  if (asked.role !== "assistant" || typeof asked.content !== "string") return false;
-  const question = asked.content.replace(/\byes or no\b/gi, "");
-  if (!/\bcancel/i.test(question) || !question.includes("?")) return false;
-  const questions = question.match(/[^.!?]*\?/g) || [];
-  if (questions.some((q) => /\bor\b/i.test(q))) return false;
-  return isAffirmative(transcript[last].content);
+function namesDay(question, args) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(args.datetime || args.date || ""));
+  if (!m) return false;
+  const weekday = WEEKDAYS[new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])).getUTCDay()];
+  const day = String(+m[3]);
+  const month = MONTHS[+m[2] - 1];
+  const q = question.toLowerCase();
+  return (
+    new RegExp(`\\b${weekday}\\b`).test(q) ||
+    new RegExp(`\\b${day}(?:st|nd|rd|th)\\b`).test(q) ||
+    new RegExp(`\\b${month} ${day}\\b|\\b${day} ${month}\\b`).test(q)
+  );
 }
 
 /**
- * @typedef {{ spellingHolds: number, secondBookingNudged: boolean, endCallHolds: number }} GuardState
+ * B4: the caller's plain yes to the AI's own "cancel <that day's booking>?",
+ * as the index of that yes in the transcript, or -1. The question must be the
+ * last sentence the AI said, ask to cancel ("cancelled" is a statement), offer
+ * no choice ("…or move it?", "…instead…", "keep…"), and name the day `args`
+ * cancels.
+ * @param {Array<{ role: string, content: unknown }>} transcript - session.fullTranscriptMessages
+ * @param {Record<string, any>} args - the model's own cancel_appointment arguments
+ * @returns {number}
+ */
+function cancelConfirmation(transcript, args) {
+  const last = transcript.length - 1;
+  if (last < 1 || transcript[last].role !== "user") return -1;
+  const asked = transcript[last - 1];
+  if (asked.role !== "assistant" || typeof asked.content !== "string") return -1;
+  const text = asked.content.replace(/\byes or no\b\??/gi, "").trim();
+  if (!text.endsWith("?")) return -1;
+  const questions = text.match(/[^.!?]*\?/g) || [];
+  const question = questions[questions.length - 1] || "";
+  if (!/\bcancel(?:l?ing)?\b/i.test(question) || /\b(or|instead|rather|keep)\b/i.test(question)) return -1;
+  if (!namesDay(question, args || {})) return -1;
+  return isPlainYes(transcript[last].content) ? last : -1;
+}
+
+/**
+ * @typedef {{
+ *   spellingHolds: number, lastSpellingHoldTurn: number,
+ *   secondBookingNudged: boolean,
+ *   endCallHolds: number, lastEndCallHoldTurn: number,
+ *   usedCancelConfirmation: number
+ * }} GuardState
  */
 
 /**
@@ -173,9 +245,42 @@ function cancelConfirmedInTranscript(transcript) {
 function guardState(session) {
   const state = /** @type {GuardState} */ (session.bookingGuardState ||= {});
   state.spellingHolds ??= 0;
+  state.lastSpellingHoldTurn ??= -1;
   state.secondBookingNudged ??= false;
   state.endCallHolds ??= 0;
+  state.lastEndCallHoldTurn ??= -1;
+  state.usedCancelConfirmation ??= -1;
   return state;
+}
+
+/**
+ * How many times the caller has spoken: the turn a hold belongs to.
+ * @param {Array<{ role: string }>} transcript
+ * @returns {number}
+ */
+function callerTurns(transcript) {
+  return transcript.filter((m) => m.role === "user").length;
+}
+
+/**
+ * B4: the fast path's CancelGate, on the MODEL'S OWN arguments (before any
+ * caller-ID fill, so a cancel with no identifier of its own is always held).
+ * The caller's plain yes to the AI's own "cancel <that day>?" confirms it, and
+ * each such yes confirms one cancel only. Otherwise it is the gate: hold, then
+ * the same booking's attempt after the caller has spoken again proceeds.
+ * @param {import("../call-session").CallSession} session
+ * @param {Record<string, any>} modelArgs
+ * @param {number} nowMs
+ * @returns {{ proceed: boolean, callerConfirmed: boolean }}
+ */
+function fastCancelGate(session, modelArgs, nowMs) {
+  const state = guardState(session);
+  const transcript = session.fullTranscriptMessages;
+  const yesAt = cancelConfirmation(transcript, modelArgs || {});
+  const callerConfirmed = yesAt >= 0 && yesAt !== state.usedCancelConfirmation;
+  const proceed = session.confirmCancel(modelArgs || {}, nowMs, { fastPath: true, callerConfirmed, callerTurn: callerTurns(transcript) });
+  if (proceed && callerConfirmed) state.usedCancelConfirmation = yesAt;
+  return { proceed, callerConfirmed: proceed && callerConfirmed };
 }
 
 /**
@@ -193,13 +298,15 @@ function describeLocal(datetime) {
 
 /**
  * The fast path's checks on a book_appointment, before it runs. Null lets it
- * through; otherwise the result's message goes back to the model as the tool
- * result and nothing is booked. Counts its own holds on `session.bookingGuardState`.
+ * through. `hold: true` means nothing is booked and the message goes back to
+ * the model as the tool result; `capReached: true` lets an unconfirmed
+ * spelling through after SPELLING_HOLD_CAP caller turns of holds (server.js
+ * logs and alerts on it). Counts its holds on `session.bookingGuardState`.
  *
  * @param {{ bookingGuards?: boolean, bookingGuardState?: Partial<GuardState>, fullTranscriptMessages: Array<{ role: string, content: unknown }>, confirmedBookings?: Map<string, { datetime?: string, name?: string, at?: number }> }} session
  * @param {Record<string, any>} args - the model's book_appointment arguments
  * @param {(args: Record<string, any>) => string} bookingKey - lib/booking-key.js
- * @returns {{ kind: "second-booking" | "spelling", message: string } | null}
+ * @returns {{ hold: true, kind: "second-booking" | "spelling", message: string, reason: string, count?: number, cap?: number } | { hold: false, kind: "spelling", capReached: true, reason: string } | null}
  */
 function checkBookingGuards(session, args, bookingKey = require("./booking-key").bookingKey) {
   if (!session.bookingGuards) return null;
@@ -212,8 +319,10 @@ function checkBookingGuards(session, args, bookingKey = require("./booking-key")
     state.secondBookingNudged = true;
     const existing = [...held.values()].sort((x, y) => (y.at || 0) - (x.at || 0))[0];
     return {
+      hold: true,
       kind: "second-booking",
-      message: `THIS CALLER ALREADY HAS A BOOKING FROM THIS CALL: ${describeLocal(existing.datetime)} for ${existing.name || "them"}. If they want to CHANGE it to the new time, call reschedule_appointment instead (current_datetime "${existing.datetime}", new_datetime "${a.datetime}") — do not book a second appointment. Only if they clearly want a SECOND, separate appointment as well, confirm that with them, then call book_appointment again.`,
+      reason: "this-call-holds-a-booking",
+      message: `NOT BOOKED — no new appointment was made. This caller already has a booking from this call: ${describeLocal(existing.datetime)} for ${existing.name || "them"}. If they want to CHANGE it to the new time, call reschedule_appointment instead (current_datetime "${existing.datetime}", new_datetime "${a.datetime}") — do not book a second appointment. Only if they clearly want a SECOND, separate appointment as well, confirm that with them, then call book_appointment again.`,
     };
   }
 
@@ -221,15 +330,22 @@ function checkBookingGuards(session, args, bookingKey = require("./booking-key")
   const surname = typeof a.last_name === "string" && a.last_name.trim()
     ? a.last_name.trim()
     : String(a.name || "").trim().split(/\s+/).slice(1).join(" ");
-  if (!surname || state.spellingHolds >= SPELLING_HOLD_CAP) return null;
-  if (surnameSpellingConfirmed(session.fullTranscriptMessages, surname).confirmed) return null;
-  state.spellingHolds++;
-  return { kind: "spelling", message: spellingHoldMessage(surname) };
+  if (!surname) return null;
+  const check = surnameSpellingConfirmed(session.fullTranscriptMessages, surname);
+  if (check.confirmed) return null;
+  const turn = callerTurns(session.fullTranscriptMessages);
+  if (state.lastSpellingHoldTurn !== turn) {
+    if (state.spellingHolds >= SPELLING_HOLD_CAP) return { hold: false, kind: "spelling", capReached: true, reason: check.reason };
+    state.spellingHolds++;
+    state.lastSpellingHoldTurn = turn;
+  }
+  return { hold: true, kind: "spelling", reason: check.reason, count: state.spellingHolds, cap: SPELLING_HOLD_CAP, message: spellingHoldMessage(surname) };
 }
 
 /**
  * The ledger entry (session.confirmedBookings) a reschedule or cancel is about:
  * by its time or date when the model gave one, else the call's only booking.
+ * Never a guess between two.
  * @param {Record<string, any>} args
  * @param {Map<string, { datetime?: string, name?: string }> | undefined} ledger
  * @param {(datetime: unknown) => string} normalizeDatetime - lib/booking-key.js
@@ -258,7 +374,7 @@ function ledgerEntryFor(args, ledger, normalizeDatetime) {
  * @param {Record<string, any>} args
  * @param {Map<string, { datetime?: string, name?: string }> | undefined} ledger - session.confirmedBookings
  * @param {(datetime: unknown) => string} normalizeDatetime - lib/booking-key.js
- * @returns {Record<string, any>} args, or a copy with `name` filled
+ * @returns {Record<string, any>} args itself, or a copy with `name` filled
  */
 function withBookedName(args, ledger, normalizeDatetime) {
   const a = args || {};
@@ -287,13 +403,48 @@ function noteNameCorrection(ledger, args, normalizeDatetime) {
   entry.name = `${first || oldFirst} ${last || oldLast}`.trim();
 }
 
-const GOODBYE = /\b(bye|goodbye|see ya|see you|cheers|that'?ll be all|nothing else|all good|all done|i'?m (?:good|fine|done|right|all set)|we'?re (?:good|done|all set)|no thanks|no,? thank you|have a (?:good|great|nice))\b/i;
+/** The fast path's cancel note when this call still holds another booking (CANCEL_NUDGE says it holds none). */
+const CANCEL_KEPT_NUDGE =
+  " NOTE: that appointment is cancelled, but the caller still has another appointment booked on this call — don't tell them they have nothing booked.";
+
+/**
+ * After a successful fast-path cancel: forget the cancelled booking from this
+ * call's ledger, and only it. A cancel by time or date that matches none of
+ * this call's bookings (an earlier call's) leaves the ledger alone; one it
+ * can't place (a code, two the same day) forgets them all, as every pipeline did.
+ * @param {Map<string, { datetime?: string }> | undefined} ledger - session.confirmedBookings
+ * @param {Record<string, any>} args - the cancel's arguments
+ * @param {(datetime: unknown) => string} normalizeDatetime
+ * @returns {{ remaining: number }}
+ */
+function forgetCancelledBooking(ledger, args, normalizeDatetime) {
+  if (!(ledger instanceof Map) || ledger.size === 0) return { remaining: 0 };
+  const a = args || {};
+  const entry = ledgerEntryFor(a, ledger, normalizeDatetime);
+  if (entry) {
+    for (const [key, value] of ledger) if (value === entry) ledger.delete(key);
+    return { remaining: ledger.size };
+  }
+  const datetime = String(a.datetime || "").trim();
+  const date = String(a.date || "").trim();
+  const onThatDay = (/** @type {{ datetime?: string }} */ e) => typeof e.datetime === "string" && (datetime ? normalizeDatetime(e.datetime) === normalizeDatetime(datetime) : e.datetime.startsWith(date));
+  if ((datetime || date) && ![...ledger.values()].some(onThatDay)) return { remaining: ledger.size };
+  ledger.clear();
+  return { remaining: 0 };
+}
+
+/** A goodbye in any position: the caller is done. */
+const GOODBYE = /\b(bye|goodbye|see ya|see you|nothing else|that'?ll be all|no thanks|no,? thank you|have a (?:good|great|nice) (?:one|day|night|weekend|afternoon|evening))\b/i;
 /** "That's all" closes a call; "that's all correct" answers a read-back. */
-const THATS_ALL = /\bthat'?s (?:all|it|everything)\b(?! (?:correct|right|true))/i;
+const THATS_ALL = /\bthat'?s all\b(?! (?:correct|right|true|good))/i;
+/** Done only as an answer to "anything else?" — after "is everything correct?" they answer the read-back. */
+const DONE_IF_ASKED = /\b(that'?s it|that'?s everything|all good|all done|cheers|i'?m (?:good|fine|done|right|all set)|we'?re (?:good|done|all set)|that'?s all)\b/i;
 const PLAIN_NO = /^\W*(no|nope|nah|not really)\b/i;
 
 /**
- * B5: has the caller said goodbye, or that they need nothing else?
+ * B5: has the caller said goodbye, or — asked if there's anything else — that
+ * they need nothing more? ("Yep, that's it, thanks." answering "Is everything
+ * correct?" is a yes to the read-back, not a goodbye.)
  * @param {Array<{ role: string, content: unknown }>} transcript - session.fullTranscriptMessages
  * @returns {boolean}
  */
@@ -303,39 +454,69 @@ function callerIsDone(transcript) {
   const said = transcript[last].content;
   if (GOODBYE.test(said) || THATS_ALL.test(said)) return true;
   const asked = transcript[last - 1];
-  return Boolean(asked && asked.role === "assistant" && /anything else/i.test(String(asked.content)) && PLAIN_NO.test(said));
+  const askedAnythingElse = Boolean(asked && asked.role === "assistant" && /anything else/i.test(String(asked.content)));
+  return askedAnythingElse && (DONE_IF_ASKED.test(said) || PLAIN_NO.test(said));
 }
 
 /**
  * B5: the fast path's check on an end_call the end_call guard allowed. Null
- * lets the call end; otherwise the message goes back to the model as the tool
- * result and the call stays up.
+ * lets the call end; `allow: false` keeps it up with the message as the tool
+ * result; `capReached` lets it end after END_CALL_HOLD_CAP caller turns of
+ * holds (server.js logs and alerts on it).
  * @param {{ bookingGuards?: boolean, bookingGuardState?: Partial<GuardState>, fullTranscriptMessages: Array<{ role: string, content: unknown }> }} session
- * @returns {{ allow: false, message: string } | null}
+ * @returns {{ allow: false, message: string, count: number, cap: number } | { allow: true, capReached: true } | null}
  */
 function checkCallerDone(session) {
   if (!session.bookingGuards) return null;
   const state = guardState(session);
-  if (state.endCallHolds >= END_CALL_HOLD_CAP || callerIsDone(session.fullTranscriptMessages)) return null;
-  state.endCallHolds++;
+  if (callerIsDone(session.fullTranscriptMessages)) return null;
+  const turn = callerTurns(session.fullTranscriptMessages);
+  if (state.lastEndCallHoldTurn !== turn) {
+    if (state.endCallHolds >= END_CALL_HOLD_CAP) return { allow: true, capReached: true };
+    state.endCallHolds++;
+    state.lastEndCallHoldTurn = turn;
+  }
   return {
     allow: false,
+    count: state.endCallHolds,
+    cap: END_CALL_HOLD_CAP,
     message: "DON'T END THE CALL YET: the caller hasn't said goodbye or that they're done. Ask if there's anything else you can help with, and end the call only after they say goodbye or that's all.",
   };
+}
+
+/**
+ * A guard stepped aside after its cap of holds: the booking or the hang-up goes
+ * ahead unconfirmed. Logged and alerted, never silent (no caller words).
+ * @param {{ callSid?: string }} session
+ * @param {"spelling" | "end_call"} guard
+ * @param {string} what - what went unconfirmed
+ */
+function noteBookingGuardCap(session, guard, what) {
+  console.warn(`[BookingGuard] ${guard} guard stepped aside after its cap: ${what}. callSid=${session.callSid}`);
+  Sentry.withScope((scope) => {
+    scope.setTag("service", "booking_guard");
+    scope.setExtras({ callSid: session.callSid, guard });
+    Sentry.captureMessage(`Booking guard cap reached (${guard}) — going ahead unconfirmed`, "warning");
+  });
 }
 
 module.exports = {
   SPELLING_HOLD_CAP,
   END_CALL_HOLD_CAP,
-  withBookedName,
-  noteNameCorrection,
-  callerIsDone,
-  checkCallerDone,
+  CANCEL_KEPT_NUDGE,
   spelledRuns,
   spellableLetters,
   isAffirmative,
+  isPlainYes,
   surnameSpellingConfirmed,
   spellingHoldMessage,
-  cancelConfirmedInTranscript,
+  cancelConfirmation,
+  fastCancelGate,
   checkBookingGuards,
+  withBookedName,
+  noteNameCorrection,
+  forgetCancelledBooking,
+  callerIsDone,
+  checkCallerDone,
+  noteBookingGuardCap,
 };

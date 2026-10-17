@@ -31,7 +31,7 @@ const { createOpenAIRealtimeSession, createGrokRealtimeSession, resolveOpenAIRea
 const { createSessionWithFailover, isFailoverEnabled } = require("./services/gemini-failover"); // SCRUM-535
 const { resolveTestPipeline, KNOWN_TEST_PIPELINES, resolveOwnerPipeline, resolveCallPipeline, fastPathKeysPresent } = require("./lib/pipeline-routing"); // SCRUM-378 per-number test override; SCRUM-587 OWNER_PIPELINE; SCRUM-594 DEMO_LINE_PIPELINE
 const { checkEndCallGuard } = require("./lib/end-call-guard"); // SCRUM-594: the SCRUM-373 end_call guard for the classic pipeline
-const { checkBookingGuards, cancelConfirmedInTranscript, checkCallerDone, withBookedName, noteNameCorrection } = require("./lib/booking-guards"); // SCRUM-594 PHASE 2: the fast path's booking guards
+const { checkBookingGuards, fastCancelGate, checkCallerDone, withBookedName, noteNameCorrection, forgetCancelledBooking, noteBookingGuardCap, CANCEL_KEPT_NUDGE } = require("./lib/booking-guards"); // SCRUM-594 PHASE 2: the fast path's booking guards
 // SCRUM-594: the fast classic pipeline (DEMO_LINE_PIPELINE=classic-fast, spec 4.8):
 // Flux STT and its turn engine, the Aura stream and the player that carries it
 // to Twilio, speculative drafts, and Claude with clause chunking. These modules
@@ -4114,7 +4114,15 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
               : checkEndCallGuard(session, fnArgs?.reason);
             // SCRUM-594 PHASE 2 (B5): on the fast path the call also waits for the
             // caller's goodbye — the simulated calls hung up on "that's all correct, thanks".
-            if (verdict.allow && session.bookingGuards) verdict = checkCallerDone(session) || verdict;
+            if (verdict.allow && session.bookingGuards) {
+              const done = checkCallerDone(session);
+              if (done && done.allow === false) {
+                console.warn(`[BookingGuard] Holding end_call (caller not done, ${done.count}/${done.cap}). callSid=${session.callSid}`);
+                verdict = done;
+              } else if (done && done.allow === true) {
+                noteBookingGuardCap(session, "end_call", "the caller never said goodbye");
+              }
+            }
             if (!verdict.allow) {
               blockedEndCallMessage = verdict.message;
               session.messages.push({ role: "tool", tool_call_id: toolCall.id, content: verdict.message });
@@ -4122,25 +4130,34 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
             }
           }
 
-          // SCRUM-594 PHASE 2 (B4): on the fast path a cancel's phone defaults to
-          // caller ID (the handler needs one to find the booking; the caller was
-          // asked for the number they were calling from), and the AI's own
-          // "cancel this?" + yes is the CancelGate's confirmation.
-          // (B6) A reschedule or cancel of a booking THIS call made carries the name
-          // it was booked under: the handler would otherwise ask the caller for it
-          // (phone test F1 — "Sorry?" was heard as "Deville" and the move refused).
-          /** @type {{ callerConfirmed?: boolean, fastPath?: boolean } | undefined} */
-          let cancelGateOptions;
+          // SCRUM-594 PHASE 2 (B4/B6), the fast path: the CancelGate reads the
+          // model's OWN arguments (so a cancel with no identifier is always held);
+          // then a reschedule or cancel of a booking THIS call made carries the
+          // name it was booked under — the handler would otherwise ask the caller
+          // for it (phone test F1: "Sorry?" was heard as "Deville", the move was
+          // refused) — and a cancel's phone defaults to caller ID (the handler
+          // needs one to find the booking; the caller was asked for the number
+          // they were calling from).
+          const modelArgs = fnArgs;
           if ((fnName === "cancel_appointment" || fnName === "reschedule_appointment") && session.bookingGuards) {
-            fnArgs = withBookedName(fnArgs, session.confirmedBookings, normalizeDatetime);
+            const named = withBookedName(fnArgs, session.confirmedBookings, normalizeDatetime);
+            if (named !== fnArgs) console.log(`[BookingGuard] ${fnName}: passing the name this call booked under. callSid=${session.callSid}`);
+            fnArgs = named;
           }
           if (fnName === "cancel_appointment" && session.bookingGuards) {
             fnArgs = applyCallerIdPhoneFallback(fnName, fnArgs, session.callerPhone, { cancel: true });
-            cancelGateOptions = { callerConfirmed: cancelConfirmedInTranscript(session.fullTranscriptMessages), fastPath: true };
           }
 
           // SCRUM-372: cancel-confirmation gate (classic pipeline — mirrors Gemini path)
-          if (fnName === "cancel_appointment" && !session.confirmCancel(fnArgs || {}, Date.now(), cancelGateOptions)) {
+          const cancelGate = fnName !== "cancel_appointment"
+            ? { proceed: true, callerConfirmed: false }
+            : session.bookingGuards
+              ? fastCancelGate(session, modelArgs || {}, Date.now())
+              : { proceed: session.confirmCancel(fnArgs || {}, Date.now()), callerConfirmed: false };
+          if (cancelGate.callerConfirmed) {
+            console.log(`[CancelGate] Proceeding on the caller's yes to the AI's own cancel question (fast path). callSid=${session.callSid}`);
+          }
+          if (!cancelGate.proceed) {
             console.warn(`[CancelGate] Holding cancel_appointment pending confirmation (classic). callSid=${session.callSid}`);
             session.toolCallAudit.push({ name: "cancel_appointment_held", successful: false, at: Date.now() });
             session.messages.push({
@@ -4155,13 +4172,15 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
           // booking while this call holds one is redirected to a move (once), and
           // nothing is booked until the surname was spelled back and confirmed.
           if (fnName === "book_appointment" && session.bookingGuards) {
-            const held = checkBookingGuards(session, fnArgs || {}, bookingKey);
-            if (held) {
-              console.warn(`[BookingGuard] Holding book_appointment (${held.kind}). callSid=${session.callSid}`);
+            const guard = checkBookingGuards(session, fnArgs || {}, bookingKey);
+            if (guard && guard.hold === true) {
+              const count = guard.count ? ` ${guard.count}/${guard.cap}` : "";
+              console.warn(`[BookingGuard] Holding book_appointment (${guard.kind}${count}, reason=${guard.reason}). callSid=${session.callSid}`);
               session.toolCallAudit.push({ name: "book_appointment_held", successful: false, at: Date.now() });
-              session.messages.push({ role: "tool", tool_call_id: toolCall.id, content: held.message });
+              session.messages.push({ role: "tool", tool_call_id: toolCall.id, content: guard.message });
               continue;
             }
+            if (guard && guard.hold === false) noteBookingGuardCap(session, "spelling", `the surname spelling was never confirmed (reason=${guard.reason})`);
           }
 
           // SCRUM-257: rebook intercept (classic pipeline — mirrors Gemini path)
@@ -4291,9 +4310,16 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
               ? toolResult.success
               : !resultMessage.toLowerCase().includes("error") && !resultMessage.toLowerCase().includes("not found");
           if (fnName === "cancel_appointment" && cancelOk) {
-            if (session.confirmedBookings) session.confirmedBookings.clear();
             session.clearCancelConfirmation(); // SCRUM-594 PHASE 2 (B4): the next cancel needs its own yes
-            resultMessage += CANCEL_NUDGE; // SCRUM-557: nothing is booked now — say so in the tool result
+            if (session.bookingGuards) {
+              // SCRUM-594 PHASE 2: the fast path forgets only the cancelled booking
+              // (B3 and B6 read the rest), and says when another one still stands.
+              const { remaining } = forgetCancelledBooking(session.confirmedBookings, fnArgs, normalizeDatetime);
+              resultMessage += remaining > 0 ? CANCEL_KEPT_NUDGE : CANCEL_NUDGE;
+            } else {
+              if (session.confirmedBookings) session.confirmedBookings.clear();
+              resultMessage += CANCEL_NUDGE; // SCRUM-557: nothing is booked now — say so in the tool result
+            }
           }
 
           // SCRUM-563: move this call's ledger entry on a successful reschedule

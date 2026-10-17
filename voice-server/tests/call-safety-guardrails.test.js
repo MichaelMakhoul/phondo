@@ -60,15 +60,60 @@ describe("CallSession.hasUnfinishedBooking (SCRUM-373/377)", () => {
     return s;
   };
 
-  it("false after book → failed reschedule → successful cancel (the caller dropped the booking)", () => {
-    const s = withAudit([
-      { name: "check_availability", successful: true, at: 100 },
-      { name: "book_appointment", successful: true, at: 200 },
-      { name: "reschedule_appointment", successful: false, at: 300 },
-      { name: "cancel_appointment", successful: true, at: 400 },
-    ]);
+  // SCRUM-594 phone test F1 (fast path only, gate review): a failed move of a
+  // booking, then the caller cancels THAT booking — nothing is left unfinished.
+  const MOVE_THEN_CANCEL = () => [
+    { name: "check_availability", successful: true, at: 100 },
+    { name: "book_appointment", successful: true, at: 200, dt: "2026-10-19T09:30" },
+    { name: "reschedule_appointment", successful: false, at: 300, oldDt: "2026-10-19T09:30", dt: "2026-10-19T10:30" },
+    { name: "cancel_appointment", successful: true, at: 400, dt: "2026-10-19T09:30" },
+  ];
+  const fast = (audit) => {
+    const s = withAudit(audit);
+    s.bookingGuards = true;
+    return s;
+  };
+
+  it("fast path: book → failed reschedule → successful cancel of THAT booking is finished (phone test F1)", () => {
+    const s = fast(MOVE_THEN_CANCEL());
     assert.equal(s.hasUnfinishedBooking("caller_done"), false);
     assert.equal(s.lastFunnelStep(), null);
+  });
+
+  it("Gemini/classic (no guards): the same calls stay unfinished — the guard they run is unchanged", () => {
+    const s = withAudit(MOVE_THEN_CANCEL());
+    assert.equal(s.hasUnfinishedBooking("caller_done"), true);
+    assert.equal(s.lastFunnelStep(), "reschedule_appointment");
+  });
+
+  it("fast path: a failed BOOK then a successful cancel of an earlier booking is still unfinished (the caller would be left with nothing)", () => {
+    for (const s of [fast, withAudit].map((make) => make([
+      { name: "book_appointment", successful: true, at: 100, dt: "2026-10-19T09:00" },
+      { name: "book_appointment", successful: false, at: 200, dt: "2026-10-20T09:00" },
+      { name: "cancel_appointment", successful: true, at: 300, dt: "2026-10-19T09:00" },
+    ]))) {
+      assert.equal(s.hasUnfinishedBooking("caller_done"), true);
+      assert.equal(s.lastFunnelStep(), "book_appointment");
+    }
+  });
+
+  it("fast path: cancelling a DIFFERENT booking than the one the failed move was for leaves the move unfinished", () => {
+    const audit = MOVE_THEN_CANCEL();
+    audit[3].dt = "2026-10-22T14:00";
+    assert.equal(fast(audit).hasUnfinishedBooking("caller_done"), true);
+  });
+
+  it("fast path: a held booking (book_appointment_held) is a booking step until a booking succeeds", () => {
+    const held = [
+      { name: "check_availability", successful: true, at: 100 },
+      { name: "book_appointment_held", successful: false, at: 200 },
+    ];
+    assert.equal(fast(held).hasUnfinishedBooking("caller_done"), true);
+    assert.equal(fast([...held, { name: "book_appointment", successful: true, at: 300 }]).hasUnfinishedBooking("caller_done"), false);
+    // gate review: a cancel, then a booking the guards held — nothing new was booked.
+    const s = fast([{ name: "cancel_appointment", successful: true, at: 100, dt: "2026-10-19T09:00" }, { name: "book_appointment_held", successful: false, at: 200 }]);
+    assert.equal(s.hasUnfinishedBooking("caller_done"), true);
+    assert.equal(s.lastFunnelStep(), "book_appointment", "worded as nothing booked");
   });
 
   it("a cancel BEFORE a later failed reschedule still leaves it unfinished", () => {

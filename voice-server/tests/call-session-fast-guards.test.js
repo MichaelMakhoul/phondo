@@ -48,7 +48,7 @@ describe("guards are off unless the fast path turns them on", () => {
   it("a new session has no booking guards and a fresh guard state", () => {
     const s = new CallSession("CA1");
     assert.equal(s.bookingGuards, false);
-    assert.deepEqual(s.bookingGuardState, { spellingHolds: 0, secondBookingNudged: false, endCallHolds: 0 });
+    assert.deepEqual(s.bookingGuardState, { spellingHolds: 0, lastSpellingHoldTurn: -1, secondBookingNudged: false, endCallHolds: 0, lastEndCallHoldTurn: -1, usedCancelConfirmation: -1 });
   });
 });
 
@@ -105,9 +105,44 @@ describe("CancelGate (B4)", () => {
     assert.equal(s.confirmCancel({ datetime: "2026-10-21T14:00:00", phone: "+61412555013" }, 3000, { fastPath: true }), true, "its own retry confirms it");
   });
 
-  it("without fastPath, a callerConfirmed proceed leaves nothing behind", () => {
+  it("without fastPath the options are ignored: the Gemini/classic gate is exactly the old one", () => {
     const s = new CallSession("CA1");
-    assert.equal(s.confirmCancel(MON, 1000, { callerConfirmed: true }), true);
-    assert.equal(s.confirmCancel(MON, 2000), false);
+    assert.equal(s.confirmCancel(MON, 1000, { callerConfirmed: true }), false, "held");
+    assert.equal(s.confirmCancel(MON, 2000), true);
+  });
+
+  it("Gemini/classic keep matching on ANY shared key (a shared phone confirms, as before)", () => {
+    const s = new CallSession("CA1");
+    assert.equal(s.confirmCancel(MON_PHONE, 1000), false);
+    assert.equal(s.confirmCancel({ datetime: "2026-10-21T14:00:00", phone: "+61412555013" }, 2000), true);
+  });
+
+  it("fast path: a confirmation never carries to another day through the shared caller-ID phone", () => {
+    const s = new CallSession("CA1");
+    assert.equal(s.confirmCancel(MON_PHONE, 1000, { callerConfirmed: true, fastPath: true }), true);
+    assert.equal(s.confirmCancel({ datetime: "2026-10-21T14:00:00", phone: "+61412555013" }, 2000, { fastPath: true }), false);
+  });
+
+  it("fast path: a confirmation is for one booking — another time the same day is held (a family's two bookings)", () => {
+    const s = new CallSession("CA1");
+    assert.equal(s.confirmCancel(MON, 1000, { callerConfirmed: true, fastPath: true }), true);
+    assert.equal(s.confirmCancel({ datetime: "2026-10-19T14:00:00" }, 2000, { fastPath: true }), false, "a different time");
+    const t = new CallSession("CA2");
+    assert.equal(t.confirmCancel({ date: "2026-10-19" }, 1000, { callerConfirmed: true, fastPath: true }), true);
+    assert.equal(t.confirmCancel({ datetime: "2026-10-19T14:00:00" }, 2000, { fastPath: true }), false, "a date-only yes doesn't cover a time the model picked after");
+  });
+
+  it("fast path: a held cancel is confirmed only by an attempt after the caller has spoken again", () => {
+    const s = new CallSession("CA1");
+    assert.equal(s.confirmCancel(MON, 1000, { fastPath: true, callerTurn: 3 }), false);
+    assert.equal(s.confirmCancel(MON, 1001, { fastPath: true, callerTurn: 3 }), false, "the model's instant retry, same caller turn");
+    assert.equal(s.confirmCancel(MON, 2000, { fastPath: true, callerTurn: 4 }), true);
+  });
+
+  it("fast path: the held cancel and the confirming one must be the same booking (time, then date)", () => {
+    const s = new CallSession("CA1");
+    assert.equal(s.confirmCancel(MON, 1000, { fastPath: true, callerTurn: 1 }), false);
+    assert.equal(s.confirmCancel({ datetime: "2026-10-19T14:00:00" }, 2000, { fastPath: true, callerTurn: 2 }), false);
+    assert.equal(s.confirmCancel({ datetime: "2026-10-19T14:00:00" }, 3000, { fastPath: true, callerTurn: 3 }), true);
   });
 });
