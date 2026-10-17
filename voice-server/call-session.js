@@ -36,6 +36,16 @@ const MAX_MESSAGES = 21; // system prompt + up to 20 messages (user/assistant tu
  * @property {number} auraReceivedMs - R14″: ms of Aura audio received in that time
  * @property {number|null} questionAudioStartAt - R14″: Date.now() estimate of when the AI's last question starts playing; null when there is none
  * @property {string|null} bargeInDeclined - the reason the last barge-in was declined (logged once in a row); null after one that acted
+ * @property {{ readyState: number, send: (data: string) => void }|null} twilioWs - the call's Twilio stream (gate H2 and M5 speak outside a turn)
+ * @property {Array<{ text: string, seq: number|null }>} auraSegments - gate H2: text sent to Aura whose Flushed has not confirmed it (seq: the flush it went out with)
+ * @property {number} auraHeardSinceFlushedMs - gate H2: ms of Aura audio received since the last Flushed
+ * @property {Promise<void>|null} respeak - gate H2: the re-speak of text a failed Aura stream never voiced; later REST speech waits for it
+ * @property {number} clearCount - barge-in Clears so far (a re-speak synthesised across one is not sent)
+ * @property {ReturnType<typeof setTimeout>|null} auraOpenTimer - gate M3: falls back to REST if Aura does not open in time
+ * @property {import("./lib/no-turn-watchdog").NoTurnWatchdog|null} noTurnWatchdog - gate M4b: speech energy with no Flux turn events
+ * @property {((reason: string, err: unknown, options?: { callerSpoke?: boolean }) => void)|null} fluxFallBack - hands the call to Nova (set while Flux serves it)
+ * @property {ReturnType<typeof setTimeout>|null} repromptTimer - gate M5 (ii): asks the AI's question again after a silence
+ * @property {string|null} repromptedQuestion - the question last asked again (once per question)
  * @property {boolean} closed - cleanup has run: late callbacks do nothing
  */
 
@@ -62,6 +72,12 @@ const MAX_MESSAGES = 21; // system prompt + up to 20 messages (user/assistant tu
  * @property {{ turnIndex: number, at: number }|null} eager - the latest draft's turn and start
  * @property {FastTurnRecord|null} pending - committed, not yet picked up by handleUserSpeech
  * @property {FastTurnRecord|null} current - the turn handleUserSpeech answered last
+ * @property {number} llmErrors - gate H1: fast turns that failed (an apology instead of a reply)
+ * @property {number} llmErrorStreak - failed fast turns in a row (two or more page at error level)
+ * @property {number} draftsInCall - gate B: drafts started in the call
+ * @property {number|null} draftTurnIndex - the turn the last draft was started for
+ * @property {number} draftsForTurn - drafts started for that turn
+ * @property {boolean} draftCapLogged - the draft cap is logged once per call
  *
  * SCRUM-594: the fast path's turn in flight (server.js beginFastTurn). Its
  * abort() is what a barge-in calls.

@@ -1801,3 +1801,93 @@ describe("a barge-in the session declines is not spent (fix round 4, Minor #1)",
     assert.equal(asked, 1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 10. The gate: the turn Flux has open (M4a), and an answer to a long question
+//     committed once the AI goes idle (M5 i)
+// ---------------------------------------------------------------------------
+
+describe("openTurn(): the turn Flux has open (gate M4a)", () => {
+  it("none before a turn starts; a started turn with no words yet; then its latest words", () => {
+    const h = FAST(IDLE);
+    assert.equal(h.engine.openTurn(), null);
+    h.feed(ev("StartOfTurn", 0, ""));
+    assert.deepEqual(h.engine.openTurn(), { turnIndex: 0, transcript: "" });
+    h.feed(ev("Update", 0, "I'd like"), ev("Update", 0, "I'd like to book"));
+    assert.deepEqual(h.engine.openTurn(), { turnIndex: 0, transcript: "I'd like to book" });
+  });
+
+  it("an event with no words never erases the words the turn already has", () => {
+    const h = FAST(IDLE);
+    h.feed(ev("StartOfTurn", 0, ""), ev("Update", 0, "I'd like to book"), ev("Update", 0, ""), ev("EagerEndOfTurn", 0, "  "));
+    assert.deepEqual(h.engine.openTurn(), { turnIndex: 0, transcript: "I'd like to book" });
+  });
+
+  it("an Update with words opens it too (no StartOfTurn seen); an empty one alone does not", () => {
+    const h = FAST(IDLE);
+    h.feed(ev("Update", 0, ""));
+    assert.equal(h.engine.openTurn(), null);
+    h.feed(ev("Update", 0, "hello"));
+    assert.deepEqual(h.engine.openTurn(), { turnIndex: 0, transcript: "hello" });
+  });
+
+  it("an ended turn is not open, and the next one starts afresh; reset() forgets", () => {
+    const h = FAST(IDLE);
+    h.feed(ev("Update", 0, "hello there"), ev("EndOfTurn", 0, "Hello there."));
+    assert.equal(h.engine.openTurn(), null);
+    h.feed(ev("StartOfTurn", 1, ""));
+    assert.deepEqual(h.engine.openTurn(), { turnIndex: 1, transcript: "" });
+    h.engine.reset();
+    assert.equal(h.engine.openTurn(), null);
+  });
+});
+
+describe("onAiIdle(): a short answer to a long question is committed once the AI goes idle (gate M5 i)", () => {
+  // The question started at 10 000; its audio still had 3 s to play when "Yes" ended
+  // (R14′ wants the tail), but "Yes" began after the question did (R14″).
+  const LONG_Q = { aiSpeaking: true, aiSpeakingText: "Would you like me to book you in for Tuesday at ten?", aiRemainingMs: 3_000, questionAudioStartAt: 10_000 };
+  const IDLE_AFTER = { aiSpeakingText: LONG_Q.aiSpeakingText, questionAudioStartAt: 10_000 };
+  const DROPPED = [["dropEcho", "Yes.", "backchannel"], ["cancelSpeculation", "backchannel"]];
+  function droppedYes(startAt = 10_800) {
+    const h = FAST(LONG_Q);
+    h.feed({ ...ev("StartOfTurn", 0, "Yes"), receivedAt: startAt }, { ...ev("EndOfTurn", 0, "Yes."), receivedAt: startAt + 600 });
+    assert.deepEqual(h.calls, DROPPED, "R14′: not in the tail yet");
+    return h;
+  }
+
+  it("begun after the question started: committed when the AI goes idle (trigger deferred), once", () => {
+    const h = droppedYes();
+    assert.equal(h.engine.onAiIdle(IDLE_AFTER), true);
+    assert.deepEqual(h.calls.slice(2), [["commit", "Yes.", 0, "deferred"]]);
+    assert.equal(h.engine.onAiIdle(IDLE_AFTER), false, "forgotten once committed");
+  });
+
+  it("begun before the question started (+500 ms): not an answer to it", () => {
+    const h = droppedYes(10_499);
+    assert.equal(h.engine.onAiIdle(IDLE_AFTER), false);
+    assert.equal(h.calls.length, 2);
+  });
+
+  it("not after a newer turn started, nor when the AI's last words were no question, nor with no question time", () => {
+    const newer = droppedYes();
+    newer.feed({ ...ev("StartOfTurn", 1, "And"), receivedAt: 11_900 });
+    assert.equal(newer.engine.onAiIdle(IDLE_AFTER), false);
+    const statement = droppedYes();
+    assert.equal(statement.engine.onAiIdle({ aiSpeakingText: "Let me check that.", questionAudioStartAt: 10_000 }), false);
+    const unknown = droppedYes();
+    assert.equal(unknown.engine.onAiIdle({ aiSpeakingText: LONG_Q.aiSpeakingText, questionAudioStartAt: null }), false);
+    for (const h of [newer, statement, unknown]) assert.deepEqual(h.calls, DROPPED);
+  });
+
+  it("an idle with no question in it forgets the dropped final: a later idle does not commit it", () => {
+    const h = droppedYes();
+    assert.equal(h.engine.onAiIdle({ aiSpeakingText: "One moment.", questionAudioStartAt: null }), false);
+    assert.equal(h.engine.onAiIdle(IDLE_AFTER), false);
+  });
+
+  it("reset() forgets it", () => {
+    const h = droppedYes();
+    h.engine.reset();
+    assert.equal(h.engine.onAiIdle(IDLE_AFTER), false);
+  });
+});

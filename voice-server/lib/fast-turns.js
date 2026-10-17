@@ -225,6 +225,8 @@ const SPEECH_PIECE = /(\d+):(\d{2})|\d+|\p{L}+/gu;
  * @typedef {Object} FastTurnEngine
  * @property {(evt: FastTurnEvent) => void} onTurnInfo
  * @property {() => void} reset
+ * @property {() => { turnIndex: number, transcript: string } | null} openTurn - the turn Flux has open (started or with words, not ended), its latest words ("" before any); null when none (gate M4a)
+ * @property {(state: { aiSpeakingText?: string, questionAudioStartAt?: number | null }) => boolean} onAiIdle - the AI has finished speaking; true when a dropped short answer to its question was committed now (gate M5)
  */
 
 /**
@@ -442,6 +444,14 @@ function createFastTurnEngine(options) {
    * later event of the same turn never moves.
    */
   let turnStart = { index: /** @type {number | null} */ (null), at: /** @type {number | null} */ (null), fromStart: false };
+  /** Gate M4a: the turn in progress: its index, its latest words, and whether its StartOfTurn came. */
+  let open = { index: /** @type {number | null} */ (null), text: "", started: false };
+  /**
+   * Gate M5 (i): the last short final dropped as a backchannel, with when its turn
+   * started. Forgotten once a newer turn starts, or the AI goes idle.
+   * @type {{ text: string, turnIndex: number, startedAt: number | null } | null}
+   */
+  let lastDropped = null;
   /** The turnIndex of the draft we asked the session to start. */
   let draftTurn = /** @type {number | null} */ (null);
 
@@ -552,6 +562,7 @@ function createFastTurnEngine(options) {
         mayBargeIn = !isBackchannel(text);
       } else {
         if ((state.aiSpeaking || state.processing) && isBackchannel(text)) {
+          lastDropped = { text, turnIndex, startedAt: turnStart.index === turnIndex ? turnStart.at : null };
           actions.dropEcho(text, "backchannel");
           cancelDraft("backchannel");
           return;
@@ -590,6 +601,10 @@ function createFastTurnEngine(options) {
 
     const text = typeof evt.transcript === "string" ? evt.transcript.trim() : "";
     noteTurnStart(event, turnIndex, text, evt.receivedAt);
+    if (open.index !== turnIndex) open = { index: turnIndex, text: "", started: false };
+    if (event === "StartOfTurn") open.started = true;
+    if (text !== "" && event !== "EndOfTurn") open.text = text;
+    if (lastDropped && turnIndex > lastDropped.turnIndex) lastDropped = null;
     if (text === "") return; // rule 1
 
     if (draftTurn !== null && draftTurn !== turnIndex) cancelDraft("new-turn"); // rule 2
@@ -614,11 +629,42 @@ function createFastTurnEngine(options) {
     lastEndedTurn = -1;
     bargedTurn = null;
     turnStart = { index: null, at: null, fromStart: false };
+    open = { index: null, text: "", started: false };
+    lastDropped = null;
     draftTurn = null;
     if (holdsDraft) actions.cancelSpeculation("reset");
   }
 
-  return { onTurnInfo, reset };
+  /**
+   * Gate M4a: the turn Flux has open (it started, or has words, and has not ended), so a
+   * fallback can still answer it.
+   * @returns {{ turnIndex: number, transcript: string } | null}
+   */
+  function openTurn() {
+    if (open.index === null || open.index <= lastEndedTurn) return null;
+    if (!open.started && open.text === "") return null;
+    return { turnIndex: open.index, transcript: open.text };
+  }
+
+  /**
+   * Gate M5 (i): the AI has finished speaking. A short final dropped while it spoke, whose
+   * turn began at least START_OF_TURN_LAG_MS after its last question started, answered that
+   * question (a long one: R14″ only takes its tail as it plays). It is committed now,
+   * unless a newer turn has started. Either way it is forgotten.
+   * @param {{ aiSpeakingText?: string, questionAudioStartAt?: number | null }} idle - the state just before it is cleared
+   * @returns {boolean} whether one was committed
+   */
+  function onAiIdle(idle) {
+    const dropped = lastDropped;
+    lastDropped = null;
+    if (!dropped || !idle || !endsWithQuestion(idle.aiSpeakingText)) return false;
+    const questionAt = idle.questionAudioStartAt;
+    if (typeof dropped.startedAt !== "number" || typeof questionAt !== "number" || !(dropped.startedAt >= questionAt + START_OF_TURN_LAG_MS)) return false;
+    actions.commit(dropped.text, dropped.turnIndex, "deferred");
+    return true;
+  }
+
+  return { onTurnInfo, reset, openTurn, onAiIdle };
 }
 
 module.exports = { createFastTurnEngine, INTERRUPT_RE, wordCount, isLikelyEcho, speechTokens, isBackchannel, endsWithQuestion, QUESTION_TAIL_MS, START_OF_TURN_LAG_MS };
