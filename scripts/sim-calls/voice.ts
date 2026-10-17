@@ -167,9 +167,9 @@ const NOT_A_REPLY = Object.freeze({ reply: false });
 
 /**
  * Log lines that mean the simulation itself went wrong (a turn that apologised
- * because of an error, a blocked network call, a gap in the fake store), as
- * opposed to the conversation going wrong. A run with any is reported as an
- * anomaly, never scored as if it were the product's behaviour.
+ * because of an error, a blocked network call, a gap in the fake store, a
+ * stubbed transfer), as opposed to the conversation going wrong. A run with any
+ * is reported as an anomaly and never scored as if it were the product's behaviour.
  */
 const ANOMALY = /\[Pipeline\] .*error|\[ToolExecutor\] (Failed to execute|Internal API error|Cannot execute)|\[ToolCall\] Unhandled error|fake-supabase: |sim: /;
 
@@ -376,17 +376,22 @@ async function setUpSimCall(o: { calledNumber: string; callerPhone: string; call
     },
     executeToolCall: async (name: string, args: unknown, ctx: unknown) => {
       if (name === "transfer_call") {
-        // Never a real Twilio transfer from a simulation; the demo prompt forbids transfers anyway.
+        // Never a real Twilio transfer from a simulation. The "sim: " line marks
+        // the run as an anomaly: a made-up result is not the product's behaviour.
+        console.warn("sim: transfer_call stubbed — this run is not a fair score");
         return { message: "Transfers are unavailable right now.", success: false };
       }
       return vs.toolExecutor.executeToolCall(name, args, ctx);
     },
     applyCallerIdPhoneFallback: vs.toolExecutor.applyCallerIdPhoneFallback,
     checkBookingGuards: vs.bookingGuards?.checkBookingGuards,
-    cancelConfirmedInTranscript: vs.bookingGuards?.cancelConfirmedInTranscript,
+    fastCancelGate: vs.bookingGuards?.fastCancelGate,
     checkCallerDone: vs.bookingGuards?.checkCallerDone,
     withBookedName: vs.bookingGuards?.withBookedName,
     noteNameCorrection: vs.bookingGuards?.noteNameCorrection,
+    forgetCancelledBooking: vs.bookingGuards?.forgetCancelledBooking,
+    noteBookingGuardCap: vs.bookingGuards?.noteBookingGuardCap,
+    CANCEL_KEPT_NUDGE: vs.bookingGuards?.CANCEL_KEPT_NUDGE,
     runOwnerToolCall: vs.ownerToolRunner.runOwnerToolCall,
     scheduleCache: vs.scheduleCache,
     noteAssistantSpeech: vs.ownerTurnStamps.noteAssistantSpeech,

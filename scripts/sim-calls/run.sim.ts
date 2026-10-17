@@ -202,6 +202,7 @@ async function rescore(dir: string): Promise<void> {
   const startedAt = new Date();
   const scored: ScoredCall[] = await pool(records, Number(process.env.SIM_CONCURRENCY || 4), async (record) => {
     if (record.error) return { record, score: null, scoreError: "not scored: the call failed" };
+    if (record.anomalies.length > 0) return { record, score: null, scoreError: "not scored: harness anomalies (see the run file)" };
     try {
       return { record, score: await scoreCall(record, judgeModel) };
     } catch (err) {
@@ -269,6 +270,8 @@ it("simulated demo-line calls", async () => {
     let result: ScoredCall;
     if (record.error) {
       result = { record, score: null, scoreError: "not scored: the call failed" };
+    } else if (record.anomalies.length > 0) {
+      result = { record, score: null, scoreError: "not scored: harness anomalies (see the run file)" };
     } else {
       try {
         result = { record, score: await scoreCall(record, judgeModel) };

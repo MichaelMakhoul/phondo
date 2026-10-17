@@ -5,10 +5,11 @@
  *
  *   node scripts/sim-calls/capture-fixture.mjs <organization-id> <out.json>
  *
- * Uses voice-server/.env's Supabase credentials (or SIM_ENV_FILE's) and only ever SELECTs. Contact
- * details (forwarding and transfer numbers, emails, billing ids) are replaced
- * or dropped; integration secrets are never selected. Keep the output out of
- * git anyway: it holds the business's prompt.
+ * Uses voice-server/.env's Supabase credentials (or SIM_ENV_FILE's) and only
+ * ever SELECTs. The organization, assistant and phone-number rows are captured
+ * by column allowlist (no owner contact details or billing ids); forwarding and
+ * transfer numbers are replaced; integration secrets are never selected. Keep
+ * the output out of git anyway: it holds the business's prompt.
  */
 import fs from "fs";
 import path from "path";
@@ -38,10 +39,15 @@ const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
 const FAKE_FORWARD = "+61400000099";
 const FAKE_TRANSFER = "+61400000098";
 
-/** A copy of `row` without `keys`. */
-function omit(row, keys) {
-  return Object.fromEntries(Object.entries(row).filter(([k]) => !keys.includes(k)));
+/** A copy of `row` with only `keys` — every table is captured by allowlist, so a new contact column never leaks in. */
+function pick(row, keys) {
+  return Object.fromEntries(keys.filter((k) => k in row).map((k) => [k, row[k]]));
 }
+
+// The columns the voice server's call setup and the calendar handlers read.
+const ORG_COLUMNS = ["id", "name", "industry", "timezone", "business_hours", "default_appointment_duration", "country", "business_state", "recording_consent_mode", "appointment_verification_fields", "recording_disclosure_text", "send_customer_confirmations"];
+const ASSISTANT_COLUMNS = ["id", "organization_id", "name", "system_prompt", "prompt_config", "settings", "first_message", "is_active", "voice_id", "language", "after_hours_config"];
+const PHONE_COLUMNS = ["id", "organization_id", "assistant_id", "phone_number", "is_active", "ai_enabled", "user_phone_number", "forwarding_status", "source_type", "telephony_provider"];
 
 async function rows(table, select, filter) {
   const { data, error } = await filter(supabase.from(table).select(select));
@@ -49,18 +55,15 @@ async function rows(table, select, filter) {
   return data || [];
 }
 
-const organizations = (await rows("organizations", "*", (q) => q.eq("id", orgId))).map((o) =>
-  omit(o, ["stripe_customer_id", "business_email", "business_phone", "sms_sender"]),
-);
+const organizations = (await rows("organizations", ORG_COLUMNS.join(", "), (q) => q.eq("id", orgId))).map((o) => pick(o, ORG_COLUMNS));
 if (organizations.length !== 1) throw new Error(`organization ${orgId} not found`);
 
 const fixture = {
   organizations,
-  assistants: await rows("assistants", "*", (q) => q.eq("organization_id", orgId)),
-  phone_numbers: (await rows("phone_numbers", "*", (q) => q.eq("organization_id", orgId).eq("is_active", true).eq("ai_enabled", true))).map((p) => ({
-    ...omit(p, ["twilio_sid", "telnyx_connection_id"]),
+  assistants: (await rows("assistants", ASSISTANT_COLUMNS.join(", "), (q) => q.eq("organization_id", orgId))).map((a) => pick(a, ASSISTANT_COLUMNS)),
+  phone_numbers: (await rows("phone_numbers", PHONE_COLUMNS.join(", "), (q) => q.eq("organization_id", orgId).eq("is_active", true).eq("ai_enabled", true))).map((p) => ({
+    ...pick(p, PHONE_COLUMNS),
     user_phone_number: p.user_phone_number ? FAKE_FORWARD : null,
-    fallback_forward_number: p.fallback_forward_number ? FAKE_FORWARD : null,
   })),
   transfer_rules: (await rows("transfer_rules", "*", (q) => q.eq("organization_id", orgId))).map((t) => ({
     ...t,
