@@ -3655,6 +3655,7 @@ const FAST_VOICE_ADDENDUM = [
   "BOOKINGS MADE ON THIS CALL:",
   "- If you booked an appointment earlier in this call, use the exact name and time you booked when calling reschedule_appointment or cancel_appointment (pass the full name on the booking as name); do not ask the caller to repeat them.",
   "- If the caller wants a different time for an appointment you booked on this call, move it with reschedule_appointment; book a second one only if they want two.",
+  "- When the caller asks to cancel, call cancel_appointment straight away: it tells you when to read the booking back to them for a yes.",
 ].join("\n");
 /** SCRUM-594 PHASE 2 (B1): the fast path's context window — the whole call (a 10-minute call is about 100 messages). */
 const FAST_MAX_MESSAGES = 201;
@@ -4149,15 +4150,13 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
           }
 
           // SCRUM-372: cancel-confirmation gate (classic pipeline — mirrors Gemini path)
-          /** @type {{ proceed: boolean, callerConfirmed: boolean, via: string|null, reason: string|null }} */
+          /** @type {{ proceed: boolean, via: string|null, reason: string|null }} */
           const cancelGate = fnName !== "cancel_appointment"
-            ? { proceed: true, callerConfirmed: false, via: null, reason: null }
+            ? { proceed: true, via: null, reason: null }
             : session.bookingGuards
               ? fastCancelGate(session, modelArgs || {}, Date.now())
-              : { proceed: session.confirmCancel(fnArgs || {}, Date.now()), callerConfirmed: false, via: null, reason: null };
-          if (cancelGate.callerConfirmed) {
-            console.log(`[CancelGate] Proceeding on the caller's yes to the AI's own cancel question (fast path). callSid=${session.callSid}`);
-          } else if (cancelGate.proceed && cancelGate.via) {
+              : { proceed: session.confirmCancel(fnArgs || {}, Date.now()), via: null, reason: null };
+          if (cancelGate.proceed && cancelGate.via) {
             console.log(`[CancelGate] Proceeding (fast path, via=${cancelGate.via}). callSid=${session.callSid}`);
           }
           if (!cancelGate.proceed) {
@@ -4298,8 +4297,14 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
             session.toolCallAudit.push(auditEntry);
           }
 
-          // SCRUM-257: track confirmed bookings (classic pipeline)
-          if (fnName === "book_appointment" && (resultMessage.includes("confirmed") || resultMessage.includes("booked") || resultMessage.includes("confirmation"))) {
+          // SCRUM-257: track confirmed bookings (classic pipeline). SCRUM-594 PHASE 2:
+          // on the fast path only a booking the handler confirmed — "That practitioner
+          // is already booked at this time" is a failure (B3, B6 and the end_call
+          // nudge read this ledger).
+          const bookedOk = session.bookingGuards
+            ? toolResult?.success === true
+            : resultMessage.includes("confirmed") || resultMessage.includes("booked") || resultMessage.includes("confirmation");
+          if (fnName === "book_appointment" && bookedOk) {
             if (!session.confirmedBookings) session.confirmedBookings = new Map();
             const bookKey = bookingKey(fnArgs);
             const codeMatch = resultMessage.match(/\b(\d{6})\b/);
@@ -4319,7 +4324,9 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
               ? toolResult.success
               : !resultMessage.toLowerCase().includes("error") && !resultMessage.toLowerCase().includes("not found");
           if (fnName === "cancel_appointment" && cancelOk) {
-            session.clearCancelConfirmation(); // SCRUM-594 PHASE 2 (B4): the next cancel needs its own yes
+            // SCRUM-594 PHASE 2 (B4): the next cancel needs its own confirmation
+            // (on the fast path, another booking's held cancel stands).
+            session.clearCancelConfirmation(session.bookingGuards ? modelArgs || {} : undefined);
             if (session.bookingGuards) {
               // SCRUM-594 PHASE 2: the fast path forgets only the cancelled booking
               // (B3 and B6 read the rest), and says when another one still stands.
@@ -4365,7 +4372,7 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
 
           // Apply optimistic cache delta for write operations
           if (session.scheduleSnapshot) {
-            if (fnName === "book_appointment" && (resultMessage.includes("confirmed") || resultMessage.includes("booked") || resultMessage.includes("confirmation"))) {
+            if (fnName === "book_appointment" && bookedOk) {
               scheduleCache.applyDelta(session.organizationId, "book", {
                 appointment: {
                   id: "pending-" + Date.now(),

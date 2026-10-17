@@ -249,24 +249,27 @@ describe("SCRUM-594 PHASE 2 (B3): a second booking while this call holds one is 
   });
 });
 
-describe("SCRUM-594 PHASE 2 (B4): a cancel takes the caller-ID phone and the AI's own confirmation", () => {
+describe("SCRUM-594 PHASE 2 (B4): the fast path's CancelGate — the caller-ID phone, one hold per booking, a retry after the caller's answer", () => {
   const CANCEL = { name: "cancel_appointment", args: { datetime: "2026-10-19T09:00:00", name: "Sami Khoury" } };
+  const CANCELLED = { success: true, message: "Your appointment has been cancelled." };
 
-  it("the AI asked 'cancel the Monday 9 AM booking?', the caller said yes: cancelled at once, with the caller-ID phone", async () => {
+  it("held first (even after the AI asked and the caller said yes), then the retry after the caller's yes goes through with the caller-ID phone", async () => {
     const s = makeSession();
     s.addMessage("assistant", "Do you want me to cancel the Monday 9 AM booking?");
-    const loop = makeLoop({ steps: [{ tools: [CANCEL] }, { content: "It's cancelled." }], results: { cancel_appointment: { success: true, message: "Your appointment has been cancelled." } } });
+    const loop = makeLoop({ steps: [{ tools: [CANCEL] }, { content: "To confirm: cancel Monday the 19th at 9 AM?" }, { tools: [CANCEL] }, { content: "It's cancelled." }], results: { cancel_appointment: CANCELLED } });
     await loop.say(s, "Yes please.");
+    assert.deepEqual(loop.executed, [], "never on a 'yes' read off the transcript");
+    assert.match(toolResults(s)[0], /^DO NOT CANCEL YET/);
+    await loop.say(s, "Yes.");
     assert.deepEqual(loop.executed, [{ name: "cancel_appointment", args: { ...CANCEL.args, phone: CALLER } }]);
-    assert.ok(!toolResults(s).some((m) => m.startsWith("DO NOT CANCEL YET")));
+    assert.ok(loop.lines.some((l) => l.startsWith("log| [CancelGate] Proceeding (fast path, via=retry).")), loop.lines.join("\n"));
   });
 
-  it("without that question the gate still holds once; the retry after the handler's refusal is not held again", async () => {
+  it("the retry after the handler's refusal is not held again", async () => {
     const s = makeSession();
     const loop = makeLoop({
       steps: [{ tools: [CANCEL] }, { content: "Cancel Monday at 9, yes?" }, { tools: [CANCEL] }, { content: "What's the name on it?" }, { tools: [CANCEL] }, { content: "Cancelled." }],
-      // The handler wants a detail on the first executed attempt, then cancels.
-      results: { cancel_appointment: [{ success: false, message: "For security, could you confirm the name on the booking before I make that change?" }, { success: true, message: "Your appointment has been cancelled." }] },
+      results: { cancel_appointment: [{ success: false, message: "For security, could you confirm the name on the booking before I make that change?" }, CANCELLED] },
     });
     await loop.say(s, "Cancel it please.");
     assert.match(toolResults(s)[0], /^DO NOT CANCEL YET/);
@@ -277,31 +280,35 @@ describe("SCRUM-594 PHASE 2 (B4): a cancel takes the caller-ID phone and the AI'
     assert.equal(toolResults(s).filter((m) => m.startsWith("DO NOT CANCEL YET")).length, 1);
   });
 
-  it("a cancel with no arguments of its own is held every time, even after a yes (SCRUM-372: the caller-ID phone is no identifier)", async () => {
+  it("a cancel with no arguments of its own is held every time (SCRUM-372: the caller-ID phone is no identifier)", async () => {
     const s = makeSession();
     const EMPTY = { name: "cancel_appointment", args: {} };
     const loop = makeLoop({ steps: [{ tools: [EMPTY] }, { content: "Which booking?" }, { tools: [EMPTY] }, { content: "Which one?" }] });
     await loop.say(s, "Cancel it.");
     await loop.say(s, "Yes.");
     assert.deepEqual(loop.executed, []);
-    const s2 = makeSession();
-    s2.addMessage("assistant", "Do you want me to cancel the Monday 9 AM booking?");
-    const loop2 = makeLoop({ steps: [{ tools: [EMPTY] }, { content: "Which one?" }] });
-    await loop2.say(s2, "Yes please.");
-    assert.deepEqual(loop2.executed, []);
   });
 
-  it("one yes confirms one cancel: a second cancel in the same turn, for another day, is held", async () => {
+  it("'cancel both': each keeps its own hold, and both go through after the caller's yes", async () => {
     const s = makeSession();
-    s.addMessage("assistant", "Do you want me to cancel the Monday 9 AM booking?");
-    const THURSDAY = { name: "cancel_appointment", args: { datetime: "2026-10-22T09:00:00" } };
+    const TUESDAY = { name: "cancel_appointment", args: { datetime: "2026-10-20T14:00:00", name: "Sami Khoury" } };
     const loop = makeLoop({
-      steps: [{ tools: [CANCEL, THURSDAY] }, { content: "Monday's cancelled. Thursday too?" }],
-      results: { cancel_appointment: { success: true, message: "Your appointment has been cancelled." } },
+      steps: [{ tools: [CANCEL, TUESDAY] }, { content: "Cancel Monday at 9 and Tuesday at 2?" }, { tools: [CANCEL, TUESDAY] }, { content: "Both cancelled." }],
+      results: { cancel_appointment: CANCELLED },
     });
-    await loop.say(s, "Yes please.");
-    assert.deepEqual(loop.executed.map((e) => e.args.datetime), ["2026-10-19T09:00:00"]);
-    assert.ok(loop.lines.some((l) => l.startsWith("log| [CancelGate] Proceeding on the caller's yes to the AI's own cancel question (fast path).")), loop.lines.join("\n"));
+    await loop.say(s, "Cancel both of them please.");
+    assert.deepEqual(loop.executed, []);
+    await loop.say(s, "Yes, both.");
+    assert.deepEqual(loop.executed.map((e) => e.args.datetime), ["2026-10-19T09:00:00", "2026-10-20T14:00:00"]);
+  });
+
+  it("the caller's no after the read-back stops the model's retry", async () => {
+    const s = makeSession();
+    const loop = makeLoop({ steps: [{ tools: [CANCEL] }, { content: "Cancel Monday at 9?" }, { tools: [CANCEL] }, { content: "Okay, I'll leave it." }] });
+    await loop.say(s, "Cancel Monday.");
+    await loop.say(s, "No, don't cancel it, I'll keep it.");
+    assert.deepEqual(loop.executed, []);
+    assert.ok(loop.lines.some((l) => l.includes("[CancelGate] Holding cancel_appointment pending confirmation (fast path, reason=caller-declined)")), loop.lines.join("\n"));
   });
 
   it("cancelling one of two bookings this call made keeps the other, and says so", async () => {
@@ -310,38 +317,38 @@ describe("SCRUM-594 PHASE 2 (B4): a cancel takes the caller-ID phone and the AI'
       [bookingKey({ datetime: "2026-10-19T09:00:00", first_name: "Sami" }), { datetime: "2026-10-19T09:00:00", name: "Sami Khoury", at: 1 }],
       [bookingKey({ datetime: "2026-10-20T10:00:00", first_name: "Lina" }), { datetime: "2026-10-20T10:00:00", name: "Lina Khoury", at: 2 }],
     ]);
-    s.addMessage("assistant", "Do you want me to cancel the Monday 9 AM booking?");
     const NAMELESS = { name: "cancel_appointment", args: { datetime: "2026-10-19T09:00:00" } };
-    const loop = makeLoop({ steps: [{ tools: [NAMELESS] }, { content: "Done." }], results: { cancel_appointment: { success: true, message: "Your appointment has been cancelled." } } });
-    await loop.say(s, "Yes please.");
+    const loop = makeLoop({ steps: [{ tools: [NAMELESS] }, { content: "Cancel Monday at 9?" }, { tools: [NAMELESS] }, { content: "Done." }], results: { cancel_appointment: CANCELLED } });
+    await loop.say(s, "Cancel the Monday one.");
+    await loop.say(s, "Yes.");
     assert.equal(loop.executed[0].args.name, "Sami Khoury", "B6: the booked name, logged");
     assert.ok(loop.lines.some((l) => l.startsWith("log| [BookingGuard] cancel_appointment: passing the name this call booked under.")), loop.lines.join("\n"));
     assert.deepEqual([...s.confirmedBookings.values()].map((e) => e.name), ["Lina Khoury"]);
-    assert.ok(toolResults(s)[0].endsWith(CANCEL_KEPT_NUDGE));
+    assert.ok(toolResults(s).at(-1).endsWith(CANCEL_KEPT_NUDGE));
   });
 
-  it("re-review: a cancel whose request failed in transport (no success flag) is not a cancel on the fast path", async () => {
+  it("a cancel whose request failed in transport (no success flag) is not a cancel on the fast path", async () => {
     const s = makeSession();
     s.confirmedBookings = new Map([[bookingKey({ datetime: "2026-10-19T09:00:00", first_name: "Sami" }), { datetime: "2026-10-19T09:00:00", name: "Sami Khoury", at: 1 }]]);
-    s.addMessage("assistant", "Do you want me to cancel the Monday 9 AM booking?");
     const loop = makeLoop({
-      steps: [{ tools: [CANCEL] }, { content: "Sorry, I couldn't do that just now." }],
+      steps: [{ tools: [CANCEL] }, { content: "Cancel Monday at 9?" }, { tools: [CANCEL] }, { content: "Sorry, I couldn't do that just now." }],
       results: { cancel_appointment: { message: "I'm having trouble with that right now. Would you like me to take your information instead?" } },
     });
-    await loop.say(s, "Yes please.");
+    await loop.say(s, "Cancel Monday.");
+    await loop.say(s, "Yes.");
     assert.equal(s.confirmedBookings.size, 1, "the booking is still this call's");
-    assert.doesNotMatch(toolResults(s)[0], /NOTE: the caller now has NO appointment/);
+    assert.doesNotMatch(toolResults(s).at(-1), /NOTE: the caller now has NO appointment/);
     assert.equal(s.toolCallAudit.find((a) => a.name === "cancel_appointment").successful, false);
   });
 
-  it("re-review: a fast-path hold says why", async () => {
+  it("a fast-path hold says why", async () => {
     const s = makeSession();
     const loop = makeLoop({ steps: [{ tools: [CANCEL] }, { content: "Cancel Monday at 9, is that right?" }] });
     await loop.say(s, "Cancel it.");
     assert.ok(loop.lines.some((l) => l.startsWith("warn| [CancelGate] Holding cancel_appointment pending confirmation (fast path, reason=first-attempt). callSid=CA-guards")), loop.lines.join("\n"));
   });
 
-  it("re-review: a second booking redirected to a move, then 'leave it, bye' — the call ends; nothing new is booked", async () => {
+  it("a second booking redirected to a move, then 'leave it, bye' — the call ends; nothing new is booked", async () => {
     const s = makeSession();
     const KHOURY = { name: "book_appointment", args: { ...BOOK.args, last_name: "Khoury" } };
     const TUESDAY = { name: "book_appointment", args: { ...KHOURY.args, datetime: "2026-10-20T09:00:00" } };
@@ -362,6 +369,30 @@ describe("SCRUM-594 PHASE 2 (B4): a cancel takes the caller-ID phone and the AI'
     assert.equal(s.endedReason, "end_call_tool", toolResults(s).join("\n"));
   });
 
+  it("a failed booking ('already booked at this time') never enters this call's ledger", async () => {
+    const s = makeSession();
+    const KHOURY = { name: "book_appointment", args: { ...BOOK.args, last_name: "Khoury" } };
+    const loop = makeLoop({
+      steps: [{ content: "That's K-H-O-U-R-Y?" }, { tools: [KHOURY] }, { content: "That time's taken." }],
+      results: { book_appointment: { success: false, message: "That practitioner is already booked at this time. Please choose another." } },
+    });
+    await loop.say(s, "Sami Khoury.");
+    await loop.say(s, "Yes.");
+    assert.equal(s.confirmedBookings?.size || 0, 0);
+  });
+
+  it("…nor a booking result without the handler's success flag, whatever its words", async () => {
+    const s = makeSession();
+    const KHOURY = { name: "book_appointment", args: { ...BOOK.args, last_name: "Khoury" } };
+    const loop = makeLoop({
+      steps: [{ content: "That's K-H-O-U-R-Y?" }, { tools: [KHOURY] }, { content: "Hmm." }],
+      results: { book_appointment: { message: "I've booked your appointment for Monday at 9." } },
+    });
+    await loop.say(s, "Sami Khoury.");
+    await loop.say(s, "Yes.");
+    assert.equal(s.confirmedBookings?.size || 0, 0);
+  });
+
   it("a session without the guards keeps the old gate and passes no phone", async () => {
     const s = makeSession({ fast: false });
     s.addMessage("assistant", "Do you want me to cancel the Monday 9 AM booking?");
@@ -369,15 +400,16 @@ describe("SCRUM-594 PHASE 2 (B4): a cancel takes the caller-ID phone and the AI'
     await loop.say(s, "Yes please.");
     assert.deepEqual(loop.executed, [], "held, as before");
     assert.match(toolResults(s)[0], /^DO NOT CANCEL YET/);
+    assert.ok(loop.lines.some((l) => l.startsWith("warn| [CancelGate] Holding cancel_appointment pending confirmation (classic).")), loop.lines.join("\n"));
   });
 
   it("a successful cancel ends the confirmation: the next cancel needs its own", async () => {
     const s = makeSession();
-    s.addMessage("assistant", "Do you want me to cancel the Monday 9 AM booking?");
     const loop = makeLoop({
-      steps: [{ tools: [CANCEL] }, { content: "Cancelled." }, { tools: [CANCEL] }, { content: "Confirm?" }],
-      results: { cancel_appointment: { success: true, message: "Your appointment has been cancelled." } },
+      steps: [{ tools: [CANCEL] }, { content: "Cancel Monday?" }, { tools: [CANCEL] }, { content: "Cancelled." }, { tools: [CANCEL] }, { content: "Confirm?" }],
+      results: { cancel_appointment: CANCELLED },
     });
+    await loop.say(s, "Cancel Monday.");
     await loop.say(s, "Yes.");
     await loop.say(s, "Cancel it again.");
     assert.equal(loop.executed.length, 1);

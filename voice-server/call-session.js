@@ -149,7 +149,7 @@ class CallSession {
     /** @type {boolean} */
     this.bookingGuards = false;
     /** @type {import("./lib/booking-guards").GuardState} */
-    this.bookingGuardState = { spellingHolds: 0, lastSpellingHoldTurn: -1, secondBookingNudged: false, endCallHolds: 0, lastEndCallHoldTurn: -1, usedCancelConfirmation: -1 };
+    this.bookingGuardState = { spellingHolds: 0, lastSpellingHoldTurn: -1, secondBookingNudged: false, endCallHolds: 0, lastEndCallHoldTurn: -1 };
     // SCRUM-594: the fast path's audio player (lib/fast-player.js); null on every other call.
     /** @type {import("./lib/fast-player").FastPlayer|null} */
     this.fastPlayer = null;
@@ -276,9 +276,13 @@ class CallSession {
     // confirmation; only a SECOND call with a matching fingerprint executes.
     // Prevents an irreversible cancel from a single misheard/garbled turn.
     this._pendingCancel = null; // { keys: string[], at: number, callerTurn?: number } | null
-    // SCRUM-594 PHASE 2 (B4): the fast path's confirmed cancel, kept until the
-    // cancel succeeds (clearCancelConfirmation) or five minutes pass.
-    this._confirmedCancel = null; // { keys: string[], at: number } | null
+    // SCRUM-594 PHASE 2 (B4): the fast path's CancelGate, per booking (keyed by
+    // its most specific identifier): held cancels, and confirmed ones kept until
+    // the cancel succeeds (clearCancelConfirmation) or five minutes pass.
+    /** @type {Map<string, { keys: string[], at: number, callerTurn?: number, transcriptAt?: number }>} */
+    this._fastPendingCancels = new Map();
+    /** @type {Map<string, { keys: string[], at: number, transcriptAt?: number }>} */
+    this._fastConfirmedCancels = new Map();
 
     // SCRUM-506: per-call carry-forward of the caller's OWN identity/verification
     // details (name/phone/email/date_of_birth), so the AI never re-asks for
@@ -373,22 +377,13 @@ class CallSession {
    * identifier (arg-less / garbled — the noisiest, most dangerous case) is
    * ALWAYS held and can NEVER auto-confirm.
    *
-   * SCRUM-594 PHASE 2 (B4), the fast path only (`options.fastPath`, from
-   * lib/booking-guards.js fastCancelGate, on the model's OWN arguments), where
-   * the simulated baseline took cancels through four confirmations:
-   *  - `callerConfirmed`: the caller's plain yes to the AI's own "cancel <that
-   *    day's booking>?" IS the confirmation, so the attempt proceeds.
-   *  - Matching is per booking, and a held cancel needs the caller to have
-   *    spoken since (`callerTurn`) — see _confirmFastCancel.
-   *  - A confirmed cancel stays confirmed (that exact booking, five minutes)
-   *    when the handler sends the model back for a detail, until
-   *    clearCancelConfirmation.
-   * An attempt with no identifier is held whatever the options say. Without
-   * `fastPath` the options are ignored: Gemini and classic keep the gate above.
+   * SCRUM-594 PHASE 2 (B4): `options.fastPath` runs the fast path's gate
+   * instead (confirmFastCancel). Without it the options are ignored: Gemini and
+   * classic keep the gate above.
    *
    * @param {{phone?: string, date?: string, datetime?: string}} args
    * @param {number} nowMs - current epoch ms (passed in; Date.now is fine here)
-   * @param {{ callerConfirmed?: boolean, fastPath?: boolean, callerTurn?: number }} [options] - the fast path only; ignored otherwise
+   * @param {{ fastPath?: boolean, callerTurn?: number, transcriptAt?: number, declinedAt?: number }} [options] - the fast path only; ignored otherwise
    * @returns {boolean} true to PROCEED with the cancel, false to hold + confirm first
    */
   confirmCancel(args, nowMs, options = {}) {
@@ -417,16 +412,19 @@ class CallSession {
   }
 
   /**
-   * SCRUM-594 PHASE 2 (B4): the CancelGate on the fast path (see confirmCancel),
-   * with why it proceeded or held. Adds the exact time ("t:") to the keys and
-   * matches per BOOKING: the time when both attempts carry one, else the date,
-   * else any shared key. A remembered confirmation covers only a retry of
-   * exactly the same booking, and a held cancel is confirmed only by an attempt
-   * after the caller has spoken again (`callerTurn`).
+   * SCRUM-594 PHASE 2 (B4): the CancelGate on the fast path (see confirmCancel,
+   * and lib/booking-guards.js fastCancelGate, which passes the model's OWN
+   * arguments), with why it proceeded or held. Per BOOKING — the exact time
+   * ("t:") when both attempts carry one, else the date, else a shared phone —
+   * so two cancels in one reply each keep their own hold. A held cancel is
+   * confirmed only by the same booking's attempt after the caller has spoken
+   * again (`callerTurn`); a confirmed one stays confirmed for exactly that
+   * booking across a handler retry. A caller decline at transcript index
+   * `declinedAt` drops every record made before it.
    * @param {{ phone?: string, date?: string, datetime?: string }} args - the model's own arguments
    * @param {number} nowMs
-   * @param {{ callerConfirmed?: boolean, callerTurn?: number }} [options]
-   * @returns {{ proceed: boolean, via: "caller-yes" | "confirmed" | "retry" | null, reason: "no-identifier" | "first-attempt" | "awaiting-caller" | "another-booking" | null }}
+   * @param {{ callerTurn?: number, transcriptAt?: number, declinedAt?: number }} [options]
+   * @returns {{ proceed: boolean, via: "confirmed" | "retry" | null, reason: "no-identifier" | "first-attempt" | "awaiting-caller" | "caller-declined" | null }}
    */
   confirmFastCancel(args, nowMs, options = {}) {
     const keys = [];
@@ -434,13 +432,16 @@ class CallSession {
     if (phone.length >= 6) keys.push("p:" + phone);
     const datePart = String(args?.datetime || args?.date || "").slice(0, 10);
     if (/^\d{4}-\d{2}-\d{2}$/.test(datePart)) keys.push("d:" + datePart);
-    if (keys.length === 0) {
-      this._pendingCancel = null; // as confirmCancel: an attempt with no identifier never confirms
-      return { proceed: false, via: null, reason: "no-identifier" };
-    }
+    if (keys.length === 0) return { proceed: false, via: null, reason: "no-identifier" }; // never confirms (SCRUM-372)
     const time = String(args?.datetime || "").slice(0, 16);
     if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(time)) keys.push("t:" + time);
-    const fresh = (/** @type {{ keys: string[], at: number } | null} */ rec) => rec !== null && nowMs - rec.at < 5 * 60 * 1000;
+
+    const declinedAt = typeof options.declinedAt === "number" ? options.declinedAt : -1;
+    const live = (/** @type {{ at: number, transcriptAt?: number }} */ rec) =>
+      nowMs - rec.at < 5 * 60 * 1000 && !(typeof rec.transcriptAt === "number" && declinedAt >= rec.transcriptAt);
+    for (const map of [this._fastPendingCancels, this._fastConfirmedCancels]) {
+      for (const [id, rec] of map) if (!live(rec)) map.delete(id);
+    }
     const key = (/** @type {string[]} */ ks, /** @type {string} */ kind) => ks.find((k) => k.startsWith(kind));
     const sameBooking = (/** @type {string[]} */ held) => {
       if (key(held, "t:") && key(keys, "t:")) return key(held, "t:") === key(keys, "t:");
@@ -451,27 +452,51 @@ class CallSession {
       if (key(held, "t:") || key(keys, "t:")) return Boolean(key(held, "t:") && key(held, "t:") === key(keys, "t:"));
       return Boolean(key(held, "d:") && key(held, "d:") === key(keys, "d:"));
     };
+    const id = /** @type {string} */ (key(keys, "t:") || key(keys, "d:") || key(keys, "p:"));
 
-    if (fresh(this._confirmedCancel) && exactlySameBooking(this._confirmedCancel.keys)) {
-      return { proceed: true, via: "confirmed", reason: null }; // confirmed; the handler wanted a detail
+    for (const rec of this._fastConfirmedCancels.values()) {
+      if (exactlySameBooking(rec.keys)) return { proceed: true, via: "confirmed", reason: null }; // the handler wanted a detail
     }
-    const pending = this._pendingCancel;
-    const answered = !pending || typeof options.callerTurn !== "number" || typeof pending.callerTurn !== "number" || options.callerTurn > pending.callerTurn;
-    const samePending = fresh(pending) && sameBooking(pending.keys);
-    if (options.callerConfirmed || (samePending && answered)) {
-      this._pendingCancel = null;
-      this._confirmedCancel = { keys, at: nowMs };
-      return { proceed: true, via: options.callerConfirmed ? "caller-yes" : "retry", reason: null };
+    /** @type {[string, { keys: string[], at: number, callerTurn?: number, transcriptAt?: number }] | null} */
+    let held = null;
+    for (const entry of this._fastPendingCancels) if (sameBooking(entry[1].keys)) { held = entry; break; }
+    if (held) {
+      const [heldId, rec] = held;
+      const answered = typeof options.callerTurn !== "number" || typeof rec.callerTurn !== "number" || options.callerTurn > rec.callerTurn;
+      if (answered) {
+        this._fastPendingCancels.delete(heldId);
+        this._fastConfirmedCancels.set(id, { keys, at: nowMs, transcriptAt: options.transcriptAt });
+        return { proceed: true, via: "retry", reason: null };
+      }
+      this._fastPendingCancels.set(heldId, { ...rec, keys, at: nowMs });
+      return { proceed: false, via: null, reason: "awaiting-caller" };
     }
-    const reason = samePending ? "awaiting-caller" : fresh(pending) ? "another-booking" : "first-attempt";
-    this._pendingCancel = { keys, at: nowMs, callerTurn: samePending ? pending.callerTurn : options.callerTurn };
-    return { proceed: false, via: null, reason };
+    this._fastPendingCancels.set(id, { keys, at: nowMs, callerTurn: options.callerTurn, transcriptAt: options.transcriptAt });
+    const latestIsDecline = typeof options.transcriptAt === "number" && declinedAt === options.transcriptAt - 1;
+    return { proceed: false, via: null, reason: latestIsDecline ? "caller-declined" : "first-attempt" };
   }
 
-  /** SCRUM-594 PHASE 2 (B4): a cancel went through — the next one needs its own confirmation. */
-  clearCancelConfirmation() {
+  /**
+   * A cancel went through: the next one needs its own confirmation. On the fast
+   * path, given the cancel's arguments, only that booking's records go (another
+   * booking's held cancel stands); without, everything does.
+   * @param {{ phone?: string, date?: string, datetime?: string }} [args]
+   */
+  clearCancelConfirmation(args) {
     this._pendingCancel = null;
-    this._confirmedCancel = null;
+    if (!args) {
+      this._fastPendingCancels.clear();
+      this._fastConfirmedCancels.clear();
+      return;
+    }
+    const time = String(args.datetime || "").slice(0, 16);
+    const date = String(args.datetime || args.date || "").slice(0, 10);
+    const phone = String(args.phone || "").replace(/\D/g, "");
+    const id = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(time) ? "t:" + time : /^\d{4}-\d{2}-\d{2}$/.test(date) ? "d:" + date : phone.length >= 6 ? "p:" + phone : null;
+    for (const map of [this._fastPendingCancels, this._fastConfirmedCancels]) {
+      if (id === null) map.clear();
+      else for (const [key, rec] of map) if (key === id || rec.keys.includes(id)) map.delete(key);
+    }
   }
 
   /**
@@ -558,8 +583,9 @@ class CallSession {
 
   /**
    * Does this audit entry resolve the booking funnel: a successful booking,
-   * reschedule or take-a-message callback. On the fast path (SCRUM-594 phone
-   * test F1) also a successful cancel of the booking a failed move was for —
+   * reschedule or take-a-message callback. On the fast path also B3's redirect
+   * (this call's booking stands), and (SCRUM-594 phone test F1) a successful
+   * cancel of the booking a failed move was for —
    * the caller chose to drop it ("just cancel the one you booked"). Only then:
    * a cancel after a failed BOOKING still leaves the caller with nothing, and
    * Gemini and classic keep the rule they had.
@@ -568,6 +594,9 @@ class CallSession {
    * @returns {boolean}
    */
   _resolvesFunnel(t, audit) {
+    // The fast path's B3 redirect: the caller already has this call's booking, so
+    // the new booking flow it interrupted is not left unfinished.
+    if (this.bookingGuards && t.name === "book_appointment_redirected") return true;
     if (!t.successful) return false;
     if (t.name === "book_appointment" || t.name === "reschedule_appointment" || t.name === "schedule_callback") return true;
     if (!this.bookingGuards || t.name !== "cancel_appointment") return false;

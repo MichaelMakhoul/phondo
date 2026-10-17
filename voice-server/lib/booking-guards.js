@@ -15,10 +15,13 @@
  *    back letter by letter, as its question, and the caller said yes.
  *  - B3 second booking: while this call holds a booking, a booking at another
  *    time is redirected to reschedule_appointment once.
- *  - B4 cancel: the AI's own "cancel the Monday 9 AM booking?" — its last
- *    question, naming the day being cancelled — answered with a plain yes is
- *    the CancelGate's confirmation, once (fastCancelGate). The gate keys on
- *    the MODEL'S OWN arguments, so a cancel with no identifier is always held.
+ *  - B4 cancel (fastCancelGate): the CancelGate on the MODEL'S OWN arguments
+ *    (so a cancel with no identifier is always held), one held cancel per
+ *    booking, a retry confirmed only after the caller has spoken again, a
+ *    confirmation kept for the same booking across a handler retry, and the
+ *    caller's clear "no / leave it" dropping both. Structural only: the
+ *    gate review showed a "yes" read off speech-to-text text can't be trusted
+ *    to confirm an irreversible cancel ("Yes, the three PM one").
  *  - B5 hang-up: end_call waits until the caller has said goodbye or that
  *    they're done.
  *  - B6 own booking: a reschedule or cancel of a booking THIS call made carries
@@ -106,32 +109,6 @@ function isAffirmative(text) {
   return POSITIVE.test(t);
 }
 
-const PLAIN_YES_START = /^\W*(yes|yeah|yep|yup|yea|sure|go ahead|do it|that'?s (?:right|correct|the one))\b/i;
-/** "Please" and "correct" are a yes only on their own: "Please hold…", "Correct me if…" are not. */
-const PLAIN_YES_ALONE = /^\W*(?:please(?: do)?|correct)\W*$/i;
-const YES_BLOCKERS = new RegExp(
-  "\\b(no|not|don'?t|nah|wait|hang on|hold on|actually|but|leave|keep|unsure|maybe|instead|rather|" +
-    "sec|second|moment|check|think|repeat|again|what|which|when|where|who|how|sorry|pardon|hmm+|um+|uh+|it'?s|my name|" +
-    `${["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"].join("|")}|\\d+(?:st|nd|rd|th))\\b`,
-  "i",
-);
-
-/**
- * The only yes that confirms an irreversible cancel: short (at most 8 words),
- * starting with a yes, asking nothing ("?"), naming no detail (a digit, a day,
- * a name), and with nothing that hedges, stalls or takes it back.
- * @param {unknown} text
- * @returns {boolean}
- */
-function isPlainYes(text) {
-  if (typeof text !== "string") return false;
-  const t = text.trim();
-  if (!t || t.includes("?") || /\d/.test(t) || t.split(/\s+/).length > 8) return false;
-  if (PLAIN_YES_ALONE.test(t)) return true;
-  if (!PLAIN_YES_START.test(t)) return false;
-  return !YES_BLOCKERS.test(t.replace(/\bno worries\b/gi, "").replace(/\byes please\b/gi, "yes"));
-}
-
 /** A short "is that right?" after a read-back — not a question about something else. */
 const GENERIC_CHECK = /\b(right|correct|yes|ok(?:ay)?|spell|spelled|spelling)\b/i;
 
@@ -151,9 +128,10 @@ function asksToCheckSpelling(content, target) {
   const last = questions[questions.length - 1];
   if (spelledRuns(last).some((run) => runSpells(run, target))) return true;
   const words = last.trim().split(/\s+/).length;
-  // "Is that how you spell it?" — a longer question is the spelling only when it says so.
-  if (/\bspell/i.test(last)) return words <= 10;
-  return words <= 6 && GENERIC_CHECK.test(last);
+  // "Is that how you spell it?" — a longer question is the spelling only when it
+  // points back at it ("Could you spell your first name?" is another question).
+  if (/\bspell/i.test(last) && /\b(it|that)\b/i.test(last) && !/\bfirst\b/i.test(last)) return words <= 10;
+  return words <= 6 && GENERIC_CHECK.test(last) && !/\bfirst\b/i.test(last);
 }
 
 /**
@@ -192,74 +170,11 @@ function spellingHoldMessage(surname) {
   return `DO NOT BOOK YET. Read the caller's last name back to them letter by letter, exactly as you will save it — for "${surname}" that is ${letters} — and ask "Is that right?" as its own question, with nothing else in that reply. If they correct it, save their spelling. Call book_appointment again only after they say yes.`;
 }
 
-const WEEKDAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
-const MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
-
-/**
- * Does `question` name the booking `args` cancels? It must name its day — the
- * weekday, "the 19th", or "October 19" / "19 October" (a bare "19" could be a
- * time) — and any day of the month or clock time it also names must be the
- * cancel's: "Monday 9 AM?" never confirms Monday 2 PM, "the 26th" never the 19th.
- * @param {string} question
- * @param {Record<string, any>} args
- * @returns {boolean}
- */
-function namesBooking(question, args) {
-  const m = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}))?/.exec(String(args.datetime || args.date || ""));
-  if (!m) return false;
-  const weekday = WEEKDAYS[new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])).getUTCDay()];
-  const day = +m[3];
-  const q = question.toLowerCase();
-  const namedDays = [...q.matchAll(/\b(\d{1,2})(?:st|nd|rd|th)\b/g), ...q.matchAll(new RegExp(`\\b(?:${MONTHS.join("|")}) (\\d{1,2})\\b|\\b(\\d{1,2}) (?:${MONTHS.join("|")})\\b`, "g"))]
-    .map((d) => +(d[1] || d[2]));
-  if (namedDays.some((d) => d !== day)) return false;
-  if (m[4] !== undefined) {
-    const minutes = +m[4] * 60 + +m[5];
-    for (const t of q.matchAll(/\b(\d{1,2})(?::(\d{2}))?\s*(a\.?\s?m\.?|p\.?\s?m\.?)(?![a-z])/g)) {
-      const hour = (+t[1] % 12) + (t[3].startsWith("p") ? 12 : 0);
-      if (hour * 60 + +(t[2] || 0) !== minutes) return false;
-    }
-  }
-  return new RegExp(`\\b${weekday}\\b`).test(q) || namedDays.includes(day);
-}
-
-/** The AI's question asks permission to cancel ("Do you want me to cancel…?", "Shall I cancel…?", "Cancel Monday at 9?"). */
-const CANCEL_ASK = /^\W*(?:(?:so|okay|ok|alright|right|just to confirm|to confirm|just to be sure|just to check),?\s+)?(?:(?:do |did )?you want(?: me)? to|you'?d like(?: me)? to|would you like(?: me)? to|shall i|should i|can i go ahead and|i'?ll)?\s*cancel(?:l?ing)?\b/i;
-/** …and asks for nothing else, and isn't the reverse. */
-const NOT_A_CANCEL_ASK = /\b(or|instead|rather|keep|not|never|no longer|what|which|when|where|who|how|name|number|phone|email|code|spell)\b|n['’]t\b/i;
-
-/**
- * B4: the caller's plain yes to the AI's own "cancel <that booking>?", as
- * the index of that yes in the transcript, or -1. The question must be the
- * last sentence the AI said and ask permission to cancel ("cancelled" is a
- * statement; "Before I cancel…, can I get your name?" asks for a name), offer
- * no choice, not be the reverse ("you don't want me to cancel…?"), and name
- * the booking `args` cancels (namesBooking).
- * @param {Array<{ role: string, content: unknown }>} transcript - session.fullTranscriptMessages
- * @param {Record<string, any>} args - the model's own cancel_appointment arguments
- * @returns {number}
- */
-function cancelConfirmation(transcript, args) {
-  const last = transcript.length - 1;
-  if (last < 1 || transcript[last].role !== "user") return -1;
-  const asked = transcript[last - 1];
-  if (asked.role !== "assistant" || typeof asked.content !== "string") return -1;
-  // "…, yes or no?" and "…? Yes or no?" are the same question.
-  const text = asked.content.replace(/,?\s*\byes or no\b/gi, "").replace(/\?(\s*\?)+/g, "?").trim();
-  if (!text.endsWith("?")) return -1;
-  const questions = text.match(/[^.!?]*\?/g) || [];
-  const question = (questions[questions.length - 1] || "").trim();
-  if (!CANCEL_ASK.test(question) || NOT_A_CANCEL_ASK.test(question)) return -1;
-  if (!namesBooking(question, args || {})) return -1;
-  return isPlainYes(transcript[last].content) ? last : -1;
-}
-
 /**
  * @typedef {{
  *   spellingHolds: number, lastSpellingHoldTurn: number,
  *   secondBookingNudged: boolean,
- *   endCallHolds: number, lastEndCallHoldTurn: number,
- *   usedCancelConfirmation: number
+ *   endCallHolds: number, lastEndCallHoldTurn: number
  * }} GuardState
  */
 
@@ -275,12 +190,23 @@ function guardState(session) {
   state.secondBookingNudged ??= false;
   state.endCallHolds ??= 0;
   state.lastEndCallHoldTurn ??= -1;
-  state.usedCancelConfirmation ??= -1;
   return state;
 }
 
-/** The caller's latest words take a cancel back. */
-const CALLER_DECLINES = /^\W*(?:no|nope|nah)\b|\b(?:don'?t|do not) cancel\b|\bleave it\b|\bkeep it\b|\bnever ?mind\b/i;
+/** A caller's clear "no" to a cancel: an explicit phrase, or a bare no. */
+const DECLINE_PHRASE = /\b(?:don'?t|do not) (?:want to |need to )?cancel\b|\bleave it\b|\bnever ?mind\b|\bchanged my mind\b|\bforget it\b|\bnot sure\b|\bkeep (?:the|my) (?:booking|appointment)\b/i;
+const BARE_NO = /^\W*(?:no|nope|nah|no thanks?|no thank you|not really)\W*$/i;
+
+/**
+ * Does this caller message take a cancel back? ("No worries, go ahead" and
+ * "No, just cancel it" do not.)
+ * @param {unknown} text
+ * @returns {boolean}
+ */
+function declinesCancel(text) {
+  if (typeof text !== "string") return false;
+  return DECLINE_PHRASE.test(text) || BARE_NO.test(text.trim());
+}
 
 /**
  * How many times the caller has spoken: the turn a hold belongs to.
@@ -292,32 +218,26 @@ function callerTurns(transcript) {
 }
 
 /**
- * B4: the fast path's CancelGate, on the MODEL'S OWN arguments (before any
- * caller-ID fill, so a cancel with no identifier of its own is always held).
- * The caller's plain yes to the AI's own "cancel <that booking>?" confirms it,
- * and each such yes confirms one cancel only. Otherwise it is the gate: hold,
- * then the same booking's attempt after the caller has spoken again proceeds.
- * The caller's "no, don't cancel it" holds it and forgets any confirmation.
- * `via` / `reason` say why it proceeded or held, for the log.
+ * B4: the fast path's CancelGate (call-session.js confirmFastCancel) on the
+ * MODEL'S OWN arguments — before any caller-ID fill, so a cancel with no
+ * identifier of its own is always held — with the caller's latest decline: a
+ * held or remembered confirmation made before it no longer counts.
  * @param {import("../call-session").CallSession} session
  * @param {Record<string, any>} modelArgs
  * @param {number} nowMs
- * @returns {{ proceed: boolean, callerConfirmed: boolean, via: "caller-yes" | "confirmed" | "retry" | null, reason: string | null }}
+ * @returns {{ proceed: boolean, via: "confirmed" | "retry" | null, reason: "no-identifier" | "first-attempt" | "awaiting-caller" | "caller-declined" | null }}
  */
 function fastCancelGate(session, modelArgs, nowMs) {
-  const state = guardState(session);
   const transcript = session.fullTranscriptMessages;
-  const said = [...transcript].reverse().find((m) => m.role === "user");
-  if (said && CALLER_DECLINES.test(String(said.content))) {
-    // "No, don't cancel it" ends any held or remembered cancel.
-    session.clearCancelConfirmation();
-    return { proceed: false, callerConfirmed: false, via: null, reason: "caller-declined" };
-  }
-  const yesAt = cancelConfirmation(transcript, modelArgs || {});
-  const callerConfirmed = yesAt >= 0 && yesAt !== state.usedCancelConfirmation;
-  const gate = session.confirmFastCancel(modelArgs || {}, nowMs, { callerConfirmed, callerTurn: callerTurns(transcript) });
-  if (gate.proceed && gate.via === "caller-yes") state.usedCancelConfirmation = yesAt;
-  return { proceed: gate.proceed, callerConfirmed: gate.via === "caller-yes", via: gate.via, reason: gate.reason };
+  let declinedAt = -1;
+  transcript.forEach((m, i) => {
+    if (m.role === "user" && declinesCancel(m.content)) declinedAt = i;
+  });
+  return session.confirmFastCancel(modelArgs || {}, nowMs, {
+    callerTurn: callerTurns(transcript),
+    transcriptAt: transcript.length,
+    declinedAt,
+  });
 }
 
 /**
@@ -383,16 +303,23 @@ function checkBookingGuards(session, args, bookingKey = require("./booking-key")
 const MATCH_WINDOW_MS = 15 * 60 * 1000;
 
 /**
- * Are two model-supplied datetimes the same booking by the handlers' ±15-minute rule?
- * @param {unknown} a
- * @param {unknown} b
+ * The booking a model-supplied datetime means, the way the handlers pick it:
+ * an exact match, else the closest within ±15 minutes; null when none is, or
+ * when two are equally close.
+ * @param {Array<{ datetime?: string }>} entries
+ * @param {unknown} datetime
  * @param {(datetime: unknown) => string} normalizeDatetime
- * @returns {boolean}
+ * @returns {any}
  */
-function withinMatchWindow(a, b, normalizeDatetime) {
-  const x = Date.parse(normalizeDatetime(a));
-  const y = Date.parse(normalizeDatetime(b));
-  return Number.isFinite(x) && Number.isFinite(y) && Math.abs(x - y) <= MATCH_WINDOW_MS;
+function closestWithinWindow(entries, datetime, normalizeDatetime) {
+  const target = Date.parse(normalizeDatetime(datetime));
+  if (!Number.isFinite(target)) return null;
+  const scored = entries
+    .map((e) => ({ e, gap: Math.abs(Date.parse(normalizeDatetime(e.datetime)) - target) }))
+    .filter((x) => Number.isFinite(x.gap) && x.gap <= MATCH_WINDOW_MS)
+    .sort((x, y) => x.gap - y.gap);
+  if (scored.length === 0 || (scored.length > 1 && scored[0].gap === scored[1].gap)) return null;
+  return scored[0].e;
 }
 
 /**
@@ -408,10 +335,7 @@ function ledgerEntryFor(args, ledger, normalizeDatetime) {
   if (!(ledger instanceof Map) || ledger.size === 0) return null;
   const entries = [...ledger.values()];
   const datetime = String(args.current_datetime || args.datetime || "").trim();
-  if (datetime) {
-    const hits = entries.filter((e) => withinMatchWindow(e.datetime, datetime, normalizeDatetime));
-    return hits.length === 1 ? hits[0] : null;
-  }
+  if (datetime) return closestWithinWindow(entries, datetime, normalizeDatetime);
   const date = String(args.current_date || args.date || "").trim();
   if (date) {
     const hits = entries.filter((e) => typeof e.datetime === "string" && e.datetime.startsWith(date));
@@ -479,8 +403,9 @@ function forgetCancelledBooking(ledger, args, normalizeDatetime) {
   }
   const datetime = String(a.datetime || "").trim();
   const date = String(a.date || "").trim();
-  const cancelled = (/** @type {{ datetime?: string }} */ e) => typeof e.datetime === "string" && (datetime ? withinMatchWindow(e.datetime, datetime, normalizeDatetime) : e.datetime.startsWith(date));
-  if ((datetime || date) && ![...ledger.values()].some(cancelled)) return { remaining: ledger.size, clearedAll: false };
+  // A time or date none of this call's bookings is near: an earlier call's booking — the ledger stands.
+  const near = (/** @type {{ datetime?: string }} */ e) => typeof e.datetime === "string" && (datetime ? closestWithinWindow([e], datetime, normalizeDatetime) !== null : e.datetime.startsWith(date));
+  if ((datetime || date) && ![...ledger.values()].some(near)) return { remaining: ledger.size, clearedAll: false };
   ledger.clear();
   return { remaining: 0, clearedAll: true };
 }
@@ -506,7 +431,8 @@ function callerIsDone(transcript) {
   const said = transcript[last].content;
   if (GOODBYE.test(said) || THATS_ALL.test(said)) return true;
   const asked = transcript[last - 1];
-  const askedAnythingElse = Boolean(asked && asked.role === "assistant" && /anything else|is that everything|is that all|anything more/i.test(String(asked.content)));
+  // "Is that all correct?" is a read-back, not "anything else?".
+  const askedAnythingElse = Boolean(asked && asked.role === "assistant" && /anything else|anything more|\bis that (?:everything|all)\b(?!\s*(?:correct|right|ok(?:ay)?|good|fine))/i.test(String(asked.content)));
   return askedAnythingElse && (DONE_IF_ASKED.test(said) || PLAIN_NO.test(said));
 }
 
@@ -559,10 +485,9 @@ module.exports = {
   spelledRuns,
   spellableLetters,
   isAffirmative,
-  isPlainYes,
   surnameSpellingConfirmed,
   spellingHoldMessage,
-  cancelConfirmation,
+  declinesCancel,
   fastCancelGate,
   checkBookingGuards,
   withBookedName,

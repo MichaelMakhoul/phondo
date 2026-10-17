@@ -14,8 +14,7 @@ const {
   isAffirmative,
   surnameSpellingConfirmed,
   spellingHoldMessage,
-  cancelConfirmation,
-  isPlainYes,
+  declinesCancel,
   fastCancelGate,
   forgetCancelledBooking,
   checkBookingGuards,
@@ -156,6 +155,7 @@ describe("surnameSpellingConfirmed", () => {
     assert.equal(surnameSpellingConfirmed([ai("K-H-O-U-R-Y. Is that how you spell it?"), caller("Yes.")], "Khoury").confirmed, true);
     assert.equal(surnameSpellingConfirmed([ai("K-H-O-U-R-Y. Is that the correct spelling of your last name?"), caller("Yes.")], "Khoury").confirmed, true);
     assert.equal(surnameSpellingConfirmed([ai("Got it, K-H-O-U-R-Y. Is the number you're calling from the right one?"), caller("Yes.")], "Khoury").reason, "not-asked");
+    assert.equal(surnameSpellingConfirmed([ai("K-H-O-U-R-Y. Could you spell your first name for me?"), caller("Sure.")], "Khoury").reason, "not-asked");
   });
 
   it("a read-back with no question, answered yes, confirms", () => {
@@ -187,165 +187,76 @@ describe("spellingHoldMessage", () => {
 
 const MON_9 = { datetime: "2026-10-19T09:00:00" }; // a Monday
 
-describe("isPlainYes (the only yes that confirms a cancel)", () => {
-  for (const yes of ["Yes.", "Yes please.", "Yep, go ahead and cancel it.", "Yeah, cancel that one.", "Correct.", "Sure, no worries.", "Please do.", "That's right."]) {
-    it(`"${yes}" is a plain yes`, () => assert.equal(isPlainYes(yes), true));
+describe("declinesCancel (a caller's clear no to a cancel)", () => {
+  for (const no of ["No.", "Nope", "Nah.", "No thanks.", "No, don't cancel it, I'll keep it.", "Actually no, leave it.", "Never mind.", "I don't want to cancel it anymore.", "I'm not sure anymore.", "I've changed my mind.", "Keep the booking please."]) {
+    it(`"${no}" takes it back`, () => assert.equal(declinesCancel(no), true));
   }
-  for (const no of [
-    "Definitely not.", "Absolutely not!", "I'm not sure.", "Okay, hold on.", "Okay, no, don't.", "Yeah, no, leave it.",
-    "Right, hmm, I'm not sure actually.", "Yes, but keep the Tuesday one.", "Yeah, the Monday 9 AM one we just made, please cancel that one now.",
-    // re-review: questions, stalls, details and other days are not a plain yes
-    "Yep, what time was that?", "Yes? Sorry, which one?", "Yeah, just a sec, let me check.", "Please repeat that", "Yeah. Hmm.",
-    "Yeah, it's Sarah Khoury.", "Yes, the 3 pm one.", "Yes, cancel the Tuesday one.", "Please hold, let me check my calendar.",
-    "Correct me if I'm wrong, is it 9?", "Yes, sorry, what time was that?", "Yeah, um, is that the 9 or 10?",
-    "Correct me, it was the earlier one.",
-  ]) {
-    it(`"${no}" is not`, () => assert.equal(isPlainYes(no), false));
+  for (const yes of ["No worries, go ahead.", "Nah yeah, cancel it.", "No problem, yes please.", "No, I mean the one you just booked. Please cancel that.", "No, just cancel it.", "Yes.", "I'll keep it handy."]) {
+    it(`"${yes}" does not`, () => assert.equal(declinesCancel(yes), false));
   }
 });
 
-describe("cancelConfirmation (B4: the AI's own 'cancel <that day>?' answered with a plain yes)", () => {
-  it("returns the caller's yes when the AI's last question was to cancel that day's booking", () => {
-    for (const q of [
-      "Do you want me to cancel the Monday 9 AM booking?",
-      "Just to confirm, cancel Monday at 9? Yes or no?",
-      "Shall I cancel your booking on the 19th?",
-      "Just to confirm, you want me to cancel the Monday, October 19 at 9 AM appointment?",
-      "Would you like me to cancel the Monday booking?",
-      "I'll cancel the Monday 9 AM booking, okay?",
-      "Do you want me to cancel your Monday 9 AM appointment, yes or no?",
-    ]) {
-      assert.equal(cancelConfirmation([ai(q), caller("Yes.")], MON_9), 1, q);
-    }
-  });
-
-  it("re-review: a question that asks for something else, or the reverse, is not the permission ask", () => {
-    for (const [q, reply] of [
-      ["Before I cancel your Monday 9 AM appointment, can I get your full name?", "Yeah, it's Sarah Khoury."],
-      ["To cancel your Monday 19th booking, can you confirm the number it's under?", "Yeah, it's 0412 345 678."],
-      ["Before I cancel your Monday 19th appointment, can I confirm your name is Sarah Lee?", "Yes, it's Sarah Lee."],
-      ["Do you have the confirmation code for the Monday appointment you'd like to cancel?", "Yes, it's 482917."],
-      ["So you don't want me to cancel the Monday 19th appointment?", "Yes, that's right."],
-      ["Shall I cancel your Monday appointment?", "Yes, the 3 pm one."],
-      ["Shall I cancel your Monday appointment?", "Yes, cancel the Tuesday one."],
-      // a question that mentions cancelling but asks something else: the yes is to booking Wednesday
-      ["After I cancel the Monday 9 AM booking, shall I book Wednesday?", "Yes."],
-      // a permission ask that also offers a choice or asks for information
-      ["Shall I cancel the Monday 9 AM booking, or move it?", "Yes."],
-      ["Do you want me to cancel the Monday booking, and what's the reason for cancelling?", "Yes."],
-    ]) {
-      assert.equal(cancelConfirmation([ai(q), caller(reply)], MON_9), -1, `${q} / ${reply}`);
-    }
-  });
-
-  it("re-review: a day of the month or a time in the question must be the cancel's", () => {
-    assert.equal(cancelConfirmation([ai("Do you want me to cancel the Monday 9 AM booking?"), caller("Yes.")], { datetime: "2026-10-19T14:00:00" }), -1, "Monday 2 PM's cancel");
-    assert.equal(cancelConfirmation([ai("Shall I cancel your Monday 26th booking?"), caller("Yes.")], MON_9), -1, "the 26th, not the 19th");
-    assert.equal(cancelConfirmation([ai("Do you want me to cancel the Monday 9:00 AM booking?"), caller("Yes.")], MON_9), 1, "9:00 AM is 09:00");
-    assert.equal(cancelConfirmation([ai("Do you want me to cancel the Monday 2 PM booking?"), caller("Yes.")], { datetime: "2026-10-19T14:00:00" }), 1);
-  });
-
-  it("only the last question counts, and it must be the cancel itself", () => {
-    for (const q of [
-      "Sure, I can cancel that. Can I confirm your name is Sami Khoury?",
-      "Would you like to reschedule instead of cancelling?",
-      "Shall I keep the booking rather than cancel it?",
-      "Do you want to cancel it, or move it to another day?",
-      "Sure, I can cancel that for you. What date is the appointment on?",
-      "I couldn't find an appointment to cancel on that day. Could you double-check the date?",
-      "Your Monday booking is cancelled. Anything else?",
-      "I can cancel the Monday booking.",
-    ]) {
-      assert.equal(cancelConfirmation([ai(q), caller("Yes.")], MON_9), -1, q);
-    }
-  });
-
-  it("the question must name the day being cancelled", () => {
-    assert.equal(cancelConfirmation([ai("Do you want me to cancel the Monday 9 AM booking?"), caller("Yes.")], { datetime: "2026-10-22T09:00:00" }), -1, "Thursday's cancel");
-    assert.equal(cancelConfirmation([ai("Do you want me to cancel the booking?"), caller("Yes.")], MON_9), -1, "no day named");
-    assert.equal(cancelConfirmation([ai("Do you want me to cancel the Monday 9 AM booking?"), caller("Yes.")], {}), -1, "no day to check against");
-  });
-
-  it("a yes that hedges or rambles is not a plain yes (the irreversible cancel needs one)", () => {
-    for (const reply of ["Yes, but keep the Tuesday one.", "Yeah, the Monday 9 AM one we just made, please cancel that one now."]) {
-      assert.equal(cancelConfirmation([ai("Do you want me to cancel the Monday 9 AM booking?"), caller(reply)], MON_9), -1, reply);
-    }
-  });
-
-  it("the cancel question must be the last thing the AI said", () => {
-    assert.equal(cancelConfirmation([ai("Cancel the Monday 9 AM booking? Otherwise I could move it for you."), caller("Yes.")], MON_9), -1);
-  });
-
-  it("a negation is never a yes", () => {
-    for (const no of ["Definitely not.", "Absolutely not!", "I'm not sure.", "Okay, hold on.", "Okay, no, don't."]) {
-      assert.equal(cancelConfirmation([ai("Do you want me to cancel the Monday 9 AM booking?"), caller(no)], MON_9), -1, no);
-    }
-  });
-
-  it("only the AI's last words before the caller's last words count", () => {
-    assert.equal(cancelConfirmation([ai("Do you want me to cancel the Monday booking?"), caller("Hang on."), ai("Sure, take your time."), caller("Yes.")], MON_9), -1);
-    assert.equal(cancelConfirmation([caller("Cancel Monday?")], MON_9), -1);
-    assert.equal(cancelConfirmation([], MON_9), -1);
-  });
-});
-
-describe("fastCancelGate", () => {
+describe("fastCancelGate (structural: no 'yes' is read off the transcript)", () => {
   const session = (lines) => {
     const s = new CallSession("CA-gate");
     s.bookingGuards = true;
     for (const l of lines) s.addMessage(l.role, l.content);
     return s;
   };
+  const say = (s, role, text) => s.addMessage(role, text);
 
-  it("a plain yes to 'cancel Monday at 9?' lets that cancel through — once", () => {
-    const s = session([ai("Do you want me to cancel the Monday 9 AM booking?"), caller("Yes please.")]);
-    assert.deepEqual(fastCancelGate(s, MON_9, 1000), { proceed: true, callerConfirmed: true, via: "caller-yes", reason: null });
-    s.clearCancelConfirmation(); // the cancel went through
-    assert.deepEqual(fastCancelGate(s, MON_9, 2000), { proceed: false, callerConfirmed: false, via: null, reason: "first-attempt" }, "the same yes never confirms a second cancel");
+  it("holds the first attempt — even after the AI asked and the caller said yes — and the retry after the caller's answer goes through", () => {
+    const s = session([ai("Do you want me to cancel the Monday 9 AM booking?"), caller("Yes, the three PM one.")]);
+    assert.deepEqual(fastCancelGate(s, MON_9, 1000), { proceed: false, via: null, reason: "first-attempt" });
+    assert.deepEqual(fastCancelGate(s, MON_9, 1001), { proceed: false, via: null, reason: "awaiting-caller" }, "the model's instant retry");
+    say(s, "assistant", "To confirm, cancel Monday the 19th at 9 AM?");
+    say(s, "user", "Yes.");
+    assert.deepEqual(fastCancelGate(s, MON_9, 2000), { proceed: true, via: "retry", reason: null });
   });
 
-  it("re-review: the caller's 'no' stops a held cancel and a remembered confirmation", () => {
+  it("a cancel with no date or phone of the model's own is held every time", () => {
+    const s = session([caller("Cancel it.")]);
+    assert.equal(fastCancelGate(s, {}, 1000).reason, "no-identifier");
+    say(s, "assistant", "Which booking?");
+    say(s, "user", "Yes.");
+    assert.equal(fastCancelGate(s, {}, 2000).proceed, false);
+  });
+
+  it("two cancels in one reply each keep their own hold, and both go through after the caller's yes", () => {
+    const TUE_2 = { datetime: "2026-10-20T14:00:00" };
+    const s = session([caller("Cancel both, please.")]);
+    assert.equal(fastCancelGate(s, MON_9, 1000).proceed, false);
+    assert.equal(fastCancelGate(s, TUE_2, 1001).proceed, false);
+    say(s, "assistant", "Cancel Monday at 9 and Tuesday at 2?");
+    say(s, "user", "Yes, both.");
+    assert.equal(fastCancelGate(s, MON_9, 2000).proceed, true);
+    s.clearCancelConfirmation(MON_9); // Monday's cancel went through
+    assert.equal(fastCancelGate(s, TUE_2, 2001).proceed, true, "Tuesday's hold survived Monday's cancel");
+  });
+
+  it("the caller's no drops a held cancel and a remembered confirmation", () => {
     const s = session([caller("Cancel Monday please.")]);
     assert.equal(fastCancelGate(s, MON_9, 1000).proceed, false);
-    s.addMessage("assistant", "Cancel Monday at 9 AM, is that right?");
-    s.addMessage("user", "No, don't cancel it, I'll keep it.");
-    assert.deepEqual(fastCancelGate(s, MON_9, 2000), { proceed: false, callerConfirmed: false, via: null, reason: "caller-declined" });
-    const t = session([ai("Do you want me to cancel the Monday 9 AM booking?"), caller("Yes.")]);
-    assert.equal(fastCancelGate(t, MON_9, 1000).proceed, true); // the handler then wants a detail
-    t.addMessage("assistant", "What's the name on the booking?");
-    t.addMessage("user", "Actually no, leave it.");
-    assert.equal(fastCancelGate(t, MON_9, 2000).reason, "caller-declined");
-    t.addMessage("assistant", "No problem, I'll leave it.");
-    t.addMessage("user", "Thanks.");
-    assert.equal(fastCancelGate(t, MON_9, 3000).proceed, false, "the remembered confirmation is gone");
+    say(s, "assistant", "Cancel Monday at 9 AM, is that right?");
+    say(s, "user", "No, don't cancel it, I'll keep it.");
+    assert.deepEqual(fastCancelGate(s, MON_9, 2000), { proceed: false, via: null, reason: "caller-declined" });
+    const t = session([caller("Cancel Monday please.")]);
+    fastCancelGate(t, MON_9, 1000);
+    say(t, "assistant", "Cancel Monday at 9?");
+    say(t, "user", "Yes.");
+    assert.equal(fastCancelGate(t, MON_9, 2000).proceed, true); // the handler then wants a detail
+    say(t, "assistant", "What's the name on the booking?");
+    say(t, "user", "Actually no, leave it.");
+    say(t, "assistant", "No problem.");
+    say(t, "user", "Thanks.");
+    assert.equal(fastCancelGate(t, MON_9, 3000).proceed, false, "a decline at any point after the confirmation drops it");
   });
 
-  it("says why it held: no identifier, waiting for the caller, or another booking", () => {
+  it("says why it held: no identifier, a first attempt, or waiting for the caller", () => {
     const s = session([caller("Cancel it.")]);
     assert.equal(fastCancelGate(s, {}, 1000).reason, "no-identifier");
     assert.equal(fastCancelGate(s, MON_9, 1001).reason, "first-attempt");
     assert.equal(fastCancelGate(s, MON_9, 1002).reason, "awaiting-caller");
-    s.addMessage("assistant", "Which booking?");
-    s.addMessage("user", "The Monday one.");
-    assert.equal(fastCancelGate(s, { datetime: "2026-10-19T14:00:00" }, 2000).reason, "another-booking");
-    assert.equal(fastCancelGate(s, { datetime: "2026-10-19T14:00:00" }, 2001).reason, "awaiting-caller");
-  });
-
-  it("a cancel with no date or phone of the model's own is held every time, whatever the caller said", () => {
-    const s = session([ai("Do you want me to cancel the Monday 9 AM booking?"), caller("Yes please.")]);
-    assert.equal(fastCancelGate(s, {}, 1000).proceed, false);
-    s.addMessage("assistant", "Which booking?");
-    s.addMessage("user", "Yes.");
-    assert.equal(fastCancelGate(s, {}, 2000).proceed, false);
-  });
-
-  it("without the caller's yes it is the gate: held, then confirmed by the retry after the caller answers", () => {
-    const s = session([caller("Cancel Monday please.")]);
-    assert.equal(fastCancelGate(s, MON_9, 1000).proceed, false);
-    assert.equal(fastCancelGate(s, MON_9, 1001).proceed, false, "the model's instant retry");
-    s.addMessage("assistant", "Cancel Monday at 9 AM, is that right?");
-    s.addMessage("user", "Yes.");
-    assert.equal(fastCancelGate(s, MON_9, 2000).proceed, true);
   });
 });
 
@@ -365,6 +276,19 @@ describe("forgetCancelledBooking (the ledger after a fast-path cancel)", () => {
     const l = ledger();
     assert.deepEqual(forgetCancelledBooking(l, { datetime: "2026-10-19T09:10" }, normalizeDatetime), { remaining: 1, clearedAll: false });
     assert.deepEqual([...l.values()].map((e) => e.name), ["Lina Khoury"]);
+  });
+
+  it("an exact time wins, and otherwise the closest — never both of two nearby bookings", () => {
+    const two = () => new Map([
+      ["a", { datetime: "2026-10-19T09:00:00", name: "Sami Khoury", at: 1 }],
+      ["b", { datetime: "2026-10-19T09:15:00", name: "Lina Khoury", at: 2 }],
+    ]);
+    const l = two();
+    assert.deepEqual(forgetCancelledBooking(l, { datetime: "2026-10-19T09:00" }, normalizeDatetime), { remaining: 1, clearedAll: false });
+    assert.deepEqual([...l.values()].map((e) => e.name), ["Lina Khoury"]);
+    const m = two();
+    forgetCancelledBooking(m, { datetime: "2026-10-19T09:12" }, normalizeDatetime);
+    assert.deepEqual([...m.values()].map((e) => e.name), ["Sami Khoury"], "9:12 is closest to 9:15");
   });
 
   it("an earlier call's booking leaves this call's ledger alone", () => {
@@ -504,8 +428,10 @@ describe("callerIsDone (B5: the AI ends the call only once the caller has)", () 
   for (const done of ["Thanks, bye!", "No, that's all, thanks.", "That's everything, cheers", "Nope, I'm good.", "All good, thanks", "Have a good one"]) {
     it(`"${done}" is done`, () => assert.equal(callerIsDone([ai("You're booked in. Anything else?"), caller(done)]), true));
   }
-  it("'Is that everything?' asks the same as 'anything else?'", () => {
+  it("'Is that everything?' asks the same as 'anything else?' — 'Is that all correct?' does not", () => {
     assert.equal(callerIsDone([ai("You're booked. Is that everything?"), caller("Yep, that's it.")]), true);
+    assert.equal(callerIsDone([ai("Monday at 9, Sami Khoury. Is that all correct?"), caller("Yep, all good.")]), false);
+    assert.equal(callerIsDone([ai("Is that all right?"), caller("Perfect, cheers.")]), false);
   });
 
   it("a plain no to 'anything else?' is done", () => {

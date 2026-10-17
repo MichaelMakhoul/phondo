@@ -111,6 +111,14 @@ describe("CallSession.hasUnfinishedBooking (SCRUM-373/377)", () => {
       { name: "book_appointment_redirected", successful: false, at: 200 },
     ]);
     assert.equal(s.hasUnfinishedBooking("caller_done"), false);
+    // the usual order: availability for the new time, then the redirect
+    const t = fast([
+      { name: "check_availability", successful: true, at: 50 },
+      { name: "book_appointment", successful: true, at: 100 },
+      { name: "check_availability", successful: true, at: 150 },
+      { name: "book_appointment_redirected", successful: false, at: 200 },
+    ]);
+    assert.equal(t.hasUnfinishedBooking("caller_done"), false);
   });
 
   it("fast path: cancelling a DIFFERENT booking than the one the failed move was for leaves the move unfinished", () => {
