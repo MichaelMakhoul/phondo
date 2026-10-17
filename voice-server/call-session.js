@@ -60,7 +60,9 @@ const MAX_MESSAGES = 21; // system prompt + up to 20 messages (user/assistant tu
  * @property {"adopted"|"discarded"|"none"} spec
  * @property {number|null} llmAt - the reply's first text from the LLM
  * @property {number|null} speakAt - the turn's first words sent to TTS
- * @property {number|null} audioAt - the turn's first audio handed to the player
+ * @property {number|null} audioAt - the turn's first audio handed to the player (its reply's: never a filler's or an apology's)
+ * @property {boolean} queued - committed while another turn was in flight: it waited in the queue
+ * @property {number} waitedMs - ms the turn waited before its LLM could start (the queue, and R12b″'s wait for the AI's audio); such a turn's eot_to_audio is no latency sample
  * @property {boolean} logged
  *
  * SCRUM-594: the fast path's per-call latency summary ([FastCall], calls.metadata.fastPath).
@@ -160,6 +162,9 @@ class CallSession {
     // leg's fast-path summary into calls.metadata.fastPath (restoreFrom).
     /** @type {object|null} */
     this.carriedFastPath = null;
+    // SCRUM-594 gate C7: the first leg's pipeline (calls.metadata.pipeline), carried the same way.
+    /** @type {string|null} */
+    this.carriedPipeline = null;
     // SCRUM-594: optional — resolves once the call's queued speech has played.
     // The classic end_call hang-up (server.js hangUpAfterEndCall) awaits it
     // instead of its sendTTS-duration estimate. The fast path sets it: its
@@ -472,6 +477,7 @@ class CallSession {
     // SCRUM-594: the first leg's fast-path summary (attached to the entry when
     // that leg's stream closed for the dial), for this leg's call record.
     this.carriedFastPath = savedState.fastPath && typeof savedState.fastPath === "object" ? savedState.fastPath : null;
+    this.carriedPipeline = typeof savedState.pipeline === "string" ? savedState.pipeline : null;
   }
 
   /**

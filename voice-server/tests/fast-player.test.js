@@ -131,7 +131,7 @@ test("push: ignores empty and non-buffer input", () => {
   player.push(/** @type {any} */ (undefined));
   assert.deepEqual(sent, []);
   assert.equal(player.isPlaying(), false);
-  assert.deepEqual(player.stats(), { firstAudioAt: null, bytesSent: 0 });
+  assert.equal(player.remainingMs(), null, "nothing went out");
 });
 
 test("push: a bare Uint8Array works too, including a view into a larger ArrayBuffer (offset respected)", () => {
@@ -273,43 +273,6 @@ test("stop: empties the outstanding marks and never reuses a mark name (Twilio e
   assert.equal(player.isPlaying(), true, "and it did not end the new utterance");
   assert.equal(player.onMark(fresh), true);
   assert.equal(player.isPlaying(), false);
-});
-
-test("stop: resets the utterance stats", () => {
-  const { player } = makePlayer();
-  player.push(bytes(320));
-  assert.notDeepEqual(player.stats(), { firstAudioAt: null, bytesSent: 0 });
-  player.stop();
-  assert.deepEqual(player.stats(), { firstAudioAt: null, bytesSent: 0 });
-});
-
-// ── stats() ─────────────────────────────────────────────────────────────────
-
-test("stats: firstAudioAt is when the first byte was handed over; bytesSent counts bytes put on the wire", () => {
-  const { player, clock } = makePlayer({ start: 5_000 });
-  assert.deepEqual(player.stats(), { firstAudioAt: null, bytesSent: 0 });
-
-  player.push(bytes(100)); // handed over at 5000, nothing on the wire yet
-  assert.deepEqual(player.stats(), { firstAudioAt: 5_000, bytesSent: 0 });
-
-  clock.advance(80);
-  player.push(bytes(300, 100)); // 2 frames go out (320 bytes), 80 held
-  assert.deepEqual(player.stats(), { firstAudioAt: 5_000, bytesSent: 320 }, "firstAudioAt does not move");
-
-  clock.advance(80);
-  player.endUtterance(); // the 80-byte tail goes out
-  assert.deepEqual(player.stats(), { firstAudioAt: 5_000, bytesSent: 400 });
-});
-
-test("stats: they describe the current utterance; the next utterance's first push starts a fresh one", () => {
-  const { player, clock } = makePlayer({ start: 1_000 });
-  player.push(bytes(320));
-  player.endUtterance();
-  clock.advance(600);
-  assert.deepEqual(player.stats(), { firstAudioAt: 1_000, bytesSent: 320 }, "still readable after the mark (the caller logs it then)");
-
-  player.push(bytes(160));
-  assert.deepEqual(player.stats(), { firstAudioAt: 1_600, bytesSent: 160 });
 });
 
 // ── whenIdle() ──────────────────────────────────────────────────────────────

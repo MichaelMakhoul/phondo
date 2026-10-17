@@ -29,22 +29,42 @@
  *      one event that does not read its transcript: see rule 5.)
  *   2. An event for a turn other than the one a draft belongs to cancels that draft:
  *      cancelSpeculation("new-turn"), before anything else the event causes.
- *   3. Barge-in. On Update and StartOfTurn, and on an EndOfTurn that is not dropped as
- *      echo (rule 6), while aiSpeaking or processing: the first one of a turn whose
- *      transcript has 3 or more words, or starts with an INTERRUPT_RE word, calls
- *      bargeIn(). Once per turnIndex, and not when the words are the AI's own voice
- *      coming back (the echo filter). At an EndOfTurn it comes first, then the final is
- *      answered as in rule 6, so a processing-only state and a 3+ word digit final in
- *      structured mode are covered.
+ *   3. Barge-in, while aiSpeaking or processing: on Update and StartOfTurn, the first one
+ *      of a turn whose transcript has 3 or more words calls bargeIn(); one of
+ *      ECHO_MAX_WORDS words or fewer never does there, interrupt word or not ("No" is
+ *      how "No worries" starts: R12a′). On an EndOfTurn that rule 6 does not drop, a
+ *      final of 3 or more words, or one that starts with an INTERRUPT_RE word, calls it,
+ *      then the final is answered as in rule 6 (so a processing-only state and a 3+ word
+ *      digit final in structured mode are covered). Once per turnIndex (a declined
+ *      barge-in is not spent: see bargeIn below), and not when the words are the AI's
+ *      own voice coming back (the echo filter).
  *   4. EagerEndOfTurn, with speculation on and !aiSpeaking && !processing and general
  *      input expected: speculate(transcript, turnIndex).
  *   5. TurnResumed: cancelSpeculation("resumed"). It does not depend on the transcript:
  *      cancelling is always safe, and a draft must not outlive a resumed turn.
- *   6. EndOfTurn, the first one of a turn:
- *        - aiSpeaking, 2 words or fewer, no interrupt word: the classic echo rule.
- *          dropEcho(transcript), then cancelSpeculation("echo"). Nothing else.
+ *   6. EndOfTurn, the first one of a turn, in this order:
+ *        - an answer to the AI's question: while the AI is speaking, its text ends with a
+ *          question (endsWithQuestion), at most QUESTION_TAIL_MS of its audio is still to
+ *          play (aiRemainingMs, a number) and the turn began after the question's audio
+ *          did (its start as received, from the events' receivedAt, at least
+ *          START_OF_TURN_LAG_MS after questionAudioStartAt), a final of ECHO_MAX_WORDS
+ *          words or fewer is the answer ("…Shall I book 10 AM?" "Yes"; R14″), backchannel
+ *          words and content alike: never dropped, it is answered below. A backchannel
+ *          does not barge in ("No worries" never cuts the question); an interrupt word
+ *          does, as always. Earlier in the reply, or when what is still to play is unknown
+ *          (REST audio), the two drops below apply: a question the caller has not heard
+ *          yet is not what an "okay" answers.
+ *        - a backchannel while the AI is speaking OR processing (isBackchannel: "okay",
+ *          "thanks", "no worries" ..., two words or fewer) is no turn (R12a′):
+ *          dropEcho(transcript, "backchannel"), then cancelSpeculation("backchannel"). On
+ *          the structured path too. It is kept for onAiIdle (below).
+ *        - an echo-like final while the AI is speaking (isLikelyEcho against
+ *          aiSpeakingText) is the AI's own voice coming back (R13): dropEcho(transcript,
+ *          "echo-like"), then cancelSpeculation("echo"). Answering it would have the AI
+ *          answer itself.
  *        - otherwise rule 3 first (bargeIn(), if it has not fired in this turn), then the
- *          final is answered:
+ *          final is answered. Any other short final is a real answer ("Tuesday"); the
+ *          session holds the turn until the AI has finished speaking:
  *            - a structured input type is expected: cancelSpeculation("structured"), then
  *              bufferStructured(transcript). CallSession.bufferTranscript merges the pieces
  *              (digits and spelled names split across Flux turns).
@@ -66,8 +86,7 @@
  *   case, punctuation, "a.m." and "am", and digits against number words ("10" is "ten",
  *   "9:30" is "nine thirty"). The playback position is not used: Aura synthesises at about
  *   twice real time and the echo transcript lags, so what has been heard is not knowable.
- *   The filter only holds back the barge-in. It never touches dropEcho, and an echo-like
- *   final of 3+ words is still committed, as in classic.
+ *   As a final, an echo-like candidate is dropped (rule 6, R13).
  *
  * Per-turn bookkeeping (what the spec leaves open; pinned in tests/fast-turns.test.js)
  *   - A turn is handled once. After its EndOfTurn (committed, dropped or buffered) the
@@ -88,8 +107,8 @@
  *
  * What the actions must do
  *   - cancelSpeculation(reason) may be called when there is no draft (rule 5 always asks)
- *     and must then do nothing. Reasons: "resumed", "new-turn", "echo", "structured",
- *     "reset".
+ *     and must then do nothing. Reasons: "resumed", "new-turn", "echo", "backchannel",
+ *     "structured", "reset".
  *   - speculate() must replace a draft the session still holds.
  *   - bargeIn() may decline by returning false (nothing was stopped): the turn's barge-in is
  *     then not spent, and a later event of the turn may barge in. Any other return spends it.
@@ -100,31 +119,11 @@
  *     aborted, and handles `processing` by queueing.
  *   - They are called as methods of the `actions` object, so a class instance works.
  *
- * The "fast-path" policy (`policy: "fast-path"`; the default policy is everything above)
- *   What a live phone call needs on top (Task 5 review, rulings R12a′ and R13):
- *   - A candidate of ECHO_MAX_WORDS words or fewer never barges in on StartOfTurn or Update,
- *     interrupt word or not: "No" is how "No worries" starts. It is judged at its EndOfTurn.
- *     Three words or more barge in early, exactly as above.
- *   - EndOfTurn, in this order:
- *       - while the AI is speaking, its text ends with a question (endsWithQuestion), at
- *         most QUESTION_TAIL_MS of its audio is still to play (aiRemainingMs, a number) and
- *         the turn began after the question's audio did (its start as received, from the
- *         events' receivedAt, at least START_OF_TURN_LAG_MS after questionAudioStartAt), a
- *         final of ECHO_MAX_WORDS words or fewer is the answer ("…Shall I book 10 AM?"
- *         "Yes"; R14″), backchannel words and content alike: never dropped, it goes to
- *         rule 6's answer. A backchannel does not barge in ("No worries" never cuts the
- *         question); an interrupt word does, as always. Earlier in the reply, or when what
- *         is still to play is unknown (REST audio), the rules below apply: a question the
- *         caller has not heard yet is not what an "okay" answers.
- *       - while the AI is speaking OR processing, a backchannel (isBackchannel: "okay",
- *         "thanks", "no worries" ..., two words or fewer) is no turn: dropEcho(transcript,
- *         "backchannel"), then cancelSpeculation("backchannel"). On the structured path too.
- *       - while the AI is speaking, an echo-like final (isLikelyEcho against aiSpeakingText)
- *         is the AI's own voice coming back: dropEcho(transcript, "echo-like"), then
- *         cancelSpeculation("echo"). Answering it would have the AI answer itself.
- *       - otherwise rule 3 (an interrupt word, or substantial speech, barges in) and rule 6's
- *         answer. The classic echo rule is off: any other short final is a real answer
- *         ("Tuesday"), and the session holds the turn until the AI has finished speaking.
+ * Beyond the events (the gate)
+ *   - openTurn(): the turn Flux has open, for a fallback to Nova to answer (M4a).
+ *   - onAiIdle(state): the AI has finished speaking. A backchannel-like short final
+ *     dropped while it asked a long question, begun after the question started, is
+ *     committed now (trigger "deferred"; M5 i).
  *
  * Speculation off (`speculationEnabled: false`, e.g. FLUX_EAGER_EOT_THRESHOLD=off): the
  * engine never calls speculate or cancelSpeculation, and does not need them.
@@ -175,7 +174,6 @@ const ECHO_MIN_OVERLAP_PERCENT = 80;
 const ECHO_MIN_RUN = 3;
 
 const TURN_EVENTS = new Set(["StartOfTurn", "Update", "EagerEndOfTurn", "TurnResumed", "EndOfTurn"]);
-const POLICIES = new Set(["default", "fast-path"]);
 
 /**
  * What a caller says to keep the conversation going without taking a turn (ruling R12a′),
@@ -219,7 +217,7 @@ const SPEECH_PIECE = /(\d+):(\d{2})|\d+|\p{L}+/gu;
  * @property {(reason: string) => void} [cancelSpeculation] - cancel the draft, if any (not needed when speculation is off)
  * @property {(transcript: string, turnIndex: number, trigger: string | null) => void} commit - the turn is over: answer it
  * @property {() => boolean|void} bargeIn - stop the AI's audio and abort the turn in flight; false: the session declined (nothing was stopped), and the turn may still barge in later
- * @property {(transcript: string, reason?: string) => void} dropEcho - discard a final that is no turn: the AI's own echo (no reason: the classic rule), or under the "fast-path" policy "backchannel" / "echo-like"
+ * @property {(transcript: string, reason: "backchannel"|"echo-like") => void} dropEcho - discard a final that is no turn: a backchannel while the AI is busy, or the AI's own echo
  * @property {(transcript: string) => void} bufferStructured - hand a structured-input final to the session's debounce buffer
  *
  * @typedef {Object} FastTurnEngine
@@ -319,15 +317,6 @@ function hasSharedRun(a, b, length) {
 }
 
 /**
- * Is `candidate` the AI's own voice coming back through the caller's mic? Yes only when it
- * has 3 or more normalised words, at least 80% of them are words the AI said, and 3 or more
- * in a row are in a row in what the AI said. Fewer words say too little to judge, and with
- * no AI text nothing is shared, so it fails open: false.
- * @param {unknown} candidate - what the caller seems to have said
- * @param {unknown} aiText - everything sent to TTS since the player last went idle
- * @returns {boolean}
- */
-/**
  * True when a normalised token is a number: digits, or a number word from the tables above.
  * @param {string} token - one output token of speechTokens
  * @returns {boolean}
@@ -336,6 +325,15 @@ function isNumberToken(token) {
   return /^\d/.test(token) || (token !== "" && (NUMBER_ONES.includes(token) || NUMBER_TENS.includes(token)));
 }
 
+/**
+ * Is `candidate` the AI's own voice coming back through the caller's mic? Yes only when it
+ * has 3 or more normalised words, at least 80% of them are words the AI said, and 3 or more
+ * in a row are in a row in what the AI said. Fewer words say too little to judge, and with
+ * no AI text nothing is shared, so it fails open: false.
+ * @param {unknown} candidate - what the caller seems to have said
+ * @param {unknown} aiText - everything sent to TTS since the player last went idle
+ * @returns {boolean}
+ */
 function isLikelyEcho(candidate, aiText) {
   const said = speechTokens(candidate);
   if (said.length < ECHO_MIN_WORDS) return false;
@@ -420,15 +418,12 @@ function isInsubstantial(text) {
  * @param {() => FastTurnState} options.getState - the session's state, read when each event arrives
  * @param {FastTurnActions} options.actions - what the engine asks of the session
  * @param {boolean} [options.speculationEnabled] - false when Flux sends no EagerEndOfTurn (default true)
- * @param {"default"|"fast-path"} [options.policy] - "fast-path": short candidates are judged at their EndOfTurn, a short final while the AI asks a question is its answer, and other backchannels and echo-like finals while the AI is busy are dropped (see the module comment); default "default"
  * @returns {FastTurnEngine}
  */
 function createFastTurnEngine(options) {
-  const { getState, actions, speculationEnabled = true, policy = "default" } = /** @type {any} */ (options || {});
+  const { getState, actions, speculationEnabled = true } = /** @type {any} */ (options || {});
   if (typeof getState !== "function") throw new TypeError("createFastTurnEngine: getState must be a function");
   if (typeof speculationEnabled !== "boolean") throw new TypeError("createFastTurnEngine: speculationEnabled must be a boolean");
-  if (!POLICIES.has(policy)) throw new TypeError('createFastTurnEngine: policy must be "default" or "fast-path"');
-  const fastPolicy = policy === "fast-path";
   const offered = /** @type {Record<string, unknown>} */ (actions || {});
   for (const name of speculationEnabled ? [...ALWAYS_REQUIRED_ACTIONS, ...SPECULATION_ACTIONS] : ALWAYS_REQUIRED_ACTIONS) {
     if (typeof offered[name] !== "function") throw new TypeError(`createFastTurnEngine: actions.${name} must be a function`);
@@ -553,30 +548,24 @@ function createFastTurnEngine(options) {
     const state = getState();
     lastEndedTurn = turnIndex;
     let mayBargeIn = true;
-    if (fastPolicy) {
-      if (state.aiSpeaking && wordCount(text) <= ECHO_MAX_WORDS && endsWithQuestion(state.aiSpeakingText) && inQuestionTail(state.aiRemainingMs) && startedAfterQuestion(turnIndex, state.questionAudioStartAt)) {
-        // R14″: the answer to the question the AI is still asking ("…Shall I book 10 AM?"
-        // "Yes"): heard in its tail, and begun after the question started. Answered, never
-        // dropped: the session holds the turn until the AI has finished. A backchannel
-        // never cuts the question; an interrupt word still does.
-        mayBargeIn = !isBackchannel(text);
-      } else {
-        if ((state.aiSpeaking || state.processing) && isBackchannel(text)) {
-          lastDropped = { text, turnIndex, startedAt: turnStart.index === turnIndex ? turnStart.at : null };
-          actions.dropEcho(text, "backchannel");
-          cancelDraft("backchannel");
-          return;
-        }
-        if (state.aiSpeaking && isLikelyEcho(text, state.aiSpeakingText)) {
-          actions.dropEcho(text, "echo-like");
-          cancelDraft("echo");
-          return;
-        }
+    if (state.aiSpeaking && wordCount(text) <= ECHO_MAX_WORDS && endsWithQuestion(state.aiSpeakingText) && inQuestionTail(state.aiRemainingMs) && startedAfterQuestion(turnIndex, state.questionAudioStartAt)) {
+      // R14″: the answer to the question the AI is still asking ("…Shall I book 10 AM?"
+      // "Yes"): heard in its tail, and begun after the question started. Answered, never
+      // dropped: the session holds the turn until the AI has finished. A backchannel
+      // never cuts the question; an interrupt word still does.
+      mayBargeIn = !isBackchannel(text);
+    } else {
+      if ((state.aiSpeaking || state.processing) && isBackchannel(text)) {
+        lastDropped = { text, turnIndex, startedAt: turnStart.index === turnIndex ? turnStart.at : null };
+        actions.dropEcho(text, "backchannel");
+        cancelDraft("backchannel");
+        return;
       }
-    } else if (state.aiSpeaking && isInsubstantial(text)) {
-      actions.dropEcho(text);
-      cancelDraft("echo");
-      return;
+      if (state.aiSpeaking && isLikelyEcho(text, state.aiSpeakingText)) {
+        actions.dropEcho(text, "echo-like");
+        cancelDraft("echo");
+        return;
+      }
     }
     try {
       if (mayBargeIn) considerBargeIn(turnIndex, text, state);
@@ -612,8 +601,8 @@ function createFastTurnEngine(options) {
     switch (event) {
       case "StartOfTurn":
       case "Update":
-        // "fast-path": a short candidate is judged at its EndOfTurn ("No" is how "No worries" starts).
-        if (!fastPolicy || wordCount(text) > ECHO_MAX_WORDS) considerBargeIn(turnIndex, text, getState());
+        // R12a′: a short candidate is judged at its EndOfTurn ("No" is how "No worries" starts).
+        if (wordCount(text) > ECHO_MAX_WORDS) considerBargeIn(turnIndex, text, getState());
         break;
       case "EagerEndOfTurn":
         considerDraft(turnIndex, text);

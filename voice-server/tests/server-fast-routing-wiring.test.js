@@ -100,7 +100,9 @@ describe("SCRUM-594: demo-line switch — source pins", () => {
   });
 
   it("cleanup hands the pipeline to completeCallRecord for demo-line customer calls only", () => {
-    assert.match(cleanup, /pipeline: !s\.ownerMode && isDemoLineNumber\(s\.orgPhoneNumber\) \? s\.effectivePipeline : null,/);
+    // Gate C7: computed once, so a transfer can carry it (and a reconnected leg write the first leg's).
+    assert.match(cleanup, /const pipelineServed = \(!s\.ownerMode && isDemoLineNumber\(s\.orgPhoneNumber\) \? s\.effectivePipeline : null\) \|\| s\.carriedPipeline \|\| null;/);
+    assert.match(cleanup, /pipeline: pipelineServed,\n/);
     assert.match(cleanup, /pipelineFailover: s\.pipelineFailover \|\| null,\n/);
   });
 

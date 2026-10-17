@@ -286,6 +286,7 @@ function makeFast(o = {}) {
     FAST_DISCLOSURE_MARK: "fast-disclosure",
     AURA_OPEN_TIMEOUT_MS: o.auraOpenTimeoutMs ?? 60_000,
     FAST_RESPEAK_MS_PER_CHAR: 95,
+    FAST_QUESTION_MS_PER_CHAR: 95,
     FAST_REPROMPT_MS: o.repromptMs ?? 60_000,
     FAST_DRAFTS_PER_TURN: o.draftsPerTurn ?? 2,
     FAST_DRAFTS_PER_CALL: o.draftsPerCall ?? 60,
@@ -294,7 +295,7 @@ function makeFast(o = {}) {
     console: recordingConsole(lines),
   };
   const names = ["handleUserSpeech", "sendTTS", "sendRestTTS", "sendClear", "startFastPath", "closeFastPath", "onFastMark", "onFastRestMark", "settleFastAudio", "fastFlush", "summarizeFastCall",
-    "beginFastDisclosure", "armFastDisclosureEnd", "endFastDisclosure", "noteFastRestSpeech", "noteFastInboundAudio"];
+    "beginFastDisclosure", "armFastDisclosureEnd", "endFastDisclosure", "noteFastRestSpeech", "noteFastInboundAudio", "beginFastTurn"];
   const fns = runSlice({
     from: "function buildLLMOptions(session, { includeTransfer = false } = {}) {",
     to: "// --- Test Call WebSocket (/ws/test) ---",
@@ -1508,7 +1509,7 @@ describe("SCRUM-594 4.8.9: [FastTurn], [FastCall] and calls.metadata.fastPath", 
     h.audio(1, 0); // the turn's first audio
     const lines = h.lines.filter((l) => l.includes("[FastTurn]"));
     assert.equal(lines.length, 1, h.lines.join("\n"));
-    const m = lines[0].match(/^log\| \[FastTurn\] callSid=CA-fast trigger=model spec=adopted eot_to_llm=(\d+) eot_to_audio=(\d+) eager_lead=(\d+)$/);
+    const m = lines[0].match(/^log\| \[FastTurn\] callSid=CA-fast trigger=model spec=adopted eot_to_llm=(\d+) eot_to_audio=(\d+) eager_lead=(\d+) waited=0$/);
     assert.ok(m, lines[0]);
     assert.ok(Number(m[2]) >= 10, `eot_to_audio runs to the first audio byte: ${m[2]}`);
     assert.ok(Number(m[3]) >= 15, `eager_lead is EagerEndOfTurn to EndOfTurn: ${m[3]}`);
@@ -1537,8 +1538,8 @@ describe("SCRUM-594 4.8.9: [FastTurn], [FastCall] and calls.metadata.fastPath", 
     h.audio(1, 0);
     const lines = h.lines.filter((l) => l.includes("[FastTurn]"));
     assert.equal(lines.length, 2, h.lines.join("\n"));
-    assert.match(lines[0], /trigger=model spec=none eot_to_llm=\d+ eot_to_audio=- eager_lead=-$/);
-    assert.match(lines[1], /trigger=model spec=discarded eot_to_llm=\d+ eot_to_audio=\d+ eager_lead=\d+$/);
+    assert.match(lines[0], /trigger=model spec=none eot_to_llm=\d+ eot_to_audio=- eager_lead=- waited=0$/);
+    assert.match(lines[1], /trigger=model spec=discarded eot_to_llm=\d+ eot_to_audio=\d+ eager_lead=\d+ waited=0$/);
     h.closeFastPath(s);
     const summary = h.summarizeFastCall(s);
     assert.equal(summary.specDiscarded, 1);
@@ -1581,7 +1582,7 @@ describe("SCRUM-594 4.8.9: [FastTurn], [FastCall] and calls.metadata.fastPath", 
     assert.equal(h.llmCalls[0].which, "claude");
     assert.deepEqual(h.lastAura().handle.spoken, ["Hi there."]);
     h.audio(1, 0);
-    assert.ok(h.lines.some((l) => /\[FastTurn\] callSid=CA-fast trigger=buffered spec=none eot_to_llm=\d+ eot_to_audio=\d+ eager_lead=-$/.test(l)), h.lines.join("\n"));
+    assert.ok(h.lines.some((l) => /\[FastTurn\] callSid=CA-fast trigger=buffered spec=none eot_to_llm=\d+ eot_to_audio=\d+ eager_lead=- waited=0$/.test(l)), h.lines.join("\n"));
     h.closeFastPath(s);
   });
 
@@ -2239,19 +2240,22 @@ describe("SCRUM-594 review: a barge-in's Clear and the flush waits", () => {
 });
 
 describe("SCRUM-594 review Minor 7: the summary survives a transfer", () => {
-  it("cleanup of a leg that is transferring hands its summary to the pending transfer (finishTransferredCall writes it)", async () => {
+  it("cleanup of a leg that is transferring hands its summary, and its pipeline (gate C7), to the pending transfer (finishTransferredCall writes them)", async () => {
     const saved = { callSid: "CA-fast" };
     const h = makeFast({ getTransfer: (sid) => (sid === "CA-fast" ? saved : null) });
     const s = h.start(makeSession());
     s.pendingTransfer = true;
+    s.effectivePipeline = "classic-fast";
+    s.orgPhoneNumber = "+61238205672";
     const { cleanupSession } = runSlice({
       from: "async function cleanupSession() {",
       to: 'twilioWs.on("message", async (raw) => {',
-      scope: { session: s, cleaningUp: false, sessions: new Map(), closeFastPath: h.closeFastPath, summarizeFastCall: h.summarizeFastCall, getTransfer: (sid) => (sid === "CA-fast" ? saved : null), console: recordingConsole(h.lines) },
+      scope: { session: s, cleaningUp: false, sessions: new Map(), closeFastPath: h.closeFastPath, summarizeFastCall: h.summarizeFastCall, getTransfer: (sid) => (sid === "CA-fast" ? saved : null), isDemoLineNumber: (n) => n === "+61238205672", console: recordingConsole(h.lines) },
       names: ["cleanupSession"],
     });
     await cleanupSession();
     assert.deepEqual(saved.fastPath, { turns: 0, eotToAudioP50: null, eotToAudioP90: null, specAdopted: 0, specDiscarded: 0, llmErrors: 0, stt: "flux", tts: "stream" });
+    assert.equal(saved.pipeline, "classic-fast");
   });
 
   it("a leg reconnected after a failed dial writes the first leg's summary", () => {
@@ -2262,6 +2266,13 @@ describe("SCRUM-594 review Minor 7: the summary survives a transfer", () => {
     plain.restoreFrom({ messages: [] });
     assert.equal(plain.carriedFastPath, null);
     assert.match(cleanup, /const fastPathSummary = s\.fastStats \? summarizeFastCall\(s\) : s\.carriedFastPath;/);
+    // Gate C7: and the first leg's pipeline.
+    const carried = new CallSession("CA-reconnected-2");
+    carried.restoreFrom({ messages: [], pipeline: "classic-fast" });
+    assert.equal(carried.carriedPipeline, "classic-fast");
+    assert.equal(plain.carriedPipeline, null);
+    assert.match(cleanup, /const pipelineServed = \(!s\.ownerMode && isDemoLineNumber\(s\.orgPhoneNumber\) \? s\.effectivePipeline : null\) \|\| s\.carriedPipeline \|\| null;/);
+    assert.match(cleanup, /pipeline: pipelineServed,\n/);
   });
 });
 
@@ -2414,16 +2425,16 @@ describe("SCRUM-594 fix round 4, R14″: an answer must start after the question
     let before = Date.now();
     await h.sendTTS(s, h.twilioWs, "Shall I book it?");
     let q = state().questionAudioStartAt;
-    assert.ok(q >= before + 23 * 70 && q <= Date.now() + 23 * 70, `owed: +${q - before}`);
+    assert.ok(q >= before + 23 * 95 && q <= Date.now() + 23 * 95, `owed at FAST_QUESTION_MS_PER_CHAR: +${q - before}`);
     h.sendClear(s, h.twilioWs); // a barge-in: cleared with the text
     assert.equal(state().questionAudioStartAt, null);
     // Its audio already in the player (2 s, more than the estimate): the player's figure counts.
     await h.sendTTS(s, h.twilioWs, "We have Tuesday at ten.");
-    h.audio(50);
+    h.audio(75); // 3 s, more than the estimate (23 × 95 = 2185 ms)
     before = Date.now();
     await h.sendTTS(s, h.twilioWs, "Shall I book it?");
     q = state().questionAudioStartAt;
-    assert.ok(q >= before + 1_900 && q <= Date.now() + 2_000, `queued: +${q - before}`);
+    assert.ok(q >= before + 2_900 && q <= Date.now() + 3_000, `queued: +${q - before}`);
     h.closeFastPath(s);
   });
 
@@ -2434,7 +2445,7 @@ describe("SCRUM-594 fix round 4, R14″: an answer must start after the question
     const before = Date.now();
     const seq = await (async () => { await h.sendTTS(s, h.twilioWs, "Tuesday works. Shall I book 10 AM?"); return h.fastFlush(s); })();
     const q = state().questionAudioStartAt;
-    assert.ok(q >= before + 15 * 70 && q <= Date.now() + 15 * 70, `lead: +${q - before}`);
+    assert.ok(q >= before + 15 * 95 && q <= Date.now() + 15 * 95, `lead: +${q - before}`);
     await h.sendTTS(s, h.twilioWs, "Great.");
     assert.equal(state().questionAudioStartAt, q, "a statement after it leaves it (the text no longer ends with a question)");
     h.audio(1, seq);
@@ -2982,6 +2993,61 @@ describe("SCRUM-594 gate B: the draft cap", () => {
     await settle();
     assert.equal(h.llmCalls.length, 1);
     assert.equal(h.lines.filter((l) => l.includes("[FastTurn] Draft cap reached")).length, 1);
+    h.closeFastPath(s);
+  });
+});
+
+// ─── The final gate: code-lens minors (C4, C5) ───────────────────────────────
+
+describe("SCRUM-594 gate C4/C5: the question's start errs late, and a turn that waited is no latency sample", () => {
+  it("the production values of the gate's constants", () => {
+    assert.match(src, /^const FAST_QUESTION_MS_PER_CHAR = 95;$/m);
+    assert.match(src, /^const AURA_OPEN_TIMEOUT_MS = 3000;$/m);
+    assert.match(src, /^const FAST_RESPEAK_MS_PER_CHAR = 95;$/m);
+    assert.match(src, /^const FAST_REPROMPT_MS = 6000;$/m);
+    assert.match(src, /^const FAST_DRAFTS_PER_TURN = 2;$/m);
+    assert.match(src, /^const FAST_DRAFTS_PER_CALL = 60;$/m);
+    assert.match(src, /charsBefore \* FAST_QUESTION_MS_PER_CHAR - state\.auraReceivedMs/);
+  });
+
+  it("a turn that waited for the AI's audio logs waited=N, and its eot_to_audio is no p50/p90 sample", async () => {
+    const h = makeFast({ steps: [{ sentences: ["Great."], content: "Great." }] });
+    const s = h.start(makeSession());
+    h.fluxOpens();
+    await replyPlaying(h, s, "We have Tuesday or Wednesday.");
+    h.turn("EndOfTurn", 0, "Tuesday.");
+    await sleep(40);
+    echoMarks(h, s); // the reply has played: the turn starts
+    await until(() => h.llmCalls.length === 1 && !s.isProcessing, "the answer");
+    h.audio(1); // its first audio
+    const line = h.lines.find((l) => l.startsWith("log| [FastTurn] callSid="));
+    const waited = Number(/ waited=(\d+)$/.exec(String(line))?.[1]);
+    assert.ok(waited >= 30, line);
+    assert.deepEqual(s.fastStats.eotToAudioMs, [], "no sample");
+    h.closeFastPath(s);
+  });
+
+  it("a turn committed behind one in flight (queued) waited too", async () => {
+    const h = makeFast({ steps: [{ firstDelayMs: 60, sentences: ["Sure."], content: "Sure." }, { sentences: ["And Friday too."], content: "And Friday too." }] });
+    const s = h.start(makeSession());
+    h.fluxOpens();
+    h.turn("EndOfTurn", 0, "Can I book Tuesday?");
+    await settle();
+    h.turn("EndOfTurn", 1, "And Friday?");
+    await until(() => h.llmCalls.length === 2 && !s.isProcessing, "both", 3_000);
+    assert.equal(s.fastStats.current.queued, true);
+    assert.ok(s.fastStats.current.waitedMs >= 30, String(s.fastStats.current.waitedMs));
+    h.closeFastPath(s);
+  });
+
+  it("the queue alone counts: a queued turn's wait runs from its commit to its start", () => {
+    const h = makeFast();
+    const s = h.start(makeSession());
+    s.fastStats.pending = { eotAt: Date.now() - 250, trigger: "model", eagerAt: null, drafted: false, spec: "none", llmAt: null, speakAt: null, audioAt: null, queued: true, waitedMs: 0, logged: false };
+    const turn = h.beginFastTurn(s, "And Friday?");
+    assert.ok(turn.record.waitedMs >= 250 && turn.record.waitedMs < 1_000, String(turn.record.waitedMs));
+    s.fastStats.pending = { ...s.fastStats.pending, eotAt: Date.now() - 250, queued: false, waitedMs: 0 };
+    assert.equal(h.beginFastTurn(s, "Thanks").record.waitedMs, 0, "not queued: no wait");
     h.closeFastPath(s);
   });
 });

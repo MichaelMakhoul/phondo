@@ -128,4 +128,12 @@ describe("finishTransferredCall — SCRUM-594: the fast path's summary survives 
     await finishTransferredCall(savedState(), "answered");
     assert.equal(calls.find((c) => c[0] === "completeCallRecord")[2].fastPath, null);
   });
+
+  it("gate C7: writes the pipeline cleanup attached to the entry (a demo-line call), and null without one", async () => {
+    await finishTransferredCall(savedState({ pipeline: "classic-fast" }), "answered");
+    assert.equal(calls.find((c) => c[0] === "completeCallRecord")[2].pipeline, "classic-fast");
+    calls.length = 0;
+    await finishTransferredCall(savedState(), "answered");
+    assert.equal(calls.find((c) => c[0] === "completeCallRecord")[2].pipeline, null);
+  });
 });

@@ -1571,6 +1571,9 @@ wss.on("connection", (twilioWs) => {
     if (s.fastState) closeFastPath(s);
     // A reconnected leg after a failed transfer carries the first leg's summary.
     const fastPathSummary = s.fastStats ? summarizeFastCall(s) : s.carriedFastPath;
+    // SCRUM-594: which pipeline served a demo-line customer call (the DEMO_LINE_PIPELINE
+    // comparison); gate C7: a reconnected leg carries the first leg's. Null on every other call.
+    const pipelineServed = (!s.ownerMode && isDemoLineNumber(s.orgPhoneNumber) ? s.effectivePipeline : null) || s.carriedPipeline || null;
 
     // Unsubscribe from schedule cache events
     if (s._cacheUnsub) {
@@ -1584,9 +1587,10 @@ wss.on("connection", (twilioWs) => {
       console.log(`[Cleanup] Transfer pending for callSid=${s.callSid} — deferring post-call processing`);
       // SCRUM-594: whoever writes this call's record later (finishTransferredCall,
       // or the cleanup of a leg reconnected after a failed dial) writes the summary.
-      if (fastPathSummary) {
+      if (fastPathSummary || pipelineServed) {
         const saved = getTransfer(s.callSid);
-        if (saved) saved.fastPath = fastPathSummary;
+        if (saved && fastPathSummary) saved.fastPath = fastPathSummary;
+        if (saved && pipelineServed) saved.pipeline = pipelineServed; // gate C7
       }
       s.destroy();
       return;
@@ -1760,7 +1764,7 @@ wss.on("connection", (twilioWs) => {
             // SCRUM-594: which pipeline served a demo-line customer call (the
             // DEMO_LINE_PIPELINE comparison). Null on every other call, so they
             // write no new metadata (tests/call-logger-metadata.test.js).
-            pipeline: !s.ownerMode && isDemoLineNumber(s.orgPhoneNumber) ? s.effectivePipeline : null,
+            pipeline: pipelineServed,
             // SCRUM-594: the fast path's latency summary; null on every other call.
             fastPath: fastPathSummary,
             sentiment: analysis?.sentiment || null,
@@ -3621,6 +3625,9 @@ const FLUX_WATCHDOG_TICK_MS = 1000;
 const FAST_DISCLOSURE_MARK = "fast-disclosure";
 // Gate M3: the Aura stream must open within this long (as Flux must), or the call speaks over REST.
 const AURA_OPEN_TIMEOUT_MS = 3000;
+// Gate C4: R14″'s estimate of the audio Aura still owes ahead of a question, at a slow speech rate:
+// it errs late (an answer must clearly start after the question did), never early.
+const FAST_QUESTION_MS_PER_CHAR = 95;
 // Gate H2: a slow speech rate, so a sentence counts as voiced by a failed Aura stream only with
 // plenty of its audio received: in doubt, it is said again over REST rather than lost.
 const FAST_RESPEAK_MS_PER_CHAR = 95;
@@ -3859,7 +3866,9 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
       // the turn, so that barge-in aborts it: no reply to these words alone, which
       // stay in the conversation for the turn that follows.
       if (fastAudioBusy(session)) {
+        const waitStarted = Date.now();
         await waitForFastTurnStart(session, fastTurn);
+        fastTurn.record.waitedMs += Date.now() - waitStarted; // gate C5
         if (fastTurn.ctl.signal.aborted) throw fastAbortError(fastTurn.abortReason || "abort");
         if (twilioWs.readyState !== WebSocket.OPEN) return;
       }
@@ -4567,6 +4576,9 @@ async function sendRestTTS(session, twilioWs, text, isStale) {
 
 /**
  * Send clear event to flush Twilio's audio buffer (barge-in).
+ * @param {any} session
+ * @param {WebSocket} twilioWs
+ * @returns {boolean} whether anything was cleared: classic always is (on an open stream); the fast path keeps the recording disclosure
  */
 function sendClear(session, twilioWs) {
   if (twilioWs.readyState !== WebSocket.OPEN) return false;
@@ -4940,10 +4952,6 @@ function openFastStt(session, twilioWs, openClassicStt) {
     actions: fastTurnActions(session, twilioWs),
     // FLUX_EAGER_EOT_THRESHOLD=off asks Flux for no EagerEndOfTurn: no drafts.
     speculationEnabled: config.eagerEotThreshold !== null,
-    // R12a′/R13: short candidates are judged at their EndOfTurn ("No" starts "No
-    // worries"), and a backchannel or the AI's own echo while it is busy is no turn,
-    // unless it answers the question the AI is still asking (R14: "…10 AM?" "Yes").
-    policy: "fast-path",
   });
   session.fastTurns = engine;
   let opened = false;
@@ -5081,14 +5089,13 @@ function fastTurnActions(session, twilioWs) {
     cancelSpeculation: guarded("cancelSpeculation", (reason) => dropFastDraft(session, reason)),
     commit: guarded("commit", (transcript, turnIndex, trigger) => commitFastTurn(session, twilioWs, transcript, turnIndex, trigger)),
     bargeIn: guarded("bargeIn", () => fastBargeIn(session)),
-    dropEcho: guarded("dropEcho", (transcript, reason) => logTranscript(FAST_DROP_LABELS[reason] || FAST_DROP_LABELS.echo, transcript)),
+    dropEcho: guarded("dropEcho", (transcript, reason) => logTranscript(FAST_DROP_LABELS[reason], transcript)),
     bufferStructured: guarded("bufferStructured", (transcript) => bufferFastTurn(session, twilioWs, transcript)),
   };
 }
 
 /** What the turn engine's dropEcho(transcript, reason) logs, by reason (no caller words: logTranscript). */
 const FAST_DROP_LABELS = {
-  echo: "[STT] Dropped (echo suppression while AI speaking)",
   "echo-like": "[STT] Dropped (echo-like: the AI's own words coming back)",
   backchannel: "[STT] Dropped (backchannel while the AI is busy)",
 };
@@ -5151,7 +5158,7 @@ function dropFastDraft(session, reason) {
  * @returns {import("./call-session").FastTurnRecord}
  */
 function newFastTurnRecord(trigger, eagerAt) {
-  return { eotAt: Date.now(), trigger, eagerAt, drafted: eagerAt !== null, spec: "none", llmAt: null, speakAt: null, audioAt: null, logged: false };
+  return { eotAt: Date.now(), trigger, eagerAt, drafted: eagerAt !== null, spec: "none", llmAt: null, speakAt: null, audioAt: null, queued: false, waitedMs: 0, logged: false };
 }
 
 /**
@@ -5170,7 +5177,11 @@ function commitFastTurn(session, twilioWs, transcript, turnIndex, trigger) {
   if (session.fastState) session.fastState.repromptedQuestion = null;
   const stats = session.fastStats;
   const eager = stats?.eager && stats.eager.turnIndex === turnIndex ? stats.eager : null;
-  if (stats) stats.pending = newFastTurnRecord(trigger || "model", eager ? eager.at : null);
+  if (stats) {
+    stats.pending = newFastTurnRecord(trigger || "model", eager ? eager.at : null);
+    // Gate C5: committed behind a turn in flight, it waits in the queue (its waited= says how long).
+    stats.pending.queued = session.isProcessing;
+  }
   const draft = session.speculation;
   if (draft && (draft.turnKey !== turnIndex || draft.transcript !== transcript)) dropFastDraft(session, "other words");
   logTranscript("[STT] Final", transcript);
@@ -5202,6 +5213,7 @@ function bufferFastTurn(session, twilioWs, transcript) {
  * ending the call keeps its goodbye: what the caller says over it would not be
  * answered anyway (the hang-up drops it).
  * @param {CallSession} session
+ * @returns {boolean} false when declined (the disclosure plays, or the call is ending): the turn may barge in later
  */
 function fastBargeIn(session) {
   const turn = session.currentTurn;
@@ -5243,6 +5255,7 @@ function beginFastTurn(session, transcript) {
   // A Nova turn (after a fallback) or a drained queue has no Flux commit: its clock starts here.
   const record = stats.pending || newFastTurnRecord("buffered", null);
   stats.pending = null;
+  if (record.queued) record.waitedMs += Math.max(0, Date.now() - record.eotAt);
   stats.current = record;
   stats.turns += 1;
   /** @type {import("./lib/speculative-reply").SpeculativeReply|null} */
@@ -5377,8 +5390,10 @@ function logFastTurn(session, record) {
   record.logged = true;
   /** @type {(from: number|null, to: number|null) => string} */
   const span = (from, to) => (from === null || to === null ? "-" : String(Math.max(0, Math.round(to - from))));
-  if (record.audioAt !== null && session.fastStats) session.fastStats.eotToAudioMs.push(Math.max(0, record.audioAt - record.eotAt));
-  console.log(`[FastTurn] callSid=${session.callSid} trigger=${record.trigger} spec=${record.spec} eot_to_llm=${span(record.eotAt, record.llmAt)} eot_to_audio=${span(record.eotAt, record.audioAt)} eager_lead=${span(record.eagerAt, record.eotAt)}`);
+  // Gate C5: a turn that waited (in the queue, or for the AI's audio) measured that wait, not
+  // the pipeline: logged, but no p50/p90 sample.
+  if (record.audioAt !== null && record.waitedMs === 0 && session.fastStats) session.fastStats.eotToAudioMs.push(Math.max(0, record.audioAt - record.eotAt));
+  console.log(`[FastTurn] callSid=${session.callSid} trigger=${record.trigger} spec=${record.spec} eot_to_llm=${span(record.eotAt, record.llmAt)} eot_to_audio=${span(record.eotAt, record.audioAt)} eager_lead=${span(record.eagerAt, record.eotAt)} waited=${Math.round(record.waitedMs)}`);
 }
 
 /**
@@ -5738,7 +5753,8 @@ function clearFastSpeakingText(state) {
  * still owes for the text before it has played too. The player cannot know that part
  * yet: Aura delivers audio at about twice real time, so a reply's question is usually
  * sent while its first sentence is still being synthesised. It is estimated at
- * FAST_TTS_MS_PER_CHAR, never making the estimate earlier than the player's figure.
+ * FAST_QUESTION_MS_PER_CHAR (a slow rate: late rather than early), never making the
+ * estimate earlier than the player's figure.
  * @param {CallSession} session
  * @param {string} text - the chunk, its question last
  */
@@ -5748,7 +5764,7 @@ function noteFastQuestion(session, text) {
   const now = Date.now();
   const queuedMs = session.fastPlayer?.remainingMs(now) ?? 0;
   const charsBefore = state.auraSentChars + fastQuestionLeadChars(text);
-  const owedMs = Math.max(0, charsBefore * FAST_TTS_MS_PER_CHAR - state.auraReceivedMs);
+  const owedMs = Math.max(0, charsBefore * FAST_QUESTION_MS_PER_CHAR - state.auraReceivedMs);
   state.questionAudioStartAt = now + queuedMs + owedMs;
 }
 
@@ -5856,11 +5872,14 @@ function fastAudioBusy(session) {
 }
 
 /**
- * R12b′: a fast turn starts only once the AI has finished speaking, waiting at
+ * R12b″: a fast turn starts only once the AI has finished speaking, waiting at
  * most FAST_TURN_START_WAIT_MS. Nothing is cleared: the turn answers after the
  * AI's words, never over them. (A turn that waited is one committed while the AI
- * spoke without a barge-in: a short answer, or one queued behind a reply.)
+ * spoke without a barge-in: a short answer, or one queued behind a reply.) The
+ * wait is part of the turn: its user message is already recorded, and a barge-in
+ * (the turn's abort) ends the wait at once, without an answer to these words.
  * @param {CallSession} session
+ * @param {import("./call-session").FastTurn} turn - the turn waiting; its abort signal ends the wait
  * @returns {Promise<void>}
  */
 async function waitForFastTurnStart(session, turn) {
@@ -5966,6 +5985,7 @@ function onFastMark(session, name) {
  * Clear; on an idle stream it was never probed, and a Cleared that never came
  * would drop the next reply's first audio). Never throws.
  * @param {CallSession} session
+ * @returns {boolean} false when it refused: the recording disclosure is playing (R12d′)
  */
 function stopFastAudio(session) {
   const state = session.fastState;

@@ -190,18 +190,28 @@ These rules apply on the fast path only; classic and Gemini are unchanged. The l
 - **Short interrupts are decided late (R12a′).** A final of 2 words or fewer matching INTERRUPT_RE doesn't barge in at StartOfTurn or Update. It is decided at EndOfTurn, because the bare "No" of "No worries" would otherwise cut the AI off.
 - **Backchannels are dropped (R12a′).** While the AI is speaking or processing, a final made only of backchannel words is dropped, on both the commit and structured paths. The words are: okay, ok, yeah, yep, yes, sure, right, alright, cool, great, perfect, thanks, thank you, mm-hmm, uh-huh, no worries, no problem.
 - **Echoed finals are dropped (R13).** While the AI is speaking, a final that `isLikelyEcho` matches against `aiSpeakingText` is dropped, not committed. Otherwise the LLM would answer its own words.
-- **Answers at the end of a question are kept (R14′).** While the AI is speaking, a final of 2 words or fewer counts as an ANSWER, and is committed, only when both hold:
+- **Answers at the end of a question are kept (R14″).** While the AI is speaking, a final of 2 words or fewer counts as an ANSWER, and is committed, only when all three hold:
   - the reply text ends with "?"
   - the player's gap-aware remaining playback is 2000 ms or less
-  If the remaining playback is unknown (REST-only playback), the final is dropped.
-- **Queued turns wait (R12b′).** A turn that starts while `player.isPlaying() || session.isSpeaking` waits up to about 10 s for idle before hold audio starts, and skips the turn-start clear. Degraded-stt (Nova) keeps the clear.
+  - the caller's turn began after the question's audio did: its start as server.js received it (StartOfTurn's `receivedAt`, else its first event with words) is at least 500 ms (Flux's StartOfTurn lag) after `questionAudioStartAt`. That is set when the chunk ending in "?" goes to TTS: `now + player.remainingMs(now)`, plus the audio Aura still owes for the text before the question, estimated at 95 ms a character (late rather than early), and it clears with `aiSpeakingText`.
+
+  If any of them is unknown (REST-only playback, unstamped events), the final is dropped.
+- **A dropped answer to a long question is answered later (gate M5).** A short final dropped while the AI asked a question too long for its tail rule, but begun after the question started (+500 ms), is committed (`trigger=deferred`) once the AI finishes speaking, unless a newer turn has started.
+- **A silence after a question gets one re-prompt (gate M5).** When the AI finishes on a question and no caller turn starts within 6 s, it says "Sorry, I didn't catch that." and the question sentence again, once per question. Any StartOfTurn, commit, barge-in, new speech or hang-up cancels it.
+- **Queued turns wait (R12b″).** A turn that starts while the AI's audio plays (the player, REST audio, what Aura still owes, or the disclosure) waits up to about 10 s for idle before hold audio starts, and skips the turn-start clear. The wait is part of the turn: the user message is recorded first, and a barge-in during it aborts the turn (no reply to those words alone; they stay for the next turn). Degraded-stt (Nova) keeps the clear.
 - **The recording disclosure is protected (R12d′).** A `disclosureActive` flag makes the disclosure non-interruptible on both of its paths. The fallback disclosure goes over REST and is marked played only once its frames are sent. REST-spoken text enters `aiSpeakingText`.
 - **Missing keys (R12c).** Classic-fast without ANTHROPIC_API_KEY or DEEPGRAM_API_KEY routes to the global pipeline, with one warning per process.
 - **Echo text while a reply is in flight.** Text stays "owed", so the echo filter remains active, while any audio is unflushed or a flush is pending, not just while the player is playing.
 - **Watchdogs.**
   - A Flushed overdue by 3 s with no audio switches the call to REST TTS.
+  - An Aura stream that has not opened within 3 s switches the call to REST TTS (gate M3); one that opens logs `[FastPath] Aura connected`.
   - No Flux frames for more than 5 s while audio is being sent switches the call to Nova.
+  - 3 s of caller speech energy within 8 s (frames of RMS 300 or more, counted only while the AI is silent) with no Flux turn event switches the call to Nova (gate M4b: speech Flux cannot transcribe, e.g. another language), and the caller is asked to say it again.
   - A lost `fast-*` mark is treated as idle after the estimated playback plus 5 s.
+- **Nothing the caller said or should have heard is lost in a fallback (gate H2, M4a).** An Aura failure says again over REST the text Aura was given and, as far as its audio shows, never voiced (estimated at 95 ms a character); when that cannot be done, a system note tells the next turn the caller did not hear it. A Flux failure answers the turn it had open (`trigger=stt-fallback`), or asks the caller to say it again if the turn had started with no words yet.
+- **A failing Claude pages (gate H1).** A fast turn that fails (an apology instead of a reply) is captured with service `claude-chat`: warning level, then error level from the second in a row. `[FastCall]` and `metadata.fastPath` count them (`llm_errors`), and apologies and fillers are never a turn's latency.
+- **Latency samples (gate C5).** `[FastTurn]` logs `waited=<ms>`: time queued behind another turn plus R12b″'s wait. A turn that waited is logged but not counted in the p50/p90.
+- **Drafts are capped (gate B).** At most 2 drafts per Flux turn and 60 per call; past either, turns are answered live. Logged once per call.
 - **Abortable back-off.** The claude-chat retry back-off is abortable in every mode.
 
 ## 5. Constraints
@@ -234,7 +244,8 @@ Every file this branch adds or changes against `origin/develop` (`git diff --nam
 - `voice-server/services/aura-stream.js`: the Aura-2 WebSocket TTS client (`openAuraStream`): `speak`, `flush`, `clear` and `close`, the flush budget and the `Clear` backstop [4.2].
 - `voice-server/services/deepgram-ws-common.js`: what the two clients share: the AU default host, the ping keepalive, the loopback-only plaintext rule, the callback guard and the dead-handle helper.
 - `voice-server/lib/fast-player.js`: re-frames Aura audio into 20 ms Twilio frames and sends it at once; tracks playback through Twilio marks (`isPlaying`, `whenIdle`, `stop`, `remainingMs`) [4.3].
-- `voice-server/lib/fast-turns.js`: the pure Flux turn engine: drafts, barge-in, backchannel and echo drops, structured input, and the answer at the tail of a question [4.6].
+- `voice-server/lib/fast-turns.js`: the pure Flux turn engine: drafts, barge-in, backchannel and echo drops, structured input, the answer at the tail of a question, the open turn and the deferred answer [4.6, 4.9].
+- `voice-server/lib/no-turn-watchdog.js`: speech energy in the caller's audio with no Flux turn events (gate M4b) [4.9].
 - `voice-server/lib/speculative-reply.js`: the silent draft reply started on `EagerEndOfTurn`, then adopted on the matching `EndOfTurn` or aborted [4.5].
 - `voice-server/lib/end-call-guard.js`: the SCRUM-373 `end_call` booking guard in shared form, for the classic hang-up [4.7].
 
@@ -257,6 +268,7 @@ New:
 - `voice-server/tests/deepgram-stt.keyterms.test.js`: Nova keyterms byte-identical to before; Flux keyterms plain and de-duplicated.
 - `voice-server/tests/fast-player.test.js`: framing, marks, `whenIdle`, `stop` and `remainingMs`.
 - `voice-server/tests/fast-turns.test.js`: the turn rules as a table, the echo filter, recorded Flux streams replayed, purity.
+- `voice-server/tests/no-turn-watchdog.test.js`: the no-turn watchdog on an injected clock: silence, speech, the window, the AI's own audio, turn events.
 - `voice-server/tests/speculative-reply.test.js`: drafts over a mocked Anthropic stream: adopt, abort, the deadline, replay.
 - `voice-server/tests/claude-chat-clause.test.js`: clause chunking, plus a differential test that the default mode is unchanged.
 - `voice-server/tests/anthropic-sse-helpers.js`: a shared helper, not a `*.test.js` file: Anthropic SSE builders and fake `fetch`.

@@ -127,6 +127,8 @@ async function finishTransferredCall(savedState, outcome) {
           // SCRUM-594: the fast path's latency summary, attached when the
           // call's stream closed for the dial (server.js cleanupSession).
           fastPath: savedState.fastPath || null,
+          // SCRUM-594 gate C7: and which pipeline served it (a demo-line customer call).
+          pipeline: savedState.pipeline || null,
           // SCRUM-587: written BEFORE notifyCallCompleted (below) — PR B reads
           // call_type / owner_auth from the row.
           callType: isOwnerCall ? "owner" : null,

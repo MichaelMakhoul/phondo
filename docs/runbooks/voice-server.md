@@ -343,12 +343,21 @@ what was said.
   "no worries" or "no problem", said while the AI is speaking or working, are not a turn: the
   AI carries on and the log shows `[STT] Dropped (backchannel while the AI is busy)`. Any
   other short reply ("Tuesday") is a real turn. It waits up to 10 s for the AI to finish and
-  is then answered, instead of talking over the AI.
-- **An answer at the tail of a question is kept.** If the AI's reply ends in a question and
-  at most 2 s of its audio is left, a one- or two-word reply ("Yes", "Ten AM") is the answer,
-  and is answered as soon as the AI finishes. The same "okay" earlier in the reply is a
-  backchannel. When the time left is unknown (the AI is speaking over REST), the tail rule
-  does not apply.
+  is then answered, instead of talking over the AI. The words are recorded at once, so if the
+  caller then talks over the AI (a barge-in), that wait ends without a reply to them alone:
+  the next turn answers both.
+- **An answer at the tail of a question is kept.** If the AI's reply ends in a question, at
+  most 2 s of its audio is left, and the caller began speaking after the question started
+  (Flux's start of turn at least 0.5 s after it), a one- or two-word reply ("Yes", "Ten AM")
+  is the answer, and is answered as soon as the AI finishes. An "okay" to the sentence before
+  the question is a backchannel. When the timing is unknown (the AI is speaking over REST),
+  the tail rule does not apply.
+- **An answer during a long question is not lost.** A "yes" said after a long question
+  started, but before its last 2 s, is dropped while the question plays and answered when the
+  AI finishes (`[FastTurn] … trigger=deferred`).
+- **A silence after a question gets one re-prompt.** If the AI finishes on a question and the
+  caller says nothing for 6 s, it says "Sorry, I didn't catch that." and the question again,
+  once per question (`[FastTurn] No answer 6000 ms after the AI's question — asking it again`).
 - **The recording disclosure cannot be interrupted.** While it plays, a barge-in is ignored
   (`[Barge-in] (fast) ignored — the recording disclosure is playing`), nothing clears the
   audio, and a turn that starts waits. The greeting after it can be interrupted.
@@ -369,14 +378,20 @@ what was said.
 
 ### Fallbacks and watchdogs
 
-Each half degrades on its own, to the classic component, and never to silence or an ended
-call. Each fallback also writes an `[ALERT:error]` line (the Sentry shim logs captures), so
-the generic `Voice server — error logged` rule fires.
+Each half degrades on its own, to the classic component, and never to an ended call. A
+fallback can cost a moment of silence, but no words are lost silently: when Aura fails
+mid-reply, what it was given and never voiced is said again over REST (`[FastPath] Saying
+again over REST the N characters the Aura stream never voiced`), and if that is impossible
+(the stream is closing, or REST fails too) the next turn is told the caller did not hear it.
+When Flux fails mid-turn, the caller's words so far are answered (`[FastPath] Answering the
+turn Flux left open`, `trigger=stt-fallback`), or, if the turn had started with no words
+yet, the caller is asked to say it again. Each fallback also writes an `[ALERT:error]` line
+(the Sentry shim logs captures), so the generic `Voice server — error logged` rule fires.
 
 | Falls back | When | Log lines | Then |
 |---|---|---|---|
-| **Flux → Nova** | Flux does not open within 3 s; a Flux error, or a close we did not ask for, before or after it opens; or the stuck-stream watchdog: no frame at all from Flux for 5 s while the caller's audio keeps going out (Flux normally sends one about every 240 ms) | `[FastPath] Flux unavailable — falling back to Nova (<reason>, callSid=…)` and `[ALERT:error] [flux-stt] … what=Flux unavailable: <reason>` | Nova-3 and the classic debounce buffer for the rest of the call; Aura keeps speaking. `[FastCall]` says `stt=nova-fallback` |
-| **Aura → REST** | an Aura error, or a close we did not ask for; or the stuck-stream watchdog: a flush whose `Flushed` is 3 s overdue with no Aura audio in that time | `[FastPath] Aura stream unavailable — falling back to REST TTS (<reason>, callSid=…)` and `[ALERT:error] [aura-stream] … what=Aura stream unavailable: <reason>` | REST TTS, one request per sentence on the default Deepgram host, for the rest of the call. `[FastCall]` says `tts=rest-fallback` |
+| **Flux → Nova** | Flux does not open within 3 s; a Flux error, or a close we did not ask for, before or after it opens; the stuck-stream watchdog: no frame at all from Flux for 5 s while the caller's audio keeps going out (Flux normally sends one about every 240 ms); or the no-turn watchdog: 3 s of the caller's speech within 8 s, while the AI is silent, with no Flux turn event at all (`speech but no turns`: a language Flux does not transcribe; the caller is asked to say it again) | `[FastPath] Flux unavailable — falling back to Nova (<reason>, callSid=…)` and `[ALERT:error] [flux-stt] … what=Flux unavailable: <reason>` | Nova-3 and the classic debounce buffer for the rest of the call; Aura keeps speaking. `[FastCall]` says `stt=nova-fallback` |
+| **Aura → REST** | Aura does not open within 3 s; an Aura error, or a close we did not ask for; or the stuck-stream watchdog: a flush whose `Flushed` is 3 s overdue with no Aura audio in that time | `[FastPath] Aura stream unavailable — falling back to REST TTS (<reason>, callSid=…)` and `[ALERT:error] [aura-stream] … what=Aura stream unavailable: <reason>`. A healthy stream logs `[FastPath] Aura connected` | REST TTS, one request per sentence on the default Deepgram host, for the rest of the call. `[FastCall]` says `tts=rest-fallback` |
 
 Both at once is close to the old classic pipeline, with Claude as its LLM. A turn action that throws
 is contained and the call carries on: `[FastTurn] <action> failed (callSid=…)` with
@@ -394,46 +409,62 @@ is contained and the call carries on: `[FastTurn] <action> failed (callSid=…)`
   speaking after N ms — answering anyway` once the 10 s cap is hit.
 - `[SpeculativeReply] draft failed turn=N: …`: an early draft's Claude call failed, so the
   turn answers with its own call.
+- `[FastTurn] Draft cap reached (…) — answering live`, once per call: a turn had 2 drafts, or
+  the call 60, so later turns are answered without one.
 
-Claude itself has no fallback. A Claude error or a 15 s timeout gets the classic apology
-("I'm sorry, I'm having a little trouble right now. Could you repeat that?") and the caller's
-words for that turn are dropped from the history. The log shows
-`[Pipeline] unknown error (callSid=…)` followed by the error (an `Anthropic …` message for an
-API error): the error-source label only knows OpenAI, so "unknown" is expected here.
+Claude itself has no fallback (Fly runs `LLM_PROVIDER=anthropic`, so another provider would
+use the same key). A Claude error or a 15 s timeout gets the classic apology ("I'm sorry, I'm
+having a little trouble right now. Could you repeat that?") and the caller's words for that
+turn are dropped from the history. The log shows `[Pipeline] unknown error (callSid=…)`
+followed by the error (an `Anthropic …` message for an API error): the error-source label
+only knows OpenAI, so "unknown" is expected here. Each such turn is captured with service
+`claude-chat` (`what=fast turn failed (N in a row)`): warning level for the first, error
+level from the second in a row, which pages. A bad `ANTHROPIC_API_KEY` or `FAST_LLM_MODEL`
+shows up there on the first call. `[FastCall]` counts them as `llm_errors`, and an apology
+is never counted as a turn's latency.
 
 ### Log lines
 
 Per-call lines carry `callSid=`. None carries caller words: the `[STT] Dropped …` lines end
 in a length (`[5 chars]`), and the `[FastTurn]` and `[FastCall]` lines are ids, times and enums.
 
-- `[FastTurn] callSid=… trigger=… spec=… eot_to_llm=… eot_to_audio=… eager_lead=…`: one per
-  answered turn, written when its first audio goes out.
+- `[FastTurn] callSid=… trigger=… spec=… eot_to_llm=… eot_to_audio=… eager_lead=… waited=…`:
+  one per answered turn, written when its first audio goes out.
   - `trigger`: how the turn ended. `model` is Flux's own decision, `timeout` is silence for
     `FLUX_EOT_TIMEOUT_MS`, and `buffered` means it came through the debounce buffer (a phone
-    number or spelled name, or any turn after the Nova fallback).
+    number or spelled name, or any turn after the Nova fallback). `stt-fallback` is the turn
+    Flux left open when it failed; `deferred` is a short answer to a long question, answered
+    once the AI finished.
   - `spec`: `adopted` (an early draft was used), `discarded` (one was started and thrown
     away) or `none`.
   - `eot_to_llm`: ms from Flux's end-of-turn to Claude's first words or first tool call.
     Shorter with an adopted draft, because Claude has been running since the early end-of-turn.
-  - `eot_to_audio`: ms from Flux's end-of-turn to the first audio handed to Twilio. The
-    number to watch.
+  - `eot_to_audio`: ms from Flux's end-of-turn to the first audio of the reply handed to
+    Twilio (a filler or an apology does not count). The number to watch.
+  - `waited`: ms the turn waited before Claude could start: queued behind another turn, or
+    waiting for the AI's own audio to finish. Such a turn's `eot_to_audio` includes the wait,
+    so it is logged but left out of the call's p50/p90.
   - `eager_lead`: ms from the early end-of-turn to the real one when a draft was started:
     the head start it bought.
   - `-` means it never happened, for example a barge-in before the first audio.
-- `[FastCall] callSid=… turns=N eot_to_audio_p50=… p90=… spec_adopted=N spec_discarded=N stt=… tts=…`:
-  the call's summary, at the end. `stt` is `flux` or `nova-fallback`; `tts` is `stream` or
+- `[FastCall] callSid=… turns=N eot_to_audio_p50=… p90=… spec_adopted=N spec_discarded=N llm_errors=N stt=… tts=…`:
+  the call's summary, at the end. The percentiles leave out turns that waited. `llm_errors`
+  counts turns that got the apology. `stt` is `flux` or `nova-fallback`; `tts` is `stream` or
   `rest-fallback`.
 - `[Barge-in] (fast) Stopped the AI's audio and its reply`, then `[FastTurn] Reply stopped
   (barge-in) — kept what was said`. Also `[Barge-in] (fast) ignored — …` (the disclosure is
   playing, or the AI is ending the call).
 - `[EndCall] Hanging up after end_call — waited Nms for playback`: the goodbye played and
   the line closed.
+- `[FastPath] Asking the caller to say it again after the Flux fallback` and `[FastTurn] No
+  answer … asking it again`: the two prompts the AI says on its own.
 - Fallbacks and watchdogs: the lines in the section above.
 
 In the database, `calls.metadata.pipeline` is `classic-fast`, `classic` or `gemini-live`,
 written for demo-line customer calls only (older calls have no such key), and
 `calls.metadata.fastPath` is the `[FastCall]` summary as `{ turns, eotToAudioP50,
-eotToAudioP90, specAdopted, specDiscarded, stt, tts }`, on fast-path calls only.
+eotToAudioP90, specAdopted, specDiscarded, llmErrors, stt, tts }`, on fast-path calls only.
+Both survive a transfer: the first leg's values are written with the call.
 
 ```sql
 select started_at, metadata->>'pipeline' as pipeline, metadata->'fastPath' as fast_path
@@ -447,7 +478,7 @@ fly logs -a phondo-voice --no-tail | grep -E "\[FastPath\].*falling back"     # 
 
 ```logql
 {fly_app_name="phondo-voice"} |~ "\\[Fast(Path|Turn|Call)\\]"
-{fly_app_name="phondo-voice"} |~ "\\[ALERT:error\\] \\[(flux-stt|aura-stream|fast-turns)\\]"
+{fly_app_name="phondo-voice"} |~ "\\[ALERT:(error|warning)\\] \\[(flux-stt|aura-stream|fast-turns|claude-chat)\\]"
 ```
 
 ### Phone test: what to compare with Gemini calls
@@ -476,8 +507,9 @@ silence; say goodbye; and run it once from a speakerphone. Then compare with a G
    `FLUX_EAGER_EOT_THRESHOLD` or set it to `off`.
 
 Watch for:
-- A "yes" or "sure" said over the middle of the AI's question counts as a backchannel and is
-  dropped, so the caller has to say it again.
+- A "yes" said to the sentence before a question is ignored, as it should be, but one said
+  very early in a long question is only answered once the question ends: check that this
+  feels natural, and that a caller who says nothing gets the one re-prompt after 6 s.
 - An echo that is garbled or partial slips past the filter and is answered as if the caller
   said it. If a speakerphone test shows the AI answering itself, that is the case to bring back.
 - The Flux watchdog assumes Flux keeps sending frames through silence. A fallback reading
