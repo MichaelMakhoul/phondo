@@ -91,6 +91,8 @@
  *     and must then do nothing. Reasons: "resumed", "new-turn", "echo", "structured",
  *     "reset".
  *   - speculate() must replace a draft the session still holds.
+ *   - bargeIn() may decline by returning false (nothing was stopped): the turn's barge-in is
+ *     then not spent, and a later event of the turn may barge in. Any other return spends it.
  *   - bargeIn() must also abort the session's draft, if any: the engine does not. At an
  *     EndOfTurn it is called right before commit(), which then queues behind the turn that
  *     bargeIn() aborted (CallSession.queueOrProcess) and is adopted or not by its === check.
@@ -104,10 +106,12 @@
  *     interrupt word or not: "No" is how "No worries" starts. It is judged at its EndOfTurn.
  *     Three words or more barge in early, exactly as above.
  *   - EndOfTurn, in this order:
- *       - while the AI is speaking, its text ends with a question (endsWithQuestion) and at
- *         most QUESTION_TAIL_MS of its audio is still to play (aiRemainingMs, a number), a
+ *       - while the AI is speaking, its text ends with a question (endsWithQuestion), at
+ *         most QUESTION_TAIL_MS of its audio is still to play (aiRemainingMs, a number) and
+ *         the turn began after the question's audio did (its start as received, from the
+ *         events' receivedAt, at least START_OF_TURN_LAG_MS after questionAudioStartAt), a
  *         final of ECHO_MAX_WORDS words or fewer is the answer ("…Shall I book 10 AM?"
- *         "Yes"; R14′), backchannel words and content alike: never dropped, it goes to
+ *         "Yes"; R14″), backchannel words and content alike: never dropped, it goes to
  *         rule 6's answer. A backchannel does not barge in ("No worries" never cuts the
  *         question); an interrupt word does, as always. Earlier in the reply, or when what
  *         is still to play is unknown (REST audio), the rules below apply: a question the
@@ -143,6 +147,13 @@ const INTERRUPT_RE = /^(stop|wait|hold on|no|cancel|nevermind|never mind|excuse 
  * caller has not heard yet.
  */
 const QUESTION_TAIL_MS = 2000;
+
+/**
+ * R14″: Flux's StartOfTurn reaches the server about this long after the caller's first
+ * sound. A turn heard to start at least this long after the question's audio started
+ * began while the caller was hearing the question, not the sentence before it.
+ */
+const START_OF_TURN_LAG_MS = 500;
 
 /**
  * The classic echo rule drops a final of this many words or fewer while the AI speaks.
@@ -193,6 +204,7 @@ const SPEECH_PIECE = /(\d+):(\d{2})|\d+|\p{L}+/gu;
  * @property {number} turnIndex - Flux turn_index; it increments right after each EndOfTurn
  * @property {string} transcript - cumulative for the turn so far
  * @property {string | null} [trigger] - EndOfTurn only: "model" | "manual" | "timeout" (an open enum)
+ * @property {number} [receivedAt] - Date.now() when the server received it (server.js stamps every event); R14″ reads it
  *
  * @typedef {Object} FastTurnState
  * @property {boolean} aiSpeaking - the AI's audio is still playing
@@ -200,12 +212,13 @@ const SPEECH_PIECE = /(\d+):(\d{2})|\d+|\p{L}+/gu;
  * @property {string} [expectedInputType] - "general" | "phone" | "email" | "name" | "address" | "date_time"; missing means general
  * @property {string} [aiSpeakingText] - every word sent to TTS since the player last went idle; missing or empty switches the echo filter off
  * @property {number|null} [aiRemainingMs] - ms of the AI's audio still to play (the player's estimate); null or missing when unknown (REST audio)
+ * @property {number|null} [questionAudioStartAt] - Date.now() estimate of when the audio of the AI's last question starts playing; null or missing when unknown
  *
  * @typedef {Object} FastTurnActions
  * @property {(transcript: string, turnIndex: number) => void} [speculate] - start a draft reply (not needed when speculation is off)
  * @property {(reason: string) => void} [cancelSpeculation] - cancel the draft, if any (not needed when speculation is off)
  * @property {(transcript: string, turnIndex: number, trigger: string | null) => void} commit - the turn is over: answer it
- * @property {() => void} bargeIn - stop the AI's audio and abort the turn in flight
+ * @property {() => boolean|void} bargeIn - stop the AI's audio and abort the turn in flight; false: the session declined (nothing was stopped), and the turn may still barge in later
  * @property {(transcript: string, reason?: string) => void} dropEcho - discard a final that is no turn: the AI's own echo (no reason: the classic rule), or under the "fast-path" policy "backchannel" / "echo-like"
  * @property {(transcript: string) => void} bufferStructured - hand a structured-input final to the session's debounce buffer
  *
@@ -423,6 +436,12 @@ function createFastTurnEngine(options) {
   let lastEndedTurn = -1;
   /** The turnIndex barge-in has fired for. */
   let bargedTurn = /** @type {number | null} */ (null);
+  /**
+   * R14″: when the current turn started, as the server received it: its StartOfTurn,
+   * else its first event with words. `fromStart` marks a StartOfTurn's time, which a
+   * later event of the same turn never moves.
+   */
+  let turnStart = { index: /** @type {number | null} */ (null), at: /** @type {number | null} */ (null), fromStart: false };
   /** The turnIndex of the draft we asked the session to start. */
   let draftTurn = /** @type {number | null} */ (null);
 
@@ -446,8 +465,12 @@ function createFastTurnEngine(options) {
     // The AI's own voice coming back is not the caller. Judged only above ECHO_MAX_WORDS words as
     // heard: a short interrupt ("wait") would overlap almost any sentence the AI is saying.
     if (aiSpeaking && wordCount(text) > ECHO_MAX_WORDS && isLikelyEcho(text, aiSpeakingText)) return;
+    const spent = bargedTurn;
     bargedTurn = turnIndex;
-    actions.bargeIn();
+    // The session may decline (false: the recording disclosure is playing, or the call is
+    // ending): then nothing was stopped, and a later event of this turn may still barge in.
+    // Set first, so a bargeIn() that throws is not retried (at most once).
+    if (actions.bargeIn() === false) bargedTurn = spent;
   }
 
   /**
@@ -481,6 +504,36 @@ function createFastTurnEngine(options) {
   }
 
   /**
+   * R14″: did this turn begin after the question's audio started? Its start as the server
+   * heard it (StartOfTurn, else its first words) lags the caller's first sound by about
+   * START_OF_TURN_LAG_MS. Unknown times (an unstamped event, no question) are not.
+   * @param {number} turnIndex
+   * @param {unknown} questionAudioStartAt - getState().questionAudioStartAt
+   * @returns {boolean}
+   */
+  function startedAfterQuestion(turnIndex, questionAudioStartAt) {
+    const startedAt = turnStart.index === turnIndex ? turnStart.at : null;
+    return typeof startedAt === "number" && typeof questionAudioStartAt === "number" && startedAt >= questionAudioStartAt + START_OF_TURN_LAG_MS;
+  }
+
+  /**
+   * R14″: note when a turn started: its StartOfTurn (even an empty one), else its first
+   * event with words.
+   * @param {string} event
+   * @param {number} turnIndex
+   * @param {string} text - trimmed
+   * @param {unknown} receivedAt
+   */
+  function noteTurnStart(event, turnIndex, text, receivedAt) {
+    const at = typeof receivedAt === "number" && Number.isFinite(receivedAt) ? receivedAt : null;
+    if (event === "StartOfTurn") {
+      if (turnStart.index !== turnIndex || !turnStart.fromStart) turnStart = { index: turnIndex, at, fromStart: true };
+    } else if (text !== "" && turnStart.index !== turnIndex) {
+      turnStart = { index: turnIndex, at, fromStart: false };
+    }
+  }
+
+  /**
    * Rule 6.
    * @param {number} turnIndex
    * @param {string} text - trimmed, non-empty
@@ -491,11 +544,11 @@ function createFastTurnEngine(options) {
     lastEndedTurn = turnIndex;
     let mayBargeIn = true;
     if (fastPolicy) {
-      if (state.aiSpeaking && wordCount(text) <= ECHO_MAX_WORDS && endsWithQuestion(state.aiSpeakingText) && inQuestionTail(state.aiRemainingMs)) {
-        // R14′: the answer to the question the AI is still asking ("…Shall I book 10 AM?"
-        // "Yes"), heard in its tail. Answered, never dropped: the session holds the turn
-        // until the AI has finished. A backchannel never cuts the question; an interrupt
-        // word still does.
+      if (state.aiSpeaking && wordCount(text) <= ECHO_MAX_WORDS && endsWithQuestion(state.aiSpeakingText) && inQuestionTail(state.aiRemainingMs) && startedAfterQuestion(turnIndex, state.questionAudioStartAt)) {
+        // R14″: the answer to the question the AI is still asking ("…Shall I book 10 AM?"
+        // "Yes"): heard in its tail, and begun after the question started. Answered, never
+        // dropped: the session holds the turn until the AI has finished. A backchannel
+        // never cuts the question; an interrupt word still does.
         mayBargeIn = !isBackchannel(text);
       } else {
         if ((state.aiSpeaking || state.processing) && isBackchannel(text)) {
@@ -536,6 +589,7 @@ function createFastTurnEngine(options) {
     }
 
     const text = typeof evt.transcript === "string" ? evt.transcript.trim() : "";
+    noteTurnStart(event, turnIndex, text, evt.receivedAt);
     if (text === "") return; // rule 1
 
     if (draftTurn !== null && draftTurn !== turnIndex) cancelDraft("new-turn"); // rule 2
@@ -559,6 +613,7 @@ function createFastTurnEngine(options) {
     const holdsDraft = draftTurn !== null;
     lastEndedTurn = -1;
     bargedTurn = null;
+    turnStart = { index: null, at: null, fromStart: false };
     draftTurn = null;
     if (holdsDraft) actions.cancelSpeculation("reset");
   }
@@ -566,4 +621,4 @@ function createFastTurnEngine(options) {
   return { onTurnInfo, reset };
 }
 
-module.exports = { createFastTurnEngine, INTERRUPT_RE, wordCount, isLikelyEcho, speechTokens, isBackchannel, endsWithQuestion, QUESTION_TAIL_MS };
+module.exports = { createFastTurnEngine, INTERRUPT_RE, wordCount, isLikelyEcho, speechTokens, isBackchannel, endsWithQuestion, QUESTION_TAIL_MS, START_OF_TURN_LAG_MS };

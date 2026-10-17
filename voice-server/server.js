@@ -39,7 +39,7 @@ const { openFluxStream, fluxConfigFromEnv } = require("./services/flux-stt");
 const { openAuraStream } = require("./services/aura-stream");
 const { DEFAULT_HOST } = require("./services/deepgram-ws-common");
 const { createFastPlayer } = require("./lib/fast-player");
-const { createFastTurnEngine } = require("./lib/fast-turns");
+const { createFastTurnEngine, endsWithQuestion } = require("./lib/fast-turns");
 const { startSpeculativeReply } = require("./lib/speculative-reply");
 const { streamClaudeResponse } = require("./services/claude-chat");
 const { handleConversationRelayConnection, buildConversationRelayTwiml } = require("./services/conversationrelay"); // SCRUM-378 eval spike (ConversationRelay + Claude)
@@ -3798,22 +3798,12 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
   if (!session || twilioWs.readyState !== WebSocket.OPEN) return;
   session.isProcessing = true;
 
-  if (session.fastPath === true) {
-    // SCRUM-594 (R12b′): a fast turn never cuts the AI off at its start. It waits
-    // (at most FAST_TURN_START_WAIT_MS) for the AI's audio to finish: a caller
-    // who really talks over it has already barged in (the turn engine).
-    if (fastAudioBusy(session)) {
-      await waitForFastTurnStart(session);
-      if (twilioWs.readyState !== WebSocket.OPEN) {
-        session.isProcessing = false;
-        return;
-      }
-    }
-  } else if (session.isSpeaking) {
-    // Barge-in: if assistant is speaking, clear Twilio's audio buffer. (On the
-    // fast path with Nova after a fallback, this is still the only barge-in.)
-    sendClear(session, twilioWs);
-    session.isSpeaking = false;
+  // Barge-in: if assistant is speaking, clear Twilio's audio buffer. (On the
+  // fast path with Nova after a fallback, this is still the only barge-in; a
+  // Flux fast turn waits for the AI's audio instead, below.) SCRUM-594: when
+  // nothing was cleared (the recording disclosure plays on), it is still speaking.
+  if (session.fastPath !== true && session.isSpeaking) {
+    if (sendClear(session, twilioWs)) session.isSpeaking = false;
   }
 
   // Play hold audio while AI processes. SCRUM-594: holdPlaying lets an end_call
@@ -3821,14 +3811,16 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
   // every stop() sends a Twilio clear, which would cut speech already queued.
   // On the fast path that clear is sendClear's full stop (the player and the
   // Aura stream too), so only the first stop there does anything: a later
-  // round's first words must not cut what this turn already said.
-  const holdAudio = startHoldAudio(session, twilioWs, "twilio");
-  let holdPlaying = true;
+  // round's first words must not cut what this turn already said. A Flux fast
+  // turn starts it after its turn-start wait (R12b′), in the try below.
+  /** @type {{ stop: () => void } | null} */
+  let holdAudio = session.fastPath === true ? null : startHoldAudio(session, twilioWs, "twilio");
+  let holdPlaying = holdAudio !== null;
   const hold = {
     stop: () => {
       if (session.fastPath && !holdPlaying) return;
       holdPlaying = false;
-      holdAudio.stop();
+      holdAudio?.stop();
     },
   };
   // SCRUM-594 (spec 4.8.7): the fast path's turn: the draft it adopts, and the
@@ -3841,6 +3833,21 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
     // messages array the draft started from, length included.
     fastTurn = session.fastPath ? beginFastTurn(session, transcript) : null;
     session.addMessage("user", transcript);
+
+    if (fastTurn && session.fastPath === true) {
+      // SCRUM-594 (R12b″): a fast turn never cuts the AI off at its start. It waits
+      // (at most FAST_TURN_START_WAIT_MS) for the AI's audio to finish: a caller
+      // who really talks over it barges in (the turn engine). The wait is part of
+      // the turn, so that barge-in aborts it: no reply to these words alone, which
+      // stay in the conversation for the turn that follows.
+      if (fastAudioBusy(session)) {
+        await waitForFastTurnStart(session, fastTurn);
+        if (fastTurn.ctl.signal.aborted) throw fastAbortError(fastTurn.abortReason || "abort");
+        if (twilioWs.readyState !== WebSocket.OPEN) return;
+      }
+      holdAudio = startHoldAudio(session, twilioWs, "twilio");
+      holdPlaying = true;
+    }
 
     const llmOptions = buildLLMOptions(session, { includeTransfer: true });
     let reply = null;
@@ -4528,13 +4535,13 @@ async function sendRestTTS(session, twilioWs, text, isStale) {
  * Send clear event to flush Twilio's audio buffer (barge-in).
  */
 function sendClear(session, twilioWs) {
-  if (twilioWs.readyState !== WebSocket.OPEN) return;
+  if (twilioWs.readyState !== WebSocket.OPEN) return false;
   if (session.fastPlayer) {
     // SCRUM-594 (spec 4.8.5): the fast path stops its player (which sends the
     // Twilio clear) and the Aura stream too; never the recording disclosure (R12d′).
     if (!stopFastAudio(session)) {
       console.log("[FastPath] Kept the recording disclosure playing (no clear)");
-      return;
+      return false;
     }
   } else {
     twilioWs.send(
@@ -4545,6 +4552,7 @@ function sendClear(session, twilioWs) {
     );
   }
   console.log("[Barge-in] Cleared Twilio audio buffer");
+  return true;
 }
 
 /**
@@ -4674,6 +4682,10 @@ function newFastPathState() {
     disclosureActive: false,
     disclosureTimer: null,
     fluxWatchdog: null,
+    auraSentChars: 0,
+    auraReceivedMs: 0,
+    questionAudioStartAt: null,
+    bargeInDeclined: null,
     closed: false,
   };
 }
@@ -4804,7 +4816,8 @@ function openFastStt(session, twilioWs, openClassicStt) {
       startFluxWatchdog(session, fallBack);
       console.log(`[FastPath] Flux connected (callSid=${session.callSid})`);
     },
-    onTurnInfo: (evt) => engine.onTurnInfo(evt),
+    // R14″: when each event arrived (the engine reads the turn's start from it).
+    onTurnInfo: (evt) => engine.onTurnInfo({ ...evt, receivedAt: Date.now() }),
     onError: (err) => fallBack(opened ? "error" : "error before open", err),
     onClose: (code, reason, info) => {
       if (info.initiatedByUs) return;
@@ -4871,6 +4884,7 @@ function fastTurnState(session) {
     expectedInputType: session._expectedInputType,
     aiSpeakingText: session.fastState?.speakingText ?? "",
     aiRemainingMs: fastRestPlaying(session) ? null : (session.fastPlayer?.remainingMs(Date.now()) ?? null),
+    questionAudioStartAt: session.fastState?.questionAudioStartAt ?? null,
   };
 }
 
@@ -4885,12 +4899,12 @@ function fastTurnState(session) {
 function fastTurnActions(session, twilioWs) {
   /**
    * @param {string} name
-   * @param {(...args: any[]) => void} action
-   * @returns {(...args: any[]) => void}
+   * @param {(...args: any[]) => any} action
+   * @returns {(...args: any[]) => any} what the action returned (undefined when it threw)
    */
   const guarded = (name, action) => (...args) => {
     try {
-      action(...args);
+      return action(...args);
     } catch (err) {
       console.error(`[FastTurn] ${name} failed (callSid=${session.callSid}): ${err?.message || err}`);
       captureFastFailure(session, "fast-turns", `turn action ${name} failed`, err);
@@ -5006,18 +5020,25 @@ function bufferFastTurn(session, twilioWs, transcript) {
  */
 function fastBargeIn(session) {
   const turn = session.currentTurn;
-  if (session.fastState?.disclosureActive) {
-    console.log(`[Barge-in] (fast) ignored — the recording disclosure is playing (callSid=${session.callSid})`);
-    return;
-  }
-  if (turn?.ending) {
-    console.log(`[Barge-in] (fast) ignored — the AI is ending the call (callSid=${session.callSid})`);
-    return;
-  }
+  const state = session.fastState;
+  // Declined (false): the turn engine leaves the turn free to barge in later, e.g. over
+  // the greeting once the disclosure has played. Each reason is logged once in a row:
+  // a caller talking over the disclosure asks on every Update.
+  const decline = (/** @type {string} */ reason) => {
+    if (state && state.bargeInDeclined !== reason) {
+      state.bargeInDeclined = reason;
+      console.log(`[Barge-in] (fast) ignored — ${reason} (callSid=${session.callSid})`);
+    }
+    return false;
+  };
+  if (state?.disclosureActive) return decline("the recording disclosure is playing");
+  if (turn?.ending) return decline("the AI is ending the call");
+  if (state) state.bargeInDeclined = null;
   stopFastAudio(session);
   turn?.abort("barge-in");
   dropFastDraft(session, "barge-in");
   console.log(`[Barge-in] (fast) Stopped the AI's audio${turn ? " and its reply" : ""} (callSid=${session.callSid})`);
+  return true;
 }
 
 /**
@@ -5212,6 +5233,8 @@ function speakFast(session, text) {
   const clean = stripMarkdown(text);
   const state = session.fastState;
   if (!state || !session.fastTts?.speak(clean)) return 0;
+  if (endsWithQuestion(clean)) noteFastQuestion(session, clean);
+  state.auraSentChars += clean.length;
   state.speakingText = state.speakingText ? `${state.speakingText} ${clean}` : clean;
   state.unflushed = true;
   const record = session.fastStats?.current;
@@ -5236,6 +5259,9 @@ function fastFlush(session) {
     seq = tts.flush();
   } catch (err) {
     console.warn(`[FastPath] Aura flush threw (callSid=${session.callSid}): ${err.message}`);
+    // As a refusal: no Flushed will answer for this text; it stays owed until Aura goes quiet.
+    state.flushRefused = true;
+    armFastQuietTimer(session);
     return null;
   }
   if (seq === null) {
@@ -5292,6 +5318,7 @@ function onFastAudio(session, audio) {
   state.unmarked = true;
   state.presumedIdle = false;
   state.lastAudioAt = Date.now();
+  state.auraReceivedMs += audio.length / 8; // 8 kHz mulaw: 8 bytes a ms
   armFastQuietTimer(session);
   // The turn's first audio: its [FastTurn] line has everything now.
   const record = session.fastStats?.current;
@@ -5409,7 +5436,52 @@ function fastAuraOwes(state) {
 function refreshFastSpeaking(session) {
   const state = session.fastState;
   session.isSpeaking = fastPlayerPlaying(session) || fastRestPlaying(session);
-  if (state && !session.isSpeaking && !fastAuraOwes(state)) state.speakingText = "";
+  if (state && !session.isSpeaking && !fastAuraOwes(state)) clearFastSpeakingText(state);
+}
+
+/**
+ * The echo filter's text starts afresh, and with it what R14″ knows about the AI's
+ * last question.
+ * @param {import("./call-session").FastPathState} state
+ */
+function clearFastSpeakingText(state) {
+  state.speakingText = "";
+  state.auraSentChars = 0;
+  state.auraReceivedMs = 0;
+  state.questionAudioStartAt = null;
+}
+
+/**
+ * R14″: the AI just sent a question to Aura (the chunk ends with "?"). Its audio starts
+ * once the audio already in the player has played (now + remainingMs) and the audio Aura
+ * still owes for the text before it has played too. The player cannot know that part
+ * yet: Aura delivers audio at about twice real time, so a reply's question is usually
+ * sent while its first sentence is still being synthesised. It is estimated at
+ * FAST_TTS_MS_PER_CHAR, never making the estimate earlier than the player's figure.
+ * @param {CallSession} session
+ * @param {string} text - the chunk, its question last
+ */
+function noteFastQuestion(session, text) {
+  const state = session.fastState;
+  if (!state) return;
+  const now = Date.now();
+  const queuedMs = session.fastPlayer?.remainingMs(now) ?? 0;
+  const charsBefore = state.auraSentChars + fastQuestionLeadChars(text);
+  const owedMs = Math.max(0, charsBefore * FAST_TTS_MS_PER_CHAR - state.auraReceivedMs);
+  state.questionAudioStartAt = now + queuedMs + owedMs;
+}
+
+/**
+ * The characters of a chunk before its last sentence ("Tuesday works. Shall I book it?"
+ * → 15): the question is that last sentence.
+ * @param {string} text
+ * @returns {number}
+ */
+function fastQuestionLeadChars(text) {
+  const body = text.replace(/["'\u201D\u2019\u00BB\s]+$/u, "");
+  let lead = 0;
+  for (const m of body.matchAll(/[.!?]["'\u201D\u2019\u00BB]*\s+/gu)) lead = (m.index ?? 0) + m[0].length;
+  return lead;
 }
 
 /**
@@ -5509,11 +5581,22 @@ function fastAudioBusy(session) {
  * @param {CallSession} session
  * @returns {Promise<void>}
  */
-async function waitForFastTurnStart(session) {
+async function waitForFastTurnStart(session, turn) {
   const started = Date.now();
-  while (fastAudioBusy(session) && !session.fastState?.closed && Date.now() - started < FAST_TURN_START_WAIT_MS) {
-    await new Promise((resolve) => setTimeout(resolve, FAST_TURN_START_POLL_MS));
+  const signal = turn.ctl.signal;
+  while (!signal.aborted && fastAudioBusy(session) && !session.fastState?.closed && Date.now() - started < FAST_TURN_START_WAIT_MS) {
+    // Polled, but a barge-in (the turn's abort) ends the wait at once (R12b″).
+    await new Promise((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        signal.removeEventListener("abort", done);
+        resolve(undefined);
+      };
+      const timer = setTimeout(done, FAST_TURN_START_POLL_MS);
+      signal.addEventListener("abort", done, { once: true });
+    });
   }
+  if (signal.aborted) return; // the turn's abort path logs it
   const waited = Date.now() - started;
   if (fastAudioBusy(session)) console.warn(`[FastTurn] The AI was still speaking after ${waited} ms — answering anyway (callSid=${session.callSid})`);
   else console.log(`[FastTurn] Waited ${waited} ms for the AI to finish before answering (callSid=${session.callSid})`);
@@ -5609,7 +5692,7 @@ function stopFastAudio(session) {
   const owed = fastAuraOwes(state) || Boolean(state?.speakingText) || Boolean(player?.isPlaying());
   session.isSpeaking = false;
   if (state) {
-    state.speakingText = "";
+    clearFastSpeakingText(state);
     state.unmarked = false;
     state.unflushed = false;
     state.flushRefused = false;

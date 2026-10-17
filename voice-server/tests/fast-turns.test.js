@@ -1487,12 +1487,24 @@ describe("isBackchannel", () => {
 
 // The AI is still saying its question when the caller answers it: the reply ends in a
 // question, and only its tail (1.2 s) is still to play (R14′).
-const ASKING = { aiSpeaking: true, aiSpeakingText: "Sure, Tuesday works. Shall I book 10 AM?", aiRemainingMs: 1_200 };
+const ASKING = { aiSpeaking: true, aiSpeakingText: "Sure, Tuesday works. Shall I book 10 AM?", aiRemainingMs: 1_200, questionAudioStartAt: 1_000 };
+
+// R14″ (fix round 4): the caller must also have begun speaking after the question's audio
+// started (+500 ms: Flux's StartOfTurn lags speech onset). These tests state that much: the
+// question started at 1 000, and the caller's events arrive at 5 000.
+const QUESTION_STARTED = { questionAudioStartAt: 1_000 };
+/** FAST, its events stamped as server.js stamps them (receivedAt): here well after the question started. */
+const HEARD = (state) => {
+  const h = FAST(state);
+  const feed = h.feed;
+  h.feed = (...steps) => feed(...steps.map((step) => ("set" in step || "receivedAt" in step ? step : { ...step, receivedAt: 5_000 })));
+  return h;
+};
 
 describe('the "fast-path" policy: a short final while the AI asks a question is its answer (R14)', () => {
   it('"Yes" (and other backchannel words) over "…Shall I book 10 AM?" is committed: not dropped, not a barge-in', () => {
     for (const said of ["Yes.", "Yes", "Okay.", "Yeah, sure.", "Sure.", "Perfect!"]) {
-      const h = FAST(ASKING);
+      const h = HEARD(ASKING);
       h.feed(ev("StartOfTurn", 0, said), ev("EndOfTurn", 0, said));
       assert.deepEqual(h.calls, [["commit", said, 0, "model"]], said);
     }
@@ -1500,7 +1512,7 @@ describe('the "fast-path" policy: a short final while the AI asks a question is 
 
   it("content words alike: \"ten\", \"Michael\", \"Yes please\"", () => {
     for (const said of ["Ten.", "Michael.", "Yes please.", "Ten thirty"]) {
-      const h = FAST(ASKING);
+      const h = HEARD(ASKING);
       h.feed(ev("EndOfTurn", 0, said));
       assert.deepEqual(h.calls, [["commit", said, 0, "model"]], said);
     }
@@ -1508,7 +1520,7 @@ describe('the "fast-path" policy: a short final while the AI asks a question is 
 
   it("the question mark counts past trailing whitespace and closing quotes", () => {
     for (const text of ["Shall I book 10 AM?  ", 'She asked "shall I book 10 AM?"', "Shall I book 10 AM?' \n", "Shall I book 10 AM?\u201D", "Shall I book 10 AM?\u2019", "Shall I book 10 AM?\u00BB"]) {
-      const h = FAST({ aiSpeaking: true, aiSpeakingText: text, aiRemainingMs: 1_200 });
+      const h = HEARD({ aiSpeaking: true, aiSpeakingText: text, aiRemainingMs: 1_200, ...QUESTION_STARTED });
       h.feed(ev("EndOfTurn", 0, "Yes."));
       assert.deepEqual(h.calls, [["commit", "Yes.", 0, "model"]], JSON.stringify(text));
     }
@@ -1516,21 +1528,21 @@ describe('the "fast-path" policy: a short final while the AI asks a question is 
 
   it('"Okay" over a statement is still dropped (R12a′), and so is one after a question the AI has gone past', () => {
     for (const text of ["One moment, let me check that.", "Is Tuesday good? Let me check.", "Booked for 10 AM!", ""]) {
-      const h = FAST({ aiSpeaking: true, aiSpeakingText: text, aiRemainingMs: 1_200 });
+      const h = HEARD({ aiSpeaking: true, aiSpeakingText: text, aiRemainingMs: 1_200, ...QUESTION_STARTED });
       h.feed(ev("EndOfTurn", 0, "Okay."));
       assert.deepEqual(h.calls, [["dropEcho", "Okay.", "backchannel"], ["cancelSpeculation", "backchannel"]], JSON.stringify(text));
     }
   });
 
   it('"Yes" while processing (the AI not speaking) is still dropped, whatever the text', () => {
-    const h = FAST({ processing: true, aiSpeakingText: "Shall I book 10 AM?", aiRemainingMs: 1_200 });
+    const h = HEARD({ processing: true, aiSpeakingText: "Shall I book 10 AM?", aiRemainingMs: 1_200, ...QUESTION_STARTED });
     h.feed(ev("EndOfTurn", 0, "Yes."));
     assert.deepEqual(h.calls, [["dropEcho", "Yes.", "backchannel"], ["cancelSpeculation", "backchannel"]]);
   });
 
   it("an interrupt word behaves as before: barge-in at the end of its turn, then commit", () => {
     for (const said of INTERRUPTS) {
-      const h = FAST(ASKING);
+      const h = HEARD(ASKING);
       h.feed(ev("StartOfTurn", 0, said));
       assert.deepEqual(h.calls, [], said);
       h.feed(ev("EndOfTurn", 0, said));
@@ -1539,16 +1551,16 @@ describe('the "fast-path" policy: a short final while the AI asks a question is 
   });
 
   it('a backchannel that starts with "No" ("No worries") is answered, never a barge-in on the question', () => {
-    const h = FAST(ASKING);
+    const h = HEARD(ASKING);
     h.feed(ev("StartOfTurn", 0, "No"), ev("Update", 0, "No worries"), ev("EndOfTurn", 0, "No worries."));
     assert.deepEqual(h.calls, [["commit", "No worries.", 0, "model"]]);
   });
 
   it("3 or more words are judged as before: the question's own words coming back are dropped (R13), the caller's barge in", () => {
-    const echo = FAST(ASKING);
+    const echo = HEARD(ASKING);
     echo.feed(ev("EndOfTurn", 0, "Shall I book 10 AM?"));
     assert.deepEqual(echo.calls, [["dropEcho", "Shall I book 10 AM?", "echo-like"], ["cancelSpeculation", "echo"]]);
-    const real = FAST(ASKING);
+    const real = HEARD(ASKING);
     real.feed(ev("Update", 0, "yes book it"));
     assert.deepEqual(real.calls, [["bargeIn"]]);
     real.feed(ev("EndOfTurn", 0, "yes book it please"));
@@ -1556,7 +1568,7 @@ describe('the "fast-path" policy: a short final while the AI asks a question is 
   });
 
   it("on the structured path the answer is buffered", () => {
-    const h = FAST({ ...ASKING, expectedInputType: "phone" });
+    const h = HEARD({ ...ASKING, expectedInputType: "phone" });
     h.feed(ev("EndOfTurn", 0, "yeah"));
     assert.deepEqual(h.calls, [["cancelSpeculation", "structured"], ["bufferStructured", "yeah"]]);
   });
@@ -1587,13 +1599,13 @@ describe('the "fast-path" policy: the answer must land in the tail of the questi
   const DROPPED = (said) => [["dropEcho", said, "backchannel"], ["cancelSpeculation", "backchannel"]];
 
   it('"Okay" over the first sentence of a reply that ends in a question (4 s still to play) is dropped', () => {
-    const h = FAST({ aiSpeaking: true, aiSpeakingText: REPLY, aiRemainingMs: 4_000 });
+    const h = HEARD({ aiSpeaking: true, aiSpeakingText: REPLY, aiRemainingMs: 4_000, ...QUESTION_STARTED });
     h.feed(ev("StartOfTurn", 0, "Okay"), ev("EndOfTurn", 0, "Okay."));
     assert.deepEqual(h.calls, DROPPED("Okay."));
   });
 
   it('"Yes" over its tail (1.2 s still to play) is committed', () => {
-    const h = FAST({ aiSpeaking: true, aiSpeakingText: REPLY, aiRemainingMs: 1_200 });
+    const h = HEARD({ aiSpeaking: true, aiSpeakingText: REPLY, aiRemainingMs: 1_200, ...QUESTION_STARTED });
     h.feed(ev("StartOfTurn", 0, "Yes"), ev("EndOfTurn", 0, "Yes."));
     assert.deepEqual(h.calls, [["commit", "Yes.", 0, "model"]]);
   });
@@ -1601,20 +1613,20 @@ describe('the "fast-path" policy: the answer must land in the tail of the questi
   it('"Yes" while what is still to play is unknown (REST audio: the greeting, the disclosure) or large is dropped', () => {
     const greeting = "This call is recorded. Thanks for calling Copperline Plumbing, how can I help?";
     for (const aiRemainingMs of [null, undefined, Number.NaN, "1200", 6_000]) {
-      const h = FAST({ aiSpeaking: true, aiSpeakingText: greeting, aiRemainingMs });
+      const h = HEARD({ aiSpeaking: true, aiSpeakingText: greeting, aiRemainingMs, ...QUESTION_STARTED });
       h.feed(ev("EndOfTurn", 0, "Yes."));
       assert.deepEqual(h.calls, DROPPED("Yes."), String(aiRemainingMs));
     }
   });
 
   it("the tail is 2 s: exactly 2000 ms still to play is accepted, 2001 is dropped", () => {
-    const at = FAST({ aiSpeaking: true, aiSpeakingText: REPLY, aiRemainingMs: 2_000 });
+    const at = HEARD({ aiSpeaking: true, aiSpeakingText: REPLY, aiRemainingMs: 2_000, ...QUESTION_STARTED });
     at.feed(ev("EndOfTurn", 0, "Yes."));
     assert.deepEqual(at.calls, [["commit", "Yes.", 0, "model"]]);
-    const past = FAST({ aiSpeaking: true, aiSpeakingText: REPLY, aiRemainingMs: 2_001 });
+    const past = HEARD({ aiSpeaking: true, aiSpeakingText: REPLY, aiRemainingMs: 2_001, ...QUESTION_STARTED });
     past.feed(ev("EndOfTurn", 0, "Yes."));
     assert.deepEqual(past.calls, DROPPED("Yes."));
-    const zero = FAST({ aiSpeaking: true, aiSpeakingText: REPLY, aiRemainingMs: 0 });
+    const zero = HEARD({ aiSpeaking: true, aiSpeakingText: REPLY, aiRemainingMs: 0, ...QUESTION_STARTED });
     zero.feed(ev("EndOfTurn", 0, "Yes."));
     assert.deepEqual(zero.calls, [["commit", "Yes.", 0, "model"]], "its last frame is out and playing");
   });
@@ -1622,7 +1634,7 @@ describe('the "fast-path" policy: the answer must land in the tail of the questi
   it("interrupt words are unchanged, in the tail or not: barge-in at the end of the turn, then commit", () => {
     for (const aiRemainingMs of [1_200, 4_000, null]) {
       for (const said of INTERRUPTS) {
-        const h = FAST({ aiSpeaking: true, aiSpeakingText: REPLY, aiRemainingMs });
+        const h = HEARD({ aiSpeaking: true, aiSpeakingText: REPLY, aiRemainingMs, ...QUESTION_STARTED });
         h.feed(ev("StartOfTurn", 0, said), ev("EndOfTurn", 0, said));
         assert.deepEqual(h.calls, [["bargeIn"], ["commit", said, 0, "model"]], `${said} at ${aiRemainingMs}`);
       }
@@ -1630,8 +1642,162 @@ describe('the "fast-path" policy: the answer must land in the tail of the questi
   });
 
   it("content words outside the tail are answered as before (R12a′): only backchannels are dropped there", () => {
-    const h = FAST({ aiSpeaking: true, aiSpeakingText: REPLY, aiRemainingMs: 4_000 });
+    const h = HEARD({ aiSpeaking: true, aiSpeakingText: REPLY, aiRemainingMs: 4_000, ...QUESTION_STARTED });
     h.feed(ev("EndOfTurn", 0, "Tuesday."));
     assert.deepEqual(h.calls, [["commit", "Tuesday.", 0, "model"]]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 9. Fix round 4: an answer must start after the question does (R14″), and a declined
+//    barge-in is not spent (Minor #1)
+// ---------------------------------------------------------------------------
+
+describe('the "fast-path" policy: the answer must start after the question does (R14″)', () => {
+  // The question's audio started at 10 000 (server.js: questionAudioStartAt); Flux's StartOfTurn
+  // lags the caller's first sound by about 500 ms, so a turn heard to start at 10 500 or later
+  // began after the question did.
+  const Q = { aiSpeaking: true, aiSpeakingText: "We have Tuesday at ten. Shall I book it?", aiRemainingMs: 1_000, questionAudioStartAt: 10_000 };
+  const COMMITTED = [["commit", "Yes.", 0, "model"]];
+  const DROPPED = [["dropEcho", "Yes.", "backchannel"], ["cancelSpeculation", "backchannel"]];
+  /** "Yes" whose StartOfTurn arrives at `startAt` (its EndOfTurn 700 ms later). */
+  const yesAt = (startAt, state = Q) => {
+    const h = FAST(state);
+    h.feed({ ...ev("StartOfTurn", 0, "Yes"), receivedAt: startAt }, { ...ev("EndOfTurn", 0, "Yes."), receivedAt: startAt + 700 });
+    return h.calls;
+  };
+
+  it("exactly +500 ms after the question's audio started is accepted; +499 is dropped", () => {
+    assert.deepEqual(yesAt(10_500), COMMITTED);
+    assert.deepEqual(yesAt(10_499), DROPPED);
+    assert.deepEqual(yesAt(12_000), COMMITTED);
+  });
+
+  it("the turn starts at its StartOfTurn, even an empty one; without one, at its first words", () => {
+    const early = FAST(Q); // an empty StartOfTurn before the question: late words do not move it
+    early.feed({ ...ev("StartOfTurn", 0, ""), receivedAt: 10_100 }, { ...ev("Update", 0, "Yes"), receivedAt: 10_900 }, { ...ev("EndOfTurn", 0, "Yes."), receivedAt: 11_200 });
+    assert.deepEqual(early.calls, DROPPED);
+    const words = FAST(Q); // no StartOfTurn: an empty Update does not start it, the first words do
+    words.feed({ ...ev("Update", 0, ""), receivedAt: 10_000 }, { ...ev("Update", 0, "Yes"), receivedAt: 10_600 }, { ...ev("EndOfTurn", 0, "Yes."), receivedAt: 11_000 });
+    assert.deepEqual(words.calls, COMMITTED);
+    const only = FAST(Q); // nothing but its EndOfTurn
+    only.feed({ ...ev("EndOfTurn", 0, "Yes."), receivedAt: 10_400 });
+    assert.deepEqual(only.calls, DROPPED);
+  });
+
+  it("each turn has its own start", () => {
+    const h = FAST(Q);
+    h.feed({ ...ev("StartOfTurn", 0, "Okay"), receivedAt: 10_100 }, { ...ev("EndOfTurn", 0, "Okay."), receivedAt: 10_600 });
+    h.feed({ ...ev("StartOfTurn", 1, "Yes"), receivedAt: 10_700 }, { ...ev("EndOfTurn", 1, "Yes."), receivedAt: 11_100 });
+    assert.deepEqual(h.calls, [["dropEcho", "Okay.", "backchannel"], ["cancelSpeculation", "backchannel"], ["commit", "Yes.", 1, "model"]]);
+  });
+
+  it("reset() forgets the turn starts (a new Flux connection numbers its turns from 0 again)", () => {
+    const h = FAST(Q);
+    h.feed({ ...ev("StartOfTurn", 0, "Yes"), receivedAt: 10_100 });
+    h.engine.reset();
+    h.feed({ ...ev("StartOfTurn", 0, "Yes"), receivedAt: 10_800 }, { ...ev("EndOfTurn", 0, "Yes."), receivedAt: 11_100 });
+    assert.deepEqual(h.calls.filter((c) => c[0] !== "cancelSpeculation"), COMMITTED);
+  });
+
+  it("unknown times mean drop: events without receivedAt, or no questionAudioStartAt", () => {
+    const unstamped = FAST(Q);
+    unstamped.feed(ev("StartOfTurn", 0, "Yes"), ev("EndOfTurn", 0, "Yes."));
+    assert.deepEqual(unstamped.calls, DROPPED);
+    for (const questionAudioStartAt of [null, undefined, Number.NaN]) {
+      assert.deepEqual(yesAt(20_000, { ...Q, questionAudioStartAt }), DROPPED, String(questionAudioStartAt));
+    }
+  });
+
+  it("interrupt words are unchanged, whenever the turn started", () => {
+    for (const startAt of [10_100, 12_000]) {
+      const h = FAST(Q);
+      h.feed({ ...ev("StartOfTurn", 0, "Stop"), receivedAt: startAt }, { ...ev("EndOfTurn", 0, "Stop."), receivedAt: startAt + 500 });
+      assert.deepEqual(h.calls, [["bargeIn"], ["commit", "Stop.", 0, "model"]], String(startAt));
+    }
+  });
+
+  // The re-review probe (scratchpad/t5rr/tools/probe-r14-eot-lag.js), with the real player:
+  // "We have Tuesday at ten." (1.6 s, all of it already in the player when the question is
+  // sent at 300 ms), then "Shall I book it?" (1.1 s), so the question plays from 1 600 ms. The
+  // EndOfTurn lags the caller's last word by 400-900 ms, so at the EndOfTurn the AI is in its
+  // question's tail either way: only when the caller BEGAN tells an "okay" to the first
+  // sentence from an answer to the question.
+  const { createFastPlayer } = require("../lib/fast-player");
+  function probe({ said, onsetAt, endsAt, eotLagMs }) {
+    let clock = 0;
+    const player = createFastPlayer({ sendJson: () => {}, streamSid: "MZ", now: () => clock });
+    const calls = [];
+    const engine = createFastTurnEngine({
+      policy: "fast-path",
+      speculationEnabled: false,
+      getState: () => ({
+        aiSpeaking: player.isPlaying(), processing: false, expectedInputType: "general",
+        aiSpeakingText: "We have Tuesday at ten. Shall I book it?",
+        aiRemainingMs: player.remainingMs(clock),
+        questionAudioStartAt: 1_600, // server.js at the question's speak: 300 + the 1 300 ms still queued
+      }),
+      actions: {
+        commit: (t) => calls.push(["commit", t]),
+        bargeIn: () => calls.push(["bargeIn"]),
+        dropEcho: (t, r) => calls.push(["dropEcho", t, r]),
+        bufferStructured: (t) => calls.push(["bufferStructured", t]),
+      },
+    });
+    player.push(Buffer.alloc(1_600 * 8, 0x7e));
+    clock = 300;
+    player.push(Buffer.alloc(1_100 * 8, 0x7e));
+    player.endUtterance();
+    clock = onsetAt + 500; // Flux's StartOfTurn, ~500 ms after the first sound
+    engine.onTurnInfo({ event: "StartOfTurn", turnIndex: 0, transcript: said, receivedAt: clock });
+    clock = endsAt + eotLagMs;
+    const remaining = player.remainingMs(clock);
+    engine.onTurnInfo({ event: "EndOfTurn", turnIndex: 0, transcript: `${said}.`, trigger: "model", receivedAt: clock });
+    return { remaining, calls };
+  }
+
+  it('the probe: an "Okay." that ended 200-500 ms before the question started is dropped, though at its EndOfTurn the AI is in the tail', () => {
+    for (const [endsAt, eotLagMs] of [[1_400, 600], [1_100, 900], [1_400, 400]]) {
+      const { remaining, calls } = probe({ said: "Okay", onsetAt: endsAt - 300, endsAt, eotLagMs });
+      assert.ok(remaining <= 2_000, `R14′ alone would have taken it: ${remaining} ms left`);
+      assert.deepEqual(calls, [["dropEcho", "Okay.", "backchannel"]], `ended at ${endsAt}, EndOfTurn +${eotLagMs}`);
+    }
+  });
+
+  it('the probe: a "Yes" begun during the question is committed', () => {
+    const { calls } = probe({ said: "Yes", onsetAt: 1_700, endsAt: 2_000, eotLagMs: 600 });
+    assert.deepEqual(calls, [["commit", "Yes."]]);
+  });
+});
+
+describe("a barge-in the session declines is not spent (fix round 4, Minor #1)", () => {
+  for (const policy of ["fast-path", undefined]) {
+    it(`bargeIn() returning false leaves the turn free to barge in again; anything else spends it (${policy || "default"} policy)`, () => {
+      const asked = [];
+      let decline = true;
+      const h = harness({ state: SPEAKING, policy, actions: { bargeIn: () => { asked.push(decline); return decline ? false : undefined; } } });
+      h.feed(ev("Update", 0, "hi I'm calling about my booking"));
+      h.feed(ev("Update", 0, "hi I'm calling about my booking for Tuesday"));
+      assert.deepEqual(asked, [true, true], "declined: asked again on the next Update");
+      decline = false;
+      h.feed(ev("Update", 0, "hi I'm calling about my booking for Tuesday and"));
+      h.feed(ev("Update", 0, "hi I'm calling about my booking for Tuesday and I need"), ev("EndOfTurn", 0, "hi I'm calling about my booking for Tuesday and I need to move it"));
+      assert.deepEqual(asked, [true, true, false], "done: spent for the rest of the turn");
+      assert.deepEqual(h.calls, [["commit", "hi I'm calling about my booking for Tuesday and I need to move it", 0, "model"]]);
+    });
+  }
+
+  it("declined at the EndOfTurn: the final is still answered", () => {
+    const h = harness({ state: SPEAKING, policy: "fast-path", actions: { bargeIn: () => false } });
+    h.feed(ev("EndOfTurn", 0, "wait a second please"));
+    assert.deepEqual(h.calls, [["commit", "wait a second please", 0, "model"]]);
+  });
+
+  it("a bargeIn() that throws still spends it (the bookkeeping comes first: at most once)", () => {
+    let asked = 0;
+    const h = harness({ state: SPEAKING, actions: { bargeIn: () => { asked += 1; throw new Error("boom"); } } });
+    assert.throws(() => h.feed(ev("Update", 0, "wait a second please")), /boom/);
+    h.feed(ev("Update", 0, "wait a second please now"));
+    assert.equal(asked, 1);
   });
 });

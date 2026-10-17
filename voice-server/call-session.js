@@ -32,6 +32,10 @@ const MAX_MESSAGES = 21; // system prompt + up to 20 messages (user/assistant tu
  * @property {boolean} disclosureActive - the recording disclosure is playing: nothing may cut it
  * @property {ReturnType<typeof setTimeout>|null} disclosureTimer - ends the disclosure window if its mark is lost
  * @property {ReturnType<typeof setInterval>|null} fluxWatchdog - no Flux frames while audio goes out means a stuck stream
+ * @property {number} auraSentChars - R14″: characters sent to Aura since the echo filter's text last started afresh
+ * @property {number} auraReceivedMs - R14″: ms of Aura audio received in that time
+ * @property {number|null} questionAudioStartAt - R14″: Date.now() estimate of when the AI's last question starts playing; null when there is none
+ * @property {string|null} bargeInDeclined - the reason the last barge-in was declined (logged once in a row); null after one that acted
  * @property {boolean} closed - cleanup has run: late callbacks do nothing
  */
 

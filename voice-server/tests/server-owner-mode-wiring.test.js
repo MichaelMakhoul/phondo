@@ -862,7 +862,7 @@ function makeClassic(o = {}) {
       return { type: "tool_calls", toolCalls, message: { role: "assistant", content: null, tool_calls: toolCalls } };
     },
     startHoldAudio: () => ({ stop: () => {} }),
-    sendClear: () => {},
+    sendClear: () => true, // classic always clears
     // Real TTS takes far longer than a millisecond; 2 ms keeps a read-back's audio stamp after its arm.
     sendTTS: async (s, ws, text) => { calls.push(["sendTTS", text]); await sleep(2); if (o.ttsFails) throw new Error("tts down"); return 100; },
     executeToolCall: o.executeToolCall || (async (...a) => { calls.push(["executeToolCall", ...a]); return { message: "customer tool result" }; }),

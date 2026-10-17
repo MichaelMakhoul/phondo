@@ -118,7 +118,7 @@ function makeClassic(o = {}) {
       return { type: "tool_calls", toolCalls, message: { role: "assistant", content: null, tool_calls: toolCalls } };
     },
     startHoldAudio: () => ({ stop: () => calls.push(["hold.stop"]) }),
-    sendClear: () => calls.push(["sendClear"]),
+    sendClear: () => { calls.push(["sendClear"]); return true; }, // classic always clears
     sendTTS: async (s, ws, text) => {
       calls.push(["sendTTS", text]);
       await sleep(o.ttsDelay ? o.ttsDelay(text) : 2);
