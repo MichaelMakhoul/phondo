@@ -122,6 +122,27 @@ describe("surnameSpellingConfirmed", () => {
     assert.equal(surnameSpellingConfirmed(t, "Khoury").confirmed, true);
   });
 
+  it("a yes to ANOTHER question asked after the read-back is not a yes to the spelling (sim S4: 'Got it, K-H-O-U-R-Y. And is the best mobile…?' — 'Yep')", () => {
+    const t = [ai("Got it, K-H-O-U-R-Y. And is the best mobile to reach you on the number you're calling from?"), caller("Yep, the number I'm calling from is fine.")];
+    assert.deepEqual(surnameSpellingConfirmed(t, "Khoury"), { confirmed: false, reason: "not-asked" });
+  });
+
+  it("a short generic check after the read-back is the spelling question", () => {
+    for (const q of ["Is that right?", "Did I get that right?", "Correct?", "Is that spelled right?"]) {
+      assert.equal(surnameSpellingConfirmed([ai(`Got it, K-H-O-U-R-Y. ${q}`), caller("Yes.")], "Khoury").confirmed, true, q);
+    }
+    assert.equal(surnameSpellingConfirmed([ai("Got it, K-H-O-U-R-Y. And your number?"), caller("Yes.")], "Khoury").confirmed, false, "a short question about something else");
+    assert.equal(
+      surnameSpellingConfirmed([ai("Got it, K-H-O-U-R-Y. And is the number you're calling from the right one to reach you on?"), caller("Yes.")], "Khoury").confirmed,
+      false,
+      "a long question that happens to say 'right' is about something else",
+    );
+  });
+
+  it("a read-back with no question, answered yes, confirms", () => {
+    assert.equal(surnameSpellingConfirmed([ai("So that's K-H-O-U-R-Y."), caller("Yep.")], "Khoury").confirmed, true);
+  });
+
   it("a read-back inside a booking question, answered yes, confirms", () => {
     const t = [ai("So that's Sami K-H-O-U-R-Y on Monday at 9, shall I book it?"), caller("Yes please.")];
     assert.equal(surnameSpellingConfirmed(t, "Khoury").confirmed, true);
@@ -135,11 +156,13 @@ describe("surnameSpellingConfirmed", () => {
 });
 
 describe("spellingHoldMessage", () => {
-  it("tells the model what it would save, letter by letter, and to wait for a yes", () => {
+  it("tells the model what it would save, letter by letter, to ask it as its own question, and to wait for a yes", () => {
     const m = spellingHoldMessage("Curry");
     assert.match(m, /^DO NOT BOOK YET/);
     assert.match(m, /C-U-R-R-Y/);
+    assert.match(m, /Is that right\?/);
     assert.match(m, /book_appointment again only after they say yes/);
+    assert.doesNotMatch(m, /hasn't confirmed/, "never claims what the caller did (the model contradicted it: 'You've already confirmed…')");
   });
 });
 

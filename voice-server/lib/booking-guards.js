@@ -85,12 +85,33 @@ function isAffirmative(text) {
   return POSITIVE.test(t);
 }
 
+/** A short "is that right?" after a read-back — not a question about something else. */
+const GENERIC_CHECK = /\b(right|correct|yes|ok(?:ay)?|spelled|spelling)\b/i;
+
+/**
+ * Does this AI message ask the caller to check `target`'s spelling? Its LAST
+ * question must be the spelling (contain the letters) or a short generic check
+ * ("Is that right?"); a read-back with no question at all counts too. A read-back
+ * followed by another question ("…K-H-O-U-R-Y. And is the best mobile…?") does
+ * not: the caller's "yep" answers that question.
+ * @param {string} content
+ * @param {string} target - spellableLetters(surname)
+ * @returns {boolean}
+ */
+function asksToCheckSpelling(content, target) {
+  const questions = content.match(/[^.!?]*\?/g) || [];
+  if (questions.length === 0) return true;
+  const last = questions[questions.length - 1];
+  if (spelledRuns(last).includes(target)) return true;
+  return last.trim().split(/\s+/).length <= 6 && GENERIC_CHECK.test(last);
+}
+
 /**
  * Has `surname` been spelled back to the caller and confirmed? The LATEST
  * read-back of exactly these letters decides, by the caller's next words.
  * @param {Array<{ role: string, content: unknown }>} transcript - session.fullTranscriptMessages
  * @param {unknown} surname - the last name about to be saved
- * @returns {{ confirmed: boolean, reason: "confirmed" | "not-spellable" | "not-read-back" | "awaiting-reply" | "caller-respelled" | "not-affirmed" }}
+ * @returns {{ confirmed: boolean, reason: "confirmed" | "not-spellable" | "not-read-back" | "not-asked" | "awaiting-reply" | "caller-respelled" | "not-affirmed" }}
  */
 function surnameSpellingConfirmed(transcript, surname) {
   const target = spellableLetters(surname);
@@ -98,6 +119,7 @@ function surnameSpellingConfirmed(transcript, surname) {
   for (let i = transcript.length - 1; i >= 0; i--) {
     const m = transcript[i];
     if (m.role !== "assistant" || !spelledRuns(m.content).includes(target)) continue;
+    if (!asksToCheckSpelling(String(m.content), target)) return { confirmed: false, reason: "not-asked" };
     const reply = transcript.slice(i + 1).find((x) => x.role === "user");
     if (!reply) return { confirmed: false, reason: "awaiting-reply" };
     const replyRuns = spelledRuns(reply.content);
@@ -116,7 +138,7 @@ function surnameSpellingConfirmed(transcript, surname) {
  */
 function spellingHoldMessage(surname) {
   const letters = spellableLetters(surname).split("").join("-");
-  return `DO NOT BOOK YET: the caller hasn't confirmed how their last name is spelled. Spell it back to them letter by letter, exactly as you will save it — for "${surname}" that is ${letters} — and ask if that's right. If they correct it, save their spelling. Call book_appointment again only after they say yes.`;
+  return `DO NOT BOOK YET. Read the caller's last name back to them letter by letter, exactly as you will save it — for "${surname}" that is ${letters} — and ask "Is that right?" as its own question, with nothing else in that reply. If they correct it, save their spelling. Call book_appointment again only after they say yes.`;
 }
 
 /**
