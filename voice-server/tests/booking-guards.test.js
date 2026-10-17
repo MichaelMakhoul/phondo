@@ -206,6 +206,8 @@ describe("declinesCancel (a caller's clear no to a cancel)", () => {
     "Yeah nah, it's all good.", "Actually, no.",
     // confirmation review: "wrong one" is a no to the booking read back
     "Not that one, the Tuesday one.", "Wrong one — Tuesday.", "That's not the one.", "That's wrong.", "That's not right.", "Don't do it.", "Not the Monday one.",
+    // gate review: clear no's in other words
+    "Absolutely not.", "Definitely not.", "Not at all.", "I'd rather not.", "Do not.", "I don't want it cancelled.", "Uh, no…", "Um, no.", "Um, no, I'll hang onto it for now.", "Keeping it.", "I'm keeping the booking.",
   ]) {
     it(`"${no}" takes it back`, () => assert.equal(declinesCancel(no), true));
   }
@@ -215,6 +217,7 @@ describe("declinesCancel (a caller's clear no to a cancel)", () => {
     "Yes please, I can't keep the appointment.",
     "No dramas.", "No probs, go for it.", "Yes, no worries.", "Yeah, no problem.", "Yeah, nah, yeah, go ahead.",
     "That's right.", "That's the one, yes.",
+    "Yes, I won't be able to keep it.", "I'm not keeping it, cancel it.",
   ]) {
     it(`"${yes}" does not`, () => assert.equal(declinesCancel(yes), false));
   }
@@ -305,7 +308,8 @@ describe("fastCancelGate (structural: no 'yes' is read off the transcript)", () 
     say(s, "user", "No.");
     assert.equal(fastCancelGate(s, { date: "2026-10-19" }, 2000).reason, "caller-declined");
     assert.equal(fastCancelGate(s, { phone: "+61412555013" }, 2001).reason, "caller-declined");
-    assert.equal(fastCancelGate(s, { datetime: "2026-10-19T14:00:00" }, 2002).reason, "first-attempt", "another time that day is a different booking");
+    assert.equal(fastCancelGate(s, { datetime: "2026-10-19T09:10:00" }, 2002).reason, "caller-declined", "within the handler's ±15 minutes it may be the same booking");
+    assert.equal(fastCancelGate(s, { datetime: "2026-10-19T14:00:00" }, 2003).reason, "first-attempt", "another time that day is a different booking");
   });
 
   it("final review: 'No, the Tuesday one' — after a no, a cancel for a different booking is an ordinary first attempt (two asks in all)", () => {

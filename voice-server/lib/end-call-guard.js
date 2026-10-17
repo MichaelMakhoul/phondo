@@ -37,13 +37,21 @@ const END_CALL_BLOCKED_MESSAGE =
 const END_CALL_BLOCKED_KEPT_MESSAGE =
   "CANNOT END CALL YET: the NEW booking was NOT made — but the caller's earlier booking from this call still stands. If the caller still wants the new appointment, finish booking it; if they don't, just say goodbye — do not book anything they didn't ask for. Do NOT say the new one is booked.";
 
+/**
+ * SCRUM-594 PHASE 2 (gate review): ... on the fast path when the call was about a
+ * booking the caller already has (CallSession.aboutTheirBooking) and nothing new
+ * was booked: only the NEW one is missing — "NO appointment" would be false.
+ */
+const END_CALL_BLOCKED_NOTHING_NEW_MESSAGE =
+  "CANNOT END CALL YET: nothing new was booked on this call — book_appointment never succeeded. If the caller wants a new appointment, book it now; if they don't, just say goodbye. Do NOT say a new one is booked, and don't tell them they have nothing booked — the booking you found or changed for them stays as it is.";
+
 /** ... and after a failed reschedule: the caller's existing appointment still stands (PR #442's text). */
 const END_CALL_BLOCKED_RESCHEDULE_MESSAGE =
   "CANNOT END CALL YET: the appointment change was NOT completed — the caller's existing appointment is unchanged. Either call reschedule_appointment again with the confirmed details, or tell the caller — in their language — that you couldn't change it and call schedule_callback to take a message. Only call end_call AFTER one of those succeeds.";
 
 /**
  * Decide whether an end_call may go ahead.
- * @param {{ callSid?: string|null, toolCallAudit: Array<{ name: string, successful?: boolean, at?: number }>, hasUnfinishedBooking: (endCallReason?: string) => boolean, lastFunnelStep: () => string|null, bookingGuards?: boolean, confirmedBookings?: Map<string, unknown> }} session - the call's CallSession
+ * @param {{ callSid?: string|null, toolCallAudit: Array<{ name: string, successful?: boolean, at?: number }>, hasUnfinishedBooking: (endCallReason?: string) => boolean, lastFunnelStep: () => string|null, bookingGuards?: boolean, confirmedBookings?: Map<string, unknown>, aboutTheirBooking?: () => boolean }} session - the call's CallSession
  * @param {string} [reason] - the end_call tool call's `reason` argument
  * @returns {{ allow: boolean, message?: string }} `message` is set exactly when allow is false: the tool result to send back instead
  */
@@ -65,7 +73,9 @@ function checkEndCallGuard(session, reason) {
       ? END_CALL_BLOCKED_RESCHEDULE_MESSAGE
       : session.bookingGuards === true && session.confirmedBookings instanceof Map && session.confirmedBookings.size > 0
         ? END_CALL_BLOCKED_KEPT_MESSAGE
-        : END_CALL_BLOCKED_MESSAGE;
+        : session.bookingGuards === true && typeof session.aboutTheirBooking === "function" && session.aboutTheirBooking()
+          ? END_CALL_BLOCKED_NOTHING_NEW_MESSAGE
+          : END_CALL_BLOCKED_MESSAGE;
     return { allow: false, message };
   }
   // Already nudged once: let the caller go, but alert at error level — the
@@ -79,4 +89,4 @@ function checkEndCallGuard(session, reason) {
   return { allow: true };
 }
 
-module.exports = { checkEndCallGuard, END_CALL_BLOCKED_MESSAGE, END_CALL_BLOCKED_RESCHEDULE_MESSAGE, END_CALL_BLOCKED_KEPT_MESSAGE };
+module.exports = { checkEndCallGuard, END_CALL_BLOCKED_MESSAGE, END_CALL_BLOCKED_RESCHEDULE_MESSAGE, END_CALL_BLOCKED_KEPT_MESSAGE, END_CALL_BLOCKED_NOTHING_NEW_MESSAGE };

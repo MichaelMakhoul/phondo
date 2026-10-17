@@ -13,7 +13,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const { checkEndCallGuard, END_CALL_BLOCKED_MESSAGE, END_CALL_BLOCKED_RESCHEDULE_MESSAGE, END_CALL_BLOCKED_KEPT_MESSAGE } = require("../lib/end-call-guard");
+const { checkEndCallGuard, END_CALL_BLOCKED_MESSAGE, END_CALL_BLOCKED_RESCHEDULE_MESSAGE, END_CALL_BLOCKED_KEPT_MESSAGE, END_CALL_BLOCKED_NOTHING_NEW_MESSAGE } = require("../lib/end-call-guard");
 const { CallSession } = require("../call-session");
 
 const serverSrc = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
@@ -213,6 +213,21 @@ describe("SCRUM-594 PHASE 2 re-review: the fast path's nudge when this call's bo
     assert.equal(verdict.message, END_CALL_BLOCKED_KEPT_MESSAGE);
     assert.match(END_CALL_BLOCKED_KEPT_MESSAGE, /earlier booking from this call still stands/);
     assert.doesNotMatch(END_CALL_BLOCKED_KEPT_MESSAGE, /NO appointment/);
+  });
+
+  it("gate review: a new booking the AI claimed on a call about the caller's own booking — the nudge says only the NEW one isn't booked", (t) => {
+    captureConsole(t);
+    const claimed = (guards, audit) => {
+      const s = session(audit);
+      s.bookingGuards = guards;
+      s.addMessage("assistant", "I've booked you in for Tuesday at 2 PM.");
+      return checkEndCallGuard(s, "booked Tuesday 2pm");
+    };
+    const FOUND = [{ name: "lookup_appointment", successful: true, found: true, at: 1 }];
+    assert.deepEqual(claimed(true, FOUND), { allow: false, message: END_CALL_BLOCKED_NOTHING_NEW_MESSAGE });
+    assert.doesNotMatch(END_CALL_BLOCKED_NOTHING_NEW_MESSAGE, /NO appointment/);
+    assert.equal(claimed(true, []).message, END_CALL_BLOCKED_MESSAGE, "nothing about their booking: the plain wording");
+    assert.equal(claimed(false, FOUND).message, END_CALL_BLOCKED_MESSAGE, "Gemini/classic: unchanged");
   });
 
   it("Gemini/classic (no guards) keep the old wording", (t) => {

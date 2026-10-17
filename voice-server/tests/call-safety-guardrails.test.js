@@ -116,6 +116,27 @@ describe("CallSession.hasUnfinishedBooking (SCRUM-373/377)", () => {
     assert.equal(withAudit([{ name: "lookup_appointment", successful: true, found: true, at: 100 }]).hasUnfinishedBooking("caller kept their booking"), true, "Gemini/classic: unchanged");
   });
 
+  it("gate review: a booking the AI claimed without book_appointment still blocks once — even on a call about the caller's own booking", () => {
+    const said = (audit, role, line) => {
+      const s = fast(audit);
+      s.addMessage(role, line);
+      return s;
+    };
+    const FOUND = [{ name: "lookup_appointment", successful: true, found: true, at: 100 }];
+    const HELD = [{ name: "cancel_appointment_held", successful: false, at: 100 }];
+    const CANCELLED = [{ name: "cancel_appointment", successful: true, at: 100 }];
+    for (const audit of [FOUND, HELD, CANCELLED]) {
+      assert.equal(said(audit, "assistant", "I've booked you in for Tuesday at 2 PM.").hasUnfinishedBooking("booked new appointment for Tuesday 2pm"), true);
+      assert.equal(said(audit, "assistant", "I have made a booking for you on Tuesday.").hasUnfinishedBooking("booking complete"), true);
+      assert.equal(said(audit, "assistant", "Done — booked you in for Tuesday.").hasUnfinishedBooking("booking complete"), true);
+    }
+    // describing the booking they already have is no claim; the caller's words never count
+    assert.equal(said(FOUND, "assistant", "You've got a booking on Monday the 19th at 10 am.").hasUnfinishedBooking("caller kept their booking"), false);
+    assert.equal(said(FOUND, "assistant", "You're booked in for Monday at 10.").hasUnfinishedBooking("caller kept their booking"), false);
+    assert.equal(said(CANCELLED, "assistant", "Your Monday booking has been cancelled.").hasUnfinishedBooking("booking cancelled"), false);
+    assert.equal(said(FOUND, "user", "I've booked a plumber already.").hasUnfinishedBooking("caller kept their booking"), false);
+  });
+
   it("re-review: a failed move, an availability check, then the cancel of that booking is still finished", () => {
     const audit = MOVE_THEN_CANCEL();
     audit.splice(3, 0, { name: "check_availability", successful: true, at: 350 });

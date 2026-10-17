@@ -3,6 +3,8 @@ const { validateInput, getBufferConfig, extractSpokenDigits } = require("./lib/i
 const { logTranscript } = require("./lib/log-transcript");
 
 const MAX_MESSAGES = 21; // system prompt + up to 20 messages (user/assistant turns + tool call/result messages)
+/** SCRUM-594 (gate review): the AI's own words claiming it booked something ("I've booked you in…"). */
+const AI_SAID_BOOKED = /\b(?:i['’]?ve|i have|i) (?:just )?(?:booked|made (?:you )?(?:the|a|an|your) (?:booking|appointment))\b|\bbooked (?:you|them|him|her|your \w+) in\b/i;
 
 /**
  * SCRUM-594: the fast path's per-call audio bookkeeping. server.js owns it (the
@@ -477,10 +479,12 @@ class CallSession {
     // confirm. A different booking ("No, the Tuesday one") is a new cancel.
     if (typeof options.transcriptAt === "number" && declinedAt === options.transcriptAt - 1) {
       const refused = this._fastDeclined && this._fastDeclined.at === declinedAt ? this._fastDeclined.keys : [];
-      // Provably another booking: another day, or the same day at another time.
+      // Provably another booking: another day, or the same day further apart than
+      // the handlers' ±15-minute match.
       const anotherBooking = (/** @type {string[]} */ no) => {
         if (key(no, "d:") && key(keys, "d:") && key(no, "d:") !== key(keys, "d:")) return true;
-        return Boolean(key(no, "t:") && key(keys, "t:") && key(no, "t:") !== key(keys, "t:"));
+        const minutes = (/** @type {string | undefined} */ k) => (k ? Number(k.slice(-5, -3)) * 60 + Number(k.slice(-2)) : NaN);
+        return Math.abs(minutes(key(no, "t:")) - minutes(key(keys, "t:"))) > 15;
       };
       if (refused.length > 0 && !refused.every(anotherBooking)) return { proceed: false, via: null, reason: "caller-declined", dropped };
     }
@@ -582,17 +586,27 @@ class CallSession {
     // No booking-funnel tool calls at all — only flag if the end_call reason
     // explicitly claims a booking/reschedule while nothing was ever booked.
     // SCRUM-594 (phone test F4): on the fast path, not when the call was about a
-    // booking the caller already has — it cancelled one, found one, or held a
-    // cancel the caller then declined. The model ended a pure cancel call as
-    // "booking complete", the nudge said the caller had NO appointment, and a
-    // callback the caller didn't want was logged. A reason claiming a reschedule
-    // still blocks.
-    const theirBooking = (t) => (t.name === "cancel_appointment" && t.successful) || t.name === "cancel_appointment_held" || (t.name === "lookup_appointment" && t.found === true);
-    if (this.bookingGuards && !/reschedul/i.test(endCallReason || "") && audit.some(theirBooking)) return false;
+    // booking the caller already has (aboutTheirBooking). The model ended a pure
+    // cancel call as "booking complete", the nudge said the caller had NO
+    // appointment, and a callback the caller didn't want was logged. A reason
+    // claiming a reschedule — or the AI's own "I've booked you in" when nothing
+    // was booked — still blocks.
+    const aiSaidBooked = this.fullTranscriptMessages.some((m) => m.role === "assistant" && AI_SAID_BOOKED.test(String(m.content || "")));
+    if (this.bookingGuards && !/reschedul/i.test(endCallReason || "") && this.aboutTheirBooking() && !aiSaidBooked) return false;
     const everBooked = audit.some((t) => t.name === "book_appointment" && t.successful);
     // Substring match (not \b-anchored) so snake_case reasons like
     // "booking_complete" / "reschedule_done" match; "cancelled" does not.
     return /(book|reschedul|reserv)/i.test(endCallReason || "") && !everBooked;
+  }
+
+  /**
+   * SCRUM-594 (F4): was this call about a booking the caller already has — it
+   * cancelled one, found one (fast path's `found`), or held a cancel the caller
+   * then declined?
+   * @returns {boolean}
+   */
+  aboutTheirBooking() {
+    return (this.toolCallAudit || []).some((t) => (t.name === "cancel_appointment" && t.successful) || t.name === "cancel_appointment_held" || (t.name === "lookup_appointment" && t.found === true));
   }
 
   /**
