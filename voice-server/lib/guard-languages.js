@@ -27,7 +27,7 @@ function wordsRe(alternatives, flags = "iu") {
 
 /**
  * Is this question short enough to be a bare "is that right?" — at most
- * `maxWords` words (Japanese, written without spaces: two and a half times as many characters).
+ * `maxWords` words (Japanese, written without spaces: twice as many characters).
  * @param {string} question
  * @param {number} maxWords
  * @returns {boolean}
@@ -38,7 +38,7 @@ function latinShort(question, maxWords) {
 
 /** @type {(question: string, maxWords: number) => boolean} */
 function japaneseShort(question, maxWords) {
-  return question.replace(/[\s。．、，！？!?,.「」『』]/g, "").length <= Math.round(maxWords * 2.5); // 「違っていたら教えてください」 is 13
+  return question.replace(/[\s。．、，！？!?,.「」『』]/g, "").length <= maxWords * 2;
 }
 
 /**
@@ -67,6 +67,7 @@ function bookedWithObject(subjects, negations, participles) {
  *   goAhead: RegExp,
  *   noLongerNeeded: RegExp,
  *   cancelYes?: RegExp,
+ *   pointsBack?: RegExp,
  *   agreeingNo: RegExp | null,
  *   booked: RegExp,
  * }} GuardWords
@@ -79,6 +80,7 @@ function bookedWithObject(subjects, negations, participles) {
  * - goAhead: "cancel it" / "go ahead"; noLongerNeeded: "I don't need it any more" (a go-ahead,
  *   though it says no); cancelYes: a yes to a cancel, where it differs from `yes` (Japanese
  *   「大丈夫です」 can mean "no need")
+ * - pointsBack: a check that points back at what was just read, whatever its length
  * - booked: the AI's own "I've booked you"
  */
 
@@ -174,6 +176,8 @@ const GUARD_WORDS = Object.freeze({
     field: /メール|住所|番号|電話|携帯|下の(?:お)?名前/,
     time: /曜日|今日|明日|明後日|午前|午後|(?<![当同])時|朝|夕方|夜/,
     shortQuestion: japaneseShort,
+    // 2× is the length cap: 「ご来院は初めてでよろしいですか」 is another question (re-review).
+    pointsBack: /^(?:もし)?(?:違|間違)っていたら|^(?:こちら|これ|それ|そちら)で|ご?確認(?:を)?(?:ください|下さい|お願い|して|いただけ)/,
     goAhead: /キャンセルして|取り消して|お願い(?:いた)?します|やめます|構いません|かまいません/,
     noLongerNeeded: /(?:もう)?(?:必要|要り|いり)(?:ありません|ません|ない|なくなりました)/g,
     cancelYes: /はい|ええ(?![ーっ]*と)|そうです/,

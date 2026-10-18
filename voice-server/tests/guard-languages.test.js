@@ -205,6 +205,8 @@ describe("surnameSpellingConfirmed in the call's language", () => {
     // final review: 確認 alone is no check (「確認ですが、緊急ですか」 asks about urgency); a check that asks to be told if it's wrong is one
     assert.equal(surnameSpellingConfirmed([ai("K-H-O-U-R-Yですね。確認ですが、緊急ですか。"), caller("はい、急ぎです。")], "Khoury", "ja").reason, "not-asked");
     assert.equal(surnameSpellingConfirmed([ai("K-H-O-U-R-Yでよろしいですか。違っていたら教えてください。"), caller("はい、合っています。")], "Khoury", "ja").confirmed, true);
+    // re-review: a short question of the right length about something else isn't a check (「ご来院は初めて…」)
+    assert.equal(surnameSpellingConfirmed([ai("K-H-O-U-R-Yですね。ご来院は初めてでよろしいですか。"), caller("はい。")], "Khoury", "ja").reason, "not-asked");
     // final review: the spelling and another detail in one request (a comma, not 。)
     assert.equal(surnameSpellingConfirmed([ai("K-H-O-U-R-Yですね、では携帯番号を教えてください。"), caller("大丈夫です。")], "Khoury", "ja").reason, "not-asked");
     const photo = [ai("K-H-O-U-R-Yですね。次に、写真をお願いします。"), caller("はい。")];

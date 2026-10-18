@@ -220,7 +220,8 @@ function asksToCheckSpelling(content, target, language = "en") {
   if (words <= 6 && GENERIC_CHECK.test(last)) return true;
   if (!other) return false;
   if (other.spell.test(last)) return other.shortQuestion(last, 10);
-  return other.shortQuestion(last, 6) && other.check.test(last);
+  // A check that points back at what was read needs no length cap (「違っていたら教えてください」).
+  return (Boolean(other.pointsBack?.test(last.trim())) || other.shortQuestion(last, 6)) && other.check.test(last);
 }
 
 /**
@@ -547,8 +548,14 @@ const PLAIN_NO = /^\W*(no|nope|nah|not really)\b/i;
 // said ("Das war's nicht…", "C'est tout ce que…" are not goodbyes), optionally
 // followed by a thanks. JS's \b is ASCII-only, so words are bounded by \p{L}.
 const THANKS = "(?:muchas )?gracias|merci(?: beaucoup)?|danke(?: sch[öo]n| sehr)?|vielen dank|grazie(?: mille)?|bedankt|dank (?:je|u)(?: wel)?|thanks|thank you";
-/** Where a clause starts: the reply's start, after punctuation, or after "and" / "okay" / "thanks". */
-const CLAUSE_START = `(?<=^[\\s¡¿"'«]*|[.,;:!?¡…]\\s*|(?<![\\p{L}\\p{N}])(?:y|et|und|e|en|alors|also|allora|dus|pues|entonces|ok(?:ay|é)?|vale|bueno|bien|gut|bene|goed|${THANKS})\\s+)`;
+/** Words a closing may follow at a clause's start: "and", "okay", "yes", "thanks"… */
+const CLAUSE_LEAD = `(?:y|et|und|e|en|alors|also|allora|dus|pues|entonces|ok(?:ay|é)?|vale|bueno|bien|gut|bene|goed|s[ií]|s[iì]|oui|ja|perfect[oa]|perfetto|parfait|d['’]accord|bon|super|prima|top|nou|klar|alles klar|va bene|muy bien|tr[èe]s bien|adi[oó]s|ciao|chao|tsch[üu]ss|doei|${THANKS})`;
+/**
+ * Where a clause starts: the reply's start or after punctuation, then at most two lead
+ * words ("Sí hasta mañana", "Merci, à mardi"). A lead word mid-sentence is no start
+ * ("Déplacez-le alors à jeudi"). Bounded repeats: no O(n²) on long runs of spaces.
+ */
+const CLAUSE_START = `(?<=(?:^|[.,;:!?¡…])[\\s¡¿"'«]{0,3}(?:${CLAUSE_LEAD},?\\s{1,2}){0,2})`;
 /**
  * @param {string[]} alternatives
  * @param {{ clauseStart?: boolean }} [options] - clauseStart: only where a clause starts

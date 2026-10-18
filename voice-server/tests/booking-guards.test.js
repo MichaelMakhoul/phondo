@@ -624,10 +624,14 @@ describe("callerIsDone (B5: the AI ends the call only once the caller has)", () 
       ["de", "Ich bin im Urlaub bis Montag."],
       ["es", "Estoy de viaje hasta el lunes."],
       ["nl", "Ik ben weg tot maandag."],
+      // re-review: a lead word mid-sentence is no clause start
+      ["fr", "Déplacez-le alors à jeudi."],
+      ["it", "Lo spostiamo allora a lunedì."],
+      ["fr", "C'est bien à mardi."],
     ]) {
       assert.equal(callerIsDone([ai("Perfecto. ¿Algo más?"), caller(said)], language), false, said);
     }
-    for (const [language, said] of [["fr", "Merci, à mardi !"], ["it", "Grazie a giovedì"], ["de", "Danke bis Montag"], ["es", "Vale, hasta el lunes."], ["nl", "Oké, tot maandag!"]]) {
+    for (const [language, said] of [["fr", "Merci, à mardi !"], ["it", "Grazie a giovedì"], ["de", "Danke bis Montag"], ["es", "Vale, hasta el lunes."], ["nl", "Oké, tot maandag!"], ["es", "Sí hasta mañana"], ["de", "Ja bis morgen"]]) {
       assert.equal(callerIsDone([ai("Listo."), caller(said)], language), true, said);
     }
   });
