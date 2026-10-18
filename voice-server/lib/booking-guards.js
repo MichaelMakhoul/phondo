@@ -86,7 +86,7 @@ function runLetters(run, trim = true) {
     // A space between a surname's words is no such word: "D-E S-I-L-V-A".
     const kind = (/** @type {string} */ sep) => sep.replace(/\s+/g, "") || " ";
     const loose = (/** @type {string} */ sep) => kind(sep) === " " || kind(sep) === "." || kind(sep) === ","; // "K-H-O-U-R-Y, è corretto?"
-    if (kind(parts[1]) === " " && kind(parts[3]) !== " ") parts.splice(0, 2);
+    if (parts.length >= 7 && kind(parts[1]) === " " && kind(parts[3]) !== " " && kind(parts[3]) === kind(parts[5])) parts.splice(0, 2); // "N G, a" is NG
     if (parts.length >= 5 && loose(parts[parts.length - 2]) && kind(parts[parts.length - 2]) !== kind(parts[parts.length - 4])) parts.splice(-2);
   }
   return (parts.join("").match(/\p{L}/gu) || []).join("").toUpperCase();
@@ -340,8 +340,23 @@ function cancelGoAhead(text, language = "en") {
   const words = guardWords(language);
   if (!words) return true;
   const raw = text.trim();
-  return (words.cancelYes || words.yes).test(raw) || words.goAhead.test(raw) || POSITIVE.test(raw);
+  // Never a question ("Wäre es in Ordnung, ihn zu verlegen?", 「キャンセルですか」) or a
+  // hedge ("In Ordnung, ich überlege noch"): security review.
+  if (/[?？]\s*$/.test(raw) || (language === "ja" && /か[。．!！]?\s*$/.test(raw))) return false;
+  if (words.hedge.test(raw)) return false;
+  if (words.cancelYes.test(raw) || words.goAhead.test(raw) || EN_YES.test(raw)) return true;
+  // "Alles klar", "Vale", "Okay" only as the whole answer (with a thanks or a please).
+  const rest = raw.replace(new RegExp(words.ack.source, `${words.ack.flags}g`), " ").replace(EN_ACK, " ").replace(ACK_COURTESY, " ");
+  return (words.ack.test(raw) || EN_ACK_ONE.test(raw)) && !/\p{L}/u.test(rest);
 }
+
+/** A plain English yes, anywhere in a caller's answer on a call in another language. */
+const EN_YES = /\b(?:yes|yeah|yep)\b/i;
+/** English acknowledgements: a go-ahead only as the whole answer. */
+const EN_ACK = /\b(?:ok(?:ay)?|sure|fine|alright|all right|perfect|great)\b/gi;
+const EN_ACK_ONE = /\b(?:ok(?:ay)?|sure|fine|alright|all right|perfect|great)\b/i;
+/** A thanks or a please that may go with an acknowledgement. */
+const ACK_COURTESY = /(?<![\p{L}\p{N}])(?:(?:muchas )?gracias|merci(?: beaucoup)?|danke(?: sch[öo]n)?|grazie|bedankt|dank (?:je|u)(?: wel)?|thanks|thank you|por favor|s['’]il vous pla[iî]t|bitte|per favore|alstublieft|graag|お願いします|ありがとうございます)(?![\p{L}\p{N}])/giu;
 
 /**
  * How many times the caller has spoken: the turn a hold belongs to.
@@ -365,25 +380,29 @@ function callerTurns(transcript) {
 function fastCancelGate(session, modelArgs, nowMs) {
   const transcript = session.fullTranscriptMessages;
   const language = session.fastLanguage || "en";
+  const otherLanguage = guardWords(language) !== null;
   let declinedAt = -1;
   let assistantAt = -1;
   let callerAt = -1;
+  let unclearAt = -1;
   transcript.forEach((m, i) => {
     if (m.role === "user") {
       callerAt = i;
       if (declinesCancel(m.content, language)) declinedAt = i;
+      else if (otherLanguage && !cancelGoAhead(m.content, language)) unclearAt = i;
     }
     if (m.role === "assistant") assistantAt = i;
   });
-  // Another language: an answer that is neither a refusal nor a clear go-ahead keeps
-  // a held cancel held (one more read-back) — it neither confirms nor drops it.
-  const callerUnclear = guardWords(language) !== null && callerAt >= 0 && callerAt !== declinedAt && !cancelGoAhead(transcript[callerAt].content, language);
+  // Another language: an answer that is neither a refusal nor a clear go-ahead keeps a
+  // held cancel held, and puts a confirmed one back on hold: the clear yes must follow a
+  // fresh read-back (confirmation reviews, security review).
   return session.confirmFastCancel(modelArgs || {}, nowMs, {
     callerTurn: callerTurns(transcript),
     transcriptAt: transcript.length,
     declinedAt,
     assistantAt,
-    callerUnclear,
+    callerUnclear: callerAt >= 0 && callerAt === unclearAt,
+    unclearAt,
   });
 }
 

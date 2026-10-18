@@ -452,7 +452,7 @@ class CallSession {
    * read-back), not just the caller.
    * @param {{ phone?: string, date?: string, datetime?: string }} args - the model's own arguments
    * @param {number} nowMs
-   * @param {{ callerTurn?: number, transcriptAt?: number, declinedAt?: number, assistantAt?: number, callerUnclear?: boolean }} [options]
+   * @param {{ callerTurn?: number, transcriptAt?: number, declinedAt?: number, assistantAt?: number, callerUnclear?: boolean, unclearAt?: number }} [options]
    * @returns {{ proceed: boolean, via: "confirmed" | "retry" | null, reason: "no-identifier" | "first-attempt" | "awaiting-caller" | "caller-declined" | null, dropped: number }}
    */
   confirmFastCancel(args, nowMs, options = {}) {
@@ -509,8 +509,16 @@ class CallSession {
       if (refused.length > 0 && !refused.every(anotherBooking)) return { proceed: false, via: null, reason: "caller-declined", dropped };
     }
 
-    for (const rec of this._fastConfirmedCancels.values()) {
-      if (exactlySameBooking(rec.keys)) return { proceed: true, via: "confirmed", reason: null, dropped }; // the handler wanted a detail
+    // SCRUM-594 (F5): another language's unclear answer (fastCancelGate) since a hold or a
+    // confirmation: the clear yes must follow a fresh read-back.
+    const unclearAt = typeof options.unclearAt === "number" ? options.unclearAt : -1;
+    const unclearSince = (/** @type {{ transcriptAt?: number }} */ rec) => typeof rec.transcriptAt === "number" && unclearAt >= rec.transcriptAt;
+    for (const [confirmedId, rec] of this._fastConfirmedCancels) {
+      if (!exactlySameBooking(rec.keys)) continue;
+      if (!unclearSince(rec)) return { proceed: true, via: "confirmed", reason: null, dropped }; // the handler wanted a detail
+      this._fastConfirmedCancels.delete(confirmedId); // back on hold: one more read-back, never a cancel
+      this._fastPendingCancels.set(id, { keys, at: nowMs, callerTurn: options.callerTurn, transcriptAt: options.transcriptAt });
+      return { proceed: false, via: null, reason: "awaiting-caller", dropped };
     }
     /** @type {[string, { keys: string[], at: number, callerTurn?: number, transcriptAt?: number }] | null} */
     let held = null;
@@ -520,12 +528,13 @@ class CallSession {
       const callerSpoke = typeof options.callerTurn !== "number" || typeof rec.callerTurn !== "number" || options.callerTurn > rec.callerTurn;
       const aiSpoke = typeof options.assistantAt !== "number" || typeof rec.transcriptAt !== "number" || options.assistantAt >= rec.transcriptAt;
       // SCRUM-594 (F5): in another language, an answer that is no clear go-ahead keeps it held.
-      if (callerSpoke && aiSpoke && !options.callerUnclear) {
+      if (callerSpoke && aiSpoke && !options.callerUnclear && !unclearSince(rec)) {
         this._fastPendingCancels.delete(heldId);
         this._fastConfirmedCancels.set(id, { keys, at: nowMs, transcriptAt: options.transcriptAt });
         return { proceed: true, via: "retry", reason: null, dropped };
       }
-      this._fastPendingCancels.set(heldId, { ...rec, at: nowMs }); // what it's for never changes
+      // What it's for never changes; an unclear answer since the hold re-arms it.
+      this._fastPendingCancels.set(heldId, unclearSince(rec) ? { ...rec, at: nowMs, callerTurn: options.callerTurn, transcriptAt: options.transcriptAt } : { ...rec, at: nowMs });
       return { proceed: false, via: null, reason: "awaiting-caller", dropped };
     }
     this._fastPendingCancels.set(id, { keys, at: nowMs, callerTurn: options.callerTurn, transcriptAt: options.transcriptAt });
@@ -629,8 +638,10 @@ class CallSession {
     // SCRUM-594 (F5): and in each other language the call used ("Le he reservado…"),
     // its questions aside ("Haben wir schon etwas gebucht?" is no claim).
     const others = (this.languagesUsed || []).map(guardWords).filter((w) => w !== null);
-    // Only the question's own clause goes: "Le he reservado el martes, ¿necesita algo más?" is a claim.
-    const statements = (/** @type {string} */ text) => text.split(/(?<=[.!?。！？])/).map((sentence) => sentence.replace(/(?:^|[,，、;]|¿)[^,，、;¿]*[?？]\s*$/, "")).join("");
+    // Only the question goes: from its "¿" or its clause ("Le he reservado el martes, ¿necesita
+    // algo más?" is a claim), or the whole sentence when it opens with an inverted verb
+    // ("Habe ich Sie eingetragen, oder soll ich warten?").
+    const statements = (/** @type {string} */ text) => text.split(/(?<=[.!?。！？])/).map((sentence) => (/[?？]\s*$/.test(sentence) && /^[\s"'«“]*(?:habe ich|haben wir|heb ik|hebben (?:we|wij)|est-ce que)(?!\p{L})/iu.test(sentence) ? "" : sentence.replace(/(?:¿[^¿]*|(?:^|[,，、;])[^,，、;¿]*)[?？]\s*$/, ""))).join("");
     return [...this.fullTranscriptMessages, ...this.messages].some((m) => m?.role === "assistant" && typeof m.content === "string" && (AI_SAID_BOOKED.test(m.content) || (others.length > 0 && others.some((w) => w.booked.test(statements(m.content))))));
   }
 
