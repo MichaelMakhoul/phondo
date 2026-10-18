@@ -23,7 +23,8 @@ One fixed list of checkpoints. Every test call gets scored against it, so we can
 | 12 | Speaks spelled names clearly | — | — | — | ❌ dropped "U L" | — | ⚠️ "M-C-C-O-O-L" recorded as "m c c o o" | — | — (no recording transcript yet) |
 | 13 | Speed (median gap ≤ 1.5 s) | ✅ ~1.5 s | ✅ | ✅ | ✅ 1.06 s* | ✅ 0.98 s* (p90 4.0 s) | ✅ 0.91 s* (p90 3.0 s) | ✅ 1.03 s* (p90 5.1 s) | ✅ 0.95 s* (p90 2.3 s) |
 | 14 | Ends properly (goodbye → hangs up; never over an objection) | ❌ cut off by the 3-min limit | ❌ hung up over "No, I said 10AM" | ❌ asked to spell, then hung up | ✅ | ⚠️ you hung up mid-confusion | ✅ | ⚠️ **didn't hang up after "That's all"; logged a callback you didn't want** | ✅ waited for your goodbye |
-| | **Score (✅ out of checkpoints exercised)** | **3 / 8** | **2 / 10** | **4 / 10** | **6 / 13** | **6 / 13** | **7 / 12** | **4 / 9** | **8 / 11** |
+| 15 | Speaks the caller's language when it can; says so plainly when it can't | — | — | — | — | — | — | — | ❌ **"Yes, I can speak Arabic"**, then Arabic text to an English voice |
+| | **Score (✅ out of checkpoints exercised)** | **3 / 8** | **2 / 10** | **4 / 10** | **6 / 13** | **6 / 13** | **7 / 12** | **4 / 9** | **8 / 12** |
 
 \* Measured from when it detected you'd finished. Add about 0.3–0.9 s for the real gap from your last word.
 
@@ -32,6 +33,18 @@ F3 and F4 ran the same build as F2: none of the fixes below were deployed yet. T
 F5 is the first call on the new build. The booking flow worked: it spelled your surname back, waited for your yes, and booked only after you agreed the time. Two new failures, both outside the booking checks:
 - **Wrong weekday (8).** The model never asked the system for the date. The prompt's schedule only says "Current date: 2026-10-18", and it lists the closed Sunday as "Fully booked", with Monday the first day that has times. The model called today Monday and blamed "booked 9 to 5" for a day you're simply closed.
 - **Arabic (8).** The shared prompt tells the AI it's multilingual (true for Gemini). This line hears with an English-only recogniser and speaks with Deepgram voices that have no Arabic. So it promised Arabic and sent Arabic text to an English voice, which came out as gibberish.
+
+**Fixed after F5 (commits b3f728a and c7a26aa), checked in the simulator before your next call:**
+- The schedule names today's weekday and gives today, and a closed tomorrow, a line of their own: "Today (Sun, Oct 18): CLOSED". Before opening, today says every time is still ahead.
+- The demo line speaks English, Spanish, French, German, Italian, Dutch and Japanese: what Deepgram can both hear and say. It switches when the caller asks. For Arabic or any other language, it says so in English and offers a call-back. It never sends a voice text it can't say.
+- Charlotte now uses Deepgram's Australian voice.
+
+New simulated callers:
+- the F5 Sunday call: 3/3 with no false weekday;
+- a Spanish speaker: 3/3 switched, booked and said goodbye;
+- an Arabic request: 3/3 declined plainly.
+
+Across all 27 simulated calls, every booking, move, cancel, language and ending check passes. One after-midnight call still said "today's getting late".
 
 ## What the fast calls tell us
 
