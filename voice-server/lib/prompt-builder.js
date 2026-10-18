@@ -1094,6 +1094,14 @@ function buildLiveScheduleSection(snapshot, todayStr) {
   // "Tomorrow (Mon, Oct 19)" line, the model called a Sunday "Monday the 18th".
   lines.push(`Current date: ${formatLongDate(todayStr)} (${todayStr}), Current time: ${currentTime} (${getCurrentTime24(timezone)} on the 24-hour clock) (${sanitizeForPrompt(timezone)})`); // SCRUM-562: snapshot-sourced free text
   lines.push("Use the weekdays and dates written here; never work out a weekday yourself.");
+  // SCRUM-594 (F5 simulated calls): at 3 AM, "the earliest weekday morning" became
+  // "tomorrow, Tuesday at 9" in 5 of 12 calls with all of Monday free.
+  const todaySlots = dates.includes(todayStr) ? getAnySlots(snapshot.slots[todayStr]) : [];
+  const earlyHours = todaySlots.length > 0 && beforeOpening(snapshot.businessHours, todayStr, timezone);
+  if (earlyHours) {
+    const weekday = formatLongDate(todayStr).split(" ")[0];
+    lines.push(`It's the early hours, before opening: to a caller now, "this morning" and "tomorrow morning" both usually mean today (${formatDateLabel(todayStr, timezone)}). Offer today's times first, and say the day by name ("${weekday} at ${formatSlotTime(todaySlots[0])}").`);
+  }
   lines.push("");
   lines.push("⚠️ IMPORTANT: the times below are AGGREGATE (any-practitioner). If a caller asks for a SPECIFIC practitioner by name, DO NOT use these times. Instead, call `check_availability` with `practitioner_id` set to that practitioner's ID from the PRACTITIONERS ON STAFF list below — this is the ONLY way to see slots that respect that practitioner's personal blocked times (days off, lunch breaks, etc.). Booking with practitioner_id on a day they're blocked WILL fail.");
   lines.push("");
@@ -1126,11 +1134,12 @@ function buildLiveScheduleSection(snapshot, todayStr) {
     let dayLabel;
     if (dateKey === todayStr) {
       // SCRUM-594 (F5): just after midnight the model called today "out since it's late".
-      dayLabel = slots.length > 0 && beforeOpening(snapshot.businessHours, todayStr, timezone)
-        ? `Today (${label}) — the business hasn't opened yet today, so every time today is still ahead`
+      dayLabel = earlyHours
+        ? `Today (${label}) — this morning: the business hasn't opened yet, so these are the earliest times of all`
         : `Today (${label})`;
     } else if (dateKey === getNextDay(todayStr)) {
-      dayLabel = `Tomorrow (${label})`;
+      // In the early hours "tomorrow" is what a caller calls this morning: no "Tomorrow" to anchor on.
+      dayLabel = earlyHours ? `Next day (${label})` : `Tomorrow (${label})`;
     } else {
       dayLabel = label;
     }

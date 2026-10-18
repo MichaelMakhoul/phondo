@@ -327,13 +327,18 @@ describe("SCRUM-594 (phone test F5): today's weekday and a closed today", () => 
     // Simulated calls at 00:32 Monday: "Today's out since it's late", "Today's pretty full" — today was empty.
     const result = withNow("2026-10-18T13:32:00Z", () => buildLiveScheduleSection(weekdaySnapshot(BUSINESS_WEEK), "2026-10-19")); // Mon 00:32 Sydney
     assert.ok(result.includes("Current time: 12:32 AM (00:32 on the 24-hour clock)"), result.split("\n")[1]);
-    assert.ok(result.includes("Today (Mon, Oct 19) — the business hasn't opened yet today, so every time today is still ahead: 10 AM, 10:30 AM (2 slots)"), result);
+    assert.ok(result.includes("Today (Mon, Oct 19) — this morning: the business hasn't opened yet, so these are the earliest times of all: 10 AM, 10:30 AM (2 slots)"), result);
+    // Simulated calls at 3 AM: "earliest weekday morning" became "tomorrow, Tuesday at 9" in 5 of 12.
+    assert.ok(result.includes('It\'s the early hours, before opening: to a caller now, "this morning" and "tomorrow morning" both usually mean today (Mon, Oct 19). Offer today\'s times first, and say the day by name ("Monday at 10 AM").'), result);
+    assert.ok(result.includes("Next day (Tue, Oct 20):"), result);
+    assert.ok(!result.includes("Tomorrow (Tue, Oct 20)"), "no \"Tomorrow\" for the model to anchor on");
   });
 
   it("once open, today's line is plain (a later first free time is not 'not open yet')", () => {
     const result = withNow("2026-10-18T23:15:00Z", () => buildLiveScheduleSection(weekdaySnapshot(BUSINESS_WEEK), "2026-10-19")); // Mon 10:15 Sydney
     assert.ok(result.includes("Today (Mon, Oct 19): 10 AM, 10:30 AM (2 slots)"), result);
     assert.ok(!result.includes("hasn't opened yet"));
+    assert.ok(!result.includes("early hours"));
   });
 
   it("an open today with times is listed as before", () => {
