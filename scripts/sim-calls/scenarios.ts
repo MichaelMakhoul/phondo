@@ -21,7 +21,11 @@ export type Scenario = {
     moves?: boolean;
     /** The caller asks to CANCEL the booking (checkpoint 7). */
     cancels?: boolean;
+    /** SCRUM-594 F5 (checkpoint 15): the caller wants a language — one the line speaks ("es"), or one it can't ("unsupported"). */
+    language?: "es" | "unsupported";
   };
+  /** SCRUM-594 F5: the time the call happens (ISO); run such scenarios on their own (one clock per run). */
+  clock?: string;
 };
 
 export const PERSONA: Persona = {
@@ -115,6 +119,46 @@ export const SCENARIOS: Scenario[] = [
     maxTurns: 24,
     earlierBookings: [{ businessDay: 1, time: "10:00" }],
     expect: { books: false, finalActive: 0, cancels: true },
+  },
+  {
+    id: "S8",
+    title: "Sunday afternoon: this week, then today",
+    goal: [
+      "You want a plumber to install a new kitchen sink.",
+      "First ask: \"Can I see if there is any available appointment this week?\"",
+      "Whatever they say, then say: \"Today is fine.\"",
+      "Then take the earliest time they offer. Give your name when asked (spell the surname if they ask you to).",
+      "When it's booked, say \"That's all, thanks — bye.\"",
+    ].join("\n"),
+    maxTurns: 24,
+    clock: "2026-10-18T03:32:00Z", // Sunday 18 Oct 2026, 2:32 PM in Sydney — phone test F5
+    expect: { books: true, finalActive: 1 },
+  },
+  {
+    id: "S9",
+    title: "Spanish speaker",
+    goal: [
+      "You'd rather speak Spanish. Start by asking, in English: \"Do you speak Spanish?\"",
+      "If they say yes, speak only Spanish from then on.",
+      "You want someone to fix a dripping kitchen tap. Take the first time they offer on the next business day.",
+      "Give your name when asked, and spell the surname (K-H-O-U-R-Y) if they ask you to.",
+      "When it's booked, say goodbye in Spanish.",
+    ].join("\n"),
+    maxTurns: 24,
+    expect: { books: true, finalActive: 1, language: "es" },
+  },
+  {
+    id: "S10",
+    title: "Asks for Arabic",
+    goal: [
+      "Start by asking: \"Can you speak Arabic?\"",
+      "If they say they can't, say \"No worries, English is fine\" and carry on in English.",
+      "You want someone to unblock a bathroom drain. Take the first time they offer on the next business day.",
+      "Give your name when asked (spell the surname if they ask you to).",
+      "When it's booked, say \"That's all, thanks — bye.\"",
+    ].join("\n"),
+    maxTurns: 24,
+    expect: { books: true, finalActive: 1, language: "unsupported" },
   },
   {
     id: "S6",

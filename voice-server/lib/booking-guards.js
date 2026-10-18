@@ -437,6 +437,37 @@ const THATS_ALL = /\bthat'?s all\b(?=\s*(?:$|[,.!]|thanks|thank you|for (?:now|t
 const DONE_IF_ASKED = /\b(that'?s it|that'?s everything|all good|all done|cheers|i'?m (?:good|fine|done|right|all set)|we'?re (?:good|done|all set)|that'?s all)\b/i;
 const PLAIN_NO = /^\W*(no|nope|nah|not really)\b/i;
 
+// SCRUM-594 (F5): the same closings in the other languages the fast path speaks
+// (lib/fast-languages.js: es, fr, de, it, nl, ja). JS's \b is ASCII-only, so
+// these bound words by letters (\p{L}); Japanese has no spaces to bound.
+/** @param {string[]} alternatives */
+const wordsOf = (alternatives) => new RegExp(`(?<![\\p{L}\\p{N}])(?:${alternatives.join("|")})(?![\\p{L}\\p{N}])`, "iu");
+const GOODBYE_OTHER = wordsOf([
+  "adi[oó]s", "chao", "chau", "hasta (?:luego|pronto|la pr[oó]xima)", "que tenga (?:un )?buen d[ií]a", "no,? (?:muchas )?gracias", "eso es todo(?!\\s*(?:correcto|bien|perfecto))",
+  "au revoir", "[àa] bient[ôo]t", "bonne (?:journ[ée]e|soir[ée]e)", "non,? merci", "c['’]est tout(?!\\s*(?:bon|correct|juste))",
+  "tsch[üu]ss?", "auf wieder(?:h[öo]ren|sehen)", "sch[öo]nen tag", "nein,? danke", "das war['’]?s", "das ist alles(?!\\s*(?:richtig|korrekt|gut))",
+  "arrivederci", "ciao", "buona (?:giornata|serata)", "a presto", "no,? grazie", "[èe] tutto(?!\\s*(?:giusto|corretto|ok))",
+  "doei", "tot ziens", "fijne dag", "nee,? (?:bedankt|dank je(?: wel)?)", "dat was het", "dat is alles(?!\\s*(?:goed|correct|juist))",
+]);
+const GOODBYE_JA = /さようなら|失礼(?:します|いたします)|ありがとうございました/;
+const DONE_IF_ASKED_OTHER = wordsOf([
+  "nada(?: m[aá]s)?", "es todo", "estoy bien",
+  "rien(?: d['’]autre)?", "[çc]a ira",
+  "nichts(?: weiter)?", "alles gut",
+  "niente(?: altro)?", "nient['’]altro", "a posto",
+  "niets(?: meer)?", "verder niets",
+]);
+const DONE_IF_ASKED_JA = /大丈夫です|特にありません|以上です|いいえ/;
+const PLAIN_NO_OTHER = /^[\s¡¿"'(«]*(?:no|non|nein|nee|nada|niente|nichts|niets)(?![\p{L}\p{N}])/iu;
+const ANYTHING_ELSE_OTHER = wordsOf([
+  "algo m[aá]s", "alguna otra cosa",
+  "autre chose", "rien d['’]autre", "quelque chose d['’]autre",
+  "noch etwas", "sonst noch", "noch was",
+  "qualcos['’]altro", "nient['’]altro", "c['’][èe] altro",
+  "nog iets", "verder nog",
+]);
+const ANYTHING_ELSE_JA = /他に|ほかに/;
+
 /**
  * B5: has the caller said goodbye, or — asked if there's anything else — that
  * they need nothing more? ("Yep, that's it, thanks." answering "Is everything
@@ -448,11 +479,16 @@ function callerIsDone(transcript) {
   const last = transcript.length - 1;
   if (last < 0 || transcript[last].role !== "user" || typeof transcript[last].content !== "string") return false;
   const said = transcript[last].content;
-  if (GOODBYE.test(said) || THATS_ALL.test(said)) return true;
+  if (GOODBYE.test(said) || THATS_ALL.test(said) || GOODBYE_OTHER.test(said) || GOODBYE_JA.test(said)) return true;
   const asked = transcript[last - 1];
+  const question = asked && asked.role === "assistant" ? String(asked.content) : "";
   // "Is that all correct?" is a read-back, not "anything else?".
-  const askedAnythingElse = Boolean(asked && asked.role === "assistant" && /anything else|anything more|\bis that (?:everything|all)\b(?!\s*,?\s*(?:correct|right|ok(?:ay)?|good|fine|accurate|alright|true))/i.test(String(asked.content)));
-  return askedAnythingElse && (DONE_IF_ASKED.test(said) || PLAIN_NO.test(said));
+  const askedAnythingElse = Boolean(question) && (
+    /anything else|anything more|\bis that (?:everything|all)\b(?!\s*,?\s*(?:correct|right|ok(?:ay)?|good|fine|accurate|alright|true))/i.test(question)
+    || ANYTHING_ELSE_OTHER.test(question)
+    || ANYTHING_ELSE_JA.test(question)
+  );
+  return askedAnythingElse && (DONE_IF_ASKED.test(said) || PLAIN_NO.test(said) || DONE_IF_ASKED_OTHER.test(said) || DONE_IF_ASKED_JA.test(said) || PLAIN_NO_OTHER.test(said));
 }
 
 /**

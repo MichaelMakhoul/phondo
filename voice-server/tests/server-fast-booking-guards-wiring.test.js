@@ -29,6 +29,7 @@ const { applyRescheduleToLedger, RESCHEDULE_SUCCESS_SIGNAL } = require("../lib/r
 const { checkEndCallGuard, END_CALL_BLOCKED_NOTHING_NEW_MESSAGE } = require("../lib/end-call-guard");
 const { checkBookingGuards, fastCancelGate, checkCallerDone, withBookedName, noteNameCorrection, forgetCancelledBooking, noteBookingGuardCap, CANCEL_KEPT_NUDGE, SPELLING_HOLD_CAP } = require("../lib/booking-guards");
 
+const { fastLanguagesEnabled, setLanguageToolDefinition, applyLanguageSwitch } = require("../lib/fast-languages");
 const src = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
 
 function sliceOf(from, to) {
@@ -46,7 +47,7 @@ function runSlice({ from, to, scope, names }) {
 const { applyFastConversationSettings, FAST_MAX_MESSAGES } = runSlice({
   from: "const FAST_VOICE_ADDENDUM = [",
   to: "// Gate B: speculative drafts",
-  scope: {},
+  scope: { fastLanguagesEnabled },
   names: ["applyFastConversationSettings", "FAST_MAX_MESSAGES"],
 });
 
@@ -119,6 +120,9 @@ function makeLoop({ steps, results = {} }) {
     forgetCancelledBooking,
     noteBookingGuardCap,
     CANCEL_KEPT_NUDGE,
+    setLanguageToolDefinition,
+    applyLanguageSwitch,
+    switchFastLanguageStreams: (session, sw) => { session.deepgramVoice = sw.voice; },
     runOwnerToolCall: async () => ({ message: "owner" }),
     scheduleCache: { invalidate: () => {}, applyDelta: () => {} },
     noteAssistantSpeech: () => {},

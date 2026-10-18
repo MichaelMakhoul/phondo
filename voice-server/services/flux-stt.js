@@ -35,6 +35,8 @@ const { buildKeytermsParam } = require("./deepgram-stt");
 const { DEFAULT_HOST, resolveScheme, createCallbackGuard, failConnect, deadStream, createPinger } = require("./deepgram-ws-common");
 
 const FLUX_MODEL = "flux-general-en";
+/** SCRUM-594 (F5): the models a call may open on; anything else is the English model. */
+const FLUX_MODELS = new Set([FLUX_MODEL, "flux-general-multi"]);
 
 /**
  * Defaults for the turn-detection knobs (spec 4.1). The eager default is 0.4;
@@ -72,6 +74,8 @@ const TURN_EVENTS = new Set(["StartOfTurn", "Update", "EagerEndOfTurn", "TurnRes
  * @property {number|null} [eagerEotThreshold] - 0.3-0.9 and <= eot, default 0.4; null omits the param (no eager events)
  * @property {number} [eotTimeoutMs] - 500-60000, default 5000
  * @property {string} [scheme] - "wss" (default) or "ws" for a loopback test server
+ * @property {string} [model] - "flux-general-en" (default) or "flux-general-multi" (SCRUM-594 F5)
+ * @property {string[]} [languageHints] - two-letter language_hint values (flux-general-multi)
  */
 
 /**
@@ -109,8 +113,11 @@ function buildFluxUrl(options = {}) {
   const eager = options.eagerEotThreshold === null ? null : finiteOr(options.eagerEotThreshold, FLUX_DEFAULTS.eagerEotThreshold);
   const timeoutMs = finiteOr(options.eotTimeoutMs, FLUX_DEFAULTS.eotTimeoutMs);
 
+  const model = FLUX_MODELS.has(String(options.model)) ? String(options.model) : FLUX_MODEL;
+  const hints = Array.isArray(options.languageHints) ? options.languageHints.filter((h) => /^[a-z]{2}$/.test(String(h))) : [];
   const params = [
-    `model=${FLUX_MODEL}`,
+    `model=${model}`,
+    ...hints.map((h) => `language_hint=${h}`),
     "encoding=mulaw",
     "sample_rate=8000",
     `eot_threshold=${floatParam(eot)}`,

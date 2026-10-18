@@ -1007,6 +1007,35 @@ function getAnySlots(dateSlots) {
 }
 
 /**
+ * SCRUM-594 (F5): "YYYY-MM-DD" as "Sunday 18 October 2026" (the date's own weekday, no timezone math).
+ * @param {string} dateKey
+ * @returns {string}
+ */
+function formatLongDate(dateKey) {
+  const [y, mo, d] = String(dateKey).split("-").map(Number);
+  const date = new Date(Date.UTC(y, mo - 1, d, 12, 0, 0));
+  if (Number.isNaN(date.getTime())) return String(dateKey);
+  const part = (/** @type {Intl.DateTimeFormatOptions} */ opts) => new Intl.DateTimeFormat("en-US", { ...opts, timeZone: "UTC" }).format(date);
+  return `${part({ weekday: "long" })} ${d} ${part({ month: "long" })} ${y}`;
+}
+
+/**
+ * SCRUM-594 (F5): is the business closed that day? The same test as getBusinessDates
+ * (lib/call-context.js); no hours on the snapshot means unknown, never closed.
+ * @param {Record<string, { open?: string, close?: string, closed?: boolean }>|null|undefined} businessHours
+ * @param {string} dateKey
+ * @returns {boolean}
+ */
+function isClosedDay(businessHours, dateKey) {
+  if (!businessHours || typeof businessHours !== "object") return false;
+  const [y, mo, d] = String(dateKey).split("-").map(Number);
+  const date = new Date(Date.UTC(y, mo - 1, d, 12, 0, 0));
+  if (Number.isNaN(date.getTime())) return false;
+  const config = businessHours[new Intl.DateTimeFormat("en-US", { weekday: "long", timeZone: "UTC" }).format(date).toLowerCase()];
+  return !config || config.closed === true || !config.open || !config.close;
+}
+
+/**
  * Build a LIVE SCHEDULE section for injection into the system prompt.
  * Uses pre-loaded cached schedule data so the AI can answer availability
  * questions without calling check_availability for today/tomorrow.
@@ -1026,7 +1055,10 @@ function buildLiveScheduleSection(snapshot, todayStr) {
   const lines = [];
 
   lines.push("LIVE SCHEDULE (pre-loaded AGGREGATE availability — sum across ALL practitioners):");
-  lines.push(`Current date: ${todayStr}, Current time: ${currentTime} (${sanitizeForPrompt(timezone)})`); // SCRUM-562: snapshot-sourced free text
+  // SCRUM-594 (phone test F5): the weekday spelled out — given only "2026-10-18" over a
+  // "Tomorrow (Mon, Oct 19)" line, the model called a Sunday "Monday the 18th".
+  lines.push(`Current date: ${formatLongDate(todayStr)} (${todayStr}), Current time: ${currentTime} (${sanitizeForPrompt(timezone)})`); // SCRUM-562: snapshot-sourced free text
+  lines.push("Use the weekdays and dates written here; never work out a weekday yourself.");
   lines.push("");
   lines.push("⚠️ IMPORTANT: the times below are AGGREGATE (any-practitioner). If a caller asks for a SPECIFIC practitioner by name, DO NOT use these times. Instead, call `check_availability` with `practitioner_id` set to that practitioner's ID from the PRACTITIONERS ON STAFF list below — this is the ONLY way to see slots that respect that practitioner's personal blocked times (days off, lunch breaks, etc.). Booking with practitioner_id on a day they're blocked WILL fail.");
   lines.push("");
@@ -1034,6 +1066,11 @@ function buildLiveScheduleSection(snapshot, todayStr) {
   // First 2 dates get detailed slot times
   const detailedDates = dates.slice(0, 2);
   const summaryDates = dates.slice(2);
+
+  // SCRUM-594 (F5): today always gets a line. The snapshot lists business days only, so a
+  // closed today had none and the model filled the gap ("past 2:30 ... booked 9 to 5").
+  const todayEmpty = isClosedDay(snapshot.businessHours, todayStr) ? "CLOSED — not a business day." : "no times left today.";
+  if (!dates.includes(todayStr)) lines.push(`Today (${formatDateLabel(todayStr, timezone)}): ${todayEmpty}`);
 
   for (let i = 0; i < detailedDates.length; i++) {
     const dateKey = detailedDates[i];
@@ -1050,7 +1087,7 @@ function buildLiveScheduleSection(snapshot, todayStr) {
     }
 
     if (slots.length === 0) {
-      lines.push(`${dayLabel}: Fully booked - no slots available.`);
+      lines.push(dateKey === todayStr ? `${dayLabel}: ${todayEmpty}` : `${dayLabel}: Fully booked - no slots available.`);
     } else {
       const times = slots.map(formatSlotTime).filter(Boolean).join(", ");
       lines.push(`${dayLabel}: ${times} (${slots.length} slot${slots.length === 1 ? "" : "s"})`);

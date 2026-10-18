@@ -30,6 +30,7 @@ export const CHECKPOINTS: Array<{ id: number; name: string; simulated: boolean }
   { id: 12, name: "Speaks spelled names clearly", simulated: false },
   { id: 13, name: "Speed (median gap ≤ 1.5 s)", simulated: false },
   { id: 14, name: "Ends properly (goodbye → hangs up; never over an objection)", simulated: true },
+  { id: 15, name: "Speaks the caller's language when it can; says so plainly when it can't", simulated: true },
 ];
 
 /** One line of the call as the scorer sees it. */
@@ -62,6 +63,10 @@ export type CallRecord = {
   llm: { calls: number; medianMs: number; p90Ms: number };
   turns: number;
   error?: string;
+  /** SCRUM-594 F5: when the call happened (ISO) — the judge checks stated dates and weekdays against it. */
+  callTime?: string;
+  /** SCRUM-594 F5: the business's opening hours, as the judge reads them ("monday 09:00–17:00; …; sunday closed"). */
+  businessHours?: string;
 };
 
 const RANK: Record<Verdict, number> = { fail: 0, partial: 1, pass: 2, na: 3 };
@@ -92,6 +97,28 @@ export function replyWordCounts(t: TranscriptLine[]): number[] {
   return counts;
 }
 
+/** A letter outside Latin script: words the fast path's voices can't say (Japanese aside). */
+const NON_LATIN_LETTER = /(?=\p{L})\P{Script=Latin}/u;
+
+const WEEKDAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+
+/** SCRUM-594 F5: "today's Monday" / "tomorrow is Tuesday" lines whose weekday isn't the call's (Sydney time). */
+export function wrongWeekdayClaims(rec: Pick<CallRecord, "transcript" | "callTime">): string[] {
+  if (!rec.callTime) return [];
+  const at = new Date(rec.callTime);
+  const dayIn = (ms: number) => new Intl.DateTimeFormat("en-US", { weekday: "long", timeZone: "Australia/Sydney" }).format(new Date(ms)).toLowerCase();
+  const actual: Record<string, string> = { today: dayIn(at.getTime()), tomorrow: dayIn(at.getTime() + 24 * 3600 * 1000) };
+  const claims: string[] = [];
+  const re = new RegExp(`\\b(today|tomorrow)(?:['’]s|\\s+is)?,?\\s+(?:a\\s+)?(${WEEKDAYS.join("|")})\\b`, "gi");
+  for (const line of rec.transcript) {
+    if (line.who !== "ai") continue;
+    for (const m of line.text.matchAll(re)) {
+      if (m[2].toLowerCase() !== actual[m[1].toLowerCase()]) claims.push(m[0]);
+    }
+  }
+  return claims;
+}
+
 function deterministic(rec: CallRecord): Partial<Record<number, CheckpointResult>> {
   const out: Partial<Record<number, CheckpointResult>> = {};
   const made = rec.diary.filter((d) => d.madeThisCall);
@@ -118,6 +145,27 @@ function deterministic(rec: CallRecord): Partial<Record<number, CheckpointResult
     out[7] = active.length === 0
       ? { verdict: holds <= 1 ? "pass" : "partial", evidence: `cancelled; ${holds} confirmation hold(s) from the cancel guard`, source: "det" }
       : { verdict: "fail", evidence: `${active.length} booking(s) still active at the end`, source: "det" };
+  }
+
+  // SCRUM-594 F5: a weekday the AI gives for today or tomorrow that isn't the call's (phone test F5:
+  // "Today's Monday the 18th" on a Sunday).
+  const wrongDays = wrongWeekdayClaims(rec);
+  if (wrongDays.length > 0) out[8] = { verdict: "fail", evidence: `wrong weekday: ${wrongDays.slice(0, 2).map((w) => `"${w}"`).join(", ")}`, source: "det" };
+
+  // SCRUM-594 F5: languages. Words in a script the line can't speak always fail; a supported
+  // language must be switched to; an unsupported one must never be claimed (the judge reads that).
+  const foreign = rec.transcript.filter((l) => l.who === "ai" && NON_LATIN_LETTER.test(l.text)).map((l) => (l.who === "ai" ? l.text : ""));
+  const switchedTo = rec.toolTrace.filter((t) => t.name === "set_language" && /^Switched to/.test(t.result || "")).map((t) => String((t.args as { language?: unknown } | undefined)?.language || ""));
+  if (foreign.length > 0) {
+    out[15] = { verdict: "fail", evidence: `wrote words the voice can't say: "${foreign[0].slice(0, 60)}"`, source: "det" };
+  } else if (rec.scenario.expect.language === "es") {
+    out[15] = switchedTo.includes("es")
+      ? { verdict: "pass", evidence: "switched to Spanish (set_language)", source: "det" }
+      : { verdict: "fail", evidence: `never switched to Spanish (set_language: ${switchedTo.join(", ") || "none"})`, source: "det" };
+  } else if (rec.scenario.expect.language === "unsupported") {
+    out[15] = switchedTo.some((l) => l !== "en")
+      ? { verdict: "fail", evidence: `switched to ${switchedTo.join(", ")} instead of saying it can't`, source: "det" }
+      : { verdict: "pass", evidence: "no words in a language the line can't speak; never switched", source: "det" };
   }
 
   const words = replyWordCounts(rec.transcript);
@@ -171,10 +219,11 @@ const JUDGE_RUBRIC = `Score the call on each checkpoint below. Verdicts: "pass",
 5. Books the time the caller asked for — na if nothing was booked. pass: the bookings the caller holds at the end are at the day and time they last asked for or agreed to. fail otherwise.
 6. Moves a booking when asked — na unless the caller asked to move or change a booking. pass: the existing booking was moved (not a second one booked), and the caller ends with one booking at the new time. fail otherwise.
 7. Cancels with at most 2 confirmations — na unless the caller asked to cancel. pass: cancelled after at most two confirmation questions from the AI after the request, without re-asking for details it already had (name, phone). partial: cancelled, but it took three confirmations or it re-asked for a detail it had. fail: not cancelled, or four or more confirmations.
-8. Never says anything false about bookings — pass: nothing the AI said about bookings contradicts the tool results and the final diary (e.g. "you're booked" before any booking succeeded; "nothing was booked" when something was; a wrong day or time; "I can't see it" about a booking it made). Fillers such as "Let me book that" are fine. fail: any such statement.
+8. Never says anything false about bookings — pass: nothing the AI said about bookings, dates or availability contradicts the tool results, the final diary or the CALL TIME (e.g. "you're booked" before any booking succeeded; "nothing was booked" when something was; a wrong day or time; a wrong weekday for today or tomorrow; a made-up reason why a day is unavailable; "I can't see it" about a booking it made). Fillers such as "Let me book that" are fine. fail: any such statement.
 9. Remembers what it did earlier in the call — na if the caller never asked about earlier parts of the call. pass: questions about earlier events (what was booked, how a name was spelled, what it did) were answered correctly. fail: a wrong answer, or claiming not to know or not to have done something it did.
 10. Answers "Sorry?" — na unless the caller said "Sorry?" or asked it to say something again. pass: the AI repeated or rephrased what it had just said, and did not treat "Sorry?" as an answer. fail otherwise.
 11. Short replies, no repeating itself — pass: replies are short (mostly one or two sentences) and it never asks a question the caller already answered, nor repeats the same offer three or more times. partial: one such repeat. fail: two or more, or long multi-question replies.
+15. Speaks the caller's language when it can — na unless the caller asked for or spoke a language other than English. This line can speak English, Spanish, French, German, Italian, Dutch and Japanese only. pass: for one of those it switched (a set_language call) and carried on in that language; for any other language it said plainly, in English, that this line can't speak it (offering a call-back is a plus) and never claimed to speak it or wrote words in it. fail: it claimed a language it can't speak, wrote words in it, or ignored the request.
 14. Ends properly — every call is scored (never na). pass: the AI said goodbye and ended the call only after the caller had said goodbye or that they needed nothing else. partial: the caller had to hang up themselves after saying goodbye, or the AI ended the call before the caller had said goodbye or that they were done (for example straight after "yes, that's correct, thanks"). fail: the AI hung up while the caller was objecting or still had something to ask, or the call never ended properly.`;
 
 async function judge(rec: CallRecord, model: string): Promise<{ checkpoints: Record<string, { verdict: Verdict; evidence: string }>; summary: string }> {
@@ -185,10 +234,11 @@ async function judge(rec: CallRecord, model: string): Promise<{ checkpoints: Rec
     "",
     JUDGE_RUBRIC,
     "",
-    'Reply with JSON only: {"checkpoints": {"2": {"verdict": "...", "evidence": "≤ 30 words"}, ... one entry for each of 2,3,4,5,6,7,8,9,10,11,14}, "summary": "≤ 2 sentences: what went wrong, if anything"}',
+    'Reply with JSON only: {"checkpoints": {"2": {"verdict": "...", "evidence": "≤ 30 words"}, ... one entry for each of 2,3,4,5,6,7,8,9,10,11,14,15}, "summary": "≤ 2 sentences: what went wrong, if anything"}',
   ].join("\n");
   const user = [
     `CALLER (truth): ${rec.persona.firstName} ${rec.persona.lastName}, surname spelled ${rec.persona.spelled}, calling from ${rec.persona.phone}.`,
+    `CALL TIME: ${rec.callTime ? new Intl.DateTimeFormat("en-AU", { weekday: "long", day: "numeric", month: "long", year: "numeric", hour: "numeric", minute: "2-digit", timeZone: "Australia/Sydney" }).format(new Date(rec.callTime)) : "unknown"} (Sydney). BUSINESS HOURS: ${rec.businessHours || "unknown"}.`,
     `CALLER'S SCRIPT:\n${rec.scenario.goal}`,
     "",
     `TRANSCRIPT:\n${renderTranscript(rec.transcript)}`,
@@ -224,7 +274,7 @@ export async function scoreCall(rec: CallRecord, judgeModel: string): Promise<Ca
     if (!jj) throw new Error(`sim: the judge skipped checkpoint ${cp.id}`);
     if (cp.id === 2 || cp.id === 6) {
       checkpoints[cp.id] = d ?? { verdict: jj.verdict, evidence: jj.evidence, source: "judge" };
-    } else if ((cp.id === 7 || cp.id === 11 || cp.id === 14) && d) {
+    } else if ((cp.id === 7 || cp.id === 8 || cp.id === 11 || cp.id === 14 || cp.id === 15) && d) {
       const v = worse(d.verdict, jj.verdict);
       checkpoints[cp.id] = { verdict: v, evidence: `${d.evidence}; judge: ${jj.evidence}`, source: "both" };
     } else {

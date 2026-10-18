@@ -171,6 +171,19 @@ test("buildFluxUrl: exact params in the exact order, AU host over wss by default
   assert.ok(url.includes("&keyterm="), "the common keyterms follow");
 });
 
+test("buildFluxUrl: SCRUM-594 (F5) — the multilingual model with language hints (checked live: Flux accepts our params on flux-general-multi)", () => {
+  const url = buildFluxUrl({ model: "flux-general-multi", languageHints: ["en"] });
+  assert.equal(
+    url.split("&keyterm=")[0],
+    "wss://api.au.deepgram.com/v2/listen?model=flux-general-multi&language_hint=en&encoding=mulaw&sample_rate=8000" +
+      "&eot_threshold=0.7&eager_eot_threshold=0.4&eot_timeout_ms=5000&mip_opt_out=true",
+  );
+  const params = new URL(buildFluxUrl({ model: "flux-general-multi", languageHints: ["es", "en"] })).searchParams;
+  assert.deepEqual(params.getAll("language_hint"), ["es", "en"]);
+  assert.equal(new URL(buildFluxUrl({ languageHints: ["en"] })).searchParams.get("model"), "flux-general-en", "hints alone never change the model");
+  assert.equal(new URL(buildFluxUrl({ model: "flux-general-multi; drop" })).searchParams.get("model"), "flux-general-en", "only a known model name is used");
+});
+
 test("buildFluxUrl: carries mip_opt_out=true on every variant (privacy: no model-improvement retention)", () => {
   for (const opts of [{}, { industry: "dental" }, { eagerEotThreshold: null }, { host: "example.test", eotThreshold: 0.9 }]) {
     const params = new URL(buildFluxUrl(opts)).searchParams;
@@ -179,8 +192,11 @@ test("buildFluxUrl: carries mip_opt_out=true on every variant (privacy: no model
 });
 
 test("buildFluxUrl: only Flux-legal params (unknown params are an HTTP 400 on /v2/listen)", () => {
-  const allowed = new Set(["model", "encoding", "sample_rate", "eot_threshold", "eager_eot_threshold", "eot_timeout_ms", "mip_opt_out", "keyterm"]);
-  const names = [...new URL(buildFluxUrl({ industry: "dental" })).searchParams.keys()];
+  const allowed = new Set(["model", "language_hint", "encoding", "sample_rate", "eot_threshold", "eager_eot_threshold", "eot_timeout_ms", "mip_opt_out", "keyterm"]);
+  const names = [
+    ...new URL(buildFluxUrl({ industry: "dental" })).searchParams.keys(),
+    ...new URL(buildFluxUrl({ industry: "dental", model: "flux-general-multi", languageHints: ["en"] })).searchParams.keys(),
+  ];
   const unknown = names.filter((n) => !allowed.has(n));
   assert.deepEqual(unknown, []);
   // The Nova-3 params that Flux rejects must never leak in.

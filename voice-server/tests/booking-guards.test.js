@@ -564,6 +564,42 @@ describe("callerIsDone (B5: the AI ends the call only once the caller has)", () 
     it(`"${notDone}" is not done (the baseline hung up on these)`, () => assert.equal(callerIsDone([ai("Is everything correct?"), caller(notDone)]), false));
   }
   it("nothing said yet is not done", () => assert.equal(callerIsDone([ai("Hello?")]), false));
+
+  // SCRUM-594 F5: the languages the fast path speaks (simulated Spanish caller: "Adiós" was held,
+  // the AI asked "¿algo más?" and the caller had to hang up).
+  for (const done of [
+    "Muchas gracias, adiós.", "Vale, hasta luego.", "No, gracias. Eso es todo.", "Que tenga un buen día.",
+    "Merci, au revoir !", "Parfait, à bientôt.", "Non merci, c'est tout.", "Bonne journée.",
+    "Danke, tschüss!", "Auf Wiederhören.", "Nein danke, das war's.", "Schönen Tag noch.",
+    "Grazie, arrivederci.", "Perfetto, ciao!", "No grazie, è tutto.", "Buona giornata.",
+    "Bedankt, doei!", "Tot ziens.", "Nee, dank je wel. Dat was het.", "Fijne dag nog.",
+    "ありがとうございました。", "失礼します。", "さようなら",
+  ]) {
+    it(`"${done}" is done`, () => assert.equal(callerIsDone([ai("Gracias. ¿Algo más?"), caller(done)]), true));
+  }
+  for (const [question, answer] of [
+    ["¿Hay algo más en que pueda ayudarle?", "No."],
+    ["¿Le puedo ayudar en algo más?", "Nada más, gracias."],
+    ["Y a-t-il autre chose ?", "Non, rien."],
+    ["Kann ich sonst noch etwas für Sie tun?", "Nein, nichts weiter."],
+    ["C'è qualcos'altro?", "No, niente."],
+    ["Kan ik u nog ergens anders mee helpen? Nog iets?", "Nee, niets."],
+    ["他に何かございますか？", "大丈夫です。"],
+    ["Kann ich sonst noch etwas für Sie tun?", "Nein."],
+    ["Kan ik u nog ergens mee helpen? Nog iets?", "Nee."],
+  ]) {
+    it(`"${answer}" answering "${question}" is done`, () => assert.equal(callerIsDone([ai(question), caller(answer)]), true));
+  }
+  for (const [question, answer] of [
+    ["¿Está todo correcto?", "Sí, todo correcto."],
+    ["¿Eso es todo correcto?", "Sí, eso es todo correcto."],
+    ["Preferisce un altro giorno?", "No."],
+    ["C'est tout bon pour vous ?", "Oui, c'est tout bon."],
+    ["Ist das alles richtig?", "Ja, das ist alles richtig."],
+    ["Klopt dat allemaal?", "Ja, dat is alles goed."],
+  ]) {
+    it(`"${answer}" answering "${question}" is not done (a read-back, not anything else)`, () => assert.equal(callerIsDone([ai(question), caller(answer)]), false));
+  }
 });
 
 describe("checkCallerDone", () => {

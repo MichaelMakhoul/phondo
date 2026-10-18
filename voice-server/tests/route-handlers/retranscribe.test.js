@@ -224,6 +224,21 @@ describe("handleRetranscribe (SCRUM-550)", () => {
     assert.equal(sentry.events[0].reason, "retranscribe-failed");
   });
 
+  it("SCRUM-594 (F5): skips (no page, no write, no download) a fast-path call that switched language — the live transcript stays", async () => {
+    const { deps, captured, sentry } = makeDeps({ row: { ...DEFAULT_ROW, metadata: { ...(DEFAULT_ROW.metadata || {}), fastPath: { stt: "flux", tts: "rest-language", languages: ["en", "es"] } } } });
+    const res = await handleRetranscribe({ callId: "c1", deps });
+    assert.equal(res.reason, "language-switched");
+    assert.equal(res.retranscribed, false);
+    assert.equal(captured.applyReanalysis, null);
+    assert.equal(sentry.events.length, 0);
+  });
+
+  it("SCRUM-594 (F5): a fast-path call that stayed in its language is re-transcribed as before", async () => {
+    const { deps } = makeDeps({ row: { ...DEFAULT_ROW, metadata: { ...(DEFAULT_ROW.metadata || {}), fastPath: { stt: "flux", tts: "stream" } } } });
+    const res = await handleRetranscribe({ callId: "c1", deps });
+    assert.notEqual(res.reason, "language-switched");
+  });
+
   it("skips (no page, no write) an unsupported assistant language — keeps Gemini's transcript AND analysis", async () => {
     const { deps, captured, sentry } = makeDeps({ row: { ...DEFAULT_ROW, assistants: { language: "ar" } } });
     const res = await handleRetranscribe({ callId: "c1", deps });

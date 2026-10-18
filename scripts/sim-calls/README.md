@@ -56,3 +56,9 @@ are never scored here.
 A run whose turn handler hit an error (a `[Pipeline]` error, a blocked network
 call, a gap in the fake store) is listed under anomalies and fails the vitest
 run: it is a harness problem, not a score.
+
+## Clocked scenarios and languages (SCRUM-594 F5)
+
+- `S8` runs at its own `clock` (Sunday 18 Oct 2026, 2:32 PM Sydney — phone test F5). `Date` is global, so a clocked scenario runs on its own: `SIM_SCENARIOS=S8`. A default run leaves it out. `SIM_NOW=<ISO time>` runs every selected scenario at that time instead.
+- `S9` (a Spanish speaker) and `S10` (asks for Arabic) score checkpoint 15. For Spanish, `set_language` must switch the call; for Arabic, the AI must say plainly that the line can't speak it. A reply with letters outside Latin script fails either way.
+- Every call record carries `callTime` and the org's `businessHours`. The judge checks dates and weekdays the AI states against them, and a deterministic check fails checkpoint 8 when the AI names the wrong weekday for today or tomorrow.

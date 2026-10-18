@@ -183,6 +183,37 @@ function diaryFor(orgId: string, callId: string, timezone: string): DiaryEntry[]
     }));
 }
 
+/** SCRUM-594 F5: the org's business_hours as one line for the judge. */
+function describeHours(hours: unknown): string | undefined {
+  if (!hours || typeof hours !== "object") return undefined;
+  const days = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
+  return days.map((d) => {
+    const c = (hours as Record<string, { open?: string; close?: string; closed?: boolean } | undefined>)[d];
+    return !c || c.closed || !c.open || !c.close ? `${d} closed` : `${d} ${c.open}–${c.close}`;
+  }).join("; ");
+}
+
+/**
+ * SCRUM-594 F5: every call runs as if it were `iso`, the clock still ticking
+ * (a scenario's `clock`, or SIM_NOW). One clock per run: Date is global.
+ */
+function installSimClock(iso: string): void {
+  const RealDate = Date;
+  const target = RealDate.parse(iso);
+  if (!Number.isFinite(target)) throw new Error(`sim: not a date: ${iso}`);
+  const offset = target - RealDate.now();
+  class SimDate extends RealDate {
+    constructor(...args: unknown[]) {
+      // @ts-expect-error Date takes these arguments; none means "now" on the sim clock
+      super(...(args.length === 0 ? [RealDate.now() + offset] : args));
+    }
+    static now(): number {
+      return RealDate.now() + offset;
+    }
+  }
+  (globalThis as { Date: DateConstructor }).Date = SimDate as unknown as DateConstructor;
+}
+
 async function runCall(o: { scenario: Scenario; run: number; fixture: Fixture; callerModel: string; noise: NoiseLevel; outDir: string }): Promise<CallRecord> {
   const { scenario, run } = o;
   const persona = PERSONA;
@@ -196,6 +227,8 @@ async function runCall(o: { scenario: Scenario; run: number; fixture: Fixture; c
     scenario,
     persona,
     run,
+    callTime: new Date().toISOString(), // SIM_NOW / the scenario's clock when set
+    businessHours: describeHours(o.fixture.organizations?.[0]?.business_hours),
     transcript,
     toolTrace: [],
     diary: [],
@@ -300,8 +333,16 @@ it("simulated demo-line calls", async () => {
   if (!fixturePath) throw new Error("SIM_FIXTURE is required: a JSON dump of the demo org's rows (see README.md)");
   const fixture = JSON.parse(fs.readFileSync(fixturePath, "utf8")) as Fixture;
   const wanted = (process.env.SIM_SCENARIOS || "").split(",").map((s) => s.trim()).filter(Boolean);
-  const scenarios = wanted.length > 0 ? SCENARIOS.filter((s) => wanted.includes(s.id)) : SCENARIOS;
+  // A clocked scenario (S8) is left out of a default run unless SIM_NOW sets one clock for all.
+  const scenarios = wanted.length > 0 ? SCENARIOS.filter((s) => wanted.includes(s.id)) : SCENARIOS.filter((s) => !s.clock || process.env.SIM_NOW);
   if (scenarios.length === 0) throw new Error(`no scenarios match SIM_SCENARIOS=${process.env.SIM_SCENARIOS}`);
+  // SCRUM-594 F5: a clocked scenario (S8) runs at its own time — on its own, since Date is global.
+  const clocks = [...new Set(scenarios.map((s) => s.clock).filter((c): c is string => Boolean(c)))];
+  const clock = process.env.SIM_NOW || (clocks.length === 1 && scenarios.every((s) => s.clock) ? clocks[0] : null);
+  if (!process.env.SIM_NOW && clocks.length > 0 && !clock) {
+    throw new Error(`sim: ${scenarios.filter((s) => s.clock).map((s) => s.id).join(", ")} must run at their own time: run them on their own (SIM_SCENARIOS=…) or set SIM_NOW`);
+  }
+  if (clock) installSimClock(clock);
   const runs = Number(process.env.SIM_RUNS || 2);
   const concurrency = Number(process.env.SIM_CONCURRENCY || 4);
   const callerModel = process.env.SIM_CALLER_MODEL || "claude-sonnet-5-5";

@@ -80,6 +80,8 @@ export function loadVoiceServer(): any {
     pendingTransfers: vsRequire("./lib/pending-transfers"),
     // Absent before SCRUM-594 PHASE 2: a run can still score that code (a fair baseline).
     bookingGuards: optionalRequire(vsRequire, "./lib/booking-guards"),
+    // Absent before SCRUM-594 F5 (the fast path's languages).
+    fastLanguages: optionalRequire(vsRequire, "./lib/fast-languages"),
   };
   const fastModel = /const FAST_LLM_MODEL = process\.env\.FAST_LLM_MODEL \|\| "([^"]+)";/.exec(src);
   const fastTimeout = /const FAST_LLM_TIMEOUT_MS = ([\d_]+);/.exec(src);
@@ -101,7 +103,7 @@ export function loadVoiceServer(): any {
   // The fast path's conversation settings, exactly as a live fast call gets them
   // (before PHASE 2 that was the voice-style addendum alone).
   loaded.applyFastConversationSettings = src.includes("function applyFastConversationSettings(session) {")
-    ? runSlice(src, { from: "const FAST_VOICE_ADDENDUM = [", to: "// Gate B: speculative drafts", scope: {}, names: ["applyFastConversationSettings"] }).applyFastConversationSettings
+    ? runSlice(src, { from: "const FAST_VOICE_ADDENDUM = [", to: "// Gate B: speculative drafts", scope: { fastLanguagesEnabled: loaded.fastLanguages?.fastLanguagesEnabled ?? (() => false) }, names: ["applyFastConversationSettings"] }).applyFastConversationSettings
     : (() => {
         const { FAST_VOICE_ADDENDUM } = runSlice(src, { from: "const FAST_VOICE_ADDENDUM = [", to: "// Gate B: speculative drafts", scope: {}, names: ["FAST_VOICE_ADDENDUM"] });
         return (session: any) => session.setSystemPrompt(`${session.messages[0]?.content || ""}\n${FAST_VOICE_ADDENDUM}`);
@@ -395,6 +397,10 @@ async function setUpSimCall(o: { calledNumber: string; callerPhone: string; call
     forgetCancelledBooking: vs.bookingGuards?.forgetCancelledBooking,
     noteBookingGuardCap: vs.bookingGuards?.noteBookingGuardCap,
     CANCEL_KEPT_NUDGE: vs.bookingGuards?.CANCEL_KEPT_NUDGE,
+    // SCRUM-594 F5: set_language — no streams here; the voice the next words would use is recorded.
+    setLanguageToolDefinition: vs.fastLanguages?.setLanguageToolDefinition,
+    applyLanguageSwitch: vs.fastLanguages?.applyLanguageSwitch,
+    switchFastLanguageStreams: (s: any, sw: { voice?: string }) => { s.deepgramVoice = sw.voice; },
     runOwnerToolCall: vs.ownerToolRunner.runOwnerToolCall,
     scheduleCache: vs.scheduleCache,
     noteAssistantSpeech: vs.ownerTurnStamps.noteAssistantSpeech,

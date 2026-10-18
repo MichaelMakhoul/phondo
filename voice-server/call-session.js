@@ -25,6 +25,7 @@ const AI_SAID_BOOKED = /(?<!\bwhat )\b(?:i['’]?ve|i have|i|we['’]?ve|we have
  * @property {ReturnType<typeof setTimeout>|null} quietTimer - ends an utterance whose Flushed never comes
  * @property {ReturnType<typeof setTimeout>|null} fluxOpenTimer - Flux must open before it fires
  * @property {boolean} ttsFellBack - the Aura stream failed: REST for the rest of the call
+ * @property {"language"} [ttsRestReason] - SCRUM-594 (F5): REST because the call switched language (no failure)
  * @property {boolean} flushRefusalLogged - a refused flush is logged once per call
  * @property {boolean} flushRefused - the last flush was refused: its text is owed until Aura goes quiet
  * @property {number} flushSentAt - Date.now() of the last flush sent
@@ -155,6 +156,18 @@ class CallSession {
     // off on every other call. bookingGuardState counts their holds for this call.
     /** @type {boolean} */
     this.bookingGuards = false;
+    // SCRUM-594 (phone test F5): the fast path's languages (lib/fast-languages.js), set by
+    // applyFastConversationSettings. fastLanguage stays null on every other call (no speech guard).
+    /** @type {boolean} */
+    this.fastLanguages = false;
+    /** @type {string|null} the call's current language on the fast path */
+    this.fastLanguage = null;
+    /** @type {string|null} the assistant's own voice, to come back to from another language */
+    this.baseDeepgramVoice = null;
+    /** @type {string[]|null} every language the call used, when it switched */
+    this.languagesUsed = null;
+    /** @type {number} the caller turn whose unspeakable reply was already replaced by the apology */
+    this.unspeakableTurn = -1;
     /** @type {import("./lib/booking-guards").GuardState} */
     this.bookingGuardState = { spellingHolds: 0, lastSpellingHoldTurn: -1, secondBookingNudged: false, endCallHolds: 0, lastEndCallHoldTurn: -1 };
     // SCRUM-594: the fast path's audio player (lib/fast-player.js); null on every other call.

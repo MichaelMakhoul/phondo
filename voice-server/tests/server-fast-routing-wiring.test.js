@@ -25,6 +25,7 @@ const { resolveCallPipeline, fastPathKeysPresent } = require("../lib/pipeline-ro
 const { maskPhone } = require("../lib/mask-phone");
 const { buildOwnerCallSummary, settleOwnerToolRuns } = require("../lib/owner-tool-runner");
 
+const { fastLanguagesEnabled, setLanguageToolDefinition, applyLanguageSwitch } = require("../lib/fast-languages");
 const src = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
 const startHandler = src.slice(src.indexOf('case "start": {'), src.indexOf('case "media": {'));
 const cleanup = src.slice(src.indexOf("async function cleanupSession()"), src.indexOf('twilioWs.on("message"'));
@@ -50,11 +51,11 @@ function recordingConsole(lines) {
 }
 
 /** server.js's FAST_VOICE_ADDENDUM (phone test F3/F5) and the fast path's conversation settings (PHASE 2), evaluated from its own text. */
-const { FAST_VOICE_ADDENDUM, FAST_MAX_MESSAGES, applyFastConversationSettings } = runSlice({
+const { FAST_VOICE_ADDENDUM, FAST_MAX_MESSAGES, applyFastConversationSettings, FAST_LANGUAGE_RULES, FAST_ENGLISH_ONLY_RULES } = runSlice({
   from: "const FAST_VOICE_ADDENDUM = [",
   to: "// Gate B: speculative drafts",
-  scope: {},
-  names: ["FAST_VOICE_ADDENDUM", "FAST_MAX_MESSAGES", "applyFastConversationSettings"],
+  scope: { fastLanguagesEnabled },
+  names: ["FAST_VOICE_ADDENDUM", "FAST_MAX_MESSAGES", "applyFastConversationSettings", "FAST_LANGUAGE_RULES", "FAST_ENGLISH_ONLY_RULES"],
 });
 /** Every line the REAL resolver writes (it logs through the global console). */
 function captureConsole(t) {
@@ -268,9 +269,37 @@ describe("SCRUM-594: the classic block flags the fast variant, run for real", ()
     assert.equal(classicTop({ effectivePipeline: "classic" }).session.effectivePipeline, "classic");
   });
 
+  it("phone test F5: the fast path's language rules name every language it can switch to, and the kill switch leaves English only", () => {
+    const { FAST_LANGUAGES } = require("../lib/fast-languages");
+    for (const { name } of Object.values(FAST_LANGUAGES)) assert.ok(FAST_LANGUAGE_RULES.includes(name), name);
+    assert.match(FAST_LANGUAGE_RULES, /replaces the LANGUAGE rule above/);
+    assert.match(FAST_LANGUAGE_RULES, /call set_language first/);
+    assert.match(FAST_LANGUAGE_RULES, /Arabic/);
+    const prev = process.env.FAST_LANGUAGES;
+    process.env.FAST_LANGUAGES = "off";
+    try {
+      const s = { messages: [{ role: "system", content: "BASE" }], deepgramVoice: "aura-2-theia-en", setSystemPrompt(p) { this.messages[0] = { role: "system", content: p }; } };
+      applyFastConversationSettings(s);
+      assert.equal(s.fastLanguages, false);
+      assert.equal(s.messages[0].content, `BASE\n${FAST_VOICE_ADDENDUM}\n${FAST_ENGLISH_ONLY_RULES}`);
+      assert.match(FAST_ENGLISH_ONLY_RULES, /English only/);
+    } finally {
+      if (prev === undefined) delete process.env.FAST_LANGUAGES;
+      else process.env.FAST_LANGUAGES = prev;
+    }
+  });
+
+  it("phone test F5: the fast path starts in English with the assistant's voice to come back to", () => {
+    const s = { messages: [{ role: "system", content: "BASE" }], deepgramVoice: "aura-2-theia-en", setSystemPrompt(p) { this.messages[0] = { role: "system", content: p }; } };
+    applyFastConversationSettings(s);
+    assert.equal(s.fastLanguages, true);
+    assert.equal(s.fastLanguage, "en");
+    assert.equal(s.baseDeepgramVoice, "aura-2-theia-en");
+  });
+
   it("phone test F3/F5: a classic-fast call's system prompt ends with the voice-style addendum; no other call's changes", () => {
     const fast = classicTop({ effectivePipeline: "classic-fast", prompt: "BASE PROMPT" });
-    assert.deepEqual(fast.session.messages, [{ role: "system", content: `BASE PROMPT\n${FAST_VOICE_ADDENDUM}` }], "amended in place, once");
+    assert.deepEqual(fast.session.messages, [{ role: "system", content: `BASE PROMPT\n${FAST_VOICE_ADDENDUM}\n${FAST_LANGUAGE_RULES}` }], "amended in place, once");
     // PHASE 2: the whole call in context (B1) and the booking guards (B2–B4), on the fast path only.
     assert.equal(fast.session.maxMessages, FAST_MAX_MESSAGES);
     assert.ok(FAST_MAX_MESSAGES > 100, "a 10-minute call fits");
