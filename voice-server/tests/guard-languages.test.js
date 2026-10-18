@@ -330,6 +330,7 @@ describe("a held cancel in another language goes through only on a clear go-ahea
       ["de", "Ja, vielleicht."], ["es", "Sí, quizás."], ["nl", "Ja, misschien."], ["ja", "はい、ちょっと考えます。"],
       // last confirmation review: 「キャンセルです。」 states a purpose, 「ふうん。」 is "I see"; "Ik denk er nog over na." hedges
       ["ja", "キャンセルです。"], ["ja", "ふうん。"], ["nl", "Ik denk er nog over na."],
+      ["ja", "はい、考えておきます。"], ["ja", "はい、まだ考えています。"], ["ja", "はい、考えとく。"], ["nl", "Ja, ik denk erover na."], ["nl", "Ja, ik denk er nog even over na."],
     ]) {
       assert.equal(cancelGoAhead(line, language), false, `${language}: ${line}`);
     }
