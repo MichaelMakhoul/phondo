@@ -452,7 +452,7 @@ class CallSession {
    * read-back), not just the caller.
    * @param {{ phone?: string, date?: string, datetime?: string }} args - the model's own arguments
    * @param {number} nowMs
-   * @param {{ callerTurn?: number, transcriptAt?: number, declinedAt?: number, assistantAt?: number }} [options]
+   * @param {{ callerTurn?: number, transcriptAt?: number, declinedAt?: number, assistantAt?: number, callerUnclear?: boolean }} [options]
    * @returns {{ proceed: boolean, via: "confirmed" | "retry" | null, reason: "no-identifier" | "first-attempt" | "awaiting-caller" | "caller-declined" | null, dropped: number }}
    */
   confirmFastCancel(args, nowMs, options = {}) {
@@ -519,7 +519,8 @@ class CallSession {
       const [heldId, rec] = held;
       const callerSpoke = typeof options.callerTurn !== "number" || typeof rec.callerTurn !== "number" || options.callerTurn > rec.callerTurn;
       const aiSpoke = typeof options.assistantAt !== "number" || typeof rec.transcriptAt !== "number" || options.assistantAt >= rec.transcriptAt;
-      if (callerSpoke && aiSpoke) {
+      // SCRUM-594 (F5): in another language, an answer that is no clear go-ahead keeps it held.
+      if (callerSpoke && aiSpoke && !options.callerUnclear) {
         this._fastPendingCancels.delete(heldId);
         this._fastConfirmedCancels.set(id, { keys, at: nowMs, transcriptAt: options.transcriptAt });
         return { proceed: true, via: "retry", reason: null, dropped };
@@ -628,7 +629,8 @@ class CallSession {
     // SCRUM-594 (F5): and in each other language the call used ("Le he reservado…"),
     // its questions aside ("Haben wir schon etwas gebucht?" is no claim).
     const others = (this.languagesUsed || []).map(guardWords).filter((w) => w !== null);
-    const statements = (/** @type {string} */ text) => text.split(/(?<=[.!?。！？])/).filter((sentence) => !/[?？]\s*$/.test(sentence)).join("");
+    // Only the question's own clause goes: "Le he reservado el martes, ¿necesita algo más?" is a claim.
+    const statements = (/** @type {string} */ text) => text.split(/(?<=[.!?。！？])/).map((sentence) => sentence.replace(/(?:^|[,，、;]|¿)[^,，、;¿]*[?？]\s*$/, "")).join("");
     return [...this.fullTranscriptMessages, ...this.messages].some((m) => m?.role === "assistant" && typeof m.content === "string" && (AI_SAID_BOOKED.test(m.content) || (others.length > 0 && others.some((w) => w.booked.test(statements(m.content))))));
   }
 

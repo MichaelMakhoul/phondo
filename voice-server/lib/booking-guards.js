@@ -86,8 +86,8 @@ function runLetters(run, trim = true) {
     // A space between a surname's words is no such word: "D-E S-I-L-V-A".
     const kind = (/** @type {string} */ sep) => sep.replace(/\s+/g, "") || " ";
     const loose = (/** @type {string} */ sep) => kind(sep) === " " || kind(sep) === "." || kind(sep) === ","; // "K-H-O-U-R-Y, è corretto?"
-    if (kind(parts[1]) === " " && !loose(parts[3])) parts.splice(0, 2);
-    if (parts.length >= 5 && loose(parts[parts.length - 2]) && !loose(parts[parts.length - 4])) parts.splice(-2);
+    if (kind(parts[1]) === " " && kind(parts[3]) !== " ") parts.splice(0, 2);
+    if (parts.length >= 5 && loose(parts[parts.length - 2]) && kind(parts[parts.length - 2]) !== kind(parts[parts.length - 4])) parts.splice(-2);
   }
   return (parts.join("").match(/\p{L}/gu) || []).join("").toUpperCase();
 }
@@ -303,7 +303,7 @@ const NO_JUST_CANCEL_IT = /^\W*(?:no|nope|nah)\W+just cancel (?:it|that)\W*$/i;
  * one" is a no to this one); only "No, just cancel it" is a yes. Ambiguous words
  * count as a decline: that costs one more read-back, never a cancel the caller
  * refused. On a call in another language its words count too ("Non, attendez"),
- * and only a clear go-ahead lets a held cancel through.
+ * and a held cancel goes through only on a clear go-ahead (cancelGoAhead).
  * @param {unknown} text
  * @param {string} [language] - the call's language (session.fastLanguage)
  * @returns {boolean}
@@ -317,15 +317,30 @@ function declinesCancel(text, language = "en") {
   if (NO_JUST_CANCEL_IT.test(t)) return false;
   if (!words) return NO_AT_EDGE.test(t);
   if (words.decline.test(t)) return true;
-  // Confirmation review: no table lists every way to take a cancel back ("Ich behalte
-  // ihn", 「そのままでお願いします」), so on a call in another language only a clear
-  // go-ahead counts — a yes or "cancel it", and no "no" once "I don't need it any
-  // more" is set aside. Anything else costs one more read-back, never a cancel the
-  // caller refused.
-  const raw = text.trim();
+  // Any "no" too, once the reasons that mean cancel ("I don't need it any more",
+  // "I can't come") are set aside.
   const said = t.replace(words.noLongerNeeded, " ");
-  const goAhead = (words.cancelYes || words.yes).test(raw) || words.goAhead.test(raw) || POSITIVE.test(raw);
-  return !goAhead || words.no.test(said) || NO_AT_EDGE.test(said);
+  return words.no.test(said) || NO_AT_EDGE.test(said);
+}
+
+/**
+ * Does this caller message clearly say go ahead with a cancel — a yes or "cancel it",
+ * and no refusal? On a call in another language a held cancel goes through only on one
+ * (confirmation reviews): no table lists every way to take a cancel back ("Lascia
+ * stare", 「そのままでお願いします」), so an answer that is neither keeps the cancel held
+ * for one more read-back — never a cancel the caller refused, never a dropped one.
+ * English: anything but a refusal, as before (the gate is structural).
+ * @param {unknown} text
+ * @param {string} [language] - the call's language (session.fastLanguage)
+ * @returns {boolean}
+ */
+function cancelGoAhead(text, language = "en") {
+  if (typeof text !== "string") return false;
+  if (declinesCancel(text, language)) return false;
+  const words = guardWords(language);
+  if (!words) return true;
+  const raw = text.trim();
+  return (words.cancelYes || words.yes).test(raw) || words.goAhead.test(raw) || POSITIVE.test(raw);
 }
 
 /**
@@ -349,17 +364,26 @@ function callerTurns(transcript) {
  */
 function fastCancelGate(session, modelArgs, nowMs) {
   const transcript = session.fullTranscriptMessages;
+  const language = session.fastLanguage || "en";
   let declinedAt = -1;
   let assistantAt = -1;
+  let callerAt = -1;
   transcript.forEach((m, i) => {
-    if (m.role === "user" && declinesCancel(m.content, session.fastLanguage || "en")) declinedAt = i;
+    if (m.role === "user") {
+      callerAt = i;
+      if (declinesCancel(m.content, language)) declinedAt = i;
+    }
     if (m.role === "assistant") assistantAt = i;
   });
+  // Another language: an answer that is neither a refusal nor a clear go-ahead keeps
+  // a held cancel held (one more read-back) — it neither confirms nor drops it.
+  const callerUnclear = guardWords(language) !== null && callerAt >= 0 && callerAt !== declinedAt && !cancelGoAhead(transcript[callerAt].content, language);
   return session.confirmFastCancel(modelArgs || {}, nowMs, {
     callerTurn: callerTurns(transcript),
     transcriptAt: transcript.length,
     declinedAt,
     assistantAt,
+    callerUnclear,
   });
 }
 
@@ -683,6 +707,7 @@ module.exports = {
   surnameSpellingConfirmed,
   spellingHoldMessage,
   declinesCancel,
+  cancelGoAhead,
   fastCancelGate,
   checkBookingGuards,
   withBookedName,

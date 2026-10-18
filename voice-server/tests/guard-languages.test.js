@@ -16,6 +16,7 @@ const {
   isAffirmative,
   surnameSpellingConfirmed,
   declinesCancel,
+  cancelGoAhead,
   fastCancelGate,
   checkBookingGuards,
 } = require("../lib/booking-guards");
@@ -44,6 +45,8 @@ describe("spelledRuns: a spelling written against Japanese text", () => {
     assert.deepEqual(spelledRuns("Lo tengo como K-H-O-U-R-Y y su número es el mismo."), ["KHOURY"]);
     assert.deepEqual(spelledRuns("Il cognome è K-H-O-U-R-Y e il numero è questo."), ["KHOURY"]);
     assert.deepEqual(spelledRuns("Il cognome è K-H-O-U-R-Y. È corretto?"), ["KHOURY"]);
+    assert.deepEqual(spelledRuns("Il cognome è K, H, O, U, R, Y. È corretto?"), ["KHOURY"]);
+    assert.deepEqual(spelledRuns("K, H, O, U, R, Y"), ["KHOURY"]);
     assert.deepEqual(spelledRuns("Is it a K-H-O-U-R-Y?"), ["KHOURY"]);
     assert.deepEqual(spelledRuns("K-H-O-U-R-Y, a lovely name."), ["KHOURY"]);
   });
@@ -205,6 +208,8 @@ describe("surnameSpellingConfirmed in the call's language", () => {
     // final review: 確認 alone is no check (「確認ですが、緊急ですか」 asks about urgency); a check that asks to be told if it's wrong is one
     assert.equal(surnameSpellingConfirmed([ai("K-H-O-U-R-Yですね。確認ですが、緊急ですか。"), caller("はい、急ぎです。")], "Khoury", "ja").reason, "not-asked");
     assert.equal(surnameSpellingConfirmed([ai("K-H-O-U-R-Yでよろしいですか。違っていたら教えてください。"), caller("はい、合っています。")], "Khoury", "ja").confirmed, true);
+    // final confirmation review: 「それでは、」 is a conjunction, not 「それで（よろしいですか）」
+    assert.equal(surnameSpellingConfirmed([ai("K-H-O-U-R-Yですね。それでは、ご来院は初めてでよろしいですか。"), caller("はい。")], "Khoury", "ja").reason, "not-asked");
     // re-review: a short question of the right length about something else isn't a check (「ご来院は初めて…」)
     assert.equal(surnameSpellingConfirmed([ai("K-H-O-U-R-Yですね。ご来院は初めてでよろしいですか。"), caller("はい。")], "Khoury", "ja").reason, "not-asked");
     // final review: the spelling and another detail in one request (a comma, not 。)
@@ -260,9 +265,10 @@ describe("declinesCancel in the call's language", () => {
   });
 });
 
-describe("declinesCancel on a call in another language: only a clear go-ahead lets a held cancel through (confirmation review)", () => {
-  // The tables can't list every way to take a cancel back ("Ich behalte ihn", 「そのままでお願いします」):
-  // anything that isn't a clear yes costs one more read-back, never a cancel the caller refused.
+describe("a held cancel in another language goes through only on a clear go-ahead (confirmation reviews)", () => {
+  // The tables can't list every way to take a cancel back ("Lascia stare", 「そのままでお願いします」):
+  // an explicit refusal drops the cancel, an unclear answer keeps it held for one more read-back,
+  // and only a clear yes or "cancel it" lets it through — never a cancel the caller refused.
   const declines = {
     es: ["Por favor, no la canceles.", "Déjala.", "Mejor déjala.", "Olvídalo.", "Mantenla.", "He cambiado de opinión.", "Cambié de opinión.", "Mejor la mantengo.", "Prefiero mantenerla.",
       "Pensándolo bien, mejor la dejo.", "Un segundo.", "Ni hablar.", "Espera.", "Para, para.", "Al final no.", "Todavía no.", "No la cancelen.", "Mejor que no.", "Quiero mantener la cita.", "Sí, pero la del jueves, no esta."],
@@ -286,17 +292,30 @@ describe("declinesCancel on a call in another language: only a clear go-ahead le
     ja: ["はい、キャンセルしてください。", "はい、お願いします。", "はい、もう必要ありません。", "はい、取り消してください。", "キャンセルをお願いします。", "予約をやめます。", "はい。"],
   };
   for (const [language, lines] of Object.entries(declines)) {
-    it(`${language}: every way of taking it back holds the cancel`, () => {
-      const missed = lines.filter((line) => !declinesCancel(line, language));
-      assert.deepEqual(missed, []);
+    it(`${language}: no way of taking it back is a go-ahead`, () => {
+      const through = lines.filter((line) => cancelGoAhead(line, language));
+      assert.deepEqual(through, []);
     });
   }
   for (const [language, lines] of Object.entries(goAheads)) {
-    it(`${language}: a clear go-ahead lets it through`, () => {
-      const held = lines.filter((line) => declinesCancel(line, language));
+    it(`${language}: a clear go-ahead lets it through, and is no refusal`, () => {
+      const held = lines.filter((line) => !cancelGoAhead(line, language) || declinesCancel(line, language));
       assert.deepEqual(held, []);
     });
   }
+  it("final confirmation review: natural yeses are go-aheads, a reason to cancel is no refusal", () => {
+    for (const [language, line] of [["de", "Alles klar."], ["de", "In Ordnung."], ["es", "Por supuesto."], ["fr", "Très bien."], ["ja", "うん。"], ["ja", "キャンセルで。"], ["es", "Sí, cancélela, no puedo ir."], ["fr", "Oui, annulez, je ne peux pas venir."], ["de", "Ja, ich kann nicht kommen."], ["it", "Sì, non posso venire."], ["nl", "Ja, ik kan niet komen."], ["ja", "はい、行けません。"]]) {
+      assert.equal(cancelGoAhead(line, language), true, `${language}: ${line}`);
+      assert.equal(declinesCancel(line, language), false, `${language}: ${line}`);
+    }
+  });
+  it("final confirmation review: a yes that keeps it is a refusal", () => {
+    for (const [language, line] of [["de", "Ja, ich behalte ihn."], ["ja", "はい、キャンセルは必要ありません。"], ["ja", "ううん。"]]) {
+      assert.equal(cancelGoAhead(line, language), false, `${language}: ${line}`);
+    }
+    assert.equal(declinesCancel("Ja, ich behalte ihn.", "de"), true);
+    assert.equal(declinesCancel("はい、キャンセルは必要ありません。", "ja"), true);
+  });
   it("an English call is unchanged: only a clear decline holds", () => {
     assert.equal(declinesCancel("What does it cost to cancel?"), false);
     assert.equal(declinesCancel("No, wait."), true);
@@ -315,6 +334,34 @@ describe("the guards read the call's language (session.fastLanguage)", () => {
     s.addMessage("assistant", "Vous voulez annuler le rendez-vous de lundi à 9 h ?");
     s.addMessage("user", "Non, attendez.");
     assert.deepEqual(fastCancelGate(s, MON_9, 2000), { proceed: false, via: null, reason: "caller-declined", dropped: 1 });
+  });
+
+  it("final confirmation review: an unclear answer keeps the cancel held — one more read-back, not three — and a clear yes then lets it through", () => {
+    const s = new CallSession("CA-de");
+    s.bookingGuards = true;
+    s.fastLanguage = "de";
+    s.addMessage("user", "Ich möchte meinen Termin am Montag stornieren.");
+    assert.equal(fastCancelGate(s, MON_9, 1000).reason, "first-attempt");
+    s.addMessage("assistant", "Soll ich den Termin am Montag um 9 Uhr stornieren?");
+    s.addMessage("user", "Mmh, also…");
+    assert.equal(fastCancelGate(s, MON_9, 2000).reason, "awaiting-caller", "unclear: still held, not dropped");
+    s.addMessage("assistant", "Bitte sagen Sie ja oder nein: stornieren?");
+    s.addMessage("user", "Alles klar.");
+    assert.deepEqual(fastCancelGate(s, MON_9, 3000), { proceed: true, via: "retry", reason: null, dropped: 0 });
+  });
+
+  it("final confirmation review: a detail given to the handler's follow-up never revokes a confirmed cancel", () => {
+    const s = new CallSession("CA-es");
+    s.bookingGuards = true;
+    s.fastLanguage = "es";
+    s.addMessage("user", "Quiero cancelar mi cita del lunes.");
+    fastCancelGate(s, MON_9, 1000);
+    s.addMessage("assistant", "¿Cancelo la cita del lunes a las 9?");
+    s.addMessage("user", "Sí, por favor.");
+    assert.equal(fastCancelGate(s, MON_9, 2000).proceed, true);
+    s.addMessage("assistant", "¿A nombre de quién está la cita?");
+    s.addMessage("user", "Sami Khoury.");
+    assert.deepEqual(fastCancelGate(s, MON_9, 3000), { proceed: true, via: "confirmed", reason: null, dropped: 0 });
   });
 
   it("checkBookingGuards: a Spanish read-back and yes let the booking through", () => {
@@ -340,7 +387,7 @@ describe("hasUnfinishedBooking: the AI's own \"I've booked you\" in the call's o
     return s;
   };
   const claims = {
-    es: ["Listo, le he reservado el martes a las 2.", "Ya le reservé el martes a las 2.", "Hemos agendado su visita para el martes."],
+    es: ["Listo, le he reservado el martes a las 2.", "Ya le reservé el martes a las 2.", "Hemos agendado su visita para el martes.", "Le he reservado el martes a las diez, ¿necesita algo más?"],
     fr: ["Je vous ai réservé mardi à 14 h.", "J'ai bien noté votre rendez-vous pour mardi."],
     de: ["Ich habe Sie für Dienstag um 14 Uhr eingetragen.", "Wir haben den Termin gebucht.", "Dann habe ich Sie für Dienstag, den 20. Oktober, um 9 Uhr eingetragen."],
     it: ["Le ho prenotato martedì alle 14.", "Abbiamo fissato l'appuntamento per martedì."],
