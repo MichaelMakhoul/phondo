@@ -159,6 +159,9 @@ function isAffirmative(text, language = "en") {
   return POSITIVE.test(t);
 }
 
+/** Another detail the AI asks about (its own question, never the spelling's). */
+const OTHER_FIELD = /\b(first|email|e-mail|address|street|suburb|number|phone|mobile|cell|postcode|post code|zip)\b/i;
+
 /** A day, a time of day or any number: a question about the booking's time. */
 const ABOUT_TIME = /\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tomorrow|tonight|morning|afternoon|evening|noon|midday|o['’]?clock)\b|\d/i;
 
@@ -190,10 +193,15 @@ function asksToCheckSpelling(content, target, language = "en") {
     // ("That's K-H-O-U-R-Y. And your phone number, please.").
     const runEnd = spellingEnd(content, target);
     const after = runEnd >= 0 ? content.slice(runEnd) : "";
-    return !(/\b(first|email|e-mail|address|street|suburb|number|phone)\b/i.test(after) || Boolean(other?.field.test(after)));
+    return !(OTHER_FIELD.test(after) || Boolean(other?.field.test(after)));
   }
   const last = questions[questions.length - 1];
-  if (spelledRuns(last).some((run) => runSpells(run, target))) return true;
+  const namesField = (/** @type {string} */ text) => OTHER_FIELD.test(text) || Boolean(other?.field.test(text));
+  if (spelledRuns(last).some((run) => runSpells(run, target))) {
+    // …unless it goes on to another detail: "Is it K-H-O-U-R-Y, and is your mobile…?" (final review)
+    const end = spellingEnd(last, target);
+    return !namesField(end >= 0 ? last.slice(end) : "");
+  }
   const words = last.trim().split(/\s+/).length;
   // Gate review: a question about a day or a time is about the booking, not the
   // spelling ("K-H-O-U-R-Y. ¿Le viene bien el martes?", "Is Tuesday okay?").
@@ -206,7 +214,7 @@ function asksToCheckSpelling(content, target, language = "en") {
   const lastAt = content.lastIndexOf(last);
   const runEnd = spellingEnd(content, target);
   const span = runEnd >= 0 && runEnd <= lastAt ? content.slice(runEnd, lastAt + last.length) : last;
-  const otherField = /\b(first|email|e-mail|address|street|suburb|number|phone)\b/i.test(span) || Boolean(other?.field.test(span));
+  const otherField = namesField(span);
   if (otherField) return false;
   if (/\bspell/i.test(last) && /\b(it|that)\b/i.test(last)) return words <= 10;
   if (words <= 6 && GENERIC_CHECK.test(last)) return true;
@@ -529,15 +537,32 @@ const PLAIN_NO = /^\W*(no|nope|nah|not really)\b/i;
 // said ("Das war's nicht…", "C'est tout ce que…" are not goodbyes), optionally
 // followed by a thanks. JS's \b is ASCII-only, so words are bounded by \p{L}.
 const THANKS = "(?:muchas )?gracias|merci(?: beaucoup)?|danke(?: sch[öo]n| sehr)?|vielen dank|grazie(?: mille)?|bedankt|dank (?:je|u)(?: wel)?|thanks|thank you";
-/** @param {string[]} alternatives */
-const closingAtEnd = (alternatives) => new RegExp(`(?<![\\p{L}\\p{N}])(?:(?=(?:no|non|nein|nee)[\\s,])|(?<!(?<![\\p{L}\\p{N}])(?:non|no|nicht|niet|pas)\\s))(?:${alternatives.join("|")})(?:[\\s,.!¡]+(?:y |et |und |e |en )?(?:${THANKS}))?[\\s,.!¡…]*$`, "iu");
+/** Where a clause starts: the reply's start, after punctuation, or after "and" / "okay" / "thanks". */
+const CLAUSE_START = `(?<=^[\\s¡¿"'«]*|[.,;:!?¡…]\\s*|(?<![\\p{L}\\p{N}])(?:y|et|und|e|en|alors|also|allora|dus|pues|entonces|ok(?:ay|é)?|vale|bueno|bien|gut|bene|goed|${THANKS})\\s+)`;
+/**
+ * @param {string[]} alternatives
+ * @param {{ clauseStart?: boolean }} [options] - clauseStart: only where a clause starts
+ */
+const closingAtEnd = (alternatives, options = {}) => new RegExp(`(?<![\\p{L}\\p{N}])${options.clauseStart ? CLAUSE_START : ""}(?:(?=(?:no|non|nein|nee)[\\s,])|(?<!(?<![\\p{L}\\p{N}])(?:non|no|nicht|niet|pas)\\s))(?:${alternatives.join("|")})(?:[\\s,.!¡]+(?:y |et |und |e |en )?(?:${THANKS}))?[\\s,.!¡…]*$`, "iu");
 const GOODBYE_OTHER = closingAtEnd([
-  "adi[oó]s", "hasta (?:luego|pronto|la pr[oó]xima|ma[ñn]ana|el (?:lunes|martes|mi[ée]rcoles|jueves|viernes|s[áa]bado|domingo))", "que tenga (?:un )?buen d[ií]a", "no,? (?:muchas )?gracias", "eso (?:es|ser[ií]a) todo",
-  "au revoir", "[àa] (?:bient[ôo]t|demain|plus tard|lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche)", "bonne (?:journ[ée]e|soir[ée]e)", "non,? merci", "c['’]est tout", "ce sera tout",
-  "tsch[üu]ss?", "auf wieder(?:h[öo]ren|sehen)", "bis (?:morgen|dann|bald|sp[äa]ter|montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag)", "sch[öo]nen tag(?: noch)?", "nein,? danke", "das w[aä]r['’]?s", "das ist alles",
-  "arrivederci", "buona (?:giornata|serata)", "a (?:presto|domani|luned[iì]|marted[iì]|mercoled[iì]|gioved[iì]|venerd[iì]|sabato|domenica)", "ci vediamo", "no,? grazie", "[èe] tutto",
-  "doei", "tot (?:ziens|morgen|dan|straks|maandag|dinsdag|woensdag|donderdag|vrijdag|zaterdag|zondag)", "fijne dag(?: nog)?", "nee,? (?:bedankt|dank (?:je|u)(?: wel)?)", "dat was het", "dat is alles",
+  "adi[oó]s", "hasta (?:luego|pronto|la pr[oó]xima)", "que tenga (?:un )?buen d[ií]a", "no,? (?:muchas )?gracias", "eso (?:es|ser[ií]a) todo",
+  "au revoir", "[àa] bient[ôo]t", "bonne (?:journ[ée]e|soir[ée]e)", "non,? merci", "c['’]est tout", "ce sera tout",
+  "tsch[üu]ss?", "auf wieder(?:h[öo]ren|sehen)", "sch[öo]nen tag(?: noch)?", "nein,? danke", "das w[aä]r['’]?s", "das ist alles",
+  "arrivederci", "buona (?:giornata|serata)", "a presto", "no,? grazie", "[èe] tutto",
+  "doei", "tot ziens", "fijne dag(?: nog)?", "nee,? (?:bedankt|dank (?:je|u)(?: wel)?)", "dat was het", "dat is alles",
 ]);
+/**
+ * "See you tomorrow / on Tuesday" — only where a clause starts ("Merci, à mardi !"),
+ * never at the end of a scheduling sentence ("je voudrais le déplacer à mardi",
+ * "estoy de viaje hasta el lunes"): final review.
+ */
+const SEE_YOU_OTHER = closingAtEnd([
+  "hasta (?:ma[ñn]ana|el (?:lunes|martes|mi[ée]rcoles|jueves|viernes|s[áa]bado|domingo))",
+  "[àa] (?:demain|plus tard|lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche)",
+  "bis (?:morgen|dann|bald|sp[äa]ter|montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag)",
+  "a (?:domani|luned[iì]|marted[iì]|mercoled[iì]|gioved[iì]|venerd[iì]|sabato|domenica)", "ci vediamo",
+  "tot (?:morgen|dan|straks|maandag|dinsdag|woensdag|donderdag|vrijdag|zaterdag|zondag)",
+], { clauseStart: true });
 /** "Chao" / "ciao" / "dag" only as the whole reply ("Linda Chao" is a name; "Ciao, vorrei…" a greeting). */
 const CIAO_ALONE = new RegExp(`^[\\s¡¿"'«]*(?:(?:${THANKS}|vale|bueno|perfecto|perfetto|ok(?:ay)?)[\\s,.!]+)?(?:chao|chau|ciao|dag)(?:[\\s,]+(?:chao|chau|ciao|dag))?(?:[\\s,.!]+(?:${THANKS}))?[\\s,.!…]*$`, "iu");
 const GOODBYE_JA = /(?:さようなら|失礼(?:します|いたします)|また(?:明日|あした|今度))[。．！!.\s]*$/;
@@ -575,7 +600,7 @@ function callerIsDone(transcript, language = "en") {
   const said = transcript[last].content;
   const other = language !== "en"; // F5: another language's closings only once the call speaks it
   if (GOODBYE.test(said) || THATS_ALL.test(said)) return true;
-  if (other && (GOODBYE_OTHER.test(said) || CIAO_ALONE.test(said) || GOODBYE_JA.test(said))) return true;
+  if (other && (GOODBYE_OTHER.test(said) || SEE_YOU_OTHER.test(said) || CIAO_ALONE.test(said) || GOODBYE_JA.test(said))) return true;
   const asked = transcript[last - 1];
   const question = asked && asked.role === "assistant" ? String(asked.content) : "";
   // "Is that all correct?" is a read-back, not "anything else?".

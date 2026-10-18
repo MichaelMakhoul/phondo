@@ -27,7 +27,7 @@ function wordsRe(alternatives, flags = "iu") {
 
 /**
  * Is this question short enough to be a bare "is that right?" — at most
- * `maxWords` words (Japanese, written without spaces: twice as many characters).
+ * `maxWords` words (Japanese, written without spaces: two and a half times as many characters).
  * @param {string} question
  * @param {number} maxWords
  * @returns {boolean}
@@ -38,7 +38,7 @@ function latinShort(question, maxWords) {
 
 /** @type {(question: string, maxWords: number) => boolean} */
 function japaneseShort(question, maxWords) {
-  return question.replace(/[\s。．、，！？!?,.「」『』]/g, "").length <= maxWords * 2;
+  return question.replace(/[\s。．、，！？!?,.「」『』]/g, "").length <= Math.round(maxWords * 2.5); // 「違っていたら教えてください」 is 13
 }
 
 /**
@@ -152,7 +152,8 @@ const GUARD_WORDS = Object.freeze({
     // Gate review: any negative form (ない, ません, じゃなく…), once the ones that agree — 「間違いありません」,
     // 「問題ありません」, 「すみません」 — are set aside (agreeingNo).
     no: /いいえ|いえ、|違い|ちがい|違う|ちがう|間違|まちが|待って|まって|でも|けど|ですが|じゃなく|ではなく|ない|ません/,
-    check: /よろしい|正しい|合って|あって|間違い|まちがい|確認/,
+    // 「確認」 only as "please confirm" (「確認ですが、緊急ですか」 asks something else): final review.
+    check: /よろしい|正しい|合って|あって|間違い|まちがい|違っていたら|ご?確認(?:を)?(?:ください|下さい|お願い|して|いただけ)/,
     spell: /つづり|綴り|スペル|書き方/,
     field: /メール|住所|番号|電話|携帯|下の(?:お)?名前/,
     time: /曜日|今日|明日|明後日|午前|午後|時|朝|夕方|夜/,

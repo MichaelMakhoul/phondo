@@ -201,6 +201,11 @@ describe("surnameSpellingConfirmed in the call's language", () => {
   it("final run: a Japanese request (「…教えてください。」) after the read-back is the question — the yes was about the phone", () => {
     const t = [ai("失礼しました。K-H-O-U-R-Y で、サミ・コウリーさんですね。次に、連絡の取れる携帯番号を教えてください。"), caller("今おかけしている番号で大丈夫です。")];
     assert.deepEqual(surnameSpellingConfirmed(t, "Khoury", "ja"), { confirmed: false, reason: "not-asked" });
+    // final review: 確認 alone is no check (「確認ですが、緊急ですか」 asks about urgency); a check that asks to be told if it's wrong is one
+    assert.equal(surnameSpellingConfirmed([ai("K-H-O-U-R-Yですね。確認ですが、緊急ですか。"), caller("はい、急ぎです。")], "Khoury", "ja").reason, "not-asked");
+    assert.equal(surnameSpellingConfirmed([ai("K-H-O-U-R-Yでよろしいですか。違っていたら教えてください。"), caller("はい、合っています。")], "Khoury", "ja").confirmed, true);
+    // final review: the spelling and another detail in one request (a comma, not 。)
+    assert.equal(surnameSpellingConfirmed([ai("K-H-O-U-R-Yですね、では携帯番号を教えてください。"), caller("大丈夫です。")], "Khoury", "ja").reason, "not-asked");
     const photo = [ai("K-H-O-U-R-Yですね。次に、写真をお願いします。"), caller("はい。")];
     assert.equal(surnameSpellingConfirmed(photo, "Khoury", "ja").reason, "not-asked", "a request for something else, no detail named");
     const confirm = [ai("K-H-O-U-R-Yですね。ご確認をお願いします。"), caller("はい、合っています。")];

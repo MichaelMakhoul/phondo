@@ -142,6 +142,13 @@ describe("surnameSpellingConfirmed", () => {
     }
   });
 
+  it("final review: a question that holds the spelling and then another detail is that detail's question", () => {
+    assert.equal(surnameSpellingConfirmed([ai("Is it K-H-O-U-R-Y, and is your mobile the number you're calling from?"), caller("Yes.")], "Khoury").reason, "not-asked");
+    assert.equal(surnameSpellingConfirmed([ai("That's K-H-O-U-R-Y. And your postcode?"), caller("Yes, 2000.")], "Khoury").reason, "not-asked");
+    assert.equal(surnameSpellingConfirmed([ai("That's K-H-O-U-R-Y, and the mobile you're calling from, is that right?"), caller("Yes.")], "Khoury").reason, "not-asked", "a mobile is another detail");
+    assert.equal(surnameSpellingConfirmed([ai("Is it K-H-O-U-R-Y, Sami?"), caller("Yes.")], "Khoury").confirmed, true, "the caller's own name is no other detail");
+  });
+
   it("gate review: a surname of two words read back with a space between them still counts (\"D-E S-I-L-V-A\")", () => {
     assert.deepEqual(surnameSpellingConfirmed([ai("That's D-E S-I-L-V-A. Is that right?"), caller("Yes.")], "De Silva"), { confirmed: true, reason: "confirmed" });
   });
@@ -606,6 +613,21 @@ describe("callerIsDone (B5: the AI ends the call only once the caller has)", () 
   ]) {
     it(`"${done}" is done (${language} call)`, () => assert.equal(callerIsDone([ai("Gracias. ¿Algo más?"), caller(done)], language), true));
   }
+  it("final review: \"until / to Tuesday\" ending a scheduling sentence is no goodbye — only at a clause's start", () => {
+    for (const [language, said] of [
+      ["fr", "Oui, je voudrais le déplacer à mardi."],
+      ["it", "Sì, vorrei spostarlo a giovedì."],
+      ["de", "Ich bin im Urlaub bis Montag."],
+      ["es", "Estoy de viaje hasta el lunes."],
+      ["nl", "Ik ben weg tot maandag."],
+    ]) {
+      assert.equal(callerIsDone([ai("Perfecto. ¿Algo más?"), caller(said)], language), false, said);
+    }
+    for (const [language, said] of [["fr", "Merci, à mardi !"], ["it", "Grazie a giovedì"], ["de", "Danke bis Montag"], ["es", "Vale, hasta el lunes."], ["nl", "Oké, tot maandag!"]]) {
+      assert.equal(callerIsDone([ai("Listo."), caller(said)], language), true, said);
+    }
+  });
+
   it("scoped re-review: \"No no gracias\" is a goodbye even when nothing asked \"anything else?\"", () => {
     assert.equal(callerIsDone([ai("Perfecto, le esperamos el martes."), caller("No no gracias.")], "es"), true);
   });
