@@ -289,6 +289,10 @@ describe("SCRUM-594: the classic block flags the fast variant, run for real", ()
     }
   });
 
+  it("phone test F5 (gate review): the addendum tells the model to offer today first and never invent a reason a day is unavailable", () => {
+    assert.match(FAST_VOICE_ADDENDUM, /TIMES:\n- Offer the earliest free time in the LIVE SCHEDULE: today first, if it still has times\. Never give a reason a day is unavailable that the schedule doesn't show\./);
+  });
+
   it("phone test F5: the fast path starts in English with the assistant's voice to come back to", () => {
     const s = { messages: [{ role: "system", content: "BASE" }], deepgramVoice: "aura-2-theia-en", setSystemPrompt(p) { this.messages[0] = { role: "system", content: p }; } };
     applyFastConversationSettings(s);

@@ -566,40 +566,63 @@ describe("callerIsDone (B5: the AI ends the call only once the caller has)", () 
   it("nothing said yet is not done", () => assert.equal(callerIsDone([ai("Hello?")]), false));
 
   // SCRUM-594 F5: the languages the fast path speaks (simulated Spanish caller: "Adiós" was held,
-  // the AI asked "¿algo más?" and the caller had to hang up).
-  for (const done of [
-    "Muchas gracias, adiós.", "Vale, hasta luego.", "No, gracias. Eso es todo.", "Que tenga un buen día.",
-    "Merci, au revoir !", "Parfait, à bientôt.", "Non merci, c'est tout.", "Bonne journée.",
-    "Danke, tschüss!", "Auf Wiederhören.", "Nein danke, das war's.", "Schönen Tag noch.",
-    "Grazie, arrivederci.", "Perfetto, ciao!", "No grazie, è tutto.", "Buona giornata.",
-    "Bedankt, doei!", "Tot ziens.", "Nee, dank je wel. Dat was het.", "Fijne dag nog.",
-    "ありがとうございました。", "失礼します。", "さようなら",
+  // the AI asked "¿algo más?" and the caller had to hang up). Checked only once the call has
+  // switched to that language, and anchored at the end of what the caller said (gate review).
+  for (const [language, done] of [
+    ["es", "Muchas gracias, adiós."], ["es", "Vale, hasta luego."], ["es", "No, gracias. Eso es todo."], ["es", "Que tenga un buen día."], ["es", "¡Chao!"], ["es", "Gracias, chau."],
+    ["fr", "Merci, au revoir !"], ["fr", "Parfait, à bientôt."], ["fr", "Non merci, c'est tout."], ["fr", "Bonne journée."],
+    ["de", "Danke, tschüss!"], ["de", "Auf Wiederhören."], ["de", "Nein danke, das war's."], ["de", "Schönen Tag noch."],
+    ["it", "Grazie, arrivederci."], ["it", "Perfetto, ciao!"], ["it", "No grazie, è tutto."], ["it", "Buona giornata."],
+    ["nl", "Bedankt, doei!"], ["nl", "Tot ziens."], ["nl", "Nee, dank je wel. Dat was het."], ["nl", "Fijne dag nog."],
+    ["ja", "失礼します。"], ["ja", "さようなら"],
   ]) {
-    it(`"${done}" is done`, () => assert.equal(callerIsDone([ai("Gracias. ¿Algo más?"), caller(done)]), true));
+    it(`"${done}" is done (${language} call)`, () => assert.equal(callerIsDone([ai("Gracias. ¿Algo más?"), caller(done)], language), true));
   }
-  for (const [question, answer] of [
-    ["¿Hay algo más en que pueda ayudarle?", "No."],
-    ["¿Le puedo ayudar en algo más?", "Nada más, gracias."],
-    ["Y a-t-il autre chose ?", "Non, rien."],
-    ["Kann ich sonst noch etwas für Sie tun?", "Nein, nichts weiter."],
-    ["C'è qualcos'altro?", "No, niente."],
-    ["Kan ik u nog ergens anders mee helpen? Nog iets?", "Nee, niets."],
-    ["他に何かございますか？", "大丈夫です。"],
-    ["Kann ich sonst noch etwas für Sie tun?", "Nein."],
-    ["Kan ik u nog ergens mee helpen? Nog iets?", "Nee."],
+  for (const [language, question, answer] of [
+    ["es", "¿Hay algo más en que pueda ayudarle?", "No."],
+    ["es", "¿Le puedo ayudar en algo más?", "Nada más, gracias."],
+    ["fr", "Y a-t-il autre chose ?", "Non, rien."],
+    ["de", "Kann ich sonst noch etwas für Sie tun?", "Nein, nichts weiter."],
+    ["de", "Kann ich sonst noch etwas für Sie tun?", "Nein."],
+    ["it", "C'è qualcos'altro?", "No, niente."],
+    ["nl", "Kan ik u nog ergens mee helpen? Nog iets?", "Nee, niets."],
+    ["nl", "Kan ik u nog ergens mee helpen? Nog iets?", "Nee."],
+    ["ja", "他に何かございますか？", "大丈夫です。"],
+    ["ja", "他に何かございますか？", "ありがとうございました。"],
   ]) {
-    it(`"${answer}" answering "${question}" is done`, () => assert.equal(callerIsDone([ai(question), caller(answer)]), true));
+    it(`"${answer}" answering "${question}" is done (${language} call)`, () => assert.equal(callerIsDone([ai(question), caller(answer)], language), true));
   }
-  for (const [question, answer] of [
-    ["¿Está todo correcto?", "Sí, todo correcto."],
-    ["¿Eso es todo correcto?", "Sí, eso es todo correcto."],
-    ["Preferisce un altro giorno?", "No."],
-    ["C'est tout bon pour vous ?", "Oui, c'est tout bon."],
-    ["Ist das alles richtig?", "Ja, das ist alles richtig."],
-    ["Klopt dat allemaal?", "Ja, dat is alles goed."],
+  for (const [language, question, answer] of [
+    // a read-back, not "anything else?"
+    ["es", "¿Está todo correcto?", "Sí, todo correcto."],
+    ["es", "¿Eso es todo correcto?", "Sí, eso es todo correcto."],
+    ["fr", "C'est bien ça ?", "Oui, c'est tout à fait ça."],
+    ["de", "Ist das alles richtig?", "Ja, das ist alles in Ordnung."],
+    ["it", "È tutto giusto?", "Sì, è tutto a posto."],
+    ["it", "È tutto giusto?", "Sì, è tutto perfetto."],
+    ["nl", "Klopt dat allemaal?", "Ja, dat is alles in orde."],
+    ["ja", "これでよろしいですか？", "ありがとうございました。"],
+    // a "no" to a time offer (gate review: B5 let the call end mid-booking)
+    ["es", "¿Prefiere algo más temprano?", "No."],
+    ["es", "¿Le gustaría algo más temprano?", "No, el martes."],
+    ["de", "Möchten Sie noch etwas früher?", "Nein."],
+    ["nl", "Wilt u nog iets eerder?", "Nee."],
+    ["it", "Preferisce un altro giorno?", "No."],
+    // a closing word that isn't the end of what they said
+    ["it", "Buongiorno!", "Ciao, vorrei prenotare un idraulico."],
+    ["es", "¿A nombre de quién?", "Me llamo Linda Chao."],
+    ["nl", "Is dat alles?", "Dat was het niet, ik heb nog een vraag."],
+    ["de", "War das alles?", "Das war's nicht, ich habe noch eine Frage."],
+    ["fr", "Autre chose ?", "C'est tout ce que vous avez ?"],
+    ["it", "Altro?", "No grazie, ma vorrei cambiare l'orario."],
   ]) {
-    it(`"${answer}" answering "${question}" is not done (a read-back, not anything else)`, () => assert.equal(callerIsDone([ai(question), caller(answer)]), false));
+    it(`"${answer}" answering "${question}" is not done (${language} call)`, () => assert.equal(callerIsDone([ai(question), caller(answer)], language), false));
   }
+  it("an English call never reads another language's goodbye (surnames like Chau and Chao)", () => {
+    assert.equal(callerIsDone([ai("And your surname?"), caller("It is Jenny Chau.")], "en"), false);
+    assert.equal(callerIsDone([ai("And your surname?"), caller("Linda Chao")], "en"), false);
+    assert.equal(callerIsDone([ai("Is there anything else?"), caller("Ciao!")]), false, "the default is an English call");
+  });
 });
 
 describe("checkCallerDone", () => {

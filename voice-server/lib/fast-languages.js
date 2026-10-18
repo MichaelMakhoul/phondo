@@ -84,15 +84,18 @@ function unspeakableText(text, language = "en") {
   return false;
 }
 
+/** set_language when the call's hearing can't follow (Flux not open, or Flux fell back to Nova). */
+const LANGUAGE_UNHEARD_MESSAGE = "NOT SWITCHED: this call can't switch language right now. Tell the caller, in English, that you can only continue in English, and offer to have someone call them back.";
+
 /**
- * The model asked to switch language (set_language). Records the call's
- * language on the session and says what the streams must do; the caller
- * (server.js) changes the hints and the voice.
- * @param {{ fastLanguage?: string, languagesUsed?: string[], baseDeepgramVoice?: string|null, deepgramVoice?: string|null }} session
+ * The model asked to switch language (set_language): what to switch to — the
+ * voice and the hints — without changing the session. server.js switches the
+ * streams, then recordLanguageSwitch records it only if that worked.
+ * @param {{ fastLanguage?: string|null, baseDeepgramVoice?: string|null }} session
  * @param {unknown} requested - the model's `language` argument
  * @returns {{ ok: boolean, changed: boolean, from?: string, to?: string, voice?: string, hints?: string[], message: string }}
  */
-function applyLanguageSwitch(session, requested) {
+function planLanguageSwitch(session, requested) {
   const code = String(requested || "").trim().toLowerCase();
   const entry = Object.prototype.hasOwnProperty.call(FAST_LANGUAGES, code) ? FAST_LANGUAGES[code] : null;
   if (!entry) {
@@ -104,13 +107,34 @@ function applyLanguageSwitch(session, requested) {
   }
   const from = session.fastLanguage || "en";
   if (code === from) return { ok: true, changed: false, from, to: code, message: `Already speaking ${entry.name}.` };
-  session.fastLanguage = code;
-  session.languagesUsed = [...new Set([...(session.languagesUsed || ["en"]), code])];
   const voice = entry.voice || session.baseDeepgramVoice || ENGLISH_FALLBACK_VOICE;
   const message = code === "en"
     ? "Switched back to English: the caller hears the usual voice again."
     : `Switched to ${entry.name}: the caller now hears a ${entry.name} voice. Speak only ${entry.name} from now on; keep names, numbers, dates, times and confirmation codes exactly as they are, and translate English tool results before you say them.`;
   return { ok: true, changed: true, from, to: code, voice, hints: code === "en" ? ["en"] : [code, "en"], message };
+}
+
+/**
+ * Record a switch that happened: the call's language, and every language it used.
+ * @param {{ fastLanguage?: string|null, languagesUsed?: string[]|null }} session
+ * @param {{ changed: boolean, to?: string }} plan - planLanguageSwitch's result
+ */
+function recordLanguageSwitch(session, plan) {
+  if (!plan.changed || !plan.to) return;
+  session.fastLanguage = plan.to;
+  session.languagesUsed = [...new Set([...(session.languagesUsed || ["en"]), plan.to])];
+}
+
+/**
+ * Plan and record at once (no streams to switch).
+ * @param {{ fastLanguage?: string|null, languagesUsed?: string[]|null, baseDeepgramVoice?: string|null }} session
+ * @param {unknown} requested
+ * @returns {ReturnType<typeof planLanguageSwitch>}
+ */
+function applyLanguageSwitch(session, requested) {
+  const plan = planLanguageSwitch(session, requested);
+  recordLanguageSwitch(session, plan);
+  return plan;
 }
 
 module.exports = {
@@ -121,5 +145,8 @@ module.exports = {
   fastLanguagesEnabled,
   setLanguageToolDefinition,
   unspeakableText,
+  planLanguageSwitch,
+  recordLanguageSwitch,
   applyLanguageSwitch,
+  LANGUAGE_UNHEARD_MESSAGE,
 };

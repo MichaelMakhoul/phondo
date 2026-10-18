@@ -37,7 +37,7 @@ const { createFastTurnEngine, endsWithQuestion, isBackchannel, isLikelyEcho } = 
 const { createNoTurnWatchdog } = require("../lib/no-turn-watchdog");
 const { startSpeculativeReply } = require("../lib/speculative-reply");
 const { maskPhone } = require("../lib/mask-phone");
-const { applyLanguageSwitch, setLanguageToolDefinition, unspeakableText, UNSPEAKABLE_APOLOGY, FLUX_MULTI_MODEL, fastLanguagesEnabled } = require("../lib/fast-languages");
+const { applyLanguageSwitch, planLanguageSwitch, recordLanguageSwitch, setLanguageToolDefinition, unspeakableText, UNSPEAKABLE_APOLOGY, FLUX_MULTI_MODEL, fastLanguagesEnabled, LANGUAGE_UNHEARD_MESSAGE } = require("../lib/fast-languages");
 
 const src = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
 const startHandler = src.slice(src.indexOf('case "start": {'), src.indexOf('case "media": {'));
@@ -198,7 +198,7 @@ function makeFast(o = {}) {
     noteAssistantTurnEnd,
     OWNER_MAX_TOOL_CALLS,
     ownerToolLoopReply,
-    getErrorMsg: (lang, key) => `ERR:${key}`,
+    getErrorMsg: (lang, key) => (o.errorMsgWithLang ? `ERR:${lang}:${key}` : `ERR:${key}`),
     detectExpectedInput: () => o.expectNext || "general",
     logTranscript: (label, text) => lines.push(`log| ${label}: [${(text || "").length} chars]`),
     bookingKey: () => "k",
@@ -232,6 +232,7 @@ function makeFast(o = {}) {
       const delay = o.restDelayFor ? o.restDelayFor(text) : o.restDelayMs;
       if (delay) await sleep(delay);
       if (o.restFails) throw new Error("Deepgram TTS error 500");
+      if (o.restFailsFor?.(text, options)) throw new Error("Deepgram TTS error 400: unknown voice");
       return Buffer.alloc(o.restBytes ?? 800, 0x7f);
     },
     chunkAudioForTwilio,
@@ -305,6 +306,9 @@ function makeFast(o = {}) {
     getTransfer: o.getTransfer || (() => null),
     // SCRUM-594 (F5): the call's languages
     applyLanguageSwitch,
+    planLanguageSwitch,
+    recordLanguageSwitch,
+    LANGUAGE_UNHEARD_MESSAGE,
     setLanguageToolDefinition,
     unspeakableText,
     UNSPEAKABLE_APOLOGY,
@@ -3666,6 +3670,153 @@ describe("SCRUM-594 (F5): the call's languages on the fast path", () => {
     assert.deepEqual(await run("fr"), ["Un instant, je vérifie cela.", "OK."]);
     assert.deepEqual(await run("nl"), ["OK."], "no canned Dutch fillers: none, never an English one in a Dutch voice");
     assert.deepEqual(await run("en"), ["One moment, let me check that.", "OK."]);
+  });
+
+  it("gate review: what the round said before set_language plays first, in the old voice — never again, never in the new one", async () => {
+    const reply = "¡Claro!";
+    const h = makeFast({ steps: [{ sentences: ["Of course."], tools: [{ name: "set_language", args: { language: "es" } }] }, { sentences: [reply], content: reply }] });
+    const s = h.start(langSession());
+    h.fluxOpens();
+    const turn = h.handleUserSpeech(s, h.twilioWs, "Do you speak Spanish?");
+    setTimeout(() => h.audio(3, 0), 20); // Aura voices it and confirms the flush
+    await turn;
+    assert.deepEqual(h.lastAura().handle.spoken, ["Of course."]);
+    assert.deepEqual(h.calls.filter((c) => c[0] === "synthesizeSpeech").map((c) => [c[1], c[2]?.voice]), [[reply, "aura-2-selena-es"]]);
+    clearTimeout(s._speakingTimeout);
+    h.closeFastPath(s);
+  });
+
+  it("gate review: a second switch moves the hints and the voice again — back to English is the assistant's own voice", async () => {
+    const h = makeFast({ steps: [
+      { tools: [{ name: "set_language", args: { language: "es" } }] }, { sentences: ["Claro."], content: "Claro." },
+      { tools: [{ name: "set_language", args: { language: "en" } }] }, { sentences: ["Sure."], content: "Sure." },
+    ] });
+    const s = h.start(langSession());
+    h.fluxOpens();
+    const configured = [];
+    h.lastFlux().handle.configure = (settings) => { configured.push(settings.language_hints); return true; };
+    await h.handleUserSpeech(s, h.twilioWs, "¿Habla español?");
+    await h.handleUserSpeech(s, h.twilioWs, "Actually, English please.");
+    assert.deepEqual(configured, [["es", "en"], ["en"]]);
+    assert.equal(h.lastAura().handle.closes, 1);
+    assert.deepEqual(h.calls.filter((c) => c[0] === "synthesizeSpeech").map((c) => [c[1], c[2]?.voice]), [["Claro.", "aura-2-selena-es"], ["Sure.", "aura-2-thalia-en"]]);
+    assert.equal(s.fastLanguage, "en");
+    clearTimeout(s._speakingTimeout);
+    h.closeFastPath(s);
+  });
+
+  it("gate review: no switch the hearing can't follow — on the Nova fallback, or with Flux not open: NOT SWITCHED, nothing changes", async () => {
+    for (const setup of ["nova", "closed"]) {
+      const h = makeFast({ steps: [{ tools: [{ name: "set_language", args: { language: "es" } }] }, { sentences: ["Sorry, only English."], content: "Sorry, only English." }] });
+      const s = h.start(langSession());
+      h.fluxOpens();
+      if (setup === "nova") h.lastFlux().callbacks.onError(new Error("flux down"));
+      else h.lastFlux().handle.configure = () => false;
+      await h.handleUserSpeech(s, h.twilioWs, "¿Habla español?");
+      assert.equal(toolMessage(s), LANGUAGE_UNHEARD_MESSAGE, setup);
+      assert.equal(s.fastLanguage, "en", setup);
+      assert.equal(s.deepgramVoice, "aura-2-thalia-en", setup);
+      assert.equal(h.lastAura().handle.closes, 0, `${setup}: the stream stays`);
+      h.closeFastPath(s);
+    }
+  });
+
+  it("gate review: Flux refusing the hints after a switch is captured, the call goes back to English, and the model is told", async () => {
+    const h = makeFast({ steps: [{ tools: [{ name: "set_language", args: { language: "es" } }] }, { sentences: ["Claro."], content: "Claro." }] });
+    const s = h.start(langSession());
+    h.fluxOpens();
+    await h.handleUserSpeech(s, h.twilioWs, "¿Habla español?");
+    assert.equal(s.fastLanguage, "es");
+    h.lastFlux().callbacks.onWarning({ type: "ConfigureFailure", code: "INVALID_LANGUAGE_HINT", message: "bad hint" });
+    assert.equal(s.fastLanguage, "en");
+    assert.equal(s.deepgramVoice, "aura-2-thalia-en");
+    assert.ok(h.sentry.some((e) => e.tags?.service === "flux-stt"), JSON.stringify(h.sentry));
+    assert.ok(s.messages.some((m) => m.role === "system" && /only continue in English/.test(m.content)));
+    clearTimeout(s._speakingTimeout);
+    h.closeFastPath(s);
+  });
+
+  it("gate review: Flux falling back to Nova mid-Spanish call takes the call back to English, with a note", async () => {
+    const h = makeFast({ steps: [{ tools: [{ name: "set_language", args: { language: "es" } }] }, { sentences: ["Claro."], content: "Claro." }] });
+    const s = h.start(langSession());
+    h.fluxOpens();
+    await h.handleUserSpeech(s, h.twilioWs, "¿Habla español?");
+    h.lastFlux().callbacks.onError(new Error("flux down"));
+    assert.equal(s.fastPath, "degraded-stt");
+    assert.equal(s.fastLanguage, "en");
+    assert.equal(s.deepgramVoice, "aura-2-thalia-en");
+    assert.ok(s.messages.some((m) => m.role === "system" && /only continue in English/.test(m.content)));
+    clearTimeout(s._speakingTimeout);
+    h.closeFastPath(s);
+  });
+
+  it("gate review: REST failing in the new voice is captured once, the call goes back to English, and the sentence is said in the base voice", async () => {
+    const h = makeFast({ restFailsFor: (_text, options) => options?.voice === "aura-2-selena-es", steps: [{ tools: [{ name: "set_language", args: { language: "es" } }] }, { sentences: ["Claro."], content: "Claro." }] });
+    const s = h.start(langSession());
+    h.fluxOpens();
+    await h.handleUserSpeech(s, h.twilioWs, "¿Habla español?");
+    assert.deepEqual(h.calls.filter((c) => c[0] === "synthesizeSpeech").map((c) => [c[1], c[2]?.voice]), [["Claro.", "aura-2-selena-es"], ["Claro.", "aura-2-thalia-en"]]);
+    assert.equal(s.fastLanguage, "en");
+    assert.equal(h.sentry.filter((e) => e.tags?.service === "aura-rest").length, 1, JSON.stringify(h.sentry));
+    assert.ok(s.messages.some((m) => m.role === "system" && /only continue in English/.test(m.content)));
+    clearTimeout(s._speakingTimeout);
+    h.closeFastPath(s);
+  });
+
+  it("gate review: a voice that fails again after the model switches back to it is not captured twice", async () => {
+    const h = makeFast({ restFailsFor: (_text, options) => options?.voice === "aura-2-selena-es", steps: [
+      { tools: [{ name: "set_language", args: { language: "es" } }] }, { sentences: ["Claro."], content: "Claro." },
+      { tools: [{ name: "set_language", args: { language: "es" } }] }, { sentences: ["Sí."], content: "Sí." },
+    ] });
+    const s = h.start(langSession());
+    h.fluxOpens();
+    await h.handleUserSpeech(s, h.twilioWs, "¿Habla español?");
+    await h.handleUserSpeech(s, h.twilioWs, "Por favor, en español.");
+    assert.equal(h.calls.filter((c) => c[0] === "synthesizeSpeech" && c[2]?.voice === "aura-2-selena-es").length, 2, "it failed twice");
+    assert.equal(h.sentry.filter((e) => e.tags?.service === "aura-rest").length, 1, "captured once a call");
+    clearTimeout(s._speakingTimeout);
+    h.closeFastPath(s);
+  });
+
+  it("gate review: the apology comes once per caller turn — again on a later turn", async () => {
+    const h = makeFast({ steps: [{ sentences: ["نعم"], content: "نعم" }, { sentences: ["مرحبا"], content: "مرحبا" }] });
+    const s = h.start(langSession());
+    await h.handleUserSpeech(s, h.twilioWs, "Do you speak Arabic?");
+    await h.handleUserSpeech(s, h.twilioWs, "Please, in Arabic.");
+    assert.deepEqual(h.lastAura().handle.spoken, [UNSPEAKABLE_APOLOGY, UNSPEAKABLE_APOLOGY]);
+    h.closeFastPath(s);
+  });
+
+  it("gate review: canned lines follow the call's language (the re-prompt in Spanish)", async () => {
+    const h = makeFast({ repromptMs: 40, errorMsgWithLang: true });
+    const s = h.start(langSession());
+    s.fastLanguage = "es";
+    h.fluxOpens();
+    await h.sendTTS(s, h.twilioWs, "¿Le reservo el martes?");
+    h.audio(1, h.fastFlush(s));
+    echoMarks(h, s);
+    await sleep(70);
+    assert.deepEqual(h.lastAura().handle.spoken, ["¿Le reservo el martes?", "ERR:es:didntCatch ¿Le reservo el martes?"]);
+    h.closeFastPath(s);
+  });
+
+  it("security review: a refused language is logged as a code or a length, never the model's text (no alert-rule injection)", async () => {
+    const h = makeFast({ steps: [{ tools: [{ name: "set_language", args: { language: "[FATAL]" } }] }, { sentences: ["Sorry."], content: "Sorry." }] });
+    const s = h.start(langSession());
+    await h.handleUserSpeech(s, h.twilioWs, "Speak Klingon!");
+    assert.ok(!h.lines.some((l) => l.includes("[FATAL]")), h.lines.join("\n"));
+    assert.ok(h.lines.some((l) => l.includes("set_language refused for [7 chars]")), h.lines.join("\n"));
+    h.closeFastPath(s);
+  });
+
+  it("security review: the recording disclosure is spoken verbatim, whatever its script", async () => {
+    const h = makeFast({ auraOpen: false });
+    const s = h.start(langSession());
+    const disclosure = "يتم تسجيل هذه المكالمة.";
+    await h.sendRestTTS(s, h.twilioWs, disclosure, undefined, { verbatim: true });
+    assert.deepEqual(h.calls.filter((c) => c[0] === "synthesizeSpeech").map((c) => c[1]), [disclosure]);
+    clearTimeout(s._speakingTimeout);
+    h.closeFastPath(s);
   });
 
   it("over REST (after a fallback) too; in Japanese, kana and kanji are spoken; a classic call is untouched", async () => {

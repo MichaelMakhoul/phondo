@@ -15,7 +15,10 @@ const {
   setLanguageToolDefinition,
   unspeakableText,
   applyLanguageSwitch,
+  planLanguageSwitch,
+  recordLanguageSwitch,
   UNSPEAKABLE_APOLOGY,
+  LANGUAGE_UNHEARD_MESSAGE,
 } = require("../lib/fast-languages");
 
 describe("FAST_LANGUAGES: what Flux Multilingual hears and Aura-2 speaks", () => {
@@ -143,5 +146,24 @@ describe("applyLanguageSwitch", () => {
   it("back to English without a recorded base voice: an English voice, never the Spanish one", () => {
     const s = { fastLanguage: "es", deepgramVoice: "aura-2-selena-es" };
     assert.equal(applyLanguageSwitch(s, "en").voice, "aura-2-theia-en");
+  });
+});
+
+describe("planLanguageSwitch / recordLanguageSwitch (gate review: decide, then record only what happened)", () => {
+  it("a plan changes nothing on the session; recording it does", () => {
+    const s = { fastLanguage: "en", baseDeepgramVoice: "aura-2-theia-en", deepgramVoice: "aura-2-theia-en" };
+    const plan = planLanguageSwitch(s, "de");
+    assert.equal(plan.changed, true);
+    assert.equal(plan.voice, "aura-2-elara-de");
+    assert.equal(s.fastLanguage, "en");
+    assert.equal(s.languagesUsed, undefined);
+    recordLanguageSwitch(s, plan);
+    assert.equal(s.fastLanguage, "de");
+    assert.deepEqual(s.languagesUsed, ["en", "de"]);
+  });
+  it("the unheard message says to carry on in English and offer a call-back", () => {
+    assert.match(LANGUAGE_UNHEARD_MESSAGE, /^NOT SWITCHED/);
+    assert.match(LANGUAGE_UNHEARD_MESSAGE, /English/);
+    assert.match(LANGUAGE_UNHEARD_MESSAGE, /call (?:them )?back/);
   });
 });

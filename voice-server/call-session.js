@@ -26,6 +26,7 @@ const AI_SAID_BOOKED = /(?<!\bwhat )\b(?:i['’]?ve|i have|i|we['’]?ve|we have
  * @property {ReturnType<typeof setTimeout>|null} fluxOpenTimer - Flux must open before it fires
  * @property {boolean} ttsFellBack - the Aura stream failed: REST for the rest of the call
  * @property {"language"} [ttsRestReason] - SCRUM-594 (F5): REST because the call switched language (no failure)
+ * @property {boolean} [restVoiceFailureCaptured] - SCRUM-594 (F5): a REST failure in a switched language's voice was captured
  * @property {boolean} flushRefusalLogged - a refused flush is logged once per call
  * @property {boolean} flushRefused - the last flush was refused: its text is owed until Aura goes quiet
  * @property {number} flushSentAt - Date.now() of the last flush sent

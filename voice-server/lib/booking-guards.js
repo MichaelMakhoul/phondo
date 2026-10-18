@@ -438,34 +438,42 @@ const DONE_IF_ASKED = /\b(that'?s it|that'?s everything|all good|all done|cheers
 const PLAIN_NO = /^\W*(no|nope|nah|not really)\b/i;
 
 // SCRUM-594 (F5): the same closings in the other languages the fast path speaks
-// (lib/fast-languages.js: es, fr, de, it, nl, ja). JS's \b is ASCII-only, so
-// these bound words by letters (\p{L}); Japanese has no spaces to bound.
+// (lib/fast-languages.js: es, fr, de, it, nl, ja) — read only once the call has
+// switched to one (an English call keeps the English patterns: "Jenny Chau" is a
+// surname). Like THATS_ALL, a closing counts only at the END of what the caller
+// said ("Das war's nicht…", "C'est tout ce que…" are not goodbyes), optionally
+// followed by a thanks. JS's \b is ASCII-only, so words are bounded by \p{L}.
+const THANKS = "(?:muchas )?gracias|merci(?: beaucoup)?|danke(?: sch[öo]n| sehr)?|vielen dank|grazie(?: mille)?|bedankt|dank (?:je|u)(?: wel)?|thanks|thank you";
 /** @param {string[]} alternatives */
-const wordsOf = (alternatives) => new RegExp(`(?<![\\p{L}\\p{N}])(?:${alternatives.join("|")})(?![\\p{L}\\p{N}])`, "iu");
-const GOODBYE_OTHER = wordsOf([
-  "adi[oó]s", "chao", "chau", "hasta (?:luego|pronto|la pr[oó]xima)", "que tenga (?:un )?buen d[ií]a", "no,? (?:muchas )?gracias", "eso es todo(?!\\s*(?:correcto|bien|perfecto))",
-  "au revoir", "[àa] bient[ôo]t", "bonne (?:journ[ée]e|soir[ée]e)", "non,? merci", "c['’]est tout(?!\\s*(?:bon|correct|juste))",
-  "tsch[üu]ss?", "auf wieder(?:h[öo]ren|sehen)", "sch[öo]nen tag", "nein,? danke", "das war['’]?s", "das ist alles(?!\\s*(?:richtig|korrekt|gut))",
-  "arrivederci", "ciao", "buona (?:giornata|serata)", "a presto", "no,? grazie", "[èe] tutto(?!\\s*(?:giusto|corretto|ok))",
-  "doei", "tot ziens", "fijne dag", "nee,? (?:bedankt|dank je(?: wel)?)", "dat was het", "dat is alles(?!\\s*(?:goed|correct|juist))",
+const closingAtEnd = (alternatives) => new RegExp(`(?<![\\p{L}\\p{N}])(?:${alternatives.join("|")})(?:[\\s,.!¡]+(?:y |et |und |e |en )?(?:${THANKS}))?[\\s,.!?¡¿…]*$`, "iu");
+const GOODBYE_OTHER = closingAtEnd([
+  "adi[oó]s", "hasta (?:luego|pronto|la pr[oó]xima)", "que tenga (?:un )?buen d[ií]a", "no,? (?:muchas )?gracias", "eso es todo",
+  "au revoir", "[àa] bient[ôo]t", "bonne (?:journ[ée]e|soir[ée]e)", "non,? merci", "c['’]est tout",
+  "tsch[üu]ss?", "auf wieder(?:h[öo]ren|sehen)", "sch[öo]nen tag(?: noch)?", "nein,? danke", "das war['’]?s", "das ist alles",
+  "arrivederci", "buona (?:giornata|serata)", "a presto", "no,? grazie", "[èe] tutto",
+  "doei", "tot ziens", "fijne dag(?: nog)?", "nee,? (?:bedankt|dank (?:je|u)(?: wel)?)", "dat was het", "dat is alles",
 ]);
-const GOODBYE_JA = /さようなら|失礼(?:します|いたします)|ありがとうございました/;
-const DONE_IF_ASKED_OTHER = wordsOf([
+/** "Chao" / "ciao" only as the whole reply ("Linda Chao" is a name; "Ciao, vorrei…" a greeting). */
+const CIAO_ALONE = new RegExp(`^[\\s¡¿"'«]*(?:(?:${THANKS}|vale|bueno|perfecto|perfetto|ok(?:ay)?)[\\s,.!]+)?(?:chao|chau|ciao)[\\s,.!?…]*$`, "iu");
+const GOODBYE_JA = /(?:さようなら|失礼(?:します|いたします))[。．！!\s]*$/;
+const DONE_IF_ASKED_OTHER = closingAtEnd([
   "nada(?: m[aá]s)?", "es todo", "estoy bien",
   "rien(?: d['’]autre)?", "[çc]a ira",
   "nichts(?: weiter)?", "alles gut",
   "niente(?: altro)?", "nient['’]altro", "a posto",
   "niets(?: meer)?", "verder niets",
 ]);
-const DONE_IF_ASKED_JA = /大丈夫です|特にありません|以上です|いいえ/;
-const PLAIN_NO_OTHER = /^[\s¡¿"'(«]*(?:no|non|nein|nee|nada|niente|nichts|niets)(?![\p{L}\p{N}])/iu;
-const ANYTHING_ELSE_OTHER = wordsOf([
-  "algo m[aá]s", "alguna otra cosa",
+const DONE_IF_ASKED_JA = /(?:大丈夫です|特にありません|以上です|ありがとうございました|いいえ)[。．！!\s]*$/;
+/** A bare "no" (or "no, thanks") as the whole reply. */
+const PLAIN_NO_OTHER = new RegExp(`^[\\s¡¿"'«]*(?:no|non|nein|nee|nada|niente|nichts|niets)(?:[\\s,.!]+(?:${THANKS}))?[\\s,.!?…]*$`, "iu");
+/** "Anything else?" — never "something earlier / later" (a time offer). */
+const ANYTHING_ELSE_OTHER = new RegExp(`(?<![\\p{L}\\p{N}])(?:${[
+  "algo m[aá]s(?!\\s+(?:temprano|tarde|pronto|cerca|barato|caro))", "alguna otra cosa",
   "autre chose", "rien d['’]autre", "quelque chose d['’]autre",
-  "noch etwas", "sonst noch", "noch was",
-  "qualcos['’]altro", "nient['’]altro", "c['’][èe] altro",
-  "nog iets", "verder nog",
-]);
+  "sonst noch(?: etwas| was)?(?!\\s+(?:fr[üu]her|sp[äa]ter|eher))", "noch etwas(?!\\s+(?:fr[üu]her|sp[äa]ter|eher))", "noch was(?!\\s+(?:fr[üu]her|sp[äa]ter|eher))",
+  "qualcos['’]altro", "nient['’]altro", "c['’][èe] altro(?!\\s+(?:orario|giorno))",
+  "nog iets(?!\\s+(?:eerder|later|vroeger))", "verder nog",
+].join("|")})(?![\\p{L}\\p{N}])`, "iu");
 const ANYTHING_ELSE_JA = /他に|ほかに/;
 
 /**
@@ -473,22 +481,26 @@ const ANYTHING_ELSE_JA = /他に|ほかに/;
  * they need nothing more? ("Yep, that's it, thanks." answering "Is everything
  * correct?" is a yes to the read-back, not a goodbye.)
  * @param {Array<{ role: string, content: unknown }>} transcript - session.fullTranscriptMessages
+ * @param {string} [language] - the call's language (fast path); another language's closings count only then
  * @returns {boolean}
  */
-function callerIsDone(transcript) {
+function callerIsDone(transcript, language = "en") {
   const last = transcript.length - 1;
   if (last < 0 || transcript[last].role !== "user" || typeof transcript[last].content !== "string") return false;
   const said = transcript[last].content;
-  if (GOODBYE.test(said) || THATS_ALL.test(said) || GOODBYE_OTHER.test(said) || GOODBYE_JA.test(said)) return true;
+  const other = language !== "en"; // F5: another language's closings only once the call speaks it
+  if (GOODBYE.test(said) || THATS_ALL.test(said)) return true;
+  if (other && (GOODBYE_OTHER.test(said) || CIAO_ALONE.test(said) || GOODBYE_JA.test(said))) return true;
   const asked = transcript[last - 1];
   const question = asked && asked.role === "assistant" ? String(asked.content) : "";
   // "Is that all correct?" is a read-back, not "anything else?".
   const askedAnythingElse = Boolean(question) && (
     /anything else|anything more|\bis that (?:everything|all)\b(?!\s*,?\s*(?:correct|right|ok(?:ay)?|good|fine|accurate|alright|true))/i.test(question)
-    || ANYTHING_ELSE_OTHER.test(question)
-    || ANYTHING_ELSE_JA.test(question)
+    || (other && (ANYTHING_ELSE_OTHER.test(question) || ANYTHING_ELSE_JA.test(question)))
   );
-  return askedAnythingElse && (DONE_IF_ASKED.test(said) || PLAIN_NO.test(said) || DONE_IF_ASKED_OTHER.test(said) || DONE_IF_ASKED_JA.test(said) || PLAIN_NO_OTHER.test(said));
+  if (!askedAnythingElse) return false;
+  if (DONE_IF_ASKED.test(said) || PLAIN_NO.test(said)) return true;
+  return other && (DONE_IF_ASKED_OTHER.test(said) || DONE_IF_ASKED_JA.test(said) || PLAIN_NO_OTHER.test(said));
 }
 
 /**
@@ -496,13 +508,13 @@ function callerIsDone(transcript) {
  * lets the call end; `allow: false` keeps it up with the message as the tool
  * result; `capReached` lets it end after END_CALL_HOLD_CAP caller turns of
  * holds (server.js logs and alerts on it).
- * @param {{ bookingGuards?: boolean, bookingGuardState?: Partial<GuardState>, fullTranscriptMessages: Array<{ role: string, content: unknown }> }} session
+ * @param {{ bookingGuards?: boolean, bookingGuardState?: Partial<GuardState>, fullTranscriptMessages: Array<{ role: string, content: unknown }>, fastLanguage?: string|null }} session
  * @returns {{ allow: false, message: string, count: number, cap: number } | { allow: true, capReached: true } | null}
  */
 function checkCallerDone(session) {
   if (!session.bookingGuards) return null;
   const state = guardState(session);
-  if (callerIsDone(session.fullTranscriptMessages)) return null;
+  if (callerIsDone(session.fullTranscriptMessages, session.fastLanguage || "en")) return null;
   const turn = callerTurns(session.fullTranscriptMessages);
   if (state.lastEndCallHoldTurn !== turn) {
     if (state.endCallHolds >= END_CALL_HOLD_CAP) return { allow: true, capReached: true };

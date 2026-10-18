@@ -288,8 +288,51 @@ describe("SCRUM-594 (phone test F5): today's weekday and a closed today", () => 
     assert.ok(!result.includes("CLOSED"));
   });
 
+  it("a closed tomorrow gets its own line too: Saturday → Sunday, Friday → Saturday (gate review)", () => {
+    const saturday = buildLiveScheduleSection(weekdaySnapshot(BUSINESS_WEEK), "2026-10-17");
+    const lines = saturday.split("\n");
+    const at = (prefix) => lines.findIndex((l) => l.startsWith(prefix));
+    assert.ok(at("Today (Sat, Oct 17): CLOSED — not a business day.") >= 0, saturday);
+    assert.ok(at("Tomorrow (Sun, Oct 18): CLOSED — not a business day.") > at("Today (Sat, Oct 17)"));
+    assert.ok(at("Mon, Oct 19:") > at("Tomorrow (Sun, Oct 18)"), "then the next business day, by its own name");
+    const friday = withNow("2026-10-16T03:00:00Z", () => buildLiveScheduleSection(weekdaySnapshot({ "2026-10-16": ["2026-10-16T15:00:00"], ...BUSINESS_WEEK }), "2026-10-16")); // Fri 2 PM Sydney
+    const fl = friday.split("\n");
+    const fat = (prefix) => fl.findIndex((l) => l.startsWith(prefix));
+    assert.ok(fat("Today (Fri, Oct 16): 3 PM") >= 0, friday);
+    assert.ok(fat("Tomorrow (Sat, Oct 17): CLOSED — not a business day.") > fat("Today (Fri, Oct 16)"));
+    assert.ok(fat("Mon, Oct 19:") > fat("Tomorrow (Sat, Oct 17)"));
+  });
+
+  /** Run `fn` with the clock at `iso` (Date only). */
+  const withNow = (iso, fn) => {
+    const RealDate = Date;
+    const fixed = RealDate.parse(iso);
+    global.Date = class extends RealDate {
+      constructor(...a) { super(...(a.length ? a : [fixed])); }
+      static now() { return fixed; }
+    };
+    try {
+      return fn();
+    } finally {
+      global.Date = RealDate;
+    }
+  };
+
+  it("before opening (just after midnight), today's line says every time today is still ahead; the time also reads on the 24-hour clock", () => {
+    // Simulated calls at 00:32 Monday: "Today's out since it's late", "Today's pretty full" — today was empty.
+    const result = withNow("2026-10-18T13:32:00Z", () => buildLiveScheduleSection(weekdaySnapshot(BUSINESS_WEEK), "2026-10-19")); // Mon 00:32 Sydney
+    assert.ok(result.includes("Current time: 12:32 AM (00:32 on the 24-hour clock)"), result.split("\n")[1]);
+    assert.ok(result.includes("Today (Mon, Oct 19) — the business hasn't opened yet today, so every time today is still ahead: 10 AM, 10:30 AM (2 slots)"), result);
+  });
+
+  it("once open, today's line is plain (a later first free time is not 'not open yet')", () => {
+    const result = withNow("2026-10-18T23:15:00Z", () => buildLiveScheduleSection(weekdaySnapshot(BUSINESS_WEEK), "2026-10-19")); // Mon 10:15 Sydney
+    assert.ok(result.includes("Today (Mon, Oct 19): 10 AM, 10:30 AM (2 slots)"), result);
+    assert.ok(!result.includes("hasn't opened yet"));
+  });
+
   it("an open today with times is listed as before", () => {
-    const result = buildLiveScheduleSection(weekdaySnapshot(BUSINESS_WEEK), "2026-10-19");
+    const result = withNow("2026-10-18T23:15:00Z", () => buildLiveScheduleSection(weekdaySnapshot(BUSINESS_WEEK), "2026-10-19")); // Mon 10:15 Sydney
     assert.ok(result.includes("Today (Mon, Oct 19): 10 AM, 10:30 AM (2 slots)"), result);
     assert.ok(result.includes("Tomorrow (Tue, Oct 20):"));
   });

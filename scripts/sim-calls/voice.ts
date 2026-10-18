@@ -399,8 +399,10 @@ async function setUpSimCall(o: { calledNumber: string; callerPhone: string; call
     CANCEL_KEPT_NUDGE: vs.bookingGuards?.CANCEL_KEPT_NUDGE,
     // SCRUM-594 F5: set_language — no streams here; the voice the next words would use is recorded.
     setLanguageToolDefinition: vs.fastLanguages?.setLanguageToolDefinition,
-    applyLanguageSwitch: vs.fastLanguages?.applyLanguageSwitch,
-    switchFastLanguageStreams: (s: any, sw: { voice?: string }) => { s.deepgramVoice = sw.voice; },
+    planLanguageSwitch: vs.fastLanguages?.planLanguageSwitch,
+    recordLanguageSwitch: vs.fastLanguages?.recordLanguageSwitch,
+    LANGUAGE_UNHEARD_MESSAGE: vs.fastLanguages?.LANGUAGE_UNHEARD_MESSAGE,
+    switchFastLanguageStreams: (s: any, sw: { voice?: string }) => { s.deepgramVoice = sw.voice; return true; },
     runOwnerToolCall: vs.ownerToolRunner.runOwnerToolCall,
     scheduleCache: vs.scheduleCache,
     noteAssistantSpeech: vs.ownerTurnStamps.noteAssistantSpeech,

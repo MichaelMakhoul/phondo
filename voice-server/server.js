@@ -41,7 +41,7 @@ const { openAuraStream } = require("./services/aura-stream");
 const { DEFAULT_HOST } = require("./services/deepgram-ws-common");
 const { createFastPlayer } = require("./lib/fast-player");
 const { createFastTurnEngine, endsWithQuestion, isBackchannel, isLikelyEcho } = require("./lib/fast-turns");
-const { FLUX_MULTI_MODEL, fastLanguagesEnabled, setLanguageToolDefinition, unspeakableText, applyLanguageSwitch, UNSPEAKABLE_APOLOGY } = require("./lib/fast-languages"); // SCRUM-594 (F5)
+const { FLUX_MULTI_MODEL, fastLanguagesEnabled, setLanguageToolDefinition, unspeakableText, planLanguageSwitch, recordLanguageSwitch, UNSPEAKABLE_APOLOGY, LANGUAGE_UNHEARD_MESSAGE } = require("./lib/fast-languages"); // SCRUM-594 (F5)
 const { createNoTurnWatchdog } = require("./lib/no-turn-watchdog");
 const { startSpeculativeReply } = require("./lib/speculative-reply");
 const { streamClaudeResponse } = require("./services/claude-chat");
@@ -259,6 +259,43 @@ const ERROR_MESSAGES = {
     goodbye: "Gracias por llamar. ¡Adiós!",
     sayAgain: "Perdón, ¿podría repetirlo?",
     didntCatch: "Perdón, no le entendí.",
+  },
+  // SCRUM-594 (F5): the lines a fast-path call can hear once it has switched language
+  // (lib/fast-languages.js); any other key falls back to English.
+  fr: {
+    repeatRequest: "Excusez-moi, je n'ai pas pu traiter cela. Pourriez-vous répéter ?",
+    troubleRepeat: "Désolée, j'ai un petit souci. Pourriez-vous répéter ?",
+    goodbye: "Merci de votre appel. Au revoir !",
+    sayAgain: "Pardon, pourriez-vous répéter ?",
+    didntCatch: "Pardon, je n'ai pas compris.",
+  },
+  de: {
+    repeatRequest: "Entschuldigung, das konnte ich nicht verarbeiten. Könnten Sie das wiederholen?",
+    troubleRepeat: "Entschuldigung, ich habe gerade ein kleines Problem. Könnten Sie das wiederholen?",
+    goodbye: "Danke für Ihren Anruf. Auf Wiederhören!",
+    sayAgain: "Entschuldigung, könnten Sie das noch einmal sagen?",
+    didntCatch: "Entschuldigung, das habe ich nicht verstanden.",
+  },
+  it: {
+    repeatRequest: "Mi scusi, non sono riuscita a elaborarlo. Può ripetere?",
+    troubleRepeat: "Mi scusi, ho un piccolo problema. Può ripetere?",
+    goodbye: "Grazie per la chiamata. Arrivederci!",
+    sayAgain: "Scusi, può ripetere?",
+    didntCatch: "Scusi, non ho capito.",
+  },
+  nl: {
+    repeatRequest: "Sorry, dat kon ik niet verwerken. Kunt u het herhalen?",
+    troubleRepeat: "Sorry, ik heb even een klein probleem. Kunt u dat herhalen?",
+    goodbye: "Bedankt voor het bellen. Tot ziens!",
+    sayAgain: "Sorry, kunt u dat herhalen?",
+    didntCatch: "Sorry, dat verstond ik niet.",
+  },
+  ja: {
+    repeatRequest: "申し訳ございません、うまく処理できませんでした。もう一度おっしゃっていただけますか？",
+    troubleRepeat: "申し訳ございません、少し問題が発生しています。もう一度おっしゃっていただけますか？",
+    goodbye: "お電話ありがとうございました。失礼いたします。",
+    sayAgain: "すみません、もう一度おっしゃっていただけますか？",
+    didntCatch: "すみません、聞き取れませんでした。",
   },
 };
 
@@ -3458,7 +3495,7 @@ wss.on("connection", (twilioWs) => {
                   // required, and REST knows its frames went out (and before the
                   // pre-synthesised greeting's); nothing may cut it off.
                   beginFastDisclosure(session);
-                  const disclosureMs = await sendRestTTS(session, twilioWs, disclosureText);
+                  const disclosureMs = await sendRestTTS(session, twilioWs, disclosureText, undefined, { verbatim: true });
                   if (twilioWs.readyState !== WebSocket.OPEN) throw new Error("the Twilio stream closed before the disclosure was sent");
                   armFastDisclosureEnd(session, twilioWs, disclosureMs);
                 } else {
@@ -3658,6 +3695,8 @@ const FAST_VOICE_ADDENDUM = [
   "- If the caller wants a different time for an appointment you booked on this call, move it with reschedule_appointment; book a second one only if they want two.",
   "- When they ask to move it to a day (\"how about Tuesday?\"), offer the times free that day and let them pick one before you move it.",
   "- When the caller asks to cancel, call cancel_appointment straight away, without checking their name again: it tells you when to read the booking back to them for a yes.",
+  "TIMES:",
+  "- Offer the earliest free time in the LIVE SCHEDULE: today first, if it still has times. Never give a reason a day is unavailable that the schedule doesn't show.",
 ].join("\n");
 // Phone test F5: asked for Arabic, the model followed the shared prompt's LANGUAGE rule (written
 // for Gemini, which speaks it), said yes, and sent Arabic text to an English voice. The fast path
@@ -3877,6 +3916,16 @@ const NO_FILLER_RE = /^(yeah?|yes|no|ok(ay)?|sure|thanks?( you)?|thank you|bye|g
 function fillerMessagesFor(session) {
   if (typeof session.fastLanguage === "string") return FILLER_MESSAGES[session.fastLanguage] || null;
   return FILLER_MESSAGES[session.language] || FILLER_MESSAGES.en;
+}
+
+/**
+ * SCRUM-594 (F5): the language the caller is hearing — the fast path's (switched) language,
+ * else the assistant's — for the canned lines (getErrorMsg).
+ * @param {any} session
+ * @returns {string}
+ */
+function callLanguage(session) {
+  return typeof session?.fastLanguage === "string" ? session.fastLanguage : session?.language;
 }
 
 function getToolFiller(lang, toolNames) {
@@ -4145,10 +4194,21 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
           // SCRUM-594 (phone test F5): the fast path's language switch runs here,
           // never through the executor: the hints, the voice and the model's note.
           if (fnName === "set_language" && session.fastLanguages) {
-            const sw = applyLanguageSwitch(session, fnArgs?.language);
-            if (sw.changed) switchFastLanguageStreams(session, sw);
-            else if (!sw.ok) console.warn(`[FastPath] set_language refused for "${String(fnArgs?.language ?? "").slice(0, 20)}" (callSid=${session.callSid})`);
-            session.messages.push({ role: "tool", tool_call_id: toolCall.id, content: sw.message });
+            const plan = planLanguageSwitch(session, fnArgs?.language);
+            let message = plan.message;
+            if (plan.changed) {
+              // Gate review: what this round said before the tool call goes out and plays in
+              // the old voice first — never said again over REST, never in the new voice.
+              await ttsChain;
+              if (session.fastTts?.isOpen()) await settleFastAudio(session);
+              if (switchFastLanguageStreams(session, plan)) recordLanguageSwitch(session, plan);
+              else message = LANGUAGE_UNHEARD_MESSAGE;
+            } else if (!plan.ok) {
+              // Security review: the model's text never reaches the logs (alert rules match substrings).
+              const raw = String(fnArgs?.language ?? "");
+              console.warn(`[FastPath] set_language refused for ${/^[a-z]{2,3}(?:-[a-z]{2,4})?$/i.test(raw) ? `"${raw}"` : `[${raw.length} chars]`} (callSid=${session.callSid})`);
+            }
+            session.messages.push({ role: "tool", tool_call_id: toolCall.id, content: message });
             continue;
           }
 
@@ -4524,7 +4584,7 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
           await Promise.all(turnTtsChains); // every earlier round's audio goes out first
           reply = sentenceQueue.join(" ");
           if (!reply) {
-            reply = getErrorMsg(session.language, "goodbye");
+            reply = getErrorMsg(callLanguage(session), "goodbye");
             try {
               await speak(reply);
             } catch (err) {
@@ -4541,7 +4601,7 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
 
     if (!reply) {
       hold.stop();
-      reply = getErrorMsg(session.language, "repeatRequest");
+      reply = getErrorMsg(callLanguage(session), "repeatRequest");
       console.warn(`[Pipeline] Tool call loop exhausted after ${maxToolIterations} iterations (callSid=${session.callSid})`);
       // SCRUM-587 (SF5): an owner never hears "could you repeat that?" — after
       // a change it invites a duplicate request — but the last tool's own words.
@@ -4586,7 +4646,7 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
       session.messages.pop();
     }
     try {
-      await sendTTS(session, twilioWs, getErrorMsg(session.language, "troubleRepeat"), undefined, NOT_A_REPLY);
+      await sendTTS(session, twilioWs, getErrorMsg(callLanguage(session), "troubleRepeat"), undefined, NOT_A_REPLY);
       if (session.fastPath) fastFlush(session); // SCRUM-594: a flush point (spec 4.8.4)
     } catch (ttsErr) {
       console.error("[Pipeline] Failed to send error message to caller:", ttsErr);
@@ -4697,14 +4757,32 @@ const NOT_A_REPLY = Object.freeze({ reply: false });
  * @param {() => boolean} [isStale] - true after synthesis: nothing is sent (SCRUM-594)
  * @returns {Promise<number>} the audio's playback ms (0 when nothing was sent because it went stale)
  */
-async function sendRestTTS(session, twilioWs, text, isStale) {
+async function sendRestTTS(session, twilioWs, text, isStale, options = {}) {
   const t0 = Date.now();
-  const cleanText = stripMarkdown(speakableFastText(session, text));
+  // SCRUM-594 (F5): the speech guard — but a legal disclosure is spoken verbatim (security review).
+  const cleanText = stripMarkdown(options.verbatim ? text : speakableFastText(session, text));
   if (!cleanText) return 0; // SCRUM-594 (F5): a second unspeakable sentence in the same turn says nothing
   // SCRUM-594 (phone test F4): only the words sent to TTS (harmless for classic too).
-  const audioBuffer = await synthesizeSpeech(DEEPGRAM_API_KEY, spellLettersForTts(cleanText), {
-    voice: session?.deepgramVoice,
-  });
+  let audioBuffer;
+  try {
+    audioBuffer = await synthesizeSpeech(DEEPGRAM_API_KEY, spellLettersForTts(cleanText), {
+      voice: session?.deepgramVoice,
+    });
+  } catch (err) {
+    // Gate review (F5): after a language switch the call speaks over REST in that language's
+    // voice; a voice that fails would leave every later sentence silent. Captured once; back
+    // to English, and this sentence is said in the assistant's own voice.
+    if (!session?.fastState || !session.baseDeepgramVoice || session.deepgramVoice === session.baseDeepgramVoice) throw err;
+    if (!session.fastState.restVoiceFailureCaptured) {
+      session.fastState.restVoiceFailureCaptured = true;
+      captureFastFailure(session, "aura-rest", `REST TTS failed in the voice ${session.deepgramVoice}`, err);
+    }
+    revertFastLanguageToEnglish(session, `REST TTS failed in ${session.deepgramVoice}`);
+    session.deepgramVoice = session.baseDeepgramVoice;
+    audioBuffer = await synthesizeSpeech(DEEPGRAM_API_KEY, spellLettersForTts(cleanText), {
+      voice: session.deepgramVoice,
+    });
+  }
   console.log(`[TTS] (${Date.now() - t0}ms) ${audioBuffer.length} bytes`);
   // SCRUM-594: the fast turn this was for was barged in on while it synthesised.
   if (isStale?.()) return 0;
@@ -5093,14 +5171,46 @@ function fallBackToRestTts(session, reason, err, options = {}) {
  */
 function switchFastLanguageStreams(session, sw) {
   const stt = session.deepgramWs;
-  if (session.fastPath === true && stt && typeof stt.configure === "function") {
-    if (!stt.configure({ language_hints: sw.hints })) console.warn(`[FastPath] Language hints not sent: Flux is not open (callSid=${session.callSid})`);
-  } else if (session.fastPath === "degraded-stt") {
-    console.warn(`[FastPath] Language ${sw.to}: Nova (the Flux fallback) only hears English (callSid=${session.callSid})`);
+  const hearing = session.fastPath === true && Boolean(stt) && typeof stt.configure === "function";
+  if (sw.to !== "en") {
+    // Gate review: no switch the hearing can't follow — the model would speak Spanish to a
+    // recogniser still listening for English.
+    if (!hearing) {
+      console.warn(`[FastPath] Language ${sw.to} not switched: ${session.fastPath === "degraded-stt" ? "Nova (the Flux fallback) only hears English" : "no Flux stream"} (callSid=${session.callSid})`);
+      return false;
+    }
+    if (!stt.configure({ language_hints: sw.hints })) {
+      console.warn(`[FastPath] Language ${sw.to} not switched: Flux is not open (callSid=${session.callSid})`);
+      return false;
+    }
+  } else if (hearing) {
+    stt.configure({ language_hints: sw.hints }); // back to English: best effort (Nova hears English anyway)
   }
   if (session.fastTts) fallBackToRestTts(session, `language switch to ${sw.to}`, null, { intentional: true });
   session.deepgramVoice = sw.voice;
   console.log(`[FastPath] Language ${sw.from} → ${sw.to}, voice ${sw.voice} (callSid=${session.callSid})`);
+  return true;
+}
+
+/**
+ * Gate review: the call can't go on in its language — Flux refused the hints, Flux fell
+ * back to Nova (English only), or the language's voice failed. Back to English (the hints
+ * when Flux still hears, the assistant's own voice), and the model is told what to say.
+ * @param {CallSession} session
+ * @param {string} why - for the log, never caller words
+ * @returns {boolean} whether the call was in another language
+ */
+function revertFastLanguageToEnglish(session, why) {
+  if (typeof session.fastLanguage !== "string" || session.fastLanguage === "en") return false;
+  const plan = planLanguageSwitch(session, "en");
+  if (!plan.changed) return false;
+  const stt = session.deepgramWs;
+  if (session.fastPath === true && stt && typeof stt.configure === "function") stt.configure({ language_hints: plan.hints });
+  session.deepgramVoice = plan.voice || session.deepgramVoice;
+  recordLanguageSwitch(session, plan);
+  console.warn(`[FastPath] Back to English: ${why} (callSid=${session.callSid})`);
+  session.addMessage("system", "The line can only continue in English now: the caller's language stopped working. Tell the caller, in English, that you can only continue in English, and offer to have someone call them back.");
+  return true;
 }
 
 /**
@@ -5203,6 +5313,10 @@ function openFastStt(session, twilioWs, openClassicStt) {
     },
     onWarning: (warning) => {
       console.warn(`[FastPath] Flux ${warning.type} ${warning.code || "-"}: ${String(warning.message).slice(0, 120)} (callSid=${session.callSid})`);
+      // Gate review: the only Configure the fast path sends is a language switch's hints.
+      if (warning.type === "ConfigureFailure" && revertFastLanguageToEnglish(session, "Flux refused the language hints")) {
+        captureFastFailure(session, "flux-stt", "Flux refused the language hints", new Error(`Flux ConfigureFailure ${warning.code || ""}`.trim()));
+      }
     },
   }, {
     host: FAST_DEEPGRAM_HOST,
@@ -5245,6 +5359,7 @@ function fallBackToNova(session, twilioWs, openClassicStt, reason, err, options)
   );
   cancelFastReprompt(session); // gate N1: no re-prompt on the Nova path
   session.fastPath = "degraded-stt";
+  revertFastLanguageToEnglish(session, "Flux fell back to Nova, which hears English only"); // gate review (F5)
   state.fluxFallBack = null;
   state.noTurnWatchdog = null;
   if (state.fluxOpenTimer) clearTimeout(state.fluxOpenTimer);
@@ -5272,7 +5387,7 @@ function fallBackToNova(session, twilioWs, openClassicStt, reason, err, options)
     commitFastTurn(session, twilioWs, open.transcript, open.turnIndex, "stt-fallback");
   } else if ((open || options?.callerSpoke) && !session.isProcessing && !fastAudioBusy(session)) {
     // The caller was talking and none of it reached us: ask, rather than leave them in silence.
-    const again = getErrorMsg(session.language, "sayAgain");
+    const again = getErrorMsg(callLanguage(session), "sayAgain");
     console.log(`[FastPath] Asking the caller to say it again after the Flux fallback (callSid=${session.callSid})`);
     session.addMessage("assistant", again);
     sendTTS(session, twilioWs, again, undefined, NOT_A_REPLY).then(
@@ -6010,7 +6125,7 @@ function repromptFast(session, question) {
   if (state.closed || session.fastPath !== true || session.isProcessing || fastAudioBusy(session) || !ws || ws.readyState !== WebSocket.OPEN) return;
   if (session.fastTurns?.openTurn()) return; // gate N1: the caller has started talking
   state.repromptedQuestion = question;
-  const text = `${getErrorMsg(session.language, "didntCatch")} ${question}`;
+  const text = `${getErrorMsg(callLanguage(session), "didntCatch")} ${question}`;
   console.log(`[FastTurn] No answer ${FAST_REPROMPT_MS} ms after the AI's question — asking it again (callSid=${session.callSid})`);
   // Gate N1: recorded once heard, as an aborted turn keeps only what was said. On the Aura
   // stream, at its first audio (a barge-in before that clears it); over REST, once its frames
