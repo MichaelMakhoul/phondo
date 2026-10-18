@@ -131,6 +131,21 @@ describe("surnameSpellingConfirmed", () => {
     assert.deepEqual(surnameSpellingConfirmed(after, "Khoury"), { confirmed: true, reason: "confirmed" }, "a detail after the question doesn't count");
   });
 
+  it("gate review: the caller's letters are read as said — a correction that adds a letter at either end is a respelling, never a yes", () => {
+    for (const [readBack, reply, surname] of [
+      ["B-R-O-W-N. Is that right?", "No, B-R-O-W-N, E on the end.", "Brown"],
+      ["S-M-Y-T-H. Is that right?", "No, S M Y T H, E.", "Smyth"],
+      ["H-O-U-R-Y. Is that right?", "No, K. H O U R Y.", "Houry"],
+      ["C-L-A-R-K. Is that right?", "No, C-L-A-R-K. E.", "Clark"],
+    ]) {
+      assert.deepEqual(surnameSpellingConfirmed([ai(readBack), caller(reply)], surname), { confirmed: false, reason: "caller-respelled" }, reply);
+    }
+  });
+
+  it("gate review: a surname of two words read back with a space between them still counts (\"D-E S-I-L-V-A\")", () => {
+    assert.deepEqual(surnameSpellingConfirmed([ai("That's D-E S-I-L-V-A. Is that right?"), caller("Yes.")], "De Silva"), { confirmed: true, reason: "confirmed" });
+  });
+
   it("a read-back with a one-letter word run into it still counts (\"…R-Y, a lovely name\")", () => {
     assert.equal(surnameSpellingConfirmed([ai("K-H-O-U-R-Y, a lovely name. Is that right?"), caller("Yes.")], "Khoury").confirmed, true);
     assert.equal(surnameSpellingConfirmed([ai("Is it a K-H-O-U-R-Y?"), caller("Yes.")], "Khoury").confirmed, true);

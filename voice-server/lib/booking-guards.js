@@ -57,13 +57,15 @@ const ABBREVIATION = /\b(?:a\.\s?m|p\.\s?m|e\.\s?g|i\.\s?e)\b\.?/gi;
  * Spelled-out letter runs in a text — "K-H-O-U-R-Y", "K, H, O, U, R, Y",
  * "K h o u r y." — as uppercase strings, in order.
  * @param {unknown} text
+ * @param {boolean} [trim] - set aside a one-letter word next to the spelling (runLetters);
+ *   only for the AI's read-back — a caller's letters are read as said
  * @returns {string[]}
  */
-function spelledRuns(text) {
+function spelledRuns(text, trim = true) {
   if (typeof text !== "string" || !text) return [];
   const runs = [];
   for (const m of text.replace(ABBREVIATION, " ").matchAll(SPELLED_RUN)) {
-    const letters = runLetters(m[2]);
+    const letters = runLetters(m[2], trim);
     if (letters.length >= 2) runs.push(letters);
   }
   return runs;
@@ -72,16 +74,21 @@ function spelledRuns(text) {
 /**
  * A spelled run's letters, uppercase.
  * @param {string} run - SPELLED_RUN's letters with their separators
+ * @param {boolean} [trim] - see spelledRuns
  * @returns {string}
  */
-function runLetters(run) {
+function runLetters(run, trim = true) {
   const parts = run.split(/([\s,.\-–—]+)/);
-  // A one-letter word next to a spelling — Italian "è", Spanish "y", English "a" —
-  // is set off by another kind of separator than its letters ("è K-H-O-U-R-Y. È…",
-  // "K-H-O-U-R-Y y su número"): it isn't one of them (SCRUM-594 F5).
-  const kind = (/** @type {string} */ sep) => sep.replace(/\s+/g, "") || " ";
-  if (parts.length >= 5 && kind(parts[1]) !== kind(parts[3])) parts.splice(0, 2);
-  if (parts.length >= 5 && kind(parts[parts.length - 2]) !== kind(parts[parts.length - 4])) parts.splice(-2);
+  if (trim && parts.length >= 5) {
+    // A one-letter word next to the AI's spelling — Italian "è", Spanish "y", English
+    // "a" — is set off by a space (or a sentence end) where its letters had hyphens,
+    // commas or dots: "è K-H-O-U-R-Y. È…", "K-H-O-U-R-Y y su número" (SCRUM-594 F5).
+    // A space between a surname's words is no such word: "D-E S-I-L-V-A".
+    const kind = (/** @type {string} */ sep) => sep.replace(/\s+/g, "") || " ";
+    const loose = (/** @type {string} */ sep) => kind(sep) === " " || kind(sep) === ".";
+    if (kind(parts[1]) === " " && !loose(parts[3])) parts.splice(0, 2);
+    if (parts.length >= 5 && loose(parts[parts.length - 2]) && !loose(parts[parts.length - 4])) parts.splice(-2);
+  }
   return (parts.join("").match(/\p{L}/gu) || []).join("").toUpperCase();
 }
 
@@ -145,11 +152,15 @@ function isAffirmative(text, language = "en") {
   if (!t || LEADING_NEGATIVE.test(t) || NEGATIVE_ANYWHERE.test(t)) return false;
   const words = guardWords(language);
   if (words) {
-    if (words.no.test(t)) return false;
+    // "No hay problema", 「間違いありません」 agree: set aside before any no counts.
+    if (words.no.test(words.agreeingNo ? t.replace(words.agreeingNo, " ") : t)) return false;
     if (words.yes.test(t)) return true;
   }
   return POSITIVE.test(t);
 }
+
+/** A day, a time of day or any number: a question about the booking's time. */
+const ABOUT_TIME = /\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tomorrow|tonight|morning|afternoon|evening|noon|midday|o['’]?clock)\b|\d/i;
 
 /** A short "is that right?" after a read-back — not a question about something else. */
 const GENERIC_CHECK = /\b(right|correct|yes|ok(?:ay)?)\b/i;
@@ -177,6 +188,9 @@ function asksToCheckSpelling(content, target, language = "en") {
   if (spelledRuns(last).some((run) => runSpells(run, target))) return true;
   const words = last.trim().split(/\s+/).length;
   const other = guardWords(language);
+  // Gate review: a question about a day or a time is about the booking, not the
+  // spelling ("K-H-O-U-R-Y. ¿Le viene bien el martes?", "Is Tuesday okay?").
+  if (ABOUT_TIME.test(last) || Boolean(other?.time.test(last))) return false;
   // "Is that how you spell it?" — a longer question is the spelling only when it
   // points back at it ("Could you spell your first name?" is another question).
   // Another detail named between the spelling and the question makes it that
@@ -211,7 +225,7 @@ function surnameSpellingConfirmed(transcript, surname, language = "en") {
     if (!asksToCheckSpelling(String(m.content), target, language)) return { confirmed: false, reason: "not-asked" };
     const reply = transcript.slice(i + 1).find((x) => x.role === "user");
     if (!reply) return { confirmed: false, reason: "awaiting-reply" };
-    const replyRuns = spelledRuns(reply.content);
+    const replyRuns = spelledRuns(reply.content, false); // gate review: "No, C-L-A-R-K. E." is a respelling
     const respelledSame = replyRuns.some((run) => runSpells(run, target));
     if (replyRuns.length > 0 && !respelledSame) return { confirmed: false, reason: "caller-respelled" };
     if (isAffirmative(reply.content, language) || respelledSame) return { confirmed: true, reason: "confirmed" };

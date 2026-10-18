@@ -200,6 +200,14 @@ describe("detectCallerLanguage (F5 simulated calls: a French caller was answered
     "I'd like a booking on Monday, por favor.",
     "Yes, the Rue de la Paix one, thanks.",
     "Hi, I need a cita para mañana por favor, thanks.",
+    // gate review
+    "你好。我叫王小明。",
+    "15 Avenida Del Mar, Los Gatos, Las Vegas.",
+    "Olá, você fala português? Preciso de um encanador.",
+    "Eu preciso de uma consulta para amanhã, por favor, obrigado.",
+    "Hola, gracias, buenos días; ciao, grazie, buongiorno.",
+    "Hello ね, thanks.",
+    "Necesito cita mañana, por favor, thanks, okay.", // two English words to five Spanish: still English enough
     "مرحبا، هل تتكلم العربية؟",
     "我想预约",
     "",

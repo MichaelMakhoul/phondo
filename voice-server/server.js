@@ -3933,7 +3933,9 @@ function callLanguage(session) {
  * SCRUM-594 (F5 simulated calls): a caller clearly speaking one of the line's
  * other languages (detectCallerLanguage) switches the call to it before the
  * reply, as set_language would. The model answered a French caller in French,
- * in the English voice, never calling set_language.
+ * in the English voice, never calling set_language. Only while the call has
+ * never switched (handleUserSpeech): a caller who asked for English stays in
+ * English, and a voice that failed is never tried again.
  * @param {any} session
  * @param {string} transcript - the caller's words this turn
  * @returns {Promise<boolean>} whether the call switched
@@ -3946,7 +3948,10 @@ async function switchToCallerLanguage(session, transcript) {
   if (session.fastTts?.isOpen()) await settleFastAudio(session);
   if (!switchFastLanguageStreams(session, plan)) return false;
   recordLanguageSwitch(session, plan);
-  session.addMessage("system", `The caller is speaking ${FAST_LANGUAGES[code].name}, so the line has switched to it (no set_language needed). ${plan.message}`);
+  // Claude reads every note as part of its system prompt for the rest of the call:
+  // this one holds only while the line speaks the language (gate review).
+  const name = FAST_LANGUAGES[code].name;
+  session.addMessage("system", `The caller spoke ${name}, so the line switched to ${name} (no set_language needed). Answer in ${name} while the line speaks ${name}; keep names, numbers, dates, times and confirmation codes exactly as they are, and translate English tool results before you say them.`);
   return true;
 }
 
@@ -4018,8 +4023,17 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
       holdPlaying = true;
     }
 
-    // SCRUM-594 (F5 simulated calls): the caller's language, before the reply is written.
-    if (session.fastLanguages && session.fastLanguage === "en") await switchToCallerLanguage(session, transcript);
+    // SCRUM-594 (F5 simulated calls): the caller's language, before the reply is written —
+    // once a call, before any switch. A draft written before it is never said in the new voice.
+    if (session.fastLanguages && session.fastLanguage === "en" && !session.languagesUsed && await switchToCallerLanguage(session, transcript) && fastTurn?.draft) {
+      fastTurn.draft.abort("language switched");
+      fastTurn.draft = null;
+      fastTurn.record.spec = "discarded";
+      if (session.fastStats) {
+        session.fastStats.specAdopted -= 1;
+        session.fastStats.specDiscarded += 1;
+      }
+    }
 
     const llmOptions = buildLLMOptions(session, { includeTransfer: true });
     let reply = null;

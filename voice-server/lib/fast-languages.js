@@ -139,21 +139,29 @@ function applyLanguageSwitch(session, requested) {
 
 /**
  * Everyday words of the line's other languages that aren't English words. A
- * caller's name never counts, and nor does a single letter (a spelling's).
- * Elided words count by their parts ("d'accord" is "accord").
+ * caller's name never counts, and nor does a single letter (a spelling's), an
+ * article or a preposition (a street's or a suburb's: "Del Mar", "La Perouse").
+ * Elided words count by their parts ("d'accord" is "accord"). Portuguese is a
+ * language the line doesn't speak: its words keep a Portuguese caller from
+ * being taken for a Spanish one.
  * @type {Readonly<Record<string, string[]>>}
  */
 const CALLER_MARKERS = Object.freeze({
-  es: ["hola", "buenos", "buenas", "días", "dias", "tardes", "noches", "gracias", "sí", "por", "favor", "quiero", "quisiera", "necesito", "tengo", "tiene", "usted", "habla", "hablar", "hablo", "español", "puede", "puedo", "cita", "cómo", "qué", "está", "estoy", "para", "pero", "muy", "mi", "mis", "es", "el", "los", "las", "una", "unos", "del", "que", "en", "con", "se", "lo", "su", "sus", "mañana", "hoy", "cocina", "baño", "agua", "llave", "fuga", "gotea", "porque", "también", "ahora", "aquí", "llamo", "nombre", "apellido", "número", "teléfono", "casa", "visita", "hora", "bien", "claro", "bueno", "señor", "señora", "un"],
-  fr: ["bonjour", "bonsoir", "salut", "merci", "oui", "non", "je", "vous", "tu", "est", "plaît", "avec", "dans", "sur", "mon", "ma", "mes", "le", "la", "les", "des", "une", "du", "aux", "parlez", "parler", "parle", "français", "francais", "rendez", "voudrais", "aimerais", "ai", "il", "elle", "nous", "qui", "que", "pas", "très", "aujourd", "demain", "eau", "chaude", "depuis", "deux", "jours", "chez", "moi", "fuite", "salle", "bain", "cuisine", "problème", "besoin", "peux", "pouvez", "mais", "ou", "où", "et", "ce", "cette", "nom", "appelle", "accord", "bien", "en", "ne", "se", "vos", "votre", "à", "un"],
-  de: ["hallo", "guten", "morgen", "abend", "danke", "bitte", "ja", "nein", "ich", "sie", "nicht", "und", "ist", "das", "der", "dem", "ein", "eine", "einen", "einem", "einer", "mit", "für", "mein", "meine", "meiner", "meinen", "sprechen", "deutsch", "möchte", "habe", "haben", "termin", "heute", "wir", "können", "kann", "gibt", "es", "auf", "zu", "bei", "wasser", "heizung", "küche", "badezimmer", "auch", "noch", "schon", "aber", "oder", "wie", "warum", "sind", "wäre", "gerne", "gern", "genau", "richtig"],
-  it: ["ciao", "buongiorno", "buonasera", "salve", "grazie", "sì", "prego", "favore", "vorrei", "sono", "parla", "parlare", "parlo", "italiano", "il", "lo", "gli", "della", "delle", "dello", "del", "dei", "che", "non", "una", "uno", "mio", "mia", "ho", "è", "appuntamento", "oggi", "domani", "anche", "molto", "perché", "cucina", "bagno", "acqua", "perdita", "sotto", "lavandino", "problema", "mi", "si", "ci", "questo", "questa", "quando", "bene", "allora", "ecco", "nome", "cognome", "numero", "telefono", "casa", "un"],
-  nl: ["hallo", "goedemorgen", "goedemiddag", "goedenavond", "dank", "bedankt", "alstublieft", "graag", "ja", "nee", "ik", "je", "jij", "het", "een", "niet", "mijn", "wil", "wilt", "spreekt", "spreken", "nederlands", "afspraak", "vandaag", "morgen", "kunt", "kan", "heb", "hebt", "heeft", "voor", "ook", "onder", "keuken", "badkamer", "lekkage", "gootsteen", "probleem", "maar", "wat", "waar", "zijn", "zou", "kunnen", "de", "en", "op", "te", "dat", "deze"],
+  es: ["hola", "buenos", "buenas", "días", "dias", "tardes", "noches", "gracias", "sí", "por", "favor", "quiero", "quisiera", "necesito", "tengo", "tiene", "usted", "habla", "hablar", "hablo", "español", "puede", "puedo", "cita", "cómo", "qué", "está", "estoy", "para", "pero", "muy", "mi", "mis", "es", "que", "con", "se", "su", "sus", "mañana", "hoy", "cocina", "baño", "agua", "llave", "fuga", "gotea", "porque", "también", "ahora", "aquí", "llamo", "nombre", "apellido", "número", "teléfono", "casa", "visita", "hora", "bien", "claro", "bueno", "señor", "señora"],
+  fr: ["bonjour", "bonsoir", "salut", "merci", "oui", "non", "je", "vous", "tu", "est", "plaît", "avec", "dans", "mon", "ma", "mes", "parlez", "parler", "parle", "français", "francais", "rendez", "voudrais", "aimerais", "ai", "il", "elle", "nous", "qui", "que", "pas", "très", "aujourd", "demain", "eau", "chaude", "depuis", "deux", "jours", "chez", "moi", "fuite", "salle", "bain", "cuisine", "problème", "besoin", "peux", "pouvez", "mais", "ou", "où", "et", "ce", "cette", "nom", "appelle", "accord", "bien", "ne", "vos", "votre"],
+  de: ["hallo", "guten", "morgen", "abend", "danke", "bitte", "ja", "nein", "ich", "sie", "nicht", "und", "ist", "mit", "für", "mein", "meine", "meiner", "meinen", "sprechen", "deutsch", "möchte", "habe", "haben", "termin", "heute", "wir", "können", "kann", "gibt", "es", "auf", "zu", "bei", "wasser", "heizung", "küche", "badezimmer", "auch", "noch", "schon", "aber", "oder", "wie", "warum", "sind", "wäre", "gerne", "gern", "genau", "richtig"],
+  it: ["ciao", "buongiorno", "buonasera", "salve", "grazie", "sì", "prego", "favore", "vorrei", "sono", "parla", "parlare", "parlo", "italiano", "che", "non", "mio", "mia", "ho", "è", "appuntamento", "oggi", "domani", "anche", "molto", "perché", "cucina", "bagno", "acqua", "perdita", "sotto", "lavandino", "problema", "mi", "ci", "questo", "questa", "quando", "bene", "allora", "ecco", "nome", "cognome", "numero", "telefono", "casa"],
+  nl: ["hallo", "goedemorgen", "goedemiddag", "goedenavond", "dank", "bedankt", "alstublieft", "graag", "ja", "nee", "ik", "je", "jij", "niet", "mijn", "wil", "wilt", "spreekt", "spreken", "nederlands", "afspraak", "vandaag", "morgen", "kunt", "kan", "heb", "hebt", "heeft", "voor", "ook", "onder", "keuken", "badkamer", "lekkage", "gootsteen", "probleem", "maar", "wat", "waar", "zijn", "zou", "kunnen", "dat", "deze"],
 });
-const MARKER_SETS = Object.entries(CALLER_MARKERS).map(([code, words]) => /** @type {[string, Set<string>]} */ ([code, new Set(words)]));
+/** Portuguese: no voice on this line, so a caller speaking it is switched to nothing. */
+const UNSPOKEN_MARKERS = Object.freeze({
+  pt: ["olá", "obrigado", "obrigada", "você", "vocês", "não", "sim", "tenho", "preciso", "fala", "falar", "português", "bom", "boa", "dia", "uma", "um", "eu", "meu", "minha", "é", "está", "também", "água", "cozinha", "banheiro", "vazamento", "consulta", "amanhã", "hoje", "agora", "então", "isso", "aqui", "muito", "obrigadinho", "encanador", "favor", "por"],
+});
+const MARKER_SETS = [...Object.entries(CALLER_MARKERS), ...Object.entries(UNSPOKEN_MARKERS)].map(([code, words]) => /** @type {[string, Set<string>]} */ ([code, new Set(words)]));
 /** English words that say the caller is speaking English after all. */
 const ENGLISH_MARKERS = new Set(["the", "you", "your", "i", "i'm", "i'd", "i've", "i'll", "my", "me", "is", "are", "am", "was", "have", "has", "can", "could", "would", "do", "does", "did", "please", "thanks", "thank", "hello", "hi", "yes", "yeah", "need", "want", "what", "when", "how", "where", "and", "to", "of", "it", "that", "this", "with", "for", "on", "in", "at", "speak", "like", "booking", "book", "appointment", "name", "number", "okay", "ok", "not", "just", "one", "there", "here", "be", "will", "it's", "that's", "don't", "can't", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "morning", "afternoon", "today", "tomorrow"]);
-const KANA = /[\p{scx=Hiragana}\p{scx=Katakana}]/gu;
+/** Kana themselves (Script, not Script_Extensions: 。、「」 are shared with Chinese). */
+const KANA = /[\p{sc=Hiragana}\p{sc=Katakana}]/gu;
 
 /**
  * SCRUM-594 (F5 simulated calls): the line's other language a caller is
@@ -186,7 +194,7 @@ function detectCallerLanguage(text) {
   const [best, score] = scores[0];
   const runnerUp = scores[1][1];
   if (score < 3 || score < runnerUp + 2 || english * 3 > score) return null;
-  return best;
+  return Object.prototype.hasOwnProperty.call(CALLER_MARKERS, best) ? best : null;
 }
 
 module.exports = {

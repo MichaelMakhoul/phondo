@@ -45,7 +45,7 @@ describe("spelledRuns: a spelling written against Japanese text", () => {
     assert.deepEqual(spelledRuns("Il cognome è K-H-O-U-R-Y e il numero è questo."), ["KHOURY"]);
     assert.deepEqual(spelledRuns("Il cognome è K-H-O-U-R-Y. È corretto?"), ["KHOURY"]);
     assert.deepEqual(spelledRuns("Is it a K-H-O-U-R-Y?"), ["KHOURY"]);
-    assert.deepEqual(spelledRuns("K-H-O-U-R-Y, a lovely name."), ["KHOURY"]);
+    assert.deepEqual(spelledRuns("K-H-O-U-R-Y, a lovely name."), ["KHOURYA"], "after a comma it stays, as before: runSpells takes a trailing A");
   });
 
   it("a spelling with one kind of separator keeps every letter", () => {
@@ -64,20 +64,20 @@ describe("spelledRuns: a spelling written against Japanese text", () => {
 
 describe("isAffirmative in the call's language", () => {
   const yes = {
-    es: ["Sí, es correcto.", "Sí.", "Correcto, K-H-O-U-R-Y.", "Exacto.", "Eso es.", "Así es, gracias."],
-    fr: ["Oui, c'est ça.", "Oui.", "Exactement.", "C'est correct.", "Tout à fait."],
-    de: ["Ja, genau.", "Ja.", "Richtig.", "Stimmt.", "Das stimmt so."],
-    it: ["Sì, esatto.", "Sì.", "Corretto.", "Giusto.", "Perfetto, grazie."],
-    nl: ["Ja, dat klopt.", "Ja.", "Klopt.", "Precies.", "Dat is juist."],
-    ja: ["はい、そうです。", "はい。", "合っています。", "その通りです。", "大丈夫です。", "はい、間違いありません。", "間違いありません。"],
+    es: ["Sí, es correcto.", "Sí.", "Correcto, K-H-O-U-R-Y.", "Exacto.", "Eso es.", "Así es, gracias.", "Exactamente.", "Sí, no se preocupe, es correcto."],
+    fr: ["Oui, c'est ça.", "Oui.", "Exactement.", "C'est correct.", "Tout à fait.", "C'est bien ça.", "Oui, pas de problème, c'est ça."],
+    de: ["Ja, genau.", "Ja.", "Richtig.", "Stimmt.", "Das stimmt so.", "Ja, kein Problem, das stimmt."],
+    it: ["Sì, esatto.", "Sì.", "Corretto.", "Giusto.", "Perfetto, grazie.", "Sì, nessun problema, è giusto."],
+    nl: ["Ja, dat klopt.", "Ja.", "Klopt.", "Precies.", "Dat is juist.", "Ja, geen probleem, dat klopt."],
+    ja: ["はい、そうです。", "はい。", "合っています。", "その通りです。", "大丈夫です。", "はい、間違いありません。", "間違いありません。", "はい、問題ありません。", "はい、すみません、そうです。"],
   };
   const notYes = {
-    es: ["No, es con K.", "No es así.", "Está mal.", "Espere.", "Sí, pero es con K al principio."],
-    fr: ["Non, c'est avec un K.", "Ce n'est pas ça.", "Pas tout à fait.", "Non, pas correct.", "Oui, mais avec un K."],
-    de: ["Nein, mit K.", "Nicht ganz.", "Das ist falsch.", "Moment mal.", "Ja, aber mit K."],
-    it: ["No, con la K.", "Non è giusto.", "Sbagliato.", "Aspetti.", "Sì, ma con la K."],
-    nl: ["Nee, met een K.", "Niet helemaal.", "Dat klopt niet.", "Fout.", "Ja, maar met een K."],
-    ja: ["いいえ、違います。", "違います。", "ちょっと待ってください。", "はい、でもKから始まります。", "はい、違います。"],
+    es: ["No, es con K.", "No es así.", "Está mal.", "Espere.", "Sí, pero es con K al principio.", "Eso no es correcto.", "¡Claro que no!"],
+    fr: ["Non, c'est avec un K.", "Ce n'est pas ça.", "Pas tout à fait.", "Non, pas correct.", "Oui, mais avec un K.", "Pas exactement."],
+    de: ["Nein, mit K.", "Nicht ganz.", "Das ist falsch.", "Moment mal.", "Ja, aber mit K.", "Passt nicht.", "Das stimmt leider nicht."],
+    it: ["No, con la K.", "Non è giusto.", "Sbagliato.", "Aspetti.", "Sì, ma con la K.", "Non esattamente.", "Non mi sembra giusto."],
+    nl: ["Nee, met een K.", "Niet helemaal.", "Dat klopt niet.", "Fout.", "Ja, maar met een K.", "Dat klopt helaas niet."],
+    ja: ["いいえ、違います。", "違います。", "ちょっと待ってください。", "はい、でもKから始まります。", "はい、違います。", "ええと、最初の文字はCです。", "はい、CじゃなくてKです。", "合っていません。"],
   };
   for (const [language, lines] of Object.entries(yes)) {
     for (const line of lines) it(`"${line}" is a yes on a ${language} call`, () => assert.equal(isAffirmative(line, language), true));
@@ -183,6 +183,25 @@ describe("surnameSpellingConfirmed in the call's language", () => {
     assert.deepEqual(surnameSpellingConfirmed(t, "Khoury", "es"), { confirmed: false, reason: "not-asked" });
   });
 
+  it("gate review: a short question about a day or time isn't a spelling check (\"¿Le viene bien el martes?\")", () => {
+    for (const [language, question, yes] of [
+      ["es", "K-H-O-U-R-Y. ¿Le viene bien el martes?", "Sí."],
+      ["es", "K-H-O-U-R-Y. ¿A las 9?", "Sí."],
+      ["fr", "K-H-O-U-R-Y. Mardi, ça vous va ?", "Oui."],
+      ["de", "K-H-O-U-R-Y. Passt Dienstag?", "Ja."],
+      ["it", "K-H-O-U-R-Y. Va bene martedì?", "Sì."],
+      ["nl", "K-H-O-U-R-Y. Is dinsdag goed?", "Ja."],
+      ["ja", "K-H-O-U-R-Yですね。火曜日でよろしいですか？", "はい。"],
+      ["en", "K-H-O-U-R-Y. Is Tuesday okay?", "Yes."],
+    ]) {
+      assert.equal(surnameSpellingConfirmed([ai(question), caller(yes)], "Khoury", language).reason, "not-asked", `${language}: ${question}`);
+    }
+  });
+
+  it("gate review: a short question needs a check word (\"¿Y usted?\" is no spelling check)", () => {
+    assert.equal(surnameSpellingConfirmed([ai("K-H-O-U-R-Y. ¿Y usted?"), caller("Sí.")], "Khoury", "es").reason, "not-asked");
+  });
+
   it("an English call is unchanged: \"¿Es correcto?\" is no question it knows", () => {
     assert.equal(surnameSpellingConfirmed([ai("Su apellido es K-H-O-U-R-Y. ¿Es correcto?"), caller("Yes.")], "Khoury").reason, "not-asked");
   });
@@ -190,12 +209,12 @@ describe("surnameSpellingConfirmed in the call's language", () => {
 
 describe("declinesCancel in the call's language", () => {
   const declines = {
-    es: ["No, espere.", "No la cancele, por favor.", "Mejor no.", "Déjela como está.", "Un momento."],
-    fr: ["Non, attendez.", "Ne l'annulez pas.", "Gardez-le, finalement.", "Non.", "Laissez tomber."],
-    de: ["Nein, warten Sie.", "Bitte nicht stornieren.", "Lassen Sie ihn.", "Nein.", "Doch nicht."],
-    it: ["No, aspetti.", "Non la cancelli.", "Lasci stare.", "Un attimo.", "Ci ho ripensato."],
-    nl: ["Nee, wacht.", "Niet annuleren.", "Laat maar.", "Nee.", "Toch niet."],
-    ja: ["いいえ、待ってください。", "キャンセルしないでください。", "やっぱりやめます。", "いいえ。"],
+    es: ["No, espere.", "No la cancele, por favor.", "Mejor no.", "Déjela como está.", "Un momento.", "Por favor, no la canceles.", "Déjala.", "Cambié de opinión."],
+    fr: ["Non, attendez.", "Ne l'annulez pas.", "Gardez-le, finalement.", "Non.", "Laissez tomber.", "Finalement, je le garde.", "J'ai changé d'avis."],
+    de: ["Nein, warten Sie.", "Bitte nicht stornieren.", "Lassen Sie ihn.", "Nein.", "Doch nicht.", "Nee.", "Nö.", "Stornieren Sie ihn bitte nicht.", "Lieber nicht.", "Stornieren Sie ihn nicht."],
+    it: ["No, aspetti.", "Non la cancelli.", "Lasci stare.", "Un attimo.", "Ci ho ripensato.", "Lasci perdere.", "Ho cambiato idea."],
+    nl: ["Nee, wacht.", "Niet annuleren.", "Laat maar.", "Nee.", "Toch niet.", "Toch maar niet.", "Liever niet."],
+    ja: ["いいえ、待ってください。", "キャンセルしないでください。", "やっぱりやめます。", "いいえ。", "キャンセルはしないでください。", "取り消さないでください。"],
   };
   const goAheads = {
     es: ["Sí, cancélela, por favor.", "Sí, no hay problema.", "Sí, por favor, ya no la necesito.", "No hay problema, cancélela.", "No se preocupe, cancélela."],
@@ -257,10 +276,10 @@ describe("hasUnfinishedBooking: the AI's own \"I've booked you\" in the call's o
   const claims = {
     es: ["Listo, le he reservado el martes a las 2.", "Ya le reservé el martes a las 2.", "Hemos agendado su visita para el martes."],
     fr: ["Je vous ai réservé mardi à 14 h.", "J'ai bien noté votre rendez-vous pour mardi."],
-    de: ["Ich habe Sie für Dienstag um 14 Uhr eingetragen.", "Wir haben den Termin gebucht."],
+    de: ["Ich habe Sie für Dienstag um 14 Uhr eingetragen.", "Wir haben den Termin gebucht.", "Dann habe ich Sie für Dienstag, den 20. Oktober, um 9 Uhr eingetragen."],
     it: ["Le ho prenotato martedì alle 14.", "Abbiamo fissato l'appuntamento per martedì."],
-    nl: ["Ik heb u voor dinsdag om 14 uur ingepland.", "We hebben de afspraak geboekt."],
-    ja: ["火曜日の14時でご予約をお取りしました。", "予約が完了しました。"],
+    nl: ["Ik heb u voor dinsdag om 14 uur ingepland.", "We hebben de afspraak geboekt.", "Dan heb ik u voor dinsdag 20 oktober om 9 uur ingepland."],
+    ja: ["火曜日の14時でご予約をお取りしました。", "予約が完了しました。", "ご予約を承りました。"],
   };
   const descriptions = {
     es: ["Su cita está reservada para el lunes a las 10.", "No le he reservado nada nuevo.", "¿Quiere que le reserve otra?"],
