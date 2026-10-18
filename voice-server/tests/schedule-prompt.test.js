@@ -334,13 +334,16 @@ describe("SCRUM-594 (phone test F5): today's weekday and a closed today", () => 
     assert.ok(!result.includes("Tomorrow (Tue, Oct 20)"), "no \"Tomorrow\" for the model to anchor on");
   });
 
-  it("confirmation review: after waking (07:30 before a 9:00 opening), tomorrow is Tomorrow again — the small-hours line is only before 5 AM", () => {
+  it("before opening after waking (07:30): today comes first and the next day is \"Next day\" — only the small hours say a caller's \"tomorrow morning\" means today", () => {
     const result = withNow("2026-10-18T20:30:00Z", () => buildLiveScheduleSection(weekdaySnapshot(BUSINESS_WEEK), "2026-10-19")); // Mon 07:30 Sydney
-    // Simulated calls at 5:19 AM: "Today's out", "earliest is tomorrow" (3 of 33) — today keeps its strong label until opening.
+    // Simulated calls at 5:19 and 5:56 AM: "Today's out", "Today's fully booked" (6 of 33) — until opening, today keeps its
+    // strong label, today's times come first and the next day is no "Tomorrow" to anchor on; only the small hours say a
+    // caller's "tomorrow morning" means today.
     assert.ok(result.includes("Today (Mon, Oct 19) — this morning: the business hasn't opened yet, so these are the earliest times of all: 10 AM, 10:30 AM (2 slots)"), result);
-    assert.ok(result.includes("Tomorrow (Tue, Oct 20):"), result);
+    assert.ok(result.includes('Before opening, today\'s times are the earliest: Offer today\'s times first, and say the day by name ("Monday at 10 AM").'), result);
+    assert.ok(result.includes("Next day (Tue, Oct 20):"), result);
     assert.ok(!result.includes("early hours"), result);
-    assert.ok(!result.includes("Next day"), result);
+    assert.ok(!/tomorrow morning/i.test(result), "after 5 AM a caller's tomorrow is tomorrow");
   });
 
   it("in the small hours a closed next day is \"Next day\" too, never \"Tomorrow\"", () => {

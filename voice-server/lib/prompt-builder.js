@@ -1103,9 +1103,13 @@ function buildLiveScheduleSection(snapshot, todayStr) {
   const notOpenYet = todaySlots.length > 0 && beforeOpening(snapshot.businessHours, todayStr, timezone);
   // Confirmation review: only in the small hours. At 07:30 a caller's "tomorrow" means tomorrow.
   const earlyHours = notOpenYet && Number(getCurrentTime24(timezone).slice(0, 2)) < SMALL_HOURS_END;
-  if (earlyHours) {
+  if (notOpenYet) {
+    // Until opening (simulated calls at 5:56 AM: "Today's fully booked" in 6 of 33 without it).
     const weekday = formatLongDate(todayStr).split(" ")[0];
-    lines.push(`It's the early hours, before opening: to a caller now, "this morning" and "tomorrow morning" both usually mean today (${formatDateLabel(todayStr, timezone)}). Offer today's times first, and say the day by name ("${weekday} at ${formatSlotTime(todaySlots[0])}").`);
+    const todayFirst = `Offer today's times first, and say the day by name ("${weekday} at ${formatSlotTime(todaySlots[0])}").`;
+    lines.push(earlyHours
+      ? `It's the early hours, before opening: to a caller now, "this morning" and "tomorrow morning" both usually mean today (${formatDateLabel(todayStr, timezone)}). ${todayFirst}`
+      : `Before opening, today's times are the earliest: ${todayFirst}`);
   }
   lines.push("");
   lines.push("⚠️ IMPORTANT: the times below are AGGREGATE (any-practitioner). If a caller asks for a SPECIFIC practitioner by name, DO NOT use these times. Instead, call `check_availability` with `practitioner_id` set to that practitioner's ID from the PRACTITIONERS ON STAFF list below — this is the ONLY way to see slots that respect that practitioner's personal blocked times (days off, lunch breaks, etc.). Booking with practitioner_id on a day they're blocked WILL fail.");
@@ -1124,7 +1128,7 @@ function buildLiveScheduleSection(snapshot, todayStr) {
   const closedLines = [];
   if (!dates.includes(todayStr)) closedLines.push({ key: todayStr, text: `Today (${formatDateLabel(todayStr, timezone)}): ${todayEmpty}` });
   if (!dates.includes(tomorrowStr) && isClosedDay(snapshot.businessHours, tomorrowStr)) {
-    closedLines.push({ key: tomorrowStr, text: `${earlyHours ? "Next day" : "Tomorrow"} (${formatDateLabel(tomorrowStr, timezone)}): CLOSED — not a business day.` });
+    closedLines.push({ key: tomorrowStr, text: `${notOpenYet ? "Next day" : "Tomorrow"} (${formatDateLabel(tomorrowStr, timezone)}): CLOSED — not a business day.` });
   }
   const flushClosedBefore = (/** @type {string} */ key) => {
     while (closedLines.length > 0 && closedLines[0].key < key) lines.push(/** @type {{ text: string }} */ (closedLines.shift()).text);
@@ -1142,8 +1146,8 @@ function buildLiveScheduleSection(snapshot, todayStr) {
       // Until opening (simulated calls at 5:19 AM still said "Today's out" without it).
       dayLabel = notOpenYet ? `Today (${label}) — this morning: the business hasn't opened yet, so these are the earliest times of all` : `Today (${label})`;
     } else if (dateKey === getNextDay(todayStr)) {
-      // In the early hours "tomorrow" is what a caller calls this morning: no "Tomorrow" to anchor on.
-      dayLabel = earlyHours ? `Next day (${label})` : `Tomorrow (${label})`;
+      // Before opening, no "Tomorrow" for the model to anchor "the earliest" on.
+      dayLabel = notOpenYet ? `Next day (${label})` : `Tomorrow (${label})`;
     } else {
       dayLabel = label;
     }
