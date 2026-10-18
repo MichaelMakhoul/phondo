@@ -39,14 +39,18 @@ Assumes ~3-minute calls and that the AI answers the business's forwarded or miss
 | Item | ≈ / month | Notes |
 |---|---|---|
 | Fly.io always-on voice server | ~$42 | from the Oct 2026 Fly cost memo; scales a little with concurrent calls |
-| ElevenLabs paid plan | ~$5–22 | needed for library voices (an Australian voice, a native Arabic voice) and commercial use |
+| ElevenLabs plan | **$0 extra** | No fixed cost on top of usage. Pay-as-you-go (no monthly fee) and the monthly plans both charge $0.04 per 1K chars. A plan's fee is simply that month's characters bought up front: Starter $6 = 150K chars, Creator $22 = 550K, Pro $99 = ~2.5M, Scale $299 = ~7.5M. The tier really sets how many voice requests can run at once (~3 on Starter, 5 on Creator, 10 on Pro). Any paid plan includes the commercial licence and API access to library voices. |
 | Supabase / Vercel / Resend | current plans | unchanged by the pilot |
 
 ## 10 typical businesses for 3 months
 
 - Usage: 10 × $69 ≈ $690.
-- Fixed: 3 × ~$50–65 ≈ $150–195.
-- **Total ≈ US$850–900.** Claude usage is covered by the Anthropic credit.
+- Fixed: 3 × ~$42 (the voice server) ≈ $126.
+- **Total ≈ US$800–850.** Claude usage is covered by the Anthropic credit.
+
+The ElevenLabs plan isn't counted separately: its fee is prepaid usage that's already in the per-business numbers.
+
+10 typical tradies use about 1.6M characters a month. That's ~$65 on pay-as-you-go, or the Pro plan ($99), which also allows 10 voice requests at once.
 
 ## Caveats
 
@@ -62,4 +66,5 @@ Assumes ~3-minute calls and that the AI answers the business's forwarded or miss
 - Twilio recording cost: https://support.twilio.com/hc/en-us/articles/223132527-How-Much-Does-It-Cost-to-Record-a-Call
 - Deepgram pricing: https://deepgram.com/pricing
 - ElevenLabs API pricing: https://elevenlabs.io/pricing/api
+- ElevenLabs plans: https://elevenlabs.io/pricing (it shows Starter at $1 and Creator at $11, which look like first-month offers; confirm at checkout)
 - Claude Haiku 5.5 pricing: Claude API reference, cached 6 Oct 2026
