@@ -353,6 +353,7 @@ describe("buildSchedulingSection: availability examples (SCRUM-594 F5 simulated 
   it("its examples offer today first: the model copied \"The earliest I can get you in is tomorrow\" at 2 AM with all of today free", () => {
     const section = buildSchedulingSection("Australia/Sydney", {}, 45, true, [], {}, null);
     assert.ok(!/earliest[^.']*tomorrow/i.test(section), section);
+    assert.ok(!/Good: '[^']*this afternoon/i.test(section), "final run: 11:30 AM was called \"this afternoon\", after the example");
     assert.match(section, /The earliest I can get you in is today at 2:30 PM\./);
     assert.match(section, /The earliest time is today's first free time while today still has one; only when it has none is it the next open day\./);
   });

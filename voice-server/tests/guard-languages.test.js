@@ -198,6 +198,21 @@ describe("surnameSpellingConfirmed in the call's language", () => {
     }
   });
 
+  it("final run: a Japanese request (「…教えてください。」) after the read-back is the question — the yes was about the phone", () => {
+    const t = [ai("失礼しました。K-H-O-U-R-Y で、サミ・コウリーさんですね。次に、連絡の取れる携帯番号を教えてください。"), caller("今おかけしている番号で大丈夫です。")];
+    assert.deepEqual(surnameSpellingConfirmed(t, "Khoury", "ja"), { confirmed: false, reason: "not-asked" });
+    const photo = [ai("K-H-O-U-R-Yですね。次に、写真をお願いします。"), caller("はい。")];
+    assert.equal(surnameSpellingConfirmed(photo, "Khoury", "ja").reason, "not-asked", "a request for something else, no detail named");
+    const confirm = [ai("K-H-O-U-R-Yですね。ご確認をお願いします。"), caller("はい、合っています。")];
+    assert.deepEqual(surnameSpellingConfirmed(confirm, "Khoury", "ja"), { confirmed: true, reason: "confirmed" });
+  });
+
+  it("final run: a read-back with no question that goes on to another detail isn't a spelling check (English too)", () => {
+    assert.equal(surnameSpellingConfirmed([ai("That's K-H-O-U-R-Y. And your phone number, please."), caller("Yes.")], "Khoury").reason, "not-asked");
+    assert.equal(surnameSpellingConfirmed([ai("Lo tengo como K-H-O-U-R-Y. Ahora su número de teléfono, por favor."), caller("Sí.")], "Khoury", "es").reason, "not-asked");
+    assert.equal(surnameSpellingConfirmed([ai("That's K-H-O-U-R-Y."), caller("Yes.")], "Khoury").confirmed, true, "a bare read-back still counts");
+  });
+
   it("gate review: a short question needs a check word (\"¿Y usted?\" is no spelling check)", () => {
     assert.equal(surnameSpellingConfirmed([ai("K-H-O-U-R-Y. ¿Y usted?"), caller("Sí.")], "Khoury", "es").reason, "not-asked");
   });

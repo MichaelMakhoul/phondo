@@ -179,15 +179,22 @@ const GENERIC_CHECK = /\b(right|correct|yes|ok(?:ay)?)\b/i;
  * @returns {boolean}
  */
 function asksToCheckSpelling(content, target, language = "en") {
-  // Japanese asks with a closing 「か」 as often as with 「？」.
+  // Japanese asks with a closing 「か」 as often as with 「？」, and with a request
+  // (「…教えてください。」) as often as either (final simulated run).
   const questions = language === "ja"
-    ? content.split(/(?<=[。．！？!?])/).filter((sentence) => /(?:[?？]|か[。．]?)\s*$/.test(sentence))
+    ? content.split(/(?<=[。．！？!?])/).filter((sentence) => /(?:[?？]|か|ください|下さい|お願い(?:いた)?します)[。．]?\s*$/.test(sentence))
     : content.match(/[^.!?。！？]*[?？]/g) || [];
-  if (questions.length === 0) return true;
+  const other = guardWords(language);
+  if (questions.length === 0) {
+    // A read-back with no question counts — unless it goes on to another detail
+    // ("That's K-H-O-U-R-Y. And your phone number, please.").
+    const runEnd = spellingEnd(content, target);
+    const after = runEnd >= 0 ? content.slice(runEnd) : "";
+    return !(/\b(first|email|e-mail|address|street|suburb|number|phone)\b/i.test(after) || Boolean(other?.field.test(after)));
+  }
   const last = questions[questions.length - 1];
   if (spelledRuns(last).some((run) => runSpells(run, target))) return true;
   const words = last.trim().split(/\s+/).length;
-  const other = guardWords(language);
   // Gate review: a question about a day or a time is about the booking, not the
   // spelling ("K-H-O-U-R-Y. ¿Le viene bien el martes?", "Is Tuesday okay?").
   if (ABOUT_TIME.test(last) || Boolean(other?.time.test(last))) return false;
@@ -525,15 +532,15 @@ const THANKS = "(?:muchas )?gracias|merci(?: beaucoup)?|danke(?: sch[öo]n| sehr
 /** @param {string[]} alternatives */
 const closingAtEnd = (alternatives) => new RegExp(`(?<![\\p{L}\\p{N}])(?:(?=(?:no|non|nein|nee)[\\s,])|(?<!(?<![\\p{L}\\p{N}])(?:non|no|nicht|niet|pas)\\s))(?:${alternatives.join("|")})(?:[\\s,.!¡]+(?:y |et |und |e |en )?(?:${THANKS}))?[\\s,.!¡…]*$`, "iu");
 const GOODBYE_OTHER = closingAtEnd([
-  "adi[oó]s", "hasta (?:luego|pronto|la pr[oó]xima)", "que tenga (?:un )?buen d[ií]a", "no,? (?:muchas )?gracias", "eso (?:es|ser[ií]a) todo",
-  "au revoir", "[àa] bient[ôo]t", "bonne (?:journ[ée]e|soir[ée]e)", "non,? merci", "c['’]est tout", "ce sera tout",
-  "tsch[üu]ss?", "auf wieder(?:h[öo]ren|sehen)", "sch[öo]nen tag(?: noch)?", "nein,? danke", "das w[aä]r['’]?s", "das ist alles",
-  "arrivederci", "buona (?:giornata|serata)", "a presto", "no,? grazie", "[èe] tutto",
-  "doei", "tot ziens", "fijne dag(?: nog)?", "nee,? (?:bedankt|dank (?:je|u)(?: wel)?)", "dat was het", "dat is alles",
+  "adi[oó]s", "hasta (?:luego|pronto|la pr[oó]xima|ma[ñn]ana|el (?:lunes|martes|mi[ée]rcoles|jueves|viernes|s[áa]bado|domingo))", "que tenga (?:un )?buen d[ií]a", "no,? (?:muchas )?gracias", "eso (?:es|ser[ií]a) todo",
+  "au revoir", "[àa] (?:bient[ôo]t|demain|plus tard|lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche)", "bonne (?:journ[ée]e|soir[ée]e)", "non,? merci", "c['’]est tout", "ce sera tout",
+  "tsch[üu]ss?", "auf wieder(?:h[öo]ren|sehen)", "bis (?:morgen|dann|bald|sp[äa]ter|montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag)", "sch[öo]nen tag(?: noch)?", "nein,? danke", "das w[aä]r['’]?s", "das ist alles",
+  "arrivederci", "buona (?:giornata|serata)", "a (?:presto|domani|luned[iì]|marted[iì]|mercoled[iì]|gioved[iì]|venerd[iì]|sabato|domenica)", "ci vediamo", "no,? grazie", "[èe] tutto",
+  "doei", "tot (?:ziens|morgen|dan|straks|maandag|dinsdag|woensdag|donderdag|vrijdag|zaterdag|zondag)", "fijne dag(?: nog)?", "nee,? (?:bedankt|dank (?:je|u)(?: wel)?)", "dat was het", "dat is alles",
 ]);
 /** "Chao" / "ciao" / "dag" only as the whole reply ("Linda Chao" is a name; "Ciao, vorrei…" a greeting). */
 const CIAO_ALONE = new RegExp(`^[\\s¡¿"'«]*(?:(?:${THANKS}|vale|bueno|perfecto|perfetto|ok(?:ay)?)[\\s,.!]+)?(?:chao|chau|ciao|dag)(?:[\\s,]+(?:chao|chau|ciao|dag))?(?:[\\s,.!]+(?:${THANKS}))?[\\s,.!…]*$`, "iu");
-const GOODBYE_JA = /(?:さようなら|失礼(?:します|いたします))[。．！!.\s]*$/;
+const GOODBYE_JA = /(?:さようなら|失礼(?:します|いたします)|また(?:明日|あした|今度))[。．！!.\s]*$/;
 const DONE_IF_ASKED_OTHER = closingAtEnd([
   "nada(?: m[aá]s)?", "es todo", "estoy bien", "ya est[aá]",
   "rien(?: d['’]autre)?", "[çc]a ira", "c['’]est bon",

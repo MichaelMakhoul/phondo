@@ -601,6 +601,8 @@ describe("callerIsDone (B5: the AI ends the call only once the caller has)", () 
     ["it", "Ciao ciao!"], ["it", "Ciao, grazie."], ["es", "Chao, gracias."], ["de", "Das wär's."], ["es", "Eso sería todo."], ["fr", "Ce sera tout."], ["nl", "Dag!"], ["ja", "失礼します."],
     // scoped re-review: a "no" ending another word isn't a negation; "nein" is an answer, not one; "no no gracias"
     ["es", "Bueno adiós."], ["de", "Nein das war's."], ["es", "No no gracias."], ["nl", "Nee dat was het."],
+    // final run: "see you tomorrow" closes a call too
+    ["es", "Sí, todo correcto. Muchas gracias. ¡Adiós y hasta mañana!"], ["fr", "Merci, à demain !"], ["de", "Danke, bis morgen!"], ["it", "Grazie, a domani!"], ["nl", "Bedankt, tot morgen!"], ["ja", "ありがとうございました。また明日。"],
   ]) {
     it(`"${done}" is done (${language} call)`, () => assert.equal(callerIsDone([ai("Gracias. ¿Algo más?"), caller(done)], language), true));
   }

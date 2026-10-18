@@ -422,6 +422,7 @@ describe("buildSchedulingSection availability examples", () => {
   it("offer today first", () => {
     const section = buildSchedulingSection("Australia/Sydney", {}, 45);
     expect(section).not.toMatch(/earliest[^.']*tomorrow/i);
+    expect(section).not.toMatch(/Good: '[^']*this afternoon/i); // 11:30 AM was called "this afternoon", after the example
     expect(section).toContain("The earliest I can get you in is today at 2:30 PM.");
     expect(section).toContain("The earliest time is today's first free time while today still has one; only when it has none is it the next open day.");
   });
