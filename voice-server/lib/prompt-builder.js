@@ -1139,9 +1139,8 @@ function buildLiveScheduleSection(snapshot, todayStr) {
     let dayLabel;
     if (dateKey === todayStr) {
       // SCRUM-594 (F5): just after midnight the model called today "out since it's late".
-      if (earlyHours) dayLabel = `Today (${label}) — this morning: the business hasn't opened yet, so these are the earliest times of all`;
-      else if (notOpenYet) dayLabel = `Today (${label}) — the business hasn't opened yet today, so every time today is still ahead`;
-      else dayLabel = `Today (${label})`;
+      // Until opening (simulated calls at 5:19 AM still said "Today's out" without it).
+      dayLabel = notOpenYet ? `Today (${label}) — this morning: the business hasn't opened yet, so these are the earliest times of all` : `Today (${label})`;
     } else if (dateKey === getNextDay(todayStr)) {
       // In the early hours "tomorrow" is what a caller calls this morning: no "Tomorrow" to anchor on.
       dayLabel = earlyHours ? `Next day (${label})` : `Tomorrow (${label})`;

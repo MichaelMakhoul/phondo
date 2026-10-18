@@ -336,7 +336,8 @@ describe("SCRUM-594 (phone test F5): today's weekday and a closed today", () => 
 
   it("confirmation review: after waking (07:30 before a 9:00 opening), tomorrow is Tomorrow again — the small-hours line is only before 5 AM", () => {
     const result = withNow("2026-10-18T20:30:00Z", () => buildLiveScheduleSection(weekdaySnapshot(BUSINESS_WEEK), "2026-10-19")); // Mon 07:30 Sydney
-    assert.ok(result.includes("Today (Mon, Oct 19) — the business hasn't opened yet today, so every time today is still ahead: 10 AM, 10:30 AM (2 slots)"), result);
+    // Simulated calls at 5:19 AM: "Today's out", "earliest is tomorrow" (3 of 33) — today keeps its strong label until opening.
+    assert.ok(result.includes("Today (Mon, Oct 19) — this morning: the business hasn't opened yet, so these are the earliest times of all: 10 AM, 10:30 AM (2 slots)"), result);
     assert.ok(result.includes("Tomorrow (Tue, Oct 20):"), result);
     assert.ok(!result.includes("early hours"), result);
     assert.ok(!result.includes("Next day"), result);
