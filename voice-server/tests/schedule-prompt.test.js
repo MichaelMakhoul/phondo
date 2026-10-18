@@ -342,3 +342,13 @@ describe("SCRUM-594 (phone test F5): today's weekday and a closed today", () => 
     assert.ok(result.includes("Tomorrow (Tue, Oct 20):"));
   });
 });
+
+describe("buildSchedulingSection: availability examples (SCRUM-594 F5 simulated calls)", () => {
+  const { buildSchedulingSection } = require("../lib/prompt-builder");
+  it("its examples offer today first: the model copied \"The earliest I can get you in is tomorrow\" at 2 AM with all of today free", () => {
+    const section = buildSchedulingSection("Australia/Sydney", {}, 45, true, [], {}, null);
+    assert.ok(!/earliest[^.']*tomorrow/i.test(section), section);
+    assert.match(section, /The earliest I can get you in is today at 2:30 PM\./);
+    assert.match(section, /The earliest time is today's first free time while today still has one; only when it has none is it the next open day\./);
+  });
+});

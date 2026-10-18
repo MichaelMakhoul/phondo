@@ -124,6 +124,13 @@ describe("surnameSpellingConfirmed", () => {
     assert.equal(surnameSpellingConfirmed(t, "Khoury").confirmed, true);
   });
 
+  it("not asked: another detail named between the read-back and a generic \"Is that right?\" (F5 simulated calls)", () => {
+    const t = [ai("Got it, K-H-O-U-R-Y. And your mobile is the number you're calling from, 0412 555 013. Is that right?"), caller("Yes.")];
+    assert.deepEqual(surnameSpellingConfirmed(t, "Khoury"), { confirmed: false, reason: "not-asked" });
+    const after = [ai("That's K-H-O-U-R-Y. Is that right? I'll pop it next to your phone number."), caller("Yes.")];
+    assert.deepEqual(surnameSpellingConfirmed(after, "Khoury"), { confirmed: true, reason: "confirmed" }, "a detail after the question doesn't count");
+  });
+
   it("a read-back with a one-letter word run into it still counts (\"…R-Y, a lovely name\")", () => {
     assert.equal(surnameSpellingConfirmed([ai("K-H-O-U-R-Y, a lovely name. Is that right?"), caller("Yes.")], "Khoury").confirmed, true);
     assert.equal(surnameSpellingConfirmed([ai("Is it a K-H-O-U-R-Y?"), caller("Yes.")], "Khoury").confirmed, true);
@@ -577,9 +584,14 @@ describe("callerIsDone (B5: the AI ends the call only once the caller has)", () 
     ["ja", "失礼します。"], ["ja", "さようなら"],
     // confirmation review: more of the usual closings
     ["it", "Ciao ciao!"], ["it", "Ciao, grazie."], ["es", "Chao, gracias."], ["de", "Das wär's."], ["es", "Eso sería todo."], ["fr", "Ce sera tout."], ["nl", "Dag!"], ["ja", "失礼します."],
+    // scoped re-review: a "no" ending another word isn't a negation; "nein" is an answer, not one; "no no gracias"
+    ["es", "Bueno adiós."], ["de", "Nein das war's."], ["es", "No no gracias."], ["nl", "Nee dat was het."],
   ]) {
     it(`"${done}" is done (${language} call)`, () => assert.equal(callerIsDone([ai("Gracias. ¿Algo más?"), caller(done)], language), true));
   }
+  it("scoped re-review: \"No no gracias\" is a goodbye even when nothing asked \"anything else?\"", () => {
+    assert.equal(callerIsDone([ai("Perfecto, le esperamos el martes."), caller("No no gracias.")], "es"), true);
+  });
   for (const [language, question, answer] of [
     ["es", "¿Hay algo más en que pueda ayudarle?", "No."],
     ["es", "¿Le puedo ayudar en algo más?", "Nada más, gracias."],
@@ -592,6 +604,12 @@ describe("callerIsDone (B5: the AI ends the call only once the caller has)", () 
     ["ja", "他に何かございますか？", "大丈夫です。"],
     ["ja", "他に何かございますか？", "ありがとうございました。"],
     ["ja", "他に何かございますか？", "大丈夫です."], // confirmation review: an ASCII full stop from the transcriber
+    // scoped re-review: these stopped counting once the English "no" was kept to English calls
+    ["es", "¿Algo más?", "No, no."],
+    ["es", "¿Algo más?", "No, ya está."],
+    ["it", "C'è qualcos'altro?", "No, va bene così."],
+    ["fr", "Autre chose ?", "Non, c'est bon."],
+    ["de", "Sonst noch etwas?", "Nein, passt so."],
   ]) {
     it(`"${answer}" answering "${question}" is done (${language} call)`, () => assert.equal(callerIsDone([ai(question), caller(answer)], language), true));
   }

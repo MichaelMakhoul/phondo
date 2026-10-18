@@ -38,14 +38,18 @@
  */
 
 const { Sentry } = require("./sentry");
+const { guardWords } = require("./guard-languages");
 
 /** Caller turns with a spelling hold before the guard steps aside. */
 const SPELLING_HOLD_CAP = 2;
 /** Caller turns with an end_call hold before the guard steps aside. */
 const END_CALL_HOLD_CAP = 2;
 
-/** Two or more single letters with separators, as a model or a caller spells a word aloud. */
-const SPELLED_RUN = /(^|[^\p{L}'’])(\p{L}(?:[\s,.\-–—]+\p{L}(?![\p{L}'’]))+)/gu;
+/**
+ * Two or more single letters with separators, as a model or a caller spells a word aloud.
+ * A spelling may touch Japanese text ("名字はK-H-O-U-R-Yですね", SCRUM-594 F5).
+ */
+const SPELLED_RUN = /(^|[^\p{L}'’]|[\p{scx=Hiragana}\p{scx=Katakana}\p{scx=Han}])(\p{Script=Latin}(?:[\s,.\-–—]+\p{Script=Latin}(?![\p{Script=Latin}'’]))+)/gu;
 /** Dotted abbreviations that look like spelled letters ("9 a.m.", "e.g."). */
 const ABBREVIATION = /\b(?:a\.\s?m|p\.\s?m|e\.\s?g|i\.\s?e)\b\.?/gi;
 
@@ -59,10 +63,41 @@ function spelledRuns(text) {
   if (typeof text !== "string" || !text) return [];
   const runs = [];
   for (const m of text.replace(ABBREVIATION, " ").matchAll(SPELLED_RUN)) {
-    const letters = (m[2].match(/\p{L}/gu) || []).join("").toUpperCase();
+    const letters = runLetters(m[2]);
     if (letters.length >= 2) runs.push(letters);
   }
   return runs;
+}
+
+/**
+ * A spelled run's letters, uppercase.
+ * @param {string} run - SPELLED_RUN's letters with their separators
+ * @returns {string}
+ */
+function runLetters(run) {
+  const parts = run.split(/([\s,.\-–—]+)/);
+  // A one-letter word next to a spelling — Italian "è", Spanish "y", English "a" —
+  // is set off by another kind of separator than its letters ("è K-H-O-U-R-Y. È…",
+  // "K-H-O-U-R-Y y su número"): it isn't one of them (SCRUM-594 F5).
+  const kind = (/** @type {string} */ sep) => sep.replace(/\s+/g, "") || " ";
+  if (parts.length >= 5 && kind(parts[1]) !== kind(parts[3])) parts.splice(0, 2);
+  if (parts.length >= 5 && kind(parts[parts.length - 2]) !== kind(parts[parts.length - 4])) parts.splice(-2);
+  return (parts.join("").match(/\p{L}/gu) || []).join("").toUpperCase();
+}
+
+/**
+ * Where the last spelling of `target` in `text` ends, or -1.
+ * @param {string} text
+ * @param {string} target - spellableLetters(surname)
+ * @returns {number}
+ */
+function spellingEnd(text, target) {
+  let end = -1;
+  // Abbreviations blanked to the same length, so indexes stay the text's.
+  for (const m of text.replace(ABBREVIATION, (abbr) => " ".repeat(abbr.length)).matchAll(SPELLED_RUN)) {
+    if (runSpells(runLetters(m[2]), target)) end = /** @type {number} */ (m.index) + m[1].length + m[2].length;
+  }
+  return end;
 }
 
 /**
@@ -99,13 +134,20 @@ const POSITIVE = /\b(yes|yeah|yep|yup|yea|correct|right|exactly|perfect|spot on|
 /**
  * Does the caller's reply say yes to what was just read back? ("Yes, Khoury,
  * not Curry" is a yes; "Definitely not", "Okay, hold on", "Yeah, no" are not.)
+ * On a call in another language its words count too ("Sí, es correcto").
  * @param {unknown} text
+ * @param {string} [language] - the call's language (session.fastLanguage)
  * @returns {boolean}
  */
-function isAffirmative(text) {
+function isAffirmative(text, language = "en") {
   if (typeof text !== "string") return false;
   const t = text.trim();
   if (!t || LEADING_NEGATIVE.test(t) || NEGATIVE_ANYWHERE.test(t)) return false;
+  const words = guardWords(language);
+  if (words) {
+    if (words.no.test(t)) return false;
+    if (words.yes.test(t)) return true;
+  }
   return POSITIVE.test(t);
 }
 
@@ -118,21 +160,38 @@ const GENERIC_CHECK = /\b(right|correct|yes|ok(?:ay)?)\b/i;
  * ("Is that right?"); a read-back with no question at all counts too. A read-back
  * followed by another question ("…K-H-O-U-R-Y. And is the best mobile…?") does
  * not: the caller's "yep" answers that question.
+ * On a call in another language, its "is that right?" and its other details
+ * count too (a Japanese question ends in 「？」 or 「か。」).
  * @param {string} content
  * @param {string} target - spellableLetters(surname)
+ * @param {string} [language] - the call's language (session.fastLanguage)
  * @returns {boolean}
  */
-function asksToCheckSpelling(content, target) {
-  const questions = content.match(/[^.!?]*\?/g) || [];
+function asksToCheckSpelling(content, target, language = "en") {
+  // Japanese asks with a closing 「か」 as often as with 「？」.
+  const questions = language === "ja"
+    ? content.split(/(?<=[。．！？!?])/).filter((sentence) => /(?:[?？]|か[。．]?)\s*$/.test(sentence))
+    : content.match(/[^.!?。！？]*[?？]/g) || [];
   if (questions.length === 0) return true;
   const last = questions[questions.length - 1];
   if (spelledRuns(last).some((run) => runSpells(run, target))) return true;
   const words = last.trim().split(/\s+/).length;
+  const other = guardWords(language);
   // "Is that how you spell it?" — a longer question is the spelling only when it
   // points back at it ("Could you spell your first name?" is another question).
-  const otherField = /\b(first|email|e-mail|address|street|suburb|number|phone)\b/i.test(last);
-  if (/\bspell/i.test(last) && /\b(it|that)\b/i.test(last) && !otherField) return words <= 10;
-  return words <= 6 && GENERIC_CHECK.test(last) && !otherField;
+  // Another detail named between the spelling and the question makes it that
+  // detail's question: "K-H-O-U-R-Y. ¿Y su móvil…? …013. ¿Es ese el correcto?"
+  // (SCRUM-594 F5 simulated calls).
+  const lastAt = content.lastIndexOf(last);
+  const runEnd = spellingEnd(content, target);
+  const span = runEnd >= 0 && runEnd <= lastAt ? content.slice(runEnd, lastAt + last.length) : last;
+  const otherField = /\b(first|email|e-mail|address|street|suburb|number|phone)\b/i.test(span) || Boolean(other?.field.test(span));
+  if (otherField) return false;
+  if (/\bspell/i.test(last) && /\b(it|that)\b/i.test(last)) return words <= 10;
+  if (words <= 6 && GENERIC_CHECK.test(last)) return true;
+  if (!other) return false;
+  if (other.spell.test(last)) return other.shortQuestion(last, 10);
+  return other.shortQuestion(last, 6) && other.check.test(last);
 }
 
 /**
@@ -140,21 +199,22 @@ function asksToCheckSpelling(content, target) {
  * read-back of exactly these letters decides, by the caller's next words.
  * @param {Array<{ role: string, content: unknown }>} transcript - session.fullTranscriptMessages
  * @param {unknown} surname - the last name about to be saved
+ * @param {string} [language] - the call's language (session.fastLanguage)
  * @returns {{ confirmed: boolean, reason: "confirmed" | "not-spellable" | "not-read-back" | "not-asked" | "awaiting-reply" | "caller-respelled" | "not-affirmed" }}
  */
-function surnameSpellingConfirmed(transcript, surname) {
+function surnameSpellingConfirmed(transcript, surname, language = "en") {
   const target = spellableLetters(surname);
   if (target.length < 2) return { confirmed: true, reason: "not-spellable" };
   for (let i = transcript.length - 1; i >= 0; i--) {
     const m = transcript[i];
     if (m.role !== "assistant" || !spelledRuns(m.content).some((run) => runSpells(run, target))) continue;
-    if (!asksToCheckSpelling(String(m.content), target)) return { confirmed: false, reason: "not-asked" };
+    if (!asksToCheckSpelling(String(m.content), target, language)) return { confirmed: false, reason: "not-asked" };
     const reply = transcript.slice(i + 1).find((x) => x.role === "user");
     if (!reply) return { confirmed: false, reason: "awaiting-reply" };
     const replyRuns = spelledRuns(reply.content);
     const respelledSame = replyRuns.some((run) => runSpells(run, target));
     if (replyRuns.length > 0 && !respelledSame) return { confirmed: false, reason: "caller-respelled" };
-    if (isAffirmative(reply.content) || respelledSame) return { confirmed: true, reason: "confirmed" };
+    if (isAffirmative(reply.content, language) || respelledSame) return { confirmed: true, reason: "confirmed" };
     return { confirmed: false, reason: "not-affirmed" };
   }
   return { confirmed: false, reason: "not-read-back" };
@@ -212,15 +272,19 @@ const NO_JUST_CANCEL_IT = /^\W*(?:no|nope|nah)\W+just cancel (?:it|that)\W*$/i;
  * yeah") are set aside. A go-ahead never outweighs it ("No, cancel the other
  * one" is a no to this one); only "No, just cancel it" is a yes. Ambiguous words
  * count as a decline: that costs one more read-back, never a cancel the caller
- * refused.
+ * refused. On a call in another language its words count too ("Non, attendez").
  * @param {unknown} text
+ * @param {string} [language] - the call's language (session.fastLanguage)
  * @returns {boolean}
  */
-function declinesCancel(text) {
+function declinesCancel(text, language = "en") {
   if (typeof text !== "string") return false;
-  const t = text.trim().replace(AGREEING_NO, " ");
+  const words = guardWords(language);
+  let t = text.trim().replace(AGREEING_NO, " ");
+  if (words?.agreeingNo) t = t.replace(words.agreeingNo, " ");
   if (DONT_CANCEL.test(t) || YES_BUT_NO.test(t) || DECLINE_PHRASE.test(t)) return true;
   if (NO_JUST_CANCEL_IT.test(t)) return false;
+  if (words?.decline.test(t)) return true;
   return NO_AT_EDGE.test(t);
 }
 
@@ -248,7 +312,7 @@ function fastCancelGate(session, modelArgs, nowMs) {
   let declinedAt = -1;
   let assistantAt = -1;
   transcript.forEach((m, i) => {
-    if (m.role === "user" && declinesCancel(m.content)) declinedAt = i;
+    if (m.role === "user" && declinesCancel(m.content, session.fastLanguage || "en")) declinedAt = i;
     if (m.role === "assistant") assistantAt = i;
   });
   return session.confirmFastCancel(modelArgs || {}, nowMs, {
@@ -279,7 +343,7 @@ function describeLocal(datetime) {
  * spelling through after SPELLING_HOLD_CAP caller turns of holds (server.js
  * logs and alerts on it). Counts its holds on `session.bookingGuardState`.
  *
- * @param {{ bookingGuards?: boolean, bookingGuardState?: Partial<GuardState>, fullTranscriptMessages: Array<{ role: string, content: unknown }>, confirmedBookings?: Map<string, { datetime?: string, name?: string, at?: number }> }} session
+ * @param {{ bookingGuards?: boolean, bookingGuardState?: Partial<GuardState>, fullTranscriptMessages: Array<{ role: string, content: unknown }>, confirmedBookings?: Map<string, { datetime?: string, name?: string, at?: number }>, fastLanguage?: string|null }} session
  * @param {Record<string, any>} args - the model's book_appointment arguments
  * @param {(args: Record<string, any>) => string} bookingKey - lib/booking-key.js
  * @returns {{ hold: true, kind: "second-booking" | "spelling", message: string, reason: string, count?: number, cap?: number } | { hold: false, kind: "spelling", capReached: true, reason: string } | null}
@@ -307,7 +371,7 @@ function checkBookingGuards(session, args, bookingKey = require("./booking-key")
     ? a.last_name.trim()
     : String(a.name || "").trim().split(/\s+/).slice(1).join(" ");
   if (!surname) return null;
-  const check = surnameSpellingConfirmed(session.fullTranscriptMessages, surname);
+  const check = surnameSpellingConfirmed(session.fullTranscriptMessages, surname, session.fastLanguage || "en");
   if (check.confirmed) return null;
   const turn = callerTurns(session.fullTranscriptMessages);
   if (state.lastSpellingHoldTurn !== turn) {
@@ -445,7 +509,7 @@ const PLAIN_NO = /^\W*(no|nope|nah|not really)\b/i;
 // followed by a thanks. JS's \b is ASCII-only, so words are bounded by \p{L}.
 const THANKS = "(?:muchas )?gracias|merci(?: beaucoup)?|danke(?: sch[öo]n| sehr)?|vielen dank|grazie(?: mille)?|bedankt|dank (?:je|u)(?: wel)?|thanks|thank you";
 /** @param {string[]} alternatives */
-const closingAtEnd = (alternatives) => new RegExp(`(?<![\\p{L}\\p{N}])(?<!(?:non|no|nicht|niet|pas|nein)\\s)(?:${alternatives.join("|")})(?:[\\s,.!¡]+(?:y |et |und |e |en )?(?:${THANKS}))?[\\s,.!¡…]*$`, "iu");
+const closingAtEnd = (alternatives) => new RegExp(`(?<![\\p{L}\\p{N}])(?:(?=(?:no|non|nein|nee)[\\s,])|(?<!(?<![\\p{L}\\p{N}])(?:non|no|nicht|niet|pas)\\s))(?:${alternatives.join("|")})(?:[\\s,.!¡]+(?:y |et |und |e |en )?(?:${THANKS}))?[\\s,.!¡…]*$`, "iu");
 const GOODBYE_OTHER = closingAtEnd([
   "adi[oó]s", "hasta (?:luego|pronto|la pr[oó]xima)", "que tenga (?:un )?buen d[ií]a", "no,? (?:muchas )?gracias", "eso (?:es|ser[ií]a) todo",
   "au revoir", "[àa] bient[ôo]t", "bonne (?:journ[ée]e|soir[ée]e)", "non,? merci", "c['’]est tout", "ce sera tout",
@@ -457,15 +521,15 @@ const GOODBYE_OTHER = closingAtEnd([
 const CIAO_ALONE = new RegExp(`^[\\s¡¿"'«]*(?:(?:${THANKS}|vale|bueno|perfecto|perfetto|ok(?:ay)?)[\\s,.!]+)?(?:chao|chau|ciao|dag)(?:[\\s,]+(?:chao|chau|ciao|dag))?(?:[\\s,.!]+(?:${THANKS}))?[\\s,.!…]*$`, "iu");
 const GOODBYE_JA = /(?:さようなら|失礼(?:します|いたします))[。．！!.\s]*$/;
 const DONE_IF_ASKED_OTHER = closingAtEnd([
-  "nada(?: m[aá]s)?", "es todo", "estoy bien",
-  "rien(?: d['’]autre)?", "[çc]a ira",
-  "nichts(?: weiter)?", "alles gut",
-  "niente(?: altro)?", "nient['’]altro", "a posto",
+  "nada(?: m[aá]s)?", "es todo", "estoy bien", "ya est[aá]",
+  "rien(?: d['’]autre)?", "[çc]a ira", "c['’]est bon",
+  "nichts(?: weiter)?", "alles gut", "passt so",
+  "niente(?: altro)?", "nient['’]altro", "a posto", "va bene cos[iì]",
   "niets(?: meer)?", "verder niets",
 ]);
 const DONE_IF_ASKED_JA = /(?:大丈夫です|特にありません|以上です|ありがとうございました|いいえ)[。．！!.\s]*$/;
 /** A bare "no" (or "no, thanks") as the whole reply. */
-const PLAIN_NO_OTHER = new RegExp(`^[\\s¡¿"'«]*(?:no|non|nein|nee|nada|niente|nichts|niets)(?:[\\s,.!]+(?:${THANKS}))?[\\s,.!…]*$`, "iu");
+const PLAIN_NO_OTHER = new RegExp(`^[\\s¡¿"'«]*(?:no|non|nein|nee|nada|niente|nichts|niets)(?:[\\s,.!]+(?:no|non|nein|nee))*(?:[\\s,.!]+(?:${THANKS}))?[\\s,.!…]*$`, "iu");
 /** "Anything else?" — never "something earlier / later" (a time offer). */
 const ANYTHING_ELSE_OTHER = new RegExp(`(?<![\\p{L}\\p{N}])(?:${[
   "algo m[aá]s(?!\\s+(?:temprano|tarde|pronto|cerca|barato|caro))", "alguna otra cosa",

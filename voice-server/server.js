@@ -41,7 +41,7 @@ const { openAuraStream } = require("./services/aura-stream");
 const { DEFAULT_HOST } = require("./services/deepgram-ws-common");
 const { createFastPlayer } = require("./lib/fast-player");
 const { createFastTurnEngine, endsWithQuestion, isBackchannel, isLikelyEcho } = require("./lib/fast-turns");
-const { FLUX_MULTI_MODEL, fastLanguagesEnabled, setLanguageToolDefinition, unspeakableText, planLanguageSwitch, recordLanguageSwitch, UNSPEAKABLE_APOLOGY, LANGUAGE_UNHEARD_MESSAGE } = require("./lib/fast-languages"); // SCRUM-594 (F5)
+const { FLUX_MULTI_MODEL, FAST_LANGUAGES, fastLanguagesEnabled, setLanguageToolDefinition, unspeakableText, planLanguageSwitch, recordLanguageSwitch, detectCallerLanguage, UNSPEAKABLE_APOLOGY, LANGUAGE_UNHEARD_MESSAGE } = require("./lib/fast-languages"); // SCRUM-594 (F5)
 const { createNoTurnWatchdog } = require("./lib/no-turn-watchdog");
 const { startSpeculativeReply } = require("./lib/speculative-reply");
 const { streamClaudeResponse } = require("./services/claude-chat");
@@ -3704,7 +3704,8 @@ const FAST_VOICE_ADDENDUM = [
 const FAST_LANGUAGE_RULES = [
   "LANGUAGES ON THIS LINE (this replaces the LANGUAGE rule above):",
   "- This line speaks English, Spanish, French, German, Italian, Dutch and Japanese, nothing else.",
-  "- When the caller asks for one of these, or speaks a full sentence in it, call set_language first, then continue the whole call in that language.",
+  "- When the caller asks for one of these, or speaks a full sentence in it, call set_language first, in a reply with no words, then answer in that language and keep to it for the rest of the call.",
+  "- Once you've switched, say everything in that language, including any line this prompt gives you to say (translate it).",
   "- For any other language (for example Arabic, Mandarin, Cantonese, Vietnamese, Hindi or Greek), say in English, in one short sentence, that this line can't speak it yet, and offer to have someone call them back. Never write words in a language this line can't speak.",
 ].join("\n");
 /** FAST_LANGUAGES=off: the English-only rules (Flux English, no set_language). */
@@ -3928,6 +3929,27 @@ function callLanguage(session) {
   return typeof session?.fastLanguage === "string" ? session.fastLanguage : session?.language;
 }
 
+/**
+ * SCRUM-594 (F5 simulated calls): a caller clearly speaking one of the line's
+ * other languages (detectCallerLanguage) switches the call to it before the
+ * reply, as set_language would. The model answered a French caller in French,
+ * in the English voice, never calling set_language.
+ * @param {any} session
+ * @param {string} transcript - the caller's words this turn
+ * @returns {Promise<boolean>} whether the call switched
+ */
+async function switchToCallerLanguage(session, transcript) {
+  const code = detectCallerLanguage(transcript);
+  if (!code) return false;
+  const plan = planLanguageSwitch(session, code);
+  if (!plan.changed) return false;
+  if (session.fastTts?.isOpen()) await settleFastAudio(session);
+  if (!switchFastLanguageStreams(session, plan)) return false;
+  recordLanguageSwitch(session, plan);
+  session.addMessage("system", `The caller is speaking ${FAST_LANGUAGES[code].name}, so the line has switched to it (no set_language needed). ${plan.message}`);
+  return true;
+}
+
 function getToolFiller(lang, toolNames) {
   const msgs = FILLER_MESSAGES[lang] || FILLER_MESSAGES.en;
   const names = Array.isArray(toolNames) ? toolNames : [toolNames];
@@ -3995,6 +4017,9 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
       holdAudio = startHoldAudio(session, twilioWs, "twilio");
       holdPlaying = true;
     }
+
+    // SCRUM-594 (F5 simulated calls): the caller's language, before the reply is written.
+    if (session.fastLanguages && session.fastLanguage === "en") await switchToCallerLanguage(session, transcript);
 
     const llmOptions = buildLLMOptions(session, { includeTransfer: true });
     let reply = null;
@@ -4782,7 +4807,8 @@ async function sendRestTTS(session, twilioWs, text, isStale, options = {}) {
     }
     revertFastLanguageToEnglish(session, `REST TTS refused ${voice}`);
     session.deepgramVoice = session.baseDeepgramVoice;
-    spokenText = stripMarkdown(options.verbatim ? text : speakableFastText(session, text));
+    // What this request was saying, through the guard again (the apology stays the apology).
+    spokenText = options.verbatim ? cleanText : speakableFastText(session, cleanText);
     if (!spokenText) return 0;
     audioBuffer = await synthesizeSpeech(DEEPGRAM_API_KEY, spellLettersForTts(spokenText), { voice: session.deepgramVoice });
   }

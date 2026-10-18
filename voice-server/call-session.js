@@ -1,6 +1,7 @@
 const { WebSocket } = require("ws");
 const { validateInput, getBufferConfig, extractSpokenDigits } = require("./lib/input-validators");
 const { logTranscript } = require("./lib/log-transcript");
+const { guardWords } = require("./lib/guard-languages");
 
 const MAX_MESSAGES = 21; // system prompt + up to 20 messages (user/assistant turns + tool call/result messages)
 /**
@@ -624,7 +625,9 @@ class CallSession {
    * @returns {boolean}
    */
   _aiSaidBooked() {
-    return [...this.fullTranscriptMessages, ...this.messages].some((m) => m?.role === "assistant" && typeof m.content === "string" && AI_SAID_BOOKED.test(m.content));
+    // SCRUM-594 (F5): and in each other language the call used ("Le he reservado…").
+    const others = (this.languagesUsed || []).map(guardWords).filter((w) => w !== null);
+    return [...this.fullTranscriptMessages, ...this.messages].some((m) => m?.role === "assistant" && typeof m.content === "string" && (AI_SAID_BOOKED.test(m.content) || others.some((w) => w.booked.test(m.content))));
   }
 
   /**

@@ -400,6 +400,8 @@ async function setUpSimCall(o: { calledNumber: string; callerPhone: string; call
     // SCRUM-594 F5: set_language — no streams here; the voice the next words would use is recorded.
     setLanguageToolDefinition: vs.fastLanguages?.setLanguageToolDefinition,
     planLanguageSwitch: vs.fastLanguages?.planLanguageSwitch,
+    detectCallerLanguage: vs.fastLanguages?.detectCallerLanguage,
+    FAST_LANGUAGES: vs.fastLanguages?.FAST_LANGUAGES,
     recordLanguageSwitch: vs.fastLanguages?.recordLanguageSwitch,
     LANGUAGE_UNHEARD_MESSAGE: vs.fastLanguages?.LANGUAGE_UNHEARD_MESSAGE,
     switchFastLanguageStreams: (s: any, sw: { voice?: string }) => { s.deepgramVoice = sw.voice; return true; },

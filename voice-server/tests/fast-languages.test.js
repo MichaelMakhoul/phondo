@@ -19,6 +19,7 @@ const {
   recordLanguageSwitch,
   UNSPEAKABLE_APOLOGY,
   LANGUAGE_UNHEARD_MESSAGE,
+  detectCallerLanguage,
 } = require("../lib/fast-languages");
 
 describe("FAST_LANGUAGES: what Flux Multilingual hears and Aura-2 speaks", () => {
@@ -166,4 +167,44 @@ describe("planLanguageSwitch / recordLanguageSwitch (gate review: decide, then r
     assert.match(LANGUAGE_UNHEARD_MESSAGE, /English/);
     assert.match(LANGUAGE_UNHEARD_MESSAGE, /call (?:them )?back/);
   });
+});
+
+describe("detectCallerLanguage (F5 simulated calls: a French caller was answered in French by the English voice)", () => {
+  for (const [text, code] of [
+    ["Bonjour, vous parlez français ?", "fr"],
+    ["Mon eau chaude est tiède depuis deux jours. Ce n'est pas urgent.", "fr"],
+    ["Hola, ¿habla español?", "es"],
+    ["Sí, por favor. Necesito que arreglen una llave que gotea en la cocina.", "es"],
+    ["Guten Tag, sprechen Sie Deutsch?", "de"],
+    ["Ich habe ein Problem mit meiner Heizung.", "de"],
+    ["Buongiorno, parla italiano?", "it"],
+    ["Ho una perdita sotto il lavandino della cucina.", "it"],
+    ["Goedemiddag, spreekt u Nederlands?", "nl"],
+    ["Ik heb een lekkage onder de gootsteen.", "nl"],
+    ["日本語で話してもいいですか？", "ja"],
+    ["トイレの水が止まらないんです。", "ja"],
+  ]) {
+    it(`${JSON.stringify(text)} is ${code}`, () => assert.equal(detectCallerLanguage(text), code));
+  }
+
+  for (const text of [
+    "Hello, do you speak Spanish?",
+    "Can you speak French?",
+    "My name is José García.",
+    "I live on Calle de la Rosa.",
+    "Merci.",
+    "Sí.",
+    "Ja.",
+    "Oui, d'accord.",
+    "Gracias",
+    "I'd like a booking on Monday, por favor.",
+    "Yes, the Rue de la Paix one, thanks.",
+    "Hi, I need a cita para mañana por favor, thanks.",
+    "مرحبا، هل تتكلم العربية؟",
+    "我想预约",
+    "",
+    null,
+  ]) {
+    it(`${JSON.stringify(text)} is no clear other language`, () => assert.equal(detectCallerLanguage(text), null));
+  }
 });

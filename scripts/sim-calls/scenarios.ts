@@ -22,7 +22,7 @@ export type Scenario = {
     /** The caller asks to CANCEL the booking (checkpoint 7). */
     cancels?: boolean;
     /** SCRUM-594 F5 (checkpoint 15): the caller wants a language — one the line speaks ("es"), or one it can't ("unsupported"). */
-    language?: "es" | "unsupported";
+    language?: "es" | "fr" | "de" | "it" | "nl" | "ja" | "unsupported";
   };
   /** SCRUM-594 F5: the time the call happens (ISO); run such scenarios on their own (one clock per run). */
   clock?: string;
@@ -159,6 +159,33 @@ export const SCENARIOS: Scenario[] = [
     ].join("\n"),
     maxTurns: 24,
     expect: { books: true, finalActive: 1, language: "unsupported" },
+  },
+  {
+    id: "S11",
+    title: "French speaker: book, then cancel",
+    goal: [
+      "You'd rather speak French. Start by saying, in French: \"Bonjour, vous parlez français ?\"",
+      "Speak only French for the whole call.",
+      "Your hot water has been lukewarm for two days. Not urgent. Book the first visit time they offer.",
+      "Give your name when asked, and spell the surname (K-H-O-U-R-Y) if they ask you to.",
+      "As soon as they tell you it's booked, say your partner has already found someone else, so please cancel that booking. If they ask you to confirm the cancellation, confirm it.",
+      "When it's cancelled, say goodbye in French.",
+    ].join("\n"),
+    maxTurns: 34,
+    expect: { books: true, finalActive: 0, cancels: true, language: "fr" },
+  },
+  {
+    id: "S12",
+    title: "Japanese speaker",
+    goal: [
+      "You'd rather speak Japanese. Start by asking, in English: \"Do you speak Japanese?\"",
+      "If they say yes, speak only polite Japanese from then on.",
+      "You want someone to fix a toilet that keeps running. Take the first time they offer on the next business day.",
+      "Give your name when asked. Your surname is written K-H-O-U-R-Y in English letters: spell it that way if they ask.",
+      "When it's booked, say goodbye in Japanese.",
+    ].join("\n"),
+    maxTurns: 24,
+    expect: { books: true, finalActive: 1, language: "ja" },
   },
   {
     id: "S6",

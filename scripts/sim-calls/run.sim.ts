@@ -272,6 +272,7 @@ async function runCall(o: { scenario: Scenario; run: number; fixture: Fixture; c
       }
     }
     record.diary = diaryFor(orgId, call.session.callRecordId, timezone);
+    record.languages = call.session.languagesUsed || ["en"];
     record.llm = llmStats(call.llmStats.ms, call.llmStats.calls);
   } catch (err) {
     record.ending = "error";
@@ -397,7 +398,7 @@ it("simulated demo-line calls", async () => {
   fs.writeFileSync(path.join(outDir, "report.md"), report);
   fs.writeFileSync(
     path.join(outDir, "results.json"),
-    JSON.stringify(scored.map((s) => ({ scenario: s.record.scenario.id, run: s.record.run, ending: s.record.ending, turns: s.record.turns, anomalies: s.record.anomalies, error: s.record.error, score: s.score, scoreError: s.scoreError })), null, 2),
+    JSON.stringify(scored.map((s) => ({ scenario: s.record.scenario.id, run: s.record.run, ending: s.record.ending, turns: s.record.turns, languages: s.record.languages, anomalies: s.record.anomalies, error: s.record.error, score: s.score, scoreError: s.scoreError })), null, 2),
   );
   processLog.end();
   process.stdout.write(`\nsim report: ${path.join(outDir, "report.md")}\n`);

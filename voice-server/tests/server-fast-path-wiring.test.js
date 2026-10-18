@@ -37,7 +37,7 @@ const { createFastTurnEngine, endsWithQuestion, isBackchannel, isLikelyEcho } = 
 const { createNoTurnWatchdog } = require("../lib/no-turn-watchdog");
 const { startSpeculativeReply } = require("../lib/speculative-reply");
 const { maskPhone } = require("../lib/mask-phone");
-const { applyLanguageSwitch, planLanguageSwitch, recordLanguageSwitch, setLanguageToolDefinition, unspeakableText, UNSPEAKABLE_APOLOGY, FLUX_MULTI_MODEL, fastLanguagesEnabled, LANGUAGE_UNHEARD_MESSAGE } = require("../lib/fast-languages");
+const { applyLanguageSwitch, planLanguageSwitch, recordLanguageSwitch, setLanguageToolDefinition, unspeakableText, UNSPEAKABLE_APOLOGY, FLUX_MULTI_MODEL, fastLanguagesEnabled, LANGUAGE_UNHEARD_MESSAGE, detectCallerLanguage, FAST_LANGUAGES } = require("../lib/fast-languages");
 
 const src = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
 const startHandler = src.slice(src.indexOf('case "start": {'), src.indexOf('case "media": {'));
@@ -306,6 +306,8 @@ function makeFast(o = {}) {
     getTransfer: o.getTransfer || (() => null),
     // SCRUM-594 (F5): the call's languages
     applyLanguageSwitch,
+    detectCallerLanguage,
+    FAST_LANGUAGES,
     planLanguageSwitch,
     recordLanguageSwitch,
     LANGUAGE_UNHEARD_MESSAGE,
@@ -3705,6 +3707,46 @@ describe("SCRUM-594 (F5): the call's languages on the fast path", () => {
     h.closeFastPath(s);
   });
 
+  it("F5 simulated calls: a caller clearly speaking French switches the line before the reply — the model never called set_language", async () => {
+    const reply = "Oui, bien sûr. Comment puis-je vous aider ?";
+    const h = makeFast({ steps: [{ sentences: [reply], content: reply }] });
+    const s = h.start(langSession());
+    h.fluxOpens();
+    const configured = [];
+    h.lastFlux().handle.configure = (settings) => { configured.push(settings); return true; };
+    await h.handleUserSpeech(s, h.twilioWs, "Bonjour, vous parlez français ?");
+    assert.deepEqual(configured, [{ language_hints: ["fr", "en"] }]);
+    assert.equal(s.fastLanguage, "fr");
+    assert.deepEqual(s.languagesUsed, ["en", "fr"]);
+    assert.deepEqual(h.calls.filter((c) => c[0] === "synthesizeSpeech").map((c) => [c[1], c[2]?.voice]), [[reply, "aura-2-agathe-fr"]]);
+    assert.ok(s.messages.some((m) => m.role === "system" && /^The caller is speaking French, so the line has switched to it/.test(m.content)), "the model is told");
+    assert.ok(h.lines.some((l) => l.includes("[FastPath] Language en → fr")), h.lines.join("\n"));
+    clearTimeout(s._speakingTimeout);
+    h.closeFastPath(s);
+  });
+
+  it("F5 simulated calls: no switch for an English caller, a call with languages off, a call already in another language, or one the hearing can't follow", async () => {
+    const run = async (setup, words) => {
+      const h = makeFast({ steps: [{ sentences: ["Sure."], content: "Sure." }] });
+      const s = h.start(setup === "off" ? makeSession() : langSession());
+      h.fluxOpens();
+      const configured = [];
+      h.lastFlux().handle.configure = (settings) => { configured.push(settings); return true; };
+      if (setup === "spanish") s.fastLanguage = "es";
+      if (setup === "nova") h.lastFlux().callbacks.onError(new Error("flux down"));
+      await h.handleUserSpeech(s, h.twilioWs, words);
+      const result = { language: s.fastLanguage, configured, notes: s.messages.filter((m) => m.role === "system" && /^The caller is speaking/.test(m.content)).length };
+      clearTimeout(s._speakingTimeout);
+      h.closeFastPath(s);
+      return result;
+    };
+    assert.deepEqual(await run("english", "Hello, do you speak French?"), { language: "en", configured: [], notes: 0 });
+    assert.deepEqual(await run("english", "Merci."), { language: "en", configured: [], notes: 0 }, "one word is no language");
+    assert.equal((await run("off", "Bonjour, vous parlez français ?")).notes, 0);
+    assert.deepEqual(await run("spanish", "Bonjour, vous parlez français ?"), { language: "es", configured: [], notes: 0 });
+    assert.deepEqual(await run("nova", "Bonjour, vous parlez français ?"), { language: "en", configured: [], notes: 0 });
+  });
+
   it("gate review: no switch the hearing can't follow — on the Nova fallback, or with Flux not open: NOT SWITCHED, nothing changes", async () => {
     for (const setup of ["nova", "closed"]) {
       const h = makeFast({ steps: [{ tools: [{ name: "set_language", args: { language: "es" } }] }, { sentences: ["Sorry, only English."], content: "Sorry, only English." }] });
@@ -3842,6 +3884,19 @@ describe("SCRUM-594 (F5): the call's languages on the fast path", () => {
     assert.match(src, /await sendTTS\(session, twilioWs, getErrorMsg\(callLanguage\(session\), "troubleRepeat"\), undefined, NOT_A_REPLY\);/);
     assert.match(src, /const again = getErrorMsg\(callLanguage\(session\), "sayAgain"\);/);
     assert.match(src, /const text = `\$\{getErrorMsg\(callLanguage\(session\), "didntCatch"\)\} \$\{question\}`;/);
+  });
+
+  it("scoped re-review: the apology itself, refused in the language's voice, is said in the assistant's voice — not dropped", async () => {
+    const h = makeFast({ restFailsFor: (_text, options) => options?.voice === "aura-2-uzume-ja", steps: [
+      { tools: [{ name: "set_language", args: { language: "ja" } }] },
+      { sentences: ["مرحبا"], content: "مرحبا" },
+    ] });
+    const s = h.start(langSession());
+    h.fluxOpens();
+    await h.handleUserSpeech(s, h.twilioWs, "Japanese please.");
+    assert.deepEqual(h.calls.filter((c) => c[0] === "synthesizeSpeech").map((c) => [c[1], c[2]?.voice]), [[UNSPEAKABLE_APOLOGY, "aura-2-uzume-ja"], [UNSPEAKABLE_APOLOGY, "aura-2-thalia-en"]]);
+    clearTimeout(s._speakingTimeout);
+    h.closeFastPath(s);
   });
 
   it("gate review: the apology comes once per caller turn — again on a later turn", async () => {

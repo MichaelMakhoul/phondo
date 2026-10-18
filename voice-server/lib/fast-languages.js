@@ -137,7 +137,60 @@ function applyLanguageSwitch(session, requested) {
   return plan;
 }
 
+/**
+ * Everyday words of the line's other languages that aren't English words. A
+ * caller's name never counts, and nor does a single letter (a spelling's).
+ * Elided words count by their parts ("d'accord" is "accord").
+ * @type {Readonly<Record<string, string[]>>}
+ */
+const CALLER_MARKERS = Object.freeze({
+  es: ["hola", "buenos", "buenas", "días", "dias", "tardes", "noches", "gracias", "sí", "por", "favor", "quiero", "quisiera", "necesito", "tengo", "tiene", "usted", "habla", "hablar", "hablo", "español", "puede", "puedo", "cita", "cómo", "qué", "está", "estoy", "para", "pero", "muy", "mi", "mis", "es", "el", "los", "las", "una", "unos", "del", "que", "en", "con", "se", "lo", "su", "sus", "mañana", "hoy", "cocina", "baño", "agua", "llave", "fuga", "gotea", "porque", "también", "ahora", "aquí", "llamo", "nombre", "apellido", "número", "teléfono", "casa", "visita", "hora", "bien", "claro", "bueno", "señor", "señora", "un"],
+  fr: ["bonjour", "bonsoir", "salut", "merci", "oui", "non", "je", "vous", "tu", "est", "plaît", "avec", "dans", "sur", "mon", "ma", "mes", "le", "la", "les", "des", "une", "du", "aux", "parlez", "parler", "parle", "français", "francais", "rendez", "voudrais", "aimerais", "ai", "il", "elle", "nous", "qui", "que", "pas", "très", "aujourd", "demain", "eau", "chaude", "depuis", "deux", "jours", "chez", "moi", "fuite", "salle", "bain", "cuisine", "problème", "besoin", "peux", "pouvez", "mais", "ou", "où", "et", "ce", "cette", "nom", "appelle", "accord", "bien", "en", "ne", "se", "vos", "votre", "à", "un"],
+  de: ["hallo", "guten", "morgen", "abend", "danke", "bitte", "ja", "nein", "ich", "sie", "nicht", "und", "ist", "das", "der", "dem", "ein", "eine", "einen", "einem", "einer", "mit", "für", "mein", "meine", "meiner", "meinen", "sprechen", "deutsch", "möchte", "habe", "haben", "termin", "heute", "wir", "können", "kann", "gibt", "es", "auf", "zu", "bei", "wasser", "heizung", "küche", "badezimmer", "auch", "noch", "schon", "aber", "oder", "wie", "warum", "sind", "wäre", "gerne", "gern", "genau", "richtig"],
+  it: ["ciao", "buongiorno", "buonasera", "salve", "grazie", "sì", "prego", "favore", "vorrei", "sono", "parla", "parlare", "parlo", "italiano", "il", "lo", "gli", "della", "delle", "dello", "del", "dei", "che", "non", "una", "uno", "mio", "mia", "ho", "è", "appuntamento", "oggi", "domani", "anche", "molto", "perché", "cucina", "bagno", "acqua", "perdita", "sotto", "lavandino", "problema", "mi", "si", "ci", "questo", "questa", "quando", "bene", "allora", "ecco", "nome", "cognome", "numero", "telefono", "casa", "un"],
+  nl: ["hallo", "goedemorgen", "goedemiddag", "goedenavond", "dank", "bedankt", "alstublieft", "graag", "ja", "nee", "ik", "je", "jij", "het", "een", "niet", "mijn", "wil", "wilt", "spreekt", "spreken", "nederlands", "afspraak", "vandaag", "morgen", "kunt", "kan", "heb", "hebt", "heeft", "voor", "ook", "onder", "keuken", "badkamer", "lekkage", "gootsteen", "probleem", "maar", "wat", "waar", "zijn", "zou", "kunnen", "de", "en", "op", "te", "dat", "deze"],
+});
+const MARKER_SETS = Object.entries(CALLER_MARKERS).map(([code, words]) => /** @type {[string, Set<string>]} */ ([code, new Set(words)]));
+/** English words that say the caller is speaking English after all. */
+const ENGLISH_MARKERS = new Set(["the", "you", "your", "i", "i'm", "i'd", "i've", "i'll", "my", "me", "is", "are", "am", "was", "have", "has", "can", "could", "would", "do", "does", "did", "please", "thanks", "thank", "hello", "hi", "yes", "yeah", "need", "want", "what", "when", "how", "where", "and", "to", "of", "it", "that", "this", "with", "for", "on", "in", "at", "speak", "like", "booking", "book", "appointment", "name", "number", "okay", "ok", "not", "just", "one", "there", "here", "be", "will", "it's", "that's", "don't", "can't", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "morning", "afternoon", "today", "tomorrow"]);
+const KANA = /[\p{scx=Hiragana}\p{scx=Katakana}]/gu;
+
+/**
+ * SCRUM-594 (F5 simulated calls): the line's other language a caller is
+ * clearly speaking, or null. A French caller's "Bonjour, vous parlez français ?"
+ * was answered in French in the English voice: the model never called
+ * set_language. Clearly means kana for Japanese; otherwise at least three of
+ * the language's everyday words, two more than any other language's, and few
+ * English ones ("I'd like a booking, por favor" is English).
+ * @param {unknown} text - the caller's words
+ * @returns {string|null}
+ */
+function detectCallerLanguage(text) {
+  if (typeof text !== "string" || !text.trim()) return null;
+  if ((text.match(KANA) || []).length >= 2) return "ja";
+  /** @type {Set<string>} */
+  const words = new Set();
+  /** @type {Set<string>} */
+  const englishWords = new Set();
+  for (const raw of text.toLowerCase().replace(/’/g, "'").match(/[\p{L}']+/gu) || []) {
+    englishWords.add(raw); // "i'm", "don't"
+    for (const part of raw.split("'")) {
+      if (!part) continue;
+      englishWords.add(part);
+      if (!/^[a-z]$/.test(part)) words.add(part); // a spelling's letters are no language's words
+    }
+  }
+  const count = (/** @type {Set<string>} */ found, /** @type {Set<string>} */ set) => [...found].filter((t) => set.has(t)).length;
+  const english = count(englishWords, ENGLISH_MARKERS);
+  const scores = MARKER_SETS.map(([code, set]) => /** @type {[string, number]} */ ([code, count(words, set)])).sort((a, b) => b[1] - a[1]);
+  const [best, score] = scores[0];
+  const runnerUp = scores[1][1];
+  if (score < 3 || score < runnerUp + 2 || english * 3 > score) return null;
+  return best;
+}
+
 module.exports = {
+  detectCallerLanguage,
   FAST_LANGUAGES,
   FLUX_MULTI_MODEL,
   ENGLISH_FALLBACK_VOICE,
