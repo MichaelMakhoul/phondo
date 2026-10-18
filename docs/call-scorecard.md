@@ -34,17 +34,35 @@ F5 is the first call on the new build. The booking flow worked: it spelled your 
 - **Wrong weekday (8).** The model never asked the system for the date. The prompt's schedule only says "Current date: 2026-10-18", and it lists the closed Sunday as "Fully booked", with Monday the first day that has times. The model called today Monday and blamed "booked 9 to 5" for a day you're simply closed.
 - **Arabic (8).** The shared prompt tells the AI it's multilingual (true for Gemini). This line hears with an English-only recogniser and speaks with Deepgram voices that have no Arabic. So it promised Arabic and sent Arabic text to an English voice, which came out as gibberish.
 
-**Fixed after F5 (commits b3f728a and c7a26aa), checked in the simulator before your next call:**
-- The schedule names today's weekday and gives today, and a closed tomorrow, a line of their own: "Today (Sun, Oct 18): CLOSED". Before opening, today says every time is still ahead.
-- The demo line speaks English, Spanish, French, German, Italian, Dutch and Japanese: what Deepgram can both hear and say. It switches when the caller asks. For Arabic or any other language, it says so in English and offers a call-back. It never sends a voice text it can't say.
-- Charlotte now uses Deepgram's Australian voice.
+**Fixed after F5 (commits b3f728a → cf13f45), checked in the simulator before your next call:**
+- **Weekday:**
+  - The schedule names today's weekday. Today and a closed tomorrow each get their own line, e.g. "Today (Sun, Oct 18): CLOSED".
+  - Before the business opens, today is labelled "this morning: the earliest times of all" and its times are offered first. In the small hours (before 5 AM) the AI is also told that a caller's "tomorrow morning" usually means today.
+  - The prompt's example replies no longer say "the earliest … is tomorrow".
+- **Languages:**
+  - The demo line speaks English, Spanish, French, German, Italian, Dutch and Japanese: what Deepgram can both hear and say.
+  - It switches when the caller asks, or once on its own when the caller clearly speaks one of them.
+  - The spelling read-back, the cancel check, the goodbye check and the "I've booked you" check all understand the call's language. In another language a cancel goes ahead only on a clear yes that follows its read-back. A refusal drops it. An unclear answer, a hedge or a question gets asked again.
+  - For Arabic or any other language, it says so in English and offers a call-back. It never sends a voice text it can't say.
+- **Voice:** Charlotte now uses Deepgram's Australian voice.
 
-New simulated callers:
-- the F5 Sunday call: 3/3 with no false weekday;
-- a Spanish speaker: 3/3 switched, booked and said goodbye;
-- an Arabic request: 3/3 declined plainly.
+**Simulated callers, 3 runs each (33 calls, head cf13f45, 6 AM Monday before opening):**
 
-Across all 27 simulated calls, every booking, move, cancel, language and ending check passes. One after-midnight call still said "today's getting late".
+| Check | Result |
+|---|---|
+| Language handled (Spanish, French book-then-cancel, Japanese; Arabic declined) | 12/12 |
+| Spelling confirmed before booking | 27/27 |
+| Cancels within 2 confirmations | 9/9 |
+| Ends properly | 33/33 |
+| Never false about bookings | 31/33 |
+
+- 10 of 12 checkpoints pass on every run. Short replies misses because of the demo prompt; the other miss is the "never false" line above.
+- The 2 misses are early-morning slips ("the earliest is tomorrow"). The bookings themselves were right.
+- In the before-opening fixes:
+  - offering Tuesday as "the earliest morning" at 3 AM went from 5 calls in 12 to 0;
+  - "today's fully booked" at 5:56 AM went from 6 calls in 12 to 2;
+  - 7:30 AM: 12/12.
+- **Cancel safety in other languages:** a reviewer probed 282 ways of taking a cancel back. None cancels. A caller who keeps saying a clear yes is never stuck.
 
 ## What the fast calls tell us
 
