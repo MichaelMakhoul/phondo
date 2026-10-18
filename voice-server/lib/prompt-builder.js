@@ -1070,6 +1070,9 @@ function isClosedDay(businessHours, dateKey) {
   return !config || config.closed === true || !config.open || !config.close;
 }
 
+/** SCRUM-594 (F5): the small hours end at 5 AM: before then "tomorrow morning" from a caller usually means today. */
+const SMALL_HOURS_END = 5;
+
 /**
  * Build a LIVE SCHEDULE section for injection into the system prompt.
  * Uses pre-loaded cached schedule data so the AI can answer availability
@@ -1097,7 +1100,9 @@ function buildLiveScheduleSection(snapshot, todayStr) {
   // SCRUM-594 (F5 simulated calls): at 3 AM, "the earliest weekday morning" became
   // "tomorrow, Tuesday at 9" in 5 of 12 calls with all of Monday free.
   const todaySlots = dates.includes(todayStr) ? getAnySlots(snapshot.slots[todayStr]) : [];
-  const earlyHours = todaySlots.length > 0 && beforeOpening(snapshot.businessHours, todayStr, timezone);
+  const notOpenYet = todaySlots.length > 0 && beforeOpening(snapshot.businessHours, todayStr, timezone);
+  // Confirmation review: only in the small hours. At 07:30 a caller's "tomorrow" means tomorrow.
+  const earlyHours = notOpenYet && Number(getCurrentTime24(timezone).slice(0, 2)) < SMALL_HOURS_END;
   if (earlyHours) {
     const weekday = formatLongDate(todayStr).split(" ")[0];
     lines.push(`It's the early hours, before opening: to a caller now, "this morning" and "tomorrow morning" both usually mean today (${formatDateLabel(todayStr, timezone)}). Offer today's times first, and say the day by name ("${weekday} at ${formatSlotTime(todaySlots[0])}").`);
@@ -1119,7 +1124,7 @@ function buildLiveScheduleSection(snapshot, todayStr) {
   const closedLines = [];
   if (!dates.includes(todayStr)) closedLines.push({ key: todayStr, text: `Today (${formatDateLabel(todayStr, timezone)}): ${todayEmpty}` });
   if (!dates.includes(tomorrowStr) && isClosedDay(snapshot.businessHours, tomorrowStr)) {
-    closedLines.push({ key: tomorrowStr, text: `Tomorrow (${formatDateLabel(tomorrowStr, timezone)}): CLOSED — not a business day.` });
+    closedLines.push({ key: tomorrowStr, text: `${earlyHours ? "Next day" : "Tomorrow"} (${formatDateLabel(tomorrowStr, timezone)}): CLOSED — not a business day.` });
   }
   const flushClosedBefore = (/** @type {string} */ key) => {
     while (closedLines.length > 0 && closedLines[0].key < key) lines.push(/** @type {{ text: string }} */ (closedLines.shift()).text);
@@ -1134,9 +1139,9 @@ function buildLiveScheduleSection(snapshot, todayStr) {
     let dayLabel;
     if (dateKey === todayStr) {
       // SCRUM-594 (F5): just after midnight the model called today "out since it's late".
-      dayLabel = earlyHours
-        ? `Today (${label}) — this morning: the business hasn't opened yet, so these are the earliest times of all`
-        : `Today (${label})`;
+      if (earlyHours) dayLabel = `Today (${label}) — this morning: the business hasn't opened yet, so these are the earliest times of all`;
+      else if (notOpenYet) dayLabel = `Today (${label}) — the business hasn't opened yet today, so every time today is still ahead`;
+      else dayLabel = `Today (${label})`;
     } else if (dateKey === getNextDay(todayStr)) {
       // In the early hours "tomorrow" is what a caller calls this morning: no "Tomorrow" to anchor on.
       dayLabel = earlyHours ? `Next day (${label})` : `Tomorrow (${label})`;

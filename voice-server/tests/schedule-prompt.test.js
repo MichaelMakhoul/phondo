@@ -334,6 +334,20 @@ describe("SCRUM-594 (phone test F5): today's weekday and a closed today", () => 
     assert.ok(!result.includes("Tomorrow (Tue, Oct 20)"), "no \"Tomorrow\" for the model to anchor on");
   });
 
+  it("confirmation review: after waking (07:30 before a 9:00 opening), tomorrow is Tomorrow again — the small-hours line is only before 5 AM", () => {
+    const result = withNow("2026-10-18T20:30:00Z", () => buildLiveScheduleSection(weekdaySnapshot(BUSINESS_WEEK), "2026-10-19")); // Mon 07:30 Sydney
+    assert.ok(result.includes("Today (Mon, Oct 19) — the business hasn't opened yet today, so every time today is still ahead: 10 AM, 10:30 AM (2 slots)"), result);
+    assert.ok(result.includes("Tomorrow (Tue, Oct 20):"), result);
+    assert.ok(!result.includes("early hours"), result);
+    assert.ok(!result.includes("Next day"), result);
+  });
+
+  it("in the small hours a closed next day is \"Next day\" too, never \"Tomorrow\"", () => {
+    const result = withNow("2026-10-15T16:00:00Z", () => buildLiveScheduleSection(weekdaySnapshot({ "2026-10-16": ["2026-10-16T15:00:00"] }), "2026-10-16")); // Fri 3 AM Sydney
+    assert.ok(result.includes("Next day (Sat, Oct 17): CLOSED — not a business day."), result);
+    assert.ok(!result.includes("Tomorrow ("), result);
+  });
+
   it("once open, today's line is plain (a later first free time is not 'not open yet')", () => {
     const result = withNow("2026-10-18T23:15:00Z", () => buildLiveScheduleSection(weekdaySnapshot(BUSINESS_WEEK), "2026-10-19")); // Mon 10:15 Sydney
     assert.ok(result.includes("Today (Mon, Oct 19): 10 AM, 10:30 AM (2 slots)"), result);

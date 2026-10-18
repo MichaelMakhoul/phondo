@@ -85,7 +85,7 @@ function runLetters(run, trim = true) {
     // commas or dots: "è K-H-O-U-R-Y. È…", "K-H-O-U-R-Y y su número" (SCRUM-594 F5).
     // A space between a surname's words is no such word: "D-E S-I-L-V-A".
     const kind = (/** @type {string} */ sep) => sep.replace(/\s+/g, "") || " ";
-    const loose = (/** @type {string} */ sep) => kind(sep) === " " || kind(sep) === ".";
+    const loose = (/** @type {string} */ sep) => kind(sep) === " " || kind(sep) === "." || kind(sep) === ","; // "K-H-O-U-R-Y, è corretto?"
     if (kind(parts[1]) === " " && !loose(parts[3])) parts.splice(0, 2);
     if (parts.length >= 5 && loose(parts[parts.length - 2]) && !loose(parts[parts.length - 4])) parts.splice(-2);
   }
@@ -186,7 +186,7 @@ function asksToCheckSpelling(content, target, language = "en") {
   // (「…教えてください。」) as often as either (final simulated run).
   const questions = language === "ja"
     ? content.split(/(?<=[。．！？!?])/).filter((sentence) => /(?:[?？]|か|ください|下さい|お願い(?:いた)?します)[。．]?\s*$/.test(sentence))
-    : content.match(/[^.!?。！？]*[?？]/g) || [];
+    : content.split(/(?<=[.!?。！？])/).filter((sentence) => /[?？]\s*$/.test(sentence));
   const other = guardWords(language);
   if (questions.length === 0) {
     // A read-back with no question counts — unless it goes on to another detail
@@ -301,7 +301,8 @@ const NO_JUST_CANCEL_IT = /^\W*(?:no|nope|nah)\W+just cancel (?:it|that)\W*$/i;
  * yeah") are set aside. A go-ahead never outweighs it ("No, cancel the other
  * one" is a no to this one); only "No, just cancel it" is a yes. Ambiguous words
  * count as a decline: that costs one more read-back, never a cancel the caller
- * refused. On a call in another language its words count too ("Non, attendez").
+ * refused. On a call in another language its words count too ("Non, attendez"),
+ * and only a clear go-ahead lets a held cancel through.
  * @param {unknown} text
  * @param {string} [language] - the call's language (session.fastLanguage)
  * @returns {boolean}
@@ -313,8 +314,17 @@ function declinesCancel(text, language = "en") {
   if (words?.agreeingNo) t = t.replace(words.agreeingNo, " ");
   if (DONT_CANCEL.test(t) || YES_BUT_NO.test(t) || DECLINE_PHRASE.test(t)) return true;
   if (NO_JUST_CANCEL_IT.test(t)) return false;
-  if (words?.decline.test(t)) return true;
-  return NO_AT_EDGE.test(t);
+  if (!words) return NO_AT_EDGE.test(t);
+  if (words.decline.test(t)) return true;
+  // Confirmation review: no table lists every way to take a cancel back ("Ich behalte
+  // ihn", 「そのままでお願いします」), so on a call in another language only a clear
+  // go-ahead counts — a yes or "cancel it", and no "no" once "I don't need it any
+  // more" is set aside. Anything else costs one more read-back, never a cancel the
+  // caller refused.
+  const raw = text.trim();
+  const said = t.replace(words.noLongerNeeded, " ");
+  const goAhead = (words.cancelYes || words.yes).test(raw) || words.goAhead.test(raw) || POSITIVE.test(raw);
+  return !goAhead || words.no.test(said) || NO_AT_EDGE.test(said);
 }
 
 /**

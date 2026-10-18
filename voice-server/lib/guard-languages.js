@@ -64,6 +64,9 @@ function bookedWithObject(subjects, negations, participles) {
  *   time: RegExp,
  *   shortQuestion: (question: string, maxWords: number) => boolean,
  *   decline: RegExp,
+ *   goAhead: RegExp,
+ *   noLongerNeeded: RegExp,
+ *   cancelYes?: RegExp,
  *   agreeingNo: RegExp | null,
  *   booked: RegExp,
  * }} GuardWords
@@ -73,6 +76,9 @@ function bookedWithObject(subjects, negations, participles) {
  * - field: a question about another detail (phone, email, address…)
  * - time: a question about a day or time ("¿Le viene bien el martes?")
  * - decline: a caller taking a cancel back; agreeingNo: "no problem" phrases set aside first
+ * - goAhead: "cancel it" / "go ahead"; noLongerNeeded: "I don't need it any more" (a go-ahead,
+ *   though it says no); cancelYes: a yes to a cancel, where it differs from `yes` (Japanese
+ *   「大丈夫です」 can mean "no need")
  * - booked: the AI's own "I've booked you"
  */
 
@@ -87,8 +93,10 @@ const GUARD_WORDS = Object.freeze({
     field: wordsRe(["correo", "e-?mail", "direcci[oó]n", "calle", "barrio", "n[uú]mero", "tel[eé]fono", "m[oó]vil", "celular", "nombre de pila"]),
     time: wordsRe(["lunes", "martes", "mi[ée]rcoles", "jueves", "viernes", "s[áa]bado", "domingo", "hoy", "ma[ñn]ana", "tarde", "noche", "horas?", "mediod[ií]a"]),
     shortQuestion: latinShort,
+    goAhead: wordsRe(["canc[ée]l(?:[ae]la|[ae]lo|e|a|ar|en)", "an[úu]l(?:[ae]la|[ae]lo|e|a|ar|en)", "adelante", "h[áa]galo", "proceda", "confirmo"]),
+    noLongerNeeded: wordsRe(["(?:ya )?no (?:la |lo |me )?(?:necesito|hace falta|sirve)(?: m[áa]s)?"], "giu"),
     decline: wordsRe(["esper[ae]", "un momento", "no (?:me )?(?:la |lo )?(?:cancel|anul)(?:e|es)", "mejor no", "d[ée]j(?:el|al)[oa]", "mant[ée]n(?:gal|l)[oa]", "olv[ií]d(?:el|al)[oa]", "me equivoqu[ée]", "no es (?:esa|ese)", "cambi[ée] de (?:opini[oó]n|idea)", "pens[aá]ndolo bien"]),
-    agreeingNo: wordsRe(["no hay problema", "sin problema", "no se preocupe", "ning[uú]n problema", "no pasa nada"], "giu"),
+    agreeingNo: wordsRe(["no hay problema", "sin problema", "no se preocupe", "no te preocupes", "ning[uú]n problema", "no pasa nada"], "giu"),
     booked: wordsRe([
       "(?<!no (?:\\S+ )?)(?:(?:le|te|lo|la|les) )?(?:he|hemos) (?:reservado|agendado|programado|apuntado)",
       "(?<!no (?:\\S+ )?)(?:le|te|les) (?:reservé|agendé|apunté)",
@@ -103,6 +111,8 @@ const GUARD_WORDS = Object.freeze({
     field: wordsRe(["pr[ée]nom", "e-?mail", "courriel", "adresse", "rue", "num[ée]ro", "t[ée]l[ée]phone", "portable"]),
     time: wordsRe(["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche", "aujourd['’]hui", "demain", "matin", "apr[èe]s-midi", "soir", "heures?", "midi"]),
     shortQuestion: latinShort,
+    goAhead: wordsRe(["annul(?:ez|e|er)(?:-l[ea])?", "allez-y", "faites-le", "je confirme", "confirm(?:ez|e)"]),
+    noLongerNeeded: wordsRe(["(?:je )?n['’]en ai plus besoin", "plus besoin", "(?:on |je )ne (?:le |la )garde pas"], "giu"),
     decline: wordsRe(["non", "attendez", "un instant", "n['’]annulez pas", "ne l['’]annulez pas", "gardez", "laissez", "oubliez", "pas (?:celui|celle)-l[àa]", "finalement non", "je (?:le|la) garde", "j['’]ai chang[ée] d['’]avis"]),
     agreeingNo: wordsRe(["pas de probl[èe]me", "pas de souci", "sans probl[èe]me"], "giu"),
     booked: wordsRe(["(?:je vous ai|je t['’]ai|j['’]ai|nous vous avons|nous avons|on vous a|on a) (?:bien )?(?:r[ée]serv[ée]e?s?|programm[ée]e?s?|inscrite?s?|not[ée]e?s?|pris (?:votre|le|un) rendez-vous)"]),
@@ -116,6 +126,8 @@ const GUARD_WORDS = Object.freeze({
     field: wordsRe(["vorname\\p{L}*", "e-?mail", "adresse", "stra(?:ß|ss)e", "\\p{L}*nummer", "telefon\\p{L}*", "handy\\p{L}*"]),
     time: wordsRe(["montag", "dienstag", "mittwoch", "donnerstag", "freitag", "samstag", "sonntag", "heute", "morgen", "vormittag", "nachmittag", "abend", "uhr", "mittag"]),
     shortQuestion: latinShort,
+    goAhead: wordsRe(["stornier(?:en|t|e)", "absagen", "machen sie (?:das|es)", "gerne?", "bitte", "ich best[äa]tige"]),
+    noLongerNeeded: wordsRe(["(?:ich )?brauche (?:ihn|sie|es|den termin) nicht mehr", "nicht mehr (?:n[öo]tig|notwendig)"], "giu"),
     decline: wordsRe(["nein", "nee", "n[öo]", "warten sie", "moment(?:mal)?", "nicht (?:stornieren|absagen|l[öo]schen)", "(?:stornieren|absagen|l[öo]schen) sie (?:\\p{L}+ )?(?:bitte )?nicht", "bitte nicht", "lieber nicht", "behalten", "lassen sie", "vergessen sie", "doch nicht", "nicht (?:den|die|diesen|diese)"]),
     agreeingNo: wordsRe(["kein problem", "keine sorge"], "giu"),
     booked: wordsRe([bookedWithObject("ich habe|wir haben|habe ich|haben wir", "nicht|nichts|kein\\p{L}*", "gebucht|eingetragen|reserviert|eingeplant|vereinbart")]),
@@ -129,6 +141,8 @@ const GUARD_WORDS = Object.freeze({
     field: wordsRe(["e-?mail", "indirizzo", "via", "numero", "telefono", "cellulare"]),
     time: wordsRe(["luned[iì]", "marted[iì]", "mercoled[iì]", "gioved[iì]", "venerd[iì]", "sabato", "domenica", "oggi", "domani", "mattina", "pomeriggio", "sera", "ore", "mezzogiorno"]),
     shortQuestion: latinShort,
+    goAhead: wordsRe(["(?:la |lo )?cancell(?:i|ate|are|a)", "(?:la |lo )?annull(?:i|ate|are|a)", "proceda", "vada pure", "confermo"]),
+    noLongerNeeded: wordsRe(["non (?:mi )?serve più", "non (?:ne )?ho più bisogno"], "giu"),
     decline: wordsRe(["aspett[ia]", "un attimo", "un momento", "non (?:la |lo )?(?:cancelli|annulli|cancellare|annullare)", "la tenga", "lo tenga", "lasci(?:amo)? (?:stare|perdere)", "non quell[ao]", "ci ho ripensato", "ho cambiato idea"]),
     agreeingNo: wordsRe(["nessun problema", "non c['’][èe] problema", "non si preoccupi"], "giu"),
     booked: wordsRe(["(?<!non (?:\\S+ )?)(?:(?:le|ti|vi|gliel[oa]) )?(?:ho|abbiamo) (?:prenotato|fissato|segnato|registrato)"]),
@@ -142,24 +156,29 @@ const GUARD_WORDS = Object.freeze({
     field: wordsRe(["voornaam", "e-?mail", "adres", "straat", "\\p{L}*nummer", "telefoon\\p{L}*", "mobiel\\p{L}*"]),
     time: wordsRe(["maandag", "dinsdag", "woensdag", "donderdag", "vrijdag", "zaterdag", "zondag", "vandaag", "morgen", "ochtend", "middag", "avond", "uur"]),
     shortQuestion: latinShort,
+    goAhead: wordsRe(["annuleer", "annuleren", "zeg (?:hem |maar )?af", "ga (?:je|uw) gang", "doe maar", "graag", "bevestig"]),
+    noLongerNeeded: wordsRe(["(?:ik )?heb (?:hem|het|ze) niet meer nodig", "niet meer nodig"], "giu"),
     decline: wordsRe(["nee", "neen", "wacht", "momentje", "niet annuleren", "niet afzeggen", "laat maar", "houd", "hou", "toch (?:maar )?niet", "liever niet", "niet die", "niet deze"]),
     agreeingNo: wordsRe(["geen probleem", "geen zorgen"], "giu"),
     booked: wordsRe([bookedWithObject("ik heb|we hebben|wij hebben|heb ik|hebben we|hebben wij", "niet|niets|geen", "geboekt|ingepland|gereserveerd|vastgelegd|ingeboekt")]),
   },
   ja: {
     // 「ええと」 (um) is no 「ええ」 (yes).
-    yes: /はい|ええ(?!と)|そうです|その通り|合って(?:い)?ます|あって(?:い)?ます|大丈夫です|正しいです|間違い(?:ありません|ございません|ない)/,
+    yes: /はい|ええ(?![ーっ]*と)|そうです|その通り|合って(?:い)?ます|あって(?:い)?ます|大丈夫です|正しいです|(?:間違い|相違)(?:ありません|ございません|ない)/,
     // Gate review: any negative form (ない, ません, じゃなく…), once the ones that agree — 「間違いありません」,
     // 「問題ありません」, 「すみません」 — are set aside (agreeingNo).
-    no: /いいえ|いえ、|違い|ちがい|違う|ちがう|間違|まちが|待って|まって|でも|けど|ですが|じゃなく|ではなく|ない|ません/,
+    no: /いいえ|いえ、|違い|ちがい|違う|ちがう|違っ|ちがっ|間違|まちが|待って|まって|でも|けど|ですが|じゃなく|ではなく|なく(?:て|ても)|ない|ません/,
     // 「確認」 only as "please confirm" (「確認ですが、緊急ですか」 asks something else): final review.
     check: /よろしい|正しい|合って|あって|間違い|まちがい|違っていたら|ご?確認(?:を)?(?:ください|下さい|お願い|して|いただけ)/,
     spell: /つづり|綴り|スペル|書き方/,
     field: /メール|住所|番号|電話|携帯|下の(?:お)?名前/,
-    time: /曜日|今日|明日|明後日|午前|午後|時|朝|夕方|夜/,
+    time: /曜日|今日|明日|明後日|午前|午後|(?<![当同])時|朝|夕方|夜/,
     shortQuestion: japaneseShort,
-    decline: /いいえ|いや|待って|まって|しないで|さないで|(?<!取り)やめ|やっぱり|結構です|違い|ちがい|違う|ちがう/,
-    agreeingNo: /間違い(?:ありません|ございません|ない)|問題(?:は)?(?:ありません|ございません|ない)|構いません|かまいません|すみません|すいません|申し訳(?:あり|ござい)ません/g,
+    goAhead: /キャンセルして|取り消して|お願い(?:いた)?します|やめます|構いません|かまいません/,
+    noLongerNeeded: /(?:もう)?(?:必要|要り|いり)(?:ありません|ません|ない|なくなりました)/g,
+    cancelYes: /はい|ええ(?![ーっ]*と)|そうです/,
+    decline: /いいえ|いえ|いや|待って|まって|しないで|さないで|しなくて(?:いい|大丈夫|結構)|(?<!取り)やめて|やっぱり|そのまま|結構です|違い|ちがい|違う|ちがう/,
+    agreeingNo: /(?:間違い|相違)(?:ありません|ございません|ない)|問題(?:は)?(?:ありません|ございません|ない)|構いません|かまいません|すみません|すいません|申し訳(?:あり|ござい)ません/g,
     booked: /予約(?:いた)?しました|予約を(?:お取り(?:いた)?しました|お入れ(?:いた)?しました|承りました)|予約が(?:完了(?:いた)?しました|取れました)/,
   },
 });

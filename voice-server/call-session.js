@@ -625,9 +625,11 @@ class CallSession {
    * @returns {boolean}
    */
   _aiSaidBooked() {
-    // SCRUM-594 (F5): and in each other language the call used ("Le he reservado…").
+    // SCRUM-594 (F5): and in each other language the call used ("Le he reservado…"),
+    // its questions aside ("Haben wir schon etwas gebucht?" is no claim).
     const others = (this.languagesUsed || []).map(guardWords).filter((w) => w !== null);
-    return [...this.fullTranscriptMessages, ...this.messages].some((m) => m?.role === "assistant" && typeof m.content === "string" && (AI_SAID_BOOKED.test(m.content) || others.some((w) => w.booked.test(m.content))));
+    const statements = (/** @type {string} */ text) => text.split(/(?<=[.!?。！？])/).filter((sentence) => !/[?？]\s*$/.test(sentence)).join("");
+    return [...this.fullTranscriptMessages, ...this.messages].some((m) => m?.role === "assistant" && typeof m.content === "string" && (AI_SAID_BOOKED.test(m.content) || (others.length > 0 && others.some((w) => w.booked.test(statements(m.content))))));
   }
 
   /**

@@ -45,7 +45,7 @@ describe("spelledRuns: a spelling written against Japanese text", () => {
     assert.deepEqual(spelledRuns("Il cognome è K-H-O-U-R-Y e il numero è questo."), ["KHOURY"]);
     assert.deepEqual(spelledRuns("Il cognome è K-H-O-U-R-Y. È corretto?"), ["KHOURY"]);
     assert.deepEqual(spelledRuns("Is it a K-H-O-U-R-Y?"), ["KHOURY"]);
-    assert.deepEqual(spelledRuns("K-H-O-U-R-Y, a lovely name."), ["KHOURYA"], "after a comma it stays, as before: runSpells takes a trailing A");
+    assert.deepEqual(spelledRuns("K-H-O-U-R-Y, a lovely name."), ["KHOURY"]);
   });
 
   it("a spelling with one kind of separator keeps every letter", () => {
@@ -69,7 +69,7 @@ describe("isAffirmative in the call's language", () => {
     de: ["Ja, genau.", "Ja.", "Richtig.", "Stimmt.", "Das stimmt so.", "Ja, kein Problem, das stimmt."],
     it: ["Sì, esatto.", "Sì.", "Corretto.", "Giusto.", "Perfetto, grazie.", "Sì, nessun problema, è giusto."],
     nl: ["Ja, dat klopt.", "Ja.", "Klopt.", "Precies.", "Dat is juist.", "Ja, geen probleem, dat klopt."],
-    ja: ["はい、そうです。", "はい。", "合っています。", "その通りです。", "大丈夫です。", "はい、間違いありません。", "間違いありません。", "はい、問題ありません。", "はい、すみません、そうです。"],
+    ja: ["はい、そうです。", "はい。", "合っています。", "その通りです。", "大丈夫です。", "はい、間違いありません。", "間違いありません。", "はい、問題ありません。", "はい、すみません、そうです。", "相違ありません。"],
   };
   const notYes = {
     es: ["No, es con K.", "No es así.", "Está mal.", "Espere.", "Sí, pero es con K al principio.", "Eso no es correcto.", "¡Claro que no!"],
@@ -77,7 +77,8 @@ describe("isAffirmative in the call's language", () => {
     de: ["Nein, mit K.", "Nicht ganz.", "Das ist falsch.", "Moment mal.", "Ja, aber mit K.", "Passt nicht.", "Das stimmt leider nicht."],
     it: ["No, con la K.", "Non è giusto.", "Sbagliato.", "Aspetti.", "Sì, ma con la K.", "Non esattamente.", "Non mi sembra giusto."],
     nl: ["Nee, met een K.", "Niet helemaal.", "Dat klopt niet.", "Fout.", "Ja, maar met een K.", "Dat klopt helaas niet."],
-    ja: ["いいえ、違います。", "違います。", "ちょっと待ってください。", "はい、でもKから始まります。", "はい、違います。", "ええと、最初の文字はCです。", "はい、CじゃなくてKです。", "合っていません。"],
+    ja: ["いいえ、違います。", "違います。", "ちょっと待ってください。", "はい、でもKから始まります。", "はい、違います。", "ええと、最初の文字はCです。", "はい、CじゃなくてKです。", "合っていません。",
+      "はい、違ってます。", "Kじゃなくて、Cです。", "最初が違って、Cです。", "ええっと、最初はCです。", "ええーと…"],
   };
   for (const [language, lines] of Object.entries(yes)) {
     for (const line of lines) it(`"${line}" is a yes on a ${language} call`, () => assert.equal(isAffirmative(line, language), true));
@@ -257,6 +258,49 @@ describe("declinesCancel in the call's language", () => {
   });
 });
 
+describe("declinesCancel on a call in another language: only a clear go-ahead lets a held cancel through (confirmation review)", () => {
+  // The tables can't list every way to take a cancel back ("Ich behalte ihn", 「そのままでお願いします」):
+  // anything that isn't a clear yes costs one more read-back, never a cancel the caller refused.
+  const declines = {
+    es: ["Por favor, no la canceles.", "Déjala.", "Mejor déjala.", "Olvídalo.", "Mantenla.", "He cambiado de opinión.", "Cambié de opinión.", "Mejor la mantengo.", "Prefiero mantenerla.",
+      "Pensándolo bien, mejor la dejo.", "Un segundo.", "Ni hablar.", "Espera.", "Para, para.", "Al final no.", "Todavía no.", "No la cancelen.", "Mejor que no.", "Quiero mantener la cita.", "Sí, pero la del jueves, no esta."],
+    fr: ["Finalement, je le garde.", "Je préfère le garder.", "J'ai changé d'avis.", "Attends.", "Une seconde.", "Pas question.", "Surtout pas.", "Ne l'annulez surtout pas.", "Je vais le garder.",
+      "Laissez-le.", "Gardez-le.", "Oubliez ça.", "Plutôt pas.", "N'annulez rien.", "Je le garde finalement."],
+    de: ["Nee.", "Nö.", "Ne, lieber nicht.", "Lieber nicht.", "Bitte nicht.", "Ich behalte ihn.", "Ich behalte den Termin.", "Ich hab's mir anders überlegt.", "Halt.", "Stopp.", "Warte.",
+      "Stornieren Sie ihn bitte nicht.", "Lass mal.", "Noch nicht.", "Nicht stornieren.", "Den Termin bitte behalten.", "Ach, lassen Sie es.", "Einen Moment."],
+    it: ["Ho cambiato idea.", "La tengo.", "Preferisco tenerla.", "Lascia stare.", "Lascia perdere.", "Lasci perdere.", "Non la cancellare.", "Non annullarla.", "Fermo.", "Aspetta.",
+      "Meglio di no.", "Non ancora.", "La voglio tenere.", "No, la tengo."],
+    nl: ["Niet doen.", "Liever niet.", "Nog niet.", "Ik wil hem houden.", "Ik ben van gedachten veranderd.", "Toch maar niet.", "Laat maar zitten.", "Wacht even.", "Houd hem maar.",
+      "Annuleer hem maar niet.", "Momentje.", "Nee hoor."],
+    ja: ["いえ。", "いえ、そのままでお願いします。", "そのままでお願いします。", "取り消さないでください。", "大丈夫です。", "やっぱりいいです。", "いや、待って。", "キャンセルはしないでください。",
+      "ちょっと待ってください。", "結構です。", "キャンセルしなくていいです。"],
+  };
+  const goAheads = {
+    es: ["Sí, cancélala.", "Sí, por favor, cancélela.", "Sí, no la necesito.", "Sí, ya no la necesito.", "Sí, adelante.", "Vale, cancélala.", "Sí, sin problema.", "Sí, no te preocupes.", "Sí.", "Correcto.", "Ok, cancélela.", "Okay."],
+    fr: ["Oui, annulez-le.", "Oui, je n'en ai plus besoin.", "Oui, allez-y.", "D'accord, annulez.", "Oui, sans problème.", "Oui, on ne le garde pas.", "Oui.", "Je confirme."],
+    de: ["Ja, bitte stornieren.", "Ja, ich brauche ihn nicht mehr.", "Ja, gerne.", "Ja, machen Sie das.", "Ja, kein Problem.", "Ja.", "Genau."],
+    it: ["Sì, la cancelli.", "Sì, non mi serve più.", "Sì, grazie.", "Va bene, la cancelli.", "Sì, nessun problema.", "Sì.", "Confermo."],
+    nl: ["Ja, annuleer maar.", "Ja, ik heb hem niet meer nodig.", "Ja, graag.", "Prima, annuleer hem maar.", "Ja, geen probleem.", "Ja.", "Klopt."],
+    ja: ["はい、キャンセルしてください。", "はい、お願いします。", "はい、もう必要ありません。", "はい、取り消してください。", "キャンセルをお願いします。", "予約をやめます。", "はい。"],
+  };
+  for (const [language, lines] of Object.entries(declines)) {
+    it(`${language}: every way of taking it back holds the cancel`, () => {
+      const missed = lines.filter((line) => !declinesCancel(line, language));
+      assert.deepEqual(missed, []);
+    });
+  }
+  for (const [language, lines] of Object.entries(goAheads)) {
+    it(`${language}: a clear go-ahead lets it through`, () => {
+      const held = lines.filter((line) => declinesCancel(line, language));
+      assert.deepEqual(held, []);
+    });
+  }
+  it("an English call is unchanged: only a clear decline holds", () => {
+    assert.equal(declinesCancel("What does it cost to cancel?"), false);
+    assert.equal(declinesCancel("No, wait."), true);
+  });
+});
+
 describe("the guards read the call's language (session.fastLanguage)", () => {
   const MON_9 = { datetime: "2026-10-19T09:00:00" };
 
@@ -304,7 +348,7 @@ describe("hasUnfinishedBooking: the AI's own \"I've booked you\" in the call's o
   const descriptions = {
     es: ["Su cita está reservada para el lunes a las 10.", "No le he reservado nada nuevo.", "¿Quiere que le reserve otra?"],
     fr: ["Votre rendez-vous est lundi à 10 h.", "Je n'ai rien réservé de nouveau."],
-    de: ["Ihr Termin ist am Montag um 10 Uhr.", "Ich habe noch nichts Neues gebucht."],
+    de: ["Ihr Termin ist am Montag um 10 Uhr.", "Ich habe noch nichts Neues gebucht.", "Haben wir schon etwas für Dienstag gebucht?"],
     it: ["Il suo appuntamento è lunedì alle 10.", "Non ho prenotato niente di nuovo."],
     nl: ["Uw afspraak staat op maandag om 10 uur.", "Ik heb nog niets nieuws geboekt."],
     ja: ["ご予約は月曜日の10時です。", "まだ予約していません。"],

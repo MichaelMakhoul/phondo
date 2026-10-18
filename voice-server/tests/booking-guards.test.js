@@ -149,6 +149,10 @@ describe("surnameSpellingConfirmed", () => {
     assert.equal(surnameSpellingConfirmed([ai("Is it K-H-O-U-R-Y, Sami?"), caller("Yes.")], "Khoury").confirmed, true, "the caller's own name is no other detail");
   });
 
+  it("confirmation review: an Italian read-back ending \", è corretto?\" still counts", () => {
+    assert.deepEqual(surnameSpellingConfirmed([ai("Il cognome è K-H-O-U-R-Y, è corretto?"), caller("Sì.")], "Khoury", "it"), { confirmed: true, reason: "confirmed" });
+  });
+
   it("gate review: a surname of two words read back with a space between them still counts (\"D-E S-I-L-V-A\")", () => {
     assert.deepEqual(surnameSpellingConfirmed([ai("That's D-E S-I-L-V-A. Is that right?"), caller("Yes.")], "De Silva"), { confirmed: true, reason: "confirmed" });
   });

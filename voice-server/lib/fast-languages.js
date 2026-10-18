@@ -155,7 +155,7 @@ const CALLER_MARKERS = Object.freeze({
 });
 /** Portuguese: no voice on this line, so a caller speaking it is switched to nothing. */
 const UNSPOKEN_MARKERS = Object.freeze({
-  pt: ["olá", "obrigado", "obrigada", "você", "vocês", "não", "sim", "tenho", "preciso", "fala", "falar", "português", "bom", "boa", "dia", "uma", "um", "eu", "meu", "minha", "é", "está", "também", "água", "cozinha", "banheiro", "vazamento", "consulta", "amanhã", "hoje", "agora", "então", "isso", "aqui", "muito", "obrigadinho", "encanador", "favor", "por"],
+  pt: ["olá", "obrigado", "obrigada", "você", "vocês", "não", "sim", "tenho", "preciso", "fala", "falar", "português", "bom", "boa", "dia", "uma", "um", "eu", "meu", "minha", "é", "está", "também", "água", "cozinha", "banheiro", "vazamento", "consulta", "amanhã", "hoje", "agora", "então", "isso", "aqui", "muito", "obrigadinho", "encanador"],
 });
 const MARKER_SETS = [...Object.entries(CALLER_MARKERS), ...Object.entries(UNSPOKEN_MARKERS)].map(([code, words]) => /** @type {[string, Set<string>]} */ ([code, new Set(words)]));
 /** English words that say the caller is speaking English after all. */

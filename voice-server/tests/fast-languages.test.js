@@ -174,6 +174,7 @@ describe("detectCallerLanguage (F5 simulated calls: a French caller was answered
     ["Bonjour, vous parlez français ?", "fr"],
     ["Mon eau chaude est tiède depuis deux jours. Ce n'est pas urgent.", "fr"],
     ["Hola, ¿habla español?", "es"],
+    ["Tengo un problema, por favor.", "es"], // confirmation review: "por favor" is Spanish, not a Portuguese decoy's
     ["Sí, por favor. Necesito que arreglen una llave que gotea en la cocina.", "es"],
     ["Guten Tag, sprechen Sie Deutsch?", "de"],
     ["Ich habe ein Problem mit meiner Heizung.", "de"],
