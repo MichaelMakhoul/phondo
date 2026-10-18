@@ -1,5 +1,7 @@
 # Voice providers for more languages (researched 18 Oct 2026)
 
+> **Superseded on voice quality (same day).** Azure's standard voices rank near the bottom of the independent listener rankings (Elo 1035). ElevenLabs v4 Turbo is #1 (1330) and covers 90+ languages including Arabic. See `voice-providers-price-quality-2026-10-18.md` for the updated recommendation.
+
 **Why this came up:** on call F5, the demo line promised Arabic and then sent Arabic text to an English-only voice. The fast pipeline uses Deepgram for both directions:
 - **Hearing:** Flux, which is English-only.
 - **Speaking:** Aura-2, whose voices cover seven languages: English, Spanish, French, German, Italian, Dutch and Japanese.
