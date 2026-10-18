@@ -575,6 +575,8 @@ describe("callerIsDone (B5: the AI ends the call only once the caller has)", () 
     ["it", "Grazie, arrivederci."], ["it", "Perfetto, ciao!"], ["it", "No grazie, è tutto."], ["it", "Buona giornata."],
     ["nl", "Bedankt, doei!"], ["nl", "Tot ziens."], ["nl", "Nee, dank je wel. Dat was het."], ["nl", "Fijne dag nog."],
     ["ja", "失礼します。"], ["ja", "さようなら"],
+    // confirmation review: more of the usual closings
+    ["it", "Ciao ciao!"], ["it", "Ciao, grazie."], ["es", "Chao, gracias."], ["de", "Das wär's."], ["es", "Eso sería todo."], ["fr", "Ce sera tout."], ["nl", "Dag!"], ["ja", "失礼します."],
   ]) {
     it(`"${done}" is done (${language} call)`, () => assert.equal(callerIsDone([ai("Gracias. ¿Algo más?"), caller(done)], language), true));
   }
@@ -589,6 +591,7 @@ describe("callerIsDone (B5: the AI ends the call only once the caller has)", () 
     ["nl", "Kan ik u nog ergens mee helpen? Nog iets?", "Nee."],
     ["ja", "他に何かございますか？", "大丈夫です。"],
     ["ja", "他に何かございますか？", "ありがとうございました。"],
+    ["ja", "他に何かございますか？", "大丈夫です."], // confirmation review: an ASCII full stop from the transcriber
   ]) {
     it(`"${answer}" answering "${question}" is done (${language} call)`, () => assert.equal(callerIsDone([ai(question), caller(answer)], language), true));
   }
@@ -615,6 +618,13 @@ describe("callerIsDone (B5: the AI ends the call only once the caller has)", () 
     ["de", "War das alles?", "Das war's nicht, ich habe noch eine Frage."],
     ["fr", "Autre chose ?", "C'est tout ce que vous avez ?"],
     ["it", "Altro?", "No grazie, ma vorrei cambiare l'orario."],
+    // confirmation review: a question, a negated closing, a time offer after "sonst noch", a "no, wait"
+    ["es", "¿Algo más?", "¿Eso es todo?"],
+    ["it", "Altro?", "È tutto?"],
+    ["it", "È tutto?", "Non è tutto."],
+    ["de", "Möchten Sie sonst noch etwas später?", "Nein."],
+    ["es", "¿Hay algo más en que pueda ayudarle?", "No, espere un momento."],
+    ["it", "C'è qualcos'altro?", "No?"],
   ]) {
     it(`"${answer}" answering "${question}" is not done (${language} call)`, () => assert.equal(callerIsDone([ai(question), caller(answer)], language), false));
   }

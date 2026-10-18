@@ -102,14 +102,17 @@ const NON_LATIN_LETTER = /(?=\p{L})\P{Script=Latin}/u;
 
 const WEEKDAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
 
-/** SCRUM-594 F5: "today's Monday" / "tomorrow is Tuesday" lines whose weekday isn't the call's (Sydney time). */
+/**
+ * SCRUM-594 F5: "today's Monday" / "tomorrow is Tuesday" lines whose weekday isn't the call's
+ * (Sydney time). The verb is required: "closed today, Monday at 9 is free" names two days.
+ */
 export function wrongWeekdayClaims(rec: Pick<CallRecord, "transcript" | "callTime">): string[] {
   if (!rec.callTime) return [];
   const at = new Date(rec.callTime);
   const dayIn = (ms: number) => new Intl.DateTimeFormat("en-US", { weekday: "long", timeZone: "Australia/Sydney" }).format(new Date(ms)).toLowerCase();
   const actual: Record<string, string> = { today: dayIn(at.getTime()), tomorrow: dayIn(at.getTime() + 24 * 3600 * 1000) };
   const claims: string[] = [];
-  const re = new RegExp(`\\b(today|tomorrow)(?:['’]s|\\s+is)?,?\\s+(?:a\\s+)?(${WEEKDAYS.join("|")})\\b`, "gi");
+  const re = new RegExp(`\\b(today|tomorrow)(?:['’]s|\\s+is)\\s+(?:a\\s+)?(${WEEKDAYS.join("|")})\\b`, "gi");
   for (const line of rec.transcript) {
     if (line.who !== "ai") continue;
     for (const m of line.text.matchAll(re)) {

@@ -445,17 +445,17 @@ const PLAIN_NO = /^\W*(no|nope|nah|not really)\b/i;
 // followed by a thanks. JS's \b is ASCII-only, so words are bounded by \p{L}.
 const THANKS = "(?:muchas )?gracias|merci(?: beaucoup)?|danke(?: sch[öo]n| sehr)?|vielen dank|grazie(?: mille)?|bedankt|dank (?:je|u)(?: wel)?|thanks|thank you";
 /** @param {string[]} alternatives */
-const closingAtEnd = (alternatives) => new RegExp(`(?<![\\p{L}\\p{N}])(?:${alternatives.join("|")})(?:[\\s,.!¡]+(?:y |et |und |e |en )?(?:${THANKS}))?[\\s,.!?¡¿…]*$`, "iu");
+const closingAtEnd = (alternatives) => new RegExp(`(?<![\\p{L}\\p{N}])(?<!(?:non|no|nicht|niet|pas|nein)\\s)(?:${alternatives.join("|")})(?:[\\s,.!¡]+(?:y |et |und |e |en )?(?:${THANKS}))?[\\s,.!¡…]*$`, "iu");
 const GOODBYE_OTHER = closingAtEnd([
-  "adi[oó]s", "hasta (?:luego|pronto|la pr[oó]xima)", "que tenga (?:un )?buen d[ií]a", "no,? (?:muchas )?gracias", "eso es todo",
-  "au revoir", "[àa] bient[ôo]t", "bonne (?:journ[ée]e|soir[ée]e)", "non,? merci", "c['’]est tout",
-  "tsch[üu]ss?", "auf wieder(?:h[öo]ren|sehen)", "sch[öo]nen tag(?: noch)?", "nein,? danke", "das war['’]?s", "das ist alles",
+  "adi[oó]s", "hasta (?:luego|pronto|la pr[oó]xima)", "que tenga (?:un )?buen d[ií]a", "no,? (?:muchas )?gracias", "eso (?:es|ser[ií]a) todo",
+  "au revoir", "[àa] bient[ôo]t", "bonne (?:journ[ée]e|soir[ée]e)", "non,? merci", "c['’]est tout", "ce sera tout",
+  "tsch[üu]ss?", "auf wieder(?:h[öo]ren|sehen)", "sch[öo]nen tag(?: noch)?", "nein,? danke", "das w[aä]r['’]?s", "das ist alles",
   "arrivederci", "buona (?:giornata|serata)", "a presto", "no,? grazie", "[èe] tutto",
   "doei", "tot ziens", "fijne dag(?: nog)?", "nee,? (?:bedankt|dank (?:je|u)(?: wel)?)", "dat was het", "dat is alles",
 ]);
-/** "Chao" / "ciao" only as the whole reply ("Linda Chao" is a name; "Ciao, vorrei…" a greeting). */
-const CIAO_ALONE = new RegExp(`^[\\s¡¿"'«]*(?:(?:${THANKS}|vale|bueno|perfecto|perfetto|ok(?:ay)?)[\\s,.!]+)?(?:chao|chau|ciao)[\\s,.!?…]*$`, "iu");
-const GOODBYE_JA = /(?:さようなら|失礼(?:します|いたします))[。．！!\s]*$/;
+/** "Chao" / "ciao" / "dag" only as the whole reply ("Linda Chao" is a name; "Ciao, vorrei…" a greeting). */
+const CIAO_ALONE = new RegExp(`^[\\s¡¿"'«]*(?:(?:${THANKS}|vale|bueno|perfecto|perfetto|ok(?:ay)?)[\\s,.!]+)?(?:chao|chau|ciao|dag)(?:[\\s,]+(?:chao|chau|ciao|dag))?(?:[\\s,.!]+(?:${THANKS}))?[\\s,.!…]*$`, "iu");
+const GOODBYE_JA = /(?:さようなら|失礼(?:します|いたします))[。．！!.\s]*$/;
 const DONE_IF_ASKED_OTHER = closingAtEnd([
   "nada(?: m[aá]s)?", "es todo", "estoy bien",
   "rien(?: d['’]autre)?", "[çc]a ira",
@@ -463,14 +463,14 @@ const DONE_IF_ASKED_OTHER = closingAtEnd([
   "niente(?: altro)?", "nient['’]altro", "a posto",
   "niets(?: meer)?", "verder niets",
 ]);
-const DONE_IF_ASKED_JA = /(?:大丈夫です|特にありません|以上です|ありがとうございました|いいえ)[。．！!\s]*$/;
+const DONE_IF_ASKED_JA = /(?:大丈夫です|特にありません|以上です|ありがとうございました|いいえ)[。．！!.\s]*$/;
 /** A bare "no" (or "no, thanks") as the whole reply. */
-const PLAIN_NO_OTHER = new RegExp(`^[\\s¡¿"'«]*(?:no|non|nein|nee|nada|niente|nichts|niets)(?:[\\s,.!]+(?:${THANKS}))?[\\s,.!?…]*$`, "iu");
+const PLAIN_NO_OTHER = new RegExp(`^[\\s¡¿"'«]*(?:no|non|nein|nee|nada|niente|nichts|niets)(?:[\\s,.!]+(?:${THANKS}))?[\\s,.!…]*$`, "iu");
 /** "Anything else?" — never "something earlier / later" (a time offer). */
 const ANYTHING_ELSE_OTHER = new RegExp(`(?<![\\p{L}\\p{N}])(?:${[
   "algo m[aá]s(?!\\s+(?:temprano|tarde|pronto|cerca|barato|caro))", "alguna otra cosa",
   "autre chose", "rien d['’]autre", "quelque chose d['’]autre",
-  "sonst noch(?: etwas| was)?(?!\\s+(?:fr[üu]her|sp[äa]ter|eher))", "noch etwas(?!\\s+(?:fr[üu]her|sp[äa]ter|eher))", "noch was(?!\\s+(?:fr[üu]her|sp[äa]ter|eher))",
+  "sonst noch(?!(?:\\s+(?:etwas|was))?\\s+(?:fr[üu]her|sp[äa]ter|eher))(?:\\s+(?:etwas|was))?", "noch etwas(?!\\s+(?:fr[üu]her|sp[äa]ter|eher))", "noch was(?!\\s+(?:fr[üu]her|sp[äa]ter|eher))",
   "qualcos['’]altro", "nient['’]altro", "c['’][èe] altro(?!\\s+(?:orario|giorno))",
   "nog iets(?!\\s+(?:eerder|later|vroeger))", "verder nog",
 ].join("|")})(?![\\p{L}\\p{N}])`, "iu");
@@ -499,7 +499,8 @@ function callerIsDone(transcript, language = "en") {
     || (other && (ANYTHING_ELSE_OTHER.test(question) || ANYTHING_ELSE_JA.test(question)))
   );
   if (!askedAnythingElse) return false;
-  if (DONE_IF_ASKED.test(said) || PLAIN_NO.test(said)) return true;
+  // English "no" only on an English call: "No, espere…" is not "no, nothing else" (confirmation review).
+  if (DONE_IF_ASKED.test(said) || (!other && PLAIN_NO.test(said))) return true;
   return other && (DONE_IF_ASKED_OTHER.test(said) || DONE_IF_ASKED_JA.test(said) || PLAIN_NO_OTHER.test(said));
 }
 

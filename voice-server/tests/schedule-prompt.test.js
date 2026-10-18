@@ -318,6 +318,11 @@ describe("SCRUM-594 (phone test F5): today's weekday and a closed today", () => 
     }
   };
 
+  it("a closed tomorrow after the last listed day still gets its line (a one-day snapshot)", () => {
+    const result = withNow("2026-10-16T03:00:00Z", () => buildLiveScheduleSection(weekdaySnapshot({ "2026-10-16": ["2026-10-16T15:00:00"] }), "2026-10-16")); // Fri 2 PM Sydney
+    assert.ok(result.includes("Tomorrow (Sat, Oct 17): CLOSED — not a business day."), result);
+  });
+
   it("before opening (just after midnight), today's line says every time today is still ahead; the time also reads on the 24-hour clock", () => {
     // Simulated calls at 00:32 Monday: "Today's out since it's late", "Today's pretty full" — today was empty.
     const result = withNow("2026-10-18T13:32:00Z", () => buildLiveScheduleSection(weekdaySnapshot(BUSINESS_WEEK), "2026-10-19")); // Mon 00:32 Sydney

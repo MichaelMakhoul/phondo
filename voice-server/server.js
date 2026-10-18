@@ -4199,7 +4199,7 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
             if (plan.changed) {
               // Gate review: what this round said before the tool call goes out and plays in
               // the old voice first — never said again over REST, never in the new voice.
-              await ttsChain;
+              await Promise.all(turnTtsChains); // every round of this turn, not only this one (confirmation review)
               if (session.fastTts?.isOpen()) await settleFastAudio(session);
               if (switchFastLanguageStreams(session, plan)) recordLanguageSwitch(session, plan);
               else message = LANGUAGE_UNHEARD_MESSAGE;
@@ -4763,25 +4763,28 @@ async function sendRestTTS(session, twilioWs, text, isStale, options = {}) {
   const cleanText = stripMarkdown(options.verbatim ? text : speakableFastText(session, text));
   if (!cleanText) return 0; // SCRUM-594 (F5): a second unspeakable sentence in the same turn says nothing
   // SCRUM-594 (phone test F4): only the words sent to TTS (harmless for classic too).
+  const voice = session?.deepgramVoice; // the voice THIS request used (a switch may land during it)
   let audioBuffer;
+  let spokenText = cleanText;
   try {
-    audioBuffer = await synthesizeSpeech(DEEPGRAM_API_KEY, spellLettersForTts(cleanText), {
-      voice: session?.deepgramVoice,
-    });
+    audioBuffer = await synthesizeSpeech(DEEPGRAM_API_KEY, spellLettersForTts(cleanText), { voice });
   } catch (err) {
     // Gate review (F5): after a language switch the call speaks over REST in that language's
-    // voice; a voice that fails would leave every later sentence silent. Captured once; back
-    // to English, and this sentence is said in the assistant's own voice.
-    if (!session?.fastState || !session.baseDeepgramVoice || session.deepgramVoice === session.baseDeepgramVoice) throw err;
+    // voice; a voice the service refuses (a 4xx: not a timeout, 408, 429 or 5xx) would leave
+    // every later sentence silent. Captured once; back to English, and this sentence is said
+    // again, through the speech guard, in the assistant's own voice.
+    const status = Number(/Deepgram TTS error (\d{3})/.exec(String(err?.message || ""))?.[1]);
+    const refused = status >= 400 && status < 500 && status !== 408 && status !== 429;
+    if (!session?.fastState || !session.baseDeepgramVoice || voice === session.baseDeepgramVoice || !refused) throw err;
     if (!session.fastState.restVoiceFailureCaptured) {
       session.fastState.restVoiceFailureCaptured = true;
-      captureFastFailure(session, "aura-rest", `REST TTS failed in the voice ${session.deepgramVoice}`, err);
+      captureFastFailure(session, "aura-rest", `REST TTS refused the voice ${voice}`, err);
     }
-    revertFastLanguageToEnglish(session, `REST TTS failed in ${session.deepgramVoice}`);
+    revertFastLanguageToEnglish(session, `REST TTS refused ${voice}`);
     session.deepgramVoice = session.baseDeepgramVoice;
-    audioBuffer = await synthesizeSpeech(DEEPGRAM_API_KEY, spellLettersForTts(cleanText), {
-      voice: session.deepgramVoice,
-    });
+    spokenText = stripMarkdown(options.verbatim ? text : speakableFastText(session, text));
+    if (!spokenText) return 0;
+    audioBuffer = await synthesizeSpeech(DEEPGRAM_API_KEY, spellLettersForTts(spokenText), { voice: session.deepgramVoice });
   }
   console.log(`[TTS] (${Date.now() - t0}ms) ${audioBuffer.length} bytes`);
   // SCRUM-594: the fast turn this was for was barged in on while it synthesised.
@@ -4815,7 +4818,7 @@ async function sendRestTTS(session, twilioWs, text, isStale, options = {}) {
     );
     // SCRUM-594 (R12d′): REST audio on the fast path (after an Aura fallback):
     // the echo filter hears its words, and isSpeaking holds until its mark is back.
-    if (session?.fastState) noteFastRestSpeech(session, cleanText, audioBuffer.length / 8);
+    if (session?.fastState) noteFastRestSpeech(session, spokenText, audioBuffer.length / 8);
   }
 
   // Playback duration in ms (8kHz mulaw = 8 bytes/ms). Chunks are pushed

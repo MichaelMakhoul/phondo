@@ -232,7 +232,7 @@ function makeFast(o = {}) {
       const delay = o.restDelayFor ? o.restDelayFor(text) : o.restDelayMs;
       if (delay) await sleep(delay);
       if (o.restFails) throw new Error("Deepgram TTS error 500");
-      if (o.restFailsFor?.(text, options)) throw new Error("Deepgram TTS error 400: unknown voice");
+      if (o.restFailsFor?.(text, options)) throw new Error(o.restFailMessage || "Deepgram TTS error 400: unknown voice");
       return Buffer.alloc(o.restBytes ?? 800, 0x7f);
     },
     chunkAudioForTwilio,
@@ -3776,6 +3776,72 @@ describe("SCRUM-594 (F5): the call's languages on the fast path", () => {
     assert.equal(h.sentry.filter((e) => e.tags?.service === "aura-rest").length, 1, "captured once a call");
     clearTimeout(s._speakingTimeout);
     h.closeFastPath(s);
+  });
+
+  it("confirmation review: a switch in a later round waits for every earlier round's speech, which keeps its voice", async () => {
+    const h = makeFast({ restDelayFor: (text) => (text === "Un momento." ? 60 : 0), steps: [
+      { tools: [{ name: "set_language", args: { language: "es" } }] }, { sentences: ["Claro."], content: "Claro." },
+      { sentences: ["Un momento.", "Lo compruebo."], tools: [{ name: "check_availability", args: { date: "2026-10-20" } }] },
+      { tools: [{ name: "set_language", args: { language: "fr" } }] },
+      { sentences: ["D'accord."], content: "D'accord." },
+    ] });
+    const s = h.start(langSession());
+    h.fluxOpens();
+    await h.handleUserSpeech(s, h.twilioWs, "¿Habla español?");
+    await h.handleUserSpeech(s, h.twilioWs, "¿Hay hueco el martes? Mejor en francés.");
+    assert.deepEqual(h.calls.filter((c) => c[0] === "synthesizeSpeech").map((c) => [c[1], c[2]?.voice]), [
+      ["Claro.", "aura-2-selena-es"], ["Un momento.", "aura-2-selena-es"], ["Lo compruebo.", "aura-2-selena-es"], ["D'accord.", "aura-2-agathe-fr"],
+    ]);
+    clearTimeout(s._speakingTimeout);
+    h.closeFastPath(s);
+  });
+
+  it("confirmation review: the old voice failing while it re-says owed words is not blamed on the new one", async () => {
+    const h = makeFast({ restFailsFor: (_text, options) => options?.voice === "aura-2-thalia-en", steps: [{ sentences: ["Of course."], tools: [{ name: "set_language", args: { language: "es" } }] }, { sentences: ["Claro."], content: "Claro." }] });
+    const s = h.start(langSession());
+    h.fluxOpens();
+    await h.handleUserSpeech(s, h.twilioWs, "¿Habla español?"); // Aura never confirms "Of course.": it is owed, and re-said over REST in the old voice
+    assert.equal(s.fastLanguage, "es", "the switch stands");
+    assert.equal(h.sentry.filter((e) => e.tags?.service === "aura-rest").length, 0);
+    clearTimeout(s._speakingTimeout);
+    h.closeFastPath(s);
+  });
+
+  it("confirmation review: a Japanese voice that fails is retried through the speech guard (the apology, never Japanese in the English voice)", async () => {
+    const h = makeFast({ restFailsFor: (_text, options) => options?.voice === "aura-2-uzume-ja", steps: [{ tools: [{ name: "set_language", args: { language: "ja" } }] }, { sentences: ["はい。"], content: "はい。" }] });
+    const s = h.start(langSession());
+    h.fluxOpens();
+    await h.handleUserSpeech(s, h.twilioWs, "日本語でお願いします");
+    assert.deepEqual(h.calls.filter((c) => c[0] === "synthesizeSpeech").map((c) => [c[1], c[2]?.voice]), [["はい。", "aura-2-uzume-ja"], [UNSPEAKABLE_APOLOGY, "aura-2-thalia-en"]]);
+    assert.equal(s.fastState.speakingText, UNSPEAKABLE_APOLOGY, "the echo filter listens for what was said");
+    clearTimeout(s._speakingTimeout);
+    h.closeFastPath(s);
+  });
+
+  it("confirmation review: a passing error (timeout, 429, 5xx) in the language's voice keeps the language — only a voice the service refuses sends the call back", async () => {
+    for (const message of ["Deepgram TTS error 500: upstream", "Deepgram TTS error 429: slow down", "Deepgram TTS error 408: request timeout", "The operation was aborted due to timeout"]) {
+      const h = makeFast({ restFailMessage: message, restFailsFor: (_text, options) => options?.voice === "aura-2-selena-es", steps: [{ tools: [{ name: "set_language", args: { language: "es" } }] }, { sentences: ["Claro."], content: "Claro." }] });
+      const s = h.start(langSession());
+      h.fluxOpens();
+      await h.handleUserSpeech(s, h.twilioWs, "¿Habla español?");
+      assert.equal(s.fastLanguage, "es", message);
+      assert.equal(h.sentry.filter((e) => e.tags?.service === "aura-rest").length, 0, message);
+      clearTimeout(s._speakingTimeout);
+      h.closeFastPath(s);
+    }
+  });
+
+  it("confirmation review: canned lines at every fast-path site follow the call's language", () => {
+    for (const key of ["goodbye", "repeatRequest", "troubleRepeat", "sayAgain", "didntCatch"]) {
+      const sites = src.match(new RegExp(`getErrorMsg\\((?:session\\.language|callLanguage\\(session\\)), "${key}"`, "g")) || [];
+      assert.ok(sites.length > 0, key);
+    }
+    // the fast-path sites (the tool loop, the Flux fallback, the re-prompt) read callLanguage
+    assert.match(src, /reply = getErrorMsg\(callLanguage\(session\), "goodbye"\);/);
+    assert.match(src, /reply = getErrorMsg\(callLanguage\(session\), "repeatRequest"\);\n\s*console\.warn\(`\[Pipeline\] Tool call loop exhausted/);
+    assert.match(src, /await sendTTS\(session, twilioWs, getErrorMsg\(callLanguage\(session\), "troubleRepeat"\), undefined, NOT_A_REPLY\);/);
+    assert.match(src, /const again = getErrorMsg\(callLanguage\(session\), "sayAgain"\);/);
+    assert.match(src, /const text = `\$\{getErrorMsg\(callLanguage\(session\), "didntCatch"\)\} \$\{question\}`;/);
   });
 
   it("gate review: the apology comes once per caller turn — again on a later turn", async () => {
