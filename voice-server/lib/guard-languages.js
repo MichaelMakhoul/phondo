@@ -82,7 +82,8 @@ function bookedWithObject(subjects, negations, participles) {
  * - a go-ahead to a cancel (cancelGoAhead): cancelYes (a plain yes) or goAhead ("cancel it",
  *   "go ahead") anywhere; ack ("alles klar", "vale") only as the whole answer; never with a
  *   hedge ("I'm still thinking"); noLongerNeeded: "I don't need it any more", "I can't come"
- *   (a go-ahead, though it says no). Japanese 「大丈夫です」 is no cancelYes: it can mean "no need"
+ *   — set aside before any "no" counts (a reason to cancel is no refusal, though on its own
+ *   it is no go-ahead either). Japanese 「大丈夫です」 is no cancelYes: it can mean "no need"
  * - pointsBack: a check that points back at what was just read, whatever its length
  * - booked: the AI's own "I've booked you"
  */
@@ -176,7 +177,7 @@ const GUARD_WORDS = Object.freeze({
     cancelYes: wordsRe(["ja", "jawel"]),
     goAhead: wordsRe(["annuleer", "annuleren", "zeg (?:hem |maar )?af", "ga (?:je|uw) gang", "doe maar", "bevestig"]),
     ack: wordsRe(["goed", "prima", "in orde", "akkoord", "zeker", "natuurlijk", "klopt", "precies", "perfect", "graag", "ok[ée]?", "okay"]),
-    hedge: wordsRe(["denk\\p{L}*", "misschien", "weet (?:niet|nog)"]),
+    hedge: wordsRe(["nadenk\\p{L}*", "denk (?:er )?(?:nog )?over", "misschien", "weet (?:niet|nog)"]),
     noLongerNeeded: wordsRe(["(?:ik )?heb (?:hem|het|ze) niet meer nodig", "niet meer nodig", "(?:ik kan|kan ik) (?:er )?(?:helaas )?niet(?: (?:komen|zijn))?"], "giu"),
     decline: wordsRe(["nee", "neen", "wacht", "momentje", "niet annuleren", "niet afzeggen", "laat maar", "houd", "hou", "toch (?:maar )?niet", "liever niet", "niet die", "niet deze"]),
     agreeingNo: wordsRe(["geen probleem", "geen zorgen"], "giu"),
@@ -199,7 +200,8 @@ const GUARD_WORDS = Object.freeze({
     pointsBack: /^(?:もし)?(?:違|間違)っていたら|^(?:こちら|これ|それ|そちら)で(?=よろし|お間違い|間違い|合って|正し)|ご?確認(?:を)?(?:ください|下さい|お願い|して|いただけ)/,
     goAhead: /キャンセルして|キャンセルで(?!す)|そうしてください|取り消して|お願い(?:いた)?します|やめます|構いません|かまいません/,
     ack: /了解(?:です|しました)?|承知(?:しました|いたしました)|わかりました|分かりました/,
-    hedge: /考え|かもしれ|わから|分から|迷/,
+    // 「考えます」/「迷っています」 hedge; 「考えた」 and 「迷惑」 don't.
+    hedge: /考え(?:ます|させて|中|たい|てみ)|かもしれ|わから|分から|迷(?:って|い|う)/,
     noLongerNeeded: /(?:もう)?(?:必要|要り|いり)(?:ありません|ません|ない|なくなりました)|(?:行け|来られ|伺え)(?:ません|ない|なくなりました)/g,
     cancelYes: /はい|ええ(?![ーっ]*と)|そうです|(?<![うふ])うん(?!と)/,
     decline: /いいえ|いえ|いや|ううん|待って|まって|しないで|さないで|しなくて(?:いい|大丈夫|結構)|キャンセル(?:は|の)?(?:必要|いり|要り)(?:ありません|ません|ない)|(?<!取り)やめて|やっぱり|そのまま(?!キャンセル|取り消)|結構です|違い|ちがい|違う|ちがう/,

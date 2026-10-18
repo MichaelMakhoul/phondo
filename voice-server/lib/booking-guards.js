@@ -86,7 +86,7 @@ function runLetters(run, trim = true) {
     // A space between a surname's words is no such word: "D-E S-I-L-V-A".
     const kind = (/** @type {string} */ sep) => sep.replace(/\s+/g, "") || " ";
     const loose = (/** @type {string} */ sep) => kind(sep) === " " || kind(sep) === "." || kind(sep) === ","; // "K-H-O-U-R-Y, è corretto?"
-    if (parts.length >= 7 && kind(parts[1]) === " " && kind(parts[3]) !== " " && kind(parts[3]) === kind(parts[5])) parts.splice(0, 2); // "N G, a" is NG
+    if (kind(parts[1]) === " " && kind(parts[3]) !== " " && !(parts.length === 5 && loose(parts[3]))) parts.splice(0, 2); // "N G, a" is NG; "è L-I. È" is LI
     if (parts.length >= 5 && loose(parts[parts.length - 2]) && kind(parts[parts.length - 2]) !== kind(parts[parts.length - 4])) parts.splice(-2);
   }
   return (parts.join("").match(/\p{L}/gu) || []).join("").toUpperCase();
@@ -355,8 +355,8 @@ const EN_YES = /\b(?:yes|yeah|yep)\b/i;
 /** English acknowledgements: a go-ahead only as the whole answer. */
 const EN_ACK = /\b(?:ok(?:ay)?|sure|fine|alright|all right|perfect|great)\b/gi;
 const EN_ACK_ONE = /\b(?:ok(?:ay)?|sure|fine|alright|all right|perfect|great)\b/i;
-/** A thanks or a please that may go with an acknowledgement. */
-const ACK_COURTESY = /(?<![\p{L}\p{N}])(?:(?:muchas )?gracias|merci(?: beaucoup)?|danke(?: sch[öo]n)?|grazie|bedankt|dank (?:je|u)(?: wel)?|thanks|thank you|por favor|s['’]il vous pla[iî]t|bitte|per favore|alstublieft|graag|お願いします|ありがとうございます)(?![\p{L}\p{N}])/giu;
+/** A thanks, a please, a filler or a goodbye that may go with an acknowledgement ("Ah, vale.", "Vale, gracias, adiós."). */
+const ACK_COURTESY = /(?<![\p{L}\p{N}])(?:(?:muchas )?gracias|merci(?: beaucoup)?|danke(?: sch[öo]n)?|grazie|bedankt|dank (?:je|u)(?: wel)?|thanks|thank you|por favor|s['’]il vous pla[iî]t|bitte|per favore|alstublieft|graag|お願いします|ありがとうございます|ah|eh|euh|oh|ehm|[äe]hm?|mm+h?|uhm?|adi[oó]s|au revoir|tsch[üu]ss?|ciao|chao|doei|arrivederci)(?![\p{L}\p{N}])/giu;
 
 /**
  * How many times the caller has spoken: the turn a hold belongs to.

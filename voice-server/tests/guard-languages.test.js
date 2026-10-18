@@ -48,6 +48,10 @@ describe("spelledRuns: a spelling written against Japanese text", () => {
     assert.deepEqual(spelledRuns("Il cognome è K, H, O, U, R, Y. È corretto?"), ["KHOURY"]);
     assert.deepEqual(spelledRuns("K, H, O, U, R, Y"), ["KHOURY"]);
     assert.deepEqual(spelledRuns("That's N G, a lovely name."), ["NG"], "a two-letter name spelled with spaces");
+    // last confirmation review: short Italian read-backs after "è"
+    assert.deepEqual(spelledRuns("Il cognome è L-I. È corretto?"), ["LI"]);
+    assert.deepEqual(spelledRuns("Il cognome è N-G, giusto?"), ["NG"]);
+    assert.equal(surnameSpellingConfirmed([ai("Il cognome è D-I S-T-E-F-A-N-O. È corretto?"), caller("Sì.")], "Di Stefano", "it").confirmed, true);
     assert.deepEqual(spelledRuns("Is it a K-H-O-U-R-Y?"), ["KHOURY"]);
     assert.deepEqual(spelledRuns("K-H-O-U-R-Y, a lovely name."), ["KHOURY"]);
   });
@@ -324,10 +328,15 @@ describe("a held cancel in another language goes through only on a clear go-ahea
       ["ja", "キャンセルですか？"], ["ja", "キャンセルでしょうか。"], ["de", "Wäre es in Ordnung, ihn zu verlegen?"], ["fr", "Pardon, j'ai mal entendu."], ["es", "¿Cancelarla?"],
       ["es", "Vale, mi marido lo trae."], ["de", "Alles klar, mein Mann ruft an."],
       ["de", "Ja, vielleicht."], ["es", "Sí, quizás."], ["nl", "Ja, misschien."], ["ja", "はい、ちょっと考えます。"],
+      // last confirmation review: 「キャンセルです。」 states a purpose, 「ふうん。」 is "I see"; "Ik denk er nog over na." hedges
+      ["ja", "キャンセルです。"], ["ja", "ふうん。"], ["nl", "Ik denk er nog over na."],
     ]) {
       assert.equal(cancelGoAhead(line, language), false, `${language}: ${line}`);
     }
-    for (const [language, line] of [["de", "Alles klar, danke."], ["es", "Vale, gracias."], ["nl", "Zeker."], ["de", "Klar."], ["it", "Certamente."], ["fr", "Voilà."], ["es", "Dale."], ["ja", "了解しました。"], ["ja", "そうしてください。"], ["ja", "はい、そのままキャンセルしてください。"], ["de", "Ja, ich kann leider nicht."], ["fr", "Yes, cancel it please."]]) {
+    for (const [language, line] of [["de", "Alles klar, danke."], ["es", "Vale, gracias."], ["nl", "Zeker."], ["de", "Klar."], ["it", "Certamente."], ["fr", "Voilà."], ["es", "Dale."], ["ja", "了解しました。"], ["ja", "そうしてください。"], ["ja", "はい、そのままキャンセルしてください。"], ["de", "Ja, ich kann leider nicht."], ["fr", "Yes, cancel it please."],
+      // last confirmation review: several acknowledgements, an English one with a thanks, a filler or a goodbye; narrower hedges
+      ["it", "Perfetto, va bene."], ["es", "Vale, perfecto."], ["es", "Sure, gracias."], ["es", "Ah, vale."], ["fr", "Euh, d'accord."], ["es", "Vale, gracias, adiós."],
+      ["ja", "ご迷惑をおかけしてすみません、キャンセルでお願いします。"], ["ja", "考えた結果、キャンセルでお願いします。"], ["nl", "Ja, dat denk ik wel."]]) {
       assert.equal(cancelGoAhead(line, language), true, `${language}: ${line}`);
     }
   });
@@ -389,6 +398,18 @@ describe("the guards read the call's language (session.fastLanguage)", () => {
     s.addMessage("assistant", "Confermo: cancello lunedì alle 9?");
     s.addMessage("user", "Sì.");
     assert.equal(fastCancelGate(s, MON_9, 4000).proceed, true, "a clear yes after a fresh read-back");
+  });
+
+  it("last confirmation review: an unlisted refusal right after the hold (no AI line between) still re-arms it", () => {
+    const s = new CallSession("CA-es");
+    s.bookingGuards = true;
+    s.fastLanguage = "es";
+    s.addMessage("user", "Quiero cancelar el lunes.");
+    fastCancelGate(s, MON_9, 1000);
+    s.addMessage("user", "Para, para. Mejor la mantengo.");
+    s.addMessage("assistant", "¿Algo más?");
+    s.addMessage("user", "Sí, una pregunta.");
+    assert.equal(fastCancelGate(s, MON_9, 2000).proceed, false);
   });
 
   it("final confirmation review: a yes to \"anything else?\" after an unlisted refusal never confirms the held cancel", () => {
