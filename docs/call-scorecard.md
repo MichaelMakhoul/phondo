@@ -7,24 +7,25 @@ One fixed list of checkpoints. Every test call gets scored against it, so we can
 - ❌ = failed
 - — = not exercised in that call
 
-| # | Checkpoint | G1 Gemini 16 Oct 12:51 | G2 Gemini 16 Oct 13:39 | G3 Gemini 16 Oct 14:17 (filter off) | F1 Fast 17 Oct 07:03 | F2 Fast 17 Oct 08:00 | F3 Fast 17 Oct 21:38 (same build as F2) | F4 Fast 17 Oct 21:42 (same build as F2) | F5 Fast 18 Oct 14:32 (new build 87e2433) |
-|---|---|---|---|---|---|---|---|---|---|
-| 1 | Hears the caller correctly | ❌ "Nine is good" heard as "Nein, gut"; "yes" heard as "no" | ❌ Spanish, Hindi, Italian | ❌ German, Spanish | ✅ one slip ("Sorry?" heard as "Deville") | ✅ one slip ("book a line") | ⚠️ a few slips ("Audrey"), recovered | ⚠️ "That's my day at night", "Michael but close" | ⚠️ said surname heard as "Makoot", "McCool"; spelled letters right |
-| 2 | Gets the surname right | ❌ McCool | ❌ Makhlouf | ✅ Makhoul, after a struggle | ✅ Makhoul | ❌ **McCool** | ⚠️ booked **McCool**, fixed only when you asked | ✅ you spelled it for the lookup | ✅ Makhoul |
-| 3 | Confirms the spelling before booking | ⚠️ only because the check forced it | ❌ | ⚠️ several re-spells | ⚠️ asked to spell, but no "is that right?" | ❌ **never asked** | ❌ **never asked** | — | ✅ spelled back + "is that right?" (one muddled extra round) |
-| 4 | Books only after the caller agrees to a time | ✅ the check held it | ❌ booked before you agreed | ⚠️ third try unchecked | ✅ | ✅ | ✅ | — | ✅ |
-| 5 | Books the time the caller asked for | — | ❌ 9 AM, not your 10 AM | ✅ 10 AM | ✅ 9:30 | ✅ Tue 9 AM | ✅ Mon 10:30 | — | ✅ Mon 10 AM |
-| 6 | Moves a booking when asked | — | — | — | ❌ refused (name check) | ❌ **made a second booking instead of moving** | — | — | — |
-| 7 | Cancels with at most 2 confirmations | — | — | — | ❌ refused ("no booking") | ❌ **5 confirmations, and asked for the phone** | — | ❌ **3 confirmations and asked for the phone** | — |
-| 8 | Never says anything false about bookings | ⚠️ "Actually, let me clarify…" | ❌ "You're all set" over your "No" | ⚠️ "Perfect! You're all set" mid-spelling | ❌ "no appointment on the system" | ❌ **"I didn't book anything on this call"** | ✅ | ❌ **"a booking was started but never completed"** | ❌ **"Today's Monday the 18th"** (Sunday); "today's out, booked 9 to 5" (closed Sundays); **"Yes, I can speak Arabic"** |
-| 9 | Remembers what it did earlier in the call | — | — | — | ✅ | ❌ **forgot its own Tuesday booking** | ❌ **asked your name again** ("I just told you") | ✅ | ✅ |
-| 10 | Stops when interrupted, answers "Sorry?" | — | — | — | ❌ "Sorry?" waited 10 s | ✅ stopped 8 times when you spoke | ✅ | ✅ took your "No, no" | ✅ answered your "Sorry?" |
-| 11 | Short replies, no repeating itself | ✅ | ✅ | ✅ | ❌ 12–15 s replies, repeated offers | ⚠️ short, but asked the time 4× | ⚠️ asked for a time twice | ⚠️ re-confirmations | ⚠️ asked you to spell again after you had; "anything else?" 3× |
-| 12 | Speaks spelled names clearly | — | — | — | ❌ dropped "U L" | — | ⚠️ "M-C-C-O-O-L" recorded as "m c c o o" | — | — (no recording transcript yet) |
-| 13 | Speed (median gap ≤ 1.5 s) | ✅ ~1.5 s | ✅ | ✅ | ✅ 1.06 s* | ✅ 0.98 s* (p90 4.0 s) | ✅ 0.91 s* (p90 3.0 s) | ✅ 1.03 s* (p90 5.1 s) | ✅ 0.95 s* (p90 2.3 s) |
-| 14 | Ends properly (goodbye → hangs up; never over an objection) | ❌ cut off by the 3-min limit | ❌ hung up over "No, I said 10AM" | ❌ asked to spell, then hung up | ✅ | ⚠️ you hung up mid-confusion | ✅ | ⚠️ **didn't hang up after "That's all"; logged a callback you didn't want** | ✅ waited for your goodbye |
-| 15 | Speaks the caller's language when it can; says so plainly when it can't | — | — | — | — | — | — | — | ❌ **"Yes, I can speak Arabic"**, then Arabic text to an English voice |
-| | **Score (✅ out of checkpoints exercised)** | **3 / 8** | **2 / 10** | **4 / 10** | **6 / 13** | **6 / 13** | **7 / 12** | **4 / 9** | **8 / 12** |
+| # | Checkpoint | G1 Gemini 16 Oct 12:51 | G2 Gemini 16 Oct 13:39 | G3 Gemini 16 Oct 14:17 (filter off) | F1 Fast 17 Oct 07:03 | F2 Fast 17 Oct 08:00 | F3 Fast 17 Oct 21:38 (same build as F2) | F4 Fast 17 Oct 21:42 (same build as F2) | F5 Fast 18 Oct 14:32 (new build 87e2433) | F6 Fast 19 Oct 10:02 (build 8347f34) |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | Hears the caller correctly | ❌ "Nine is good" heard as "Nein, gut"; "yes" heard as "no" | ❌ Spanish, Hindi, Italian | ❌ German, Spanish | ✅ one slip ("Sorry?" heard as "Deville") | ✅ one slip ("book a line") | ⚠️ a few slips ("Audrey"), recovered | ⚠️ "That's my day at night", "Michael but close" | ⚠️ said surname heard as "Makoot", "McCool"; spelled letters right | ⚠️ said surname heard as "McCool"; spelled letters right |
+| 2 | Gets the surname right | ❌ McCool | ❌ Makhlouf | ✅ Makhoul, after a struggle | ✅ Makhoul | ❌ **McCool** | ⚠️ booked **McCool**, fixed only when you asked | ✅ you spelled it for the lookup | ✅ Makhoul | ✅ Makhoul |
+| 3 | Confirms the spelling before booking | ⚠️ only because the check forced it | ❌ | ⚠️ several re-spells | ⚠️ asked to spell, but no "is that right?" | ❌ **never asked** | ❌ **never asked** | — | ✅ spelled back + "is that right?" (one muddled extra round) | ✅ spelled back + "is that right?"; spelled again when you asked |
+| 4 | Books only after the caller agrees to a time | ✅ the check held it | ❌ booked before you agreed | ⚠️ third try unchecked | ✅ | ✅ | ✅ | — | ✅ | ✅ |
+| 5 | Books the time the caller asked for | — | ❌ 9 AM, not your 10 AM | ✅ 10 AM | ✅ 9:30 | ✅ Tue 9 AM | ✅ Mon 10:30 | — | ✅ Mon 10 AM | ✅ Mon 4:30 PM |
+| 6 | Moves a booking when asked | — | — | — | ❌ refused (name check) | ❌ **made a second booking instead of moving** | — | — | — | — |
+| 7 | Cancels with at most 2 confirmations | — | — | — | ❌ refused ("no booking") | ❌ **5 confirmations, and asked for the phone** | — | ❌ **3 confirmations and asked for the phone** | — | — |
+| 8 | Never says anything false about bookings | ⚠️ "Actually, let me clarify…" | ❌ "You're all set" over your "No" | ⚠️ "Perfect! You're all set" mid-spelling | ❌ "no appointment on the system" | ❌ **"I didn't book anything on this call"** | ✅ | ❌ **"a booking was started but never completed"** | ❌ **"Today's Monday the 18th"** (Sunday); "today's out, booked 9 to 5" (closed Sundays); **"Yes, I can speak Arabic"** | ✅ right weekday and date; offered today first |
+| 9 | Remembers what it did earlier in the call | — | — | — | ✅ | ❌ **forgot its own Tuesday booking** | ❌ **asked your name again** ("I just told you") | ✅ | ✅ | ✅ |
+| 10 | Stops when interrupted, answers "Sorry?" | — | — | — | ❌ "Sorry?" waited 10 s | ✅ stopped 8 times when you spoke | ✅ | ✅ took your "No, no" | ✅ answered your "Sorry?" | ✅ stopped for your "A new one"; answered "Hello?" |
+| 11 | Short replies, no repeating itself | ✅ | ✅ | ✅ | ❌ 12–15 s replies, repeated offers | ⚠️ short, but asked the time 4× | ⚠️ asked for a time twice | ⚠️ re-confirmations | ⚠️ asked you to spell again after you had; "anything else?" 3× | ⚠️ said the same times twice in one reply; **two goodbyes** before you were done; the demo line |
+| 12 | Speaks spelled names clearly | — | — | — | ❌ dropped "U L" | — | ⚠️ "M-C-C-O-O-L" recorded as "m c c o o" | — | — (no recording transcript yet) | ⚠️ the second read-back recorded as "M-A-K-H-R-U-L" |
+| 13 | Speed (median gap ≤ 1.5 s) | ✅ ~1.5 s | ✅ | ✅ | ✅ 1.06 s* | ✅ 0.98 s* (p90 4.0 s) | ✅ 0.91 s* (p90 3.0 s) | ✅ 1.03 s* (p90 5.1 s) | ✅ 0.95 s* (p90 2.3 s) | ⚠️ 1.04 s* (p90 4.0 s), but **14 s of silence** after "Yeah, that one please" (you said "Hello?") and 6 s after "Four thirty is good" |
+| 14 | Ends properly (goodbye → hangs up; never over an objection) | ❌ cut off by the 3-min limit | ❌ hung up over "No, I said 10AM" | ❌ asked to spell, then hung up | ✅ | ⚠️ you hung up mid-confusion | ✅ | ⚠️ **didn't hang up after "That's all"; logged a callback you didn't want** | ✅ waited for your goodbye | ⚠️ hung up after your "That's all", but tried twice before that (the check held it), with a goodbye each time |
+| 15 | Speaks the caller's language when it can; says so plainly when it can't | — | — | — | — | — | — | — | ❌ **"Yes, I can speak Arabic"**, then Arabic text to an English voice | — |
+| 16 | Clean audio: no words cut off, no background noise | — | — | — | — | — | — | — | — | ❌ **4 words cut off mid-sound** ("…for yo—", "…Mich—"); a second of hold noise ("wind") before every reply |
+| | **Score (✅ out of checkpoints exercised)** | **3 / 8** | **2 / 10** | **4 / 10** | **6 / 13** | **6 / 13** | **7 / 12** | **4 / 9** | **8 / 12** | **7 / 13** |
 
 \* Measured from when it detected you'd finished. Add about 0.3–0.9 s for the real gap from your last word.
 
@@ -63,6 +64,41 @@ F5 is the first call on the new build. The booking flow worked: it spelled your 
   - "today's fully booked" at 5:56 AM went from 6 calls in 12 to 2;
   - 7:30 AM: 12/12.
 - **Cancel safety in other languages:** a reviewer probed 282 ways of taking a cancel back. None cancels. A caller who keeps saying a clear yes is never stuck.
+
+F6 (Monday 10:02 AM, build 8347f34) booked correctly: the right weekday, today offered first, your surname spelled back, and 4:30 PM booked. Checkpoint 16 is new: the recording showed problems you can hear but no other checkpoint covers. What went wrong, from the recording and the logs:
+- **Words cut off mid-sound (16).** Four times a word stops dead: "Let me book that for yo—", "Have a good day, Mich—", "is that righ—" and "Sure—". The next sentence then starts, so it sounds like the AI stopping and starting again. This is Deepgram's Australian voice (Theia) itself. Replaying the call's exact messages gave the same cuts, and so did Deepgram's other API and its full-quality audio. Over the same sentences, the endings that came back cut off were Theia 13 of 90, Thalia (American) 3 of 90 and Hyperion (Australian, male) 1 of 90.
+- **The "wind" (16).** The fast line still played the old pipeline's "thinking" sound: soft brown noise for about a second before every reply.
+- **14 s of silence (13).** You answered "Yeah, that one please" to "is that the one?". The "one" counted as the first digit of a phone number, so the line waited 12 s for the rest, until you said "Hello?".
+- **6 s after "Four thirty is good" (13).** A time said in words didn't count as a time, so the line waited out its 4 s limit.
+- **Two goodbyes (11, 14).** The prompt told the AI to say goodbye as soon as you confirmed the booking, but this line won't hang up until you say you're done. So you heard "Have a good day, Michael" and then "Is there anything else I can help you with today?". Your "Sounds perfect" arrived separately from your "Yeah". It was answered on its own, which led to a second goodbye.
+- **The same times twice (11):** "Today's openings start at 11 AM, and tomorrow has times from 9:30 AM. Would today at 11 AM or tomorrow at 9:30 AM suit you better?"
+- **The demo line**, which you asked to remove.
+
+**Fixed after F6 (commits 8089f87 → 72c2406), checked in the simulator before your next call:**
+- No "thinking" sound on the fast line.
+- A plain "yes" to "is that the one?" goes straight through. A different number given in pieces is still put together first. "One" and "oh" count as digits only inside a run of real digits. "Four thirty", "Four PM", "ten past four", "after four" and "noon" count as times.
+- On the phone line, after you confirm a booking, the AI asks "anything else?" before any goodbye. If it does try to hang up early, it is told not to say goodbye again. Short approvals like "Sounds perfect", "That's great" and "Lovely" are no longer answered on their own while the AI is busy, the same as "Perfect" already was. Closers like "Cheers" and "All good" still count as your goodbye.
+- New rule: say each time once, in the question.
+- The demo line is gone. Phondo comes up only if the caller asks. The photo ask says to send it to this number. (The demo number itself can't receive texts or photos: SMS and MMS are off for it in Twilio.)
+- **Not fixed: the cut-off words.** Fixing them means changing the voice, which is your call.
+
+**Simulated callers, 3 runs each, Monday 11 AM (the same clock as the F5 run it is compared with):**
+
+| Check | Before (F5 build) | After (2db8c6c) |
+|---|---|---|
+| Says the demo line | 19 of 33 calls | 0 of 36 |
+| Says goodbye before you're done (the hang-up is held) | 5 of 33 | 2 of 36 |
+| Ends properly | 33/33 | 35/36 |
+| Never false about bookings | 29/33 | 34/36 |
+| Short replies, no repeating itself | 18/33 | 24/36 |
+| Spelling confirmed before booking | 27/27 | 30/30 |
+| Cancels within 2 confirmations | 8/9 | 9/9 |
+| Languages | 11/12 | 12/12 |
+| Checkpoints passing on every run | 8 / 12 | 9 / 12 |
+
+- The one call that didn't end properly: the caller said "all correct, thanks, bye!" and was asked "anything else?". Rewording the rule fixed that case but brought back early goodbyes after a plain "yes, thanks", so this wording is the better balance.
+- The 2 "never false" misses are the known "today's pretty full" slip, said with today free.
+- The simulator has no audio and no turn timing, so the thinking sound and the number/time waits are covered by tests instead.
 
 ## What the fast calls tell us
 
