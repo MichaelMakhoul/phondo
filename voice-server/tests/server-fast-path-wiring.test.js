@@ -199,7 +199,7 @@ function makeFast(o = {}) {
     OWNER_MAX_TOOL_CALLS,
     ownerToolLoopReply,
     getErrorMsg: (lang, key) => (o.errorMsgWithLang ? `ERR:${lang}:${key}` : `ERR:${key}`),
-    detectExpectedInput: () => o.expectNext || "general",
+    detectExpectedInput: (t) => o.expectNext || (o.realDetector ? require("../lib/input-type-detector").detectExpectedInput(t) : "general"),
     logTranscript: (label, text) => lines.push(`log| ${label}: [${(text || "").length} chars]`),
     bookingKey: () => "k",
     classifyRebookAttempt: () => ({ kind: "duplicate" }),
@@ -4030,6 +4030,77 @@ describe("SCRUM-594 (F5): the call's languages on the fast path", () => {
     assert.deepEqual(h.calls.filter((c) => c[0] === "synthesizeSpeech").map((c) => c[1]), [UNSPEAKABLE_APOLOGY, "はい、明日の10時です。", "نعم"]);
     clearTimeout(s._speakingTimeout);
     clearTimeout(classic._speakingTimeout);
+    h.closeFastPath(s);
+  });
+});
+
+describe("SCRUM-594 test review (F6): the offered caller-ID number, from the AI's reply to the answer", () => {
+  const OFFER = "Thanks, Michael. What's the best mobile number to reach you on? I can see you're calling from 0414 141 883, is that the one?";
+  const ASK = "Thanks, Michael. What's the best mobile number to reach you on?";
+  /** The AI says `aiText` (the real detector sets what the buffer expects next) and it has all played; then the caller says `said`, piece by piece. */
+  async function answerTo(aiText, said, nextReply) {
+    const h = makeFast({ realDetector: true, steps: [{ sentences: [aiText], content: aiText }, { sentences: [nextReply], content: nextReply }] });
+    const s = h.start(makeSession());
+    h.fluxOpens();
+    h.turn("EndOfTurn", 0, "Hi, I'd like a quote please.");
+    await until(() => h.llmCalls.length === 1 && !s.isProcessing, "the first turn");
+    h.audio(2, 0);
+    h.lastAura().options.onFlushed(0);
+    echoMarks(h, s);
+    await settle();
+    const expected = s._expectedInputType;
+    const started = Date.now();
+    for (const [i, piece] of said.entries()) {
+      if (i > 0) await sleep(100);
+      h.turn("EndOfTurn", 1 + i, piece);
+    }
+    return { h, s, expected, started };
+  }
+
+  it("'Yeah. That one, please.' to the offer is answered at once, not after the buffer's wait", async () => {
+    const { h, s, expected, started } = await answerTo(OFFER, ["Yeah. That one, please."], "Great, thanks.");
+    assert.equal(expected, "phone", "the reply made the buffer expect a number");
+    await until(() => h.llmCalls.length === 2, "the answer", 3000);
+    assert.ok(Date.now() - started < 500, `${Date.now() - started} ms`);
+    h.closeFastPath(s);
+  });
+
+  it("'Yeah, sure.' to a plain ask, then the digits, is one turn with the whole number", async () => {
+    const { h, s, expected } = await answerTo(ASK, ["Yeah, sure.", "Oh four one two, three four five, six seven eight."], "Got it.");
+    assert.equal(expected, "phone");
+    await until(() => h.llmCalls.length === 2, "the answer", 5000);
+    assert.deepEqual(h.llmCalls[1].messages.at(-1), { role: "user", content: "Yeah, sure. Oh four one two, three four five, six seven eight." });
+    h.closeFastPath(s);
+  });
+
+  it("after a Nova fallback, a reply that is flushed but not yet voiced is cleared when the next turn starts", async () => {
+    const h = makeFast({ steps: [{ sentences: ["Thursday it is."], content: "Thursday it is." }] });
+    const s = h.start(makeSession());
+    h.lastFlux().callbacks.onError(new Error("flux down"));
+    assert.equal(s.fastPath, "degraded-stt");
+    await h.sendTTS(s, h.twilioWs, "Tuesday at ten is booked.");
+    h.fastFlush(s); // flushed: no audio and no Flushed yet (the other owed state, `unflushed`, is pinned above)
+    assert.equal(s.isSpeaking, false, "no audio from Aura yet");
+    const clears = h.twilio("clear").length;
+    await h.handleUserSpeech(s, h.twilioWs, "Actually, make it Thursday instead.");
+    assert.equal(h.twilio("clear").length, clears + 1, "the stale reply is cut at the turn's start");
+    assert.equal(h.lastAura().handle.clears, 1, "and Cleared from Aura");
+    h.closeFastPath(s);
+  });
+
+  it("after a Nova fallback, the recording disclosure is not cut at a turn's start even before isSpeaking is set", async () => {
+    const h = makeFast({ steps: [{ sentences: ["Sure."], content: "Sure." }] });
+    const s = h.start(makeSession());
+    h.lastFlux().callbacks.onError(new Error("flux down"));
+    h.beginFastDisclosure(s); // disclosureActive; isSpeaking still false
+    h.armFastDisclosureEnd(s, h.twilioWs, 3000);
+    assert.equal(s.isSpeaking, false);
+    const clears = h.twilio("clear").length;
+    const turn = h.handleUserSpeech(s, h.twilioWs, "Hi, I need to book a cleaning");
+    assert.equal(h.twilio("clear").length, clears, "nothing cleared");
+    assert.equal(h.lastAura().handle.clears, 0);
+    await turn;
+    clearTimeout(s._speakingTimeout);
     h.closeFastPath(s);
   });
 });

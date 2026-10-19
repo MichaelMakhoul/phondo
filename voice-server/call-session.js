@@ -1,5 +1,5 @@
 const { WebSocket } = require("ws");
-const { validateInput, getBufferConfig, extractSpokenDigits, isPlainYes } = require("./lib/input-validators");
+const { validateInput, getBufferConfig, extractSpokenDigits, isPlainYes, saysPhoneNumber } = require("./lib/input-validators");
 const { logTranscript } = require("./lib/log-transcript");
 const { guardWords } = require("./lib/guard-languages");
 
@@ -880,14 +880,17 @@ class CallSession {
   }
 
   /**
-   * Did the AI's last words hold a whole phone number (the caller-ID number it
-   * offered)? Then a plain yes is an answer, not the start of one.
+   * Did the AI, since the caller last spoke, say a whole phone number (the
+   * caller-ID number it offered)? Then a plain yes is an answer, not the start of
+   * one. Every AI message since then counts: a re-prompt repeats only the
+   * question's last sentence, and the number may be in an earlier one.
    * @returns {boolean}
    */
   _lastAiOfferedNumber() {
     for (let i = this.fullTranscriptMessages.length - 1; i >= 0; i--) {
       const m = this.fullTranscriptMessages[i];
-      if (m.role === "assistant") return typeof m.content === "string" && extractSpokenDigits(m.content).length >= 8;
+      if (m.role === "user") return false;
+      if (m.role === "assistant" && saysPhoneNumber(m.content)) return true;
     }
     return false;
   }

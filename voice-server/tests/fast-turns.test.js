@@ -1502,6 +1502,13 @@ describe("isBackchannel", () => {
     }
   });
 
+  it("test review (F6): every BACKCHANNEL_PHRASES entry is a backchannel as a caller says it", () => {
+    for (const phrase of BACKCHANNEL_PHRASES) {
+      const said = phrase.replace(/^that s /, "That's ") + ".";
+      assert.equal(isBackchannel(said), true, said);
+    }
+  });
+
   it("…but not a closer, a polite decline, a confirmation, or anything with content", () => {
     // Closers are DONE_IF_ASKED (booking-guards): dropped while the AI is busy, a goodbye would be lost.
     for (const said of ["Cheers.", "All good.", "No dramas.", "That's all.", "That's it.", "That's all, thanks", "That's okay.", "That's alright.", "That's fine.", "That's right.", "That's correct.", "That's", "Sounds wrong.", "That's Tuesday", "Good morning"]) {

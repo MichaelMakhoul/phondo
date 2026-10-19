@@ -67,12 +67,13 @@ function isRealDigit(token) {
 
 /**
  * Does an ambiguous digit word at tokens[i] count? Only in a run of digits that
- * holds a real one, or, once the text holds a real digit anywhere (a number being
- * dictated: "… five six one, and one one one"), beside another digit. Two
- * ambiguous words alone don't vouch for each other ("Oh, one more thing").
+ * holds a real one, or, once the number has started (after the text's first real
+ * digit: "… five six one, and one one one"), beside another digit. Two ambiguous
+ * words alone don't vouch for each other ("Oh, one more thing"), nor does a
+ * lead-in before the number ("Oh, one sec. Oh four one two …").
  * @param {string[]} tokens
  * @param {number} i
- * @param {boolean} dictating - the text holds a real digit
+ * @param {boolean} dictating - tokens[i] comes after the text's first real digit
  */
 function ambiguousCounts(tokens, i, dictating) {
   for (const step of [-1, 1]) {
@@ -101,14 +102,15 @@ function extractSpokenDigits(text) {
   }
 
   // Second pass: extract all digit characters and spoken digit words
-  const tokens = expanded.split(/[\s,.-]+/).filter(Boolean);
-  const dictating = tokens.some(isRealDigit);
+  // Punctuation ends a token too: "… 0412 555 013?" and "… six seven eight?" (not ":", so "10:30" stays one).
+  const tokens = expanded.split(/[\s,.\-?!;()"“”–—]+/).filter(Boolean);
+  const firstReal = tokens.findIndex(isRealDigit);
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
     if (/^\d+$/.test(token)) {
       digits += token;
     } else if (spokenDigit(token) !== undefined) {
-      if (AMBIGUOUS_DIGIT_WORDS.has(token) && tokens.length > 1 && !ambiguousCounts(tokens, i, dictating)) continue;
+      if (AMBIGUOUS_DIGIT_WORDS.has(token) && tokens.length > 1 && !ambiguousCounts(tokens, i, firstReal !== -1 && i > firstReal)) continue;
       digits += spokenDigit(token);
     }
   }
@@ -119,9 +121,9 @@ function extractSpokenDigits(text) {
 // A plain yes, and nothing else, as the whole answer: "Yeah. That one, please.",
 // "Yep, that's the one", "Yeah, sure." Anything more ("Sure, my number is",
 // "Yes, but use my work one") may be the start of another number.
-const YES_WORDS = "(?:yes|yeah|yep|yup|yeh|okay|ok|correct|right|sure|absolutely|definitely|perfect|that one|this one|(?:the )?same one|that'?s (?:it|right|correct|the one|perfect|fine)|that is (?:it|right|correct|the one))";
-const YES_TAIL = "(?:please|thanks|thank you|mate|it is|go ahead|use that(?: one)?|the same(?: number)?|that'?s my (?:mobile|number))";
-const PLAIN_YES_RE = new RegExp(`^\\W*${YES_WORDS}(?:[\\s,.!-]+(?:${YES_WORDS}|${YES_TAIL}))*[\\s,.!]*$`, "i");
+const YES_WORDS = "(?:yes|yeah|yep|yup|yeh|okay|ok|correct|right|sure|absolutely|definitely|perfect|that one|this one|(?:the )?same one|that'?s (?:it|right|correct|perfect|fine|good)|that is (?:it|right|correct|the one)|that'?s the (?:right )?(?:one|number)(?: i'?m calling from)?|that (?:one|number)'?s (?:fine|good|right)|the (?:one|number) i'?m calling from(?: is (?:fine|good|right))?)";
+const YES_TAIL = "(?:please|thanks|thank you|ta|cheers|mate|no worries|all good|sounds good|that works|that'?ll do|it is|go ahead|use that(?: one)?|the same(?: number)?|that'?s (?:the number|my (?:mobile|number|mobile number)))";
+const PLAIN_YES_RE = new RegExp(`^\\W*(?:(?:uh|um|er)[\\s,.]+)?${YES_WORDS}(?:[\\s,.!-]+(?:${YES_WORDS}|${YES_TAIL}))*[\\s,.!]*$`, "i");
 
 /**
  * Is `text` a plain yes to a phone question that offered a number? SCRUM-594
@@ -135,6 +137,21 @@ const PLAIN_YES_RE = new RegExp(`^\\W*${YES_WORDS}(?:[\\s,.!-]+(?:${YES_WORDS}|$
  */
 function isPlainYes(type, text, offered) {
   return type === "phone" && offered === true && typeof text === "string" && PLAIN_YES_RE.test(text);
+}
+
+/**
+ * Do the AI's words say a whole phone number? A run of numerals joined by spaces,
+ * dashes, dots or brackets ("0414 141 883", "(02) 3820 5672") with 8+ digits, or,
+ * with no numerals at all, 8+ spoken digits. A date read back ("Tuesday 20
+ * October 2026 at 10") is several short runs, not a number.
+ * @param {unknown} text
+ * @returns {boolean}
+ */
+function saysPhoneNumber(text) {
+  if (typeof text !== "string") return false;
+  const runs = text.match(/\+?\(?\d[\d\s().-]*\d/g);
+  if (runs) return runs.some((run) => run.replace(/\D/g, "").length >= 8);
+  return extractSpokenDigits(text).length >= 8;
 }
 
 // An hour, as said or as a numeral.
@@ -254,4 +271,4 @@ function getBufferConfig(type) {
   return BUFFER_CONFIGS[type] || BUFFER_CONFIGS.general;
 }
 
-module.exports = { validateInput, getBufferConfig, BUFFER_CONFIGS, extractSpokenDigits, isPlainYes };
+module.exports = { validateInput, getBufferConfig, BUFFER_CONFIGS, extractSpokenDigits, isPlainYes, saysPhoneNumber };

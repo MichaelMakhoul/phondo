@@ -9,19 +9,20 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 /**
  * Buffer one final while `type` is expected; resolve with what was flushed and when.
  * @param {string} type
- * @param {string[]} finals - said one after another, 100 ms apart
+ * @param {Array<string | [string, number]>} finals - said one after another, 100 ms apart unless [text, gapMs]
  * @param {number} waitMs - how long to watch
- * @param {string} [aiSaid] - the AI's last words before the answer
+ * @param {string | string[]} [aiSaid] - the AI's messages before the answer
  */
 async function buffer(type, finals, waitMs, aiSaid) {
   const s = new CallSession(`buffer-${type}`);
-  if (aiSaid) s.addMessage("assistant", aiSaid);
+  for (const said of [aiSaid ?? []].flat()) s.addMessage("assistant", said);
   s.setExpectedInputType(type);
   const started = Date.now();
   /** @type {Array<{ text: string, type: string, afterMs: number }>} */
   const flushed = [];
-  for (const [i, text] of finals.entries()) {
-    if (i > 0) await sleep(100);
+  for (const [i, final] of finals.entries()) {
+    const [text, gapMs] = Array.isArray(final) ? final : [final, 100];
+    if (i > 0) await sleep(gapMs);
     s.bufferTranscript(text, (combined, inputType) => flushed.push({ text: combined, type: inputType, afterMs: Date.now() - started }));
   }
   await sleep(waitMs);
@@ -62,6 +63,16 @@ describe("CallSession.bufferTranscript — phone test F6", () => {
     assert.deepEqual(flushed.map((f) => f.text), ["Yeah, sure. oh four one two, three four five, six seven eight."]);
   });
 
+  it("silent-failure re-review 2: \"Oh, one sec. Oh four one two,\" … a pause … the rest is still one answer", async () => {
+    const flushed = await buffer("phone", ["Oh, one sec. Oh four one two,", ["three four five,", 1500], ["six seven eight.", 2400]], BUFFER_CONFIGS.phone.debounceMs + 400, "What's the best number to reach you on?");
+    assert.deepEqual(flushed.map((f) => f.text), ["Oh, one sec. Oh four one two, three four five, six seven eight."]);
+  });
+
+  it("silent-failure re-review 2: the offer counts when a re-prompt repeated only the question", async () => {
+    const flushed = await buffer("phone", ["Yes."], 100, ["I can see you're calling from 0414 141 883. Is that the best number to reach you on?", "Is that the best number to reach you on?"]);
+    assert.equal(flushed.length, 1, "flushed at once");
+  });
+
   it("silent-failure re-review: \"… five six one,\" \"and one one one.\" completes the number at the debounce (not 16 s)", async () => {
     const flushed = await buffer("phone", ["Oh four nine five,", "five six one,", "and one one one."], BUFFER_CONFIGS.phone.debounceMs + 400);
     assert.deepEqual(flushed.map((f) => f.text), ["Oh four nine five, five six one, and one one one."]);
@@ -86,6 +97,40 @@ describe("CallSession.bufferTranscript — phone test F6", () => {
   it("a bare \"four\" to a time question still waits (the control: the helper sees a buffer that holds)", async () => {
     const flushed = await buffer("date_time", ["Four."], BUFFER_CONFIGS.date_time.debounceMs + 400);
     assert.equal(flushed.length, 0);
+  });
+
+  it("test review (F6): a yes-word in the middle of a dictation does not cut it", async () => {
+    // Only the FIRST piece can be a plain yes (bufferTranscript's `length === 1`): "right" here is a filler.
+    const flushed = await buffer("phone", ["No, it's oh four one four", "right", "one four one, eight eight three"], BUFFER_CONFIGS.phone.debounceMs + 400, OFFER);
+    assert.deepEqual(flushed.map((f) => f.text), ["No, it's oh four one four right one four one, eight eight three"]);
+  });
+
+  it("test review (F6): a booking time in the AI's question is not an offered number", async () => {
+    const ask = "Great, Tuesday the 21st at 10 AM it is. What's the best number to reach you on?";
+    const flushed = await buffer("phone", ["Yeah, sure.", "oh four one two, three four five, six seven eight."], BUFFER_CONFIGS.phone.debounceMs + 400, ask);
+    assert.deepEqual(flushed.map((f) => f.text), ["Yeah, sure. oh four one two, three four five, six seven eight."]);
+  });
+
+  it("code review 2 (F6): a date read back with its year is not an offered number", async () => {
+    const ask = "You're booked for Tuesday 20 October 2026 at 10. What's the best number to reach you on?";
+    const flushed = await buffer("phone", ["Yeah, sure.", "oh four one two, three four five, six seven eight."], BUFFER_CONFIGS.phone.debounceMs + 400, ask);
+    assert.deepEqual(flushed.map((f) => f.text), ["Yeah, sure. oh four one two, three four five, six seven eight."]);
+  });
+
+  it("code review 2 (F6): an offer ending at \"?\" counts (\"… calling from, 0412 555 013?\")", async () => {
+    const flushed = await buffer("phone", ["Yep, that's the one."], 100, ["Thanks for calling.", "Is the best mobile for you the number you're calling from, 0412 555 013?"]);
+    assert.equal(flushed.length, 1, "flushed at once");
+  });
+
+  it("test review (F6): only the AI's LAST words can be the offer", () => {
+    const s = new CallSession("stale-offer");
+    s.addMessage("assistant", OFFER);
+    s.addMessage("user", "No, use a different one.");
+    s.addMessage("assistant", "Sure, what's the number?");
+    assert.equal(s._lastAiOfferedNumber(), false, "the offer was two turns ago");
+    s.addMessage("user", "It's 0412 345 678");
+    s.addMessage("assistant", "I have 0412 345 678 down, is that right?");
+    assert.equal(s._lastAiOfferedNumber(), true);
   });
 
   it("\"The second one\" for a time is an answer too (\"one\" there is not a digit)", async () => {

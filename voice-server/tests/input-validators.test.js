@@ -1,6 +1,6 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
-const { extractSpokenDigits, validateInput, getBufferConfig, BUFFER_CONFIGS, isPlainYes } = require("../lib/input-validators");
+const { extractSpokenDigits, validateInput, getBufferConfig, BUFFER_CONFIGS, isPlainYes, saysPhoneNumber } = require("../lib/input-validators");
 
 describe("extractSpokenDigits", () => {
   it("extracts numeric digits", () => {
@@ -43,6 +43,21 @@ describe("extractSpokenDigits", () => {
     assert.equal(extractSpokenDigits("oh 412 345 678"), "0412345678", "a numeral vouches for its neighbour");
     assert.equal(extractSpokenDigits("one one two"), "112");
     assert.equal(extractSpokenDigits("Oh four nine five, five six one, and one one one."), "0495561111", "silent-failure re-review: a group of ones after \"and\", mid-dictation");
+  });
+  it("silent-failure re-review 2: a lead-in before the number doesn't count (it would make a partial look whole)", () => {
+    assert.equal(extractSpokenDigits("Oh, one sec. Oh four one two, three four five,"), "0412345");
+    assert.equal(extractSpokenDigits("That one. Oh, sorry, no, oh four one two,"), "0412");
+    assert.equal(validateInput("phone", "Oh, one sec. Oh four one two, three four five,").complete, false, "7 digits said: still waiting");
+  });
+  it("test review (F6): an ambiguous word away from the digits is chatter, even when the text holds a number", () => {
+    assert.equal(extractSpokenDigits("Oh sorry, it's 0412 345 678"), "0412345678");
+    assert.equal(extractSpokenDigits("I have one question, my number is 0412 345 678"), "0412345678");
+    assert.equal(extractSpokenDigits("I need it for two, that one"), "2", "code review 2");
+  });
+  it("code review 2 (F6): a number ends at punctuation too (\"… six seven eight?\")", () => {
+    assert.equal(extractSpokenDigits("oh four one two, three four five, six seven eight?"), "0412345678");
+    assert.equal(extractSpokenDigits("Is the best mobile for you the number you're calling from, 0412 555 013?"), "0412555013");
+    assert.equal(extractSpokenDigits("(02) 3820 5672"), "0238205672");
   });
   it("gate review (F6): two ambiguous words don't vouch for each other", () => {
     for (const said of ["Oh, one more thing", "Oh, one sec", "Oh one moment please", "That one. Oh, sorry", "martes o jueves"]) {
@@ -200,7 +215,8 @@ describe("getBufferConfig", () => {
 
 describe("isPlainYes — phone test F6 (gate review)", () => {
   it("a plain yes to an offered number", () => {
-    for (const said of ["Yeah. That one, please.", "Yep.", "Yes, that's the one", "Correct.", "That's it.", "Sure, the same one", "Yeah, sure.", "Yes please", "Okay, that one.", "Yes, it is.", "Yeah, the same number", "Yep, that's my mobile", "Yeah, go ahead", "Yes, use that one"]) {
+    for (const said of ["Yeah. That one, please.", "Yep.", "Yes, that's the one", "Correct.", "That's it.", "Sure, the same one", "Yeah, sure.", "Yes please", "Okay, that one.", "Yes, it is.", "Yeah, the same number", "Yep, that's my mobile", "Yeah, go ahead", "Yes, use that one",
+      "Yeah, cheers.", "Yep, that's it, cheers.", "Yes, ta.", "Yep, all good.", "Yeah, no worries.", "Yeah, sounds good.", "Yeah, that works.", "Yes, that's good.", "Yeah, that's my mobile number.", "Uh, yes."]) {
       assert.equal(isPlainYes("phone", said, true), true, said);
     }
   });
@@ -208,7 +224,7 @@ describe("isPlainYes — phone test F6 (gate review)", () => {
     for (const said of [
       "Yes, but use my work number", "Yeah, it's oh four one two", "Yeah, actually no", "No.", "Nah, a different one", "Yes, 0412 345 678", "Yeah, the home one", "Hello?", "That one, wait",
       "Yeah, my mobile is", "Yes, it's", "Sure, it's", "Yeah, so", "Yes, the number is", "Right, so my number is", "Yep, and", "Yeah, um", "Yes, I'll give you my mobile", "Yeah, you can use my wife's",
-      "Yeah, one sec", "Yes, give me a sec", "Yeah, let me find it", "Yeah, and also", "Sure, I'll read it out",
+      "Yeah, one sec", "Yes, give me a sec", "Yeah, let me find it", "Yeah, and also", "Sure, I'll read it out", "Yeah, no, my work one", "Um, yeah, it's",
     ]) {
       assert.equal(isPlainYes("phone", said, true), false, said);
     }
@@ -217,8 +233,32 @@ describe("isPlainYes — phone test F6 (gate review)", () => {
     assert.equal(isPlainYes("phone", "Yeah, sure.", false), false);
     assert.equal(isPlainYes("phone", "Yep.", false), false);
   });
+  it("test review (F6): a yes-word at the END of a longer sentence is not a plain yes (the start anchor)", () => {
+    for (const said of ["Let me check my other phone, okay.", "Hang on, yeah.", "Oh wait, sure.", "I'm not sure, right", "No, that's right."]) {
+      assert.equal(isPlainYes("phone", said, true), false, said);
+    }
+  });
+  it("test review (F6): every word of the whitelist is a plain yes to an offered number", () => {
+    for (const said of ["Yup.", "Yeh.", "OK.", "Right.", "Absolutely.", "Definitely.", "Perfect.", "This one.", "That's right.", "That's correct.", "That's perfect.", "That's fine.", "That is it.", "That is right.", "That is correct.", "That is the one.", "Yes, thanks.", "Yes, thank you.", "Yep, mate.", "Yes, that's my number.",
+      "Yep, that's the one I'm calling from.", "That's the right number.", "Yeah, that number's fine.", "The one I'm calling from is fine."]) {
+      assert.equal(isPlainYes("phone", said, true), true, said);
+    }
+  });
   it("only for a phone number", () => {
     assert.equal(isPlainYes("name", "Yes.", true), false);
     assert.equal(isPlainYes("date_time", "Yes.", true), false);
+  });
+});
+
+describe("saysPhoneNumber — code review 2 (F6)", () => {
+  it("a whole number in the AI's words", () => {
+    for (const said of ["I can see you're calling from 0414 141 883, is that the one?", "Is that 0412 555 013?", "Shall I use (02) 3820 5672?", "Is +61 414 141 883 right?", "I have zero four one four, one four one, eight eight three. Is that right?"]) {
+      assert.equal(saysPhoneNumber(said), true, said);
+    }
+  });
+  it("not a date, a time list or a short code", () => {
+    for (const said of ["You're booked for Tuesday 20 October 2026 at 10. What's the best number to reach you on?", "We have 9, 10 or 11 tomorrow.", "Your code is 4821.", "What's the best number to reach you on?", null]) {
+      assert.equal(saysPhoneNumber(said), false, String(said));
+    }
   });
 });
