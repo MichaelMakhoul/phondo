@@ -79,9 +79,9 @@ describe("detectExpectedInput", () => {
     // Known behavior: confirmations also trigger phone detection.
     // This is logged in voice-server-tuning.md as a known issue.
   });
-  it("phone test F6: offering the caller-ID number is a yes/no question", () => {
-    assert.equal(detectExpectedInput("Thanks, Michael. What's the best mobile number to reach you on? I can see you're calling from 0414 141 883, is that the one?"), "general");
-    assert.equal(detectExpectedInput("I've got 0414 141 883 from your call. Is that the best number?"), "general");
-    assert.equal(detectExpectedInput("What's the best mobile number to reach you on?"), "phone", "asking for a number is unchanged");
+  it("phone test F6 (gate review): offering the caller-ID number still expects a phone number", () => {
+    // A caller may give another number, in pieces: the buffer must still merge them. A plain
+    // yes to the offer skips the wait instead (CallSession.bufferTranscript, isPlainYes).
+    assert.equal(detectExpectedInput("Thanks, Michael. What's the best mobile number to reach you on? I can see you're calling from 0414 141 883, is that the one?"), "phone");
   });
 });

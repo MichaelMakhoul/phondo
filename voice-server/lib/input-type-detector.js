@@ -96,9 +96,6 @@ const CONFIRMATION_PATTERNS = [
   /just\s+to\s+(confirm|verify|make\s+sure|double[\s-]?check)/i,
   /so\s+(that('s|s)|it('s|s)|your\s+\w+\s+is)/i,
   /I('ve|'ll| have| will)\s+(got|read|note)/i,
-  // SCRUM-594 (phone test F6): "I can see you're calling from 0414 141 883, is that the one?"
-  // is a yes/no question, not a request for a number.
-  /is\s+(that|this|it)\s+the\s+(one|best\s+(one|number)|number)\b/i,
 ];
 
 /**

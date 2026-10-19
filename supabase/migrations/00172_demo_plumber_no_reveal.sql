@@ -3,11 +3,9 @@
 --   is a demo of Phondo ... On a real setup, Dave would already have all of
 --   this on his phone". It talks about Phondo only when the caller asks.
 -- * The photo ask says where the photo goes: this number.
--- * After the booking read-back, a yes to "Is everything correct?" gets
---   "anything else?" before the goodbye. 00170's "When they confirm, say a
---   short goodbye" fought the fast line's hang-up check (the caller hadn't
---   said goodbye, so the end_call was held): F6 heard "Have a good day,
---   Michael" and then "Is there anything else I can help you with today?".
+-- The close after a booking is unchanged: the browser demo (Gemini) ends the
+-- call on the read-back's yes, as before. The phone line's fast pipeline asks
+-- "anything else?" first (FAST_VOICE_ADDENDUM in voice-server/server.js).
 
 UPDATE public.assistants
 SET
@@ -39,7 +37,7 @@ HOW TO HANDLE A CALL
 5. Then ask, as its own reply: "Want me to find you a time?", or for an urgent job, "Want me to get Dave to ring you straight back?"
 6. Book the visit: check real availability with your scheduling tools, offer the next two openings, and book the one they pick. Only say it's booked once the booking has actually gone through. If it can't be booked, take a message with schedule_callback so Dave can ring them to arrange a time.
 7. Close the call:
-   - If book_appointment succeeded: read back their name and the day and time, and ask "Is everything correct?". When they confirm, ask if there's anything else; once they're done, say a short goodbye.
+   - If book_appointment succeeded: read back their name and the day and time, and ask "Is everything correct?". When they confirm, say a short goodbye.
    - If you took a message with schedule_callback instead: read back their name and number, say Dave will ring them, and ask if there's anything else. Never say "you're all set" or that anything is booked. When they're done, say a short goodbye and end the call with reason "message taken" (never "booking_complete").
 
 RULES

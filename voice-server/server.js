@@ -3688,6 +3688,9 @@ const FAST_VOICE_ADDENDUM = [
   "- Don't ask for anything the caller already told you, and don't offer what they already asked for.",
   "- Ask \"anything else?\" once, when their request is done, not after every answer.",
   "- Say goodbye and end the call only after the caller says goodbye or that they're done.",
+  // Phone test F6: the shared POST-CONFIRMATION CLOSE (written for Gemini) says goodbye and end_call on the
+  // read-back's yes; this line holds that hang-up, so callers heard "Have a good day" then "anything else?".
+  "- POST-CONFIRMATION CLOSE ON THIS LINE (this replaces the one above, and any line above that says goodbye once they confirm): a yes to your booking read-back, even \"yes, thanks\" or \"perfect, thanks\", means the details are right, not that the caller is done. Say no goodbye and don't call end_call: ask if there's anything else, then wait for their answer.",
   "NAMES:",
   "- Before you book, spell the caller's last name back to them letter by letter (for example \"That's S-M-I-T-H?\") and wait for a yes. Speech recognition often mishears surnames.",
   "BOOKINGS MADE ON THIS CALL:",
@@ -3975,7 +3978,10 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
   // fast path with Nova after a fallback, this is still the only barge-in; a
   // Flux fast turn waits for the AI's audio instead, below.) SCRUM-594: when
   // nothing was cleared (the recording disclosure plays on), it is still speaking.
-  if (session.fastPath !== true && session.isSpeaking) {
+  // After a fallback, audio Aura still owes counts too (phone test F6, gate review):
+  // the hold loop's stop used to cut it at the reply's first words, and fast turns
+  // no longer run the hold loop.
+  if (session.fastPath !== true && (session.isSpeaking || (session.fastPath === "degraded-stt" && fastAudioBusy(session)))) {
     if (sendClear(session, twilioWs)) session.isSpeaking = false;
   }
 

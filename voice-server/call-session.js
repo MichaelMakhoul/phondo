@@ -1,5 +1,5 @@
 const { WebSocket } = require("ws");
-const { validateInput, getBufferConfig, extractSpokenDigits } = require("./lib/input-validators");
+const { validateInput, getBufferConfig, extractSpokenDigits, isPlainYes } = require("./lib/input-validators");
 const { logTranscript } = require("./lib/log-transcript");
 const { guardWords } = require("./lib/guard-languages");
 
@@ -830,6 +830,13 @@ class CallSession {
 
     this._utteranceBuffer.push(text);
     if (!this._utteranceCallback) this._utteranceCallback = callback;
+
+    // SCRUM-594 (phone test F6): a plain yes to an offered number is the whole answer.
+    if (this._utteranceBuffer.length === 1 && isPlainYes(this._expectedInputType, text)) {
+      console.log(`[Buffer] Plain yes for type="${this._expectedInputType}" — flushing immediately`);
+      this._flushAndReset();
+      return;
+    }
 
     // Start max-wait timer on first buffer entry
     if (!this._bufferStartedAt) {

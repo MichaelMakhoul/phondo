@@ -26,7 +26,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const { createFastTurnEngine, INTERRUPT_RE, FAST_INTERRUPT_RE, wordCount, isLikelyEcho, speechTokens, isBackchannel, endsWithQuestion } = require("../lib/fast-turns");
+const { createFastTurnEngine, INTERRUPT_RE, FAST_INTERRUPT_RE, wordCount, isLikelyEcho, speechTokens, isBackchannel, endsWithQuestion, BACKCHANNEL_PHRASES } = require("../lib/fast-turns");
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1487,13 +1487,24 @@ describe("isBackchannel", () => {
   });
 
   it("phone test F6: \"Sounds perfect.\" and the other short approvals are backchannels too", () => {
-    for (const said of ["Sounds perfect.", "Sounds good!", "Sounds great.", "That's great.", "That's perfect.", "That's fine.", "Lovely.", "Good.", "Got it.", "All good.", "No dramas.", "Too easy.", "Cheers."]) {
+    for (const said of ["Sounds perfect.", "Sounds good!", "Sounds great.", "Sounds lovely.", "That's great.", "That's perfect.", "That's good.", "Lovely.", "Good.", "Got it.", "Gotcha.", "Too easy.", "Okay, lovely.", "Awesome!", "Brilliant.", "Excellent.", "Beautiful.", "Wonderful.", "Fantastic."]) {
       assert.equal(isBackchannel(said), true, said);
     }
   });
 
-  it("…but not a caller finishing, or anything with content after \"That's\"", () => {
-    for (const said of ["That's all.", "That's it.", "That's all, thanks", "Sounds wrong.", "That's Tuesday", "Good morning"]) {
+  it("gate review (F6): no backchannel is the hang-up check's done-signal after \"anything else?\" (dropped while busy, a goodbye would be lost)", () => {
+    const { callerIsDone } = require("../lib/booking-guards");
+    const preexisting = new Set(["no worries", "no problem"]); // R12a′, before F6: PLAIN_NO also reads them as done
+    for (const phrase of BACKCHANNEL_PHRASES) {
+      if (preexisting.has(phrase)) continue;
+      const said = phrase.replace(/^that s /, "That's ") + ".";
+      assert.equal(callerIsDone([{ role: "assistant", content: "Is there anything else I can help with?" }, { role: "user", content: said }]), false, said);
+    }
+  });
+
+  it("…but not a closer, a polite decline, a confirmation, or anything with content", () => {
+    // Closers are DONE_IF_ASKED (booking-guards): dropped while the AI is busy, a goodbye would be lost.
+    for (const said of ["Cheers.", "All good.", "No dramas.", "That's all.", "That's it.", "That's all, thanks", "That's okay.", "That's alright.", "That's fine.", "That's right.", "That's correct.", "That's", "Sounds wrong.", "That's Tuesday", "Good morning"]) {
       assert.equal(isBackchannel(said), false, JSON.stringify(said));
     }
   });

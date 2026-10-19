@@ -121,10 +121,9 @@ describe("plumber demo persona, as assembled for the demo org", () => {
     assert.ok(ask < persona.indexOf("6. Book the visit"), "before any tool call");
   });
 
-  it("phone test F6: after the booking read-back, asks \"anything else?\" before the goodbye (the fast line holds a goodbye the caller hasn't said)", () => {
+  it("phone test F6: the booking close stays pipeline-neutral (the fast line's addendum overrides it, the browser demo keeps it)", () => {
     const close = between("7. Close the call", "RULES");
-    assert.match(close, /ask "Is everything correct\?"\. When they confirm, ask if there's anything else; once they're done, say a short goodbye\./);
-    assert.doesNotMatch(close, /When they confirm, say a short goodbye/);
+    assert.match(close, /ask "Is everything correct\?"\. When they confirm, say a short goodbye\./);
   });
 
   it("books a leak the small tap has stopped (the demo's main showcase), but main-off stays urgent", () => {

@@ -195,17 +195,19 @@ const TURN_EVENTS = new Set(["StartOfTurn", "Update", "EagerEndOfTurn", "TurnRes
 
 /**
  * What a caller says to keep the conversation going without taking a turn (ruling R12a′),
- * in the form backchannelTokens() leaves them, plus the spellings a transcript gives the
- * same sounds ("all right", "mhm", "uh huh"). "that s" is how "That's" comes out, so
- * "That's great" is one ("That's all" is not). Phone test F6: "Yeah. Sounds perfect." came
- * as two finals; the second waited out the reply and was then answered on its own, as if
- * it answered the "anything else?" asked after it.
+ * in the form backchannelTokens() leaves them ("That's" comes out as "that s"), plus the
+ * spellings a transcript gives the same sounds ("all right", "mhm", "uh huh"). Phone test
+ * F6: "Yeah. Sounds perfect." came as two finals; the second waited out the reply and was
+ * then answered on its own, as if it answered the "anything else?" asked after it. Only
+ * approvals were added: closers ("Cheers", "All good", "No dramas" — booking-guards'
+ * callerIsDone) and polite declines ("That's okay") stay turns.
  */
 const BACKCHANNEL_PHRASES = new Set([
   "okay", "ok", "yeah", "yep", "yes", "sure", "right", "alright", "all right", "cool", "great", "perfect",
   "thanks", "thank you", "mm hmm", "mhm", "mhmm", "mmhmm", "uh huh", "uhhuh", "no worries", "no problem",
-  "good", "fine", "lovely", "awesome", "brilliant", "excellent", "beautiful", "wonderful", "fantastic", "cheers", "gotcha",
-  "sounds good", "sounds great", "sounds perfect", "sounds fine", "sounds lovely", "got it", "all good", "no dramas", "too easy", "that s",
+  "good", "lovely", "awesome", "brilliant", "excellent", "beautiful", "wonderful", "fantastic", "gotcha",
+  "sounds good", "sounds great", "sounds perfect", "sounds lovely", "got it", "too easy",
+  "that s great", "that s perfect", "that s lovely", "that s awesome", "that s brilliant", "that s excellent", "that s wonderful", "that s good",
 ]);
 const ALWAYS_REQUIRED_ACTIONS = ["commit", "bargeIn", "dropEcho", "bufferStructured"];
 const SPECULATION_ACTIONS = ["speculate", "cancelSpeculation"];
@@ -390,7 +392,8 @@ function isBackchannel(text) {
   const tokens = backchannelTokens(text);
   if (tokens.length === 0) return false;
   for (let i = 0; i < tokens.length;) {
-    if (i + 1 < tokens.length && BACKCHANNEL_PHRASES.has(`${tokens[i]} ${tokens[i + 1]}`)) i += 2;
+    if (i + 2 < tokens.length && BACKCHANNEL_PHRASES.has(`${tokens[i]} ${tokens[i + 1]} ${tokens[i + 2]}`)) i += 3;
+    else if (i + 1 < tokens.length && BACKCHANNEL_PHRASES.has(`${tokens[i]} ${tokens[i + 1]}`)) i += 2;
     else if (BACKCHANNEL_PHRASES.has(tokens[i])) i += 1;
     else return false;
   }
@@ -679,4 +682,4 @@ function createFastTurnEngine(options) {
   return { onTurnInfo, reset, openTurn, onAiIdle };
 }
 
-module.exports = { createFastTurnEngine, INTERRUPT_RE, FAST_INTERRUPT_RE, wordCount, isLikelyEcho, speechTokens, isBackchannel, endsWithQuestion, QUESTION_TAIL_MS, START_OF_TURN_LAG_MS };
+module.exports = { createFastTurnEngine, INTERRUPT_RE, FAST_INTERRUPT_RE, wordCount, isLikelyEcho, speechTokens, isBackchannel, endsWithQuestion, QUESTION_TAIL_MS, START_OF_TURN_LAG_MS, BACKCHANNEL_PHRASES };

@@ -39,14 +39,40 @@ const SPOKEN_DIGITS = {
 const MULTIPLIERS = { double: 2, triple: 3, doble: 2 };
 
 // Digit words that are as often ordinary words: "that one", "oh, sorry", "una cita".
-// They count only beside another digit, or as the whole answer. SCRUM-594 (phone
+// They count only in a run with a real digit, or as the whole answer. SCRUM-594 (phone
 // test F6): "Yeah. That one, please." (to the caller-ID number) counted one digit,
 // and the buffer waited its full 12 s for a number nobody was saying.
 const AMBIGUOUS_DIGIT_WORDS = new Set(["one", "oh", "o", "uno", "una"]);
 
+/**
+ * The digit a word stands for. Own keys only: a caller's "double constructor"
+ * must not reach Object.prototype (its function made `.repeat` throw inside the
+ * buffer's timer, and the uncaught exception exits the whole server).
+ * @param {string|undefined} word
+ * @returns {string|undefined}
+ */
+function spokenDigit(word) {
+  return word !== undefined && Object.hasOwn(SPOKEN_DIGITS, word) ? SPOKEN_DIGITS[word] : undefined;
+}
+
 /** @param {string|undefined} token */
 function isDigitToken(token) {
-  return token !== undefined && (/^\d+$/.test(token) || SPOKEN_DIGITS[token] !== undefined);
+  return token !== undefined && (/^\d+$/.test(token) || spokenDigit(token) !== undefined);
+}
+
+/**
+ * Is tokens[i] part of a run of digits that holds a numeral or an unambiguous digit
+ * word? Two ambiguous words don't vouch for each other ("Oh, one more thing").
+ * @param {string[]} tokens
+ * @param {number} i
+ */
+function inRealDigitRun(tokens, i) {
+  for (const step of [-1, 1]) {
+    for (let j = i + step; j >= 0 && j < tokens.length && isDigitToken(tokens[j]); j += step) {
+      if (!AMBIGUOUS_DIGIT_WORDS.has(tokens[j])) return true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -61,7 +87,7 @@ function extractSpokenDigits(text) {
   for (const [mult, count] of Object.entries(MULTIPLIERS)) {
     const re = new RegExp(`${mult}\\s+(\\w+)`, "gi");
     expanded = expanded.replace(re, (_, word) => {
-      const d = SPOKEN_DIGITS[word] || (word.match(/^\d$/) ? word : "");
+      const d = spokenDigit(word) || (word.match(/^\d$/) ? word : "");
       return d ? d.repeat(count) : word;
     });
   }
@@ -72,13 +98,32 @@ function extractSpokenDigits(text) {
     const token = tokens[i];
     if (/^\d+$/.test(token)) {
       digits += token;
-    } else if (SPOKEN_DIGITS[token] !== undefined) {
-      if (AMBIGUOUS_DIGIT_WORDS.has(token) && tokens.length > 1 && !isDigitToken(tokens[i - 1]) && !isDigitToken(tokens[i + 1])) continue;
-      digits += SPOKEN_DIGITS[token];
+    } else if (spokenDigit(token) !== undefined) {
+      if (AMBIGUOUS_DIGIT_WORDS.has(token) && tokens.length > 1 && !inRealDigitRun(tokens, i)) continue;
+      digits += spokenDigit(token);
     }
   }
 
   return digits;
+}
+
+// A plain yes as the whole answer ("Yeah. That one, please.", "Yep, that's the one") ...
+const PLAIN_YES_RE = /^\W*(?:yes|yeah|yep|yup|yeh|correct|right|sure|absolutely|definitely|perfect|that one|that'?s (?:it|right|correct|the one|perfect)|that is (?:it|right|correct|the one))\b/i;
+// ... that doesn't go on to another number: "Yes, but use my work one", "Yeah, actually no".
+const NOT_PLAIN_YES_RE = /\b(?:no|not|nah|but|actually|other|another|different|instead|wait|hang on|hold on|change|new|work|home|landline)\b/i;
+
+/**
+ * Is `text` a plain yes to a question asking for `type`? Only for a phone number:
+ * a yes to "I can see you're calling from 0414 141 883, is that the one?" needs no
+ * wait for digits that aren't coming. SCRUM-594 (phone test F6, gate review): the
+ * buffer still waits for a caller who gives another number, in pieces.
+ * @param {string} type
+ * @param {string} text
+ * @returns {boolean}
+ */
+function isPlainYes(type, text) {
+  if (type !== "phone" || typeof text !== "string") return false;
+  return PLAIN_YES_RE.test(text) && !NOT_PLAIN_YES_RE.test(text) && !/\d/.test(text) && extractSpokenDigits(text) === "";
 }
 
 // An hour, as said or as a numeral.
@@ -87,10 +132,11 @@ const HOUR = "(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|
 // "Four thirty is good." had no time for it, so the buffer sat out its 4 s maximum.
 const SPOKEN_TIME_RE = new RegExp([
   `\\b${HOUR}\\s+(?:thirty|fifteen|forty[\\s-]?five|oh\\s+\\w+|(?:twenty|forty|fifty)(?:[\\s-]?(?:one|two|three|four|five|six|seven|eight|nine))?)\\b`,
-  `\\b${HOUR}\\s*o'?clock\\b`,
-  "\\b(?:half|quarter)\\s+(?:past|to|after)\\b",
-  `\\b(?:at|around|about|by)\\s+${HOUR}\\b`,
-  "\\b\\d{1,2}:\\d{2}\\b",
+  `\\b${HOUR}\\s*(?:o'?clock|a\\.?\\s?m|p\\.?\\s?m)\\b`,
+  "\\b(?:five|ten|twenty(?:[\\s-]five)?|quarter|half)\\s+(?:past|to|after)\\b",
+  `\\b(?:at|around|about|by|after|before|from|until|till)\\s+${HOUR}\\b`,
+  // "Four is fine", "Two works": an hour as the answer
+  `\\b${HOUR}\\s+(?:is|works|would|sounds|suits)\\b`,
   "\\b(?:noon|midday|midnight|lunchtime|lunch\\s+time)\\b",
   // Spanish: "a la una", "a las cuatro y media"
   "\\ba\\s+las?\\s+(?:una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce|\\d{1,2})\\b",
@@ -197,4 +243,4 @@ function getBufferConfig(type) {
   return BUFFER_CONFIGS[type] || BUFFER_CONFIGS.general;
 }
 
-module.exports = { validateInput, getBufferConfig, BUFFER_CONFIGS, extractSpokenDigits };
+module.exports = { validateInput, getBufferConfig, BUFFER_CONFIGS, extractSpokenDigits, isPlainYes };

@@ -297,6 +297,12 @@ describe("SCRUM-594: the classic block flags the fast variant, run for real", ()
     assert.match(FAST_VOICE_ADDENDUM, /TIMES:\n- Offer the earliest free time in the LIVE SCHEDULE: today first, if it still has times\. Never give a reason a day is unavailable that the schedule doesn't show\./);
   });
 
+  it("phone test F6: the addendum overrides the shared POST-CONFIRMATION CLOSE (goodbye + end_call on the read-back's yes, which this line holds)", () => {
+    assert.match(FAST_VOICE_ADDENDUM, /\n- POST-CONFIRMATION CLOSE ON THIS LINE \(this replaces the one above, and any line above that says goodbye once they confirm\): a yes to your booking read-back, even "yes, thanks" or "perfect, thanks", means the details are right, not that the caller is done\. Say no goodbye and don't call end_call: ask if there's anything else, then wait for their answer\.\n/);
+    // The rule it replaces must still exist by that name, or the override points at nothing.
+    assert.match(require("../lib/prompt-builder").buildSystemPrompt({ language: "en", systemPrompt: "", promptConfig: null, settings: {} }, { name: "X", timezone: "Australia/Sydney", country: "AU", businessHours: {} }, "", { calendarEnabled: true, transferRules: [], isAfterHours: false, afterHoursConfig: null, serviceTypes: [] }), /POST-CONFIRMATION CLOSE/);
+  });
+
   it("phone test F6: the addendum tells the model to say each time once (\"Today's openings start at 11 … Would today at 11 …?\")", () => {
     assert.match(FAST_VOICE_ADDENDUM, /\n- Say each time once: put the choices in your question \("Today at 11, or tomorrow at 9:30\?"\), not in a sentence first and then again in the question\.$/);
   });

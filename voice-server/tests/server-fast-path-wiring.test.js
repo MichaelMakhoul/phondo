@@ -1995,12 +1995,46 @@ describe("SCRUM-594 review R12b′: a fast turn waits for the AI to finish, it n
   });
 
   it("the wait is bounded: the turn starts anyway, and says so", async () => {
-    const h = makeFast({ turnStartWaitMs: 40, steps: [{ sentences: ["Sure."], content: "Sure." }] });
+    const h = makeFast({ turnStartWaitMs: 40, holdAudio: true, steps: [{ sentences: ["Sure."], content: "Sure." }] });
+    const holdFrames = () => h.twilio("media").filter((m) => Buffer.from(m.media.payload, "base64")[0] === 0x55).length;
     const s = h.start(makeSession());
     await replyPlaying(h, s, "This is a very long reply that never finishes playing.");
+    const clears = h.twilio("clear").length;
     await within(h.handleUserSpeech(s, h.twilioWs, "Hello, are you still there?"), 1000, "the bounded wait");
     assert.equal(h.llmCalls.length, 1);
     assert.ok(h.lines.some((l) => l.startsWith("warn| [FastTurn] The AI was still speaking after")), h.lines.join("\n"));
+    // Phone test F6: no hold loop, so nothing cuts the AI's words still playing (R12b″).
+    assert.equal(holdFrames(), 0);
+    assert.equal(h.twilio("clear").length, clears, "no Twilio clear");
+    assert.equal(h.lastAura().handle.clears, 0, "no Aura Clear");
+    h.closeFastPath(s);
+  });
+
+  it("phone test F6: after a Nova fallback the turn plays no hold audio either", async () => {
+    const h = makeFast({ holdAudio: true, steps: [{ tools: [{ name: "check_availability", args: {} }] }, { sentences: ["Ten is free."], content: "Ten is free." }] });
+    const holdFrames = () => h.twilio("media").filter((m) => Buffer.from(m.media.payload, "base64")[0] === 0x55).length;
+    const s = h.start(makeSession());
+    h.lastFlux().callbacks.onError(new Error("flux down"));
+    assert.equal(s.fastPath, "degraded-stt");
+    await h.handleUserSpeech(s, h.twilioWs, "Is Tuesday free at all?");
+    assert.equal(holdFrames(), 0);
+    assert.equal(h.twilio("clear").length, 0, "no Twilio clear at the turn's first words");
+    assert.equal(h.lastAura().handle.clears, 0);
+    h.closeFastPath(s);
+  });
+
+  it("phone test F6 (gate review): after a Nova fallback, a reply Aura still owes is cleared when the next turn starts", async () => {
+    // The hold loop's stop used to cut it at the next reply's first words; isSpeaking is false until Aura's first audio.
+    const h = makeFast({ steps: [{ sentences: ["Thursday it is."], content: "Thursday it is." }] });
+    const s = h.start(makeSession());
+    h.lastFlux().callbacks.onError(new Error("flux down"));
+    assert.equal(s.fastPath, "degraded-stt");
+    await h.sendTTS(s, h.twilioWs, "Tuesday at ten is booked.");
+    assert.equal(s.isSpeaking, false, "no audio from Aura yet");
+    const clears = h.twilio("clear").length;
+    await h.handleUserSpeech(s, h.twilioWs, "Actually, make it Thursday instead.");
+    assert.equal(h.twilio("clear").length, clears + 1, "the stale reply is cut at the turn's start");
+    assert.equal(h.lastAura().handle.clears, 1, "and Cleared from Aura");
     h.closeFastPath(s);
   });
 
