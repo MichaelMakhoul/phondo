@@ -831,8 +831,8 @@ class CallSession {
     this._utteranceBuffer.push(text);
     if (!this._utteranceCallback) this._utteranceCallback = callback;
 
-    // SCRUM-594 (phone test F6): a plain yes to an offered number is the whole answer.
-    if (this._utteranceBuffer.length === 1 && isPlainYes(this._expectedInputType, text)) {
+    // SCRUM-594 (phone test F6): a plain yes to a number the AI offered is the whole answer.
+    if (this._utteranceBuffer.length === 1 && isPlainYes(this._expectedInputType, text, this._lastAiOfferedNumber())) {
       console.log(`[Buffer] Plain yes for type="${this._expectedInputType}" — flushing immediately`);
       this._flushAndReset();
       return;
@@ -877,6 +877,19 @@ class CallSession {
         this._flushAndReset();
       }
     }, config.debounceMs);
+  }
+
+  /**
+   * Did the AI's last words hold a whole phone number (the caller-ID number it
+   * offered)? Then a plain yes is an answer, not the start of one.
+   * @returns {boolean}
+   */
+  _lastAiOfferedNumber() {
+    for (let i = this.fullTranscriptMessages.length - 1; i >= 0; i--) {
+      const m = this.fullTranscriptMessages[i];
+      if (m.role === "assistant") return typeof m.content === "string" && extractSpokenDigits(m.content).length >= 8;
+    }
+    return false;
   }
 
   /**

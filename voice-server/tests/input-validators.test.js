@@ -42,6 +42,7 @@ describe("extractSpokenDigits", () => {
     assert.equal(extractSpokenDigits("um, zero"), "0", "an unambiguous digit word always counts");
     assert.equal(extractSpokenDigits("oh 412 345 678"), "0412345678", "a numeral vouches for its neighbour");
     assert.equal(extractSpokenDigits("one one two"), "112");
+    assert.equal(extractSpokenDigits("Oh four nine five, five six one, and one one one."), "0495561111", "silent-failure re-review: a group of ones after \"and\", mid-dictation");
   });
   it("gate review (F6): two ambiguous words don't vouch for each other", () => {
     for (const said of ["Oh, one more thing", "Oh, one sec", "Oh one moment please", "That one. Oh, sorry", "martes o jueves"]) {
@@ -199,17 +200,25 @@ describe("getBufferConfig", () => {
 
 describe("isPlainYes — phone test F6 (gate review)", () => {
   it("a plain yes to an offered number", () => {
-    for (const said of ["Yeah. That one, please.", "Yep.", "Yes, that's the one", "Correct.", "That's it.", "Sure, the same one"]) {
-      assert.equal(isPlainYes("phone", said), true, said);
+    for (const said of ["Yeah. That one, please.", "Yep.", "Yes, that's the one", "Correct.", "That's it.", "Sure, the same one", "Yeah, sure.", "Yes please", "Okay, that one.", "Yes, it is.", "Yeah, the same number", "Yep, that's my mobile", "Yeah, go ahead", "Yes, use that one"]) {
+      assert.equal(isPlainYes("phone", said, true), true, said);
     }
   });
-  it("not a yes that goes on to another number, a no, or any digits", () => {
-    for (const said of ["Yes, but use my work number", "Yeah, it's oh four one two", "Yeah, actually no", "No.", "Nah, a different one", "Yes, 0412 345 678", "Yeah, the home one", "Hello?", "That one, wait"]) {
-      assert.equal(isPlainYes("phone", said), false, said);
+  it("not a yes that goes on: another number, a no, digits, or a clause still open", () => {
+    for (const said of [
+      "Yes, but use my work number", "Yeah, it's oh four one two", "Yeah, actually no", "No.", "Nah, a different one", "Yes, 0412 345 678", "Yeah, the home one", "Hello?", "That one, wait",
+      "Yeah, my mobile is", "Yes, it's", "Sure, it's", "Yeah, so", "Yes, the number is", "Right, so my number is", "Yep, and", "Yeah, um", "Yes, I'll give you my mobile", "Yeah, you can use my wife's",
+      "Yeah, one sec", "Yes, give me a sec", "Yeah, let me find it", "Yeah, and also", "Sure, I'll read it out",
+    ]) {
+      assert.equal(isPlainYes("phone", said, true), false, said);
     }
+  });
+  it("silent-failure re-review: a yes to a plain \"what's your number?\" (nothing offered) is a lead-in", () => {
+    assert.equal(isPlainYes("phone", "Yeah, sure.", false), false);
+    assert.equal(isPlainYes("phone", "Yep.", false), false);
   });
   it("only for a phone number", () => {
-    assert.equal(isPlainYes("name", "Yes."), false);
-    assert.equal(isPlainYes("date_time", "Yes."), false);
+    assert.equal(isPlainYes("name", "Yes.", true), false);
+    assert.equal(isPlainYes("date_time", "Yes.", true), false);
   });
 });

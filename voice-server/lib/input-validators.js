@@ -39,7 +39,7 @@ const SPOKEN_DIGITS = {
 const MULTIPLIERS = { double: 2, triple: 3, doble: 2 };
 
 // Digit words that are as often ordinary words: "that one", "oh, sorry", "una cita".
-// They count only in a run with a real digit, or as the whole answer. SCRUM-594 (phone
+// They count only beside real digits (ambiguousCounts), or as the whole answer. SCRUM-594 (phone
 // test F6): "Yeah. That one, please." (to the caller-ID number) counted one digit,
 // and the buffer waited its full 12 s for a number nobody was saying.
 const AMBIGUOUS_DIGIT_WORDS = new Set(["one", "oh", "o", "uno", "una"]);
@@ -60,19 +60,27 @@ function isDigitToken(token) {
   return token !== undefined && (/^\d+$/.test(token) || spokenDigit(token) !== undefined);
 }
 
+/** @param {string|undefined} token a numeral or an unambiguous digit word */
+function isRealDigit(token) {
+  return token !== undefined && isDigitToken(token) && !AMBIGUOUS_DIGIT_WORDS.has(token);
+}
+
 /**
- * Is tokens[i] part of a run of digits that holds a numeral or an unambiguous digit
- * word? Two ambiguous words don't vouch for each other ("Oh, one more thing").
+ * Does an ambiguous digit word at tokens[i] count? Only in a run of digits that
+ * holds a real one, or, once the text holds a real digit anywhere (a number being
+ * dictated: "… five six one, and one one one"), beside another digit. Two
+ * ambiguous words alone don't vouch for each other ("Oh, one more thing").
  * @param {string[]} tokens
  * @param {number} i
+ * @param {boolean} dictating - the text holds a real digit
  */
-function inRealDigitRun(tokens, i) {
+function ambiguousCounts(tokens, i, dictating) {
   for (const step of [-1, 1]) {
     for (let j = i + step; j >= 0 && j < tokens.length && isDigitToken(tokens[j]); j += step) {
-      if (!AMBIGUOUS_DIGIT_WORDS.has(tokens[j])) return true;
+      if (isRealDigit(tokens[j])) return true;
     }
   }
-  return false;
+  return dictating && (isDigitToken(tokens[i - 1]) || isDigitToken(tokens[i + 1]));
 }
 
 /**
@@ -94,12 +102,13 @@ function extractSpokenDigits(text) {
 
   // Second pass: extract all digit characters and spoken digit words
   const tokens = expanded.split(/[\s,.-]+/).filter(Boolean);
+  const dictating = tokens.some(isRealDigit);
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
     if (/^\d+$/.test(token)) {
       digits += token;
     } else if (spokenDigit(token) !== undefined) {
-      if (AMBIGUOUS_DIGIT_WORDS.has(token) && tokens.length > 1 && !inRealDigitRun(tokens, i)) continue;
+      if (AMBIGUOUS_DIGIT_WORDS.has(token) && tokens.length > 1 && !ambiguousCounts(tokens, i, dictating)) continue;
       digits += spokenDigit(token);
     }
   }
@@ -107,23 +116,25 @@ function extractSpokenDigits(text) {
   return digits;
 }
 
-// A plain yes as the whole answer ("Yeah. That one, please.", "Yep, that's the one") ...
-const PLAIN_YES_RE = /^\W*(?:yes|yeah|yep|yup|yeh|correct|right|sure|absolutely|definitely|perfect|that one|that'?s (?:it|right|correct|the one|perfect)|that is (?:it|right|correct|the one))\b/i;
-// ... that doesn't go on to another number: "Yes, but use my work one", "Yeah, actually no".
-const NOT_PLAIN_YES_RE = /\b(?:no|not|nah|but|actually|other|another|different|instead|wait|hang on|hold on|change|new|work|home|landline)\b/i;
+// A plain yes, and nothing else, as the whole answer: "Yeah. That one, please.",
+// "Yep, that's the one", "Yeah, sure." Anything more ("Sure, my number is",
+// "Yes, but use my work one") may be the start of another number.
+const YES_WORDS = "(?:yes|yeah|yep|yup|yeh|okay|ok|correct|right|sure|absolutely|definitely|perfect|that one|this one|(?:the )?same one|that'?s (?:it|right|correct|the one|perfect|fine)|that is (?:it|right|correct|the one))";
+const YES_TAIL = "(?:please|thanks|thank you|mate|it is|go ahead|use that(?: one)?|the same(?: number)?|that'?s my (?:mobile|number))";
+const PLAIN_YES_RE = new RegExp(`^\\W*${YES_WORDS}(?:[\\s,.!-]+(?:${YES_WORDS}|${YES_TAIL}))*[\\s,.!]*$`, "i");
 
 /**
- * Is `text` a plain yes to a question asking for `type`? Only for a phone number:
- * a yes to "I can see you're calling from 0414 141 883, is that the one?" needs no
- * wait for digits that aren't coming. SCRUM-594 (phone test F6, gate review): the
- * buffer still waits for a caller who gives another number, in pieces.
+ * Is `text` a plain yes to a phone question that offered a number? SCRUM-594
+ * (phone test F6): a yes to "I can see you're calling from 0414 141 883, is that
+ * the one?" needs no wait for digits that aren't coming. A yes to a plain "what's
+ * your number?" is a lead-in (gate review), and so is any yes that goes on.
  * @param {string} type
  * @param {string} text
+ * @param {boolean} offered - the AI's last words held a whole number
  * @returns {boolean}
  */
-function isPlainYes(type, text) {
-  if (type !== "phone" || typeof text !== "string") return false;
-  return PLAIN_YES_RE.test(text) && !NOT_PLAIN_YES_RE.test(text) && !/\d/.test(text) && extractSpokenDigits(text) === "";
+function isPlainYes(type, text, offered) {
+  return type === "phone" && offered === true && typeof text === "string" && PLAIN_YES_RE.test(text);
 }
 
 // An hour, as said or as a numeral.

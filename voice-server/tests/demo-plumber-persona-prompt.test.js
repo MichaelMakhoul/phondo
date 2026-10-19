@@ -121,9 +121,11 @@ describe("plumber demo persona, as assembled for the demo org", () => {
     assert.ok(ask < persona.indexOf("6. Book the visit"), "before any tool call");
   });
 
-  it("phone test F6: the booking close stays pipeline-neutral (the fast line's addendum overrides it, the browser demo keeps it)", () => {
+  it("phone test F6: the booking close defers to the named rule (shared POST-CONFIRMATION CLOSE on Gemini, the fast addendum's on the phone line)", () => {
     const close = between("7. Close the call", "RULES");
-    assert.match(close, /ask "Is everything correct\?"\. When they confirm, say a short goodbye\./);
+    assert.match(close, /ask "Is everything correct\?"\. When they confirm, close as POST-CONFIRMATION CLOSE says\./);
+    assert.doesNotMatch(close.split("If you took a message")[0], /goodbye/i, "no goodbye of its own after a booking");
+    assert.match(assembled, /POST-CONFIRMATION CLOSE — MANDATORY/, "the rule it names is in the assembled prompt");
   });
 
   it("books a leak the small tap has stopped (the demo's main showcase), but main-off stays urgent", () => {

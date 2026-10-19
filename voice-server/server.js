@@ -3690,7 +3690,7 @@ const FAST_VOICE_ADDENDUM = [
   "- Say goodbye and end the call only after the caller says goodbye or that they're done.",
   // Phone test F6: the shared POST-CONFIRMATION CLOSE (written for Gemini) says goodbye and end_call on the
   // read-back's yes; this line holds that hang-up, so callers heard "Have a good day" then "anything else?".
-  "- POST-CONFIRMATION CLOSE ON THIS LINE (this replaces the one above, and any line above that says goodbye once they confirm): a yes to your booking read-back, even \"yes, thanks\" or \"perfect, thanks\", means the details are right, not that the caller is done. Say no goodbye and don't call end_call: ask if there's anything else, then wait for their answer.",
+  "- POST-CONFIRMATION CLOSE ON THIS LINE (this replaces the one above, and any line above that says goodbye once they confirm): a yes to your booking read-back, even \"yes, thanks\" or \"perfect, thanks\", means the details are right, not that the caller is done. Say no goodbye and don't call end_call: ask if there's anything else, then wait for their answer. If they also said goodbye or that's all, say a short goodbye and call end_call.",
   "NAMES:",
   "- Before you book, spell the caller's last name back to them letter by letter (for example \"That's S-M-I-T-H?\") and wait for a yes. Speech recognition often mishears surnames.",
   "BOOKINGS MADE ON THIS CALL:",
