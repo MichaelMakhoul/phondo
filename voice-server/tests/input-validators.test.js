@@ -59,6 +59,16 @@ describe("extractSpokenDigits", () => {
     assert.equal(extractSpokenDigits("Is the best mobile for you the number you're calling from, 0412 555 013?"), "0412555013");
     assert.equal(extractSpokenDigits("(02) 3820 5672"), "0238205672");
   });
+  it("silent-failure re-review 3: before the number starts, punctuation ends a run (\"Not that one. Oh four …\")", () => {
+    assert.equal(extractSpokenDigits("Not that one. Oh four one two, three four five,"), "0412345");
+    assert.equal(extractSpokenDigits("The other one? Oh four one two,"), "0412");
+    assert.equal(extractSpokenDigits("No, not that one, oh four one two"), "0412");
+    assert.equal(extractSpokenDigits("Oh, four one two, three four five, six seven eight."), "412345678", "the cost: a leading \"Oh,\" drops, the number stays whole");
+  });
+  it("silent-failure re-review 3: \"one sec\" mid-number is a pause, not a digit", () => {
+    assert.equal(extractSpokenDigits("Oh four one two, three four five, one sec,"), "0412345");
+    assert.equal(extractSpokenDigits("Oh, one moment. Oh four one two"), "0412");
+  });
   it("gate review (F6): two ambiguous words don't vouch for each other", () => {
     for (const said of ["Oh, one more thing", "Oh, one sec", "Oh one moment please", "That one. Oh, sorry", "martes o jueves"]) {
       assert.equal(extractSpokenDigits(said), "", said);

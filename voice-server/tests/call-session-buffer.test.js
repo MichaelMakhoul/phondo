@@ -68,6 +68,18 @@ describe("CallSession.bufferTranscript — phone test F6", () => {
     assert.deepEqual(flushed.map((f) => f.text), ["Oh, one sec. Oh four one two, three four five, six seven eight."]);
   });
 
+  it("silent-failure re-review 3: declining the offer, \"Not that one. Oh four one two,\" … a pause … the rest is one answer", async () => {
+    for (const lead of ["Not that one. Oh four one two,", "The other one? Oh four one two,"]) {
+      const flushed = await buffer("phone", [lead, ["three four five,", 1500], ["six seven eight.", 2400]], BUFFER_CONFIGS.phone.debounceMs + 400, OFFER);
+      assert.deepEqual(flushed.map((f) => f.text), [`${lead} three four five, six seven eight.`], lead);
+    }
+  });
+
+  it("silent-failure re-review 3: \"… three four five, one sec,\" … a pause … the rest is one answer", async () => {
+    const flushed = await buffer("phone", ["Oh four one two,", ["three four five, one sec,", 1500], ["six seven eight.", 2400]], BUFFER_CONFIGS.phone.debounceMs + 400, "What's the best number to reach you on?");
+    assert.deepEqual(flushed.map((f) => f.text), ["Oh four one two, three four five, one sec, six seven eight."]);
+  });
+
   it("silent-failure re-review 2: the offer counts when a re-prompt repeated only the question", async () => {
     const flushed = await buffer("phone", ["Yes."], 100, ["I can see you're calling from 0414 141 883. Is that the best number to reach you on?", "Is that the best number to reach you on?"]);
     assert.equal(flushed.length, 1, "flushed at once");

@@ -75,9 +75,11 @@ function isRealDigit(token) {
  * @param {number} i
  * @param {boolean} dictating - tokens[i] comes after the text's first real digit
  */
-function ambiguousCounts(tokens, i, dictating) {
+function ambiguousCounts(tokens, i, dictating, tight) {
   for (const step of [-1, 1]) {
     for (let j = i + step; j >= 0 && j < tokens.length && isDigitToken(tokens[j]); j += step) {
+      // Before the number starts, only words said together make a run: "Not that one. Oh four …"
+      if (!dictating && !tight[step > 0 ? j - 1 : j]) break;
       if (isRealDigit(tokens[j])) return true;
     }
   }
@@ -92,7 +94,8 @@ function extractSpokenDigits(text) {
   let digits = "";
 
   // First pass: expand "double/triple X" patterns
-  let expanded = text.toLowerCase();
+  // "… three four five, one sec,": a pause asked for, not a digit (nor the "oh" before it)
+  let expanded = text.toLowerCase().replace(/\b(?:oh[\s,.]+)?one\s+(?:sec|second|moment|minute|tick)\b/g, " ");
   for (const [mult, count] of Object.entries(MULTIPLIERS)) {
     const re = new RegExp(`${mult}\\s+(\\w+)`, "gi");
     expanded = expanded.replace(re, (_, word) => {
@@ -103,14 +106,23 @@ function extractSpokenDigits(text) {
 
   // Second pass: extract all digit characters and spoken digit words
   // Punctuation ends a token too: "… 0412 555 013?" and "… six seven eight?" (not ":", so "10:30" stays one).
-  const tokens = expanded.split(/[\s,.\-?!;()"“”–—]+/).filter(Boolean);
+  const parts = expanded.split(/([\s,.\-?!;()"“”–—]+)/);
+  /** @type {string[]} */
+  const tokens = [];
+  /** @type {boolean[]} tight[k]: tokens[k] and tokens[k + 1] are joined by spaces (or a dash) only */
+  const tight = [];
+  for (let p = 0; p < parts.length; p += 2) {
+    if (!parts[p]) continue;
+    tokens.push(parts[p]);
+    tight.push(/^[\s-]*$/.test(parts[p + 1] ?? ""));
+  }
   const firstReal = tokens.findIndex(isRealDigit);
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
     if (/^\d+$/.test(token)) {
       digits += token;
     } else if (spokenDigit(token) !== undefined) {
-      if (AMBIGUOUS_DIGIT_WORDS.has(token) && tokens.length > 1 && !ambiguousCounts(tokens, i, firstReal !== -1 && i > firstReal)) continue;
+      if (AMBIGUOUS_DIGIT_WORDS.has(token) && tokens.length > 1 && !ambiguousCounts(tokens, i, firstReal !== -1 && i > firstReal, tight)) continue;
       digits += spokenDigit(token);
     }
   }
