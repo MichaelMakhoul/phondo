@@ -38,6 +38,17 @@ const SPOKEN_DIGITS = {
 // "doble cinco" → "55", "triple cero" → "000"
 const MULTIPLIERS = { double: 2, triple: 3, doble: 2 };
 
+// Digit words that are as often ordinary words: "that one", "oh, sorry", "una cita".
+// They count only beside another digit, or as the whole answer. SCRUM-594 (phone
+// test F6): "Yeah. That one, please." (to the caller-ID number) counted one digit,
+// and the buffer waited its full 12 s for a number nobody was saying.
+const AMBIGUOUS_DIGIT_WORDS = new Set(["one", "oh", "o", "uno", "una"]);
+
+/** @param {string|undefined} token */
+function isDigitToken(token) {
+  return token !== undefined && (/^\d+$/.test(token) || SPOKEN_DIGITS[token] !== undefined);
+}
+
 /**
  * Extract digits from spoken text.
  * Handles: "0412 345 678", "oh four one two", "double five", etc.
@@ -56,17 +67,34 @@ function extractSpokenDigits(text) {
   }
 
   // Second pass: extract all digit characters and spoken digit words
-  const tokens = expanded.split(/[\s,.-]+/);
-  for (const token of tokens) {
+  const tokens = expanded.split(/[\s,.-]+/).filter(Boolean);
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
     if (/^\d+$/.test(token)) {
       digits += token;
     } else if (SPOKEN_DIGITS[token] !== undefined) {
+      if (AMBIGUOUS_DIGIT_WORDS.has(token) && tokens.length > 1 && !isDigitToken(tokens[i - 1]) && !isDigitToken(tokens[i + 1])) continue;
       digits += SPOKEN_DIGITS[token];
     }
   }
 
   return digits;
 }
+
+// An hour, as said or as a numeral.
+const HOUR = "(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\\d{1,2})";
+// Clock times said as words, which the am/pm check misses. SCRUM-594 (phone test F6):
+// "Four thirty is good." had no time for it, so the buffer sat out its 4 s maximum.
+const SPOKEN_TIME_RE = new RegExp([
+  `\\b${HOUR}\\s+(?:thirty|fifteen|forty[\\s-]?five|oh\\s+\\w+|(?:twenty|forty|fifty)(?:[\\s-]?(?:one|two|three|four|five|six|seven|eight|nine))?)\\b`,
+  `\\b${HOUR}\\s*o'?clock\\b`,
+  "\\b(?:half|quarter)\\s+(?:past|to|after)\\b",
+  `\\b(?:at|around|about|by)\\s+${HOUR}\\b`,
+  "\\b\\d{1,2}:\\d{2}\\b",
+  "\\b(?:noon|midday|midnight|lunchtime|lunch\\s+time)\\b",
+  // Spanish: "a la una", "a las cuatro y media"
+  "\\ba\\s+las?\\s+(?:una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce|\\d{1,2})\\b",
+].join("|"), "i");
 
 /**
  * Check if the user's speech is a question rather than structured data input.
@@ -146,7 +174,8 @@ function validateInput(type, text) {
       const hasDate = /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|today|next\s+\w+|this\s+\w+|\d{1,2}(st|nd|rd|th)?(\s+of)?(\s+\w+)?)\b/i.test(lower)
         || /\b(lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo|ma[nñ]ana|hoy|pr[oó]ximo|esta\s+semana|el\s+\d{1,2})\b/i.test(lower);
       const hasTime = /\b(\d{1,2}(:\d{2})?\s*(am|pm|a\.m|p\.m)|morning|afternoon|evening)\b/i.test(lower)
-        || /\b(por la ma[nñ]ana|tarde|noche|mediod[ií]a)\b/i.test(lower);
+        || /\b(por la ma[nñ]ana|tarde|noche|mediod[ií]a)\b/i.test(lower)
+        || SPOKEN_TIME_RE.test(lower);
       if (hasDate || hasTime) {
         return { complete: true, reason: hasDate ? "date reference found" : "time reference found" };
       }

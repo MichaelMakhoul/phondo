@@ -3697,6 +3697,7 @@ const FAST_VOICE_ADDENDUM = [
   "- When the caller asks to cancel, call cancel_appointment straight away, without checking their name again: it tells you when to read the booking back to them for a yes.",
   "TIMES:",
   "- Offer the earliest free time in the LIVE SCHEDULE: today first, if it still has times. Never give a reason a day is unavailable that the schedule doesn't show.",
+  "- Say each time once: put the choices in your question (\"Today at 11, or tomorrow at 9:30?\"), not in a sentence first and then again in the question.",
 ].join("\n");
 // Phone test F5: asked for Arabic, the model followed the shared prompt's LANGUAGE rule (written
 // for Gemini, which speaks it), said yes, and sent Arabic text to an English voice. The fast path
@@ -3981,12 +3982,12 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
   // Play hold audio while AI processes. SCRUM-594: holdPlaying lets an end_call
   // hang-up stop hold audio that is still looping — and only then, because
   // every stop() sends a Twilio clear, which would cut speech already queued.
-  // On the fast path that clear is sendClear's full stop (the player and the
-  // Aura stream too), so only the first stop there does anything: a later
-  // round's first words must not cut what this turn already said. A Flux fast
-  // turn starts it after its turn-start wait (R12b″), in the try below.
+  // Never on the fast path (phone test F6): its replies start about a second
+  // after the caller stops, so the loop was only ever a second of brown noise,
+  // heard as wind, before every reply, and its stop sent a Twilio clear and an
+  // Aura Clear at every turn's first words.
   /** @type {{ stop: () => void } | null} */
-  let holdAudio = session.fastPath === true ? null : startHoldAudio(session, twilioWs, "twilio");
+  const holdAudio = session.fastPath ? null : startHoldAudio(session, twilioWs, "twilio");
   let holdPlaying = holdAudio !== null;
   const hold = {
     stop: () => {
@@ -4019,8 +4020,6 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
         if (fastTurn.ctl.signal.aborted) throw fastAbortError(fastTurn.abortReason || "abort");
         if (twilioWs.readyState !== WebSocket.OPEN) return;
       }
-      holdAudio = startHoldAudio(session, twilioWs, "twilio");
-      holdPlaying = true;
     }
 
     // SCRUM-594 (F5 simulated calls): the caller's language, before the reply is written —

@@ -975,15 +975,17 @@ describe("SCRUM-594 4.8.4: flush points", () => {
     h.closeFastPath(s);
   });
 
-  it("hold audio stops once: a later round's first chunk does not cut what the turn already said", async () => {
+  it("phone test F6: a fast turn plays no hold audio, so nothing is cleared before its words", async () => {
     const h = makeFast({
       holdAudio: true,
       steps: [{ tools: [{ name: "check_availability", args: {} }] }, { sentences: ["Ten is free."], content: "Ten is free." }],
     });
+    const holdFrames = () => h.twilio("media").filter((m) => Buffer.from(m.media.payload, "base64")[0] === 0x55).length;
     const s = h.start(makeSession());
     await h.handleUserSpeech(s, h.twilioWs, "Is Tuesday free at all?");
-    assert.equal(h.twilio("clear").length, 1, "one clear: the hold audio's");
-    assert.equal(h.lastAura().handle.clears, 0, "the filler is not Cleared from Aura");
+    assert.equal(holdFrames(), 0, "no brown noise before the reply");
+    assert.equal(h.twilio("clear").length, 0, "no Twilio clear at the turn's first words");
+    assert.equal(h.lastAura().handle.clears, 0, "no Aura Clear either");
     assert.deepEqual(h.lastAura().handle.spoken, ["One moment, let me check that.", "Ten is free."]);
     h.closeFastPath(s);
   });
@@ -2092,18 +2094,18 @@ describe("SCRUM-594 review R12d′: the recording disclosure is never cut, and R
 });
 
 describe("SCRUM-594 review minors", () => {
-  it("Minor 1: an aborted turn stops its hold audio (the loop would otherwise run until the call ends)", async () => {
+  it("phone test F6: a Flux fast turn never starts the hold loop, not even while the model is slow", async () => {
     const h = makeFast({ holdAudio: true, steps: [{ firstDelayMs: 5000, content: "never" }] });
     const s = h.start(makeSession());
     h.fluxOpens();
     h.turn("EndOfTurn", 0, "What are your opening hours on Saturday?");
     await settle();
     const holdFrames = () => h.twilio("media").filter((m) => Buffer.from(m.media.payload, "base64")[0] === 0x55).length;
-    assert.equal(holdFrames(), 2, "the hold audio's first loop");
+    assert.equal(holdFrames(), 0, "no hold audio while the model thinks");
     h.turn("Update", 1, "sorry actually never mind that");
     await until(() => !s.isProcessing, "the aborted turn");
     await sleep(2100); // past the hold loop's 2 s period
-    assert.equal(holdFrames(), 2, "the loop was stopped");
+    assert.equal(holdFrames(), 0, "and no loop started later");
     h.closeFastPath(s);
   });
 

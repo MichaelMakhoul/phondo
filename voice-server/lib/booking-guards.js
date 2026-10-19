@@ -696,7 +696,8 @@ function checkCallerDone(session) {
     allow: false,
     count: state.endCallHolds,
     cap: END_CALL_HOLD_CAP,
-    message: "DON'T END THE CALL YET: the caller hasn't said goodbye or that they're done. Ask if there's anything else you can help with, and end the call only after they say goodbye or that's all.",
+    // Phone test F6: the held reply had already said "Have a good day"; another goodbye next round would be the third.
+    message: "DON'T END THE CALL YET, and don't say goodbye again: the caller hasn't said goodbye or that they're done. Ask if there's anything else you can help with, and end the call only after they say goodbye or that's all.",
   };
 }
 

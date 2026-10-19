@@ -27,6 +27,19 @@ describe("extractSpokenDigits", () => {
   it("handles single digit", () => {
     assert.equal(extractSpokenDigits("four"), "4");
   });
+  it("phone test F6: \"one\", \"oh\" and \"una\" used as ordinary words are not digits", () => {
+    for (const said of ["Yeah. That one, please.", "Yeah. That one, please. Hello?", "Oh yes, that's the one", "the second one", "una cita"]) {
+      assert.equal(extractSpokenDigits(said), "", said);
+    }
+  });
+  it("…but beside another digit, or as the whole answer, they still are", () => {
+    assert.equal(extractSpokenDigits("oh four one two"), "0412");
+    assert.equal(extractSpokenDigits("It's oh four"), "04");
+    assert.equal(extractSpokenDigits("one four one"), "141");
+    assert.equal(extractSpokenDigits("zero four one four, one four one, eight eight three"), "0414141883");
+    assert.equal(extractSpokenDigits("one"), "1");
+    assert.equal(extractSpokenDigits("um, zero"), "0", "an unambiguous digit word always counts");
+  });
 });
 
 describe("validateInput - phone", () => {
@@ -121,6 +134,14 @@ describe("validateInput - date_time", () => {
   it("incomplete without reference", () => {
     const result = validateInput("date_time", "whenever you have");
     assert.equal(result.complete, false);
+  });
+  it("phone test F6: a clock time said in words is a time", () => {
+    for (const said of ["Four thirty is good.", "four o'clock", "half past four", "quarter to five", "at four", "around 10", "4:30", "eleven fifteen", "two forty-five", "noon works", "a las cuatro y media", "a la una"]) {
+      assert.equal(validateInput("date_time", said).complete, true, said);
+    }
+  });
+  it("…but a bare number word is not yet", () => {
+    assert.equal(validateInput("date_time", "four").complete, false);
   });
 });
 

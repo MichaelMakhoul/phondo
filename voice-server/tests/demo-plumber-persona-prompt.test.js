@@ -53,10 +53,19 @@ function between(a, b) {
 }
 
 describe("plumber demo persona, as assembled for the demo org", () => {
-  it("keeps the photo ask, the no-transfer rule and the Phondo reveal", () => {
+  it("keeps the photo ask and the no-transfer rule", () => {
     assert.match(assembled, /Ask for a photo/);
     assert.match(assembled, /Never try to transfer the call/);
-    assert.match(assembled, /this is a demo of Phondo/);
+  });
+
+  it("phone test F6 (owner ruling): never volunteers that the line is a demo; answers about Phondo only when asked", () => {
+    assert.doesNotMatch(persona, /Just so you know|On a real setup|THE DEMO LINE|demo line/i, "no scripted reveal");
+    assert.equal((persona.match(/Phondo/g) || []).length, 2, "Phondo appears only in the asked-about rule");
+    assert.match(persona, /- Never bring up Phondo or say this line is a demo\. Only if the caller asks about it, or how to get this for their own business: /);
+  });
+
+  it("phone test F6 (owner ruling): the photo ask says where to send it", () => {
+    assert.match(between("4. Ask for a photo", "5. Then ask"), /send it to this number/);
   });
 
   it("books through the attached calendar tools instead of scripting availability", () => {
@@ -106,21 +115,16 @@ describe("plumber demo persona, as assembled for the demo org", () => {
     assert.match(persona, /first and last name/);
   });
 
-  it("gives the Phondo reveal mid-call: before any tool call, never in the end_call reply", () => {
-    // Phone path: the closing reply is goodbye + end_call in one response, with
-    // a drain sized for one brief phrase, so a reveal there gets cut off and the
-    // caller can't ask about Phondo. The turn right after a booking/callback
-    // result is audited by Tier-2. The reveal goes between the photo ask and
-    // booking, as its own reply ending on a question.
-    const reveal = persona.indexOf("Then give the demo line below as its own reply");
-    assert.ok(reveal > -1, "step 5 must deliver the demo line");
-    assert.ok(reveal < persona.indexOf("6. Book the visit"), "reveal before any tool call");
-    assert.doesNotMatch(between("7. Close the call", "THE DEMO LINE"), /demo line|demo of Phondo/i, "the closing reply must not carry the reveal");
-    assert.match(persona, /Want me to find you a time\?/);
-    // Exactly one reveal: the DEMO LINE heading plus the step-5 pointer, and the
-    // reveal sentence itself once, so a second reveal can't slip in anywhere.
-    assert.equal((persona.match(/demo line/gi) || []).length, 2, "heading + step 5 only");
-    assert.equal((persona.match(/demo of Phondo/g) || []).length, 1, "the reveal sentence appears once");
+  it("asks whether to find a time as its own reply, before any tool call", () => {
+    const ask = persona.indexOf('5. Then ask, as its own reply: "Want me to find you a time?"');
+    assert.ok(ask > -1, "step 5 asks the question");
+    assert.ok(ask < persona.indexOf("6. Book the visit"), "before any tool call");
+  });
+
+  it("phone test F6: after the booking read-back, asks \"anything else?\" before the goodbye (the fast line holds a goodbye the caller hasn't said)", () => {
+    const close = between("7. Close the call", "RULES");
+    assert.match(close, /ask "Is everything correct\?"\. When they confirm, ask if there's anything else; once they're done, say a short goodbye\./);
+    assert.doesNotMatch(close, /When they confirm, say a short goodbye/);
   });
 
   it("books a leak the small tap has stopped (the demo's main showcase), but main-off stays urgent", () => {
@@ -133,9 +137,8 @@ describe("plumber demo persona, as assembled for the demo org", () => {
     assert.match(persona, /4\. Ask for a photo, in one sentence/);
   });
 
-  it("asks one thing per reply, and the reveal stands alone", () => {
+  it("asks one thing per reply", () => {
     assert.match(persona, /Ask ONE thing per reply, never a list of questions/);
-    assert.match(persona, /give the demo line below as its own reply \(nothing else in that reply\)/);
   });
 
   it("ends a message-only call as a message, never as booking_complete", () => {
@@ -143,7 +146,7 @@ describe("plumber demo persona, as assembled for the demo org", () => {
     // when no booking resolved; the appended blocks default every goodbye to it.
     assert.match(persona, /end the call with reason "message taken" \(never "booking_complete"\)/);
     assert.match(persona, /An urgent job is a message for Dave, not a booking/);
-    // The reveal comes first; the callback after it, so the reveal never sits in a Tier-2-audited turn.
+    // The callback comes after the details, the photo and the step-5 question.
     assert.match(persona, /after steps 3 to 5, take it with schedule_callback/);
     assert.match(persona, /Want me to get Dave to ring you straight back\?/);
     assert.match(persona, /don't go on to book a visit unless they ask/);

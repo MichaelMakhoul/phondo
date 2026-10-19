@@ -1420,8 +1420,14 @@ describe("short turns, backchannels and echo (R12a′, R13)", () => {
     }
   });
 
+  it("phone test F6: \"Sounds perfect.\" split off \"Yeah.\" while the AI thinks is dropped, not answered later on its own", () => {
+    const h = FAST(PROCESSING);
+    h.feed(ev("EndOfTurn", 0, "Sounds perfect."));
+    assert.deepEqual(h.calls, [["dropEcho", "Sounds perfect.", "backchannel"], ["cancelSpeculation", "backchannel"]]);
+  });
+
   it("a backchannel while the AI is idle is an answer: committed", () => {
-    for (const said of ["Okay.", "Yes.", "No worries.", "Thanks!"]) {
+    for (const said of ["Okay.", "Yes.", "No worries.", "Thanks!", "Sounds perfect."]) {
       const h = FAST(IDLE);
       h.feed(ev("EndOfTurn", 0, said));
       assert.deepEqual(h.calls, [["commit", said, 0, "model"]], said);
@@ -1476,6 +1482,18 @@ describe("isBackchannel", () => {
 
   it("anything with a word of content, an interrupt, or more than two words is not", () => {
     for (const said of ["Yes please.", "No.", "No, wait.", "Okay, wait", "Tuesday", "Okay thank you", "thanks so much", "Nope", "Stop", "", "  ", "okayyy"]) {
+      assert.equal(isBackchannel(said), false, JSON.stringify(said));
+    }
+  });
+
+  it("phone test F6: \"Sounds perfect.\" and the other short approvals are backchannels too", () => {
+    for (const said of ["Sounds perfect.", "Sounds good!", "Sounds great.", "That's great.", "That's perfect.", "That's fine.", "Lovely.", "Good.", "Got it.", "All good.", "No dramas.", "Too easy.", "Cheers."]) {
+      assert.equal(isBackchannel(said), true, said);
+    }
+  });
+
+  it("…but not a caller finishing, or anything with content after \"That's\"", () => {
+    for (const said of ["That's all.", "That's it.", "That's all, thanks", "Sounds wrong.", "That's Tuesday", "Good morning"]) {
       assert.equal(isBackchannel(said), false, JSON.stringify(said));
     }
   });

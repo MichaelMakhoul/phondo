@@ -707,6 +707,7 @@ describe("checkCallerDone", () => {
     const held = checkCallerDone(session([ai("Is everything correct?"), caller("Yep, that's all correct. Thanks.")]));
     assert.match(held.message, /^DON'T END THE CALL YET/);
     assert.match(held.message, /anything else/);
+    assert.match(held.message, /don't say goodbye again/, "phone test F6: the held reply already said goodbye");
   });
 
   it("lets it through once the caller is done", () => {
