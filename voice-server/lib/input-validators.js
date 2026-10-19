@@ -94,8 +94,7 @@ function extractSpokenDigits(text) {
   let digits = "";
 
   // First pass: expand "double/triple X" patterns
-  // "… three four five, one sec,": a pause asked for, not a digit (nor the "oh" before it)
-  let expanded = text.toLowerCase().replace(/\b(?:oh[\s,.]+)?one\s+(?:sec|second|moment|minute|tick)\b/g, " ");
+  let expanded = text.toLowerCase();
   for (const [mult, count] of Object.entries(MULTIPLIERS)) {
     const re = new RegExp(`${mult}\\s+(\\w+)`, "gi");
     expanded = expanded.replace(re, (_, word) => {
@@ -103,6 +102,9 @@ function extractSpokenDigits(text) {
       return d ? d.repeat(count) : word;
     });
   }
+  // "… three four five, one sec,": a pause asked for, not a digit (nor the "oh" before it). After the
+  // expansion above, so the "oh" of "double oh" is already a numeral and is not eaten.
+  expanded = expanded.replace(/\b(?:oh[^a-z0-9]+)?one\s+(?:more\s+)?(?:sec|second|moment|minute|tick)\b/g, " ");
 
   // Second pass: extract all digit characters and spoken digit words
   // Punctuation ends a token too: "… 0412 555 013?" and "… six seven eight?" (not ":", so "10:30" stays one).

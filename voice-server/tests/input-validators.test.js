@@ -68,6 +68,12 @@ describe("extractSpokenDigits", () => {
   it("silent-failure re-review 3: \"one sec\" mid-number is a pause, not a digit", () => {
     assert.equal(extractSpokenDigits("Oh four one two, three four five, one sec,"), "0412345");
     assert.equal(extractSpokenDigits("Oh, one moment. Oh four one two"), "0412");
+    assert.equal(extractSpokenDigits("Oh four one two, three four five, one more sec,"), "0412345");
+    assert.equal(extractSpokenDigits("Oh four one two, three four five, oh! One sec."), "0412345");
+    assert.equal(extractSpokenDigits("Oh! One sec."), "", "not a lone digit to wait 12 s for");
+  });
+  it("confirmation review (F6): \"double oh\" keeps its oh before a hold phrase", () => {
+    assert.equal(extractSpokenDigits("Oh, four double oh, one sec, six eight one two, six seven."), "400681267", "the leading \"Oh,\" drops (the documented cost); the number still counts as whole");
   });
   it("gate review (F6): two ambiguous words don't vouch for each other", () => {
     for (const said of ["Oh, one more thing", "Oh, one sec", "Oh one moment please", "That one. Oh, sorry", "martes o jueves"]) {
