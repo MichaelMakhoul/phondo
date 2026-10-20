@@ -5,7 +5,7 @@ const { guardWords } = require("./lib/guard-languages");
 
 const MAX_MESSAGES = 21; // system prompt + up to 20 messages (user/assistant turns + tool call/result messages)
 // The AI asking for both names at once (CallSession._lastAiAskedBothNameParts), English and Spanish.
-const BOTH_NAME_PARTS_RE = /\b(?:first and last|full) name\b|\bfirst name and (?:your )?(?:last name|surname)\b|\bname and surname\b|\bnombre completo\b|\bnombre y apellidos?\b/i;
+const BOTH_NAME_PARTS_RE = /\bfirst (?:and|&) last\b|\bfull names?\b|\b(?:first |given )?names? and (?:your )?(?:last name|surname|family name)s?\b|\bfirst and surname\b|\bnombre completo\b|\bnombre y apellidos?\b/i;
 /**
  * SCRUM-594 (gate review): the AI's own words claiming it booked something ("I've
  * booked you in…", "I've also booked…", "we've scheduled you in…", "I've booked

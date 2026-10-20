@@ -331,10 +331,14 @@ describe("isRepairRequest — phone test F8", () => {
 
 describe("isLineCheck — phone test F8 review", () => {
   it("only a check that the line is alive", () => {
-    for (const said of ["Hello?", "Hello? Hello?", "Hello? Are you there?", "Are you still there?", "You there?", "Anyone there?", "I can't hear you.", "Oh, hello?", "¿Hola?", "¿Aló?", "¿Estás ahí?"]) {
+    for (const said of ["Hello?", "Hello? Hello?", "Hello, hello?", "Hello? Are you there?", "Are you still there?", "You there?", "You still there?", "Anyone there?", "Is anyone there?", "Is anybody there?",
+      "Are you with me?", "Can you hear me?", "Hello? Can you hear me?", "Can you still hear me okay?", "Did I lose you?", "I can't hear you.", "Oh, hello?",
+      "¿Hola?", "¿Aló?", "¿Estás ahí?", "¿Sigues ahí?", "¿Me escuchas?", "¿Me oyes?", "¿Hay alguien?", "¿Alguien ahí?"]) {
       assert.equal(isLineCheck(said), true, said);
     }
-    for (const said of ["Sorry?", "What?", "Can you repeat that?", "Hello, my name is Michael", "Hello, it's oh four one two", "Michael", "", null, ["Hello?"]]) {
+    for (const said of ["Sorry?", "What?", "Can you repeat that?", "Hello, my name is Michael", "Hello, it's oh four one two", "Michael", "", null, ["Hello?"],
+      // a bare hello may start an answer ("hello at …"): only "Hello?" checks the line
+      "Hello.", "Hello", "Hola."]) {
       assert.equal(isLineCheck(said), false, String(said));
     }
   });

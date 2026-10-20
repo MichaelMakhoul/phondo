@@ -186,9 +186,29 @@ describe("CallSession.bufferTranscript — phone test F8", () => {
   });
 
   it("review: a \"Hello?\" after a piece of a number flushes what is held at once (it waited 16 s)", async () => {
+    // Watched 200 ms after "Hello?": nothing else could flush a number that soon.
     const flushed = await buffer("phone", ["555 1234.", ["Hello?", 300]], 200, "What's the best number to reach you on?", { wholeTurn: true });
     assert.deepEqual(flushed.map((f) => f.text), ["555 1234. Hello?"]);
-    assert.ok(flushed[0].afterMs < 400, `${flushed[0].afterMs} ms`);
+  });
+
+  it("re-review: \"Can you hear me?\" after a piece of a number is a line check too", async () => {
+    const flushed = await buffer("phone", ["0412 555.", ["Can you hear me?", 300]], 200, "What's the best number to reach you on?", { wholeTurn: true });
+    assert.deepEqual(flushed.map((f) => f.text), ["0412 555. Can you hear me?"]);
+  });
+
+  it("re-review: the ways the AI asks for both names", () => {
+    const asked = (said) => {
+      const s = new CallSession("both-names-phrasing");
+      s.addMessage("assistant", said);
+      return s._lastAiAskedBothNameParts();
+    };
+    for (const said of ["Can I grab your first and last name?", "What's your full name?", "Could I get your first and last names?", "Your name, first and last?", "First and last, please.",
+      "Can I get your first name and family name?", "Can I have your name and surname?", "And your name and last name?", "First & last name, please?", "¿Me da su nombre completo?", "¿Su nombre y apellido?"]) {
+      assert.equal(asked(said), true, said);
+    }
+    for (const said of ["Thanks, Michael. And your last name?", "What's your first name?", "Can I grab your name?", "Could you spell your surname for me?", "Is that the first time you've called?"]) {
+      assert.equal(asked(said), false, said);
+    }
   });
 
   it("review: \"Oh.\" then the rest of the number is one answer (\"oh\" is a zero)", async () => {

@@ -156,13 +156,15 @@ function isPlainYes(type, text, offered) {
 // The caller asking to hear it again, or checking the line, and nothing else (English and
 // Spanish, the languages the input-type detector knows). A bare "sorry" (or "excuse me",
 // "perdón", "disculpe") counts only as a question: "Oh, sorry." is an apology that may lead
-// into the answer.
+// into the answer. So does a bare "hello" ("Hello." may start "hello at …").
+const ASKED = "(?=\\s*\\?)"; // the word is followed by a question mark
 const LINE_CHECK_PHRASES = [
-  "hello", "are you (?:still )?there", "you there", "anyone there", "i can'?t hear you",
-  "hola", "al[oó]", "(?:est[aá]s|est[aá]) ah[ií]",
+  `hello${ASKED}`, "(?:are )?you (?:still )?(?:there|with me)", "(?:is )?(?:any|some)(?:one|body) (?:there|home)",
+  "i can'?t hear you", "(?:can|could) you (?:still )?hear me(?: (?:ok(?:ay)?|now|alright|all right))?", "did i lose you",
+  `hola${ASKED}`, `al[oó]${ASKED}`, "(?:est[aá]s|est[aá]|sigues?) ah[ií]", "me (?:escuchas?|oyes?)", "(?:hay )?alguien(?: ah[ií])?",
 ];
 const REPEAT_PHRASES = [
-  "sorry(?=\\s*\\?)", "excuse me(?=\\s*\\?)", "perd[oó]n(?=\\s*\\?)", "disculpe(?=\\s*\\?)",
+  `sorry${ASKED}`, `excuse me${ASKED}`, `perd[oó]n${ASKED}`, `disculpe${ASKED}`,
   "pardon(?: me)?", "what", "huh", "eh", "again", "come again", "say again", "one more time",
   "what was that", "what'?s that", "what did you (?:just )?say",
   "(?:can|could|would) you (?:please )?repeat(?: (?:that|it|yourself|the question|what you said))?",
@@ -172,8 +174,8 @@ const REPEAT_PHRASES = [
   "c[oó]mo", "qu[eé]", "mande", "otra vez",
   "(?:me )?(?:lo )?(?:puede|podr[ií]a) repetir(?:lo)?", "rep[ií]ta(?:lo|me)?", "no (?:le |te )?(?:escuch[eé]|entend[ií]|o[ií])",
 ];
-// "say": a stutter ("Say say again?", phone test F8).
-const REPAIR_FILLER = "(?:oh|um|uh|er|ah|sorry|excuse me|perd[oó]n|disculpe|yeah|no|say|sí|si)";
+// "say": a stutter ("Say say again?", phone test F8). "hello": "Hello, can you hear me?"
+const REPAIR_FILLER = "(?:oh|um|uh|er|ah|sorry|excuse me|perd[oó]n|disculpe|hello|hola|al[oó]|yeah|no|say|sí|si)";
 // No word of the tail is also a phrase: one way to read each word keeps the match linear.
 const REPAIR_TAIL = "(?:please|mate|por favor)";
 /** @param {string[]} phrases */
