@@ -155,13 +155,16 @@ function isPlainYes(type, text, offered) {
 
 // The caller asking to hear it again, or checking the line, and nothing else (English and
 // Spanish, the languages the input-type detector knows). A bare "sorry" (or "excuse me",
-// "perdón", "disculpe") counts only as a question: "Oh, sorry." is an apology that may lead
-// into the answer. So does a bare "hello" ("Hello." may start "hello at …").
+// "perdón", "disculpe", "bueno") counts only as a question: "Oh, sorry." is an apology that
+// may lead into the answer. A lone flat "Hello." doesn't count either (FLAT_HELLO_RE): it may
+// start one ("hello at …"); "Hello? Hello." and "Hello. Hello." still do.
 const ASKED = "(?=\\s*\\?)"; // the word is followed by a question mark
 const LINE_CHECK_PHRASES = [
-  `hello${ASKED}`, "(?:are )?you (?:still )?(?:there|with me)", "(?:is )?(?:any|some)(?:one|body) (?:there|home)",
-  "i can'?t hear you", "(?:can|could) you (?:still )?hear me(?: (?:ok(?:ay)?|now|alright|all right))?", "did i lose you",
-  `hola${ASKED}`, `al[oó]${ASKED}`, "(?:est[aá]s|est[aá]|sigues?) ah[ií]", "me (?:escuchas?|oyes?)", "(?:hay )?alguien(?: ah[ií])?",
+  "hello", "(?:(?:are )?you (?:still )?|still )(?:there|with me|on the line)", "(?:is )?(?:any|some)(?:one|body) (?:there|home)",
+  "i can'?t hear you", "(?:can|could) (?:you|any(?:one|body)) (?:still )?hear me(?: (?:ok(?:ay)?|now|alright|all right))?",
+  "(?:did i lose|have i lost) you", "did we get cut off",
+  "hola", "al[oó]", `bueno${ASKED}`, "(?:est[aá]s|est[aá]|sigues?) ah[ií]", "me (?:escuchas?|oyes?)(?: bien)?",
+  "no (?:te |le )?(?:escucho|oigo)", "(?:hay )?alguien(?: ah[ií])?",
 ];
 const REPEAT_PHRASES = [
   `sorry${ASKED}`, `excuse me${ASKED}`, `perd[oó]n${ASKED}`, `disculpe${ASKED}`,
@@ -174,8 +177,8 @@ const REPEAT_PHRASES = [
   "c[oó]mo", "qu[eé]", "mande", "otra vez",
   "(?:me )?(?:lo )?(?:puede|podr[ií]a) repetir(?:lo)?", "rep[ií]ta(?:lo|me)?", "no (?:le |te )?(?:escuch[eé]|entend[ií]|o[ií])",
 ];
-// "say": a stutter ("Say say again?", phone test F8). "hello": "Hello, can you hear me?"
-const REPAIR_FILLER = "(?:oh|um|uh|er|ah|sorry|excuse me|perd[oó]n|disculpe|hello|hola|al[oó]|yeah|no|say|sí|si)";
+// "say": a stutter ("Say say again?", phone test F8).
+const REPAIR_FILLER = "(?:oh|um|uh|er|ah|sorry|excuse me|perd[oó]n|disculpe|hey|hi|yeah|no|say|sí|si)";
 // No word of the tail is also a phrase: one way to read each word keeps the match linear.
 const REPAIR_TAIL = "(?:please|mate|por favor)";
 /** @param {string[]} phrases */
@@ -185,6 +188,8 @@ function wholeTurnOf(phrases) {
 }
 const REPAIR_RE = wholeTurnOf([...REPEAT_PHRASES, ...LINE_CHECK_PHRASES]);
 const LINE_CHECK_RE = wholeTurnOf(LINE_CHECK_PHRASES);
+// One flat hello and nothing else ("Hello.", "Oh, hello."): a greeting or the start of an answer.
+const FLAT_HELLO_RE = new RegExp(`^[\\s¿¡]*(?:${REPAIR_FILLER}[\\s,.!]+)*(?:hello|hola|al[oó])[\\s,.!]*$`, "i");
 const REPAIR_MAX_WORDS = 12;
 
 /**
@@ -207,7 +212,7 @@ function fewWords(text) {
  * @returns {boolean}
  */
 function isRepairRequest(text) {
-  return typeof text === "string" && fewWords(text) && REPAIR_RE.test(text);
+  return typeof text === "string" && fewWords(text) && !FLAT_HELLO_RE.test(text) && REPAIR_RE.test(text);
 }
 
 /**
@@ -218,7 +223,7 @@ function isRepairRequest(text) {
  * @returns {boolean}
  */
 function isLineCheck(text) {
-  return typeof text === "string" && fewWords(text) && LINE_CHECK_RE.test(text);
+  return typeof text === "string" && fewWords(text) && !FLAT_HELLO_RE.test(text) && LINE_CHECK_RE.test(text);
 }
 
 /**

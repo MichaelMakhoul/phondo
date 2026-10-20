@@ -333,12 +333,17 @@ describe("isLineCheck — phone test F8 review", () => {
   it("only a check that the line is alive", () => {
     for (const said of ["Hello?", "Hello? Hello?", "Hello, hello?", "Hello? Are you there?", "Are you still there?", "You there?", "You still there?", "Anyone there?", "Is anyone there?", "Is anybody there?",
       "Are you with me?", "Can you hear me?", "Hello? Can you hear me?", "Can you still hear me okay?", "Did I lose you?", "I can't hear you.", "Oh, hello?",
-      "¿Hola?", "¿Aló?", "¿Estás ahí?", "¿Sigues ahí?", "¿Me escuchas?", "¿Me oyes?", "¿Hay alguien?", "¿Alguien ahí?"]) {
+      "¿Hola?", "¿Aló?", "¿Estás ahí?", "¿Sigues ahí?", "¿Me escuchas?", "¿Me oyes?", "¿Hay alguien?", "¿Alguien ahí?",
+      // final re-review: more than one hello is never the start of an answer, and more common checks
+      "Hello? Hello.", "Hello. Hello.", "Hello, hello.", "Hello hello", "Are you there? Hello.", "Hola. Hola.",
+      "Still there?", "Hey, you there?", "Have I lost you?", "Did we get cut off?", "Are you still on the line?", "Can anyone hear me?",
+      "¿Bueno?", "¿Me escuchas bien?", "No te escucho."]) {
       assert.equal(isLineCheck(said), true, said);
     }
     for (const said of ["Sorry?", "What?", "Can you repeat that?", "Hello, my name is Michael", "Hello, it's oh four one two", "Michael", "", null, ["Hello?"],
-      // a bare hello may start an answer ("hello at …"): only "Hello?" checks the line
-      "Hello.", "Hello", "Hola."]) {
+      // one flat hello may be a greeting or start an answer ("hello at …")
+      "Hello.", "Hello", "Hola.", "Oh, hello.", "Hi, hello.", "¡Hola!",
+      "Bueno.", "Bueno, mi nombre es Ana", "Is anyone home on Tuesday", "Hello, it is Michael"]) {
       assert.equal(isLineCheck(said), false, String(said));
     }
   });
