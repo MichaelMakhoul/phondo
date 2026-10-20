@@ -204,6 +204,18 @@ export const SCENARIOS: Scenario[] = [
     expect: { books: true, finalActive: 1, language: "es", endsInEnglish: true },
   },
   {
+    id: "S14",
+    title: "Spanish speaker who answers once in English",
+    goal: [
+      "You'd rather speak Spanish. Start by asking, in Spanish: \"Hola, ¿habla español?\"",
+      "Speak Spanish. You want someone to fix a dripping kitchen tap. Take the first time they offer on the next business day.",
+      "When they ask for your name, answer in English, exactly: \"Okay, thanks. It's Sami Khoury.\" After that, speak only Spanish again (spell the surname K-H-O-U-R-Y if they ask).",
+      "When it's booked, say goodbye in Spanish.",
+    ].join("\n"),
+    maxTurns: 24,
+    expect: { books: true, finalActive: 1, language: "es" },
+  },
+  {
     id: "S6",
     title: "Message for Dave, then goodbye",
     goal: [

@@ -160,6 +160,21 @@ const UNSPOKEN_MARKERS = Object.freeze({
 const MARKER_SETS = [...Object.entries(CALLER_MARKERS), ...Object.entries(UNSPOKEN_MARKERS)].map(([code, words]) => /** @type {[string, Set<string>]} */ ([code, new Set(words)]));
 /** English words that say the caller is speaking English after all. */
 const ENGLISH_MARKERS = new Set(["the", "you", "your", "i", "i'm", "i'd", "i've", "i'll", "my", "me", "is", "are", "am", "was", "have", "has", "can", "could", "would", "do", "does", "did", "please", "thanks", "thank", "hello", "hi", "yes", "yeah", "need", "want", "what", "when", "how", "where", "and", "to", "of", "it", "that", "this", "with", "for", "on", "in", "at", "speak", "like", "booking", "book", "appointment", "name", "number", "okay", "ok", "not", "just", "one", "there", "here", "be", "will", "it's", "that's", "don't", "can't", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "morning", "afternoon", "today", "tomorrow"]);
+/** Phone test F9: the English words everyone uses, whatever language they speak ("Okay, thanks"). */
+const ENGLISH_COURTESY = new Set(["okay", "ok", "thanks", "thank", "yes", "yeah", "please", "hello", "hi"]);
+/**
+ * Phone test F9 (security review): English words that are everyday words of the
+ * line's own language, never counted as English on that line: "Ich will am Montag
+ * in der Früh kommen" is German, "Het lek is in de badkamer en het was erg" Dutch.
+ * @type {Readonly<Record<string, ReadonlySet<string>>>}
+ */
+const ENGLISH_LOOKALIKES = Object.freeze({
+  es: new Set(["me", "has"]),
+  fr: new Set(["on", "me"]),
+  de: new Set(["will", "am", "in", "was", "name"]),
+  it: new Set(["i", "in", "me", "do"]),
+  nl: new Set(["is", "in", "was", "me", "of"]),
+});
 /** Kana themselves (Script, not Script_Extensions: 。、「」 are shared with Chinese). */
 const KANA = /[\p{sc=Hiragana}\p{sc=Katakana}]/gu;
 
@@ -179,7 +194,7 @@ function detectCallerLanguage(text) {
   const { english, scores } = markerCounts(text);
   const [best, score] = scores[0];
   const runnerUp = scores[1][1];
-  if (score < 3 || score < runnerUp + 2 || english * 3 > score) return null;
+  if (score < 3 || score < runnerUp + 2 || english.length * 3 > score) return null;
   return Object.prototype.hasOwnProperty.call(CALLER_MARKERS, best) ? best : null;
 }
 
@@ -188,23 +203,28 @@ function detectCallerLanguage(text) {
  * speaking English again. The model answered "No, I just want to check if you
  * speak any other languages" in English, never calling set_language, and the
  * Spanish voice read the English out. Clearly means at least four words, three
- * of them everyday English ones, and at least three times as many English ones
- * as any other language's: "Okay, thank you" and "Sí, thank you, gracias" aren't.
+ * of them everyday English ones besides the courtesies anyone uses ("okay",
+ * "thanks") and the line language's own look-alikes, and at least three times as
+ * many as any other language's: "Okay, thanks. It's Sami Khoury." and "Sí, thank
+ * you, gracias" aren't.
  * @param {unknown} text - the caller's words
+ * @param {string} [language] - the line's language now
  * @returns {boolean}
  */
-function detectCallerEnglish(text) {
+function detectCallerEnglish(text, language) {
   if (typeof text !== "string" || !text.trim()) return false;
+  const lookalikes = typeof language === "string" && Object.hasOwn(ENGLISH_LOOKALIKES, language) ? ENGLISH_LOOKALIKES[language] : null;
   const { words, english, scores } = markerCounts(text);
+  const plain = english.filter((w) => !ENGLISH_COURTESY.has(w) && !lookalikes?.has(w)).length;
   const other = scores[0][1];
-  return words >= 4 && english >= 3 && other * 3 <= english;
+  return words >= 4 && plain >= 3 && other * 3 <= plain;
 }
 
 /**
- * The everyday words in a caller's text: how many words it has, how many distinct
- * English ones, and each other language's count, best first.
+ * The everyday words in a caller's text: how many words it has, its distinct
+ * everyday English ones, and each other language's count, best first.
  * @param {string} text
- * @returns {{ words: number, english: number, scores: Array<[string, number]> }}
+ * @returns {{ words: number, english: string[], scores: Array<[string, number]> }}
  */
 function markerCounts(text) {
   let total = 0;
@@ -223,12 +243,13 @@ function markerCounts(text) {
   }
   const count = (/** @type {Set<string>} */ found, /** @type {Set<string>} */ set) => [...found].filter((t) => set.has(t)).length;
   const scores = MARKER_SETS.map(([code, set]) => /** @type {[string, number]} */ ([code, count(words, set)])).sort((a, b) => b[1] - a[1]);
-  return { words: total, english: count(englishWords, ENGLISH_MARKERS), scores };
+  return { words: total, english: [...englishWords].filter((t) => ENGLISH_MARKERS.has(t)), scores };
 }
 
 module.exports = {
   detectCallerLanguage,
   detectCallerEnglish,
+  ENGLISH_LOOKALIKES,
   FAST_LANGUAGES,
   FLUX_MULTI_MODEL,
   ENGLISH_FALLBACK_VOICE,

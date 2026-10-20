@@ -21,6 +21,7 @@ const {
   LANGUAGE_UNHEARD_MESSAGE,
   detectCallerLanguage,
   detectCallerEnglish,
+  ENGLISH_LOOKALIKES,
 } = require("../lib/fast-languages");
 
 describe("FAST_LANGUAGES: what Flux Multilingual hears and Aura-2 speaks", () => {
@@ -231,7 +232,6 @@ describe("detectCallerEnglish (phone test F9: back in English, the caller heard 
     "What time is available today?",
     "The appointment is for tomorrow at two.",
     "I'm sorry. Can you repeat that again, please?",
-    "Okay, thank you very much.",
     "My name is Juan García.",
     "Yes, I want to book 明日",
   ]) {
@@ -239,8 +239,11 @@ describe("detectCallerEnglish (phone test F9: back in English, the caller heard 
   }
 
   for (const text of [
-    // too short to tell: a Spanish caller says these too
+    // too short to tell, or only the courtesies anyone uses: a Spanish caller says these too
     "Okay, thank you.",
+    "Okay, thank you very much.",
+    "Okay, thanks. It's Sami Khoury.",
+    "Thank you so much, have a good day",
     "Thank you very much.",
     "Yes, please.",
     "English, please.",
@@ -279,6 +282,37 @@ describe("detectCallerEnglish (phone test F9: back in English, the caller heard 
   ]) {
     it(`${JSON.stringify(text)} is not clearly English`, () => assert.equal(detectCallerEnglish(text), false));
   }
+
+  it("the courtesies anyone uses (okay, ok, thanks, thank, yes, yeah, please, hello, hi) don't count toward English", () => {
+    assert.equal(detectCallerEnglish("Okay, yes, thanks, please, hello, hi, yeah, ok, thank"), false);
+    assert.equal(detectCallerEnglish("Okay thanks, so I can see you"), true); // i, can, you
+    assert.equal(detectCallerEnglish("Okay thanks, so I can see"), false, "two besides the courtesies");
+  });
+
+  it("security review: the line's own words that look English never count there", () => {
+    for (const [language, text] of [
+      ["de", "Ich will am Montag in der Früh kommen"],
+      ["de", "Was will er am Montag in der Werkstatt"],
+      ["nl", "Het lek is in de badkamer en het was erg"],
+      ["it", "I tubi in cucina, me lo può dire"],
+    ]) {
+      assert.equal(detectCallerEnglish(text, language), false, `${language}: ${text}`);
+    }
+    assert.equal(detectCallerEnglish("No. I just want to check if you speak any other languages.", "de"), true, "real English still is");
+    assert.equal(detectCallerEnglish("No. I just want to check if you speak any other languages.", "es"), true);
+  });
+
+  it("each look-alike counts as English everywhere but on its own language's line", () => {
+    for (const [language, words] of Object.entries(ENGLISH_LOOKALIKES)) {
+      for (const word of words) {
+        const text = `${word} you can xyz`;
+        assert.equal(detectCallerEnglish(text, language), false, `${language}: ${word}`);
+        assert.equal(detectCallerEnglish(text, "ja"), true, `ja: ${word}`);
+        assert.equal(detectCallerEnglish(text), true, `no language: ${word}`);
+      }
+    }
+    assert.deepEqual(Object.keys(ENGLISH_LOOKALIKES).sort(), ["de", "es", "fr", "it", "nl"]);
+  });
 
   it("the edges: four words with three English ones is enough; three words or two English ones are not", () => {
     assert.equal(detectCallerEnglish("Can you hear this"), true); // can, you, this

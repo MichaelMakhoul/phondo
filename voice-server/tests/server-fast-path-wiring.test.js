@@ -3893,6 +3893,21 @@ describe("SCRUM-594 (F5): the call's languages on the fast path", () => {
     }
   });
 
+  it("phone test F9 (security review): a German line's own sentence never reads as English, however English its words look", async () => {
+    const h = makeFast({ steps: [
+      { tools: [{ name: "set_language", args: { language: "de" } }] }, { sentences: ["Natürlich."], content: "Natürlich." },
+      { sentences: ["Gern, am Montag."], content: "Gern, am Montag." },
+    ] });
+    const s = h.start(langSession());
+    h.fluxOpens();
+    await h.handleUserSpeech(s, h.twilioWs, "Sprechen Sie Deutsch?");
+    await h.handleUserSpeech(s, h.twilioWs, "Ich will am Montag in der Früh kommen");
+    assert.equal(s.fastLanguage, "de");
+    assert.deepEqual(voicesSpoken(h).at(-1), ["Gern, am Montag.", "aura-2-elara-de"]);
+    clearTimeout(s._speakingTimeout);
+    h.closeFastPath(s);
+  });
+
   it("phone test F9: a draft written in the old language is dropped; the reply is written after the switch, in English", async () => {
     const h = spanishFirst([{ sentences: ["Claro que sí."], content: "Claro que sí." }, { sentences: ["Sure, here they are."], content: "Sure, here they are." }]);
     const s = h.start(langSession());

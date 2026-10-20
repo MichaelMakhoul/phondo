@@ -3973,7 +3973,7 @@ async function switchToCallerLanguage(session, transcript) {
  * @returns {boolean} whether the call switched
  */
 function switchCallerBackToEnglish(session, transcript) {
-  if (!detectCallerEnglish(transcript)) return false;
+  if (!detectCallerEnglish(transcript, session.fastLanguage)) return false;
   const plan = planLanguageSwitch(session, "en");
   if (!plan.changed || !switchFastLanguageStreams(session, plan)) return false;
   recordLanguageSwitch(session, plan);
