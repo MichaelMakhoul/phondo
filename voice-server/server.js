@@ -18,6 +18,7 @@ const { CallSession } = require("./call-session");
 const { openDeepgramStream, transcribeRecording } = require("./services/deepgram-stt");
 const { getChatResponse, streamChatResponse, LLM_PROVIDER, DEFAULT_MODEL } = require("./services/openai-llm");
 const { synthesizeSpeech, chunkAudioForTwilio } = require("./services/deepgram-tts");
+const { boostAura } = require("./lib/aura-gain");
 const { loadCallContext, loadTestCallContext, loadScheduleSnapshot } = require("./lib/call-context");
 const { buildSystemPrompt, getGreeting, buildLiveScheduleSection } = require("./lib/prompt-builder");
 const scheduleCache = require("./lib/schedule-cache");
@@ -5949,7 +5950,7 @@ function armFastFlushWatchdog(session, delayMs) {
 function onFastAudio(session, audio) {
   const state = session.fastState;
   if (!state || state.closed || !session.fastPlayer) return;
-  session.fastPlayer.push(audio);
+  session.fastPlayer.push(boostAura(audio)); // phone test F7: Aura is quieter than line level (lib/aura-gain.js)
   session.isSpeaking = true;
   state.unmarked = true;
   state.presumedIdle = false;

@@ -27,6 +27,7 @@ const util = require("node:util");
 const { CallSession } = require("../call-session");
 const toolExecutor = require("../services/tool-executor");
 const { chunkAudioForTwilio } = require("../services/deepgram-tts");
+const { boostAura } = require("../lib/aura-gain");
 const { forwardingFallbackEligible } = require("../lib/transfer-eligibility");
 const { buildOwnerTools } = require("../lib/owner-tools");
 const { runOwnerToolCall, OWNER_MAX_TOOL_CALLS, ownerToolLoopReply, buildOwnerCallSummary, settleOwnerToolRuns } = require("../lib/owner-tool-runner");
@@ -236,6 +237,7 @@ function makeFast(o = {}) {
       return Buffer.alloc(o.restBytes ?? 800, 0x7f);
     },
     chunkAudioForTwilio,
+    boostAura,
     generateHoldAudio: () => (o.holdAudio ? Buffer.alloc(320, 0x55) : null),
     // ── the fast path ──
     openFluxStream: (apiKey, callbacks, options) => {
@@ -653,6 +655,7 @@ describe("SCRUM-594 4.8.1-4.8.2: greeting, disclosure and media on the fast path
         greetingAudioPromise: Promise.resolve(greetingAudio),
         greeting: "Thanks for calling!",
         chunkAudioForTwilio,
+    boostAura,
         WebSocket: { OPEN: 1 },
         sendTTS: h.sendTTS,
         sendRestTTS: h.sendRestTTS,
@@ -962,6 +965,20 @@ describe("SCRUM-594 4.8.4: flush points", () => {
     await h.handleUserSpeech(s, h.twilioWs, "Great, thanks for that.");
     assert.ok(a.spoken.includes("Anything else?"));
     assert.equal(h.lines.filter((l) => l.includes("[FastPath] Aura flush refused")).length, 1);
+    h.closeFastPath(s);
+  });
+
+  it("phone test F7: Aura's audio reaches Twilio boosted to line level (lib/aura-gain.js)", async () => {
+    const h = makeFast();
+    const s = h.start(makeSession());
+    await h.sendTTS(s, h.twilioWs, "Sure, Tuesday at ten.");
+    h.fastFlush(s);
+    const before = h.twilio("media").length;
+    h.audio(1);
+    const sent = Buffer.concat(h.twilio("media").slice(before).map((m) => Buffer.from(m.media.payload, "base64")));
+    assert.equal(sent.length, 320, "both frames of the 40 ms chunk went out");
+    assert.deepEqual(sent, boostAura(FRAME));
+    assert.notDeepEqual(sent, FRAME, "not the raw bytes");
     h.closeFastPath(s);
   });
 
