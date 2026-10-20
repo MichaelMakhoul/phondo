@@ -574,6 +574,7 @@ Watch for:
 | Kill all eval overrides | `fly secrets unset TEST_PIPELINE_OVERRIDES -a phondo-voice` |
 | Demo line on the fast classic pipeline (SCRUM-594) | `fly secrets set DEMO_LINE_PIPELINE=classic-fast -a phondo-voice` (restarts the machine: see [Fast classic pipeline](#fast-classic-pipeline-scrum-594)) |
 | Demo line back to `VOICE_PIPELINE` (SCRUM-594 kill switch) | `fly secrets unset DEMO_LINE_PIPELINE -a phondo-voice` |
+| Aura voice louder / quieter, or the boost off (SCRUM-594, phone test F7) | `fly secrets set AURA_GAIN_DB=8 -a phondo-voice` (0-12 dB, default 6); off: `AURA_GAIN_DB=off` |
 | Revert the voice model (SCRUM-588) | `fly secrets set GEMINI_LIVE_MODEL=models/gemini-3.1-flash-live-preview -a phondo-voice` |
 | Revert post-call analysis / Tier-2 validator models | `fly secrets set ANALYSIS_MODEL=gpt-4.1-mini VALIDATOR_MODEL=claude-haiku-4-5-20251001 -a phondo-voice` |
 | Per-number AI off (calls forward instead) | `phone_numbers.ai_enabled=false` in DB / dashboard toggle |

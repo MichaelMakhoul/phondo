@@ -655,7 +655,6 @@ describe("SCRUM-594 4.8.1-4.8.2: greeting, disclosure and media on the fast path
         greetingAudioPromise: Promise.resolve(greetingAudio),
         greeting: "Thanks for calling!",
         chunkAudioForTwilio,
-    boostAura,
         WebSocket: { OPEN: 1 },
         sendTTS: h.sendTTS,
         sendRestTTS: h.sendRestTTS,
@@ -696,6 +695,8 @@ describe("SCRUM-594 4.8.1-4.8.2: greeting, disclosure and media on the fast path
     const h = makeFast();
     const s = h.start(makeSession());
     await sendGreeting(h, s, { disclosureAudio: Buffer.alloc(320, 0x22) });
+    const firstBytes = h.twilio("media").map((m) => Buffer.from(m.media.payload, "base64")[0]);
+    assert.ok(firstBytes.includes(0x22) && firstBytes.every((b) => b === 0x22 || b === 0x11), "pre-synthesised audio goes out as synthesizeSpeech returned it (no second gain)");
     assert.deepEqual(h.marks(), ["tts-done", "fast-disclosure", "tts-done"]);
     assert.equal(s.recordingDisclosurePlayed, true);
     assert.equal(s.fastState.disclosureActive, true);
@@ -968,6 +969,11 @@ describe("SCRUM-594 4.8.4: flush points", () => {
     h.closeFastPath(s);
   });
 
+  it("phone test F7 (test review): server.js imports the boost it calls", () => {
+    assert.match(src, /\nconst \{ boostAura \} = require\("\.\/lib\/aura-gain"\);\n/);
+    assert.match(src, /session\.fastPlayer\.push\(boostAura\(audio\)\);/);
+  });
+
   it("phone test F7: Aura's audio reaches Twilio boosted to line level (lib/aura-gain.js)", async () => {
     const h = makeFast();
     const s = h.start(makeSession());
@@ -979,6 +985,24 @@ describe("SCRUM-594 4.8.4: flush points", () => {
     assert.equal(sent.length, 320, "both frames of the 40 ms chunk went out");
     assert.deepEqual(sent, boostAura(FRAME));
     assert.notDeepEqual(sent, FRAME, "not the raw bytes");
+    h.closeFastPath(s);
+  });
+
+  it("phone test F7 (test review): every Aura frame is boosted whatever its size, and in every utterance (not just the first frame)", async () => {
+    const h = makeFast();
+    const s = h.start(makeSession());
+    const aura = () => h.lastAura().options;
+    // The frame sizes Aura really sends (290 / 320 / 30 bytes); together 960 bytes = 6 whole Twilio frames.
+    const frames = [Buffer.alloc(290, 0x7e), Buffer.alloc(320, 0x8a), Buffer.alloc(30, 0x7d), Buffer.alloc(320, 0xa0)];
+    const sentSince = (before) => Buffer.concat(h.twilio("media").slice(before).map((m) => Buffer.from(m.media.payload, "base64")));
+    for (const utterance of [1, 2]) {
+      await h.sendTTS(s, h.twilioWs, `Sure, part ${utterance}.`);
+      const seq = h.fastFlush(s);
+      const before = h.twilio("media").length;
+      for (const frame of frames) aura().onAudio(frame);
+      assert.deepEqual(sentSince(before), boostAura(Buffer.concat(frames)), `utterance ${utterance}`);
+      aura().onFlushed(seq); // Aura is done: the utterance is marked and the next one starts clean
+    }
     h.closeFastPath(s);
   });
 

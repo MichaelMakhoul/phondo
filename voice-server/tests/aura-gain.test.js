@@ -28,7 +28,7 @@ describe("aura-gain — phone test F7 (the voice was too quiet to follow)", () =
     delete process.env.AURA_GAIN_DB;
     assert.equal(auraGainDb(), DEFAULT_GAIN_DB);
     assert.equal(DEFAULT_GAIN_DB, 6);
-    for (const [raw, want] of [["", 6], ["  ", 6], ["4", 4], ["0", 0], ["-3", 0], ["20", 12], ["7.5", 7.5], ["loud", 6]]) {
+    for (const [raw, want] of [["", 6], ["  ", 6], ["4", 4], ["0", 0], ["-3", 0], ["20", 12], ["7.5", 7.5], ["loud", 6], ["off", 0], ["OFF", 0], [" false ", 0], ["none", 0], ["disabled", 0], ["no", 0]]) {
       process.env.AURA_GAIN_DB = raw;
       assert.equal(auraGainDb(), want, JSON.stringify(raw));
     }
@@ -102,10 +102,84 @@ describe("aura-gain — phone test F7 (the voice was too quiet to follow)", () =
     globalThis.fetch = /** @type {any} */ (async () => ({ ok: true, status: 200, arrayBuffer: async () => raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.length) }));
     try {
       const { synthesizeSpeech } = require("../services/deepgram-tts");
-      const audio = await synthesizeSpeech("KEY", "Thanks for calling.");
+      const audio = await synthesizeSpeech("KEY", "Thanks for calling.", { voice: "aura-2-thalia-en", host: "api.au.deepgram.com" });
       assert.deepEqual(audio, boostAura(raw));
     } finally {
       globalThis.fetch = savedFetch;
     }
+  });
+  it("silent-failure review: any Uint8Array is boosted, not only a Buffer; anything else goes out as it came", () => {
+    delete process.env.AURA_GAIN_DB;
+    const bytes = tone(-21, 160);
+    assert.deepEqual(boostAura(new Uint8Array(bytes)), boostAura(bytes));
+    assert.equal(boostAura(/** @type {any} */ ("not audio")), "not audio");
+    assert.equal(boostAura(/** @type {any} */ (null)), null);
+  });
+
+  it("test review: boostAura sends every byte through the table, in order, whatever the length", () => {
+    delete process.env.AURA_GAIN_DB;
+    const table = gainTable(6);
+    // Frame sizes Aura and Twilio use, plus the edges of Buffer's 4 KB pool.
+    for (const n of [1, 2, 30, 159, 160, 161, 290, 320, 4095, 4096, 4097]) {
+      const input = Buffer.from(Array.from({ length: n }, (_, i) => (i * 37 + 11) & 0xff));
+      const out = boostAura(input);
+      assert.equal(out.length, n);
+      for (let i = 0; i < n; i++) assert.equal(out[i], table[input[i]], `byte ${i} of ${n}`);
+    }
+    const everyCode = Buffer.from(Array.from({ length: 256 }, (_, i) => i));
+    assert.deepEqual([...boostAura(everyCode)], [...table], "all 256 codes");
+  });
+
+  it("test review: below the knee a sample is only scaled: every quiet code comes out gain x louder, to within one mulaw step", () => {
+    for (const db of [3, 6, 9, 12]) {
+      const table = gainTable(db);
+      const gain = 10 ** (db / 20);
+      for (let code = 0; code < 256; code++) {
+        const linear = Math.abs(decodeMulaw(code)) * gain;
+        if (linear > 0.5 * 32635) continue; // the limiter's own test covers what is above
+        const out = Math.abs(decodeMulaw(table[code]));
+        assert.ok(Math.abs(out - linear) <= 0.07 * linear + 8, `${db} dB, code ${code}: ${out} vs plain gain ${linear.toFixed(0)}`);
+      }
+    }
+  });
+
+  it("test review: a boost never makes any code quieter, and silence stays silent", () => {
+    for (const db of [3, 6, 12]) {
+      const table = gainTable(db);
+      for (let code = 0; code < 256; code++) {
+        assert.ok(Math.abs(decodeMulaw(table[code])) >= Math.abs(decodeMulaw(code)), `${db} dB, code ${code}`);
+      }
+    }
+    delete process.env.AURA_GAIN_DB;
+    assert.deepEqual(boostAura(Buffer.alloc(320, 0xff)), Buffer.alloc(320, 0xff), "positive zero");
+    assert.equal(decodeMulaw(boostAura(Buffer.alloc(1, 0x7f))[0]) + 0, 0, "negative zero");
+  });
+
+  it("test review: AURA_GAIN_DB reaches the audio: 3, 9 and 12 dB, and the next frame follows a change", () => {
+    const quiet = tone(-30); // +12 dB still sits far below the knee
+    const base = levelDb(quiet);
+    for (const db of [3, 9, 12, 6, 3]) {
+      process.env.AURA_GAIN_DB = String(db);
+      const got = levelDb(boostAura(quiet)) - base;
+      assert.ok(Math.abs(got - db) < 0.5, `${db} dB asked, ${got.toFixed(2)} dB heard`);
+    }
+  });
+
+  it("test review: a non-numeric AURA_GAIN_DB warns once, not once per frame", () => {
+    const modPath = require.resolve("../lib/aura-gain");
+    delete require.cache[modPath]; // a fresh copy: its warn-once flag starts clear
+    const fresh = require("../lib/aura-gain");
+    const warnings = [];
+    const realWarn = console.warn;
+    console.warn = (...args) => warnings.push(args.join(" "));
+    try {
+      process.env.AURA_GAIN_DB = "loud";
+      for (let frame = 0; frame < 50; frame++) fresh.boostAura(Buffer.alloc(160, 0x7e));
+    } finally {
+      console.warn = realWarn;
+      delete require.cache[modPath];
+    }
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /AURA_GAIN_DB/);
   });
 });
