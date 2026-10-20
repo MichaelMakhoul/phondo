@@ -196,6 +196,11 @@ describe("CallSession.bufferTranscript — phone test F8", () => {
     assert.deepEqual(flushed.map((f) => f.text), ["0412 555. Can you hear me?"]);
   });
 
+  it("verification: \"Sorry? Are you there?\" after a piece of a number is a line check", async () => {
+    const flushed = await buffer("phone", ["0412 555.", ["Sorry? Are you there?", 300]], 200, "What's the best number to reach you on?", { wholeTurn: true });
+    assert.deepEqual(flushed.map((f) => f.text), ["0412 555. Sorry? Are you there?"]);
+  });
+
   it("re-review: the ways the AI asks for both names", () => {
     const asked = (said) => {
       const s = new CallSession("both-names-phrasing");

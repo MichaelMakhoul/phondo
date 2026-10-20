@@ -341,7 +341,9 @@ describe("isLineCheck — phone test F8 review", () => {
       "¿Bueno?", "¿Me escuchas bien?", "No te escucho.",
       // a filler between checks ("Hello? Sorry, can you hear me?")
       "Hello? Sorry, can you hear me?", "Hello? Oh, are you there?", "Hola, perdón, ¿me escuchas?", "Hello, sorry, is anyone there?", "Hello? Um, hello?",
-      "Are you there? Sorry, hello?", "Can you hear me? Um, hello?"]) {
+      "Are you there? Sorry, hello?", "Can you hear me? Um, hello?",
+      // an apology with a "?" leads a check too
+      "Sorry? Are you there?", "Sorry? Hello?", "Excuse me? Can you hear me?", "¿Perdón? ¿Me escuchas?", "Hello? Sorry? Can you hear me?"]) {
       assert.equal(isLineCheck(said), true, said);
     }
     for (const said of ["Sorry?", "What?", "Can you repeat that?", "Hello, my name is Michael", "Hello, it's oh four one two", "Michael", "", null, ["Hello?"],
@@ -349,7 +351,7 @@ describe("isLineCheck — phone test F8 review", () => {
       "Hello.", "Hello", "Hola.", "Oh, hello.", "Hi, hello.", "¡Hola!",
       "Bueno.", "Bueno, mi nombre es Ana", "Is anyone home on Tuesday", "Hello, it is Michael",
       // a filler never ends the turn ("oh" may be a zero)
-      "Hello? Oh.", "Hello? Yeah, Michael Makhoul.", "What? No, oh four one two"]) {
+      "Hello? Oh.", "Hello? Yeah, Michael Makhoul.", "What? No, oh four one two", "Sorry, hello.", "Sorry? Oh four one two"]) {
       assert.equal(isLineCheck(said), false, String(said));
     }
   });

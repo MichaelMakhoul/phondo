@@ -177,34 +177,39 @@ const REPEAT_PHRASES = [
   "c[oó]mo", "qu[eé]", "mande", "otra vez",
   "(?:me )?(?:lo )?(?:puede|podr[ií]a) repetir(?:lo)?", "rep[ií]ta(?:lo|me)?", "no (?:le |te )?(?:escuch[eé]|entend[ií]|o[ií])",
 ];
-// "say": "say again", and a stutter ("Say say again?", phone test F8). A word with a "?" after
-// it is a phrase, without one a filler: one way to read each word keeps the match from
-// backtracking exponentially (with a filler between phrases, "Sorry? Sorry? …" doubled per word).
+// Each word must read ONE way, or the match backtracks exponentially (with fillers between
+// phrases, "Sorry? Sorry? …" doubled the work per word). "say" is a filler: "say again", and a
+// stutter ("Say say again?", phone test F8).
+const FILLER_WORDS = "oh|um|uh|er|ah|hey|hi|yeah|no|say|sí|si";
+const APOLOGIES = "sorry|excuse me|perd[oó]n|disculpe";
 const NOT_ASKED = "(?!\\s*\\?)";
-const REPAIR_FILLER = `(?:oh|um|uh|er|ah|sorry${NOT_ASKED}|excuse me${NOT_ASKED}|perd[oó]n${NOT_ASKED}|disculpe${NOT_ASKED}|hey|hi|yeah|no|say|sí|si)`;
+// Among the repairs an apology with a "?" is a phrase ("Sorry?"), so as a filler it has none.
+const REPAIR_FILLER = `(?:${FILLER_WORDS}|(?:${APOLOGIES})${NOT_ASKED})`;
+// No apology is a line-check phrase, so there it may lead either way ("Sorry? Are you there?").
+const LINE_CHECK_FILLER = `(?:${FILLER_WORDS}|${APOLOGIES})`;
 // No word of the tail is also a phrase, for the same reason.
 const REPAIR_TAIL = "(?:please|mate|por favor)";
 /**
  * A whole turn of `phrases`, each optionally led by fillers ("Hello? Sorry, can you hear me?"),
  * with a polite tail ("please"). A filler never ends the turn: "Hello? Oh." may be "oh four …".
  * @param {string[]} phrases
+ * @param {string} filler
  */
-function wholeTurnOf(phrases) {
+function wholeTurnOf(phrases, filler) {
   const any = phrases.join("|");
   const sep = "[\\s,.!?¿¡]+";
-  const fillers = `(?:${REPAIR_FILLER}${sep})*`;
+  const fillers = `(?:${filler}${sep})*`;
   return new RegExp(`^[\\s¿¡]*${fillers}(?:${any})(?:${sep}${fillers}(?:${any}|${REPAIR_TAIL}))*[\\s,.!?]*$`, "i");
 }
-const REPAIR_RE = wholeTurnOf([...REPEAT_PHRASES, ...LINE_CHECK_PHRASES]);
-const LINE_CHECK_RE = wholeTurnOf(LINE_CHECK_PHRASES);
+const REPAIR_RE = wholeTurnOf([...REPEAT_PHRASES, ...LINE_CHECK_PHRASES], REPAIR_FILLER);
+const LINE_CHECK_RE = wholeTurnOf(LINE_CHECK_PHRASES, LINE_CHECK_FILLER);
 // One flat hello and nothing else ("Hello.", "Oh, hello."): a greeting or the start of an answer.
-const FLAT_HELLO_RE = new RegExp(`^[\\s¿¡]*(?:${REPAIR_FILLER}[\\s,.!]+)*(?:hello|hola|al[oó])[\\s,.!]*$`, "i");
+const FLAT_HELLO_RE = new RegExp(`^[\\s¿¡]*(?:${LINE_CHECK_FILLER}[\\s,.!]+)*(?:hello|hola|al[oó])[\\s,.!]*$`, "i");
 const REPAIR_MAX_WORDS = 12;
 
 /**
- * A repair is a few words. The cap also bounds the regexes' backtracking (the fillers overlap
- * the phrases), so it counts words split the way the regexes split them: "sorry,sorry,…" is
- * many words, not one.
+ * A repair is a few words. The cap also bounds the regexes' work on long turns, so it counts
+ * words split the way the regexes split them: "sorry,sorry,…" is many words, not one.
  * @param {string} text
  */
 function fewWords(text) {
