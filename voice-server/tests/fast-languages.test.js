@@ -369,8 +369,8 @@ describe("detectCallerEnglish (phone test F9: back in English, the caller heard 
       assert.equal(detectCallerEnglish(text, language), false, `${language}: ${text}`);
       assert.equal(detectCallerEnglish(text), true, `without the line's language it reads as English: ${text}`);
     }
-    assert.equal(detectCallerEnglish("Can we switch back to English instead of Spanish?", "es"), true, "naming English too: a switch back");
-    assert.equal(detectCallerEnglish("Please say it in Spanish and then in English for my husband", "es"), true, "a request in the line's language that names English too is English");
+    assert.equal(detectCallerEnglish("Can we switch back to English instead of Spanish?", "es"), true, "\"instead of Spanish\" asks for no Spanish: a switch back");
+    assert.equal(detectCallerEnglish("Please say it in Spanish and then in English for my husband", "es"), true, "a request in the line's language that asks for English too is English");
     // re-review: only a request IN the language; a mention or a refusal is English
     for (const text of [
       "No. I just want to check if you speak Spanish.",
