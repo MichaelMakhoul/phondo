@@ -1,9 +1,11 @@
 const { WebSocket } = require("ws");
-const { validateInput, getBufferConfig, extractSpokenDigits, isPlainYes, isRepairRequest, saysPhoneNumber } = require("./lib/input-validators");
+const { validateInput, getBufferConfig, extractSpokenDigits, isPlainYes, isRepairRequest, isLineCheck, saysPhoneNumber } = require("./lib/input-validators");
 const { logTranscript } = require("./lib/log-transcript");
 const { guardWords } = require("./lib/guard-languages");
 
 const MAX_MESSAGES = 21; // system prompt + up to 20 messages (user/assistant turns + tool call/result messages)
+// The AI asking for both names at once (CallSession._lastAiAskedBothNameParts), English and Spanish.
+const BOTH_NAME_PARTS_RE = /\b(?:first and last|full) name\b|\bfirst name and (?:your )?(?:last name|surname)\b|\bname and surname\b|\bnombre completo\b|\bnombre y apellidos?\b/i;
 /**
  * SCRUM-594 (gate review): the AI's own words claiming it booked something ("I've
  * booked you in…", "I've also booked…", "we've scheduled you in…", "I've booked
@@ -826,8 +828,9 @@ class CallSession {
    * get longer debounce and max-wait to avoid cutting off mid-dictation.
    * @param {string} text
    * @param {(combined: string, inputType: string) => void} callback
-   * @param {{ wholeTurn?: boolean }} [opts] - wholeTurn: `text` is the caller's whole turn (a Flux
-   *   final), not a piece of one (a Nova final, where "Sorry," may lead into the answer)
+   * @param {{ wholeTurn?: boolean }} [opts] - wholeTurn: `text` is a Flux final, which ends where
+   *   Flux's model judged the caller done (it may still split a dictation, which the buffer merges);
+   *   a Nova final can stop mid-sentence ("Sorry," leading into the answer)
    */
   bufferTranscript(text, callback, opts = {}) {
     const config = getBufferConfig(this._expectedInputType);
@@ -841,8 +844,10 @@ class CallSession {
       this._flushAndReset();
       return;
     }
-    // SCRUM-594 (phone test F8): a whole turn of "Sorry?" or "Hello?" is never the data being waited for.
-    if (opts.wholeTurn === true && this._utteranceBuffer.length === 1 && isRepairRequest(text)) {
+    // SCRUM-594 (phone test F8): "Sorry?" or "Hello?" is never the data being waited for. A
+    // repeat request counts only as the buffer's first piece (inside a dictation, "sorry" is a
+    // self-correction); a line check means the caller has heard nothing, so whatever is held goes now.
+    if (opts.wholeTurn === true && (isLineCheck(text) || (this._utteranceBuffer.length === 1 && isRepairRequest(text)))) {
       console.log(`[Buffer] Asked to repeat (or "hello?") for type="${this._expectedInputType}" — flushing immediately`);
       this._flushAndReset();
       return;
@@ -873,7 +878,7 @@ class CallSession {
           console.log(`[Buffer] Natural language response for type="${this._expectedInputType}" — flushing immediately`);
           this._flushAndReset();
         } else {
-          const { complete, reason } = validateInput(this._expectedInputType, combined);
+          const { complete, reason } = validateInput(this._expectedInputType, combined, { bothNameParts: this._lastAiAskedBothNameParts() });
           if (complete) {
             console.log(`[Buffer] Input validated (${this._expectedInputType}): ${reason}`);
             this._flushAndReset();
@@ -887,6 +892,21 @@ class CallSession {
         this._flushAndReset();
       }
     }, config.debounceMs);
+  }
+
+  /**
+   * Did the AI, since the caller last spoke, ask for the first and last name together ("Can
+   * I grab your first and last name?")? Then one word is half the answer, and the buffer
+   * waits for the rest. SCRUM-594 (phone test F8, code review).
+   * @returns {boolean}
+   */
+  _lastAiAskedBothNameParts() {
+    for (let i = this.fullTranscriptMessages.length - 1; i >= 0; i--) {
+      const m = this.fullTranscriptMessages[i];
+      if (m.role === "user") return false;
+      if (m.role === "assistant" && typeof m.content === "string" && BOTH_NAME_PARTS_RE.test(m.content)) return true;
+    }
+    return false;
   }
 
   /**

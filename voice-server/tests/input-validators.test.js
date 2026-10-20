@@ -1,6 +1,6 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
-const { extractSpokenDigits, validateInput, getBufferConfig, BUFFER_CONFIGS, isPlainYes, isRepairRequest, saysPhoneNumber } = require("../lib/input-validators");
+const { extractSpokenDigits, validateInput, getBufferConfig, BUFFER_CONFIGS, isPlainYes, isRepairRequest, isLineCheck, saysPhoneNumber } = require("../lib/input-validators");
 
 describe("extractSpokenDigits", () => {
   it("extracts numeric digits", () => {
@@ -135,9 +135,19 @@ describe("validateInput - name", () => {
     assert.equal(result.complete, true);
   });
   it("phone test F8: one whole word is an answer (\"McCook.\" to \"And your last name?\")", () => {
-    for (const said of ["John", "McCook.", "Li", "José", "O'Brien", "M-A-K-H-O-U-L"]) {
+    for (const said of ["John", "McCook.", "Li", "José", "O'Brien", "M-A-K-H-O-U-L", "田中"]) {
       assert.deepEqual(validateInput("name", said), { complete: true, reason: "one whole word" }, said);
     }
+  });
+  it("phone test F8 review: a lead-in waits for the name (\"Yeah.\" … \"Michael Makhoul.\")", () => {
+    for (const said of ["Yeah.", "Sure.", "Okay.", "OK", "Um.", "Umm,", "Oh.", "Well,", "No.", "Sí.", "Vale.", "Bueno."]) {
+      assert.equal(validateInput("name", said).complete, false, said);
+    }
+  });
+  it("phone test F8 review: one word is half the answer when the AI asked for both names", () => {
+    assert.equal(validateInput("name", "Michael.", { bothNameParts: true }).complete, false);
+    assert.equal(validateInput("name", "Michael Makhoul.", { bothNameParts: true }).complete, true);
+    assert.equal(validateInput("name", "Michael.", { bothNameParts: false }).complete, true);
   });
   it("phone test F8: a lone letter is a spelling just begun, and waits", () => {
     for (const said of ["M", "m.", "M,", "É"]) {
@@ -275,14 +285,15 @@ describe("isPlainYes — phone test F6 (gate review)", () => {
 describe("isRepairRequest — phone test F8", () => {
   it("asking to hear it again, or checking the line, and nothing else", () => {
     for (const said of [
-      "Sorry?", "sorry", "Pardon?", "Pardon me?", "What?", "Huh?", "Eh?", "Excuse me?", "Come again?", "Say again?",
+      "Sorry?", "Pardon?", "Pardon me?", "Again?", "Excuse me?", "Excuse me, what did you say?", "What?", "Huh?", "Eh?", "Excuse me?", "Come again?", "Say again?",
       "Say say again?", "Sorry, what?", "Sorry, what was that?", "What did you say?", "What did you just say?",
       "Can you repeat that?", "Can you repeat again?", "Could you repeat that, please?", "Can you please repeat?",
       "Could you say that again?", "Repeat that, please.", "Say it again?", "I didn't catch that.", "Sorry, I didn't hear you.",
       "I missed that.", "One more time?", "Hello?", "Hello? Are you there?", "Are you still there?", "You there?",
       "Oh, sorry?", "Um, sorry, what?", "Yeah, sorry?", "No, sorry, what?", "What? Sorry?",
       "Sorry, can you say that again?", "Sorry, could you repeat the question?",
-      "¿Perdón?", "¿Cómo?", "¿Qué?", "¿Me lo puede repetir?", "¿Puede repetir, por favor?", "Repítalo, por favor.", "No le escuché.", "¿Hola?", "¿Está ahí?",
+      "¿Perdón?", "Perdón, ¿qué?", "¿Cómo?", "¿Qué?", "¿Me lo puede repetir?", "¿Puede repetir, por favor?", "Repítalo, por favor.", "No le escuché.", "¿Hola?", "¿Aló?", "¿Está ahí?",
+      "Sorry, could you please repeat that again? Hello? Are you still there?", // 12 words: the cap's edge
     ]) {
       assert.equal(isRepairRequest(said), true, said);
     }
@@ -292,20 +303,39 @@ describe("isRepairRequest — phone test F8", () => {
       "Sorry, Michael.", "Sorry, my name is Michael", "Hello, my name is Michael", "Michael", "McCook.", "Yes.", "No.", "Sure", "Hi",
       "What time?", "What do you need?", "What about 1 PM?", "What a day", "Can you book me in?", "Can you", "Can you repeat my booking details?",
       "Say Michael", "I'm sorry to hear that", "Sorry I'm driving", "It is facing a new existing one.", "One... sorry? What?",
-      "Qué hora tiene?", "Cómo se escribe?", "", "   ", null, 42,
+      "Qué hora tiene?", "Cómo se escribe?", "", "   ", null, 42, ["Sorry?"],
+      // an apology, which may lead into the answer: a bare "sorry" counts only as a question
+      "sorry", "Sorry.", "Oh, sorry.", "Excuse me.", "Perdón.",
+      // "oh" is a zero in a number ("Oh." … "four one two …")
+      "Oh.", "Oh,",
+      "Sorry, could you please repeat that again? Hello? Are you still there? Hello?", // 13 words
     ]) {
       assert.equal(isRepairRequest(said), false, String(said));
     }
   });
   it("security: a long run of fillers is never a repair, and the check stays fast (no regex backtracking blow-up)", () => {
     assert.equal(isRepairRequest("Sorry? ".repeat(13).trim()), false, "over 12 words");
-    for (const unit of ["sorry ", "Sorry, ", "oh sorry ", "Sorry? ", "otra vez ", "say again "]) {
+    // counted the way the regex splits words, not on spaces alone
+    assert.equal(isRepairRequest("Sorry?".repeat(12)), true, "12 words with no spaces: at the cap");
+    assert.equal(isRepairRequest("Sorry?".repeat(13)), false, "13 words with no spaces: over it");
+    for (const unit of ["sorry ", "Sorry, ", "oh sorry ", "Sorry? ", "otra vez ", "say again ", "sorry,", "Sorry?", "sorry,.!?¿¡"]) {
       for (const n of [11, 200]) {
         const started = process.hrtime.bigint();
         isRepairRequest(unit.repeat(n) + "Michael");
         const ms = Number(process.hrtime.bigint() - started) / 1e6;
         assert.ok(ms < 50, `${JSON.stringify(unit)} x${n}: ${ms.toFixed(1)} ms`);
       }
+    }
+  });
+});
+
+describe("isLineCheck — phone test F8 review", () => {
+  it("only a check that the line is alive", () => {
+    for (const said of ["Hello?", "Hello? Hello?", "Hello? Are you there?", "Are you still there?", "You there?", "Anyone there?", "I can't hear you.", "Oh, hello?", "¿Hola?", "¿Aló?", "¿Estás ahí?"]) {
+      assert.equal(isLineCheck(said), true, said);
+    }
+    for (const said of ["Sorry?", "What?", "Can you repeat that?", "Hello, my name is Michael", "Hello, it's oh four one two", "Michael", "", null, ["Hello?"]]) {
+      assert.equal(isLineCheck(said), false, String(said));
     }
   });
 });

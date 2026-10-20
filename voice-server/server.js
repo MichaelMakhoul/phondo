@@ -5606,8 +5606,11 @@ function bufferFastTurn(session, twilioWs, transcript) {
   logTranscript("[STT] Final", transcript);
   session.bufferTranscript(transcript, (combined, inputType) => {
     logTranscript("[STT] Buffered", combined);
+    // Gate C5 (phone test F8 review): flushed behind a turn in flight, it waits in the queue too
+    // (its waited= runs from the caller's last piece, the debounce included).
+    if (session.fastStats?.pending) session.fastStats.pending.queued = session.isProcessing;
     session.queueOrProcess(combined, (text) => handleUserSpeech(session, twilioWs, text, inputType));
-  }, { wholeTurn: true }); // a Flux final is the caller's whole turn
+  }, { wholeTurn: true }); // Flux's model ended this turn; a Nova final can stop mid-sentence
 }
 
 /**

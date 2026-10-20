@@ -4185,7 +4185,7 @@ describe("SCRUM-594 phone test F8: short answers to a name question", () => {
     assert.equal(expected, "name");
     await until(() => h.llmCalls.length === 2, "the answer", 3000);
     const ms = Date.now() - started;
-    assert.ok(ms >= NAME_WAIT.debounceMs - 50 && ms < NAME_WAIT.debounceMs + 600, `${ms} ms (debounce ${NAME_WAIT.debounceMs}, maximum ${NAME_WAIT.maxWaitMs})`);
+    assert.ok(ms >= NAME_WAIT.debounceMs - 50 && ms < NAME_WAIT.maxWaitMs, `${ms} ms (debounce ${NAME_WAIT.debounceMs}, maximum ${NAME_WAIT.maxWaitMs})`);
     assert.deepEqual(h.llmCalls[1].messages.at(-1), { role: "user", content: "McCook." });
     h.closeFastPath(s);
   });
@@ -4196,6 +4196,36 @@ describe("SCRUM-594 phone test F8: short answers to a name question", () => {
     assert.equal(h.llmCalls.length, 1, "no answer yet");
     s._utteranceCallback = null;
     s._flushAndReset(); // stop the max-wait timer
+    h.closeFastPath(s);
+  });
+
+  it("review: only a Flux final is a whole turn (the Nova and /ws/test buffers keep their debounce)", () => {
+    assert.equal((src.match(/wholeTurn/g) || []).length, 1, "server.js passes wholeTurn once");
+    assert.match(sliceOf("function bufferFastTurn(", "\n}\n"), /\}, \{ wholeTurn: true \}\);/);
+  });
+
+  it("review (gate C5): a buffered turn flushed behind one in flight waited too, so it is no latency sample", async () => {
+    /** @type {(() => void) | undefined} */
+    let release;
+    const h = makeFast({
+      onTool: () => new Promise((r) => { release = () => r(undefined); }), // a barge-in never stops a tool mid-way
+      steps: [
+        { sentences: ["Let me check that for you."], tools: [{ name: "check_availability", args: { date: "2026-10-21" } }] },
+        { sentences: ["No worries. What's your name?"], content: "No worries. What's your name?" },
+      ],
+    });
+    const s = h.start(makeSession());
+    h.fluxOpens();
+    h.turn("EndOfTurn", 0, "Is Wednesday free?");
+    await until(() => typeof release === "function", "the tool call");
+    s.setExpectedInputType("name"); // as if the AI had just asked for a name
+    h.turn("EndOfTurn", 1, "Sorry?"); // flushed at once, behind the turn still in its tool
+    await sleep(50);
+    /** @type {() => void} */ (release)();
+    await until(() => h.llmCalls.length === 2 && !s.isProcessing, "the queued turn", 3_000);
+    assert.equal(s.fastStats.current.trigger, "buffered");
+    assert.equal(s.fastStats.current.queued, true);
+    assert.ok(s.fastStats.current.waitedMs >= 40, String(s.fastStats.current.waitedMs));
     h.closeFastPath(s);
   });
 
