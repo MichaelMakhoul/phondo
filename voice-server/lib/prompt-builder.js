@@ -230,8 +230,9 @@ function buildSchedulingSection(timezone, businessHours, defaultAppointmentDurat
       "",
       "IMPORTANT — PRESENTING AVAILABILITY:",
       "Do NOT list every individual time slot — it sounds robotic and overwhelming on a phone call. Instead, summarize availability naturally:",
-      "- Good: 'We have availability tomorrow morning between 8 and 11, with appointments every 45 minutes. Would morning or later in the day work better for you?'",
-      "- Good: 'The earliest I can get you in is tomorrow at 8:45 AM. Would that work, or would you prefer later in the day?'",
+      "- Good: 'We have times today from 2:30, or tomorrow from 8 to 11, with appointments every 45 minutes. Which would suit you better?'",
+      "- Good: 'The earliest I can get you in is today at 2:30 PM. Would that work, or would another day suit you better?'",
+      "The earliest time is today's first free time while today still has one; only when it has none is it the next open day.",
       "- Bad: 'The available times are 8 AM, 8:45 AM, 9:30 AM, 10:15 AM, 11 AM, 11:45 AM, 12:30 PM...'",
       "Keep it conversational. Mention the appointment duration so the caller understands why slots start at specific times (e.g., 'Appointments are 45 minutes, so the closest to 9 AM would be either 8:45 or 9:30').",
       "If the caller asks for a specific time that falls between slots, briefly explain why and offer the nearest options.",
@@ -1007,6 +1008,72 @@ function getAnySlots(dateSlots) {
 }
 
 /**
+ * SCRUM-594 (F5): the time on the 24-hour clock ("00:32"): just after midnight, the model read
+ * "12:32 AM" as midday and told callers today's morning had passed.
+ * @param {string} timezone
+ * @returns {string}
+ */
+function getCurrentTime24(timezone) {
+  /** @param {string} tz */
+  const format = (tz) => new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: tz }).format(new Date());
+  try {
+    return format(timezone);
+  } catch {
+    return format("UTC");
+  }
+}
+
+/**
+ * SCRUM-594 (F5): is it still before the business opens today (the small hours)? Unknown
+ * hours, or a closed day: no.
+ * @param {Record<string, { open?: string, close?: string, closed?: boolean }>|null|undefined} businessHours
+ * @param {string} dateKey - today in the org's timezone
+ * @param {string} timezone
+ * @returns {boolean}
+ */
+function beforeOpening(businessHours, dateKey, timezone) {
+  if (!businessHours || typeof businessHours !== "object" || isClosedDay(businessHours, dateKey)) return false;
+  const [y, mo, d] = String(dateKey).split("-").map(Number);
+  const weekday = new Intl.DateTimeFormat("en-US", { weekday: "long", timeZone: "UTC" }).format(new Date(Date.UTC(y, mo - 1, d, 12, 0, 0))).toLowerCase();
+  const open = /^(\d{1,2}):(\d{2})/.exec(String(businessHours[weekday]?.open || ""));
+  const now = /^(\d{2}):(\d{2})$/.exec(getCurrentTime24(timezone));
+  if (!open || !now) return false;
+  return Number(now[1]) * 60 + Number(now[2]) < Number(open[1]) * 60 + Number(open[2]);
+}
+
+/**
+ * SCRUM-594 (F5): "YYYY-MM-DD" as "Sunday 18 October 2026" (the date's own weekday, no timezone math).
+ * @param {string} dateKey
+ * @returns {string}
+ */
+function formatLongDate(dateKey) {
+  const [y, mo, d] = String(dateKey).split("-").map(Number);
+  const date = new Date(Date.UTC(y, mo - 1, d, 12, 0, 0));
+  if (Number.isNaN(date.getTime())) return String(dateKey);
+  const part = (/** @type {Intl.DateTimeFormatOptions} */ opts) => new Intl.DateTimeFormat("en-US", { ...opts, timeZone: "UTC" }).format(date);
+  return `${part({ weekday: "long" })} ${d} ${part({ month: "long" })} ${y}`;
+}
+
+/**
+ * SCRUM-594 (F5): is the business closed that day? The same test as getBusinessDates
+ * (lib/call-context.js); no hours on the snapshot means unknown, never closed.
+ * @param {Record<string, { open?: string, close?: string, closed?: boolean }>|null|undefined} businessHours
+ * @param {string} dateKey
+ * @returns {boolean}
+ */
+function isClosedDay(businessHours, dateKey) {
+  if (!businessHours || typeof businessHours !== "object") return false;
+  const [y, mo, d] = String(dateKey).split("-").map(Number);
+  const date = new Date(Date.UTC(y, mo - 1, d, 12, 0, 0));
+  if (Number.isNaN(date.getTime())) return false;
+  const config = businessHours[new Intl.DateTimeFormat("en-US", { weekday: "long", timeZone: "UTC" }).format(date).toLowerCase()];
+  return !config || config.closed === true || !config.open || !config.close;
+}
+
+/** SCRUM-594 (F5): the small hours end at 5 AM: before then "tomorrow morning" from a caller usually means today. */
+const SMALL_HOURS_END = 5;
+
+/**
  * Build a LIVE SCHEDULE section for injection into the system prompt.
  * Uses pre-loaded cached schedule data so the AI can answer availability
  * questions without calling check_availability for today/tomorrow.
@@ -1026,7 +1093,24 @@ function buildLiveScheduleSection(snapshot, todayStr) {
   const lines = [];
 
   lines.push("LIVE SCHEDULE (pre-loaded AGGREGATE availability — sum across ALL practitioners):");
-  lines.push(`Current date: ${todayStr}, Current time: ${currentTime} (${sanitizeForPrompt(timezone)})`); // SCRUM-562: snapshot-sourced free text
+  // SCRUM-594 (phone test F5): the weekday spelled out — given only "2026-10-18" over a
+  // "Tomorrow (Mon, Oct 19)" line, the model called a Sunday "Monday the 18th".
+  lines.push(`Current date: ${formatLongDate(todayStr)} (${todayStr}), Current time: ${currentTime} (${getCurrentTime24(timezone)} on the 24-hour clock) (${sanitizeForPrompt(timezone)})`); // SCRUM-562: snapshot-sourced free text
+  lines.push("Use the weekdays and dates written here; never work out a weekday yourself.");
+  // SCRUM-594 (F5 simulated calls): at 3 AM, "the earliest weekday morning" became
+  // "tomorrow, Tuesday at 9" in 5 of 12 calls with all of Monday free.
+  const todaySlots = dates.includes(todayStr) ? getAnySlots(snapshot.slots[todayStr]) : [];
+  const notOpenYet = todaySlots.length > 0 && beforeOpening(snapshot.businessHours, todayStr, timezone);
+  // Confirmation review: only in the small hours. At 07:30 a caller's "tomorrow" means tomorrow.
+  const earlyHours = notOpenYet && Number(getCurrentTime24(timezone).slice(0, 2)) < SMALL_HOURS_END;
+  if (notOpenYet) {
+    // Until opening (simulated calls at 5:56 AM: "Today's fully booked" in 6 of 33 without it).
+    const weekday = formatLongDate(todayStr).split(" ")[0];
+    const todayFirst = `Offer today's times first, and say the day by name ("${weekday} at ${formatSlotTime(todaySlots[0])}").`;
+    lines.push(earlyHours
+      ? `It's the early hours, before opening: to a caller now, "this morning" and "tomorrow morning" both usually mean today (${formatDateLabel(todayStr, timezone)}). ${todayFirst}`
+      : `Before opening, today's times are the earliest: ${todayFirst}`);
+  }
   lines.push("");
   lines.push("⚠️ IMPORTANT: the times below are AGGREGATE (any-practitioner). If a caller asks for a SPECIFIC practitioner by name, DO NOT use these times. Instead, call `check_availability` with `practitioner_id` set to that practitioner's ID from the PRACTITIONERS ON STAFF list below — this is the ONLY way to see slots that respect that practitioner's personal blocked times (days off, lunch breaks, etc.). Booking with practitioner_id on a day they're blocked WILL fail.");
   lines.push("");
@@ -1035,27 +1119,48 @@ function buildLiveScheduleSection(snapshot, todayStr) {
   const detailedDates = dates.slice(0, 2);
   const summaryDates = dates.slice(2);
 
+  // SCRUM-594 (F5): today always gets a line, and a closed tomorrow too. The snapshot lists
+  // business days only, so a closed day had none and the model filled the gap ("past 2:30
+  // ... booked 9 to 5"). They go in date order, before the business day they precede.
+  const todayEmpty = isClosedDay(snapshot.businessHours, todayStr) ? "CLOSED — not a business day." : "no times left today.";
+  const tomorrowStr = getNextDay(todayStr);
+  /** @type {Array<{ key: string, text: string }>} */
+  const closedLines = [];
+  if (!dates.includes(todayStr)) closedLines.push({ key: todayStr, text: `Today (${formatDateLabel(todayStr, timezone)}): ${todayEmpty}` });
+  if (!dates.includes(tomorrowStr) && isClosedDay(snapshot.businessHours, tomorrowStr)) {
+    closedLines.push({ key: tomorrowStr, text: `${notOpenYet ? "Next day" : "Tomorrow"} (${formatDateLabel(tomorrowStr, timezone)}): CLOSED — not a business day.` });
+  }
+  const flushClosedBefore = (/** @type {string} */ key) => {
+    while (closedLines.length > 0 && closedLines[0].key < key) lines.push(/** @type {{ text: string }} */ (closedLines.shift()).text);
+  };
+
   for (let i = 0; i < detailedDates.length; i++) {
     const dateKey = detailedDates[i];
+    flushClosedBefore(dateKey);
     const slots = getAnySlots(snapshot.slots[dateKey]);
     const label = formatDateLabel(dateKey, timezone);
 
     let dayLabel;
     if (dateKey === todayStr) {
-      dayLabel = `Today (${label})`;
+      // SCRUM-594 (F5): just after midnight the model called today "out since it's late".
+      // Until opening (simulated calls at 5:19 AM still said "Today's out" without it).
+      dayLabel = notOpenYet ? `Today (${label}) — this morning: the business hasn't opened yet, so these are the earliest times of all` : `Today (${label})`;
     } else if (dateKey === getNextDay(todayStr)) {
-      dayLabel = `Tomorrow (${label})`;
+      // Before opening, no "Tomorrow" for the model to anchor "the earliest" on.
+      dayLabel = notOpenYet ? `Next day (${label})` : `Tomorrow (${label})`;
     } else {
       dayLabel = label;
     }
 
     if (slots.length === 0) {
-      lines.push(`${dayLabel}: Fully booked - no slots available.`);
+      lines.push(dateKey === todayStr ? `${dayLabel}: ${todayEmpty}` : `${dayLabel}: Fully booked - no slots available.`);
     } else {
       const times = slots.map(formatSlotTime).filter(Boolean).join(", ");
       lines.push(`${dayLabel}: ${times} (${slots.length} slot${slots.length === 1 ? "" : "s"})`);
     }
   }
+
+  flushClosedBefore("9999-12-31"); // closed days after the detailed ones (a short snapshot)
 
   // Remaining dates get count-only summary
   if (summaryDates.length > 0) {

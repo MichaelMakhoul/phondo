@@ -37,6 +37,14 @@ describe("applyCallerIdPhoneFallback (SCRUM-366)", () => {
     assert.equal("phone" in applyCallerIdPhoneFallback("lookup_appointment", { name: "x" }, CALLER), false);
   });
 
+  it("SCRUM-594 PHASE 2 (B4): defaults a cancel's phone only when the caller opts in (the fast path)", () => {
+    assert.equal(applyCallerIdPhoneFallback("cancel_appointment", { datetime: "x" }, CALLER, { cancel: true }).phone, CALLER);
+    assert.equal(applyCallerIdPhoneFallback("cancel_appointment", { datetime: "x", phone: "0.5" }, CALLER, { cancel: true }).phone, CALLER);
+    assert.equal(applyCallerIdPhoneFallback("cancel_appointment", { phone: "+61399998888" }, CALLER, { cancel: true }).phone, "+61399998888", "a caller-given number is kept");
+    assert.equal("phone" in applyCallerIdPhoneFallback("cancel_appointment", { datetime: "x" }, "anonymous", { cancel: true }), false, "never a withheld ID");
+    assert.equal("phone" in applyCallerIdPhoneFallback("lookup_appointment", { name: "x" }, CALLER, { cancel: true }), false, "lookup stays out");
+  });
+
   it("DOES default phone for reschedule_appointment (SCRUM-377 — prompts identify by 'the same number')", () => {
     const out = applyCallerIdPhoneFallback("reschedule_appointment", { new_datetime: "2026-06-17T10:15:00" }, CALLER);
     assert.equal(out.phone, CALLER);

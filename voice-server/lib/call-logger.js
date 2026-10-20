@@ -70,6 +70,8 @@ async function createCallRecord({ orgId, assistantId, phoneNumberId, callerPhone
  * @param {*} [fields.cleanedTranscript]
  * @param {*} [fields.actionTaken]
  * @param {*} [fields.pipelineFailover] - SCRUM-535: {from, to, reason, model} when the fallback provider served the call
+ * @param {string|null} [fields.pipeline] - SCRUM-594: the pipeline that served a demo-line call ("gemini-live"|"classic"|"classic-fast") → metadata.pipeline; null on every other call
+ * @param {object|null} [fields.fastPath] - SCRUM-594: the fast path's latency summary (turns, eot-to-audio p50/p90, drafts, fallbacks) → metadata.fastPath; null on every other call
  * @param {"owner"|null} [fields.callType] - SCRUM-587: "owner" for an owner-assistant call → metadata.call_type
  * @param {string|null} [fields.ownerAuth] - SCRUM-587: "verified"|"locked"|"failed"|"error" → metadata.owner_auth (also on customer calls that failed the PIN gate)
  */
@@ -93,6 +95,8 @@ async function completeCallRecord(callId, {
   cleanedTranscript,
   actionTaken,
   pipelineFailover,
+  pipeline,
+  fastPath,
   callType,
   ownerAuth,
 }) {
@@ -129,6 +133,11 @@ async function completeCallRecord(callId, {
     // SCRUM-535: queryable record of which calls a Gemini outage touched —
     // Sentry has the alert, this has the audit trail.
     ...(pipelineFailover && { pipelineFailover }),
+    // SCRUM-594: the DEMO_LINE_PIPELINE comparison — which pipeline served a
+    // demo-line call (server.js passes null for every other call).
+    ...(pipeline && { pipeline }),
+    // SCRUM-594: the fast path's latency summary ([FastCall]), on its calls only.
+    ...(fastPath && { fastPath }),
     // SCRUM-587: PR B's call-completed route reads call_type from the DB row
     // (never from the payload) — cleanupSession awaits this write before the
     // webhook fires. owner_auth is also stamped on a CUSTOMER call that failed

@@ -62,7 +62,7 @@ export const VOICE_CATALOG: CatalogVoice[] = [
     tags: ["warm", "friendly"],
     description: "Warm, friendly Australian female",
     previewText: "Hi there! Thanks for getting in touch. What can I do for you?",
-    deepgramVoice: "aura-2-asteria-en",
+    deepgramVoice: "aura-2-theia-en", // Deepgram's Australian voice (SCRUM-594 F5 A/B)
     geminiVoice: "Kore",
     language: "en",
     recommended: true,

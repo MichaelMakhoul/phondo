@@ -166,4 +166,16 @@ describe("pcm16ToMulaw — full-scale peaks", () => {
       previous = decoded;
     }
   });
+
+  it("phone test F7 (test review): geminiToTwilio applies no gain: Gemini's own level goes out untouched (the Aura boost is for Aura only)", () => {
+    const n = 2400; // 100 ms at 24 kHz
+    const pcm = Buffer.alloc(n * 2);
+    const amp = 32768 * 10 ** (-20 / 20) * Math.SQRT2; // a 1 kHz tone at -20 dBFS RMS
+    for (let i = 0; i < n; i++) pcm.writeInt16LE(Math.round(amp * Math.sin((2 * Math.PI * 1000 * i) / 24000)), i * 2);
+    const mulaw = Buffer.from(geminiToTwilio(pcm.toString("base64")), "base64");
+    let power = 0;
+    for (const code of mulaw) power += g711Decode(code) ** 2;
+    const db = 10 * Math.log10(power / mulaw.length / 32768 ** 2);
+    assert.ok(Math.abs(db + 20) < 0.7, `${db.toFixed(2)} dBFS`);
+  });
 });
