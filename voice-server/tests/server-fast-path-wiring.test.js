@@ -4082,28 +4082,29 @@ describe("SCRUM-594 (F5): the call's languages on the fast path", () => {
   });
 });
 
+/** The AI says `aiText` (the real detector sets what the buffer expects next) and it has all played; then the caller says `said`, piece by piece (Flux finals, 100 ms apart). */
+async function answerTo(aiText, said, nextReply) {
+  const h = makeFast({ realDetector: true, steps: [{ sentences: [aiText], content: aiText }, { sentences: [nextReply], content: nextReply }] });
+  const s = h.start(makeSession());
+  h.fluxOpens();
+  h.turn("EndOfTurn", 0, "Hi, I'd like a quote please.");
+  await until(() => h.llmCalls.length === 1 && !s.isProcessing, "the first turn");
+  h.audio(2, 0);
+  h.lastAura().options.onFlushed(0);
+  echoMarks(h, s);
+  await settle();
+  const expected = s._expectedInputType;
+  const started = Date.now();
+  for (const [i, piece] of said.entries()) {
+    if (i > 0) await sleep(100);
+    h.turn("EndOfTurn", 1 + i, piece);
+  }
+  return { h, s, expected, started };
+}
+
 describe("SCRUM-594 test review (F6): the offered caller-ID number, from the AI's reply to the answer", () => {
   const OFFER = "Thanks, Michael. What's the best mobile number to reach you on? I can see you're calling from 0414 141 883, is that the one?";
   const ASK = "Thanks, Michael. What's the best mobile number to reach you on?";
-  /** The AI says `aiText` (the real detector sets what the buffer expects next) and it has all played; then the caller says `said`, piece by piece. */
-  async function answerTo(aiText, said, nextReply) {
-    const h = makeFast({ realDetector: true, steps: [{ sentences: [aiText], content: aiText }, { sentences: [nextReply], content: nextReply }] });
-    const s = h.start(makeSession());
-    h.fluxOpens();
-    h.turn("EndOfTurn", 0, "Hi, I'd like a quote please.");
-    await until(() => h.llmCalls.length === 1 && !s.isProcessing, "the first turn");
-    h.audio(2, 0);
-    h.lastAura().options.onFlushed(0);
-    echoMarks(h, s);
-    await settle();
-    const expected = s._expectedInputType;
-    const started = Date.now();
-    for (const [i, piece] of said.entries()) {
-      if (i > 0) await sleep(100);
-      h.turn("EndOfTurn", 1 + i, piece);
-    }
-    return { h, s, expected, started };
-  }
 
   it("'Yeah. That one, please.' to the offer is answered at once, not after the buffer's wait", async () => {
     const { h, s, expected, started } = await answerTo(OFFER, ["Yeah. That one, please."], "Great, thanks.");
@@ -4149,6 +4150,59 @@ describe("SCRUM-594 test review (F6): the offered caller-ID number, from the AI'
     assert.equal(h.lastAura().handle.clears, 0);
     await turn;
     clearTimeout(s._speakingTimeout);
+    h.closeFastPath(s);
+  });
+});
+
+// Phone test F8: "Sorry?" to the name question waited out the name buffer's 4 s maximum, the
+// caller asked again just as the reply started, and the barge-in cut the reply off; the surname
+// "McCook." waited the same 4 s.
+describe("SCRUM-594 phone test F8: short answers to a name question", () => {
+  const NAME_ASK = "Got it, a new shower install. Is this a booked job rather than an urgent one? Can I grab your first and last name?";
+  const SURNAME_ASK = "Thanks, Michael. And your last name?";
+  const NAME_WAIT = require("../lib/input-validators").BUFFER_CONFIGS.name;
+
+  it("'Sorry?' to the name question is answered at once, not after the buffer's 4 s", async () => {
+    const { h, s, expected, started } = await answerTo(NAME_ASK, ["Sorry?"], "No worries. Can I get your first and last name, please?");
+    assert.equal(expected, "name", "the reply made the buffer expect a name");
+    await until(() => h.llmCalls.length === 2, "the answer", 3000);
+    assert.ok(Date.now() - started < 500, `${Date.now() - started} ms`);
+    assert.deepEqual(h.llmCalls[1].messages.at(-1), { role: "user", content: "Sorry?" });
+    h.closeFastPath(s);
+  });
+
+  it("'Can you repeat again?' and 'Hello?' are answered at once too", async () => {
+    for (const said of ["Can you repeat again?", "Hello?"]) {
+      const { h, s, started } = await answerTo(NAME_ASK, [said], "Sure. What's your first and last name?");
+      await until(() => h.llmCalls.length === 2, `the answer to ${said}`, 3000);
+      assert.ok(Date.now() - started < 500, `${said}: ${Date.now() - started} ms`);
+      h.closeFastPath(s);
+    }
+  });
+
+  it("'McCook.' to 'And your last name?' is answered at the debounce, not after the 4 s maximum", async () => {
+    const { h, s, expected, started } = await answerTo(SURNAME_ASK, ["McCook."], "Thanks. Tomorrow we've got times from 9:30.");
+    assert.equal(expected, "name");
+    await until(() => h.llmCalls.length === 2, "the answer", 3000);
+    const ms = Date.now() - started;
+    assert.ok(ms >= NAME_WAIT.debounceMs - 50 && ms < NAME_WAIT.debounceMs + 600, `${ms} ms (debounce ${NAME_WAIT.debounceMs}, maximum ${NAME_WAIT.maxWaitMs})`);
+    assert.deepEqual(h.llmCalls[1].messages.at(-1), { role: "user", content: "McCook." });
+    h.closeFastPath(s);
+  });
+
+  it("a lone letter is a spelling just begun: it still waits past the debounce", async () => {
+    const { h, s } = await answerTo(SURNAME_ASK, ["M."], "Thanks.");
+    await sleep(NAME_WAIT.debounceMs + 400);
+    assert.equal(h.llmCalls.length, 1, "no answer yet");
+    s._utteranceCallback = null;
+    s._flushAndReset(); // stop the max-wait timer
+    h.closeFastPath(s);
+  });
+
+  it("a 'sorry' inside a dictation does not cut it: the number is still one turn", async () => {
+    const { h, s } = await answerTo("Thanks, Michael. What's the best mobile number to reach you on?", ["Oh four one two,", "sorry,", "three four five, six seven eight."], "Got it.");
+    await until(() => h.llmCalls.length === 2, "the answer", 5000);
+    assert.deepEqual(h.llmCalls[1].messages.at(-1), { role: "user", content: "Oh four one two, sorry, three four five, six seven eight." });
     h.closeFastPath(s);
   });
 });

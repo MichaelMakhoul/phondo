@@ -1,5 +1,5 @@
 const { WebSocket } = require("ws");
-const { validateInput, getBufferConfig, extractSpokenDigits, isPlainYes, saysPhoneNumber } = require("./lib/input-validators");
+const { validateInput, getBufferConfig, extractSpokenDigits, isPlainYes, isRepairRequest, saysPhoneNumber } = require("./lib/input-validators");
 const { logTranscript } = require("./lib/log-transcript");
 const { guardWords } = require("./lib/guard-languages");
 
@@ -824,8 +824,12 @@ class CallSession {
    * Buffer a final STT transcript and debounce before dispatching.
    * Uses type-aware timing: structured inputs (phone, email, address)
    * get longer debounce and max-wait to avoid cutting off mid-dictation.
+   * @param {string} text
+   * @param {(combined: string, inputType: string) => void} callback
+   * @param {{ wholeTurn?: boolean }} [opts] - wholeTurn: `text` is the caller's whole turn (a Flux
+   *   final), not a piece of one (a Nova final, where "Sorry," may lead into the answer)
    */
-  bufferTranscript(text, callback) {
+  bufferTranscript(text, callback, opts = {}) {
     const config = getBufferConfig(this._expectedInputType);
 
     this._utteranceBuffer.push(text);
@@ -834,6 +838,12 @@ class CallSession {
     // SCRUM-594 (phone test F6): a plain yes to a number the AI offered is the whole answer.
     if (this._utteranceBuffer.length === 1 && isPlainYes(this._expectedInputType, text, this._lastAiOfferedNumber())) {
       console.log(`[Buffer] Plain yes for type="${this._expectedInputType}" — flushing immediately`);
+      this._flushAndReset();
+      return;
+    }
+    // SCRUM-594 (phone test F8): a whole turn of "Sorry?" or "Hello?" is never the data being waited for.
+    if (opts.wholeTurn === true && this._utteranceBuffer.length === 1 && isRepairRequest(text)) {
+      console.log(`[Buffer] Asked to repeat (or "hello?") for type="${this._expectedInputType}" — flushing immediately`);
       this._flushAndReset();
       return;
     }

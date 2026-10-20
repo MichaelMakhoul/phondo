@@ -5607,7 +5607,7 @@ function bufferFastTurn(session, twilioWs, transcript) {
   session.bufferTranscript(transcript, (combined, inputType) => {
     logTranscript("[STT] Buffered", combined);
     session.queueOrProcess(combined, (text) => handleUserSpeech(session, twilioWs, text, inputType));
-  });
+  }, { wholeTurn: true }); // a Flux final is the caller's whole turn
 }
 
 /**

@@ -1,6 +1,6 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
-const { extractSpokenDigits, validateInput, getBufferConfig, BUFFER_CONFIGS, isPlainYes, saysPhoneNumber } = require("../lib/input-validators");
+const { extractSpokenDigits, validateInput, getBufferConfig, BUFFER_CONFIGS, isPlainYes, isRepairRequest, saysPhoneNumber } = require("../lib/input-validators");
 
 describe("extractSpokenDigits", () => {
   it("extracts numeric digits", () => {
@@ -134,9 +134,15 @@ describe("validateInput - name", () => {
     const result = validateInput("name", "John Smith");
     assert.equal(result.complete, true);
   });
-  it("incomplete with single word", () => {
-    const result = validateInput("name", "John");
-    assert.equal(result.complete, false);
+  it("phone test F8: one whole word is an answer (\"McCook.\" to \"And your last name?\")", () => {
+    for (const said of ["John", "McCook.", "Li", "José", "O'Brien", "M-A-K-H-O-U-L"]) {
+      assert.deepEqual(validateInput("name", said), { complete: true, reason: "one whole word" }, said);
+    }
+  });
+  it("phone test F8: a lone letter is a spelling just begun, and waits", () => {
+    for (const said of ["M", "m.", "M,", "É"]) {
+      assert.equal(validateInput("name", said).complete, false, said);
+    }
   });
   it("complete with three words", () => {
     const result = validateInput("name", "John William Smith");
@@ -263,6 +269,44 @@ describe("isPlainYes — phone test F6 (gate review)", () => {
   it("only for a phone number", () => {
     assert.equal(isPlainYes("name", "Yes.", true), false);
     assert.equal(isPlainYes("date_time", "Yes.", true), false);
+  });
+});
+
+describe("isRepairRequest — phone test F8", () => {
+  it("asking to hear it again, or checking the line, and nothing else", () => {
+    for (const said of [
+      "Sorry?", "sorry", "Pardon?", "Pardon me?", "What?", "Huh?", "Eh?", "Excuse me?", "Come again?", "Say again?",
+      "Say say again?", "Sorry, what?", "Sorry, what was that?", "What did you say?", "What did you just say?",
+      "Can you repeat that?", "Can you repeat again?", "Could you repeat that, please?", "Can you please repeat?",
+      "Could you say that again?", "Repeat that, please.", "Say it again?", "I didn't catch that.", "Sorry, I didn't hear you.",
+      "I missed that.", "One more time?", "Hello?", "Hello? Are you there?", "Are you still there?", "You there?",
+      "Oh, sorry?", "Um, sorry, what?", "Yeah, sorry?", "No, sorry, what?", "What? Sorry?",
+      "Sorry, can you say that again?", "Sorry, could you repeat the question?",
+      "¿Perdón?", "¿Cómo?", "¿Qué?", "¿Me lo puede repetir?", "¿Puede repetir, por favor?", "Repítalo, por favor.", "No le escuché.", "¿Hola?", "¿Está ahí?",
+    ]) {
+      assert.equal(isRepairRequest(said), true, said);
+    }
+  });
+  it("not an answer, a question about something else, or a repair that goes on", () => {
+    for (const said of [
+      "Sorry, Michael.", "Sorry, my name is Michael", "Hello, my name is Michael", "Michael", "McCook.", "Yes.", "No.", "Sure", "Hi",
+      "What time?", "What do you need?", "What about 1 PM?", "What a day", "Can you book me in?", "Can you", "Can you repeat my booking details?",
+      "Say Michael", "I'm sorry to hear that", "Sorry I'm driving", "It is facing a new existing one.", "One... sorry? What?",
+      "Qué hora tiene?", "Cómo se escribe?", "", "   ", null, 42,
+    ]) {
+      assert.equal(isRepairRequest(said), false, String(said));
+    }
+  });
+  it("security: a long run of fillers is never a repair, and the check stays fast (no regex backtracking blow-up)", () => {
+    assert.equal(isRepairRequest("Sorry? ".repeat(13).trim()), false, "over 12 words");
+    for (const unit of ["sorry ", "Sorry, ", "oh sorry ", "Sorry? ", "otra vez ", "say again "]) {
+      for (const n of [11, 200]) {
+        const started = process.hrtime.bigint();
+        isRepairRequest(unit.repeat(n) + "Michael");
+        const ms = Number(process.hrtime.bigint() - started) / 1e6;
+        assert.ok(ms < 50, `${JSON.stringify(unit)} x${n}: ${ms.toFixed(1)} ms`);
+      }
+    }
   });
 });
 

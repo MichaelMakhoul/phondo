@@ -12,8 +12,9 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * @param {Array<string | [string, number]>} finals - said one after another, 100 ms apart unless [text, gapMs]
  * @param {number} waitMs - how long to watch
  * @param {string | string[]} [aiSaid] - the AI's messages before the answer
+ * @param {{ wholeTurn?: boolean }} [opts] - bufferTranscript's options (wholeTurn: Flux finals)
  */
-async function buffer(type, finals, waitMs, aiSaid) {
+async function buffer(type, finals, waitMs, aiSaid, opts) {
   const s = new CallSession(`buffer-${type}`);
   for (const said of [aiSaid ?? []].flat()) s.addMessage("assistant", said);
   s.setExpectedInputType(type);
@@ -23,7 +24,7 @@ async function buffer(type, finals, waitMs, aiSaid) {
   for (const [i, final] of finals.entries()) {
     const [text, gapMs] = Array.isArray(final) ? final : [final, 100];
     if (i > 0) await sleep(gapMs);
-    s.bufferTranscript(text, (combined, inputType) => flushed.push({ text: combined, type: inputType, afterMs: Date.now() - started }));
+    s.bufferTranscript(text, (combined, inputType) => flushed.push({ text: combined, type: inputType, afterMs: Date.now() - started }), opts);
   }
   await sleep(waitMs);
   const byItself = flushed.slice(); // before the cleanup below, which would flush a buffer still waiting
@@ -148,5 +149,48 @@ describe("CallSession.bufferTranscript — phone test F6", () => {
   it("\"The second one\" for a time is an answer too (\"one\" there is not a digit)", async () => {
     const flushed = await buffer("date_time", ["The second one, please."], BUFFER_CONFIGS.date_time.debounceMs + 400);
     assert.equal(flushed.length, 1);
+  });
+});
+
+// SCRUM-594 (phone test F8): a "Sorry?" and a one-word surname each waited the name buffer's 4 s maximum.
+describe("CallSession.bufferTranscript — phone test F8", () => {
+  const NAME_ASK = "Got it, a new shower install. Is this a booked job rather than an urgent one? Can I grab your first and last name?";
+
+  it("a whole turn of \"Sorry?\" to the name question flushes at once", async () => {
+    const flushed = await buffer("name", ["Sorry?"], 100, NAME_ASK, { wholeTurn: true });
+    assert.equal(flushed.length, 1, "flushed at once");
+    assert.deepEqual([flushed[0].text, flushed[0].type], ["Sorry?", "name"]);
+    assert.ok(flushed[0].afterMs < 50, `${flushed[0].afterMs} ms`);
+  });
+
+  it("asked to repeat while a number is expected: at once too", async () => {
+    const flushed = await buffer("phone", ["Can you repeat that?"], 100, "What's the best number to reach you on?", { wholeTurn: true });
+    assert.equal(flushed.length, 1, "flushed at once");
+  });
+
+  it("a Nova piece (not a whole turn) is not flushed at once: \"Sorry,\" may lead into the answer", async () => {
+    const flushed = await buffer("name", ["Sorry,", "it's Michael Makhoul."], BUFFER_CONFIGS.name.debounceMs + 400, NAME_ASK);
+    assert.deepEqual(flushed.map((f) => f.text), ["Sorry, it's Michael Makhoul."]);
+  });
+
+  it("a repair word after the first piece does not cut a dictation", async () => {
+    const flushed = await buffer("phone", ["Oh four one two,", "sorry,", "three four five, six seven eight."], BUFFER_CONFIGS.phone.debounceMs + 400, "What's the best number to reach you on?", { wholeTurn: true });
+    assert.deepEqual(flushed.map((f) => f.text), ["Oh four one two, sorry, three four five, six seven eight."]);
+  });
+
+  it("\"McCook.\" to \"And your last name?\" flushes at the debounce, not the 4 s maximum", async () => {
+    const flushed = await buffer("name", ["McCook."], BUFFER_CONFIGS.name.debounceMs + 400, "Thanks, Michael. And your last name?", { wholeTurn: true });
+    assert.equal(flushed.length, 1);
+    assert.ok(flushed[0].afterMs >= BUFFER_CONFIGS.name.debounceMs - 20 && flushed[0].afterMs < BUFFER_CONFIGS.name.debounceMs + 300, `${flushed[0].afterMs} ms`);
+  });
+
+  it("a lone letter still waits past the debounce (a spelling just begun)", async () => {
+    const flushed = await buffer("name", ["M."], BUFFER_CONFIGS.name.debounceMs + 400, "Thanks, Michael. And your last name?", { wholeTurn: true });
+    assert.equal(flushed.length, 0);
+  });
+
+  it("spelled letters in pieces are still one answer", async () => {
+    const flushed = await buffer("name", ["M.", "A K H", "O U L."], BUFFER_CONFIGS.name.debounceMs + 400, "Could you spell your last name for me?", { wholeTurn: true });
+    assert.deepEqual(flushed.map((f) => f.text), ["M. A K H O U L."]);
   });
 });

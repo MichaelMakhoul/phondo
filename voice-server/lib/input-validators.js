@@ -153,6 +153,41 @@ function isPlainYes(type, text, offered) {
   return type === "phone" && offered === true && typeof text === "string" && PLAIN_YES_RE.test(text);
 }
 
+// The caller asking to hear it again, or checking the line, and nothing else (English and
+// Spanish, the languages the input-type detector knows).
+const REPAIR_PHRASES = [
+  "sorry", "pardon(?: me)?", "what", "huh", "eh", "excuse me", "come again", "say again", "one more time",
+  "what was that", "what'?s that", "what did you (?:just )?say",
+  "(?:can|could|would) you (?:please )?repeat(?: (?:that|it|yourself|the question|what you said))?",
+  "(?:can|could|would) you (?:please )?say (?:that|it) again",
+  "repeat (?:that|it|please)", "say (?:that|it) again",
+  "i didn'?t (?:catch|hear|get|understand) (?:that|you|it|what you said)", "i (?:missed|lost) (?:that|it|you)",
+  "i can'?t hear you", "hello", "are you (?:still )?there", "you there", "anyone there",
+  "perd[oó]n", "c[oó]mo", "qu[eé]", "mande", "disculpe", "otra vez",
+  "(?:me )?(?:lo )?(?:puede|podr[ií]a) repetir(?:lo)?", "rep[ií]ta(?:lo|me)?", "no (?:le |te )?(?:escuch[eé]|entend[ií]|o[ií])",
+  "(?:est[aá]s|est[aá]) ah[ií]", "hola",
+].join("|");
+const REPAIR_FILLER = "(?:oh|um|uh|er|ah|sorry|yeah|no|say|sí|si)"; // "say": a stutter ("Say say again?", phone test F8)
+// No word of the tail is also a phrase: one way to read each word keeps the match linear.
+const REPAIR_TAIL = "(?:please|again|mate|por favor)";
+const REPAIR_MAX_WORDS = 12;
+const REPAIR_RE = new RegExp(`^[\\s¿¡]*(?:${REPAIR_FILLER}[\\s,.!?¿¡]+)*(?:${REPAIR_PHRASES})(?:[\\s,.!?¿¡]+(?:${REPAIR_PHRASES}|${REPAIR_TAIL}))*[\\s,.!?]*$`, "i");
+
+/**
+ * Is `text` only a request to hear the AI again ("Sorry?", "Can you repeat that?") or a
+ * check that the line is alive ("Hello?")? SCRUM-594 (phone test F8): the caller's
+ * "Sorry?" to "Can I grab your first and last name?" sat in the name buffer for its 4 s
+ * maximum; the caller asked again just as the reply started, and the barge-in cut it off.
+ * Such a turn is never the data the buffer waits for, so it is answered at once.
+ * @param {unknown} text
+ * @returns {boolean}
+ */
+function isRepairRequest(text) {
+  // A repair is a few words. The cap also bounds the regex's backtracking: the fillers
+  // overlap the phrases ("sorry"), so a long run of them costs more with every word.
+  return typeof text === "string" && text.trim().split(/\s+/).length <= REPAIR_MAX_WORDS && REPAIR_RE.test(text);
+}
+
 /**
  * Do the AI's words say a whole phone number? A run of numerals joined by spaces,
  * dashes, dots or brackets ("0414 141 883", "(02) 3820 5672") with 8+ digits, or,
@@ -241,6 +276,12 @@ function validateInput(type, text) {
       if (words.length >= 2) {
         return { complete: true, reason: `${words.length} words (first+last)` };
       }
+      // SCRUM-594 (phone test F8): one whole word is an answer ("McCook." to "And your last
+      // name?"), and waiting the 4 s maximum for a second one left the caller in silence. A
+      // lone letter is a spelling just begun: that one still waits for the rest.
+      if (words.length === 1 && (words[0].match(/\p{L}/gu) || []).length >= 2) {
+        return { complete: true, reason: "one whole word" };
+      }
       return { complete: false, reason: `only ${words.length} word(s)` };
     }
 
@@ -285,4 +326,4 @@ function getBufferConfig(type) {
   return BUFFER_CONFIGS[type] || BUFFER_CONFIGS.general;
 }
 
-module.exports = { validateInput, getBufferConfig, BUFFER_CONFIGS, extractSpokenDigits, isPlainYes, saysPhoneNumber };
+module.exports = { validateInput, getBufferConfig, BUFFER_CONFIGS, extractSpokenDigits, isPlainYes, isRepairRequest, saysPhoneNumber };
