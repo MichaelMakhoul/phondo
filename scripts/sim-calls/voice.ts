@@ -406,8 +406,6 @@ async function setUpSimCall(o: { calledNumber: string; callerPhone: string; call
     planLanguageSwitch: vs.fastLanguages?.planLanguageSwitch,
     detectCallerLanguage: vs.fastLanguages?.detectCallerLanguage,
     detectCallerEnglish: vs.fastLanguages?.detectCallerEnglish,
-    asksInLanguage: vs.fastLanguages?.asksInLanguage,
-    namesLanguage: vs.fastLanguages?.namesLanguage,
     FAST_LANGUAGES: vs.fastLanguages?.FAST_LANGUAGES,
     recordLanguageSwitch: vs.fastLanguages?.recordLanguageSwitch,
     LANGUAGE_UNHEARD_MESSAGE: vs.fastLanguages?.LANGUAGE_UNHEARD_MESSAGE,

@@ -22,7 +22,6 @@ const {
   detectCallerLanguage,
   detectCallerEnglish,
   asksInLanguage,
-  namesLanguage,
   ENGLISH_LOOKALIKES,
 } = require("../lib/fast-languages");
 
@@ -246,12 +245,6 @@ describe("asksInLanguage (re-review: \"Sí, en inglés, por favor\" is Spanish a
   ]) {
     it(`${JSON.stringify(text)} names ${code} but doesn't ask for it`, () => assert.equal(asksInLanguage(text, code), false));
   }
-  it("namesLanguage: any mention, as a whole word", () => {
-    assert.equal(namesLanguage("No hablo inglés", "en"), true);
-    assert.equal(namesLanguage("Can you speak ENGLISH?", "en"), true);
-    assert.equal(namesLanguage("A germane point", "de"), false);
-    assert.equal(namesLanguage("日本語は少し", "ja"), true);
-  });
 });
 
 describe("phone test F9: the switch note and its bookkeeping", () => {
@@ -259,15 +252,6 @@ describe("phone test F9: the switch note and its bookkeeping", () => {
     const { message } = planLanguageSwitch({ fastLanguage: "en", baseDeepgramVoice: "aura-2-theia-en" }, "es");
     assert.match(message, /Speak only Spanish until the caller changes language;/);
     assert.doesNotMatch(message, /from now on/);
-  });
-
-  it("any recorded switch ends an automatic return to English", () => {
-    const session = { fastLanguage: "en", languagesUsed: ["en", "es"], fastAutoEnglish: true };
-    recordLanguageSwitch(session, { changed: true, to: "es" });
-    assert.equal(session.fastAutoEnglish, false);
-    session.fastAutoEnglish = true;
-    recordLanguageSwitch(session, { changed: false, to: "es" });
-    assert.equal(session.fastAutoEnglish, true, "no switch, nothing recorded");
   });
 });
 
@@ -287,8 +271,6 @@ describe("detectCallerEnglish (phone test F9: back in English, the caller heard 
     "My name is Juan García.",
     "Yes, I want to book 明日", // one kanji, no kana
     "Yes, I want to book あ", // one kana
-    "はい、can you speak English please?", // silent-failure verification: Japanese that asks for English
-    "えっと、sorry, I don't understand Japanese. Can we continue in English?",
   ]) {
     it(`${JSON.stringify(text)} is English`, () => assert.equal(detectCallerEnglish(text), true));
   }
@@ -327,6 +309,7 @@ describe("detectCallerEnglish (phone test F9: back in English, the caller heard 
     // re-review: Japanese with English words in it (else the line flips en ⇄ ja every turn)
     "はい、I want to book an appointment for tomorrow",
     "はい、my name is 田中です",
+    "はい、can you speak English please?", // a Japanese caller asking for English: the model's to switch (set_language)
     // a spelling, repeats, nothing
     "J O R D A N",
     "J-O-R-D-A-N.",
@@ -407,11 +390,12 @@ describe("detectCallerEnglish (phone test F9: back in English, the caller heard 
       "Stop, stop, can you say it again in Spanish?",
       "Why don't we just continue in Spanish?",
     ]) assert.equal(detectCallerEnglish(text, "es"), false, `a request: ${text}`);
-    // …and a "did you…" asks for nothing
+    // code verification: a polite or conditional request is still one; asking for English too is not
     for (const text of [
-      "No. I just wanted to check if you could answer in Spanish.",
-      "Okay cool, I just wanted to hear how it sounds in Spanish.",
-    ]) assert.equal(detectCallerEnglish(text, "es"), true, `no request: ${text}`);
+      "Can we continue in Spanish if that's okay?",
+      "Can you say it in Spanish if you don't mind",
+      "Can you speak in Spanish please? My English is not very good.",
+    ]) assert.equal(detectCallerEnglish(text, "es"), false, `a request: ${text}`);
     assert.equal(detectCallerEnglish("Can you say that again in Spanish?", "fr"), true, "another line's language is no request for this one");
     assert.equal(detectCallerEnglish("That is a germane point, can you help me with the booking", "de"), true, "a whole word only");
   });

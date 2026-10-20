@@ -116,16 +116,13 @@ function planLanguageSwitch(session, requested) {
 
 /**
  * Record a switch that happened: the call's language, and every language it used.
- * Any switch ends an automatic return to English (phone test F9); the automatic
- * return sets it again right after.
- * @param {{ fastLanguage?: string|null, languagesUsed?: string[]|null, fastAutoEnglish?: boolean }} session
+ * @param {{ fastLanguage?: string|null, languagesUsed?: string[]|null }} session
  * @param {{ changed: boolean, to?: string }} plan - planLanguageSwitch's result
  */
 function recordLanguageSwitch(session, plan) {
   if (!plan.changed || !plan.to) return;
   session.fastLanguage = plan.to;
   session.languagesUsed = [...new Set([...(session.languagesUsed || ["en"]), plan.to])];
-  session.fastAutoEnglish = false;
 }
 
 /**
@@ -167,8 +164,7 @@ const ENGLISH_MARKERS = new Set(["the", "you", "your", "i", "i'm", "i'd", "i've"
 const ENGLISH_COURTESY = new Set(["okay", "ok", "thanks", "thank", "yes", "yeah", "please", "hello", "hi"]);
 /**
  * Gate review (F9): each language's names, in English and its own. "Can you say that
- * again in Spanish?" on a Spanish line is English words asking for Spanish; "Sí, en
- * inglés, por favor" is Spanish words asking for English.
+ * again in Spanish?" on a Spanish line is English words asking for Spanish.
  * @type {Readonly<Record<string, readonly string[]>>}
  */
 const LANGUAGE_NAMES = Object.freeze({
@@ -234,8 +230,7 @@ function detectCallerLanguage(text) {
  */
 function detectCallerEnglish(text, language) {
   if (typeof text !== "string" || !text.trim()) return false;
-  // Re-review: Japanese with English words in it is Japanese (else en ⇄ ja every turn), unless it names English.
-  if ((text.match(KANA) || []).length >= 2 && !namesLanguage(text, "en")) return false;
+  if ((text.match(KANA) || []).length >= 2) return false; // re-review: Japanese with English words in it is Japanese (else en ⇄ ja every turn)
   if (typeof language === "string" && requestsLineLanguage(text, language)) return false;
   const lookalikes = typeof language === "string" && Object.hasOwn(ENGLISH_LOOKALIKES, language) ? ENGLISH_LOOKALIKES[language] : null;
   const { words, english, scores } = markerCounts(text);
@@ -244,35 +239,25 @@ function detectCallerEnglish(text, language) {
   return words >= 4 && plain >= 3 && other * 3 <= plain;
 }
 
-/** LANGUAGE_NAMES as tests: a Latin-script name as a whole word ("german", not "germane"), a Japanese one anywhere. */
-const NAME_TESTS = Object.fromEntries(Object.entries(LANGUAGE_NAMES).map(([code, names]) => {
-  const latin = names.filter((n) => /^\p{Script=Latin}+$/u.test(n));
-  const others = names.filter((n) => !latin.includes(n));
-  const word = latin.length > 0 ? new RegExp(`(?<!\\p{L})(?:${latin.join("|")})(?!\\p{L})`, "u") : null;
-  return [code, (/** @type {string} */ lower) => Boolean(word?.test(lower)) || others.some((n) => lower.includes(n))];
-}));
-
 /** Words that turn a request around ("I can't understand you in Spanish", "Why in Spanish?"). */
 const REFUSAL = /(?<!\p{L})(?:don'?t|do not|not|never|stop|can'?t|cannot|why)(?!\p{L})/u;
-/** …but "why don't we continue in Spanish?" suggests. */
-const SUGGESTION = /(?<!\p{L})why (?:don'?t|not)(?!\p{L})/gu;
-/** "I just wanted to check if you can answer in Spanish" asks nothing. */
-const NOT_A_REQUEST = /(?<!\p{L})(?:if|whether|wanted to)(?!\p{L})/u;
+/** …but "why don't we continue in Spanish?" and "if you don't mind" are polite. */
+const SUGGESTION = /(?<!\p{L})(?:why (?:don'?t|not)|if you don'?t mind)(?!\p{L})/gu;
 
 /**
  * Re-review (F9): do the caller's English words ask for the line's own language?
- * "Can you say that again in Spanish? I can't hear you" does. A refusal or a "did
- * you…" in the request's own clause doesn't ("I can't understand you in Spanish",
- * "I wanted to check if you can answer in Spanish"), nor does naming English too.
+ * "Can you say that again in Spanish? I can't hear you" does. A refusal in the
+ * request's own clause doesn't ("I can't understand you in Spanish"), nor does a
+ * request for English too ("…in Spanish and then in English for my husband").
  * @param {string} text
  * @param {string} language - the line's language
  * @returns {boolean}
  */
 function requestsLineLanguage(text, language) {
-  if (!Object.hasOwn(LANGUAGE_NAMES, language) || !asksInLanguage(text, language) || namesLanguage(text, "en")) return false;
+  if (!Object.hasOwn(LANGUAGE_NAMES, language) || !asksInLanguage(text, language) || asksInLanguage(text, "en")) return false;
   const lower = text.toLowerCase().replace(/’/g, "'");
   const clause = lower.split(/[.?!;,、。？！]/).find((c) => asksInLanguage(c, language)) ?? lower;
-  return !REFUSAL.test(clause.replace(SUGGESTION, "")) && !NOT_A_REQUEST.test(clause);
+  return !REFUSAL.test(clause.replace(SUGGESTION, ""));
 }
 
 /** LANGUAGE_NAMES as a request to speak it: "in Spanish", "en español", "auf Deutsch", "in het Nederlands", "日本語で". */
@@ -291,16 +276,6 @@ const REQUEST_TESTS = Object.fromEntries(Object.entries(LANGUAGE_NAMES).map(([co
  */
 function asksInLanguage(text, code) {
   return REQUEST_TESTS[code](text.toLowerCase());
-}
-
-/**
- * Does the text name the language (in English or its own name)?
- * @param {string} text
- * @param {string} code - a LANGUAGE_NAMES key
- * @returns {boolean}
- */
-function namesLanguage(text, code) {
-  return NAME_TESTS[code](text.toLowerCase());
 }
 
 /**
@@ -333,7 +308,6 @@ module.exports = {
   detectCallerLanguage,
   detectCallerEnglish,
   asksInLanguage,
-  namesLanguage,
   ENGLISH_LOOKALIKES,
   FAST_LANGUAGES,
   FLUX_MULTI_MODEL,

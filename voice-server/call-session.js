@@ -170,10 +170,6 @@ class CallSession {
     this.baseDeepgramVoice = null;
     /** @type {string[]|null} every language the call used, when it switched */
     this.languagesUsed = null;
-    /** @type {boolean} phone test F9: the line is in English because the caller's English switched it back */
-    this.fastAutoEnglish = false;
-    /** @type {string[]|null} phone test F9: languages whose voice or hearing failed on this call, never switched to again automatically */
-    this.failedLanguages = null;
     /** @type {number} the caller turn whose unspeakable reply was already replaced by the apology */
     this.unspeakableTurn = -1;
     /** @type {import("./lib/booking-guards").GuardState} */
