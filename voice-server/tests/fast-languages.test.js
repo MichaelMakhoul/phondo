@@ -287,6 +287,8 @@ describe("detectCallerEnglish (phone test F9: back in English, the caller heard 
     "My name is Juan García.",
     "Yes, I want to book 明日", // one kanji, no kana
     "Yes, I want to book あ", // one kana
+    "はい、can you speak English please?", // silent-failure verification: Japanese that asks for English
+    "えっと、sorry, I don't understand Japanese. Can we continue in English?",
   ]) {
     it(`${JSON.stringify(text)} is English`, () => assert.equal(detectCallerEnglish(text), true));
   }
@@ -324,6 +326,7 @@ describe("detectCallerEnglish (phone test F9: back in English, the caller heard 
     "トイレの水が止まらないんです。",
     // re-review: Japanese with English words in it (else the line flips en ⇄ ja every turn)
     "はい、I want to book an appointment for tomorrow",
+    "はい、my name is 田中です",
     // a spelling, repeats, nothing
     "J O R D A N",
     "J-O-R-D-A-N.",
@@ -384,6 +387,7 @@ describe("detectCallerEnglish (phone test F9: back in English, the caller heard 
       assert.equal(detectCallerEnglish(text), true, `without the line's language it reads as English: ${text}`);
     }
     assert.equal(detectCallerEnglish("Can we switch back to English instead of Spanish?", "es"), true, "naming English too: a switch back");
+    assert.equal(detectCallerEnglish("Please say it in Spanish and then in English for my husband", "es"), true, "a request in the line's language that names English too is English");
     // re-review: only a request IN the language; a mention or a refusal is English
     for (const text of [
       "No. I just want to check if you speak Spanish.",
@@ -395,6 +399,19 @@ describe("detectCallerEnglish (phone test F9: back in English, the caller heard 
     ]) assert.equal(detectCallerEnglish(text, "es"), true, text);
     assert.equal(detectCallerEnglish("No, I want it in Spanish.", "es"), false);
     assert.equal(detectCallerEnglish("Could you repeat that in Spanish for me", "es"), false);
+    // silent-failure verification: the refusal must be in the request's own clause; "why don't we…" suggests
+    for (const text of [
+      "Sorry, can you say that again in Spanish? I can't hear you very well.",
+      "Never mind, can you just continue in Spanish?",
+      "Can you not speak so fast, in Spanish please?",
+      "Stop, stop, can you say it again in Spanish?",
+      "Why don't we just continue in Spanish?",
+    ]) assert.equal(detectCallerEnglish(text, "es"), false, `a request: ${text}`);
+    // …and a "did you…" asks for nothing
+    for (const text of [
+      "No. I just wanted to check if you could answer in Spanish.",
+      "Okay cool, I just wanted to hear how it sounds in Spanish.",
+    ]) assert.equal(detectCallerEnglish(text, "es"), true, `no request: ${text}`);
     assert.equal(detectCallerEnglish("Can you say that again in Spanish?", "fr"), true, "another line's language is no request for this one");
     assert.equal(detectCallerEnglish("That is a germane point, can you help me with the booking", "de"), true, "a whole word only");
   });

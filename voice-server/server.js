@@ -3950,8 +3950,13 @@ function callLanguage(session) {
  */
 async function switchToCallerLanguage(session, transcript) {
   const code = detectCallerLanguage(transcript);
-  // Re-review (F9): "Sí, en inglés, por favor" is Spanish asking for English.
-  if (!code || asksInLanguage(transcript, "en")) return false;
+  if (!code) return false;
+  // Re-review (F9): "Sí, en inglés, por favor" is Spanish asking for English; "soy malo en
+  // inglés, ¿habla español?" and "英語ではなく日本語で" name their own language and want it.
+  if (asksInLanguage(transcript, "en") && !namesLanguage(transcript, code)) {
+    console.log(`[FastPath] The caller spoke ${FAST_LANGUAGES[code].name} asking for English: staying in English (callSid=${session.callSid})`);
+    return false;
+  }
   if (session.failedLanguages?.includes(code)) {
     console.log(`[FastPath] The caller spoke ${FAST_LANGUAGES[code].name}, which stopped working earlier on this call: staying in English (callSid=${session.callSid})`);
     return false;

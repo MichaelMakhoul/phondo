@@ -234,8 +234,9 @@ function detectCallerLanguage(text) {
  */
 function detectCallerEnglish(text, language) {
   if (typeof text !== "string" || !text.trim()) return false;
-  if ((text.match(KANA) || []).length >= 2) return false; // re-review: Japanese with English words in it is Japanese (else en ⇄ ja every turn)
-  if (typeof language === "string" && Object.hasOwn(LANGUAGE_NAMES, language) && asksInLanguage(text, language) && !namesLanguage(text, "en") && !REFUSAL.test(text.toLowerCase().replace(/’/g, "'"))) return false;
+  // Re-review: Japanese with English words in it is Japanese (else en ⇄ ja every turn), unless it names English.
+  if ((text.match(KANA) || []).length >= 2 && !namesLanguage(text, "en")) return false;
+  if (typeof language === "string" && requestsLineLanguage(text, language)) return false;
   const lookalikes = typeof language === "string" && Object.hasOwn(ENGLISH_LOOKALIKES, language) ? ENGLISH_LOOKALIKES[language] : null;
   const { words, english, scores } = markerCounts(text);
   const plain = english.filter((w) => !ENGLISH_COURTESY.has(w) && !lookalikes?.has(w)).length;
@@ -253,6 +254,26 @@ const NAME_TESTS = Object.fromEntries(Object.entries(LANGUAGE_NAMES).map(([code,
 
 /** Words that turn a request around ("I can't understand you in Spanish", "Why in Spanish?"). */
 const REFUSAL = /(?<!\p{L})(?:don'?t|do not|not|never|stop|can'?t|cannot|why)(?!\p{L})/u;
+/** …but "why don't we continue in Spanish?" suggests. */
+const SUGGESTION = /(?<!\p{L})why (?:don'?t|not)(?!\p{L})/gu;
+/** "I just wanted to check if you can answer in Spanish" asks nothing. */
+const NOT_A_REQUEST = /(?<!\p{L})(?:if|whether|wanted to)(?!\p{L})/u;
+
+/**
+ * Re-review (F9): do the caller's English words ask for the line's own language?
+ * "Can you say that again in Spanish? I can't hear you" does. A refusal or a "did
+ * you…" in the request's own clause doesn't ("I can't understand you in Spanish",
+ * "I wanted to check if you can answer in Spanish"), nor does naming English too.
+ * @param {string} text
+ * @param {string} language - the line's language
+ * @returns {boolean}
+ */
+function requestsLineLanguage(text, language) {
+  if (!Object.hasOwn(LANGUAGE_NAMES, language) || !asksInLanguage(text, language) || namesLanguage(text, "en")) return false;
+  const lower = text.toLowerCase().replace(/’/g, "'");
+  const clause = lower.split(/[.?!;,、。？！]/).find((c) => asksInLanguage(c, language)) ?? lower;
+  return !REFUSAL.test(clause.replace(SUGGESTION, "")) && !NOT_A_REQUEST.test(clause);
+}
 
 /** LANGUAGE_NAMES as a request to speak it: "in Spanish", "en español", "auf Deutsch", "in het Nederlands", "日本語で". */
 const REQUEST_TESTS = Object.fromEntries(Object.entries(LANGUAGE_NAMES).map(([code, names]) => {

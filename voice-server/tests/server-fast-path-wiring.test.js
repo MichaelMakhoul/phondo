@@ -4034,6 +4034,7 @@ describe("SCRUM-594 (F5): the call's languages on the fast path", () => {
     assert.deepEqual(voicesSpoken(h).at(-1), ["Of course.", "aura-2-thalia-en"]);
     clearTimeout(s._speakingTimeout);
     h.closeFastPath(s);
+    assert.ok(h.lines.some((l) => l.includes("[FastPath] The caller spoke Spanish asking for English: staying in English")), h.lines.join("\n"));
     const first = makeFast({ steps: [{ sentences: ["Of course."], content: "Of course." }] });
     const t = first.start(langSession());
     first.fluxOpens();
@@ -4041,6 +4042,38 @@ describe("SCRUM-594 (F5): the call's languages on the fast path", () => {
     assert.equal(t.fastLanguage, "en", "F5's first switch too");
     clearTimeout(t._speakingTimeout);
     first.closeFastPath(t);
+  });
+
+  it("silent-failure verification: \"bad at English\" asks for nothing — a caller naming their own language is switched to it", async () => {
+    for (const [words, code, voice] of [
+      ["soy muy malo en inglés, ¿habla español?", "es", "aura-2-selena-es"],
+      ["je suis nul en anglais, vous parlez français ?", "fr", "aura-2-agathe-fr"],
+      ["ich bin nicht so gut in Englisch. Sprechen Sie Deutsch?", "de", "aura-2-elara-de"],
+      ["non sono bravo in inglese, parla italiano?", "it", "aura-2-cinzia-it"],
+      ["ik ben niet zo goed in Engels, spreekt u Nederlands?", "nl", "aura-2-daphne-nl"],
+      ["英語ではなく日本語でお願いします", "ja", "aura-2-uzume-ja"],
+    ]) {
+      const h = makeFast({ steps: [{ sentences: ["OK."], content: "OK." }] });
+      const s = h.start(langSession());
+      h.fluxOpens();
+      await h.handleUserSpeech(s, h.twilioWs, words);
+      assert.equal(s.fastLanguage, code, words);
+      assert.deepEqual(voicesSpoken(h), [["OK.", voice]], words);
+      clearTimeout(s._speakingTimeout);
+      h.closeFastPath(s);
+    }
+  });
+
+  it("silent-failure verification: a request for the line's language with a negation elsewhere keeps the line", async () => {
+    const h = spanishFirst([{ sentences: ["Claro: ¿en qué le puedo ayudar?"], content: "Claro: ¿en qué le puedo ayudar?" }]);
+    const s = h.start(langSession());
+    h.fluxOpens();
+    await h.handleUserSpeech(s, h.twilioWs, "Oh, pues español.");
+    await h.handleUserSpeech(s, h.twilioWs, "Sorry, can you say that again in Spanish? I can't hear you very well.");
+    assert.equal(s.fastLanguage, "es");
+    assert.deepEqual(voicesSpoken(h).at(-1), ["Claro: ¿en qué le puedo ayudar?", "aura-2-selena-es"]);
+    clearTimeout(s._speakingTimeout);
+    h.closeFastPath(s);
   });
 
   it("silent-failure re-review: declining to follow the caller into a language that failed is logged", async () => {
