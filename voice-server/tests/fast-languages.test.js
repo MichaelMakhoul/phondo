@@ -220,6 +220,23 @@ describe("detectCallerLanguage (F5 simulated calls: a French caller was answered
   }
 });
 
+describe("phone test F9: the switch note and its bookkeeping", () => {
+  it("set_language's note says to keep the language until the caller changes it, not \"from now on\" (code review)", () => {
+    const { message } = planLanguageSwitch({ fastLanguage: "en", baseDeepgramVoice: "aura-2-theia-en" }, "es");
+    assert.match(message, /Speak only Spanish until the caller changes language;/);
+    assert.doesNotMatch(message, /from now on/);
+  });
+
+  it("any recorded switch ends an automatic return to English", () => {
+    const session = { fastLanguage: "en", languagesUsed: ["en", "es"], fastAutoEnglish: true };
+    recordLanguageSwitch(session, { changed: true, to: "es" });
+    assert.equal(session.fastAutoEnglish, false);
+    session.fastAutoEnglish = true;
+    recordLanguageSwitch(session, { changed: false, to: "es" });
+    assert.equal(session.fastAutoEnglish, true, "no switch, nothing recorded");
+  });
+});
+
 describe("detectCallerEnglish (phone test F9: back in English, the caller heard the Spanish voice read English)", () => {
   for (const text of [
     "No. I just want to check if you speak any other languages.", // F9, word for word
@@ -295,11 +312,42 @@ describe("detectCallerEnglish (phone test F9: back in English, the caller heard 
       ["de", "Was will er am Montag in der Werkstatt"],
       ["nl", "Het lek is in de badkamer en het was erg"],
       ["it", "I tubi in cucina, me lo può dire"],
+      // code review and silent-failure review: booking talk, with English day and time words nearby
+      ["de", "Was geht am Dienstag in der Früh?"],
+      ["de", "Am Montag in der Früh, was ist da frei?"],
+      ["de", "Was kostet das am Montag in der Früh?"],
+      ["de", "Was ist am Dienstag in der Früh?"],
+      ["de", "Ich will am Montag in die Stadt."],
+      ["nl", "Is dinsdag in de ochtend of in de middag?"],
+      ["nl", "Is morgen in de ochtend of in de middag beter?"],
+      ["nl", "Het is in de badkamer, want de kraan lekt."],
+      ["nl", "Is het in de ochtend of in de middag?"],
+      ["nl", "Was het in de ochtend of in de middag?"],
+      ["nl", "Is het mogelijk om in de middag te komen, want ik werk in de ochtend?"],
     ]) {
       assert.equal(detectCallerEnglish(text, language), false, `${language}: ${text}`);
     }
     assert.equal(detectCallerEnglish("No. I just want to check if you speak any other languages.", "de"), true, "real English still is");
     assert.equal(detectCallerEnglish("No. I just want to check if you speak any other languages.", "es"), true);
+  });
+
+  it("code review: English words asking for the line's own language are the model's to answer, not a switch back", () => {
+    for (const [language, text] of [
+      ["es", "Can you say that again in Spanish?"],
+      ["es", "Can you say something else in español?"],
+      ["fr", "Can you say that again in French, please?"],
+      ["de", "Can you say that again in German, please?"],
+      ["it", "Can you say that again in Italian, please?"],
+      ["nl", "Can you say that again in Dutch, please?"],
+      ["ja", "Can you say that again in Japanese, please?"],
+      ["ja", "Can you say that again in 日本語, please?"],
+    ]) {
+      assert.equal(detectCallerEnglish(text, language), false, `${language}: ${text}`);
+      assert.equal(detectCallerEnglish(text), true, `without the line's language it reads as English: ${text}`);
+    }
+    assert.equal(detectCallerEnglish("Can we switch back to English instead of Spanish?", "es"), true, "naming English too: a switch back");
+    assert.equal(detectCallerEnglish("Can you say that again in Spanish?", "fr"), true, "another line's language is no request for this one");
+    assert.equal(detectCallerEnglish("That is a germane point, can you help me with the booking", "de"), true, "a whole word only");
   });
 
   it("each look-alike counts as English everywhere but on its own language's line", () => {

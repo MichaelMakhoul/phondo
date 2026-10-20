@@ -115,8 +115,8 @@ export function voiceLanguage(voice: string | undefined): string | null {
   const suffix = /-([a-z]{2})$/.exec(voice || "")?.[1];
   return suffix && Object.hasOwn(VOICE_LANGUAGES, suffix) ? VOICE_LANGUAGES[suffix] : null;
 }
-/** Everyday English words that are no word in the line's other languages ("is" is Dutch, so it isn't here). */
-const ENGLISH_ONLY = new Set(["the", "you", "your", "what", "can", "there", "anything", "else", "help", "with", "today", "would", "like", "have", "please", "thanks", "thank", "and", "for", "this", "that", "we", "our", "it's", "i'm", "you're"]);
+/** Everyday English words that are no word in the line's other languages ("is", "we" and "help" are Dutch, so they aren't here). */
+const ENGLISH_ONLY = new Set(["the", "you", "your", "what", "can", "there", "anything", "else", "with", "today", "would", "like", "have", "please", "thanks", "thank", "and", "for", "this", "that", "our", "it's", "i'm", "you're"]);
 
 /**
  * Phone test F9: AI lines another language's voice read out in English ("Is there anything

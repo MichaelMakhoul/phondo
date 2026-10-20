@@ -15,9 +15,10 @@
  * Phone test F9: the voices aren't equally loud, nor equally peaky. The Spanish
  * voice speaks 2 dB louder than Theia with peaks 3 dB higher, so +6 dB drove it
  * into the limiter (its error 10 dB over Theia's) and the caller heard it as
- * "off". AURA_GAIN_DB is Theia's gain; every voice listed below gets the gain
- * that brings it to Theia's level, but never more than its ceiling. A voice not
- * listed gets AURA_GAIN_DB as it is.
+ * "off". AURA_GAIN_DB is Theia's gain, up to her own ceiling (7 dB: more than
+ * that no longer changes her); every voice listed below gets the gain that
+ * brings it to Theia's level, but never more than its ceiling. A voice not
+ * listed gets AURA_GAIN_DB as it is, with a warning (measure it).
  */
 
 const { encodeMulawSample } = require("./audio-converter");
@@ -66,6 +67,9 @@ let loggedDb = null;
 /** Each listed voice's gain as its own "[AuraGain]" line last announced it. */
 /** @type {Map<string, number>} */
 const loggedVoiceDb = new Map();
+/** Voices with no profile already warned about (a new voice must be measured). */
+/** @type {Set<string>} */
+const warnedUnprofiled = new Set();
 /** The gain tables made so far, by gain (a few: AURA_GAIN_DB's and the listed voices'). */
 /** @type {Map<number, Uint8Array>} */
 const tables = new Map();
@@ -161,6 +165,10 @@ function boostAura(audio, voice) {
     console.log(base === 0 ? "[AuraGain] Aura boost is OFF (AURA_GAIN_DB)" : `[AuraGain] Aura audio at +${base} dB (AURA_GAIN_DB)`);
   }
   const db = voiceGainDb(voice, base);
+  if (typeof voice === "string" && base !== 0 && !Object.hasOwn(VOICE_PROFILES, voice) && !warnedUnprofiled.has(voice) && warnedUnprofiled.size < 32) {
+    warnedUnprofiled.add(voice);
+    console.warn(`[AuraGain] ${voice.slice(0, 60)} has no measured profile — using AURA_GAIN_DB (+${base} dB); measure it (lib/aura-gain.js)`);
+  }
   if (db !== base && typeof voice === "string" && loggedVoiceDb.get(voice) !== db) {
     loggedVoiceDb.set(voice, db);
     console.log(`[AuraGain] ${voice} at +${db} dB (its own level and peaks; AURA_GAIN_DB is ${base})`);

@@ -290,10 +290,9 @@ describe("aura-gain — phone test F9 (the Spanish voice sounded off: +6 dB drov
       require("../lib/voice-mapping").DEFAULT_DEEPGRAM_VOICE,
       require("../services/aura-stream").DEFAULT_VOICE,
     ];
-    assert.ok(product.length >= 15, "the lists were read");
-    for (const voice of new Set(product.filter((v) => typeof v === "string" && v.startsWith("aura-2-")))) {
-      assert.ok(Object.hasOwn(VOICE_PROFILES, voice), `${voice} has a profile`);
-    }
+    const voices = new Set(product);
+    assert.ok(voices.size >= 11, `the lists were read: ${[...voices].join(", ")}`);
+    for (const voice of voices) assert.ok(Object.hasOwn(VOICE_PROFILES, voice), `${voice} has a profile`);
     assert.equal(REFERENCE_VOICE, "aura-2-theia-en");
     delete process.env.AURA_GAIN_DB;
     const ref = VOICE_PROFILES[REFERENCE_VOICE].level + voiceGainDb(REFERENCE_VOICE);
@@ -382,6 +381,21 @@ describe("aura-gain — phone test F9 (the Spanish voice sounded off: +6 dB drov
     ]);
     const off = withFreshModule("off", (g) => { g.boostAura(Buffer.alloc(160, 0x8a), SELENA); g.boostAura(Buffer.alloc(160, 0x8a), "aura-2-daphne-nl"); });
     assert.deepEqual(off.logs, ["[AuraGain] Aura boost is OFF (AURA_GAIN_DB)"]);
+  });
+
+  it("silent-failure review: a voice with no profile is warned about once (measure it), and still gets AURA_GAIN_DB", () => {
+    const { warns } = withFreshModule(undefined, (g) => {
+      for (let i = 0; i < 20; i++) {
+        assert.deepEqual(g.boostAura(Buffer.alloc(160, 0x8a), "aura-3-newvoice-en"), g.boostAura(Buffer.alloc(160, 0x8a)));
+        g.boostAura(Buffer.alloc(160, 0x8a), SELENA);
+        g.boostAura(Buffer.alloc(160, 0x8a));
+      }
+    });
+    assert.deepEqual(warns, ["[AuraGain] aura-3-newvoice-en has no measured profile — using AURA_GAIN_DB (+6 dB); measure it (lib/aura-gain.js)"]);
+    const off = withFreshModule("off", (g) => g.boostAura(Buffer.alloc(160, 0x8a), "aura-3-newvoice-en"));
+    assert.deepEqual(off.warns, [], "off: nothing is boosted, nothing to measure");
+    const many = withFreshModule(undefined, (g) => { for (let i = 0; i < 100; i++) g.boostAura(Buffer.alloc(1, 0x8a), `aura-x-${i}`); });
+    assert.equal(many.warns.length, 32, "at most 32 voices are remembered");
   });
 
   it("the REST client boosts for the voice it asked for", async () => {

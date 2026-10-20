@@ -42,6 +42,7 @@ describe("englishInOtherVoice and the voice tags", () => {
       voiced("Is there anything else I can help you with today?"),
       voiced("Sure, Michael.", "aura-2-selena-es"),
       voiced("Is het mogelijk om morgen te komen?", "aura-2-daphne-nl"),
+      voiced("We help u graag met de afspraak van morgen.", "aura-2-daphne-nl"), // "we" and "help" are Dutch too
     ])).toEqual([]);
   });
 

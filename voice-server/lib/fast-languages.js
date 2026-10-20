@@ -110,19 +110,22 @@ function planLanguageSwitch(session, requested) {
   const voice = entry.voice || session.baseDeepgramVoice || ENGLISH_FALLBACK_VOICE;
   const message = code === "en"
     ? "Switched back to English: the caller hears the usual voice again."
-    : `Switched to ${entry.name}: the caller now hears a ${entry.name} voice. Speak only ${entry.name} from now on; keep names, numbers, dates, times and confirmation codes exactly as they are, and translate English tool results before you say them.`;
+    : `Switched to ${entry.name}: the caller now hears a ${entry.name} voice. Speak only ${entry.name} until the caller changes language; keep names, numbers, dates, times and confirmation codes exactly as they are, and translate English tool results before you say them.`;
   return { ok: true, changed: true, from, to: code, voice, hints: code === "en" ? ["en"] : [code, "en"], message };
 }
 
 /**
  * Record a switch that happened: the call's language, and every language it used.
- * @param {{ fastLanguage?: string|null, languagesUsed?: string[]|null }} session
+ * Any switch ends an automatic return to English (phone test F9); the automatic
+ * return sets it again right after.
+ * @param {{ fastLanguage?: string|null, languagesUsed?: string[]|null, fastAutoEnglish?: boolean }} session
  * @param {{ changed: boolean, to?: string }} plan - planLanguageSwitch's result
  */
 function recordLanguageSwitch(session, plan) {
   if (!plan.changed || !plan.to) return;
   session.fastLanguage = plan.to;
   session.languagesUsed = [...new Set([...(session.languagesUsed || ["en"]), plan.to])];
+  session.fastAutoEnglish = false;
 }
 
 /**
@@ -168,12 +171,26 @@ const ENGLISH_COURTESY = new Set(["okay", "ok", "thanks", "thank", "yes", "yeah"
  * in der Früh kommen" is German, "Het lek is in de badkamer en het was erg" Dutch.
  * @type {Readonly<Record<string, ReadonlySet<string>>>}
  */
+/**
+ * Gate review (F9): each language's names, in English and its own. "Can you say that
+ * again in Spanish?" on a Spanish line is English words asking for Spanish.
+ * @type {Readonly<Record<string, readonly string[]>>}
+ */
+const LANGUAGE_NAMES = Object.freeze({
+  en: ["english", "inglés", "ingles", "anglais", "englisch", "inglese", "engels", "英語"],
+  es: ["spanish", "español", "espanol", "castellano"],
+  fr: ["french", "français", "francais"],
+  de: ["german", "deutsch"],
+  it: ["italian", "italiano"],
+  nl: ["dutch", "nederlands"],
+  ja: ["japanese", "日本語", "にほんご", "nihongo"],
+});
 const ENGLISH_LOOKALIKES = Object.freeze({
   es: new Set(["me", "has"]),
   fr: new Set(["on", "me"]),
   de: new Set(["will", "am", "in", "was", "name"]),
   it: new Set(["i", "in", "me", "do"]),
-  nl: new Set(["is", "in", "was", "me", "of"]),
+  nl: new Set(["is", "in", "was", "me", "of", "want"]),
 });
 /** Kana themselves (Script, not Script_Extensions: 。、「」 are shared with Chinese). */
 const KANA = /[\p{sc=Hiragana}\p{sc=Katakana}]/gu;
@@ -206,18 +223,38 @@ function detectCallerLanguage(text) {
  * of them everyday English ones besides the courtesies anyone uses ("okay",
  * "thanks") and the line language's own look-alikes, and at least three times as
  * many as any other language's: "Okay, thanks. It's Sami Khoury." and "Sí, thank
- * you, gracias" aren't.
+ * you, gracias" aren't. Nor is a request naming the line's own language, not
+ * English ("Can you say that again in Spanish?"): that is the model's to answer.
  * @param {unknown} text - the caller's words
  * @param {string} [language] - the line's language now
  * @returns {boolean}
  */
 function detectCallerEnglish(text, language) {
   if (typeof text !== "string" || !text.trim()) return false;
+  if (typeof language === "string" && Object.hasOwn(LANGUAGE_NAMES, language) && namesLanguage(text, language) && !namesLanguage(text, "en")) return false;
   const lookalikes = typeof language === "string" && Object.hasOwn(ENGLISH_LOOKALIKES, language) ? ENGLISH_LOOKALIKES[language] : null;
   const { words, english, scores } = markerCounts(text);
   const plain = english.filter((w) => !ENGLISH_COURTESY.has(w) && !lookalikes?.has(w)).length;
   const other = scores[0][1];
   return words >= 4 && plain >= 3 && other * 3 <= plain;
+}
+
+/** LANGUAGE_NAMES as tests: a Latin-script name as a whole word ("german", not "germane"), a Japanese one anywhere. */
+const NAME_TESTS = Object.fromEntries(Object.entries(LANGUAGE_NAMES).map(([code, names]) => {
+  const latin = names.filter((n) => /^\p{Script=Latin}+$/u.test(n));
+  const others = names.filter((n) => !latin.includes(n));
+  const word = latin.length > 0 ? new RegExp(`(?<!\\p{L})(?:${latin.join("|")})(?!\\p{L})`, "u") : null;
+  return [code, (/** @type {string} */ lower) => Boolean(word?.test(lower)) || others.some((n) => lower.includes(n))];
+}));
+
+/**
+ * Does the text name the language (in English or its own name)?
+ * @param {string} text
+ * @param {string} code - a LANGUAGE_NAMES key
+ * @returns {boolean}
+ */
+function namesLanguage(text, code) {
+  return NAME_TESTS[code](text.toLowerCase());
 }
 
 /**

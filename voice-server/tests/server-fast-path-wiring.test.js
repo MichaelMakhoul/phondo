@@ -3873,6 +3873,8 @@ describe("SCRUM-594 (F5): the call's languages on the fast path", () => {
     const notes = s.messages.filter((m) => m.role === "system" && /^The caller spoke English, so the line switched back to English \(no set_language needed\)\. Answer in English while the line speaks English\.$/.test(m.content));
     assert.equal(notes.length, 1, "the model is told, once");
     assert.ok(h.lines.some((l) => l.includes("[FastPath] Language es → en, voice aura-2-thalia-en")), h.lines.join("\n"));
+    assert.ok(h.lines.some((l) => l.includes("[FastPath] The caller spoke English on the Spanish line: switched back automatically")), "silent-failure review: told apart from set_language in the logs");
+    assert.equal(s.fastAutoEnglish, true);
     assert.equal(h.llmCalls.length, 3, "no extra model round for the way back");
     clearTimeout(s._speakingTimeout);
     h.closeFastPath(s);
@@ -3928,16 +3930,64 @@ describe("SCRUM-594 (F5): the call's languages on the fast path", () => {
     h.closeFastPath(s);
   });
 
-  it("phone test F9: the way back never re-opens the automatic switch away from English (once a call), and is no switch on an English line", async () => {
-    const h = spanishFirst([{ sentences: ["Sure."], content: "Sure." }, { sentences: ["Of course."], content: "Of course." }]);
+  it("silent-failure review: after the automatic way back, a caller who goes on in their language is followed back to it", async () => {
+    const h = spanishFirst([{ sentences: ["Sure."], content: "Sure." }, { sentences: ["Claro, sin problema."], content: "Claro, sin problema." }]);
+    const s = h.start(langSession());
+    h.fluxOpens();
+    const configured = [];
+    h.lastFlux().handle.configure = (settings) => { configured.push(settings.language_hints); return true; };
+    await h.handleUserSpeech(s, h.twilioWs, "Oh, pues español.");
+    await h.handleUserSpeech(s, h.twilioWs, "My name is Sami Khoury and I can be there in the morning.");
+    assert.equal(s.fastLanguage, "en");
+    await h.handleUserSpeech(s, h.twilioWs, "Perdón, sí, prefiero hablar español, por favor.");
+    assert.equal(s.fastLanguage, "es", "followed back to Spanish");
+    assert.equal(s.fastAutoEnglish, false);
+    assert.deepEqual(configured, [["es", "en"], ["en"], ["es", "en"]]);
+    assert.deepEqual(voicesSpoken(h).at(-1), ["Claro, sin problema.", "aura-2-selena-es"]);
+    assert.ok(s.messages.some((m) => m.role === "system" && /^The caller spoke Spanish, so the line switched to Spanish/.test(m.content)));
+    assert.ok(h.lines.some((l) => l.includes("[FastPath] The caller spoke Spanish: switched automatically")), h.lines.join("\n"));
+    clearTimeout(s._speakingTimeout);
+    h.closeFastPath(s);
+  });
+
+  it("phone test F9: a caller who asked for English (set_language) stays in English, as before — no automatic switch away", async () => {
+    const h = spanishFirst([{ tools: [{ name: "set_language", args: { language: "en" } }] }, { sentences: ["Sure."], content: "Sure." }, { sentences: ["Of course."], content: "Of course." }]);
     const s = h.start(langSession());
     h.fluxOpens();
     await h.handleUserSpeech(s, h.twilioWs, "Oh, pues español.");
-    await h.handleUserSpeech(s, h.twilioWs, "Can we speak in English, please?");
+    await h.handleUserSpeech(s, h.twilioWs, "English please.");
     assert.equal(s.fastLanguage, "en");
+    assert.equal(s.fastAutoEnglish, false);
     await h.handleUserSpeech(s, h.twilioWs, "Bonjour, vous parlez français ?");
     assert.equal(s.fastLanguage, "en", "the caller chose English: no automatic switch to French");
-    assert.equal(s.messages.filter((m) => m.role === "system" && /^The caller spoke/.test(m.content)).length, 1, "only the way back");
+    assert.equal(s.messages.filter((m) => m.role === "system" && /^The caller spoke/.test(m.content)).length, 0);
+    clearTimeout(s._speakingTimeout);
+    h.closeFastPath(s);
+  });
+
+  it("phone test F9: never followed back to a language whose voice or hearing failed", async () => {
+    for (const failed of [["fr"], null]) {
+      const h = makeFast({ steps: [{ sentences: ["Bien sûr."], content: "Bien sûr." }] });
+      const s = h.start(langSession());
+      h.fluxOpens();
+      s.languagesUsed = ["en", "fr", "es"];
+      s.fastAutoEnglish = true; // came back to English on its own
+      s.failedLanguages = failed;
+      await h.handleUserSpeech(s, h.twilioWs, "Bonjour, vous parlez français ?");
+      assert.equal(s.fastLanguage, failed ? "en" : "fr", JSON.stringify(failed));
+      clearTimeout(s._speakingTimeout);
+      h.closeFastPath(s);
+    }
+  });
+
+  it("code review: English words asking for the line's own language leave it be — the model answers", async () => {
+    const h = spanishFirst([{ sentences: ["Claro: ¿en qué le puedo ayudar?"], content: "Claro: ¿en qué le puedo ayudar?" }]);
+    const s = h.start(langSession());
+    h.fluxOpens();
+    await h.handleUserSpeech(s, h.twilioWs, "Oh, pues español.");
+    await h.handleUserSpeech(s, h.twilioWs, "Can you say that again in Spanish?");
+    assert.equal(s.fastLanguage, "es");
+    assert.deepEqual(voicesSpoken(h).at(-1), ["Claro: ¿en qué le puedo ayudar?", "aura-2-selena-es"]);
     clearTimeout(s._speakingTimeout);
     h.closeFastPath(s);
   });
@@ -4045,6 +4095,7 @@ describe("SCRUM-594 (F5): the call's languages on the fast path", () => {
     await h.handleUserSpeech(s, h.twilioWs, "¿Habla español?");
     assert.deepEqual(h.calls.filter((c) => c[0] === "synthesizeSpeech").map((c) => [c[1], c[2]?.voice]), [["Claro.", "aura-2-selena-es"], ["Claro.", "aura-2-thalia-en"]]);
     assert.equal(s.fastLanguage, "en");
+    assert.deepEqual(s.failedLanguages, ["es"], "phone test F9: never followed back to it");
     assert.equal(h.sentry.filter((e) => e.tags?.service === "aura-rest").length, 1, JSON.stringify(h.sentry));
     assert.ok(s.messages.some((m) => m.role === "system" && /only continue in English/.test(m.content)));
     clearTimeout(s._speakingTimeout);

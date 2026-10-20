@@ -3711,6 +3711,7 @@ const FAST_LANGUAGE_RULES = [
   "- This line speaks English, Spanish, French, German, Italian, Dutch and Japanese, nothing else.",
   "- When the caller asks for one of these, or speaks a full sentence in it, call set_language first, in a reply with no words, then answer in that language and keep to it until the caller changes language again.",
   "- That includes going back: once you've switched, if the caller asks for English or speaks a full sentence in English, call set_language with \"en\" before you answer in English.",
+  "- If the caller only asks, in English, whether you speak one of them, answer in English (\"Yes, I can. Would you like to continue in Spanish?\") and switch when they want to. Never write a word of another language before set_language has switched the line.",
   "- Once you've switched, say everything in that language, including any line this prompt gives you to say (translate it).",
   "- For any other language (for example Arabic, Mandarin, Cantonese, Vietnamese, Hindi or Greek), say in English, in one short sentence, that this line can't speak it yet, and offer to have someone call them back. Never write words in a language this line can't speak.",
 ].join("\n");
@@ -3940,20 +3941,22 @@ function callLanguage(session) {
  * other languages (detectCallerLanguage) switches the call to it before the
  * reply, as set_language would. The model answered a French caller in French,
  * in the English voice, never calling set_language. Only while the call has
- * never switched (handleUserSpeech): a caller who asked for English stays in
- * English, and a voice that failed is never tried again.
+ * never switched, or came back to English on its own (phone test F9;
+ * handleUserSpeech): a caller who asked for English stays in English, and a
+ * language whose voice or hearing failed is never tried again.
  * @param {any} session
  * @param {string} transcript - the caller's words this turn
  * @returns {Promise<boolean>} whether the call switched
  */
 async function switchToCallerLanguage(session, transcript) {
   const code = detectCallerLanguage(transcript);
-  if (!code) return false;
+  if (!code || session.failedLanguages?.includes(code)) return false;
   const plan = planLanguageSwitch(session, code);
   if (!plan.changed) return false;
   if (session.fastTts?.isOpen()) await settleFastAudio(session);
   if (!switchFastLanguageStreams(session, plan)) return false;
   recordLanguageSwitch(session, plan);
+  console.log(`[FastPath] The caller spoke ${FAST_LANGUAGES[code].name}: switched automatically (callSid=${session.callSid})`);
   // Claude reads every note as part of its system prompt for the rest of the call:
   // this one holds only while the line speaks the language (gate review).
   const name = FAST_LANGUAGES[code].name;
@@ -3965,9 +3968,10 @@ async function switchToCallerLanguage(session, transcript) {
  * SCRUM-594 (phone test F9): on a line switched to another language, a caller
  * clearly speaking English again (detectCallerEnglish) switches it back before
  * the reply. The model answered in English without set_language, and the
- * Spanish voice read the English out. Only ever toward English: a voice that
- * failed is never tried again, and the one automatic switch away from English
- * a call (switchToCallerLanguage) stands.
+ * Spanish voice read the English out. This return re-arms the automatic switch
+ * to the caller's language (fastAutoEnglish): a caller who goes on in Spanish
+ * is followed back, never to a language whose voice failed. A caller who asked
+ * for English (set_language) stays in English, as before.
  * @param {any} session
  * @param {string} transcript - the caller's words this turn
  * @returns {boolean} whether the call switched
@@ -3977,6 +3981,8 @@ function switchCallerBackToEnglish(session, transcript) {
   const plan = planLanguageSwitch(session, "en");
   if (!plan.changed || !switchFastLanguageStreams(session, plan)) return false;
   recordLanguageSwitch(session, plan);
+  session.fastAutoEnglish = true;
+  console.log(`[FastPath] The caller spoke English on the ${FAST_LANGUAGES[plan.from]?.name || plan.from} line: switched back automatically (callSid=${session.callSid})`);
   session.addMessage("system", "The caller spoke English, so the line switched back to English (no set_language needed). Answer in English while the line speaks English.");
   return true;
 }
@@ -4052,9 +4058,10 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
 
     // SCRUM-594 (F5 simulated calls): the caller's language, before the reply is written —
     // once a call, before any switch; phone test F9: back to English whenever the caller
-    // clearly speaks it again. A draft written before a switch is never said in the new voice.
+    // clearly speaks it again, and after that back to theirs. A draft written before a
+    // switch is never said in the new voice.
     const callerSwitched = session.fastLanguages && (session.fastLanguage === "en"
-      ? !session.languagesUsed && await switchToCallerLanguage(session, transcript)
+      ? (!session.languagesUsed || session.fastAutoEnglish) && await switchToCallerLanguage(session, transcript)
       : switchCallerBackToEnglish(session, transcript));
     if (callerSwitched && fastTurn?.draft) {
       fastTurn.draft.abort("language switched");
@@ -5280,6 +5287,7 @@ function revertFastLanguageToEnglish(session, why) {
   if (typeof session.fastLanguage !== "string" || session.fastLanguage === "en") return false;
   const plan = planLanguageSwitch(session, "en");
   if (!plan.changed) return false;
+  session.failedLanguages = [...(session.failedLanguages || []), session.fastLanguage]; // phone test F9: never followed back to it
   const stt = session.deepgramWs;
   if (session.fastPath === true && stt && typeof stt.configure === "function") stt.configure({ language_hints: plan.hints });
   session.deepgramVoice = plan.voice || session.deepgramVoice;
