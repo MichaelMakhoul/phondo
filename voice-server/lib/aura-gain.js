@@ -28,6 +28,9 @@ const OFF_WORDS = /^(?:off|false|no|none|disabled)$/i;
 let warnedBadGain = false;
 let warnedClamp = false;
 let warnedNotAudio = false;
+/** The gain the last "[AuraGain]" line announced (null: none yet), so it is logged once, not per frame. */
+/** @type {number | null} */
+let loggedDb = null;
 /** @type {{ db: number, table: Uint8Array } | null} */
 let cached = null;
 
@@ -100,11 +103,12 @@ function boostAura(audio) {
     return audio;
   }
   const db = auraGainDb();
-  if (db === 0 || audio.length === 0) return /** @type {Buffer} */ (audio);
-  if (!cached || cached.db !== db) {
-    cached = { db, table: gainTable(db) };
-    console.log(`[AuraGain] Aura audio at +${db} dB (AURA_GAIN_DB)`);
+  if (db !== loggedDb) {
+    loggedDb = db;
+    console.log(db === 0 ? "[AuraGain] Aura boost is OFF (AURA_GAIN_DB)" : `[AuraGain] Aura audio at +${db} dB (AURA_GAIN_DB)`);
   }
+  if (db === 0 || audio.length === 0) return /** @type {Buffer} */ (audio);
+  if (!cached || cached.db !== db) cached = { db, table: gainTable(db) };
   const { table } = cached;
   const out = Buffer.allocUnsafe(audio.length);
   for (let i = 0; i < audio.length; i++) out[i] = table[audio[i]];

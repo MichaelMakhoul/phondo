@@ -182,4 +182,78 @@ describe("aura-gain — phone test F7 (the voice was too quiet to follow)", () =
     assert.equal(warnings.length, 1);
     assert.match(warnings[0], /AURA_GAIN_DB/);
   });
+
+  /** A fresh copy of the module (warn-once and log-once state clear), with console.log/warn captured while `body` runs. */
+  function withFreshModule(env, body) {
+    const modPath = require.resolve("../lib/aura-gain");
+    delete require.cache[modPath];
+    const fresh = require("../lib/aura-gain");
+    const logs = [];
+    const warns = [];
+    const realLog = console.log;
+    const realWarn = console.warn;
+    console.log = (...args) => logs.push(args.join(" "));
+    console.warn = (...args) => warns.push(args.join(" "));
+    try {
+      if (env === undefined) delete process.env.AURA_GAIN_DB;
+      else process.env.AURA_GAIN_DB = env;
+      body(fresh);
+    } finally {
+      console.log = realLog;
+      console.warn = realWarn;
+      delete require.cache[modPath];
+    }
+    return { logs, warns };
+  }
+  const frames = (g, n = 50) => { for (let i = 0; i < n; i++) g.boostAura(Buffer.alloc(160, 0x8a)); };
+
+  it("a bad AURA_GAIN_DB is named in its warning, once, and the default gain is what gets logged", () => {
+    const { logs, warns } = withFreshModule("loud", (g) => frames(g));
+    assert.equal(warns.length, 1);
+    assert.ok(warns[0].includes('"loud"'), warns[0]);
+    assert.deepEqual(logs, ["[AuraGain] Aura audio at +6 dB (AURA_GAIN_DB)"]);
+  });
+
+  it("a clamped AURA_GAIN_DB warns once with what was asked and what is used, and the clamped gain is the one logged", () => {
+    for (const [raw, asked, used, logLine] of [["20", "20", "12", "+12 dB"], ["-3", "-3", "0", "boost is OFF"]]) {
+      const { logs, warns } = withFreshModule(raw, (g) => frames(g));
+      assert.equal(warns.length, 1, raw);
+      assert.ok(warns[0].includes(`AURA_GAIN_DB=${asked} `) && warns[0].includes(`using ${used} dB`), warns[0]);
+      assert.equal(logs.length, 1, raw);
+      assert.ok(logs[0].includes(logLine), logs[0]);
+    }
+  });
+
+  it("the gain in use is logged once per process, not per frame, and again only when it changes", () => {
+    const { logs, warns } = withFreshModule(undefined, (g) => {
+      frames(g);
+      process.env.AURA_GAIN_DB = "8";
+      frames(g);
+    });
+    assert.deepEqual(warns, []);
+    assert.deepEqual(logs, ["[AuraGain] Aura audio at +6 dB (AURA_GAIN_DB)", "[AuraGain] Aura audio at +8 dB (AURA_GAIN_DB)"]);
+  });
+
+  it("off is logged too (once): the kill switch's effect is visible in the logs", () => {
+    for (const raw of ["off", "0", "false"]) {
+      const { logs, warns } = withFreshModule(raw, (g) => frames(g));
+      assert.deepEqual(warns, [], raw);
+      assert.deepEqual(logs, ["[AuraGain] Aura boost is OFF (AURA_GAIN_DB)"], raw);
+    }
+  });
+
+  it("only the whole word turns it off: a value that merely contains one is a bad value (default + warning)", () => {
+    for (const raw of ["nope", "snow", "offline", "6 off", "no way"]) {
+      const { warns } = withFreshModule(raw, (g) => assert.equal(g.auraGainDb(), 6, raw));
+      assert.equal(warns.length, 1, raw);
+    }
+  });
+
+  it("something that isn't bytes goes out as it came, with one warning", () => {
+    const { warns } = withFreshModule(undefined, (g) => {
+      for (let i = 0; i < 20; i++) assert.equal(g.boostAura(/** @type {any} */ ("not audio")), "not audio");
+    });
+    assert.equal(warns.length, 1);
+    assert.match(warns[0], /isn't audio bytes/);
+  });
 });
