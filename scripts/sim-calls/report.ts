@@ -18,7 +18,7 @@ export function renderRun(sc: ScoredCall): string {
   const lines = [
     `# ${rec.scenario.id} run ${rec.run}: ${rec.scenario.title}`,
     "",
-    `Ended: ${rec.ending} after ${rec.turns} caller turns. Claude (receptionist): ${rec.llm.calls} requests, median ${rec.llm.medianMs} ms, p90 ${rec.llm.p90Ms} ms. Languages: ${(rec.languages || ["en"]).join(", ")}.`,
+    `Ended: ${rec.ending} after ${rec.turns} caller turns. Claude (receptionist): ${rec.llm.calls} requests, median ${rec.llm.medianMs} ms, p90 ${rec.llm.p90Ms} ms. Languages: ${(rec.languages || ["en"]).join(", ")}${rec.finalLanguage && rec.finalLanguage !== "en" ? ` (ended in ${rec.finalLanguage})` : ""}.`,
     rec.error ? `\n**Harness error:** ${rec.error}` : "",
     rec.anomalies.length > 0 ? `\n**Anomalies (the run is not a fair score):**\n${rec.anomalies.map((a) => `- ${a}`).join("\n")}` : "",
     "",

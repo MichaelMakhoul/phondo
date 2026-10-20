@@ -42,7 +42,7 @@ const { openAuraStream } = require("./services/aura-stream");
 const { DEFAULT_HOST } = require("./services/deepgram-ws-common");
 const { createFastPlayer } = require("./lib/fast-player");
 const { createFastTurnEngine, endsWithQuestion, isBackchannel, isLikelyEcho } = require("./lib/fast-turns");
-const { FLUX_MULTI_MODEL, FAST_LANGUAGES, fastLanguagesEnabled, setLanguageToolDefinition, unspeakableText, planLanguageSwitch, recordLanguageSwitch, detectCallerLanguage, UNSPEAKABLE_APOLOGY, LANGUAGE_UNHEARD_MESSAGE } = require("./lib/fast-languages"); // SCRUM-594 (F5)
+const { FLUX_MULTI_MODEL, FAST_LANGUAGES, fastLanguagesEnabled, setLanguageToolDefinition, unspeakableText, planLanguageSwitch, recordLanguageSwitch, detectCallerLanguage, detectCallerEnglish, UNSPEAKABLE_APOLOGY, LANGUAGE_UNHEARD_MESSAGE } = require("./lib/fast-languages"); // SCRUM-594 (F5)
 const { createNoTurnWatchdog } = require("./lib/no-turn-watchdog");
 const { startSpeculativeReply } = require("./lib/speculative-reply");
 const { streamClaudeResponse } = require("./services/claude-chat");
@@ -3709,7 +3709,8 @@ const FAST_VOICE_ADDENDUM = [
 const FAST_LANGUAGE_RULES = [
   "LANGUAGES ON THIS LINE (this replaces the LANGUAGE rule above):",
   "- This line speaks English, Spanish, French, German, Italian, Dutch and Japanese, nothing else.",
-  "- When the caller asks for one of these, or speaks a full sentence in it, call set_language first, in a reply with no words, then answer in that language and keep to it for the rest of the call.",
+  "- When the caller asks for one of these, or speaks a full sentence in it, call set_language first, in a reply with no words, then answer in that language and keep to it until the caller changes language again.",
+  "- That includes going back: once you've switched, if the caller asks for English or speaks a full sentence in English, call set_language with \"en\" before you answer in English.",
   "- Once you've switched, say everything in that language, including any line this prompt gives you to say (translate it).",
   "- For any other language (for example Arabic, Mandarin, Cantonese, Vietnamese, Hindi or Greek), say in English, in one short sentence, that this line can't speak it yet, and offer to have someone call them back. Never write words in a language this line can't speak.",
 ].join("\n");
@@ -3960,6 +3961,26 @@ async function switchToCallerLanguage(session, transcript) {
   return true;
 }
 
+/**
+ * SCRUM-594 (phone test F9): on a line switched to another language, a caller
+ * clearly speaking English again (detectCallerEnglish) switches it back before
+ * the reply. The model answered in English without set_language, and the
+ * Spanish voice read the English out. Only ever toward English: a voice that
+ * failed is never tried again, and the one automatic switch away from English
+ * a call (switchToCallerLanguage) stands.
+ * @param {any} session
+ * @param {string} transcript - the caller's words this turn
+ * @returns {boolean} whether the call switched
+ */
+function switchCallerBackToEnglish(session, transcript) {
+  if (!detectCallerEnglish(transcript)) return false;
+  const plan = planLanguageSwitch(session, "en");
+  if (!plan.changed || !switchFastLanguageStreams(session, plan)) return false;
+  recordLanguageSwitch(session, plan);
+  session.addMessage("system", "The caller spoke English, so the line switched back to English (no set_language needed). Answer in English while the line speaks English.");
+  return true;
+}
+
 function getToolFiller(lang, toolNames) {
   const msgs = FILLER_MESSAGES[lang] || FILLER_MESSAGES.en;
   const names = Array.isArray(toolNames) ? toolNames : [toolNames];
@@ -4030,8 +4051,12 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
     }
 
     // SCRUM-594 (F5 simulated calls): the caller's language, before the reply is written —
-    // once a call, before any switch. A draft written before it is never said in the new voice.
-    if (session.fastLanguages && session.fastLanguage === "en" && !session.languagesUsed && await switchToCallerLanguage(session, transcript) && fastTurn?.draft) {
+    // once a call, before any switch; phone test F9: back to English whenever the caller
+    // clearly speaks it again. A draft written before a switch is never said in the new voice.
+    const callerSwitched = session.fastLanguages && (session.fastLanguage === "en"
+      ? !session.languagesUsed && await switchToCallerLanguage(session, transcript)
+      : switchCallerBackToEnglish(session, transcript));
+    if (callerSwitched && fastTurn?.draft) {
       fastTurn.draft.abort("language switched");
       fastTurn.draft = null;
       fastTurn.record.spec = "discarded";
@@ -5127,10 +5152,12 @@ function startFastPath(session, twilioWs, openClassicStt) {
  */
 function openFastTts(session, twilioWs) {
   session.fastPlayer = createFastPlayer({ sendJson: (message) => sendTwilioJson(twilioWs, message), streamSid: session.streamSid });
+  // A stream's voice is fixed when it opens; its audio is boosted for that voice (phone test F9).
+  const voice = session.deepgramVoice || undefined;
   session.fastTts = openAuraStream(DEEPGRAM_API_KEY, {
-    voice: session.deepgramVoice || undefined,
+    voice,
     host: FAST_DEEPGRAM_HOST,
-    onAudio: (audio) => onFastAudio(session, audio),
+    onAudio: (audio) => onFastAudio(session, audio, voice),
     onFlushed: (seq) => onFastFlushed(session, seq),
     onWarning: (warning) => {
       console.warn(`[FastPath] Aura warning ${warning.code || "-"}: ${String(warning.message).slice(0, 120)} (callSid=${session.callSid})`);
@@ -5949,11 +5976,12 @@ function armFastFlushWatchdog(session, delayMs) {
  * Aura audio for the caller: through the player to Twilio.
  * @param {CallSession} session
  * @param {Buffer} audio
+ * @param {string} [voice] - the stream's voice
  */
-function onFastAudio(session, audio) {
+function onFastAudio(session, audio, voice) {
   const state = session.fastState;
   if (!state || state.closed || !session.fastPlayer) return;
-  session.fastPlayer.push(boostAura(audio)); // phone test F7: Aura is quieter than line level (lib/aura-gain.js)
+  session.fastPlayer.push(boostAura(audio, voice)); // phone tests F7/F9: Aura is quieter than line level, by voice (lib/aura-gain.js)
   session.isSpeaking = true;
   state.unmarked = true;
   state.presumedIdle = false;

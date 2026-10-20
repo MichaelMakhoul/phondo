@@ -20,6 +20,7 @@ const {
   UNSPEAKABLE_APOLOGY,
   LANGUAGE_UNHEARD_MESSAGE,
   detectCallerLanguage,
+  detectCallerEnglish,
 } = require("../lib/fast-languages");
 
 describe("FAST_LANGUAGES: what Flux Multilingual hears and Aura-2 speaks", () => {
@@ -216,4 +217,83 @@ describe("detectCallerLanguage (F5 simulated calls: a French caller was answered
   ]) {
     it(`${JSON.stringify(text)} is no clear other language`, () => assert.equal(detectCallerLanguage(text), null));
   }
+});
+
+describe("detectCallerEnglish (phone test F9: back in English, the caller heard the Spanish voice read English)", () => {
+  for (const text of [
+    "No. I just want to check if you speak any other languages.", // F9, word for word
+    "No. I just want to check if you speak any other languages. Thank you.",
+    "Can you speak English?",
+    "Do you speak English?",
+    "Can we speak in English, please?",
+    "Hello, can you hear me?",
+    "No. That's all. Thank you.",
+    "What time is available today?",
+    "The appointment is for tomorrow at two.",
+    "I'm sorry. Can you repeat that again, please?",
+    "Okay, thank you very much.",
+    "My name is Juan García.",
+    "Yes, I want to book 明日",
+  ]) {
+    it(`${JSON.stringify(text)} is English`, () => assert.equal(detectCallerEnglish(text), true));
+  }
+
+  for (const text of [
+    // too short to tell: a Spanish caller says these too
+    "Okay, thank you.",
+    "Thank you very much.",
+    "Yes, please.",
+    "English, please.",
+    "Sorry?",
+    "Hello? Hello?",
+    "Alright. Anything else?",
+    "Two PM is good.",
+    "Yes I do",
+    // mixed: the other language holds its own
+    "Sí, sí, thank you, gracias.",
+    "Gracias, thank you very much, adiós.",
+    "Okay, thank you. ¿Y a qué hora llega?",
+    "Quiero hablar en inglés, please.",
+    "Necesito cita mañana, por favor, thanks, okay.",
+    // the line's other languages ("is" is Dutch too)
+    "¿Hablas español?",
+    "Muy bien, gracias. ¿Y usted?",
+    "Mi nombre es Juan.",
+    "Bonjour, vous parlez français ?",
+    "Oui, d'accord, merci beaucoup, c'est parfait pour moi.",
+    "Ja, ich habe heute einen Termin.",
+    "Is het mogelijk om morgen te komen?",
+    "Is dinsdagochtend nog vrij?",
+    "Ho una perdita sotto il lavandino.",
+    "トイレの水が止まらないんです。",
+    // a spelling, repeats, nothing
+    "J O R D A N",
+    "J-O-R-D-A-N.",
+    "ok ok ok ok",
+    "the the the the",
+    "",
+    "   ",
+    null,
+    undefined,
+    42,
+  ]) {
+    it(`${JSON.stringify(text)} is not clearly English`, () => assert.equal(detectCallerEnglish(text), false));
+  }
+
+  it("the edges: four words with three English ones is enough; three words or two English ones are not", () => {
+    assert.equal(detectCallerEnglish("Can you hear this"), true); // can, you, this
+    assert.equal(detectCallerEnglish("Can you hear"), false, "three words");
+    assert.equal(detectCallerEnglish("Can you hear jamón"), false, "two English words");
+  });
+
+  it("the edges: at least three times as many English words as any other language's", () => {
+    // 4 English (i, want, to, the) to 2 Spanish (para, hoy): 2 x 3 > 4
+    assert.equal(detectCallerEnglish("I want to see the plumber para hoy"), false);
+    // 7 English (i, want, to, the, and, need, it) to 2 Spanish: 2 x 3 <= 7
+    assert.equal(detectCallerEnglish("I want to see the plumber para hoy and need it"), true);
+    // 3 English (i, want, to) to 1 Spanish (hoy): exactly three times
+    assert.equal(detectCallerEnglish("I want to go hoy"), true);
+    // 3 English to 2 Spanish
+    assert.equal(detectCallerEnglish("I want to go hoy para"), false);
+  });
 });

@@ -247,7 +247,7 @@ async function runCall(o: { scenario: Scenario; run: number; fixture: Fixture; c
     record.toolTrace = call.toolTrace;
     record.logs = call.logs;
     record.anomalies = call.anomalies;
-    for (const line of call.opening) transcript.push({ who: "ai", text: line.text, kind: line.kind });
+    for (const line of call.opening) transcript.push({ who: "ai", text: line.text, kind: line.kind, voice: line.voice });
     const caller = new SimCaller(persona, scenario.goal, o.callerModel);
     let aiSaid = call.opening.map((l) => l.text).join(" ");
     for (let turn = 0; turn < scenario.maxTurns; turn++) {
@@ -258,7 +258,7 @@ async function runCall(o: { scenario: Scenario; run: number; fixture: Fixture; c
         const heard = hearAs(clean, persona, o.noise, turn);
         transcript.push({ who: "caller", said: clean, heard });
         const spoken = await call.callerSays(heard);
-        for (const s of spoken) transcript.push({ who: "ai", text: s.text, kind: s.kind });
+        for (const s of spoken) transcript.push({ who: "ai", text: s.text, kind: s.kind, voice: s.voice });
         aiSaid = spoken.map((s) => s.text).join(" ");
       }
       activeAfterTurn.push(activeCount(orgId));
@@ -273,6 +273,7 @@ async function runCall(o: { scenario: Scenario; run: number; fixture: Fixture; c
     }
     record.diary = diaryFor(orgId, call.session.callRecordId, timezone);
     record.languages = call.session.languagesUsed || ["en"];
+    record.finalLanguage = call.session.fastLanguage || "en";
     record.llm = llmStats(call.llmStats.ms, call.llmStats.calls);
   } catch (err) {
     record.ending = "error";

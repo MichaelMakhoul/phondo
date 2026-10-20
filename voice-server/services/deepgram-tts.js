@@ -46,8 +46,9 @@ async function synthesizeSpeech(apiKey, text, options) {
   }
 
   const arrayBuffer = await res.arrayBuffer();
-  // SCRUM-594 (phone test F7): Aura comes out quieter than line level (lib/aura-gain.js).
-  return boostAura(Buffer.from(arrayBuffer));
+  // SCRUM-594 (phone test F7): Aura comes out quieter than line level (lib/aura-gain.js);
+  // phone test F9: by how much depends on the voice.
+  return boostAura(Buffer.from(arrayBuffer), voice);
 }
 
 /**

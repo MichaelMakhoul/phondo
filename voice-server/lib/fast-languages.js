@@ -176,11 +176,44 @@ const KANA = /[\p{sc=Hiragana}\p{sc=Katakana}]/gu;
 function detectCallerLanguage(text) {
   if (typeof text !== "string" || !text.trim()) return null;
   if ((text.match(KANA) || []).length >= 2) return "ja";
+  const { english, scores } = markerCounts(text);
+  const [best, score] = scores[0];
+  const runnerUp = scores[1][1];
+  if (score < 3 || score < runnerUp + 2 || english * 3 > score) return null;
+  return Object.prototype.hasOwnProperty.call(CALLER_MARKERS, best) ? best : null;
+}
+
+/**
+ * Phone test F9: a caller on a line switched to another language, clearly
+ * speaking English again. The model answered "No, I just want to check if you
+ * speak any other languages" in English, never calling set_language, and the
+ * Spanish voice read the English out. Clearly means at least four words, three
+ * of them everyday English ones, and at least three times as many English ones
+ * as any other language's: "Okay, thank you" and "Sí, thank you, gracias" aren't.
+ * @param {unknown} text - the caller's words
+ * @returns {boolean}
+ */
+function detectCallerEnglish(text) {
+  if (typeof text !== "string" || !text.trim()) return false;
+  const { words, english, scores } = markerCounts(text);
+  const other = scores[0][1];
+  return words >= 4 && english >= 3 && other * 3 <= english;
+}
+
+/**
+ * The everyday words in a caller's text: how many words it has, how many distinct
+ * English ones, and each other language's count, best first.
+ * @param {string} text
+ * @returns {{ words: number, english: number, scores: Array<[string, number]> }}
+ */
+function markerCounts(text) {
+  let total = 0;
   /** @type {Set<string>} */
   const words = new Set();
   /** @type {Set<string>} */
   const englishWords = new Set();
   for (const raw of text.toLowerCase().replace(/’/g, "'").match(/[\p{L}']+/gu) || []) {
+    total += 1;
     englishWords.add(raw); // "i'm", "don't"
     for (const part of raw.split("'")) {
       if (!part) continue;
@@ -189,16 +222,13 @@ function detectCallerLanguage(text) {
     }
   }
   const count = (/** @type {Set<string>} */ found, /** @type {Set<string>} */ set) => [...found].filter((t) => set.has(t)).length;
-  const english = count(englishWords, ENGLISH_MARKERS);
   const scores = MARKER_SETS.map(([code, set]) => /** @type {[string, number]} */ ([code, count(words, set)])).sort((a, b) => b[1] - a[1]);
-  const [best, score] = scores[0];
-  const runnerUp = scores[1][1];
-  if (score < 3 || score < runnerUp + 2 || english * 3 > score) return null;
-  return Object.prototype.hasOwnProperty.call(CALLER_MARKERS, best) ? best : null;
+  return { words: total, english: count(englishWords, ENGLISH_MARKERS), scores };
 }
 
 module.exports = {
   detectCallerLanguage,
+  detectCallerEnglish,
   FAST_LANGUAGES,
   FLUX_MULTI_MODEL,
   ENGLISH_FALLBACK_VOICE,

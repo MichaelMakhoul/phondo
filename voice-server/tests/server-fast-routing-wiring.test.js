@@ -279,6 +279,10 @@ describe("SCRUM-594: the classic block flags the fast variant, run for real", ()
     // the demo's English script line read out on a Spanish call.
     assert.match(FAST_LANGUAGE_RULES, /call set_language first, in a reply with no words/);
     assert.match(FAST_LANGUAGE_RULES, /including any line this prompt gives you to say/);
+    // Phone test F9: the shared rule's way back (RECOVERY IS MANDATORY) was lost when the fast rules replaced it.
+    assert.match(FAST_LANGUAGE_RULES, /keep to it until the caller changes language again/);
+    assert.doesNotMatch(FAST_LANGUAGE_RULES, /for the rest of the call/);
+    assert.match(FAST_LANGUAGE_RULES, /speaks a full sentence in English, call set_language with "en" before you answer in English/);
     const prev = process.env.FAST_LANGUAGES;
     process.env.FAST_LANGUAGES = "off";
     try {

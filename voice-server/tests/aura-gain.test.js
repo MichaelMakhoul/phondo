@@ -1,7 +1,7 @@
 const { describe, it, afterEach } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { boostAura, auraGainDb, gainTable, decodeMulaw, DEFAULT_GAIN_DB } = require("../lib/aura-gain");
+const { boostAura, auraGainDb, voiceGainDb, gainTable, decodeMulaw, DEFAULT_GAIN_DB, VOICE_PROFILES, REFERENCE_VOICE } = require("../lib/aura-gain");
 const { encodeMulawSample } = require("../lib/audio-converter");
 
 const saved = process.env.AURA_GAIN_DB;
@@ -21,6 +21,29 @@ function levelDb(mulaw) {
 function tone(db, samples = 8000) {
   const amp = 32768 * 10 ** (db / 20) * Math.SQRT2;
   return Buffer.from(Array.from({ length: samples }, (_, i) => encodeMulawSample(Math.round(amp * Math.sin((2 * Math.PI * 1000 * i) / 8000)))));
+}
+
+/** A fresh copy of the module (warn-once and log-once state clear), with console.log/warn captured while `body` runs. */
+function withFreshModule(env, body) {
+  const modPath = require.resolve("../lib/aura-gain");
+  delete require.cache[modPath];
+  const fresh = require("../lib/aura-gain");
+  const logs = [];
+  const warns = [];
+  const realLog = console.log;
+  const realWarn = console.warn;
+  console.log = (...args) => logs.push(args.join(" "));
+  console.warn = (...args) => warns.push(args.join(" "));
+  try {
+    if (env === undefined) delete process.env.AURA_GAIN_DB;
+    else process.env.AURA_GAIN_DB = env;
+    body(fresh);
+  } finally {
+    console.log = realLog;
+    console.warn = realWarn;
+    delete require.cache[modPath];
+  }
+  return { logs, warns };
 }
 
 describe("aura-gain — phone test F7 (the voice was too quiet to follow)", () => {
@@ -184,28 +207,6 @@ describe("aura-gain — phone test F7 (the voice was too quiet to follow)", () =
     assert.match(warnings[0], /AURA_GAIN_DB/);
   });
 
-  /** A fresh copy of the module (warn-once and log-once state clear), with console.log/warn captured while `body` runs. */
-  function withFreshModule(env, body) {
-    const modPath = require.resolve("../lib/aura-gain");
-    delete require.cache[modPath];
-    const fresh = require("../lib/aura-gain");
-    const logs = [];
-    const warns = [];
-    const realLog = console.log;
-    const realWarn = console.warn;
-    console.log = (...args) => logs.push(args.join(" "));
-    console.warn = (...args) => warns.push(args.join(" "));
-    try {
-      if (env === undefined) delete process.env.AURA_GAIN_DB;
-      else process.env.AURA_GAIN_DB = env;
-      body(fresh);
-    } finally {
-      console.log = realLog;
-      console.warn = realWarn;
-      delete require.cache[modPath];
-    }
-    return { logs, warns };
-  }
   const frames = (g, n = 50) => { for (let i = 0; i < n; i++) g.boostAura(Buffer.alloc(160, 0x8a)); };
 
   it("a bad AURA_GAIN_DB is named in its warning, once, and the default gain is what gets logged", () => {
@@ -256,5 +257,145 @@ describe("aura-gain — phone test F7 (the voice was too quiet to follow)", () =
     });
     assert.equal(warns.length, 1);
     assert.match(warns[0], /isn't audio bytes/);
+  });
+});
+
+describe("aura-gain — phone test F9 (the Spanish voice sounded off: +6 dB drove it into the limiter)", () => {
+  const SELENA = "aura-2-selena-es";
+
+  it("at the default, each voice gets Theia's level within its own ceiling: louder voices less, quieter ones more", () => {
+    delete process.env.AURA_GAIN_DB;
+    const got = Object.fromEntries(Object.keys(VOICE_PROFILES).map((v) => [v, voiceGainDb(v)]));
+    assert.deepEqual(got, {
+      "aura-2-theia-en": 6,
+      "aura-2-asteria-en": 6,
+      "aura-2-luna-en": 7.5,
+      "aura-2-orion-en": 4.5,
+      "aura-2-arcas-en": 4,
+      "aura-2-selena-es": 3.5,
+      "aura-2-agathe-fr": 6.5,
+      "aura-2-elara-de": 7.5,
+      "aura-2-cinzia-it": 7.5,
+      "aura-2-daphne-nl": 9.5,
+      "aura-2-uzume-ja": 8.5,
+    });
+  });
+
+  it("every product voice is listed, with Theia as the reference, and no voice ends up louder than Theia", () => {
+    const fastLanguages = require("../lib/fast-languages");
+    const product = [
+      ...Object.values(fastLanguages.FAST_LANGUAGES).map((l) => l.voice).filter(Boolean),
+      fastLanguages.ENGLISH_FALLBACK_VOICE,
+      ...Object.values(require("../lib/voice-mapping").VOICE_MAP),
+      require("../lib/voice-mapping").DEFAULT_DEEPGRAM_VOICE,
+      require("../services/aura-stream").DEFAULT_VOICE,
+    ];
+    assert.ok(product.length >= 15, "the lists were read");
+    for (const voice of new Set(product.filter((v) => typeof v === "string" && v.startsWith("aura-2-")))) {
+      assert.ok(Object.hasOwn(VOICE_PROFILES, voice), `${voice} has a profile`);
+    }
+    assert.equal(REFERENCE_VOICE, "aura-2-theia-en");
+    delete process.env.AURA_GAIN_DB;
+    const ref = VOICE_PROFILES[REFERENCE_VOICE].level + voiceGainDb(REFERENCE_VOICE);
+    for (const [voice, p] of Object.entries(VOICE_PROFILES)) {
+      assert.ok(p.ceiling > 0 && p.ceiling <= 12, `${voice} ceiling`);
+      assert.ok(voiceGainDb(voice) <= p.ceiling, `${voice} within its ceiling`);
+      assert.ok(p.level + voiceGainDb(voice) <= ref + 0.05, `${voice} no louder than Theia`);
+    }
+  });
+
+  it("below the ceilings the voices are matched to Theia's level; above them, the ceiling holds, Theia's too", () => {
+    // Theia -20.6 dBFS. At +4: Selena (-18.5) 1.9, Orion (-19.3) 2.7, Daphne (-25.6) 9.0; Uzume (-25.5) wants 8.9, ceiling 8.5.
+    assert.equal(voiceGainDb(SELENA, 4), 1.9);
+    assert.equal(voiceGainDb("aura-2-orion-en", 4), 2.7);
+    assert.equal(voiceGainDb("aura-2-daphne-nl", 4), 9);
+    assert.equal(voiceGainDb("aura-2-uzume-ja", 4), 8.5);
+    assert.equal(voiceGainDb(REFERENCE_VOICE, 8), 7, "AURA_GAIN_DB past Theia's own ceiling stops there");
+    assert.equal(voiceGainDb(REFERENCE_VOICE, 12), 7);
+    assert.equal(voiceGainDb(SELENA, 1), 0, "a gain that would go below 0 is 0, never a cut");
+  });
+
+  it("the kill switch turns every voice off; a voice not listed, or none, gets AURA_GAIN_DB as it is", () => {
+    for (const voice of [REFERENCE_VOICE, SELENA, "aura-2-daphne-nl", "aura-2-thalia-en", undefined]) assert.equal(voiceGainDb(voice, 0), 0, String(voice));
+    for (const voice of ["aura-2-thalia-en", "aura-2-unknown-xx", undefined, null, 7, "", "toString", "__proto__", "constructor"]) {
+      assert.equal(voiceGainDb(voice, 6), 6, String(voice));
+      assert.equal(voiceGainDb(voice, 8.3), 8.3, String(voice));
+    }
+    process.env.AURA_GAIN_DB = "off";
+    assert.equal(voiceGainDb("aura-2-daphne-nl"), 0, "read from AURA_GAIN_DB when not given");
+    process.env.AURA_GAIN_DB = "4";
+    assert.equal(voiceGainDb(SELENA), 1.9);
+  });
+
+  it("boostAura applies the voice's gain: a quiet tone comes out +3.5 dB for Selena, +9.5 for Daphne, +6 with no voice", () => {
+    delete process.env.AURA_GAIN_DB;
+    const quiet = tone(-30);
+    const base = levelDb(quiet);
+    for (const [voice, db] of [[SELENA, 3.5], ["aura-2-daphne-nl", 9.5], [REFERENCE_VOICE, 6], [undefined, 6], ["aura-2-thalia-en", 6]]) {
+      const got = levelDb(boostAura(quiet, voice)) - base;
+      assert.ok(Math.abs(got - db) < 0.5, `${voice}: ${db} dB wanted, ${got.toFixed(2)} dB heard`);
+    }
+    const bytes = Buffer.from(Array.from({ length: 256 }, (_, i) => i));
+    assert.deepEqual([...boostAura(bytes, SELENA)], [...gainTable(3.5)], "Selena's table, every code");
+    assert.deepEqual([...boostAura(bytes)], [...gainTable(6)]);
+    process.env.AURA_GAIN_DB = "off";
+    assert.equal(boostAura(quiet, "aura-2-daphne-nl"), quiet, "off: the same bytes for every voice");
+  });
+
+  it("Selena's loudest syllables bend far less than at the old +6 dB (the limiter's error, relative to plain gain)", () => {
+    delete process.env.AURA_GAIN_DB;
+    // A tone at Selena's p99.9 peak (-5.3 dBFS) — what the limiter bent on the F9 call.
+    const loud = tone(-8.3);
+    const error = (out, db) => {
+      const g = 10 ** (db / 20);
+      let e = 0, sig = 0;
+      for (let i = 0; i < loud.length; i++) {
+        const plain = decodeMulaw(loud[i]) * g;
+        e += (decodeMulaw(out[i]) - plain) ** 2;
+        sig += plain ** 2;
+      }
+      return 10 * Math.log10(e / sig);
+    };
+    const now = error(boostAura(loud, SELENA), 3.5);
+    const before = error(boostAura(loud), 6);
+    assert.ok(now < before - 6, `limiter error ${now.toFixed(1)} dB now vs ${before.toFixed(1)} dB at +6`);
+  });
+
+  it("each listed voice's gain is logged once, beside the base line; Theia (the base gain itself) adds no line; off is one line", () => {
+    const { logs } = withFreshModule(undefined, (g) => {
+      for (let i = 0; i < 20; i++) {
+        g.boostAura(Buffer.alloc(160, 0x8a), SELENA);
+        g.boostAura(Buffer.alloc(160, 0x8a), REFERENCE_VOICE);
+        g.boostAura(Buffer.alloc(160, 0x8a), "aura-2-daphne-nl");
+        g.boostAura(Buffer.alloc(160, 0x8a));
+      }
+      process.env.AURA_GAIN_DB = "4";
+      g.boostAura(Buffer.alloc(160, 0x8a), SELENA);
+      g.boostAura(Buffer.alloc(160, 0x8a), SELENA);
+    });
+    assert.deepEqual(logs, [
+      "[AuraGain] Aura audio at +6 dB (AURA_GAIN_DB)",
+      "[AuraGain] aura-2-selena-es at +3.5 dB (its own level and peaks; AURA_GAIN_DB is 6)",
+      "[AuraGain] aura-2-daphne-nl at +9.5 dB (its own level and peaks; AURA_GAIN_DB is 6)",
+      "[AuraGain] Aura audio at +4 dB (AURA_GAIN_DB)",
+      "[AuraGain] aura-2-selena-es at +1.9 dB (its own level and peaks; AURA_GAIN_DB is 4)",
+    ]);
+    const off = withFreshModule("off", (g) => { g.boostAura(Buffer.alloc(160, 0x8a), SELENA); g.boostAura(Buffer.alloc(160, 0x8a), "aura-2-daphne-nl"); });
+    assert.deepEqual(off.logs, ["[AuraGain] Aura boost is OFF (AURA_GAIN_DB)"]);
+  });
+
+  it("the REST client boosts for the voice it asked for", async () => {
+    delete process.env.AURA_GAIN_DB;
+    const raw = tone(-21, 800);
+    const savedFetch = globalThis.fetch;
+    globalThis.fetch = /** @type {any} */ (async () => ({ ok: true, status: 200, arrayBuffer: async () => raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.length) }));
+    try {
+      const { synthesizeSpeech } = require("../services/deepgram-tts");
+      const audio = await synthesizeSpeech("KEY", "Claro, ahora podemos seguir en español.", { voice: SELENA, host: "api.au.deepgram.com" });
+      assert.deepEqual(audio, boostAura(raw, SELENA));
+      assert.notDeepEqual(audio, boostAura(raw), "not the old one-size gain");
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
   });
 });

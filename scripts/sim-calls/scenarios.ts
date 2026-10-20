@@ -23,6 +23,8 @@ export type Scenario = {
     cancels?: boolean;
     /** SCRUM-594 F5 (checkpoint 15): the caller wants a language — one the line speaks ("es"), or one it can't ("unsupported"). */
     language?: "es" | "fr" | "de" | "it" | "nl" | "ja" | "unsupported";
+    /** Phone test F9 (checkpoint 15): the caller goes back to English, so the call must end in English. */
+    endsInEnglish?: boolean;
   };
   /** SCRUM-594 F5: the time the call happens (ISO); run such scenarios on their own (one clock per run). */
   clock?: string;
@@ -186,6 +188,20 @@ export const SCENARIOS: Scenario[] = [
     ].join("\n"),
     maxTurns: 24,
     expect: { books: true, finalActive: 1, language: "ja" },
+  },
+  {
+    id: "S13",
+    title: "Spanish for a moment, then back to English (phone test F9)",
+    goal: [
+      "You want someone to fix a dripping bathroom tap. Take the first time they offer on the next business day.",
+      "Give your name when asked, and spell the surname (K-H-O-U-R-Y) if they ask you to.",
+      "Once it's booked, ask: \"Do you speak any other languages, by the way?\"",
+      "When they list them, say in Spanish: \"¿Hablas español?\" Then ask one more short question in Spanish: \"¿Cómo estás?\"",
+      "Then go back to English and stay in English: \"No, I just wanted to check if you speak other languages. Thank you.\"",
+      "When they ask if there's anything else, say \"No, that's all, thanks — bye.\"",
+    ].join("\n"),
+    maxTurns: 26,
+    expect: { books: true, finalActive: 1, language: "es", endsInEnglish: true },
   },
   {
     id: "S6",

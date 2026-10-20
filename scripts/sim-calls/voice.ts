@@ -74,6 +74,7 @@ export function loadVoiceServer(): any {
     logTranscriptMod: vsRequire("./lib/log-transcript"),
     recordingConsent: vsRequire("./lib/recording-consent"),
     callerHistory: vsRequire("./lib/caller-history"),
+    voiceMapping: vsRequire("./lib/voice-mapping"),
     maskPhone: vsRequire("./lib/mask-phone").maskPhone,
     Sentry: vsRequire("./lib/sentry").Sentry,
     claudeChat: vsRequire("./services/claude-chat"),
@@ -144,7 +145,8 @@ function runSlice(src: string, o: { from: string; to: string; scope: Record<stri
   return fn(...params.map((p) => o.scope[p]));
 }
 
-export type SpokenLine = { text: string; kind: "reply" | "filler"; at: number };
+/** voice: the Aura voice the line would be said in (phone test F9: English read by the Spanish voice). */
+export type SpokenLine = { text: string; kind: "reply" | "filler"; at: number; voice?: string };
 export type ToolEvent = { id: string; name: string; args: unknown; result?: string; at: number };
 
 /** What one simulated call exposes to the caller loop and the scorer. */
@@ -243,6 +245,8 @@ async function setUpSimCall(o: { calledNumber: string; callerPhone: string; call
   session.sourceType = context.sourceType || null;
   session.behaviors = context.assistant?.promptConfig?.behaviors || {};
   session.language = context.assistant.language || "en";
+  // Phone test F9: the voice each line is said in (server.js sets it the same way).
+  session.deepgramVoice = vs.voiceMapping.getDeepgramVoice(context.assistant.voiceId);
   session.organization = {
     timezone: context.organization.timezone,
     businessHours: context.organization.businessHours,
@@ -326,11 +330,11 @@ async function setUpSimCall(o: { calledNumber: string; callerPhone: string; call
     );
     session.recordingDisclosurePlayed = true;
     session.addMessage("assistant", disclosureText);
-    opening.push({ text: disclosureText, kind: "reply", at: Date.now() });
+    opening.push({ text: disclosureText, kind: "reply", at: Date.now(), voice: session.deepgramVoice });
   }
   const greeting = vs.promptBuilder.getGreeting(context.assistant, context.organization.name, { isAfterHours, afterHoursConfig });
   session.addMessage("assistant", greeting);
-  opening.push({ text: greeting, kind: "reply", at: Date.now() });
+  opening.push({ text: greeting, kind: "reply", at: Date.now(), voice: session.deepgramVoice });
   session.setExpectedInputType(vs.inputTypeDetector.detectExpectedInput(greeting));
 
   const twilioWs = {
@@ -369,14 +373,14 @@ async function setUpSimCall(o: { calledNumber: string; callerPhone: string; call
     },
     startHoldAudio: () => ({ stop: () => {} }),
     sendClear: () => true,
-    sendTTS: async (_s: unknown, _ws: unknown, text: string, isStale?: () => boolean, kind?: unknown) => {
+    sendTTS: async (s: any, _ws: unknown, text: string, isStale?: () => boolean, kind?: unknown) => {
       if (isStale?.()) return 0;
       const filler = kind === NOT_A_REPLY && vs.CANNED_FILLERS.has(text);
       // A fast turn never says a canned filler once the model has spoken in it
       // (handleUserSpeech: `if (fastTurn) … fillerSentThisTurn = true`); the text
       // turn here is a classic one, so that rule is applied to what it says.
       if (filler && spoken.some((l) => l.kind === "reply")) return 0;
-      spoken.push({ text, kind: kind === NOT_A_REPLY ? "filler" : "reply", at: Date.now() });
+      spoken.push({ text, kind: kind === NOT_A_REPLY ? "filler" : "reply", at: Date.now(), voice: s?.deepgramVoice });
       return 0;
     },
     executeToolCall: async (name: string, args: unknown, ctx: unknown) => {
@@ -401,6 +405,7 @@ async function setUpSimCall(o: { calledNumber: string; callerPhone: string; call
     setLanguageToolDefinition: vs.fastLanguages?.setLanguageToolDefinition,
     planLanguageSwitch: vs.fastLanguages?.planLanguageSwitch,
     detectCallerLanguage: vs.fastLanguages?.detectCallerLanguage,
+    detectCallerEnglish: vs.fastLanguages?.detectCallerEnglish,
     FAST_LANGUAGES: vs.fastLanguages?.FAST_LANGUAGES,
     recordLanguageSwitch: vs.fastLanguages?.recordLanguageSwitch,
     LANGUAGE_UNHEARD_MESSAGE: vs.fastLanguages?.LANGUAGE_UNHEARD_MESSAGE,
