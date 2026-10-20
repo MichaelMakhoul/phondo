@@ -168,14 +168,14 @@ describe("CallSession.bufferTranscript — phone test F8", () => {
     assert.equal(flushed.length, 1, "flushed at once");
   });
 
-  it("a Nova piece (not a whole turn) is not flushed at once: \"Sorry,\" may lead into the answer", async () => {
-    const flushed = await buffer("name", ["Sorry,", "it's Michael Makhoul."], BUFFER_CONFIGS.name.debounceMs + 400, NAME_ASK);
-    assert.deepEqual(flushed.map((f) => f.text), ["Sorry, it's Michael Makhoul."]);
+  it("a Nova piece (not a whole turn) is not flushed at once, even \"Sorry?\": Nova can end a final mid-sentence", async () => {
+    const flushed = await buffer("name", ["Sorry?", "Oh, it's Michael Makhoul."], BUFFER_CONFIGS.name.debounceMs + 400, NAME_ASK);
+    assert.deepEqual(flushed.map((f) => f.text), ["Sorry? Oh, it's Michael Makhoul."]);
   });
 
-  it("a repair word after the first piece does not cut a dictation", async () => {
-    const flushed = await buffer("phone", ["Oh four one two,", "sorry,", "three four five, six seven eight."], BUFFER_CONFIGS.phone.debounceMs + 400, "What's the best number to reach you on?", { wholeTurn: true });
-    assert.deepEqual(flushed.map((f) => f.text), ["Oh four one two, sorry, three four five, six seven eight."]);
+  it("a repeat request after the first piece does not cut a dictation (only a line check does)", async () => {
+    const flushed = await buffer("phone", ["Oh four one two,", "Sorry?", "three four five, six seven eight."], BUFFER_CONFIGS.phone.debounceMs + 400, "What's the best number to reach you on?", { wholeTurn: true });
+    assert.deepEqual(flushed.map((f) => f.text), ["Oh four one two, Sorry? three four five, six seven eight."]);
   });
 
   it("\"McCook.\" to \"And your last name?\" flushes at the debounce, not the 4 s maximum", async () => {

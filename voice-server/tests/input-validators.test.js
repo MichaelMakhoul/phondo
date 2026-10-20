@@ -294,6 +294,7 @@ describe("isRepairRequest — phone test F8", () => {
       "Sorry, can you say that again?", "Sorry, could you repeat the question?",
       "¿Perdón?", "Perdón, ¿qué?", "¿Cómo?", "¿Qué?", "¿Me lo puede repetir?", "¿Puede repetir, por favor?", "Repítalo, por favor.", "No le escuché.", "¿Hola?", "¿Aló?", "¿Está ahí?",
       "Sorry, could you please repeat that again? Hello? Are you still there?", // 12 words: the cap's edge
+      "Sorry? What?", "Sorry? Sorry?", "Say again, please?", "What? Sorry, can you repeat that?",
     ]) {
       assert.equal(isRepairRequest(said), true, said);
     }
@@ -337,13 +338,18 @@ describe("isLineCheck — phone test F8 review", () => {
       // final re-review: more than one hello is never the start of an answer, and more common checks
       "Hello? Hello.", "Hello. Hello.", "Hello, hello.", "Hello hello", "Are you there? Hello.", "Hola. Hola.",
       "Still there?", "Hey, you there?", "Have I lost you?", "Did we get cut off?", "Are you still on the line?", "Can anyone hear me?",
-      "¿Bueno?", "¿Me escuchas bien?", "No te escucho."]) {
+      "¿Bueno?", "¿Me escuchas bien?", "No te escucho.",
+      // a filler between checks ("Hello? Sorry, can you hear me?")
+      "Hello? Sorry, can you hear me?", "Hello? Oh, are you there?", "Hola, perdón, ¿me escuchas?", "Hello, sorry, is anyone there?", "Hello? Um, hello?",
+      "Are you there? Sorry, hello?", "Can you hear me? Um, hello?"]) {
       assert.equal(isLineCheck(said), true, said);
     }
     for (const said of ["Sorry?", "What?", "Can you repeat that?", "Hello, my name is Michael", "Hello, it's oh four one two", "Michael", "", null, ["Hello?"],
       // one flat hello may be a greeting or start an answer ("hello at …")
       "Hello.", "Hello", "Hola.", "Oh, hello.", "Hi, hello.", "¡Hola!",
-      "Bueno.", "Bueno, mi nombre es Ana", "Is anyone home on Tuesday", "Hello, it is Michael"]) {
+      "Bueno.", "Bueno, mi nombre es Ana", "Is anyone home on Tuesday", "Hello, it is Michael",
+      // a filler never ends the turn ("oh" may be a zero)
+      "Hello? Oh.", "Hello? Yeah, Michael Makhoul.", "What? No, oh four one two"]) {
       assert.equal(isLineCheck(said), false, String(said));
     }
   });

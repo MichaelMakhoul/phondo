@@ -168,7 +168,7 @@ const LINE_CHECK_PHRASES = [
 ];
 const REPEAT_PHRASES = [
   `sorry${ASKED}`, `excuse me${ASKED}`, `perd[oó]n${ASKED}`, `disculpe${ASKED}`,
-  "pardon(?: me)?", "what", "huh", "eh", "again", "come again", "say again", "one more time",
+  "pardon(?: me)?", "what", "huh", "eh", "again", "come again", "one more time",
   "what was that", "what'?s that", "what did you (?:just )?say",
   "(?:can|could|would) you (?:please )?repeat(?: (?:that|it|yourself|the question|what you said))?",
   "(?:can|could|would) you (?:please )?say (?:that|it) again",
@@ -177,14 +177,23 @@ const REPEAT_PHRASES = [
   "c[oó]mo", "qu[eé]", "mande", "otra vez",
   "(?:me )?(?:lo )?(?:puede|podr[ií]a) repetir(?:lo)?", "rep[ií]ta(?:lo|me)?", "no (?:le |te )?(?:escuch[eé]|entend[ií]|o[ií])",
 ];
-// "say": a stutter ("Say say again?", phone test F8).
-const REPAIR_FILLER = "(?:oh|um|uh|er|ah|sorry|excuse me|perd[oó]n|disculpe|hey|hi|yeah|no|say|sí|si)";
-// No word of the tail is also a phrase: one way to read each word keeps the match linear.
+// "say": "say again", and a stutter ("Say say again?", phone test F8). A word with a "?" after
+// it is a phrase, without one a filler: one way to read each word keeps the match from
+// backtracking exponentially (with a filler between phrases, "Sorry? Sorry? …" doubled per word).
+const NOT_ASKED = "(?!\\s*\\?)";
+const REPAIR_FILLER = `(?:oh|um|uh|er|ah|sorry${NOT_ASKED}|excuse me${NOT_ASKED}|perd[oó]n${NOT_ASKED}|disculpe${NOT_ASKED}|hey|hi|yeah|no|say|sí|si)`;
+// No word of the tail is also a phrase, for the same reason.
 const REPAIR_TAIL = "(?:please|mate|por favor)";
-/** @param {string[]} phrases */
+/**
+ * A whole turn of `phrases`, each optionally led by fillers ("Hello? Sorry, can you hear me?"),
+ * with a polite tail ("please"). A filler never ends the turn: "Hello? Oh." may be "oh four …".
+ * @param {string[]} phrases
+ */
 function wholeTurnOf(phrases) {
   const any = phrases.join("|");
-  return new RegExp(`^[\\s¿¡]*(?:${REPAIR_FILLER}[\\s,.!?¿¡]+)*(?:${any})(?:[\\s,.!?¿¡]+(?:${any}|${REPAIR_TAIL}))*[\\s,.!?]*$`, "i");
+  const sep = "[\\s,.!?¿¡]+";
+  const fillers = `(?:${REPAIR_FILLER}${sep})*`;
+  return new RegExp(`^[\\s¿¡]*${fillers}(?:${any})(?:${sep}${fillers}(?:${any}|${REPAIR_TAIL}))*[\\s,.!?]*$`, "i");
 }
 const REPAIR_RE = wholeTurnOf([...REPEAT_PHRASES, ...LINE_CHECK_PHRASES]);
 const LINE_CHECK_RE = wholeTurnOf(LINE_CHECK_PHRASES);

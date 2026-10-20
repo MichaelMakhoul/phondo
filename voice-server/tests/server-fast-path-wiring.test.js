@@ -4229,10 +4229,10 @@ describe("SCRUM-594 phone test F8: short answers to a name question", () => {
     h.closeFastPath(s);
   });
 
-  it("a 'sorry' inside a dictation does not cut it: the number is still one turn", async () => {
-    const { h, s } = await answerTo("Thanks, Michael. What's the best mobile number to reach you on?", ["Oh four one two,", "sorry,", "three four five, six seven eight."], "Got it.");
+  it("a 'Sorry?' inside a dictation does not cut it: the number is still one turn", async () => {
+    const { h, s } = await answerTo("Thanks, Michael. What's the best mobile number to reach you on?", ["Oh four one two,", "Sorry?", "three four five, six seven eight."], "Got it.");
     await until(() => h.llmCalls.length === 2, "the answer", 5000);
-    assert.deepEqual(h.llmCalls[1].messages.at(-1), { role: "user", content: "Oh four one two, sorry, three four five, six seven eight." });
+    assert.deepEqual(h.llmCalls[1].messages.at(-1), { role: "user", content: "Oh four one two, Sorry? three four five, six seven eight." });
     h.closeFastPath(s);
   });
 });
