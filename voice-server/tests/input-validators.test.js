@@ -1,6 +1,6 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
-const { extractSpokenDigits, validateInput, getBufferConfig, BUFFER_CONFIGS, isPlainYes, isRepairRequest, isLineCheck, saysPhoneNumber } = require("../lib/input-validators");
+const { extractSpokenDigits, validateInput, getBufferConfig, BUFFER_CONFIGS, isPlainYes, isRepairRequest, isLineCheck, saysPhoneNumber, REPAIR_RE, LINE_CHECK_RE } = require("../lib/input-validators");
 
 describe("extractSpokenDigits", () => {
   it("extracts numeric digits", () => {
@@ -309,9 +309,22 @@ describe("isRepairRequest — phone test F8", () => {
       "sorry", "Sorry.", "Oh, sorry.", "Excuse me.", "Perdón.",
       // "oh" is a zero in a number ("Oh." … "four one two …")
       "Oh.", "Oh,",
+      // one flat hello may be a greeting or start an answer ("hello at …")
+      "Hello.", "Oh, hello.", "Hola.",
       "Sorry, could you please repeat that again? Hello? Are you still there? Hello?", // 13 words
     ]) {
       assert.equal(isRepairRequest(said), false, String(said));
+    }
+  });
+  it("security: without the word cap too, each word reads one way, so long runs stay fast", () => {
+    // A word read two ways (a filler and a phrase) doubles the work every word or two: 26 of them take seconds.
+    for (const re of [REPAIR_RE, LINE_CHECK_RE]) {
+      for (const unit of ["Sorry? ", "Sorry, ", "Hello? Sorry, ", "Perdón? ", "say again ", "no ", "you still "]) {
+        const started = process.hrtime.bigint();
+        re.test(unit.repeat(26) + "Michael");
+        const ms = Number(process.hrtime.bigint() - started) / 1e6;
+        assert.ok(ms < 200, `${JSON.stringify(unit)} x26: ${ms.toFixed(1)} ms`);
+      }
     }
   });
   it("security: a long run of fillers is never a repair, and the check stays fast (no regex backtracking blow-up)", () => {

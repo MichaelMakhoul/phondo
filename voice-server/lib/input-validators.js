@@ -385,4 +385,4 @@ function getBufferConfig(type) {
   return BUFFER_CONFIGS[type] || BUFFER_CONFIGS.general;
 }
 
-module.exports = { validateInput, getBufferConfig, BUFFER_CONFIGS, extractSpokenDigits, isPlainYes, isRepairRequest, isLineCheck, saysPhoneNumber };
+module.exports = { validateInput, getBufferConfig, BUFFER_CONFIGS, extractSpokenDigits, isPlainYes, isRepairRequest, isLineCheck, saysPhoneNumber, REPAIR_RE, LINE_CHECK_RE };
