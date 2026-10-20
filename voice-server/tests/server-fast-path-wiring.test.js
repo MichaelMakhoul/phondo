@@ -975,17 +975,24 @@ describe("SCRUM-594 4.8.4: flush points", () => {
   });
 
   it("phone test F7: Aura's audio reaches Twilio boosted to line level (lib/aura-gain.js)", async () => {
-    const h = makeFast();
-    const s = h.start(makeSession());
-    await h.sendTTS(s, h.twilioWs, "Sure, Tuesday at ten.");
-    h.fastFlush(s);
-    const before = h.twilio("media").length;
-    h.audio(1);
-    const sent = Buffer.concat(h.twilio("media").slice(before).map((m) => Buffer.from(m.media.payload, "base64")));
-    assert.equal(sent.length, 320, "both frames of the 40 ms chunk went out");
-    assert.deepEqual(sent, boostAura(FRAME));
-    assert.notDeepEqual(sent, FRAME, "not the raw bytes");
-    h.closeFastPath(s);
+    const ambient = process.env.AURA_GAIN_DB;
+    delete process.env.AURA_GAIN_DB; // the shipped default, whatever the developer's shell says
+    try {
+      const h = makeFast();
+      const s = h.start(makeSession());
+      await h.sendTTS(s, h.twilioWs, "Sure, Tuesday at ten.");
+      h.fastFlush(s);
+      const before = h.twilio("media").length;
+      h.audio(1);
+      const sent = Buffer.concat(h.twilio("media").slice(before).map((m) => Buffer.from(m.media.payload, "base64")));
+      assert.equal(sent.length, 320, "both frames of the 40 ms chunk went out");
+      assert.deepEqual(sent, boostAura(FRAME));
+      assert.notDeepEqual(sent, FRAME, "not the raw bytes");
+      h.closeFastPath(s);
+    } finally {
+      if (ambient === undefined) delete process.env.AURA_GAIN_DB;
+      else process.env.AURA_GAIN_DB = ambient;
+    }
   });
 
   it("phone test F7 (test review): every Aura frame is boosted whatever its size, and in every utterance (not just the first frame)", async () => {

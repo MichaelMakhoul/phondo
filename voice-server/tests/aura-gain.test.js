@@ -63,6 +63,7 @@ describe("aura-gain — phone test F7 (the voice was too quiet to follow)", () =
         }
       }
     }
+    delete process.env.AURA_GAIN_DB; // the shipped default, whatever the developer's shell says
     const fullScale = tone(-3);
     const out = boostAura(fullScale);
     assert.ok(levelDb(out) > levelDb(fullScale), "a loud tone still gets louder, just less than 6 dB");
