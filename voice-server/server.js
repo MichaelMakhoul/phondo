@@ -42,7 +42,7 @@ const { openAuraStream } = require("./services/aura-stream");
 const { DEFAULT_HOST } = require("./services/deepgram-ws-common");
 const { createFastPlayer } = require("./lib/fast-player");
 const { createFastTurnEngine, endsWithQuestion, isBackchannel, isLikelyEcho } = require("./lib/fast-turns");
-const { FLUX_MULTI_MODEL, FAST_LANGUAGES, fastLanguagesEnabled, setLanguageToolDefinition, unspeakableText, planLanguageSwitch, recordLanguageSwitch, detectCallerLanguage, detectCallerEnglish, UNSPEAKABLE_APOLOGY, LANGUAGE_UNHEARD_MESSAGE } = require("./lib/fast-languages"); // SCRUM-594 (F5)
+const { FLUX_MULTI_MODEL, FAST_LANGUAGES, fastLanguagesEnabled, setLanguageToolDefinition, unspeakableText, planLanguageSwitch, recordLanguageSwitch, detectCallerLanguage, detectCallerEnglish, asksInLanguage, namesLanguage, UNSPEAKABLE_APOLOGY, LANGUAGE_UNHEARD_MESSAGE } = require("./lib/fast-languages"); // SCRUM-594 (F5)
 const { createNoTurnWatchdog } = require("./lib/no-turn-watchdog");
 const { startSpeculativeReply } = require("./lib/speculative-reply");
 const { streamClaudeResponse } = require("./services/claude-chat");
@@ -3950,7 +3950,12 @@ function callLanguage(session) {
  */
 async function switchToCallerLanguage(session, transcript) {
   const code = detectCallerLanguage(transcript);
-  if (!code || session.failedLanguages?.includes(code)) return false;
+  // Re-review (F9): "Sí, en inglés, por favor" is Spanish asking for English.
+  if (!code || asksInLanguage(transcript, "en")) return false;
+  if (session.failedLanguages?.includes(code)) {
+    console.log(`[FastPath] The caller spoke ${FAST_LANGUAGES[code].name}, which stopped working earlier on this call: staying in English (callSid=${session.callSid})`);
+    return false;
+  }
   const plan = planLanguageSwitch(session, code);
   if (!plan.changed) return false;
   if (session.fastTts?.isOpen()) await settleFastAudio(session);
@@ -3971,7 +3976,10 @@ async function switchToCallerLanguage(session, transcript) {
  * Spanish voice read the English out. This return re-arms the automatic switch
  * to the caller's language (fastAutoEnglish): a caller who goes on in Spanish
  * is followed back, never to a language whose voice failed. A caller who asked
- * for English (set_language) stays in English, as before.
+ * for English stays in English, as before: by name ("Can you speak English
+ * please?"), by turning the language down ("I don't speak Spanish"), or through
+ * set_language. The model's own set_language("en") after this return changes
+ * nothing: it calls it on most returns, asked or not.
  * @param {any} session
  * @param {string} transcript - the caller's words this turn
  * @returns {boolean} whether the call switched
@@ -3981,7 +3989,9 @@ function switchCallerBackToEnglish(session, transcript) {
   const plan = planLanguageSwitch(session, "en");
   if (!plan.changed || !switchFastLanguageStreams(session, plan)) return false;
   recordLanguageSwitch(session, plan);
-  session.fastAutoEnglish = true;
+  // Re-review: asking for English by name, or turning down the line's language ("I don't
+  // speak Spanish"), is a choice to stay in English, not an automatic return.
+  session.fastAutoEnglish = !namesLanguage(transcript, "en") && !(typeof plan.from === "string" && Object.hasOwn(FAST_LANGUAGES, plan.from) && namesLanguage(transcript, plan.from));
   console.log(`[FastPath] The caller spoke English on the ${FAST_LANGUAGES[plan.from]?.name || plan.from} line: switched back automatically (callSid=${session.callSid})`);
   session.addMessage("system", "The caller spoke English, so the line switched back to English (no set_language needed). Answer in English while the line speaks English.");
   return true;
@@ -5287,7 +5297,7 @@ function revertFastLanguageToEnglish(session, why) {
   if (typeof session.fastLanguage !== "string" || session.fastLanguage === "en") return false;
   const plan = planLanguageSwitch(session, "en");
   if (!plan.changed) return false;
-  session.failedLanguages = [...(session.failedLanguages || []), session.fastLanguage]; // phone test F9: never followed back to it
+  session.failedLanguages = [...new Set([...(session.failedLanguages || []), session.fastLanguage])]; // phone test F9: never followed back to it
   const stt = session.deepgramWs;
   if (session.fastPath === true && stt && typeof stt.configure === "function") stt.configure({ language_hints: plan.hints });
   session.deepgramVoice = plan.voice || session.deepgramVoice;

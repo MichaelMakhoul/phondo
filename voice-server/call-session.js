@@ -172,7 +172,7 @@ class CallSession {
     this.languagesUsed = null;
     /** @type {boolean} phone test F9: the line is in English because the caller's English switched it back */
     this.fastAutoEnglish = false;
-    /** @type {string[]|null} phone test F9: languages whose voice or hearing failed on this call, never switched to again */
+    /** @type {string[]|null} phone test F9: languages whose voice or hearing failed on this call, never switched to again automatically */
     this.failedLanguages = null;
     /** @type {number} the caller turn whose unspeakable reply was already replaced by the apology */
     this.unspeakableTurn = -1;

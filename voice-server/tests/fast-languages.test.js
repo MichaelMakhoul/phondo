@@ -21,6 +21,8 @@ const {
   LANGUAGE_UNHEARD_MESSAGE,
   detectCallerLanguage,
   detectCallerEnglish,
+  asksInLanguage,
+  namesLanguage,
   ENGLISH_LOOKALIKES,
 } = require("../lib/fast-languages");
 
@@ -184,6 +186,7 @@ describe("detectCallerLanguage (F5 simulated calls: a French caller was answered
     ["Ho una perdita sotto il lavandino della cucina.", "it"],
     ["Goedemiddag, spreekt u Nederlands?", "nl"],
     ["Ik heb een lekkage onder de gootsteen.", "nl"],
+    ["Je m'appelle Marie, j'ai besoin d'aide.", "fr"], // test review: elisions count by their parts (appelle, ai)
     ["日本語で話してもいいですか？", "ja"],
     ["トイレの水が止まらないんです。", "ja"],
   ]) {
@@ -220,6 +223,37 @@ describe("detectCallerLanguage (F5 simulated calls: a French caller was answered
   }
 });
 
+describe("asksInLanguage (re-review: \"Sí, en inglés, por favor\" is Spanish asking for English)", () => {
+  for (const [code, text] of [
+    ["en", "Sí, en inglés, por favor."],
+    ["en", "Oui, en anglais s'il vous plaît, merci."],
+    ["en", "Ja, bitte auf Englisch, danke."],
+    ["en", "Sì, in inglese per favore, grazie."],
+    ["en", "Ja, in het Engels graag, dank je."],
+    ["en", "はい、英語でお願いします。"],
+    ["es", "Can you say that again in Spanish?"],
+    ["es", "¿Me lo dice en español?"],
+    ["ja", "Can you say that in 日本語?"],
+  ]) {
+    it(`${JSON.stringify(text)} asks for ${code}`, () => assert.equal(asksInLanguage(text, code), true));
+  }
+  for (const [code, text] of [
+    ["en", "No hablo inglés, ¿habla español?"],
+    ["en", "英語は話せません"],
+    ["en", "My English is fine"],
+    ["es", "No. I just want to check if you speak Spanish."],
+    ["es", "The Spanish voice is nice"],
+  ]) {
+    it(`${JSON.stringify(text)} names ${code} but doesn't ask for it`, () => assert.equal(asksInLanguage(text, code), false));
+  }
+  it("namesLanguage: any mention, as a whole word", () => {
+    assert.equal(namesLanguage("No hablo inglés", "en"), true);
+    assert.equal(namesLanguage("Can you speak ENGLISH?", "en"), true);
+    assert.equal(namesLanguage("A germane point", "de"), false);
+    assert.equal(namesLanguage("日本語は少し", "ja"), true);
+  });
+});
+
 describe("phone test F9: the switch note and its bookkeeping", () => {
   it("set_language's note says to keep the language until the caller changes it, not \"from now on\" (code review)", () => {
     const { message } = planLanguageSwitch({ fastLanguage: "en", baseDeepgramVoice: "aura-2-theia-en" }, "es");
@@ -240,6 +274,7 @@ describe("phone test F9: the switch note and its bookkeeping", () => {
 describe("detectCallerEnglish (phone test F9: back in English, the caller heard the Spanish voice read English)", () => {
   for (const text of [
     "No. I just want to check if you speak any other languages.", // F9, word for word
+    "What's the time? There's a leak under the sink.", // test review: a contraction counts by its parts (what, there)
     "No. I just want to check if you speak any other languages. Thank you.",
     "Can you speak English?",
     "Do you speak English?",
@@ -250,7 +285,8 @@ describe("detectCallerEnglish (phone test F9: back in English, the caller heard 
     "The appointment is for tomorrow at two.",
     "I'm sorry. Can you repeat that again, please?",
     "My name is Juan García.",
-    "Yes, I want to book 明日",
+    "Yes, I want to book 明日", // one kanji, no kana
+    "Yes, I want to book あ", // one kana
   ]) {
     it(`${JSON.stringify(text)} is English`, () => assert.equal(detectCallerEnglish(text), true));
   }
@@ -286,6 +322,8 @@ describe("detectCallerEnglish (phone test F9: back in English, the caller heard 
     "Is dinsdagochtend nog vrij?",
     "Ho una perdita sotto il lavandino.",
     "トイレの水が止まらないんです。",
+    // re-review: Japanese with English words in it (else the line flips en ⇄ ja every turn)
+    "はい、I want to book an appointment for tomorrow",
     // a spelling, repeats, nothing
     "J O R D A N",
     "J-O-R-D-A-N.",
@@ -346,6 +384,17 @@ describe("detectCallerEnglish (phone test F9: back in English, the caller heard 
       assert.equal(detectCallerEnglish(text), true, `without the line's language it reads as English: ${text}`);
     }
     assert.equal(detectCallerEnglish("Can we switch back to English instead of Spanish?", "es"), true, "naming English too: a switch back");
+    // re-review: only a request IN the language; a mention or a refusal is English
+    for (const text of [
+      "No. I just want to check if you speak Spanish.",
+      "Sorry, I don't speak Spanish.",
+      "Sorry, my Spanish is not very good.",
+      "Why are you speaking Spanish? I need to book an appointment.",
+      "I can't understand you in Spanish, I want to book an appointment",
+      "Why in Spanish? I want to book an appointment please",
+    ]) assert.equal(detectCallerEnglish(text, "es"), true, text);
+    assert.equal(detectCallerEnglish("No, I want it in Spanish.", "es"), false);
+    assert.equal(detectCallerEnglish("Could you repeat that in Spanish for me", "es"), false);
     assert.equal(detectCallerEnglish("Can you say that again in Spanish?", "fr"), true, "another line's language is no request for this one");
     assert.equal(detectCallerEnglish("That is a germane point, can you help me with the booking", "de"), true, "a whole word only");
   });
@@ -359,12 +408,18 @@ describe("detectCallerEnglish (phone test F9: back in English, the caller heard 
         assert.equal(detectCallerEnglish(text), true, `no language: ${word}`);
       }
     }
-    assert.deepEqual(Object.keys(ENGLISH_LOOKALIKES).sort(), ["de", "es", "fr", "it", "nl"]);
+    assert.deepEqual(Object.fromEntries(Object.entries(ENGLISH_LOOKALIKES).map(([code, set]) => [code, [...set].sort()])), {
+      es: ["has", "me"],
+      fr: ["me", "on"],
+      de: ["am", "in", "name", "was", "will"],
+      it: ["do", "i", "in", "me"],
+      nl: ["in", "is", "me", "of", "want", "was"],
+    });
   });
 
   it("the edges: four words with three English ones is enough; three words or two English ones are not", () => {
     assert.equal(detectCallerEnglish("Can you hear this"), true); // can, you, this
-    assert.equal(detectCallerEnglish("Can you hear"), false, "three words");
+    assert.equal(detectCallerEnglish("Can you speak"), false, "three words, all three English");
     assert.equal(detectCallerEnglish("Can you hear jamón"), false, "two English words");
   });
 

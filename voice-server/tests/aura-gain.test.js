@@ -312,6 +312,11 @@ describe("aura-gain — phone test F9 (the Spanish voice sounded off: +6 dB drov
     assert.equal(voiceGainDb(REFERENCE_VOICE, 8), 7, "AURA_GAIN_DB past Theia's own ceiling stops there");
     assert.equal(voiceGainDb(REFERENCE_VOICE, 12), 7);
     assert.equal(voiceGainDb(SELENA, 1), 0, "a gain that would go below 0 is 0, never a cut");
+    // test review: every measured level, where the levels decide (AURA_GAIN_DB low, under the ceilings)
+    assert.deepEqual(Object.fromEntries(Object.keys(VOICE_PROFILES).map((v) => [v, voiceGainDb(v, 1)])), {
+      "aura-2-theia-en": 1, "aura-2-asteria-en": 3.2, "aura-2-luna-en": 4, "aura-2-orion-en": 0, "aura-2-arcas-en": 4, "aura-2-selena-es": 0,
+      "aura-2-agathe-fr": 5.5, "aura-2-elara-de": 7.2, "aura-2-cinzia-it": 6.9, "aura-2-daphne-nl": 6, "aura-2-uzume-ja": 5.9,
+    });
   });
 
   it("the kill switch turns every voice off; a voice not listed, or none, gets AURA_GAIN_DB as it is", () => {
