@@ -480,8 +480,10 @@ describe("aura-router: barge-in, the voices' cap, and cleanup", () => {
     streams.confirm(SPANISH);
     router.speak("Bonjour.", FRENCH); // waiting for the French stream
     router.speak("Hallo.", GERMAN); // over the cap
-    assert.equal(streams.of(FRENCH).handle.closes, 0, "not the one waited for, though least recently used");
-    assert.equal(streams.of(SPANISH).handle.closes, 1, "the idle one");
+    // The first handles (streams.of gives the newest): French opened once and never closed.
+    assert.equal(streams.opened.filter((a) => a.options.voice === FRENCH).length, 1, "not the one waited for, though least recently used");
+    assert.equal(streams.of(FRENCH).handle.closes, 0);
+    assert.equal(streams.opened.find((a) => a.options.voice === SPANISH).handle.closes, 1, "the idle one");
     streams.of(FRENCH).handle.opens();
     await settle();
     assert.deepEqual(streams.of(FRENCH).handle.spoken, ["Bonjour."]);
