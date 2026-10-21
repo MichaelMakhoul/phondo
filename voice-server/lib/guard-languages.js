@@ -212,7 +212,7 @@ const GUARD_WORDS = Object.freeze({
 
 /**
  * The guards' words for a call's language: null for English (the guards' own
- * words) and for anything set_language doesn't offer.
+ * words) and for any language the fast path doesn't speak (FAST_LANGUAGES).
  * @param {unknown} language - session.fastLanguage
  * @returns {GuardWords | null}
  */

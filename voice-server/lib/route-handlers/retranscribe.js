@@ -219,9 +219,10 @@ async function handleRetranscribe({ callId, deps, isRetry = false }) {
     return { ok: true, retranscribed: false, reason: "unsupported-language" };
   }
 
-  // SCRUM-594 (phone test F5): a demo-line call that switched language mid-call
-  // (set_language: metadata.fastPath.languages). A one-language re-transcription
-  // would garble the other part — the live (Flux Multilingual) transcript stays.
+  // SCRUM-594 (phone test F5): a demo-line call that used another language mid-call
+  // (metadata.fastPath.languages: the caller's, or the AI's own sentences'). A
+  // one-language re-transcription would garble the other part — the live (Flux
+  // Multilingual) transcript stays.
   // An expected skip, not a failure: no page.
   const languagesUsed = row.metadata && row.metadata.fastPath && row.metadata.fastPath.languages;
   if (Array.isArray(languagesUsed) && languagesUsed.some((l) => l !== (language || "en"))) {

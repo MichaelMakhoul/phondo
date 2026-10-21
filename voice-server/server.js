@@ -5365,7 +5365,7 @@ function openFastStt(session, twilioWs, openClassicStt) {
     industry: session.organization?.industry,
     ...config,
     // SCRUM-594 (F5): with languages on, Flux Multilingual hinted to English (as accurate as the
-    // English model when locked to one language); set_language moves the hints (no reconnect).
+    // English model when locked to one language); the line's moves move the hints (no reconnect).
     ...(session.fastLanguages ? { model: FLUX_MULTI_MODEL, languageHints: ["en"] } : {}),
   });
   state.fluxOpenTimer = setTimeout(() => {

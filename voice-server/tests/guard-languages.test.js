@@ -26,7 +26,7 @@ const ai = (content) => ({ role: "assistant", content });
 const caller = (content) => ({ role: "user", content });
 
 describe("guardWords", () => {
-  it("has words for every language set_language offers, and none for English or any other", () => {
+  it("has words for every language the fast path speaks, and none for English or any other", () => {
     for (const code of Object.keys(FAST_LANGUAGES)) {
       if (code === "en") assert.equal(guardWords(code), null);
       else assert.ok(guardWords(code), code);
