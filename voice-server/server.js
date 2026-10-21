@@ -3707,7 +3707,9 @@ const FAST_VOICE_ADDENDUM = [
   "- When the caller asks to cancel, call cancel_appointment straight away, without checking their name again: it tells you when to read the booking back to them for a yes.",
   "TIMES:",
   "- Offer the earliest free time in the LIVE SCHEDULE: today first, if it still has times. Never give a reason a day is unavailable that the schedule doesn't show.",
-  "- Say each time once: put the choices in your question (\"Today at 11, or tomorrow at 9:30?\"), not in a sentence first and then again in the question.",
+  // Phone test F9: the example was "Today at 11, or tomorrow at 9:30?" — copied at 1:53 AM as "Want 2 PM, or … 9 AM
+  // tomorrow?", with the times said first in a sentence. This is the shape the model reaches for anyway, each time once.
+  "- Say each time once: name the two earliest in one sentence, then ask which (\"The earliest is today at 11, or 11:30. Which suits you?\"), not in a sentence first and then again in the question.",
 ].join("\n");
 // Phone test F5: asked for Arabic, the model followed the shared prompt's LANGUAGE rule (written
 // for Gemini, which speaks it), said yes, and sent Arabic text to an English voice. The fast path

@@ -329,7 +329,9 @@ describe("SCRUM-594 (phone test F5): today's weekday and a closed today", () => 
     assert.ok(result.includes("Current time: 12:32 AM (00:32 on the 24-hour clock)"), result.split("\n")[1]);
     assert.ok(result.includes("Today (Mon, Oct 19) — this morning: the business hasn't opened yet, so these are the earliest times of all: 10 AM, 10:30 AM (2 slots)"), result);
     // Simulated calls at 3 AM: "earliest weekday morning" became "tomorrow, Tuesday at 9" in 5 of 12.
-    assert.ok(result.includes('It\'s the early hours, before opening: to a caller now, "this morning" and "tomorrow morning" both usually mean today (Mon, Oct 19). Offer today\'s times first, and say the day by name ("Monday at 10 AM").'), result);
+    // Phone test F9 (1:53 AM): "I can offer 2 PM or 3 PM today too. Want 2 PM, or would you rather have 9 AM tomorrow?" —
+    // 1:53 read as the afternoon (simulated calls: "2 PM or 2:30 PM this afternoon"), and "tomorrow" for the next day.
+    assert.ok(result.includes('It\'s the early hours (12:32 AM, not PM), before opening: none of today\'s times has passed, and to a caller now "this morning" and "tomorrow morning" both usually mean today (Mon, Oct 19). Offer today\'s times first, and say the day by name ("Monday at 10 AM"). Never say "tomorrow" yourself (to a caller now it means today): say "Tuesday".'), result);
     assert.ok(result.includes("Next day (Tue, Oct 20):"), result);
     assert.ok(!result.includes("Tomorrow (Tue, Oct 20)"), "no \"Tomorrow\" for the model to anchor on");
   });
@@ -344,12 +346,14 @@ describe("SCRUM-594 (phone test F5): today's weekday and a closed today", () => 
     assert.ok(result.includes("Next day (Tue, Oct 20):"), result);
     assert.ok(!result.includes("early hours"), result);
     assert.ok(!/tomorrow morning/i.test(result), "after 5 AM a caller's tomorrow is tomorrow");
+    assert.ok(!result.includes('Never say "tomorrow"'), "after 5 AM the next day may be \"tomorrow\"");
   });
 
   it("in the small hours a closed next day is \"Next day\" too, never \"Tomorrow\"", () => {
     const result = withNow("2026-10-15T16:00:00Z", () => buildLiveScheduleSection(weekdaySnapshot({ "2026-10-16": ["2026-10-16T15:00:00"] }), "2026-10-16")); // Fri 3 AM Sydney
     assert.ok(result.includes("Next day (Sat, Oct 17): CLOSED — not a business day."), result);
     assert.ok(!result.includes("Tomorrow ("), result);
+    assert.ok(result.includes('Never say "tomorrow" yourself (to a caller now it means today): say "Saturday".'), result);
   });
 
   it("once open, today's line is plain (a later first free time is not 'not open yet')", () => {

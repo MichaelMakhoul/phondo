@@ -313,7 +313,12 @@ describe("SCRUM-594: the classic block flags the fast variant, run for real", ()
   });
 
   it("phone test F6: the addendum tells the model to say each time once (\"Today's openings start at 11 … Would today at 11 …?\")", () => {
-    assert.match(FAST_VOICE_ADDENDUM, /\n- Say each time once: put the choices in your question \("Today at 11, or tomorrow at 9:30\?"\), not in a sentence first and then again in the question\.$/);
+    // Phone test F9 (1:53 AM): "Want 2 PM, or would you rather have 9 AM tomorrow?" after "Today's first openings are 9:30 AM".
+    // The example was "Today at 11, or tomorrow at 9:30?": the model paired a later time today with the next day, called that
+    // day "tomorrow" in the small hours, and still said the times in a sentence before the question. Now it shows the shape
+    // the model reaches for anyway (the earliest, said once, then the question), and no "tomorrow".
+    assert.match(FAST_VOICE_ADDENDUM, /\n- Say each time once: name the two earliest in one sentence, then ask which \("The earliest is today at 11, or 11:30\. Which suits you\?"\), not in a sentence first and then again in the question\.$/);
+    assert.doesNotMatch(FAST_VOICE_ADDENDUM, /tomorrow/i);
   });
 
   it("phone test F5: the fast path starts in English with the assistant's voice to come back to", () => {

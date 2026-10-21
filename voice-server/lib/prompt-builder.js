@@ -1107,8 +1107,11 @@ function buildLiveScheduleSection(snapshot, todayStr) {
     // Until opening (simulated calls at 5:56 AM: "Today's fully booked" in 6 of 33 without it).
     const weekday = formatLongDate(todayStr).split(" ")[0];
     const todayFirst = `Offer today's times first, and say the day by name ("${weekday} at ${formatSlotTime(todaySlots[0])}").`;
+    // Phone test F9 (1:53 AM): "I can offer 2 PM or 3 PM today too. Want 2 PM, or would you rather have 9 AM
+    // tomorrow?" — 1:53 read as the afternoon, and "tomorrow" in the model's own words for the next day.
+    const nextWeekday = formatLongDate(getNextDay(todayStr)).split(" ")[0];
     lines.push(earlyHours
-      ? `It's the early hours, before opening: to a caller now, "this morning" and "tomorrow morning" both usually mean today (${formatDateLabel(todayStr, timezone)}). ${todayFirst}`
+      ? `It's the early hours (${currentTime}, not PM), before opening: none of today's times has passed, and to a caller now "this morning" and "tomorrow morning" both usually mean today (${formatDateLabel(todayStr, timezone)}). ${todayFirst} Never say "tomorrow" yourself (to a caller now it means today): say "${nextWeekday}".`
       : `Before opening, today's times are the earliest: ${todayFirst}`);
   }
   lines.push("");
