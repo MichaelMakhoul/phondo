@@ -251,15 +251,29 @@ describe("aura-router: a sentence in another voice", () => {
     assert.deepEqual(events.flushed, [seq]);
   });
 
-  it("a Flushed that never comes gives way after handoverWaitMs, with a warning; the flushes owed are reported", async () => {
+  it("silent-failure review: a long sentence still sending audio is waited for past handoverWaitMs — the next voice never speaks over it", async () => {
+    const { router, streams, events } = makeRouter({ handoverWaitMs: 40 });
+    router.speak("A long read-back of the whole booking, every detail of it, one more time.");
+    router.speak("Claro.", SPANISH);
+    for (let i = 0; i < 5; i++) {
+      await sleep(20);
+      streams.of(BASE).options.onAudio(Buffer.alloc(160)); // 100 ms of audio arriving: a healthy stream
+    }
+    assert.deepEqual(streams.of(SPANISH).handle.spoken, [], "still the English sentence's turn");
+    assert.deepEqual(events.errors, []);
+    streams.confirm(BASE);
+    assert.deepEqual(streams.of(SPANISH).handle.spoken, ["Claro."]);
+  });
+
+  it("a stream that sends neither audio nor its Flushed for handoverWaitMs is stuck: onError (the server falls back and says it again)", async () => {
     const { router, streams, events } = makeRouter({ handoverWaitMs: 30 });
     router.speak("Of course.");
-    const seq = router.flush();
+    router.flush();
     router.speak("Claro.", SPANISH);
-    await sleep(50);
-    assert.deepEqual(streams.of(SPANISH).handle.spoken, ["Claro."]);
-    assert.deepEqual(events.warnings.map((w) => [w.code, w.voice]), [["HANDOVER_TIMEOUT", BASE]]);
-    assert.deepEqual(events.flushed, [seq]);
+    await sleep(60);
+    assert.deepEqual(events.errors, ["Aura voice aura-2-theia-en stuck: no Flushed and no audio for " + events.errors[0]?.match(/(\d+) ms$/)?.[1] + " ms"]);
+    assert.deepEqual(events.flushed, [], "never reported done");
+    assert.deepEqual(streams.of(SPANISH).handle.spoken, [], "nothing spoken over it");
   });
 });
 
@@ -311,13 +325,13 @@ describe("aura-router: failures", () => {
     assert.deepEqual(streams.said, [[BASE, "Hola."]]);
   });
 
-  it("another voice failing while it still owes audio fails the router (the server's fallback says it again)", () => {
+  it("another voice failing while it still owes audio fails the router, named (the server's fallback says it again)", () => {
     const { router, streams, events } = makeRouter();
     router.speak("Hola.", SPANISH);
     router.flush();
     streams.of(SPANISH).options.onError(new Error("socket hang up"));
     streams.of(SPANISH).options.onClose(1006, "", { initiatedByUs: false });
-    assert.deepEqual(events.errors, ["socket hang up"]);
+    assert.deepEqual(events.errors, ["Aura voice aura-2-selena-es failed mid-sentence: socket hang up"]);
     assert.deepEqual(events.failedVoices, []);
   });
 
@@ -332,6 +346,23 @@ describe("aura-router: failures", () => {
     router.speak("Otra vez.", SPANISH);
     assert.equal(streams.opened.filter((a) => a.options.voice === SPANISH).length, 2);
     assert.deepEqual(streams.of(SPANISH).handle.spoken, ["Otra vez."]);
+  });
+
+  it("code review: a sentence that comes as an idle stream is closing waits for it, then goes out on a new one", () => {
+    const { router, streams } = makeRouter();
+    router.speak("Hola.", SPANISH);
+    router.flush();
+    streams.confirm(SPANISH);
+    const first = streams.of(SPANISH);
+    first.handle.open = false; // Aura is closing it; the close event isn't in yet
+    router.speak("Muy bien.", SPANISH);
+    const seq = router.flush();
+    assert.deepEqual(first.handle.spoken, ["Hola."]);
+    first.options.onClose(1000, "idle", { initiatedByUs: false });
+    const second = streams.of(SPANISH);
+    assert.notEqual(second, first, "opened again");
+    assert.deepEqual(second.handle.spoken, ["Muy bien."]);
+    assert.deepEqual(second.handle.flushes, [0], `the flush behind it (router seq ${seq}) went too`);
   });
 
   it("a server callback that throws in a timer is routed to onError, never thrown", async () => {

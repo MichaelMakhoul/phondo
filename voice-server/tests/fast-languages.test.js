@@ -149,8 +149,8 @@ describe("planLanguageSwitch / recordLanguageSwitch: the line moving (decide, th
 
 describe("textLanguage: the language the model's words are clearly in (phone test F9)", () => {
   const clear = {
-    en: ["Thanks, Sami.", "Is everything correct?", "Thursday, is 9 AM.", "Got it, a slow drip.", "Thanks, Michael. And your last name?", "Let me book that for you.", "Is there anything else you need today?", "Sure. This line speaks English, Spanish, French, German, Italian, Dutch and Japanese.", "Before I lock it in, let me spell your last name back to you: J-O-R-D-A-N.", "Today we have 9:30 AM, 10 AM, 11 AM, 2 PM, 3 PM and 4 PM open. Which suits you?", "Yes, I can. Would you like to continue in Spanish?", UNSPEAKABLE_APOLOGY],
-    es: ["Claro, ahora podemos seguir en español.", "¿Hay algo más en lo que pueda ayudarle hoy?", "Sí, hablo español.", "Muy bien, gracias por preguntar.", "Permítame reservar eso.", "Listo, su cita es el miércoles a las dos.", "¡Perfecto!", "Gracias, Sami.", "Entendido, un grifo que gotea en la cocina.", "Solo para confirmar, su apellido es K-H-O-U-R-Y.", "Le he reservado la cita."],
+    en: ["Got it, a slow drip.", "Thanks, Michael. And your last name?", "Let me book that for you.", "Is there anything else you need today?", "Sure. This line speaks English, Spanish, French, German, Italian, Dutch and Japanese.", "Before I lock it in, let me spell your last name back to you: J-O-R-D-A-N.", "Today we have 9:30 AM, 10 AM, 11 AM, 2 PM, 3 PM and 4 PM open. Which suits you?", "Yes, I can. Would you like to continue in Spanish?", UNSPEAKABLE_APOLOGY],
+    es: ["Claro, ahora podemos seguir en español.", "¿Hay algo más en lo que pueda ayudarle hoy?", "Sí, hablo español.", "Muy bien, gracias por preguntar.", "Permítame reservar eso.", "Listo, su cita es el miércoles a las dos.", "¡Perfecto!", "Entendido, un grifo que gotea en la cocina.", "Solo para confirmar, su apellido es K-H-O-U-R-Y.", "Le he reservado la cita."],
     fr: ["D'accord, je vous réserve demain à 9 heures.", "Bien sûr, je peux vous proposer demain à 9 h.", "Merci, votre rendez-vous est confirmé."],
     de: ["Gerne, ich kann Sie am Montag eintragen.", "Alles klar, ich buche Sie für Montag um 9 Uhr.", "Danke, bis morgen um zehn Uhr."],
     it: ["Perfetto, la prenoto per domani alle 9.", "Certo, posso aiutarla con un appuntamento.", "Grazie, a che ora preferisce?", "È disponibile alle dieci."],
@@ -172,7 +172,7 @@ describe("textLanguage: the language the model's words are clearly in (phone tes
   it("names and places in another language don't move a sentence: its own words decide", () => {
     assert.equal(textLanguage("Your booking with Dr. Muñoz is at 10 on Wednesday."), "en");
     assert.equal(textLanguage("Su cita con el Dr. Smith es el lunes."), "es");
-    assert.equal(textLanguage("Is that García, G-A-R-C-I-A?"), "en", "\"that\": its one word");
+    assert.equal(textLanguage("Is that García, G-A-R-C-I-A?", { inPlay: ["en"] }), "en", "\"that\": its one word, English being in play");
     assert.equal(textLanguage("García, G-A-R-C-I-A?"), null, "a name and its letters say nothing");
   });
 
@@ -188,9 +188,9 @@ describe("textLanguage: the language the model's words are clearly in (phone tes
     assert.deepEqual(Object.keys(LANGUAGE_WORDS), ["en", "es", "fr", "de", "it", "nl", "pt"]);
   });
 
-  it("the edges: one word with no rival is enough; a rival must be outnumbered more than twice", () => {
+  it("the edges: two words with no rival are enough; a rival must be outnumbered more than twice", () => {
     assert.equal(textLanguage("Thank you!"), "en");
-    assert.equal(textLanguage("Gracias."), "es", "one word, no rival");
+    assert.equal(textLanguage("Gracias."), null, "one word starts no language");
     assert.equal(textLanguage("Thank you, gracias."), null, "2 against 1");
     assert.equal(textLanguage("Thank you so much, gracias."), null, "still 2 against 1");
     assert.equal(textLanguage("Thank you for that, gracias."), "en", "4 against 1");
@@ -199,8 +199,19 @@ describe("textLanguage: the language the model's words are clearly in (phone tes
   });
 
   it("an accented one-letter word counts (\"è\"), a spelling's letters never do", () => {
-    assert.equal(textLanguage("È."), "it");
-    assert.equal(textLanguage("K-H-O-U-R-Y."), null);
+    assert.equal(textLanguage("È."), null);
+    assert.equal(textLanguage("È.", { inPlay: ["it"] }), "it");
+    assert.equal(textLanguage("K-H-O-U-R-Y.", { inPlay: ["en", "es", "fr", "de", "it", "nl"] }), null);
+  });
+
+  it("silent-failure and code reviews: one word only continues a language in play — a name never starts one", () => {
+    for (const [text, code] of [["Thanks, Sami.", "en"], ["Is everything correct?", "en"], ["Thursday, is 9 AM.", "en"], ["Gracias, Sami.", "es"]]) {
+      assert.equal(textLanguage(text), null, text);
+      assert.equal(textLanguage(text, { inPlay: [code] }), code, text);
+    }
+    for (const text of ["Perfect, Lei.", "Mr Ho?", "Okay, Dat.", "so Dat Nguyen.", "Done, Di.", "Okay, 14 Della Street.", "Perfect, Elle.", "Email is mike@bigpond.com.au.", "Van Der Berg.", "Von Bibra, V-O-N?", "Understood, gut pain.", "De Los Santos.", "Solo trader, noted."]) {
+      assert.equal(textLanguage(text, { inPlay: ["en"] }) ?? "en", "en", text);
+    }
   });
 
   it("Japanese is two kana or more: one in an English sentence is not", () => {

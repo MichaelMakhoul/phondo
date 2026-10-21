@@ -3670,6 +3670,11 @@ const FLUX_WATCHDOG_TICK_MS = 1000;
 const FAST_DISCLOSURE_MARK = "fast-disclosure";
 // Gate M3: the Aura stream must open within this long (as Flux must), or the call speaks over REST.
 const AURA_OPEN_TIMEOUT_MS = 3000;
+// Phone test F9 (silent-failure review): another language's voice must open within this, or its
+// sentences go to the assistant's voice. Shorter than FAST_FLUSH_WATCHDOG_MS, which watches the
+// flush queued behind it: equal, the healthy base stream was blamed and the call went to REST.
+// The probes opened every voice in 70-220 ms.
+const AURA_VOICE_OPEN_TIMEOUT_MS = 1500;
 // Gate C4: R14″'s estimate of the audio Aura still owes ahead of a question, at a slow speech rate:
 // it errs late (an answer must clearly start after the question did), never early.
 const FAST_QUESTION_MS_PER_CHAR = 95;
@@ -5107,7 +5112,7 @@ function startFastPath(session, twilioWs, openClassicStt) {
  * The Aura streams (spec 4.2; phone test F9: one per voice, services/aura-router.js)
  * and the player that carries their audio to Twilio (spec 4.3). Warnings are logged
  * only: CLEARED_TIMEOUT is the client's own backstop doing its job, EXCESSIVE_FLUSH a
- * refused flush, HANDOVER_TIMEOUT a voice whose Flushed never came (all tolerated).
+ * refused flush, VOICE_CLOSED an idle voice's stream that opens again for its next sentence (all tolerated).
  * @param {CallSession} session
  * @param {WebSocket} twilioWs
  */
@@ -5117,7 +5122,7 @@ function openFastTts(session, twilioWs) {
     voice: session.deepgramVoice || undefined,
     host: FAST_DEEPGRAM_HOST,
     openStream: openAuraStream,
-    openTimeoutMs: AURA_OPEN_TIMEOUT_MS,
+    openTimeoutMs: AURA_VOICE_OPEN_TIMEOUT_MS,
     quietMs: FAST_AUDIO_QUIET_MS,
     handoverWaitMs: FAST_FLUSHED_WAIT_MS,
     // Each voice's audio is boosted for that voice (phone test F9).

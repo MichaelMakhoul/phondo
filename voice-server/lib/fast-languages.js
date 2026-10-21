@@ -96,7 +96,7 @@ function planLanguageSwitch(session, requested) {
  * @param {string} code
  */
 function noteLanguageUsed(session, code) {
-  if (session.languagesUsed?.includes(code)) return;
+  if (code === "en" || session.languagesUsed?.includes(code)) return; // English alone is no other language
   session.languagesUsed = [...new Set([...(session.languagesUsed || ["en"]), code])];
 }
 
@@ -169,18 +169,20 @@ function languageScores(text) {
  * Phone test F9: the line's language a piece of the model's text (or the caller's) is
  * clearly in, or null. Clearly: two kana for Japanese; otherwise more than twice as many
  * of the language's words (a letter only it writes counts double) as any other
- * language's, and at least one ("Gracias, Sami." is Spanish). Strict, for a whole reply
- * or the caller's turn: three, and more than three times. Portuguese is never an answer:
- * the line can't speak it.
+ * language's, and at least two — or one, for a language already in play (`inPlay`):
+ * "Gracias, Sami." on a Spanish call is Spanish, but "Perfect, Lei." on an English one is
+ * no Italian (silent-failure review: one name made an English call "multilingual"). Strict,
+ * for a whole reply or the caller's turn: three, and more than three times. Portuguese is
+ * never an answer: the line can't speak it.
  * @param {unknown} text
- * @param {{ strict?: boolean }} [options]
+ * @param {{ strict?: boolean, inPlay?: ReadonlyArray<string|null|undefined> }} [options]
  * @returns {string|null} a FAST_LANGUAGES code
  */
 function textLanguage(text, options = {}) {
   if (typeof text !== "string" || !text.trim()) return null;
   if ((text.match(KANA) || []).length >= 2) return "ja";
   const [[best, score], [, runnerUp]] = languageScores(text);
-  const [least, times] = options.strict ? [3, 3] : [1, 2];
+  const [least, times] = options.strict ? [3, 3] : [options.inPlay?.includes(best) ? 1 : 2, 2];
   if (score < least || score <= runnerUp * times) return null;
   return Object.hasOwn(FAST_LANGUAGES, best) ? best : null;
 }
@@ -212,8 +214,9 @@ function languageVoice(session, code) {
 
 /**
  * Phone test F9: the language and voice of one sentence of the model's. Its own
- * language when its words say so clearly (textLanguage); otherwise this reply's so
- * far, then the caller's this turn, then the line's. So the model's English on a
+ * language when its words say so clearly (textLanguage; one word is enough for a
+ * language already in play); otherwise this reply's so far, then the caller's this
+ * turn, then the line's. So the model's English on a
  * Spanish line is said in English, and its Spanish before the line has followed it,
  * in Spanish. Off with the kill switch: the line's voice, as before languages.
  * @param {FastVoiceSession} session
@@ -222,7 +225,8 @@ function languageVoice(session, code) {
  */
 function sentenceVoice(session, text) {
   if (!session.fastLanguages) return { language: session.fastLanguage || "en", voice: session.deepgramVoice || null };
-  const found = textLanguage(text);
+  // A lone word only continues a language this reply, this caller or the line is in, or English (the line's own).
+  const found = textLanguage(text, { inPlay: ["en", session.fastReplyLanguage, session.fastTurnLanguage, session.fastLanguage] });
   if (found) {
     session.fastReplyLanguage = found;
     noteLanguageUsed(session, found);

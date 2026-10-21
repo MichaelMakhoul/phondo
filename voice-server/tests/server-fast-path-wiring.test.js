@@ -301,6 +301,7 @@ function makeFast(o = {}) {
     FLUX_WATCHDOG_TICK_MS: o.fluxTickMs ?? 1000,
     FAST_DISCLOSURE_MARK: "fast-disclosure",
     AURA_OPEN_TIMEOUT_MS: o.auraOpenTimeoutMs ?? 60_000,
+    AURA_VOICE_OPEN_TIMEOUT_MS: o.voiceOpenTimeoutMs ?? 60_000,
     FAST_RESPEAK_MS_PER_CHAR: 75,
     FAST_QUESTION_MS_PER_CHAR: 95,
     FAST_REPROMPT_MS: o.repromptMs ?? 60_000,
@@ -409,6 +410,8 @@ describe("SCRUM-594 fast path wiring — source pins", () => {
     assert.match(src, /^const FLUX_OPEN_TIMEOUT_MS = 3000;$/m);
     assert.match(src, /^const FAST_TTS_MS_PER_CHAR = 70;$/m);
     assert.match(src, /^const FAST_FLUSHED_WAIT_MS = 3000;$/m);
+    // Phone test F9 (silent-failure review): another voice's open deadline is shorter than the flush watchdog behind it.
+    assert.match(src, /^const AURA_VOICE_OPEN_TIMEOUT_MS = 1500;$/m);
   });
 
   it("the classic block picks the STT from session.fastPath: the fast path starts Flux, every other call opens Nova", () => {
@@ -3905,12 +3908,24 @@ describe("SCRUM-594 (F5, F9): the call's languages on the fast path", () => {
     const configured = recordHints(h);
     await h.handleUserSpeech(s, h.twilioWs, "Two PM is good.");
     flushAll(h);
-    assert.deepEqual(h.aura.said, [[SPANISH, "Gracias."]], "said in Spanish all the same");
-    assert.equal(s.fastLanguage, "en", "one word moves no line");
+    assert.deepEqual(h.aura.said, [[BASE, "Gracias."]], "one word starts no new language: the line's voice");
+    assert.equal(s.fastLanguage, "en", "nor moves the line");
+    assert.equal(s.languagesUsed, null, "nor makes the call multilingual (re-transcription would skip it)");
     await h.handleUserSpeech(s, h.twilioWs, "Okay then.");
     flushAll(h);
     assert.equal(s.fastLanguage, "es");
     assert.deepEqual(configured, [["es", "en"]]);
+    h.closeFastPath(s);
+  });
+
+  it("silent-failure and code reviews: a caller's name in an English call never takes another voice, nor makes the call multilingual", async () => {
+    const replies = ["Got it, that's N-G-U-Y-E-N,", "so Dat Nguyen.", "Perfect, Lei.", "Okay, Mr Ho.", "Done, Di.", "Van Der Berg.", "Perfect, Elle."];
+    const h = makeFast({ steps: [{ sentences: replies, content: replies.join(" ") }] });
+    const s = h.start(langSession());
+    h.fluxOpens();
+    await h.handleUserSpeech(s, h.twilioWs, "It's Dat Nguyen, N-G-U-Y-E-N.");
+    assert.deepEqual(h.aura.said.map(([voice]) => voice), replies.map(() => BASE));
+    assert.equal(s.languagesUsed, null);
     h.closeFastPath(s);
   });
 
@@ -4003,8 +4018,8 @@ describe("SCRUM-594 (F5, F9): the call's languages on the fast path", () => {
     h.closeFastPath(s);
   });
 
-  it("a voice whose stream never opens within AURA_OPEN_TIMEOUT_MS fails the same way", async () => {
-    const h = makeFast({ auraOpenTimeoutMs: 30, auraOpenFor: (voice) => voice !== SPANISH, auraReadyFor: (voice) => (voice === SPANISH ? new Promise(() => {}) : Promise.resolve()), steps: [
+  it("a voice whose stream never opens within AURA_VOICE_OPEN_TIMEOUT_MS fails the same way", async () => {
+    const h = makeFast({ voiceOpenTimeoutMs: 30, auraOpenFor: (voice) => voice !== SPANISH, auraReadyFor: (voice) => (voice === SPANISH ? new Promise(() => {}) : Promise.resolve()), steps: [
       { sentences: ["Sí, mañana a las diez."], content: "Sí, mañana a las diez." },
     ] });
     const s = h.start(langSession());

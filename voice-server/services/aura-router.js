@@ -16,8 +16,10 @@
  * stream speaking now is flushed and its Flushed awaited: Aura makes audio at
  * about twice real time, so the hand-over is done long before the audio
  * already sent has played. A flush the budget refuses has no Flushed: that
- * stream is done once its audio has been quiet for `quietMs`. A Flushed that
- * never comes gives way after `handoverWaitMs`.
+ * stream is done once its audio has been quiet for `quietMs`. A stream that
+ * sends neither audio nor its Flushed for `handoverWaitMs` is stuck: onError, as
+ * the server's flush watchdog treats the stream it watches (a long sentence still
+ * sending audio is waited for, however long it takes).
  *
  * To the server it is the stream it always had (the AuraStream methods it
  * uses, `speak` taking a voice). flush() returns the router's own sequence
@@ -45,7 +47,7 @@ const { createCallbackGuard } = require("./deepgram-ws-common");
 const DEFAULT_OPEN_TIMEOUT_MS = 3000;
 /** A voice whose flush was refused is done once its audio has been quiet this long (the server's FAST_AUDIO_QUIET_MS). */
 const DEFAULT_QUIET_MS = 500;
-/** The longest a sentence in another voice waits for the voice before it to finish. */
+/** A stream owing a hand-over that sends neither audio nor its Flushed this long is stuck (the server's FAST_FLUSH_WATCHDOG_MS). */
 const DEFAULT_HANDOVER_WAIT_MS = 3000;
 /** Streams open at once, the assistant's own included: for a new voice, the least recently used idle one closes. */
 const DEFAULT_MAX_VOICES = 3;
@@ -96,6 +98,7 @@ const DEFAULT_MAX_VOICES = 3;
  * @property {ReturnType<typeof setTimeout>|null} quietTimer
  * @property {ReturnType<typeof setTimeout>|null} openTimer
  * @property {number} lastUsedAt
+ * @property {number} lastAudioAt - Date.now() of its last audio (0 before any): a hand-over waits while it comes
  */
 
 /** @typedef {{ type: "speak", voice: string, text: string } | { type: "flush", seq: number }} Op */
@@ -169,7 +172,7 @@ function createAuraRouter(apiKey, options = {}) {
     /** @type {VoiceStream} */
     const vs = {
       voice, isBase, stream: /** @type {any} */ (null), opened: false, dead: false, unflushed: false,
-      pending: [], quietSeqs: [], awaitingQuiet: false, quietTimer: null, openTimer: null, lastUsedAt: Date.now(),
+      pending: [], quietSeqs: [], awaitingQuiet: false, quietTimer: null, openTimer: null, lastUsedAt: Date.now(), lastAudioAt: 0,
     };
     streams.set(voice, vs);
     vs.stream = openStream(apiKey, {
@@ -296,11 +299,14 @@ function createAuraRouter(apiKey, options = {}) {
     }
     if (owes(vs)) {
       forget(vs);
-      reportError(err); // mid-sentence: the server's fallback says again what it never voiced
+      // Mid-sentence: the server's fallback says again what it never voiced. Named, so a
+      // Spanish stream's drop is never read as the assistant's (silent-failure review).
+      reportError(Object.assign(new Error(`Aura voice ${vs.voice} failed mid-sentence: ${err.message}`), { cause: err }));
       return;
     }
     forget(vs); // idle (Aura's idle timeout): opened again for its next sentence
     invoke(onWarning, { code: "VOICE_CLOSED", message: `${vs.voice} stopped while idle (${err.message.slice(0, 80)}) - it opens again for its next sentence`, voice: vs.voice });
+    pump(); // code review: a sentence may already be waiting for it (it closed as the sentence came)
   }
 
   /**
@@ -324,6 +330,7 @@ function createAuraRouter(apiKey, options = {}) {
    */
   function onStreamAudio(vs, audio) {
     if (vs.dead || closed) return;
+    vs.lastAudioAt = Date.now();
     if (vs.awaitingQuiet) armQuiet(vs);
     invoke(onAudio, audio, vs.voice);
   }
@@ -382,7 +389,9 @@ function createAuraRouter(apiKey, options = {}) {
 
   /**
    * Has this stream finished, so the next voice can speak? If not: it is flushed (a
-   * hand-over flush) and waited for, at most handoverWaitMs.
+   * hand-over flush) and waited for — while its audio keeps coming, however long (a
+   * long read-back makes audio for well over handoverWaitMs); once it sends neither
+   * audio nor its Flushed for handoverWaitMs, it is stuck.
    * @param {VoiceStream} vs
    * @returns {boolean}
    */
@@ -393,22 +402,29 @@ function createAuraRouter(apiKey, options = {}) {
       stopHandoverTimer();
       return true;
     }
-    if (!handoverTimer) {
-      handoverTimer = unref(setTimeout(() => {
-        handoverTimer = null;
-        if (closed || current !== vs || vs.dead || !owes(vs)) return;
-        invoke(onWarning, { code: "HANDOVER_TIMEOUT", message: `${vs.voice} still owed audio ${handoverWaitMs} ms after its flush - the next voice goes on`, voice: vs.voice });
-        const seqs = [...vs.pending.map((p) => p.routerSeq), ...vs.quietSeqs];
-        vs.pending = [];
-        vs.quietSeqs = [];
-        vs.awaitingQuiet = false;
-        if (vs.quietTimer) clearTimeout(vs.quietTimer);
-        vs.quietTimer = null;
-        for (const seq of seqs) if (seq !== null) invoke(onFlushed, seq);
-        pump();
-      }, handoverWaitMs));
-    }
+    if (!handoverTimer) armHandoverTimer(vs, Date.now(), handoverWaitMs);
     return false;
+  }
+
+  /**
+   * Silent-failure review: never a flat deadline. Until F9's gate a long, healthy sentence
+   * timed out, the next voice spoke over it, and its flushes were reported done.
+   * @param {VoiceStream} vs
+   * @param {number} startedAt - when the hand-over began waiting
+   * @param {number} delayMs
+   */
+  function armHandoverTimer(vs, startedAt, delayMs) {
+    handoverTimer = unref(setTimeout(() => {
+      handoverTimer = null;
+      if (closed || current !== vs || vs.dead || !owes(vs)) return;
+      const silentMs = Date.now() - Math.max(vs.lastAudioAt, startedAt);
+      if (silentMs < handoverWaitMs) {
+        armHandoverTimer(vs, startedAt, handoverWaitMs - silentMs); // still talking
+        return;
+      }
+      // Stuck: the server falls back to REST and says again what it never voiced (gate H2).
+      reportError(new Error(`Aura voice ${vs.voice} stuck: no Flushed and no audio for ${silentMs} ms`));
+    }, delayMs));
   }
 
   /** Send what can go now, in order; a sentence in another voice waits until the voice before it has finished. */
