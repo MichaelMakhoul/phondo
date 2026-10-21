@@ -3715,6 +3715,7 @@ const FAST_LANGUAGE_RULES = [
   "- Answer in the language the caller speaks, or the one they ask for, and keep to it until they change language. Nothing needs switching: the caller hears each sentence in a voice for its own language.",
   "- If the caller only asks, in English, whether you speak one of them, answer in English (\"Yes, I can. Would you like to continue in Spanish?\"), then speak the one they choose.",
   "- In another language, say everything in it, including any line this prompt gives you to say and what the tools tell you (translate them); keep names, numbers, dates, times and confirmation codes exactly as they are. Never mix two languages in one reply.",
+  "- That includes the short line before you check or book something: in Spanish \"Un momento, lo compruebo.\" or \"Se lo reservo ahora.\", never \"Let me book that for you.\"",
   "- For any other language (for example Arabic, Mandarin, Cantonese, Vietnamese, Hindi or Greek), say in English, in one short sentence, that this line can't speak it yet, and offer to have someone call them back. Never write words in a language this line can't speak.",
 ].join("\n");
 /** FAST_LANGUAGES=off: the English-only rules (Flux English, the assistant's voice only). */
@@ -5809,6 +5810,8 @@ function summarizeFastCall(session) {
   /** @type {(p: number) => number|null} the nearest-rank percentile */
   const percentile = (p) => (samples.length === 0 ? null : Math.round(samples[Math.ceil((p / 100) * samples.length) - 1]));
   const voices = session.fastTts?.voicesUsed() || session.fastState?.voicesUsed || [];
+  // Phone test F9: listed when any voice besides the assistant's own spoke.
+  const otherVoices = voices.some((voice) => voice !== (session.baseDeepgramVoice || session.deepgramVoice));
   const summary = {
     turns: stats.turns,
     eotToAudioP50: percentile(50),
@@ -5820,10 +5823,9 @@ function summarizeFastCall(session) {
     tts: /** @type {"stream"|"rest-fallback"} */ (session.fastState?.ttsFellBack ? "rest-fallback" : "stream"),
     // SCRUM-594 (F5): the languages a call used besides English (retranscribe leaves such calls alone).
     ...(Array.isArray(session.languagesUsed) && session.languagesUsed.length > 1 ? { languages: [...session.languagesUsed] } : {}),
-    // Phone test F9: the voices that spoke, when more than the assistant's own did.
-    ...(voices.length > 1 ? { voices } : {}),
+    ...(otherVoices ? { voices } : {}),
   };
-  console.log(`[FastCall] callSid=${session.callSid} turns=${summary.turns} eot_to_audio_p50=${summary.eotToAudioP50 ?? "-"} p90=${summary.eotToAudioP90 ?? "-"} spec_adopted=${summary.specAdopted} spec_discarded=${summary.specDiscarded} llm_errors=${summary.llmErrors} stt=${summary.stt} tts=${summary.tts}${voices.length > 1 ? ` voices=${voices.join(",")}` : ""}`);
+  console.log(`[FastCall] callSid=${session.callSid} turns=${summary.turns} eot_to_audio_p50=${summary.eotToAudioP50 ?? "-"} p90=${summary.eotToAudioP90 ?? "-"} spec_adopted=${summary.specAdopted} spec_discarded=${summary.specDiscarded} llm_errors=${summary.llmErrors} stt=${summary.stt} tts=${summary.tts}${otherVoices ? ` voices=${voices.join(",")}` : ""}`);
   return summary;
 }
 

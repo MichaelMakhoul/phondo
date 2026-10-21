@@ -323,7 +323,8 @@ function makeFast(o = {}) {
     console: recordingConsole(lines),
   };
   const names = ["handleUserSpeech", "buildLLMOptions", "sendTTS", "sendRestTTS", "sendClear", "startFastPath", "closeFastPath", "onFastMark", "onFastRestMark", "settleFastAudio", "fastFlush", "summarizeFastCall",
-    "beginFastDisclosure", "armFastDisclosureEnd", "endFastDisclosure", "noteFastRestSpeech", "noteFastInboundAudio", "beginFastTurn"];
+    "beginFastDisclosure", "armFastDisclosureEnd", "endFastDisclosure", "noteFastRestSpeech", "noteFastInboundAudio", "beginFastTurn",
+    "switchFastLanguageStreams", "noteFastVoiceFailed"];
   const fns = runSlice({
     from: "function buildLLMOptions(session, { includeTransfer = false } = {}) {",
     to: "// --- Test Call WebSocket (/ws/test) ---",
@@ -4078,6 +4079,32 @@ describe("SCRUM-594 (F5, F9): the call's languages on the fast path", () => {
     assert.equal(base.handle.clears, 0, "idle");
     h.closeFastPath(s);
     assert.equal(streamOf(h, SPANISH).handle.closes, 1, "cleanup closes every stream");
+  });
+
+  it("the line moving to a language opens its voice's stream ahead of its first sentence", () => {
+    const h = makeFast();
+    const s = h.start(langSession());
+    h.fluxOpens();
+    assert.equal(h.switchFastLanguageStreams(s, planLanguageSwitch(s, "fr")), true);
+    assert.ok(streamOf(h, "aura-2-agathe-fr"), "opened");
+    assert.equal(s.deepgramVoice, "aura-2-agathe-fr");
+    h.closeFastPath(s);
+  });
+
+  it("a voice that fails twice is captured once; the [FastCall] voices survive a fallback to REST", async () => {
+    const h = makeFast({ steps: [{ sentences: ["¡Claro! Puedo ayudarle en español."], content: "¡Claro! Puedo ayudarle en español." }] });
+    const s = h.start(langSession());
+    h.fluxOpens();
+    await h.handleUserSpeech(s, h.twilioWs, "¿Habla español?");
+    flushAll(h);
+    h.noteFastVoiceFailed(s, FAST_LANGUAGES.fr.voice, "aura-stream", "test", new Error("refused"));
+    h.noteFastVoiceFailed(s, FAST_LANGUAGES.fr.voice, "aura-rest", "test", new Error("refused"));
+    assert.equal(h.sentry.length, 1, JSON.stringify(h.sentry));
+    assert.deepEqual(s.fastFailedVoices, [FAST_LANGUAGES.fr.voice]);
+    streamOf(h, BASE).options.onError(new Error("aura down"));
+    assert.equal(s.fastTts, null);
+    h.closeFastPath(s);
+    assert.deepEqual(h.summarizeFastCall(s).voices, [SPANISH], "only the Spanish voice spoke: still listed");
   });
 
   it("phone test F9: each stream's audio is boosted for its own voice", async () => {

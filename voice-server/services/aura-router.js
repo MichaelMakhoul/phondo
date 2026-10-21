@@ -133,7 +133,7 @@ function createAuraRouter(apiKey, options = {}) {
   let current = null;
   let nextSeq = 0;
   let closed = false;
-  /** Until another voice is asked for, the router's sequence ids are the assistant's stream's own. */
+  /** Until another voice is asked for, a Flushed the router never asked for still reaches the server, as it did. */
   let oneVoice = true;
   /** @type {ReturnType<typeof setTimeout>|null} */
   let handoverTimer = null;
@@ -450,8 +450,8 @@ function createAuraRouter(apiKey, options = {}) {
         armQuiet(target);
         return null;
       }
-      const seq = oneVoice ? streamSeq : nextSeq;
-      nextSeq = seq + 1;
+      // One voice: the two counts move together, so the router's ids are the stream's own.
+      const seq = nextSeq++;
       target.pending.push({ seq: streamSeq, routerSeq: seq });
       return seq;
     },

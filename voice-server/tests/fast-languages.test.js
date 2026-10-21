@@ -203,6 +203,11 @@ describe("textLanguage: the language the model's words are clearly in (phone tes
     assert.equal(textLanguage("K-H-O-U-R-Y."), null);
   });
 
+  it("Japanese is two kana or more: one in an English sentence is not", () => {
+    assert.equal(textLanguage("Hello ね, thanks."), "en");
+    assert.equal(textLanguage("ねえ"), "ja");
+  });
+
   it("a letter only one language writes counts twice: ¿ ¡ ñ, ß, œ, ã õ", () => {
     assert.equal(textLanguage("¿Mañana?"), "es");
     assert.equal(textLanguage("Die Straße."), "de");
