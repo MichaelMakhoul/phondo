@@ -209,7 +209,7 @@ describe("textLanguage: the language the model's words are clearly in (phone tes
       assert.equal(textLanguage(text), null, text);
       assert.equal(textLanguage(text, { inPlay: [code] }), code, text);
     }
-    for (const text of ["Perfect, Lei.", "Mr Ho?", "Okay, Dat.", "so Dat Nguyen.", "Done, Di.", "Okay, 14 Della Street.", "Perfect, Elle.", "Email is mike@bigpond.com.au.", "Email is elle@bigpond.com.au.", "It's on www.copperline.com.au/bookings.", "Van Der Berg.", "Von Bibra, V-O-N?", "Understood, gut pain.", "De Los Santos.", "Solo trader, noted."]) {
+    for (const text of ["Perfect, Lei.", "Mr Ho?", "Okay, Dat.", "so Dat Nguyen.", "Done, Di.", "Okay, 14 Della Street.", "Perfect, Elle.", "Email is mike@bigpond.com.au.", "Email is elle@bigpond.com.au.", "It's on www.copperline.com.au/bookings.", "Website: elle.com.au.", "Van Der Berg.", "Von Bibra, V-O-N?", "Understood, gut pain.", "De Los Santos.", "Solo trader, noted."]) {
       assert.equal(textLanguage(text, { inPlay: ["en"] }) ?? "en", "en", text);
     }
   });
