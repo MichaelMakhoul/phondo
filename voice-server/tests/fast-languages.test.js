@@ -260,6 +260,8 @@ describe("sentenceVoice: each sentence in its own language's voice (phone test F
     const s = session({ fastLanguage: "fr", deepgramVoice: "aura-2-agathe-fr" });
     beginReplyLanguage(s, "Two PM is good.");
     assert.equal(s.fastTurnLanguage, null);
+    beginReplyLanguage(s, "Sí, claro.");
+    assert.equal(s.fastTurnLanguage, null, "the caller's words must be clear (strict): two Spanish words aren't");
     assert.equal(sentenceVoice(s, "Michael Jordan.").language, "fr", "the line's");
     beginReplyLanguage(s, "Hola, buenos días, necesito una cita para mañana.");
     assert.equal(s.fastTurnLanguage, "es");
@@ -269,6 +271,13 @@ describe("sentenceVoice: each sentence in its own language's voice (phone test F
     beginReplyLanguage(s, "Two PM is good.");
     assert.equal(s.fastReplyLanguage, null, "a new turn starts afresh");
     assert.equal(sentenceVoice(s, "Michael Jordan.").language, "fr");
+  });
+
+  it("phone test F9 (S14): on a Spanish line, after the caller's one English answer, \"Gracias, Sami.\" is still Spanish — the line is in play", () => {
+    const s = session({ fastLanguage: "es", deepgramVoice: "aura-2-selena-es" });
+    beginReplyLanguage(s, "Okay, thanks. It's Sami Khoury.");
+    assert.equal(s.fastTurnLanguage, "en");
+    assert.deepEqual(sentenceVoice(s, "Gracias, Sami."), { language: "es", voice: "aura-2-selena-es" });
   });
 
   it("a language whose voice failed is said in the assistant's voice", () => {

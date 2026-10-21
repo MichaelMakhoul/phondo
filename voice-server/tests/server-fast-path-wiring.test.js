@@ -3901,8 +3901,12 @@ describe("SCRUM-594 (F5, F9): the call's languages on the fast path", () => {
     }
   });
 
-  it("the line follows only a reply clearly in a language (strict): \"Gracias.\" alone moves nothing", async () => {
-    const h = makeFast({ steps: [{ sentences: ["Gracias."], content: "Gracias." }, { sentences: ["Gracias, muy bien, hasta luego."], content: "Gracias, muy bien, hasta luego." }] });
+  it("the line follows only a reply clearly in a language (strict): \"Gracias.\" or \"Sí, claro.\" alone moves nothing", async () => {
+    const h = makeFast({ steps: [
+      { sentences: ["Gracias."], content: "Gracias." },
+      { sentences: ["Sí, claro."], content: "Sí, claro." },
+      { sentences: ["Gracias, muy bien, hasta luego."], content: "Gracias, muy bien, hasta luego." },
+    ] });
     const s = h.start(langSession());
     h.fluxOpens();
     const configured = recordHints(h);
@@ -3911,6 +3915,10 @@ describe("SCRUM-594 (F5, F9): the call's languages on the fast path", () => {
     assert.deepEqual(h.aura.said, [[BASE, "Gracias."]], "one word starts no new language: the line's voice");
     assert.equal(s.fastLanguage, "en", "nor moves the line");
     assert.equal(s.languagesUsed, null, "nor makes the call multilingual (re-transcription would skip it)");
+    await h.handleUserSpeech(s, h.twilioWs, "Two PM is good.");
+    flushAll(h);
+    assert.deepEqual(h.aura.said.at(-1), [SPANISH, "Sí, claro."], "two words are Spanish: its voice");
+    assert.equal(s.fastLanguage, "en", "but two words are no whole reply in Spanish (strict needs three)");
     await h.handleUserSpeech(s, h.twilioWs, "Okay then.");
     flushAll(h);
     assert.equal(s.fastLanguage, "es");
