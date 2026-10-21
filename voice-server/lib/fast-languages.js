@@ -148,7 +148,9 @@ const KANA = /[\p{sc=Hiragana}\p{sc=Katakana}]/gu;
  * @returns {Array<[string, number]>}
  */
 function languageScores(text) {
-  const lower = text.toLowerCase().replace(/’/g, "'");
+  // An email or a web address is no language's words ("elle@bigpond.com.au" is not French):
+  // tokens with "@", "/" or a dot inside are dropped (one linear pass each, never a backtracking regex).
+  const lower = text.toLowerCase().replace(/’/g, "'").split(/\s+/).filter((token) => !/[@/]|[\p{L}\d]\.[\p{L}\d]/u.test(token)).join(" ");
   /** @type {Set<string>} */
   const words = new Set();
   // A spelling's letters are no language's words; an accented one-letter word is ("è").
