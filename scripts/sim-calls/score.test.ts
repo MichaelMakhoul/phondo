@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { englishInOtherVoice, renderTranscript, scoreCall, voiceLanguage, wrongWeekdayClaims, type CallRecord, type TranscriptLine } from "./score";
+import { englishInOtherVoice, otherInEnglishVoice, renderTranscript, scoreCall, voiceLanguage, wrongWeekdayClaims, type CallRecord, type TranscriptLine } from "./score";
 import { PERSONA, SCENARIOS } from "./scenarios";
 
 // The judge is an LLM call: these tests score only the deterministic side, so the judge passes everything.
@@ -66,7 +66,7 @@ describe("checkpoint 15: English in another language's voice, and the way back t
   const voiced = (text: string, voice?: string): TranscriptLine => ({ who: "ai", text, kind: "reply", voice });
   const S13 = SCENARIOS.find((s) => s.id === "S13")!;
   const call = (o: Partial<CallRecord>): CallRecord => ({
-    scenario: S13, persona: PERSONA, run: 1, transcript: [], toolTrace: [], diary: [], activeAfterTurn: [],
+    scenario: S13, persona: PERSONA, run: 1, transcript: [voiced("Sí, hablo español.", "aura-2-selena-es")], toolTrace: [], diary: [], activeAfterTurn: [],
     ending: "end_call", anomalies: [], logs: [], llm: { calls: 0, medianMs: 0, p90Ms: 0 }, turns: 1,
     languages: ["en", "es"], finalLanguage: "en", ...o,
   });
@@ -100,5 +100,26 @@ describe("checkpoint 15: English in another language's voice, and the way back t
     const { checkpoints } = await scoreCall(call({ transcript: [voiced("Is there anything else I can help you with today?", "aura-2-selena-es")] }), "judge");
     expect(checkpoints[15].verdict).toBe("fail");
     expect(checkpoints[15].evidence).toMatch(/English read by another language's voice/);
+  });
+
+  it("phone test F9: fails another language read by the English voice (Spanish, Japanese), and passes English or short lines there", async () => {
+    expect(otherInEnglishVoice([voiced("Sí, puedo hablar español con usted.", "aura-2-theia-en")])).toHaveLength(1);
+    expect(otherInEnglishVoice([voiced("はい、日本語で大丈夫です。")])).toHaveLength(1);
+    expect(otherInEnglishVoice([voiced("Is there anything else I can help you with today?", "aura-2-theia-en"), voiced("Gracias, Michael."), voiced("Sí, puedo hablar español.", "aura-2-selena-es")])).toEqual([]);
+    const { checkpoints } = await scoreCall(call({ transcript: [voiced("Sí, hablo español.", "aura-2-selena-es"), voiced("¿Necesita algo más para su cita de hoy?", "aura-2-theia-en")] }), "judge");
+    expect(checkpoints[15].verdict).toBe("fail");
+    expect(checkpoints[15].evidence).toMatch(/another language read by the English voice/);
+  });
+
+  it("a supported language passes only when the AI spoke it in its voice; Japanese may write kana in the Japanese voice", async () => {
+    const english = await scoreCall(call({ transcript: [voiced("Sure, I can help you with that today.", "aura-2-theia-en")] }), "judge");
+    expect(english.checkpoints[15].verdict).toBe("fail");
+    expect(english.checkpoints[15].evidence).toMatch(/^never spoke Spanish \(voices: English\)/);
+    const S12 = SCENARIOS.find((s) => s.id === "S12")!;
+    const japanese = await scoreCall(call({ scenario: S12, finalLanguage: "ja", transcript: [voiced("はい、日本語で大丈夫です。", "aura-2-uzume-ja")] }), "judge");
+    expect(japanese.checkpoints[15].verdict).toBe("pass");
+    expect(japanese.checkpoints[15].evidence).toMatch(/^spoke Japanese, in its own voice/);
+    const kanaInEnglish = await scoreCall(call({ scenario: S12, transcript: [voiced("はい、日本語で大丈夫です。", "aura-2-uzume-ja"), voiced("ありがとう", "aura-2-theia-en")] }), "judge");
+    expect(kanaInEnglish.checkpoints[15].verdict).toBe("fail");
   });
 });

@@ -28,8 +28,7 @@ const AI_SAID_BOOKED = /(?<!\bwhat )\b(?:i['’]?ve|i have|i|we['’]?ve|we have
  * @property {ReturnType<typeof setTimeout>|null} quietTimer - ends an utterance whose Flushed never comes
  * @property {ReturnType<typeof setTimeout>|null} fluxOpenTimer - Flux must open before it fires
  * @property {boolean} ttsFellBack - the Aura stream failed: REST for the rest of the call
- * @property {"language"} [ttsRestReason] - SCRUM-594 (F5): REST because the call switched language (no failure)
- * @property {boolean} [restVoiceFailureCaptured] - SCRUM-594 (F5): a REST failure in a switched language's voice was captured
+ * @property {string[]} [voicesUsed] - SCRUM-594 (phone test F9): the voices the streams spoke in before a fallback (the [FastCall] line)
  * @property {boolean} flushRefusalLogged - a refused flush is logged once per call
  * @property {boolean} flushRefused - the last flush was refused: its text is owed until Aura goes quiet
  * @property {number} flushSentAt - Date.now() of the last flush sent
@@ -168,8 +167,18 @@ class CallSession {
     this.fastLanguage = null;
     /** @type {string|null} the assistant's own voice, to come back to from another language */
     this.baseDeepgramVoice = null;
-    /** @type {string[]|null} every language the call used, when it switched */
+    /** @type {string[]|null} every language the call used, when it used more than English (calls.metadata.fastPath.languages) */
     this.languagesUsed = null;
+    // SCRUM-594 (phone test F9): each sentence is said in its own language's voice
+    // (lib/fast-languages.js sentenceVoice) and the line follows the model's replies.
+    /** @type {string|null} the language the caller's words this turn are clearly in */
+    this.fastTurnLanguage = null;
+    /** @type {string|null} the language of the reply's last sentence that said its own */
+    this.fastReplyLanguage = null;
+    /** @type {string[]|null} voices that failed on this call: their sentences go to the assistant's voice */
+    this.fastFailedVoices = null;
+    /** @type {string[]|null} languages the line went back to English from, or couldn't hear: never followed into again */
+    this.fastBlockedLanguages = null;
     /** @type {number} the caller turn whose unspeakable reply was already replaced by the apology */
     this.unspeakableTurn = -1;
     /** @type {import("./lib/booking-guards").GuardState} */
@@ -177,10 +186,10 @@ class CallSession {
     // SCRUM-594: the fast path's audio player (lib/fast-player.js); null on every other call.
     /** @type {import("./lib/fast-player").FastPlayer|null} */
     this.fastPlayer = null;
-    // SCRUM-594: the fast path's Aura-2 WebSocket TTS (services/aura-stream.js).
-    // Null on every other call, and once the stream has failed: sendTTS then
-    // speaks over REST for the rest of the call.
-    /** @type {import("./services/aura-stream").AuraStream|null} */
+    // SCRUM-594: the fast path's Aura-2 WebSocket TTS, one stream per voice
+    // (services/aura-router.js). Null on every other call, and once the stream has
+    // failed: sendTTS then speaks over REST for the rest of the call.
+    /** @type {import("./services/aura-router").AuraRouter|null} */
     this.fastTts = null;
     // SCRUM-594: the fast path's Flux turn engine (lib/fast-turns.js); null on
     // every other call, and once Flux has fallen back to Nova.

@@ -67,7 +67,7 @@ export type CallRecord = {
   callTime?: string;
   /** SCRUM-594 F5: the business's opening hours, as the judge reads them ("monday 09:00–17:00; …; sunday closed"). */
   businessHours?: string;
-  /** SCRUM-594 F5: every language the call used (session.languagesUsed): set_language's, or the caller's own. */
+  /** SCRUM-594 F5: every language the call used (session.languagesUsed): the caller's, or the AI's own sentences'. */
   languages?: string[];
   /** Phone test F9: the language the call ended in (session.fastLanguage). */
   finalLanguage?: string;
@@ -103,7 +103,7 @@ export function replyWordCounts(t: TranscriptLine[]): number[] {
 
 /** A letter outside Latin script: words the fast path's voices can't say (Japanese aside). */
 const NON_LATIN_LETTER = /(?=\p{L})\P{Script=Latin}/u;
-/** …once the call has switched to Japanese, whose voice reads kana and kanji. */
+/** …in the Japanese voice, which reads kana and kanji. */
 const NON_LATIN_NON_JAPANESE_LETTER = /(?=\p{L})(?![\p{scx=Hiragana}\p{scx=Katakana}\p{scx=Han}])\P{Script=Latin}/u;
 
 const WEEKDAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
@@ -129,6 +129,40 @@ export function englishInOtherVoice(t: TranscriptLine[]): string[] {
     if (line.who !== "ai" || !voiceLanguage(line.voice)) continue;
     const words = new Set(line.text.toLowerCase().replace(/’/g, "'").match(/[a-z']+/g) || []);
     if ([...words].filter((w) => ENGLISH_ONLY.has(w)).length >= 3) out.push(line.text);
+  }
+  return out;
+}
+
+/**
+ * Everyday words of the line's other languages that are no English words: this scorer's own
+ * lists, never the voice server's (it would only grade itself).
+ */
+const OTHER_ONLY: Record<string, Set<string>> = {
+  Spanish: new Set(["el", "los", "las", "usted", "gracias", "hola", "puedo", "puede", "cita", "mañana", "hoy", "también", "ahora", "qué", "cómo", "está", "muy", "más", "pero", "sí", "español", "ayudarle", "para", "por", "una", "que"]),
+  French: new Set(["je", "vous", "nous", "est", "et", "pour", "avec", "merci", "bonjour", "oui", "votre", "demain", "rendez", "c'est", "très", "pas", "une"]),
+  German: new Set(["ich", "sie", "und", "ist", "nicht", "mit", "für", "danke", "bitte", "termin", "heute", "uhr", "können", "gerne", "ein", "eine"]),
+  Italian: new Set(["il", "che", "è", "sono", "grazie", "buongiorno", "appuntamento", "oggi", "domani", "posso", "vorrei", "perfetto", "una"]),
+  Dutch: new Set(["het", "een", "ik", "niet", "uw", "graag", "dank", "afspraak", "vandaag", "kunt", "wilt", "voor", "wat"]),
+};
+const KANA = /[\p{sc=Hiragana}\p{sc=Katakana}]/gu;
+
+/**
+ * Phone test F9's other half: AI lines the English voice read out in another language ("Sí,
+ * puedo hablar español" before the line had switched). Another language means two kana, or
+ * three or more of its everyday words and more of them than English ones.
+ */
+export function otherInEnglishVoice(t: TranscriptLine[]): string[] {
+  const out: string[] = [];
+  for (const line of t) {
+    if (line.who !== "ai" || voiceLanguage(line.voice)) continue;
+    if ((line.text.match(KANA) || []).length >= 2) {
+      out.push(line.text);
+      continue;
+    }
+    const words = new Set(line.text.toLowerCase().replace(/’/g, "'").match(/[\p{L}']+/gu) || []);
+    const english = [...words].filter((w) => ENGLISH_ONLY.has(w)).length;
+    const other = Math.max(...Object.values(OTHER_ONLY).map((set) => [...words].filter((w) => set.has(w)).length));
+    if (other >= 3 && other > english) out.push(line.text);
   }
   return out;
 }
@@ -186,30 +220,31 @@ function deterministic(rec: CallRecord): Partial<Record<number, CheckpointResult
   const wrongDays = wrongWeekdayClaims(rec);
   if (wrongDays.length > 0) out[8] = { verdict: "fail", evidence: `wrong weekday: ${wrongDays.slice(0, 2).map((w) => `"${w}"`).join(", ")}`, source: "det" };
 
-  // SCRUM-594 F5: languages. Words in a script the line can't speak always fail; a supported
-  // language must be switched to; an unsupported one must never be claimed (the judge reads that).
-  const switchedTo = [
-    ...rec.toolTrace.filter((t) => t.name === "set_language" && /^Switched to/.test(t.result || "")).map((t) => String((t.args as { language?: unknown } | undefined)?.language || "")),
-    ...(rec.languages || []).filter((l) => l !== "en"), // switched to the caller's language before the reply
-  ];
-  const unspeakable = switchedTo.includes("ja") ? NON_LATIN_NON_JAPANESE_LETTER : NON_LATIN_LETTER;
-  const foreign = rec.transcript.filter((l) => l.who === "ai" && unspeakable.test(l.text)).map((l) => (l.who === "ai" ? l.text : ""));
+  // SCRUM-594 F5: languages. Words in a script the voice can't say always fail; a supported
+  // language must be spoken in its own voice; an unsupported one must never be claimed (the judge
+  // reads that). Phone test F9: every line in the voice of its own language, both ways.
+  const aiLines = rec.transcript.filter((l): l is Extract<TranscriptLine, { who: "ai" }> => l.who === "ai");
+  const foreign = aiLines.filter((l) => (voiceLanguage(l.voice) === "Japanese" ? NON_LATIN_NON_JAPANESE_LETTER : NON_LATIN_LETTER).test(l.text)).map((l) => l.text);
   const misvoiced = englishInOtherVoice(rec.transcript);
+  const unvoiced = otherInEnglishVoice(rec.transcript);
+  const spokeIn = [...new Set(aiLines.map((l) => voiceLanguage(l.voice)).filter((v): v is string => v !== null))];
   if (foreign.length > 0) {
     out[15] = { verdict: "fail", evidence: `wrote words the voice can't say: "${foreign[0].slice(0, 60)}"`, source: "det" };
   } else if (misvoiced.length > 0) {
     out[15] = { verdict: "fail", evidence: `English read by another language's voice: "${misvoiced[0].slice(0, 60)}"`, source: "det" };
+  } else if (unvoiced.length > 0) {
+    out[15] = { verdict: "fail", evidence: `another language read by the English voice: "${unvoiced[0].slice(0, 60)}"`, source: "det" };
   } else if (rec.scenario.expect.endsInEnglish && (rec.finalLanguage || "en") !== "en") {
     out[15] = { verdict: "fail", evidence: `the caller went back to English, the line stayed in ${rec.finalLanguage}`, source: "det" };
   } else if (rec.scenario.expect.language && rec.scenario.expect.language !== "unsupported") {
-    const wanted = rec.scenario.expect.language;
-    out[15] = switchedTo.includes(wanted)
-      ? { verdict: "pass", evidence: `switched to ${wanted} (set_language)`, source: "det" }
-      : { verdict: "fail", evidence: `never switched to ${wanted} (set_language: ${switchedTo.join(", ") || "none"})`, source: "det" };
+    const wanted = VOICE_LANGUAGES[rec.scenario.expect.language];
+    out[15] = spokeIn.includes(wanted)
+      ? { verdict: "pass", evidence: `spoke ${wanted}, in its own voice`, source: "det" }
+      : { verdict: "fail", evidence: `never spoke ${wanted} (voices: English${spokeIn.length > 0 ? `, ${spokeIn.join(", ")}` : ""})`, source: "det" };
   } else if (rec.scenario.expect.language === "unsupported") {
-    out[15] = switchedTo.some((l) => l !== "en")
-      ? { verdict: "fail", evidence: `switched to ${switchedTo.join(", ")} instead of saying it can't`, source: "det" }
-      : { verdict: "pass", evidence: "no words in a language the line can't speak; never switched", source: "det" };
+    out[15] = spokeIn.length > 0
+      ? { verdict: "fail", evidence: `spoke ${spokeIn.join(", ")} instead of saying it can't`, source: "det" }
+      : { verdict: "pass", evidence: "no words in a language the line can't speak; English only", source: "det" };
   }
 
   const words = replyWordCounts(rec.transcript);
@@ -270,7 +305,7 @@ const JUDGE_RUBRIC = `Score the call on each checkpoint below. Verdicts: "pass",
 9. Remembers what it did earlier in the call — na if the caller never asked about earlier parts of the call. pass: questions about earlier events (what was booked, how a name was spelled, what it did) were answered correctly. fail: a wrong answer, or claiming not to know or not to have done something it did.
 10. Answers "Sorry?" — na unless the caller said "Sorry?" or asked it to say something again. pass: the AI repeated or rephrased what it had just said, and did not treat "Sorry?" as an answer. fail otherwise.
 11. Short replies, no repeating itself — pass: replies are short (mostly one or two sentences) and it never asks a question the caller already answered, nor repeats the same offer three or more times. partial: one such repeat. fail: two or more, or long multi-question replies.
-15. Speaks the caller's language when it can — na unless the caller asked for or spoke a language other than English. This line can speak English, Spanish, French, German, Italian, Dutch and Japanese only. AI lines tagged "[Spanish voice]" (and so on) were spoken by that language's voice; untagged lines by the English voice. pass: for one of those the call switched — a set_language call, or the line switching itself when the caller spoke it (LANGUAGES USED shows every language the voice spoke) — and carried on in that language, every line in the voice of its own language (when the caller went back to English, the English voice again); for any other language it said plainly, in English, that this line can't speak it (offering a call-back is a plus) and never claimed to speak it or wrote words in it. fail: it claimed a language it can't speak, wrote words in it, ignored the request, or a line was read by another language's voice (for example English in the Spanish voice).
+15. Speaks the caller's language when it can — na unless the caller asked for or spoke a language other than English. This line can speak English, Spanish, French, German, Italian, Dutch and Japanese only. AI lines tagged "[Spanish voice]" (and so on) were spoken by that language's voice; untagged lines by the English voice (each sentence is said in the voice of its own language). pass: for one of those it answered in the caller's language (or the one they asked for) and carried on in it until the caller changed language (when the caller went back to English, it answered in English), every line in the voice of its own language; for any other language it said plainly, in English, that this line can't speak it (offering a call-back is a plus) and never claimed to speak it or wrote words in it. fail: it claimed a language it can't speak, wrote words in it, ignored the request, mixed two languages in one reply, or a line was read by another language's voice (for example English in the Spanish voice).
 14. Ends properly — every call is scored (never na). pass: the AI said goodbye and ended the call only after the caller had said goodbye or that they needed nothing else. partial: the caller had to hang up themselves after saying goodbye, or the AI ended the call before the caller had said goodbye or that they were done (for example straight after "yes, that's correct, thanks"). fail: the AI hung up while the caller was objecting or still had something to ask, or the call never ended properly.`;
 
 async function judge(rec: CallRecord, model: string): Promise<{ checkpoints: Record<string, { verdict: Verdict; evidence: string }>; summary: string }> {

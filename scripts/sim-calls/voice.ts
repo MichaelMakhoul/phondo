@@ -380,7 +380,10 @@ async function setUpSimCall(o: { calledNumber: string; callerPhone: string; call
       // (handleUserSpeech: `if (fastTurn) … fillerSentThisTurn = true`); the text
       // turn here is a classic one, so that rule is applied to what it says.
       if (filler && spoken.some((l) => l.kind === "reply")) return 0;
-      spoken.push({ text, kind: kind === NOT_A_REPLY ? "filler" : "reply", at: Date.now(), voice: s?.deepgramVoice });
+      // Phone test F9: each sentence in its own language's voice, chosen as the server's fastSpeech does
+      // (before F9: the line's voice).
+      const voice = vs.fastLanguages?.sentenceVoice ? vs.fastLanguages.sentenceVoice(s, text).voice || s?.baseDeepgramVoice : s?.deepgramVoice;
+      spoken.push({ text, kind: kind === NOT_A_REPLY ? "filler" : "reply", at: Date.now(), voice });
       return 0;
     },
     executeToolCall: async (name: string, args: unknown, ctx: unknown) => {
@@ -401,13 +404,17 @@ async function setUpSimCall(o: { calledNumber: string; callerPhone: string; call
     forgetCancelledBooking: vs.bookingGuards?.forgetCancelledBooking,
     noteBookingGuardCap: vs.bookingGuards?.noteBookingGuardCap,
     CANCEL_KEPT_NUDGE: vs.bookingGuards?.CANCEL_KEPT_NUDGE,
-    // SCRUM-594 F5: set_language — no streams here; the voice the next words would use is recorded.
-    setLanguageToolDefinition: vs.fastLanguages?.setLanguageToolDefinition,
+    // SCRUM-594 F5/F9: the call's languages — no streams here; the line's move is recorded.
     planLanguageSwitch: vs.fastLanguages?.planLanguageSwitch,
-    detectCallerLanguage: vs.fastLanguages?.detectCallerLanguage,
-    detectCallerEnglish: vs.fastLanguages?.detectCallerEnglish,
     FAST_LANGUAGES: vs.fastLanguages?.FAST_LANGUAGES,
     recordLanguageSwitch: vs.fastLanguages?.recordLanguageSwitch,
+    textLanguage: vs.fastLanguages?.textLanguage,
+    beginReplyLanguage: vs.fastLanguages?.beginReplyLanguage,
+    LANGUAGE_UNHEARD_NOTE: vs.fastLanguages?.LANGUAGE_UNHEARD_NOTE,
+    // Before F9 (a fair baseline): set_language and the caller-side switches.
+    setLanguageToolDefinition: vs.fastLanguages?.setLanguageToolDefinition,
+    detectCallerLanguage: vs.fastLanguages?.detectCallerLanguage,
+    detectCallerEnglish: vs.fastLanguages?.detectCallerEnglish,
     LANGUAGE_UNHEARD_MESSAGE: vs.fastLanguages?.LANGUAGE_UNHEARD_MESSAGE,
     switchFastLanguageStreams: (s: any, sw: { voice?: string }) => { s.deepgramVoice = sw.voice; return true; },
     runOwnerToolCall: vs.ownerToolRunner.runOwnerToolCall,

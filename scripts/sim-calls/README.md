@@ -60,5 +60,6 @@ run: it is a harness problem, not a score.
 ## Clocked scenarios and languages (SCRUM-594 F5)
 
 - `S8` runs at its own `clock` (Sunday 18 Oct 2026, 2:32 PM Sydney — phone test F5). `Date` is global, so a clocked scenario runs on its own: `SIM_SCENARIOS=S8`. A default run leaves it out. `SIM_NOW=<ISO time>` runs every selected scenario at that time instead.
-- `S9` (a Spanish speaker) and `S10` (asks for Arabic) score checkpoint 15. For Spanish, `set_language` must switch the call; for Arabic, the AI must say plainly that the line can't speak it. A reply with letters outside Latin script fails either way.
+- `S9` (a Spanish speaker) and `S10` (asks for Arabic) score checkpoint 15. For Spanish, the AI must speak Spanish in the Spanish voice; for Arabic, it must say plainly that the line can't speak it. A reply with letters outside Latin script fails either way.
+- Phone test F9: each AI line is recorded with the voice the server would say it in (`lib/fast-languages.js` `sentenceVoice`: each sentence in its own language's voice). Checkpoint 15 fails English read by another language's voice and another language read by the English voice. `S13` (Spanish, then back to English) must also end with the line in English.
 - Every call record carries `callTime` and the org's `businessHours`. The judge checks dates and weekdays the AI states against them, and a deterministic check fails checkpoint 8 when the AI names the wrong weekday for today or tomorrow.

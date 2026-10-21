@@ -269,23 +269,23 @@ describe("SCRUM-594: the classic block flags the fast variant, run for real", ()
     assert.equal(classicTop({ effectivePipeline: "classic" }).session.effectivePipeline, "classic");
   });
 
-  it("phone test F5: the fast path's language rules name every language it can switch to, and the kill switch leaves English only", () => {
+  it("phone test F5: the fast path's language rules name every language it speaks, and the kill switch leaves English only", () => {
     const { FAST_LANGUAGES } = require("../lib/fast-languages");
     for (const { name } of Object.values(FAST_LANGUAGES)) assert.ok(FAST_LANGUAGE_RULES.includes(name), name);
     assert.match(FAST_LANGUAGE_RULES, /replaces the LANGUAGE rule above/);
-    assert.match(FAST_LANGUAGE_RULES, /call set_language first/);
     assert.match(FAST_LANGUAGE_RULES, /Arabic/);
-    // F5 simulated calls: "Sí, puedo hablar español. How can I help you today?" before the switch, and
-    // the demo's English script line read out on a Spanish call.
-    assert.match(FAST_LANGUAGE_RULES, /call set_language first, in a reply with no words/);
-    assert.match(FAST_LANGUAGE_RULES, /including any line this prompt gives you to say/);
-    // Phone test F9: the shared rule's way back (RECOVERY IS MANDATORY) was lost when the fast rules replaced it.
-    assert.match(FAST_LANGUAGE_RULES, /keep to it until the caller changes language again/);
+    // Phone test F9: no set_language. Each sentence is said in its own language's voice and the line
+    // follows the replies, so the model only has to answer in the caller's language.
+    assert.doesNotMatch(FAST_LANGUAGE_RULES, /set_language/);
+    assert.match(FAST_LANGUAGE_RULES, /Answer in the language the caller speaks, or the one they ask for, and keep to it until they change language\. Nothing needs switching/);
     assert.doesNotMatch(FAST_LANGUAGE_RULES, /for the rest of the call/);
-    assert.match(FAST_LANGUAGE_RULES, /speaks a full sentence in English, call set_language with "en" before you answer in English/);
-    // F9 simulated calls: asked "Do you speak Spanish?", the English voice said "Sí, puedo hablar en español" (5 of 6 calls before this line, none after).
+    // F5 simulated calls: the demo's English script line read out on a Spanish call; F9: English tool results.
+    assert.match(FAST_LANGUAGE_RULES, /including any line this prompt gives you to say and what the tools tell you \(translate them\)/);
+    assert.match(FAST_LANGUAGE_RULES, /keep names, numbers, dates, times and confirmation codes exactly as they are/);
+    // F9 simulated calls: "Let me book that for you." in English on Spanish, French and Japanese calls.
+    assert.match(FAST_LANGUAGE_RULES, /Never mix two languages in one reply\./);
+    // F9 simulated calls: asked "Do you speak Spanish?", the AI answered in Spanish (5 of 6 calls before this line, none after).
     assert.match(FAST_LANGUAGE_RULES, /If the caller only asks, in English, whether you speak one of them, answer in English/);
-    assert.match(FAST_LANGUAGE_RULES, /Never write a word of another language before set_language has switched the line\./);
     const prev = process.env.FAST_LANGUAGES;
     process.env.FAST_LANGUAGES = "off";
     try {
