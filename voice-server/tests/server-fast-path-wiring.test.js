@@ -4042,7 +4042,7 @@ describe("SCRUM-594 (F5, F9): the call's languages on the fast path", () => {
     flushAll(h);
     await h.handleUserSpeech(s, h.twilioWs, "Please, in Arabic.");
     flushAll(h);
-    assert.deepEqual(h.aura.said, [[JAPANESE, "Yes."], [BASE, UNSPEAKABLE_APOLOGY], [BASE, UNSPEAKABLE_APOLOGY]], "\"Yes.\" says no language of its own: the line's voice");
+    assert.deepEqual(h.aura.said, [[BASE, "Yes."], [BASE, UNSPEAKABLE_APOLOGY], [BASE, UNSPEAKABLE_APOLOGY]], "\"Yes.\" is English, on a Japanese line too");
     assert.equal(notes(s, /can't speak/), 2, "once a turn");
     assert.ok(h.lines.some((l) => l.includes("[FastPath] Replaced a reply this voice can't speak")), h.lines.join("\n"));
     h.closeFastPath(s);
