@@ -285,7 +285,7 @@ describe("SCRUM-594: the classic block flags the fast variant, run for real", ()
     // F9 simulated calls: "Let me book that for you." in English on Spanish, French and Japanese calls.
     assert.match(FAST_LANGUAGE_RULES, /Never mix two languages in one reply\./);
     // F9 replay simulations: "Let me check tomorrow's times" in English mid-Spanish (2 of 15 calls), mid-Japanese (1).
-    assert.match(FAST_LANGUAGE_RULES, /the short line before you check or book something: in Spanish "Un momento, lo compruebo\." or "Se lo reservo ahora\.", never "Let me book that for you\."/);
+    assert.match(FAST_LANGUAGE_RULES, /the short line before you check or book something: in Spanish "Un momento, lo compruebo\." or "Se lo reservo ahora\."; never say "Let me book that for you\." to them in English\./);
     // F9 simulated calls: asked "Do you speak Spanish?", the AI answered in Spanish (5 of 6 calls before this line, none after).
     assert.match(FAST_LANGUAGE_RULES, /If the caller only asks, in English, whether you speak one of them, answer in English/);
     const prev = process.env.FAST_LANGUAGES;
