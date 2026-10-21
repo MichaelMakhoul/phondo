@@ -5132,6 +5132,8 @@ function openFastTts(session, twilioWs) {
       fallBackToRestTts(session, `stream closed (${code})`, new Error(`Aura stream closed unexpectedly: ${code} ${String(reason).slice(0, 80)}`));
     },
     onVoiceFailed: (voice, err) => noteFastVoiceFailed(session, voice, "aura-stream", `Aura voice ${voice} did not open`, err),
+    // Security review: what waited for that voice goes through the speech guard again (kana → the apology).
+    rerouteText: (text) => fastSpeech(session, text).text,
   });
   // Gate M3: a stream that never opens (no error, no close) must not go unnoticed.
   const state = session.fastState;

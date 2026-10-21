@@ -94,6 +94,7 @@ function makeRouter(o = {}) {
     onError: (err) => events.errors.push(err.message),
     onClose: (code, reason, info) => events.closes.push([code, info.initiatedByUs]),
     onVoiceFailed: (voice, err) => events.failedVoices.push([voice, err.message]),
+    rerouteText: o.rerouteText,
   });
   return { router, streams, events };
 }
@@ -280,6 +281,26 @@ describe("aura-router: failures", () => {
     assert.equal(streams.opened.filter((a) => a.options.voice === SPANISH).length, 1, "never tried again");
   });
 
+  it("security review: what waited for a failed voice goes through the server's speech guard, in order (\"\" drops it)", () => {
+    let apologised = false;
+    const rerouteText = (text) => (/[ぁ-ん]/.test(text) ? (apologised ? "" : ((apologised = true), "Sorry, English only.")) : text);
+    const { router, streams, events } = makeRouter({ opens: (voice) => voice === BASE, rerouteText });
+    router.speak("はい。", "aura-2-uzume-ja");
+    router.speak("ありがとうございます。", "aura-2-uzume-ja");
+    router.speak("Bye.");
+    streams.of("aura-2-uzume-ja").handle.fails();
+    assert.deepEqual(events.failedVoices.map(([voice]) => voice), ["aura-2-uzume-ja"]);
+    assert.deepEqual(streams.said, [[BASE, "Sorry, English only."], [BASE, "Bye."]]);
+  });
+
+  it("a speech guard that throws fails the router (reported), and the sentence keeps its words", () => {
+    const { router, streams, events } = makeRouter({ opens: (voice) => voice === BASE, rerouteText: () => { throw new Error("guard bug"); } });
+    router.speak("Hola.", SPANISH);
+    streams.of(SPANISH).handle.fails();
+    assert.deepEqual(events.errors, ["guard bug"]);
+    assert.deepEqual(streams.said, [[BASE, "Hola."]]);
+  });
+
   it("a voice that does not open within openTimeoutMs fails the same way, and is closed", async () => {
     const { router, streams, events } = makeRouter({ openTimeoutMs: 20, opens: (voice) => voice === BASE });
     router.speak("Hola.", SPANISH);
@@ -363,6 +384,19 @@ describe("aura-router: barge-in, the voices' cap, and cleanup", () => {
     assert.equal(streams.of(SPANISH).handle.closes, 1, "the oldest idle one");
     assert.equal(streams.of(FRENCH).handle.closes, 0);
     assert.equal(streams.of(BASE).handle.closes, 0, "never the assistant's own");
+  });
+
+  it("security review: a stream still connecting, with a sentence waiting for it, is never the one evicted", () => {
+    const { router, streams } = makeRouter({ maxVoices: 3, opens: (voice) => voice === BASE || voice === SPANISH });
+    router.speak("Hola.", SPANISH);
+    router.flush();
+    streams.confirm(SPANISH);
+    router.speak("Bonjour.", FRENCH); // connecting, its sentence waiting
+    router.speak("Hallo.", GERMAN); // over the cap
+    assert.equal(streams.of(FRENCH).handle.closes, 0, "not the one waited for");
+    assert.equal(streams.of(SPANISH).handle.closes, 1, "the idle one");
+    streams.of(FRENCH).handle.opens();
+    return settle().then(() => assert.deepEqual(streams.of(FRENCH).handle.spoken, ["Bonjour."]));
   });
 
   it("close closes every stream, once; one that throws doesn't stop the others; late callbacks do nothing", () => {

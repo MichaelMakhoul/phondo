@@ -65,6 +65,7 @@ const DEFAULT_MAX_VOICES = 3;
  * @property {(err: Error) => void} [onError] - the router can't go on: fall back
  * @property {(code: number, reason: string, info: { initiatedByUs: boolean }) => void} [onClose] - the assistant's voice's stream closed
  * @property {(voice: string, err: Error) => void} [onVoiceFailed] - another voice's stream never opened: its sentences go to the assistant's voice
+ * @property {(text: string) => string} [rerouteText] - what a sentence queued for a voice that failed becomes in the assistant's voice ("" drops it): the server's speech guard (Japanese text in an English voice is letters)
  */
 
 /**
@@ -211,7 +212,9 @@ function createAuraRouter(apiKey, options = {}) {
     const existing = streams.get(voice);
     if (existing && !existing.dead) return existing;
     if (streams.size >= maxVoices) {
-      const idle = [...streams.values()].filter((vs) => !vs.isBase && vs !== current && !owes(vs)).sort((a, b) => a.lastUsedAt - b.lastUsedAt)[0];
+      // Idle: not speaking, owing nothing, and no sentence waiting for it (one still connecting counts).
+      const waiting = new Set(queue.map((op) => (op.type === "speak" ? op.voice : null)));
+      const idle = [...streams.values()].filter((vs) => !vs.isBase && vs !== current && !owes(vs) && !waiting.has(vs.voice)).sort((a, b) => a.lastUsedAt - b.lastUsedAt)[0];
       if (idle) forget(idle);
     }
     return open(voice, false);
@@ -246,9 +249,35 @@ function createAuraRouter(apiKey, options = {}) {
     if (vs.dead) return;
     forget(vs);
     failedVoices.add(vs.voice);
-    for (const op of queue) if (op.type === "speak" && op.voice === vs.voice) op.voice = baseVoice;
-    invoke(onVoiceFailed, vs.voice, err);
+    invoke(onVoiceFailed, vs.voice, err); // first: the server's speech guard then knows the voice failed
+    /** @type {Op[]} */
+    const kept = [];
+    for (const op of queue) {
+      if (op.type !== "speak" || op.voice !== vs.voice) {
+        kept.push(op);
+        continue;
+      }
+      const text = reroute(op.text);
+      if (text) kept.push({ type: "speak", voice: baseVoice, text });
+    }
+    queue.splice(0, queue.length, ...kept);
     pump();
+  }
+
+  /**
+   * A sentence that was queued for a voice that failed, as the assistant's voice will say it.
+   * @param {string} text
+   * @returns {string} "" to drop it
+   */
+  function reroute(text) {
+    if (typeof options.rerouteText !== "function") return text;
+    try {
+      const said = options.rerouteText(text);
+      return typeof said === "string" ? said : text;
+    } catch (err) {
+      reportError(err instanceof Error ? err : new Error(String(err)));
+      return text;
+    }
   }
 
   /**
@@ -393,7 +422,6 @@ function createAuraRouter(apiKey, options = {}) {
         flushStream(target, op.seq);
         continue;
       }
-      if (failedVoices.has(op.voice)) op.voice = baseVoice;
       if (current && current.voice !== op.voice) {
         if (!handOver(current)) return; // its Flushed (or its quiet, or the timeout) pumps again
         current = null;

@@ -3957,6 +3957,19 @@ describe("SCRUM-594 (F5, F9): the call's languages on the fast path", () => {
     h.closeFastPath(s);
   });
 
+  it("security review: Japanese waiting for a Japanese voice that is refused becomes the apology in the assistant's voice — never letters", async () => {
+    const h = makeFast({ auraOpenFor: (voice) => voice !== JAPANESE, auraReadyFor: (voice) => (voice === JAPANESE ? new Promise(() => {}) : Promise.resolve()), steps: [
+      { sentences: ["はい、大丈夫です。", "明日の10時はいかがですか？"], content: "はい、大丈夫です。明日の10時はいかがですか？" },
+    ] });
+    const s = h.start(langSession());
+    h.fluxOpens();
+    await h.handleUserSpeech(s, h.twilioWs, "日本語で話してもいいですか？");
+    streamOf(h, JAPANESE).options.onError(new Error("Unexpected server response: 400"));
+    assert.deepEqual(h.aura.said, [[BASE, UNSPEAKABLE_APOLOGY]], "once a turn; the second sentence says nothing");
+    assert.equal(notes(s, /can't speak/), 1);
+    h.closeFastPath(s);
+  });
+
   it("a voice whose stream never opens within AURA_OPEN_TIMEOUT_MS fails the same way", async () => {
     const h = makeFast({ auraOpenTimeoutMs: 30, auraOpenFor: (voice) => voice !== SPANISH, auraReadyFor: (voice) => (voice === SPANISH ? new Promise(() => {}) : Promise.resolve()), steps: [
       { sentences: ["Sí, mañana a las diez."], content: "Sí, mañana a las diez." },
