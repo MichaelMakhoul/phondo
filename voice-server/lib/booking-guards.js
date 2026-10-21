@@ -258,7 +258,7 @@ function surnameSpellingConfirmed(transcript, surname, language = "en") {
  */
 function spellingHoldMessage(surname) {
   const letters = spellableLetters(surname).split("").join("-");
-  return `DO NOT BOOK YET. Read the caller's last name back to them letter by letter, exactly as you will save it — for "${surname}" that is ${letters} — and ask "Is that right?" as its own question, with nothing else in that reply. If they correct it, save their spelling. Call book_appointment again only after they say yes.`;
+  return `DO NOT BOOK YET. Read the caller's last name back to them letter by letter, exactly as you will save it — for "${surname}" that is ${letters} — and ask "Is that right?" (in the caller's language) as its own question, with nothing else in that reply. If they correct it, save their spelling. Call book_appointment again only after they say yes.`;
 }
 
 /**

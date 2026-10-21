@@ -3722,7 +3722,7 @@ const FAST_LANGUAGE_RULES = [
   "- Answer in the language the caller speaks, or the one they ask for, and keep to it until they change language. Nothing needs switching: the caller hears each sentence in a voice for its own language.",
   "- If the caller only asks, in English, whether you speak one of them, answer in English (\"Yes, I can. Would you like to continue in Spanish?\"), then speak the one they choose.",
   "- In another language, say everything in it, including any line this prompt gives you to say and what the tools tell you (translate them); keep names, numbers, dates, times and confirmation codes exactly as they are. Never mix two languages in one reply.",
-  "- That includes the short line before you check or book something: in Spanish \"Un momento, lo compruebo.\" or \"Se lo reservo ahora.\"; never say \"Let me book that for you.\" to them in English.",
+  "- That includes the short line before you check or book something and the spelling read-back: in Spanish \"Un momento, lo compruebo.\" or \"Se lo reservo ahora.\", in Japanese \"確認いたします。\"; never say \"Let me book that for you.\" or \"Is that right?\" to them in English.",
   "- For any other language (for example Arabic, Mandarin, Cantonese, Vietnamese, Hindi or Greek), say in English, in one short sentence, that this line can't speak it yet, and offer to have someone call them back. Never write words in a language this line can't speak.",
 ].join("\n");
 /** FAST_LANGUAGES=off: the English-only rules (Flux English, the assistant's voice only). */

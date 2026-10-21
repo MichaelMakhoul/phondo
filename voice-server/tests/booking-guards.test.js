@@ -214,7 +214,7 @@ describe("spellingHoldMessage", () => {
     const m = spellingHoldMessage("Curry");
     assert.match(m, /^DO NOT BOOK YET/);
     assert.match(m, /C-U-R-R-Y/);
-    assert.match(m, /Is that right\?/);
+    assert.match(m, /Is that right\?" \(in the caller's language\)/, "phone test F9 simulations: copied in English mid-Japanese");
     assert.match(m, /book_appointment again only after they say yes/);
     assert.doesNotMatch(m, /hasn't confirmed/, "never claims what the caller did (the model contradicted it: 'You've already confirmed…')");
   });
