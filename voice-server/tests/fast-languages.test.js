@@ -280,6 +280,14 @@ describe("sentenceVoice: each sentence in its own language's voice (phone test F
     assert.deepEqual(sentenceVoice(s, "Gracias, Sami."), { language: "es", voice: "aura-2-selena-es" });
   });
 
+  it("test review (S9): on an English line, after the model's English tool line, \"Gracias, Sami.\" to a Spanish caller is Spanish — the caller's language is in play", () => {
+    const s = session();
+    beginReplyLanguage(s, "Hola, necesito un fontanero para mañana por la mañana.");
+    assert.equal(s.fastTurnLanguage, "es");
+    assert.equal(sentenceVoice(s, "Let me check that for you.").language, "en");
+    assert.deepEqual(sentenceVoice(s, "Gracias, Sami."), { language: "es", voice: "aura-2-selena-es" });
+  });
+
   it("a language whose voice failed is said in the assistant's voice", () => {
     const s = session({ fastFailedVoices: ["aura-2-selena-es"] });
     assert.deepEqual(sentenceVoice(s, "Sí, hablo español."), { language: "es", voice: "aura-2-theia-en" });
