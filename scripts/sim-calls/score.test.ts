@@ -1,5 +1,8 @@
+import fs from "fs";
+import os from "os";
+import path from "path";
 import { describe, expect, it, vi } from "vitest";
-import { englishInOtherVoice, otherInEnglishVoice, renderTranscript, scoreCall, voiceLanguage, wrongWeekdayClaims, type CallRecord, type TranscriptLine } from "./score";
+import { englishInOtherVoice, otherInEnglishVoice, renderTranscript, scoreCall, SESSION_JUDGE, voiceLanguage, wrongWeekdayClaims, type CallRecord, type TranscriptLine } from "./score";
 import { PERSONA, SCENARIOS } from "./scenarios";
 
 // The judge is an LLM call: these tests score only the deterministic side, so the judge passes everything.
@@ -121,5 +124,37 @@ describe("checkpoint 15: English in another language's voice, and the way back t
     expect(japanese.checkpoints[15].evidence).toMatch(/^spoke Japanese, in its own voice/);
     const kanaInEnglish = await scoreCall(call({ scenario: S12, transcript: [voiced("はい、日本語で大丈夫です。", "aura-2-uzume-ja"), voiced("ありがとう", "aura-2-theia-en")] }), "judge");
     expect(kanaInEnglish.checkpoints[15].verdict).toBe("fail");
+  });
+});
+
+// The owner can't top up the API credit: the judge (~40% of a simulated call's cost) is graded in the Claude Code session.
+describe("SIM_JUDGE_MODEL=session: the judge's prompt is written out and its grade read back, with no API call", () => {
+  const voiced = (text: string, voice?: string): TranscriptLine => ({ who: "ai", text, kind: "reply", voice });
+  const S13 = SCENARIOS.find((s) => s.id === "S13")!;
+  const record = (): CallRecord => ({
+    scenario: S13, persona: PERSONA, run: 1, transcript: [voiced("Sí, hablo español.", "aura-2-selena-es")], toolTrace: [], diary: [], activeAfterTurn: [],
+    ending: "end_call", anomalies: [], logs: [], llm: { calls: 0, medianMs: 0, p90Ms: 0 }, turns: 1, languages: ["en", "es"], finalLanguage: "en",
+  });
+  const files = () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sim-session-judge-"));
+    return { dir, prompt: path.join(dir, "S13-run1.judge-prompt.md"), grade: path.join(dir, "S13-run1.judge.json") };
+  };
+
+  it("with no grade yet: the prompt is written, the judge's checkpoints wait as na, the deterministic ones stand", async () => {
+    const f = files();
+    const { checkpoints, summary } = await scoreCall(record(), SESSION_JUDGE, f);
+    expect(fs.readFileSync(f.prompt, "utf8")).toMatch(/^# Judge this call[\s\S]*Reply with JSON only[\s\S]*TRANSCRIPT:/);
+    expect(checkpoints[3]).toMatchObject({ verdict: "na", evidence: "awaiting the session's grade" });
+    expect(checkpoints[15].verdict).toBe("pass");
+    expect(summary).toBe("awaiting the session's grade");
+  });
+
+  it("with the session's grade: read back through the same merge rules", async () => {
+    const f = files();
+    const grade = { checkpoints: Object.fromEntries(["2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "14", "15"].map((k) => [k, { verdict: k === "3" ? "fail" : "pass", evidence: "L4" }])), summary: "graded here" };
+    fs.writeFileSync(f.grade, JSON.stringify(grade));
+    const { checkpoints, summary } = await scoreCall(record(), SESSION_JUDGE, f);
+    expect(checkpoints[3]).toMatchObject({ verdict: "fail", source: "judge" });
+    expect(summary).toBe("graded here");
   });
 });

@@ -40,11 +40,13 @@ server log. In a git worktree, point `SIM_ENV_FILE` at a checkout's
 | `SIM_RUNS` | 2 | runs per scenario |
 | `SIM_CONCURRENCY` | 4 | calls at once |
 | `SIM_CALLER_MODEL` | `claude-sonnet-5-5` | the caller |
-| `SIM_JUDGE_MODEL` | `claude-opus-5-5` | the judge |
+| `SIM_JUDGE_MODEL` | `claude-opus-5-5` | the judge; `session` = no API call: each run's judge prompt is written to `runs/<run>.judge-prompt.md` for the Claude Code session to grade into `runs/<run>.judge.json`, then `SIM_RESCORE=<dir> SIM_JUDGE_MODEL=session` builds the report from those grades |
 | `SIM_NOISE` | `phone` | `none` turns the STT layer off |
 | `SIM_OUT` | `.sim-calls/<timestamp>` | report directory |
 | `SIM_LABEL` | | the report's title |
 | `SIM_ENV_FILE` | `voice-server/.env` | where to find `ANTHROPIC_API_KEY` |
+
+**Cost (2026-10-21 prices).** A call costs about 10¢ with the defaults: the receptionist (Haiku) ~2.5¢, the caller (Sonnet) ~3¢, the judge (Opus) ~4¢. With `SIM_CALLER_MODEL=claude-haiku-5-5` and `SIM_JUDGE_MODEL=session` it is about 3¢: only the receptionist, the system under test, needs the API. Set a budget before a run (calls × cost) — 2,200 simulated calls cost about $200 over 17-21 Oct.
 
 ## Scoring
 

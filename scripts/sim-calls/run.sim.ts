@@ -60,7 +60,7 @@ import { simDb, type Row } from "./fake-supabase";
 import { loadVoiceServer, routeConsole, startSimCall, SIM_INTERNAL_SECRET, SIM_INTERNAL_URL, VOICE_DIR } from "./voice";
 import { SimCaller, hearAs, HANGUP, type NoiseLevel } from "./caller";
 import { PERSONA, SCENARIOS, type Scenario } from "./scenarios";
-import { llmStats, scoreCall, type CallRecord, type DiaryEntry, type TranscriptLine } from "./score";
+import { llmStats, scoreCall, SESSION_JUDGE, type CallRecord, type DiaryEntry, type SessionJudgeFiles, type TranscriptLine } from "./score";
 import { renderReport, renderRun, runFileName, type ScoredCall } from "./report";
 import { usage } from "./anthropic";
 
@@ -284,9 +284,9 @@ async function runCall(o: { scenario: Scenario; run: number; fixture: Fixture; c
 
 /** SIM_RESCORE=<run dir>: score that run's saved calls again (a changed rubric or scorer), into report-rescored.md. */
 async function rescore(dir: string): Promise<void> {
-  ensureAnthropicKey();
-  sandboxFetch();
   const judgeModel = process.env.SIM_JUDGE_MODEL || "claude-opus-5-5";
+  if (judgeModel !== SESSION_JUDGE) ensureAnthropicKey(); // the session's grades need no API
+  sandboxFetch();
   const files = fs.readdirSync(path.join(dir, "runs")).filter((f) => f.endsWith(".json"));
   if (files.length === 0) throw new Error(`no saved records in ${dir}/runs (runs before records were saved can't be re-scored)`);
   const records = files.map((f) => JSON.parse(fs.readFileSync(path.join(dir, "runs", f), "utf8")) as CallRecord);
@@ -295,7 +295,7 @@ async function rescore(dir: string): Promise<void> {
     if (record.error) return { record, score: null, scoreError: "not scored: the call failed" };
     if (record.anomalies.length > 0) return { record, score: null, scoreError: "not scored: harness anomalies (see the run file)" };
     try {
-      return { record, score: await scoreCall(record, judgeModel) };
+      return { record, score: await scoreCall(record, judgeModel, sessionJudgeFiles(dir, record)) };
     } catch (err) {
       return { record, score: null, scoreError: err instanceof Error ? err.message : String(err) };
     }
@@ -313,6 +313,12 @@ async function rescore(dir: string): Promise<void> {
   });
   fs.writeFileSync(path.join(dir, "report-rescored.md"), report);
   process.stdout.write(`\nsim re-scored report: ${path.join(dir, "report-rescored.md")}\n`);
+}
+
+/** SIM_JUDGE_MODEL=session: the files the run's judge prompt and the session's grade live in. */
+function sessionJudgeFiles(dir: string, record: CallRecord): SessionJudgeFiles {
+  const base = path.join(dir, "runs", runFileName(record).replace(/\.md$/, ""));
+  return { prompt: `${base}.judge-prompt.md`, grade: `${base}.judge.json` };
 }
 
 async function pool<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
@@ -373,7 +379,7 @@ it("simulated demo-line calls", async () => {
       result = { record, score: null, scoreError: "not scored: harness anomalies (see the run file)" };
     } else {
       try {
-        result = { record, score: await scoreCall(record, judgeModel) };
+        result = { record, score: await scoreCall(record, judgeModel, sessionJudgeFiles(outDir, record)) };
       } catch (err) {
         result = { record, score: null, scoreError: err instanceof Error ? err.message : String(err) };
       }

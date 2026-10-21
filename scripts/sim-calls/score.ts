@@ -6,13 +6,25 @@
  * apply, the deterministic verdict is authoritative (2, 6) or the worse of the
  * two wins (7, 11, 14). Checkpoints 1, 12 and 13 need real audio and are never
  * scored here.
+ *
+ * SIM_JUDGE_MODEL=session: no API call for the judge (it was ~40% of a call's
+ * cost). The judge's exact prompt is written beside the run
+ * (runs/<run>.judge-prompt.md) for the Claude Code session to grade; the
+ * session writes its JSON reply to runs/<run>.judge.json, and SIM_RESCORE
+ * reads it back through the same merge rules. Until then the judge's
+ * checkpoints are "na" (awaiting the session's grade).
  */
+import fs from "fs";
 import { claudeText } from "./anthropic";
 import type { Persona } from "./caller";
 import type { Scenario } from "./scenarios";
 import type { SpokenLine, ToolEvent } from "./voice";
 
 export type Verdict = "pass" | "partial" | "fail" | "na";
+/** SIM_JUDGE_MODEL value that hands the judging to the Claude Code session (see the header). */
+export const SESSION_JUDGE = "session";
+/** Where a session-judged call's prompt goes and its grade comes back. */
+export type SessionJudgeFiles = { prompt: string; grade: string };
 export type CheckpointResult = { verdict: Verdict; evidence: string; source: "det" | "judge" | "both" };
 
 export const CHECKPOINTS: Array<{ id: number; name: string; simulated: boolean }> = [
@@ -308,7 +320,10 @@ const JUDGE_RUBRIC = `Score the call on each checkpoint below. Verdicts: "pass",
 15. Speaks the caller's language when it can — na unless the caller asked for or spoke a language other than English. This line can speak English, Spanish, French, German, Italian, Dutch and Japanese only. AI lines tagged "[Spanish voice]" (and so on) were spoken by that language's voice; untagged lines by the English voice (each sentence is said in the voice of its own language). pass: for one of those it answered in the caller's language (or the one they asked for) and carried on in it until the caller changed language (when the caller went back to English, it answered in English; a short answer in English such as a name or "okay, thanks" is no change of language), every line in the voice of its own language; for any other language it said plainly, in English, that this line can't speak it (offering a call-back is a plus) and never claimed to speak it or wrote words in it. fail: it claimed a language it can't speak, wrote words in it, ignored the request, mixed two languages in one reply, or a line was read by another language's voice (for example English in the Spanish voice).
 14. Ends properly — every call is scored (never na). pass: the AI said goodbye and ended the call only after the caller had said goodbye or that they needed nothing else. partial: the caller had to hang up themselves after saying goodbye, or the AI ended the call before the caller had said goodbye or that they were done (for example straight after "yes, that's correct, thanks"). fail: the AI hung up while the caller was objecting or still had something to ask, or the call never ended properly.`;
 
-async function judge(rec: CallRecord, model: string): Promise<{ checkpoints: Record<string, { verdict: Verdict; evidence: string }>; summary: string }> {
+/** The checkpoints the judge reads (the order its reply lists them in). */
+const JUDGED = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 14, 15];
+
+async function judge(rec: CallRecord, model: string, sessionFiles?: SessionJudgeFiles): Promise<{ checkpoints: Record<string, { verdict: Verdict; evidence: string }>; summary: string }> {
   const system = [
     "You audit phone calls handled by an AI receptionist for a plumbing business. A scripted caller (who knows the truth) talked to it.",
     "You get the transcript (with what the receptionist's speech-to-text heard), every tool call the receptionist made with the result it got back, and the business diary after the call.",
@@ -331,7 +346,18 @@ async function judge(rec: CallRecord, model: string): Promise<{ checkpoints: Rec
     "",
     `HOW THE CALL ENDED: ${rec.ending === "end_call" ? "the AI ended the call (end_call)" : rec.ending === "caller-hangup" ? "the caller hung up" : rec.ending}`,
   ].join("\n");
-  const raw = await claudeText({ model, system, messages: [{ role: "user", content: user }], maxTokens: 8000 });
+  let raw: string;
+  if (model === SESSION_JUDGE) {
+    if (!sessionFiles) throw new Error("sim: SIM_JUDGE_MODEL=session needs the run's file paths");
+    fs.writeFileSync(sessionFiles.prompt, `# Judge this call\n\nWrite the JSON reply to ${sessionFiles.grade}\n\n## System\n\n${system}\n\n## Call\n\n${user}\n`);
+    if (!fs.existsSync(sessionFiles.grade)) {
+      const pending = Object.fromEntries(JUDGED.map((id) => [String(id), { verdict: "na" as const, evidence: "awaiting the session's grade" }]));
+      return { checkpoints: pending, summary: "awaiting the session's grade" };
+    }
+    raw = fs.readFileSync(sessionFiles.grade, "utf8");
+  } else {
+    raw = await claudeText({ model, system, messages: [{ role: "user", content: user }], maxTokens: 8000 });
+  }
   const json = raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1);
   const parsed = JSON.parse(json) as { checkpoints?: Record<string, { verdict?: string; evidence?: string }>; summary?: string };
   const checkpoints: Record<string, { verdict: Verdict; evidence: string }> = {};
@@ -345,9 +371,9 @@ async function judge(rec: CallRecord, model: string): Promise<{ checkpoints: Rec
 
 export type CallScore = { checkpoints: Record<number, CheckpointResult>; summary: string };
 
-export async function scoreCall(rec: CallRecord, judgeModel: string): Promise<CallScore> {
+export async function scoreCall(rec: CallRecord, judgeModel: string, sessionFiles?: SessionJudgeFiles): Promise<CallScore> {
   const det = deterministic(rec);
-  const j = await judge(rec, judgeModel);
+  const j = await judge(rec, judgeModel, sessionFiles);
   const checkpoints: Record<number, CheckpointResult> = {};
   for (const cp of CHECKPOINTS) {
     if (!cp.simulated) continue;
