@@ -265,13 +265,34 @@ describe("aura-router: a sentence in another voice", () => {
     assert.deepEqual(streams.of(SPANISH).handle.spoken, ["Claro."]);
   });
 
+  it("test review: each hand-over gets its own deadline — a stuck one after another finished, or after a clear, is still caught", async () => {
+    for (const between of ["finished", "cleared"]) {
+      const { router, streams, events } = makeRouter({ handoverWaitMs: 30 });
+      router.speak("One.");
+      router.speak("Dos.", SPANISH); // the first hand-over: the English owes its audio
+      if (between === "finished") {
+        streams.confirm(BASE);
+      } else {
+        router.clear(); // a barge-in mid hand-over
+        router.speak("Dos.", SPANISH);
+      }
+      assert.deepEqual(streams.of(SPANISH).handle.spoken, ["Dos."], between);
+      router.flush();
+      router.speak("Three."); // the second hand-over: the Spanish never sends anything again
+      await sleep(70);
+      assert.match(events.errors[0] ?? "", /^Aura voice aura-2-selena-es stuck/, between);
+    }
+  });
+
   it("a stream that sends neither audio nor its Flushed for handoverWaitMs is stuck: onError (the server falls back and says it again)", async () => {
     const { router, streams, events } = makeRouter({ handoverWaitMs: 30 });
     router.speak("Of course.");
     router.flush();
     router.speak("Claro.", SPANISH);
     await sleep(60);
-    assert.deepEqual(events.errors, ["Aura voice aura-2-theia-en stuck: no Flushed and no audio for " + events.errors[0]?.match(/(\d+) ms$/)?.[1] + " ms"]);
+    assert.equal(events.errors.length, 1);
+    const silent = Number(/^Aura voice aura-2-theia-en stuck: no Flushed and no audio for (\d+) ms$/.exec(events.errors[0])?.[1]);
+    assert.ok(silent >= 30, `${events.errors[0]}: it waited out handoverWaitMs`);
     assert.deepEqual(events.flushed, [], "never reported done");
     assert.deepEqual(streams.of(SPANISH).handle.spoken, [], "nothing spoken over it");
   });
@@ -450,17 +471,31 @@ describe("aura-router: barge-in, the voices' cap, and cleanup", () => {
     assert.equal(streams.of(BASE).handle.closes, 0, "never the assistant's own");
   });
 
-  it("security review: a stream still connecting, with a sentence waiting for it, is never the one evicted", () => {
-    const { router, streams } = makeRouter({ maxVoices: 3, opens: (voice) => voice === BASE || voice === SPANISH });
+  it("security review: a stream still connecting, with a sentence waiting for it, is never the one evicted — even when it is the oldest", async () => {
+    const { router, streams } = makeRouter({ maxVoices: 3, opens: (voice) => voice !== FRENCH });
+    router.prepare(FRENCH); // the oldest, still connecting
+    await sleep(2);
     router.speak("Hola.", SPANISH);
     router.flush();
     streams.confirm(SPANISH);
-    router.speak("Bonjour.", FRENCH); // connecting, its sentence waiting
+    router.speak("Bonjour.", FRENCH); // waiting for the French stream
     router.speak("Hallo.", GERMAN); // over the cap
-    assert.equal(streams.of(FRENCH).handle.closes, 0, "not the one waited for");
+    assert.equal(streams.of(FRENCH).handle.closes, 0, "not the one waited for, though least recently used");
     assert.equal(streams.of(SPANISH).handle.closes, 1, "the idle one");
     streams.of(FRENCH).handle.opens();
-    return settle().then(() => assert.deepEqual(streams.of(FRENCH).handle.spoken, ["Bonjour."]));
+    await settle();
+    assert.deepEqual(streams.of(FRENCH).handle.spoken, ["Bonjour."]);
+  });
+
+  it("test review: eviction never closes the stream speaking, nor one that owes audio, even the oldest", async () => {
+    const { router, streams } = makeRouter({ maxVoices: 3 });
+    router.speak("Sí, hablo español.", SPANISH); // speaking, owes its audio
+    router.flush();
+    await sleep(2);
+    router.prepare(FRENCH); // newer, idle
+    router.speak("Ja, ich spreche Deutsch.", GERMAN); // over the cap
+    assert.equal(streams.of(SPANISH).handle.closes, 0, "the stream still speaking");
+    assert.equal(streams.of(FRENCH).handle.closes, 1);
   });
 
   it("close closes every stream, once; one that throws doesn't stop the others; late callbacks do nothing", () => {

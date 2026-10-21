@@ -4018,6 +4018,34 @@ describe("SCRUM-594 (F5, F9): the call's languages on the fast path", () => {
     h.closeFastPath(s);
   });
 
+  it("test review: a voice failing on an English call after the conversation moved on tells the model nothing", async () => {
+    const h = makeFast({ auraOpenFor: (voice) => voice !== SPANISH, auraReadyFor: (voice) => (voice === SPANISH ? new Promise(() => {}) : Promise.resolve()), steps: [
+      { sentences: ["¡Muchas gracias!", "Sure, Tuesday at ten works."], content: "¡Muchas gracias! Sure, Tuesday at ten works." },
+      { sentences: ["You're welcome, see you Tuesday."], content: "You're welcome, see you Tuesday." },
+    ] });
+    const s = h.start(langSession());
+    h.fluxOpens();
+    await h.handleUserSpeech(s, h.twilioWs, "Can you book me in for Tuesday morning, please?");
+    await h.handleUserSpeech(s, h.twilioWs, "Great, thank you so much for that.");
+    streamOf(h, SPANISH).options.onError(new Error("Unexpected server response: 400"));
+    assert.deepEqual(s.fastFailedVoices, [SPANISH]);
+    assert.equal(notes(s, /only continue in English/), 0, "nobody is speaking Spanish now");
+    h.closeFastPath(s);
+  });
+
+  it("test review: a language given up on (Flux refused its hints) whose voice then fails is not noted twice", async () => {
+    const h = makeFast({ steps: [{ sentences: ["¡Claro! Puedo ayudarle en español."], content: "¡Claro! Puedo ayudarle en español." }] });
+    const s = h.start(langSession());
+    h.fluxOpens();
+    await h.handleUserSpeech(s, h.twilioWs, "¿Habla español?");
+    flushAll(h);
+    h.lastFlux().callbacks.onWarning({ type: "ConfigureFailure", code: "INVALID_LANGUAGE_HINT", message: "bad hint" });
+    h.noteFastVoiceFailed(s, SPANISH, "aura-rest", "test", new Error("refused"));
+    assert.equal(notes(s, /only continue in English/), 1);
+    assert.deepEqual(s.fastBlockedLanguages, ["es"]);
+    h.closeFastPath(s);
+  });
+
   it("a voice whose stream never opens within AURA_VOICE_OPEN_TIMEOUT_MS fails the same way", async () => {
     const h = makeFast({ voiceOpenTimeoutMs: 30, auraOpenFor: (voice) => voice !== SPANISH, auraReadyFor: (voice) => (voice === SPANISH ? new Promise(() => {}) : Promise.resolve()), steps: [
       { sentences: ["Sí, mañana a las diez."], content: "Sí, mañana a las diez." },
