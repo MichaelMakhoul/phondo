@@ -372,6 +372,39 @@ describe("aura-router: barge-in, the voices' cap, and cleanup", () => {
     assert.deepEqual(streams.of(BASE).handle.spoken, ["Of course.", "New reply."], "no hand-over wait after a clear");
   });
 
+  it("a second clear never Clears a stream the first one already did (nothing is speaking)", () => {
+    const { router, streams } = makeRouter();
+    router.speak("Claro.", SPANISH);
+    router.clear();
+    router.clear();
+    assert.equal(streams.of(SPANISH).handle.clears, 1);
+    assert.equal(streams.of(BASE).handle.clears, 0);
+  });
+
+  it("a flush the stream refuses at once still holds the next voice until that stream's audio goes quiet", async () => {
+    const { router, streams } = makeRouter({ quietMs: 30 });
+    router.speak("Of course.");
+    streams.of(BASE).handle.refuse = true;
+    assert.equal(router.flush(), null);
+    router.speak("Claro.", SPANISH);
+    assert.deepEqual(streams.of(SPANISH).handle.spoken, [], "not before the English is out");
+    await sleep(50);
+    assert.deepEqual(streams.of(SPANISH).handle.spoken, ["Claro."]);
+  });
+
+  it("a stream forgotten while the call goes on (closed idle) never delivers late audio", () => {
+    const { router, streams, events } = makeRouter();
+    router.speak("Hola.", SPANISH);
+    router.flush();
+    streams.confirm(SPANISH);
+    const old = streams.of(SPANISH);
+    old.options.onClose(1000, "idle", { initiatedByUs: false });
+    old.options.onAudio(Buffer.alloc(160));
+    old.options.onFlushed(0);
+    assert.deepEqual(events.audio, []);
+    assert.deepEqual(events.flushed, [0], "only the Flushed that came before");
+  });
+
   it("past maxVoices, a new voice closes the least recently used idle one", () => {
     const { router, streams } = makeRouter({ maxVoices: 3 });
     router.speak("Hola.", SPANISH);

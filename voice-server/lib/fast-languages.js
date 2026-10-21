@@ -151,10 +151,11 @@ function languageScores(text) {
   const lower = text.toLowerCase().replace(/’/g, "'");
   /** @type {Set<string>} */
   const words = new Set();
+  // A spelling's letters are no language's words; an accented one-letter word is ("è").
+  const isWord = (/** @type {string} */ w) => w.length > 1 || /[^a-z']/.test(w);
   for (const raw of lower.match(/[\p{L}']+/gu) || []) {
-    words.add(raw); // "c'est", "i'm"
-    // A spelling's letters are no language's words; an accented one is ("è", "à").
-    for (const part of raw.split("'")) if (part.length > 1 || /[^a-z]/.test(part)) words.add(part);
+    if (isWord(raw)) words.add(raw); // "c'est", "i'm"
+    for (const part of raw.split("'")) if (isWord(part)) words.add(part);
   }
   return WORD_SETS.map(([code, set]) => {
     let score = 0;

@@ -3898,6 +3898,39 @@ describe("SCRUM-594 (F5, F9): the call's languages on the fast path", () => {
     }
   });
 
+  it("the line follows only a reply clearly in a language (strict): \"Gracias.\" alone moves nothing", async () => {
+    const h = makeFast({ steps: [{ sentences: ["Gracias."], content: "Gracias." }, { sentences: ["Gracias, muy bien, hasta luego."], content: "Gracias, muy bien, hasta luego." }] });
+    const s = h.start(langSession());
+    h.fluxOpens();
+    const configured = recordHints(h);
+    await h.handleUserSpeech(s, h.twilioWs, "Two PM is good.");
+    flushAll(h);
+    assert.deepEqual(h.aura.said, [[SPANISH, "Gracias."]], "said in Spanish all the same");
+    assert.equal(s.fastLanguage, "en", "one word moves no line");
+    await h.handleUserSpeech(s, h.twilioWs, "Okay then.");
+    flushAll(h);
+    assert.equal(s.fastLanguage, "es");
+    assert.deepEqual(configured, [["es", "en"]]);
+    h.closeFastPath(s);
+  });
+
+  it("the hearing can't follow: one note, even for a second language", async () => {
+    const h = makeFast({ steps: [
+      { sentences: ["¡Claro! Puedo ayudarle en español."], content: "¡Claro! Puedo ayudarle en español." },
+      { sentences: ["Bien sûr, je peux vous aider en français."], content: "Bien sûr, je peux vous aider en français." },
+    ] });
+    const s = h.start(langSession());
+    h.fluxOpens();
+    h.lastFlux().callbacks.onError(new Error("flux down"));
+    await h.handleUserSpeech(s, h.twilioWs, "¿Habla español?");
+    flushAll(h);
+    await h.handleUserSpeech(s, h.twilioWs, "Vous parlez français ?");
+    flushAll(h);
+    assert.deepEqual(s.fastBlockedLanguages, ["es", "fr"]);
+    assert.equal(notes(s, /^This line can only hear English now\./), 1);
+    h.closeFastPath(s);
+  });
+
   it("Flux refusing the hints after the line followed: back to English, captured, the model told — and the line never follows into Spanish again", async () => {
     const h = makeFast({ steps: [
       { sentences: ["¡Claro! Puedo ayudarle en español."], content: "¡Claro! Puedo ayudarle en español." },
@@ -4076,7 +4109,16 @@ describe("SCRUM-594 (F5, F9): the call's languages on the fast path", () => {
     assert.deepEqual(await run("en", "¿Está libre el martes por la mañana?"), ["Un momento, déjeme verificar.", "OK."], "the caller's Spanish on an English line");
     assert.deepEqual(await run("en", "Mardi matin, c'est libre ?"), ["Un instant, je vérifie cela.", "OK."]);
     assert.deepEqual(await run("nl", "Is dinsdagochtend nog vrij?"), ["OK."], "no canned Dutch fillers: none, never an English one in a Dutch voice");
+    assert.deepEqual(await run("en", "Goedemiddag, ik heb een lekkage in de keuken, kunt u komen?"), ["OK."], "the caller's Dutch on an English line: none either");
     assert.deepEqual(await run("en", "Is Tuesday free in the morning at all?"), ["One moment, let me check that.", "OK."]);
+  });
+
+  it("the waiting filler is in the caller's language this turn", async () => {
+    const h = makeFast({ steps: [{ firstDelayMs: 1700, sentences: ["Perfecto."], content: "Perfecto." }] });
+    const s = h.start(langSession());
+    await h.handleUserSpeech(s, h.twilioWs, "Hola, buenos días, necesito un fontanero para mañana.");
+    assert.deepEqual(h.aura.said, [[SPANISH, "Un momento."], [SPANISH, "Perfecto."]]);
+    h.closeFastPath(s);
   });
 
   it("a barge-in Clears the stream still speaking, never an idle one (a lost Cleared would mute its next sentence)", async () => {

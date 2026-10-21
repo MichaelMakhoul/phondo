@@ -223,6 +223,8 @@ describe("textLanguage: the language the model's words are clearly in (phone tes
     assert.equal(textLanguage("I'd like a booking on Monday, please, thanks.", { strict: true }), "en");
     assert.equal(textLanguage("I'd like a booking on Monday, por favor, gracias.", { strict: true }), null, "4 against 3: not clear");
     assert.equal(textLanguage("Thank you, gracias, muy bien.", { strict: true }), null);
+    assert.equal(textLanguage("Hola, gracias, muy amable, thanks.", { strict: true }), null, "3 against 1 is not more than three times");
+    assert.equal(textLanguage("Hola, gracias, muy amable, thanks."), "es", "but it is more than twice");
     assert.equal(textLanguage("日本語で話してもいいですか？", { strict: true }), "ja");
   });
 
