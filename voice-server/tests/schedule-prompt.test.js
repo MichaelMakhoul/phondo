@@ -356,15 +356,27 @@ describe("SCRUM-594 (phone test F5): today's weekday and a closed today", () => 
     assert.ok(result.includes('Never say "tomorrow" yourself (to a caller now it means today): say "Saturday".'), result);
   });
 
+  it("phone test F9 simulations: today lists only the times the 30-minute rule lets the AI offer (3:58 PM: 4:30 PM; from 4:01: none left)", () => {
+    const today = { "2026-10-21": ["2026-10-21T16:00:00", "2026-10-21T16:30:00"], "2026-10-22": ["2026-10-22T09:00:00"] };
+    const at358 = withNow("2026-10-21T04:58:00Z", () => buildLiveScheduleSection(weekdaySnapshot(today), "2026-10-21")); // Wed 3:58 PM Sydney
+    assert.ok(at358.includes("Today (Wed, Oct 21): 4:30 PM (1 slot)"), at358);
+    const at401 = withNow("2026-10-21T05:01:00Z", () => buildLiveScheduleSection(weekdaySnapshot(today), "2026-10-21"));
+    assert.ok(at401.includes("Today (Wed, Oct 21): no times left today."), at401);
+    assert.ok(at401.includes("Tomorrow (Thu, Oct 22): 9 AM (1 slot)"), at401);
+    // A snapshot for another day than the clock's: nothing to measure against, nothing dropped.
+    const other = withNow("2026-10-21T05:01:00Z", () => buildLiveScheduleSection(weekdaySnapshot({ "2026-10-23": ["2026-10-23T09:00:00"] }), "2026-10-23"));
+    assert.ok(other.includes("9 AM (1 slot)"), other);
+  });
+
   it("once open, today's line is plain (a later first free time is not 'not open yet')", () => {
-    const result = withNow("2026-10-18T23:15:00Z", () => buildLiveScheduleSection(weekdaySnapshot(BUSINESS_WEEK), "2026-10-19")); // Mon 10:15 Sydney
+    const result = withNow("2026-10-18T22:15:00Z", () => buildLiveScheduleSection(weekdaySnapshot(BUSINESS_WEEK), "2026-10-19")); // Mon 9:15 Sydney: open, 10 AM still 45 min away
     assert.ok(result.includes("Today (Mon, Oct 19): 10 AM, 10:30 AM (2 slots)"), result);
     assert.ok(!result.includes("hasn't opened yet"));
     assert.ok(!result.includes("early hours"));
   });
 
   it("an open today with times is listed as before", () => {
-    const result = withNow("2026-10-18T23:15:00Z", () => buildLiveScheduleSection(weekdaySnapshot(BUSINESS_WEEK), "2026-10-19")); // Mon 10:15 Sydney
+    const result = withNow("2026-10-18T22:15:00Z", () => buildLiveScheduleSection(weekdaySnapshot(BUSINESS_WEEK), "2026-10-19")); // Mon 9:15 Sydney
     assert.ok(result.includes("Today (Mon, Oct 19): 10 AM, 10:30 AM (2 slots)"), result);
     assert.ok(result.includes("Tomorrow (Tue, Oct 20):"));
   });

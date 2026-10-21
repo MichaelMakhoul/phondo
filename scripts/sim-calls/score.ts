@@ -320,7 +320,7 @@ async function judge(rec: CallRecord, model: string): Promise<{ checkpoints: Rec
   ].join("\n");
   const user = [
     `CALLER (truth): ${rec.persona.firstName} ${rec.persona.lastName}, surname spelled ${rec.persona.spelled}, calling from ${rec.persona.phone}.`,
-    `CALL TIME: ${rec.callTime ? new Intl.DateTimeFormat("en-AU", { weekday: "long", day: "numeric", month: "long", year: "numeric", hour: "numeric", minute: "2-digit", timeZone: "Australia/Sydney" }).format(new Date(rec.callTime)) : "unknown"} (Sydney). BUSINESS HOURS: ${rec.businessHours || "unknown"}. LANGUAGES USED: ${(rec.languages || ["en"]).join(", ")}.`,
+    `CALL TIME: ${rec.callTime ? new Intl.DateTimeFormat("en-AU", { weekday: "long", day: "numeric", month: "long", year: "numeric", hour: "numeric", minute: "2-digit", timeZone: "Australia/Sydney" }).format(new Date(rec.callTime)) : "unknown"} (Sydney). BUSINESS HOURS: ${rec.businessHours || "unknown"}. Today's times are offered only at least 30 minutes ahead (the line's rule), so "no time left today" is true once only later-than-that times are left. LANGUAGES USED: ${(rec.languages || ["en"]).join(", ")}.`,
     `CALLER'S SCRIPT:\n${rec.scenario.goal}`,
     "",
     `TRANSCRIPT:\n${renderTranscript(rec.transcript)}`,

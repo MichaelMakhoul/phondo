@@ -1073,6 +1073,36 @@ function isClosedDay(businessHours, dateKey) {
 /** SCRUM-594 (F5): the small hours end at 5 AM: before then "tomorrow morning" from a caller usually means today. */
 const SMALL_HOURS_END = 5;
 
+/** TIME AWARENESS (buildSchedulingSection): today's slots are offered only this far ahead. */
+const TODAY_LEAD_MINUTES = 30;
+
+/**
+ * SCRUM-594 (phone test F9 simulations): today's slots the TIME AWARENESS rule lets the AI
+ * offer, at least TODAY_LEAD_MINUTES from now. At 3:58 PM the schedule listed "4 PM, 4:30 PM",
+ * the rule forbade 4 PM (and 4:30 PM from 4:00), and the model resolved the two differently
+ * from call to call ("no time left today", "Hoy ya no quedan horarios"). Only when `todayStr`
+ * is today on the business's clock.
+ * @param {string[]} slots - "YYYY-MM-DDTHH:MM:SS" on the business's clock
+ * @param {string} todayStr
+ * @param {string} timezone
+ * @returns {string[]}
+ */
+function offerableToday(slots, todayStr, timezone) {
+  let nowDate;
+  try {
+    nowDate = new Intl.DateTimeFormat("en-CA", { timeZone: timezone }).format(new Date());
+  } catch {
+    return slots;
+  }
+  const now = /^(\d{2}):(\d{2})$/.exec(getCurrentTime24(timezone));
+  if (nowDate !== todayStr || !now) return slots;
+  const cutoff = Number(now[1]) * 60 + Number(now[2]) + TODAY_LEAD_MINUTES;
+  return slots.filter((slot) => {
+    const time = /T(\d{2}):(\d{2})/.exec(String(slot));
+    return !time || Number(time[1]) * 60 + Number(time[2]) >= cutoff;
+  });
+}
+
 /**
  * Build a LIVE SCHEDULE section for injection into the system prompt.
  * Uses pre-loaded cached schedule data so the AI can answer availability
@@ -1099,7 +1129,7 @@ function buildLiveScheduleSection(snapshot, todayStr) {
   lines.push("Use the weekdays and dates written here; never work out a weekday yourself.");
   // SCRUM-594 (F5 simulated calls): at 3 AM, "the earliest weekday morning" became
   // "tomorrow, Tuesday at 9" in 5 of 12 calls with all of Monday free.
-  const todaySlots = dates.includes(todayStr) ? getAnySlots(snapshot.slots[todayStr]) : [];
+  const todaySlots = dates.includes(todayStr) ? offerableToday(getAnySlots(snapshot.slots[todayStr]), todayStr, timezone) : [];
   const notOpenYet = todaySlots.length > 0 && beforeOpening(snapshot.businessHours, todayStr, timezone);
   // Confirmation review: only in the small hours. At 07:30 a caller's "tomorrow" means tomorrow.
   const earlyHours = notOpenYet && Number(getCurrentTime24(timezone).slice(0, 2)) < SMALL_HOURS_END;
@@ -1140,7 +1170,7 @@ function buildLiveScheduleSection(snapshot, todayStr) {
   for (let i = 0; i < detailedDates.length; i++) {
     const dateKey = detailedDates[i];
     flushClosedBefore(dateKey);
-    const slots = getAnySlots(snapshot.slots[dateKey]);
+    const slots = dateKey === todayStr ? todaySlots : getAnySlots(snapshot.slots[dateKey]);
     const label = formatDateLabel(dateKey, timezone);
 
     let dayLabel;
