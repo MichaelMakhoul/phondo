@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import fs from "fs";
 import os from "os";
 import path from "path";
@@ -169,6 +170,16 @@ describe("SIM_JUDGE_MODEL=session: the judge's prompt is written out and its gra
     expect(hashIn(a.prompt)).toMatch(/^[0-9a-f]{16}$/);
     expect(hashIn(b.prompt)).toBe(hashIn(a.prompt));
     expect(hashIn(c.prompt)).not.toBe(hashIn(a.prompt));
+  });
+
+  it("hashes the rubric as well as the call: a rubric change needs new grades", async () => {
+    const f = files();
+    await scoreCall(record(), SESSION_JUDGE, f);
+    const prompt = fs.readFileSync(f.prompt, "utf8");
+    const system = prompt.slice(prompt.indexOf("## System\n\n") + "## System\n\n".length, prompt.indexOf("\n\n## Call\n\n"));
+    const user = prompt.slice(prompt.indexOf("## Call\n\n") + "## Call\n\n".length).replace(/\n$/, "");
+    expect(system).toContain("Score the call on each checkpoint below.");
+    expect(hashIn(f.prompt)).toBe(crypto.createHash("sha256").update(`${system}\n${user}`).digest("hex").slice(0, 16));
   });
 
   it("with the session's grade: read back through the same merge rules", async () => {
