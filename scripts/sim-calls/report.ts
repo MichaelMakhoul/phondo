@@ -115,7 +115,9 @@ export function renderReport(o: {
     rows.push(`| ${cp.id} | ${cp.name} | ${cells.join(" | ")} | ${n > 0 ? `${pass}/${n}` : "—"} |`);
   }
 
-  const pending = o.calls.filter((c) => c.score?.pending).length;
+  const ungraded = o.calls.filter((c) => c.score?.pending).length;
+  // Calls without a final score: ungraded, failed or anomalous. While there are any, the report claims no pass count.
+  const unfinal = o.calls.filter((c) => !c.score || c.score.pending).length;
   const anomalous = o.calls.filter((c) => c.record.anomalies.length > 0 || c.record.error || c.scoreError);
   const failures = o.calls.flatMap((c) =>
     Object.entries(c.score?.checkpoints || {})
@@ -128,22 +130,22 @@ export function renderReport(o: {
     "",
     `${o.startedAt.toISOString()} · ${o.calls.length} calls · ${minutes} min · receptionist ${o.models.receptionist} (the demo line's real prompt, guards and booking code) · caller ${o.models.caller} · judge ${o.models.judge} · STT noise "${o.noise}"`,
     "",
-    pending > 0
-      ? `> ${PENDING} **The judge hasn't graded ${pending} of ${o.calls.length} calls, so this report is not a verdict.** Grade each \`runs/*.judge-prompt.md\` into its \`runs/*.judge.json\`, then run \`SIM_RESCORE=<this run's directory>\`. Until then only ❌ is final.\n`
+    unfinal > 0
+      ? `> ${PENDING} **${unfinal}/${o.calls.length} calls have no final score, so this report is not a verdict.**${ungraded > 0 ? ` Grade each \`runs/*.judge-prompt.md\` into its \`runs/*.judge.json\`, then run \`SIM_RESCORE=<this run's directory>\`.` : ""}${unfinal > ungraded ? " Failed or anomalous calls are listed below." : ""} Only ❌ is final.\n`
       : "",
     `One mark per run: ✅ passed · ⚠️ partly passed · ❌ failed · — not exercised · ${PENDING} awaiting the session's grade. Checkpoints 1, 12 and 13 need a real phone line.`,
     "",
     header,
     sep,
     ...rows,
-    `| | **Fully passing (every run)** | ${o.scenarios.map(() => " ").join(" | ")} | **${pending > 0 ? `${PENDING} ${pending} calls ungraded` : `${fullyPassing} / ${exercised}`}** |`,
+    `| | **Fully passing (every run)** | ${o.scenarios.map(() => " ").join(" | ")} | **${unfinal > 0 ? `${PENDING} ${unfinal}/${o.calls.length} calls without a final score` : `${fullyPassing} / ${exercised}`}** |`,
     "",
     anomalous.length > 0
-      ? `## ⚠️ Runs with harness anomalies (not a fair score)\n\n${anomalous.map((c) => `- ${c.record.scenario.id} run ${c.record.run}: ${c.record.error ?? c.scoreError ?? c.record.anomalies[0]}`).join("\n")}\n`
+      ? `## ⚠️ Calls not scored (failed, anomalous or ungraded)\n\n${anomalous.map((c) => `- ${c.record.scenario.id} run ${c.record.run}: ${c.record.error ?? c.scoreError ?? c.record.anomalies[0]}`).join("\n")}\n`
       : "",
     "## What failed",
     "",
-    failures.length > 0 ? failures.join("\n") : pending > 0 ? "Nothing final yet: the judge hasn't graded every call." : "Nothing.",
+    failures.length > 0 ? failures.join("\n") : unfinal > 0 ? "Nothing final yet: not every call has a final score." : "Nothing.",
     "",
     "## Judge's summaries",
     "",

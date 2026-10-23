@@ -65,6 +65,23 @@ function modelOf(body: Record<string, unknown>): string {
 }
 
 /**
+ * Throws unless the request can reach its own model only. A server tool (the
+ * advisor tool consults another model, Opus among them) or a beta header could
+ * bring in another model on the provider's side, so only custom tools pass.
+ */
+function assertNoOtherModel(init: RequestInit | undefined, body: Record<string, unknown>): void {
+  if (new Headers(init?.headers).has("anthropic-beta")) throw new Error("sim: a Messages request may not carry an anthropic-beta header");
+  const tools = body.tools ?? [];
+  if (!Array.isArray(tools)) throw new Error("sim: a Messages request's tools must be a list");
+  for (const tool of tools) {
+    const t = tool as Record<string, unknown> | null;
+    if (!t || typeof t !== "object" || Array.isArray(t) || "model" in t || (t.type !== undefined && t.type !== "custom")) {
+      throw new Error(`sim: a Messages request may carry custom tools only (got ${String(JSON.stringify(tool)).slice(0, 80)})`);
+    }
+  }
+}
+
+/**
  * A Messages request for OpenRouter: the OpenRouter key in place of the
  * Anthropic one, OpenRouter's model name, and Anthropic's own servers only.
  */
@@ -73,6 +90,7 @@ export function toOpenRouter(init: RequestInit | undefined, key: string): Reques
   const model = openRouterName(modelOf(body));
   const routing = OPENROUTER_ROUTING.filter((field) => field in body);
   if (routing.length > 0) throw new Error(`sim: a Messages request may not carry OpenRouter's routing fields (${routing.join(", ")})`);
+  assertNoOtherModel(init, body);
   const headers = new Headers(init?.headers);
   headers.delete("x-api-key");
   headers.set("authorization", `Bearer ${key}`);
@@ -101,6 +119,7 @@ export function simFetch(o: {
     if (o.gateway === "anthropic") {
       const body = messagesBody(init);
       assertApiModel(modelOf(body), "anthropic");
+      assertNoOtherModel(init, body);
       // The body that was checked, re-serialised: a repeated "model" key can't slip past.
       return o.realFetch(input, { ...init, body: JSON.stringify(body), redirect: "error" });
     }

@@ -29,11 +29,11 @@ describe("the run report before the session's grade", () => {
     expect(cells(md, 8)).toBe("| ⏳ | — |");
   });
 
-  it("says it is not a verdict, and claims no fully-passing count", () => {
+  it("says it is not a verdict and how to grade, and claims no fully-passing count", () => {
     const md = report([{ record: record(1), score: score(true) }]);
-    expect(md).toContain("The judge hasn't graded 1 of 1 calls, so this report is not a verdict.");
-    expect(md).toContain("**⏳ 1 calls ungraded**");
-    expect(md).toContain("Nothing final yet: the judge hasn't graded every call.");
+    expect(md).toContain("1/1 calls have no final score, so this report is not a verdict.** Grade each `runs/*.judge-prompt.md`");
+    expect(md).toContain("**⏳ 1/1 calls without a final score**");
+    expect(md).toContain("Nothing final yet: not every call has a final score.");
     expect(md).not.toMatch(/\*\*\d+ \/ \d+\*\*/);
   });
 
@@ -49,7 +49,28 @@ describe("the run report before the session's grade", () => {
     ]);
     expect(cells(md, 2)).toBe("| ✅⏳ | 1/1 |");
     expect(cells(md, 7)).toBe("| ✅❌ | 1/2 |");
-    expect(md).toContain("The judge hasn't graded 1 of 2 calls");
+    expect(md).toContain("1/2 calls have no final score");
+  });
+
+  it("claims no pass count beside a call that failed to run", () => {
+    const md = report([
+      { record: record(1), score: score(false) },
+      { record: record(2), score: null, scoreError: "not scored: the call failed" },
+    ]);
+    expect(md).not.toMatch(/\*\*\d+ \/ \d+\*\*/);
+    expect(md).toContain("1/2 calls have no final score, so this report is not a verdict.** Failed or anomalous calls are listed below.");
+    expect(md).not.toContain("Grade each");
+    expect(md).toContain("- S2 run 2: not scored: the call failed");
+  });
+
+  it("lists a re-scored call that still has no grade, and says how to grade it", () => {
+    const md = report([
+      { record: record(1), score: score(false) },
+      { record: record(2), score: score(true), scoreError: "not graded: no session grade at runs/S2-run2.judge.json" },
+    ]);
+    expect(md).not.toMatch(/\*\*\d+ \/ \d+\*\*/);
+    expect(md).toContain("Grade each `runs/*.judge-prompt.md`");
+    expect(md).toContain("- S2 run 2: not graded: no session grade at runs/S2-run2.judge.json");
   });
 
   it("is a plain report once every call is graded", () => {

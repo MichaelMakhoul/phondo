@@ -203,6 +203,39 @@ describe("simFetch", () => {
     }
   });
 
+  it("refuses a server tool on either gateway: the advisor tool would consult Opus", async () => {
+    const advisor = { type: "advisor_20260301", name: "advisor", model: "claude-opus-5-5" };
+    for (const gateway of ["anthropic", "openrouter"] as const) {
+      const { fetch, realFetch } = sandbox(gateway, "or-key");
+      await expect(fetch(ANTHROPIC, request("claude-haiku-5-5", { tools: [advisor] }))).rejects.toThrow(/custom tools only/);
+      await expect(fetch(ANTHROPIC, request("claude-haiku-5-5", { tools: [{ type: "web_search_20260209", name: "web_search" }] }))).rejects.toThrow(/custom tools only/);
+      await expect(fetch(ANTHROPIC, request("claude-haiku-5-5", { tools: [{ name: "lookup", model: "claude-opus-5-5", input_schema: {} }] }))).rejects.toThrow(/custom tools only/);
+      await expect(fetch(ANTHROPIC, request("claude-haiku-5-5", { tools: [null] }))).rejects.toThrow(/custom tools only/);
+      await expect(fetch(ANTHROPIC, request("claude-haiku-5-5", { tools: [["advisor"]] }))).rejects.toThrow(/custom tools only/);
+      await expect(fetch(ANTHROPIC, request("claude-haiku-5-5", { tools: { name: "advisor" } }))).rejects.toThrow(/tools must be a list/);
+      expect(realFetch).not.toHaveBeenCalled();
+    }
+  });
+
+  it("lets custom tools through on either gateway, typed or not", async () => {
+    const tools = [{ name: "check_availability", input_schema: { type: "object" } }, { type: "custom", name: "book_appointment", input_schema: { type: "object" } }];
+    for (const gateway of ["anthropic", "openrouter"] as const) {
+      const { fetch, realFetch } = sandbox(gateway, "or-key");
+      await fetch(ANTHROPIC, request("claude-haiku-5-5", { tools }));
+      expect(sent(realFetch).body.tools).toEqual(tools);
+    }
+  });
+
+  it("refuses a beta header on either gateway", async () => {
+    for (const gateway of ["anthropic", "openrouter"] as const) {
+      const { fetch, realFetch } = sandbox(gateway, "or-key");
+      const init = request("claude-haiku-5-5");
+      const headers = { ...(init.headers as Record<string, string>), "Anthropic-Beta": "advisor-tool-2026-03-01" };
+      await expect(fetch(ANTHROPIC, { ...init, headers })).rejects.toThrow(/anthropic-beta header/);
+      expect(realFetch).not.toHaveBeenCalled();
+    }
+  });
+
   it("refuses OpenRouter without its key", async () => {
     const { fetch, realFetch } = sandbox("openrouter", undefined);
     await expect(fetch(ANTHROPIC, request("claude-haiku-5-5"))).rejects.toThrow(/needs OPENROUTER_API_KEY/);

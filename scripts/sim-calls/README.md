@@ -48,7 +48,7 @@ server log. In a git worktree, point `SIM_ENV_FILE` at a checkout's
 | `SIM_LABEL` | | the report's title |
 | `SIM_ENV_FILE` | `voice-server/.env` | where to find `ANTHROPIC_API_KEY` (or `OPENROUTER_API_KEY`) |
 
-**Haiku only.** Sonnet and Opus work (the judge) is done in the Claude Code session, never through the API (the owner's rule, 23 Oct 2026). A run refuses any other model before it starts, and `gateway.ts` refuses any request for one.
+**Haiku only.** Sonnet and Opus work (the judge) is done in the Claude Code session, never through the API (the owner's rule, 23 Oct 2026). A run refuses any other model before it starts, and `gateway.ts` refuses any request that could reach one: another model by name, a server tool (the advisor tool consults Opus) or a beta header.
 
 **Cost (2026-10-21 prices).** A call costs about 3¢: the receptionist (Haiku 5.5) ~2.5¢, the caller (Haiku 5.5) ~0.5¢, and the judge is the session. Set a budget before a run (calls × cost): 2,200 simulated calls cost about $200 over 17-21 Oct, mostly a Sonnet caller and an Opus judge.
 

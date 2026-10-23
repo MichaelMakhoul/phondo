@@ -61,10 +61,11 @@ import { simDb, type Row } from "./fake-supabase";
 import { loadVoiceServer, routeConsole, startSimCall, SIM_INTERNAL_SECRET, SIM_INTERNAL_URL, VOICE_DIR } from "./voice";
 import { SimCaller, hearAs, HANGUP, type NoiseLevel } from "./caller";
 import { PERSONA, SCENARIOS, type Scenario } from "./scenarios";
-import { llmStats, scoreCall, SESSION_JUDGE, type CallRecord, type DiaryEntry, type SessionJudgeFiles, type TranscriptLine } from "./score";
+import { llmStats, SESSION_JUDGE, type CallRecord, type DiaryEntry, type TranscriptLine } from "./score";
 import { renderReport, renderRun, runFileName, type ScoredCall } from "./report";
 import { usage } from "./anthropic";
 import { assertApiModel, envKey, OPENROUTER_PLACEHOLDER_KEY, simFetch, simGateway, type Gateway } from "./gateway";
+import { assertFreshRunDir, loadRecords, scoreRecord } from "./runs";
 
 /** The gateway's API key from the environment, else from voice-server/.env or SIM_ENV_FILE (never printed). */
 function ensureApiKey(gateway: Gateway): void {
@@ -305,27 +306,10 @@ async function rescore(dir: string): Promise<void> {
     ensureApiKey(gateway);
   }
   sandboxFetch(gateway);
-  // runs/ also holds the session's grades (<run>.judge.json): they are not call records.
-  const files = fs.readdirSync(path.join(dir, "runs")).filter((f) => f.endsWith(".json") && !f.endsWith(".judge.json"));
-  if (files.length === 0) throw new Error(`no saved records in ${dir}/runs (runs before records were saved can't be re-scored)`);
-  const records = files.map((f) => {
-    const record = JSON.parse(fs.readFileSync(path.join(dir, "runs", f), "utf8")) as CallRecord;
-    if (!record?.scenario || !Array.isArray(record.anomalies)) throw new Error(`sim: runs/${f} is not a call record`);
-    return record;
-  });
+  const records = loadRecords(dir);
   const startedAt = new Date();
-  const scored: ScoredCall[] = await pool(records, Number(process.env.SIM_CONCURRENCY || 4), async (record) => {
-    if (record.error) return { record, score: null, scoreError: "not scored: the call failed" };
-    if (record.anomalies.length > 0) return { record, score: null, scoreError: "not scored: harness anomalies (see the run file)" };
-    const judgeFiles = sessionJudgeFiles(dir, record);
-    // A call the session hasn't graded is no pass: it fails the re-score.
-    if (judgeModel === SESSION_JUDGE && !fs.existsSync(judgeFiles.grade)) return { record, score: null, scoreError: `not scored: no session grade at ${judgeFiles.grade}` };
-    try {
-      return { record, score: await scoreCall(record, judgeModel, judgeFiles) };
-    } catch (err) {
-      return { record, score: null, scoreError: err instanceof Error ? err.message : String(err) };
-    }
-  });
+  // A call the session hasn't graded is no pass: it fails the re-score.
+  const scored: ScoredCall[] = await pool(records, Number(process.env.SIM_CONCURRENCY || 4), (record) => scoreRecord(record, judgeModel, dir, true));
   const ids = [...new Set(records.map((r) => r.scenario.id))];
   const report = renderReport({
     label: `${process.env.SIM_LABEL || path.basename(dir)} (re-scored)`,
@@ -346,12 +330,6 @@ async function rescore(dir: string): Promise<void> {
 function expectNoneBroken(scored: ScoredCall[]): void {
   const broken = scored.filter((s) => s.record.error || s.scoreError || s.record.anomalies.length > 0);
   expect(broken.map((s) => `${s.record.scenario.id} run ${s.record.run}: ${s.record.error ?? s.scoreError ?? s.record.anomalies[0]}`)).toEqual([]);
-}
-
-/** SIM_JUDGE_MODEL=session: the files the run's judge prompt and the session's grade live in. */
-function sessionJudgeFiles(dir: string, record: CallRecord): SessionJudgeFiles {
-  const base = path.join(dir, "runs", runFileName(record).replace(/\.md$/, ""));
-  return { prompt: `${base}.judge-prompt.md`, grade: `${base}.judge.json` };
 }
 
 async function pool<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
@@ -395,6 +373,7 @@ it("simulated demo-line calls", async () => {
   const label = process.env.SIM_LABEL || "unlabelled run";
   const startedAt = new Date();
   const outDir = process.env.SIM_OUT || path.resolve(VOICE_DIR, "..", ".sim-calls", startedAt.toISOString().replace(/[:.]/g, "-"));
+  assertFreshRunDir(outDir);
   fs.mkdirSync(path.join(outDir, "runs"), { recursive: true });
 
   ensureApiKey(gateway);
@@ -408,18 +387,7 @@ it("simulated demo-line calls", async () => {
   const jobs = scenarios.flatMap((scenario) => Array.from({ length: runs }, (_, i) => ({ scenario, run: i + 1 })));
   const scored: ScoredCall[] = await pool(jobs, concurrency, async (job) => {
     const record = await runCall({ ...job, fixture, callerModel, noise, outDir });
-    let result: ScoredCall;
-    if (record.error) {
-      result = { record, score: null, scoreError: "not scored: the call failed" };
-    } else if (record.anomalies.length > 0) {
-      result = { record, score: null, scoreError: "not scored: harness anomalies (see the run file)" };
-    } else {
-      try {
-        result = { record, score: await scoreCall(record, judgeModel, sessionJudgeFiles(outDir, record)) };
-      } catch (err) {
-        result = { record, score: null, scoreError: err instanceof Error ? err.message : String(err) };
-      }
-    }
+    const result = await scoreRecord(record, judgeModel, outDir, false); // the session grades afterwards (SIM_RESCORE)
     fs.writeFileSync(path.join(outDir, "runs", runFileName(record)), renderRun(result));
     // The whole record, so a changed rubric can re-score this run without re-simulating it (SIM_RESCORE).
     fs.writeFileSync(path.join(outDir, "runs", runFileName(record).replace(/\.md$/, ".json")), JSON.stringify(record));
@@ -445,8 +413,8 @@ it("simulated demo-line calls", async () => {
   );
   processLog.end();
   process.stdout.write(`\nsim report: ${path.join(outDir, "report.md")}\n`);
-  const pending = scored.filter((s) => s.score?.pending).length;
-  if (pending > 0) process.stdout.write(`${pending} calls await the session's grade: runs/*.judge-prompt.md → runs/*.judge.json, then SIM_RESCORE=${outDir}\n`);
+  const ungraded = scored.filter((s) => s.score?.pending).length;
+  if (ungraded > 0) process.stdout.write(`Ungraded calls: ${ungraded}. Grade runs/*.judge-prompt.md into runs/*.judge.json, then SIM_RESCORE=${outDir}\n`);
 
   expectNoneBroken(scored);
 }, 3 * 60 * 60 * 1000);
