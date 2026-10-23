@@ -7,7 +7,8 @@
  * conversation logic — server.js's turn handler, its guards, the real tool
  * executor, the real Next.js calendar handlers — over an in-memory diary, and
  * every call is scored against docs/call-scorecard.md. Network access is
- * limited to the Anthropic API: nothing here can touch production.
+ * limited to Haiku on the Messages API (Anthropic's, or OpenRouter's under
+ * SIM_GATEWAY=openrouter; gateway.ts): nothing here can touch production.
  */
 import fs from "fs";
 import path from "path";
@@ -63,25 +64,37 @@ import { PERSONA, SCENARIOS, type Scenario } from "./scenarios";
 import { llmStats, scoreCall, SESSION_JUDGE, type CallRecord, type DiaryEntry, type SessionJudgeFiles, type TranscriptLine } from "./score";
 import { renderReport, renderRun, runFileName, type ScoredCall } from "./report";
 import { usage } from "./anthropic";
+import { assertApiModel, envKey, OPENROUTER_PLACEHOLDER_KEY, simFetch, simGateway, type Gateway } from "./gateway";
 
-/** The API key from the environment, else from voice-server/.env or SIM_ENV_FILE (never printed). */
-function ensureAnthropicKey(): void {
-  if (process.env.ANTHROPIC_API_KEY) return;
+/** The gateway's API key from the environment, else from voice-server/.env or SIM_ENV_FILE (never printed). */
+function ensureApiKey(gateway: Gateway): void {
   const envFile = process.env.SIM_ENV_FILE || path.join(VOICE_DIR, ".env");
-  if (!fs.existsSync(envFile)) return;
-  const line = fs.readFileSync(envFile, "utf8").split("\n").find((l) => l.startsWith("ANTHROPIC_API_KEY="));
-  if (line) process.env.ANTHROPIC_API_KEY = line.slice("ANTHROPIC_API_KEY=".length).trim().replace(/^["']|["']$/g, "");
+  if (gateway === "openrouter") {
+    const key = envKey("OPENROUTER_API_KEY", envFile);
+    if (!key) throw new Error("SIM_GATEWAY=openrouter: OPENROUTER_API_KEY is not set (env or voice-server/.env)");
+    process.env.OPENROUTER_API_KEY = key;
+    process.env.ANTHROPIC_API_KEY = OPENROUTER_PLACEHOLDER_KEY; // the real Anthropic key is never loaded
+    return;
+  }
+  const key = envKey("ANTHROPIC_API_KEY", envFile);
+  if (!key) throw new Error("ANTHROPIC_API_KEY is not set (env or voice-server/.env)");
+  process.env.ANTHROPIC_API_KEY = key;
 }
 
-/** Only the in-process tool-call route and the Anthropic API are reachable. */
-function sandboxFetch(): void {
-  const realFetch = globalThis.fetch.bind(globalThis);
-  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-    if (url === `${SIM_INTERNAL_URL}/api/internal/tool-call`) return POST(new Request(url, init));
-    if (url.startsWith("https://api.anthropic.com/")) return realFetch(input, init);
-    throw new Error(`sim: blocked network call to ${url}`);
-  }) as typeof fetch;
+/** Only the in-process tool-call route and Haiku on the Messages API are reachable (gateway.ts). */
+function sandboxFetch(gateway: Gateway): void {
+  globalThis.fetch = simFetch({
+    realFetch: globalThis.fetch.bind(globalThis),
+    internalUrl: `${SIM_INTERNAL_URL}/api/internal/tool-call`,
+    internal: (req) => POST(req),
+    gateway,
+    openRouterKey: process.env.OPENROUTER_API_KEY,
+  });
+}
+
+/** A model as the report names it. */
+function modelLabel(model: string, gateway: Gateway): string {
+  return gateway === "openrouter" && model !== SESSION_JUDGE ? `${model} via OpenRouter` : model;
 }
 
 type Fixture = Record<string, Row[]>;
@@ -284,9 +297,14 @@ async function runCall(o: { scenario: Scenario; run: number; fixture: Fixture; c
 
 /** SIM_RESCORE=<run dir>: score that run's saved calls again (a changed rubric or scorer), into report-rescored.md. */
 async function rescore(dir: string): Promise<void> {
-  const judgeModel = process.env.SIM_JUDGE_MODEL || "claude-opus-5-5";
-  if (judgeModel !== SESSION_JUDGE) ensureAnthropicKey(); // the session's grades need no API
-  sandboxFetch();
+  const gateway = simGateway();
+  const judgeModel = process.env.SIM_JUDGE_MODEL || SESSION_JUDGE;
+  if (judgeModel !== SESSION_JUDGE) {
+    // The session's grades need no API.
+    assertApiModel(judgeModel, gateway);
+    ensureApiKey(gateway);
+  }
+  sandboxFetch(gateway);
   const files = fs.readdirSync(path.join(dir, "runs")).filter((f) => f.endsWith(".json"));
   if (files.length === 0) throw new Error(`no saved records in ${dir}/runs (runs before records were saved can't be re-scored)`);
   const records = files.map((f) => JSON.parse(fs.readFileSync(path.join(dir, "runs", f), "utf8")) as CallRecord);
@@ -305,7 +323,7 @@ async function rescore(dir: string): Promise<void> {
     label: `${process.env.SIM_LABEL || path.basename(dir)} (re-scored)`,
     scenarios: SCENARIOS.filter((s) => ids.includes(s.id)),
     calls: scored,
-    models: { receptionist: "as recorded", caller: "as recorded", judge: judgeModel },
+    models: { receptionist: "as recorded", caller: "as recorded", judge: modelLabel(judgeModel, gateway) },
     noise: "as recorded",
     usage,
     startedAt,
@@ -353,21 +371,24 @@ it("simulated demo-line calls", async () => {
   if (clock) installSimClock(clock);
   const runs = Number(process.env.SIM_RUNS || 2);
   const concurrency = Number(process.env.SIM_CONCURRENCY || 4);
-  const callerModel = process.env.SIM_CALLER_MODEL || "claude-sonnet-5-5";
-  const judgeModel = process.env.SIM_JUDGE_MODEL || "claude-opus-5-5";
+  const gateway = simGateway();
+  const callerModel = process.env.SIM_CALLER_MODEL || "claude-haiku-5-5";
+  const judgeModel = process.env.SIM_JUDGE_MODEL || SESSION_JUDGE;
+  assertApiModel(callerModel, gateway);
+  if (judgeModel !== SESSION_JUDGE) assertApiModel(judgeModel, gateway);
   const noise = (process.env.SIM_NOISE || "phone") as NoiseLevel;
   const label = process.env.SIM_LABEL || "unlabelled run";
   const startedAt = new Date();
   const outDir = process.env.SIM_OUT || path.resolve(VOICE_DIR, "..", ".sim-calls", startedAt.toISOString().replace(/[:.]/g, "-"));
   fs.mkdirSync(path.join(outDir, "runs"), { recursive: true });
 
-  ensureAnthropicKey();
-  if (!process.env.ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY is not set (env or voice-server/.env)");
+  ensureApiKey(gateway);
   process.env.INTERNAL_API_SECRET = SIM_INTERNAL_SECRET; // the route checks it; loadVoiceServer sets the same
   const processLog = fs.createWriteStream(path.join(outDir, "process.log"));
   routeConsole((line) => processLog.write(`${line}\n`));
-  sandboxFetch();
+  sandboxFetch(gateway);
   const vs = loadVoiceServer();
+  assertApiModel(vs.FAST_LLM_MODEL, gateway);
 
   const jobs = scenarios.flatMap((scenario) => Array.from({ length: runs }, (_, i) => ({ scenario, run: i + 1 })));
   const scored: ScoredCall[] = await pool(jobs, concurrency, async (job) => {
@@ -396,7 +417,7 @@ it("simulated demo-line calls", async () => {
     label,
     scenarios,
     calls: scored,
-    models: { receptionist: vs.FAST_LLM_MODEL, caller: callerModel, judge: judgeModel },
+    models: { receptionist: modelLabel(vs.FAST_LLM_MODEL, gateway), caller: modelLabel(callerModel, gateway), judge: modelLabel(judgeModel, gateway) },
     noise,
     usage,
     startedAt,

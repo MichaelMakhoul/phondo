@@ -14,8 +14,9 @@ line (hearing, speed, interruptions, audio).
 | Claude Haiku as the fast path calls it (`FAST_LLM_MODEL`, clause chunking) | The caller's STT: a said surname is misheard (`Khoury` → `Curry`/`Corey`), a spelled one arrives as Flux writes it (`K h o u r y.`), as on the 2026-10-17 test calls |
 | The tool executor and the Next.js tool-call route with the real calendar handlers | The database: an in-memory store (`fake-supabase.ts`) seeded from a fixture, with the appointment overlap and unique-code constraints |
 
-Network access is limited to the Anthropic API. The store, notifications, SMS
-and rate limiters are stubs, so a run can never touch production.
+Network access is limited to Haiku on the Messages API (`gateway.ts`). The
+store, notifications, SMS and rate limiters are stubs, so a run can never touch
+production.
 
 ## Run it
 
@@ -39,14 +40,17 @@ server log. In a git worktree, point `SIM_ENV_FILE` at a checkout's
 | `SIM_SCENARIOS` | all | e.g. `S2,S3` |
 | `SIM_RUNS` | 2 | runs per scenario |
 | `SIM_CONCURRENCY` | 4 | calls at once |
-| `SIM_CALLER_MODEL` | `claude-sonnet-5-5` | the caller |
-| `SIM_JUDGE_MODEL` | `claude-opus-5-5` | the judge; `session` = no API call: each run's judge prompt is written to `runs/<run>.judge-prompt.md` for the Claude Code session to grade into `runs/<run>.judge.json`, then `SIM_RESCORE=<dir> SIM_JUDGE_MODEL=session` builds the report from those grades |
+| `SIM_CALLER_MODEL` | `claude-haiku-5-5` | the caller |
+| `SIM_JUDGE_MODEL` | `session` | the judge; `session` = no API call: each run's judge prompt is written to `runs/<run>.judge-prompt.md` for the Claude Code session to grade into `runs/<run>.judge.json`, then `SIM_RESCORE=<dir>` builds the report from those grades |
+| `SIM_GATEWAY` | `anthropic` | `openrouter` sends the same requests to OpenRouter's Anthropic-compatible endpoint with `OPENROUTER_API_KEY`, pinned to Anthropic's own servers at the same price (`claude-haiku-5-5` only) |
 | `SIM_NOISE` | `phone` | `none` turns the STT layer off |
 | `SIM_OUT` | `.sim-calls/<timestamp>` | report directory |
 | `SIM_LABEL` | | the report's title |
-| `SIM_ENV_FILE` | `voice-server/.env` | where to find `ANTHROPIC_API_KEY` |
+| `SIM_ENV_FILE` | `voice-server/.env` | where to find `ANTHROPIC_API_KEY` (or `OPENROUTER_API_KEY`) |
 
-**Cost (2026-10-21 prices).** A call costs about 10¢ with the defaults: the receptionist (Haiku) ~2.5¢, the caller (Sonnet) ~3¢, the judge (Opus) ~4¢. With `SIM_CALLER_MODEL=claude-haiku-5-5` and `SIM_JUDGE_MODEL=session` it is about 3¢: only the receptionist, the system under test, needs the API. Set a budget before a run (calls × cost) — 2,200 simulated calls cost about $200 over 17-21 Oct.
+**Haiku only.** Sonnet and Opus work (the judge) is done in the Claude Code session, never through the API (the owner's rule, 23 Oct 2026). A run refuses any other model before it starts, and `gateway.ts` refuses any request for one.
+
+**Cost (2026-10-21 prices).** A call costs about 3¢: the receptionist (Haiku 5.5) ~2.5¢, the caller (Haiku 5.5) ~0.5¢, and the judge is the session. Set a budget before a run (calls × cost): 2,200 simulated calls cost about $200 over 17-21 Oct, mostly a Sonnet caller and an Opus judge.
 
 ## Scoring
 

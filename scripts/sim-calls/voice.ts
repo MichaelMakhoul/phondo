@@ -6,8 +6,8 @@
  * Node's own require (never vitest's transform). Its Supabase client is swapped
  * for the shared in-memory store BEFORE anything requires it, and `fetch` only
  * reaches two places: the in-process Next.js tool-call route (the real calendar
- * handlers) and the Anthropic API. Anything else throws — a simulated call can
- * never write to production.
+ * handlers) and Haiku on the Messages API (gateway.ts). Anything else throws — a
+ * simulated call can never write to production.
  *
  * Each call is set up the way server.js sets up a demo-line call on the fast
  * pipeline (context → after-hours → system prompt + caller context → live
