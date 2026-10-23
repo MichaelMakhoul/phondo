@@ -6,6 +6,13 @@ import { CHECKPOINTS, renderDiary, renderToolTrace, renderTranscript, type CallR
 import type { Scenario } from "./scenarios";
 
 const MARK: Record<Verdict, string> = { pass: "✅", partial: "⚠️", fail: "❌", na: "—" };
+/** A verdict the session's grade could still change (CallScore.pending). */
+const PENDING = "⏳";
+
+/** One checkpoint's mark: before the session's grade, only a failure is final. */
+function mark(score: CallScore, verdict: Verdict): string {
+  return score.pending && verdict !== "fail" ? PENDING : MARK[verdict];
+}
 
 export type ScoredCall = { record: CallRecord; score: CallScore | null; scoreError?: string };
 
@@ -21,6 +28,9 @@ export function renderRun(sc: ScoredCall): string {
     `Ended: ${rec.ending} after ${rec.turns} caller turns. Claude (receptionist): ${rec.llm.calls} requests, median ${rec.llm.medianMs} ms, p90 ${rec.llm.p90Ms} ms. Languages: ${(rec.languages || ["en"]).join(", ")}${rec.finalLanguage && rec.finalLanguage !== "en" ? ` (ended in ${rec.finalLanguage})` : ""}.`,
     rec.error ? `\n**Harness error:** ${rec.error}` : "",
     rec.anomalies.length > 0 ? `\n**Anomalies (the run is not a fair score):**\n${rec.anomalies.map((a) => `- ${a}`).join("\n")}` : "",
+    score?.pending
+      ? `\n**${PENDING} Judge pending, not a verdict:** grade \`${runFileName(rec).replace(/\.md$/, ".judge-prompt.md")}\` into \`${runFileName(rec).replace(/\.md$/, ".judge.json")}\` (beside this file), then run \`SIM_RESCORE=<run dir>\`. Until then only ❌ is final.`
+      : "",
     "",
     "## Verdicts",
     "",
@@ -28,7 +38,7 @@ export function renderRun(sc: ScoredCall): string {
     "|---|---|---|---|",
     ...CHECKPOINTS.filter((c) => c.simulated).map((c) => {
       const r = score?.checkpoints[c.id];
-      return `| ${c.id} | ${c.name} | ${r ? MARK[r.verdict] : "?"} | ${r ? `${r.evidence.replace(/\|/g, "/")} (${r.source})` : sc.scoreError ?? ""} |`;
+      return `| ${c.id} | ${c.name} | ${r && score ? mark(score, r.verdict) : "?"} | ${r ? `${r.evidence.replace(/\|/g, "/")} (${r.source})` : sc.scoreError ?? ""} |`;
     }),
     "",
     score?.summary ? `**Judge's summary:** ${score.summary}` : "",
@@ -88,12 +98,13 @@ export function renderReport(o: {
         .sort((a, b) => a.record.run - b.record.run)
         .map((c) => {
           const v = c.score?.checkpoints[cp.id]?.verdict;
-          if (!v) return "?";
-          if (v !== "na") {
+          if (!c.score || !v) return "?";
+          const m = mark(c.score, v);
+          if (v !== "na" && m !== PENDING) {
             n++;
             if (v === "pass") pass++;
           }
-          return MARK[v];
+          return m;
         });
       return marks.join("");
     });
@@ -104,6 +115,7 @@ export function renderReport(o: {
     rows.push(`| ${cp.id} | ${cp.name} | ${cells.join(" | ")} | ${n > 0 ? `${pass}/${n}` : "—"} |`);
   }
 
+  const pending = o.calls.filter((c) => c.score?.pending).length;
   const anomalous = o.calls.filter((c) => c.record.anomalies.length > 0 || c.record.error || c.scoreError);
   const failures = o.calls.flatMap((c) =>
     Object.entries(c.score?.checkpoints || {})
@@ -116,19 +128,22 @@ export function renderReport(o: {
     "",
     `${o.startedAt.toISOString()} · ${o.calls.length} calls · ${minutes} min · receptionist ${o.models.receptionist} (the demo line's real prompt, guards and booking code) · caller ${o.models.caller} · judge ${o.models.judge} · STT noise "${o.noise}"`,
     "",
-    "One mark per run: ✅ passed · ⚠️ partly passed · ❌ failed · — not exercised. Checkpoints 1, 12 and 13 need a real phone line.",
+    pending > 0
+      ? `> ${PENDING} **The judge hasn't graded ${pending} of ${o.calls.length} calls, so this report is not a verdict.** Grade each \`runs/*.judge-prompt.md\` into its \`runs/*.judge.json\`, then run \`SIM_RESCORE=<this run's directory>\`. Until then only ❌ is final.\n`
+      : "",
+    `One mark per run: ✅ passed · ⚠️ partly passed · ❌ failed · — not exercised · ${PENDING} awaiting the session's grade. Checkpoints 1, 12 and 13 need a real phone line.`,
     "",
     header,
     sep,
     ...rows,
-    `| | **Fully passing (every run)** | ${o.scenarios.map(() => " ").join(" | ")} | **${fullyPassing} / ${exercised}** |`,
+    `| | **Fully passing (every run)** | ${o.scenarios.map(() => " ").join(" | ")} | **${pending > 0 ? `${PENDING} ${pending} calls ungraded` : `${fullyPassing} / ${exercised}`}** |`,
     "",
     anomalous.length > 0
       ? `## ⚠️ Runs with harness anomalies (not a fair score)\n\n${anomalous.map((c) => `- ${c.record.scenario.id} run ${c.record.run}: ${c.record.error ?? c.scoreError ?? c.record.anomalies[0]}`).join("\n")}\n`
       : "",
     "## What failed",
     "",
-    failures.length > 0 ? failures.join("\n") : "Nothing.",
+    failures.length > 0 ? failures.join("\n") : pending > 0 ? "Nothing final yet: the judge hasn't graded every call." : "Nothing.",
     "",
     "## Judge's summaries",
     "",

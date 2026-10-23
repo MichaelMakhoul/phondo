@@ -1,7 +1,7 @@
 /**
  * SCRUM-594 simulated calls — the runner. See scripts/sim-calls/README.md.
  *
- *   SIM_FIXTURE=path/to/demo-line.json npx vitest run --config scripts/sim-calls/vitest.config.mts
+ *   SIM_FIXTURE=path/to/demo-line.json npx vitest run --config scripts/sim-calls/vitest.config.ts
  *
  * Scripted callers (an LLM with a goal) phone the demo line's REAL
  * conversation logic — server.js's turn handler, its guards, the real tool
@@ -305,15 +305,23 @@ async function rescore(dir: string): Promise<void> {
     ensureApiKey(gateway);
   }
   sandboxFetch(gateway);
-  const files = fs.readdirSync(path.join(dir, "runs")).filter((f) => f.endsWith(".json"));
+  // runs/ also holds the session's grades (<run>.judge.json): they are not call records.
+  const files = fs.readdirSync(path.join(dir, "runs")).filter((f) => f.endsWith(".json") && !f.endsWith(".judge.json"));
   if (files.length === 0) throw new Error(`no saved records in ${dir}/runs (runs before records were saved can't be re-scored)`);
-  const records = files.map((f) => JSON.parse(fs.readFileSync(path.join(dir, "runs", f), "utf8")) as CallRecord);
+  const records = files.map((f) => {
+    const record = JSON.parse(fs.readFileSync(path.join(dir, "runs", f), "utf8")) as CallRecord;
+    if (!record?.scenario || !Array.isArray(record.anomalies)) throw new Error(`sim: runs/${f} is not a call record`);
+    return record;
+  });
   const startedAt = new Date();
   const scored: ScoredCall[] = await pool(records, Number(process.env.SIM_CONCURRENCY || 4), async (record) => {
     if (record.error) return { record, score: null, scoreError: "not scored: the call failed" };
     if (record.anomalies.length > 0) return { record, score: null, scoreError: "not scored: harness anomalies (see the run file)" };
+    const judgeFiles = sessionJudgeFiles(dir, record);
+    // A call the session hasn't graded is no pass: it fails the re-score.
+    if (judgeModel === SESSION_JUDGE && !fs.existsSync(judgeFiles.grade)) return { record, score: null, scoreError: `not scored: no session grade at ${judgeFiles.grade}` };
     try {
-      return { record, score: await scoreCall(record, judgeModel, sessionJudgeFiles(dir, record)) };
+      return { record, score: await scoreCall(record, judgeModel, judgeFiles) };
     } catch (err) {
       return { record, score: null, scoreError: err instanceof Error ? err.message : String(err) };
     }
@@ -331,6 +339,13 @@ async function rescore(dir: string): Promise<void> {
   });
   fs.writeFileSync(path.join(dir, "report-rescored.md"), report);
   process.stdout.write(`\nsim re-scored report: ${path.join(dir, "report-rescored.md")}\n`);
+  expectNoneBroken(scored);
+}
+
+/** Fails the vitest run (after the report is written) when a call failed, was anomalous or couldn't be scored. */
+function expectNoneBroken(scored: ScoredCall[]): void {
+  const broken = scored.filter((s) => s.record.error || s.scoreError || s.record.anomalies.length > 0);
+  expect(broken.map((s) => `${s.record.scenario.id} run ${s.record.run}: ${s.record.error ?? s.scoreError ?? s.record.anomalies[0]}`)).toEqual([]);
 }
 
 /** SIM_JUDGE_MODEL=session: the files the run's judge prompt and the session's grade live in. */
@@ -430,7 +445,8 @@ it("simulated demo-line calls", async () => {
   );
   processLog.end();
   process.stdout.write(`\nsim report: ${path.join(outDir, "report.md")}\n`);
+  const pending = scored.filter((s) => s.score?.pending).length;
+  if (pending > 0) process.stdout.write(`${pending} calls await the session's grade: runs/*.judge-prompt.md → runs/*.judge.json, then SIM_RESCORE=${outDir}\n`);
 
-  const broken = scored.filter((s) => s.record.error || s.scoreError || s.record.anomalies.length > 0);
-  expect(broken.map((s) => `${s.record.scenario.id} run ${s.record.run}: ${s.record.error ?? s.scoreError ?? s.record.anomalies[0]}`)).toEqual([]);
+  expectNoneBroken(scored);
 }, 3 * 60 * 60 * 1000);

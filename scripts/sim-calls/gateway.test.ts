@@ -2,9 +2,13 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { describe, expect, it, vi } from "vitest";
-import { ANTHROPIC_MESSAGES_URL, assertApiModel, envKey, OPENROUTER_MESSAGES_URL, simFetch, simGateway, toOpenRouter } from "./gateway";
+import { assertApiModel, envKey, simFetch, simGateway, toOpenRouter } from "./gateway";
 
 // SCRUM-594: the simulator's model gateway. Haiku only; OpenRouter as a stopgap while the Anthropic balance is empty.
+// The URLs are written out (not imported) so a wrong constant in gateway.ts fails here.
+const ANTHROPIC = "https://api.anthropic.com/v1/messages";
+const OPENROUTER = "https://openrouter.ai/api/v1/messages";
+
 const request = (model: string, extra: Record<string, unknown> = {}): RequestInit => ({
   method: "POST",
   headers: { "x-api-key": "the-anthropic-key", "anthropic-version": "2023-06-01", "Content-Type": "application/json" },
@@ -20,9 +24,9 @@ function sandbox(gateway: "anthropic" | "openrouter", openRouterKey?: string) {
   return { fetch, realFetch, internal };
 }
 
-function sent(realFetch: ReturnType<typeof sandbox>["realFetch"]): { url: string; headers: Headers; body: Record<string, unknown> } {
+function sent(realFetch: ReturnType<typeof sandbox>["realFetch"]) {
   const [url, init] = realFetch.mock.calls[0];
-  return { url: String(url), headers: new Headers(init?.headers), body: JSON.parse(String(init?.body)) };
+  return { url: String(url), headers: new Headers(init?.headers), body: JSON.parse(String(init?.body)) as Record<string, unknown>, redirect: init?.redirect };
 }
 
 describe("simGateway", () => {
@@ -31,6 +35,15 @@ describe("simGateway", () => {
     expect(simGateway("")).toBe("anthropic");
     expect(simGateway("anthropic")).toBe("anthropic");
     expect(simGateway("openrouter")).toBe("openrouter");
+  });
+
+  it("reads SIM_GATEWAY from the environment", () => {
+    vi.stubEnv("SIM_GATEWAY", "openrouter");
+    try {
+      expect(simGateway()).toBe("openrouter");
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("refuses anything else rather than guess", () => {
@@ -97,6 +110,12 @@ describe("toOpenRouter", () => {
     expect(init.method).toBe("POST");
   });
 
+  it("refuses OpenRouter's routing fields, which could send the request to another model", () => {
+    for (const field of ["models", "route", "preset", "plugins", "provider"]) {
+      expect(() => toOpenRouter(request("claude-haiku-5-5", { [field]: ["anthropic/claude-opus-5"] }), "or-key")).toThrow(`routing fields (${field})`);
+    }
+  });
+
   it("keeps the caller's abort signal", () => {
     const signal = AbortSignal.timeout(1000);
     expect(toOpenRouter({ ...request("claude-haiku-5-5"), signal }, "or-key").signal).toBe(signal);
@@ -121,44 +140,56 @@ describe("simFetch", () => {
     expect(realFetch).not.toHaveBeenCalled();
   });
 
-  it("blocks every other address, Anthropic's other endpoints included", async () => {
+  it("blocks every other address, Anthropic's other endpoints and OpenRouter itself included", async () => {
     for (const gateway of ["anthropic", "openrouter"] as const) {
       const { fetch, realFetch } = sandbox(gateway, "or-key");
       await expect(fetch("https://example.com/", {})).rejects.toThrow(/blocked network call to https:\/\/example.com/);
       await expect(fetch("https://api.anthropic.com/v1/models", {})).rejects.toThrow(/blocked network call/);
-      await expect(fetch(OPENROUTER_MESSAGES_URL, request("claude-haiku-5-5"))).rejects.toThrow(/blocked network call/);
+      await expect(fetch(`${ANTHROPIC}?beta=true`, request("claude-haiku-5-5"))).rejects.toThrow(/blocked network call/);
+      await expect(fetch(OPENROUTER, request("claude-haiku-5-5"))).rejects.toThrow(/blocked network call/);
       expect(realFetch).not.toHaveBeenCalled();
     }
   });
 
-  it("sends Haiku to Anthropic unchanged", async () => {
+  it("sends Haiku to Anthropic as checked: the same request, re-serialised, with no redirects", async () => {
     const { fetch, realFetch } = sandbox("anthropic");
     const init = request("claude-haiku-5-5");
-    await fetch(ANTHROPIC_MESSAGES_URL, init);
-    expect(realFetch).toHaveBeenCalledWith(ANTHROPIC_MESSAGES_URL, init);
+    const res = await fetch(ANTHROPIC, init);
+    expect(await res.text()).toBe("ok");
+    expect(realFetch).toHaveBeenCalledWith(ANTHROPIC, { ...init, redirect: "error" });
+  });
+
+  it("sends the model it checked when a body names two", async () => {
+    const { fetch, realFetch } = sandbox("anthropic");
+    await fetch(ANTHROPIC, { method: "POST", body: '{"model":"claude-opus-5-5","model":"claude-haiku-5-5","max_tokens":10}' });
+    expect(String(realFetch.mock.calls[0][1]?.body)).toBe('{"model":"claude-haiku-5-5","max_tokens":10}');
+    await expect(fetch(ANTHROPIC, { method: "POST", body: '{"model":"claude-haiku-5-5","model":"claude-opus-5-5"}' })).rejects.toThrow(/Claude Code session/);
+    expect(realFetch).toHaveBeenCalledTimes(1);
   });
 
   it("accepts the Messages URL as a URL object", async () => {
     const { fetch, realFetch } = sandbox("anthropic");
-    await fetch(new URL(ANTHROPIC_MESSAGES_URL), request("claude-haiku-5-5"));
+    await fetch(new URL(ANTHROPIC), request("claude-haiku-5-5"));
     expect(realFetch).toHaveBeenCalledTimes(1);
   });
 
-  it("sends Haiku to OpenRouter under SIM_GATEWAY=openrouter, with the OpenRouter key only", async () => {
+  it("sends Haiku to OpenRouter under SIM_GATEWAY=openrouter, with the OpenRouter key only and no redirects", async () => {
     const { fetch, realFetch } = sandbox("openrouter", "or-key");
-    await fetch(ANTHROPIC_MESSAGES_URL, request("claude-haiku-5-5"));
+    const res = await fetch(ANTHROPIC, request("claude-haiku-5-5"));
+    expect(await res.text()).toBe("ok");
     const out = sent(realFetch);
-    expect(out.url).toBe(OPENROUTER_MESSAGES_URL);
+    expect(out.url).toBe(OPENROUTER);
     expect(out.headers.get("authorization")).toBe("Bearer or-key");
     expect(out.headers.get("x-api-key")).toBeNull();
     expect(out.body.model).toBe("anthropic/claude-haiku-5.5");
+    expect(out.redirect).toBe("error");
   });
 
   it("refuses Sonnet and Opus on either gateway, before anything is sent", async () => {
     for (const gateway of ["anthropic", "openrouter"] as const) {
       const { fetch, realFetch } = sandbox(gateway, "or-key");
-      await expect(fetch(ANTHROPIC_MESSAGES_URL, request("claude-sonnet-5-5"))).rejects.toThrow(/Claude Code session/);
-      await expect(fetch(ANTHROPIC_MESSAGES_URL, request("claude-opus-5-5"))).rejects.toThrow(/Claude Code session/);
+      await expect(fetch(ANTHROPIC, request("claude-sonnet-5-5"))).rejects.toThrow(/Claude Code session/);
+      await expect(fetch(ANTHROPIC, request("claude-opus-5-5"))).rejects.toThrow(/Claude Code session/);
       expect(realFetch).not.toHaveBeenCalled();
     }
   });
@@ -166,21 +197,21 @@ describe("simFetch", () => {
   it("refuses a request without a JSON body, or without a model name, on either gateway", async () => {
     for (const gateway of ["anthropic", "openrouter"] as const) {
       const { fetch, realFetch } = sandbox(gateway, "or-key");
-      await expect(fetch(ANTHROPIC_MESSAGES_URL, { method: "POST" })).rejects.toThrow(/without a JSON body/);
-      await expect(fetch(ANTHROPIC_MESSAGES_URL, { method: "POST", body: JSON.stringify({ model: 5 }) })).rejects.toThrow(/\(no model\)/);
+      await expect(fetch(ANTHROPIC, { method: "POST" })).rejects.toThrow(/without a JSON body/);
+      await expect(fetch(ANTHROPIC, { method: "POST", body: JSON.stringify({ model: 5 }) })).rejects.toThrow(/\(no model\)/);
       expect(realFetch).not.toHaveBeenCalled();
     }
   });
 
   it("refuses OpenRouter without its key", async () => {
     const { fetch, realFetch } = sandbox("openrouter", undefined);
-    await expect(fetch(ANTHROPIC_MESSAGES_URL, request("claude-haiku-5-5"))).rejects.toThrow(/needs OPENROUTER_API_KEY/);
+    await expect(fetch(ANTHROPIC, request("claude-haiku-5-5"))).rejects.toThrow(/needs OPENROUTER_API_KEY/);
     expect(realFetch).not.toHaveBeenCalled();
   });
 
   it("refuses a Request object, whose body it can't check", async () => {
     const { fetch, realFetch } = sandbox("anthropic");
-    const req = new Request(ANTHROPIC_MESSAGES_URL, { method: "POST", body: String(request("claude-sonnet-5-5").body) });
+    const req = new Request(ANTHROPIC, { method: "POST", body: String(request("claude-sonnet-5-5").body) });
     await expect(fetch(req)).rejects.toThrow(/not a Request/);
     expect(realFetch).not.toHaveBeenCalled();
   });

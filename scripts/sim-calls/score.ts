@@ -11,8 +11,9 @@
  * cost). The judge's exact prompt is written beside the run
  * (runs/<run>.judge-prompt.md) for the Claude Code session to grade; the
  * session writes its JSON reply to runs/<run>.judge.json, and SIM_RESCORE
- * reads it back through the same merge rules. Until then the judge's
- * checkpoints are "na" (awaiting the session's grade).
+ * reads it back through the same merge rules. Until then the call's score is
+ * pending: the report marks every verdict the grade could still change ⏳,
+ * and SIM_RESCORE refuses a call that has no grade.
  */
 import fs from "fs";
 import { claudeText } from "./anthropic";
@@ -323,7 +324,7 @@ const JUDGE_RUBRIC = `Score the call on each checkpoint below. Verdicts: "pass",
 /** The checkpoints the judge reads (the order its reply lists them in). */
 const JUDGED = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 14, 15];
 
-async function judge(rec: CallRecord, model: string, sessionFiles?: SessionJudgeFiles): Promise<{ checkpoints: Record<string, { verdict: Verdict; evidence: string }>; summary: string }> {
+async function judge(rec: CallRecord, model: string, sessionFiles?: SessionJudgeFiles): Promise<{ checkpoints: Record<string, { verdict: Verdict; evidence: string }>; summary: string; pending: boolean }> {
   const system = [
     "You audit phone calls handled by an AI receptionist for a plumbing business. A scripted caller (who knows the truth) talked to it.",
     "You get the transcript (with what the receptionist's speech-to-text heard), every tool call the receptionist made with the result it got back, and the business diary after the call.",
@@ -352,7 +353,7 @@ async function judge(rec: CallRecord, model: string, sessionFiles?: SessionJudge
     fs.writeFileSync(sessionFiles.prompt, `# Judge this call\n\nWrite the JSON reply to ${sessionFiles.grade}\n\n## System\n\n${system}\n\n## Call\n\n${user}\n`);
     if (!fs.existsSync(sessionFiles.grade)) {
       const pending = Object.fromEntries(JUDGED.map((id) => [String(id), { verdict: "na" as const, evidence: "awaiting the session's grade" }]));
-      return { checkpoints: pending, summary: "awaiting the session's grade" };
+      return { checkpoints: pending, summary: "awaiting the session's grade", pending: true };
     }
     raw = fs.readFileSync(sessionFiles.grade, "utf8");
   } else {
@@ -366,10 +367,11 @@ async function judge(rec: CallRecord, model: string, sessionFiles?: SessionJudge
     if (!verdict) throw new Error(`sim: judge gave checkpoint ${k} an invalid verdict ${JSON.stringify(v?.verdict)}`);
     checkpoints[k] = { verdict, evidence: String(v?.evidence || "") };
   }
-  return { checkpoints, summary: String(parsed.summary || "") };
+  return { checkpoints, summary: String(parsed.summary || ""), pending: false };
 }
 
-export type CallScore = { checkpoints: Record<number, CheckpointResult>; summary: string };
+/** pending: the session hasn't graded the call yet (SIM_JUDGE_MODEL=session), so only its failures are final. */
+export type CallScore = { checkpoints: Record<number, CheckpointResult>; summary: string; pending: boolean };
 
 export async function scoreCall(rec: CallRecord, judgeModel: string, sessionFiles?: SessionJudgeFiles): Promise<CallScore> {
   const det = deterministic(rec);
@@ -389,7 +391,7 @@ export async function scoreCall(rec: CallRecord, judgeModel: string, sessionFile
       checkpoints[cp.id] = { verdict: jj.verdict, evidence: jj.evidence, source: "judge" };
     }
   }
-  return { checkpoints, summary: j.summary };
+  return { checkpoints, summary: j.summary, pending: j.pending };
 }
 
 export function llmStats(ms: number[], calls: number): CallRecord["llm"] {

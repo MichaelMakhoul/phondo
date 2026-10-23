@@ -23,6 +23,9 @@ export const OPENROUTER_PLACEHOLDER_KEY = "sim-gateway-openrouter";
 /** OpenRouter's names for the models it may be asked for: Haiku 5.5 only (the key is capped at $5). */
 const OPENROUTER_MODELS = new Map([["claude-haiku-5-5", "anthropic/claude-haiku-5.5"]]);
 
+/** OpenRouter's own routing fields: any of them could send a request to another model or provider. */
+const OPENROUTER_ROUTING = ["models", "route", "preset", "plugins", "provider"];
+
 export type Gateway = "anthropic" | "openrouter";
 
 /** SIM_GATEWAY: unset or `anthropic` (the default), or `openrouter`. */
@@ -57,9 +60,8 @@ function messagesBody(init: RequestInit | undefined): Record<string, unknown> {
   return JSON.parse(init.body) as Record<string, unknown>;
 }
 
-function requestedModel(init: RequestInit | undefined): string {
-  const model = messagesBody(init).model;
-  return typeof model === "string" ? model : "";
+function modelOf(body: Record<string, unknown>): string {
+  return typeof body.model === "string" ? body.model : "";
 }
 
 /**
@@ -68,7 +70,9 @@ function requestedModel(init: RequestInit | undefined): string {
  */
 export function toOpenRouter(init: RequestInit | undefined, key: string): RequestInit {
   const body = messagesBody(init);
-  const model = openRouterName(typeof body.model === "string" ? body.model : "");
+  const model = openRouterName(modelOf(body));
+  const routing = OPENROUTER_ROUTING.filter((field) => field in body);
+  if (routing.length > 0) throw new Error(`sim: a Messages request may not carry OpenRouter's routing fields (${routing.join(", ")})`);
   const headers = new Headers(init?.headers);
   headers.delete("x-api-key");
   headers.set("authorization", `Bearer ${key}`);
@@ -93,12 +97,15 @@ export function simFetch(o: {
     if (url === o.internalUrl) return o.internal(new Request(url, init));
     if (url !== ANTHROPIC_MESSAGES_URL) throw new Error(`sim: blocked network call to ${url}`);
     if (input instanceof Request) throw new Error("sim: a Messages request must pass its URL and init, not a Request");
+    // No redirects: a cross-origin one would carry the x-api-key header along.
     if (o.gateway === "anthropic") {
-      assertApiModel(requestedModel(init), "anthropic");
-      return o.realFetch(input, init);
+      const body = messagesBody(init);
+      assertApiModel(modelOf(body), "anthropic");
+      // The body that was checked, re-serialised: a repeated "model" key can't slip past.
+      return o.realFetch(input, { ...init, body: JSON.stringify(body), redirect: "error" });
     }
     if (!o.openRouterKey) throw new Error("sim: SIM_GATEWAY=openrouter needs OPENROUTER_API_KEY");
-    return o.realFetch(OPENROUTER_MESSAGES_URL, toOpenRouter(init, o.openRouterKey));
+    return o.realFetch(OPENROUTER_MESSAGES_URL, { ...toOpenRouter(init, o.openRouterKey), redirect: "error" });
   }) as typeof fetch;
 }
 

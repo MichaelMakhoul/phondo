@@ -142,19 +142,25 @@ describe("SIM_JUDGE_MODEL=session: the judge's prompt is written out and its gra
 
   it("with no grade yet: the prompt is written, the judge's checkpoints wait as na, the deterministic ones stand", async () => {
     const f = files();
-    const { checkpoints, summary } = await scoreCall(record(), SESSION_JUDGE, f);
+    const { checkpoints, summary, pending } = await scoreCall(record(), SESSION_JUDGE, f);
     expect(fs.readFileSync(f.prompt, "utf8")).toMatch(/^# Judge this call[\s\S]*Reply with JSON only[\s\S]*TRANSCRIPT:/);
     expect(checkpoints[3]).toMatchObject({ verdict: "na", evidence: "awaiting the session's grade" });
     expect(checkpoints[15].verdict).toBe("pass");
     expect(summary).toBe("awaiting the session's grade");
+    expect(pending).toBe(true);
   });
 
   it("with the session's grade: read back through the same merge rules", async () => {
     const f = files();
     const grade = { checkpoints: Object.fromEntries(["2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "14", "15"].map((k) => [k, { verdict: k === "3" ? "fail" : "pass", evidence: "L4" }])), summary: "graded here" };
     fs.writeFileSync(f.grade, JSON.stringify(grade));
-    const { checkpoints, summary } = await scoreCall(record(), SESSION_JUDGE, f);
+    const { checkpoints, summary, pending } = await scoreCall(record(), SESSION_JUDGE, f);
     expect(checkpoints[3]).toMatchObject({ verdict: "fail", source: "judge" });
     expect(summary).toBe("graded here");
+    expect(pending).toBe(false);
+  });
+
+  it("an API judge is never pending", async () => {
+    expect((await scoreCall(record(), "judge")).pending).toBe(false);
   });
 });
