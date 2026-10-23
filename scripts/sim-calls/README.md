@@ -41,7 +41,7 @@ server log. In a git worktree, point `SIM_ENV_FILE` at a checkout's
 | `SIM_RUNS` | 2 | runs per scenario |
 | `SIM_CONCURRENCY` | 4 | calls at once |
 | `SIM_CALLER_MODEL` | `claude-haiku-5-5` | the caller |
-| `SIM_JUDGE_MODEL` | `session` | the judge; `session` = no API call: each run's judge prompt is written to `runs/<run>.judge-prompt.md` for the Claude Code session to grade into `runs/<run>.judge.json`, then `SIM_RESCORE=<dir>` builds the report from those grades. Until then the run's report marks every verdict a grade could change ⏳ and says it isn't a verdict, and a call with no grade fails the re-score |
+| `SIM_JUDGE_MODEL` | `session` | the judge; `session` = no API call: each run's judge prompt is written to `runs/<run>.judge-prompt.md` for the Claude Code session to grade into `runs/<run>.judge.json`, then `SIM_RESCORE=<dir>` builds the report from those grades. Until then the run's report marks every verdict a grade could change ⏳ and says it isn't a verdict, and a call with no grade fails the re-score. A grade must carry its prompt's `promptHash`, so after a rubric change every call is graded again; a run that didn't finish (no `results.json`) can't be re-scored |
 | `SIM_GATEWAY` | `anthropic` | `openrouter` sends the same requests to OpenRouter's Anthropic-compatible endpoint with `OPENROUTER_API_KEY`, pinned to Anthropic's own servers at the same price (`claude-haiku-5-5` only) |
 | `SIM_NOISE` | `phone` | `none` turns the STT layer off |
 | `SIM_OUT` | `.sim-calls/<timestamp>` | report directory |

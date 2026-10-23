@@ -21,15 +21,28 @@ export function assertFreshRunDir(dir: string): void {
   }
 }
 
-/** A run directory's saved call records (SIM_RESCORE). The session's grades beside them are not records. */
+/**
+ * A finished run's saved call records (SIM_RESCORE). results.json, written when
+ * the run finished, lists every call: without it the run was cut short, and a
+ * listed call without its record is missing. The session's grades beside the
+ * records are not records.
+ */
 export function loadRecords(dir: string): CallRecord[] {
+  const resultsFile = path.join(dir, "results.json");
+  if (!fs.existsSync(resultsFile)) throw new Error(`sim: ${dir} has no results.json: the run didn't finish, so calls may be missing`);
+  const listed: unknown = JSON.parse(fs.readFileSync(resultsFile, "utf8"));
+  if (!Array.isArray(listed)) throw new Error(`sim: ${resultsFile} is not a list of calls`);
   const files = fs.readdirSync(path.join(dir, "runs")).filter((f) => f.endsWith(".json") && !f.endsWith(".judge.json"));
   if (files.length === 0) throw new Error(`no saved records in ${dir}/runs (runs before records were saved can't be re-scored)`);
-  return files.map((f) => {
+  const records = files.map((f) => {
     const record = JSON.parse(fs.readFileSync(path.join(dir, "runs", f), "utf8")) as CallRecord;
     if (!record?.scenario || !Array.isArray(record.anomalies)) throw new Error(`sim: runs/${f} is not a call record`);
     return record;
   });
+  const saved = new Set(records.map((r) => `${r.scenario.id} run ${r.run}`));
+  const missing = (listed as Array<{ scenario?: unknown; run?: unknown }>).map((c) => `${String(c?.scenario)} run ${String(c?.run)}`).filter((c) => !saved.has(c));
+  if (missing.length > 0) throw new Error(`sim: results.json lists calls with no saved record: ${missing.join(", ")}`);
+  return records;
 }
 
 /**

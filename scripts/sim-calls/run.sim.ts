@@ -361,6 +361,8 @@ it("simulated demo-line calls", async () => {
   if (!process.env.SIM_NOW && clocks.length > 0 && !clock) {
     throw new Error(`sim: ${scenarios.filter((s) => s.clock).map((s) => s.id).join(", ")} must run at their own time: run them on their own (SIM_SCENARIOS=…) or set SIM_NOW`);
   }
+  // The default run folder is named from the real time: on a sim clock every clocked run would get the same name.
+  const runStamp = new Date().toISOString();
   if (clock) installSimClock(clock);
   const runs = Number(process.env.SIM_RUNS || 2);
   const concurrency = Number(process.env.SIM_CONCURRENCY || 4);
@@ -372,7 +374,7 @@ it("simulated demo-line calls", async () => {
   const noise = (process.env.SIM_NOISE || "phone") as NoiseLevel;
   const label = process.env.SIM_LABEL || "unlabelled run";
   const startedAt = new Date();
-  const outDir = process.env.SIM_OUT || path.resolve(VOICE_DIR, "..", ".sim-calls", startedAt.toISOString().replace(/[:.]/g, "-"));
+  const outDir = process.env.SIM_OUT || path.resolve(VOICE_DIR, "..", ".sim-calls", runStamp.replace(/[:.]/g, "-"));
   assertFreshRunDir(outDir);
   fs.mkdirSync(path.join(outDir, "runs"), { recursive: true });
 

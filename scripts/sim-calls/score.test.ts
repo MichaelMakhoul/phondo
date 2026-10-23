@@ -150,9 +150,31 @@ describe("SIM_JUDGE_MODEL=session: the judge's prompt is written out and its gra
     expect(pending).toBe(true);
   });
 
+  const hashIn = (promptFile: string) => /"promptHash": "([0-9a-f]{16})"/.exec(fs.readFileSync(promptFile, "utf8"))?.[1];
+  const verdicts = (v: (k: string) => string) => Object.fromEntries(["2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "14", "15"].map((k) => [k, { verdict: v(k), evidence: "L4" }]));
+
+  it("refuses a grade made against another prompt, or one that names none", async () => {
+    const f = files();
+    fs.writeFileSync(f.grade, JSON.stringify({ promptHash: "0123456789abcdef", checkpoints: verdicts(() => "pass"), summary: "" }));
+    await expect(scoreCall(record(), SESSION_JUDGE, f)).rejects.toThrow(/grades another prompt \(the rubric or the call changed since\)/);
+    fs.writeFileSync(f.grade, JSON.stringify({ checkpoints: verdicts(() => "pass"), summary: "" }));
+    await expect(scoreCall(record(), SESSION_JUDGE, f)).rejects.toThrow(/grades another prompt/);
+  });
+
+  it("names a prompt by its content: the same call alike wherever it is written, a changed call differently", async () => {
+    const [a, b, c] = [files(), files(), files()];
+    await scoreCall(record(), SESSION_JUDGE, a);
+    await scoreCall(record(), SESSION_JUDGE, b);
+    await scoreCall({ ...record(), transcript: [voiced("Sí, hablo español. ¿Algo más?", "aura-2-selena-es")] }, SESSION_JUDGE, c);
+    expect(hashIn(a.prompt)).toMatch(/^[0-9a-f]{16}$/);
+    expect(hashIn(b.prompt)).toBe(hashIn(a.prompt));
+    expect(hashIn(c.prompt)).not.toBe(hashIn(a.prompt));
+  });
+
   it("with the session's grade: read back through the same merge rules", async () => {
     const f = files();
-    const grade = { checkpoints: Object.fromEntries(["2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "14", "15"].map((k) => [k, { verdict: k === "3" ? "fail" : "pass", evidence: "L4" }])), summary: "graded here" };
+    await scoreCall(record(), SESSION_JUDGE, f); // writes the prompt the grade names
+    const grade = { promptHash: hashIn(f.prompt), checkpoints: verdicts((k) => (k === "3" ? "fail" : "pass")), summary: "graded here" };
     fs.writeFileSync(f.grade, JSON.stringify(grade));
     const { checkpoints, summary, pending } = await scoreCall(record(), SESSION_JUDGE, f);
     expect(checkpoints[3]).toMatchObject({ verdict: "fail", source: "judge" });

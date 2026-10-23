@@ -13,8 +13,10 @@
  * session writes its JSON reply to runs/<run>.judge.json, and SIM_RESCORE
  * reads it back through the same merge rules. Until then the call's score is
  * pending: the report marks every verdict the grade could still change ⏳,
- * and SIM_RESCORE refuses a call that has no grade.
+ * and SIM_RESCORE refuses a call that has no grade. A grade names the prompt
+ * it graded (promptHash), so after a rubric change an old grade is refused.
  */
+import crypto from "crypto";
 import fs from "fs";
 import { claudeText } from "./anthropic";
 import type { Persona } from "./caller";
@@ -348,9 +350,12 @@ async function judge(rec: CallRecord, model: string, sessionFiles?: SessionJudge
     `HOW THE CALL ENDED: ${rec.ending === "end_call" ? "the AI ended the call (end_call)" : rec.ending === "caller-hangup" ? "the caller hung up" : rec.ending}`,
   ].join("\n");
   let raw: string;
+  let session: { grade: string; promptHash: string } | null = null;
   if (model === SESSION_JUDGE) {
     if (!sessionFiles) throw new Error("sim: SIM_JUDGE_MODEL=session needs the run's file paths");
-    fs.writeFileSync(sessionFiles.prompt, `# Judge this call\n\nWrite the JSON reply to ${sessionFiles.grade}\n\n## System\n\n${system}\n\n## Call\n\n${user}\n`);
+    const promptHash = crypto.createHash("sha256").update(`${system}\n${user}`).digest("hex").slice(0, 16);
+    session = { grade: sessionFiles.grade, promptHash };
+    fs.writeFileSync(sessionFiles.prompt, `# Judge this call\n\nWrite the JSON reply to ${sessionFiles.grade}, with "promptHash": "${promptHash}" in it.\n\n## System\n\n${system}\n\n## Call\n\n${user}\n`);
     if (!fs.existsSync(sessionFiles.grade)) {
       const pending = Object.fromEntries(JUDGED.map((id) => [String(id), { verdict: "na" as const, evidence: "awaiting the session's grade" }]));
       return { checkpoints: pending, summary: "awaiting the session's grade", pending: true };
@@ -360,7 +365,10 @@ async function judge(rec: CallRecord, model: string, sessionFiles?: SessionJudge
     raw = await claudeText({ model, system, messages: [{ role: "user", content: user }], maxTokens: 8000 });
   }
   const json = raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1);
-  const parsed = JSON.parse(json) as { checkpoints?: Record<string, { verdict?: string; evidence?: string }>; summary?: string };
+  const parsed = JSON.parse(json) as { checkpoints?: Record<string, { verdict?: string; evidence?: string }>; summary?: string; promptHash?: unknown };
+  if (session && parsed.promptHash !== session.promptHash) {
+    throw new Error(`sim: ${session.grade} grades another prompt (the rubric or the call changed since): grade it again`);
+  }
   const checkpoints: Record<string, { verdict: Verdict; evidence: string }> = {};
   for (const [k, v] of Object.entries(parsed.checkpoints || {})) {
     const verdict = (["pass", "partial", "fail", "na"] as const).find((x) => x === v?.verdict);
