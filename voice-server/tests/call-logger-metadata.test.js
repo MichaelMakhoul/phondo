@@ -124,3 +124,18 @@ test("fastPath is merged into calls.metadata; a null fastPath writes no metadata
   await completeCallRecord("call-6", { status: "completed", durationSeconds: 42, transcript: [], pipelineFailover: null, pipeline: null, fastPath: null });
   assert.equal("metadata" in updates.find((u) => u.table === "calls").payload, false);
 });
+
+// SCRUM-596: an owner session in the dashboard is marked as from the web.
+test("channel is merged into calls.metadata; no channel writes no metadata", async () => {
+  updates.length = 0;
+  await completeCallRecord("call-10", { status: "completed", durationSeconds: 42, transcript: "x", callType: "owner", ownerAuth: "verified", channel: "web" });
+  assert.deepEqual(updates.find((u) => u.table === "calls").payload.metadata, {
+    voice_provider: "self_hosted",
+    call_type: "owner",
+    owner_auth: "verified",
+    channel: "web",
+  });
+  updates.length = 0;
+  await completeCallRecord("call-11", { status: "completed", durationSeconds: 42, transcript: "x", channel: null });
+  assert.equal("metadata" in updates.find((u) => u.table === "calls").payload, false);
+});

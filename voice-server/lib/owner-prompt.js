@@ -100,15 +100,17 @@ function describeServiceType(s) {
 
 /**
  * @param {{ orgName: string, ownerFirstName?: string|null, timezone: string, todayStr: string,
- *   serviceTypes?: Array<{ id?: string, name?: string, duration_minutes?: number }>, practitioners?: Array<{ name?: string }> }} o
+ *   serviceTypes?: Array<{ id?: string, name?: string, duration_minutes?: number }>, practitioners?: Array<{ name?: string }>,
+ *   signedInOnWeb?: boolean }} o - signedInOnWeb (SCRUM-596): the owner is in the dashboard, where the login is the proof
  * @returns {string}
  */
-function buildOwnerPrompt({ orgName, ownerFirstName, timezone, todayStr, serviceTypes = [], practitioners = [] }) {
+function buildOwnerPrompt({ orgName, ownerFirstName, timezone, todayStr, serviceTypes = [], practitioners = [], signedInOnWeb = false }) {
   const org = sanitizeLine(orgName) || "this business";
   const owner = ownerDisplayName(ownerFirstName) || "the business owner";
   const tz = sanitizeLine(timezone, 40) || "UTC";
   const lines = [];
-  lines.push(`You are the private assistant for ${org}. You are speaking with ${owner}, who has verified their identity with a PIN. They may see every booking and message for this business.`);
+  const proof = signedInOnWeb ? "is signed in to the business's Phondo dashboard" : "has verified their identity with a PIN";
+  lines.push(`You are the private assistant for ${org}. You are speaking with ${owner}, who ${proof}. They may see every booking and message for this business.`);
   lines.push(`Today is ${describeToday(todayStr)} (${tz}). All times are in that timezone.`);
   lines.push("");
   lines.push("WHAT YOU CAN DO — only through these tools; nothing happens without a tool call:");
