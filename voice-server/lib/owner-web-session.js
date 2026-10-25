@@ -86,7 +86,8 @@ function createOwnerTokenLedger() {
   const used = new Map();
   return {
     claim(jti, exp, now = Date.now()) {
-      for (const [id, until] of used) if (until <= now) used.delete(id);
+      // Kept through the expiry millisecond itself: /ws/test accepts a token while now <= exp.
+      for (const [id, until] of used) if (until < now) used.delete(id);
       if (typeof jti !== "string" || !jti) return false;
       if (used.has(jti)) return false;
       used.set(jti, typeof exp === "number" && Number.isFinite(exp) ? exp : now + OWNER_WEB_MAX_SESSION_MS);

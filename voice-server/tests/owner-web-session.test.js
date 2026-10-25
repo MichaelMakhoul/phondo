@@ -242,7 +242,8 @@ describe("createOwnerTokenLedger (an owner token works once)", () => {
     assert.equal(ledger.claim("jti-1", 2_000, 1_000), true);
     assert.equal(ledger.claim("jti-1", 2_000, 1_500), false, "reused before expiry");
     assert.equal(ledger.claim("jti-2", 2_000, 1_500), true, "another token is unaffected");
-    assert.equal(ledger.claim("jti-1", 3_000, 2_000), true, "expired: the entry is purged (the token itself is rejected as expired anyway)");
+    assert.equal(ledger.claim("jti-1", 2_000, 2_000), false, "still refused AT the expiry millisecond (/ws/test accepts now <= exp)");
+    assert.equal(ledger.claim("jti-1", 3_000, 2_001), true, "expired: the entry is purged (the token itself is rejected as expired anyway)");
   });
 
   it("no jti (or not a string) is refused", () => {
@@ -254,7 +255,8 @@ describe("createOwnerTokenLedger (an owner token works once)", () => {
     const ledger = createOwnerTokenLedger();
     assert.equal(ledger.claim("jti-1", undefined, 1_000), true);
     assert.equal(ledger.claim("jti-1", undefined, 1_000 + OWNER_WEB_MAX_SESSION_MS - 1), false);
-    assert.equal(ledger.claim("jti-1", undefined, 1_000 + OWNER_WEB_MAX_SESSION_MS), true);
+    assert.equal(ledger.claim("jti-1", undefined, 1_000 + OWNER_WEB_MAX_SESSION_MS), false);
+    assert.equal(ledger.claim("jti-1", undefined, 1_000 + OWNER_WEB_MAX_SESSION_MS + 1), true);
   });
 });
 
