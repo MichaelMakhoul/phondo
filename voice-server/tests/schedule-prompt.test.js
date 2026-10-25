@@ -380,6 +380,35 @@ describe("SCRUM-594 (phone test F5): today's weekday and a closed today", () => 
     assert.ok(result.includes("Today (Mon, Oct 19): 10 AM, 10:30 AM (2 slots)"), result);
     assert.ok(result.includes("Tomorrow (Tue, Oct 20):"));
   });
+
+  /** Wednesday 21 October 2026, 9 AM to 4:30 PM every half hour, from `from` ("10:30") on. */
+  const wednesdayFrom = (from) => {
+    const times = [];
+    for (let m = 9 * 60; m < 17 * 60; m += 30) times.push(`${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`);
+    return times.filter((t) => t >= from).map((t) => `2026-10-21T${t}:00`);
+  };
+
+  it("phone test F9's daytime counterpart: at 10 AM the line says today still has times, from this morning", () => {
+    // Simulated calls at 10 AM with 13 times free today: "Today's pretty full", "Today's pretty much gone",
+    // "times this afternoon from 10:30".
+    const result = withNow("2026-10-20T23:00:00Z", () => buildLiveScheduleSection(weekdaySnapshot({ "2026-10-21": wednesdayFrom("10:30"), "2026-10-22": wednesdayFrom("09:00") }), "2026-10-21")); // Wed 10:00 Sydney
+    assert.ok(result.includes("It's 10:00 AM: today still has 13 times to offer, from 10:30 AM this morning, so a caller who wants a morning can have one today. Today isn't full, late or over while it has times."), result);
+    assert.ok(result.includes("Today (Wed, Oct 21): 10:30 AM, 11 AM,"), result);
+  });
+
+  it("phone test F9's daytime counterpart: at 3:58 PM it counts only what may be offered, and from 4:01 there is no such line", () => {
+    const today = { "2026-10-21": wednesdayFrom("16:00"), "2026-10-22": wednesdayFrom("09:00") };
+    const at358 = withNow("2026-10-21T04:58:00Z", () => buildLiveScheduleSection(weekdaySnapshot(today), "2026-10-21")); // Wed 3:58 PM Sydney
+    assert.ok(at358.includes("It's 3:58 PM: today still has 1 time to offer, from 4:30 PM this afternoon, so a caller who wants an afternoon can have one today."), at358);
+    const at401 = withNow("2026-10-21T05:01:00Z", () => buildLiveScheduleSection(weekdaySnapshot(today), "2026-10-21"));
+    assert.ok(!at401.includes("still has"), at401);
+  });
+
+  it("phone test F9's daytime counterpart: before opening the small-hours line stands alone", () => {
+    const result = withNow("2026-10-20T14:53:00Z", () => buildLiveScheduleSection(weekdaySnapshot({ "2026-10-21": wednesdayFrom("09:00") }), "2026-10-21")); // Wed 1:53 AM Sydney
+    assert.ok(result.includes("It's the early hours (1:53 AM, not PM)"), result);
+    assert.ok(!result.includes("still has"), result);
+  });
 });
 
 describe("buildSchedulingSection: availability examples (SCRUM-594 F5 simulated calls)", () => {

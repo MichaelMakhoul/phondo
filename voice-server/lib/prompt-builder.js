@@ -1143,6 +1143,12 @@ function buildLiveScheduleSection(snapshot, todayStr) {
     lines.push(earlyHours
       ? `It's the early hours (${currentTime}, not PM), before opening: none of today's times has passed, and to a caller now "this morning" and "tomorrow morning" both usually mean today (${formatDateLabel(todayStr, timezone)}). ${todayFirst} Never say "tomorrow" yourself (to a caller now it means today): say "${nextWeekday}".`
       : `Before opening, today's times are the earliest: ${todayFirst}`);
+  } else if (todaySlots.length > 0 && formatSlotTime(todaySlots[0])) {
+    // Phone test F9's daytime counterpart (simulated calls at 10 AM, 13 times free today): "Today's pretty
+    // full", "Today's pretty much gone", "times this afternoon from 10:30".
+    const firstHour = Number(String(todaySlots[0]).split("T")[1].slice(0, 2));
+    const [dayPart, partOfDay] = firstHour < 12 ? ["this morning", "a morning"] : firstHour < 17 ? ["this afternoon", "an afternoon"] : ["this evening", "an evening"];
+    lines.push(`It's ${currentTime}: today still has ${todaySlots.length} time${todaySlots.length === 1 ? "" : "s"} to offer, from ${formatSlotTime(todaySlots[0])} ${dayPart}, so a caller who wants ${partOfDay} can have one today. Today isn't full, late or over while it has times.`);
   }
   lines.push("");
   lines.push("⚠️ IMPORTANT: the times below are AGGREGATE (any-practitioner). If a caller asks for a SPECIFIC practitioner by name, DO NOT use these times. Instead, call `check_availability` with `practitioner_id` set to that practitioner's ID from the PRACTITIONERS ON STAFF list below — this is the ONLY way to see slots that respect that practitioner's personal blocked times (days off, lunch breaks, etc.). Booking with practitioner_id on a day they're blocked WILL fail.");
