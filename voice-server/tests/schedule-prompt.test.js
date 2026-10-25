@@ -381,23 +381,23 @@ describe("SCRUM-594 (phone test F5): today's weekday and a closed today", () => 
     assert.ok(result.includes("Tomorrow (Tue, Oct 20):"));
   });
 
-  /** Wednesday 21 October 2026, 9 AM to 4:30 PM every half hour, from `from` ("10:30") on. */
-  const wednesdayFrom = (from) => {
+  /** 9 AM to 4:30 PM every half hour on `date`, from `from` ("10:30") on. */
+  const halfHours = (date, from) => {
     const times = [];
     for (let m = 9 * 60; m < 17 * 60; m += 30) times.push(`${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`);
-    return times.filter((t) => t >= from).map((t) => `2026-10-21T${t}:00`);
+    return times.filter((t) => t >= from).map((t) => `${date}T${t}:00`);
   };
 
   it("phone test F9's daytime counterpart: at 10 AM the line says today still has times, from this morning", () => {
     // Simulated calls at 10 AM with 13 times free today: "Today's pretty full", "Today's pretty much gone",
     // "times this afternoon from 10:30".
-    const result = withNow("2026-10-20T23:00:00Z", () => buildLiveScheduleSection(weekdaySnapshot({ "2026-10-21": wednesdayFrom("10:30"), "2026-10-22": wednesdayFrom("09:00") }), "2026-10-21")); // Wed 10:00 Sydney
+    const result = withNow("2026-10-20T23:00:00Z", () => buildLiveScheduleSection(weekdaySnapshot({ "2026-10-21": halfHours("2026-10-21", "10:30"), "2026-10-22": halfHours("2026-10-22", "09:00") }), "2026-10-21")); // Wed 10:00 Sydney
     assert.ok(result.includes("It's 10:00 AM: today still has 13 times to offer, from 10:30 AM this morning, so a caller who wants a morning can have one today. Today isn't full, late or over while it has times."), result);
     assert.ok(result.includes("Today (Wed, Oct 21): 10:30 AM, 11 AM,"), result);
   });
 
   it("phone test F9's daytime counterpart: at 3:58 PM it counts only what may be offered, and from 4:01 there is no such line", () => {
-    const today = { "2026-10-21": wednesdayFrom("16:00"), "2026-10-22": wednesdayFrom("09:00") };
+    const today = { "2026-10-21": halfHours("2026-10-21", "16:00"), "2026-10-22": halfHours("2026-10-22", "09:00") };
     const at358 = withNow("2026-10-21T04:58:00Z", () => buildLiveScheduleSection(weekdaySnapshot(today), "2026-10-21")); // Wed 3:58 PM Sydney
     assert.ok(at358.includes("It's 3:58 PM: today still has 1 time to offer, from 4:30 PM this afternoon, so a caller who wants an afternoon can have one today."), at358);
     const at401 = withNow("2026-10-21T05:01:00Z", () => buildLiveScheduleSection(weekdaySnapshot(today), "2026-10-21"));
@@ -405,9 +405,46 @@ describe("SCRUM-594 (phone test F5): today's weekday and a closed today", () => 
   });
 
   it("phone test F9's daytime counterpart: before opening the small-hours line stands alone", () => {
-    const result = withNow("2026-10-20T14:53:00Z", () => buildLiveScheduleSection(weekdaySnapshot({ "2026-10-21": wednesdayFrom("09:00") }), "2026-10-21")); // Wed 1:53 AM Sydney
+    const result = withNow("2026-10-20T14:53:00Z", () => buildLiveScheduleSection(weekdaySnapshot({ "2026-10-21": halfHours("2026-10-21", "09:00") }), "2026-10-21")); // Wed 1:53 AM Sydney
     assert.ok(result.includes("It's the early hours (1:53 AM, not PM)"), result);
     assert.ok(!result.includes("still has"), result);
+  });
+
+  it("phone test F9's daytime counterpart: the part of day turns at noon (11:30 AM is this morning, 12 PM this afternoon)", () => {
+    const today = { "2026-10-21": halfHours("2026-10-21", "09:00") };
+    const at1100 = withNow("2026-10-21T00:00:00Z", () => buildLiveScheduleSection(weekdaySnapshot(today), "2026-10-21")); // Wed 11:00 AM Sydney
+    assert.ok(at1100.includes("It's 11:00 AM: today still has 11 times to offer, from 11:30 AM this morning, so a caller who wants a morning can have one today."), at1100);
+    const at1130 = withNow("2026-10-21T00:30:00Z", () => buildLiveScheduleSection(weekdaySnapshot(today), "2026-10-21")); // Wed 11:30 AM Sydney
+    assert.ok(at1130.includes("It's 11:30 AM: today still has 10 times to offer, from 12 PM this afternoon, so a caller who wants an afternoon can have one today."), at1130);
+  });
+
+  it("phone test F9's daytime counterpart: on a day open late, a 5 PM first time is this evening", () => {
+    const late = { ...weekdaySnapshot({ "2026-10-21": ["16:30", "17:00", "17:30", "18:00", "18:30"].map((t) => `2026-10-21T${t}:00`) }), businessHours: { ...WEEKDAYS, wednesday: { open: "09:00", close: "19:00" } } };
+    const result = withNow("2026-10-21T05:30:00Z", () => buildLiveScheduleSection(late, "2026-10-21")); // Wed 4:30 PM Sydney: 4:30 PM is under 30 minutes away
+    assert.ok(result.includes("It's 4:30 PM: today still has 4 times to offer, from 5 PM this evening, so a caller who wants an evening can have one today."), result);
+  });
+
+  it("phone test F9's daytime counterpart: a first time it can't read gets no line, and the schedule is still built", () => {
+    const snap = weekdaySnapshot({ "2026-10-21": ["2026-10-21", ...halfHours("2026-10-21", "10:30")], "2026-10-22": halfHours("2026-10-22", "09:00") }); // a slot with no time on it
+    const result = withNow("2026-10-20T23:00:00Z", () => buildLiveScheduleSection(snap, "2026-10-21")); // Wed 10:00 AM Sydney
+    assert.ok(!result.includes("still has"), result);
+    assert.ok(result.includes("Today (Wed, Oct 21): 10:30 AM, 11 AM,"), result);
+  });
+
+  it("phone test F9's daytime counterpart: no such line with practitioners, whose personal blocked times the any-practitioner times don't subtract (gate review)", () => {
+    // Sam is off all day: `_any` still lists every time (lib/call-context.js), so the line would promise a morning nobody can take.
+    const offToday = { ...weekdaySnapshot({ "2026-10-21": { _any: halfHours("2026-10-21", "09:00"), p1: [] } }), practitioners: [{ id: "p1", name: "Sam" }] };
+    const result = withNow("2026-10-20T23:00:00Z", () => buildLiveScheduleSection(offToday, "2026-10-21")); // Wed 10:00 AM Sydney
+    assert.ok(!result.includes("still has"), result);
+    assert.ok(result.includes("- Sam [ID: p1]: 0 open slots today"), result);
+  });
+
+  it("a practitioner's open slots today are only the times the 30-minute rule lets the AI offer, as on today's line (gate review)", () => {
+    const both = ["2026-10-21T16:00:00", "2026-10-21T16:30:00"];
+    const snap = { ...weekdaySnapshot({ "2026-10-21": { _any: both, p1: both } }), practitioners: [{ id: "p1", name: "Sam" }] };
+    const result = withNow("2026-10-21T04:58:00Z", () => buildLiveScheduleSection(snap, "2026-10-21")); // Wed 3:58 PM Sydney
+    assert.ok(result.includes("Today (Wed, Oct 21): 4:30 PM (1 slot)"), result);
+    assert.ok(result.includes("- Sam [ID: p1]: 1 open slot today"), result);
   });
 });
 

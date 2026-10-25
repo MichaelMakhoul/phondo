@@ -1143,9 +1143,11 @@ function buildLiveScheduleSection(snapshot, todayStr) {
     lines.push(earlyHours
       ? `It's the early hours (${currentTime}, not PM), before opening: none of today's times has passed, and to a caller now "this morning" and "tomorrow morning" both usually mean today (${formatDateLabel(todayStr, timezone)}). ${todayFirst} Never say "tomorrow" yourself (to a caller now it means today): say "${nextWeekday}".`
       : `Before opening, today's times are the earliest: ${todayFirst}`);
-  } else if (todaySlots.length > 0 && formatSlotTime(todaySlots[0])) {
+  } else if (Array.isArray(snapshot.slots[todayStr]) && todaySlots.length > 0 && formatSlotTime(todaySlots[0])) {
     // Phone test F9's daytime counterpart (simulated calls at 10 AM, 13 times free today): "Today's pretty
-    // full", "Today's pretty much gone", "times this afternoon from 10:30".
+    // full", "Today's pretty much gone", "times this afternoon from 10:30". Only without practitioners: with
+    // them, `_any` doesn't subtract their personal blocked times (lib/call-context.js), so this line could
+    // promise a morning nobody can take (gate review).
     const firstHour = Number(String(todaySlots[0]).split("T")[1].slice(0, 2));
     const [dayPart, partOfDay] = firstHour < 12 ? ["this morning", "a morning"] : firstHour < 17 ? ["this afternoon", "an afternoon"] : ["this evening", "an evening"];
     lines.push(`It's ${currentTime}: today still has ${todaySlots.length} time${todaySlots.length === 1 ? "" : "s"} to offer, from ${formatSlotTime(todaySlots[0])} ${dayPart}, so a caller who wants ${partOfDay} can have one today. Today isn't full, late or over while it has times.`);
@@ -1234,10 +1236,11 @@ function buildLiveScheduleSection(snapshot, todayStr) {
       });
       const apptCount = todayAppts.length;
 
-      // Per-practitioner slot count from structured slots
-      const todaySlots = snapshot.slots[todayStr];
-      const practSlotCount = (todaySlots && !Array.isArray(todaySlots) && todaySlots[p.id])
-        ? todaySlots[p.id].length
+      // Per-practitioner slot count from structured slots: only the times the 30-minute rule
+      // lets the AI offer, as on today's line (gate review: "2 open slots" beside "1 slot").
+      const todayEntry = snapshot.slots[todayStr];
+      const practSlotCount = (todayEntry && !Array.isArray(todayEntry) && todayEntry[p.id])
+        ? offerableToday(todayEntry[p.id], todayStr, timezone).length
         : null;
 
       const statusParts = [];
