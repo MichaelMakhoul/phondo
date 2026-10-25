@@ -1130,7 +1130,11 @@ function buildLiveScheduleSection(snapshot, todayStr) {
   // SCRUM-594 (F5 simulated calls): at 3 AM, "the earliest weekday morning" became
   // "tomorrow, Tuesday at 9" in 5 of 12 calls with all of Monday free.
   const todaySlots = dates.includes(todayStr) ? offerableToday(getAnySlots(snapshot.slots[todayStr]), todayStr, timezone) : [];
-  const notOpenYet = todaySlots.length > 0 && beforeOpening(snapshot.businessHours, todayStr, timezone);
+  // Gate review: the lines below that tell the model to lead with today (before opening, and in the day)
+  // need today's times exact, so a snapshot without practitioners. With them, `_any` doesn't subtract
+  // their personal blocked times (lib/call-context.js), so a practitioner's day off would still be offered.
+  const exactToday = Array.isArray(snapshot.slots[todayStr]);
+  const notOpenYet = exactToday && todaySlots.length > 0 && beforeOpening(snapshot.businessHours, todayStr, timezone);
   // Confirmation review: only in the small hours. At 07:30 a caller's "tomorrow" means tomorrow.
   const earlyHours = notOpenYet && Number(getCurrentTime24(timezone).slice(0, 2)) < SMALL_HOURS_END;
   if (notOpenYet) {
@@ -1143,11 +1147,9 @@ function buildLiveScheduleSection(snapshot, todayStr) {
     lines.push(earlyHours
       ? `It's the early hours (${currentTime}, not PM), before opening: none of today's times has passed, and to a caller now "this morning" and "tomorrow morning" both usually mean today (${formatDateLabel(todayStr, timezone)}). ${todayFirst} Never say "tomorrow" yourself (to a caller now it means today): say "${nextWeekday}".`
       : `Before opening, today's times are the earliest: ${todayFirst}`);
-  } else if (Array.isArray(snapshot.slots[todayStr]) && todaySlots.length > 0 && formatSlotTime(todaySlots[0])) {
+  } else if (exactToday && todaySlots.length > 0 && formatSlotTime(todaySlots[0])) {
     // Phone test F9's daytime counterpart (simulated calls at 10 AM, 13 times free today): "Today's pretty
-    // full", "Today's pretty much gone", "times this afternoon from 10:30". Only without practitioners: with
-    // them, `_any` doesn't subtract their personal blocked times (lib/call-context.js), so this line could
-    // promise a morning nobody can take (gate review).
+    // full", "Today's pretty much gone", "times this afternoon from 10:30".
     const firstHour = Number(String(todaySlots[0]).split("T")[1].slice(0, 2));
     const [dayPart, partOfDay] = firstHour < 12 ? ["this morning", "a morning"] : firstHour < 17 ? ["this afternoon", "an afternoon"] : ["this evening", "an evening"];
     lines.push(`It's ${currentTime}: today still has ${todaySlots.length} time${todaySlots.length === 1 ? "" : "s"} to offer, from ${formatSlotTime(todaySlots[0])} ${dayPart}, so a caller who wants ${partOfDay} can have one today. Today isn't full, late or over while it has times.`);

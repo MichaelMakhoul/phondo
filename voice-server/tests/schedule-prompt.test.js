@@ -439,6 +439,16 @@ describe("SCRUM-594 (phone test F5): today's weekday and a closed today", () => 
     assert.ok(result.includes("- Sam [ID: p1]: 0 open slots today"), result);
   });
 
+  it("before opening there are no lead-with-today lines with practitioners either (gate re-review: Sam's day off was offered first)", () => {
+    const offToday = { ...weekdaySnapshot({ "2026-10-21": { _any: halfHours("2026-10-21", "09:00"), p1: [] }, "2026-10-22": { _any: halfHours("2026-10-22", "09:00"), p1: halfHours("2026-10-22", "09:00") } }), practitioners: [{ id: "p1", name: "Sam" }] };
+    for (const iso of ["2026-10-20T14:53:00Z", "2026-10-20T20:30:00Z"]) { // Wed 1:53 AM and 7:30 AM Sydney
+      const result = withNow(iso, () => buildLiveScheduleSection(offToday, "2026-10-21"));
+      assert.ok(!result.includes("Offer today's times first"), result);
+      assert.ok(!result.includes("earliest times of all"), result);
+      assert.ok(result.includes("Today (Wed, Oct 21): 9 AM, 9:30 AM,"), result);
+    }
+  });
+
   it("a practitioner's open slots today are only the times the 30-minute rule lets the AI offer, as on today's line (gate review)", () => {
     const both = ["2026-10-21T16:00:00", "2026-10-21T16:30:00"];
     const snap = { ...weekdaySnapshot({ "2026-10-21": { _any: both, p1: both } }), practitioners: [{ id: "p1", name: "Sam" }] };
