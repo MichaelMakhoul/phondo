@@ -10,6 +10,7 @@
 
 const { Sentry } = require("../lib/sentry");
 const { openAIChatParams } = require("../lib/model-params");
+const { preferBookedName, cleanBookedName } = require("../lib/booked-names");
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 // Runs AFTER hangup (off the latency path) and writes exactly the text the
@@ -161,7 +162,7 @@ async function callOpenAI({ system, user, maxTokens, model, timeoutMs }) {
   return JSON.parse(content);
 }
 
-async function analyzeStructured(transcript, toolDigest) {
+async function analyzeStructured(transcript, toolDigest, bookedNames) {
   try {
     // SCRUM-559: the transcript ALONE reads as success when the AI confidently
     // claims a booking the tools never (net) delivered — the real incident's
@@ -174,13 +175,27 @@ async function analyzeStructured(transcript, toolDigest) {
     const digestBlock = toolDigest
       ? `\n\nTOOL EXECUTION LOG (ground truth from the system — the transcript's claims may be wrong; your summary and success_evaluation MUST be consistent with this log, and if the assistant's claims contradict it, state the discrepancy in the summary. final_booking_claimed is the exception: judge it ONLY from what the assistant said):\n${toolDigest}`
       : "";
+    // SCRUM-594 (phone test F10): the names on the appointments this call made. The
+    // recording's transcript heard the spelled "D-U-N-N" as "G-U-N-N", and the call
+    // log said Gunn while the booking said Dunn.
+    const names = (Array.isArray(bookedNames) ? bookedNames : []).map(cleanBookedName).filter(Boolean);
+    const namesBlock =
+      names.length > 0
+        ? `\n\nNAMES ON THIS CALL'S BOOKINGS (as saved on the appointments): ${names.map((n) => `"${n}"`).join(", ")}\n` +
+          "Speech-to-text often mishears spelled letters (D/G, B/V, M/N, F/S). If a booking is the caller's own, write the caller's name with its spelling in caller_name, the summary and collected_data. A booking can be for someone else; then don't take the caller's name from it."
+        : "";
     const parsed = await callOpenAI({
       system: STRUCTURED_PROMPT,
-      user: `Analyze this call transcript:\n\n${transcript.slice(0, 6000)}${digestBlock}`,
+      user: `Analyze this call transcript:\n\n${transcript.slice(0, 6000)}${digestBlock}${namesBlock}`,
       maxTokens: 600,
     });
+    // SCRUM-594 (F10): and if the model still misspells the booked caller, the
+    // booking's spelling wins. The log line says only that it happened (SCRUM-339).
+    const modelCallerName = parsed.caller_name || null;
+    const callerName = preferBookedName(modelCallerName, names);
+    if (callerName !== modelCallerName) console.log("[PostCallAnalysis] Caller name taken from the booking (the analysis had it differently)");
     return {
-      callerName: parsed.caller_name || null,
+      callerName,
       callerPhoneReason: parsed.caller_phone_reason || null,
       appointmentRequested: !!parsed.appointment_requested,
       summary: parsed.summary || null,
@@ -269,11 +284,14 @@ async function analyzeCleanup(transcript, language) {
  * the other.
  *
  * @param {string} transcript - The full call transcript
- * @param {{ language?: string, toolDigest?: string|null }} [options] - language: the call's
+ * @param {{ language?: string, toolDigest?: string|null, bookedNames?: string[] }} [options] - language: the call's
  *   configured language (BCP-47/ISO 639-1), used as a recovery hint for the
  *   cleanup pass. toolDigest: SCRUM-559 ground-truth tool-outcome digest
  *   (lib/action-claim-detector buildToolOutcomeDigest) injected into the
  *   structured analysis so summaries reflect tool reality, not claims.
+ *   bookedNames: SCRUM-594 (F10) the names on the appointments this call made
+ *   (lib/booked-names fetchBookedNames), so a misheard spelled surname doesn't
+ *   replace the booked one in the call log.
  * @returns {Promise<object|null>} Extracted data or null if both calls fail
  */
 async function analyzeCallTranscript(transcript, options = {}) {
@@ -291,7 +309,7 @@ async function analyzeCallTranscript(transcript, options = {}) {
   }
 
   const [structured, cleanedTranscript] = await Promise.all([
-    analyzeStructured(transcript, options.toolDigest),
+    analyzeStructured(transcript, options.toolDigest, options.bookedNames),
     analyzeCleanup(transcript, options.language),
   ]);
 

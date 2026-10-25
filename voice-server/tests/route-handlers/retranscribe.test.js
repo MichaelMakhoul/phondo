@@ -95,6 +95,13 @@ function makeDeps(overrides = {}) {
       overrides.buildTwoSidedTranscript || (() => "User: real caller words\nAI: hello"),
     analyzeCallTranscript:
       overrides.analyzeCallTranscript || (async () => ({ summary: "s", sentiment: "neutral" })),
+    // SCRUM-594 (F10): the names on this call's appointments.
+    fetchBookedNames:
+      overrides.fetchBookedNames ||
+      (async (client, callId, organizationId) => {
+        captured.bookedNamesLookup = { client, callId, organizationId };
+        return [];
+      }),
     judgeContentLoss:
       overrides.judgeContentLoss ||
       (async (prior, replacement) => {
@@ -660,4 +667,67 @@ describe("handleRetranscribe (SCRUM-550)", () => {
       assert.ok(captured.applyReanalysis, "the re-analysis must be applied for a non-owner call");
     });
   }
+});
+
+describe("SCRUM-594 (phone test F10): the re-analysis knows the names on this call's appointments", () => {
+  function run(overrides = {}) {
+    let options = null;
+    const { deps, captured } = makeDeps({
+      analyzeCallTranscript: async (_transcript, opts) => {
+        options = opts;
+        return { summary: "s", callerName: "Michael Dunn" };
+      },
+      ...overrides,
+    });
+    return handleRetranscribe({ callId: "c1", deps }).then((res) => ({ res, options, captured, deps }));
+  }
+
+  it("looks them up for this call in its org, with the handler's client, and gives them to the analysis", async () => {
+    let lookup = null;
+    const { res, options, captured, deps } = await run({
+      fetchBookedNames: async (client, callId, organizationId) => {
+        lookup = { client, callId, organizationId };
+        return ["Michael Dunn"];
+      },
+    });
+    assert.equal(res.retranscribed, true);
+    assert.equal(lookup.client, deps.getSupabase(), "the same client the handler uses");
+    assert.equal(lookup.callId, "c1");
+    assert.equal(lookup.organizationId, "o1");
+    assert.deepEqual(options, { language: "en", bookedNames: ["Michael Dunn"] });
+    assert.equal(captured.applyReanalysis.fields.analysis.callerName, "Michael Dunn");
+  });
+
+  it("a call with no appointments is re-analysed with no names", async () => {
+    const { options } = await run();
+    assert.deepEqual(options, { language: "en", bookedNames: [] });
+  });
+
+  it("a failed lookup is said in the log and the re-analysis goes on without names", async (t) => {
+    const warned = [];
+    t.mock.method(console, "warn", (...a) => warned.push(a.join(" ")));
+    const { res, options, captured } = await run({
+      fetchBookedNames: async () => {
+        throw new Error("appointments lookup failed: permission denied");
+      },
+    });
+    assert.equal(res.retranscribed, true);
+    assert.deepEqual(options, { language: "en", bookedNames: [] });
+    assert.ok(captured.applyReanalysis, "the transcript and analysis are still written");
+    assert.equal(warned.length, 1);
+    assert.match(warned[0], /\[Retranscribe\] booked names unavailable for c1 — re-analysing without them: appointments lookup failed: permission denied/);
+  });
+
+  it("not looked up when the call is skipped before the analysis (here: already re-transcribed)", async () => {
+    let looked = false;
+    const { res } = await run({
+      row: { ...DEFAULT_ROW, transcript_source: "deepgram" },
+      fetchBookedNames: async () => {
+        looked = true;
+        return [];
+      },
+    });
+    assert.equal(res.reason, "already-retranscribed");
+    assert.equal(looked, false);
+  });
 });

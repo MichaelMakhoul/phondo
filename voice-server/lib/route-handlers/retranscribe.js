@@ -16,8 +16,9 @@ const BUCKET = "call-recordings";
 /**
  * @param {{ callId: string, deps: object, isRetry?: boolean }} args
  *   deps: { getSupabase, transcribeRecording, buildTwoSidedTranscript,
- *           analyzeCallTranscript, judgeContentLoss, applyReanalysis, Sentry,
- *           deepgramApiKey, retranscribeEnabled, scheduleRetry? }
+ *           analyzeCallTranscript, fetchBookedNames, judgeContentLoss,
+ *           applyReanalysis, Sentry, deepgramApiKey, retranscribeEnabled,
+ *           scheduleRetry? }
  *   isRetry: internal — set by the one-shot delayed self-retry when the
  *   recording webhook beat the call-end write (never re-schedules).
  * @returns {Promise<{ ok: true, retranscribed: boolean, reason?: string }>}
@@ -29,6 +30,7 @@ async function handleRetranscribe({ callId, deps, isRetry = false }) {
     transcribeRecording,
     buildTwoSidedTranscript,
     analyzeCallTranscript,
+    fetchBookedNames,
     judgeContentLoss,
     applyReanalysis,
     Sentry,
@@ -352,7 +354,19 @@ async function handleRetranscribe({ callId, deps, isRetry = false }) {
       }
     }
 
-    const analysis = await analyzeCallTranscript(accurateTranscript, { language });
+    // SCRUM-594 (phone test F10): the names on the appointments this call made.
+    // The recording heard a booked, confirmed "D-U-N-N" as "G-U-N-N", and this
+    // re-analysis put Gunn in the call log. A failed lookup leaves them out: the
+    // re-analysis then runs as it did before.
+    let bookedNames = [];
+    try {
+      bookedNames = await fetchBookedNames(supabase, callId, row.organization_id);
+    } catch (namesErr) {
+      console.warn(
+        `[Retranscribe] booked names unavailable for ${callId} — re-analysing without them: ${namesErr && namesErr.message ? namesErr.message : String(namesErr)}`,
+      );
+    }
+    const analysis = await analyzeCallTranscript(accurateTranscript, { language, bookedNames });
     await applyReanalysis(callId, {
       accurateTranscript,
       priorTranscript: row.transcript,

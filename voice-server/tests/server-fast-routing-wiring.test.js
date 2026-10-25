@@ -398,6 +398,8 @@ async function runCleanup(session, { demoLine = (n) => n === DEMO } = {}) {
     summarizePhantoms: () => ({ bugTag: "x", reason: "x" }),
     analyzeCallTranscript: async () => null,
     buildToolOutcomeDigest: () => "",
+    getSupabase: () => ({}), // SCRUM-594 (F10): the booked-names lookup
+    fetchBookedNames: async () => [],
     DEBUG_TRANSCRIPTS: false,
     maybeEmitUnhappyCall: () => {},
     netLiveOutcome: () => 0,
