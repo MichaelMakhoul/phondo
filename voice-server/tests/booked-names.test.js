@@ -134,22 +134,35 @@ describe("bookedNamesForAnalysis (never throws; the analysis goes on without nam
     assert.deepEqual(warned, []);
   });
 
-  it("a timeout, a dropped connection or missing Supabase env is only a warning", async (t) => {
+  it("a database that is down, busy or slow, a dropped connection or missing Supabase env is only a warning", async (t) => {
     const captured = [];
     t.mock.method(Sentry, "captureMessage", (...a) => captured.push(a));
     const warned = [];
     t.mock.method(console, "warn", (...a) => warned.push(a.join(" ")));
-    const clients = [
-      () => fakeSupabase({ error: { message: "canceling statement due to timeout?", code: "" } }),
-      () => fakeSupabase({ throws: new TypeError("fetch failed") }),
-      () => { throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY"); },
-    ];
-    for (const getClient of clients) assert.deepEqual(await bookedNamesForAnalysis(getClient, "call-1", "org-1", "PostCall"), []);
-    assert.equal(captured.length, 0);
-    assert.equal(warned.length, 3);
-    assert.match(warned[0], /^\[PostCall\] Booked names unavailable — analysing without them \(callId=call-1\): appointments lookup failed: canceling statement/);
-    assert.match(warned[1], /fetch failed$/);
-    assert.match(warned[2], /Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY$/);
+    // The codes PostgREST and Postgres give a passing failure: a statement timeout, no
+    // database or pool connection, the connection and resource classes, a retryable clash.
+    const transient = ["57014", "57P01", "PGRST000", "PGRST001", "PGRST002", "PGRST003", "08006", "53300", "40001", "40P01"];
+    for (const code of transient) {
+      const names = await bookedNamesForAnalysis(() => fakeSupabase({ error: { message: "try again", code } }), "call-1", "org-1", "PostCall");
+      assert.deepEqual(names, [], code);
+    }
+    await bookedNamesForAnalysis(() => fakeSupabase({ throws: new TypeError("fetch failed") }), "call-1", "org-1", "PostCall");
+    await bookedNamesForAnalysis(() => { throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY"); }, "call-1", "org-1", "PostCall");
+    assert.deepEqual(captured, [], "nothing pages");
+    assert.equal(warned.length, transient.length + 2);
+    assert.equal(warned[0], "[PostCall] Booked names unavailable — analysing without them (callId=call-1, code=57014): appointments lookup failed: try again");
+    assert.equal(warned.at(-2), "[PostCall] Booked names unavailable — analysing without them (callId=call-1): fetch failed");
+    assert.match(warned.at(-1), /\(callId=call-1\): Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY$/);
+  });
+
+  it("every other code is a rejection that fails the same way for every call, and pages", async (t) => {
+    const levels = [];
+    t.mock.method(Sentry, "captureMessage", (_msg, level) => levels.push(level));
+    t.mock.method(console, "warn", () => assert.fail("a rejection must not be just a warning"));
+    for (const code of ["42703", "42501", "42P01", "22P02", "PGRST204", "PGRST301", "PGRST100"]) {
+      assert.deepEqual(await bookedNamesForAnalysis(() => fakeSupabase({ error: { message: "rejected", code } }), "call-1", "org-1", "PostCall"), [], code);
+    }
+    assert.deepEqual(levels, Array(7).fill("error"));
   });
 });
 

@@ -14,6 +14,10 @@ const { SENTRY_REASONS, setReasonTag } = require("./sentry-reasons");
 
 const MAX_NAMES = 5;
 const MAX_NAME_LENGTH = 80;
+// The codes of a failure that passes: a statement timeout, a database or pool
+// PostgREST can't reach, Postgres' connection and resource classes, a retryable
+// clash. Every other code is a rejection that fails the same way for every call.
+const PASSING_CODES = /^(57014|57P0[0-9]|PGRST00[0-3]|08[0-9A-Z]{3}|53[0-9A-Z]{3}|40001|40P01)$/;
 
 /**
  * A booked name made safe for one prompt line: no control characters or double
@@ -66,9 +70,9 @@ async function fetchBookedNames(supabase, callId, organizationId) {
 /**
  * fetchBookedNames for a post-call analysis, which goes on without names when
  * the lookup fails, as it did before the lookup existed. Never throws. A PostgREST
- * rejection (an error code: a renamed column, a revoked grant) fails the same way
- * for every call, so it pages at error level; anything else (a timeout, a dropped
- * connection, missing Supabase env) is a warning.
+ * rejection (a renamed column, a revoked grant) fails the same way for every call,
+ * so it pages at error level; a failure that passes (a timeout, a database that is
+ * down or busy, a dropped connection, missing Supabase env) is a warning.
  * @param {() => any} getClient - returns a Supabase client (may throw)
  * @param {string|null|undefined} callId
  * @param {string|null|undefined} organizationId
@@ -81,7 +85,7 @@ async function bookedNamesForAnalysis(getClient, callId, organizationId, where) 
   } catch (err) {
     const message = err && err.message ? err.message : String(err);
     const code = err && err.code ? String(err.code) : null;
-    if (code) {
+    if (code && !PASSING_CODES.test(code)) {
       Sentry.withScope((scope) => {
         scope.setTag("service", "voice-server");
         setReasonTag(scope, SENTRY_REASONS.BOOKED_NAMES_LOOKUP_REJECTED);
@@ -92,7 +96,7 @@ async function bookedNamesForAnalysis(getClient, callId, organizationId, where) 
         );
       });
     } else {
-      console.warn(`[${where}] Booked names unavailable — analysing without them (callId=${callId}): ${message}`);
+      console.warn(`[${where}] Booked names unavailable — analysing without them (callId=${callId}${code ? `, code=${code}` : ""}): ${message}`);
     }
     return [];
   }

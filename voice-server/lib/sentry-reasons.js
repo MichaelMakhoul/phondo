@@ -96,8 +96,9 @@ const SENTRY_REASONS = Object.freeze({
    *  by PostgREST (an error code: a renamed column, a revoked grant), so it
    *  fails for every call: each post-call analysis goes without names, and
    *  the call log can again carry a misheard spelling of the booked name.
-   *  Error level: it needs a human, not a threshold. A timeout or dropped
-   *  connection is only a warning line (lib/booked-names.js). */
+   *  Error level: it needs a human, not a threshold. A timeout, a database
+   *  that is down or busy, or a dropped connection is only a warning line
+   *  (lib/booked-names.js PASSING_CODES). */
   BOOKED_NAMES_LOOKUP_REJECTED: "booked-names-lookup-rejected",
 
   // ─── fallback-dial-consent (recording disclosure) ───────────────────
