@@ -16,6 +16,8 @@ function makeChain(table) {
     in: () => chain,
     gte: () => chain,
     lte: () => chain,
+    lt: () => chain,
+    gt: () => chain,
     then: (resolve, reject) =>
       Promise.resolve(failing.has(table) ? { data: null, error: { message: `${table} unavailable` } } : { data: [], error: null }).then(resolve, reject),
   };
@@ -39,13 +41,13 @@ const ORG = {
   defaultAppointmentDuration: 30,
 };
 
-/** loadScheduleSnapshot with `tables` failing, console.error silenced and counted. */
+/** loadScheduleSnapshot with `tables` failing, console.error silenced and its calls kept. */
 async function snapshotWith(...tables) {
   failing.clear();
   for (const t of tables) failing.add(t);
   const realError = console.error;
-  let errors = 0;
-  console.error = () => { errors++; };
+  const errors = [];
+  console.error = (...args) => { errors.push(args); };
   try {
     return { snapshot: await loadScheduleSnapshot("org-1", ORG, []), errors };
   } finally {
@@ -58,7 +60,7 @@ describe("loadScheduleSnapshot: a failed fetch skips the snapshot (SCRUM-594 gat
   it("builds one when every fetch succeeds (no practitioners: flat days)", async () => {
     const { snapshot, errors } = await snapshotWith();
     assert.ok(snapshot, "a snapshot");
-    assert.strictEqual(errors, 0);
+    assert.strictEqual(errors.length, 0);
     const days = Object.values(snapshot.slots);
     assert.ok(days.length > 0 && days.every(Array.isArray), "flat days");
   });
@@ -66,13 +68,21 @@ describe("loadScheduleSnapshot: a failed fetch skips the snapshot (SCRUM-594 gat
   it("skips it when blocked_times fails: a blocked day would be offered", async () => {
     const { snapshot, errors } = await snapshotWith("blocked_times");
     assert.strictEqual(snapshot, null);
-    assert.strictEqual(errors, 1);
+    assert.strictEqual(errors.length, 1);
+    assert.deepStrictEqual(errors[0][1], { organizationId: "org-1", blockedTimesError: { message: "blocked_times unavailable" }, practitionersError: null });
   });
 
   it("skips it when practitioners fails: their days off would be offered, from a snapshot that reads as exact", async () => {
     const { snapshot, errors } = await snapshotWith("practitioners");
     assert.strictEqual(snapshot, null);
-    assert.strictEqual(errors, 1);
+    assert.strictEqual(errors.length, 1);
+    assert.deepStrictEqual(errors[0][1], { organizationId: "org-1", blockedTimesError: null, practitionersError: { message: "practitioners unavailable" } });
+  });
+
+  it("logs both errors, with the org, when both fail", async () => {
+    const { snapshot, errors } = await snapshotWith("blocked_times", "practitioners");
+    assert.strictEqual(snapshot, null);
+    assert.deepStrictEqual(errors[0][1], { organizationId: "org-1", blockedTimesError: { message: "blocked_times unavailable" }, practitionersError: { message: "practitioners unavailable" } });
   });
 
   it("skips it when appointments fails, as before", async () => {
