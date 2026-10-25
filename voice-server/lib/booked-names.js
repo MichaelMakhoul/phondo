@@ -123,11 +123,11 @@ function editDistance(a, b) {
  * call's one booking was made under, the booking's spelling wins: it is what was
  * saved after the receptionist took it down, often spelling it back, while a
  * transcript can mishear spelled letters. The same person means the same first
- * name and a surname that is missing or a near miss: 1 letter off for surnames
- * of up to 4 letters ("Gunn" for "Dunn"), 2 for longer ones. Anyone else keeps
- * their own name (a booking can be for someone else: "Maria Lopez" booking for
- * "Maria Garcia", "Jenny Lee" for "Jenny Lam"). Unchanged with no booked name or
- * several, or a one-word booked name.
+ * name and a surname that is missing or a near miss: 1 letter off when either
+ * surname has 4 letters or fewer ("Gunn" for "Dunn"), 2 when both are longer.
+ * Anyone else keeps their own name (a booking can be for someone else: "Maria
+ * Lopez" booking for "Maria Garcia", "Jenny Lee" for "Jenny Lam"). Unchanged with
+ * no booked name or several, or a one-word booked name.
  * @param {unknown} callerName - the analysis' caller_name
  * @param {unknown} bookedNames - from fetchBookedNames
  * @returns {any} the booked name, or callerName as given
@@ -144,7 +144,7 @@ function preferBookedName(callerName, bookedNames) {
   if (callerRest.length === 0) return booked;
   const callerSurname = callerRest.join(" ").toLowerCase();
   const bookedSurname = bookedRest.join(" ").toLowerCase();
-  const nearMiss = Math.max(callerSurname.length, bookedSurname.length) <= 4 ? 1 : 2;
+  const nearMiss = Math.min(callerSurname.length, bookedSurname.length) <= 4 ? 1 : 2;
   return editDistance(callerSurname, bookedSurname) <= nearMiss ? booked : callerName;
 }
 

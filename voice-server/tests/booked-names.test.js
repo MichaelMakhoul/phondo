@@ -162,15 +162,17 @@ describe("preferBookedName", () => {
     assert.equal(preferBookedName("MICHAEL gunn", ["Michael Dunn"]), "Michael Dunn");
   });
 
-  it("a near miss is 1 letter off for surnames of up to 4 letters", () => {
+  it("a near miss is 1 letter off when either surname has 4 letters or fewer", () => {
     assert.equal(preferBookedName("Michael Dune", ["Michael Dunn"]), "Michael Dunn");
     assert.equal(preferBookedName("Michael Gun", ["Michael Dunn"]), "Michael Gun", "2 letters off a 4-letter surname");
+    assert.equal(preferBookedName("Michael Gunt", ["Michael Dunn"]), "Michael Gunt", "2 letters off, both 4 letters");
     assert.equal(preferBookedName("Jenny Lee", ["Jenny Lam"]), "Jenny Lee");
     assert.equal(preferBookedName("Michael Li", ["Michael Wu"]), "Michael Li");
+    assert.equal(preferBookedName("Jenny Leeds", ["Jenny Lee"]), "Jenny Leeds", "2 off, and one of them is short");
+    assert.equal(preferBookedName("Michael Dunne", ["Michael Dunn"]), "Michael Dunn", "1 off still matches");
   });
 
-  it("and 2 letters off for longer ones; 3 is another surname", () => {
-    assert.equal(preferBookedName("Michael Dunne", ["Michael Dunn"]), "Michael Dunn", "5 letters, 1 off");
+  it("and 2 letters off when both are longer; 3 is another surname", () => {
     assert.equal(preferBookedName("Tom Jonse", ["Tom Jones"]), "Tom Jones", "5 letters, 2 off");
     assert.equal(preferBookedName("Michael Makool", ["Michael Makhoul"]), "Michael Makhoul", "7 letters, 2 off");
     assert.equal(preferBookedName("Maria Lopez", ["Maria Garcia"]), "Maria Lopez", "a booking for someone else with her first name");
@@ -194,6 +196,7 @@ describe("preferBookedName", () => {
   it("a one-word booked name never replaces a fuller name", () => {
     assert.equal(preferBookedName("Michael Gunn", ["Michael"]), "Michael Gunn");
     assert.equal(preferBookedName("Michael Li", ["Michael"]), "Michael Li", "a short surname is not 'near' a missing one");
+    assert.equal(preferBookedName("Michael J", ["Michael"]), "Michael J", "nor is an initial");
   });
 
   it("no booked name, or no name from the analysis: unchanged", () => {
