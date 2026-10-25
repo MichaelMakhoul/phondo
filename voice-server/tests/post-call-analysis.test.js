@@ -463,6 +463,16 @@ describe("SCRUM-594 (F10) — the names this call's bookings were made under", (
     assert.ok(!cleanup.includes("NAMES ON THIS CALL'S BOOKINGS"), "the names stay out of the cleanup pass");
   });
 
+  it("a booking call's request carries the tool log AND the names", async () => {
+    const DIGEST = "- book_appointment: SUCCEEDED\nFINAL STATE: 1 live appointment(s) booked or moved in this call.";
+    const capture = [];
+    globalThis.fetch = mockOpenAI({ structuredObj: {}, cleanupObj: { turns: [] }, capture });
+    await freshAnalysis()(TRANSCRIPT, { toolDigest: DIGEST, bookedNames: ["Michael Dunn"] });
+    const [structured] = userMessages(capture, "Extract the following information");
+    assert.ok(structured.includes(DIGEST), structured);
+    assert.ok(structured.includes(`(as saved on the appointments): "Michael Dunn"`), structured);
+  });
+
   it("several names are listed; a call with none gets no names block", async () => {
     const capture = [];
     globalThis.fetch = mockOpenAI({ structuredObj: {}, cleanupObj: { turns: [] }, capture });

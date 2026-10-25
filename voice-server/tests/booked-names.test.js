@@ -187,6 +187,7 @@ describe("preferBookedName", () => {
   it("a different first name is left alone: the booking may be for someone else", () => {
     assert.equal(preferBookedName("Sarah Dunn", ["Michael Dunn"]), "Sarah Dunn");
     assert.equal(preferBookedName("Mike Dunn", ["Michael Dunn"]), "Mike Dunn");
+    assert.equal(preferBookedName("Dan Dunn", ["Daniel Dunn"]), "Dan Dunn", "a first name is matched whole, not as a prefix");
   });
 
   it("with two or more booked names there's no telling which one is the caller", () => {
