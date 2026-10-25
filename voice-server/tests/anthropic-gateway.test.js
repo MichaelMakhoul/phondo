@@ -182,6 +182,9 @@ describe("the standing-refusal latch (phone test F10: every turn refused, every 
     assert.equal(noteGatewayRefusal(402, "Key limit exceeded"), true);
     assert.equal(gatewayRefusal(), "Claude requests refused (HTTP 402: Key limit exceeded)");
     assert.equal(alerts.length, 1);
+    t.mock.timers.enable({ apis: ["Date"] });
+    t.mock.timers.tick(24 * 60 * 60_000);
+    assert.equal(gatewayRefusal(), "Claude requests refused (HTTP 402: Key limit exceeded)", "a day later, with no call in between: still held");
     assert.match(alerts[0], /^\[ALERT:error\] \[anthropic-gateway\] Claude requests refused \(HTTP 402: Key limit exceeded\) — the demo line takes VOICE_PIPELINE until a Claude request succeeds again or the server restarts/);
     assert.equal(noteGatewayRefusal(402, "Key limit exceeded"), false, "a repeat: no second alert");
     assert.equal(alerts.length, 1);

@@ -256,6 +256,19 @@ describe("ANTHROPIC_GATEWAY=openrouter (SCRUM-594: the Anthropic balance is empt
     assert.equal(gatewayRefusal(), null);
   });
 
+  it("only a verdict Claude returns clears a latched refusal: a 500 leaves it", async (t) => {
+    const { noteGatewayRefusal, gatewayRefusal } = require("../lib/anthropic-gateway");
+    process.env.ANTHROPIC_GATEWAY = "openrouter";
+    process.env.OPENROUTER_API_KEY = "sk-or-test";
+    const validate = loadValidator();
+    const logs = captureLogs(t);
+    noteGatewayRefusal(402, "Key limit exceeded");
+    httpError(500, "api_error", "Internal server error");
+    assert.deepEqual(await validate(ARGS), { accurate: true });
+    assert.equal(gatewayRefusal(), "Claude requests refused (HTTP 402: Key limit exceeded)");
+    assert.ok(!logs.lines.some((l) => l.includes("accepted again")));
+  });
+
   it("no OpenRouter key: fail open, no request, and a config alert naming the key", async (t) => {
     process.env.ANTHROPIC_GATEWAY = "openrouter";
     delete process.env.OPENROUTER_API_KEY;

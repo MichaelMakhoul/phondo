@@ -367,7 +367,8 @@ async function streamClaudeResponse(messages, opts = {}) {
       message = String(errBody?.error?.message || "");
       if (kind) detail = ` (${kind}: ${message.slice(0, 200)})`;
     } catch { /* body not JSON — omit detail */ }
-    // No credit, a spent cap or a bad key: new demo-line calls take the global pipeline for a while (F10).
+    // No credit, a spent limit or a bad key: new demo-line calls take the global pipeline until a
+    // Claude request succeeds again or the server restarts (F10).
     noteGatewayRefusal(res.status, message);
     throw new Error(`Anthropic API error ${res.status}${via}${detail}`);
   }

@@ -116,6 +116,21 @@ describe("streamClaudeResponse and ANTHROPIC_GATEWAY (SCRUM-594)", () => {
     assert.equal(gatewayRefusal(), null);
   });
 
+  it("only a request Claude answers clears a latched refusal: a one-off error leaves it, with no second alert", async (t) => {
+    const { noteGatewayRefusal } = require("../lib/anthropic-gateway");
+    setEnv({ ANTHROPIC_API_KEY: "sk-ant-test" });
+    const alerts = [];
+    const logs = [];
+    t.mock.method(console, "error", (...a) => alerts.push(a.join(" ")));
+    t.mock.method(console, "log", (...a) => logs.push(a.join(" ")));
+    noteGatewayRefusal(400, "Your credit balance is too low");
+    stubFetch(() => new Response(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "messages: field required" } }), { status: 400 }));
+    await assert.rejects(streamClaudeResponse(MESSAGES, { model: "claude-haiku-5-5" }), /400/);
+    assert.equal(gatewayRefusal(), "Claude requests refused (HTTP 400: Your credit balance is too low)");
+    assert.equal(alerts.length, 1);
+    assert.ok(!logs.some((l) => l.includes("accepted again")));
+  });
+
   it("a one-off error doesn't latch", async () => {
     setEnv({ ANTHROPIC_API_KEY: "sk-ant-test" });
     stubFetch(() => new Response(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "messages: field required" } }), { status: 400 }));

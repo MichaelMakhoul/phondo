@@ -12,7 +12,7 @@ const {
   fastPathKeysPresent,
   fastPathProblem,
 } = require("../lib/pipeline-routing");
-const { noteGatewayRefusal, _test: gatewayTest } = require("../lib/anthropic-gateway");
+const { noteGatewayRefusal, noteGatewayAccepted, _test: gatewayTest } = require("../lib/anthropic-gateway");
 
 /** Sets env vars for one test (undefined deletes) and puts them back after. */
 function withEnv(t, vars) {
@@ -419,7 +419,8 @@ describe("resolveCallPipeline: classic-fast without its keys (SCRUM-594 R12c)", 
     assert.equal(fastPathKeysPresent(env), false);
     const { value } = quiet(t, () => fast({ hasFastPathKeys: () => fastPathKeysPresent(env) }));
     assert.equal(value, "gemini-live");
-    gatewayTest.resetRefusal();
+    t.mock.method(console, "log", () => {});
+    noteGatewayAccepted(); // a Claude request succeeded (the turn validator, on a Gemini call)
     assert.equal(fastPathKeysPresent(env), true);
   });
 });
