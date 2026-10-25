@@ -24,9 +24,8 @@
 
 const { toAnthropicMessages, toAnthropicTools } = require("./openai-llm");
 const { claudeLatencyParams } = require("../lib/model-params");
+const { messagesRequest } = require("../lib/anthropic-gateway");
 
-const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
-const ANTHROPIC_VERSION = "2023-06-01";
 // SCRUM-588: Haiku 5.5 (test-only pipeline). CR_LLM_MODEL swaps tiers.
 const CR_LLM_MODEL = process.env.CR_LLM_MODEL || "claude-haiku-5-5";
 
@@ -306,9 +305,6 @@ async function streamClaudeResponse(messages, opts = {}) {
   if (chunking != null && chunking !== "clause") {
     throw new Error(`streamClaudeResponse: unknown chunking mode "${String(chunking)}" (expected "clause" or unset)`);
   }
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error("ANTHROPIC_API_KEY is required for the ConversationRelay (Claude) pipeline");
-
   const { system, messages: anthropicMsgs } = toAnthropicMessages(messages);
   const resolvedModel = model || CR_LLM_MODEL;
   /** @type {Record<string, any>} */
@@ -329,18 +325,18 @@ async function streamClaudeResponse(messages, opts = {}) {
   // non-default value (SCRUM-588 dropped the old Haiku/Sonnet-only 0.7).
   const anthropicTools = toAnthropicTools(tools);
   if (anthropicTools) body.tools = anthropicTools;
+  // Straight to Anthropic, or through OpenRouter (ANTHROPIC_GATEWAY=openrouter, Haiku 5.5 only).
+  // Throws when the gateway has no key or won't take the model.
+  const request = messagesRequest(body);
+  const via = request.gateway === "openrouter" ? " via OpenRouter" : "";
 
   let res;
   for (let attempt = 0; attempt < 3; attempt++) {
-    res = await fetch(ANTHROPIC_URL, {
+    res = await fetch(request.url, {
       method: "POST",
       signal: signal || AbortSignal.timeout(15_000),
-      headers: {
-        "x-api-key": apiKey,
-        "anthropic-version": ANTHROPIC_VERSION,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(body),
+      headers: request.headers,
+      body: request.body,
     });
     // 429 (rate limit) AND 500/529 (transient overload) are retryable per
     // Anthropic guidance — without this a single blip looks like "Claude failed"
@@ -348,7 +344,7 @@ async function streamClaudeResponse(messages, opts = {}) {
     if ((res.status === 429 || res.status === 500 || res.status === 529) && attempt < 2) {
       const retryAfter = res.headers.get("retry-after");
       const waitMs = Math.min(retryAfter ? Number(retryAfter) * 1000 : 1000 * (attempt + 1), 5000);
-      console.warn(`[ClaudeChat] Anthropic ${res.status}, retrying in ${waitMs}ms (attempt ${attempt + 1}/3)`);
+      console.warn(`[ClaudeChat] Anthropic ${res.status}${via}, retrying in ${waitMs}ms (attempt ${attempt + 1}/3)`);
       await backoff(waitMs, signal);
       continue;
     }
@@ -362,9 +358,11 @@ async function streamClaudeResponse(messages, opts = {}) {
     let detail = "";
     try {
       const errBody = /** @type {any} */ (await res.json());
-      if (errBody?.error?.type) detail = ` (${errBody.error.type}: ${String(errBody.error.message || "").slice(0, 200)})`;
+      // Anthropic names the error's type; OpenRouter may give only a code ("Key limit exceeded" is a 402).
+      const kind = errBody?.error?.type || errBody?.error?.code;
+      if (kind) detail = ` (${kind}: ${String(errBody.error.message || "").slice(0, 200)})`;
     } catch { /* body not JSON — omit detail */ }
-    throw new Error(`Anthropic API error ${res.status}${detail}`);
+    throw new Error(`Anthropic API error ${res.status}${via}${detail}`);
   }
   return parseClaudeStream(res, onSentence, chunking);
 }

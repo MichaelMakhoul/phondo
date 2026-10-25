@@ -315,6 +315,22 @@ describe("resolveCallPipeline: classic-fast without its keys (SCRUM-594 R12c)", 
     assert.deepEqual(lines, ["warn| [PipelineRouting] classic-fast needs ANTHROPIC_API_KEY and DEEPGRAM_API_KEY — using gemini-live"]);
   });
 
+  it("with ANTHROPIC_GATEWAY=openrouter, the line names the OpenRouter key (SCRUM-594)", (t) => {
+    const saved = process.env.ANTHROPIC_GATEWAY;
+    process.env.ANTHROPIC_GATEWAY = "openrouter";
+    t.after(() => {
+      if (saved === undefined) delete process.env.ANTHROPIC_GATEWAY;
+      else process.env.ANTHROPIC_GATEWAY = saved;
+    });
+    // A fresh module: its once-per-process line hasn't been logged yet.
+    const p = require.resolve("../lib/pipeline-routing");
+    delete require.cache[p];
+    const fresh = require(p);
+    const { value, lines } = quiet(t, () => fresh.resolveCallPipeline({ calledNumber: DEMO, language: "en", globalPipeline: "gemini-live", demoLinePipeline: "classic-fast", isDemoLine: isDemo, hasFastPathKeys: () => false }));
+    assert.equal(value, "gemini-live");
+    assert.deepEqual(lines, ["warn| [PipelineRouting] classic-fast needs OPENROUTER_API_KEY and DEEPGRAM_API_KEY — using gemini-live"]);
+  });
+
   it("the keys are asked about only when the call would run classic-fast", (t) => {
     let asked = 0;
     const hasFastPathKeys = () => { asked += 1; return false; };
@@ -364,5 +380,12 @@ describe("resolveCallPipeline: classic-fast without its keys (SCRUM-594 R12c)", 
     assert.equal(fastPathKeysPresent({ ANTHROPIC_API_KEY: "", DEEPGRAM_API_KEY: "dg" }), false);
     assert.equal(fastPathKeysPresent({ ANTHROPIC_API_KEY: "sk", DEEPGRAM_API_KEY: "" }), false);
     assert.equal(fastPathKeysPresent({}), false);
+  });
+
+  it("fastPathKeysPresent: with ANTHROPIC_GATEWAY=openrouter, the OpenRouter key stands in for the Anthropic one (SCRUM-594)", () => {
+    assert.equal(fastPathKeysPresent({ ANTHROPIC_GATEWAY: "openrouter", OPENROUTER_API_KEY: "or", DEEPGRAM_API_KEY: "dg" }), true);
+    assert.equal(fastPathKeysPresent({ ANTHROPIC_GATEWAY: "openrouter", ANTHROPIC_API_KEY: "sk", DEEPGRAM_API_KEY: "dg" }), false, "the empty Anthropic account is no stand-in");
+    assert.equal(fastPathKeysPresent({ ANTHROPIC_GATEWAY: "openrouter", OPENROUTER_API_KEY: "or" }), false);
+    assert.equal(fastPathKeysPresent({ ANTHROPIC_GATEWAY: "open-router", OPENROUTER_API_KEY: "or", ANTHROPIC_API_KEY: "sk", DEEPGRAM_API_KEY: "dg" }), false, "a value it doesn't know");
   });
 });

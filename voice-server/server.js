@@ -31,6 +31,7 @@ const { createGeminiSession, GEMINI_MODEL } = require("./services/gemini-live");
 const { createOpenAIRealtimeSession, createGrokRealtimeSession, resolveOpenAIRealtimeModel } = require("./services/openai-realtime"); // SCRUM-378 eval spike (OpenAI + Grok share the adapter)
 const { createSessionWithFailover, isFailoverEnabled } = require("./services/gemini-failover"); // SCRUM-535
 const { resolveTestPipeline, KNOWN_TEST_PIPELINES, resolveOwnerPipeline, resolveCallPipeline, fastPathKeysPresent } = require("./lib/pipeline-routing"); // SCRUM-378 per-number test override; SCRUM-587 OWNER_PIPELINE; SCRUM-594 DEMO_LINE_PIPELINE
+const { describeGateway: describeAnthropicGateway } = require("./lib/anthropic-gateway"); // SCRUM-594: ANTHROPIC_GATEWAY
 const { checkEndCallGuard } = require("./lib/end-call-guard"); // SCRUM-594: the SCRUM-373 end_call guard for the classic pipeline
 const { checkBookingGuards, fastCancelGate, checkCallerDone, withBookedName, noteNameCorrection, forgetCancelledBooking, noteBookingGuardCap, CANCEL_KEPT_NUDGE } = require("./lib/booking-guards"); // SCRUM-594 PHASE 2: the fast path's booking guards
 // SCRUM-594: the fast classic pipeline (DEMO_LINE_PIPELINE=classic-fast, spec 4.8):
@@ -7577,6 +7578,8 @@ initAudioFrontend().then(({ enabled, reason }) => {
 server.listen(Number(PORT), "0.0.0.0", () => {
   console.log(`Voice server listening on port ${PORT}`);
   console.log(`Voice pipeline: ${VOICE_PIPELINE}${VOICE_PIPELINE === "gemini-live" ? ` (Gemini Live: ${GEMINI_MODEL})` : ` (LLM: ${LLM_PROVIDER}/${FULL_MODEL})`}`);
+  const anthropicGatewayLine = describeAnthropicGateway(); // SCRUM-594: ANTHROPIC_GATEWAY=openrouter, while the Anthropic balance is empty
+  if (anthropicGatewayLine) console.log(anthropicGatewayLine);
   console.log(`TwiML endpoint: ${PUBLIC_URL}/twiml`);
   console.log(`WebSocket endpoint: ${WS_URL}`);
   if (TEST_CALL_SECRET) {

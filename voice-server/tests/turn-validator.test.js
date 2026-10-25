@@ -22,9 +22,14 @@ const assert = require("node:assert/strict");
 
 const savedKey = process.env.ANTHROPIC_API_KEY;
 const savedModel = process.env.VALIDATOR_MODEL;
+const savedGateway = { ANTHROPIC_GATEWAY: process.env.ANTHROPIC_GATEWAY, OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY };
 const realFetch = globalThis.fetch;
 
 afterEach(() => {
+  for (const [k, v] of Object.entries(savedGateway)) {
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
   if (savedKey === undefined) delete process.env.ANTHROPIC_API_KEY;
   else process.env.ANTHROPIC_API_KEY = savedKey;
   if (savedModel === undefined) delete process.env.VALIDATOR_MODEL;
@@ -199,5 +204,50 @@ describe("readable verdicts (incl. the shapes Haiku 4.5, the revert model, emits
     const validate = loadValidator();
     reply([{ type: "text", text: '{"accurate": false}' }]);
     assert.deepEqual(await validate(ARGS), { accurate: false, discrepancy: "Unknown discrepancy" });
+  });
+});
+
+describe("ANTHROPIC_GATEWAY=openrouter (SCRUM-594: the Anthropic balance is empty)", () => {
+  it("validates through OpenRouter with its bearer key, Haiku 5.5 pinned to Anthropic", async () => {
+    process.env.ANTHROPIC_GATEWAY = "openrouter";
+    process.env.OPENROUTER_API_KEY = "sk-or-test";
+    const validate = loadValidator();
+    const calls = [];
+    globalThis.fetch = async (url, init) => {
+      calls.push({ url, init });
+      return { ok: true, status: 200, json: async () => ({ content: [{ type: "text", text: '{"accurate": false, "discrepancy": "time is 9:30 not 10am"}' }], stop_reason: "end_turn" }) };
+    };
+    assert.deepEqual(await validate(ARGS), { accurate: false, discrepancy: "time is 9:30 not 10am" });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, "https://openrouter.ai/api/v1/messages");
+    assert.equal(calls[0].init.headers.authorization, "Bearer sk-or-test");
+    const body = JSON.parse(calls[0].init.body);
+    assert.equal(body.model, "anthropic/claude-haiku-5.5");
+    assert.deepEqual(body.provider, { only: ["anthropic"], allow_fallbacks: false });
+    assert.match(body.messages[0].content, /TOOL CALLED: book_appointment/);
+  });
+
+  it("no OpenRouter key: fail open, no request, and a config alert naming the key", async (t) => {
+    process.env.ANTHROPIC_GATEWAY = "openrouter";
+    delete process.env.OPENROUTER_API_KEY;
+    const validate = loadValidator();
+    const logs = captureLogs(t);
+    let called = false;
+    globalThis.fetch = async () => { called = true; return { ok: true, json: async () => ({}) }; };
+    assert.deepEqual(await validate(ARGS), { accurate: true });
+    assert.equal(called, false);
+    assert.match(logs.alerts("error")[0] ?? "", /no verdicts \(OPENROUTER_API_KEY not set \(ANTHROPIC_GATEWAY=openrouter\)\) — validation OFF/);
+  });
+
+  it("a VALIDATOR_MODEL OpenRouter won't take (the Haiku 4.5 revert): fail open, no request, a config alert", async (t) => {
+    process.env.ANTHROPIC_GATEWAY = "openrouter";
+    process.env.OPENROUTER_API_KEY = "sk-or-test";
+    const validate = loadValidator({ model: "claude-haiku-4-5-20251001" });
+    const logs = captureLogs(t);
+    let called = false;
+    globalThis.fetch = async () => { called = true; return { ok: true, json: async () => ({}) }; };
+    assert.deepEqual(await validate(ARGS), { accurate: true });
+    assert.equal(called, false);
+    assert.match(logs.alerts("error")[0] ?? "", /claude-haiku-4-5-20251001 may not be sent through OpenRouter/);
   });
 });

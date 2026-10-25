@@ -16,8 +16,8 @@
 const { DEBUG_TRANSCRIPTS } = require("../lib/log-transcript");
 const { claudeLatencyParams, claudeResponseText } = require("../lib/model-params");
 const { Sentry } = require("../lib/sentry");
+const { messagesRequest } = require("../lib/anthropic-gateway");
 
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 // SCRUM-588: Haiku 5.5 — 10× cheaper than Haiku 4.5 and, with thinking
 // disabled, within ~70ms of its latency (probed). VALIDATOR_MODEL is the
 // revert lever: "claude-haiku-4-5-20251001" accepts the same request.
@@ -150,27 +150,19 @@ async function validateToolResponse({ toolName, toolResult, spokenResponse }) {
     return { accurate: true };
   }
 
-  if (!ANTHROPIC_API_KEY) {
-    return noVerdict({ cause: "ANTHROPIC_API_KEY not set", config: true });
-  }
-
+  // Straight to Anthropic, or through OpenRouter (ANTHROPIC_GATEWAY=openrouter, Haiku 5.5 only).
+  // No key for the gateway, or a VALIDATOR_MODEL OpenRouter won't take, fails every validation alike.
+  let request;
   try {
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: VALIDATOR_MODEL,
-        max_tokens: VALIDATOR_MAX_TOKENS,
-        // Thinking off: with Haiku 5.5's default (adaptive) thinking the reply
-        // can START with a thinking block and spend the token cap on it.
-        ...claudeLatencyParams(VALIDATOR_MODEL),
-        messages: [{
-          role: "user",
-          content: `You are a quality checker for an AI receptionist. Compare the tool result against what the AI told the caller. Report ONLY factual mismatches — ignore phrasing differences.
+    request = messagesRequest({
+      model: VALIDATOR_MODEL,
+      max_tokens: VALIDATOR_MAX_TOKENS,
+      // Thinking off: with Haiku 5.5's default (adaptive) thinking the reply
+      // can START with a thinking block and spend the token cap on it.
+      ...claudeLatencyParams(VALIDATOR_MODEL),
+      messages: [{
+        role: "user",
+        content: `You are a quality checker for an AI receptionist. Compare the tool result against what the AI told the caller. Report ONLY factual mismatches — ignore phrasing differences.
 
 TOOL CALLED: ${toolName}
 TOOL RESULT: "${toolResult}"
@@ -187,8 +179,17 @@ Respond with ONLY this JSON (no markdown, no explanation):
 {"accurate": true}
 OR
 {"accurate": false, "discrepancy": "brief description of the mismatch"}`,
-        }],
-      }),
+      }],
+    });
+  } catch (err) {
+    return noVerdict({ cause: /** @type {Error} */ (err).message, config: true });
+  }
+
+  try {
+    const res = await fetch(request.url, {
+      method: "POST",
+      headers: request.headers,
+      body: request.body,
       signal: AbortSignal.timeout(5000), // 5s hard timeout
     });
 

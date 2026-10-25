@@ -10,6 +10,8 @@
  *   "+61400000000:openai-realtime,+61400000001:conversationrelay,+61400000002:grok-realtime"
  */
 
+const { gatewayProblem, gatewayKeyName } = require("./anthropic-gateway");
+
 /** Digits-only, so "+61400000000" / "61400000000" / formatted all compare equal. */
 function normNumber(s) {
   return String(s || "").replace(/\D/g, "");
@@ -70,14 +72,15 @@ const DEMO_LINE_PIPELINES = new Set(["classic-fast", "classic", "gemini-live"]);
 const warnedDemoLinePipelines = new Set();
 
 /**
- * SCRUM-594 (R12c): the keys "classic-fast" cannot run without: Claude
- * (ANTHROPIC_API_KEY) and Deepgram (DEEPGRAM_API_KEY, for Flux and Aura). An
- * empty value counts as missing.
+ * SCRUM-594 (R12c): the keys "classic-fast" cannot run without: Claude's, for
+ * its gateway (ANTHROPIC_API_KEY, or OPENROUTER_API_KEY with
+ * ANTHROPIC_GATEWAY=openrouter: lib/anthropic-gateway.js), and Deepgram's
+ * (DEEPGRAM_API_KEY, for Flux and Aura). An empty value counts as missing.
  * @param {Record<string, string|undefined>} [env] - defaults to process.env, read now
  * @returns {boolean}
  */
 function fastPathKeysPresent(env = process.env) {
-  return Boolean(env.ANTHROPIC_API_KEY && env.DEEPGRAM_API_KEY);
+  return gatewayProblem(env) === null && Boolean(env.DEEPGRAM_API_KEY);
 }
 
 /** The missing-key fallback is logged once per process, not once per call. */
@@ -140,7 +143,7 @@ function resolveCallPipeline({
   if (override === "classic-fast" && !hasFastPathKeys()) {
     if (!fastPathKeysWarned) {
       fastPathKeysWarned = true;
-      console.warn(`[PipelineRouting] classic-fast needs ANTHROPIC_API_KEY and DEEPGRAM_API_KEY — using ${global}`);
+      console.warn(`[PipelineRouting] classic-fast needs ${gatewayKeyName()} and DEEPGRAM_API_KEY — using ${global}`);
     }
     return global;
   }
