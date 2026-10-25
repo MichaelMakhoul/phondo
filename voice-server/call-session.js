@@ -1,8 +1,114 @@
 const { WebSocket } = require("ws");
-const { validateInput, getBufferConfig, extractSpokenDigits } = require("./lib/input-validators");
+const { validateInput, getBufferConfig, extractSpokenDigits, isPlainYes, isRepairRequest, isLineCheck, saysPhoneNumber } = require("./lib/input-validators");
 const { logTranscript } = require("./lib/log-transcript");
+const { guardWords } = require("./lib/guard-languages");
 
 const MAX_MESSAGES = 21; // system prompt + up to 20 messages (user/assistant turns + tool call/result messages)
+// The AI asking for both names at once (CallSession._lastAiAskedBothNameParts), English and Spanish.
+const BOTH_NAME_PARTS_RE = /\bfirst (?:and|&) last\b|\bfull names?\b|\b(?:first |given )?names? and (?:your )?(?:last name|surname|family name)s?\b|\bfirst and surname\b|\bnombre completo\b|\bnombre y apellidos?\b/i;
+/**
+ * SCRUM-594 (gate review): the AI's own words claiming it booked something ("I've
+ * booked you in…", "I've also booked…", "we've scheduled you in…", "I've booked
+ * a call-out…") — not ones describing a booking the caller has ("I've got you
+ * booked in", "what we have booked") or a callback ("I've booked a callback").
+ */
+const AI_SAID_BOOKED = /(?<!\bwhat )\b(?:i['’]?ve|i have|i|we['’]?ve|we have|we) (?:(?:just|also|now|already|successfully|gone ahead and|went ahead and) )?(?:booked|scheduled|made (?:you )?(?:the|a|an|your) (?:booking|appointment))\b(?! (?:you |them )?(?:a |in a |for a )?call(?![ -]?outs?\b))|\bbooked (?:you|them|him|her|your \w+) in\b/i;
+
+/**
+ * SCRUM-594: the fast path's per-call audio bookkeeping. server.js owns it (the
+ * "Fast classic pipeline" section); null on every other call.
+ * @typedef {Object} FastPathState
+ * @property {string} speakingText - every word sent to TTS since the player last went idle (the turn engine's echo filter reads it)
+ * @property {boolean} unmarked - audio reached the player since its last mark
+ * @property {boolean} unflushed - text went to the Aura stream since the last flush
+ * @property {number|null} pendingFlushSeq - the latest flush still waiting for its Flushed
+ * @property {number} flushedSeq - the highest Flushed sequence id seen (-1 before any)
+ * @property {Array<{ seq: number, done: () => void }>} flushWaiters - waits for a Flushed (the end_call hang-up)
+ * @property {Array<() => void>} quietWaiters - waits for Aura to go quiet (a refused flush)
+ * @property {ReturnType<typeof setTimeout>|null} quietTimer - ends an utterance whose Flushed never comes
+ * @property {ReturnType<typeof setTimeout>|null} fluxOpenTimer - Flux must open before it fires
+ * @property {boolean} ttsFellBack - the Aura stream failed: REST for the rest of the call
+ * @property {string[]} [voicesUsed] - SCRUM-594 (phone test F9): the voices the streams spoke in before a fallback (the [FastCall] line)
+ * @property {boolean} flushRefusalLogged - a refused flush is logged once per call
+ * @property {boolean} flushRefused - the last flush was refused: its text is owed until Aura goes quiet
+ * @property {number} flushSentAt - Date.now() of the last flush sent
+ * @property {ReturnType<typeof setTimeout>|null} flushWatchdog - a Flushed overdue with no audio means a stuck stream
+ * @property {number} lastAudioAt - Date.now() of the last Aura audio
+ * @property {number} markSeq - utterances the player has marked (the lost-mark backstop acts for the latest)
+ * @property {boolean} presumedIdle - the player's last mark never came back: its audio counts as played
+ * @property {boolean} lostMarkLogged - a lost mark is logged once per call
+ * @property {number} restMarks - REST audio (greeting, disclosure, after an Aura fallback) whose tts-done is not back
+ * @property {number} restPlaybackEndsAt - Date.now() estimate of when that REST audio has played
+ * @property {ReturnType<typeof setTimeout>|null} restTimer - gives up on REST tts-done marks still out FAST_LOST_MARK_MS past restPlaybackEndsAt
+ * @property {boolean} disclosureActive - the recording disclosure is playing: nothing may cut it
+ * @property {ReturnType<typeof setTimeout>|null} disclosureTimer - ends the disclosure window if its mark is lost
+ * @property {ReturnType<typeof setInterval>|null} fluxWatchdog - no Flux frames while audio goes out means a stuck stream
+ * @property {number} auraSentChars - R14″: characters sent to Aura since the echo filter's text last started afresh
+ * @property {number} auraReceivedMs - R14″: ms of Aura audio received in that time
+ * @property {number|null} questionAudioStartAt - R14″: Date.now() estimate of when the AI's last question starts playing; null when there is none
+ * @property {string|null} bargeInDeclined - the reason the last barge-in was declined (logged once in a row); null after one that acted
+ * @property {{ readyState: number, send: (data: string) => void }|null} twilioWs - the call's Twilio stream (gate H2 and M5 speak outside a turn)
+ * @property {Array<{ text: string, seq: number|null }>} auraSegments - gate H2: text sent to Aura whose Flushed has not confirmed it (seq: the flush it went out with)
+ * @property {number} auraHeardSinceFlushedMs - gate H2: ms of Aura audio received since the last Flushed
+ * @property {Promise<void>|null} respeak - gate H2: the re-speak of text a failed Aura stream never voiced; later REST speech waits for it
+ * @property {number} clearCount - barge-in Clears so far (a re-speak synthesised across one is not sent)
+ * @property {ReturnType<typeof setTimeout>|null} auraOpenTimer - gate M3: falls back to REST if Aura does not open in time
+ * @property {import("./lib/no-turn-watchdog").NoTurnWatchdog|null} noTurnWatchdog - gate M4b: speech energy with no Flux turn events
+ * @property {((reason: string, err: unknown, options?: { callerSpoke?: boolean, captureLevel?: string }) => void)|null} fluxFallBack - hands the call to Nova (set while Flux serves it)
+ * @property {ReturnType<typeof setTimeout>|null} repromptTimer - gate M5 (ii): asks the AI's question again after a silence
+ * @property {string|null} repromptedQuestion - the question last asked again (once per question)
+ * @property {string|null} repromptAwaitingAudio - a re-prompt sent to Aura: recorded in the conversation once its audio starts (a barge-in before that leaves nothing heard)
+ * @property {"log"|"act"} noTurnMode - NO_TURN_WATCHDOG: what a no-turn watchdog trip does (gate N2)
+ * @property {boolean} noTurnLogged - a log-only trip is logged and captured once per call
+ * @property {boolean} notReplyOwed - a filler or an apology went to Aura and its audio may still arrive: no turn's latency (gate N5)
+ * @property {number|null} notReplyFlushSeq - the flush that filler or apology went out with; its Flushed ends notReplyOwed
+ * @property {boolean} closed - cleanup has run: late callbacks do nothing
+ */
+
+/**
+ * SCRUM-594: one committed turn's latency stamps, for its [FastTurn] line.
+ * Times are Date.now() ms; null until they happen.
+ * @typedef {Object} FastTurnRecord
+ * @property {number} eotAt - the caller's EndOfTurn (for a Nova or buffered turn: when it reached handleUserSpeech)
+ * @property {string} trigger - Flux's EndOfTurn trigger ("model", "timeout", ...), or "buffered"
+ * @property {number|null} eagerAt - the EagerEndOfTurn whose draft this turn could adopt
+ * @property {boolean} drafted - a draft was started for this turn
+ * @property {"adopted"|"discarded"|"none"} spec
+ * @property {number|null} llmAt - the reply's first text from the LLM
+ * @property {number|null} speakAt - the turn's first words sent to TTS
+ * @property {number|null} audioAt - the turn's first audio handed to the player (its reply's: never a filler's or an apology's)
+ * @property {boolean} queued - committed while another turn was in flight: it waited in the queue
+ * @property {number} waitedMs - ms the turn waited before its LLM could start (the queue, and R12b″'s wait for the AI's audio); such a turn's eot_to_audio is no latency sample
+ * @property {boolean} logged
+ *
+ * SCRUM-594: the fast path's per-call latency summary ([FastCall], calls.metadata.fastPath).
+ * @typedef {Object} FastCallStats
+ * @property {number} turns - turns answered
+ * @property {number} specAdopted
+ * @property {number} specDiscarded
+ * @property {number[]} eotToAudioMs - one per turn that produced audio
+ * @property {{ turnIndex: number, at: number }|null} eager - the latest draft's turn and start
+ * @property {FastTurnRecord|null} pending - committed, not yet picked up by handleUserSpeech
+ * @property {FastTurnRecord|null} current - the turn handleUserSpeech answered last
+ * @property {number} llmErrors - gate H1: fast turns that failed (an apology instead of a reply)
+ * @property {number} llmErrorStreak - failed fast turns in a row (two or more page at error level)
+ * @property {number} draftsInCall - gate B: drafts started in the call
+ * @property {number|null} draftTurnIndex - the turn the last draft was started for
+ * @property {number} draftsForTurn - drafts started for that turn
+ * @property {boolean} draftCapLogged - the draft cap is logged once per call
+ *
+ * SCRUM-594: the fast path's turn in flight (server.js beginFastTurn). Its
+ * abort() is what a barge-in calls.
+ * @typedef {Object} FastTurn
+ * @property {AbortController} ctl - aborted by a barge-in or cleanup; the LLM call's signal
+ * @property {import("./lib/speculative-reply").SpeculativeReply|null} draft - the adopted draft, if any
+ * @property {FastTurnRecord} record
+ * @property {string[]} chunks - what the LLM response in flight has sent to TTS (recorded, plus "…", on an abort)
+ * @property {boolean} ending - the turn is ending the call: a barge-in leaves its goodbye alone
+ * @property {boolean} over - aborted or finished: late fillers and chunks are dropped
+ * @property {string|null} abortReason - "barge-in" or "cleanup" once aborted
+ * @property {(reason?: string) => void} abort
+ */
 
 class CallSession {
   constructor(callSid) {
@@ -33,6 +139,88 @@ class CallSession {
     // provider because Gemini never completed setup. Shape:
     // { from, to, reason, model } — persisted into calls.metadata.
     this.pipelineFailover = null;
+    // SCRUM-594: the pipeline this call runs on, set at pipeline selection in
+    // server.js ("classic" once a Gemini selection falls back for a missing
+    // key). Null on a transfer reconnect, which never selects. Demo-line calls
+    // record it in calls.metadata.pipeline.
+    /** @type {string|null} */
+    this.effectivePipeline = null;
+    // SCRUM-594: the demo line's fast classic variant (DEMO_LINE_PIPELINE=classic-fast).
+    // "degraded-stt" once its Flux STT has fallen back to Nova (spec §4.8).
+    /** @type {boolean|"degraded-stt"} */
+    this.fastPath = false;
+    // SCRUM-594 PHASE 2 (B1): the model's context window — the system prompt
+    // plus the last maxMessages - 1 messages. The fast path keeps the whole call
+    // (server.js applyFastConversationSettings): at 20 messages it lost its own
+    // booking mid-call and told the caller nothing was booked.
+    /** @type {number} */
+    this.maxMessages = MAX_MESSAGES;
+    // SCRUM-594 PHASE 2 (B2–B4): the fast path's booking guards (lib/booking-guards.js);
+    // off on every other call. bookingGuardState counts their holds for this call.
+    /** @type {boolean} */
+    this.bookingGuards = false;
+    // SCRUM-594 (phone test F5): the fast path's languages (lib/fast-languages.js), set by
+    // applyFastConversationSettings. fastLanguage stays null on every other call (no speech guard).
+    /** @type {boolean} */
+    this.fastLanguages = false;
+    /** @type {string|null} the call's current language on the fast path */
+    this.fastLanguage = null;
+    /** @type {string|null} the assistant's own voice, to come back to from another language */
+    this.baseDeepgramVoice = null;
+    /** @type {string[]|null} every language the call used, when it used more than English (calls.metadata.fastPath.languages) */
+    this.languagesUsed = null;
+    // SCRUM-594 (phone test F9): each sentence is said in its own language's voice
+    // (lib/fast-languages.js sentenceVoice) and the line follows the model's replies.
+    /** @type {string|null} the language the caller's words this turn are clearly in */
+    this.fastTurnLanguage = null;
+    /** @type {string|null} the language of the reply's last sentence that said its own */
+    this.fastReplyLanguage = null;
+    /** @type {string[]|null} voices that failed on this call: their sentences go to the assistant's voice */
+    this.fastFailedVoices = null;
+    /** @type {string[]|null} languages the line went back to English from, or couldn't hear: never followed into again */
+    this.fastBlockedLanguages = null;
+    /** @type {number} the caller turn whose unspeakable reply was already replaced by the apology */
+    this.unspeakableTurn = -1;
+    /** @type {import("./lib/booking-guards").GuardState} */
+    this.bookingGuardState = { spellingHolds: 0, lastSpellingHoldTurn: -1, secondBookingNudged: false, endCallHolds: 0, lastEndCallHoldTurn: -1 };
+    // SCRUM-594: the fast path's audio player (lib/fast-player.js); null on every other call.
+    /** @type {import("./lib/fast-player").FastPlayer|null} */
+    this.fastPlayer = null;
+    // SCRUM-594: the fast path's Aura-2 WebSocket TTS, one stream per voice
+    // (services/aura-router.js). Null on every other call, and once the stream has
+    // failed: sendTTS then speaks over REST for the rest of the call.
+    /** @type {import("./services/aura-router").AuraRouter|null} */
+    this.fastTts = null;
+    // SCRUM-594: the fast path's Flux turn engine (lib/fast-turns.js); null on
+    // every other call, and once Flux has fallen back to Nova.
+    /** @type {import("./lib/fast-turns").FastTurnEngine|null} */
+    this.fastTurns = null;
+    // SCRUM-594: the fast path's audio and flush bookkeeping (server.js).
+    /** @type {FastPathState|null} */
+    this.fastState = null;
+    // SCRUM-594: the fast path's turn in flight; a barge-in calls its abort().
+    /** @type {FastTurn|null} */
+    this.currentTurn = null;
+    // SCRUM-594: the speculative draft started on Flux's EagerEndOfTurn
+    // (lib/speculative-reply.js), until the turn adopts or discards it.
+    /** @type {import("./lib/speculative-reply").SpeculativeReply|null} */
+    this.speculation = null;
+    // SCRUM-594: the fast path's latency record ([FastTurn], [FastCall]).
+    /** @type {FastCallStats|null} */
+    this.fastStats = null;
+    // SCRUM-594: a reconnected leg (after a failed transfer) writes the first
+    // leg's fast-path summary into calls.metadata.fastPath (restoreFrom).
+    /** @type {object|null} */
+    this.carriedFastPath = null;
+    // SCRUM-594 gate C7: the first leg's pipeline (calls.metadata.pipeline), carried the same way.
+    /** @type {string|null} */
+    this.carriedPipeline = null;
+    // SCRUM-594: optional — resolves once the call's queued speech has played.
+    // The classic end_call hang-up (server.js hangUpAfterEndCall) awaits it
+    // instead of its sendTTS-duration estimate. The fast path sets it: its
+    // streaming player has its own flush/mark sequence. Null: the estimate.
+    /** @type {(() => Promise<void>)|null} */
+    this.awaitPlaybackEnd = null;
     this.recordingDisclosurePlayed = false;
     this.recordingDisclosureFailed = false;
     // SCRUM-424: the disclosure was woven into Gemini's first message but its
@@ -120,7 +308,17 @@ class CallSession {
     // cancel_appointment call in a call is held pending an explicit caller
     // confirmation; only a SECOND call with a matching fingerprint executes.
     // Prevents an irreversible cancel from a single misheard/garbled turn.
-    this._pendingCancel = null; // { fp: string, at: number } | null
+    this._pendingCancel = null; // { keys: string[], at: number, callerTurn?: number } | null
+    // SCRUM-594 PHASE 2 (B4): the fast path's CancelGate, per booking (keyed by
+    // its most specific identifier): held cancels, and confirmed ones kept until
+    // the cancel succeeds (clearCancelConfirmation) or five minutes pass.
+    /** @type {Map<string, { keys: string[], at: number, callerTurn?: number, transcriptAt?: number }>} */
+    this._fastPendingCancels = new Map();
+    /** @type {Map<string, { keys: string[], at: number, transcriptAt?: number }>} */
+    this._fastConfirmedCancels = new Map();
+    // The cancels the caller's latest "no" dropped (their keys), by that no's transcript index.
+    /** @type {{ at: number, keys: string[][] } | null} */
+    this._fastDeclined = null;
 
     // SCRUM-506: per-call carry-forward of the caller's OWN identity/verification
     // details (name/phone/email/date_of_birth), so the AI never re-asks for
@@ -215,11 +413,16 @@ class CallSession {
    * identifier (arg-less / garbled — the noisiest, most dangerous case) is
    * ALWAYS held and can NEVER auto-confirm.
    *
+   * SCRUM-594 PHASE 2 (B4): `options.fastPath` runs the fast path's gate
+   * instead (confirmFastCancel). Without it the options are ignored: Gemini and
+   * classic keep the gate above.
+   *
    * @param {{phone?: string, date?: string, datetime?: string}} args
    * @param {number} nowMs - current epoch ms (passed in; Date.now is fine here)
+   * @param {{ fastPath?: boolean, callerTurn?: number, transcriptAt?: number, declinedAt?: number }} [options] - the fast path only; ignored otherwise
    * @returns {boolean} true to PROCEED with the cancel, false to hold + confirm first
    */
-  confirmCancel(args, nowMs) {
+  confirmCancel(args, nowMs, options = {}) {
     const keys = [];
     const phone = String(args?.phone || "").replace(/\D/g, "");
     if (phone.length >= 6) keys.push("p:" + phone);
@@ -233,6 +436,8 @@ class CallSession {
       return false;
     }
 
+    if (options.fastPath) return this.confirmFastCancel(args, nowMs, options).proceed;
+
     const pending = this._pendingCancel;
     if (pending && nowMs - pending.at < 5 * 60 * 1000 && pending.keys.some((k) => keys.includes(k))) {
       this._pendingCancel = null; // shares an identifier with the held attempt — proceed
@@ -240,6 +445,142 @@ class CallSession {
     }
     this._pendingCancel = { keys, at: nowMs };
     return false; // first attempt (or a different/expired one) — hold and confirm
+  }
+
+  /**
+   * SCRUM-594 PHASE 2 (B4): the CancelGate on the fast path (see confirmCancel,
+   * and lib/booking-guards.js fastCancelGate, which passes the model's OWN
+   * arguments), with why it proceeded or held. Per BOOKING, at the same
+   * specificity — the exact time ("t:"), else the date, else a shared phone —
+   * so two cancels in one reply each keep their own hold, and a phone-only or
+   * date-only hold never confirms a cancel that names a booking. A held cancel is
+   * confirmed only by the same booking's attempt after the caller has spoken
+   * again (`callerTurn`); a confirmed one stays confirmed for exactly that
+   * booking across a handler retry. A caller decline at transcript index
+   * `declinedAt` drops every record made before it (`dropped` counts them, for
+   * the log), and a cancel right after a decline leaves no hold. A held cancel's
+   * retry needs the AI to have spoken after the hold (`assistantAt`: the
+   * read-back), not just the caller.
+   * @param {{ phone?: string, date?: string, datetime?: string }} args - the model's own arguments
+   * @param {number} nowMs
+   * @param {{ callerTurn?: number, transcriptAt?: number, declinedAt?: number, assistantAt?: number, callerUnclear?: boolean, unclearAt?: number }} [options]
+   * @returns {{ proceed: boolean, via: "confirmed" | "retry" | null, reason: "no-identifier" | "first-attempt" | "awaiting-caller" | "caller-declined" | null, dropped: number }}
+   */
+  confirmFastCancel(args, nowMs, options = {}) {
+    const keys = [];
+    const phone = String(args?.phone || "").replace(/\D/g, "");
+    if (phone.length >= 6) keys.push("p:" + phone);
+    const datePart = String(args?.datetime || args?.date || "").slice(0, 10);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(datePart)) keys.push("d:" + datePart);
+    if (keys.length === 0) return { proceed: false, via: null, reason: "no-identifier", dropped: 0 }; // never confirms (SCRUM-372)
+    const time = String(args?.datetime || "").slice(0, 16);
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(time)) keys.push("t:" + time);
+
+    const declinedAt = typeof options.declinedAt === "number" ? options.declinedAt : -1;
+    const declinedAfter = (/** @type {{ transcriptAt?: number }} */ rec) => typeof rec.transcriptAt === "number" && declinedAt >= rec.transcriptAt;
+    let dropped = 0;
+    for (const map of [this._fastPendingCancels, this._fastConfirmedCancels]) {
+      for (const [id, rec] of map) {
+        if (declinedAfter(rec)) {
+          dropped++;
+          // What the caller said no to, at that no (a different booking right after it is a new cancel).
+          if (!this._fastDeclined || this._fastDeclined.at !== declinedAt) this._fastDeclined = { at: declinedAt, keys: [] };
+          this._fastDeclined.keys.push(rec.keys);
+        }
+        if (declinedAfter(rec) || nowMs - rec.at >= 5 * 60 * 1000) map.delete(id);
+      }
+    }
+    const key = (/** @type {string[]} */ ks, /** @type {string} */ kind) => ks.find((k) => k.startsWith(kind));
+    // The same booking only at the same specificity: a phone-only or date-only
+    // hold never confirms an attempt that names a booking it didn't (that booking
+    // was never read back).
+    const sameBooking = (/** @type {string[]} */ held) => {
+      if (key(held, "t:") || key(keys, "t:")) return Boolean(key(held, "t:") && key(held, "t:") === key(keys, "t:"));
+      if (key(held, "d:") || key(keys, "d:")) return Boolean(key(held, "d:") && key(held, "d:") === key(keys, "d:"));
+      return held.some((k) => keys.includes(k));
+    };
+    const exactlySameBooking = (/** @type {string[]} */ held) => {
+      if (key(held, "t:") || key(keys, "t:")) return Boolean(key(held, "t:") && key(held, "t:") === key(keys, "t:"));
+      return Boolean(key(held, "d:") && key(held, "d:") === key(keys, "d:"));
+    };
+    const id = /** @type {string} */ (key(keys, "t:") || key(keys, "d:") || key(keys, "p:"));
+
+    // Right after the caller's no: the cancel they refused — or one that can't be
+    // told apart from it — is held, and leaves nothing their next words could
+    // confirm. A different booking ("No, the Tuesday one") is a new cancel.
+    if (typeof options.transcriptAt === "number" && declinedAt === options.transcriptAt - 1) {
+      const refused = this._fastDeclined && this._fastDeclined.at === declinedAt ? this._fastDeclined.keys : [];
+      // Provably another booking: another day, or the same day further apart than
+      // the handlers' ±15-minute match.
+      const anotherBooking = (/** @type {string[]} */ no) => {
+        if (key(no, "d:") && key(keys, "d:") && key(no, "d:") !== key(keys, "d:")) return true;
+        const minutes = (/** @type {string | undefined} */ k) => (k ? Number(k.slice(-5, -3)) * 60 + Number(k.slice(-2)) : NaN);
+        return Math.abs(minutes(key(no, "t:")) - minutes(key(keys, "t:"))) > 15;
+      };
+      if (refused.length > 0 && !refused.every(anotherBooking)) return { proceed: false, via: null, reason: "caller-declined", dropped };
+    }
+
+    // SCRUM-594 (F5): another language's unclear answer (fastCancelGate) since a hold or a
+    // confirmation: the clear yes must follow a fresh read-back.
+    const unclearAt = typeof options.unclearAt === "number" ? options.unclearAt : -1;
+    const unclearSince = (/** @type {{ transcriptAt?: number }} */ rec) => typeof rec.transcriptAt === "number" && unclearAt >= rec.transcriptAt;
+    for (const [confirmedId, rec] of this._fastConfirmedCancels) {
+      if (!exactlySameBooking(rec.keys)) continue;
+      if (!unclearSince(rec)) return { proceed: true, via: "confirmed", reason: null, dropped }; // the handler wanted a detail
+      this._fastConfirmedCancels.delete(confirmedId); // back on hold: one more read-back, never a cancel
+      this._fastPendingCancels.set(id, { keys, at: nowMs, callerTurn: options.callerTurn, transcriptAt: options.transcriptAt });
+      return { proceed: false, via: null, reason: "awaiting-caller", dropped };
+    }
+    /** @type {[string, { keys: string[], at: number, callerTurn?: number, transcriptAt?: number }] | null} */
+    let held = null;
+    for (const entry of this._fastPendingCancels) if (sameBooking(entry[1].keys)) { held = entry; break; }
+    if (held) {
+      const [heldId, rec] = held;
+      const callerSpoke = typeof options.callerTurn !== "number" || typeof rec.callerTurn !== "number" || options.callerTurn > rec.callerTurn;
+      const aiSpoke = typeof options.assistantAt !== "number" || typeof rec.transcriptAt !== "number" || options.assistantAt >= rec.transcriptAt;
+      // SCRUM-594 (F5): in another language, an answer that is no clear go-ahead keeps it held.
+      if (callerSpoke && aiSpoke && !options.callerUnclear && !unclearSince(rec)) {
+        this._fastPendingCancels.delete(heldId);
+        this._fastConfirmedCancels.set(id, { keys, at: nowMs, transcriptAt: options.transcriptAt });
+        return { proceed: true, via: "retry", reason: null, dropped };
+      }
+      // What it's for never changes; an unclear answer since the hold re-arms it.
+      this._fastPendingCancels.set(heldId, unclearSince(rec) ? { ...rec, at: nowMs, callerTurn: options.callerTurn, transcriptAt: options.transcriptAt } : { ...rec, at: nowMs });
+      return { proceed: false, via: null, reason: "awaiting-caller", dropped };
+    }
+    this._fastPendingCancels.set(id, { keys, at: nowMs, callerTurn: options.callerTurn, transcriptAt: options.transcriptAt });
+    return { proceed: false, via: null, reason: "first-attempt", dropped };
+  }
+
+  /**
+   * A cancel went through: the next one needs its own confirmation. On the fast
+   * path, given the cancel's arguments, only that booking's records go (another
+   * booking's held cancel stands); without, everything does.
+   * @param {{ phone?: string, date?: string, datetime?: string }} [args]
+   */
+  clearCancelConfirmation(args) {
+    this._pendingCancel = null;
+    if (!args) {
+      this._fastPendingCancels.clear();
+      this._fastConfirmedCancels.clear();
+      return;
+    }
+    const time = String(args.datetime || "").slice(0, 16);
+    const date = String(args.datetime || args.date || "").slice(0, 10);
+    const phone = String(args.phone || "").replace(/\D/g, "");
+    const id = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(time) ? "t:" + time : /^\d{4}-\d{2}-\d{2}$/.test(date) ? "d:" + date : phone.length >= 6 ? "p:" + phone : null;
+    const day = /^\d{4}-\d{2}-\d{2}$/.test(date) ? "d:" + date : null;
+    for (const map of [this._fastPendingCancels, this._fastConfirmedCancels]) {
+      if (id === null) {
+        map.clear();
+        continue;
+      }
+      for (const [key, rec] of map) {
+        // That booking's records, and that day's date-only ones (a "which one?" retry's confirmation is spent).
+        const dateOnlySameDay = day !== null && rec.keys.includes(day) && !rec.keys.some((k) => k.startsWith("t:"));
+        if (key === id || rec.keys.includes(id) || dateOnlySameDay) map.delete(key);
+      }
+    }
   }
 
   /**
@@ -272,12 +613,8 @@ class CallSession {
     // SCRUM-377: reschedule_appointment is BOTH booking intent (a failed move
     // with no resolution is an unfinished booking) AND, when successful, a
     // resolution in its own right (it books the new slot atomically).
-    const isFunnel = (t) =>
-      t.name === "book_appointment" || t.name === "check_availability" || t.name === "reschedule_appointment";
-    const isResolve = (t) =>
-      (t.name === "book_appointment" && t.successful) ||
-      (t.name === "reschedule_appointment" && t.successful) ||
-      (t.name === "schedule_callback" && t.successful);
+    const isFunnel = (t) => this._isFunnelStep(t);
+    const isResolve = (t) => this._resolvesFunnel(t, audit);
     const lastFunnelAt = audit.reduce((m, t) => (isFunnel(t) ? Math.max(m, at(t)) : m), 0);
     const lastResolveAt = audit.reduce((m, t) => (isResolve(t) ? Math.max(m, at(t)) : m), 0);
     if (lastFunnelAt > 0) {
@@ -289,10 +626,106 @@ class CallSession {
     }
     // No booking-funnel tool calls at all — only flag if the end_call reason
     // explicitly claims a booking/reschedule while nothing was ever booked.
+    // SCRUM-594 (phone test F4): on the fast path, not when the call was about a
+    // booking the caller already has (aboutTheirBooking). The model ended a pure
+    // cancel call as "booking complete", the nudge said the caller had NO
+    // appointment, and a callback the caller didn't want was logged. A reason
+    // claiming a reschedule — or the AI's own "I've booked you in" when nothing
+    // was booked — still blocks.
+    if (this.bookingGuards && !/reschedul/i.test(endCallReason || "") && this.aboutTheirBooking() && !this._aiSaidBooked()) return false;
     const everBooked = audit.some((t) => t.name === "book_appointment" && t.successful);
     // Substring match (not \b-anchored) so snake_case reasons like
     // "booking_complete" / "reschedule_done" match; "cancelled" does not.
     return /(book|reschedul|reserv)/i.test(endCallReason || "") && !everBooked;
+  }
+
+  /**
+   * SCRUM-594 (gate review): did the AI itself say it booked something? The words
+   * of a reply that also called a tool reach the transcript only after the tool
+   * ran, so the model's own messages are read too.
+   * @returns {boolean}
+   */
+  _aiSaidBooked() {
+    // SCRUM-594 (F5): and in each other language the call used ("Le he reservado…"),
+    // its questions aside ("Haben wir schon etwas gebucht?" is no claim).
+    const others = (this.languagesUsed || []).map(guardWords).filter((w) => w !== null);
+    // Only the question goes: from its "¿" or its clause ("Le he reservado el martes, ¿necesita
+    // algo más?" is a claim), or the whole sentence when it opens with an inverted verb
+    // ("Habe ich Sie eingetragen, oder soll ich warten?").
+    const statements = (/** @type {string} */ text) => text.split(/(?<=[.!?。！？])/).map((sentence) => (/[?？]\s*$/.test(sentence) && /^[\s"'«“]*(?:habe ich|haben wir|heb ik|hebben (?:we|wij)|est-ce que)(?!\p{L})/iu.test(sentence) ? "" : sentence.replace(/(?:¿[^¿]*|(?:^|[,，、;])[^,，、;¿]*)[?？]\s*$/, ""))).join("");
+    return [...this.fullTranscriptMessages, ...this.messages].some((m) => m?.role === "assistant" && typeof m.content === "string" && (AI_SAID_BOOKED.test(m.content) || (others.length > 0 && others.some((w) => w.booked.test(statements(m.content))))));
+  }
+
+  /**
+   * SCRUM-594 (F4): was this call about a booking the caller already has — it
+   * cancelled one, found one (fast path's `found`), or held a cancel the caller
+   * then declined?
+   * @returns {boolean}
+   */
+  aboutTheirBooking() {
+    return (this.toolCallAudit || []).some((t) => (t.name === "cancel_appointment" && t.successful) || t.name === "cancel_appointment_held" || (t.name === "lookup_appointment" && t.found === true));
+  }
+
+  /**
+   * SCRUM-593: the booking write an unfinished funnel (see hasUnfinishedBooking)
+   * is waiting on: the most recent book_appointment or reschedule_appointment
+   * attempt, by `at`, after the last resolution, or null when there is none
+   * (only availability checks). The end_call guard words its nudge by it: after
+   * a held or failed reschedule the caller's existing appointment still stands.
+   * @returns {"book_appointment" | "reschedule_appointment" | null}
+   */
+  lastFunnelStep() {
+    const audit = this.toolCallAudit || [];
+    const at = (t) => (typeof t.at === "number" ? t.at : 0);
+    // The resolutions hasUnfinishedBooking counts.
+    const lastResolveAt = audit.reduce((m, t) => (this._resolvesFunnel(t, audit) ? Math.max(m, at(t)) : m), 0);
+    let last = null;
+    for (const t of audit) {
+      if (t.name !== "book_appointment" && t.name !== "reschedule_appointment" && t.name !== "book_appointment_held") continue;
+      if (at(t) <= lastResolveAt) continue;
+      if (!last || at(t) >= at(last)) last = t;
+    }
+    if (!last) return null;
+    return last.name === "reschedule_appointment" ? "reschedule_appointment" : "book_appointment"; // a held booking booked nothing
+  }
+
+  /**
+   * A booking-funnel step (hasUnfinishedBooking): availability, a booking or
+   * reschedule attempt, or — the fast path's — a booking its guards held.
+   * @param {{ name: string }} t - a toolCallAudit entry
+   * @returns {boolean}
+   */
+  _isFunnelStep(t) {
+    return t.name === "book_appointment" || t.name === "check_availability" || t.name === "reschedule_appointment" || t.name === "book_appointment_held";
+  }
+
+  /**
+   * Does this audit entry resolve the booking funnel: a successful booking,
+   * reschedule or take-a-message callback. On the fast path also B3's redirect
+   * (this call's booking stands), and (SCRUM-594 phone test F1) a successful
+   * cancel of the booking a failed move was for —
+   * the caller chose to drop it ("just cancel the one you booked"). Only then:
+   * a cancel after a failed BOOKING still leaves the caller with nothing, and
+   * Gemini and classic keep the rule they had.
+   * @param {{ name: string, successful?: boolean, at?: number, dt?: string, oldDt?: string }} t
+   * @param {Array<{ name: string, successful?: boolean, at?: number, dt?: string, oldDt?: string }>} audit
+   * @returns {boolean}
+   */
+  _resolvesFunnel(t, audit) {
+    // The fast path's B3 redirect: the caller already has this call's booking, so
+    // the new booking flow it interrupted is not left unfinished.
+    if (this.bookingGuards && t.name === "book_appointment_redirected") return true;
+    if (!t.successful) return false;
+    if (t.name === "book_appointment" || t.name === "reschedule_appointment" || t.name === "schedule_callback") return true;
+    if (!this.bookingGuards || t.name !== "cancel_appointment") return false;
+    const at = (/** @type {{ at?: number }} */ x) => (typeof x.at === "number" ? x.at : 0);
+    // The latest booking WRITE before the cancel (an availability check in between changes nothing).
+    let latest = null;
+    for (const x of audit) {
+      if (x !== t && this._isFunnelStep(x) && x.name !== "check_availability" && at(x) <= at(t) && (!latest || at(x) >= at(latest))) latest = x;
+    }
+    const day = (/** @type {unknown} */ v) => (typeof v === "string" ? v.slice(0, 10) : "");
+    return Boolean(latest && latest.name === "reschedule_appointment" && !latest.successful && day(latest.oldDt) && day(latest.oldDt) === day(t.dt));
   }
 
   /**
@@ -336,6 +769,10 @@ class CallSession {
     // stamp across the reconnect (calls.metadata.owner_auth → PR B's lockout
     // email). Owner MODE is never restored: it comes only from a stream token.
     this.ownerAuth = typeof savedState.ownerAuth === "string" ? savedState.ownerAuth : null;
+    // SCRUM-594: the first leg's fast-path summary (attached to the entry when
+    // that leg's stream closed for the dial), for this leg's call record.
+    this.carriedFastPath = savedState.fastPath && typeof savedState.fastPath === "object" ? savedState.fastPath : null;
+    this.carriedPipeline = typeof savedState.pipeline === "string" ? savedState.pipeline : null;
   }
 
   /**
@@ -356,8 +793,8 @@ class CallSession {
       this.fullTranscriptMessages.push({ role, content, at: Date.now() }); // at: SCRUM-559 temporal claim alignment
     }
     // Sliding window: keep system prompt + last N messages
-    if (this.messages.length > MAX_MESSAGES) {
-      const keep = this.messages.slice(-MAX_MESSAGES + 1);
+    if (this.messages.length > this.maxMessages) {
+      const keep = this.messages.slice(-this.maxMessages + 1);
       // Don't start with an orphaned tool response — find a safe cut point
       let startIdx = 0;
       while (startIdx < keep.length && keep[startIdx].role === "tool") {
@@ -398,12 +835,32 @@ class CallSession {
    * Buffer a final STT transcript and debounce before dispatching.
    * Uses type-aware timing: structured inputs (phone, email, address)
    * get longer debounce and max-wait to avoid cutting off mid-dictation.
+   * @param {string} text
+   * @param {(combined: string, inputType: string) => void} callback
+   * @param {{ wholeTurn?: boolean }} [opts] - wholeTurn: `text` is a Flux final, which ends where
+   *   Flux's model judged the caller done (it may still split a dictation, which the buffer merges);
+   *   a Nova final can stop mid-sentence ("Sorry," leading into the answer)
    */
-  bufferTranscript(text, callback) {
+  bufferTranscript(text, callback, opts = {}) {
     const config = getBufferConfig(this._expectedInputType);
 
     this._utteranceBuffer.push(text);
     if (!this._utteranceCallback) this._utteranceCallback = callback;
+
+    // SCRUM-594 (phone test F6): a plain yes to a number the AI offered is the whole answer.
+    if (this._utteranceBuffer.length === 1 && isPlainYes(this._expectedInputType, text, this._lastAiOfferedNumber())) {
+      console.log(`[Buffer] Plain yes for type="${this._expectedInputType}" — flushing immediately`);
+      this._flushAndReset();
+      return;
+    }
+    // SCRUM-594 (phone test F8): "Sorry?" or "Hello?" is never the data being waited for. A
+    // repeat request counts only as the buffer's first piece (inside a dictation, "sorry" is a
+    // self-correction); a line check means the caller has heard nothing, so whatever is held goes now.
+    if (opts.wholeTurn === true && (isLineCheck(text) || (this._utteranceBuffer.length === 1 && isRepairRequest(text)))) {
+      console.log(`[Buffer] Asked to repeat (or "hello?") for type="${this._expectedInputType}" — flushing immediately`);
+      this._flushAndReset();
+      return;
+    }
 
     // Start max-wait timer on first buffer entry
     if (!this._bufferStartedAt) {
@@ -430,7 +887,7 @@ class CallSession {
           console.log(`[Buffer] Natural language response for type="${this._expectedInputType}" — flushing immediately`);
           this._flushAndReset();
         } else {
-          const { complete, reason } = validateInput(this._expectedInputType, combined);
+          const { complete, reason } = validateInput(this._expectedInputType, combined, { bothNameParts: this._lastAiAskedBothNameParts() });
           if (complete) {
             console.log(`[Buffer] Input validated (${this._expectedInputType}): ${reason}`);
             this._flushAndReset();
@@ -444,6 +901,37 @@ class CallSession {
         this._flushAndReset();
       }
     }, config.debounceMs);
+  }
+
+  /**
+   * Did the AI, since the caller last spoke, ask for the first and last name together ("Can
+   * I grab your first and last name?")? Then one word is half the answer, and the buffer
+   * waits for the rest. SCRUM-594 (phone test F8, code review).
+   * @returns {boolean}
+   */
+  _lastAiAskedBothNameParts() {
+    for (let i = this.fullTranscriptMessages.length - 1; i >= 0; i--) {
+      const m = this.fullTranscriptMessages[i];
+      if (m.role === "user") return false;
+      if (m.role === "assistant" && typeof m.content === "string" && BOTH_NAME_PARTS_RE.test(m.content)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Did the AI, since the caller last spoke, say a whole phone number (the
+   * caller-ID number it offered)? Then a plain yes is an answer, not the start of
+   * one. Every AI message since then counts: a re-prompt repeats only the
+   * question's last sentence, and the number may be in an earlier one.
+   * @returns {boolean}
+   */
+  _lastAiOfferedNumber() {
+    for (let i = this.fullTranscriptMessages.length - 1; i >= 0; i--) {
+      const m = this.fullTranscriptMessages[i];
+      if (m.role === "user") return false;
+      if (m.role === "assistant" && saysPhoneNumber(m.content)) return true;
+    }
+    return false;
   }
 
   /**

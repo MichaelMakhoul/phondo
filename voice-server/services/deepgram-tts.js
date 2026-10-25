@@ -3,13 +3,16 @@
  * container=none prevents WAV header artifacts.
  */
 
+const { boostAura } = require("../lib/aura-gain");
+
 const DEFAULT_VOICE = "aura-2-asteria-en";
+const DEFAULT_HOST = "api.deepgram.com";
 
 /**
  * @param {string} apiKey
  * @param {string} text
- * @param {{ voice?: string }} [options]
- * @returns {Promise<Buffer>} Raw mulaw audio bytes
+ * @param {{ voice?: string, host?: string }} [options] - host: the Deepgram API host, default api.deepgram.com (SCRUM-594: the fast path passes the AU host)
+ * @returns {Promise<Buffer>} Raw mulaw audio bytes, at line level (AURA_GAIN_DB)
  */
 async function synthesizeSpeech(apiKey, text, options) {
   if (!text || !text.trim()) {
@@ -17,9 +20,10 @@ async function synthesizeSpeech(apiKey, text, options) {
   }
 
   const voice = options?.voice || DEFAULT_VOICE;
+  const host = options?.host || DEFAULT_HOST;
 
   const url =
-    "https://api.deepgram.com/v1/speak?" +
+    `https://${host}/v1/speak?` +
     `model=${voice}` +
     "&encoding=mulaw" +
     "&sample_rate=8000" +
@@ -42,7 +46,9 @@ async function synthesizeSpeech(apiKey, text, options) {
   }
 
   const arrayBuffer = await res.arrayBuffer();
-  return Buffer.from(arrayBuffer);
+  // SCRUM-594 (phone test F7): Aura comes out quieter than line level (lib/aura-gain.js);
+  // phone test F9: by how much depends on the voice.
+  return boostAura(Buffer.from(arrayBuffer), voice);
 }
 
 /**

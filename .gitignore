@@ -59,3 +59,5 @@ competitive-analysis.md
 supabase/.temp/
 
 /docs
+# SCRUM-594 simulated-call reports (scripts/sim-calls)
+.sim-calls/

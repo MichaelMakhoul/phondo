@@ -16,8 +16,9 @@ const BUCKET = "call-recordings";
 /**
  * @param {{ callId: string, deps: object, isRetry?: boolean }} args
  *   deps: { getSupabase, transcribeRecording, buildTwoSidedTranscript,
- *           analyzeCallTranscript, judgeContentLoss, applyReanalysis, Sentry,
- *           deepgramApiKey, retranscribeEnabled, scheduleRetry? }
+ *           analyzeCallTranscript, bookedNamesForAnalysis, judgeContentLoss,
+ *           applyReanalysis, Sentry, deepgramApiKey, retranscribeEnabled,
+ *           scheduleRetry? }
  *   isRetry: internal — set by the one-shot delayed self-retry when the
  *   recording webhook beat the call-end write (never re-schedules).
  * @returns {Promise<{ ok: true, retranscribed: boolean, reason?: string }>}
@@ -29,6 +30,7 @@ async function handleRetranscribe({ callId, deps, isRetry = false }) {
     transcribeRecording,
     buildTwoSidedTranscript,
     analyzeCallTranscript,
+    bookedNamesForAnalysis,
     judgeContentLoss,
     applyReanalysis,
     Sentry,
@@ -219,6 +221,16 @@ async function handleRetranscribe({ callId, deps, isRetry = false }) {
     return { ok: true, retranscribed: false, reason: "unsupported-language" };
   }
 
+  // SCRUM-594 (phone test F5): a demo-line call that used another language mid-call
+  // (metadata.fastPath.languages: the caller's, or the AI's own sentences'). A
+  // one-language re-transcription would garble the other part — the live (Flux
+  // Multilingual) transcript stays.
+  // An expected skip, not a failure: no page.
+  const languagesUsed = row.metadata && row.metadata.fastPath && row.metadata.fastPath.languages;
+  if (Array.isArray(languagesUsed) && languagesUsed.some((l) => l !== (language || "en"))) {
+    return { ok: true, retranscribed: false, reason: "language-switched" };
+  }
+
   try {
     const { data: blob, error: dlErr } = await supabase.storage
       .from(BUCKET)
@@ -342,7 +354,12 @@ async function handleRetranscribe({ callId, deps, isRetry = false }) {
       }
     }
 
-    const analysis = await analyzeCallTranscript(accurateTranscript, { language });
+    // SCRUM-594 (phone test F10): the names on the appointments this call made.
+    // The recording heard a booked, confirmed "D-U-N-N" as "G-U-N-N", and this
+    // re-analysis put Gunn in the call log. Never throws: a failed lookup leaves
+    // them out, and the re-analysis runs as it did before.
+    const bookedNames = await bookedNamesForAnalysis(() => supabase, callId, row.organization_id, "Retranscribe");
+    const analysis = await analyzeCallTranscript(accurateTranscript, { language, bookedNames });
     await applyReanalysis(callId, {
       accurateTranscript,
       priorTranscript: row.transcript,

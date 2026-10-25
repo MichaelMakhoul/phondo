@@ -91,6 +91,16 @@ const SENTRY_REASONS = Object.freeze({
    *  appointment that does not exist — page LOUDLY. */
   BOOKING_STATE_MISMATCH: "booking-state-mismatch",
 
+  // ─── post-call caller name (SCRUM-594, phone test F10) ──────────────
+  /** The appointments lookup for the names a call booked under was REJECTED
+   *  by PostgREST (an error code: a renamed column, a revoked grant), so it
+   *  fails for every call: each post-call analysis goes without names, and
+   *  the call log can again carry a misheard spelling of the booked name.
+   *  Error level: it needs a human, not a threshold. A timeout, a database
+   *  that is down or busy, or a dropped connection is only a warning line
+   *  (lib/booked-names.js PASSING_CODES). */
+  BOOKED_NAMES_LOOKUP_REJECTED: "booked-names-lookup-rejected",
+
   // ─── fallback-dial-consent (recording disclosure) ───────────────────
   /** Recording disclosure can't render because the org row was missing
    *  from the lookup result. */
