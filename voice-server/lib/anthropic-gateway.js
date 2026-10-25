@@ -115,14 +115,14 @@ function messagesRequest(body, env = process.env) {
   };
 }
 
-/** How long a refusal that repeats on every request keeps the demo line off the fast path. */
-const REFUSAL_LATCH_MS = 10 * 60 * 1000;
-const refusal = { until: 0, reason: "" };
+/** The standing refusal the demo line is avoiding, or "" (see noteGatewayRefusal). */
+let refusal = "";
 
 /**
  * Whether an error response will repeat on every request until someone acts:
  * no credit (Anthropic's 400 "credit balance is too low", phone test F10), a
- * spent cap (OpenRouter's 402, or a 403 naming a limit) or a bad key (401).
+ * spent limit (Anthropic's 400 "usage limits", OpenRouter's 402, a 403 naming
+ * a limit) or a bad key (401).
  * @param {number} status
  * @param {string} [message] - the API's error message
  * @returns {boolean}
@@ -130,41 +130,47 @@ const refusal = { until: 0, reason: "" };
 function isStandingRefusal(status, message = "") {
   if (status === 401 || status === 402) return true;
   if (status === 403) return /limit/i.test(message);
-  if (status === 400) return /credit balance/i.test(message);
+  if (status === 400) return /credit balance|usage limits?/i.test(message);
   return false;
 }
 
 /**
- * Notes an error response. A standing refusal holds the latch for
- * REFUSAL_LATCH_MS, renewed while it repeats, so new demo-line calls take the
- * global pipeline instead of apologising on every turn (F10); the first one
- * raises an [ALERT:error]. The latch lapses by itself after a top-up.
+ * Notes an error response. A standing refusal latches: new demo-line calls take
+ * the global pipeline instead of apologising on every turn (F10), until a Claude
+ * request succeeds again (noteGatewayAccepted: the turn validator keeps asking on
+ * Gemini calls) or the server restarts (a new key or `fly apps restart`). Never
+ * on a timer: on a quiet line a lapse would hand the next caller to the refused
+ * key. The first refusal of a spell raises an [ALERT:error].
  * @param {number} status
  * @param {string} [message] - the API's error message
- * @param {number} [now]
  * @returns {boolean} whether this response set the latch
  */
-function noteGatewayRefusal(status, message = "", now = Date.now()) {
+function noteGatewayRefusal(status, message = "") {
   if (!isStandingRefusal(status, message)) return false;
-  const started = now >= refusal.until;
-  refusal.until = now + REFUSAL_LATCH_MS;
-  refusal.reason = `HTTP ${status}${message ? `: ${String(message).slice(0, 120)}` : ""}`;
+  const started = !refusal;
+  refusal = `HTTP ${status}${message ? `: ${String(message).slice(0, 120)}` : ""}`;
   if (started) {
     Sentry.withScope((scope) => {
       scope.setTag("service", "anthropic-gateway");
-      Sentry.captureMessage(`Claude requests refused (${refusal.reason}) — the demo line takes VOICE_PIPELINE for ${REFUSAL_LATCH_MS / 60_000} min at a time while this repeats`, "error");
+      Sentry.captureMessage(`Claude requests refused (${refusal}) — the demo line takes VOICE_PIPELINE until a Claude request succeeds again or the server restarts`, "error");
     });
   }
   return started;
 }
 
+/** Notes a request Claude answered: a latched refusal is over, and the demo line can run classic-fast again. */
+function noteGatewayAccepted() {
+  if (!refusal) return;
+  console.log(`[AnthropicGateway] Claude requests accepted again (after ${refusal}) — the demo line can run classic-fast`);
+  refusal = "";
+}
+
 /**
- * The standing refusal behind the latch while it holds, else null.
- * @param {number} [now]
+ * The standing refusal the demo line is avoiding, else null.
  * @returns {string | null}
  */
-function gatewayRefusal(now = Date.now()) {
-  return now < refusal.until ? `Claude requests refused (${refusal.reason})` : null;
+function gatewayRefusal() {
+  return refusal ? `Claude requests refused (${refusal})` : null;
 }
 
 /**
@@ -190,15 +196,14 @@ module.exports = {
   messagesRequest,
   isStandingRefusal,
   noteGatewayRefusal,
+  noteGatewayAccepted,
   gatewayRefusal,
   describeGateway,
   ANTHROPIC_MESSAGES_URL,
   OPENROUTER_MESSAGES_URL,
-  REFUSAL_LATCH_MS,
   _test: {
     resetRefusal() {
-      refusal.until = 0;
-      refusal.reason = "";
+      refusal = "";
     },
   },
 };

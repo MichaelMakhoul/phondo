@@ -4,7 +4,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const {
   anthropicGateway, gatewayKeyName, gatewayProblem, gatewayModelProblem, messagesRequest, describeGateway, ANTHROPIC_MESSAGES_URL, OPENROUTER_MESSAGES_URL,
-  isStandingRefusal, noteGatewayRefusal, gatewayRefusal, REFUSAL_LATCH_MS, _test,
+  isStandingRefusal, noteGatewayRefusal, noteGatewayAccepted, gatewayRefusal, _test,
 } = require("../lib/anthropic-gateway");
 
 // SCRUM-594: ANTHROPIC_GATEWAY=openrouter sends the voice server's Anthropic Messages requests through
@@ -164,27 +164,33 @@ describe("the standing-refusal latch (phone test F10: every turn refused, every 
     assert.equal(isStandingRefusal(403, "Key limit exceeded"), true);
     assert.equal(isStandingRefusal(403, "Your input was flagged"), false, "a moderation 403 is about one request");
     assert.equal(isStandingRefusal(400, "messages: field required"), false, "a bad request is about one request");
+    assert.equal(isStandingRefusal(400, "You have reached your specified API usage limits. You will regain access on 2026-11-01."), true, "Anthropic's spend limit");
     for (const status of [404, 429, 500, 502, 503, 529]) assert.equal(isStandingRefusal(status, "credit balance limit"), false, String(status));
   });
 
-  it("holds for REFUSAL_LATCH_MS, renews while the refusal repeats, alerts once, and lapses by itself", (t) => {
+  it("holds until a Claude request succeeds, never on a timer (a quiet line's next caller isn't handed to the refused key), and alerts once a spell", (t) => {
     t.after(() => _test.resetRefusal());
     const alerts = [];
+    const logs = [];
     t.mock.method(console, "error", (...a) => alerts.push(a.join(" ")));
-    const t0 = 1_000_000;
-    assert.equal(gatewayRefusal(t0), null);
-    assert.equal(noteGatewayRefusal(429, "", t0), false, "a transient error doesn't latch");
-    assert.equal(gatewayRefusal(t0), null);
-    assert.equal(noteGatewayRefusal(402, "Key limit exceeded", t0), true);
-    assert.equal(gatewayRefusal(t0 + 1), "Claude requests refused (HTTP 402: Key limit exceeded)");
+    t.mock.method(console, "log", (...a) => logs.push(a.join(" ")));
+    assert.equal(gatewayRefusal(), null);
+    noteGatewayAccepted();
+    assert.deepEqual(logs, [], "nothing to clear: no line");
+    assert.equal(noteGatewayRefusal(429, ""), false, "a transient error doesn't latch");
+    assert.equal(gatewayRefusal(), null);
+    assert.equal(noteGatewayRefusal(402, "Key limit exceeded"), true);
+    assert.equal(gatewayRefusal(), "Claude requests refused (HTTP 402: Key limit exceeded)");
     assert.equal(alerts.length, 1);
-    assert.match(alerts[0], /^\[ALERT:error\] \[anthropic-gateway\] Claude requests refused \(HTTP 402: Key limit exceeded\) — the demo line takes VOICE_PIPELINE for 10 min at a time while this repeats/);
-    assert.equal(noteGatewayRefusal(402, "Key limit exceeded", t0 + 5 * 60_000), false, "a repeat renews without a second alert");
+    assert.match(alerts[0], /^\[ALERT:error\] \[anthropic-gateway\] Claude requests refused \(HTTP 402: Key limit exceeded\) — the demo line takes VOICE_PIPELINE until a Claude request succeeds again or the server restarts/);
+    assert.equal(noteGatewayRefusal(402, "Key limit exceeded"), false, "a repeat: no second alert");
     assert.equal(alerts.length, 1);
-    assert.ok(gatewayRefusal(t0 + REFUSAL_LATCH_MS + 60_000), "renewed from the repeat");
-    assert.equal(gatewayRefusal(t0 + 5 * 60_000 + REFUSAL_LATCH_MS), null, "lapsed: a top-up needs no restart");
-    assert.equal(noteGatewayRefusal(400, "Your credit balance is too low", t0 + 20 * 60_000), true, "a new refusal after it lapsed alerts again");
+    assert.equal(noteGatewayRefusal(503, ""), false, "a transient error neither latches nor clears");
+    assert.equal(gatewayRefusal(), "Claude requests refused (HTTP 402: Key limit exceeded)");
+    noteGatewayAccepted();
+    assert.equal(gatewayRefusal(), null, "a request Claude answered clears it");
+    assert.deepEqual(logs, ["[AnthropicGateway] Claude requests accepted again (after HTTP 402: Key limit exceeded) — the demo line can run classic-fast"]);
+    assert.equal(noteGatewayRefusal(400, "Your credit balance is too low"), true, "a new spell alerts again");
     assert.equal(alerts.length, 2);
-    assert.equal(REFUSAL_LATCH_MS, 10 * 60_000);
   });
 });

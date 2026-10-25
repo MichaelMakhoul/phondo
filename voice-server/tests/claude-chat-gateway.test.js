@@ -104,6 +104,18 @@ describe("streamClaudeResponse and ANTHROPIC_GATEWAY (SCRUM-594)", () => {
     assert.equal(gatewayRefusal(), "Claude requests refused (HTTP 402: Key limit exceeded)");
   });
 
+  it("a request Claude answers clears a latched refusal", async (t) => {
+    const { noteGatewayRefusal } = require("../lib/anthropic-gateway");
+    setEnv({ ANTHROPIC_GATEWAY: "openrouter", OPENROUTER_API_KEY: "sk-or-test" });
+    t.mock.method(console, "error", () => {});
+    t.mock.method(console, "log", () => {});
+    noteGatewayRefusal(402, "Key limit exceeded");
+    assert.ok(gatewayRefusal());
+    stubFetch(() => new Response(sse("Hi."), { status: 200 }));
+    await streamClaudeResponse(MESSAGES, { model: "claude-haiku-5-5" });
+    assert.equal(gatewayRefusal(), null);
+  });
+
   it("a one-off error doesn't latch", async () => {
     setEnv({ ANTHROPIC_API_KEY: "sk-ant-test" });
     stubFetch(() => new Response(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "messages: field required" } }), { status: 400 }));

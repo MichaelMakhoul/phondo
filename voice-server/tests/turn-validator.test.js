@@ -243,6 +243,19 @@ describe("ANTHROPIC_GATEWAY=openrouter (SCRUM-594: the Anthropic balance is empt
     assert.match(body.messages[0].content, /TOOL CALLED: book_appointment/);
   });
 
+  it("a verdict Claude returns clears a latched refusal, so the demo line can run classic-fast again", async (t) => {
+    const { noteGatewayRefusal, gatewayRefusal } = require("../lib/anthropic-gateway");
+    process.env.ANTHROPIC_GATEWAY = "openrouter";
+    process.env.OPENROUTER_API_KEY = "sk-or-test";
+    const validate = loadValidator();
+    captureLogs(t);
+    noteGatewayRefusal(402, "Key limit exceeded");
+    assert.ok(gatewayRefusal());
+    reply([{ type: "text", text: '{"accurate": true}' }]);
+    assert.deepEqual(await validate(ARGS), { accurate: true });
+    assert.equal(gatewayRefusal(), null);
+  });
+
   it("no OpenRouter key: fail open, no request, and a config alert naming the key", async (t) => {
     process.env.ANTHROPIC_GATEWAY = "openrouter";
     delete process.env.OPENROUTER_API_KEY;

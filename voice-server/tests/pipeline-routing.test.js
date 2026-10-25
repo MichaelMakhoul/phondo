@@ -409,7 +409,7 @@ describe("resolveCallPipeline: classic-fast without its keys (SCRUM-594 R12c)", 
     assert.equal(fastPathKeysPresent(OR, "claude-opus-5-5"), false);
   });
 
-  it("a standing refusal (no credit, a spent cap) sends new demo calls to the global pipeline until it lapses (phone test F10)", (t) => {
+  it("a standing refusal (no credit, a spent cap) sends new demo calls to the global pipeline until a request succeeds (phone test F10)", (t) => {
     const env = { ANTHROPIC_API_KEY: "sk", DEEPGRAM_API_KEY: "dg" };
     t.after(() => gatewayTest.resetRefusal());
     t.mock.method(console, "error", () => {});
