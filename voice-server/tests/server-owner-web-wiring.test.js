@@ -73,7 +73,9 @@ describe("/ws/test: the owner branch (source)", () => {
     ]) assert.ok(owner.includes(line), line);
     // A page closed during setup: nothing is created after the context or the name loads.
     assert.match(handler, /const context = await loadTestCallContext\(assistantId, organizationId\);\s*\/\/[^\n]*\n\s*\/\/[^\n]*\n\s*if \(cleaningUp\) return;/);
-    assert.ok(owner.indexOf("if (cleaningUp) return;") < owner.indexOf("const callRecordId = await createCallRecord({"));
+    const nameCheck = owner.search(/session\.ownerFirstName = await loadOwnerFirstName\(organizationId\);\s*if \(cleaningUp\) return;/);
+    assert.ok(nameCheck >= 0, "a page closed while the name loads must stop setup before the row");
+    assert.ok(nameCheck < owner.indexOf("const callRecordId = await createCallRecord({"));
     assert.ok(owner.indexOf("session.callRecordId = callRecordId;") < owner.indexOf("ownerWebPrompt = buildOwnerWebPrompt({"));
     // A row that couldn't be created ends the session with a message; a page closed
     // mid-setup gets its row completed rather than left "in-progress".
