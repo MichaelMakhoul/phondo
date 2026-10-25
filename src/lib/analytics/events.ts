@@ -139,13 +139,16 @@ export function trackAssistantDeleted(): void {
   pushEvent(EventNames.ASSISTANT_DELETED);
 }
 
-export function trackTestCallStarted(source: "dashboard" | "onboarding"): void {
+/** Where a browser voice session started. SCRUM-596: "owner_assistant" is the owner talking to their assistant, not a test call. */
+export type VoiceTestSource = "dashboard" | "onboarding" | "owner_assistant";
+
+export function trackTestCallStarted(source: VoiceTestSource): void {
   pushEvent(EventNames.TEST_CALL_STARTED, { source });
 }
 
 export function trackTestCallCompleted(
   durationSeconds: number,
-  source: "dashboard" | "onboarding"
+  source: VoiceTestSource
 ): void {
   pushEvent(EventNames.TEST_CALL_COMPLETED, {
     duration_seconds: durationSeconds,
@@ -162,7 +165,7 @@ export function trackTestCallCompleted(
  * find out.
  */
 export function trackTestCallMicGateBypassed(
-  source: "dashboard" | "onboarding",
+  source: VoiceTestSource,
   rms: number,
   noiseFloor: number
 ): void {

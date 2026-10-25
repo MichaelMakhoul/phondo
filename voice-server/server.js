@@ -167,6 +167,7 @@ const { buildOwnerPrompt, buildOwnerGreeting, buildOwnerGeminiSuffix } = require
 const { buildOwnerTools } = require("./lib/owner-tools");
 const { runOwnerToolCall, buildOwnerCallSummary, settleOwnerToolRuns, noteCancelledOwnerToolCalls, ownerToolLoopReply, OWNER_MAX_TOOL_CALLS } = require("./lib/owner-tool-runner");
 const { noteAssistantSpeech, noteAssistantTurnEnd, noteOwnerSpeech } = require("./lib/owner-turn-stamps");
+const { OWNER_WEB_MAX_SESSION_MS, OWNER_WEB_RECORD_METADATA, OWNER_WEB_PROBLEM_MESSAGE, isOwnerWebToken, ownerWebCallSid, buildOwnerWebPrompt, createOwnerTokenLedger, createOwnerWebSessions, finishOwnerWebSession } = require("./lib/owner-web-session"); // SCRUM-596: the owner assistant in the dashboard
 
 // Mirror of API-layer E164_REGEX. Defense-in-depth at the dialer so a bad
 // value introduced via direct SQL or a future bug can't be sent to Twilio.
@@ -6792,6 +6793,23 @@ const testSessionCaps = createTestSessionCaps({
   maxGlobal: MAX_TEST_SESSIONS_GLOBAL,
   maxPerIp: MAX_TEST_SESSIONS_PER_IP,
 });
+// SCRUM-596: one owner session in the browser per org, and each owner token works
+// once (lib/owner-web-session.js).
+const ownerWebSessions = createOwnerWebSessions();
+const ownerTokenLedger = createOwnerTokenLedger();
+
+/** SCRUM-596: what an owner session in the browser needs to end like an owner phone call. */
+function ownerWebFinishDeps() {
+  return {
+    settleOwnerToolRuns,
+    buildOwnerCallSummary,
+    detectAndRedact,
+    completeCallRecord,
+    notifyCallCompleted,
+    internalApiUrl: INTERNAL_API_URL,
+    internalApiSecret: INTERNAL_API_SECRET,
+  };
+}
 
 /**
  * Verify a test call token (HMAC-SHA256 signed by TEST_CALL_SECRET).
@@ -6864,6 +6882,34 @@ testWss.on("connection", (ws, req) => {
     testSessionCaps.release(jti, clientIp);
   }
 
+  // SCRUM-596: an owner token opens the owner assistant in the browser. Next.js
+  // signs mode "owner" only for the org's owner. Only while
+  // OWNER_ASSISTANT_ENABLED is on, and one session per org (a second tab is refused).
+  const ownerWeb = isOwnerWebToken(tokenData);
+  let ownerWebSlotOpen = false;
+  if (ownerWeb) {
+    if (!ownerAssistantEnabled()) {
+      console.warn(`[OwnerWeb] Refused an owner session: OWNER_ASSISTANT_ENABLED is off (org=${organizationId})`);
+      releaseTestSlot();
+      ws.send(JSON.stringify({ type: "error", message: "The owner assistant is switched off." }));
+      ws.close(4004, "Owner assistant off");
+      return;
+    }
+    if (!ownerTokenLedger.claim(jti, tokenData.exp)) {
+      console.warn(`[OwnerWeb] Refused a reused owner token (org=${organizationId})`);
+      releaseTestSlot();
+      ws.close(4003, "Invalid or expired token");
+      return;
+    }
+    if (!ownerWebSessions.tryOpen(organizationId)) {
+      console.warn(`[OwnerWeb] Refused a second owner session (org=${organizationId}): one is already open`);
+      releaseTestSlot();
+      ws.close(4029, "Your assistant is already open in another tab.");
+      return;
+    }
+    ownerWebSlotOpen = true;
+  }
+
   let session = null;
   let cleaningUp = false;
   let autoEndTimer = null;
@@ -6871,10 +6917,20 @@ testWss.on("connection", (ws, req) => {
   async function cleanupTestSession() {
     if (cleaningUp) return;
     cleaningUp = true;
+    // SCRUM-596: an ending owner session takes no new turn. Speech recognition stays
+    // open through the post-call below, and a late transcript must not start one (a
+    // write, even) after the session's summary is taken.
+    if (session?.ownerMode) session.ownerSessionEnded = true;
 
     // SCRUM-341: free the concurrency slot (jti + per-IP + global) on every
     // teardown path. Idempotent via testSlotReleased.
     releaseTestSlot();
+    // SCRUM-596: and the org's owner slot, at once. The owner post-call below
+    // can take seconds, and the owner may start again meanwhile.
+    if (ownerWebSlotOpen) {
+      ownerWebSlotOpen = false;
+      ownerWebSessions.close(organizationId);
+    }
 
     if (autoEndTimer) {
       clearTimeout(autoEndTimer);
@@ -6894,6 +6950,20 @@ testWss.on("connection", (ws, req) => {
         }
         session.geminiSession = null;
       }
+      // SCRUM-596: an owner session ends like an owner phone call: its row
+      // (call_type "owner", channel "web") and the call-completed webhook.
+      if (session.ownerMode) {
+        const ended = session;
+        try {
+          await finishOwnerWebSession(
+            ended,
+            { transcript: ended.getTranscript(), durationSeconds: ended.getDurationSeconds() },
+            ownerWebFinishDeps(),
+          );
+        } catch (err) {
+          console.error(`[ALERT:error] [OwnerWeb] owner web session post-call failed (callSid=${ended.callSid}, org=${ended.organizationId}):`, err);
+        }
+      }
       session.destroy();
       session = null;
     }
@@ -6901,9 +6971,11 @@ testWss.on("connection", (ws, req) => {
 
   // Auto-disconnect after max duration. SCRUM-363: the public demo
   // (organizationId === DEMO_ORG_ID) gets a tighter cap than authed test calls.
-  const maxSessionDurationMs = getMaxSessionDurationMs(organizationId);
+  // SCRUM-596: an owner session gets OWNER_WEB_MAX_SESSION_MS (8 minutes).
+  const maxSessionDurationMs = ownerWeb ? OWNER_WEB_MAX_SESSION_MS : getMaxSessionDurationMs(organizationId);
   autoEndTimer = setTimeout(() => {
     if (ws.readyState === WebSocket.OPEN) {
+      if (ownerWeb) console.log(`[OwnerWeb] Session reached its time limit (org=${organizationId})`);
       ws.send(JSON.stringify({ type: "ended", reason: "max-duration" }));
       ws.close(1000, "Max duration reached");
     }
@@ -6913,13 +6985,16 @@ testWss.on("connection", (ws, req) => {
   (async () => {
     try {
       const context = await loadTestCallContext(assistantId, organizationId);
+      // The socket closed while the context loaded: start nothing. A session
+      // created now would never be cleaned up.
+      if (cleaningUp) return;
       if (!context) {
         ws.send(JSON.stringify({ type: "error", message: "Assistant not found or inactive" }));
         ws.close(4004, "Assistant not found");
         return;
       }
 
-      session = new CallSession(`test_${Date.now()}`);
+      session = new CallSession(ownerWeb ? ownerWebCallSid(jti) : `test_${Date.now()}`);
       session.organizationId = organizationId;
       session.assistantId = assistantId;
       session.transferRules = context.transferRules || [];
@@ -6931,6 +7006,52 @@ testWss.on("connection", (ws, req) => {
         businessHours: context.organization.businessHours,
       };
       session.orgPhoneNumber = null; // no real phone number in test mode
+
+      // SCRUM-596: the owner's session. Its identity first, then its call row
+      // before any tool can run (the owner tools' authority is ownerVerified plus
+      // the call's own id, unchanged), then the phone line's owner prompt.
+      let ownerWebPrompt = null;
+      if (ownerWeb) {
+        session.ownerMode = true;
+        session.ownerAuth = "verified";
+        session.piiRedactionEnabled = !!(context.assistant.settings?.piiRedactionEnabled);
+        session.ownerFirstName = await loadOwnerFirstName(organizationId);
+        if (cleaningUp) return; // closed while the name loaded: no row yet, nothing to complete
+        const ownerSession = session;
+        const callRecordId = await createCallRecord({
+          orgId: organizationId,
+          assistantId,
+          phoneNumberId: null,
+          callerPhone: null,
+          callSid: ownerSession.callSid,
+          // An owner call from the moment it exists, even if the session never
+          // reaches its post-call (a deploy or crash mid-session).
+          metadata: OWNER_WEB_RECORD_METADATA,
+        });
+        if (cleaningUp) {
+          // The owner closed the page while the row was being created: complete it
+          // now, so it doesn't stay "in-progress" in the call log. Nothing ran, so
+          // it is stored as failed (a completed call is billed).
+          if (callRecordId) {
+            ownerSession.callRecordId = callRecordId;
+            ownerSession.callFailed = true;
+            await finishOwnerWebSession(ownerSession, { transcript: "", durationSeconds: 0 }, ownerWebFinishDeps());
+          }
+          return;
+        }
+        if (!callRecordId) {
+          ws.send(JSON.stringify({ type: "error", message: "Couldn't start your assistant — please try again." }));
+          ws.close(4500, "Owner call record failed");
+          return;
+        }
+        session.callRecordId = callRecordId;
+        ownerWebPrompt = buildOwnerWebPrompt({
+          organization: context.organization,
+          serviceTypes: context.serviceTypes || [],
+          ownerFirstName: session.ownerFirstName,
+        });
+        console.log(`[OwnerWeb] Owner session for org=${organizationId} callSid=${session.callSid}`);
+      }
 
       // After-hours detection
       let { isAfterHours, afterHoursConfig, effectiveCalendarEnabled } = resolveAfterHoursState(context);
@@ -6956,24 +7077,27 @@ testWss.on("connection", (ws, req) => {
         console.log(`[TestAfterHours] After-hours mode ${reason} (calendar=${effectiveCalendarEnabled})`);
       }
 
-      // Build system prompt
-      const systemPrompt = buildSystemPrompt(
-        context.assistant,
-        context.organization,
-        context.knowledgeBase,
-        {
-          calendarEnabled: effectiveCalendarEnabled,
-          transferRules: session.transferRules,
-          isAfterHours,
-          afterHoursConfig,
-          serviceTypes: context.serviceTypes,
-        }
-      );
+      // Build system prompt (SCRUM-596: the owner prompt on an owner session)
+      const systemPrompt = ownerWebPrompt
+        ? ownerWebPrompt.systemPrompt
+        : buildSystemPrompt(
+          context.assistant,
+          context.organization,
+          context.knowledgeBase,
+          {
+            calendarEnabled: effectiveCalendarEnabled,
+            transferRules: session.transferRules,
+            isAfterHours,
+            afterHoursConfig,
+            serviceTypes: context.serviceTypes,
+          }
+        );
       session.setSystemPrompt(systemPrompt);
 
       // ── Schedule cache: pre-fetch availability snapshot for test calls ──
       let scheduleSnapshot = null;
-      if (session.calendarEnabled || session.serviceTypes?.length > 0) {
+      // SCRUM-596: an owner session reads live bookings through its tools — no snapshot.
+      if (!session.ownerMode && (session.calendarEnabled || session.serviceTypes?.length > 0)) {
         try {
           scheduleSnapshot = scheduleCache.getSchedule(context.organizationId);
           if (!scheduleSnapshot) {
@@ -7027,50 +7151,62 @@ testWss.on("connection", (ws, req) => {
       }
 
       // ── Pipeline selection: Gemini Live vs Classic ──────────────
-      const useGeminiLive = VOICE_PIPELINE === "gemini-live" && process.env.GEMINI_API_KEY;
+      // SCRUM-596: an owner session follows OWNER_PIPELINE, as on the phone line.
+      const sessionPipeline = session.ownerMode ? resolveOwnerPipeline() : VOICE_PIPELINE;
+      const useGeminiLive = sessionPipeline === "gemini-live" && process.env.GEMINI_API_KEY;
 
       if (useGeminiLive) {
         // ── Gemini Live pipeline for test/demo calls ──────────────
         console.log(`[TestGeminiLive] Initializing Gemini Live (${GEMINI_MODEL}) for test call`);
 
         // Build tool definitions using the same function as production
-        const llmOptions = buildLLMOptions(session);
+        const llmOptions = session.ownerMode ? { tools: buildOwnerTools() } : buildLLMOptions(session);
         const allTools = llmOptions.tools || [];
 
         // Build Gemini-specific system prompt with greeting instruction
-        const greeting = getGreeting(context.assistant, context.organization.name, {
-          isAfterHours,
-          afterHoursConfig,
-        });
+        const greeting = ownerWebPrompt
+          ? ownerWebPrompt.greeting
+          : getGreeting(context.assistant, context.organization.name, {
+            isAfterHours,
+            afterHoursConfig,
+          });
 
         let geminiSystemPrompt = systemPrompt;
 
-        // Gemini Live is natively multilingual — always remove English-only restrictions.
-        // For demo/test calls, we always enable multilingual since we promote 90+ language support.
-        geminiSystemPrompt = geminiSystemPrompt
-          .replace(/ENGLISH ONLY:.*?Do NOT respond in their language\./gs, "LANGUAGE: You are multilingual. Respond in the caller's language naturally.")
-          .replace(/You MUST ONLY respond in English\..*?Do NOT use any non-English words\./gs, "Respond in the caller's language naturally.")
-          .replace(/You must respond in English\..*?Do NOT respond in their language\./gs, "Respond in the caller's language naturally.")
-          .replace(/I can only assist in English/g, "I can assist in multiple languages")
-          .replace(/I'm sorry, I can only assist in English[^"']*/g, "I can assist in multiple languages");
+        if (ownerWebPrompt) {
+          // SCRUM-596: the phone line's owner variant. The greeting comes first and
+          // the owner rules LAST (Gemini obeys the freshest instruction), with none
+          // of the customer rules below.
+          geminiSystemPrompt += `\n\nIMPORTANT — YOUR FIRST MESSAGE: When the call connects, you will receive a short text message. Immediately respond by speaking the following greeting (word for word, naturally): "${greeting}" — Then wait for the owner to respond.`;
+          geminiSystemPrompt += buildOwnerGeminiSuffix();
+        } else {
+          // Gemini Live is natively multilingual — always remove English-only restrictions.
+          // For demo/test calls, we always enable multilingual since we promote 90+ language support.
+          geminiSystemPrompt = geminiSystemPrompt
+            .replace(/ENGLISH ONLY:.*?Do NOT respond in their language\./gs, "LANGUAGE: You are multilingual. Respond in the caller's language naturally.")
+            .replace(/You MUST ONLY respond in English\..*?Do NOT use any non-English words\./gs, "Respond in the caller's language naturally.")
+            .replace(/You must respond in English\..*?Do NOT respond in their language\./gs, "Respond in the caller's language naturally.")
+            .replace(/I can only assist in English/g, "I can assist in multiple languages")
+            .replace(/I'm sorry, I can only assist in English[^"']*/g, "I can assist in multiple languages");
 
-        geminiSystemPrompt += `\n\nIMPORTANT — YOUR FIRST MESSAGE: When the call connects, you will receive a short text message. Immediately respond by speaking the following greeting (word for word, naturally and warmly): "${greeting}" — Then wait for the caller to respond. Do NOT add anything extra. Do NOT invent a receptionist name — you are an AI assistant.`;
+          geminiSystemPrompt += `\n\nIMPORTANT — YOUR FIRST MESSAGE: When the call connects, you will receive a short text message. Immediately respond by speaking the following greeting (word for word, naturally and warmly): "${greeting}" — Then wait for the caller to respond. Do NOT add anything extra. Do NOT invent a receptionist name — you are an AI assistant.`;
 
-        geminiSystemPrompt += `\n\nCRITICAL RULES FOR THIS CONVERSATION:`;
-        geminiSystemPrompt += `\n- ABSOLUTELY NEVER FABRICATE ACTIONS: This is the most important rule. You have tools (book_appointment, schedule_callback, check_availability, lookup_appointment, cancel_appointment, etc). You MUST call the tool AND receive a SUCCESS response BEFORE telling the caller the action was done. NEVER say "I've booked", "I've scheduled", "I've checked", "I've cancelled" UNLESS the tool already returned success.`;
-        geminiSystemPrompt += `\n- 🔎 UNDERSTAND BEFORE YOU ACT (be a real receptionist): Acting on a misheard request is worse than asking again. If a caller's turn is garbled, cuts in and out, is only fragments, suddenly switches to a language they weren't using, or doesn't form a clear request, do NOT guess what they meant and do NOT act on it — warmly say you didn't catch it and ask them to repeat, in the language they are using (e.g. "Sorry, I didn't quite catch that — could you say it again?"). If you DID hear the request clearly, just proceed — do NOT tack on an extra "is that right?". Only when you genuinely couldn't hear, or you'd be guessing a name / date / time, restate it and get a clear "yes" before booking, cancelling, rescheduling, or taking a message. A caller who is upset or in a hurry is NOT a reason to make them repeat — if the words are clear, help right away. After a couple of unclear tries, offer a callback rather than guessing. NEVER book, cancel, reschedule, or record details based on a guess or an unclear turn.`;
-        geminiSystemPrompt += `\n- ALWAYS COLLECT REAL NAME: Before calling book_appointment or schedule_callback, you MUST ask for and receive the caller's actual name. NEVER use placeholder names like "Caller Name", "Unknown", or "Guest".`;
-        geminiSystemPrompt += `\n- ALWAYS SAY FILLER BEFORE EVERY TOOL CALL: Before EVERY tool call, you MUST say a short filler phrase in the caller's language (the equivalent of "one moment" / "let me check" / "just a sec"). NEVER go silent during a tool call.`;
-        geminiSystemPrompt += `\n- LANGUAGE — conduct the ENTIRE call in the caller's language: fillers, tool acknowledgements, transfer/hold messages, confirmations and closings included. Any English phrase quoted in these instructions is an ENGLISH SAMPLE — say its equivalent in the caller's language, never the literal English unless the caller is speaking English. When a tool returns an English message, translate it before speaking, keeping names, numbers, dates, times and codes exactly as given.`;
-        geminiSystemPrompt += buildLanguageLockDirective(session.language);
-        geminiSystemPrompt += `\n- RESCHEDULING: When a caller wants to move or change the time of an existing appointment, you MUST call the reschedule_appointment tool — ONE call that books the new time and removes the old one atomically. Identify it by the caller's phone plus its current date (look it up first with lookup_appointment if needed) and pass new_datetime. NEVER reschedule by calling cancel_appointment and book_appointment separately — that can leave a duplicate.`;
-        // SCRUM-294: test/demo calls never have transfer rules (transferRules: []
-        // is passed to executeToolCall a few lines below), so transfer_call is
-        // never in the tool list. If we told the model to call it, Gemini would
-        // hallucinate the invocation. Use the no-rules variant: capture the
-        // request via schedule_callback so the demo gracefully handles the
-        // intent instead of either arguing or fabricating a transfer.
-        geminiSystemPrompt += `\n- TRANSFERS — MUST OBEY: If the caller asks to be transferred, asks to speak to a human / person / manager / somebody / an actual human / a real person / staff, says 'transfer me' / 'put me through' / 'I want to talk to someone' / 'can I speak to a human' / 'get me a person' or any equivalent intent — this is a demo/test call so a live transfer isn't available. You MUST IMMEDIATELY acknowledge the request and call schedule_callback to capture their name and number. Do NOT argue. Do NOT claim you can help instead. Do NOT redirect to booking.`;
+          geminiSystemPrompt += `\n\nCRITICAL RULES FOR THIS CONVERSATION:`;
+          geminiSystemPrompt += `\n- ABSOLUTELY NEVER FABRICATE ACTIONS: This is the most important rule. You have tools (book_appointment, schedule_callback, check_availability, lookup_appointment, cancel_appointment, etc). You MUST call the tool AND receive a SUCCESS response BEFORE telling the caller the action was done. NEVER say "I've booked", "I've scheduled", "I've checked", "I've cancelled" UNLESS the tool already returned success.`;
+          geminiSystemPrompt += `\n- 🔎 UNDERSTAND BEFORE YOU ACT (be a real receptionist): Acting on a misheard request is worse than asking again. If a caller's turn is garbled, cuts in and out, is only fragments, suddenly switches to a language they weren't using, or doesn't form a clear request, do NOT guess what they meant and do NOT act on it — warmly say you didn't catch it and ask them to repeat, in the language they are using (e.g. "Sorry, I didn't quite catch that — could you say it again?"). If you DID hear the request clearly, just proceed — do NOT tack on an extra "is that right?". Only when you genuinely couldn't hear, or you'd be guessing a name / date / time, restate it and get a clear "yes" before booking, cancelling, rescheduling, or taking a message. A caller who is upset or in a hurry is NOT a reason to make them repeat — if the words are clear, help right away. After a couple of unclear tries, offer a callback rather than guessing. NEVER book, cancel, reschedule, or record details based on a guess or an unclear turn.`;
+          geminiSystemPrompt += `\n- ALWAYS COLLECT REAL NAME: Before calling book_appointment or schedule_callback, you MUST ask for and receive the caller's actual name. NEVER use placeholder names like "Caller Name", "Unknown", or "Guest".`;
+          geminiSystemPrompt += `\n- ALWAYS SAY FILLER BEFORE EVERY TOOL CALL: Before EVERY tool call, you MUST say a short filler phrase in the caller's language (the equivalent of "one moment" / "let me check" / "just a sec"). NEVER go silent during a tool call.`;
+          geminiSystemPrompt += `\n- LANGUAGE — conduct the ENTIRE call in the caller's language: fillers, tool acknowledgements, transfer/hold messages, confirmations and closings included. Any English phrase quoted in these instructions is an ENGLISH SAMPLE — say its equivalent in the caller's language, never the literal English unless the caller is speaking English. When a tool returns an English message, translate it before speaking, keeping names, numbers, dates, times and codes exactly as given.`;
+          geminiSystemPrompt += buildLanguageLockDirective(session.language);
+          geminiSystemPrompt += `\n- RESCHEDULING: When a caller wants to move or change the time of an existing appointment, you MUST call the reschedule_appointment tool — ONE call that books the new time and removes the old one atomically. Identify it by the caller's phone plus its current date (look it up first with lookup_appointment if needed) and pass new_datetime. NEVER reschedule by calling cancel_appointment and book_appointment separately — that can leave a duplicate.`;
+          // SCRUM-294: test/demo calls never have transfer rules (transferRules: []
+          // is passed to executeToolCall a few lines below), so transfer_call is
+          // never in the tool list. If we told the model to call it, Gemini would
+          // hallucinate the invocation. Use the no-rules variant: capture the
+          // request via schedule_callback so the demo gracefully handles the
+          // intent instead of either arguing or fabricating a transfer.
+          geminiSystemPrompt += `\n- TRANSFERS — MUST OBEY: If the caller asks to be transferred, asks to speak to a human / person / manager / somebody / an actual human / a real person / staff, says 'transfer me' / 'put me through' / 'I want to talk to someone' / 'can I speak to a human' / 'get me a person' or any equivalent intent — this is a demo/test call so a live transfer isn't available. You MUST IMMEDIATELY acknowledge the request and call schedule_callback to capture their name and number. Do NOT argue. Do NOT claim you can help instead. Do NOT redirect to booking.`;
+        }
 
         // Transcript buffering for test calls
         let pendingUserTranscript = "";
@@ -7089,6 +7225,8 @@ testWss.on("connection", (ws, req) => {
                 const audioBuffer = Buffer.from(twilioBase64, "base64");
                 ws.send(audioBuffer);
               }
+              // SCRUM-596: this assistant turn produced speech (the owner confirmation gate's clock).
+              if (session?.ownerMode) noteAssistantSpeech(session);
             },
             onToolCall: async (toolCall) => {
               // Guard: session may be null if Gemini delivers buffered tool calls after cleanup
@@ -7097,6 +7235,17 @@ testWss.on("connection", (ws, req) => {
                 return { message: "" };
               }
               logToolCall("[TestGeminiLive] Tool call", toolCall.name, toolCall.args);
+              // SCRUM-596: every owner tool call goes through the phone line's owner
+              // runner (its confirmation gate and authority checks), in flight as on
+              // the phone line, and never in test mode.
+              if (session.ownerMode) {
+                session._toolCallInFlight = true;
+                try {
+                  return await runOwnerToolCall(session, toolCall, { executeToolCall, scheduleCache, sendText: (text) => session?.geminiSession?.sendText(text) });
+                } finally {
+                  if (session) session._toolCallInFlight = false;
+                }
+              }
               // SCRUM-372: cancel-confirmation gate (test/demo path — parity with production)
               if (toolCall.name === "cancel_appointment" && !session.confirmCancel(toolCall.args || {}, Date.now())) {
                 console.warn(`[CancelGate] Holding cancel_appointment pending confirmation (test). callSid=${session.callSid}`);
@@ -7122,6 +7271,8 @@ testWss.on("connection", (ws, req) => {
             },
             onTranscriptIn: (text) => {
               pendingUserTranscript += text;
+              // SCRUM-596: the owner spoke (the confirmation gate's clock; once per utterance).
+              if (session?.ownerMode) noteOwnerSpeech(session, text);
             },
             onTranscriptOut: (text) => {
               pendingAiTranscript += text;
@@ -7142,6 +7293,8 @@ testWss.on("connection", (ws, req) => {
                 pendingAiTranscript = "";
                 return;
               }
+              // SCRUM-596: an interrupted turn has ended (counted once, as on the phone line).
+              if (session.ownerMode) noteAssistantTurnEnd(session);
               if (pendingAiTranscript.trim()) {
                 session.addMessage("assistant", pendingAiTranscript.trim());
                 if (ws.readyState === WebSocket.OPEN) {
@@ -7151,13 +7304,16 @@ testWss.on("connection", (ws, req) => {
                 pendingAiTranscript = "";
               }
             },
-            onTurnComplete: () => {
+            onTurnComplete: (turnInfo) => {
               // Guard: session may be null if Gemini delivers buffered events after cleanup
               if (!session) {
                 pendingUserTranscript = "";
                 pendingAiTranscript = "";
                 return;
               }
+              // SCRUM-596: one assistant turn on the confirmation gate's clock, only if
+              // it produced speech (a tool-call-only turn is not one), as on the phone line.
+              if (session.ownerMode && turnInfo?.endedWithToolCalls !== true) noteAssistantTurnEnd(session);
               if (pendingUserTranscript.trim()) {
                 session.addMessage("user", pendingUserTranscript.trim());
                 if (ws.readyState === WebSocket.OPEN) {
@@ -7174,15 +7330,51 @@ testWss.on("connection", (ws, req) => {
                 pendingAiTranscript = "";
               }
             },
+            // SCRUM-596: Gemini cancelled these tool calls (the owner talked over them),
+            // as on the phone line (lib/owner-tool-runner.js).
+            onToolCallCancellation: (ids) => {
+              if (session?.ownerMode) noteCancelledOwnerToolCalls(session, ids);
+            },
             onError: (err) => {
+              // SCRUM-596: once the owner has ended the session, an error from the
+              // Gemini socket being closed (one still connecting raises one) is not a
+              // problem: it is neither shown nor stored as a failure.
+              if (session?.ownerMode && cleaningUp) {
+                console.log(`[TestGeminiLive] Error while the owner session closes (ignored): ${err.message}`);
+                return;
+              }
               console.error("[TestGeminiLive] Session error:", err.message);
+              // SCRUM-596: an owner session that broke is stored as failed.
+              if (session?.ownerMode) session.callFailed = true;
               if (ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ type: "error", message: "AI session error" }));
+                ws.send(JSON.stringify({ type: "error", message: session?.ownerMode ? OWNER_WEB_PROBLEM_MESSAGE : "AI session error" }));
                 ws.close(4500, "Gemini session error");
               }
             },
-            onClose: (code) => {
+            onClose: (code, reason) => {
               console.log(`[TestGeminiLive] Session closed (code=${code})`);
+              if (session?.ownerMode && ws.readyState === WebSocket.OPEN && !cleaningUp) {
+                // SCRUM-596: the owner said goodbye (end_call). Let the goodbye's
+                // audio play, as on the phone line, then end the session.
+                if (reason === "end_call") {
+                  setTimeout(() => {
+                    if (ws.readyState === WebSocket.OPEN) {
+                      ws.send(JSON.stringify({ type: "ended", reason: "owner-ended" }));
+                      ws.close(1000, "Owner said goodbye");
+                    }
+                  }, 1000);
+                  return;
+                }
+                // Any other abnormal close is Gemini dropping the session: say so
+                // (it is stored as failed), rather than end it as if all went well.
+                if (code !== 1000) {
+                  session.callFailed = true;
+                  console.error(`[OwnerWeb] Gemini closed the owner session unexpectedly (code=${code}, org=${session.organizationId}, callSid=${session.callSid})`);
+                  ws.send(JSON.stringify({ type: "error", message: OWNER_WEB_PROBLEM_MESSAGE }));
+                  ws.close(4500, "Gemini session closed");
+                  return;
+                }
+              }
               if (ws.readyState === WebSocket.OPEN && !cleaningUp) {
                 ws.send(JSON.stringify({ type: "ended", reason: "ai-session-closed" }));
                 ws.close(1000, "Gemini session closed");
@@ -7213,6 +7405,8 @@ testWss.on("connection", (ws, req) => {
           }
           if (!isFinal) return;
           logTranscript("[TestSTT] Final", transcript);
+          // SCRUM-596: the owner spoke (the confirmation gate's clock; once per utterance).
+          if (session?.ownerMode) noteOwnerSpeech(session, transcript);
           session.bufferTranscript(transcript, (combined, inputType) => {
             logTranscript("[TestSTT] Buffered", combined);
             session.queueOrProcess(combined, (text) => handleTestUserSpeech(session, ws, text));
@@ -7222,26 +7416,50 @@ testWss.on("connection", (ws, req) => {
           session.flushBuffer();
         },
         onError: (err) => {
+          // SCRUM-596: as for Gemini, an error while an owner session closes is not
+          // a failure of the session.
+          if (session?.ownerMode && cleaningUp) {
+            console.log(`[TestSTT] Error while the owner session closes (ignored): ${err?.message || err}`);
+            return;
+          }
           console.error("[TestSTT] Error:", err);
           if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: "error", message: "Speech recognition error" }));
+            ws.send(JSON.stringify({ type: "error", message: session?.ownerMode ? OWNER_WEB_PROBLEM_MESSAGE : "Speech recognition error" }));
+          }
+          // SCRUM-596: an owner session can't go on without hearing the owner. End
+          // it (stored as failed) rather than leave the mic and the row open.
+          if (session?.ownerMode) {
+            session.callFailed = true;
+            if (ws.readyState === WebSocket.OPEN) ws.close(4500, "Speech recognition error");
           }
         },
         onClose: (code) => {
           if (code !== 1000 && code !== 1005) {
             console.error(`[TestSTT] Deepgram connection closed unexpectedly (code=${code})`);
+            // SCRUM-596: as on the phone line, an owner session that can no longer
+            // hear the owner ends (stored as failed) rather than stay open, deaf.
+            if (session?.ownerMode && !cleaningUp && !session.callFailed) {
+              session.callFailed = true;
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: "error", message: OWNER_WEB_PROBLEM_MESSAGE }));
+                ws.close(4500, "Speech recognition lost");
+              }
+            }
           }
         },
       }, { industry: session.organization?.industry });
 
       // Play recording disclosure if required by jurisdiction (test calls too)
       let disclosurePrefix = "";
-      const testConsentResult = requiresRecordingDisclosureHybrid(
-        context.organization.country,
-        context.organization.businessState,
-        context.organization.recordingConsentMode,
-        null // test calls have no real caller phone
-      );
+      // SCRUM-596: no spoken disclosure on an owner session, as on the phone line.
+      const testConsentResult = session.ownerMode
+        ? { required: false, callerState: null, reason: "owner-call" }
+        : requiresRecordingDisclosureHybrid(
+          context.organization.country,
+          context.organization.businessState,
+          context.organization.recordingConsentMode,
+          null // test calls have no real caller phone
+        );
       session.callerState = testConsentResult.callerState;
       session.consentReason = testConsentResult.reason;
       console.log(`[TestRecording] Consent: required=${testConsentResult.required}, callerState=${testConsentResult.callerState}, reason=${testConsentResult.reason}`);
@@ -7273,7 +7491,7 @@ testWss.on("connection", (ws, req) => {
       }
 
       // Send greeting (with disclosure prepended if standalone TTS failed)
-      const greeting = disclosurePrefix + getGreeting(context.assistant, context.organization.name, {
+      const greeting = ownerWebPrompt ? ownerWebPrompt.greeting : disclosurePrefix + getGreeting(context.assistant, context.organization.name, {
         isAfterHours,
         afterHoursConfig,
       });
@@ -7314,8 +7532,10 @@ testWss.on("connection", (ws, req) => {
       }
     } catch (err) {
       console.error("[TestCall] Init error:", err);
+      // SCRUM-596: an owner session that failed to start is stored as failed.
+      if (session?.ownerMode) session.callFailed = true;
       if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: "error", message: "Failed to initialize test call" }));
+        ws.send(JSON.stringify({ type: "error", message: ownerWeb ? "Couldn't start your assistant — please try again." : "Failed to initialize test call" }));
         ws.close(4500, "Init error");
       }
     }
@@ -7371,6 +7591,8 @@ testWss.on("connection", (ws, req) => {
  */
 async function handleTestUserSpeech(session, ws, transcript) {
   if (!session) return;
+  // SCRUM-596: an owner session that is ending or has failed takes no new turn.
+  if (session.ownerMode && (session.ownerSessionEnded || session.callFailed)) return;
   session.isProcessing = true;
 
   // Play hold audio while AI processes
@@ -7379,19 +7601,29 @@ async function handleTestUserSpeech(session, ws, transcript) {
   try {
     session.addMessage("user", transcript);
 
-    const llmOptions = buildLLMOptions(session);
+    const llmOptions = session.ownerMode ? { tools: buildOwnerTools() } : buildLLMOptions(session);
     let reply = null;
+    // SCRUM-596: an owner's end_call ends the turn and then the session (no further
+    // model call). turnAudioBytes times the goodbye's playback before the close.
+    let endCall = false;
+    let lastOwnerTool = null;
+    let turnAudioBytes = 0;
 
-    for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
+    // SCRUM-596: an owner gets the phone line's tool budget (a move is a list, a
+    // check, the move, then the read-back), as in the phone line's classic loop.
+    const maxIterations = session.ownerMode ? OWNER_MAX_TOOL_CALLS : MAX_TOOL_ITERATIONS;
+    for (let i = 0; i < maxIterations; i++) {
       const t0 = Date.now();
       let sentenceCount = 0;
       let ttsChain = Promise.resolve();
       let holdStopped = false;
+      const spoken = [];
 
       const result = await streamChatResponse(LLM_API_KEY, session.messages, {
         ...llmOptions,
         onSentence: (sentence) => {
           sentenceCount++;
+          spoken.push(sentence);
           if (!holdStopped) {
             hold.stop();
             holdStopped = true;
@@ -7404,6 +7636,9 @@ async function handleTestUserSpeech(session, ws, transcript) {
               ws.send(JSON.stringify({ type: "speaking", speaking: true }));
               ws.send(audioBuffer);
             }
+            turnAudioBytes += audioBuffer.length;
+            // SCRUM-596: a reply sentence reached the owner, so this turn produced speech.
+            if (session?.ownerMode) noteAssistantSpeech(session);
           }).catch((err) => {
             session.isSpeaking = false;
             console.error("[TestStreamTTS] Error sending sentence:", err.message);
@@ -7414,6 +7649,8 @@ async function handleTestUserSpeech(session, ws, transcript) {
       if (result.type === "content") {
         reply = result.content;
         await ttsChain;
+        // SCRUM-596: the reply has been spoken: one assistant turn on the owner confirmation gate's clock.
+        if (session.ownerMode) noteAssistantTurnEnd(session);
         // Send final speaking=false and full transcript
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: "speaking", speaking: false }));
@@ -7436,6 +7673,26 @@ async function handleTestUserSpeech(session, ws, transcript) {
         for (const toolCall of result.toolCalls) {
           const fnName = toolCall.function.name;
           const fnArgs = parseToolArgs(toolCall, "TestToolCall");
+
+          // SCRUM-596: owner tools go through the phone line's owner runner (its
+          // confirmation gate and authority checks), never in test mode. Its message
+          // and data go back to the model, as in the phone line's classic loop.
+          if (session.ownerMode) {
+            const ownerRet = await runOwnerToolCall(session, { name: fnName, args: fnArgs }, { executeToolCall, scheduleCache });
+            lastOwnerTool = { name: fnName, ret: ownerRet };
+            // The owner said goodbye: from here the session is ending, and words
+            // heard while the goodbye plays start no new turn.
+            if (ownerRet.__endCall === true) {
+              endCall = true;
+              session.ownerSessionEnded = true;
+            }
+            session.messages.push({
+              role: "tool",
+              tool_call_id: toolCall.id,
+              content: ownerRet.data !== undefined ? JSON.stringify({ message: ownerRet.message, data: ownerRet.data }) : ownerRet.message,
+            });
+            continue;
+          }
 
           // SCRUM-372: cancel-confirmation gate (test/demo classic path — parity)
           if (fnName === "cancel_appointment" && !session.confirmCancel(fnArgs || {}, Date.now())) {
@@ -7467,6 +7724,31 @@ async function handleTestUserSpeech(session, ws, transcript) {
             content: resultMessage,
           });
         }
+        if (endCall) {
+          // SCRUM-596: the owner said goodbye. They last hear this response's own
+          // words or, when it said nothing, a short goodbye.
+          hold.stop();
+          await ttsChain;
+          reply = spoken.join(" ");
+          if (!reply) {
+            reply = getErrorMsg(session.language, "goodbye");
+            try {
+              const audioBuffer = await synthesizeSpeech(DEEPGRAM_API_KEY, reply, { voice: session?.deepgramVoice });
+              turnAudioBytes += audioBuffer.length;
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: "speaking", speaking: true }));
+                ws.send(audioBuffer);
+              }
+            } catch (err) {
+              console.error(`[OwnerWeb] Goodbye TTS failed — ending without it (callSid=${session.callSid}):`, err.message);
+            }
+          }
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: "speaking", speaking: false }));
+            ws.send(JSON.stringify({ type: "transcript", role: "assistant", content: reply, isFinal: true }));
+          }
+          break;
+        }
         continue;
       }
     }
@@ -7474,7 +7756,11 @@ async function handleTestUserSpeech(session, ws, transcript) {
     if (!reply) {
       hold.stop();
       reply = getErrorMsg(session.language, "repeatRequest");
-      console.warn(`[TestPipeline] Tool call loop exhausted after ${MAX_TOOL_ITERATIONS} iterations (assistantId=${session.assistantId})`);
+      // SCRUM-596 (as SF5 on the phone line): an owner never hears "could you repeat
+      // that?", which after a change invites a duplicate request. They hear the
+      // last tool's own words.
+      if (session.ownerMode) reply = ownerToolLoopReply(session, lastOwnerTool);
+      console.warn(`[TestPipeline] Tool call loop exhausted after ${maxIterations} iterations (assistantId=${session.assistantId})`);
       const audioBuffer = await synthesizeSpeech(DEEPGRAM_API_KEY, reply, { voice: session?.deepgramVoice });
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: "speaking", speaking: true }));
@@ -7485,6 +7771,20 @@ async function handleTestUserSpeech(session, ws, transcript) {
     }
 
     session.addMessage("assistant", reply);
+    session.ownerTurnFailureStreak = 0; // SCRUM-596: a turn that answered ends a failure streak
+
+    // SCRUM-596: the session ends once the goodbye's audio has had time to play
+    // (8 kHz μ-law: 8 bytes a millisecond).
+    if (endCall) {
+      const graceMs = Math.min(15_000, Math.round(turnAudioBytes / 8) + 500);
+      setTimeout(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "ended", reason: "owner-ended" }));
+          ws.close(1000, "Owner said goodbye");
+        }
+      }, graceMs);
+      return;
+    }
 
     // Detect what input the AI is expecting next and adapt buffering
     const testNextInputType = detectExpectedInput(reply);
@@ -7495,6 +7795,18 @@ async function handleTestUserSpeech(session, ws, transcript) {
   } catch (err) {
     hold.stop();
     console.error("[TestPipeline] Error:", err);
+    // SCRUM-596: an owner session whose turns keep failing (an LLM outage, credit
+    // run out) ends at the second failure in a row, said as a problem and stored
+    // as failed, rather than "could you repeat that?" on every turn.
+    if (session.ownerMode && ++session.ownerTurnFailureStreak >= 2) {
+      session.callFailed = true;
+      console.error(`[ALERT:error] [OwnerWeb] owner session ended: ${session.ownerTurnFailureStreak} turns failed in a row (callSid=${session.callSid}, org=${session.organizationId})`);
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "error", message: OWNER_WEB_PROBLEM_MESSAGE }));
+        ws.close(4500, "Owner turns failing");
+      }
+      return;
+    }
     try {
       if (ws.readyState === WebSocket.OPEN) {
         const fallback = getErrorMsg(session?.language, "troubleRepeat");

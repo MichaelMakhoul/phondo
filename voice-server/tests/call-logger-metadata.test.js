@@ -19,9 +19,16 @@ const assert = require("node:assert/strict");
 
 /** @type {{table: string, payload: object}[]} */
 const updates = [];
+/** @type {object[]} SCRUM-596: rows createCallRecord inserted */
+const inserts = [];
 
 const mockSupabase = {
   from: (table) => ({
+    insert: (payload) => {
+      inserts.push(payload);
+      const chain = { select: () => chain, single: async () => ({ data: { id: "rec-1" }, error: null }) };
+      return chain;
+    },
     update: (payload) => {
       updates.push({ table, payload });
       const chain = {
@@ -123,4 +130,31 @@ test("fastPath is merged into calls.metadata; a null fastPath writes no metadata
   updates.length = 0;
   await completeCallRecord("call-6", { status: "completed", durationSeconds: 42, transcript: [], pipelineFailover: null, pipeline: null, fastPath: null });
   assert.equal("metadata" in updates.find((u) => u.table === "calls").payload, false);
+});
+
+// SCRUM-596: an owner session in the dashboard is marked as from the web.
+test("channel is merged into calls.metadata; no channel writes no metadata", async () => {
+  updates.length = 0;
+  await completeCallRecord("call-10", { status: "completed", durationSeconds: 42, transcript: "x", callType: "owner", ownerAuth: "verified", channel: "web" });
+  assert.deepEqual(updates.find((u) => u.table === "calls").payload.metadata, {
+    voice_provider: "self_hosted",
+    call_type: "owner",
+    owner_auth: "verified",
+    channel: "web",
+  });
+  updates.length = 0;
+  await completeCallRecord("call-11", { status: "completed", durationSeconds: 42, transcript: "x", channel: null });
+  assert.equal("metadata" in updates.find((u) => u.table === "calls").payload, false);
+});
+
+// SCRUM-596: an owner row is marked as one from the moment it is created.
+test("createCallRecord stamps extra metadata at insert, next to voice_provider", async () => {
+  inserts.length = 0;
+  const { createCallRecord } = require("../lib/call-logger");
+  await createCallRecord({ orgId: "o1", assistantId: "a1", phoneNumberId: null, callerPhone: null, callSid: "web_owner_x", metadata: { call_type: "owner", channel: "web" } });
+  await createCallRecord({ orgId: "o1", assistantId: "a1", phoneNumberId: "p1", callerPhone: "+61400000000", callSid: "CA1" });
+  assert.deepEqual(inserts.map((i) => i.metadata), [
+    { voice_provider: "self_hosted", call_type: "owner", channel: "web" },
+    { voice_provider: "self_hosted" },
+  ]);
 });

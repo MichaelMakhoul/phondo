@@ -103,8 +103,10 @@ describe("SCRUM-587: owner session — controller-override pins", () => {
   });
 
   it("resolveOwnerPipeline runs once per call (it warns on every call when misconfigured), in the start handler", () => {
-    assert.equal((src.match(/resolveOwnerPipeline\(/g) || []).length, 1);
+    // SCRUM-596: and once per browser owner session (/ws/test): two sites in all.
+    assert.equal((src.match(/resolveOwnerPipeline\(/g) || []).length, 2);
     assert.ok(startHandler.includes("resolveOwnerPipeline()"));
+    assert.match(src, /const sessionPipeline = session\.ownerMode \? resolveOwnerPipeline\(\) : VOICE_PIPELINE;/);
     // The start handler never consults the global directly any more.
     assert.doesNotMatch(startHandler, /VOICE_PIPELINE === "gemini-live"/);
     assert.match(startHandler, /if \(effectivePipeline === "gemini-live" && !process\.env\.GEMINI_API_KEY\) \{/);

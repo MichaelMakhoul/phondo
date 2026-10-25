@@ -86,7 +86,8 @@ describe("SCRUM-594: demo-line switch — source pins", () => {
   it("imports the resolver and routes non-owner calls through it; owner calls keep resolveOwnerPipeline()", () => {
     assert.match(src, /const \{ [^}]*\bresolveCallPipeline\b[^}]* \} = require\("\.\/lib\/pipeline-routing"\);/);
     assert.match(startHandler, /const effectivePipeline = session\.ownerMode\s*\?\s*resolveOwnerPipeline\(\)\s*:\s*resolveCallPipeline\(\{/);
-    assert.equal((src.match(/resolveOwnerPipeline\(/g) || []).length, 1, "owner calls resolve their pipeline once, at this site");
+    // SCRUM-596: plus the browser owner session's own site in /ws/test.
+    assert.equal((src.match(/resolveOwnerPipeline\(/g) || []).length, 2, "owner calls resolve their pipeline once, at this site (and the browser owner session at its own)");
     assert.equal((src.match(/resolveCallPipeline\(/g) || []).length, 1, "one routing decision per call");
   });
 

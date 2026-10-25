@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
   Card, CardContent, CardDescription, CardHeader, CardTitle,
@@ -232,6 +233,17 @@ function OwnerLineForm({ country, phondoNumber, initial }: OwnerLineFormProps) {
               <li key={ask}>&ldquo;{ask}&rdquo;</li>
             ))}
           </ul>
+        </div>
+
+        {/* SCRUM-596: the same assistant in the browser. The login stands in for the PIN. */}
+        <div className="flex flex-col gap-3 rounded-lg border p-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-sm font-medium">Try it now, without the phone</p>
+            <p className="text-sm text-muted-foreground">You&apos;re signed in, so there&apos;s no PIN to enter.</p>
+          </div>
+          <Button asChild variant="outline">
+            <Link href="/assistant-line">Talk to it in your browser</Link>
+          </Button>
         </div>
 
         <div className="space-y-2">
