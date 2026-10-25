@@ -7680,7 +7680,12 @@ async function handleTestUserSpeech(session, ws, transcript) {
           if (session.ownerMode) {
             const ownerRet = await runOwnerToolCall(session, { name: fnName, args: fnArgs }, { executeToolCall, scheduleCache });
             lastOwnerTool = { name: fnName, ret: ownerRet };
-            if (ownerRet.__endCall === true) endCall = true;
+            // The owner said goodbye: from here the session is ending, and words
+            // heard while the goodbye plays start no new turn.
+            if (ownerRet.__endCall === true) {
+              endCall = true;
+              session.ownerSessionEnded = true;
+            }
             session.messages.push({
               role: "tool",
               tool_call_id: toolCall.id,

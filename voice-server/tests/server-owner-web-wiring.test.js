@@ -245,8 +245,11 @@ describe("handleTestUserSpeech on an owner session (classic, run for real)", () 
       ownerResults: [{ message: "Ending the call.", __endCall: true }],
     });
     const s = ownerWebSession();
+    s._pendingTranscript = "Wait, one more thing"; // heard while the goodbye plays (queueOrProcess)
     await h.handleTestUserSpeech(s, h.ws, "That's all, thanks");
-    assert.equal(h.calls.filter((c) => c[0] === "llm").length, 1, "the model is not asked again");
+    await new Promise((r) => setImmediate(r));
+    assert.equal(s.ownerSessionEnded, true, "the session is ending from the goodbye on");
+    assert.equal(h.calls.filter((c) => c[0] === "llm").length, 1, "the model is not asked again, not even for words heard during the goodbye");
     assert.equal(s.messages.at(-1).content, "Bye for now.");
     const ended = h.ws.sent.find((m) => m && m.type === "ended");
     assert.deepEqual(ended, { type: "ended", reason: "owner-ended" });
