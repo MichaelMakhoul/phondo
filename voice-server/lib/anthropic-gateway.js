@@ -141,7 +141,8 @@ function isStandingRefusal(status, message = "") {
  * the refused key) and not on a later success (near a spent cap a small request,
  * like the turn validator's, can pass while the fast path's are refused; a slow
  * success can land after the refusal). A new key (`fly secrets set`) restarts the
- * server; after a top-up or a raised cap, `fly apps restart phondo-voice`. The
+ * server; after a top-up or a raised cap, `fly apps restart phondo-voice` when no
+ * call is live (a restart cuts live calls on every line). The
  * first refusal raises an [ALERT:error].
  * @param {number} status
  * @param {string} [message] - the API's error message
@@ -152,7 +153,7 @@ function noteGatewayRefusal(status, message = "") {
   refusal = `HTTP ${status}${message ? `: ${String(message).slice(0, 120)}` : ""}`;
   Sentry.withScope((scope) => {
     scope.setTag("service", "anthropic-gateway");
-    Sentry.captureMessage(`Claude requests refused (${refusal}) — the demo line takes VOICE_PIPELINE until the voice server restarts (after a top-up or a raised cap: fly apps restart phondo-voice)`, "error");
+    Sentry.captureMessage(`Claude requests refused (${refusal}) — the demo line takes VOICE_PIPELINE until the voice server restarts (after a top-up or a raised cap: fly apps restart phondo-voice, when no call is live)`, "error");
   });
   return true;
 }
