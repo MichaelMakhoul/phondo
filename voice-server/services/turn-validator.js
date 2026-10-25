@@ -16,7 +16,7 @@
 const { DEBUG_TRANSCRIPTS } = require("../lib/log-transcript");
 const { claudeLatencyParams, claudeResponseText } = require("../lib/model-params");
 const { Sentry } = require("../lib/sentry");
-const { messagesRequest } = require("../lib/anthropic-gateway");
+const { messagesRequest, noteGatewayRefusal } = require("../lib/anthropic-gateway");
 
 // SCRUM-588: Haiku 5.5 — 10× cheaper than Haiku 4.5 and, with thinking
 // disabled, within ~70ms of its latency (probed). VALIDATOR_MODEL is the
@@ -31,9 +31,10 @@ const VALIDATOR_MAX_TOKENS = 300;
 /**
  * Statuses that fail EVERY validation the same way: a bad VALIDATOR_MODEL
  * (404), a request field the model rejects (400 — e.g. `thinking` on a tier
- * that refuses it), a bad or revoked key (401/403). One is enough to page.
+ * that refuses it), a bad or revoked key (401/403), a spent OpenRouter cap
+ * (402, SCRUM-594). One is enough to page.
  */
-const CONFIG_FAILURE_STATUSES = new Set([400, 401, 403, 404]);
+const CONFIG_FAILURE_STATUSES = new Set([400, 401, 402, 403, 404]);
 /** Unreadable verdicts in a row before anything else counts as "validation OFF". */
 const UNREADABLE_ALERT_AFTER = 3;
 
@@ -195,13 +196,15 @@ OR
 
     if (!res.ok) {
       const { errorType, errorMessage } = await readApiError(res);
-      return noVerdict({
+      const verdict = noVerdict({
         cause: "http-error",
         status: res.status,
         config: CONFIG_FAILURE_STATUSES.has(res.status),
         errorType,
         errorMessage,
       });
+      noteGatewayRefusal(res.status, errorMessage); // the same key also serves the demo line's fast path
+      return verdict;
     }
 
     const data = /** @type {{ content?: unknown, stop_reason?: string }} */ (await res.json());

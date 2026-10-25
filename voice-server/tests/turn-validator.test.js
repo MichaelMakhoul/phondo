@@ -24,8 +24,10 @@ const savedKey = process.env.ANTHROPIC_API_KEY;
 const savedModel = process.env.VALIDATOR_MODEL;
 const savedGateway = { ANTHROPIC_GATEWAY: process.env.ANTHROPIC_GATEWAY, OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY };
 const realFetch = globalThis.fetch;
+const { _test: gatewayTest } = require("../lib/anthropic-gateway");
 
 afterEach(() => {
+  gatewayTest.resetRefusal(); // a 401 latches the shared refusal (lib/anthropic-gateway.js)
   for (const [k, v] of Object.entries(savedGateway)) {
     if (v === undefined) delete process.env[k];
     else process.env[k] = v;
@@ -208,6 +210,19 @@ describe("readable verdicts (incl. the shapes Haiku 4.5, the revert model, emits
 });
 
 describe("ANTHROPIC_GATEWAY=openrouter (SCRUM-594: the Anthropic balance is empty)", () => {
+  it("a spent cap (402) pages at once, and latches the refusal for the demo line", async (t) => {
+    const { gatewayRefusal, _test: gatewayTest } = require("../lib/anthropic-gateway");
+    t.after(() => gatewayTest.resetRefusal());
+    process.env.ANTHROPIC_GATEWAY = "openrouter";
+    process.env.OPENROUTER_API_KEY = "sk-or-test";
+    const validate = loadValidator();
+    const logs = captureLogs(t);
+    httpError(402, "payment_required", "Key limit exceeded");
+    assert.deepEqual(await validate(ARGS), { accurate: true });
+    assert.match(logs.alerts("error").find((l) => l.includes("tier2_validator")) ?? "", /no verdicts \(HTTP 402\) — validation OFF/);
+    assert.equal(gatewayRefusal(), "Claude requests refused (HTTP 402: Key limit exceeded)");
+  });
+
   it("validates through OpenRouter with its bearer key, Haiku 5.5 pinned to Anthropic", async () => {
     process.env.ANTHROPIC_GATEWAY = "openrouter";
     process.env.OPENROUTER_API_KEY = "sk-or-test";
@@ -220,6 +235,7 @@ describe("ANTHROPIC_GATEWAY=openrouter (SCRUM-594: the Anthropic balance is empt
     assert.deepEqual(await validate(ARGS), { accurate: false, discrepancy: "time is 9:30 not 10am" });
     assert.equal(calls.length, 1);
     assert.equal(calls[0].url, "https://openrouter.ai/api/v1/messages");
+    assert.equal(calls[0].init.method, "POST");
     assert.equal(calls[0].init.headers.authorization, "Bearer sk-or-test");
     const body = JSON.parse(calls[0].init.body);
     assert.equal(body.model, "anthropic/claude-haiku-5.5");

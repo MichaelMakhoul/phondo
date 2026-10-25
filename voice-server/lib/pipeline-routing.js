@@ -10,7 +10,7 @@
  *   "+61400000000:openai-realtime,+61400000001:conversationrelay,+61400000002:grok-realtime"
  */
 
-const { gatewayProblem, gatewayKeyName } = require("./anthropic-gateway");
+const { gatewayProblem, gatewayModelProblem, gatewayRefusal } = require("./anthropic-gateway");
 
 /** Digits-only, so "+61400000000" / "61400000000" / formatted all compare equal. */
 function normNumber(s) {
@@ -72,15 +72,28 @@ const DEMO_LINE_PIPELINES = new Set(["classic-fast", "classic", "gemini-live"]);
 const warnedDemoLinePipelines = new Set();
 
 /**
- * SCRUM-594 (R12c): the keys "classic-fast" cannot run without: Claude's, for
- * its gateway (ANTHROPIC_API_KEY, or OPENROUTER_API_KEY with
- * ANTHROPIC_GATEWAY=openrouter: lib/anthropic-gateway.js), and Deepgram's
- * (DEEPGRAM_API_KEY, for Flux and Aura). An empty value counts as missing.
+ * SCRUM-594 (R12c): why "classic-fast" can't run now, or null when it can. It
+ * needs Claude's key for its gateway (ANTHROPIC_API_KEY, or OPENROUTER_API_KEY
+ * with ANTHROPIC_GATEWAY=openrouter: lib/anthropic-gateway.js), a model that
+ * gateway takes, no standing refusal (no credit, a spent cap, a bad key: phone
+ * test F10) and Deepgram's key (DEEPGRAM_API_KEY, for Flux and Aura). An empty
+ * value counts as missing.
  * @param {Record<string, string|undefined>} [env] - defaults to process.env, read now
+ * @param {string} [model] - the fast path's Claude model (server.js FAST_LLM_MODEL, same default)
+ * @returns {string | null}
+ */
+function fastPathProblem(env = process.env, model = env.FAST_LLM_MODEL || "claude-haiku-5-5") {
+  return gatewayProblem(env) ?? gatewayModelProblem(model, env) ?? gatewayRefusal() ?? (env.DEEPGRAM_API_KEY ? null : "DEEPGRAM_API_KEY not set");
+}
+
+/**
+ * Whether "classic-fast" can run now (see fastPathProblem).
+ * @param {Record<string, string|undefined>} [env]
+ * @param {string} [model]
  * @returns {boolean}
  */
-function fastPathKeysPresent(env = process.env) {
-  return gatewayProblem(env) === null && Boolean(env.DEEPGRAM_API_KEY);
+function fastPathKeysPresent(env = process.env, model) {
+  return fastPathProblem(env, model) === null;
 }
 
 /** The missing-key fallback is logged once per process, not once per call. */
@@ -143,7 +156,7 @@ function resolveCallPipeline({
   if (override === "classic-fast" && !hasFastPathKeys()) {
     if (!fastPathKeysWarned) {
       fastPathKeysWarned = true;
-      console.warn(`[PipelineRouting] classic-fast needs ${gatewayKeyName()} and DEEPGRAM_API_KEY — using ${global}`);
+      console.warn(`[PipelineRouting] classic-fast can't run (${fastPathProblem() ?? "its keys are missing"}) — using ${global}`);
     }
     return global;
   }
@@ -160,4 +173,5 @@ module.exports = {
   readDemoLinePipeline,
   DEMO_LINE_PIPELINES,
   fastPathKeysPresent,
+  fastPathProblem,
 };

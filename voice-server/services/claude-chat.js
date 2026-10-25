@@ -24,8 +24,10 @@
 
 const { toAnthropicMessages, toAnthropicTools } = require("./openai-llm");
 const { claudeLatencyParams } = require("../lib/model-params");
-const { messagesRequest } = require("../lib/anthropic-gateway");
+const { messagesRequest, noteGatewayRefusal } = require("../lib/anthropic-gateway");
 
+/** Statuses worth another try: rate limits and transient errors, Anthropic's and OpenRouter's. */
+const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 529]);
 // SCRUM-588: Haiku 5.5 (test-only pipeline). CR_LLM_MODEL swaps tiers.
 const CR_LLM_MODEL = process.env.CR_LLM_MODEL || "claude-haiku-5-5";
 
@@ -340,8 +342,9 @@ async function streamClaudeResponse(messages, opts = {}) {
     });
     // 429 (rate limit) AND 500/529 (transient overload) are retryable per
     // Anthropic guidance — without this a single blip looks like "Claude failed"
-    // and would skew the eval's reliability numbers.
-    if ((res.status === 429 || res.status === 500 || res.status === 529) && attempt < 2) {
+    // and would skew the eval's reliability numbers. 502/503 are OpenRouter's
+    // temporary errors (an Anthropic overload can arrive as one: no fallbacks).
+    if (RETRYABLE_STATUSES.has(res.status) && attempt < 2) {
       const retryAfter = res.headers.get("retry-after");
       const waitMs = Math.min(retryAfter ? Number(retryAfter) * 1000 : 1000 * (attempt + 1), 5000);
       console.warn(`[ClaudeChat] Anthropic ${res.status}${via}, retrying in ${waitMs}ms (attempt ${attempt + 1}/3)`);
@@ -356,12 +359,16 @@ async function streamClaudeResponse(messages, opts = {}) {
     // the raw body to logs (keeps this file's "nothing un-gated to stdout"
     // invariant; the body is an error envelope, but we don't rely on that).
     let detail = "";
+    let message = "";
     try {
       const errBody = /** @type {any} */ (await res.json());
       // Anthropic names the error's type; OpenRouter may give only a code ("Key limit exceeded" is a 402).
       const kind = errBody?.error?.type || errBody?.error?.code;
-      if (kind) detail = ` (${kind}: ${String(errBody.error.message || "").slice(0, 200)})`;
+      message = String(errBody?.error?.message || "");
+      if (kind) detail = ` (${kind}: ${message.slice(0, 200)})`;
     } catch { /* body not JSON — omit detail */ }
+    // No credit, a spent cap or a bad key: new demo-line calls take the global pipeline for a while (F10).
+    noteGatewayRefusal(res.status, message);
     throw new Error(`Anthropic API error ${res.status}${via}${detail}`);
   }
   return parseClaudeStream(res, onSentence, chunking);

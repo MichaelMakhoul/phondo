@@ -1,6 +1,7 @@
 const { describe, it, afterEach } = require("node:test");
 const assert = require("node:assert/strict");
 const { streamClaudeResponse } = require("../services/claude-chat");
+const { gatewayRefusal, _test: gatewayTest } = require("../lib/anthropic-gateway");
 
 // SCRUM-594: the fast path's Claude requests follow ANTHROPIC_GATEWAY (lib/anthropic-gateway.js).
 const ENV_KEYS = ["ANTHROPIC_GATEWAY", "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY"];
@@ -13,6 +14,7 @@ afterEach(() => {
     else process.env[k] = savedEnv[k];
   }
   globalThis.fetch = realFetch;
+  gatewayTest.resetRefusal();
 });
 
 function setEnv(env) {
@@ -91,6 +93,35 @@ describe("streamClaudeResponse and ANTHROPIC_GATEWAY (SCRUM-594)", () => {
     setEnv({ ANTHROPIC_GATEWAY: "openrouter", OPENROUTER_API_KEY: "sk-or-test" });
     stubFetch(() => new Response(JSON.stringify({ error: { code: 402, message: "Key limit exceeded" } }), { status: 402 }));
     await assert.rejects(streamClaudeResponse(MESSAGES, { model: "claude-haiku-5-5" }), /^Error: Anthropic API error 402 via OpenRouter \(402: Key limit exceeded\)$/);
+  });
+
+  it("a spent cap latches the refusal, so new demo calls take the global pipeline (F10)", async (t) => {
+    setEnv({ ANTHROPIC_GATEWAY: "openrouter", OPENROUTER_API_KEY: "sk-or-test" });
+    t.mock.method(console, "error", () => {});
+    stubFetch(() => new Response(JSON.stringify({ error: { code: 402, message: "Key limit exceeded" } }), { status: 402 }));
+    assert.equal(gatewayRefusal(), null);
+    await assert.rejects(streamClaudeResponse(MESSAGES, { model: "claude-haiku-5-5" }), /402/);
+    assert.equal(gatewayRefusal(), "Claude requests refused (HTTP 402: Key limit exceeded)");
+  });
+
+  it("a one-off error doesn't latch", async () => {
+    setEnv({ ANTHROPIC_API_KEY: "sk-ant-test" });
+    stubFetch(() => new Response(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "messages: field required" } }), { status: 400 }));
+    await assert.rejects(streamClaudeResponse(MESSAGES, { model: "claude-haiku-5-5" }), /400/);
+    assert.equal(gatewayRefusal(), null);
+  });
+
+  it("OpenRouter's temporary 502/503 are retried, as Anthropic's 429/500/529 always were", async (t) => {
+    setEnv({ ANTHROPIC_GATEWAY: "openrouter", OPENROUTER_API_KEY: "sk-or-test" });
+    t.mock.method(console, "warn", () => {});
+    for (const status of [502, 503]) {
+      let n = 0;
+      const calls = stubFetch(() => (n++ === 0
+        ? new Response("{}", { status, headers: { "retry-after": "0" } })
+        : new Response(sse("Back again."), { status: 200 })));
+      assert.deepEqual(await streamClaudeResponse(MESSAGES, { model: "claude-haiku-5-5" }), { type: "content", content: "Back again." });
+      assert.equal(calls.length, 2, String(status));
+    }
   });
 
   it("an Anthropic error reads as before", async () => {

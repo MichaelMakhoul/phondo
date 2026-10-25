@@ -126,7 +126,7 @@ describe("SCRUM-594: demo-line switch — source pins", () => {
  * Runs the real selection text. `resolver` defaults to the real resolveCallPipeline;
  * `env` is the process.env the slice sees.
  */
-function select({ owner = false, language = "en", calledNumber = CUSTOMER_LINE, voicePipeline = "gemini-live", env = { GEMINI_API_KEY: "k" }, demoLine = (n) => n === DEMO, resolver = resolveCallPipeline, ownerPipeline = "classic" } = {}) {
+function select({ owner = false, language = "en", calledNumber = CUSTOMER_LINE, voicePipeline = "gemini-live", env = { GEMINI_API_KEY: "k" }, demoLine = (n) => n === DEMO, resolver = resolveCallPipeline, ownerPipeline = "classic", fastModel = "claude-haiku-5-5" } = {}) {
   const lines = [];
   const calls = [];
   const session = makeSession({ owner, language, calledNumber });
@@ -139,6 +139,7 @@ function select({ owner = false, language = "en", calledNumber = CUSTOMER_LINE, 
       resolveOwnerPipeline: () => { calls.push(["resolveOwnerPipeline"]); return ownerPipeline; },
       resolveCallPipeline: (opts) => { calls.push(["resolveCallPipeline", opts]); return resolver(opts); },
       fastPathKeysPresent,
+      FAST_LLM_MODEL: fastModel,
       isDemoLineNumber: demoLine,
       VOICE_PIPELINE: voicePipeline,
       process: { env },
@@ -166,6 +167,11 @@ describe("SCRUM-594: pipeline selection, run for real", () => {
     env.ANTHROPIC_API_KEY = "sk";
     delete env.DEEPGRAM_API_KEY;
     assert.equal(hasFastPathKeys(), false);
+    // SCRUM-594: under ANTHROPIC_GATEWAY=openrouter, the OpenRouter key, and a FAST_LLM_MODEL it takes.
+    Object.assign(env, { DEEPGRAM_API_KEY: "dg", ANTHROPIC_GATEWAY: "openrouter", OPENROUTER_API_KEY: "or" });
+    assert.equal(hasFastPathKeys(), true);
+    const reverted = select({ calledNumber: DEMO, env: { ...env }, demoLine, resolver: () => "classic-fast", fastModel: "claude-haiku-4-5-20251001" });
+    assert.equal(reverted.calls[0][1].hasFastPathKeys(), false, "the Haiku 4.5 revert lever can't go through OpenRouter");
     assert.equal(r.effectivePipeline, "classic-fast");
     assert.equal(r.session.effectivePipeline, "classic-fast", "the session records it (calls.metadata.pipeline, Task 5)");
     assert.deepEqual(r.lines, []);
@@ -192,6 +198,11 @@ describe("SCRUM-594: pipeline selection, run for real", () => {
   });
 
   it("R12c: classic-fast without ANTHROPIC_API_KEY or DEEPGRAM_API_KEY runs the global pipeline instead (logged once per process)", (t) => {
+    // The line names why from the process's own environment (lib/pipeline-routing.js fastPathProblem): pin it.
+    const pinned = { ANTHROPIC_API_KEY: undefined, ANTHROPIC_GATEWAY: undefined, OPENROUTER_API_KEY: undefined, FAST_LLM_MODEL: undefined };
+    const saved = Object.fromEntries(Object.keys(pinned).map((k) => [k, process.env[k]]));
+    for (const k of Object.keys(pinned)) delete process.env[k];
+    t.after(() => { for (const [k, v] of Object.entries(saved)) if (v !== undefined) process.env[k] = v; });
     const consoleLines = captureConsole(t);
     const noClaude = select({ calledNumber: DEMO, env: { GEMINI_API_KEY: "k", DEMO_LINE_PIPELINE: "classic-fast", DEEPGRAM_API_KEY: "dg" } });
     assert.equal(noClaude.effectivePipeline, "gemini-live");
@@ -199,7 +210,7 @@ describe("SCRUM-594: pipeline selection, run for real", () => {
     const noDeepgram = select({ calledNumber: DEMO, voicePipeline: "classic", env: { DEMO_LINE_PIPELINE: "classic-fast", ANTHROPIC_API_KEY: "sk" } });
     assert.equal(noDeepgram.effectivePipeline, "classic");
     assert.deepEqual(noClaude.lines, [], "Gemini has its key: no other line");
-    assert.deepEqual(consoleLines, ["warn| [PipelineRouting] classic-fast needs ANTHROPIC_API_KEY and DEEPGRAM_API_KEY — using gemini-live"]);
+    assert.deepEqual(consoleLines, ["warn| [PipelineRouting] classic-fast can't run (ANTHROPIC_API_KEY not set) — using gemini-live"]);
   });
 
   it("the missing-key fallback still follows the EFFECTIVE pipeline (a demo line pinned to gemini-live without a key)", () => {

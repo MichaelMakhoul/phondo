@@ -2389,8 +2389,9 @@ wss.on("connection", (twilioWs) => {
           // SCRUM-594: a customer call to the published demo line may be moved by
           // DEMO_LINE_PIPELINE (read on every call); every other customer call
           // follows VOICE_PIPELINE as before. Owner calls never reach the switch.
-          // classic-fast without ANTHROPIC_API_KEY/DEEPGRAM_API_KEY (read when the
-          // resolver asks) takes VOICE_PIPELINE instead (R12c).
+          // classic-fast that can't run (a missing key for Claude's gateway or for
+          // Deepgram, a model the gateway won't take, or Claude refusing requests:
+          // fastPathProblem, read when the resolver asks) takes VOICE_PIPELINE (R12c).
           const effectivePipeline = session.ownerMode
             ? resolveOwnerPipeline()
             : resolveCallPipeline({
@@ -2400,7 +2401,7 @@ wss.on("connection", (twilioWs) => {
                 globalPipeline: VOICE_PIPELINE,
                 demoLinePipeline: process.env.DEMO_LINE_PIPELINE,
                 isDemoLine: isDemoLineNumber,
-                hasFastPathKeys: () => fastPathKeysPresent(process.env),
+                hasFastPathKeys: () => fastPathKeysPresent(process.env, FAST_LLM_MODEL),
               });
           session.effectivePipeline = effectivePipeline;
           if (effectivePipeline === "gemini-live" && !process.env.GEMINI_API_KEY) {

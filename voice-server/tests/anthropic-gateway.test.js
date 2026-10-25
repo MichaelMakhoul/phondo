@@ -1,7 +1,10 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 const {
-  anthropicGateway, gatewayKeyName, gatewayProblem, messagesRequest, describeGateway, ANTHROPIC_MESSAGES_URL, OPENROUTER_MESSAGES_URL,
+  anthropicGateway, gatewayKeyName, gatewayProblem, gatewayModelProblem, messagesRequest, describeGateway, ANTHROPIC_MESSAGES_URL, OPENROUTER_MESSAGES_URL,
+  isStandingRefusal, noteGatewayRefusal, gatewayRefusal, REFUSAL_LATCH_MS, _test,
 } = require("../lib/anthropic-gateway");
 
 // SCRUM-594: ANTHROPIC_GATEWAY=openrouter sends the voice server's Anthropic Messages requests through
@@ -104,6 +107,7 @@ describe("describeGateway: the boot log's line", () => {
   it("nothing on the default", () => {
     assert.equal(describeGateway(DIRECT), null);
     assert.equal(describeGateway({ ...DIRECT, ANTHROPIC_GATEWAY: "anthropic" }), null);
+    assert.equal(describeGateway({ ...DIRECT, ANTHROPIC_GATEWAY: "" }), null, "blank is the default, as messagesRequest reads it");
   });
 
   it("says where requests go, a missing key, a bad value, and the classic fallback that still goes direct", () => {
@@ -112,5 +116,75 @@ describe("describeGateway: the boot log's line", () => {
     assert.match(describeGateway({ ANTHROPIC_GATEWAY: "nope" }) ?? "", /^⚠️ Anthropic requests: ANTHROPIC_GATEWAY must be .* — every one will fail$/);
     assert.match(describeGateway({ ...OPENROUTER, LLM_PROVIDER: "anthropic" }) ?? "", /; the classic fallback \(LLM_PROVIDER=anthropic\) still calls Anthropic directly$/);
     assert.ok(!(describeGateway(OPENROUTER) ?? "").includes("sk-or-test"));
+  });
+
+  it("names each configured model OpenRouter won't take (the documented revert levers)", () => {
+    assert.equal(
+      describeGateway({ ...OPENROUTER, FAST_LLM_MODEL: "claude-haiku-4-5-20251001", VALIDATOR_MODEL: "claude-haiku-5-5", CR_LLM_MODEL: "claude-sonnet-5-5" }),
+      "Anthropic requests: via OpenRouter, claude-haiku-5-5 only, pinned to Anthropic's servers; ⚠️ OpenRouter won't take FAST_LLM_MODEL=claude-haiku-4-5-20251001, CR_LLM_MODEL=claude-sonnet-5-5",
+    );
+    assert.ok(!(describeGateway({ ...OPENROUTER, VALIDATOR_MODEL: "claude-haiku-5-5" }) ?? "").includes("won't take"));
+    assert.match(describeGateway({ ...OPENROUTER, VALIDATOR_MODEL: "claude-haiku-4-5-20251001" }) ?? "", /won't take VALIDATOR_MODEL=claude-haiku-4-5-20251001$/);
+  });
+});
+
+describe("every Anthropic Messages call goes through the gateway", () => {
+  it("no other source file names api.anthropic.com (the classic fallback, services/openai-llm.js, is the one exemption)", () => {
+    // A new call site (e.g. PR #442's booking pre-check) would otherwise hit the empty account while ANTHROPIC_GATEWAY=openrouter.
+    const root = path.join(__dirname, "..");
+    const offenders = [];
+    const walk = (dir) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (["node_modules", "tests", "scripts", "public", ".git"].includes(entry.name)) continue;
+        const p = path.join(dir, entry.name);
+        if (entry.isDirectory()) walk(p);
+        else if (entry.name.endsWith(".js") && fs.readFileSync(p, "utf8").includes("api.anthropic.com")) offenders.push(path.relative(root, p));
+      }
+    };
+    walk(root);
+    assert.deepEqual(offenders.sort(), ["lib/anthropic-gateway.js", "services/openai-llm.js"]);
+  });
+});
+
+describe("gatewayModelProblem", () => {
+  it("OpenRouter takes Haiku 5.5 only; Anthropic takes any model; a bad gateway value is gatewayProblem's to name", () => {
+    assert.equal(gatewayModelProblem("claude-haiku-5-5", OPENROUTER), null);
+    assert.equal(gatewayModelProblem("claude-opus-5-5", OPENROUTER), "claude-opus-5-5 may not be sent through OpenRouter (claude-haiku-5-5 only)");
+    assert.equal(gatewayModelProblem(["claude-haiku-5-5"], OPENROUTER), "claude-haiku-5-5 may not be sent through OpenRouter (claude-haiku-5-5 only)", "not a string");
+    assert.equal(gatewayModelProblem("claude-opus-5-5", DIRECT), null);
+    assert.equal(gatewayModelProblem("claude-opus-5-5", { ANTHROPIC_GATEWAY: "nope" }), null);
+  });
+});
+
+describe("the standing-refusal latch (phone test F10: every turn refused, every turn an apology)", () => {
+  it("only refusals that repeat on every request: no credit, a spent cap, a bad key", () => {
+    assert.equal(isStandingRefusal(400, "Your credit balance is too low to access the Anthropic API."), true);
+    assert.equal(isStandingRefusal(402, ""), true);
+    assert.equal(isStandingRefusal(401, "invalid x-api-key"), true);
+    assert.equal(isStandingRefusal(403, "Key limit exceeded"), true);
+    assert.equal(isStandingRefusal(403, "Your input was flagged"), false, "a moderation 403 is about one request");
+    assert.equal(isStandingRefusal(400, "messages: field required"), false, "a bad request is about one request");
+    for (const status of [404, 429, 500, 502, 503, 529]) assert.equal(isStandingRefusal(status, "credit balance limit"), false, String(status));
+  });
+
+  it("holds for REFUSAL_LATCH_MS, renews while the refusal repeats, alerts once, and lapses by itself", (t) => {
+    t.after(() => _test.resetRefusal());
+    const alerts = [];
+    t.mock.method(console, "error", (...a) => alerts.push(a.join(" ")));
+    const t0 = 1_000_000;
+    assert.equal(gatewayRefusal(t0), null);
+    assert.equal(noteGatewayRefusal(429, "", t0), false, "a transient error doesn't latch");
+    assert.equal(gatewayRefusal(t0), null);
+    assert.equal(noteGatewayRefusal(402, "Key limit exceeded", t0), true);
+    assert.equal(gatewayRefusal(t0 + 1), "Claude requests refused (HTTP 402: Key limit exceeded)");
+    assert.equal(alerts.length, 1);
+    assert.match(alerts[0], /^\[ALERT:error\] \[anthropic-gateway\] Claude requests refused \(HTTP 402: Key limit exceeded\) — the demo line takes VOICE_PIPELINE for 10 min at a time while this repeats/);
+    assert.equal(noteGatewayRefusal(402, "Key limit exceeded", t0 + 5 * 60_000), false, "a repeat renews without a second alert");
+    assert.equal(alerts.length, 1);
+    assert.ok(gatewayRefusal(t0 + REFUSAL_LATCH_MS + 60_000), "renewed from the repeat");
+    assert.equal(gatewayRefusal(t0 + 5 * 60_000 + REFUSAL_LATCH_MS), null, "lapsed: a top-up needs no restart");
+    assert.equal(noteGatewayRefusal(400, "Your credit balance is too low", t0 + 20 * 60_000), true, "a new refusal after it lapsed alerts again");
+    assert.equal(alerts.length, 2);
+    assert.equal(REFUSAL_LATCH_MS, 10 * 60_000);
   });
 });

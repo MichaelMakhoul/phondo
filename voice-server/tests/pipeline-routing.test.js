@@ -10,7 +10,18 @@ const {
   readDemoLinePipeline,
   DEMO_LINE_PIPELINES,
   fastPathKeysPresent,
+  fastPathProblem,
 } = require("../lib/pipeline-routing");
+const { noteGatewayRefusal, _test: gatewayTest } = require("../lib/anthropic-gateway");
+
+/** Sets env vars for one test (undefined deletes) and puts them back after. */
+function withEnv(t, vars) {
+  const saved = Object.fromEntries(Object.keys(vars).map((k) => [k, process.env[k]]));
+  const apply = (o) => { for (const [k, v] of Object.entries(o)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; } };
+  apply(vars);
+  t.after(() => apply(saved));
+}
+const NO_CLAUDE_ENV = { ANTHROPIC_API_KEY: undefined, ANTHROPIC_GATEWAY: undefined, OPENROUTER_API_KEY: undefined, FAST_LLM_MODEL: undefined };
 
 // SCRUM-378: per-number pipeline override (eval spike), must be inert in prod.
 describe("resolveTestPipeline (SCRUM-378)", () => {
@@ -305,30 +316,26 @@ describe("resolveCallPipeline: classic-fast without its keys (SCRUM-594 R12c)", 
     assert.deepEqual(lines, []);
   });
 
-  it("a key missing: the call takes the global pipeline, and it is logged once per process", (t) => {
+  it("a key missing: the call takes the global pipeline, and it is logged once per process, with why", (t) => {
+    withEnv(t, NO_CLAUDE_ENV);
     const { value, lines } = quiet(t, () => [
       fast({ hasFastPathKeys: () => false }),
       fast({ hasFastPathKeys: () => false, globalPipeline: "classic" }),
       fast({ hasFastPathKeys: () => false, globalPipeline: "openai-realtime" }),
     ]);
     assert.deepEqual(value, ["gemini-live", "classic", "classic"], "the global, normalised as always");
-    assert.deepEqual(lines, ["warn| [PipelineRouting] classic-fast needs ANTHROPIC_API_KEY and DEEPGRAM_API_KEY — using gemini-live"]);
+    assert.deepEqual(lines, ["warn| [PipelineRouting] classic-fast can't run (ANTHROPIC_API_KEY not set) — using gemini-live"]);
   });
 
   it("with ANTHROPIC_GATEWAY=openrouter, the line names the OpenRouter key (SCRUM-594)", (t) => {
-    const saved = process.env.ANTHROPIC_GATEWAY;
-    process.env.ANTHROPIC_GATEWAY = "openrouter";
-    t.after(() => {
-      if (saved === undefined) delete process.env.ANTHROPIC_GATEWAY;
-      else process.env.ANTHROPIC_GATEWAY = saved;
-    });
+    withEnv(t, { ...NO_CLAUDE_ENV, ANTHROPIC_GATEWAY: "openrouter", ANTHROPIC_API_KEY: "sk-test" });
     // A fresh module: its once-per-process line hasn't been logged yet.
     const p = require.resolve("../lib/pipeline-routing");
     delete require.cache[p];
     const fresh = require(p);
     const { value, lines } = quiet(t, () => fresh.resolveCallPipeline({ calledNumber: DEMO, language: "en", globalPipeline: "gemini-live", demoLinePipeline: "classic-fast", isDemoLine: isDemo, hasFastPathKeys: () => false }));
     assert.equal(value, "gemini-live");
-    assert.deepEqual(lines, ["warn| [PipelineRouting] classic-fast needs OPENROUTER_API_KEY and DEEPGRAM_API_KEY — using gemini-live"]);
+    assert.deepEqual(lines, ["warn| [PipelineRouting] classic-fast can't run (OPENROUTER_API_KEY not set (ANTHROPIC_GATEWAY=openrouter)) — using gemini-live"]);
   });
 
   it("the keys are asked about only when the call would run classic-fast", (t) => {
@@ -387,5 +394,32 @@ describe("resolveCallPipeline: classic-fast without its keys (SCRUM-594 R12c)", 
     assert.equal(fastPathKeysPresent({ ANTHROPIC_GATEWAY: "openrouter", ANTHROPIC_API_KEY: "sk", DEEPGRAM_API_KEY: "dg" }), false, "the empty Anthropic account is no stand-in");
     assert.equal(fastPathKeysPresent({ ANTHROPIC_GATEWAY: "openrouter", OPENROUTER_API_KEY: "or" }), false);
     assert.equal(fastPathKeysPresent({ ANTHROPIC_GATEWAY: "open-router", OPENROUTER_API_KEY: "or", ANTHROPIC_API_KEY: "sk", DEEPGRAM_API_KEY: "dg" }), false, "a value it doesn't know");
+  });
+
+  it("fastPathProblem names the first thing missing: Claude's gateway key, a model it won't take, a refusal, Deepgram's key", () => {
+    const OR = { ANTHROPIC_GATEWAY: "openrouter", OPENROUTER_API_KEY: "or", DEEPGRAM_API_KEY: "dg" };
+    assert.equal(fastPathProblem({}), "ANTHROPIC_API_KEY not set");
+    assert.equal(fastPathProblem({ ANTHROPIC_API_KEY: "sk" }), "DEEPGRAM_API_KEY not set");
+    assert.equal(fastPathProblem({ ANTHROPIC_API_KEY: "sk", DEEPGRAM_API_KEY: "dg" }), null);
+    assert.equal(fastPathProblem(OR), null, "Haiku 5.5 by default, as server.js's FAST_LLM_MODEL");
+    assert.equal(fastPathProblem({ ...OR, FAST_LLM_MODEL: "claude-haiku-4-5-20251001" }), "claude-haiku-4-5-20251001 may not be sent through OpenRouter (claude-haiku-5-5 only)", "the documented revert lever");
+    assert.equal(fastPathProblem(OR, "claude-sonnet-5-5"), "claude-sonnet-5-5 may not be sent through OpenRouter (claude-haiku-5-5 only)");
+    assert.equal(fastPathProblem({ ANTHROPIC_API_KEY: "sk", DEEPGRAM_API_KEY: "dg" }, "claude-haiku-4-5-20251001"), null, "straight to Anthropic, any model");
+    assert.equal(fastPathKeysPresent({ ...OR, FAST_LLM_MODEL: "claude-haiku-4-5-20251001" }), false);
+    assert.equal(fastPathKeysPresent(OR, "claude-opus-5-5"), false);
+  });
+
+  it("a standing refusal (no credit, a spent cap) sends new demo calls to the global pipeline until it lapses (phone test F10)", (t) => {
+    const env = { ANTHROPIC_API_KEY: "sk", DEEPGRAM_API_KEY: "dg" };
+    t.after(() => gatewayTest.resetRefusal());
+    t.mock.method(console, "error", () => {});
+    assert.equal(fastPathProblem(env), null);
+    noteGatewayRefusal(400, "Your credit balance is too low to access the Anthropic API.");
+    assert.equal(fastPathProblem(env), "Claude requests refused (HTTP 400: Your credit balance is too low to access the Anthropic API.)");
+    assert.equal(fastPathKeysPresent(env), false);
+    const { value } = quiet(t, () => fast({ hasFastPathKeys: () => fastPathKeysPresent(env) }));
+    assert.equal(value, "gemini-live");
+    gatewayTest.resetRefusal();
+    assert.equal(fastPathKeysPresent(env), true);
   });
 });

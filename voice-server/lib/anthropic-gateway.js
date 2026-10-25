@@ -13,6 +13,8 @@
  * (services/openai-llm.js) still calls Anthropic directly.
  */
 
+const { Sentry } = require("./sentry");
+
 const ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages";
 const OPENROUTER_MESSAGES_URL = "https://openrouter.ai/api/v1/messages";
 const ANTHROPIC_VERSION = "2023-06-01";
@@ -66,6 +68,24 @@ function gatewayProblem(env = process.env) {
 }
 
 /**
+ * Why `model` can't go through the gateway, or null when it can: OpenRouter
+ * takes only Haiku 5.5. A bad ANTHROPIC_GATEWAY is gatewayProblem's to name.
+ * @param {unknown} model
+ * @param {Record<string, string|undefined>} [env]
+ * @returns {string | null}
+ */
+function gatewayModelProblem(model, env = process.env) {
+  let gateway;
+  try {
+    gateway = anthropicGateway(env);
+  } catch {
+    return null;
+  }
+  if (gateway !== "openrouter" || (typeof model === "string" && OPENROUTER_MODELS.has(model))) return null;
+  return `${model || "(no model)"} may not be sent through OpenRouter (claude-haiku-5-5 only)`;
+}
+
+/**
  * The URL, headers and JSON body for one Messages request. Throws when the
  * gateway can't send (see gatewayProblem), or when OpenRouter is asked for any
  * model but Haiku 5.5, or a body carries one of OpenRouter's routing fields.
@@ -74,7 +94,7 @@ function gatewayProblem(env = process.env) {
  * @returns {{ gateway: "anthropic" | "openrouter", url: string, headers: Record<string, string>, body: string }}
  */
 function messagesRequest(body, env = process.env) {
-  const problem = gatewayProblem(env);
+  const problem = gatewayProblem(env) ?? gatewayModelProblem(body.model, env);
   if (problem) throw new Error(problem);
   if (anthropicGateway(env) === "anthropic") {
     return {
@@ -84,8 +104,6 @@ function messagesRequest(body, env = process.env) {
       body: JSON.stringify(body),
     };
   }
-  const model = OPENROUTER_MODELS.get(body.model);
-  if (!model) throw new Error(`${body.model || "(no model)"} may not be sent through OpenRouter (claude-haiku-5-5 only)`);
   const routing = OPENROUTER_ROUTING.filter((field) => field in body);
   if (routing.length > 0) throw new Error(`a Messages request may not carry OpenRouter's routing fields (${routing.join(", ")})`);
   return {
@@ -93,8 +111,60 @@ function messagesRequest(body, env = process.env) {
     url: OPENROUTER_MESSAGES_URL,
     headers: { authorization: `Bearer ${env.OPENROUTER_API_KEY}`, "anthropic-version": ANTHROPIC_VERSION, "content-type": "application/json" },
     // Pinned to Anthropic's own servers: no other provider, no fallback.
-    body: JSON.stringify({ ...body, model, provider: { only: ["anthropic"], allow_fallbacks: false } }),
+    body: JSON.stringify({ ...body, model: OPENROUTER_MODELS.get(body.model), provider: { only: ["anthropic"], allow_fallbacks: false } }),
   };
+}
+
+/** How long a refusal that repeats on every request keeps the demo line off the fast path. */
+const REFUSAL_LATCH_MS = 10 * 60 * 1000;
+const refusal = { until: 0, reason: "" };
+
+/**
+ * Whether an error response will repeat on every request until someone acts:
+ * no credit (Anthropic's 400 "credit balance is too low", phone test F10), a
+ * spent cap (OpenRouter's 402, or a 403 naming a limit) or a bad key (401).
+ * @param {number} status
+ * @param {string} [message] - the API's error message
+ * @returns {boolean}
+ */
+function isStandingRefusal(status, message = "") {
+  if (status === 401 || status === 402) return true;
+  if (status === 403) return /limit/i.test(message);
+  if (status === 400) return /credit balance/i.test(message);
+  return false;
+}
+
+/**
+ * Notes an error response. A standing refusal holds the latch for
+ * REFUSAL_LATCH_MS, renewed while it repeats, so new demo-line calls take the
+ * global pipeline instead of apologising on every turn (F10); the first one
+ * raises an [ALERT:error]. The latch lapses by itself after a top-up.
+ * @param {number} status
+ * @param {string} [message] - the API's error message
+ * @param {number} [now]
+ * @returns {boolean} whether this response set the latch
+ */
+function noteGatewayRefusal(status, message = "", now = Date.now()) {
+  if (!isStandingRefusal(status, message)) return false;
+  const started = now >= refusal.until;
+  refusal.until = now + REFUSAL_LATCH_MS;
+  refusal.reason = `HTTP ${status}${message ? `: ${String(message).slice(0, 120)}` : ""}`;
+  if (started) {
+    Sentry.withScope((scope) => {
+      scope.setTag("service", "anthropic-gateway");
+      Sentry.captureMessage(`Claude requests refused (${refusal.reason}) — the demo line takes VOICE_PIPELINE for ${REFUSAL_LATCH_MS / 60_000} min at a time while this repeats`, "error");
+    });
+  }
+  return started;
+}
+
+/**
+ * The standing refusal behind the latch while it holds, else null.
+ * @param {number} [now]
+ * @returns {string | null}
+ */
+function gatewayRefusal(now = Date.now()) {
+  return now < refusal.until ? `Claude requests refused (${refusal.reason})` : null;
 }
 
 /**
@@ -106,16 +176,29 @@ function describeGateway(env = process.env) {
   if (!env.ANTHROPIC_GATEWAY || env.ANTHROPIC_GATEWAY === "anthropic") return null;
   const problem = gatewayProblem(env);
   if (problem) return `⚠️ Anthropic requests: ${problem} — every one will fail`;
+  const refused = ["FAST_LLM_MODEL", "VALIDATOR_MODEL", "CR_LLM_MODEL"].filter((name) => env[name] && gatewayModelProblem(env[name], env));
+  const models = refused.length > 0 ? `; ⚠️ OpenRouter won't take ${refused.map((name) => `${name}=${env[name]}`).join(", ")}` : "";
   const classic = env.LLM_PROVIDER === "anthropic" ? "; the classic fallback (LLM_PROVIDER=anthropic) still calls Anthropic directly" : "";
-  return `Anthropic requests: via OpenRouter, claude-haiku-5-5 only, pinned to Anthropic's servers${classic}`;
+  return `Anthropic requests: via OpenRouter, claude-haiku-5-5 only, pinned to Anthropic's servers${models}${classic}`;
 }
 
 module.exports = {
   anthropicGateway,
   gatewayKeyName,
   gatewayProblem,
+  gatewayModelProblem,
   messagesRequest,
+  isStandingRefusal,
+  noteGatewayRefusal,
+  gatewayRefusal,
   describeGateway,
   ANTHROPIC_MESSAGES_URL,
   OPENROUTER_MESSAGES_URL,
+  REFUSAL_LATCH_MS,
+  _test: {
+    resetRefusal() {
+      refusal.until = 0;
+      refusal.reason = "";
+    },
+  },
 };
