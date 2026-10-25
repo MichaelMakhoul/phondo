@@ -24,7 +24,7 @@
 
 const { toAnthropicMessages, toAnthropicTools } = require("./openai-llm");
 const { claudeLatencyParams } = require("../lib/model-params");
-const { messagesRequest, noteGatewayRefusal, noteGatewayAccepted } = require("../lib/anthropic-gateway");
+const { messagesRequest, noteGatewayRefusal } = require("../lib/anthropic-gateway");
 
 /** Statuses worth another try: rate limits and transient errors, Anthropic's and OpenRouter's. */
 const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 529]);
@@ -367,12 +367,11 @@ async function streamClaudeResponse(messages, opts = {}) {
       message = String(errBody?.error?.message || "");
       if (kind) detail = ` (${kind}: ${message.slice(0, 200)})`;
     } catch { /* body not JSON — omit detail */ }
-    // No credit, a spent limit or a bad key: new demo-line calls take the global pipeline until a
-    // Claude request succeeds again or the server restarts (F10).
+    // No credit, a spent limit or a bad key: new demo-line calls take the global pipeline until the
+    // server restarts (F10).
     noteGatewayRefusal(res.status, message);
     throw new Error(`Anthropic API error ${res.status}${via}${detail}`);
   }
-  noteGatewayAccepted();
   return parseClaudeStream(res, onSentence, chunking);
 }
 

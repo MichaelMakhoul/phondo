@@ -16,7 +16,7 @@
 const { DEBUG_TRANSCRIPTS } = require("../lib/log-transcript");
 const { claudeLatencyParams, claudeResponseText } = require("../lib/model-params");
 const { Sentry } = require("../lib/sentry");
-const { messagesRequest, noteGatewayRefusal, noteGatewayAccepted } = require("../lib/anthropic-gateway");
+const { messagesRequest, noteGatewayRefusal } = require("../lib/anthropic-gateway");
 
 // SCRUM-588: Haiku 5.5 — 10× cheaper than Haiku 4.5 and, with thinking
 // disabled, within ~70ms of its latency (probed). VALIDATOR_MODEL is the
@@ -206,7 +206,6 @@ OR
       noteGatewayRefusal(res.status, errorMessage); // the same key also serves the demo line's fast path
       return verdict;
     }
-    noteGatewayAccepted(); // Claude answers again: the demo line may leave the global pipeline
 
     const data = /** @type {{ content?: unknown, stop_reason?: string }} */ (await res.json());
     // By block TYPE, never content[0]: on a model that thinks, content[0] is a

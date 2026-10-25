@@ -4,7 +4,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const {
   anthropicGateway, gatewayKeyName, gatewayProblem, gatewayModelProblem, messagesRequest, describeGateway, ANTHROPIC_MESSAGES_URL, OPENROUTER_MESSAGES_URL,
-  isStandingRefusal, noteGatewayRefusal, noteGatewayAccepted, gatewayRefusal, _test,
+  isStandingRefusal, noteGatewayRefusal, gatewayRefusal, _test,
 } = require("../lib/anthropic-gateway");
 
 // SCRUM-594: ANTHROPIC_GATEWAY=openrouter sends the voice server's Anthropic Messages requests through
@@ -168,32 +168,27 @@ describe("the standing-refusal latch (phone test F10: every turn refused, every 
     for (const status of [404, 429, 500, 502, 503, 529]) assert.equal(isStandingRefusal(status, "credit balance limit"), false, String(status));
   });
 
-  it("holds until a Claude request succeeds, never on a timer (a quiet line's next caller isn't handed to the refused key), and alerts once a spell", (t) => {
+  it("holds until the server restarts: not on a timer (a quiet line's next caller), not on a later success; alerts once", (t) => {
     t.after(() => _test.resetRefusal());
     const alerts = [];
-    const logs = [];
     t.mock.method(console, "error", (...a) => alerts.push(a.join(" ")));
-    t.mock.method(console, "log", (...a) => logs.push(a.join(" ")));
     assert.equal(gatewayRefusal(), null);
-    noteGatewayAccepted();
-    assert.deepEqual(logs, [], "nothing to clear: no line");
     assert.equal(noteGatewayRefusal(429, ""), false, "a transient error doesn't latch");
     assert.equal(gatewayRefusal(), null);
     assert.equal(noteGatewayRefusal(402, "Key limit exceeded"), true);
     assert.equal(gatewayRefusal(), "Claude requests refused (HTTP 402: Key limit exceeded)");
     assert.equal(alerts.length, 1);
+    assert.match(alerts[0], /^\[ALERT:error\] \[anthropic-gateway\] Claude requests refused \(HTTP 402: Key limit exceeded\) — the demo line takes VOICE_PIPELINE until the voice server restarts \(after a top-up or a raised cap: fly apps restart phondo-voice\)/);
     t.mock.timers.enable({ apis: ["Date"] });
     t.mock.timers.tick(24 * 60 * 60_000);
     assert.equal(gatewayRefusal(), "Claude requests refused (HTTP 402: Key limit exceeded)", "a day later, with no call in between: still held");
-    assert.match(alerts[0], /^\[ALERT:error\] \[anthropic-gateway\] Claude requests refused \(HTTP 402: Key limit exceeded\) — the demo line takes VOICE_PIPELINE until a Claude request succeeds again or the server restarts/);
-    assert.equal(noteGatewayRefusal(402, "Key limit exceeded"), false, "a repeat: no second alert");
-    assert.equal(alerts.length, 1);
-    assert.equal(noteGatewayRefusal(503, ""), false, "a transient error neither latches nor clears");
+    assert.equal(noteGatewayRefusal(400, "Your credit balance is too low"), false, "another refusal: no second alert, the first reason kept");
+    assert.equal(noteGatewayRefusal(503, ""), false);
     assert.equal(gatewayRefusal(), "Claude requests refused (HTTP 402: Key limit exceeded)");
-    noteGatewayAccepted();
-    assert.equal(gatewayRefusal(), null, "a request Claude answered clears it");
-    assert.deepEqual(logs, ["[AnthropicGateway] Claude requests accepted again (after HTTP 402: Key limit exceeded) — the demo line can run classic-fast"]);
-    assert.equal(noteGatewayRefusal(400, "Your credit balance is too low"), true, "a new spell alerts again");
+    assert.equal(alerts.length, 1);
+    _test.resetRefusal(); // what a restart does
+    assert.equal(gatewayRefusal(), null);
+    assert.equal(noteGatewayRefusal(400, "Your credit balance is too low"), true, "after a restart, a new refusal alerts again");
     assert.equal(alerts.length, 2);
   });
 });

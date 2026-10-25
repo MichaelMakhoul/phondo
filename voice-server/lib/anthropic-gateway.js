@@ -135,34 +135,26 @@ function isStandingRefusal(status, message = "") {
 }
 
 /**
- * Notes an error response. A standing refusal latches: new demo-line calls take
- * the global pipeline instead of apologising on every turn (F10), until a Claude
- * request succeeds again (noteGatewayAccepted: the turn validator keeps asking on
- * Gemini calls) or the server restarts (a new key or `fly apps restart`). Never
- * on a timer: on a quiet line a lapse would hand the next caller to the refused
- * key. The first refusal of a spell raises an [ALERT:error].
+ * Notes an error response. A standing refusal latches until the server restarts:
+ * new demo-line calls take the global pipeline instead of apologising on every
+ * turn (F10). Not on a timer (on a quiet line a lapse hands the next caller to
+ * the refused key) and not on a later success (near a spent cap a small request,
+ * like the turn validator's, can pass while the fast path's are refused; a slow
+ * success can land after the refusal). A new key (`fly secrets set`) restarts the
+ * server; after a top-up or a raised cap, `fly apps restart phondo-voice`. The
+ * first refusal raises an [ALERT:error].
  * @param {number} status
  * @param {string} [message] - the API's error message
  * @returns {boolean} whether this response set the latch
  */
 function noteGatewayRefusal(status, message = "") {
-  if (!isStandingRefusal(status, message)) return false;
-  const started = !refusal;
+  if (!isStandingRefusal(status, message) || refusal) return false;
   refusal = `HTTP ${status}${message ? `: ${String(message).slice(0, 120)}` : ""}`;
-  if (started) {
-    Sentry.withScope((scope) => {
-      scope.setTag("service", "anthropic-gateway");
-      Sentry.captureMessage(`Claude requests refused (${refusal}) — the demo line takes VOICE_PIPELINE until a Claude request succeeds again or the server restarts`, "error");
-    });
-  }
-  return started;
-}
-
-/** Notes a request Claude answered: a latched refusal is over, and the demo line can run classic-fast again. */
-function noteGatewayAccepted() {
-  if (!refusal) return;
-  console.log(`[AnthropicGateway] Claude requests accepted again (after ${refusal}) — the demo line can run classic-fast`);
-  refusal = "";
+  Sentry.withScope((scope) => {
+    scope.setTag("service", "anthropic-gateway");
+    Sentry.captureMessage(`Claude requests refused (${refusal}) — the demo line takes VOICE_PIPELINE until the voice server restarts (after a top-up or a raised cap: fly apps restart phondo-voice)`, "error");
+  });
+  return true;
 }
 
 /**
@@ -196,7 +188,6 @@ module.exports = {
   messagesRequest,
   isStandingRefusal,
   noteGatewayRefusal,
-  noteGatewayAccepted,
   gatewayRefusal,
   describeGateway,
   ANTHROPIC_MESSAGES_URL,

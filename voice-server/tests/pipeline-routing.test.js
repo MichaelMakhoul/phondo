@@ -12,7 +12,7 @@ const {
   fastPathKeysPresent,
   fastPathProblem,
 } = require("../lib/pipeline-routing");
-const { noteGatewayRefusal, noteGatewayAccepted, _test: gatewayTest } = require("../lib/anthropic-gateway");
+const { noteGatewayRefusal, _test: gatewayTest } = require("../lib/anthropic-gateway");
 
 /** Sets env vars for one test (undefined deletes) and puts them back after. */
 function withEnv(t, vars) {
@@ -409,7 +409,7 @@ describe("resolveCallPipeline: classic-fast without its keys (SCRUM-594 R12c)", 
     assert.equal(fastPathKeysPresent(OR, "claude-opus-5-5"), false);
   });
 
-  it("a standing refusal (no credit, a spent cap) sends new demo calls to the global pipeline until a request succeeds (phone test F10)", (t) => {
+  it("a standing refusal (no credit, a spent cap) sends new demo calls to the global pipeline until a restart (phone test F10)", (t) => {
     const env = { ANTHROPIC_API_KEY: "sk", DEEPGRAM_API_KEY: "dg" };
     t.after(() => gatewayTest.resetRefusal());
     t.mock.method(console, "error", () => {});
@@ -419,8 +419,7 @@ describe("resolveCallPipeline: classic-fast without its keys (SCRUM-594 R12c)", 
     assert.equal(fastPathKeysPresent(env), false);
     const { value } = quiet(t, () => fast({ hasFastPathKeys: () => fastPathKeysPresent(env) }));
     assert.equal(value, "gemini-live");
-    t.mock.method(console, "log", () => {});
-    noteGatewayAccepted(); // a Claude request succeeded (the turn validator, on a Gemini call)
+    gatewayTest.resetRefusal(); // what a restart does
     assert.equal(fastPathKeysPresent(env), true);
   });
 });

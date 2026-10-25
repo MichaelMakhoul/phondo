@@ -104,31 +104,26 @@ describe("streamClaudeResponse and ANTHROPIC_GATEWAY (SCRUM-594)", () => {
     assert.equal(gatewayRefusal(), "Claude requests refused (HTTP 402: Key limit exceeded)");
   });
 
-  it("a request Claude answers clears a latched refusal", async (t) => {
+  it("a request Claude answers doesn't clear a latched refusal (near a cap a request can pass while others are refused): only a restart does", async (t) => {
     const { noteGatewayRefusal } = require("../lib/anthropic-gateway");
     setEnv({ ANTHROPIC_GATEWAY: "openrouter", OPENROUTER_API_KEY: "sk-or-test" });
     t.mock.method(console, "error", () => {});
-    t.mock.method(console, "log", () => {});
     noteGatewayRefusal(402, "Key limit exceeded");
-    assert.ok(gatewayRefusal());
     stubFetch(() => new Response(sse("Hi."), { status: 200 }));
-    await streamClaudeResponse(MESSAGES, { model: "claude-haiku-5-5" });
-    assert.equal(gatewayRefusal(), null);
+    assert.deepEqual(await streamClaudeResponse(MESSAGES, { model: "claude-haiku-5-5" }), { type: "content", content: "Hi." });
+    assert.equal(gatewayRefusal(), "Claude requests refused (HTTP 402: Key limit exceeded)");
   });
 
-  it("only a request Claude answers clears a latched refusal: a one-off error leaves it, with no second alert", async (t) => {
+  it("a one-off error while latched: the latch and its reason stay, with no second alert", async (t) => {
     const { noteGatewayRefusal } = require("../lib/anthropic-gateway");
     setEnv({ ANTHROPIC_API_KEY: "sk-ant-test" });
     const alerts = [];
-    const logs = [];
     t.mock.method(console, "error", (...a) => alerts.push(a.join(" ")));
-    t.mock.method(console, "log", (...a) => logs.push(a.join(" ")));
     noteGatewayRefusal(400, "Your credit balance is too low");
     stubFetch(() => new Response(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "messages: field required" } }), { status: 400 }));
     await assert.rejects(streamClaudeResponse(MESSAGES, { model: "claude-haiku-5-5" }), /400/);
     assert.equal(gatewayRefusal(), "Claude requests refused (HTTP 400: Your credit balance is too low)");
     assert.equal(alerts.length, 1);
-    assert.ok(!logs.some((l) => l.includes("accepted again")));
   });
 
   it("a one-off error doesn't latch", async () => {
