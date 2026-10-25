@@ -9,6 +9,20 @@ const { buildOwnerPrompt, buildOwnerGreeting } = require("./owner-prompt");
 
 const OWNER_WEB_TIMEZONE_FALLBACK = "Australia/Sydney";
 
+/** An owner session in the browser lasts up to 10 minutes (a test call: 5). */
+const OWNER_WEB_MAX_SESSION_MS = 10 * 60 * 1000;
+
+/**
+ * The owner row's metadata, stamped when the row is created. If the session never
+ * reaches its post-call (a deploy or crash mid-session), the row is still an owner
+ * call: it isn't read back to the owner as a customer "on a call right now", and
+ * it isn't counted in the customer call log or daily summary.
+ */
+const OWNER_WEB_RECORD_METADATA = Object.freeze({ call_type: "owner", owner_auth: "verified", channel: "web" });
+
+/** What the owner is told when their session breaks (setup, Gemini or speech recognition failed). */
+const OWNER_WEB_PROBLEM_MESSAGE = "Your assistant hit a problem. Please start again.";
+
 /**
  * Whether a verified /ws/test token is the owner's (Next.js signs mode "owner"
  * only for the org's owner, with the owner assistant's UI switched on).
@@ -62,6 +76,26 @@ function buildOwnerWebPrompt({ organization, serviceTypes = [], ownerFirstName =
 }
 
 /**
+ * Owner tokens are used once: a token's jti is kept until the token expires.
+ * (The /ws/test caps only block a jti while a session that used it is open.) A
+ * token with no jti is refused: Next.js always signs one.
+ * @returns {{ claim(jti: unknown, exp: unknown, now?: number): boolean }}
+ */
+function createOwnerTokenLedger() {
+  /** @type {Map<string, number>} jti → the token's expiry (ms) */
+  const used = new Map();
+  return {
+    claim(jti, exp, now = Date.now()) {
+      for (const [id, until] of used) if (until <= now) used.delete(id);
+      if (typeof jti !== "string" || !jti) return false;
+      if (used.has(jti)) return false;
+      used.set(jti, typeof exp === "number" && Number.isFinite(exp) ? exp : now + OWNER_WEB_MAX_SESSION_MS);
+      return true;
+    },
+  };
+}
+
+/**
  * One browser owner session per org at a time: a second tab is refused. The
  * voice server is one long-running process, so in-memory is authoritative (as
  * for the /ws/test caps).
@@ -93,6 +127,8 @@ function createOwnerWebSessions() {
  * - then send the call-completed webhook.
  * If the row isn't written, page instead of sending the webhook: without
  * call_type "owner", Next.js would treat the owner's session as a customer call.
+ * A session that broke (session.callFailed: setup, Gemini or STT failed) is
+ * stored as "failed", not "completed".
  * @param {any} session
  * @param {{ transcript: string, durationSeconds: number }} call
  * @param {{
@@ -131,12 +167,13 @@ async function finishOwnerWebSession(session, { transcript, durationSeconds }, d
     }
   }
 
+  const status = session.callFailed ? "failed" : "completed";
   let recordWritten = false;
   for (let attempt = 1; !recordWritten && attempt <= 2; attempt++) {
     if (attempt > 1) await sleep(1000);
     try {
       await deps.completeCallRecord(session.callRecordId, {
-        status: "completed",
+        status,
         durationSeconds,
         transcript: storedTranscript,
         summary,
@@ -164,7 +201,7 @@ async function finishOwnerWebSession(session, { transcript, durationSeconds }, d
         organizationId: session.organizationId,
         assistantId: session.assistantId,
         callerPhone: null,
-        status: "completed",
+        status,
         durationSeconds,
         transcript: storedTranscript,
         endedReason: "web-session-ended",
@@ -177,9 +214,13 @@ async function finishOwnerWebSession(session, { transcript, durationSeconds }, d
 }
 
 module.exports = {
+  OWNER_WEB_MAX_SESSION_MS,
+  OWNER_WEB_RECORD_METADATA,
+  OWNER_WEB_PROBLEM_MESSAGE,
   isOwnerWebToken,
   ownerWebCallSid,
   buildOwnerWebPrompt,
+  createOwnerTokenLedger,
   createOwnerWebSessions,
   finishOwnerWebSession,
 };

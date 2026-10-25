@@ -167,7 +167,7 @@ const { buildOwnerPrompt, buildOwnerGreeting, buildOwnerGeminiSuffix } = require
 const { buildOwnerTools } = require("./lib/owner-tools");
 const { runOwnerToolCall, buildOwnerCallSummary, settleOwnerToolRuns, noteCancelledOwnerToolCalls, ownerToolLoopReply, OWNER_MAX_TOOL_CALLS } = require("./lib/owner-tool-runner");
 const { noteAssistantSpeech, noteAssistantTurnEnd, noteOwnerSpeech } = require("./lib/owner-turn-stamps");
-const { isOwnerWebToken, ownerWebCallSid, buildOwnerWebPrompt, createOwnerWebSessions, finishOwnerWebSession } = require("./lib/owner-web-session"); // SCRUM-596: the owner assistant in the dashboard
+const { OWNER_WEB_MAX_SESSION_MS, OWNER_WEB_RECORD_METADATA, OWNER_WEB_PROBLEM_MESSAGE, isOwnerWebToken, ownerWebCallSid, buildOwnerWebPrompt, createOwnerTokenLedger, createOwnerWebSessions, finishOwnerWebSession } = require("./lib/owner-web-session"); // SCRUM-596: the owner assistant in the dashboard
 
 // Mirror of API-layer E164_REGEX. Defense-in-depth at the dialer so a bad
 // value introduced via direct SQL or a future bug can't be sent to Twilio.
@@ -6793,8 +6793,10 @@ const testSessionCaps = createTestSessionCaps({
   maxGlobal: MAX_TEST_SESSIONS_GLOBAL,
   maxPerIp: MAX_TEST_SESSIONS_PER_IP,
 });
-// SCRUM-596: one owner session in the browser per org (lib/owner-web-session.js).
+// SCRUM-596: one owner session in the browser per org, and each owner token works
+// once (lib/owner-web-session.js).
 const ownerWebSessions = createOwnerWebSessions();
+const ownerTokenLedger = createOwnerTokenLedger();
 
 /** SCRUM-596: what an owner session in the browser needs to end like an owner phone call. */
 function ownerWebFinishDeps() {
@@ -6887,12 +6889,20 @@ testWss.on("connection", (ws, req) => {
   let ownerWebSlotOpen = false;
   if (ownerWeb) {
     if (!ownerAssistantEnabled()) {
+      console.warn(`[OwnerWeb] Refused an owner session: OWNER_ASSISTANT_ENABLED is off (org=${organizationId})`);
       releaseTestSlot();
       ws.send(JSON.stringify({ type: "error", message: "The owner assistant is switched off." }));
       ws.close(4004, "Owner assistant off");
       return;
     }
+    if (!ownerTokenLedger.claim(jti, tokenData.exp)) {
+      console.warn(`[OwnerWeb] Refused a reused owner token (org=${organizationId})`);
+      releaseTestSlot();
+      ws.close(4003, "Invalid or expired token");
+      return;
+    }
     if (!ownerWebSessions.tryOpen(organizationId)) {
+      console.warn(`[OwnerWeb] Refused a second owner session (org=${organizationId}): one is already open`);
       releaseTestSlot();
       ws.close(4029, "Your assistant is already open in another tab.");
       return;
@@ -6911,6 +6921,12 @@ testWss.on("connection", (ws, req) => {
     // SCRUM-341: free the concurrency slot (jti + per-IP + global) on every
     // teardown path. Idempotent via testSlotReleased.
     releaseTestSlot();
+    // SCRUM-596: and the org's owner slot, at once. The owner post-call below
+    // can take seconds, and the owner may start again meanwhile.
+    if (ownerWebSlotOpen) {
+      ownerWebSlotOpen = false;
+      ownerWebSessions.close(organizationId);
+    }
 
     if (autoEndTimer) {
       clearTimeout(autoEndTimer);
@@ -6947,17 +6963,15 @@ testWss.on("connection", (ws, req) => {
       session.destroy();
       session = null;
     }
-    if (ownerWebSlotOpen) {
-      ownerWebSlotOpen = false;
-      ownerWebSessions.close(organizationId);
-    }
   }
 
   // Auto-disconnect after max duration. SCRUM-363: the public demo
   // (organizationId === DEMO_ORG_ID) gets a tighter cap than authed test calls.
-  const maxSessionDurationMs = getMaxSessionDurationMs(organizationId);
+  // SCRUM-596: an owner session gets 10 minutes.
+  const maxSessionDurationMs = ownerWeb ? OWNER_WEB_MAX_SESSION_MS : getMaxSessionDurationMs(organizationId);
   autoEndTimer = setTimeout(() => {
     if (ws.readyState === WebSocket.OPEN) {
+      if (ownerWeb) console.log(`[OwnerWeb] Session reached its time limit (org=${organizationId})`);
       ws.send(JSON.stringify({ type: "ended", reason: "max-duration" }));
       ws.close(1000, "Max duration reached");
     }
@@ -6967,6 +6981,9 @@ testWss.on("connection", (ws, req) => {
   (async () => {
     try {
       const context = await loadTestCallContext(assistantId, organizationId);
+      // The socket closed while the context loaded: start nothing. A session
+      // created now would never be cleaned up.
+      if (cleaningUp) return;
       if (!context) {
         ws.send(JSON.stringify({ type: "error", message: "Assistant not found or inactive" }));
         ws.close(4004, "Assistant not found");
@@ -6995,6 +7012,7 @@ testWss.on("connection", (ws, req) => {
         session.ownerAuth = "verified";
         session.piiRedactionEnabled = !!(context.assistant.settings?.piiRedactionEnabled);
         session.ownerFirstName = await loadOwnerFirstName(organizationId);
+        if (cleaningUp) return; // closed while the name loaded: no row yet, nothing to complete
         const ownerSession = session;
         const callRecordId = await createCallRecord({
           orgId: organizationId,
@@ -7002,6 +7020,9 @@ testWss.on("connection", (ws, req) => {
           phoneNumberId: null,
           callerPhone: null,
           callSid: ownerSession.callSid,
+          // An owner call from the moment it exists, even if the session never
+          // reaches its post-call (a deploy or crash mid-session).
+          metadata: OWNER_WEB_RECORD_METADATA,
         });
         if (cleaningUp) {
           // The owner closed the page while the row was being created: complete it
@@ -7310,13 +7331,37 @@ testWss.on("connection", (ws, req) => {
             },
             onError: (err) => {
               console.error("[TestGeminiLive] Session error:", err.message);
+              // SCRUM-596: an owner session that broke is stored as failed.
+              if (session?.ownerMode) session.callFailed = true;
               if (ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ type: "error", message: "AI session error" }));
+                ws.send(JSON.stringify({ type: "error", message: session?.ownerMode ? OWNER_WEB_PROBLEM_MESSAGE : "AI session error" }));
                 ws.close(4500, "Gemini session error");
               }
             },
-            onClose: (code) => {
+            onClose: (code, reason) => {
               console.log(`[TestGeminiLive] Session closed (code=${code})`);
+              if (session?.ownerMode && ws.readyState === WebSocket.OPEN && !cleaningUp) {
+                // SCRUM-596: the owner said goodbye (end_call). Let the goodbye's
+                // audio play, as on the phone line, then end the session.
+                if (reason === "end_call") {
+                  setTimeout(() => {
+                    if (ws.readyState === WebSocket.OPEN) {
+                      ws.send(JSON.stringify({ type: "ended", reason: "owner-ended" }));
+                      ws.close(1000, "Owner said goodbye");
+                    }
+                  }, 1000);
+                  return;
+                }
+                // Any other abnormal close is Gemini dropping the session: say so
+                // (it is stored as failed), rather than end it as if all went well.
+                if (code !== 1000) {
+                  session.callFailed = true;
+                  console.error(`[OwnerWeb] Gemini closed the owner session unexpectedly (code=${code}, org=${session.organizationId}, callSid=${session.callSid})`);
+                  ws.send(JSON.stringify({ type: "error", message: OWNER_WEB_PROBLEM_MESSAGE }));
+                  ws.close(4500, "Gemini session closed");
+                  return;
+                }
+              }
               if (ws.readyState === WebSocket.OPEN && !cleaningUp) {
                 ws.send(JSON.stringify({ type: "ended", reason: "ai-session-closed" }));
                 ws.close(1000, "Gemini session closed");
@@ -7360,7 +7405,13 @@ testWss.on("connection", (ws, req) => {
         onError: (err) => {
           console.error("[TestSTT] Error:", err);
           if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: "error", message: "Speech recognition error" }));
+            ws.send(JSON.stringify({ type: "error", message: session?.ownerMode ? OWNER_WEB_PROBLEM_MESSAGE : "Speech recognition error" }));
+          }
+          // SCRUM-596: an owner session can't go on without hearing the owner. End
+          // it (stored as failed) rather than leave the mic and the row open.
+          if (session?.ownerMode) {
+            session.callFailed = true;
+            if (ws.readyState === WebSocket.OPEN) ws.close(4500, "Speech recognition error");
           }
         },
         onClose: (code) => {
@@ -7453,8 +7504,10 @@ testWss.on("connection", (ws, req) => {
       }
     } catch (err) {
       console.error("[TestCall] Init error:", err);
+      // SCRUM-596: an owner session that failed to start is stored as failed.
+      if (session?.ownerMode) session.callFailed = true;
       if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: "error", message: "Failed to initialize test call" }));
+        ws.send(JSON.stringify({ type: "error", message: ownerWeb ? "Couldn't start your assistant — please try again." : "Failed to initialize test call" }));
         ws.close(4500, "Init error");
       }
     }
@@ -7526,7 +7579,10 @@ async function handleTestUserSpeech(session, ws, transcript) {
     let lastOwnerTool = null;
     let turnAudioBytes = 0;
 
-    for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
+    // SCRUM-596: an owner gets the phone line's tool budget (a move is a list, a
+    // check, the move, then the read-back), as in the phone line's classic loop.
+    const maxIterations = session.ownerMode ? OWNER_MAX_TOOL_CALLS : MAX_TOOL_ITERATIONS;
+    for (let i = 0; i < maxIterations; i++) {
       const t0 = Date.now();
       let sentenceCount = 0;
       let ttsChain = Promise.resolve();
@@ -7669,7 +7725,7 @@ async function handleTestUserSpeech(session, ws, transcript) {
       // that?", which after a change invites a duplicate request. They hear the
       // last tool's own words.
       if (session.ownerMode) reply = ownerToolLoopReply(session, lastOwnerTool);
-      console.warn(`[TestPipeline] Tool call loop exhausted after ${MAX_TOOL_ITERATIONS} iterations (assistantId=${session.assistantId})`);
+      console.warn(`[TestPipeline] Tool call loop exhausted after ${maxIterations} iterations (assistantId=${session.assistantId})`);
       const audioBuffer = await synthesizeSpeech(DEEPGRAM_API_KEY, reply, { voice: session?.deepgramVoice });
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: "speaking", speaking: true }));

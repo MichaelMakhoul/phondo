@@ -62,12 +62,21 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "assistantId is required" }, { status: 400 });
     }
 
-    // The assistant must be the owner's own org's.
-    const { data: assistant } = await (supabase.from("assistants") as any)
+    // The assistant must be the owner's own org's. "No rows" (PGRST116) is a 404;
+    // any other read error is ours, and is said as one.
+    const { data: assistant, error: assistantError } = await (supabase.from("assistants") as any)
       .select("id")
       .eq("id", assistantId)
       .eq("organization_id", membership.organization_id)
       .single();
+    if (assistantError && assistantError.code !== "PGRST116") {
+      console.error("[OwnerAssistantToken] assistants read failed:", {
+        organizationId: membership.organization_id,
+        errorCode: assistantError.code,
+        errorMessage: assistantError.message,
+      });
+      return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+    }
     if (!assistant) {
       return NextResponse.json({ error: "Assistant not found" }, { status: 404 });
     }

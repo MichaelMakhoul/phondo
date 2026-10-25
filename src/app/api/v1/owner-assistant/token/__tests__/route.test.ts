@@ -17,6 +17,7 @@ const state = vi.hoisted(() => ({
   user: { id: "user-1" } as { id: string } | null,
   membership: { organization_id: "org-1", role: "owner" } as { organization_id: string; role: string } | null,
   assistant: { id: "asst-1" } as { id: string } | null,
+  assistantError: null as { code: string; message: string } | null,
   allowed: true,
   throwOnUser: null as unknown,
 }));
@@ -43,7 +44,10 @@ vi.mock("@/lib/supabase/server", () => ({
           calls.eqs.push([`${table}.${col}`, val]);
           return chain;
         },
-        single: async () => ({ data: state.assistant, error: state.assistant ? null : { code: "PGRST116" } }),
+        single: async () => ({
+          data: state.assistant,
+          error: state.assistantError ?? (state.assistant ? null : { code: "PGRST116", message: "no rows" }),
+        }),
       };
       return chain;
     },
@@ -95,6 +99,7 @@ beforeEach(() => {
   state.user = { id: "user-1" };
   state.membership = { organization_id: "org-1", role: "owner" };
   state.assistant = { id: "asst-1" };
+  state.assistantError = null;
   state.allowed = true;
   state.throwOnUser = null;
   calls.getUser = 0;
@@ -168,6 +173,14 @@ describe("POST /api/v1/owner-assistant/token — the request", () => {
       ["assistants.id", "asst-other"],
       ["assistants.organization_id", "org-1"],
     ]);
+  });
+
+  it("a failed assistants read is a logged 500, never a 404 that hides it", async () => {
+    state.assistant = null;
+    state.assistantError = { code: "08006", message: "connection failure" };
+    const res = await post();
+    expect(res.status).toBe(500);
+    expect(logs.some((l) => l.includes("[OwnerAssistantToken] assistants read failed") && l.includes("08006"))).toBe(true);
   });
 
   it.each(["TEST_CALL_SECRET", "VOICE_SERVER_PUBLIC_URL"])("503 without %s", async (name) => {

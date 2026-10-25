@@ -39,8 +39,10 @@ export function OwnerTalkPanel({ assistantId, loadFailed = false }: OwnerTalkPan
     return (
       <PageShell>
         <Card className="space-y-3 p-6 text-center">
-          <p className="font-medium">Set up your AI receptionist first</p>
-          <p className="text-sm text-muted-foreground">Your assistant talks in your receptionist&apos;s voice.</p>
+          <p className="font-medium">Your assistant needs an active AI receptionist</p>
+          <p className="text-sm text-muted-foreground">
+            It talks in your receptionist&apos;s voice. Set one up, or switch yours back on, in Assistants.
+          </p>
           <Button asChild>
             <Link href="/assistants">Go to Assistants</Link>
           </Button>
@@ -74,6 +76,7 @@ function OwnerTalk({ assistantId }: { assistantId: string }) {
         </ul>
         <p className="mt-3 text-xs text-muted-foreground">
           Changes are real: it reads every change back and waits for your yes. Customers aren&apos;t told automatically.
+          Each session lasts up to 10 minutes.
         </p>
       </div>
 

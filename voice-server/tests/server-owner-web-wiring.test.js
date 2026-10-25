@@ -31,16 +31,28 @@ describe("/ws/test: the owner branch (source)", () => {
     assert.ok(gate > 0 && gate < flag && flag < slot && slot < init, `${gate} ${flag} ${slot} ${init}`);
     assert.match(handler, /ws\.send\(JSON\.stringify\(\{ type: "error", message: "The owner assistant is switched off\." \}\)\);\s*ws\.close\(4004, "Owner assistant off"\);/);
     assert.match(handler, /ws\.close\(4029, "Your assistant is already open in another tab\."\);/);
-    // Both refusals give back the /ws/test slot they had reserved.
+    // An owner token works once: its jti is claimed (kept until expiry) before the org slot.
+    const claim = handler.indexOf("if (!ownerTokenLedger.claim(jti, tokenData.exp)) {");
+    assert.ok(flag < claim && claim < slot, `${flag} ${claim} ${slot}`);
+    assert.match(handler, /ws\.close\(4003, "Invalid or expired token"\);/);
+    // All three refusals give back the /ws/test slot they had reserved, and say why in the log.
     const refusals = handler.slice(flag, handler.indexOf("ownerWebSlotOpen = true;", flag));
-    assert.equal((refusals.match(/releaseTestSlot\(\);/g) || []).length, 2);
+    assert.equal((refusals.match(/releaseTestSlot\(\);/g) || []).length, 3);
+    for (const why of ["OWNER_ASSISTANT_ENABLED is off", "a reused owner token", "one is already open"]) {
+      assert.ok(refusals.includes(why), why);
+    }
   });
 
-  it("the org slot is released on teardown, after the owner post-call", () => {
+  it("an owner session gets 10 minutes; a test call keeps its cap", () => {
+    assert.match(handler, /const maxSessionDurationMs = ownerWeb \? OWNER_WEB_MAX_SESSION_MS : getMaxSessionDurationMs\(organizationId\);/);
+  });
+
+  it("the org slot is released at the start of teardown (the post-call can take seconds), then the owner post-call runs", () => {
     const cleanup = sliceOf("async function cleanupTestSession() {", "// Auto-disconnect after max duration.");
     const finish = cleanup.indexOf("await finishOwnerWebSession(");
     const release = cleanup.indexOf("ownerWebSessions.close(organizationId);");
-    assert.ok(finish > 0 && release > finish, `${finish} ${release}`);
+    assert.ok(release > 0 && finish > release, `${release} ${finish}`);
+    assert.equal((cleanup.match(/ownerWebSessions\.close\(organizationId\);/g) || []).length, 1);
     assert.match(cleanup, /if \(session\.ownerMode\) \{/);
     assert.match(cleanup, /transcript: ended\.getTranscript\(\), durationSeconds: ended\.getDurationSeconds\(\)/);
   });
@@ -56,8 +68,12 @@ describe("/ws/test: the owner branch (source)", () => {
       "const callRecordId = await createCallRecord({",
       "phoneNumberId: null,",
       "callerPhone: null,",
+      "metadata: OWNER_WEB_RECORD_METADATA,",
       "session.callRecordId = callRecordId;",
     ]) assert.ok(owner.includes(line), line);
+    // A page closed during setup: nothing is created after the context or the name loads.
+    assert.match(handler, /const context = await loadTestCallContext\(assistantId, organizationId\);\s*\/\/[^\n]*\n\s*\/\/[^\n]*\n\s*if \(cleaningUp\) return;/);
+    assert.ok(owner.indexOf("if (cleaningUp) return;") < owner.indexOf("const callRecordId = await createCallRecord({"));
     assert.ok(owner.indexOf("session.callRecordId = callRecordId;") < owner.indexOf("ownerWebPrompt = buildOwnerWebPrompt({"));
     // A row that couldn't be created ends the session with a message; a page closed
     // mid-setup gets its row completed rather than left "in-progress".
@@ -82,6 +98,11 @@ describe("/ws/test: the owner branch (source)", () => {
     assert.match(handler, /onTurnComplete: \(turnInfo\) => \{/);
     assert.match(handler, /if \(session\.ownerMode && turnInfo\?\.endedWithToolCalls !== true\) noteAssistantTurnEnd\(session\);/);
     assert.match(handler, /onToolCallCancellation: \(ids\) => \{\s*if \(session\?\.ownerMode\) noteCancelledOwnerToolCalls\(session, ids\);/);
+    // The goodbye's audio plays before the session ends; a dropped Gemini session is a failure, said as one.
+    assert.match(handler, /onClose: \(code, reason\) => \{/);
+    assert.match(handler, /if \(reason === "end_call"\) \{\s*setTimeout\(\(\) => \{\s*if \(ws\.readyState === WebSocket\.OPEN\) \{\s*ws\.send\(JSON\.stringify\(\{ type: "ended", reason: "owner-ended" \}\)\);\s*ws\.close\(1000, "Owner said goodbye"\);\s*\}\s*\}, 1000\);/);
+    assert.match(handler, /if \(code !== 1000\) \{\s*session\.callFailed = true;/);
+    assert.match(handler, /if \(session\?\.ownerMode\) session\.callFailed = true;\s*if \(ws\.readyState === WebSocket\.OPEN\) \{\s*ws\.send\(JSON\.stringify\(\{ type: "error", message: session\?\.ownerMode \? OWNER_WEB_PROBLEM_MESSAGE : "AI session error" \}\)\);/);
     assert.match(handler, /if \(session\.ownerMode\) \{\s*session\._toolCallInFlight = true;\s*try \{\s*return await runOwnerToolCall\(session, toolCall, \{ executeToolCall, scheduleCache, sendText: \(text\) => session\?\.geminiSession\?\.sendText\(text\) \}\);/);
   });
 
@@ -89,6 +110,13 @@ describe("/ws/test: the owner branch (source)", () => {
     assert.match(handler, /const testConsentResult = session\.ownerMode\s*\? \{ required: false, callerState: null, reason: "owner-call" \}\s*: requiresRecordingDisclosureHybrid\(/);
     assert.match(handler, /const greeting = ownerWebPrompt \? ownerWebPrompt\.greeting : disclosurePrefix \+ getGreeting\(/);
     assert.match(handler, /if \(session\?\.ownerMode\) noteOwnerSpeech\(session, transcript\);/);
+    // A speech-recognition failure ends an owner session (stored as failed), not just a message.
+    assert.match(handler, /if \(session\?\.ownerMode\) \{\s*session\.callFailed = true;\s*if \(ws\.readyState === WebSocket\.OPEN\) ws\.close\(4500, "Speech recognition error"\);/);
+  });
+
+  it("a setup failure on an owner session says so in the owner's words and is stored as failed", () => {
+    assert.match(handler, /\/\/ SCRUM-596: an owner session that failed to start is stored as failed\.\s*if \(session\?\.ownerMode\) session\.callFailed = true;/);
+    assert.match(handler, /message: ownerWeb \? "Couldn't start your assistant — please try again\." : "Failed to initialize test call"/);
   });
 
   it("a customer's browser test call is unchanged: its tools still run in test mode", () => {
@@ -122,6 +150,7 @@ function makeLoop({ turns, ownerResults = [] }) {
     buildLLMOptions: () => ({ tools: ["customer tools"] }),
     buildOwnerTools: () => ["owner tools"],
     MAX_TOOL_ITERATIONS: 3,
+    OWNER_MAX_TOOL_CALLS: 4,
     LLM_API_KEY: "k",
     DEEPGRAM_API_KEY: "k",
     streamChatResponse: async (key, messages, opts) => {
@@ -221,11 +250,27 @@ describe("handleTestUserSpeech on an owner session (classic, run for real)", () 
     assert.ok(h.ws.sent.some((m) => m && m.type === "ended"));
   });
 
+  it("gets the phone line's tool budget: list, check, move, then the read-back (3 tool rounds is not the end)", async () => {
+    const h = makeLoop({
+      turns: [
+        { toolCalls: [{ name: "owner_list_appointments", args: { range: "today" } }] },
+        { toolCalls: [{ name: "check_availability", args: { date: "2026-10-29" } }] },
+        { toolCalls: [{ name: "owner_reschedule_appointment", args: { appointment_id: "a1", new_datetime: "2026-10-29T14:00" } }] },
+        { sentences: ["That moves Bob from 9 a.m. today to 2 p.m. Thursday — shall I go ahead?"] },
+      ],
+    });
+    const s = ownerWebSession();
+    await h.handleTestUserSpeech(s, h.ws, "Move Bob's job to Thursday at 2");
+    assert.equal(h.calls.filter((c) => c[0] === "runOwnerToolCall").length, 3);
+    assert.match(s.messages.at(-1).content, /shall I go ahead\?$/);
+  });
+
   it("a tool loop that never answers ends on the last tool's own words, never 'could you repeat that?'", async () => {
     const tool = { toolCalls: [{ name: "owner_cancel_appointment", args: { appointment_id: "a1" } }] };
-    const h = makeLoop({ turns: [tool, tool, tool] });
+    const h = makeLoop({ turns: [tool, tool, tool, tool] });
     const s = ownerWebSession();
     await h.handleTestUserSpeech(s, h.ws, "Cancel Bob");
+    assert.equal(h.calls.filter((c) => c[0] === "runOwnerToolCall").length, 4, "the owner budget, not the test call's 3");
     assert.equal(s.messages.at(-1).content, "<loop reply after owner_cancel_appointment>");
   });
 });
@@ -248,5 +293,16 @@ describe("handleTestUserSpeech on a customer's test call (unchanged)", () => {
     assert.equal(ctx.testMode, true);
     assert.ok(!h.calls.some((c) => c[0] === "runOwnerToolCall" || c[0].startsWith("note")));
     assert.ok(!h.ws.sent.some((m) => m && m.type === "ended"));
+  });
+
+  it("a test call keeps its own 3-round tool budget", async () => {
+    const tool = { toolCalls: [{ name: "check_availability", args: {} }] };
+    const h = makeLoop({ turns: [tool, tool, tool, tool] });
+    const s = new CallSession("test_2");
+    s.organizationId = "org-1";
+    s.assistantId = "asst-1";
+    await h.handleTestUserSpeech(s, h.ws, "Any times?");
+    assert.equal(h.calls.filter((c) => c[0] === "executeToolCall").length, 3);
+    assert.equal(s.messages.at(-1).content, "<repeatRequest>");
   });
 });

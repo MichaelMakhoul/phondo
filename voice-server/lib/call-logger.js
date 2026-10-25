@@ -6,9 +6,11 @@ const { Sentry } = require("./sentry");
  * Stores the Twilio CallSid prefixed with "sh_" in the vapi_call_id column
  * (NOT NULL UNIQUE) to distinguish self-hosted calls from Vapi-originated ones.
  *
+ * @param {{ orgId: string, assistantId: string, phoneNumberId: string|null, callerPhone: string|null, callSid: string,
+ *   metadata?: Record<string, unknown> }} fields - metadata (SCRUM-596): extra keys stamped at insert, next to voice_provider
  * @returns {Promise<string|null>} The call record UUID, or null on failure
  */
-async function createCallRecord({ orgId, assistantId, phoneNumberId, callerPhone, callSid }) {
+async function createCallRecord({ orgId, assistantId, phoneNumberId, callerPhone, callSid, metadata }) {
   const supabase = getSupabase();
 
   const { data, error } = await supabase
@@ -22,7 +24,7 @@ async function createCallRecord({ orgId, assistantId, phoneNumberId, callerPhone
       direction: "inbound",
       status: "in-progress",
       started_at: new Date().toISOString(),
-      metadata: { voice_provider: "self_hosted" },
+      metadata: { voice_provider: "self_hosted", ...(metadata || {}) },
     })
     .select("id")
     .single();

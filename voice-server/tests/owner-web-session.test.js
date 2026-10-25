@@ -233,3 +233,49 @@ describe("finishOwnerWebSession (the phone line's owner post-call, for the brows
     assert.ok(errors.some((e) => e.includes("[OwnerWeb] Failed to notify call completed")), errors.join("\n"));
   });
 });
+
+describe("createOwnerTokenLedger (an owner token works once)", () => {
+  const { createOwnerTokenLedger, OWNER_WEB_MAX_SESSION_MS } = require("../lib/owner-web-session");
+
+  it("a jti is refused a second time until its token expires, then forgotten", () => {
+    const ledger = createOwnerTokenLedger();
+    assert.equal(ledger.claim("jti-1", 2_000, 1_000), true);
+    assert.equal(ledger.claim("jti-1", 2_000, 1_500), false, "reused before expiry");
+    assert.equal(ledger.claim("jti-2", 2_000, 1_500), true, "another token is unaffected");
+    assert.equal(ledger.claim("jti-1", 3_000, 2_000), true, "expired: the entry is purged (the token itself is rejected as expired anyway)");
+  });
+
+  it("no jti (or not a string) is refused", () => {
+    const ledger = createOwnerTokenLedger();
+    for (const jti of [undefined, null, "", 42, {}]) assert.equal(ledger.claim(jti, 2_000, 1_000), false, JSON.stringify(jti));
+  });
+
+  it("a token with no usable expiry is kept for the longest session", () => {
+    const ledger = createOwnerTokenLedger();
+    assert.equal(ledger.claim("jti-1", undefined, 1_000), true);
+    assert.equal(ledger.claim("jti-1", undefined, 1_000 + OWNER_WEB_MAX_SESSION_MS - 1), false);
+    assert.equal(ledger.claim("jti-1", undefined, 1_000 + OWNER_WEB_MAX_SESSION_MS), true);
+  });
+});
+
+describe("the owner row's metadata and session length", () => {
+  const { OWNER_WEB_RECORD_METADATA, OWNER_WEB_MAX_SESSION_MS } = require("../lib/owner-web-session");
+
+  it("the row is an owner call from the web from the moment it is created", () => {
+    assert.deepEqual({ ...OWNER_WEB_RECORD_METADATA }, { call_type: "owner", owner_auth: "verified", channel: "web" });
+    assert.ok(Object.isFrozen(OWNER_WEB_RECORD_METADATA));
+  });
+
+  it("a session lasts up to 10 minutes", () => {
+    assert.equal(OWNER_WEB_MAX_SESSION_MS, 600_000);
+  });
+});
+
+describe("finishOwnerWebSession: a session that broke", () => {
+  it("is stored and reported as failed, not completed", async () => {
+    const { deps, calls } = makeDeps();
+    await finishOwnerWebSession(ownerSession({ callFailed: true }), { transcript: "x", durationSeconds: 3 }, deps);
+    assert.equal(calls.find((c) => c[0] === "complete")[2].status, "failed");
+    assert.equal(calls.find((c) => c[0] === "notify")[3].status, "failed");
+  });
+});

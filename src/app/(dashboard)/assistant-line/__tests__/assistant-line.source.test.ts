@@ -69,9 +69,15 @@ describe("the talk panel (client)", () => {
     expect(panelSource).toMatch(/aria-label=\{isMuted \? "Unmute microphone" : "Mute microphone"\}/);
   });
 
-  it("says plainly that changes are real and customers aren't told", () => {
+  it("says plainly that changes are real, customers aren't told, and how long a session lasts", () => {
     expect(panelSource).toMatch(/reads every change back and waits for your yes/);
     expect(panelSource).toMatch(/Customers aren&apos;t told automatically/);
+    expect(panelSource).toMatch(/Each session lasts up to 10 minutes\./);
+  });
+
+  it("an org with no active assistant is told to set one up or switch it back on", () => {
+    expect(panelSource).toMatch(/Your assistant needs an active AI receptionist/);
+    expect(panelSource).toMatch(/Set one up, or switch yours back on, in Assistants\./);
   });
 });
 
