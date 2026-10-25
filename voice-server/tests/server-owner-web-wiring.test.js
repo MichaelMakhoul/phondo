@@ -149,7 +149,7 @@ const { CallSession } = require("../call-session");
  * `turns` is the model's answers in order (each { sentences?, toolCalls? }), and
  * `ownerResults` the owner runner's results in order.
  */
-function makeLoop({ turns, ownerResults = [] }) {
+function makeLoop({ turns, ownerResults = [], ttsBytes = 8000 }) {
   const calls = [];
   const timers = [];
   const ws = {
@@ -182,7 +182,7 @@ function makeLoop({ turns, ownerResults = [] }) {
       }
       return { type: "content", content: (t.sentences || []).join(" ") };
     },
-    synthesizeSpeech: async () => Buffer.alloc(8000), // one second of 8 kHz μ-law
+    synthesizeSpeech: async () => Buffer.alloc(ttsBytes), // default: one second of 8 kHz μ-law
     WebSocket: { OPEN: 1 },
     logTranscript: () => {},
     parseToolArgs: (tc) => JSON.parse(tc.function.arguments || "{}"),
@@ -255,6 +255,16 @@ describe("handleTestUserSpeech on an owner session (classic, run for real)", () 
     assert.deepEqual(ended, { type: "ended", reason: "owner-ended" });
     assert.deepEqual(h.calls.find((c) => c[0] === "ws.close"), ["ws.close", 1000, "Owner said goodbye"]);
     assert.equal(h.timers[0], 1500, "one second of audio + half a second");
+  });
+
+  it("end_call after a long goodbye: the session waits for its audio, but never more than 15 seconds", async () => {
+    const h = makeLoop({
+      turns: [{ sentences: ["Thanks Dave, have a good one."], toolCalls: [{ name: "end_call" }] }],
+      ownerResults: [{ message: "Ending the call.", __endCall: true }],
+      ttsBytes: 200_000, // 25 seconds of audio
+    });
+    await h.handleTestUserSpeech(ownerWebSession(), h.ws, "That's all");
+    assert.equal(h.timers[0], 15_000);
   });
 
   it("end_call with nothing said: a short goodbye first", async () => {
