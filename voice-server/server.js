@@ -6917,6 +6917,10 @@ testWss.on("connection", (ws, req) => {
   async function cleanupTestSession() {
     if (cleaningUp) return;
     cleaningUp = true;
+    // SCRUM-596: an ending owner session takes no new turn. Speech recognition stays
+    // open through the post-call below, and a late transcript must not start one (a
+    // write, even) after the session's summary is taken.
+    if (session?.ownerMode) session.ownerSessionEnded = true;
 
     // SCRUM-341: free the concurrency slot (jti + per-IP + global) on every
     // teardown path. Idempotent via testSlotReleased.
@@ -7412,6 +7416,12 @@ testWss.on("connection", (ws, req) => {
           session.flushBuffer();
         },
         onError: (err) => {
+          // SCRUM-596: as for Gemini, an error while an owner session closes is not
+          // a failure of the session.
+          if (session?.ownerMode && cleaningUp) {
+            console.log(`[TestSTT] Error while the owner session closes (ignored): ${err?.message || err}`);
+            return;
+          }
           console.error("[TestSTT] Error:", err);
           if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: "error", message: session?.ownerMode ? OWNER_WEB_PROBLEM_MESSAGE : "Speech recognition error" }));
@@ -7581,6 +7591,8 @@ testWss.on("connection", (ws, req) => {
  */
 async function handleTestUserSpeech(session, ws, transcript) {
   if (!session) return;
+  // SCRUM-596: an owner session that is ending or has failed takes no new turn.
+  if (session.ownerMode && (session.ownerSessionEnded || session.callFailed)) return;
   session.isProcessing = true;
 
   // Play hold audio while AI processes
@@ -7804,10 +7816,7 @@ async function handleTestUserSpeech(session, ws, transcript) {
     }
   } finally {
     session.isProcessing = false;
-    // An owner session that has failed takes no further turns.
-    if (!(session.ownerMode && session.callFailed)) {
-      session.drainPending((text) => handleTestUserSpeech(session, ws, text));
-    }
+    session.drainPending((text) => handleTestUserSpeech(session, ws, text));
   }
 }
 

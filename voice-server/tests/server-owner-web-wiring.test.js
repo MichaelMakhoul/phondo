@@ -49,6 +49,8 @@ describe("/ws/test: the owner branch (source)", () => {
 
   it("the org slot is released at the start of teardown (the post-call can take seconds), then the owner post-call runs", () => {
     const cleanup = sliceOf("async function cleanupTestSession() {", "// Auto-disconnect after max duration.");
+    // First of all, an ending owner session takes no new turn (handleTestUserSpeech checks it).
+    assert.match(cleanup, /^async function cleanupTestSession\(\) \{\s*if \(cleaningUp\) return;\s*cleaningUp = true;\s*(\/\/[^\n]*\n\s*)+if \(session\?\.ownerMode\) session\.ownerSessionEnded = true;/);
     const finish = cleanup.indexOf("await finishOwnerWebSession(");
     const release = cleanup.indexOf("ownerWebSessions.close(organizationId);");
     assert.ok(release > 0 && finish > release, `${release} ${finish}`);
@@ -120,6 +122,8 @@ describe("/ws/test: the owner branch (source)", () => {
     // Speech recognition lost without an error event ends an owner session too, as on the
     // phone line; a test call only logs it, as before.
     assert.match(handler, /console\.error\(`\[TestSTT\] Deepgram connection closed unexpectedly \(code=\$\{code\}\)`\);\s*(\/\/[^\n]*\n\s*)+if \(session\?\.ownerMode && !cleaningUp && !session\.callFailed\) \{\s*session\.callFailed = true;\s*if \(ws\.readyState === WebSocket\.OPEN\) \{\s*ws\.send\(JSON\.stringify\(\{ type: "error", message: OWNER_WEB_PROBLEM_MESSAGE \}\)\);\s*ws\.close\(4500, "Speech recognition lost"\);/);
+    // ...but an error while the owner session closes is ignored, as for Gemini.
+    assert.match(handler, /onError: \(err\) => \{\s*(\/\/[^\n]*\n\s*)+if \(session\?\.ownerMode && cleaningUp\) \{\s*console\.log\(`\[TestSTT\] Error while the owner session closes \(ignored\)[^\n]*\);\s*return;\s*\}\s*console\.error\("\[TestSTT\] Error:", err\);/);
     // A speech-recognition failure ends an owner session (stored as failed), not just a message.
     assert.match(handler, /if \(session\?\.ownerMode\) \{\s*session\.callFailed = true;\s*if \(ws\.readyState === WebSocket\.OPEN\) ws\.close\(4500, "Speech recognition error"\);/);
   });
@@ -312,6 +316,15 @@ describe("handleTestUserSpeech on an owner session: turns that fail (classic, ru
     assert.deepEqual(h.calls.filter((c) => c[0] === "ws.close"), [["ws.close", 4500, "Owner turns failing"]]);
     await new Promise((r) => setImmediate(r));
     assert.equal(h.calls.filter((c) => c[0] === "llm").length, 2, "no turn is taken after the session failed");
+  });
+
+  it("an owner session that is ending takes no new turn: a late transcript starts nothing", async () => {
+    const h = makeLoop({ turns: [ok] });
+    const s = ownerWebSession();
+    s.ownerSessionEnded = true; // cleanupTestSession sets it first
+    await h.handleTestUserSpeech(s, h.ws, "Yes");
+    assert.equal(h.calls.filter((c) => c[0] === "llm").length, 0);
+    assert.equal(s.messages.length, 0, "the late words are not added to the conversation");
   });
 
   it("a turn that answers resets the streak", async () => {
