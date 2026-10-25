@@ -117,6 +117,7 @@ describe("preferBookedName", () => {
     assert.equal(preferBookedName("Michael Dunne", ["Michael Dunn"]), "Michael Dunn");
     assert.equal(preferBookedName("Maria Lopez", ["Maria Garcia"]), "Maria Lopez", "a booking for someone else with her first name");
     assert.equal(preferBookedName("Michael Gonzo", ["Michael Dunn"]), "Michael Gonzo");
+    assert.equal(preferBookedName("Michael Bunnet", ["Michael Dunn"]), "Michael Bunnet", "exactly 3 letters off");
   });
 
   it("a first name alone is completed from the booking", () => {
@@ -134,6 +135,7 @@ describe("preferBookedName", () => {
 
   it("a one-word booked name never replaces a fuller name", () => {
     assert.equal(preferBookedName("Michael Gunn", ["Michael"]), "Michael Gunn");
+    assert.equal(preferBookedName("Michael Li", ["Michael"]), "Michael Li", "a short surname is not 'near' a missing one");
   });
 
   it("no booked name, or no name from the analysis: unchanged", () => {
