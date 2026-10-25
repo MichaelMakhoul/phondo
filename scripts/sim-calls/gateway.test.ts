@@ -58,10 +58,11 @@ describe("assertApiModel", () => {
     expect(() => assertApiModel("claude-haiku-4-5-20251001", "anthropic")).not.toThrow();
   });
 
-  it("refuses Sonnet and Opus: their work is done in the Claude Code session", () => {
+  it("refuses Sonnet, Fable and Opus: their work is done in the Claude Code session", () => {
     for (const gateway of ["anthropic", "openrouter"] as const) {
-      expect(() => assertApiModel("claude-sonnet-5-5", gateway)).toThrow(/Claude Code session/);
-      expect(() => assertApiModel("claude-opus-5-5", gateway)).toThrow(/Claude Code session/);
+      for (const model of ["claude-sonnet-5-5", "claude-fable-5-1", "claude-fable-5", "claude-opus-5-5"]) {
+        expect(() => assertApiModel(model, gateway)).toThrow(/Sonnet, Fable and Opus work is done in the Claude Code session/);
+      }
       expect(() => assertApiModel("", gateway)).toThrow(/\(no model\)/);
     }
   });
@@ -185,11 +186,12 @@ describe("simFetch", () => {
     expect(out.redirect).toBe("error");
   });
 
-  it("refuses Sonnet and Opus on either gateway, before anything is sent", async () => {
+  it("refuses Sonnet, Fable and Opus on either gateway, before anything is sent", async () => {
     for (const gateway of ["anthropic", "openrouter"] as const) {
       const { fetch, realFetch } = sandbox(gateway, "or-key");
-      await expect(fetch(ANTHROPIC, request("claude-sonnet-5-5"))).rejects.toThrow(/Claude Code session/);
-      await expect(fetch(ANTHROPIC, request("claude-opus-5-5"))).rejects.toThrow(/Claude Code session/);
+      for (const model of ["claude-sonnet-5-5", "claude-fable-5-1", "claude-fable-5", "claude-opus-5-5"]) {
+        await expect(fetch(ANTHROPIC, request(model))).rejects.toThrow(/Claude Code session/);
+      }
       expect(realFetch).not.toHaveBeenCalled();
     }
   });

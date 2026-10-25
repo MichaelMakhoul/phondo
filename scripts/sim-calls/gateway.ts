@@ -1,9 +1,9 @@
 /**
  * SCRUM-594 simulated calls: what may reach a model API, and where it goes.
  *
- * Haiku only. Sonnet and Opus work (the judge) is done in the Claude Code
- * session, never through the API: the owner's rule, 23 Oct 2026
- * (SIM_JUDGE_MODEL=session). SIM_GATEWAY=openrouter sends the same Messages
+ * Haiku only. Sonnet, Fable and Opus work (the judge) is done in the Claude
+ * Code session, never through the API: the owner's rule, 23 Oct 2026, with
+ * Fable named on 25 Oct (SIM_JUDGE_MODEL=session). SIM_GATEWAY=openrouter sends the same Messages
  * requests to OpenRouter's Anthropic-compatible endpoint, on the owner's
  * capped OpenRouter key: a stopgap while the Anthropic balance is empty. They
  * are pinned to Anthropic's own servers there, at the same price.
@@ -38,7 +38,7 @@ export function simGateway(value = process.env.SIM_GATEWAY): Gateway {
 function notAllowed(model: string, gateway: Gateway): Error {
   return new Error(
     `sim: ${model || "(no model)"} may not be called through ${gateway === "openrouter" ? "OpenRouter (claude-haiku-5-5 only)" : "the API (Haiku only)"}. ` +
-      "Sonnet and Opus work is done in the Claude Code session: SIM_CALLER_MODEL=claude-haiku-5-5, SIM_JUDGE_MODEL=session.",
+      "Sonnet, Fable and Opus work is done in the Claude Code session: SIM_CALLER_MODEL=claude-haiku-5-5, SIM_JUDGE_MODEL=session.",
   );
 }
 
