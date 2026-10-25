@@ -72,7 +72,7 @@ describe("the talk panel (client)", () => {
   it("says plainly that changes are real, customers aren't told, and how long a session lasts", () => {
     expect(panelSource).toMatch(/reads every change back and waits for your yes/);
     expect(panelSource).toMatch(/Customers aren&apos;t told automatically/);
-    expect(panelSource).toMatch(/Each session lasts up to 10 minutes\./);
+    expect(panelSource).toMatch(/Each session lasts up to 8 minutes\./);
   });
 
   it("an org with no active assistant is told to set one up or switch it back on", () => {

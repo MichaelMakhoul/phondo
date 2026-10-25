@@ -9,8 +9,12 @@ const { buildOwnerPrompt, buildOwnerGreeting } = require("./owner-prompt");
 
 const OWNER_WEB_TIMEZONE_FALLBACK = "Australia/Sydney";
 
-/** An owner session in the browser lasts up to 10 minutes (a test call: 5). */
-const OWNER_WEB_MAX_SESSION_MS = 10 * 60 * 1000;
+/**
+ * An owner session in the browser lasts up to 8 minutes (a test call: 5). It stays
+ * under Gemini Live's ~10-minute connection lifetime: Gemini's GoAway warning
+ * would otherwise end a long session as a failure.
+ */
+const OWNER_WEB_MAX_SESSION_MS = 8 * 60 * 1000;
 
 /**
  * The owner row's metadata, stamped when the row is created. If the session never

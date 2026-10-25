@@ -238,6 +238,7 @@ class CallSession {
     this.ownerAuth = null;         // "verified" | "locked" | "failed" | "error" | null
     this.ownerFirstName = null;    // greeting + caller_name on owner calls
     this.ownerToolCalls = 0;       // per-call cap, lib/owner-tool-runner.js
+    this.ownerTurnFailureStreak = 0; // SCRUM-596: browser owner turns that failed in a row (classic)
     // SCRUM-587: the owner confirmation gate's clock (lib/owner-tool-runner.js
     // readBackVerdict), moved ONLY by lib/owner-turn-stamps.js on owner
     // sessions. The turn count only ever goes up — never reset mid-call, or an

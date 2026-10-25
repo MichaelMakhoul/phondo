@@ -6967,7 +6967,7 @@ testWss.on("connection", (ws, req) => {
 
   // Auto-disconnect after max duration. SCRUM-363: the public demo
   // (organizationId === DEMO_ORG_ID) gets a tighter cap than authed test calls.
-  // SCRUM-596: an owner session gets 10 minutes.
+  // SCRUM-596: an owner session gets OWNER_WEB_MAX_SESSION_MS (8 minutes).
   const maxSessionDurationMs = ownerWeb ? OWNER_WEB_MAX_SESSION_MS : getMaxSessionDurationMs(organizationId);
   autoEndTimer = setTimeout(() => {
     if (ws.readyState === WebSocket.OPEN) {
@@ -7026,9 +7026,11 @@ testWss.on("connection", (ws, req) => {
         });
         if (cleaningUp) {
           // The owner closed the page while the row was being created: complete it
-          // now, so it doesn't stay "in-progress" in the call log.
+          // now, so it doesn't stay "in-progress" in the call log. Nothing ran, so
+          // it is stored as failed (a completed call is billed).
           if (callRecordId) {
             ownerSession.callRecordId = callRecordId;
+            ownerSession.callFailed = true;
             await finishOwnerWebSession(ownerSession, { transcript: "", durationSeconds: 0 }, ownerWebFinishDeps());
           }
           return;
@@ -7330,6 +7332,13 @@ testWss.on("connection", (ws, req) => {
               if (session?.ownerMode) noteCancelledOwnerToolCalls(session, ids);
             },
             onError: (err) => {
+              // SCRUM-596: once the owner has ended the session, an error from the
+              // Gemini socket being closed (one still connecting raises one) is not a
+              // problem: it is neither shown nor stored as a failure.
+              if (session?.ownerMode && cleaningUp) {
+                console.log(`[TestGeminiLive] Error while the owner session closes (ignored): ${err.message}`);
+                return;
+              }
               console.error("[TestGeminiLive] Session error:", err.message);
               // SCRUM-596: an owner session that broke is stored as failed.
               if (session?.ownerMode) session.callFailed = true;
@@ -7417,6 +7426,15 @@ testWss.on("connection", (ws, req) => {
         onClose: (code) => {
           if (code !== 1000 && code !== 1005) {
             console.error(`[TestSTT] Deepgram connection closed unexpectedly (code=${code})`);
+            // SCRUM-596: as on the phone line, an owner session that can no longer
+            // hear the owner ends (stored as failed) rather than stay open, deaf.
+            if (session?.ownerMode && !cleaningUp && !session.callFailed) {
+              session.callFailed = true;
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: "error", message: OWNER_WEB_PROBLEM_MESSAGE }));
+                ws.close(4500, "Speech recognition lost");
+              }
+            }
           }
         },
       }, { industry: session.organization?.industry });
@@ -7736,6 +7754,7 @@ async function handleTestUserSpeech(session, ws, transcript) {
     }
 
     session.addMessage("assistant", reply);
+    session.ownerTurnFailureStreak = 0; // SCRUM-596: a turn that answered ends a failure streak
 
     // SCRUM-596: the session ends once the goodbye's audio has had time to play
     // (8 kHz μ-law: 8 bytes a millisecond).
@@ -7759,6 +7778,18 @@ async function handleTestUserSpeech(session, ws, transcript) {
   } catch (err) {
     hold.stop();
     console.error("[TestPipeline] Error:", err);
+    // SCRUM-596: an owner session whose turns keep failing (an LLM outage, credit
+    // run out) ends at the second failure in a row, said as a problem and stored
+    // as failed, rather than "could you repeat that?" on every turn.
+    if (session.ownerMode && ++session.ownerTurnFailureStreak >= 2) {
+      session.callFailed = true;
+      console.error(`[ALERT:error] [OwnerWeb] owner session ended: ${session.ownerTurnFailureStreak} turns failed in a row (callSid=${session.callSid}, org=${session.organizationId})`);
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "error", message: OWNER_WEB_PROBLEM_MESSAGE }));
+        ws.close(4500, "Owner turns failing");
+      }
+      return;
+    }
     try {
       if (ws.readyState === WebSocket.OPEN) {
         const fallback = getErrorMsg(session?.language, "troubleRepeat");
@@ -7773,7 +7804,10 @@ async function handleTestUserSpeech(session, ws, transcript) {
     }
   } finally {
     session.isProcessing = false;
-    session.drainPending((text) => handleTestUserSpeech(session, ws, text));
+    // An owner session that has failed takes no further turns.
+    if (!(session.ownerMode && session.callFailed)) {
+      session.drainPending((text) => handleTestUserSpeech(session, ws, text));
+    }
   }
 }
 

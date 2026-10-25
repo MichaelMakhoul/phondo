@@ -268,8 +268,8 @@ describe("the owner row's metadata and session length", () => {
     assert.ok(Object.isFrozen(OWNER_WEB_RECORD_METADATA));
   });
 
-  it("a session lasts up to 10 minutes", () => {
-    assert.equal(OWNER_WEB_MAX_SESSION_MS, 600_000);
+  it("a session lasts up to 8 minutes: under Gemini Live's ~10-minute connection lifetime", () => {
+    assert.equal(OWNER_WEB_MAX_SESSION_MS, 480_000);
   });
 });
 

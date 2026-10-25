@@ -76,7 +76,7 @@ function OwnerTalk({ assistantId }: { assistantId: string }) {
         </ul>
         <p className="mt-3 text-xs text-muted-foreground">
           Changes are real: it reads every change back and waits for your yes. Customers aren&apos;t told automatically.
-          Each session lasts up to 10 minutes.
+          Each session lasts up to 8 minutes.
         </p>
       </div>
 

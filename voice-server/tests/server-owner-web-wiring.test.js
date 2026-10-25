@@ -43,7 +43,7 @@ describe("/ws/test: the owner branch (source)", () => {
     }
   });
 
-  it("an owner session gets 10 minutes; a test call keeps its cap", () => {
+  it("an owner session gets its own cap (8 minutes); a test call keeps its cap", () => {
     assert.match(handler, /const maxSessionDurationMs = ownerWeb \? OWNER_WEB_MAX_SESSION_MS : getMaxSessionDurationMs\(organizationId\);/);
   });
 
@@ -81,6 +81,8 @@ describe("/ws/test: the owner branch (source)", () => {
     // mid-setup gets its row completed rather than left "in-progress".
     assert.match(owner, /if \(!callRecordId\) \{\s*ws\.send\(JSON\.stringify\(\{ type: "error", message: "Couldn't start your assistant — please try again\." \}\)\);\s*ws\.close\(4500, "Owner call record failed"\);\s*return;/);
     assert.match(owner, /if \(cleaningUp\) \{[\s\S]*?await finishOwnerWebSession\(ownerSession, \{ transcript: "", durationSeconds: 0 \}, ownerWebFinishDeps\(\)\);[\s\S]*?return;/);
+    // Nothing ran in that session: it is stored as failed (a completed call is billed).
+    assert.match(owner, /if \(callRecordId\) \{\s*ownerSession\.callRecordId = callRecordId;\s*ownerSession\.callFailed = true;\s*await finishOwnerWebSession\(/);
     assert.match(handler, /const systemPrompt = ownerWebPrompt\s*\? ownerWebPrompt\.systemPrompt\s*: buildSystemPrompt\(/);
     assert.match(handler, /if \(!session\.ownerMode && \(session\.calendarEnabled \|\| session\.serviceTypes\?\.length > 0\)\) \{/, "no schedule snapshot on an owner session");
   });
@@ -100,6 +102,9 @@ describe("/ws/test: the owner branch (source)", () => {
     assert.match(handler, /onTurnComplete: \(turnInfo\) => \{/);
     assert.match(handler, /if \(session\.ownerMode && turnInfo\?\.endedWithToolCalls !== true\) noteAssistantTurnEnd\(session\);/);
     assert.match(handler, /onToolCallCancellation: \(ids\) => \{\s*if \(session\?\.ownerMode\) noteCancelledOwnerToolCalls\(session, ids\);/);
+    // An error from the Gemini socket after the owner ended the session (one still
+    // connecting raises one) is ignored: not shown, not stored as a failure.
+    assert.match(handler, /onError: \(err\) => \{\s*(\/\/[^\n]*\n\s*)+if \(session\?\.ownerMode && cleaningUp\) \{\s*console\.log\([^\n]*\);\s*return;\s*\}\s*console\.error\("\[TestGeminiLive\] Session error:", err\.message\);/);
     // The goodbye's audio plays before the session ends; a dropped Gemini session is a failure, said as one.
     assert.match(handler, /onClose: \(code, reason\) => \{/);
     assert.match(handler, /if \(reason === "end_call"\) \{\s*setTimeout\(\(\) => \{\s*if \(ws\.readyState === WebSocket\.OPEN\) \{\s*ws\.send\(JSON\.stringify\(\{ type: "ended", reason: "owner-ended" \}\)\);\s*ws\.close\(1000, "Owner said goodbye"\);\s*\}\s*\}, 1000\);/);
@@ -112,6 +117,9 @@ describe("/ws/test: the owner branch (source)", () => {
     assert.match(handler, /const testConsentResult = session\.ownerMode\s*\? \{ required: false, callerState: null, reason: "owner-call" \}\s*: requiresRecordingDisclosureHybrid\(/);
     assert.match(handler, /const greeting = ownerWebPrompt \? ownerWebPrompt\.greeting : disclosurePrefix \+ getGreeting\(/);
     assert.match(handler, /if \(session\?\.ownerMode\) noteOwnerSpeech\(session, transcript\);/);
+    // Speech recognition lost without an error event ends an owner session too, as on the
+    // phone line; a test call only logs it, as before.
+    assert.match(handler, /console\.error\(`\[TestSTT\] Deepgram connection closed unexpectedly \(code=\$\{code\}\)`\);\s*(\/\/[^\n]*\n\s*)+if \(session\?\.ownerMode && !cleaningUp && !session\.callFailed\) \{\s*session\.callFailed = true;\s*if \(ws\.readyState === WebSocket\.OPEN\) \{\s*ws\.send\(JSON\.stringify\(\{ type: "error", message: OWNER_WEB_PROBLEM_MESSAGE \}\)\);\s*ws\.close\(4500, "Speech recognition lost"\);/);
     // A speech-recognition failure ends an owner session (stored as failed), not just a message.
     assert.match(handler, /if \(session\?\.ownerMode\) \{\s*session\.callFailed = true;\s*if \(ws\.readyState === WebSocket\.OPEN\) ws\.close\(4500, "Speech recognition error"\);/);
   });
@@ -159,6 +167,7 @@ function makeLoop({ turns, ownerResults = [] }) {
       calls.push(["llm", opts.tools]);
       const t = turns[turn++];
       if (!t) throw new Error("no more model turns");
+      if (t.throws) throw new Error(t.throws);
       for (const s of t.sentences || []) opts.onSentence(s);
       if (t.toolCalls) {
         return {
@@ -180,6 +189,7 @@ function makeLoop({ turns, ownerResults = [] }) {
     noteAssistantSpeech: () => calls.push(["noteAssistantSpeech"]),
     noteAssistantTurnEnd: () => calls.push(["noteAssistantTurnEnd"]),
     getErrorMsg: (lang, key) => `<${key}>`,
+    OWNER_WEB_PROBLEM_MESSAGE: "<owner problem>",
     detectExpectedInput: () => "general",
     setTimeout: (fn, ms) => { timers.push(ms); fn(); },
     console: { log() {}, warn() {}, error() {} },
@@ -277,6 +287,43 @@ describe("handleTestUserSpeech on an owner session (classic, run for real)", () 
   });
 });
 
+describe("handleTestUserSpeech on an owner session: turns that fail (classic, run for real)", () => {
+  const fail = { throws: "credit balance is too low" };
+  const ok = { sentences: ["You have two jobs today."] };
+
+  it("one failed turn: the owner hears the usual retry line and the session goes on", async () => {
+    const h = makeLoop({ turns: [fail] });
+    const s = ownerWebSession();
+    await h.handleTestUserSpeech(s, h.ws, "What's on today?");
+    assert.equal(s.ownerTurnFailureStreak, 1);
+    assert.equal(s.callFailed, false);
+    assert.ok(h.ws.sent.some((m) => m && m.content === "<troubleRepeat>"));
+    assert.ok(!h.calls.some((c) => c[0] === "ws.close"));
+  });
+
+  it("two failed turns in a row end the session: said as a problem, stored as failed, no further turns", async () => {
+    const h = makeLoop({ turns: [fail, fail, ok] });
+    const s = ownerWebSession();
+    await h.handleTestUserSpeech(s, h.ws, "What's on today?");
+    s._pendingTranscript = "Hello?"; // what CallSession.queueOrProcess queues while a turn runs
+    await h.handleTestUserSpeech(s, h.ws, "What's on today?");
+    assert.equal(s.callFailed, true);
+    assert.deepEqual(h.ws.sent.filter((m) => m && m.type === "error"), [{ type: "error", message: "<owner problem>" }]);
+    assert.deepEqual(h.calls.filter((c) => c[0] === "ws.close"), [["ws.close", 4500, "Owner turns failing"]]);
+    await new Promise((r) => setImmediate(r));
+    assert.equal(h.calls.filter((c) => c[0] === "llm").length, 2, "no turn is taken after the session failed");
+  });
+
+  it("a turn that answers resets the streak", async () => {
+    const h = makeLoop({ turns: [fail, ok, fail] });
+    const s = ownerWebSession();
+    for (const said of ["One", "Two", "Three"]) await h.handleTestUserSpeech(s, h.ws, said);
+    assert.equal(s.ownerTurnFailureStreak, 1);
+    assert.equal(s.callFailed, false);
+    assert.ok(!h.calls.some((c) => c[0] === "ws.close"));
+  });
+});
+
 describe("handleTestUserSpeech on a customer's test call (unchanged)", () => {
   it("customer tools, run in test mode; no owner runner, no stamps", async () => {
     const h = makeLoop({
@@ -295,6 +342,18 @@ describe("handleTestUserSpeech on a customer's test call (unchanged)", () => {
     assert.equal(ctx.testMode, true);
     assert.ok(!h.calls.some((c) => c[0] === "runOwnerToolCall" || c[0].startsWith("note")));
     assert.ok(!h.ws.sent.some((m) => m && m.type === "ended"));
+  });
+
+  it("failed turns never end a test call (it hears the retry line each time, as before)", async () => {
+    const fail = { throws: "boom" };
+    const h = makeLoop({ turns: [fail, fail, fail] });
+    const s = new CallSession("test_3");
+    s.organizationId = "org-1";
+    s.assistantId = "asst-1";
+    for (const said of ["One", "Two", "Three"]) await h.handleTestUserSpeech(s, h.ws, said);
+    assert.equal(h.ws.sent.filter((m) => m && m.content === "<troubleRepeat>").length, 3);
+    assert.ok(!h.calls.some((c) => c[0] === "ws.close"));
+    assert.equal(s.callFailed, false);
   });
 
   it("a test call keeps its own 3-round tool budget", async () => {
