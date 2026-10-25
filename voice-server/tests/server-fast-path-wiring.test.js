@@ -1197,7 +1197,7 @@ describe("SCRUM-594 4.8.10: cleanup", () => {
         analyzeCallTranscript: async () => null,
         buildToolOutcomeDigest: () => "",
         getSupabase: () => ({}), // SCRUM-594 (F10): the booked-names lookup
-        fetchBookedNames: async () => [],
+        bookedNamesForAnalysis: async () => [],
         DEBUG_TRANSCRIPTS: false,
         maybeEmitUnhappyCall: () => {},
         netLiveOutcome: () => 0,
@@ -1739,7 +1739,7 @@ describe("SCRUM-594 4.8.9: [FastTurn], [FastCall] and calls.metadata.fastPath", 
         analyzeCallTranscript: async () => null,
         buildToolOutcomeDigest: () => "",
         getSupabase: () => ({}), // SCRUM-594 (F10): the booked-names lookup
-        fetchBookedNames: async () => [],
+        bookedNamesForAnalysis: async () => [],
         DEBUG_TRANSCRIPTS: false,
         maybeEmitUnhappyCall: () => {},
         netLiveOutcome: () => 0,

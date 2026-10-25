@@ -399,7 +399,7 @@ async function runCleanup(session, { demoLine = (n) => n === DEMO } = {}) {
     analyzeCallTranscript: async () => null,
     buildToolOutcomeDigest: () => "",
     getSupabase: () => ({}), // SCRUM-594 (F10): the booked-names lookup
-    fetchBookedNames: async () => [],
+    bookedNamesForAnalysis: async () => [],
     DEBUG_TRANSCRIPTS: false,
     maybeEmitUnhappyCall: () => {},
     netLiveOutcome: () => 0,

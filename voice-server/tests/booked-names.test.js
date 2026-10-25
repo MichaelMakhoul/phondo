@@ -2,7 +2,8 @@
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
-const { fetchBookedNames, preferBookedName, cleanBookedName } = require("../lib/booked-names");
+const { fetchBookedNames, bookedNamesForAnalysis, preferBookedName, cleanBookedName } = require("../lib/booked-names");
+const { Sentry } = require("../lib/sentry");
 
 // SCRUM-594 (phone test F10): the booking said "Michael Dunn", spelled back and
 // confirmed on the call, but the call log said "Michael Gunn". The re-analysis of
@@ -38,6 +39,7 @@ function fakeSupabase({ data = [], error = null, throws = null } = {}) {
   const query = {
     select(cols) { calls.push(["select", cols]); return query; },
     eq(col, val) { calls.push(["eq", col, val]); return query; },
+    in(col, vals) { calls.push(["in", col, vals]); return query; },
     order(col, opts) { calls.push(["order", col, opts]); return query; },
     limit(n) { calls.push(["limit", n]); return query; },
     then(resolve, reject) {
@@ -52,7 +54,7 @@ function fakeSupabase({ data = [], error = null, throws = null } = {}) {
 }
 
 describe("fetchBookedNames (the appointments this call made)", () => {
-  it("reads this call's appointments in this org, oldest first", async () => {
+  it("reads this call's live appointments in this org, oldest first", async () => {
     const supabase = fakeSupabase({ data: [{ attendee_name: "Michael Dunn" }] });
     assert.deepEqual(await fetchBookedNames(supabase, "call-1", "org-1"), ["Michael Dunn"]);
     assert.deepEqual(supabase.calls, [
@@ -60,6 +62,7 @@ describe("fetchBookedNames (the appointments this call made)", () => {
       ["select", "attendee_name"],
       ["eq", "call_id", "call-1"],
       ["eq", "organization_id", "org-1"],
+      ["in", "status", ["confirmed", "pending"]], // a cancelled or moved booking's name is not the caller's final one
       ["order", "created_at", { ascending: true }],
       ["limit", 20],
     ]);
@@ -97,9 +100,56 @@ describe("fetchBookedNames (the appointments this call made)", () => {
     }
   });
 
-  it("a failed lookup throws, so the caller can say so (and go without names)", async () => {
-    await assert.rejects(fetchBookedNames(fakeSupabase({ error: { message: "permission denied" } }), "call-1", "org-1"), /appointments lookup failed: permission denied/);
+  it("a failed lookup throws, keeping a PostgREST rejection's code", async () => {
+    await assert.rejects(fetchBookedNames(fakeSupabase({ error: { message: "permission denied", code: "42501" } }), "call-1", "org-1"), (err) => {
+      assert.match(err.message, /appointments lookup failed: permission denied/);
+      assert.equal(err.code, "42501");
+      return true;
+    });
+    await assert.rejects(fetchBookedNames(fakeSupabase({ error: { message: "timeout", code: "" } }), "call-1", "org-1"), (err) => !("code" in err));
     await assert.rejects(fetchBookedNames(fakeSupabase({ throws: new TypeError("fetch failed") }), "call-1", "org-1"), /fetch failed/);
+  });
+});
+
+describe("bookedNamesForAnalysis (never throws; the analysis goes on without names)", () => {
+  it("passes the names through", async () => {
+    const supabase = fakeSupabase({ data: [{ attendee_name: "Michael Dunn" }] });
+    assert.deepEqual(await bookedNamesForAnalysis(() => supabase, "call-1", "org-1", "PostCall"), ["Michael Dunn"]);
+  });
+
+  it("a PostgREST rejection fails for every call: it pages at error level with its own reason, and returns no names", async (t) => {
+    const captured = [];
+    t.mock.method(Sentry, "captureMessage", (msg, level) => captured.push({ msg, level }));
+    const tags = {};
+    t.mock.method(Sentry, "withScope", (fn) => fn({ setTag: (k, v) => { tags[k] = v; }, setExtras() {}, setLevel() {} }));
+    const warned = [];
+    t.mock.method(console, "warn", (...a) => warned.push(a.join(" ")));
+    const names = await bookedNamesForAnalysis(() => fakeSupabase({ error: { message: 'column "attendee_name" does not exist', code: "42703" } }), "call-1", "org-1", "Retranscribe");
+    assert.deepEqual(names, []);
+    assert.equal(captured.length, 1);
+    assert.equal(captured[0].level, "error");
+    assert.match(captured[0].msg, /^\[Retranscribe\] booked-names lookup REJECTED \(42703\): appointments lookup failed: column "attendee_name" does not exist — every call's post-call analysis goes without names$/);
+    assert.equal(tags.reason, "booked-names-lookup-rejected");
+    assert.equal(tags.service, "voice-server");
+    assert.deepEqual(warned, []);
+  });
+
+  it("a timeout, a dropped connection or missing Supabase env is only a warning", async (t) => {
+    const captured = [];
+    t.mock.method(Sentry, "captureMessage", (...a) => captured.push(a));
+    const warned = [];
+    t.mock.method(console, "warn", (...a) => warned.push(a.join(" ")));
+    const clients = [
+      () => fakeSupabase({ error: { message: "canceling statement due to timeout?", code: "" } }),
+      () => fakeSupabase({ throws: new TypeError("fetch failed") }),
+      () => { throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY"); },
+    ];
+    for (const getClient of clients) assert.deepEqual(await bookedNamesForAnalysis(getClient, "call-1", "org-1", "PostCall"), []);
+    assert.equal(captured.length, 0);
+    assert.equal(warned.length, 3);
+    assert.match(warned[0], /^\[PostCall\] Booked names unavailable — analysing without them \(callId=call-1\): appointments lookup failed: canceling statement/);
+    assert.match(warned[1], /fetch failed$/);
+    assert.match(warned[2], /Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY$/);
   });
 });
 
@@ -112,9 +162,17 @@ describe("preferBookedName", () => {
     assert.equal(preferBookedName("MICHAEL gunn", ["Michael Dunn"]), "Michael Dunn");
   });
 
-  it("two letters off is still a near miss; three is another surname", () => {
-    assert.equal(preferBookedName("Michael Gun", ["Michael Dunn"]), "Michael Dunn");
-    assert.equal(preferBookedName("Michael Dunne", ["Michael Dunn"]), "Michael Dunn");
+  it("a near miss is 1 letter off for surnames of up to 4 letters", () => {
+    assert.equal(preferBookedName("Michael Dune", ["Michael Dunn"]), "Michael Dunn");
+    assert.equal(preferBookedName("Michael Gun", ["Michael Dunn"]), "Michael Gun", "2 letters off a 4-letter surname");
+    assert.equal(preferBookedName("Jenny Lee", ["Jenny Lam"]), "Jenny Lee");
+    assert.equal(preferBookedName("Michael Li", ["Michael Wu"]), "Michael Li");
+  });
+
+  it("and 2 letters off for longer ones; 3 is another surname", () => {
+    assert.equal(preferBookedName("Michael Dunne", ["Michael Dunn"]), "Michael Dunn", "5 letters, 1 off");
+    assert.equal(preferBookedName("Tom Jonse", ["Tom Jones"]), "Tom Jones", "5 letters, 2 off");
+    assert.equal(preferBookedName("Michael Makool", ["Michael Makhoul"]), "Michael Makhoul", "7 letters, 2 off");
     assert.equal(preferBookedName("Maria Lopez", ["Maria Garcia"]), "Maria Lopez", "a booking for someone else with her first name");
     assert.equal(preferBookedName("Michael Gonzo", ["Michael Dunn"]), "Michael Gonzo");
     assert.equal(preferBookedName("Michael Bunnet", ["Michael Dunn"]), "Michael Bunnet", "exactly 3 letters off");

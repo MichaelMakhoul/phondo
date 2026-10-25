@@ -27,7 +27,26 @@ stub("../lib/call-logger", {
   notifyCallCompleted: async (url, secret, payload) => { calls.push(["notifyCallCompleted", payload]); },
 });
 stub("../services/post-call-analysis", {
-  analyzeCallTranscript: async () => { calls.push(["analyzeCallTranscript"]); return analysis; },
+  analyzeCallTranscript: async (...args) => { calls.push(["analyzeCallTranscript", ...args]); return analysis; },
+});
+// SCRUM-594 (phone test F10): the appointments lookup for the names this call booked under.
+let appointments = { data: [], error: null };
+stub("../lib/supabase", {
+  getSupabase: () => ({
+    from(table) {
+      const lookup = { table, eq: {} };
+      calls.push(["appointmentsLookup", lookup]);
+      const chain = {
+        select: () => chain,
+        eq: (col, val) => { lookup.eq[col] = val; return chain; },
+        in: () => chain,
+        order: () => chain,
+        limit: () => chain,
+        then: (resolve, reject) => Promise.resolve(appointments).then(resolve, reject),
+      };
+      return chain;
+    },
+  }),
 });
 const { finishTransferredCall } = require("../lib/pending-transfers");
 
@@ -135,5 +154,39 @@ describe("finishTransferredCall — SCRUM-594: the fast path's summary survives 
     calls.length = 0;
     await finishTransferredCall(savedState(), "answered");
     assert.equal(calls.find((c) => c[0] === "completeCallRecord")[2].pipeline, null);
+  });
+});
+
+describe("finishTransferredCall — SCRUM-594 (phone test F10): the names on this call's appointments", () => {
+  beforeEach(() => {
+    calls.length = 0;
+    writeFailures = 0;
+    analysis = { summary: "Booked, then asked for Dave.", callerName: "Michael Dunn", successEvaluation: "successful" };
+    appointments = { data: [], error: null };
+  });
+
+  it("are looked up for this call in its org and given to the analysis", async () => {
+    appointments = { data: [{ attendee_name: "Michael Dunn" }], error: null };
+    await finishTransferredCall(savedState(), "answered");
+    const [, lookup] = calls.find((c) => c[0] === "appointmentsLookup");
+    assert.deepEqual(lookup, { table: "appointments", eq: { call_id: "call-9", organization_id: "org-1" } });
+    assert.deepEqual(calls.find((c) => c[0] === "analyzeCallTranscript")[2], { language: "en", bookedNames: ["Michael Dunn"] });
+    assert.equal(calls.find((c) => c[0] === "completeCallRecord")[2].callerName, "Michael Dunn");
+  });
+
+  it("a failed lookup is said in the log, and the call is analysed and written without names", async (t) => {
+    const warned = [];
+    t.mock.method(console, "warn", (...a) => warned.push(a.join(" ")));
+    appointments = { data: null, error: { message: "timeout" } };
+    await finishTransferredCall(savedState(), "answered");
+    assert.deepEqual(calls.find((c) => c[0] === "analyzeCallTranscript")[2].bookedNames, []);
+    assert.ok(calls.some((c) => c[0] === "completeCallRecord:done"));
+    assert.equal(warned.length, 1);
+    assert.match(warned[0], /\[PendingTransfer\] Booked names unavailable — analysing without them \(callId=call-9\): appointments lookup failed: timeout/);
+  });
+
+  it("an owner call is never analysed, so nothing is looked up", async () => {
+    await finishTransferredCall(savedState({ callType: "owner" }), "answered");
+    assert.ok(!calls.some((c) => c[0] === "appointmentsLookup"));
   });
 });

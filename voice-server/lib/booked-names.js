@@ -4,12 +4,16 @@
 // post-call analysis. The booking said "Michael Dunn", spelled back and confirmed
 // on the call, but the call log said "Michael Gunn": the re-analysis of the
 // recording's transcript had heard the spelled "D" as "G". The appointment rows
-// (appointments.call_id) hold the final name on every pipeline: update_appointment
-// fixes a name in place, and a failed booking leaves no row.
+// (appointments.call_id) hold the final name: update_appointment fixes a name in
+// place, and a failed booking leaves no row. Only bookings in our own calendar
+// carry the call's id; Cliniko's mirror rows and Cal.com's don't yet, so those
+// calls get no names (and run as before).
+
+const { Sentry } = require("./sentry");
+const { SENTRY_REASONS, setReasonTag } = require("./sentry-reasons");
 
 const MAX_NAMES = 5;
 const MAX_NAME_LENGTH = 80;
-const NEAR_MISS_LETTERS = 2;
 
 /**
  * A booked name made safe for one prompt line: no control characters or double
@@ -25,13 +29,15 @@ function cleanBookedName(name) {
 }
 
 /**
- * The names on the appointments this call made, cleaned, one per name whatever
- * its case, oldest booking first, at most 5.
+ * The names on this call's live (confirmed or pending) appointments, cleaned,
+ * one per name whatever its case, oldest booking first, at most 5. A cancelled
+ * booking, or the old row a reschedule leaves behind, may carry the spelling a
+ * correction replaced.
  * @param {any} supabase - a Supabase client
  * @param {string|null|undefined} callId - calls.id
  * @param {string|null|undefined} organizationId
  * @returns {Promise<string[]>}
- * @throws when the lookup fails; callers go on without names
+ * @throws when the lookup fails; a PostgREST rejection keeps its `code`
  */
 async function fetchBookedNames(supabase, callId, organizationId) {
   if (!callId || !organizationId) return [];
@@ -40,9 +46,14 @@ async function fetchBookedNames(supabase, callId, organizationId) {
     .select("attendee_name")
     .eq("call_id", callId)
     .eq("organization_id", organizationId)
+    .in("status", ["confirmed", "pending"])
     .order("created_at", { ascending: true })
     .limit(20);
-  if (error) throw new Error(`appointments lookup failed: ${error.message}`);
+  if (error) {
+    const err = /** @type {Error & { code?: string }} */ (new Error(`appointments lookup failed: ${error.message}`));
+    if (error.code) err.code = error.code;
+    throw err;
+  }
   /** @type {Map<string, string>} */
   const names = new Map();
   for (const row of Array.isArray(data) ? data : []) {
@@ -50,6 +61,41 @@ async function fetchBookedNames(supabase, callId, organizationId) {
     if (name && !names.has(name.toLowerCase())) names.set(name.toLowerCase(), name);
   }
   return [...names.values()].slice(0, MAX_NAMES);
+}
+
+/**
+ * fetchBookedNames for a post-call analysis, which goes on without names when
+ * the lookup fails, as it did before the lookup existed. Never throws. A PostgREST
+ * rejection (an error code: a renamed column, a revoked grant) fails the same way
+ * for every call, so it pages at error level; anything else (a timeout, a dropped
+ * connection, missing Supabase env) is a warning.
+ * @param {() => any} getClient - returns a Supabase client (may throw)
+ * @param {string|null|undefined} callId
+ * @param {string|null|undefined} organizationId
+ * @param {string} where - the caller's log tag, e.g. "PostCall"
+ * @returns {Promise<string[]>}
+ */
+async function bookedNamesForAnalysis(getClient, callId, organizationId, where) {
+  try {
+    return await fetchBookedNames(getClient(), callId, organizationId);
+  } catch (err) {
+    const message = err && err.message ? err.message : String(err);
+    const code = err && err.code ? String(err.code) : null;
+    if (code) {
+      Sentry.withScope((scope) => {
+        scope.setTag("service", "voice-server");
+        setReasonTag(scope, SENTRY_REASONS.BOOKED_NAMES_LOOKUP_REJECTED);
+        scope.setExtras({ callId, organizationId, code });
+        Sentry.captureMessage(
+          `[${where}] booked-names lookup REJECTED (${code}): ${message} — every call's post-call analysis goes without names`.slice(0, 300),
+          "error",
+        );
+      });
+    } else {
+      console.warn(`[${where}] Booked names unavailable — analysing without them (callId=${callId}): ${message}`);
+    }
+    return [];
+  }
 }
 
 /**
@@ -77,9 +123,11 @@ function editDistance(a, b) {
  * call's one booking was made under, the booking's spelling wins: it is what was
  * saved after the receptionist took it down, often spelling it back, while a
  * transcript can mishear spelled letters. The same person means the same first
- * name and a surname that is missing or at most 2 letters off ("Gunn" for
- * "Dunn"); anyone else keeps their own name (a booking can be for someone else).
- * Unchanged with no booked name or several, or a one-word booked name.
+ * name and a surname that is missing or a near miss: 1 letter off for surnames
+ * of up to 4 letters ("Gunn" for "Dunn"), 2 for longer ones. Anyone else keeps
+ * their own name (a booking can be for someone else: "Maria Lopez" booking for
+ * "Maria Garcia", "Jenny Lee" for "Jenny Lam"). Unchanged with no booked name or
+ * several, or a one-word booked name.
  * @param {unknown} callerName - the analysis' caller_name
  * @param {unknown} bookedNames - from fetchBookedNames
  * @returns {any} the booked name, or callerName as given
@@ -94,8 +142,10 @@ function preferBookedName(callerName, bookedNames) {
   const [callerFirst, ...callerRest] = callerName.trim().split(/\s+/);
   if (callerFirst.toLowerCase() !== bookedFirst.toLowerCase()) return callerName;
   if (callerRest.length === 0) return booked;
-  const distance = editDistance(callerRest.join(" ").toLowerCase(), bookedRest.join(" ").toLowerCase());
-  return distance <= NEAR_MISS_LETTERS ? booked : callerName;
+  const callerSurname = callerRest.join(" ").toLowerCase();
+  const bookedSurname = bookedRest.join(" ").toLowerCase();
+  const nearMiss = Math.max(callerSurname.length, bookedSurname.length) <= 4 ? 1 : 2;
+  return editDistance(callerSurname, bookedSurname) <= nearMiss ? booked : callerName;
 }
 
-module.exports = { fetchBookedNames, preferBookedName, cleanBookedName };
+module.exports = { fetchBookedNames, bookedNamesForAnalysis, preferBookedName, cleanBookedName };

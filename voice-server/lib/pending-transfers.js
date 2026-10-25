@@ -8,6 +8,8 @@
 const { completeCallRecord, notifyCallCompleted } = require("./call-logger");
 const { analyzeCallTranscript } = require("../services/post-call-analysis");
 const { maybeEmitUnhappyCall } = require("./unhappy-call");
+const { getSupabase } = require("./supabase");
+const { bookedNamesForAnalysis } = require("./booked-names");
 
 const INTERNAL_API_URL = process.env.INTERNAL_API_URL;
 const INTERNAL_API_SECRET = process.env.INTERNAL_API_SECRET;
@@ -85,8 +87,11 @@ async function finishTransferredCall(savedState, outcome) {
   // Run post-call analysis (never on an owner call — same rule as cleanupSession)
   let analysis = null;
   if (!isOwnerCall && transcript && durationSeconds > 5) {
+    // SCRUM-594 (phone test F10): the names on the appointments this call made, as
+    // in server.js cleanupSession. Never throws.
+    const bookedNames = await bookedNamesForAnalysis(getSupabase, savedState.callRecordId, savedState.organizationId, "PendingTransfer");
     try {
-      analysis = await analyzeCallTranscript(transcript, { language: savedState.language });
+      analysis = await analyzeCallTranscript(transcript, { language: savedState.language, bookedNames });
     } catch (err) {
       console.error("[PendingTransfer] Post-call analysis failed:", err);
     }

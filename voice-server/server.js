@@ -51,7 +51,7 @@ const { streamClaudeResponse } = require("./services/claude-chat");
 const { handleConversationRelayConnection, buildConversationRelayTwiml } = require("./services/conversationrelay"); // SCRUM-378 eval spike (ConversationRelay + Claude)
 const { validateToolResponse } = require("./services/turn-validator");
 const { detectPhantomAction, detectPostCallPhantoms, summarizePhantoms, netLiveOutcome, buildToolOutcomeDigest } = require("./lib/action-claim-detector"); // SCRUM-381 live + SCRUM-383 post-call + SCRUM-559 cancel-aware state checks
-const { fetchBookedNames } = require("./lib/booked-names"); // SCRUM-594 (phone test F10): the call log's name comes from the booking
+const { bookedNamesForAnalysis } = require("./lib/booked-names"); // SCRUM-594 (phone test F10): the call log's name comes from the booking
 // SCRUM-166 outbound calling service (cherry-picked to main for smoke testing)
 const {
   makeOutboundCall,
@@ -1309,7 +1309,7 @@ app.post("/internal/retranscribe", async (req, res) => {
         transcribeRecording,
         buildTwoSidedTranscript,
         analyzeCallTranscript,
-        fetchBookedNames, // SCRUM-594 (phone test F10)
+        bookedNamesForAnalysis, // SCRUM-594 (phone test F10)
         judgeContentLoss: judgeTranscriptContentLoss,
         applyReanalysis,
         Sentry,
@@ -1683,14 +1683,9 @@ wss.on("connection", (twilioWs) => {
     // SCRUM-587: no OpenAI analysis on owner calls — the summary is built from the tool audit below.
     if (!s.ownerMode && transcript && durationSeconds > 5) {
       // SCRUM-594 (phone test F10): the names on the appointments this call made, so
-      // a misheard spelled surname doesn't become the call log's name. A failed
-      // lookup leaves them out.
-      let bookedNames = [];
-      try {
-        bookedNames = await fetchBookedNames(getSupabase(), s.callRecordId, s.organizationId);
-      } catch (err) {
-        console.warn(`[PostCall] Booked names unavailable — analysing without them (callSid=${s.callSid}): ${err && err.message ? err.message : String(err)}`);
-      }
+      // a misheard spelled surname doesn't become the call log's name. Never throws;
+      // a failed lookup leaves them out (lib/booked-names.js says how loudly).
+      const bookedNames = await bookedNamesForAnalysis(getSupabase, s.callRecordId, s.organizationId, "PostCall");
       try {
         analysis = await analyzeCallTranscript(transcript, {
           language: s.language,

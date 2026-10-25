@@ -16,7 +16,7 @@ const BUCKET = "call-recordings";
 /**
  * @param {{ callId: string, deps: object, isRetry?: boolean }} args
  *   deps: { getSupabase, transcribeRecording, buildTwoSidedTranscript,
- *           analyzeCallTranscript, fetchBookedNames, judgeContentLoss,
+ *           analyzeCallTranscript, bookedNamesForAnalysis, judgeContentLoss,
  *           applyReanalysis, Sentry, deepgramApiKey, retranscribeEnabled,
  *           scheduleRetry? }
  *   isRetry: internal — set by the one-shot delayed self-retry when the
@@ -30,7 +30,7 @@ async function handleRetranscribe({ callId, deps, isRetry = false }) {
     transcribeRecording,
     buildTwoSidedTranscript,
     analyzeCallTranscript,
-    fetchBookedNames,
+    bookedNamesForAnalysis,
     judgeContentLoss,
     applyReanalysis,
     Sentry,
@@ -356,16 +356,9 @@ async function handleRetranscribe({ callId, deps, isRetry = false }) {
 
     // SCRUM-594 (phone test F10): the names on the appointments this call made.
     // The recording heard a booked, confirmed "D-U-N-N" as "G-U-N-N", and this
-    // re-analysis put Gunn in the call log. A failed lookup leaves them out: the
-    // re-analysis then runs as it did before.
-    let bookedNames = [];
-    try {
-      bookedNames = await fetchBookedNames(supabase, callId, row.organization_id);
-    } catch (namesErr) {
-      console.warn(
-        `[Retranscribe] booked names unavailable for ${callId} — re-analysing without them: ${namesErr && namesErr.message ? namesErr.message : String(namesErr)}`,
-      );
-    }
+    // re-analysis put Gunn in the call log. Never throws: a failed lookup leaves
+    // them out, and the re-analysis runs as it did before.
+    const bookedNames = await bookedNamesForAnalysis(() => supabase, callId, row.organization_id, "Retranscribe");
     const analysis = await analyzeCallTranscript(accurateTranscript, { language, bookedNames });
     await applyReanalysis(callId, {
       accurateTranscript,

@@ -1102,7 +1102,7 @@ function makeCleanup(session, o = {}) {
     analyzeCallTranscript: async (...args) => { calls.push(["analyzeCallTranscript", ...args]); return o.analysis || null; },
     // SCRUM-594 (F10): the names on the call's appointments, from the client getSupabase returns.
     getSupabase: () => SUPABASE,
-    fetchBookedNames: async (...args) => { calls.push(["fetchBookedNames", ...args]); return o.fetchBookedNames ? o.fetchBookedNames(...args) : []; },
+    bookedNamesForAnalysis: async (...args) => { calls.push(["bookedNamesForAnalysis", ...args]); return o.bookedNames || []; },
     buildToolOutcomeDigest: () => "",
     DEBUG_TRANSCRIPTS: false,
     maybeEmitUnhappyCall: () => calls.push(["maybeEmitUnhappyCall"]),
@@ -1200,9 +1200,11 @@ describe("SCRUM-587: post-call (cleanupSession), run for real", () => {
 describe("SCRUM-594 (phone test F10): the call-end analysis knows the names on this call's appointments", () => {
   it("a customer call: looked up for this call in its org, and given to the analysis", async () => {
     const s = endedCall(makeSession({ owner: false }));
-    const { cleanupSession, calls } = makeCleanup(s, { analysis: { summary: "Booked.", callerName: "Michael Dunn" }, fetchBookedNames: async () => ["Michael Dunn"] });
+    const { cleanupSession, calls } = makeCleanup(s, { analysis: { summary: "Booked.", callerName: "Michael Dunn" }, bookedNames: ["Michael Dunn"] });
     await cleanupSession();
-    assert.deepEqual(calls.find((c) => c[0] === "fetchBookedNames"), ["fetchBookedNames", SUPABASE, "call-1", "org-1"]);
+    const [, getClient, callId, organizationId, where] = calls.find((c) => c[0] === "bookedNamesForAnalysis");
+    assert.equal(getClient(), SUPABASE);
+    assert.deepEqual([callId, organizationId, where], ["call-1", "org-1", "PostCall"]);
     const [, transcript, options] = calls.find((c) => c[0] === "analyzeCallTranscript");
     assert.ok(transcript.includes("Bob Lee"));
     assert.deepEqual(options.bookedNames, ["Michael Dunn"]);
@@ -1210,25 +1212,11 @@ describe("SCRUM-594 (phone test F10): the call-end analysis knows the names on t
     assert.equal(calls.find((c) => c[0] === "completeCallRecord")[2].callerName, "Michael Dunn");
   });
 
-  it("a failed lookup is said in the log, and the call is analysed without names", async () => {
-    const s = endedCall(makeSession({ owner: false }));
-    const { cleanupSession, calls, lines } = makeCleanup(s, {
-      analysis: { summary: "Booked." },
-      fetchBookedNames: async () => { throw new Error("appointments lookup failed: timeout"); },
-    });
-    await cleanupSession();
-    assert.deepEqual(calls.find((c) => c[0] === "analyzeCallTranscript")[2].bookedNames, []);
-    assert.ok(calls.some((c) => c[0] === "completeCallRecord"), "the record is still written");
-    const warned = lines.filter((l) => l.startsWith("warn|") && l.includes("[PostCall] Booked names unavailable"));
-    assert.equal(warned.length, 1, lines.join("\n"));
-    assert.match(warned[0], /callSid=CA-customer\): appointments lookup failed: timeout/);
-  });
-
   it("an owner call is never analysed, so nothing is looked up", async () => {
     const s = endedCall(makeSession({ owner: true }));
     const { cleanupSession, calls } = makeCleanup(s);
     await cleanupSession();
-    assert.ok(!calls.some((c) => c[0] === "fetchBookedNames"));
+    assert.ok(!calls.some((c) => c[0] === "bookedNamesForAnalysis"));
   });
 
   it("a call too short to analyse isn't looked up either", async () => {
@@ -1236,7 +1224,7 @@ describe("SCRUM-594 (phone test F10): the call-end analysis knows the names on t
     s.startedAt = Date.now() - 2_000;
     const { cleanupSession, calls } = makeCleanup(s);
     await cleanupSession();
-    assert.ok(!calls.some((c) => c[0] === "fetchBookedNames"));
+    assert.ok(!calls.some((c) => c[0] === "bookedNamesForAnalysis"));
     assert.ok(!calls.some((c) => c[0] === "analyzeCallTranscript"));
   });
 });
