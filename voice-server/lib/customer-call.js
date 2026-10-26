@@ -57,9 +57,16 @@ const HANGUP_TWIML = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Han
 
 /**
  * Why a call can't be placed. Next.js turns each into the owner's spoken reason
- * (src/lib/owner-assistant/customer-call.ts) — keep the two lists in step.
+ * (src/lib/owner-assistant/customer-call.ts); its parity test holds the two lists
+ * in step.
  * @typedef {"calls_disabled"|"pipeline_unavailable"|"invalid_request"|"not_owner_session"|"demo_org"|"not_found"|"wrong_state"|"number_mismatch"|"not_au"|"outside_hours"|"no_caller_number"|"org_cap"|"number_cap"|"already_called"|"do_not_call"|"check_failed"|"busy"|"place_failed"} CallBlockReason
  */
+/** @type {ReadonlyArray<CallBlockReason>} */
+const CALL_BLOCK_REASONS = Object.freeze([
+  "calls_disabled", "pipeline_unavailable", "invalid_request", "not_owner_session", "demo_org", "not_found",
+  "wrong_state", "number_mismatch", "not_au", "outside_hours", "no_caller_number", "org_cap", "number_cap",
+  "already_called", "do_not_call", "check_failed", "busy", "place_failed",
+]);
 
 /**
  * @typedef {object} CustomerCallRequest
@@ -880,6 +887,7 @@ function isNotifyPurpose(v) {
 }
 
 module.exports = {
+  CALL_BLOCK_REASONS,
   NOTIFY_PURPOSES,
   CUSTOMER_NOTIFY_CALL_TYPE,
   CALL_OUTCOMES,
