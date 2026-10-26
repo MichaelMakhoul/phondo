@@ -3198,14 +3198,26 @@ export async function ownerDiaryProvider(organizationId: string): Promise<"phond
   const cliniko = await getActiveClinikoIntegration(organizationId);
   if (cliniko.kind === "error") return "error";
   if (cliniko.kind === "ok") return "Cliniko";
-  const serviceTypes = await getActiveServiceTypes(organizationId);
-  if (serviceTypes.length > 0) return "phondo";
-  try {
-    return (await getCalComClient(organizationId)) ? "Cal.com" : "phondo";
-  } catch (err) {
-    console.error("[owner-assistant] Cal.com lookup failed:", { organizationId, error: err instanceof Error ? err.message : String(err) });
+  // The service types and a Cal.com account, read with their faults: the booking
+  // path's own lookups read a fault as "none", which here would put the owner's job (or
+  // block) in Phondo's diary while the real one is Cal.com.
+  const supabase = createAdminClient();
+  const [types, calCom] = await Promise.all([
+    (supabase as any).from("service_types").select("id").eq("organization_id", organizationId).eq("is_active", true).limit(1),
+    (supabase as any)
+      .from("calendar_integrations")
+      .select("id, access_token")
+      .eq("organization_id", organizationId)
+      .eq("provider", "cal_com")
+      .eq("is_active", true)
+      .limit(1),
+  ]);
+  if (types.error || calCom.error) {
+    console.error("[owner-assistant] diary lookup failed:", { organizationId, serviceTypesError: types.error ?? null, calComError: calCom.error ?? null });
     return "error";
   }
+  if ((types.data ?? []).length > 0) return "phondo";
+  return (calCom.data ?? []).some((row: { access_token?: unknown }) => Boolean(row.access_token)) ? "Cal.com" : "phondo";
 }
 
 /** SCRUM-599: an owner booking on an org whose diary lives elsewhere — refused, never booked there. */

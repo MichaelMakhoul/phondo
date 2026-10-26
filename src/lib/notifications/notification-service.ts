@@ -1301,7 +1301,7 @@ function recapRow(item: OwnerRecapItem): string {
       const title = item.title && item.title !== "Time off" ? ` — &ldquo;${escapeHtml(item.title)}&rdquo;` : "";
       return cell(
         `Blocked out <strong>${escapeHtml(item.when)}</strong> ${forWhom}${title}`,
-        "Jobs already booked then are still booked — check the diary. To remove the block: Settings → Scheduling."
+        "If any jobs were already booked then, they're still booked — check the diary. To remove the block: Settings → Scheduling."
       );
     }
     case "callback_done":

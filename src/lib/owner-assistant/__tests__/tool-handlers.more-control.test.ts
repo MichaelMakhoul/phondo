@@ -21,7 +21,10 @@ vi.mock("@/lib/calendar/tool-handlers", async (importOriginal) => {
   return { ...actual, handleBookAppointment: vi.fn(), ownerDiaryProvider: vi.fn(async () => "phondo") };
 });
 vi.mock("@sentry/nextjs", () => ({ captureException: vi.fn(), captureMessage: vi.fn(), withScope: vi.fn() }));
-vi.mock("@/lib/sms/caller-sms", () => ({ sendCancellationSMS: vi.fn(), sendAppointmentConfirmationSMS: vi.fn() }));
+vi.mock("@/lib/sms/caller-sms", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/sms/caller-sms")>();
+  return { confirmationIdempotencyKey: actual.confirmationIdempotencyKey, sendCancellationSMS: vi.fn(), sendAppointmentConfirmationSMS: vi.fn() };
+});
 vi.mock("@/lib/observability/page-sentry", () => ({ pageSentry: vi.fn() }));
 vi.mock("../customer-call", async (importOriginal) => {
   const real = await importOriginal<typeof import("../customer-call")>();
@@ -137,7 +140,9 @@ describe("owner_book_appointment", () => {
     db.queues.organizations = [AU_ORG];
     const yes = await handleOwnerBookAppointment(ORG, { ...BOOK, confirmed: true }, ctx);
     expect(yes.data).toMatchObject({ outcome: "booked", customer_contact: { method: "none", status: "not_requested" }, customer_notified: false });
-    expect(yes.message).toBe(`Booked Jane Smith for ${WHEN} with Alex. I haven't let Jane Smith know. I can read you their number if you want to tell them yourself.`);
+    // Clients lens T2: never an offer to read back the number the owner just gave.
+    expect(yes.message).toBe(`Booked Jane Smith for ${WHEN} with Alex. I haven't let Jane Smith know.`);
+    expect(r.message).not.toContain("offer to read out their number");
   });
 
   it("with a choice, a yes without the owner's answer — or with 'call' — books NOTHING and asks the question", async () => {
@@ -190,7 +195,7 @@ describe("owner_book_appointment", () => {
     vi.mocked(handleBookAppointment).mockResolvedValueOnce({ ...BOOKED, data: { ...BOOKED.data, practitionerName: undefined } } as any);
     const r = await handleOwnerBookAppointment(ORG, { ...BOOK, customer_name: "Bob", confirmed: true, notify_customer: "none" }, ctx);
     expect(vi.mocked(handleBookAppointment).mock.calls[0][1]).toEqual({ first_name: "Bob", phone: "+61412345678", datetime: START });
-    expect(r.message).toBe(`Booked Bob for ${WHEN}. I haven't let Bob know. I can read you their number if you want to tell them yourself.`);
+    expect(r.message).toBe(`Booked Bob for ${WHEN}. I haven't let Bob know.`);
     expect(r.data).not.toHaveProperty("practitioner");
   });
 
@@ -283,7 +288,9 @@ describe("owner_book_appointment", () => {
     const r = await handleOwnerBookAppointment(ORG, { ...BOOK, confirmed: true, notify_customer: "text" }, ctx);
     expect(r).toEqual({
       success: false,
-      message: 'Nothing was booked. The diary said: "I\'m sorry, that time slot is no longer available. Would you like me to check for other available times?" Tell the owner in a few words, and offer another time if it\'s about the time.',
+      message:
+        'Nothing was booked. The diary said: "I\'m sorry, that time slot is no longer available. Would you like me to check for other available times?" Tell the owner in a few words, and offer another time if it\'s about the time.' +
+        " Outside opening hours or in blocked-out time, the owner can still book it themselves in Appointments.",
       data: { outcome: "not_booked", customer_name: "Jane Smith", customer_phone: "0412 345 678", when: WHEN, customer_notified: false },
     });
     expect(recordAppointmentEvent).not.toHaveBeenCalled();
@@ -326,37 +333,109 @@ describe("owner_book_appointment", () => {
     });
   });
 
-  describe("a same-call booking the path hands back (an interrupted write tried again)", () => {
-    const DUPLICATE = { success: true, message: "Your appointment is already confirmed…", data: { appointmentId: NEW_ID, confirmationCode: "654321", duplicate: true } };
+  describe("the same booking asked for again on this call (its result never came back)", () => {
+    const EARLIER = { id: NEW_ID, attendee_phone: "+61412345678", confirmation_code: "654321", practitioners: { name: "Alex" } };
 
-    it("the same customer's number: 'already booked', with no second audit row and no second text", async () => {
-      process.env.CALLER_SMS_ENABLED = "true";
-      vi.mocked(handleBookAppointment).mockResolvedValueOnce(DUPLICATE as any);
-      db.queues.appointments = [{ data: { attendee_phone: "+61412345678" }, error: null }];
+    it("this customer at this time already booked on this call: handed back — never booked twice (two staff would take a second), before the rate limit", async () => {
+      db.queues.appointments = [{ data: [EARLIER], error: null }];
+      db.queues.appointment_confirmations = [{ data: { status: "sent" }, error: null }];
       const r = await handleOwnerBookAppointment(ORG, { ...BOOK, confirmed: true, notify_customer: "text" }, ctx);
-      expect(r.message).toBe(`Jane Smith is already booked for ${WHEN} — that's the booking from a moment ago.`);
-      expect(r.data).toMatchObject({ outcome: "booked", appointment_id: NEW_ID, customer_notified: false });
-      // What the customer was told came with the first booking: a repeat says nothing about it.
-      expect(r.data).not.toHaveProperty("customer_contact");
-      expect(filters(opsOn("appointments")[0], "eq")).toEqual([["id", NEW_ID], ["organization_id", ORG]]);
+      expect(handleBookAppointment).not.toHaveBeenCalled();
+      expect(rateLimitDistributed).not.toHaveBeenCalled();
       expect(recordAppointmentEvent).not.toHaveBeenCalled();
+      const pre = opsOn("appointments")[0];
+      expect(filters(pre, "eq")).toEqual([["organization_id", ORG], ["call_id", CALL], ["start_time", "2026-10-15T23:00:00.000Z"]]);
+      expect(filters(pre, "in")).toEqual([["status", ["confirmed", "pending"]]]);
+      expect(r).toEqual({
+        success: true,
+        message: `Jane Smith is already booked for ${WHEN} with Alex — that's the booking from a moment ago. I've texted Jane Smith to let them know.`,
+        data: {
+          outcome: "booked", customer_name: "Jane Smith", customer_phone: "0412 345 678", when: WHEN, practitioner: "Alex",
+          appointment_id: NEW_ID, confirmation_code: "654321", customer_contact: { method: "text", status: "sent" }, customer_notified: true,
+        },
+      });
+    });
+
+    it("what the customer was told came with the first: a text already attempted is reported and never sent twice", async () => {
+      process.env.CALLER_SMS_ENABLED = "true";
+      db.queues.appointments = [{ data: [EARLIER], error: null }];
+      db.queues.appointment_confirmations = [{ data: { status: "failed" }, error: null }];
+      const r = await handleOwnerBookAppointment(ORG, { ...BOOK, confirmed: true, notify_customer: "text" }, ctx);
+      expect(sendAppointmentConfirmationSMS).not.toHaveBeenCalled();
+      expect(r.data).toMatchObject({ customer_contact: { method: "text", status: "not_sent", reason: "failed" }, customer_notified: false });
+      const log = opsOn("appointment_confirmations")[0];
+      expect(filters(log, "eq")).toEqual([["organization_id", ORG], ["idempotency_key", `${NEW_ID}:sms:confirmation:2026-10-15T23:00:00.000Z`]]);
+    });
+
+    it("no text was ever attempted (the first stopped before it): the owner's choice is carried out now", async () => {
+      process.env.CALLER_SMS_ENABLED = "true";
+      db.queues.appointments = [{ data: [EARLIER], error: null }];
+      const r = await handleOwnerBookAppointment(ORG, { ...BOOK, confirmed: true, notify_customer: "text" }, ctx);
+      expect(sendAppointmentConfirmationSMS).toHaveBeenCalledWith(ORG, "+61412345678", new Date("2026-10-15T23:00:00.000Z"), TZ, undefined, NEW_ID, { ownerRequested: true });
+      expect(r.data).toMatchObject({ outcome: "booked", customer_contact: { method: "text", status: "sent" } });
+      db.queues.organizations = [AU_ORG];
+      db.queues.appointments = [{ data: [EARLIER], error: null }];
+      const none = await handleOwnerBookAppointment(ORG, { ...BOOK, confirmed: true, notify_customer: "none" }, ctx);
+      expect(none.data).toMatchObject({ customer_contact: { method: "none", status: "not_requested" } });
+      expect(sendAppointmentConfirmationSMS).toHaveBeenCalledTimes(1);
+    });
+
+    it("an unreadable text log: nothing said about the customer, and nothing sent — never a guess", async () => {
+      silence("error");
+      process.env.CALLER_SMS_ENABLED = "true";
+      db.queues.appointments = [{ data: [EARLIER], error: null }];
+      db.queues.appointment_confirmations = [{ data: null, error: { code: "57014" } }];
+      const r = await handleOwnerBookAppointment(ORG, { ...BOOK, confirmed: true, notify_customer: "text" }, ctx);
+      expect(r.message).toBe(`Jane Smith is already booked for ${WHEN} with Alex — that's the booking from a moment ago.`);
+      expect(r.data).not.toHaveProperty("customer_contact");
       expect(sendAppointmentConfirmationSMS).not.toHaveBeenCalled();
     });
 
-    it("another customer with the same first name booked then on this call is a clash: nothing booked, never 'already booked'", async () => {
-      vi.mocked(handleBookAppointment).mockResolvedValueOnce(DUPLICATE as any);
-      db.queues.appointments = [{ data: { attendee_phone: "+61498765432" }, error: null }];
+    it("someone else booked at that time on this call (another number) is no repeat: this booking goes ahead", async () => {
+      db.queues.appointments = [{ data: [{ ...EARLIER, attendee_phone: "+61498765432" }], error: null }];
       const r = await handleOwnerBookAppointment(ORG, { ...BOOK, customer_name: "Jane Brown", confirmed: true, notify_customer: "none" }, ctx);
-      expect(r).toMatchObject({ success: false, message: "Nothing was booked: that time is taken by another booking made on this call. Offer the owner another time.", data: { outcome: "not_booked" } });
-      expect(r.message).not.toMatch(/already booked/);
+      expect(handleBookAppointment).toHaveBeenCalledTimes(1);
+      expect(r.data).toMatchObject({ outcome: "booked", appointment_id: NEW_ID });
+      expect(recordAppointmentEvent).toHaveBeenCalledTimes(1);
     });
 
-    it("an unreadable earlier booking is a fault, never 'already booked'", async () => {
+    it("an unreadable diary before booking is a fault, and nothing is booked", async () => {
       silence("error");
-      vi.mocked(handleBookAppointment).mockResolvedValueOnce(DUPLICATE as any);
       db.queues.appointments = [{ data: null, error: { code: "57014" } }];
       const r = await handleOwnerBookAppointment(ORG, { ...BOOK, confirmed: true, notify_customer: "none" }, ctx);
       expect(r).toEqual({ success: false, error: true, message: "I couldn't check the diary just now — please check Appointments before trying again." });
+      expect(handleBookAppointment).not.toHaveBeenCalled();
+    });
+
+    describe("the diary's own same-call net (it matches by first name only)", () => {
+      const DUPLICATE = { success: true, message: "Your appointment is already confirmed…", data: { appointmentId: NEW_ID, confirmationCode: "654321", duplicate: true } };
+
+      it("with this customer's number it's the booking from a moment ago: handed back, no second audit row", async () => {
+        vi.mocked(handleBookAppointment).mockResolvedValueOnce(DUPLICATE as any);
+        db.queues.appointments = [{ data: [], error: null }, { data: EARLIER, error: null }];
+        db.queues.appointment_confirmations = [{ data: { status: "delivered" }, error: null }];
+        const r = await handleOwnerBookAppointment(ORG, { ...BOOK, confirmed: true, notify_customer: "text" }, ctx);
+        expect(r.message).toBe(`Jane Smith is already booked for ${WHEN} with Alex — that's the booking from a moment ago. I've texted Jane Smith to let them know.`);
+        expect(filters(opsOn("appointments")[1], "eq")).toEqual([["id", NEW_ID], ["organization_id", ORG]]);
+        expect(recordAppointmentEvent).not.toHaveBeenCalled();
+        expect(sendAppointmentConfirmationSMS).not.toHaveBeenCalled();
+      });
+
+      it("another customer with the same first name booked then on this call is a clash: nothing booked, never 'already booked'", async () => {
+        vi.mocked(handleBookAppointment).mockResolvedValueOnce(DUPLICATE as any);
+        db.queues.appointments = [{ data: [], error: null }, { data: { ...EARLIER, attendee_phone: "+61498765432" }, error: null }];
+        const r = await handleOwnerBookAppointment(ORG, { ...BOOK, customer_name: "Jane Brown", confirmed: true, notify_customer: "none" }, ctx);
+        expect(r).toMatchObject({ success: false, message: "Nothing was booked: that time is taken by another booking made on this call. Offer the owner another time.", data: { outcome: "not_booked" } });
+        expect(recordAppointmentEvent).not.toHaveBeenCalled();
+      });
+
+      it("an unreadable earlier booking is a fault, never 'already booked'", async () => {
+        silence("error");
+        vi.mocked(handleBookAppointment).mockResolvedValueOnce(DUPLICATE as any);
+        db.queues.appointments = [{ data: [], error: null }, { data: null, error: { code: "57014" } }];
+        const r = await handleOwnerBookAppointment(ORG, { ...BOOK, confirmed: true, notify_customer: "none" }, ctx);
+        expect(r).toEqual({ success: false, error: true, message: "I couldn't check the diary just now — please check Appointments before trying again." });
+      });
     });
   });
 });
@@ -377,7 +456,7 @@ describe("owner_block_time", () => {
       success: false,
       message:
         `Read this back and get a clear yes before changing anything: block out ${SPAN} for everyone ("Quote visit"). ` +
-        "2 jobs are already booked then and will stay booked unless the owner moves or cancels them: Bob Lee at Friday, October 16 at 1:30 PM; Ann Kay at Friday, October 16 at 3:00 PM. Say so in the read-back." +
+        "2 jobs are already booked then and will stay booked unless the owner moves or cancels them: Bob Lee on Friday, October 16 at 1:30 PM; Ann Kay on Friday, October 16 at 3:00 PM. Say so in the read-back." +
         " If the owner confirms, call owner_block_time again with confirmed=true and the same start, end and reason.",
       data: { outcome: "needs_confirmation", when: SPAN, title: "Quote visit", jobs_in_the_way: 2 },
     });
@@ -393,13 +472,13 @@ describe("owner_block_time", () => {
 
   it("one job in the way reads in the singular; more than five are counted, not all named", async () => {
     db.queues.appointments = [{ data: JOBS.slice(0, 1), error: null }];
-    expect((await handleOwnerBlockTime(ORG, BLOCK, ctx)).message).toContain("One job is already booked then and will stay booked unless the owner moves or cancels it: Bob Lee at Friday, October 16 at 1:30 PM. Say so");
+    expect((await handleOwnerBlockTime(ORG, BLOCK, ctx)).message).toContain("One job is already booked then and will stay booked unless the owner moves or cancels it: Bob Lee on Friday, October 16 at 1:30 PM. Say so");
     db.queues.organizations = [AU_ORG];
     db.queues.appointments = [{ data: Array.from({ length: 7 }, (_, i) => ({ attendee_name: `C${i}`, start_time: "2026-10-16T02:30:00+00:00" })), error: null }];
     const many = await handleOwnerBlockTime(ORG, BLOCK, ctx);
     expect(many.message).toContain("7 jobs are already booked then");
-    expect(many.message).toContain("C4 at Friday, October 16 at 1:30 PM, and 2 more. Say so");
-    expect(many.message).not.toContain("C5 at");
+    expect(many.message).toContain("C4 on Friday, October 16 at 1:30 PM, and 2 more. Say so");
+    expect(many.message).not.toContain("C5 on");
   });
 
   it("no jobs in the way: no jobs line; no reason: the default title, left out of the read-back", async () => {
@@ -411,10 +490,10 @@ describe("owner_block_time", () => {
   it("confirmed: the dashboard's own row — for everyone, by the org's owner, linked to this call — then the voice server's cache refresh", async () => {
     db.queues.appointments = [{ data: JOBS, error: null }];
     db.queues.org_members = [{ data: { user_id: OWNER_USER }, error: null }];
-    db.queues.blocked_times = [{ data: { id: "block-1" }, error: null }];
+    db.queues.blocked_times = [{ data: [], error: null }, { data: { id: "block-1" }, error: null }];
     const r = await handleOwnerBlockTime(ORG, { ...BLOCK, confirmed: true }, ctx);
     expect(rateLimitDistributed).toHaveBeenCalledWith(expect.anything(), `${ORG}:owner`, "appt-mutate", "auth");
-    expect(opsOn("blocked_times")[0].insert).toEqual({
+    expect(opsOn("blocked_times")[1].insert).toEqual({
       organization_id: ORG,
       title: "Quote visit",
       start_time: "2026-10-16T02:00:00.000Z",
@@ -434,20 +513,55 @@ describe("owner_block_time", () => {
     });
   });
 
+  it("the same block asked for again on this call (its result never came back) is handed back — no second row, no rate limit", async () => {
+    db.queues.appointments = [{ data: JOBS, error: null }];
+    db.queues.blocked_times = [{ data: [{ id: "block-1" }], error: null }];
+    const r = await handleOwnerBlockTime(ORG, { ...BLOCK, confirmed: true }, ctx);
+    expect(r).toEqual({
+      success: true,
+      message: `${SPAN} is already blocked out for everyone — that's the block from a moment ago.`,
+      data: { outcome: "blocked", when: SPAN, title: "Quote visit", jobs_in_the_way: 2, block_id: "block-1" },
+    });
+    const same = opsOn("blocked_times")[0];
+    expect(filters(same, "eq")).toEqual([["organization_id", ORG], ["created_on_call_id", CALL], ["start_time", "2026-10-16T02:00:00.000Z"], ["end_time", "2026-10-16T06:00:00.000Z"]]);
+    expect(opsOn("blocked_times").some((o) => o.insert)).toBe(false);
+    expect(rateLimitDistributed).not.toHaveBeenCalled();
+    expect(runAfterResponse).not.toHaveBeenCalled();
+  });
+
+  it("an unreadable same-call check is a fault: nothing blocked", async () => {
+    silence("error");
+    db.queues.blocked_times = [{ data: null, error: { code: "57014" } }];
+    expect(await handleOwnerBlockTime(ORG, { ...BLOCK, confirmed: true }, ctx)).toEqual({ success: false, error: true, message: TROUBLE });
+    expect(opsOn("blocked_times").some((o) => o.insert)).toBe(false);
+  });
+
+  it("a block already under way names only the jobs still to come (never the ones done this morning)", async () => {
+    await handleOwnerBlockTime(ORG, { start: "2026-10-15T08:00", end: "2026-10-15T17:00" }, ctx);
+    expect(filters(opsOn("appointments")[0], "gt")).toEqual([["end_time", NOW.toISOString()]]);
+  });
+
   it("whole days are all-day rows and read as such", async () => {
-    db.queues.blocked_times = [{ data: { id: "block-2" }, error: null }];
+    db.queues.blocked_times = [{ data: [], error: null }, { data: { id: "block-2" }, error: null }];
     const r = await handleOwnerBlockTime(ORG, { start: "2026-10-17T00:00", end: "2026-10-18T00:00", confirmed: true }, ctx);
-    expect(opsOn("blocked_times")[0].insert).toMatchObject({ all_day: true, title: "Time off", start_time: "2026-10-16T13:00:00.000Z", end_time: "2026-10-17T13:00:00.000Z" });
+    expect(opsOn("blocked_times")[1].insert).toMatchObject({ all_day: true, title: "Time off", start_time: "2026-10-16T13:00:00.000Z", end_time: "2026-10-17T13:00:00.000Z" });
     expect(r.message).toBe("Blocked out Saturday, October 17 (all day) for everyone.");
+  });
+
+  it("several whole days keep their start and end (code lens N2: the dashboard shows an all-day block as one date)", async () => {
+    db.queues.blocked_times = [{ data: [], error: null }, { data: { id: "block-5" }, error: null }];
+    const r = await handleOwnerBlockTime(ORG, { start: "2026-10-19T00:00", end: "2026-10-24T00:00", confirmed: true }, ctx);
+    expect(opsOn("blocked_times")[1].insert).toMatchObject({ all_day: false, start_time: "2026-10-18T13:00:00.000Z", end_time: "2026-10-23T13:00:00.000Z" });
+    expect(r.message).toBe("Blocked out Monday, October 19 to Friday, October 23 (all day) for everyone.");
   });
 
   it("an unreadable owner is non-fatal: the block is made without created_by", async () => {
     silence("warn");
     db.queues.org_members = [{ data: null, error: { code: "57014" } }];
-    db.queues.blocked_times = [{ data: { id: "block-3" }, error: null }];
+    db.queues.blocked_times = [{ data: [], error: null }, { data: { id: "block-3" }, error: null }];
     const r = await handleOwnerBlockTime(ORG, { ...BLOCK, confirmed: true }, ctx);
     expect(r.data).toMatchObject({ outcome: "blocked" });
-    expect(opsOn("blocked_times")[0].insert).toMatchObject({ created_by: null });
+    expect(opsOn("blocked_times")[1].insert).toMatchObject({ created_by: null });
   });
 
   it.each([
@@ -489,23 +603,23 @@ describe("owner_block_time", () => {
     vi.mocked(rateLimitDistributed).mockResolvedValueOnce({ allowed: false } as any);
     const r = await handleOwnerBlockTime(ORG, { ...BLOCK, confirmed: true }, ctx);
     expect(r).toMatchObject({ success: false, data: { outcome: "rate_limited" } });
-    expect(opsOn("blocked_times")).toEqual([]);
+    expect(opsOn("blocked_times").some((o) => o.insert)).toBe(false);
   });
 
   it("a failed insert is the owner's fault line, with no cache refresh and never 'blocked'", async () => {
     silence("error");
-    db.queues.blocked_times = [{ data: null, error: { code: "23514" } }];
+    db.queues.blocked_times = [{ data: [], error: null }, { data: null, error: { code: "23514" } }];
     const r = await handleOwnerBlockTime(ORG, { ...BLOCK, confirmed: true }, ctx);
     expect(r).toEqual({ success: false, error: true, message: "I couldn't block that time out — something went wrong on our side. Please check the diary in the dashboard." });
     expect(runAfterResponse).not.toHaveBeenCalled();
   });
 
   it("the title is the owner's words as one capped line", async () => {
-    db.queues.blocked_times = [{ data: { id: "block-4" }, error: null }];
-    await handleOwnerBlockTime(ORG, { ...BLOCK, reason: "Day\noff​" + "x".repeat(200), confirmed: true }, ctx);
-    const title = opsOn("blocked_times")[0].insert!.title as string;
+    db.queues.blocked_times = [{ data: [], error: null }, { data: { id: "block-4" }, error: null }];
+    await handleOwnerBlockTime(ORG, { ...BLOCK, reason: "Day\noff\u200b" + "x".repeat(200), confirmed: true }, ctx);
+    const title = opsOn("blocked_times")[1].insert!.title as string;
     expect(title.startsWith("Day off")).toBe(true);
-    expect(title).not.toMatch(/[\n​]/);
+    expect(title).not.toMatch(/[\n\u200b]/);
     expect(Array.from(title).length).toBeLessThanOrEqual(80);
   });
 });
@@ -521,12 +635,19 @@ describe("owner_mark_callback_done", () => {
     const r = await handleOwnerMarkCallbackDone(ORG, { callback_id: CALLBACK }, ctx);
     expect(r).toEqual({
       success: false,
-      message: `Read this back and get a clear yes before changing anything: mark Sue Brown's callback (Blocked drain, received ${RECEIVED}) as done. If the owner confirms, call owner_mark_callback_done again with confirmed=true and the same callback_id.`,
+      message: `Read this back and get a clear yes before changing anything: mark Sue Brown's callback (Blocked drain, received ${RECEIVED}) as done. If the owner confirms, call owner_mark_callback_done again with confirmed=true and the same callback_id and note.`,
       data: { outcome: "needs_confirmation", callback_id: CALLBACK, caller_name: "Sue Brown", reason: "Blocked drain", received: RECEIVED },
     });
     expect(filters(opsOn("callback_requests")[0], "eq")).toEqual([["id", CALLBACK], ["organization_id", ORG], ["status", "pending"]]);
     expect(opsOn("callback_requests").some((o) => o.update)).toBe(false);
     expect(rateLimitDistributed).not.toHaveBeenCalled();
+  });
+
+  it("a note is read back with the rest (it is written to the record, so the owner must hear it)", async () => {
+    db.queues.callback_requests = [{ data: PENDING, error: null }];
+    const r = await handleOwnerMarkCallbackDone(ORG, { callback_id: CALLBACK, note: "Rang\nthem back" }, ctx);
+    expect(r.message).toContain(`mark Sue Brown's callback (Blocked drain, received ${RECEIVED}) as done, with the note "Rang them back".`);
+    expect(r.data).toMatchObject({ outcome: "needs_confirmation", note: "Rang them back" });
   });
 
   it("a nonsense id is 'not waiting' without any read", async () => {

@@ -122,3 +122,12 @@ On the call, the receptionist's tools can book a job for them. After it:
 - Blocking never cancels or moves jobs. It lists them, and the owner deals with each one.
 - No unblock tool in v1: the dashboard removes blocks, and the recap email shows every block made.
 - **Practitioner choice is deferred.** Neither owner session loads a staff list (both pass `practitioners: []`), so v1 has no `practitioner_id`. Bookings are assigned the way the receptionist's are, and blocks cover everyone; the read-back says "for everyone". Follow-up: load the staff for owner sessions, print them with IDs, then add `practitioner_id` to book and block.
+- **Review round 1 rulings (2026-10-27):**
+  - **Repeats are handed back, never doubled.** A booking with the same number and time on the same call returns the booking already made, checked before booking because two or more staff would otherwise take a second one. A block with the same start and end on the same call returns the block already made.
+  - **A repeated booking's text is never sent twice.** The text log is read first; the text goes out only if the first attempt never got to it.
+  - **All-day means one whole day,** as the dashboard makes it and shows it as one date. Longer blocks keep their start and end.
+  - **A callback's note is read back and keyed,** because it's written to the record.
+  - **Owner calls get 30 tool calls per call.** The classic pipeline still allows 10 rounds per turn.
+  - **The diary check reads its two lookups with their faults.** A fault is "error", never "Phondo's own diary".
+  - **The receptionist's schedule snapshot loads blocks that overlap its window.** Before this it loaded only blocks wholly inside the window.
+  - **Deploy order is strict:** migration 00173, then the website, then the voice server. Before the migration, the recap's new reads fail.

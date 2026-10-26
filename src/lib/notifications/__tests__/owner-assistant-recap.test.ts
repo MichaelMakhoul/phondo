@@ -171,7 +171,8 @@ describe("SCRUM-599: blocks and callbacks in the recap", () => {
     const [mail] = sent();
     expect(mail.subject).toBe("Your assistant made 1 change — please check");
     expect(mail.html).toContain("Blocked out <strong>Friday, October 30 from 1:00 PM to 5:00 PM</strong> for everyone — &ldquo;Quote visit&rdquo;");
-    expect(mail.html).toContain("Jobs already booked then are still booked — check the diary. To remove the block: Settings → Scheduling.");
+    // Clients lens T10: true whether or not any jobs were in the way.
+    expect(mail.html).toContain("If any jobs were already booked then, they're still booked — check the diary. To remove the block: Settings → Scheduling.");
     // No booking changed: no "let the customer know", and the link goes where blocks are removed.
     expect(mail.html).toContain("fix it in your dashboard.");
     expect(mail.html).not.toContain("let the customer know");

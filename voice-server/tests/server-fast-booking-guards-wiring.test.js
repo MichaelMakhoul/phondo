@@ -131,7 +131,7 @@ function makeLoop({ steps, results = {} }) {
     scheduleCache: { invalidate: () => {}, applyDelta: () => {} },
     noteAssistantSpeech: () => {},
     noteAssistantTurnEnd: () => {},
-    OWNER_MAX_TOOL_CALLS: 6,
+    OWNER_MAX_TOOL_ROUNDS: 6,
     ownerToolLoopReply: () => "",
     getErrorMsg: (_l, key) => key,
     detectExpectedInput: () => "general",

@@ -20,6 +20,7 @@ import {
   type ToolResult,
 } from "@/lib/calendar/tool-handlers";
 import { phonesMatchForOwnership } from "@/lib/calendar/appointment-verification";
+import { confirmationIdempotencyKey } from "@/lib/sms/caller-sms";
 import { parsePhoneToE164 } from "@/lib/phone/normalize";
 import { pickName, snapshotForAudit, MAX_BOOKING_HORIZON_MS } from "@/lib/calendar/appointment-lifecycle";
 import { partitionRescheduleChanges } from "@/lib/calendar/reschedule-core";
@@ -471,7 +472,8 @@ function readBackMessage(change: string, customer: string, contact: ContactOptio
         : "";
   if (!ways) {
     const why = contact.note ? ` (${contact.note.replace(/[.!?]+$/, "")})` : "";
-    return `Read this back and get a clear yes before changing anything: ${change}. Telling ${customer} isn't possible from here${why}: say so in a few words (for example "I can't text them") and offer to read out their number after the change. If the owner confirms, call ${tool} again with confirmed=true and notify_customer "none".`;
+    const offerNumber = kind === "booked" ? "" : " and offer to read out their number after the change";
+    return `Read this back and get a clear yes before changing anything: ${change}. Telling ${customer} isn't possible from here${why}: say so in a few words (for example "I can't text them")${offerNumber}. If the owner confirms, call ${tool} again with confirmed=true and notify_customer "none".`;
   }
   const note = contact.note ? ` ${contact.note}` : "";
   return `Read this back and get a clear yes before changing anything: ${change}. In the same question, ask whether to let ${customer} know: by ${ways}${callDoes}, or not tell them.${note} If the owner confirms, call ${tool} again with confirmed=true and notify_customer set to their answer: ${contact.options.map((m) => `"${m}"`).join(", ")}.`;
@@ -1126,6 +1128,8 @@ export interface OwnerCallbackDoneData {
   reason?: string;
   /** Spoken form of when the callback request came in. */
   received?: string;
+  /** The owner's note, as read back. */
+  note?: string;
 }
 
 const bookData = (d: OwnerBookData) => d as unknown as Record<string, unknown>;
@@ -1274,15 +1278,51 @@ export async function handleOwnerBookAppointment(
     }
   }
 
+  // The owner says the number the way people do ("0412 345 678"); the diary keeps it
+  // in E.164 like the receptionist's bookings (caller ID) when it parses in the org's
+  // country, and as said otherwise.
+  const bookedPhone = (org.country === "AU" || org.country === "US" ? parsePhoneToE164(phone, org.country) : null) ?? phone;
+
+  /** The booking from a moment ago, handed back with what its customer was told. */
+  const repeatBooking = async (earlier: SameCallBooking): Promise<ToolResult> => {
+    const contact = await repeatBookingContact(supabase, {
+      organizationId,
+      appointmentId: earlier.id,
+      start,
+      method,
+      phone,
+      country: org.country,
+      timezone: tz,
+      callId: ctx.callId,
+    });
+    const withWhom = earlier.practitioner ? ` with ${earlier.practitioner}` : "";
+    return {
+      success: true,
+      message: `${customer} is already booked for ${when}${withWhom} — that's the booking from a moment ago.${contact ? contactOutcomeSentence(contact, customer, "booked") : ""}`,
+      data: bookData({
+        outcome: "booked",
+        ...base,
+        ...(earlier.practitioner ? { practitioner: earlier.practitioner } : {}),
+        appointment_id: earlier.id,
+        ...(earlier.confirmationCode ? { confirmation_code: earlier.confirmationCode } : {}),
+        ...(contact ? { customer_contact: contact } : {}),
+        customer_notified: contact ? isCustomerNotified(contact) : false,
+      }),
+    };
+  };
+
+  // This customer, at this time, already booked on this call: the same booking asked
+  // for again after its result never came back. Hand it back — never book it twice
+  // (with two or more staff the diary would happily take a second one).
+  const earlier = await sameCallBooking(supabase, organizationId, ctx.callId, start, bookedPhone);
+  if (earlier === "error") return errorResult(SAME_CALL_READ_FAULT);
+  if (earlier) return repeatBooking(earlier);
+
   if (!(await ownerMutationAllowed(supabase, organizationId))) {
     return { success: false, message: RATE_LIMITED_MSG, data: bookData({ outcome: "rate_limited", ...base, customer_notified: false }) };
   }
 
   const [firstName, ...rest] = customer.split(" ");
-  // The owner says the number the way people do ("0412 345 678"); the diary keeps it
-  // in E.164 like the receptionist's bookings (caller ID) when it parses in the org's
-  // country, and as said otherwise.
-  const bookedPhone = (org.country === "AU" || org.country === "US" ? parsePhoneToE164(phone, org.country) : null) ?? phone;
   const result = await handleBookAppointment(
     organizationId,
     {
@@ -1307,7 +1347,9 @@ export async function handleOwnerBookAppointment(
     // booking path's reason is written for a caller; the model says it in its own words.
     return {
       success: false,
-      message: `Nothing was booked. The diary said: "${result.message}" Tell the owner in a few words, and offer another time if it's about the time.`,
+      message:
+        `Nothing was booked. The diary said: "${result.message}" Tell the owner in a few words, and offer another time if it's about the time.` +
+        " Outside opening hours or in blocked-out time, the owner can still book it themselves in Appointments.",
       data: bookData({ outcome: "not_booked", ...base, customer_notified: false }),
     };
   }
@@ -1318,76 +1360,169 @@ export async function handleOwnerBookAppointment(
     console.error("[owner-assistant] booking succeeded without an appointment id:", { organizationId, callId: ctx.callId });
     return errorResult(`I booked ${customer} but couldn't read the booking back — please check Appointments.`);
   }
-  const assigned = typeof booked.practitionerName === "string" ? sanitizeCustomerText(booked.practitionerName, NAME_MAX) : null;
-  const confirmationCode = typeof booked.confirmationCode === "string" ? booked.confirmationCode : undefined;
-
-  // A retry of the same booking on this call (an interrupted write) returns the one
-  // already made — audited, and the customer contacted, the first time. The booking
-  // path matches a same-call booking by first name only, so it must be this
-  // customer's number too: another "Jane" booked then on this call is a clash.
-  const duplicate = booked.duplicate === true;
-  if (duplicate) {
-    const { data: earlier, error: earlierError } = await supabase
-      .from("appointments")
-      .select("attendee_phone")
-      .eq("id", appointmentId)
-      .eq("organization_id", organizationId)
-      .maybeSingle();
-    if (earlierError) {
-      console.error("[owner-assistant] same-call booking read failed:", { organizationId, appointmentId, error: earlierError });
-      return errorResult("I couldn't check the diary just now — please check Appointments before trying again.");
-    }
-    if (!earlier || !phonesMatchForOwnership(earlier.attendee_phone, phone)) {
+  if (booked.duplicate === true) {
+    // The diary's own same-call net, which matches by first name only: it's this
+    // booking again only with this customer's number — another "Jane" booked then on
+    // this call is a clash.
+    const again = await sameCallBookingById(supabase, organizationId, appointmentId, bookedPhone);
+    if (again === "error") return errorResult(SAME_CALL_READ_FAULT);
+    if (!again) {
       return {
         success: false,
         message: "Nothing was booked: that time is taken by another booking made on this call. Offer the owner another time.",
         data: bookData({ outcome: "not_booked", ...base, customer_notified: false }),
       };
     }
-  } else {
-    // (The booking path refreshes the voice server's schedule cache itself.)
-    const audited = await recordAppointmentEvent(supabase, {
-      appointmentId,
-      organizationId,
-      eventType: "created",
-      actorType: "staff",
-      actorId: null,
-      channel: "voice",
-      callId: ctx.callId,
-    });
-    if (!audited) pageUnaudited(organizationId, ctx.callId, appointmentId, "created");
+    return repeatBooking(again);
   }
 
-  // A repeat says nothing about the customer: what they were told came with the first.
-  const contact: CustomerContactResult | null = duplicate
-    ? null
-    : await contactCustomer({
-        orgId: organizationId,
-        method,
-        kind: "booked",
-        appointmentId,
-        startTime: start,
-        phone,
-        country: org.country,
-        timezone: tz,
-        requestedByCallId: ctx.callId,
-      });
-  const withWhom = assigned ? ` with ${assigned}` : "";
+  // (The booking path refreshes the voice server's schedule cache itself.)
+  const audited = await recordAppointmentEvent(supabase, {
+    appointmentId,
+    organizationId,
+    eventType: "created",
+    actorType: "staff",
+    actorId: null,
+    channel: "voice",
+    callId: ctx.callId,
+  });
+  if (!audited) pageUnaudited(organizationId, ctx.callId, appointmentId, "created");
+
+  const contact = await contactCustomer({
+    orgId: organizationId,
+    method,
+    kind: "booked",
+    appointmentId,
+    startTime: start,
+    phone,
+    country: org.country,
+    timezone: tz,
+    requestedByCallId: ctx.callId,
+  });
+  const assigned = typeof booked.practitionerName === "string" ? sanitizeCustomerText(booked.practitionerName, NAME_MAX) : null;
+  const confirmationCode = typeof booked.confirmationCode === "string" ? booked.confirmationCode : undefined;
   return {
     success: true,
-    message: duplicate
-      ? `${customer} is already booked for ${when}${withWhom} — that's the booking from a moment ago.`
-      : `Booked ${customer} for ${when}${withWhom}.${contact ? contactOutcomeSentence(contact, customer, "booked") : ""}`,
+    message: `Booked ${customer} for ${when}${assigned ? ` with ${assigned}` : ""}.${contactOutcomeSentence(contact, customer, "booked")}`,
     data: bookData({
       outcome: "booked",
       ...base,
       ...(assigned ? { practitioner: assigned } : {}),
       appointment_id: appointmentId,
       ...(confirmationCode ? { confirmation_code: confirmationCode } : {}),
-      ...(contact ? { customer_contact: contact } : {}),
-      customer_notified: contact ? isCustomerNotified(contact) : false,
+      customer_contact: contact,
+      customer_notified: isCustomerNotified(contact),
     }),
   };
+}
+
+/** A live booking made on this owner call: what a repeat of it hands back. */
+interface SameCallBooking {
+  id: string;
+  confirmationCode: string | null;
+  practitioner: string | null;
+}
+
+const SAME_CALL_COLS = "id, attendee_phone, confirmation_code, practitioners(name)";
+const SAME_CALL_READ_FAULT = "I couldn't check the diary just now — please check Appointments before trying again.";
+
+function toSameCallBooking(row: any): SameCallBooking {
+  return {
+    id: row.id,
+    confirmationCode: typeof row.confirmation_code === "string" ? row.confirmation_code : null,
+    practitioner: sanitizeCustomerText(row.practitioners?.name, NAME_MAX),
+  };
+}
+
+/** This customer's live booking at `start` made on this call (matched by their number), or null; "error" on a fault. */
+async function sameCallBooking(
+  supabase: any,
+  organizationId: string,
+  callId: string,
+  start: Date,
+  phone: string
+): Promise<SameCallBooking | null | "error"> {
+  const { data, error } = await supabase
+    .from("appointments")
+    .select(SAME_CALL_COLS)
+    .eq("organization_id", organizationId)
+    .eq("call_id", callId)
+    .eq("start_time", start.toISOString())
+    .in("status", ["confirmed", "pending"]);
+  if (error) {
+    console.error("[owner-assistant] same-call booking read failed:", { organizationId, callId, error });
+    return "error";
+  }
+  const row = ((data ?? []) as any[]).find((r) => phonesMatchForOwnership(r.attendee_phone, phone));
+  return row ? toSameCallBooking(row) : null;
+}
+
+/** The booking the diary handed back as this call's — when it's this customer's (by number); "error" on a fault. */
+async function sameCallBookingById(
+  supabase: any,
+  organizationId: string,
+  appointmentId: string,
+  phone: string
+): Promise<SameCallBooking | null | "error"> {
+  const { data, error } = await supabase
+    .from("appointments")
+    .select(SAME_CALL_COLS)
+    .eq("id", appointmentId)
+    .eq("organization_id", organizationId)
+    .maybeSingle();
+  if (error) {
+    console.error("[owner-assistant] same-call booking read failed:", { organizationId, appointmentId, error });
+    return "error";
+  }
+  return data && phonesMatchForOwnership(data.attendee_phone, phone) ? toSameCallBooking(data) : null;
+}
+
+/**
+ * What a repeated booking's customer was told. The text the owner chose went out (or
+ * didn't) with the first attempt: that is reported, and never sent twice. Only when no
+ * text was attempted for the booking at all — the first attempt stopped before it — is
+ * the owner's choice carried out now. Null when the text log can't be read: nothing is
+ * said about the customer rather than a guess.
+ */
+async function repeatBookingContact(
+  supabase: any,
+  req: {
+    organizationId: string;
+    appointmentId: string;
+    start: Date;
+    method: ContactMethod;
+    phone: string;
+    country: string | null;
+    timezone: string;
+    callId: string;
+  }
+): Promise<CustomerContactResult | null> {
+  const { data, error } = await supabase
+    .from("appointment_confirmations")
+    .select("status")
+    .eq("organization_id", req.organizationId)
+    .eq("idempotency_key", confirmationIdempotencyKey(req.appointmentId, "sms", "confirmation", req.start.toISOString()))
+    .maybeSingle();
+  if (error) {
+    console.error("[owner-assistant] repeated booking's text log read failed:", { organizationId: req.organizationId, appointmentId: req.appointmentId, error });
+    return null;
+  }
+  if (data) {
+    return data.status === "sent" || data.status === "delivered"
+      ? { method: "text", status: "sent" }
+      : { method: "text", status: "not_sent", reason: String(data.status) };
+  }
+  return contactCustomer({
+    orgId: req.organizationId,
+    method: req.method,
+    kind: "booked",
+    appointmentId: req.appointmentId,
+    startTime: req.start,
+    phone: req.phone,
+    country: req.country,
+    timezone: req.timezone,
+    requestedByCallId: req.callId,
+  });
 }
 
 /**
@@ -1424,14 +1559,15 @@ export async function handleOwnerBlockTime(
   const who = " for everyone";
   const base = { when, title };
 
-  // The jobs already booked then (live only).
+  // The jobs already booked then (live, and not already over — a block from this
+  // morning doesn't name the jobs done since).
   const { data: jobs, error: jobsError } = await supabase
     .from("appointments")
     .select("attendee_name, start_time")
     .eq("organization_id", organizationId)
     .in("status", ["confirmed", "pending"])
     .lt("start_time", end.toISOString())
-    .gt("end_time", start.toISOString())
+    .gt("end_time", new Date(Math.max(start.getTime(), Date.now())).toISOString())
     .order("start_time", { ascending: true });
   if (jobsError) {
     console.error("[owner-assistant] jobs-in-the-way lookup failed:", { organizationId, error: jobsError });
@@ -1442,7 +1578,7 @@ export async function handleOwnerBlockTime(
     ? ` ${inTheWay.length === 1 ? "One job is" : `${inTheWay.length} jobs are`} already booked then and will stay booked unless the owner moves or cancels ${inTheWay.length === 1 ? "it" : "them"}: ` +
       inTheWay
         .slice(0, BLOCK_JOBS_NAMED)
-        .map((j) => `${sanitizeCustomerText(j.attendee_name, NAME_MAX) ?? "a customer"} at ${formatWhen(new Date(j.start_time), tz)}`)
+        .map((j) => `${sanitizeCustomerText(j.attendee_name, NAME_MAX) ?? "a customer"} on ${formatWhen(new Date(j.start_time), tz)}`)
         .join("; ") +
       `${inTheWay.length > BLOCK_JOBS_NAMED ? `, and ${inTheWay.length - BLOCK_JOBS_NAMED} more` : ""}. Say so in the read-back.`
     : "";
@@ -1457,12 +1593,36 @@ export async function handleOwnerBlockTime(
     };
   }
 
+  // The same block asked for again on this call (its result never came back): hand it
+  // back — a second identical row would only clutter the diary.
+  const { data: sameBlock, error: sameBlockError } = await supabase
+    .from("blocked_times")
+    .select("id")
+    .eq("organization_id", organizationId)
+    .eq("created_on_call_id", ctx.callId)
+    .eq("start_time", start.toISOString())
+    .eq("end_time", end.toISOString())
+    .limit(1);
+  if (sameBlockError) {
+    console.error("[owner-assistant] same-call block read failed:", { organizationId, error: sameBlockError });
+    return errorResult(TROUBLE);
+  }
+  if (Array.isArray(sameBlock) && sameBlock.length > 0) {
+    return {
+      success: true,
+      message: `${when} is already blocked out${who} — that's the block from a moment ago.`,
+      data: blockData({ outcome: "blocked", ...base, jobs_in_the_way: inTheWay.length, block_id: sameBlock[0].id }),
+    };
+  }
+
   if (!(await ownerMutationAllowed(supabase, organizationId))) {
     return { success: false, message: RATE_LIMITED_MSG, data: blockData({ outcome: "rate_limited", ...base }) };
   }
   const startLocal = toLocalIsoMinute(start, tz);
   const endLocal = toLocalIsoMinute(end, tz);
-  const allDay = startLocal.slice(11) === "00:00" && endLocal.slice(11) === "00:00";
+  // All-day is ONE whole day, as the dashboard makes them (it shows an all-day block as
+  // a single date); longer blocks keep their start and end.
+  const allDay = startLocal.slice(11) === "00:00" && endLocal.slice(11) === "00:00" && endLocal.slice(0, 10) === addDaysISO(startLocal.slice(0, 10), 1);
   const createdBy = await orgOwnerUserId(supabase, organizationId);
   const { data: block, error: insertError } = await supabase
     .from("blocked_times")
@@ -1537,11 +1697,14 @@ export async function handleOwnerMarkCallbackDone(
   const received = formatWhen(new Date(cb.created_at), tz);
   const base = { callback_id: cb.id, caller_name: caller, reason, received };
 
+  const note = sanitizeCustomerText(args.note, CALLBACK_NOTE_MAX);
   if (args.confirmed !== true) {
     return {
       success: false,
-      message: `Read this back and get a clear yes before changing anything: mark ${caller}'s callback (${reason}, received ${received}) as done. If the owner confirms, call owner_mark_callback_done again with confirmed=true and the same callback_id.`,
-      data: callbackDoneData({ outcome: "needs_confirmation", ...base }),
+      message:
+        `Read this back and get a clear yes before changing anything: mark ${caller}'s callback (${reason}, received ${received}) as done${note ? `, with the note "${note}"` : ""}.` +
+        " If the owner confirms, call owner_mark_callback_done again with confirmed=true and the same callback_id and note.",
+      data: callbackDoneData({ outcome: "needs_confirmation", ...base, ...(note ? { note } : {}) }),
     };
   }
   if (!(await ownerMutationAllowed(supabase, organizationId))) {
@@ -1556,7 +1719,7 @@ export async function handleOwnerMarkCallbackDone(
       status: "completed",
       completed_at: now,
       completed_by: completedBy,
-      completion_notes: sanitizeCustomerText(args.note, CALLBACK_NOTE_MAX) ?? DEFAULT_CALLBACK_NOTE,
+      completion_notes: note ?? DEFAULT_CALLBACK_NOTE,
       // The recap email lists the callbacks this call marked done (migration 00173).
       completed_on_call_id: ctx.callId,
       updated_at: now,

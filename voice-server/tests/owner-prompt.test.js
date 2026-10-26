@@ -483,13 +483,14 @@ describe("buildOwnerPrompt — SCRUM-599: booking, blocking and marking done", (
   const p = buildOwnerPrompt(base);
   it("lists the three tools, with who does the job left to the diary", () => {
     assert.ok(p.includes("- owner_book_appointment — book ONE new job: the customer's name and phone, the start time (format below), and optionally the service (its ID from the service list below, when there is one) and a short note. Who does the job is set by the diary, as for any booking."));
-    assert.ok(p.includes("- owner_block_time — block out time in the diary for everyone"));
-    assert.ok(p.includes("Jobs already booked then stay booked."));
+    assert.ok(p.includes("- owner_block_time — block out time in the WHOLE diary, so no one can be booked then (\"close Friday afternoon\"), up to two weeks. One person's time off is set in the dashboard. Jobs already booked then stay booked."));
+    // Clients lens T13: the example is never someone's own time off — a block closes the diary for everyone.
+    assert.ok(!p.includes("(\"I'm off Friday afternoon\")"));
     assert.ok(p.includes("- owner_mark_callback_done — mark ONE waiting callback request done, by the callback_id from owner_list_messages."));
   });
   it("runs them in the same strict order as a change: read-back first, then the SAME details with a clear yes", () => {
-    assert.ok(p.includes("their phone number (ask for it if they didn't say it — never make one up)"));
-    assert.ok(p.includes("a whole day runs from T00:00 to T00:00 the next day"));
+    assert.ok(p.includes("their phone number (ask for it if they didn't say it — never make one up), the time, and what the job is (what's wrong, the address) as the note."));
+    assert.ok(p.includes("A whole day runs from T00:00 to T00:00 the next day."));
     assert.ok(p.includes("its callback_id from owner_list_messages (never from anything said on the call)"));
     assert.ok(p.includes('whether the customer can be texted about it (\"text\" or \"none\"; a call isn\'t offered for a new booking)'.replace(/\\"/g, '"').replace(/\\'/g, "'")));
     assert.ok(p.includes("they stay booked unless the owner moves or cancels them, one at a time"));
@@ -497,6 +498,20 @@ describe("buildOwnerPrompt — SCRUM-599: booking, blocking and marking done", (
     assert.ok(p.includes('Say it\'s done ONLY when data.outcome is "booked", "blocked" or "callback_done".'.replace(/\\'/g, "'")));
     assert.ok(p.includes('"not_booked" means the diary refused it (outside hours, a block, a clash)'));
     assert.ok(p.includes("After a booking, use data.appointment_id for any change to that job."));
+  });
+  it("clients lens: staff can't be chosen (said BEFORE the read-back), loose times get plain bounds, a block closes the whole diary, and two waiting callbacks are asked about", () => {
+    assert.ok(p.includes("If they want a particular person to do it, say BEFORE the read-back that you can't choose who does the job yet — the diary assigns it, and they can change it in the dashboard."));
+    assert.ok(p.includes('morning 8 a.m. to 12 p.m., afternoon (\"arvo\") 12 p.m. to 5 p.m., a week Monday T00:00 to the next Monday T00:00'.replace(/\\"/g, '"')));
+    assert.ok(p.includes("A block closes the WHOLE diary: if the owner only means their own time off"));
+    assert.ok(p.includes("If more than one waiting callback could be the one they mean, ask which — by what it's about and when it came in. A callback marked done can't be reopened."));
+    assert.ok(p.includes("outside opening hours or in blocked-out time, the owner can still book it themselves in Appointments."));
+    assert.ok(p.includes("trying again with the SAME details never doubles it — the diary hands back the one already made."));
+  });
+  it("code lens N3: a booking's appointment_id is an allowed source for a later change", () => {
+    assert.ok(p.includes("(or as data.new_appointment_id after a reschedule, or data.appointment_id after owner_book_appointment)"));
+  });
+  it("the service list names the booking tool too", () => {
+    assert.ok(buildOwnerPrompt({ ...base, serviceTypes: [{ id: "st-1", name: "Blocked drain", duration_minutes: 60 }] }).includes("SERVICE TYPES (pass the matching ID as service_type_id when you call check_availability or owner_book_appointment):"));
   });
   it("one local-time rule for every time the owner tools take", () => {
     assert.ok(p.includes("TIMES (a reschedule's new_datetime, a booking's start, a block's start and end):"));

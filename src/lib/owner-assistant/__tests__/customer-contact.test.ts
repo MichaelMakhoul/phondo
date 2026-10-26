@@ -223,8 +223,12 @@ describe("SCRUM-599: a new booking the owner made", () => {
     expect(await contactCustomer(req({ kind: "booked", method: "call" }), { ...CAN, placeCall })).toEqual({ method: "call", status: "not_placed", reason: "invalid_request" });
     expect(placeCall).not.toHaveBeenCalled();
   });
-  it("the sentences for a booking: the same text lines, and a neutral one for a call", () => {
+  it("the sentences for a booking: never an offer to read back the number the owner just gave (clients lens T2)", () => {
     expect(contactOutcomeSentence({ method: "text", status: "sent" }, "Jane Smith", "booked")).toBe(" I've texted Jane Smith to let them know.");
+    expect(contactOutcomeSentence({ method: "none", status: "not_requested" }, "Jane Smith", "booked")).toBe(" I haven't let Jane Smith know.");
+    expect(contactOutcomeSentence({ method: "text", status: "not_sent", reason: "landline" }, "Jane Smith", "booked")).toBe(" I couldn't text Jane Smith: their number is a landline.");
+    // A change keeps the offer: the owner may not have the number to hand.
+    expect(contactOutcomeSentence({ method: "none", status: "not_requested" }, "Jane Smith", "moved")).toContain("I can read you their number");
     expect(contactOutcomeSentence({ method: "call", status: "calling", callId: "c" }, "Jane Smith", "booked")).toBe(" I'm calling Jane Smith now about the booking. You'll get an email when the call's done.");
   });
 });

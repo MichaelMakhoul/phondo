@@ -228,12 +228,14 @@ export async function contactCustomer(req: ContactRequest, deps: ContactDeps = {
  * model repeats it; it never claims a contact the result doesn't confirm.
  */
 export function contactOutcomeSentence(result: CustomerContactResult, customer: string, kind: ContactKind): string {
+  // SCRUM-599 (clients lens T2): never offer to read back a new booking's number — the owner just said it.
+  const offerNumber = kind === "booked" ? "" : " I can read you their number if you want to tell them yourself.";
   switch (result.status) {
     case "sent":
       return ` I've texted ${customer} to let them know.`;
     case "not_sent": {
       const why = (BLOCK_WHY as Record<string, string>)[result.reason] ?? SEND_WHY[result.reason] ?? "the text didn't go through";
-      return ` I couldn't text ${customer}: ${why}. I can read you their number if you want to tell them yourself.`;
+      return ` I couldn't text ${customer}: ${why}.${offerNumber}`;
     }
     case "calling":
       // Clients lens M8: the owner hears what the call will do, not only that it's happening.
@@ -252,6 +254,6 @@ export function contactOutcomeSentence(result: CustomerContactResult, customer: 
       return ` I couldn't call ${customer}: ${callWhy(result.reason)}. I can read you their number if you want to tell them yourself.`;
     case "not_requested":
       // Not "as you asked": with nothing to choose, the owner may never have been asked.
-      return ` I haven't let ${customer} know. I can read you their number if you want to tell them yourself.`;
+      return ` I haven't let ${customer} know.${offerNumber}`;
   }
 }

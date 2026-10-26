@@ -38,7 +38,15 @@
  */
 const { OWNER_TOOL_NAMES, OWNER_WRITE_TOOL_NAMES, OWNER_CHANGE_TOOL_NAMES, OWNER_ALLOWED_TOOL_NAMES, OWNER_SUCCESS_OUTCOMES } = require("./owner-tools");
 
-const OWNER_MAX_TOOL_CALLS = 10;
+/**
+ * Owner tool calls per CALL. SCRUM-599: a normal admin call (the messages, a callback
+ * ticked off, a booking — a read-back and a yes each — a block, then moving the job
+ * in its way) is well past 10, so the call budget is 30; the cap is only a runaway
+ * net (every write still needs the owner's own yes).
+ */
+const OWNER_MAX_TOOL_CALLS = 30;
+/** Tool rounds per classic-pipeline TURN (server.js): an owner's list → check → read-back fits in a few. */
+const OWNER_MAX_TOOL_ROUNDS = 10;
 
 /** Every failed check_availability, whatever the cause (controller ruling). */
 const DIARY_UNAVAILABLE_MESSAGE = "I couldn't check the diary just now — try another time, or check the dashboard.";
@@ -262,34 +270,27 @@ function confirmationKey(name, args) {
   const part = (v) => (typeof v === "string" && v !== "" && !v.includes("|") ? v : null);
   /** @param {unknown} v an optional field: absent is "", a malformed one is null */
   const optional = (v) => (v === undefined || v === null || v === "" ? "" : part(v));
-  /** @param {unknown} v words the model may space or case differently between the two calls */
-  const words = (v) => {
-    const p = part(v);
-    return p === null ? null : p.trim().replace(/\s+/g, " ").toLowerCase() || null;
-  };
-  /** @param {unknown} v optional words: absent is "" */
-  const optionalWords = (v) => (v === undefined || v === null || v === "" ? "" : words(v));
+  /** @param {unknown} v words the model may space or case differently between the two calls (any text: the fields are JSON-encoded) */
+  const words = (v) => (typeof v === "string" ? v.trim().replace(/\s+/g, " ").toLowerCase() || null : null);
+  /** @param {unknown} v optional words: absent or blank is "" (the website reads a blank one as none) */
+  const optionalWords = (v) => (v === undefined || v === null || (typeof v === "string" && v.trim() === "") ? "" : words(v));
   /** @param {unknown} v a phone number, digits only, an AU +61 number written as 0… */
   const phoneDigits = (v) => {
-    const p = part(v);
-    if (p === null) return null;
-    const d = p.replace(/\D/g, "");
+    if (typeof v !== "string") return null;
+    const d = v.replace(/\D/g, "");
     return (/^61\d{9}$/.test(d) ? `0${d.slice(2)}` : d) || null;
   };
   // SCRUM-599: the new writes name no existing booking — every field the read-back gave
-  // is the key, so a yes to one booking or block never makes another.
+  // is the key, so a yes to one booking, block or note never makes another. JSON keeps
+  // the fields apart: a "|" in a name, note or reason neither joins two keys nor makes
+  // one that can never be confirmed.
+  /** @param {Array<string|null>} fields */
+  const keyOf = (fields) => (fields.includes(null) ? null : `${name}|${JSON.stringify(fields)}`);
   if (name === "owner_book_appointment") {
-    const fields = [words(args.customer_name), phoneDigits(args.customer_phone), part(args.start), optional(args.service_type_id), optionalWords(args.notes)];
-    return fields.includes(null) ? null : `${name}|${fields.join("|")}`;
+    return keyOf([words(args.customer_name), phoneDigits(args.customer_phone), part(args.start), optional(args.service_type_id), optionalWords(args.notes)]);
   }
-  if (name === "owner_block_time") {
-    const fields = [part(args.start), part(args.end), optionalWords(args.reason)];
-    return fields.includes(null) ? null : `${name}|${fields.join("|")}`;
-  }
-  if (name === "owner_mark_callback_done") {
-    const id = part(args.callback_id);
-    return id === null ? null : `${name}|${id}`;
-  }
+  if (name === "owner_block_time") return keyOf([part(args.start), part(args.end), optionalWords(args.reason)]);
+  if (name === "owner_mark_callback_done") return keyOf([part(args.callback_id), optionalWords(args.note)]);
   const id = part(args.appointment_id);
   if (id === null) return null;
   // SCRUM-598: a yes to "call to confirm" never places a "find a new time" call, and a
@@ -744,7 +745,7 @@ async function runOneOwnerToolCall(session, toolCall, deps) {
 
 /**
  * SF5: the classic loop's reply when an owner turn uses up its tool rounds
- * (OWNER_MAX_TOOL_CALLS) — never the receptionist's "could you repeat that?",
+ * (OWNER_MAX_TOOL_ROUNDS) — never the receptionist's "could you repeat that?",
  * which after a change invites a second, duplicate request. The owner hears
  * the last owner tool's own message (a cancel's result, say), unless it was
  * written for the model (PR B's read-back request, the cap, a refusal): then a
@@ -760,9 +761,9 @@ function ownerToolLoopReply(session, last) {
     && !modelOnlyReplies.has(ret) && outcomeOf(ret) !== "needs_confirmation";
   const wroteChange = Boolean(last) && OWNER_WRITE_TOOL_NAMES.includes(last.name) && ownerResultSucceeded(last.name, ret);
   if (wroteChange) {
-    console.error(`[OwnerTools] the classic tool loop ran out (${OWNER_MAX_TOOL_CALLS} rounds) right after a successful ${last.name} — the owner heard its result, not a model reply (org=${session.organizationId}, callSid=${session.callSid})`);
+    console.error(`[OwnerTools] the classic tool loop ran out (${OWNER_MAX_TOOL_ROUNDS} rounds) right after a successful ${last.name} — the owner heard its result, not a model reply (org=${session.organizationId}, callSid=${session.callSid})`);
   } else {
-    console.warn(`[OwnerTools] the classic tool loop ran out (${OWNER_MAX_TOOL_CALLS} rounds) — the owner heard ${speakable ? "the last tool's message" : "the fallback line"}. callSid=${session.callSid}`);
+    console.warn(`[OwnerTools] the classic tool loop ran out (${OWNER_MAX_TOOL_ROUNDS} rounds) — the owner heard ${speakable ? "the last tool's message" : "the fallback line"}. callSid=${session.callSid}`);
   }
   return speakable ? ret.message : LOOP_EXHAUSTED_MESSAGE;
 }
@@ -790,6 +791,7 @@ function buildOwnerCallSummary(audit) {
 
 module.exports = {
   OWNER_MAX_TOOL_CALLS,
+  OWNER_MAX_TOOL_ROUNDS,
   CANCELLED_BEFORE_SENT_MESSAGE,
   LOOP_EXHAUSTED_MESSAGE,
   CONFIRM_SETTLE_MS,

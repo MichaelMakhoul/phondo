@@ -30,7 +30,7 @@ const { chunkAudioForTwilio } = require("../services/deepgram-tts");
 const { boostAura } = require("../lib/aura-gain");
 const { forwardingFallbackEligible } = require("../lib/transfer-eligibility");
 const { buildOwnerTools } = require("../lib/owner-tools");
-const { runOwnerToolCall, OWNER_MAX_TOOL_CALLS, ownerToolLoopReply, buildOwnerCallSummary, settleOwnerToolRuns } = require("../lib/owner-tool-runner");
+const { runOwnerToolCall, OWNER_MAX_TOOL_ROUNDS, ownerToolLoopReply, buildOwnerCallSummary, settleOwnerToolRuns } = require("../lib/owner-tool-runner");
 const { noteAssistantSpeech, noteAssistantTurnEnd } = require("../lib/owner-turn-stamps");
 const { checkEndCallGuard } = require("../lib/end-call-guard");
 const { createFastPlayer } = require("../lib/fast-player");
@@ -198,7 +198,7 @@ function makeFast(o = {}) {
     scheduleCache: { invalidate: () => {}, applyDelta: () => {} },
     noteAssistantSpeech,
     noteAssistantTurnEnd,
-    OWNER_MAX_TOOL_CALLS,
+    OWNER_MAX_TOOL_ROUNDS,
     ownerToolLoopReply,
     getErrorMsg: (lang, key) => (o.errorMsgWithLang ? `ERR:${lang}:${key}` : `ERR:${key}`),
     detectExpectedInput: (t) => o.expectNext || (o.realDetector ? require("../lib/input-type-detector").detectExpectedInput(t) : "general"),

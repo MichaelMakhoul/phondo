@@ -184,6 +184,17 @@ describe("SCRUM-599: owner_book_appointment, owner_block_time, owner_mark_callba
       assert.ok(ot.OWNER_WRITE_TOOL_NAMES.includes(t), `${t} goes through the confirmation gate`);
     }
   });
+  it("every write takes the one strict confirm flag", () => {
+    for (const d of ot.ownerToolDefinitions) {
+      if (!ot.OWNER_WRITE_TOOL_NAMES.includes(d.function.name)) continue;
+      assert.equal(d.function.parameters.properties.confirmed.type, "boolean", d.function.name);
+      assert.match(d.function.parameters.properties.confirmed.description, /^The boolean true ONLY after the owner clearly said yes to your read-back\./, d.function.name);
+    }
+  });
+  it("a booking's note can carry the address; a callback's note is read back, so it must stay the same", () => {
+    assert.ok(byName.owner_book_appointment.parameters.properties.notes.description.includes("what's wrong, and the address if they give one"));
+    assert.ok(byName.owner_mark_callback_done.parameters.properties.note.description.includes("It is read back with the rest, so keep the SAME note for the confirm."));
+  });
   it("a new booking can be texted or not — never called", () => {
     assert.deepEqual(byName.owner_book_appointment.parameters.properties.notify_customer.enum, ["text", "none"]);
     assert.ok(byName.owner_book_appointment.description.includes("a call isn't offered for a new booking"));
@@ -196,7 +207,7 @@ describe("SCRUM-599: owner_book_appointment, owner_block_time, owner_mark_callba
   });
   it("a block never moves or cancels a job, and covers everyone", () => {
     assert.ok(byName.owner_block_time.description.includes("Blocking never moves or cancels a job: jobs already booked then STAY booked"));
-    assert.ok(byName.owner_block_time.description.includes("for everyone — one person's block is done in the dashboard"));
+    assert.ok(byName.owner_block_time.description.includes("Block out time in the WHOLE diary so no one can be booked then (it is for everyone — one person's time off is done in the dashboard)"));
   });
   it("the diary-changing writes refresh the schedule cache; marking a callback done doesn't", () => {
     assert.deepEqual([...ot.OWNER_CHANGE_TOOL_NAMES], ["owner_reschedule_appointment", "owner_cancel_appointment", "owner_book_appointment", "owner_block_time"]);

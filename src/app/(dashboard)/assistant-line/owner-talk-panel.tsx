@@ -116,7 +116,7 @@ function PageShell({ children }: { children: ReactNode }) {
       <div className="mb-6">
         <h1 className="text-2xl font-bold">Your assistant</h1>
         <p className="text-muted-foreground">
-          Ask about your bookings and messages, or move or cancel a job. It&apos;s the same assistant as your phone
+          Ask about your bookings and messages, book, move or cancel a job, block out time, or mark a callback done. It&apos;s the same assistant as your phone
           line, without the PIN.
         </p>
       </div>

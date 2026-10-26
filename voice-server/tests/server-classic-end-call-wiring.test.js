@@ -25,7 +25,7 @@ const { CallSession } = require("../call-session");
 const toolExecutor = require("../services/tool-executor");
 const { forwardingFallbackEligible } = require("../lib/transfer-eligibility");
 const { buildOwnerTools } = require("../lib/owner-tools");
-const { runOwnerToolCall, OWNER_MAX_TOOL_CALLS, ownerToolLoopReply } = require("../lib/owner-tool-runner");
+const { runOwnerToolCall, OWNER_MAX_TOOL_ROUNDS, ownerToolLoopReply } = require("../lib/owner-tool-runner");
 const { noteAssistantSpeech, noteAssistantTurnEnd } = require("../lib/owner-turn-stamps");
 const { checkEndCallGuard, END_CALL_BLOCKED_MESSAGE, END_CALL_BLOCKED_RESCHEDULE_MESSAGE } = require("../lib/end-call-guard");
 
@@ -138,7 +138,7 @@ function makeClassic(o = {}) {
     scheduleCache: { invalidate: () => {}, applyDelta: () => {} },
     noteAssistantSpeech,
     noteAssistantTurnEnd,
-    OWNER_MAX_TOOL_CALLS,
+    OWNER_MAX_TOOL_ROUNDS,
     ownerToolLoopReply,
     getErrorMsg,
     detectExpectedInput: () => "general",

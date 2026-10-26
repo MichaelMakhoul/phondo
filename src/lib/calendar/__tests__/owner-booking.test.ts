@@ -41,6 +41,9 @@ const HOURS = { monday: OPEN, tuesday: OPEN, wednesday: OPEN, thursday: OPEN, fr
 const ARGS = { datetime: SLOT, first_name: "Jane", last_name: "Smith", phone: "+61412345678" };
 
 let inserts: any[] = [];
+/** What the diary check reads (service types, a Cal.com account), per table — and a fault to return instead. */
+let lists: Record<string, unknown[]> = {};
+let faults: Record<string, { code: string }> = {};
 /** The org's hours, an insert that fits, and nothing else in the diary. */
 function fakeAdmin() {
   return {
@@ -55,7 +58,8 @@ function fakeAdmin() {
             ? { data: { id: "appt-new", confirmation_code: "654321" }, error: null }
             : { data: null, error: null };
       b.maybeSingle = async () => ({ data: null, error: null });
-      b.then = (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) => Promise.resolve({ data: [], error: null }).then(resolve, reject);
+      b.then = (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) =>
+        Promise.resolve(faults[table] ? { data: null, error: faults[table] } : { data: lists[table] ?? [], error: null }).then(resolve, reject);
       return b;
     },
   };
@@ -64,6 +68,8 @@ const flush = () => new Promise((r) => setTimeout(r, 0));
 
 beforeEach(() => {
   inserts = [];
+  lists = {};
+  faults = {};
   vi.clearAllMocks();
   vi.mocked(createAdminClient).mockReturnValue(fakeAdmin() as never);
   vi.mocked(getActiveClinikoIntegration).mockResolvedValue({ kind: "none" } as never);
@@ -109,7 +115,7 @@ describe("handleBookAppointment for the owner's assistant", () => {
   });
 });
 
-describe("ownerDiaryProvider routes exactly as handleBookAppointment does", () => {
+describe("ownerDiaryProvider routes as handleBookAppointment does — and a lookup fault is a fault (silent lens N3)", () => {
   it("Cliniko connected → Cliniko; a Cliniko lookup fault → error (never a guess)", async () => {
     vi.mocked(getActiveClinikoIntegration).mockResolvedValueOnce({ kind: "ok", ctx: {} } as never);
     expect(await ownerDiaryProvider(ORG)).toBe("Cliniko");
@@ -118,20 +124,26 @@ describe("ownerDiaryProvider routes exactly as handleBookAppointment does", () =
   });
 
   it("service types set up → Phondo's diary, whatever Cal.com says", async () => {
-    vi.mocked(getActiveServiceTypes).mockResolvedValueOnce([{ id: "st-1" }] as never);
-    vi.mocked(getCalComClient).mockResolvedValue({ bookings: {} } as never);
+    lists = { service_types: [{ id: "st-1" }], calendar_integrations: [{ id: "ci-1", access_token: "enc" }] };
     expect(await ownerDiaryProvider(ORG)).toBe("phondo");
-    expect(getCalComClient).not.toHaveBeenCalled();
   });
 
-  it("no service types: Cal.com when connected, Phondo's diary when not, error when the lookup throws", async () => {
-    vi.mocked(getCalComClient).mockResolvedValueOnce({ bookings: {} } as never);
+  it("no service types: Cal.com when an account with a key is connected, Phondo's diary when not", async () => {
+    lists = { calendar_integrations: [{ id: "ci-1", access_token: "enc" }] };
     expect(await ownerDiaryProvider(ORG)).toBe("Cal.com");
-    vi.mocked(getCalComClient).mockResolvedValueOnce(null as never);
+    lists = { calendar_integrations: [{ id: "ci-1", access_token: null }] };
     expect(await ownerDiaryProvider(ORG)).toBe("phondo");
+    lists = {};
+    expect(await ownerDiaryProvider(ORG)).toBe("phondo");
+  });
+
+  it("a fault reading the service types or the Cal.com account is 'error' — never read as 'Phondo's own diary'", async () => {
     const errors = vi.spyOn(console, "error").mockImplementation(() => {});
-    vi.mocked(getCalComClient).mockRejectedValueOnce(new Error("decrypt failed"));
-    expect(await ownerDiaryProvider(ORG)).toBe("error");
-    expect(errors).toHaveBeenCalled();
+    for (const table of ["service_types", "calendar_integrations"]) {
+      faults = { [table]: { code: "57014" } };
+      lists = { calendar_integrations: [{ id: "ci-1", access_token: "enc" }] };
+      expect(await ownerDiaryProvider(ORG), table).toBe("error");
+    }
+    expect(errors).toHaveBeenCalledTimes(2);
   });
 });

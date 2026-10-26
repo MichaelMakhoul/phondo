@@ -650,12 +650,15 @@ async function loadScheduleSnapshot(organizationId, orgConfig, serviceTypes) {
       .gte("start_time", rangeStartUtc)
       .lte("start_time", rangeEndUtc),
 
+    // SCRUM-599: every block that OVERLAPS the window, as the website reads them — a
+    // block already under way, or one running past the last day (a week off, a whole
+    // day ending at the next midnight), still closes the times inside the window.
     supabase
       .from("blocked_times")
       .select("id, start_time, end_time, practitioner_id")
       .eq("organization_id", organizationId)
-      .gte("start_time", rangeStartUtc)
-      .lte("end_time", rangeEndUtc),
+      .lt("start_time", rangeEndUtc)
+      .gt("end_time", rangeStartUtc),
 
     supabase
       .from("practitioners")

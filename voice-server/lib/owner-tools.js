@@ -121,10 +121,7 @@ const ownerToolDefinitions = [
             type: "string",
             description: "The new start in the business's LOCAL time as YYYY-MM-DDTHH:mm — no seconds, no time-zone offset, no trailing Z.",
           },
-          confirmed: {
-            type: "boolean",
-            description: "The boolean true ONLY after the owner clearly said yes to your read-back. Leave it out to get the read-back to give.",
-          },
+          confirmed: CONFIRMED_PARAM,
           notify_customer: NOTIFY_CUSTOMER_PARAM,
         },
         required: ["appointment_id", "new_datetime"],
@@ -141,10 +138,7 @@ const ownerToolDefinitions = [
         type: "object",
         properties: {
           appointment_id: { type: "string", description: "The appointment_id from owner_list_appointments." },
-          confirmed: {
-            type: "boolean",
-            description: "The boolean true ONLY after the owner clearly said yes to your read-back. Leave it out to get the read-back to give.",
-          },
+          confirmed: CONFIRMED_PARAM,
           reason: { type: "string", description: "Optional short reason, in the owner's words." },
           notify_customer: NOTIFY_CUSTOMER_PARAM,
         },
@@ -180,10 +174,7 @@ const ownerToolDefinitions = [
             enum: ["morning", "afternoon", "evening", "any"],
             description: "find_new_time only, optional: when in the day the owner wants the new time.",
           },
-          confirmed: {
-            type: "boolean",
-            description: "The boolean true ONLY after the owner clearly said yes to your read-back. Leave it out to get the read-back to give.",
-          },
+          confirmed: CONFIRMED_PARAM,
         },
         required: ["appointment_id", "purpose"],
       },
@@ -202,7 +193,7 @@ const ownerToolDefinitions = [
           customer_phone: { type: "string", description: "The customer's phone number. Ask the owner for it if they didn't say it — never make one up." },
           start: { type: "string", description: `The start ${LOCAL_TIME}.` },
           service_type_id: { type: "string", description: "Optional: the ID of the service from the SERVICE TYPES list in your instructions. Never a name." },
-          notes: { type: "string", description: "Optional short note for the job, in the owner's words (for example \"hot water unit leaking\")." },
+          notes: { type: "string", description: "Optional short note for the job in the owner's words — what's wrong, and the address if they give one (for example \"hot water unit leaking, 12 Smith St\")." },
           confirmed: CONFIRMED_PARAM,
           notify_customer: NOTIFY_BOOKED_PARAM,
         },
@@ -215,7 +206,7 @@ const ownerToolDefinitions = [
     function: {
       name: "owner_block_time",
       description:
-        "Block out time in the diary so nothing gets booked then (for everyone — one person's block is done in the dashboard), in two calls. First call WITHOUT confirmed: nothing changes, and data.outcome is needs_confirmation with the read-back (data.when, data.title; data.jobs_in_the_way counts jobs already booked then, and the message names them). Read it back and get a clear yes, THEN call again with confirmed=true and the SAME start, end and reason. Blocking never moves or cancels a job: jobs already booked then STAY booked — if the owner wants one out of the way, that's owner_reschedule_appointment or owner_cancel_appointment, one at a time. The result's data.outcome is blocked | needs_confirmation | invalid_time | rate_limited | external_calendar — only 'blocked' means it happened. Up to two weeks at a time.",
+        "Block out time in the WHOLE diary so no one can be booked then (it is for everyone — one person's time off is done in the dashboard), in two calls. First call WITHOUT confirmed: nothing changes, and data.outcome is needs_confirmation with the read-back (data.when, data.title; data.jobs_in_the_way counts jobs already booked then, and the message names them). Read it back and get a clear yes, THEN call again with confirmed=true and the SAME start, end and reason. Blocking never moves or cancels a job: jobs already booked then STAY booked — if the owner wants one out of the way, that's owner_reschedule_appointment or owner_cancel_appointment, one at a time. The result's data.outcome is blocked | needs_confirmation | invalid_time | rate_limited | external_calendar — only 'blocked' means it happened. Up to two weeks at a time.",
       parameters: {
         type: "object",
         properties: {
@@ -238,7 +229,7 @@ const ownerToolDefinitions = [
         type: "object",
         properties: {
           callback_id: { type: "string", description: "The callback_id from owner_list_messages." },
-          note: { type: "string", description: "Optional short note in the owner's words (for example \"rang them back, sorted\")." },
+          note: { type: "string", description: "Optional short note in the owner's words (for example \"rang them back, sorted\"). It is read back with the rest, so keep the SAME note for the confirm." },
           confirmed: CONFIRMED_PARAM,
         },
         required: ["callback_id"],
@@ -280,7 +271,7 @@ const ownerCheckAvailabilityDefinition = {
 };
 
 /**
- * The owner session's complete tool list: the five owner tools, then the
+ * The owner session's complete tool list: the owner tools, then the
  * shared get_current_datetime, the owner-worded check_availability and
  * end_call. Lazy require: tool-executor imports the NAME lists from this
  * module, so a top-level require would be circular.
