@@ -3,7 +3,7 @@
 // email the owner asked for ("in case the AI made a mistake or hallucinated"). Built
 // only from the system's own records — the appointment audit trail and the text log —
 // never from anything the AI said.
-import { formatWhen } from "./time";
+import { formatSpan, formatWhen } from "./time";
 import { sanitizeCustomerText } from "./sanitize";
 import { parseConfirmationIdempotencyKey } from "@/lib/sms/caller-sms";
 import { CUSTOMER_NOTIFY_CALL_TYPE } from "./owner-call";
@@ -24,7 +24,8 @@ export type RecapTold =
   | { told: "calling" }
   | { told: "not_told" };
 
-export type OwnerRecapItem = {
+/** A booking the call changed, and whether its customer was told. */
+export type BookingRecapItem = {
   change: RecapChange;
   customer: string;
   /** Spoken form (formatWhen) of the job's time: the cancelled time, the new time, or the booked time. */
@@ -33,7 +34,28 @@ export type OwnerRecapItem = {
   from?: string;
 } & RecapTold;
 
+/** SCRUM-599: time the call blocked out in the diary (blocked_times.created_on_call_id). */
+export interface BlockRecapItem {
+  change: "blocked";
+  /** Spoken form of the block (formatSpan). */
+  when: string;
+  /** The staff member it's for; null means everyone. */
+  practitioner: string | null;
+  title: string;
+}
+
+/** SCRUM-599: a callback request the call marked done (callback_requests.completed_on_call_id). */
+export interface CallbackRecapItem {
+  change: "callback_done";
+  customer: string;
+  reason: string;
+}
+
+export type OwnerRecapItem = BookingRecapItem | BlockRecapItem | CallbackRecapItem;
+
 const NAME_MAX = 80;
+/** A callback's reason, as the owner's messages list caps it. */
+const REASON_MAX = 240;
 /** A change's text goes out right after its write and audit row; allow for clock skew. */
 const TEXT_AFTER_EVENT_SKEW_MS = 60_000;
 /** The audit events a recap lists, and what each one says. */
@@ -68,8 +90,57 @@ function toldFromStatus(status: unknown): RecapTold {
 }
 
 /**
- * The changes made on `callId`, oldest first, or null when the records couldn't be
- * read (the caller reports it — a missing recap is a failure, never "no changes").
+ * Everything the owner's assistant changed on `callId`: the bookings (oldest first),
+ * then the time it blocked out, then the callbacks it marked done (SCRUM-599). Null
+ * when any of the records couldn't be read — the caller reports it: a missing recap
+ * is a failure, never "no changes".
+ */
+export async function buildOwnerRecap(
+  supabase: any,
+  args: { organizationId: string; callId: string; timezone: string; since: Date }
+): Promise<OwnerRecapItem[] | null> {
+  const bookings = await buildBookingRecap(supabase, args);
+  if (bookings === null) return null;
+  const { organizationId, callId, timezone } = args;
+
+  const { data: blocks, error: blocksError } = await supabase
+    .from("blocked_times")
+    .select("id, title, start_time, end_time, practitioners(name)")
+    .eq("organization_id", organizationId)
+    .eq("created_on_call_id", callId)
+    .order("created_at", { ascending: true });
+  if (blocksError) {
+    console.error("[OwnerRecap] blocked_times read failed:", { organizationId, callId, error: blocksError });
+    return null;
+  }
+  const { data: callbacks, error: callbacksError } = await supabase
+    .from("callback_requests")
+    .select("id, caller_name, reason")
+    .eq("organization_id", organizationId)
+    .eq("completed_on_call_id", callId)
+    .order("completed_at", { ascending: true });
+  if (callbacksError) {
+    console.error("[OwnerRecap] callback_requests read failed:", { organizationId, callId, error: callbacksError });
+    return null;
+  }
+
+  const blockItems: BlockRecapItem[] = (blocks ?? []).map((b: any) => ({
+    change: "blocked",
+    when: formatSpan(new Date(b.start_time), new Date(b.end_time), timezone),
+    practitioner: sanitizeCustomerText(b.practitioners?.name, NAME_MAX),
+    title: sanitizeCustomerText(b.title, NAME_MAX) ?? "Time off",
+  }));
+  const callbackItems: CallbackRecapItem[] = (callbacks ?? []).map((c: any) => ({
+    change: "callback_done",
+    customer: sanitizeCustomerText(c.caller_name, NAME_MAX) ?? "A caller",
+    reason: sanitizeCustomerText(c.reason, REASON_MAX) ?? "no reason given",
+  }));
+  return [...bookings, ...blockItems, ...callbackItems];
+}
+
+/**
+ * The bookings changed on `callId`, oldest first, or null when the records couldn't be
+ * read.
  * - `cancelled` and `rescheduled` events with this call_id (the owner tools record
  *   them on the cancelled row and on a move's NEW leg); `created` is a booking made
  *   on the call (SCRUM-598's AI call to a customer).
@@ -80,7 +151,7 @@ function toldFromStatus(status: unknown): RecapTold {
  *   SCRUM-598: or a call this session asked for about that booking (calls rows of
  *   call_type customer_notify, requested_by_call_id = this call).
  */
-export async function buildOwnerRecap(
+async function buildBookingRecap(
   supabase: any,
   {
     organizationId,
@@ -94,7 +165,7 @@ export async function buildOwnerRecap(
     /** Text attempts before this (an earlier cancellation of a reinstated booking…) never count. */
     since: Date;
   }
-): Promise<OwnerRecapItem[] | null> {
+): Promise<BookingRecapItem[] | null> {
   const { data: events, error: eventsError } = await supabase
     .from("appointment_events")
     .select("appointment_id, event_type, created_at")
@@ -179,7 +250,7 @@ export async function buildOwnerRecap(
     });
   };
 
-  const items: OwnerRecapItem[] = [];
+  const items: BookingRecapItem[] = [];
   for (const e of rows) {
     const appt = byId.get(e.appointment_id);
     if (!appt) {

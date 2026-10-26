@@ -4,7 +4,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 // audit trail (appointment_events.call_id) and the text log (appointment_confirmations)
 // — never from anything the AI said. A failed read is null (a failure), never [].
 
-import { buildOwnerRecap } from "../recap";
+import { buildOwnerRecap, type BookingRecapItem, type OwnerRecapItem } from "../recap";
 
 const ORG = "11111111-2222-4333-a444-555555555555";
 const CALL = "0f1e2d3c-4b5a-4c6d-8e9f-0a1b2c3d4e5f";
@@ -45,9 +45,15 @@ afterEach(() => vi.restoreAllMocks());
 const EVENT_AT = "2026-10-26T04:33:55Z";
 const events = (rows: Array<[string, string]>) => ({ data: rows.map(([appointment_id, event_type]) => ({ appointment_id, event_type, created_at: EVENT_AT })), error: null });
 const ATTEMPT = "2026-10-26T04:33:56Z"; // the change's own text, a second after its audit row
+/** The recap of a call that made no blocks or callbacks: its items are all bookings. */
+async function bookingRecap(): Promise<BookingRecapItem[] | null> {
+  const items: OwnerRecapItem[] | null = await buildOwnerRecap(fake(), { organizationId: ORG, callId: CALL, timezone: TZ, since: SINCE });
+  for (const i of items ?? []) expect(["cancelled", "moved", "booked"]).toContain(i.change);
+  return items as BookingRecapItem[] | null;
+}
 
 describe("buildOwnerRecap", () => {
-  it("no events on the call: [] after one org- and call-scoped read of the audit trail", async () => {
+  it("nothing changed on the call: [] after one org- and call-scoped read each of the audit trail, the blocks and the callbacks", async () => {
     queues.appointment_events = [{ data: [], error: null }];
     expect(await buildOwnerRecap(fake(), { organizationId: ORG, callId: CALL, timezone: TZ, since: SINCE })).toEqual([]);
     expect(calls("appointment_events")).toEqual([
@@ -57,7 +63,8 @@ describe("buildOwnerRecap", () => {
       ["in", ["event_type", ["cancelled", "rescheduled", "created"]]],
       ["order", ["created_at", { ascending: true }]],
     ]);
-    expect(ops.map((o) => o.table)).toEqual(["appointment_events"]);
+    // SCRUM-599: no booking events never skips the blocks and callbacks.
+    expect(ops.map((o) => o.table)).toEqual(["appointment_events", "blocked_times", "callback_requests"]);
   });
 
   it("a cancel and a move, oldest first, in the org's zone, with the move's old time from the leg it replaced", async () => {
@@ -109,7 +116,7 @@ describe("buildOwnerRecap", () => {
         { appointment_id: A, idempotency_key: `${A}:sms:confirmation:2026-10-26T01:30:00.000Z`, status: "sent", last_attempt_at: ATTEMPT },
         { appointment_id: A, idempotency_key: `${A}:sms:cancellation:2026-10-26T01:30:00.000Z`, status, last_attempt_at: ATTEMPT },
       ], error: null }];
-      const [item] = (await buildOwnerRecap(fake(), { organizationId: ORG, callId: CALL, timezone: TZ, since: SINCE }))!;
+      const [item] = (await bookingRecap())!;
       expect(item, status).toMatchObject(told);
     }
   });
@@ -125,7 +132,7 @@ describe("buildOwnerRecap", () => {
       { appointment_id: NEW, idempotency_key: `${NEW}:email:confirmation:x`, status: "sent", last_attempt_at: ATTEMPT },
       { appointment_id: NEW, idempotency_key: `${NEW}:sms:cancellation:x`, status: "sent", last_attempt_at: ATTEMPT },
     ], error: null }];
-    const [item] = (await buildOwnerRecap(fake(), { organizationId: ORG, callId: CALL, timezone: TZ, since: SINCE }))!;
+    const [item] = (await bookingRecap())!;
     expect(item.told).toBe("not_told");
     queues.appointment_events = [events([[NEW, "rescheduled"]])];
     queues.appointments = [
@@ -133,14 +140,14 @@ describe("buildOwnerRecap", () => {
       { data: [{ id: OLD, start_time: "2026-10-27T22:00:00Z" }], error: null },
     ];
     queues.appointment_confirmations = [{ data: [{ appointment_id: NEW, idempotency_key: `${NEW}:sms:confirmation:x`, status: "sent", last_attempt_at: ATTEMPT }], error: null }];
-    const [texted] = (await buildOwnerRecap(fake(), { organizationId: ORG, callId: CALL, timezone: TZ, since: SINCE }))!;
+    const [texted] = (await bookingRecap())!;
     expect(texted.told).toBe("texted");
   });
 
   it("customer names are flattened to one capped line (they are customer-written)", async () => {
     queues.appointment_events = [events([[A, "cancelled"]])];
     queues.appointments = [{ data: [{ id: A, attendee_name: "Jane\nSmith​" + "x".repeat(200), start_time: "2026-10-26T01:30:00Z", rescheduled_from_id: null }], error: null }];
-    const [item] = (await buildOwnerRecap(fake(), { organizationId: ORG, callId: CALL, timezone: TZ, since: SINCE }))!;
+    const [item] = (await bookingRecap())!;
     expect(item.customer.startsWith("Jane Smith")).toBe(true);
     expect(item.customer).not.toMatch(/[\n​]/);
     expect(Array.from(item.customer).length).toBeLessThanOrEqual(80);
@@ -181,7 +188,7 @@ describe("SCRUM-597 (silent round 2): a change's text is attempted right after i
       queues.appointment_events = [events([[A, "cancelled"]])];
       queues.appointments = [{ data: [{ id: A, attendee_name: "Bob", start_time: "2026-10-26T01:30:00Z", rescheduled_from_id: null }], error: null }];
       queues.appointment_confirmations = [{ data: [{ appointment_id: A, idempotency_key: `${A}:sms:cancellation:x`, status: "sent", last_attempt_at: attemptAt }], error: null }];
-      const [item] = (await buildOwnerRecap(fake(), { organizationId: ORG, callId: CALL, timezone: TZ, since: SINCE }))!;
+      const [item] = (await bookingRecap())!;
       expect(item.told, attemptAt).toBe(told);
     }
     expect(calls("appointment_confirmations").find(([m]) => m === "select")?.[1]).toEqual(["appointment_id, idempotency_key, status, last_attempt_at"]);
@@ -206,7 +213,7 @@ describe("buildOwnerRecap — calls placed about a change", () => {
   it("a cancel and a move whose customers are being called read 'calling' — read org-, type- and session-scoped", async () => {
     setUp();
     queues.calls = [{ data: [notifyCall(A, "cancelled"), notifyCall(NEW, "moved")], error: null }];
-    const items = await buildOwnerRecap(fake(), { organizationId: ORG, callId: CALL, timezone: TZ, since: SINCE });
+    const items = await bookingRecap();
     expect(items?.map((i) => i.told)).toEqual(["calling", "calling"]);
     expect(calls("calls")).toEqual([
       ["select", ["id, metadata"]],
@@ -219,7 +226,7 @@ describe("buildOwnerRecap — calls placed about a change", () => {
   it("a call about another booking, or for another purpose, is not this change's", async () => {
     setUp();
     queues.calls = [{ data: [notifyCall(NEW, "cancelled"), notifyCall(A, "moved"), notifyCall(OLD, "moved")], error: null }];
-    const items = await buildOwnerRecap(fake(), { organizationId: ORG, callId: CALL, timezone: TZ, since: SINCE });
+    const items = await bookingRecap();
     expect(items?.map((i) => i.told)).toEqual(["not_told", "not_told"]);
   });
 
@@ -228,5 +235,60 @@ describe("buildOwnerRecap — calls placed about a change", () => {
     queues.calls = [{ data: null, error: { message: "boom" } }];
     expect(await buildOwnerRecap(fake(), { organizationId: ORG, callId: CALL, timezone: TZ, since: SINCE })).toBeNull();
     expect(console.error).toHaveBeenCalled();
+  });
+});
+
+// SCRUM-599: what the call blocked out and the callbacks it marked done, from the
+// columns that link them to the call — never from what the AI said.
+describe("buildOwnerRecap — blocks and callbacks", () => {
+  const BLOCK = { id: "b1", title: "Quote visit", start_time: "2026-10-30T02:00:00Z", end_time: "2026-10-30T06:00:00Z", practitioners: null };
+  const CALLBACK = { id: "cb1", caller_name: "Sue Brown", reason: "Blocked drain" };
+
+  it("after the bookings: the blocks, then the callbacks — each read org- and call-scoped", async () => {
+    queues.appointment_events = [events([[A, "cancelled"]])];
+    queues.appointments = [{ data: [{ id: A, attendee_name: "Bob", start_time: "2026-10-26T01:30:00Z", rescheduled_from_id: null }], error: null }];
+    queues.blocked_times = [{ data: [BLOCK, { ...BLOCK, id: "b2", title: null, start_time: "2026-11-01T13:00:00Z", end_time: "2026-11-02T13:00:00Z", practitioners: { name: "Alex" } }], error: null }];
+    queues.callback_requests = [{ data: [CALLBACK], error: null }];
+    const items = await buildOwnerRecap(fake(), { organizationId: ORG, callId: CALL, timezone: TZ, since: SINCE });
+    expect(items).toEqual([
+      { change: "cancelled", customer: "Bob", when: "Monday, October 26 at 12:30 PM", told: "not_told" },
+      { change: "blocked", when: "Friday, October 30 from 1:00 PM to 5:00 PM", practitioner: null, title: "Quote visit" },
+      { change: "blocked", when: "Monday, November 2 (all day)", practitioner: "Alex", title: "Time off" },
+      { change: "callback_done", customer: "Sue Brown", reason: "Blocked drain" },
+    ]);
+    expect(calls("blocked_times")).toEqual([
+      ["select", ["id, title, start_time, end_time, practitioners(name)"]],
+      ["eq", ["organization_id", ORG]],
+      ["eq", ["created_on_call_id", CALL]],
+      ["order", ["created_at", { ascending: true }]],
+    ]);
+    expect(calls("callback_requests")).toEqual([
+      ["select", ["id, caller_name, reason"]],
+      ["eq", ["organization_id", ORG]],
+      ["eq", ["completed_on_call_id", CALL]],
+      ["order", ["completed_at", { ascending: true }]],
+    ]);
+  });
+
+  it("customer-written names, titles and reasons are flattened and capped; missing ones get plain defaults", async () => {
+    queues.blocked_times = [{ data: [{ ...BLOCK, title: "Day\noff\u200b" + "x".repeat(200), practitioners: { name: "  " } }], error: null }];
+    queues.callback_requests = [{ data: [{ id: "cb1", caller_name: "Sue\nBrown", reason: "r".repeat(400) }, { id: "cb2", caller_name: null, reason: null }], error: null }];
+    const items = (await buildOwnerRecap(fake(), { organizationId: ORG, callId: CALL, timezone: TZ, since: SINCE }))!;
+    const [block, named, unnamed] = items as any[];
+    expect(block.title.startsWith("Day off")).toBe(true);
+    expect(block.title).not.toMatch(/[\n\u200b]/);
+    expect(Array.from(block.title as string).length).toBeLessThanOrEqual(80);
+    expect(block.practitioner).toBeNull();
+    expect(named.customer).toBe("Sue Brown");
+    expect(Array.from(named.reason as string).length).toBeLessThanOrEqual(240);
+    expect(unnamed).toEqual({ change: "callback_done", customer: "A caller", reason: "no reason given" });
+  });
+
+  it("an unreadable block or callback list is a failed recap (null), never 'no changes'", async () => {
+    for (const failAt of ["blocked_times", "callback_requests"]) {
+      queues = { [failAt]: [{ data: null, error: { code: "57014" } }] };
+      expect(await buildOwnerRecap(fake(), { organizationId: ORG, callId: CALL, timezone: TZ, since: SINCE }), failAt).toBeNull();
+      expect(console.error).toHaveBeenLastCalledWith(expect.stringContaining(`${failAt} read failed`), expect.objectContaining({ organizationId: ORG, callId: CALL }));
+    }
   });
 });

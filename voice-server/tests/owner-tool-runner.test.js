@@ -1591,3 +1591,87 @@ describe("SCRUM-598: owner_call_customer through the runner", () => {
     assert.ok(!told[0].includes("Jane Smith"), "never PR B's prose in a user-turn message");
   });
 });
+
+describe("SCRUM-599: booking, blocking and marking done go through the same gate", () => {
+  const prB = (name, args) =>
+    args.confirmed === true
+      ? { success: true, message: "Done.", data: { outcome: name === "owner_book_appointment" ? "booked" : name === "owner_block_time" ? "blocked" : "callback_done" } }
+      : { success: false, message: "Read this back…", data: { outcome: "needs_confirmation" } };
+  const BOOK = { customer_name: "Jane Smith", customer_phone: "0412 345 678", start: "2026-10-29T14:00", notes: "Hot water unit leaking" };
+
+  it("a booking's key is every field the read-back gave, forgiving how the model writes the same name, number or note", async () => {
+    const s = makeSession();
+    const d = makeDeps(prB);
+    await captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args: BOOK }, d.deps));
+    assert.deepEqual([...s.ownerPendingConfirmations.keys()], ["owner_book_appointment|jane smith|0412345678|2026-10-29T14:00||hot water unit leaking"]);
+    assistantTurn(s);
+    ownerSpeaks(s);
+    const same = { customer_name: "  jane   SMITH ", customer_phone: "+61412345678", start: "2026-10-29T14:00", notes: "hot water unit  leaking", confirmed: true, notify_customer: "text" };
+    await settled(() => captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args: same }, d.deps)));
+    assert.equal(d.calls.at(-1).args.confirmed, true, "the same booking, written differently, confirms");
+  });
+
+  it("a yes to one booking never makes another: a different time, person, number, service or note goes on unconfirmed", async () => {
+    for (const change of [{ start: "2026-10-29T15:00" }, { customer_name: "Jane Smyth" }, { customer_phone: "0412 345 679" }, { service_type_id: "svc-1" }, { notes: "Blocked drain" }]) {
+      const s = makeSession();
+      const d = makeDeps(prB);
+      await captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args: BOOK }, d.deps));
+      assistantTurn(s);
+      ownerSpeaks(s);
+      await settled(() => captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args: { ...BOOK, ...change, confirmed: true, notify_customer: "none" } }, d.deps)));
+      assert.equal(d.calls.at(-1).args.confirmed, false, JSON.stringify(change));
+    }
+  });
+
+  it("a block's key is its start, end and reason; a callback's is its id", async () => {
+    const s = makeSession();
+    const d = makeDeps(prB);
+    const block = { start: "2026-10-30T13:00", end: "2026-10-30T17:00", reason: "Quote visit" };
+    await captureConsole(() => runOwnerToolCall(s, { name: "owner_block_time", args: block }, d.deps));
+    await captureConsole(() => runOwnerToolCall(s, { name: "owner_mark_callback_done", args: { callback_id: "cb-1" } }, d.deps));
+    assert.deepEqual([...s.ownerPendingConfirmations.keys()].sort(), ["owner_block_time|2026-10-30T13:00|2026-10-30T17:00|quote visit", "owner_mark_callback_done|cb-1"]);
+    assistantTurn(s);
+    ownerSpeaks(s);
+    await settled(() => captureConsole(() => runOwnerToolCall(s, { name: "owner_block_time", args: { ...block, end: "2026-10-30T18:00", confirmed: true } }, d.deps)));
+    assert.equal(d.calls.at(-1).args.confirmed, false, "a longer block than the one read back goes on unconfirmed");
+  });
+
+  it("a key with a missing or malformed field can never be confirmed", async () => {
+    for (const args of [{ ...BOOK, customer_name: "" }, { ...BOOK, customer_phone: "no digits" }, { ...BOOK, start: undefined }, { ...BOOK, notes: "a|b" }]) {
+      const s = makeSession();
+      const d = makeDeps(prB);
+      await captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args }, d.deps));
+      assert.equal((s.ownerPendingConfirmations ?? new Map()).size, 0, JSON.stringify(args));
+    }
+  });
+
+  it("the stored summary says what was done, from PR B's own line", () => {
+    const booked = { outcome: "booked", customer_contact: { method: "text", status: "sent" } };
+    assert.equal(
+      describeOwnerToolCall("owner_book_appointment", {}, "Booked Jane Smith for Thursday, October 29 at 2:00 PM. I've texted Jane Smith to let them know.", true, booked),
+      "Booked Jane Smith for Thursday, October 29 at 2:00 PM — customer texted"
+    );
+    assert.equal(describeOwnerToolCall("owner_block_time", {}, "Blocked out Friday, October 30 from 1:00 PM to 5:00 PM for everyone.", true, { outcome: "blocked" }), "Blocked out Friday, October 30 from 1:00 PM to 5:00 PM for everyone.");
+    assert.equal(describeOwnerToolCall("owner_mark_callback_done", {}, "Marked Sue Brown's callback as done.", true, { outcome: "callback_done" }), "Marked Sue Brown's callback as done.");
+    assert.equal(describeOwnerToolCall("owner_block_time", {}, "", true, { outcome: "blocked" }), "Blocked out time");
+    assert.equal(describeOwnerToolCall("owner_book_appointment", {}, "anything", false, { outcome: "not_booked" }), null, "nothing done is no line");
+  });
+
+  it("an interrupted block that went through: the model hears it was made — and nothing about a customer", async () => {
+    const s = makeSession();
+    const told = [];
+    armConfirmed(s, "owner_block_time|2026-10-30T13:00|2026-10-30T17:00|");
+    let release;
+    const deps = { executeToolCall: () => new Promise((resolve) => { release = resolve; }), scheduleCache: { invalidate: () => {} }, sendText: (text) => told.push(text) };
+    await captureConsole(async () => {
+      const pending = runOwnerToolCall(s, { id: "fc-9", name: "owner_block_time", args: { start: "2026-10-30T13:00", end: "2026-10-30T17:00", confirmed: true } }, deps);
+      await flush();
+      noteCancelledOwnerToolCalls(s, ["fc-9"]);
+      release({ success: true, message: "Blocked out Friday.", data: { outcome: "blocked" } });
+      await pending;
+    });
+    assert.equal(told.length, 1);
+    assert.match(told[0], /the owner_block_time call that was interrupted had already gone through — data.outcome is "blocked", so the change HAS been made\. Tell the owner it went through\./);
+    assert.doesNotMatch(told[0], /customer/);
+  });
+});

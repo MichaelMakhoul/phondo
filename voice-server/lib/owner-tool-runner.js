@@ -100,6 +100,18 @@ function inFlightContact(status) {
   return "was NOT told";
 }
 
+/**
+ * What an interrupted write that went through did, for the notice to the model.
+ * SCRUM-599: a block or a callback marked done has no customer to tell.
+ * @param {string} name
+ * @param {unknown} data
+ */
+function inFlightWhat(name, data) {
+  if (name === "owner_call_customer") return "the call to the customer IS being placed";
+  if (name === "owner_block_time" || name === "owner_mark_callback_done") return "the change HAS been made";
+  return `the change HAS been made, and the customer ${inFlightContact(/** @type {any} */ (data)?.customer_contact?.status)}`;
+}
+
 /** Fits PR B's longest success line (an 80-character name and two spoken times). */
 const DETAIL_MAX = 200;
 
@@ -248,6 +260,36 @@ function ownerFacingMessage(name, r, successful) {
 function confirmationKey(name, args) {
   /** @param {unknown} v */
   const part = (v) => (typeof v === "string" && v !== "" && !v.includes("|") ? v : null);
+  /** @param {unknown} v an optional field: absent is "", a malformed one is null */
+  const optional = (v) => (v === undefined || v === null || v === "" ? "" : part(v));
+  /** @param {unknown} v words the model may space or case differently between the two calls */
+  const words = (v) => {
+    const p = part(v);
+    return p === null ? null : p.trim().replace(/\s+/g, " ").toLowerCase() || null;
+  };
+  /** @param {unknown} v optional words: absent is "" */
+  const optionalWords = (v) => (v === undefined || v === null || v === "" ? "" : words(v));
+  /** @param {unknown} v a phone number, digits only, an AU +61 number written as 0… */
+  const phoneDigits = (v) => {
+    const p = part(v);
+    if (p === null) return null;
+    const d = p.replace(/\D/g, "");
+    return (/^61\d{9}$/.test(d) ? `0${d.slice(2)}` : d) || null;
+  };
+  // SCRUM-599: the new writes name no existing booking — every field the read-back gave
+  // is the key, so a yes to one booking or block never makes another.
+  if (name === "owner_book_appointment") {
+    const fields = [words(args.customer_name), phoneDigits(args.customer_phone), part(args.start), optional(args.service_type_id), optionalWords(args.notes)];
+    return fields.includes(null) ? null : `${name}|${fields.join("|")}`;
+  }
+  if (name === "owner_block_time") {
+    const fields = [part(args.start), part(args.end), optionalWords(args.reason)];
+    return fields.includes(null) ? null : `${name}|${fields.join("|")}`;
+  }
+  if (name === "owner_mark_callback_done") {
+    const id = part(args.callback_id);
+    return id === null ? null : `${name}|${id}`;
+  }
   const id = part(args.appointment_id);
   if (id === null) return null;
   // SCRUM-598: a yes to "call to confirm" never places a "find a new time" call, and a
@@ -255,8 +297,6 @@ function confirmationKey(name, args) {
   // lens F2) — every field the read-back gave is in the key, as new_datetime is for a move.
   if (name === "owner_call_customer") {
     const purpose = part(args.purpose);
-    /** @param {unknown} v an optional field: absent is "", a malformed one is null */
-    const optional = (v) => (v === undefined || v === null || v === "" ? "" : part(v));
     const earliest = optional(args.earliest_date);
     const latest = optional(args.latest_date);
     // "any" constrains nothing, as the website reads it: the same key as no time of day (code lens R2-N2).
@@ -458,6 +498,14 @@ function describeOwnerToolCall(name, args, message, successful, data) {
       return writeDetail(message, "Cancelled a job", data);
     case "owner_call_customer":
       return callDetail(data);
+    // SCRUM-599: PR B's success line (one capped line of its own values), plus what
+    // happened to the customer for a booking.
+    case "owner_book_appointment":
+      return writeDetail(message, "Booked a job", data);
+    case "owner_block_time":
+      return changeDetail(message) || "Blocked out time";
+    case "owner_mark_callback_done":
+      return changeDetail(message) || "Marked a callback done";
     default:
       return null;
   }
@@ -656,7 +704,7 @@ async function runOneOwnerToolCall(session, toolCall, deps) {
   if (cancelledInFlight && forwardArgs.confirmed === true && (successful || outcomeUnknown)) {
     const outcome = outcomeUnknown ? "unknown" : outcomeLabel(outcomeOf(r));
     const notice = successful
-      ? `SYSTEM NOTICE (not the owner speaking): the ${name} call that was interrupted had already gone through — data.outcome is "${outcome}", so ${name === "owner_call_customer" ? "the call to the customer IS being placed" : `the change HAS been made, and the customer ${inFlightContact(/** @type {any} */ (r.data)?.customer_contact?.status)}`}. Tell the owner it went through.`
+      ? `SYSTEM NOTICE (not the owner speaking): the ${name} call that was interrupted had already gone through — data.outcome is "${outcome}", so ${inFlightWhat(name, r.data)}. Tell the owner it went through.`
       : `SYSTEM NOTICE (not the owner speaking): the ${name} call that was interrupted had already been sent and its result never came back, so it may have gone through. Tell the owner, and check with owner_list_appointments before changing anything else.`;
     try {
       if (typeof deps.sendText !== "function") throw new Error("no way to reach the model");

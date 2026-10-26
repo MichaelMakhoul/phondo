@@ -406,7 +406,11 @@ describe("SCRUM-587: the assembled owner prompt, run for real", () => {
     const r = await assemblePrompts({ owner: true });
     const firstMessageLine = `\n\nIMPORTANT — YOUR FIRST MESSAGE: When the call connects, you will receive a short text message. Immediately respond by speaking the following greeting (word for word, naturally and warmly): "Hi Dave, what do you need?" — Then wait for the caller to respond. Do NOT add anything extra. Do NOT invent a receptionist name — you are an AI assistant.`;
     assert.equal(r.geminiSystemPrompt, r.classicPrompt + firstMessageLine + buildOwnerGeminiSuffix());
-    for (const marker of CUSTOMER_MARKERS) assert.ok(!r.geminiSystemPrompt.includes(marker), `customer text in the owner prompt: ${marker}`);
+    // A tool name counts only standing alone — never inside an owner tool's name (owner_book_appointment).
+    for (const marker of CUSTOMER_MARKERS) {
+      const present = /^[a-z_]+$/.test(marker) ? new RegExp(`(?<![a-z_])${marker}`).test(r.geminiSystemPrompt) : r.geminiSystemPrompt.includes(marker);
+      assert.ok(!present, `customer text in the owner prompt: ${marker}`);
+    }
   });
 
   it("Gemini: owner tools, owner greeting, no disclosure (not even evaluated)", async () => {

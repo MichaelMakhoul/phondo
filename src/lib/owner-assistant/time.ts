@@ -2,7 +2,7 @@
 // SCRUM-586: date/time helpers for the owner assistant tools. Every range is
 // computed in the ORG's zone (the owner says "tomorrow" meaning their tomorrow)
 // and returned as UTC instants for the `start_time`/`created_at` filters.
-import { ensureTimezoneOffset, addDaysISO } from "@/lib/calendar/tool-handlers";
+import { ensureTimezoneOffset, addDaysISO, toLocalIsoMinute } from "@/lib/calendar/tool-handlers";
 
 export const OWNER_RANGES = ["today", "tomorrow", "this_week", "date"] as const;
 export type OwnerRange = (typeof OWNER_RANGES)[number];
@@ -98,13 +98,43 @@ export function parseOwnerLocalDatetime(input: string | undefined, timezone: str
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
-/** "Thursday, October 15 at 2:00 PM" in the org's zone — what the model reads back. */
-export function formatWhen(d: Date, timezone: string): string {
-  const day = d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: timezone });
+/** "Thursday, October 15" in the org's zone. */
+function spokenDay(d: Date, timezone: string): string {
+  return d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: timezone });
+}
+
+/** "2:00 PM" in the org's zone. */
+function spokenTime(d: Date, timezone: string): string {
   // Node 20 / newer ICU builds put a narrow no-break space (U+202F) before AM/PM;
   // normalise it so the string is identical on every runtime.
-  const time = d
-    .toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true, timeZone: timezone })
-    .replace(/\u202f/g, " ");
-  return `${day} at ${time}`;
+  return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true, timeZone: timezone }).replace(/\u202f/g, " ");
+}
+
+/** "Thursday, October 15 at 2:00 PM" in the org's zone — what the model reads back. */
+export function formatWhen(d: Date, timezone: string): string {
+  return `${spokenDay(d, timezone)} at ${spokenTime(d, timezone)}`;
+}
+
+/**
+ * SCRUM-599: a block of time, said the way the read-back and the recap say it —
+ * "Friday, October 30 from 1:00 PM to 5:00 PM", "Friday, October 30 from 1:00 PM to
+ * midnight", "Friday, October 30 (all day)", "Friday, October 30 to Sunday,
+ * November 1 (all day)", or across days at set times "Friday, October 30 at 1:00 PM
+ * to Monday, November 2 at 9:00 AM". Org-local.
+ */
+export function formatSpan(start: Date, end: Date, timezone: string): string {
+  const s = toLocalIsoMinute(start, timezone);
+  const e = toLocalIsoMinute(end, timezone);
+  if (s.slice(11) === "00:00" && e.slice(11) === "00:00") {
+    // Whole days: the last one is the day before the end's midnight.
+    const first = spokenDay(start, timezone);
+    const last = spokenDay(new Date(end.getTime() - 1), timezone);
+    return first === last ? `${first} (all day)` : `${first} to ${last} (all day)`;
+  }
+  if (s.slice(0, 10) === e.slice(0, 10)) return `${spokenDay(start, timezone)} from ${spokenTime(start, timezone)} to ${spokenTime(end, timezone)}`;
+  // "The rest of Friday": it ends at the midnight that closes the start's day.
+  if (e.slice(11) === "00:00" && toLocalIsoMinute(new Date(end.getTime() - 60_000), timezone).slice(0, 10) === s.slice(0, 10)) {
+    return `${spokenDay(start, timezone)} from ${spokenTime(start, timezone)} to midnight`;
+  }
+  return `${formatWhen(start, timezone)} to ${formatWhen(end, timezone)}`;
 }

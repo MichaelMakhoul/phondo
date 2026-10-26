@@ -1014,6 +1014,12 @@ export async function handleBookAppointment(
     // booking path recognise "colliding with the row being replaced" (its slot
     // is legitimately about to be freed) apart from a real conflict.
     rescheduleFromId?: string;
+    // SCRUM-599: the business owner's assistant is booking this (owner_book_appointment).
+    // The owner chooses whether the customer is texted (contactCustomer runs after),
+    // and the owner's own booking notice would only tell them what they just did — so
+    // neither automatic notice goes out. Only Phondo's own diary: an org on Cliniko or
+    // Cal.com is refused (data.ownerRefusal), never booked there.
+    ownerBooking?: boolean;
   }
 ): Promise<ToolResult> {
   const { datetime, phone, email, notes, service_type_id } = args;
@@ -1165,6 +1171,7 @@ export async function handleBookAppointment(
   // bookInternal exactly (same copy, same tz-aware interpretation); org-scoped
   // ref enforcement happens inside the Cliniko path via cliniko-linked lookups.
   const clinikoResolution = await getActiveClinikoIntegration(organizationId);
+  if (clinikoResolution.kind === "ok" && internal?.ownerBooking) return ownerExternalDiaryRefusal("Cliniko");
   if (clinikoResolution.kind === "error") {
     // Transient DB/decrypt fault — do NOT fall through to built-in booking, or
     // we'd confirm an appointment the practice's Cliniko diary never receives.
@@ -1244,6 +1251,7 @@ export async function handleBookAppointment(
   const calClient = await getCalComClient(organizationId);
 
   if (calClient) {
+    if (internal?.ownerBooking) return ownerExternalDiaryRefusal("Cal.com");
     // SCRUM-561: bookViaCal has no practitioner concept — silently dropping a
     // requested practitioner would confirm "with Dr X" while booking nobody in
     // particular. Refuse honestly instead.
@@ -2710,6 +2718,8 @@ async function bookInternal(
     // conflict, and a same-instant collision with it is a no-op to refuse
     // (never a duplicate to vouch for).
     rescheduleFromId?: string;
+    // SCRUM-599: booked by the owner's assistant — see handleBookAppointment.
+    ownerBooking?: boolean;
   }
 ): Promise<ToolResult> {
   const supabase = createAdminClient();
@@ -3017,7 +3027,7 @@ async function bookInternal(
         status: "confirmed",
         notes: sanitizedNotes,
         confirmation_code: confirmationCode,
-        metadata: { source: "ai_receptionist" },
+        metadata: { source: internal?.ownerBooking ? "owner_voice" : "ai_receptionist" },
         ...(linkedCallId && { call_id: linkedCallId }),
         ...(serviceTypeId && { service_type_id: serviceTypeId }),
         ...(assignedPractitionerId && { practitioner_id: assignedPractitionerId }),
@@ -3142,7 +3152,8 @@ async function bookInternal(
   // is tracked in appointment_confirmations and Twilio status callbacks can
   // update delivery state)
   const timezone = schedule?.timezone || "Australia/Sydney";
-  sendNotification(organizationId, phone, sanitizedName, startDate, timezone, confirmationCode, appointment.id);
+  // SCRUM-599: the owner's own bookings send neither automatic notice (handleBookAppointment).
+  if (!internal?.ownerBooking) sendNotification(organizationId, phone, sanitizedName, startDate, timezone, confirmationCode, appointment.id);
   const { dateStr, timeStr } = formatDateTimeForVoice(startDate, timezone);
 
   const practitionerNote = assignedPractitionerName
@@ -3174,6 +3185,37 @@ async function bookInternal(
 }
 
 // ─── Notification helper ────────────────────────────────────────────────────
+
+/**
+ * SCRUM-599: whose diary a new booking (or a block of time) would land in, by the same
+ * routing handleBookAppointment uses — Cliniko when it's connected; Cal.com when no
+ * service types are set up and a Cal.com account is; otherwise Phondo's own. The owner
+ * tools act only on Phondo's own. "error": the Cliniko lookup failed, so the caller
+ * reports a fault rather than guess (a failed service-type read already reads as none
+ * in the booking path itself).
+ */
+export async function ownerDiaryProvider(organizationId: string): Promise<"phondo" | "Cliniko" | "Cal.com" | "error"> {
+  const cliniko = await getActiveClinikoIntegration(organizationId);
+  if (cliniko.kind === "error") return "error";
+  if (cliniko.kind === "ok") return "Cliniko";
+  const serviceTypes = await getActiveServiceTypes(organizationId);
+  if (serviceTypes.length > 0) return "phondo";
+  try {
+    return (await getCalComClient(organizationId)) ? "Cal.com" : "phondo";
+  } catch (err) {
+    console.error("[owner-assistant] Cal.com lookup failed:", { organizationId, error: err instanceof Error ? err.message : String(err) });
+    return "error";
+  }
+}
+
+/** SCRUM-599: an owner booking on an org whose diary lives elsewhere — refused, never booked there. */
+function ownerExternalDiaryRefusal(diary: string): ToolResult {
+  return {
+    success: false,
+    message: `Your diary is in ${diary}, so I haven't booked anything — please book it there.`,
+    data: { ownerRefusal: "external_calendar" },
+  };
+}
 
 function sendNotification(
   organizationId: string,

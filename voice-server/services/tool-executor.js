@@ -1316,6 +1316,22 @@ function simulateCalendarWrite(functionName, args) {
       data: { outcome: "calling", customer_notified: false },
     };
   }
+  if (functionName === "owner_book_appointment" || functionName === "owner_block_time" || functionName === "owner_mark_callback_done") {
+    // SCRUM-599: the same parity — a test session never books, blocks or marks anything.
+    const done = functionName === "owner_book_appointment" ? "booked" : functionName === "owner_block_time" ? "blocked" : "callback_done";
+    if (args.confirmed !== true) {
+      return {
+        success: false,
+        message: "Needs confirmation: read it back to the owner, get a clear yes, then call again with confirmed=true. (Simulated — test mode)",
+        data: { outcome: "needs_confirmation", customer_notified: false },
+      };
+    }
+    return {
+      success: true,
+      message: `Done (${done}). Nothing was changed. (Simulated — test mode)`,
+      data: { outcome: done, customer_notified: false },
+    };
+  }
   if (functionName === "reschedule_appointment") {
     // SCRUM-452: reschedule previously fell through to the REAL internal API —
     // a test caller saying "move my appointment" created a real reschedule leg

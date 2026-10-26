@@ -13,11 +13,34 @@
  * the session (context.ownerMode) — never from anything the model sends.
  */
 
-const OWNER_TOOL_NAMES = Object.freeze(["owner_list_appointments", "owner_list_messages", "owner_reschedule_appointment", "owner_cancel_appointment", "owner_call_customer"]);
-/** Every owner tool that acts (and so goes through the confirmation gate). SCRUM-598: placing a call to a customer is one. */
-const OWNER_WRITE_TOOL_NAMES = Object.freeze(["owner_reschedule_appointment", "owner_cancel_appointment", "owner_call_customer"]);
-/** The writes that change the diary (the schedule cache is refreshed and the dashboard told); a call changes nothing by itself. */
-const OWNER_CHANGE_TOOL_NAMES = Object.freeze(["owner_reschedule_appointment", "owner_cancel_appointment"]);
+const OWNER_TOOL_NAMES = Object.freeze([
+  "owner_list_appointments",
+  "owner_list_messages",
+  "owner_reschedule_appointment",
+  "owner_cancel_appointment",
+  "owner_call_customer",
+  "owner_book_appointment",
+  "owner_block_time",
+  "owner_mark_callback_done",
+]);
+/**
+ * Every owner tool that acts (and so goes through the confirmation gate). SCRUM-598:
+ * placing a call to a customer is one; SCRUM-599: booking, blocking time and marking
+ * a callback done.
+ */
+const OWNER_WRITE_TOOL_NAMES = Object.freeze([
+  "owner_reschedule_appointment",
+  "owner_cancel_appointment",
+  "owner_call_customer",
+  "owner_book_appointment",
+  "owner_block_time",
+  "owner_mark_callback_done",
+]);
+/**
+ * The writes that change what's free in the diary (the schedule cache is refreshed);
+ * a call or a callback marked done changes nothing there.
+ */
+const OWNER_CHANGE_TOOL_NAMES = Object.freeze(["owner_reschedule_appointment", "owner_cancel_appointment", "owner_book_appointment", "owner_block_time"]);
 const OWNER_SHARED_TOOL_NAMES = Object.freeze(["get_current_datetime", "check_availability", "end_call"]);
 const OWNER_ALLOWED_TOOL_NAMES = new Set([...OWNER_TOOL_NAMES, ...OWNER_SHARED_TOOL_NAMES]);
 /**
@@ -25,7 +48,7 @@ const OWNER_ALLOWED_TOOL_NAMES = new Set([...OWNER_TOOL_NAMES, ...OWNER_SHARED_T
  * needs_confirmation, not_found, slot_taken, invalid_time, rate_limited,
  * external_calendar — is a business non-success.
  */
-const OWNER_SUCCESS_OUTCOMES = new Set(["rescheduled", "cancelled", "calling"]);
+const OWNER_SUCCESS_OUTCOMES = new Set(["rescheduled", "cancelled", "calling", "booked", "blocked", "callback_done"]);
 
 /**
  * SCRUM-597: the owner's answer on letting the customer know, sent with the
@@ -37,6 +60,23 @@ const NOTIFY_CUSTOMER_PARAM = Object.freeze({
   description:
     "With confirmed=true: the owner's answer on letting the customer know — one of data.contact_options from the read-back (\"call\" means the assistant phones them right after the change; \"none\" means don't tell them). Without it nothing changes.",
 });
+
+/** SCRUM-599: a new booking can be texted or not — a call isn't offered for one. */
+const NOTIFY_BOOKED_PARAM = Object.freeze({
+  type: "string",
+  enum: ["text", "none"],
+  description:
+    "With confirmed=true: the owner's answer on texting the customer about the new booking — one of data.contact_options from the read-back (\"none\" means don't tell them). Without it nothing is booked.",
+});
+
+/** The confirm flag every owner write takes. */
+const CONFIRMED_PARAM = Object.freeze({
+  type: "boolean",
+  description: "The boolean true ONLY after the owner clearly said yes to your read-back. Leave it out to get the read-back to give.",
+});
+
+/** A local wall time, as every owner write takes it. */
+const LOCAL_TIME = "in the business's LOCAL time as YYYY-MM-DDTHH:mm — no seconds, no time-zone offset, no trailing Z";
 
 const ownerToolDefinitions = [
   {
@@ -146,6 +186,62 @@ const ownerToolDefinitions = [
           },
         },
         required: ["appointment_id", "purpose"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "owner_book_appointment",
+      description:
+        "Book a NEW job for a customer, in two calls. First call WITHOUT confirmed: nothing is booked, and data.outcome is needs_confirmation with the read-back (data.customer_name, data.customer_phone, data.when, data.service) and data.contact_options — whether the customer can be texted about it (a call isn't offered for a new booking). Read it back, ask in the same question whether to text them (offer only data.contact_options), and get a clear yes, THEN call again with confirmed=true, the SAME details, and notify_customer set to their answer. The result's data.outcome is booked | needs_confirmation | invalid_details | invalid_time | not_booked | rate_limited | external_calendar — only 'booked' means it happened. not_booked: the diary refused it (outside hours, a block, a clash) — say why in a few words and offer another time (check_availability lists the free times). After it, use data.appointment_id for any change to that job. data.customer_contact says whether the customer was actually told.",
+      parameters: {
+        type: "object",
+        properties: {
+          customer_name: { type: "string", description: "The customer's full name, as the owner said it." },
+          customer_phone: { type: "string", description: "The customer's phone number. Ask the owner for it if they didn't say it — never make one up." },
+          start: { type: "string", description: `The start ${LOCAL_TIME}.` },
+          service_type_id: { type: "string", description: "Optional: the ID of the service from the SERVICE TYPES list in your instructions. Never a name." },
+          notes: { type: "string", description: "Optional short note for the job, in the owner's words (for example \"hot water unit leaking\")." },
+          confirmed: CONFIRMED_PARAM,
+          notify_customer: NOTIFY_BOOKED_PARAM,
+        },
+        required: ["customer_name", "customer_phone", "start"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "owner_block_time",
+      description:
+        "Block out time in the diary so nothing gets booked then (for everyone — one person's block is done in the dashboard), in two calls. First call WITHOUT confirmed: nothing changes, and data.outcome is needs_confirmation with the read-back (data.when, data.title; data.jobs_in_the_way counts jobs already booked then, and the message names them). Read it back and get a clear yes, THEN call again with confirmed=true and the SAME start, end and reason. Blocking never moves or cancels a job: jobs already booked then STAY booked — if the owner wants one out of the way, that's owner_reschedule_appointment or owner_cancel_appointment, one at a time. The result's data.outcome is blocked | needs_confirmation | invalid_time | rate_limited | external_calendar — only 'blocked' means it happened. Up to two weeks at a time.",
+      parameters: {
+        type: "object",
+        properties: {
+          start: { type: "string", description: `When the block starts, ${LOCAL_TIME}. A whole day starts at T00:00.` },
+          end: { type: "string", description: `When it ends, ${LOCAL_TIME}. A whole day ends at T00:00 the NEXT day.` },
+          reason: { type: "string", description: "Optional short title in the owner's words (for example \"Quote visit\" or \"Day off\")." },
+          confirmed: CONFIRMED_PARAM,
+        },
+        required: ["start", "end"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "owner_mark_callback_done",
+      description:
+        "Mark ONE waiting callback request as done, so it comes off the owner's callback list, in two calls. Use the callback_id from owner_list_messages. First call WITHOUT confirmed: nothing changes, and data.outcome is needs_confirmation with the read-back (data.caller_name, data.reason, data.received). Read it back and get a clear yes, THEN call again with confirmed=true and the same callback_id. The result's data.outcome is callback_done | needs_confirmation | not_found | rate_limited — only 'callback_done' means it happened.",
+      parameters: {
+        type: "object",
+        properties: {
+          callback_id: { type: "string", description: "The callback_id from owner_list_messages." },
+          note: { type: "string", description: "Optional short note in the owner's words (for example \"rang them back, sorted\")." },
+          confirmed: CONFIRMED_PARAM,
+        },
+        required: ["callback_id"],
       },
     },
   },

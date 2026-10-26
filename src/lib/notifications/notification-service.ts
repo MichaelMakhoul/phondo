@@ -11,7 +11,7 @@
 import { createAdminClient } from "@/lib/supabase/admin";
 import { DEMO_ORG_ID } from "@/lib/demo/config";
 import { ssrfSafeFetch, escapeHtml } from "@/lib/security/validation";
-import type { OwnerRecapItem } from "@/lib/owner-assistant/recap";
+import type { OwnerRecapItem, BookingRecapItem } from "@/lib/owner-assistant/recap";
 import type { CallOutcomeReport, CallResult, DiaryLine } from "@/lib/owner-assistant/call-outcome";
 import type { CallOutcome, CallPurpose } from "@/lib/owner-assistant/customer-call";
 import { formatPhoneForCountry } from "@/lib/country-config";
@@ -924,7 +924,8 @@ export async function sendOwnerAssistantRecapNotification(
     const n = data.items.length;
     channels.push(sendEmail({
       to: email,
-      subject: `Your assistant changed ${n} booking${n === 1 ? "" : "s"} — please check`,
+      // SCRUM-599: blocks and callbacks marked done are changes too, not only bookings.
+      subject: `Your assistant made ${n} change${n === 1 ? "" : "s"} — please check`,
       template: "owner-assistant-recap",
       data: { items: data.items, channel: data.channel, callId: data.callId, timesInDefaultZone: data.timesInDefaultZone === true },
     }));
@@ -937,7 +938,7 @@ export async function sendOwnerAssistantRecapNotification(
  * call outcomes SCRUM-598 adds — must be worded here before it compiles, never
  * shown as "not told".
  */
-function recapToldLine(item: OwnerRecapItem): string {
+function recapToldLine(item: BookingRecapItem): string {
   switch (item.told) {
     case "texted":
       return "Customer texted.";
@@ -958,7 +959,7 @@ function recapToldLine(item: OwnerRecapItem): string {
 }
 
 /** What changed, worded (exhaustive, like recapToldLine). */
-function recapChangeLine(item: OwnerRecapItem, who: string, when: string): string {
+function recapChangeLine(item: BookingRecapItem, who: string, when: string): string {
   switch (item.change) {
     case "cancelled":
       return `Cancelled ${who}'s job on ${when}`;
@@ -1284,10 +1285,35 @@ const CALL_OUTCOME_WORDS: Record<CallOutcome, string> = {
 
 /** One recap row (customer text escaped here: the array never passes the top-level escaping). */
 function recapRow(item: OwnerRecapItem): string {
-  const who = `<strong>${escapeHtml(String(item.customer ?? ""))}</strong>`;
-  const when = escapeHtml(String(item.when ?? ""));
-  const what = recapChangeLine(item, who, when);
-  return `<tr><td style="padding: 8px; border-bottom: 1px solid #ddd;">${what}<br/><span style="color: #6b7280; font-size: 13px;">${recapToldLine(item)}</span></td></tr>`;
+  const cell = (what: string, note: string) =>
+    `<tr><td style="padding: 8px; border-bottom: 1px solid #ddd;">${what}<br/><span style="color: #6b7280; font-size: 13px;">${note}</span></td></tr>`;
+  switch (item.change) {
+    case "cancelled":
+    case "moved":
+    case "booked": {
+      const who = `<strong>${escapeHtml(String(item.customer ?? ""))}</strong>`;
+      const when = escapeHtml(String(item.when ?? ""));
+      return cell(recapChangeLine(item, who, when), recapToldLine(item));
+    }
+    case "blocked": {
+      // SCRUM-599: blocking never moves or cancels a job — the note says so.
+      const forWhom = item.practitioner ? `for ${escapeHtml(item.practitioner)}` : "for everyone";
+      const title = item.title && item.title !== "Time off" ? ` — &ldquo;${escapeHtml(item.title)}&rdquo;` : "";
+      return cell(
+        `Blocked out <strong>${escapeHtml(item.when)}</strong> ${forWhom}${title}`,
+        "Jobs already booked then are still booked — check the diary. To remove the block: Settings → Scheduling."
+      );
+    }
+    case "callback_done":
+      return cell(
+        `Marked <strong>${escapeHtml(item.customer)}</strong>&#39;s callback as done (&ldquo;${escapeHtml(item.reason)}&rdquo;)`,
+        "It's now under Completed in Callbacks — if they still need a call, their details are there."
+      );
+    default: {
+      const unhandled: never = item;
+      return unhandled;
+    }
+  }
 }
 
 /**
@@ -1912,13 +1938,22 @@ function generateEmailHtml(template: string, data: Record<string, any>): string 
       const items: OwnerRecapItem[] = Array.isArray(d.items) ? d.items : [];
       const base = escapeHtml((process.env.NEXT_PUBLIC_APP_URL || "https://phondo.ai").replace(/\/$/, ""));
       const where = d.channel === "web" ? "in your dashboard" : "on your assistant line";
+      // SCRUM-599: a recap can hold blocked-out time and callbacks marked done too —
+      // the closing line and the links point at where each kind is fixed.
+      const hasBookings = items.some((i) => i.change === "cancelled" || i.change === "moved" || i.change === "booked");
+      const links = [
+        `<a href="${base}/appointments">Open Appointments</a>`,
+        ...(items.some((i) => i.change === "blocked") ? [`<a href="${base}/settings/scheduling">Blocked-out time</a>`] : []),
+        ...(items.some((i) => i.change === "callback_done") ? [`<a href="${base}/callbacks">Callbacks</a>`] : []),
+        `<a href="${base}/calls/${d.callId}">See the conversation</a>`,
+      ];
       return `
       <h2>What your assistant changed</h2>
-      <p>Your assistant made ${items.length} change${items.length === 1 ? "" : "s"} ${where}. This list comes from your diary and our text log, not from what the AI said.</p>
+      <p>Your assistant made ${items.length} change${items.length === 1 ? "" : "s"} ${where}. This list comes from your diary, your callbacks and our text log, not from what the AI said.</p>
       <table style="width: 100%; border-collapse: collapse; margin: 16px 0;">${items.map(recapRow).join("")}</table>
       ${d.timesInDefaultZone === true ? `<p style="color: #6b7280; font-size: 13px;">Times are shown in Sydney time — we couldn't read your business's timezone.</p>` : ""}
-      <p><strong>If anything here isn't what you asked for</strong>, fix it in Appointments and let the customer know.</p>
-      <p><a href="${base}/appointments">Open Appointments</a> &nbsp;·&nbsp; <a href="${base}/calls/${d.callId}">See the conversation</a></p>
+      <p><strong>If anything here isn't what you asked for</strong>, ${hasBookings ? "fix it in Appointments and let the customer know" : "fix it in your dashboard"}.</p>
+      <p>${links.join(" &nbsp;·&nbsp; ")}</p>
     `;
     },
     // SCRUM-598 — how a call to a customer went. `report` is nested, so the

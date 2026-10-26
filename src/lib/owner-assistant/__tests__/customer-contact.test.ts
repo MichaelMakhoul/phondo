@@ -210,3 +210,21 @@ describe("isCustomerNotified", () => {
     expect(isCustomerNotified(undefined)).toBe(false);
   });
 });
+
+describe("SCRUM-599: a new booking the owner made", () => {
+  it("texts the plain confirmation for the new booking — not a move's 'new time', not a cancellation — owner-requested", async () => {
+    vi.mocked(sendAppointmentConfirmationSMS).mockResolvedValue({ sent: true, status: "sent" } as any);
+    expect(await contactCustomer(req({ kind: "booked", phone: "0414 141 883" }), CAN)).toEqual({ method: "text", status: "sent" });
+    expect(sendAppointmentConfirmationSMS).toHaveBeenCalledWith(ORG, "+61414141883", START, "Australia/Sydney", undefined, APPT, { ownerRequested: true });
+    expect(sendCancellationSMS).not.toHaveBeenCalled();
+  });
+  it("a call about a new booking is never placed (the handler never offers one — this is the net)", async () => {
+    const placeCall = vi.fn(async () => ({ placed: true as const, callId: "call-9" }));
+    expect(await contactCustomer(req({ kind: "booked", method: "call" }), { ...CAN, placeCall })).toEqual({ method: "call", status: "not_placed", reason: "invalid_request" });
+    expect(placeCall).not.toHaveBeenCalled();
+  });
+  it("the sentences for a booking: the same text lines, and a neutral one for a call", () => {
+    expect(contactOutcomeSentence({ method: "text", status: "sent" }, "Jane Smith", "booked")).toBe(" I've texted Jane Smith to let them know.");
+    expect(contactOutcomeSentence({ method: "call", status: "calling", callId: "c" }, "Jane Smith", "booked")).toBe(" I'm calling Jane Smith now about the booking. You'll get an email when the call's done.");
+  });
+});

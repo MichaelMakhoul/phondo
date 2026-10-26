@@ -27,6 +27,9 @@ import {
   handleOwnerRescheduleAppointment,
   handleOwnerCancelAppointment,
   handleOwnerCallCustomer,
+  handleOwnerBookAppointment,
+  handleOwnerBlockTime,
+  handleOwnerMarkCallbackDone,
   type OwnerCallContext,
   type OwnerToolName,
 } from "@/lib/owner-assistant/tool-handlers";
@@ -261,6 +264,36 @@ export async function POST(request: Request) {
                 time_of_day: str(raw.time_of_day),
                 confirmed: raw.confirmed === true,
               },
+              ownerCtx
+            );
+            break;
+          case "owner_book_appointment":
+            // SCRUM-599: a new job, through the receptionist's own booking path as the owner's.
+            ownerResult = await handleOwnerBookAppointment(
+              organizationId,
+              {
+                customer_name: str(raw.customer_name),
+                customer_phone: str(raw.customer_phone),
+                start: str(raw.start),
+                service_type_id: str(raw.service_type_id),
+                notes: str(raw.notes),
+                confirmed: raw.confirmed === true,
+                notify_customer: str(raw.notify_customer),
+              },
+              ownerCtx
+            );
+            break;
+          case "owner_block_time":
+            ownerResult = await handleOwnerBlockTime(
+              organizationId,
+              { start: str(raw.start), end: str(raw.end), reason: str(raw.reason), confirmed: raw.confirmed === true },
+              ownerCtx
+            );
+            break;
+          case "owner_mark_callback_done":
+            ownerResult = await handleOwnerMarkCallbackDone(
+              organizationId,
+              { callback_id: str(raw.callback_id), note: str(raw.note), confirmed: raw.confirmed === true },
               ownerCtx
             );
             break;

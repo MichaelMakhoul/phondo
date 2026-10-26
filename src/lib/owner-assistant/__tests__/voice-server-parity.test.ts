@@ -247,3 +247,32 @@ describe("website ↔ voice server: what a customer call's row says", () => {
     expect(call.parameters.properties.purpose.enum).toEqual(["confirm", "find_new_time"]);
   });
 });
+
+// SCRUM-599: the three new writes — what the voice server declares is what the route
+// plucks, a booking is offered only the handler's own choices, and the stored summary
+// cuts every customer sentence the booking handler writes.
+describe("website ↔ voice server: book, block and mark done", () => {
+  it("each declares exactly the arguments the route reads", () => {
+    expect(Object.keys(writeTool("owner_book_appointment").parameters.properties).sort()).toEqual(["confirmed", "customer_name", "customer_phone", "notes", "notify_customer", "service_type_id", "start"]);
+    expect(Object.keys(writeTool("owner_block_time").parameters.properties).sort()).toEqual(["confirmed", "end", "reason", "start"]);
+    expect(Object.keys(writeTool("owner_mark_callback_done").parameters.properties).sort()).toEqual(["callback_id", "confirmed", "note"]);
+  });
+
+  it("a new booking is offered a text or nothing: the contact methods the handlers parse, less the call", () => {
+    expect(writeTool("owner_book_appointment").parameters.properties.notify_customer.enum).toEqual(CONTACT_METHODS.filter((m) => m !== "call"));
+  });
+
+  it("the voice server's summary of a booking ends at its customer sentence and takes the outcome from data", () => {
+    const booking = "Booked Dr. J. Smith for Friday, October 16 at 10:00 AM with Alex.";
+    const textResults: Array<[CustomerContactResult, string]> = [
+      [{ method: "text", status: "sent" }, " — customer texted"],
+      [{ method: "text", status: "not_sent", reason: "texts_paused" }, " — customer not texted"],
+      [{ method: "text", status: "not_sent", reason: "landline" }, " — customer not texted"],
+      [{ method: "none", status: "not_requested" }, " — customer not told"],
+    ];
+    for (const [result, tail] of textResults) {
+      const message = booking + contactOutcomeSentence(result, "Dr. J. Smith", "booked");
+      expect(runner.describeOwnerToolCall("owner_book_appointment", {}, message, true, { outcome: "booked", customer_contact: result }), JSON.stringify(result)).toBe(booking.replace(/\.$/, "") + tail);
+    }
+  });
+});
