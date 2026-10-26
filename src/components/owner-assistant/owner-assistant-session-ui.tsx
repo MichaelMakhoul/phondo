@@ -47,7 +47,7 @@ export function OwnerAssistantControls({ session, compact = false }: OwnerAssist
             <Bot className={cn(circleIcon, "text-primary")} />
           </div>
           <p className={cn("text-center text-muted-foreground", compact && "text-sm")}>
-            Click below and allow the microphone when your browser asks.
+            Press Start talking and allow the microphone when your browser asks.
           </p>
           <Button size={compact ? "default" : "lg"} onClick={handleStart} className="btn-primary-glow">
             <Mic className="mr-2 h-5 w-5" />
@@ -106,7 +106,9 @@ export function OwnerAssistantControls({ session, compact = false }: OwnerAssist
             <CheckCircle2 className={cn(circleIcon, "text-primary")} />
           </div>
           <p className="text-center font-medium">Session ended</p>
-          <p className="text-center text-sm text-muted-foreground">Any changes are in your call log.</p>
+          <p className="text-center text-sm text-muted-foreground">
+            Any changes are in your call log, and we&apos;ll email you a list of exactly what changed.
+          </p>
           <Button variant="outline" onClick={handleTalkAgain}>
             Talk again
           </Button>

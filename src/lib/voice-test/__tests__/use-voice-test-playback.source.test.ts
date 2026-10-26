@@ -44,3 +44,24 @@ describe("useVoiceTest: browser playback of the assistant's voice", () => {
     expect(hookSource).toMatch(/if \(pcm\.length === 0\) return;/);
   });
 });
+
+// SCRUM-597: one live session per tab, and the bookings-changed relay.
+describe("useVoiceTest: one live session per tab, and bookings_changed", () => {
+  const hook = readFileSync(join(process.cwd(), "src/lib/voice-test/use-voice-test.ts"), "utf-8");
+  it("claims the tab right after tearing down its own previous session, and releases it in cleanup()", () => {
+    const start = hook.indexOf("const start = useCallback(async () => {");
+    const ownCleanup = hook.indexOf("cleanup();", start);
+    const claim = hook.indexOf("claimVoiceSession(sessionHandleRef.current);", start);
+    expect(claim).toBeGreaterThan(ownCleanup);
+    expect(claim).toBeLessThan(hook.indexOf('updateStatus("connecting");', start));
+    const cleanupFn = hook.slice(hook.indexOf("function cleanup() {"));
+    expect(cleanupFn.slice(0, 200)).toContain("releaseVoiceSession(sessionHandleRef.current);");
+  });
+  it("the registry reaches the latest stop() through a stable handle", () => {
+    expect(hook).toMatch(/const sessionHandleRef = useRef<VoiceSessionHandle>\(\{ stop: \(\) => stopRef\.current\(\) \}\);/);
+    expect(hook).toMatch(/useEffect\(\(\) => \{\s*stopRef\.current = stop;\s*\}, \[stop\]\);/);
+  });
+  it("relays bookings_changed from the voice server as a window event", () => {
+    expect(hook).toMatch(/case "bookings_changed":\s*\/\/[^\n]*\n\s*announceBookingsChanged\(\);\s*break;/);
+  });
+});

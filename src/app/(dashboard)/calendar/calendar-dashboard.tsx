@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useEffect } from "react";
+import { onBookingsChanged } from "@/lib/voice-test/events";
 import { AppointmentDetailPanel } from "./appointment-detail-panel";
 import Link from "next/link";
 import {
@@ -257,6 +258,9 @@ export function CalendarDashboard({
   const refreshCurrentMonth = useCallback(() => {
     goToMonth(currentMonth);
   }, [currentMonth]);
+
+  // SCRUM-597: the owner's assistant moved or cancelled a booking — show it.
+  useEffect(() => onBookingsChanged(refreshCurrentMonth), [refreshCurrentMonth]);
 
   return (
     <div className="space-y-6">

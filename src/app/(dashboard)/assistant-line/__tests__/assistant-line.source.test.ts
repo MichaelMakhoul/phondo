@@ -58,13 +58,23 @@ describe("the talk panel (client)", () => {
     expect(providerSource).toMatch(/from "@\/lib\/owner-assistant\/web"/);
   });
 
-  it("calls the hook only once it has an assistant (hooks can't be conditional)", () => {
+  it("reads the shared session before any early return (hooks can't be conditional), and never opens its own", () => {
     const outer = panelSource.slice(panelSource.indexOf("export function OwnerTalkPanel"), panelSource.indexOf("function OwnerTalk("));
     expect(outer).not.toContain("useVoiceTest(");
-    expect(outer).not.toContain("useOwnerAssistant(");
+    const hook = outer.indexOf("const shared = useOwnerAssistant();");
+    expect(hook).toBeGreaterThan(-1);
+    expect(hook).toBeLessThan(outer.indexOf("if (loadFailed)"));
     expect(outer).toMatch(/if \(loadFailed\)/);
     expect(outer).toMatch(/if \(!assistantId\)/);
     expect(outer).toMatch(/href="\/assistants"/);
+  });
+
+  it("SCRUM-597: a live session (started from the bubble, which hides here) always shows — before the page's own error or empty states", () => {
+    const outer = panelSource.slice(panelSource.indexOf("export function OwnerTalkPanel"), panelSource.indexOf("function OwnerTalk("));
+    const live = outer.indexOf("if (isSessionLive(shared?.session.status)) {");
+    expect(live).toBeGreaterThan(-1);
+    expect(live).toBeLessThan(outer.indexOf("if (loadFailed)"));
+    expect(outer.slice(live, outer.indexOf("if (loadFailed)"))).toContain("<OwnerTalk />");
   });
 
   it("shows every state: idle, connecting, active (mute + end), ended (talk again), the transcript and errors", () => {

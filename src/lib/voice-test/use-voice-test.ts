@@ -2,6 +2,8 @@
 
 import { useState, useRef, useCallback, useEffect } from "react";
 import { createMulawPlaybackDecoder, type MulawPlaybackDecoder } from "./mulaw";
+import { claimVoiceSession, releaseVoiceSession, type VoiceSessionHandle } from "./session-registry";
+import { announceBookingsChanged } from "./events";
 import {
   trackTestCallStarted,
   trackTestCallCompleted,
@@ -33,6 +35,10 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody, trackingSource 
 
   // Ref tracks latest status for use in WebSocket callbacks (avoids stale closures)
   const statusRef = useRef<VoiceTestStatus>("idle");
+  // SCRUM-597: this hook instance's place in the tab's one-live-session registry.
+  // The handle is stable; it reaches the latest stop() through stopRef.
+  const stopRef = useRef<() => void>(() => {});
+  const sessionHandleRef = useRef<VoiceSessionHandle>({ stop: () => stopRef.current() });
   const updateStatus = useCallback((newStatus: VoiceTestStatus) => {
     statusRef.current = newStatus;
     setStatus(newStatus);
@@ -108,6 +114,9 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody, trackingSource 
     // (a no-op on the first call) and detaches the old socket's handlers so its
     // asynchronous close can't disturb the session we're about to create.
     cleanup();
+    // SCRUM-597: one live voice session per tab — starting this one ends any other
+    // (the owner's bubble, a receptionist test call, the demo).
+    claimVoiceSession(sessionHandleRef.current);
 
     updateStatus("connecting");
     setError(null);
@@ -243,6 +252,11 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody, trackingSource 
             flushPlayback();
             break;
 
+          case "bookings_changed":
+            // SCRUM-597: the owner's assistant changed a booking — refresh what's on screen.
+            announceBookingsChanged();
+            break;
+
           case "transcript":
             if (msg.isFinal && msg.content?.trim()) {
               setTranscript((prev) => {
@@ -338,6 +352,10 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody, trackingSource 
     cleanup();
   }, [trackingSource]);
 
+  useEffect(() => {
+    stopRef.current = stop;
+  }, [stop]);
+
   const toggleMute = useCallback(() => {
     const stream = mediaStreamRef.current;
     if (stream) {
@@ -359,6 +377,9 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody, trackingSource 
   }, []);
 
   function cleanup() {
+    // SCRUM-597: this session no longer holds the tab.
+    releaseVoiceSession(sessionHandleRef.current);
+
     // Stop any scheduled/playing audio
     flushPlayback();
     playbackDecoderRef.current = null;

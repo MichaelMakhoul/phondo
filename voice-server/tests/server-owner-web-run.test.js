@@ -267,6 +267,7 @@ function makeCallbacks(session, o = {}) {
     noteOwnerSpeech,
     noteCancelledOwnerToolCalls,
     runOwnerToolCall: o.runOwnerToolCall || (async (...a) => { calls.push(["runOwnerToolCall", ...a]); return o.ownerResult || { message: "done" }; }),
+    notifyBookingsChanged: (w, name, result) => calls.push(["notifyBookingsChanged", w, name, result]), // SCRUM-597
     executeToolCall: o.executeToolCall || (async (...a) => { calls.push(["executeToolCall", ...a]); return { message: "customer tool result" }; }),
     scheduleCache: { invalidate: () => {} },
     logToolCall: () => {},
@@ -759,6 +760,7 @@ describe("/ws/test Gemini: the owner's transcript from Deepgram, run for real", 
       noteOwnerSpeech,
       noteCancelledOwnerToolCalls,
       runOwnerToolCall: async () => ({ message: "ok" }),
+      notifyBookingsChanged: () => {},
       executeToolCall: async () => ({ message: "ok" }),
       scheduleCache: { invalidate: () => {} },
       logToolCall: () => {},
@@ -863,5 +865,50 @@ describe("/ws/test: inbound audio and teardown feed and close the owner's transc
     await h.cleanupTestSession();
     assert.deepEqual(closed, [true]);
     assert.equal(seen, null, "closed before the post-call takes the transcript");
+  });
+});
+
+// ─── SCRUM-597: the page behind the bubble hears about a changed booking ──────
+
+describe("notifyBookingsChanged, run for real", () => {
+  const start = src.indexOf("function notifyBookingsChanged(ws, name, result) {");
+  const code = src.slice(start, src.indexOf("\n}\n", start) + 3);
+  const { OWNER_WRITE_TOOL_NAMES } = require("../lib/owner-tools");
+  const { ownerResultSucceeded } = require("../lib/owner-tool-runner");
+  const notify = (ws, name, result) => run(`${code}\nnotifyBookingsChanged(ws, name, result);`, { ws, name, result, OWNER_WRITE_TOOL_NAMES, ownerResultSucceeded, WebSocket: { OPEN: 1 } });
+
+  it("a successful owner cancel or move tells the page; nothing else does", () => {
+    const cases = [
+      ["owner_cancel_appointment", { message: "Cancelled", data: { outcome: "cancelled" } }, true],
+      ["owner_reschedule_appointment", { message: "Moved", data: { outcome: "rescheduled" } }, true],
+      ["owner_cancel_appointment", { message: "Read this back", data: { outcome: "needs_confirmation" } }, false],
+      ["owner_reschedule_appointment", { success: false, message: "taken", data: { outcome: "slot_taken" } }, false],
+      ["owner_cancel_appointment", { message: "trouble" }, false],
+      ["owner_list_appointments", { message: "2 jobs", data: { count: 2 } }, false],
+      ["check_availability", { message: "free at 9" }, false],
+    ];
+    for (const [name, result, tells] of cases) {
+      const ws = fakeWs();
+      notify(ws, name, result);
+      assert.deepEqual(ws.sent, tells ? [{ type: "bookings_changed" }] : [], `${name} ${JSON.stringify(result.data)}`);
+    }
+  });
+
+  it("a closed page is never written to", () => {
+    const ws = fakeWs();
+    ws.readyState = 3;
+    notify(ws, "owner_cancel_appointment", { message: "Cancelled", data: { outcome: "cancelled" } });
+    assert.deepEqual(ws.sent, []);
+  });
+
+  it("the Gemini owner path hands every runner result to it, with the tool's name", async () => {
+    const s = ownerSession();
+    const ownerResult = { message: "Cancelled", data: { outcome: "cancelled" } };
+    const { cbs, calls, ws } = makeCallbacks(s, { ownerResult });
+    await cbs.onToolCall({ id: "t1", name: "owner_cancel_appointment", args: { appointment_id: "a1", confirmed: true, notify_customer: "none" } });
+    const n = calls.find((c) => c[0] === "notifyBookingsChanged");
+    assert.equal(n[1], ws);
+    assert.equal(n[2], "owner_cancel_appointment");
+    assert.equal(n[3], ownerResult);
   });
 });

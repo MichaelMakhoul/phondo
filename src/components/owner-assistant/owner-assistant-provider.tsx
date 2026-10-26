@@ -1,7 +1,9 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useRouter } from "next/navigation";
 import { useVoiceTest } from "@/lib/voice-test";
+import { onBookingsChanged } from "@/lib/voice-test/events";
 import { OWNER_ASSISTANT_TOKEN_URL } from "@/lib/owner-assistant/web";
 import { getBrowserStorage, readPanelState, writePanelState, type PanelState } from "./bubble-state";
 
@@ -43,6 +45,12 @@ export function OwnerAssistantProvider({ assistantId, children }: OwnerAssistant
     useVoiceTest({ assistantId: assistantId ?? "", tokenUrl: OWNER_ASSISTANT_TOKEN_URL, trackingSource: "owner_assistant" });
 
   const [panelState, setPanelState] = useState<PanelState | null>(null);
+  const router = useRouter();
+
+  // SCRUM-597: the assistant changed a booking — server-rendered pages (stats,
+  // lists) re-render; client lists listen for the same event and refetch. Safe for a
+  // live session: an admitted owner keeps this provider across a refresh.
+  useEffect(() => onBookingsChanged(() => router.refresh()), [router]);
 
   useEffect(() => {
     setPanelState(readPanelState(getBrowserStorage()));

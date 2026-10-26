@@ -53,7 +53,7 @@ export function writePanelState(storage: Pick<Storage, "setItem"> | null, state:
 export const ASSISTANT_LINE_PATH = "/assistant-line";
 
 /** A session the owner is in right now (connecting or talking): never hidden or cut off. */
-export function isSessionLive(status: string | null | undefined): boolean {
+export function isSessionLive(status: VoiceTestStatus | null | undefined): boolean {
   return status === "connecting" || status === "active";
 }
 

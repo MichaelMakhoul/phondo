@@ -288,3 +288,20 @@ describe("SCRUM-597: no assistant this render", () => {
     expect(bubbleCode).toMatch(/import \{ describeBubbleState, isSessionLive, shouldShowFloatingBubble, type BubbleIndicator \} from "\.\/bubble-state";/);
   });
 });
+
+describe("SCRUM-597 review: the page behind the bubble, and the copy", () => {
+  const appointmentsSource = read("src/app/(dashboard)/appointments/appointments-list.tsx");
+  const calendarSource = read("src/app/(dashboard)/calendar/calendar-dashboard.tsx");
+  it("a booking the assistant changed refreshes the server-rendered page (the provider) and the client lists (appointments, calendar)", () => {
+    expect(providerCode).toMatch(/useEffect\(\(\) => onBookingsChanged\(\(\) => router\.refresh\(\)\), \[router\]\);/);
+    expect(providerCode).toMatch(/import \{ onBookingsChanged \} from "@\/lib\/voice-test\/events";/);
+    expect(appointmentsSource).toMatch(/useEffect\(\(\) => onBookingsChanged\(\(\) => \{ void fetchAppointments\(\); \}\), \[fetchAppointments\]\);/);
+    expect(calendarSource).toMatch(/useEffect\(\(\) => onBookingsChanged\(refreshCurrentMonth\), \[refreshCurrentMonth\]\);/);
+  });
+  it("the bubble says what it's for; the idle line says Press (phones); the ended state mentions the recap email", () => {
+    expect(bubbleCode).toContain("Ask about your bookings and messages, or move or cancel a job.");
+    expect(sessionUiCode).toContain("Press Start talking and allow the microphone when your browser asks.");
+    expect(sessionUiCode).not.toContain("Click below");
+    expect(sessionUiCode).toContain("we&apos;ll email you a list of exactly what changed.");
+  });
+});

@@ -164,8 +164,8 @@ const { mintStreamToken, verifyStreamToken, withoutOwnerAccess } = require("./li
 // SCRUM-587: the owner session — its prompt and tools, the ONE tool path that
 // bypasses the customer guards, and the turn clock its confirmation gate reads.
 const { buildOwnerPrompt, buildOwnerGreeting, buildOwnerGeminiSuffix } = require("./lib/owner-prompt");
-const { buildOwnerTools } = require("./lib/owner-tools");
-const { runOwnerToolCall, buildOwnerCallSummary, settleOwnerToolRuns, noteCancelledOwnerToolCalls, ownerToolLoopReply, OWNER_MAX_TOOL_CALLS } = require("./lib/owner-tool-runner");
+const { buildOwnerTools, OWNER_WRITE_TOOL_NAMES } = require("./lib/owner-tools");
+const { runOwnerToolCall, buildOwnerCallSummary, settleOwnerToolRuns, noteCancelledOwnerToolCalls, ownerToolLoopReply, ownerResultSucceeded, OWNER_MAX_TOOL_CALLS } = require("./lib/owner-tool-runner");
 const { noteAssistantSpeech, noteAssistantTurnEnd, noteOwnerSpeech } = require("./lib/owner-turn-stamps");
 const { OWNER_WEB_MAX_SESSION_MS, OWNER_WEB_RECORD_METADATA, OWNER_WEB_PROBLEM_MESSAGE, isOwnerWebToken, ownerWebCallSid, buildOwnerWebPrompt, createOwnerTokenLedger, createOwnerWebSessions, finishOwnerWebSession } = require("./lib/owner-web-session"); // SCRUM-596: the owner assistant in the dashboard
 const { createOwnerTranscriber } = require("./lib/owner-transcript"); // SCRUM-597: the owner's lines in a browser session, from Deepgram
@@ -6800,6 +6800,19 @@ const ownerWebSessions = createOwnerWebSessions();
 const ownerTokenLedger = createOwnerTokenLedger();
 
 /** SCRUM-596: what an owner session in the browser needs to end like an owner phone call. */
+/**
+ * SCRUM-597: a browser owner session just changed a booking (a successful owner
+ * write): tell the page, so the dashboard open behind the bubble refreshes its diary
+ * instead of showing the old time after the assistant says "done".
+ * @param {any} ws - the /ws/test socket
+ * @param {string} name
+ * @param {unknown} result - the owner runner's result
+ */
+function notifyBookingsChanged(ws, name, result) {
+  if (!OWNER_WRITE_TOOL_NAMES.includes(name) || !ownerResultSucceeded(name, result)) return;
+  if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "bookings_changed" }));
+}
+
 function ownerWebFinishDeps() {
   return {
     settleOwnerToolRuns,
@@ -7265,7 +7278,9 @@ testWss.on("connection", (ws, req) => {
               if (session.ownerMode) {
                 session._toolCallInFlight = true;
                 try {
-                  return await runOwnerToolCall(session, toolCall, { executeToolCall, scheduleCache, sendText: (text) => session?.geminiSession?.sendText(text) });
+                  const ownerResult = await runOwnerToolCall(session, toolCall, { executeToolCall, scheduleCache, sendText: (text) => session?.geminiSession?.sendText(text) });
+                  notifyBookingsChanged(ws, toolCall.name, ownerResult); // SCRUM-597
+                  return ownerResult;
                 } finally {
                   if (session) session._toolCallInFlight = false;
                 }
@@ -7706,6 +7721,7 @@ async function handleTestUserSpeech(session, ws, transcript) {
           // and data go back to the model, as in the phone line's classic loop.
           if (session.ownerMode) {
             const ownerRet = await runOwnerToolCall(session, { name: fnName, args: fnArgs }, { executeToolCall, scheduleCache });
+            notifyBookingsChanged(ws, fnName, ownerRet); // SCRUM-597
             lastOwnerTool = { name: fnName, ret: ownerRet };
             // The owner said goodbye: from here the session is ending, and words
             // heard while the goodbye plays start no new turn.

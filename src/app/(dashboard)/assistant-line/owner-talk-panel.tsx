@@ -28,6 +28,16 @@ interface OwnerTalkPanelProps {
  * assistant, with the dashboard login instead of the PIN.
  */
 export function OwnerTalkPanel({ assistantId, loadFailed = false }: OwnerTalkPanelProps) {
+  // SCRUM-597: a session that's live (started from the bubble, which hides on this
+  // page) always shows with its End button — whatever this page's own read found.
+  const shared = useOwnerAssistant();
+  if (isSessionLive(shared?.session.status)) {
+    return (
+      <PageShell>
+        <OwnerTalk />
+      </PageShell>
+    );
+  }
   if (loadFailed) {
     return (
       <PageShell>
