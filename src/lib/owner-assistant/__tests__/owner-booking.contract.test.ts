@@ -169,11 +169,31 @@ describe("owner_book_appointment through the real booking path (test lens G2)", 
     expect(sendAppointmentConfirmationSMS).toHaveBeenCalledTimes(1);
   });
 
+  it("silent lens r2 F3: a first attempt cut off after its booking, before its audit row and text — the repeat writes both", async () => {
+    tables.appointments = [{
+      id: "appt-1", organization_id: ORG, call_id: CALL, attendee_first_name: "Jane", attendee_name: "Jane Smith", attendee_phone: "+61412345678",
+      start_time: "2026-10-15T23:00:00.000Z", status: "confirmed", confirmation_code: "123456", service_type_id: null, notes: null,
+    }];
+    const again = await handleOwnerBookAppointment(ORG, ASK, { callId: CALL });
+    expect(again.message).toContain("that's the booking from a moment ago. I've texted Jane Smith to let them know.");
+    expect(tables.appointments).toHaveLength(1);
+    expect(tables.appointment_events).toHaveLength(1);
+    expect(tables.appointment_events[0]).toMatchObject({ appointment_id: "appt-1", event_type: "created", call_id: CALL });
+    expect(sendAppointmentConfirmationSMS).toHaveBeenCalledTimes(1);
+  });
+
   it("the number said another way (+61…) is the same customer: still handed back", async () => {
     await handleOwnerBookAppointment(ORG, ASK, { callId: CALL });
     const again = await handleOwnerBookAppointment(ORG, { ...ASK, customer_phone: "+61 412 345 678" }, { callId: CALL });
     expect(again.message).toContain("that's the booking from a moment ago");
     expect(tables.appointments).toHaveLength(1);
+  });
+
+  it("security lens r2: a second child on the same mobile at the same time is booked, not taken for a repeat", async () => {
+    await handleOwnerBookAppointment(ORG, ASK, { callId: CALL });
+    const sibling = await handleOwnerBookAppointment(ORG, { ...ASK, customer_name: "Tom Smith", notify_customer: "none" }, { callId: CALL });
+    expect(sibling.message).toMatch(/^Booked Tom Smith for /);
+    expect(tables.appointments.map((a) => a.attendee_name)).toEqual(["Jane Smith", "Tom Smith"]);
   });
 
   it("another call's booking at that time is never this one's repeat", async () => {

@@ -1775,6 +1775,18 @@ describe("SCRUM-599 test lens: behaviour, not just the lists", () => {
     assert.doesNotMatch(told[0], /customer/);
   });
 
+  it("silent lens r2 F2: an interrupted repeat booking whose text log couldn't be read never says the customer was NOT told", async () => {
+    const told = await interrupted(
+      "owner_book_appointment",
+      'owner_book_appointment|["jane smith","0412345678","2026-10-29T14:00","",""]',
+      { ...BOOK, notify_customer: "text" },
+      { success: true, message: "Jane Smith is already booked for Thursday, October 29 at 2:00 PM — that's the booking from a moment ago.", data: { outcome: "booked" } }
+    );
+    assert.equal(told.length, 1);
+    assert.match(told[0], /the change HAS been made, and the customer may or may not have been told — say you couldn't check/);
+    assert.doesNotMatch(told[0], /NOT told/);
+  });
+
   it("K85: an interrupted booking that went through says whether the customer was texted", async () => {
     const told = await interrupted(
       "owner_book_appointment",

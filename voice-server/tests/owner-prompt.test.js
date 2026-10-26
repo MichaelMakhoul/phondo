@@ -505,7 +505,9 @@ describe("buildOwnerPrompt — SCRUM-599: booking, blocking and marking done", (
     assert.ok(p.includes("A block closes the WHOLE diary: if the owner only means their own time off"));
     assert.ok(p.includes("If more than one waiting callback could be the one they mean, ask which — by what it's about and when it came in. A callback marked done can't be reopened."));
     assert.ok(p.includes("outside opening hours or in blocked-out time, the owner can still book it themselves in Appointments."));
-    assert.ok(p.includes("trying again with the SAME details never doubles it — the diary hands back the one already made."));
+    assert.ok(p.includes("trying again with the SAME details never doubles it — a booking or block made a moment ago is handed back, and a callback already marked done says it isn't waiting any more."));
+    // Code lens r2: never an offer to read out a number the owner just gave.
+    assert.ok(p.includes("offer to read out their phone number so the owner can ring them — except after a new booking, when the owner has just given it."));
   });
   it("code lens N3: a booking's appointment_id is an allowed source for a later change", () => {
     assert.ok(p.includes("(or as data.new_appointment_id after a reschedule, or data.appointment_id after owner_book_appointment)"));

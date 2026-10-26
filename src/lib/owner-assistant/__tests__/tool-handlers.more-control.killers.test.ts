@@ -304,7 +304,7 @@ describe("killers — over a PostgREST-like fake", () => {
 
   it("K114 / R09: the same booking asked for again on this call is found by its number and handed back — never booked twice", async () => {
     tables.appointments = [
-      { id: NEW_ID, organization_id: ORG, call_id: CALL, start_time: "2026-10-15T23:00:00.000Z", status: "confirmed", attendee_phone: "+61412345678", confirmation_code: "654321" },
+      { id: NEW_ID, organization_id: ORG, call_id: CALL, start_time: "2026-10-15T23:00:00.000Z", status: "confirmed", attendee_name: "Jane Smith", attendee_phone: "+61412345678", confirmation_code: "654321" },
     ];
     const r = await handleOwnerBookAppointment(ORG, { ...BOOK, confirmed: true, notify_customer: "none" }, ctx);
     expect(handleBookAppointment).not.toHaveBeenCalled();

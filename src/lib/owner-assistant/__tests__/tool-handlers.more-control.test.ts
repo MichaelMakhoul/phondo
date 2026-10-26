@@ -335,10 +335,11 @@ describe("owner_book_appointment", () => {
   });
 
   describe("the same booking asked for again on this call (its result never came back)", () => {
-    const EARLIER = { id: NEW_ID, attendee_phone: "+61412345678", confirmation_code: "654321", practitioners: { name: "Alex" } };
+    const EARLIER = { id: NEW_ID, attendee_name: "Jane Smith", attendee_phone: "+61412345678", confirmation_code: "654321", practitioners: { name: "Alex" } };
 
     it("this customer at this time already booked on this call: handed back — never booked twice (two staff would take a second), before the rate limit", async () => {
       db.queues.appointments = [{ data: [EARLIER], error: null }];
+      db.queues.appointment_events = [{ data: [{ id: "ev-1" }], error: null }];
       db.queues.appointment_confirmations = [{ data: { status: "sent" }, error: null }];
       const r = await handleOwnerBookAppointment(ORG, { ...BOOK, confirmed: true, notify_customer: "text" }, ctx);
       expect(handleBookAppointment).not.toHaveBeenCalled();
@@ -357,39 +358,127 @@ describe("owner_book_appointment", () => {
       });
     });
 
-    it("what the customer was told came with the first: a text already attempted is reported and never sent twice", async () => {
+    it("what the customer was told came with the first: a text that went out (or reached the phone and bounced) is reported and never sent twice", async () => {
       process.env.CALLER_SMS_ENABLED = "true";
-      db.queues.appointments = [{ data: [EARLIER], error: null }];
-      db.queues.appointment_confirmations = [{ data: { status: "failed" }, error: null }];
-      const r = await handleOwnerBookAppointment(ORG, { ...BOOK, confirmed: true, notify_customer: "text" }, ctx);
+      for (const [status, contact] of [
+        ["delivered", { method: "text", status: "sent" }],
+        ["undelivered", { method: "text", status: "not_sent", reason: "undelivered" }],
+      ] as const) {
+        db.queues.organizations = [AU_ORG];
+        db.queues.appointments = [{ data: [EARLIER], error: null }];
+        db.queues.appointment_events = [{ data: [{ id: "ev-1" }], error: null }];
+        db.queues.appointment_confirmations = [{ data: { status }, error: null }];
+        const r = await handleOwnerBookAppointment(ORG, { ...BOOK, confirmed: true, notify_customer: "text" }, ctx);
+        expect(r.data, status).toMatchObject({ customer_contact: contact });
+      }
       expect(sendAppointmentConfirmationSMS).not.toHaveBeenCalled();
-      expect(r.data).toMatchObject({ customer_contact: { method: "text", status: "not_sent", reason: "failed" }, customer_notified: false });
       const log = opsOn("appointment_confirmations")[0];
       expect(filters(log, "eq")).toEqual([["organization_id", ORG], ["idempotency_key", `${NEW_ID}:sms:confirmation:2026-10-15T23:00:00.000Z`]]);
+    });
+
+    it("silent lens r2 F5: a first text that failed or was held back never went out — the owner's choice is carried out now", async () => {
+      process.env.CALLER_SMS_ENABLED = "true";
+      for (const status of ["failed", "skipped_db_error"]) {
+        db.queues.organizations = [AU_ORG];
+        db.queues.appointments = [{ data: [EARLIER], error: null }];
+        db.queues.appointment_events = [{ data: [{ id: "ev-1" }], error: null }];
+        db.queues.appointment_confirmations = [{ data: { status }, error: null }];
+        const r = await handleOwnerBookAppointment(ORG, { ...BOOK, confirmed: true, notify_customer: "text" }, ctx);
+        expect(r.data, status).toMatchObject({ customer_contact: { method: "text", status: "sent" }, customer_notified: true });
+      }
+      expect(sendAppointmentConfirmationSMS).toHaveBeenCalledTimes(2);
+    });
+
+    it("a text log row still pending (a send may be under way) is never sent again, and never claimed either way", async () => {
+      process.env.CALLER_SMS_ENABLED = "true";
+      db.queues.appointments = [{ data: [EARLIER], error: null }];
+      db.queues.appointment_events = [{ data: [{ id: "ev-1" }], error: null }];
+      db.queues.appointment_confirmations = [{ data: { status: "pending" }, error: null }];
+      const r = await handleOwnerBookAppointment(ORG, { ...BOOK, confirmed: true, notify_customer: "text" }, ctx);
+      expect(sendAppointmentConfirmationSMS).not.toHaveBeenCalled();
+      expect(r.data).not.toHaveProperty("customer_contact");
+      expect(r.message).toContain("I couldn't check whether Jane Smith was texted about it");
     });
 
     it("no text was ever attempted (the first stopped before it): the owner's choice is carried out now", async () => {
       process.env.CALLER_SMS_ENABLED = "true";
       db.queues.appointments = [{ data: [EARLIER], error: null }];
+      db.queues.appointment_events = [{ data: [{ id: "ev-1" }], error: null }];
       const r = await handleOwnerBookAppointment(ORG, { ...BOOK, confirmed: true, notify_customer: "text" }, ctx);
       expect(sendAppointmentConfirmationSMS).toHaveBeenCalledWith(ORG, "+61412345678", new Date("2026-10-15T23:00:00.000Z"), TZ, undefined, NEW_ID, { ownerRequested: true });
       expect(r.data).toMatchObject({ outcome: "booked", customer_contact: { method: "text", status: "sent" } });
       db.queues.organizations = [AU_ORG];
       db.queues.appointments = [{ data: [EARLIER], error: null }];
+      db.queues.appointment_events = [{ data: [{ id: "ev-1" }], error: null }];
       const none = await handleOwnerBookAppointment(ORG, { ...BOOK, confirmed: true, notify_customer: "none" }, ctx);
       expect(none.data).toMatchObject({ customer_contact: { method: "none", status: "not_requested" } });
       expect(sendAppointmentConfirmationSMS).toHaveBeenCalledTimes(1);
     });
 
-    it("an unreadable text log: nothing said about the customer, and nothing sent — never a guess", async () => {
+    it("an unreadable text log: nothing claimed about the customer either way, and nothing sent (silent lens r2 F2)", async () => {
       silence("error");
       process.env.CALLER_SMS_ENABLED = "true";
       db.queues.appointments = [{ data: [EARLIER], error: null }];
+      db.queues.appointment_events = [{ data: [{ id: "ev-1" }], error: null }];
       db.queues.appointment_confirmations = [{ data: null, error: { code: "57014" } }];
       const r = await handleOwnerBookAppointment(ORG, { ...BOOK, confirmed: true, notify_customer: "text" }, ctx);
-      expect(r.message).toBe(`Jane Smith is already booked for ${WHEN} with Alex — that's the booking from a moment ago.`);
+      expect(r.message).toBe(
+        `Jane Smith is already booked for ${WHEN} with Alex — that's the booking from a moment ago. I couldn't check whether Jane Smith was texted about it — check the booking in Appointments before texting them yourself.`
+      );
       expect(r.data).not.toHaveProperty("customer_contact");
+      expect(r.data).toMatchObject({ customer_notified: false });
       expect(sendAppointmentConfirmationSMS).not.toHaveBeenCalled();
+    });
+
+    it("silent lens r2 F1: a retry with another service or note is handed back AS BOOKED — the result never claims details the diary doesn't have", async () => {
+      const SERVICE_ID = "66666666-7777-4888-9999-aaaaaaaaaaaa";
+      db.queues.service_types = [{ data: { id: SERVICE_ID, name: "Blocked drain" }, error: null }];
+      db.queues.appointments = [{ data: [{ ...EARLIER, service_type_id: null, notes: "Hot water", service_types: null }], error: null }];
+      db.queues.appointment_events = [{ data: [{ id: "ev-1" }], error: null }];
+      const r = await handleOwnerBookAppointment(ORG, { ...BOOK, service_type_id: SERVICE_ID, notes: "Blocked drain out the back", confirmed: true, notify_customer: "none" }, ctx);
+      expect(handleBookAppointment).not.toHaveBeenCalled();
+      expect(r.message).toContain("It keeps the service and note it was booked with — the new ones weren't added; they can be changed in Appointments.");
+      expect(r.data).not.toHaveProperty("service");
+      // The same details again: no such sentence.
+      db.queues.organizations = [AU_ORG];
+      db.queues.appointments = [{ data: [{ ...EARLIER, notes: null }], error: null }];
+      db.queues.appointment_events = [{ data: [{ id: "ev-1" }], error: null }];
+      const same = await handleOwnerBookAppointment(ORG, { ...BOOK, confirmed: true, notify_customer: "none" }, ctx);
+      expect(same.message).not.toContain("It keeps the service");
+    });
+
+    it("silent lens r2 F3: a first attempt cut off before its audit row — the repeat writes it (the recap email is built from it)", async () => {
+      db.queues.appointments = [{ data: [EARLIER], error: null }];
+      db.queues.appointment_events = [{ data: [], error: null }];
+      await handleOwnerBookAppointment(ORG, { ...BOOK, confirmed: true, notify_customer: "none" }, ctx);
+      expect(filters(opsOn("appointment_events")[0], "eq")).toEqual([["organization_id", ORG], ["appointment_id", NEW_ID], ["event_type", "created"], ["call_id", CALL]]);
+      expect(recordAppointmentEvent).toHaveBeenCalledWith(expect.anything(), {
+        appointmentId: NEW_ID, organizationId: ORG, eventType: "created", actorType: "staff", actorId: null, channel: "voice", callId: CALL,
+      });
+      expect(handleBookAppointment).not.toHaveBeenCalled();
+    });
+
+    it("the same name written another way (case, spaces, punctuation) is still this customer", async () => {
+      db.queues.appointments = [{ data: [{ ...EARLIER, attendee_name: "Jane  O'Smith" }], error: null }];
+      const r = await handleOwnerBookAppointment(ORG, { ...BOOK, customer_name: "jane osmith", confirmed: true, notify_customer: "none" }, ctx);
+      expect(handleBookAppointment).not.toHaveBeenCalled();
+      expect(r.message).toContain("that's the booking from a moment ago");
+    });
+
+    it("code lens r2 (SCRUM-514's rule): a surname respelled on the retry is still this customer — never a second booking", async () => {
+      db.queues.appointments = [{ data: [{ ...EARLIER, attendee_first_name: "Jane" }], error: null }];
+      const r = await handleOwnerBookAppointment(ORG, { ...BOOK, customer_name: "Jane Smyth", confirmed: true, notify_customer: "none" }, ctx);
+      expect(handleBookAppointment).not.toHaveBeenCalled();
+      expect(r.message).toContain("that's the booking from a moment ago");
+      expect(r.data).toMatchObject({ appointment_id: NEW_ID });
+    });
+
+    it("security lens r2: another name on the same number at that time (two children, two staff) is no repeat — it's booked", async () => {
+      db.queues.appointments = [{ data: [EARLIER], error: null }];
+      const r = await handleOwnerBookAppointment(ORG, { ...BOOK, customer_name: "Tom Smith", confirmed: true, notify_customer: "none" }, ctx);
+      expect(handleBookAppointment).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(handleBookAppointment).mock.calls[0][1]).toMatchObject({ first_name: "Tom", last_name: "Smith" });
+      expect(r.message).toMatch(/^Booked Tom Smith for /);
     });
 
     it("someone else booked at that time on this call (another number) is no repeat: this booking goes ahead", async () => {
@@ -414,6 +503,7 @@ describe("owner_book_appointment", () => {
       it("with this customer's number it's the booking from a moment ago: handed back, no second audit row", async () => {
         vi.mocked(handleBookAppointment).mockResolvedValueOnce(DUPLICATE as any);
         db.queues.appointments = [{ data: [], error: null }, { data: EARLIER, error: null }];
+        db.queues.appointment_events = [{ data: [{ id: "ev-1" }], error: null }];
         db.queues.appointment_confirmations = [{ data: { status: "delivered" }, error: null }];
         const r = await handleOwnerBookAppointment(ORG, { ...BOOK, confirmed: true, notify_customer: "text" }, ctx);
         expect(r.message).toBe(`Jane Smith is already booked for ${WHEN} with Alex — that's the booking from a moment ago. I've texted Jane Smith to let them know.`);

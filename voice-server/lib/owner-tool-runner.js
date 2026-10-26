@@ -105,7 +105,20 @@ function contactSummary(data) {
 function inFlightContact(status) {
   if (status === "sent") return "WAS texted";
   if (status === "calling") return "IS being called";
+  // SCRUM-599: a booking handed back as a repeat whose text log couldn't be read says nothing about the customer.
+  if (status === undefined) return "may or may not have been told — say you couldn't check";
   return "was NOT told";
+}
+
+/**
+ * How to find out whether an interrupted write whose result never came back went
+ * through. SCRUM-599: owner_list_appointments shows neither a block nor a callback.
+ * @param {string} name
+ */
+function inFlightUnknownAdvice(name) {
+  if (name === "owner_block_time") return "trying the same block again (the same start and end) never doubles it — the one already made is handed back";
+  if (name === "owner_mark_callback_done") return "check with owner_list_messages — a callback marked done is no longer waiting";
+  return "check with owner_list_appointments before changing anything else";
 }
 
 /**
@@ -258,9 +271,12 @@ function ownerFacingMessage(name, r, successful) {
 }
 
 /**
- * The pending-confirmation key: `tool|appointment_id`, plus `|new_datetime`
- * for a reschedule. null when a part is not a non-empty string or contains
- * "|" — such a call can never be confirmed, and the key stays unambiguous.
+ * The pending-confirmation key: every field the read-back gave. For a change or a
+ * call, `tool|appointment_id`, plus `|new_datetime` for a reschedule and the window
+ * for a call; null when a part is not a non-empty string or contains "|" — such a
+ * call can never be confirmed, and the key stays unambiguous. SCRUM-599: the new
+ * writes (a booking, a block, a callback marked done) key on their read-back's fields
+ * JSON-encoded, so their free text may hold anything.
  * @param {string} name
  * @param {Record<string, any>} args
  * @returns {string|null}
@@ -706,7 +722,7 @@ async function runOneOwnerToolCall(session, toolCall, deps) {
     const outcome = outcomeUnknown ? "unknown" : outcomeLabel(outcomeOf(r));
     const notice = successful
       ? `SYSTEM NOTICE (not the owner speaking): the ${name} call that was interrupted had already gone through — data.outcome is "${outcome}", so ${inFlightWhat(name, r.data)}. Tell the owner it went through.`
-      : `SYSTEM NOTICE (not the owner speaking): the ${name} call that was interrupted had already been sent and its result never came back, so it may have gone through. Tell the owner, and check with owner_list_appointments before changing anything else.`;
+      : `SYSTEM NOTICE (not the owner speaking): the ${name} call that was interrupted had already been sent and its result never came back, so it may have gone through. Tell the owner, and ${inFlightUnknownAdvice(name)}.`;
     try {
       if (typeof deps.sendText !== "function") throw new Error("no way to reach the model");
       deps.sendText(notice);

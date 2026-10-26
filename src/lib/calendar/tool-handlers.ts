@@ -2630,7 +2630,7 @@ async function checkAvailabilityViaCal(
 // ─── Built-in booking helper ────────────────────────────────────────────────
 
 /** Case- and punctuation-insensitive given name, for comparing attendees. */
-function normalizeGivenName(name: string | null | undefined): string {
+export function normalizeGivenName(name: string | null | undefined): string {
   return (name || "").trim().toLowerCase().replace(/[^\p{L}]/gu, "");
 }
 
@@ -3190,9 +3190,9 @@ async function bookInternal(
  * SCRUM-599: whose diary a new booking (or a block of time) would land in, by the same
  * routing handleBookAppointment uses — Cliniko when it's connected; Cal.com when no
  * service types are set up and a Cal.com account is; otherwise Phondo's own. The owner
- * tools act only on Phondo's own. "error": the Cliniko lookup failed, so the caller
- * reports a fault rather than guess (a failed service-type read already reads as none
- * in the booking path itself).
+ * tools act only on Phondo's own. "error": a lookup failed (Cliniko, the service types
+ * or the Cal.com account — all read with their faults), so the caller reports a fault
+ * rather than guess.
  */
 export async function ownerDiaryProvider(organizationId: string): Promise<"phondo" | "Cliniko" | "Cal.com" | "error"> {
   const cliniko = await getActiveClinikoIntegration(organizationId);

@@ -16,6 +16,7 @@ import {
   cancelSingleAppointment,
   handleBookAppointment,
   handleCheckAvailability,
+  normalizeGivenName,
   ownerDiaryProvider,
   type ToolResult,
 } from "@/lib/calendar/tool-handlers";
@@ -1283,8 +1284,15 @@ export async function handleOwnerBookAppointment(
   // country, and as said otherwise.
   const bookedPhone = (org.country === "AU" || org.country === "US" ? parsePhoneToE164(phone, org.country) : null) ?? phone;
 
-  /** The booking from a moment ago, handed back with what its customer was told. */
+  /**
+   * The booking from a moment ago, handed back AS IT STANDS (its stored name, service
+   * and note — a retry with other details changes nothing, and says so), with what its
+   * customer was told.
+   */
   const repeatBooking = async (earlier: SameCallBooking): Promise<ToolResult> => {
+    // A first attempt cut off between its booking and its audit row would leave the
+    // recap email without it: the repeat writes the missing row (silent lens r2 F3).
+    await ensureCreatedAudit(supabase, organizationId, earlier.id, ctx.callId);
     const contact = await repeatBookingContact(supabase, {
       organizationId,
       appointmentId: earlier.id,
@@ -1296,12 +1304,22 @@ export async function handleOwnerBookAppointment(
       callId: ctx.callId,
     });
     const withWhom = earlier.practitioner ? ` with ${earlier.practitioner}` : "";
+    const who = earlier.customer ?? customer;
+    const detailsKept = (serviceTypeId ?? null) !== earlier.serviceTypeId || (notes ?? null) !== earlier.notes;
     return {
       success: true,
-      message: `${customer} is already booked for ${when}${withWhom} — that's the booking from a moment ago.${contact ? contactOutcomeSentence(contact, customer, "booked") : ""}`,
+      message:
+        `${who} is already booked for ${when}${withWhom} — that's the booking from a moment ago.` +
+        (detailsKept ? " It keeps the service and note it was booked with — the new ones weren't added; they can be changed in Appointments." : "") +
+        (contact
+          ? contactOutcomeSentence(contact, who, "booked")
+          : ` I couldn't check whether ${who} was texted about it — check the booking in Appointments before texting them yourself.`),
       data: bookData({
         outcome: "booked",
-        ...base,
+        customer_name: who,
+        customer_phone: shownPhone,
+        when,
+        ...(earlier.service ? { service: earlier.service } : {}),
         ...(earlier.practitioner ? { practitioner: earlier.practitioner } : {}),
         appointment_id: earlier.id,
         ...(earlier.confirmationCode ? { confirmation_code: earlier.confirmationCode } : {}),
@@ -1311,10 +1329,10 @@ export async function handleOwnerBookAppointment(
     };
   };
 
-  // This customer, at this time, already booked on this call: the same booking asked
-  // for again after its result never came back. Hand it back — never book it twice
-  // (with two or more staff the diary would happily take a second one).
-  const earlier = await sameCallBooking(supabase, organizationId, ctx.callId, start, bookedPhone);
+  // This customer (their number and given name), at this time, already booked on this call:
+  // the same booking asked for again after its result never came back. Hand it back —
+  // never book it twice (with two or more staff the diary would happily take a second one).
+  const earlier = await sameCallBooking(supabase, organizationId, ctx.callId, start, bookedPhone, customer);
   if (earlier === "error") return errorResult(SAME_CALL_READ_FAULT);
   if (earlier) return repeatBooking(earlier);
 
@@ -1362,9 +1380,9 @@ export async function handleOwnerBookAppointment(
   }
   if (booked.duplicate === true) {
     // The diary's own same-call net, which matches by first name only: it's this
-    // booking again only with this customer's number — another "Jane" booked then on
-    // this call is a clash.
-    const again = await sameCallBookingById(supabase, organizationId, appointmentId, bookedPhone);
+    // booking again only with this customer's number too — another "Jane" booked then
+    // on this call is a clash.
+    const again = await sameCallBookingById(supabase, organizationId, appointmentId, bookedPhone, customer);
     if (again === "error") return errorResult(SAME_CALL_READ_FAULT);
     if (!again) {
       return {
@@ -1416,31 +1434,85 @@ export async function handleOwnerBookAppointment(
   };
 }
 
-/** A live booking made on this owner call: what a repeat of it hands back. */
+/** A live booking made on this owner call: what a repeat of it hands back, as stored. */
 interface SameCallBooking {
   id: string;
   confirmationCode: string | null;
+  /** The name it was booked under. */
+  customer: string | null;
+  serviceTypeId: string | null;
+  service: string | null;
+  notes: string | null;
   practitioner: string | null;
 }
 
-const SAME_CALL_COLS = "id, attendee_phone, confirmation_code, practitioners(name)";
+const SAME_CALL_COLS =
+  "id, attendee_first_name, attendee_name, attendee_phone, confirmation_code, service_type_id, notes, service_types(name), practitioners(name)";
 const SAME_CALL_READ_FAULT = "I couldn't check the diary just now — please check Appointments before trying again.";
+
+/**
+ * The same customer: the same number AND the same given name — the receptionist's
+ * own rule (SCRUM-514, findOverlappingBookingFromCall). A family on one mobile (two
+ * children booked at once with two staff) is two bookings, not a repeat (security
+ * lens, round 2); a surname respelled on the retry is still the same customer, never
+ * a second booking (code lens, round 2).
+ */
+function sameCustomer(row: any, phone: string, customer: string): boolean {
+  const given = normalizeGivenName(row?.attendee_first_name || String(row?.attendee_name ?? "").split(" ")[0]);
+  return phonesMatchForOwnership(row?.attendee_phone, phone) && given !== "" && given === normalizeGivenName(customer.split(" ")[0]);
+}
 
 function toSameCallBooking(row: any): SameCallBooking {
   return {
     id: row.id,
     confirmationCode: typeof row.confirmation_code === "string" ? row.confirmation_code : null,
+    customer: sanitizeCustomerText(row.attendee_name, NAME_MAX),
+    serviceTypeId: typeof row.service_type_id === "string" ? row.service_type_id : null,
+    service: sanitizeCustomerText(row.service_types?.name, NAME_MAX),
+    notes: typeof row.notes === "string" && row.notes !== "" ? row.notes : null,
     practitioner: sanitizeCustomerText(row.practitioners?.name, NAME_MAX),
   };
 }
 
-/** This customer's live booking at `start` made on this call (matched by their number), or null; "error" on a fault. */
+/**
+ * The booking's "created" audit row on this call — written now when the first attempt
+ * never got to it (the recap email is built from these rows). A read fault is logged:
+ * whether the row is missing can't be told.
+ */
+async function ensureCreatedAudit(supabase: any, organizationId: string, appointmentId: string, callId: string): Promise<void> {
+  const { data, error } = await supabase
+    .from("appointment_events")
+    .select("id")
+    .eq("organization_id", organizationId)
+    .eq("appointment_id", appointmentId)
+    .eq("event_type", "created")
+    .eq("call_id", callId)
+    .limit(1);
+  if (error) {
+    console.error("[owner-assistant] repeated booking's audit read failed:", { organizationId, appointmentId, error });
+    return;
+  }
+  if (Array.isArray(data) && data.length > 0) return;
+  const audited = await recordAppointmentEvent(supabase, {
+    appointmentId,
+    organizationId,
+    eventType: "created",
+    actorType: "staff",
+    actorId: null,
+    channel: "voice",
+    callId,
+  });
+  if (!audited) pageUnaudited(organizationId, callId, appointmentId, "created");
+}
+
+/** This customer's live booking at `start` made on this call (by their number and given name), or null; "error" on a fault. */
 async function sameCallBooking(
   supabase: any,
   organizationId: string,
   callId: string,
   start: Date,
-  phone: string
+  phone: string,
+  customer: string
 ): Promise<SameCallBooking | null | "error"> {
   const { data, error } = await supabase
     .from("appointments")
@@ -1453,16 +1525,17 @@ async function sameCallBooking(
     console.error("[owner-assistant] same-call booking read failed:", { organizationId, callId, error });
     return "error";
   }
-  const row = ((data ?? []) as any[]).find((r) => phonesMatchForOwnership(r.attendee_phone, phone));
+  const row = ((data ?? []) as any[]).find((r) => sameCustomer(r, phone, customer));
   return row ? toSameCallBooking(row) : null;
 }
 
-/** The booking the diary handed back as this call's — when it's this customer's (by number); "error" on a fault. */
+/** The booking the diary handed back as this call's — when it's this customer's (by number and given name); "error" on a fault. */
 async function sameCallBookingById(
   supabase: any,
   organizationId: string,
   appointmentId: string,
-  phone: string
+  phone: string,
+  customer: string
 ): Promise<SameCallBooking | null | "error"> {
   const { data, error } = await supabase
     .from("appointments")
@@ -1474,15 +1547,15 @@ async function sameCallBookingById(
     console.error("[owner-assistant] same-call booking read failed:", { organizationId, appointmentId, error });
     return "error";
   }
-  return data && phonesMatchForOwnership(data.attendee_phone, phone) ? toSameCallBooking(data) : null;
+  return data && sameCustomer(data, phone, customer) ? toSameCallBooking(data) : null;
 }
 
 /**
- * What a repeated booking's customer was told. The text the owner chose went out (or
- * didn't) with the first attempt: that is reported, and never sent twice. Only when no
- * text was attempted for the booking at all — the first attempt stopped before it — is
- * the owner's choice carried out now. Null when the text log can't be read: nothing is
- * said about the customer rather than a guess.
+ * What a repeated booking's customer was told. A text that went out with the first
+ * attempt is reported, and never sent twice. When none did (none was tried — the first
+ * attempt stopped before it — or it was held back or failed), the owner's choice now is
+ * carried out, with every check the send path makes. Null when it can't be told — the
+ * log can't be read, or a send may still be under way — so nothing is said as fact.
  */
 async function repeatBookingContact(
   supabase: any,
@@ -1507,11 +1580,10 @@ async function repeatBookingContact(
     console.error("[owner-assistant] repeated booking's text log read failed:", { organizationId: req.organizationId, appointmentId: req.appointmentId, error });
     return null;
   }
-  if (data) {
-    return data.status === "sent" || data.status === "delivered"
-      ? { method: "text", status: "sent" }
-      : { method: "text", status: "not_sent", reason: String(data.status) };
-  }
+  if (data?.status === "sent" || data?.status === "delivered") return { method: "text", status: "sent" };
+  // Sent but not delivered: sending again would not reach them either.
+  if (data?.status === "undelivered") return { method: "text", status: "not_sent", reason: "undelivered" };
+  if (data?.status === "pending") return null;
   return contactCustomer({
     orgId: req.organizationId,
     method: req.method,

@@ -45,8 +45,9 @@ const OWNER_SHARED_TOOL_NAMES = Object.freeze(["get_current_datetime", "check_av
 const OWNER_ALLOWED_TOOL_NAMES = new Set([...OWNER_TOOL_NAMES, ...OWNER_SHARED_TOOL_NAMES]);
 /**
  * data.outcome values that mean a write actually happened. Everything else —
- * needs_confirmation, not_found, slot_taken, invalid_time, rate_limited,
- * external_calendar — is a business non-success.
+ * needs_confirmation, not_found, slot_taken, not_booked, invalid_time,
+ * invalid_details, not_available, rate_limited, external_calendar — is a business
+ * non-success.
  */
 const OWNER_SUCCESS_OUTCOMES = new Set(["rescheduled", "cancelled", "calling", "booked", "blocked", "callback_done"]);
 
@@ -224,7 +225,7 @@ const ownerToolDefinitions = [
     function: {
       name: "owner_mark_callback_done",
       description:
-        "Mark ONE waiting callback request as done, so it comes off the owner's callback list, in two calls. Use the callback_id from owner_list_messages. First call WITHOUT confirmed: nothing changes, and data.outcome is needs_confirmation with the read-back (data.caller_name, data.reason, data.received). Read it back and get a clear yes, THEN call again with confirmed=true and the same callback_id. The result's data.outcome is callback_done | needs_confirmation | not_found | rate_limited — only 'callback_done' means it happened.",
+        "Mark ONE waiting callback request as done, so it comes off the owner's callback list, in two calls. Use the callback_id from owner_list_messages. First call WITHOUT confirmed: nothing changes, and data.outcome is needs_confirmation with the read-back (data.caller_name, data.reason, data.received, and data.note when there is one). Read it back and get a clear yes, THEN call again with confirmed=true and the same callback_id and note. The result's data.outcome is callback_done | needs_confirmation | not_found | rate_limited — only 'callback_done' means it happened.",
       parameters: {
         type: "object",
         properties: {
