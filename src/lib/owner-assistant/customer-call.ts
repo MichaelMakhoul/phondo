@@ -80,8 +80,8 @@ const CALL_WHY = {
   wrong_state: "that booking has changed since",
   number_mismatch: "the number on the booking has changed",
   not_au: "I can only call Australian numbers for now",
-  outside_hours: "it's outside calling hours (8 am to 8 pm)",
-  no_caller_number: "there's no Phondo number to call from",
+  outside_hours: "it's outside calling hours (8 am to 8 pm), and I can't schedule calls for later yet — ask me again after 8 am",
+  no_caller_number: "you don't have a Phondo phone number to call from yet — set one up under Phone Numbers",
   org_cap: "you've reached today's limit of 20 calls",
   number_cap: "they've already had two calls from you today",
   already_called: "I've already called them about this",
@@ -117,9 +117,18 @@ const NOTED_CALL_REASONS: ReadonlySet<CallBlockReason> = new Set<CallBlockReason
   "not_callable_number",
 ]);
 
+/** Refusals that asking later won't change: said without "now" (clients lens S3). */
+const LASTING_CALL_REASONS: ReadonlySet<CallBlockReason> = new Set<CallBlockReason>([
+  "do_not_call",
+  "not_au",
+  "no_caller_number",
+  "not_callable_number",
+]);
+
 /** The read-back's note when a call isn't offered, or null when it isn't worth saying. */
 export function callNote(reason: CallBlockReason): string | null {
-  return NOTED_CALL_REASONS.has(reason) ? `I can't call them now: ${CALL_WHY[reason]}.` : null;
+  if (!NOTED_CALL_REASONS.has(reason)) return null;
+  return `I can't call them${LASTING_CALL_REASONS.has(reason) ? "" : " now"}: ${CALL_WHY[reason]}.`;
 }
 
 /** AU numbers the assistant may ring: geographic (02/03/07/08) and mobile (04) — the voice server's own rule. */

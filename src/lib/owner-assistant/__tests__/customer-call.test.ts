@@ -130,6 +130,10 @@ describe("the owner's words", () => {
   it("the read-back notes only what the owner can act on — never a fault, never a switched-off feature", () => {
     const noted = ALL.filter((r) => callNote(r) !== null).sort();
     expect(noted).toEqual(["already_called", "do_not_call", "no_caller_number", "not_au", "not_callable_number", "number_cap", "org_cap", "outside_hours"]);
-    expect(callNote("outside_hours")).toBe("I can't call them now: it's outside calling hours (8 am to 8 pm).");
+    expect(callNote("outside_hours")).toBe("I can't call them now: it's outside calling hours (8 am to 8 pm), and I can't schedule calls for later yet — ask me again after 8 am.");
+    // Clients lens S3: a refusal asking later won't change is never "now"; no number to call from says what to do.
+    for (const r of ["do_not_call", "not_au", "no_caller_number", "not_callable_number"] as const) expect(callNote(r), r).toMatch(/^I can't call them: /);
+    for (const r of ["outside_hours", "org_cap", "number_cap", "already_called"] as const) expect(callNote(r), r).toMatch(/^I can't call them now: /);
+    expect(callNote("no_caller_number")).toBe("I can't call them: you don't have a Phondo phone number to call from yet — set one up under Phone Numbers.");
   });
 });

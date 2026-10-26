@@ -159,7 +159,7 @@ describe("SCRUM-598: the customer call's Gemini setup, run for real", () => {
       purpose: "cancelled",
       when: WHEN,
       previousWhen: null,
-      ownerNote: null,
+      window: null,
       voicemailScript: notifyPrompt.buildVoicemailScript({ businessName: "Copperline Plumbing", firstName: "Jane", purpose: "cancelled", when: WHEN }),
       canTransfer: false,
     });
@@ -167,11 +167,68 @@ describe("SCRUM-598: the customer call's Gemini setup, run for real", () => {
     assert.ok(r.geminiSystemPrompt.indexOf("LANGUAGE LOCK") < r.geminiSystemPrompt.indexOf("OUTBOUND CALL"));
   });
 
-  it("a move says where it moved from; finding a new time carries the owner's note", () => {
+  it("a move says where it moved from; finding a new time carries the owner's window", () => {
     const moved = assemble(makeSession({ notify: { ...NOTIFY, purpose: "moved" }, briefing: { ...BRIEFING, previousStartTime: "2026-10-26T22:00:00Z" } }));
     assert.match(moved.geminiSystemPrompt, /has moved Jane's booking from Tuesday 27 October at 9:00 am to Wednesday 28 October at 2:30 pm/);
     const find = assemble(makeSession({ notify: { ...NOTIFY, purpose: "find_new_time" }, briefing: { ...BRIEFING, window: { earliest: "2026-11-02", latest: "2026-11-06", timeOfDay: "morning" } } }));
-    assert.match(find.geminiSystemPrompt, /would like the new time between Monday 2 November and Friday 6 November, in the morning/);
+    assert.match(find.geminiSystemPrompt, /can only do the new time between Monday 2 November and Friday 6 November, in the morning: offer and book only times that fit it\./);
+  });
+
+  it("the business's line is said out loud in the voicemail and the relayed message (clients lens M6)", () => {
+    const s = makeSession();
+    s.orgPhoneNumber = "+61257015064";
+    const r = assemble(s);
+    assert.match(r.geminiSystemPrompt, /please call us back on 02 5701 5064\. Thanks, bye\./);
+    assert.match(r.geminiSystemPrompt, /to call back on 02 5701 5064, thank them/);
+    const vm = makeSession({ notify: { ...NOTIFY, mode: "voicemail", answeredBy: "machine_end_beep" } });
+    vm.orgPhoneNumber = "+61257015064";
+    assemble(vm);
+    assert.match(vm.notifyVoicemailText, /please call us back on 02 5701 5064\./);
+  });
+
+  it("a title on the booking: 'calling for Mrs Johnson', never 'Mrs' (clients lens M3)", () => {
+    const r = assemble(makeSession({ briefing: { ...BRIEFING, customerName: "Mrs Johnson" } }));
+    assert.ok(r.geminiSystemPrompt.includes('"Hi, this is the AI assistant at Copperline Plumbing, calling for Mrs Johnson. Please note, this call may be recorded. Is that you?"'));
+  });
+
+  it("an org with transfer rules: a customer call drops them, so its prompt says to take a message (code lens G2, clients lens M5)", () => {
+    const rule = { id: "r1", destination: "+61400000000" };
+    const run = (session) =>
+      runSlice({
+        from: "session.transferRules = context.transferRules || [];",
+        to: "// Start call recording if consent mode allows.",
+        scope: {
+          session,
+          context: { ...makeContext(), transferRules: [rule], assistant: { ...makeContext().assistant, settings: { transferToForwardedNumber: true } } },
+          getDeepgramVoice: () => "aura",
+          getHoldPreset: () => null,
+          calledNumber: "+61257015064",
+        },
+        wrap: (code) => code,
+      });
+    const s = makeSession();
+    run(s);
+    assert.deepEqual(s.transferRules, []);
+    assert.equal(s.transferToForwardedNumber, false);
+    const r = assemble(s);
+    assert.match(r.geminiSystemPrompt, /this business has not configured a transfer destination, so you MUST IMMEDIATELY acknowledge the request and call schedule_callback/);
+    assert.doesNotMatch(r.geminiSystemPrompt, /call the transfer_call tool/);
+    const plain = makeSession({ notify: null });
+    run(plain);
+    assert.deepEqual(plain.transferRules, [rule], "any other call keeps the org's rules");
+    assert.equal(plain.transferToForwardedNumber, true);
+  });
+
+  it("never the after-hours script on a call we placed (clients lens M4)", () => {
+    const run = (session) =>
+      runSlice({
+        from: "// After-hours detection",
+        to: "const effectiveCalendarEnabled = afterHoursState.effectiveCalendarEnabled;",
+        scope: { session, context: {}, resolveAfterHoursState: () => ({ isAfterHours: true, afterHoursConfig: { message: "closed" }, effectiveCalendarEnabled: true }) },
+        wrap: (code) => `${code}\nreturn { isAfterHours, afterHoursConfig };`,
+      });
+    assert.deepEqual(run(makeSession()), { isAfterHours: false, afterHoursConfig: null });
+    assert.deepEqual(run(makeSession({ notify: null })), { isAfterHours: true, afterHoursConfig: { message: "closed" } });
   });
 
   it("a non-English assistant may say the opener in its language, names kept", () => {
@@ -226,7 +283,7 @@ function makeCallbacks(session, o = {}) {
     logTranscript: () => {},
     pendingUserTranscript: "",
     pendingAiTranscript: "",
-    detectPhantomAction: () => null,
+    detectPhantomAction: o.detectPhantomAction || (() => null),
     validateToolResponse: async () => ({ accurate: true }),
     DEBUG_TRANSCRIPTS: false,
     noteAssistantSpeech,
@@ -280,6 +337,49 @@ describe("SCRUM-598: the customer call's callbacks, run for real", () => {
     assert.deepEqual(await cbs.onToolCall({ id: "t1", name: "record_call_outcome", args: { outcome: "do_not_call" } }), { message: "Unknown function: record_call_outcome" });
     assert.equal(s.notifyOutcome, null);
     assert.equal(calls.filter((c) => c[0] === "executeToolCall").length, 0);
+  });
+
+  it("transfer_call is refused on a customer call, whatever the model emits (code lens G2)", async () => {
+    const s = makeSession();
+    const { cbs, calls } = makeCallbacks(s);
+    const ret = await cbs.onToolCall({ id: "t1", name: "transfer_call", args: { reason: "caller asked" } });
+    assert.deepEqual(ret, { message: "Transfers aren't available on this call. Offer to take a message with schedule_callback instead." });
+    assert.equal(calls.filter((c) => c[0] === "executeToolCall").length, 0);
+    assert.deepEqual(s.toolCallAudit.map((a) => [a.name, a.successful]), [["transfer_call_refused", false]]);
+  });
+
+  it("end_call after a look at the diary isn't blocked as 'NO appointment' on a customer call (code lens N3); it still is on any other", async () => {
+    const funnel = { name: "check_availability", successful: true, at: 1 };
+    const s = makeSession();
+    s.toolCallAudit.push(funnel);
+    const a = makeCallbacks(s);
+    await a.cbs.onToolCall({ id: "t1", name: "end_call", args: { reason: "customer will call back" } });
+    assert.equal(a.calls.filter((c) => c[0] === "executeToolCall").length, 1);
+    assert.equal(s.toolCallAudit.some((t) => t.name === "end_call_blocked"), false);
+    const plain = makeSession({ notify: null });
+    plain.toolCallAudit.push(funnel);
+    const b = makeCallbacks(plain);
+    const ret = await b.cbs.onToolCall({ id: "t1", name: "end_call", args: { reason: "booking_complete" } });
+    assert.match(ret.message, /^CANNOT END CALL YET/);
+    assert.equal(b.calls.filter((c) => c[0] === "executeToolCall").length, 0);
+  });
+
+  it("the made-up-action check never runs on a customer call — its news is the owner's change (code lens G1)", () => {
+    const run = (session) => {
+      const checked = [];
+      const { cbs } = makeCallbacks(session, {
+        detectPhantomAction: (text) => { checked.push(text); return { action: "cancellation", primaryTool: "cancel_appointment", negated: false }; },
+      });
+      cbs.onTranscriptOut("Your appointment on Wednesday has been cancelled, and you're all set.");
+      cbs.onTurnComplete({});
+      return checked;
+    };
+    const s = makeSession();
+    assert.deepEqual(run(s), []);
+    assert.equal(s._phantomActionCount, undefined, "no correction is ever sent");
+    const plain = makeSession({ notify: null });
+    assert.deepEqual(run(plain), ["Your appointment on Wednesday has been cancelled, and you're all set."], "any other call is still checked");
+    assert.equal(plain._phantomActionCount, 1);
   });
 
   it("the receptionist's own tools still go through the customer path", async () => {
@@ -461,7 +561,7 @@ describe("SCRUM-598: post-call for a customer call, run for real", () => {
     const { cleanupSession, calls, live } = makeCleanup(s);
     await cleanupSession();
     assert.ok(calls.some((c) => c[0] === "analyzeCallTranscript"), "the owner's email gets the summary");
-    assert.ok(calls.some((c) => c[0] === "detectPostCallPhantoms"));
+    assert.ok(!calls.some((c) => c[0] === "detectPostCallPhantoms"), "code lens G1: no claim scan — the call's news is the owner's change");
     const [, id, fields] = calls.find((c) => c[0] === "completeCallRecord");
     assert.equal(id, NOTIFY.callId);
     assert.equal(fields.callType, "customer_notify");
@@ -796,7 +896,43 @@ describe("SCRUM-598: the voicemail's hang-up triggers, run for real", () => {
     const b = run(spoken);
     b.timers[0].fn();
     assert.equal(b.hung.length, 0);
-    assert.equal(run({ notify: { mode: "conversation" } }).timers.length, 0, "a conversation has Twilio's 5-minute limit instead");
+    assert.equal(run({ notify: { mode: "conversation" } }).timers.length, 0, "a conversation gets the wrap-up notice instead (below)");
+    assert.equal(run({ notify: null }).timers.length, 0);
+  });
+
+  it("a conversation is told to wrap up a minute before Twilio's 5-minute limit (clients lens S1)", () => {
+    const run = (session, open = true) => {
+      const timers = [];
+      const lines = [];
+      runSlice({
+        from: "// SCRUM-598 (clients lens S1): Twilio cuts a customer call at 5 minutes",
+        to: "// SCRUM-598: a voicemail that is never spoken (Gemini silent) still ends.",
+        scope: {
+          session, twilioWs: { readyState: open ? 1 : 3 }, WebSocket: { OPEN: 1 },
+          setTimeout: (fn, ms) => { timers.push({ fn, ms }); return { unref: () => {} }; },
+          NOTIFY_WRAP_UP_AT_MS: 240_000,
+          NOTIFY_WRAP_UP_NOTICE: "WRAP UP",
+          console: recordingConsole(lines),
+        },
+        wrap: (code) => code,
+      });
+      return { timers, lines };
+    };
+    const sent = [];
+    const s = { notify: { mode: "conversation" }, geminiSession: { sendText: (t) => sent.push(t) } };
+    const a = run(s);
+    assert.equal(a.timers.length, 1);
+    assert.equal(a.timers[0].ms, 240_000);
+    a.timers[0].fn();
+    assert.deepEqual(sent, ["WRAP UP"]);
+    const closed = { notify: { mode: "conversation" }, geminiSession: { sendText: (t) => sent.push(t) } };
+    run(closed, false).timers[0].fn();
+    assert.equal(sent.length, 1, "nothing once the call has ended");
+    const broken = { notify: { mode: "conversation" }, geminiSession: { sendText: () => { throw new Error("socket gone"); } } };
+    const b = run(broken);
+    assert.doesNotThrow(() => b.timers[0].fn());
+    assert.ok(b.lines.some((l) => l.startsWith("warn|") && l.includes("wrap-up notice failed")));
+    assert.equal(run({ notify: { mode: "voicemail" } }).timers.length, 0);
     assert.equal(run({ notify: null }).timers.length, 0);
   });
 });

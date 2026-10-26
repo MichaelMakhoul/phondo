@@ -389,7 +389,10 @@ async function checkCustomerCall(req, phase, deps) {
     if (apptErr) return readFailed("booking", apptErr);
     if (!appt) return blocked("not_found");
     const startMs = Date.parse(appt.start_time);
-    if (!stateFits(req.purpose, phase, appt.status) || !Number.isFinite(startMs) || startMs <= nowMs) {
+    // A move's read-back is about the booking BEFORE the move — it may be this
+    // morning's no-show; the new leg checked at placement is what must be ahead (code lens N6).
+    const mustBeAhead = !(req.purpose === "moved" && phase === "check");
+    if (!stateFits(req.purpose, phase, appt.status) || !Number.isFinite(startMs) || (mustBeAhead && startMs <= nowMs)) {
       return blocked("wrong_state");
     }
     if (!matchesBookingPhone(req.phone, appt.attendee_phone)) return blocked("number_mismatch");

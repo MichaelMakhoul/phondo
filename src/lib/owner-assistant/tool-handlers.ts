@@ -460,14 +460,20 @@ function contactWays(contact: ContactOptions): string {
  * is nothing to choose: the model says so and offers the number, and a bare yes
  * confirms (notify_customer "none" is assumed — see the handlers).
  */
-function readBackMessage(change: string, customer: string, contact: ContactOptions, tool: string): string {
+function readBackMessage(change: string, customer: string, contact: ContactOptions, tool: string, kind: "cancelled" | "moved"): string {
   const ways = contactWays(contact);
+  // Clients lens M8: a call does more than tell them — the owner hears that before choosing.
+  const callDoes = !contact.options.includes("call")
+    ? ""
+    : kind === "cancelled"
+      ? " (a call also offers them another time)"
+      : " (a call also checks the new time suits them)";
   if (!ways) {
     const why = contact.note ? ` (${contact.note.replace(/[.!?]+$/, "")})` : "";
     return `Read this back and get a clear yes before changing anything: ${change}. Telling ${customer} isn't possible from here${why}: say so in a few words (for example "I can't text them") and offer to read out their number after the change. If the owner confirms, call ${tool} again with confirmed=true and notify_customer "none".`;
   }
   const note = contact.note ? ` ${contact.note}` : "";
-  return `Read this back and get a clear yes before changing anything: ${change}. In the same question, ask whether to let ${customer} know: by ${ways}, or not tell them.${note} If the owner confirms, call ${tool} again with confirmed=true and notify_customer set to their answer: ${contact.options.map((m) => `"${m}"`).join(", ")}.`;
+  return `Read this back and get a clear yes before changing anything: ${change}. In the same question, ask whether to let ${customer} know: by ${ways}${callDoes}, or not tell them.${note} If the owner confirms, call ${tool} again with confirmed=true and notify_customer set to their answer: ${contact.options.map((m) => `"${m}"`).join(", ")}.`;
 }
 
 /**
@@ -634,7 +640,7 @@ export async function handleOwnerRescheduleAppointment(
         message:
           args.confirmed === true
             ? askContactMessage(customer, contact, "owner_reschedule_appointment")
-            : readBackMessage(change, customer, contact, "owner_reschedule_appointment"),
+            : readBackMessage(change, customer, contact, "owner_reschedule_appointment", "moved"),
         data: rescheduleData({
           outcome: "needs_confirmation",
           appointment_id: before.id,
@@ -768,7 +774,7 @@ export async function handleOwnerRescheduleAppointment(
   });
   return {
     success: true,
-    message: `Moved ${customer} from ${from} to ${to}.${contactOutcomeSentence(contact, customer)}`,
+    message: `Moved ${customer} from ${from} to ${to}.${contactOutcomeSentence(contact, customer, "moved")}`,
     data: rescheduleData({
       outcome: "rescheduled",
       appointment_id: before.id,
@@ -831,7 +837,7 @@ export async function handleOwnerCancelAppointment(
         message:
           args.confirmed === true
             ? askContactMessage(customer, contact, "owner_cancel_appointment")
-            : readBackMessage(change, customer, contact, "owner_cancel_appointment"),
+            : readBackMessage(change, customer, contact, "owner_cancel_appointment", "cancelled"),
         data: cancelData({
           outcome: "needs_confirmation",
           appointment_id: appt.id,
@@ -901,7 +907,7 @@ export async function handleOwnerCancelAppointment(
   });
   return {
     success: true,
-    message: `Cancelled ${customer}'s job on ${when}.${contactOutcomeSentence(contact, customer)}`,
+    message: `Cancelled ${customer}'s job on ${when}.${contactOutcomeSentence(contact, customer, "cancelled")}`,
     data: cancelData({
       outcome: "cancelled",
       appointment_id: appt.id,
@@ -973,11 +979,15 @@ function windowPhrase(window: TimeWindow | null): string {
   return words ? ` — ${words}` : "";
 }
 
-/** The owner's line when a call isn't placed (the customer's number is offered instead). */
-function callNotPlacedMessage(customer: string, reason: CallBlockReason): string {
+/**
+ * The owner's line when a call isn't placed (the customer's number is offered
+ * instead): "can't" at the read-back, before anything was tried; "couldn't" once
+ * the placement was refused (clients lens S2).
+ */
+function callNotPlacedMessage(customer: string, reason: CallBlockReason, tried: boolean): string {
   if (reason === "calls_disabled") return "I can't call customers yet. I can read you their number if you want to ring them yourself.";
   if (reason === "place_unconfirmed") return `I'm not sure the call to ${customer} went out — check Calls in the dashboard before you ring them yourself.`;
-  return `I couldn't call ${customer}: ${callWhy(reason)}. I can read you their number if you want to ring them yourself.`;
+  return `I ${tried ? "couldn't" : "can't"} call ${customer}: ${callWhy(reason)}. I can read you their number if you want to ring them yourself.`;
 }
 
 /**
@@ -1035,7 +1045,7 @@ export async function handleOwnerCallCustomer(
   }
   const window = parsedWindow.window;
   const base = { appointment_id: appt.id, customer_name: customer, when, purpose, ...(window ? { window } : {}) };
-  const notAvailable = (reason: CallBlockReason, message = callNotPlacedMessage(customer, reason)): ToolResult => ({
+  const notAvailable = (reason: CallBlockReason, message: string): ToolResult => ({
     success: false,
     message,
     data: callData({ outcome: "not_available", ...base, reason }),
@@ -1055,7 +1065,7 @@ export async function handleOwnerCallCustomer(
 
   if (args.confirmed !== true) {
     const check = await checkCustomerCall(request);
-    if (!check.canCall) return notAvailable(check.reason);
+    if (!check.canCall) return notAvailable(check.reason, callNotPlacedMessage(customer, check.reason, false));
     return {
       success: false,
       message: `Read this back and get a clear yes before calling: call ${customer} now to ${CALL_PURPOSE_WORDS[purpose]} their booking on ${when}${windowPhrase(window)}. If the owner confirms, call owner_call_customer again with confirmed=true${window ? ", the same purpose, earliest_date, latest_date and time_of_day" : " and the same purpose"}.`,
@@ -1067,7 +1077,7 @@ export async function handleOwnerCallCustomer(
     return { success: false, message: RATE_LIMITED_MSG, data: callData({ outcome: "rate_limited", ...base }) };
   }
   const placed = await placeCustomerCall(request);
-  if (!placed.placed) return notAvailable(placed.reason);
+  if (!placed.placed) return notAvailable(placed.reason, callNotPlacedMessage(customer, placed.reason, true));
   return {
     success: true,
     message: `Calling ${customer} now to ${CALL_PURPOSE_WORDS[purpose]} their booking on ${when}${windowPhrase(window)}. You'll get an email when the call's done.`,

@@ -60,11 +60,13 @@ describe("website ↔ voice server: the customer-contact contract", () => {
     const change = "Cancelled Dr. J. Smith's job on Friday, October 16 at 3:00 PM.";
     const results = Object.values(SAMPLES).flat() as Array<[CustomerContactResult, string]>;
     for (const [result, tail] of results) {
-      const message = change + contactOutcomeSentence(result, "Dr. J. Smith");
-      const data = { outcome: "cancelled", customer_contact: result };
-      expect(runner.describeOwnerToolCall("owner_cancel_appointment", {}, message, true, data), JSON.stringify(result)).toBe(
-        change.replace(/\.$/, "") + tail
-      );
+      for (const kind of ["cancelled", "moved"] as const) {
+        const message = change + contactOutcomeSentence(result, "Dr. J. Smith", kind);
+        const data = { outcome: "cancelled", customer_contact: result };
+        expect(runner.describeOwnerToolCall("owner_cancel_appointment", {}, message, true, data), `${kind} ${JSON.stringify(result)}`).toBe(
+          change.replace(/\.$/, "") + tail
+        );
+      }
     }
   });
 

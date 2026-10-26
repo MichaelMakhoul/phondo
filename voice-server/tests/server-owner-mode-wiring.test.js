@@ -61,7 +61,7 @@ describe("SCRUM-587: owner session wiring", () => {
     assert.ok(toolCallIdx > 0 && runnerIdx > toolCallIdx && runnerIdx < funnelIdx, `order: log=${toolCallIdx} runner=${runnerIdx} funnel=${funnelIdx}`);
   });
   it("Gemini turn-complete: phantom detector and Tier-2 validator are off for owner calls", () => {
-    assert.match(src, /const phantom = session\.ownerMode \? null : detectPhantomAction\(aiTurnText, session\.toolCallAudit\);/);
+    assert.match(src, /const phantom = session\.ownerMode \|\| session\.notify \? null : detectPhantomAction\(aiTurnText, session\.toolCallAudit\);/);
     assert.match(src, /if \(!session\.ownerMode && session\._lastToolResult && !session\._phantomActionCount\) \{/);
   });
   it("classic: owner tools, owner greeting, no disclosure, runner before the cancel gate", () => {
@@ -74,7 +74,7 @@ describe("SCRUM-587: owner session wiring", () => {
     assert.ok((src.match(/buildOwnerGreeting\(session\.ownerFirstName\)/g) || []).length >= 2, "both pipelines use the owner greeting");
   });
   it("post-call: no phantom scan, no OpenAI analysis, deterministic summary, owner stamps — and the DB write precedes the webhook", () => {
-    assert.match(cleanup, /const phantomActions = s\.ownerMode \|\| s\.notify\?\.mode === "voicemail" \? \[\] : detectPostCallPhantoms\(s\.fullTranscriptMessages, s\.toolCallAudit\);/);
+    assert.match(cleanup, /const phantomActions = s\.ownerMode \|\| s\.notify \? \[\] : detectPostCallPhantoms\(s\.fullTranscriptMessages, s\.toolCallAudit\);/);
     assert.match(cleanup, /if \(!s\.ownerMode && s\.notify\?\.mode !== "voicemail" && transcript && durationSeconds > 5\) \{/);
     assert.match(cleanup, /let ownerSummary = s\.ownerMode \? buildOwnerCallSummary\(s\.toolCallAudit \|\| \[\]\) : null;/);
     assert.match(cleanup, /summary: s\.ownerMode \? ownerSummary : \(analysis\?\.summary \|\| null\),/);

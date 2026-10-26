@@ -99,6 +99,7 @@ describe("buildCallOutcome", () => {
       customer: "Jane Smith",
       phone: "+61412345678",
       bookingWhen: "Wednesday, October 28 at 2:30 PM",
+      previousWhen: null,
       result: { kind: "answered", seconds: 130, endedOnAFault: false, sureItWasAPerson: true },
       diary: [{ kind: "moved", from: "Wednesday, October 28 at 2:30 PM", when: "Thursday, October 29 at 3:00 PM" }],
       assistantOutcome: "rebooked",
@@ -126,7 +127,48 @@ describe("buildCallOutcome", () => {
     expect((await buildCallOutcome(fake(), { organizationId: ORG, callId: CALL, timezone: TZ }))?.diary).toEqual([{ kind: "cancelled", when: "Wednesday, October 28 at 2:30 PM" }]);
     queues.calls = [callRow()];
     queues.appointments = [booking({ status: "cancelled", updated_at: "2026-10-26T01:00:00Z" }), { data: [], error: null }];
-    expect((await buildCallOutcome(fake(), { organizationId: ORG, callId: CALL, timezone: TZ }))?.diary).toEqual([{ kind: "unchanged", when: "Wednesday, October 28 at 2:30 PM", stillBooked: false }]);
+    expect((await buildCallOutcome(fake(), { organizationId: ORG, callId: CALL, timezone: TZ }))?.diary).toEqual([{ kind: "unchanged", when: "Wednesday, October 28 at 2:30 PM", state: "cancelled" }]);
+    queues.calls = [callRow()];
+    queues.appointments = [booking({ status: "completed" }), { data: [], error: null }];
+    expect((await buildCallOutcome(fake(), { organizationId: ORG, callId: CALL, timezone: TZ }))?.diary).toEqual([{ kind: "unchanged", when: "Wednesday, October 28 at 2:30 PM", state: "inactive" }]);
+  });
+
+  it("a booking made on the call and cancelled on it too never reads as booked (code lens G4)", async () => {
+    queues.calls = [callRow({}, { purpose: "find_new_time" })];
+    queues.appointments = [
+      booking(),
+      {
+        data: [
+          { id: NEW_LEG, start_time: "2026-11-03T03:00:00Z", status: "cancelled", rescheduled_from_id: null },
+          { id: "aaaaaaaa-0000-4000-8000-000000000003", start_time: "2026-11-03T04:00:00Z", status: "confirmed", rescheduled_from_id: null },
+        ],
+        error: null,
+      },
+    ];
+    expect((await buildCallOutcome(fake(), { organizationId: ORG, callId: CALL, timezone: TZ }))?.diary).toEqual([
+      { kind: "booked", when: "Tuesday, November 3 at 2:00 PM" },
+      { kind: "cancelled", when: "Tuesday, November 3 at 2:00 PM" },
+      { kind: "booked", when: "Tuesday, November 3 at 3:00 PM" },
+    ]);
+  });
+
+  it("a move's call knows where the booking moved from (clients lens M1)", async () => {
+    queues.calls = [callRow({}, { purpose: "moved", appointment_id: NEW_LEG })];
+    queues.appointments = [
+      booking({ id: NEW_LEG, start_time: "2026-10-29T04:00:00Z", rescheduled_from_id: BOOKING }),
+      { data: [], error: null },
+      { data: [{ id: BOOKING, start_time: "2026-10-28T03:30:00Z" }], error: null },
+    ];
+    const r = await buildCallOutcome(fake(), { organizationId: ORG, callId: CALL, timezone: TZ });
+    expect(r?.bookingWhen).toBe("Thursday, October 29 at 3:00 PM");
+    expect(r?.previousWhen).toBe("Wednesday, October 28 at 2:30 PM");
+    expect(r?.diary).toEqual([{ kind: "unchanged", when: "Thursday, October 29 at 3:00 PM", state: "booked" }]);
+    // Only a move's call looks up where it came from.
+    ops = [];
+    queues.calls = [callRow({}, { purpose: "confirm" })];
+    queues.appointments = [booking({ rescheduled_from_id: "aaaaaaaa-0000-4000-8000-000000000009" }), { data: [], error: null }];
+    expect((await buildCallOutcome(fake(), { organizationId: ORG, callId: CALL, timezone: TZ }))?.previousWhen).toBeNull();
+    expect(ops.filter((o) => o.table === "appointments").length, "no earlier-leg read").toBe(2);
   });
 
   it("nothing done on the call: 'unchanged', still booked or not", async () => {
@@ -134,7 +176,7 @@ describe("buildCallOutcome", () => {
     queues.appointments = [booking(), { data: [], error: null }];
     const r = await buildCallOutcome(fake(), { organizationId: ORG, callId: CALL, timezone: TZ });
     expect(r?.result).toEqual({ kind: "no_answer" });
-    expect(r?.diary).toEqual([{ kind: "unchanged", when: "Wednesday, October 28 at 2:30 PM", stillBooked: true }]);
+    expect(r?.diary).toEqual([{ kind: "unchanged", when: "Wednesday, October 28 at 2:30 PM", state: "booked" }]);
     expect(r?.assistantOutcome).toBeNull();
     expect(r?.assistantNote).toBeNull();
     expect(r?.summary).toBeNull();
@@ -144,7 +186,7 @@ describe("buildCallOutcome", () => {
     queues.calls = [callRow({ outcome: "voicemail" }, { purpose: "cancelled", mode: "voicemail", voicemail_played: true, voicemail_text: "Hi Jane, your booking has been cancelled." })];
     queues.appointments = [booking({ status: "cancelled", updated_at: "2026-10-27T03:00:30Z" }), { data: [], error: null }];
     const r = await buildCallOutcome(fake(), { organizationId: ORG, callId: CALL, timezone: TZ });
-    expect(r?.diary).toEqual([{ kind: "unchanged", when: "Wednesday, October 28 at 2:30 PM", stillBooked: false }]);
+    expect(r?.diary).toEqual([{ kind: "unchanged", when: "Wednesday, October 28 at 2:30 PM", state: "cancelled" }]);
     expect(r?.result).toEqual({ kind: "voicemail", playedToEnd: true });
     expect(r?.voicemailText).toBe("Hi Jane, your booking has been cancelled.");
   });

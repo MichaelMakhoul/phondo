@@ -234,7 +234,11 @@ describe("buildOwnerPrompt — the rest of the rules the model is held to", () =
   it("declines what phase 1 cannot do, briefly", () => {
     assert.ok(p.includes("NOT IN THIS VERSION: booking new jobs by phone"));
     assert.ok(p.includes('bulk changes such as "push today to tomorrow" (one job at a time)'));
-    assert.ok(p.includes("transfers, and calling or texting anyone except a customer about their own booking (notify_customer on a change, or owner_call_customer). Decline briefly and move on."));
+    assert.ok(p.includes('transfers, scheduling a call or text for later (outside calling hours, say to ask again after 8 a.m. — never promise to call "in the morning"), and calling or texting anyone except a customer about their own booking (notify_customer on a change, or owner_call_customer). Decline briefly and move on.'));
+  });
+  it("never teaches a guess at the customer's gender from the name (clients lens S6)", () => {
+    assert.ok(p.includes(`("Call Jane Smith now to check they're still OK for Wednesday the 28th at 2:30?")`));
+    assert.doesNotMatch(p, /check she's still OK/);
   });
   it("sets the voice style and never acts on a guess", () => {
     assert.ok(p.includes("STYLE: brief and plain, like a good office manager."));

@@ -373,6 +373,14 @@ describe("checkCustomerCall", () => {
       return (await cc.checkCustomerCall(req({ purpose }), phase, checkDeps(sb))).ok;
     };
     // A cancel's read-back comes before the cancel; its call after it.
+    const past = async (purpose, phase) => {
+      const sb = fakeSupabase(responder(world({ appt: { ...world().appt, start_time: "2026-10-27T02:00:00Z" } })));
+      return (await cc.checkCustomerCall(req({ purpose }), phase, checkDeps(sb))).ok;
+    };
+    // Code lens N6: moving this morning's no-show still offers the call; the new leg must be ahead.
+    assert.equal(await past("moved", "check"), true);
+    assert.equal(await past("moved", "place"), false);
+    for (const purpose of ["cancelled", "confirm", "find_new_time"]) assert.equal(await past(purpose, "check"), false, purpose);
     assert.equal(await run("cancelled", "check", "confirmed"), true);
     assert.equal(await run("cancelled", "check", "cancelled"), false);
     assert.equal(await run("cancelled", "place", "cancelled"), true);

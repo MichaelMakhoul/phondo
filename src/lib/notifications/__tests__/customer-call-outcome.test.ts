@@ -51,6 +51,7 @@ const REPORT: CallOutcomeReport = {
   customer: "Jane Smith",
   phone: "+61412345678",
   bookingWhen: "Wednesday, October 28 at 2:30 PM",
+  previousWhen: null,
   result: { kind: "answered", seconds: 130, endedOnAFault: false, sureItWasAPerson: true },
   diary: [{ kind: "moved", from: "Wednesday, October 28 at 2:30 PM", when: "Thursday, October 29 at 3:00 PM" }],
   assistantOutcome: "rebooked",
@@ -78,7 +79,8 @@ describe("sendCustomerCallOutcomeNotification", () => {
     const [mail] = sent();
     expect(mail.to).toBe("owner@example.com");
     expect(mail.subject).toBe("Your assistant called Jane Smith — they answered");
-    expect(mail.html).toContain("You asked it to call Jane Smith (+61412345678) to find a new time for their booking on Wednesday, October 28 at 2:30 PM.");
+    expect(mail.html).toContain('You asked it to call Jane Smith (<a href="tel:+61412345678">0412 345 678</a>) to find a new time for their booking on Wednesday, October 28 at 2:30 PM.');
+    expect(mail.html, "a new time was agreed: nothing left to do").not.toContain("Next step");
     expect(mail.html).toContain("They answered — the call lasted 2 min 10 s.");
     expect(mail.html).toContain("Moved from Wednesday, October 28 at 2:30 PM to <strong>Thursday, October 29 at 3:00 PM</strong>");
     expect(mail.html).toContain("(AI-written)</span></td><td style=\"padding: 8px; border-bottom: 1px solid #ddd;\">booked or moved a time for them — &ldquo;Moved to Thursday&rdquo;");
@@ -121,25 +123,99 @@ describe("sendCustomerCallOutcomeNotification", () => {
     vi.mocked(createAdminClient).mockReturnValue(fakeAdmin(OWNER_FOUND) as any);
     await sendCustomerCallOutcomeNotification({
       organizationId: ORG,
-      report: { ...REPORT, purpose: "cancelled", result: { kind: "voicemail", playedToEnd: true }, diary: [{ kind: "unchanged", when: "Wednesday, October 28 at 2:30 PM", stillBooked: false }], assistantOutcome: null, assistantNote: null, summary: null, voicemailText: "Hi Jane, your booking has been cancelled." },
+      report: { ...REPORT, purpose: "cancelled", result: { kind: "voicemail", playedToEnd: true }, diary: [{ kind: "unchanged", when: "Wednesday, October 28 at 2:30 PM", state: "cancelled" }], assistantOutcome: null, assistantNote: null, summary: null, voicemailText: "Hi Jane, your booking has been cancelled." },
     });
     let html = sent()[0].html;
     expect(html).toContain("to tell them their booking on Wednesday, October 28 at 2:30 PM was cancelled");
-    expect(html).toContain("No change to the booking on Wednesday, October 28 at 2:30 PM (it isn't active)");
+    expect(html).toContain("Nothing changed on the call — the booking on Wednesday, October 28 at 2:30 PM is still cancelled");
     expect(html).toContain("&ldquo;Hi Jane, your booking has been cancelled.&rdquo;");
     expect(html).not.toContain("The assistant noted");
     expect(html).not.toContain("Summary <span");
     resendSend.mockClear();
     await sendCustomerCallOutcomeNotification({
       organizationId: ORG,
-      report: { ...REPORT, purpose: "confirm", diary: [{ kind: "unchanged", when: "Wednesday, October 28 at 2:30 PM", stillBooked: true }, { kind: "booked", when: "Friday" }, { kind: "cancelled", when: "Saturday" }], assistantOutcome: "do_not_call", assistantNote: null },
+      report: { ...REPORT, purpose: "confirm", diary: [{ kind: "unchanged", when: "Wednesday, October 28 at 2:30 PM", state: "booked" }, { kind: "booked", when: "Friday" }, { kind: "cancelled", when: "Saturday" }, { kind: "unchanged", when: "Sunday", state: "inactive" }], assistantOutcome: "do_not_call", assistantNote: null },
     });
     html = sent()[0].html;
     expect(html).toContain("to check they're still OK for Wednesday, October 28 at 2:30 PM");
-    expect(html).toContain("No change — still booked for <strong>Wednesday, October 28 at 2:30 PM</strong>");
+    expect(html).toContain("Nothing changed on the call — still booked for <strong>Wednesday, October 28 at 2:30 PM</strong>");
+    expect(html).toContain("Nothing changed on the call — the booking on Sunday is no longer active");
     expect(html).toContain("Booked a new time: <strong>Friday</strong>");
     expect(html).toContain("Cancelled the booking on <strong>Saturday</strong>");
     expect(html).toContain("they asked not to be called again — your assistant won&#39;t call them again");
+  });
+
+  it("a move's call says the NEW time, and where it moved from (clients lens M1)", async () => {
+    vi.mocked(createAdminClient).mockReturnValue(fakeAdmin(OWNER_FOUND) as any);
+    const moved = { ...REPORT, purpose: "moved" as const, bookingWhen: "Thursday, October 29 at 3:00 PM", previousWhen: "Wednesday, October 28 at 2:30 PM", diary: [{ kind: "unchanged" as const, when: "Thursday, October 29 at 3:00 PM", state: "booked" as const }], assistantOutcome: "confirmed" as const };
+    await sendCustomerCallOutcomeNotification({ organizationId: ORG, report: moved });
+    let html = sent()[0].html;
+    expect(html).toContain("to tell them their booking was moved to Thursday, October 29 at 3:00 PM (from Wednesday, October 28 at 2:30 PM). Here's how it went.");
+    expect(html).not.toContain("it was on");
+    expect(html).toContain("Nothing changed on the call — still booked for <strong>Thursday, October 29 at 3:00 PM</strong>");
+    resendSend.mockClear();
+    await sendCustomerCallOutcomeNotification({ organizationId: ORG, report: { ...moved, bookingWhen: null, previousWhen: null, diary: [] } });
+    html = sent()[0].html;
+    expect(html).toContain("to tell them their booking was moved. Here's how it went.");
+    expect(html).toContain("Nothing changed on the call.");
+    resendSend.mockClear();
+    await sendCustomerCallOutcomeNotification({ organizationId: ORG, report: { ...REPORT, purpose: "cancelled", bookingWhen: null } });
+    expect(sent()[0].html).toContain("to tell them their booking was cancelled. Here's how it went.");
+  });
+
+  it("says plainly when the customer still doesn't know, or nothing was agreed (clients lens M2)", async () => {
+    vi.mocked(createAdminClient).mockReturnValue(fakeAdmin(OWNER_FOUND) as any);
+    const RING = ' — ring them on <a href="tel:+61412345678">0412 345 678</a>.';
+    const unchanged = [{ kind: "unchanged" as const, when: "Wednesday, October 28 at 2:30 PM", state: "booked" as const }];
+    const nextOf = async (over: Partial<CallOutcomeReport>) => {
+      resendSend.mockClear();
+      await sendCustomerCallOutcomeNotification({ organizationId: ORG, report: { ...REPORT, diary: unchanged, ...over } });
+      const m = /<p><strong>Next step:<\/strong> (.*?)<\/p>/.exec(sent()[0].html);
+      return m ? m[1] : null;
+    };
+    const answered = { kind: "answered" as const, seconds: 60, endedOnAFault: false, sureItWasAPerson: true };
+    // A change the customer wasn't told about.
+    expect(await nextOf({ purpose: "cancelled", result: { kind: "no_answer" }, assistantOutcome: null })).toBe(`Jane Smith hasn't been told about this change${RING}`);
+    expect(await nextOf({ purpose: "moved", result: answered, assistantOutcome: "wrong_person" })).toBe(`Jane Smith hasn't been told about this change${RING}`);
+    for (const result of [{ kind: "busy" }, { kind: "dropped" }, { kind: "failed" }, { kind: "failed_on_our_side" }, { kind: "voicemail_not_left" }] as const) {
+      expect(await nextOf({ purpose: "cancelled", result, assistantOutcome: null }), result.kind).toBe(`Jane Smith hasn't been told about this change${RING}`);
+    }
+    expect(await nextOf({ purpose: "cancelled", result: answered, assistantOutcome: null })).toBe(`Jane Smith may not have heard about this change${RING}`);
+    expect(await nextOf({ purpose: "moved", result: { kind: "cut_off", seconds: 40 }, assistantOutcome: "confirmed" })).toBe(`Jane Smith may not have heard about this change${RING}`);
+    // Told, by the call or the message left: nothing to do.
+    expect(await nextOf({ purpose: "cancelled", result: answered, assistantOutcome: "declined" })).toBeNull();
+    expect(await nextOf({ purpose: "moved", result: { kind: "voicemail", playedToEnd: true }, assistantOutcome: null })).toBeNull();
+    // A confirmation not had.
+    expect(await nextOf({ purpose: "confirm", result: { kind: "busy" }, assistantOutcome: null })).toBe(`Jane Smith hasn't confirmed their booking${RING}`);
+    expect(await nextOf({ purpose: "confirm", result: { kind: "voicemail", playedToEnd: true }, assistantOutcome: null })).toBe(`Jane Smith hasn't confirmed their booking (the assistant left a message)${RING}`);
+    expect(await nextOf({ purpose: "confirm", result: answered, assistantOutcome: null })).toBe(`Jane Smith may not have confirmed their booking — check the summary${RING}`);
+    expect(await nextOf({ purpose: "confirm", result: answered, assistantOutcome: "confirmed" })).toBeNull();
+    // Finding a new time: nothing agreed is back with the owner.
+    expect(await nextOf({ purpose: "find_new_time", result: answered, assistantOutcome: "declined" })).toBe(`No new time was agreed, so Jane Smith's booking on Wednesday, October 28 at 2:30 PM still stands. It's back with you${RING}`);
+    expect(await nextOf({ purpose: "find_new_time", result: { kind: "no_answer" }, assistantOutcome: null })).toBe(`Jane Smith doesn't know yet that their booking needs to move${RING}`);
+    expect(await nextOf({ purpose: "find_new_time", result: { kind: "voicemail", playedToEnd: true }, assistantOutcome: null })).toBe(`Jane Smith doesn't know yet that their booking needs to move (the assistant left a message asking them to call back)${RING}`);
+    expect(await nextOf({ purpose: "find_new_time", result: answered, diary: [{ kind: "moved", from: "Wed", when: "Thu" }] })).toBeNull();
+    // A time booked and then cancelled on the call isn't agreed (code lens G4).
+    expect(await nextOf({ purpose: "find_new_time", result: answered, diary: [{ kind: "booked", when: "Thu" }, { kind: "cancelled", when: "Thu" }] })).toMatch(/^No new time was agreed/);
+    // No number: no "ring them"; a number we can't format is shown as written, never as a link.
+    expect(await nextOf({ purpose: "cancelled", result: { kind: "no_answer" }, phone: null })).toBe("Jane Smith hasn't been told about this change.");
+    expect(await nextOf({ purpose: "cancelled", result: { kind: "no_answer" }, phone: "+15551234567" })).toBe("Jane Smith hasn't been told about this change — ring them on +15551234567.");
+  });
+
+  it("'Listen to the call' only when the call reached someone (clients lens S4)", async () => {
+    vi.mocked(createAdminClient).mockReturnValue(fakeAdmin(OWNER_FOUND) as any);
+    const htmlOf = async (result: CallResult) => {
+      resendSend.mockClear();
+      await sendCustomerCallOutcomeNotification({ organizationId: ORG, report: { ...REPORT, result } });
+      return sent()[0].html;
+    };
+    for (const result of [{ kind: "no_answer" }, { kind: "busy" }, { kind: "voicemail", playedToEnd: true }, { kind: "failed" }] as const) {
+      const html = await htmlOf(result);
+      expect(html, result.kind).not.toContain(`/calls/${CALL}`);
+      expect(html, result.kind).not.toContain("listen to the call");
+      expect(html, result.kind).toContain('href="https://app.example.test/appointments"');
+    }
+    expect(await htmlOf({ kind: "cut_off", seconds: 30 })).toContain(`href="https://app.example.test/calls/${CALL}">Listen to the call</a>`);
   });
 
   it("escapes every customer- and AI-written value (the report bypasses the top-level escaping)", async () => {
@@ -147,7 +223,7 @@ describe("sendCustomerCallOutcomeNotification", () => {
     const evil = `<img src=x onerror="alert(1)">&"'`;
     await sendCustomerCallOutcomeNotification({
       organizationId: ORG,
-      report: { ...REPORT, customer: evil, phone: evil, bookingWhen: evil, diary: [{ kind: "moved", from: evil, when: evil }], assistantNote: evil, summary: evil, voicemailText: evil, assistantOutcome: "other" },
+      report: { ...REPORT, purpose: "moved", result: { kind: "no_answer" }, customer: evil, phone: evil, bookingWhen: evil, previousWhen: evil, diary: [{ kind: "moved", from: evil, when: evil }, { kind: "unchanged", when: evil, state: "cancelled" }], assistantNote: evil, summary: evil, voicemailText: evil, assistantOutcome: "other" },
     });
     const [mail] = sent();
     expect(mail.html).not.toContain("<img src=x");

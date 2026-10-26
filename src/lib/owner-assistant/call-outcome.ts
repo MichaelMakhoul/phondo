@@ -32,15 +32,18 @@ export type DiaryLine =
   | { kind: "booked"; when: string }
   | { kind: "moved"; from: string | null; when: string }
   | { kind: "cancelled"; when: string }
-  | { kind: "unchanged"; when: string; stillBooked: boolean };
+  /** Nothing changed on the call; the booking it was about is still booked, still cancelled, or neither (moved on since, done). */
+  | { kind: "unchanged"; when: string; state: "booked" | "cancelled" | "inactive" };
 
 export interface CallOutcomeReport {
   callId: string;
   purpose: CallPurpose;
   customer: string;
   phone: string | null;
-  /** Spoken form of the booking the call was about. */
+  /** Spoken form of the booking the call was about (for a move's call, the new time). */
   bookingWhen: string | null;
+  /** For a move's call: where it was moved from, when the earlier leg is known. */
+  previousWhen: string | null;
   result: CallResult;
   diary: DiaryLine[];
   /** record_call_outcome, as the assistant chose it (AI-written). */
@@ -121,7 +124,7 @@ export async function buildCallOutcome(
 
   const { data: booking, error: bookingError } = await supabase
     .from("appointments")
-    .select("id, attendee_name, start_time, status, updated_at")
+    .select("id, attendee_name, start_time, status, updated_at, rescheduled_from_id")
     .eq("id", appointmentId)
     .eq("organization_id", organizationId)
     .maybeSingle();
@@ -142,7 +145,9 @@ export async function buildCallOutcome(
     return null;
   }
   const madeRows = (made ?? []) as Array<{ id: string; start_time: string; status: string; rescheduled_from_id: string | null }>;
-  const priorIds = [...new Set(madeRows.map((m) => m.rescheduled_from_id).filter((v): v is string => typeof v === "string"))];
+  // The earlier legs: of moves made on the call, and of the move a "moved" call is about.
+  const movedFromId = purpose === "moved" && typeof booking?.rescheduled_from_id === "string" ? booking.rescheduled_from_id : null;
+  const priorIds = [...new Set([...madeRows.map((m) => m.rescheduled_from_id), movedFromId].filter((v): v is string => typeof v === "string"))];
   const priorStart = new Map<string, string>();
   if (priorIds.length > 0) {
     const { data: priors, error: priorsError } = await supabase
@@ -164,6 +169,9 @@ export async function buildCallOutcome(
     if (!at) continue;
     if (m.rescheduled_from_id) diary.push({ kind: "moved", from: when(priorStart.get(m.rescheduled_from_id)), when: at });
     else diary.push({ kind: "booked", when: at });
+    // Made on the call and cancelled on it too (the receptionist's own fix-up is to
+    // cancel and rebook): never left reading as booked (code lens G4).
+    if (m.status === "cancelled") diary.push({ kind: "cancelled", when: at });
   }
   // A cancel on the call leaves no call_id: the booking cancelled during the call
   // (and live when it began — a cancel's own call is about an already-cancelled one).
@@ -180,7 +188,8 @@ export async function buildCallOutcome(
   // The booking moved on the call is shown by its new leg; anything else is unchanged.
   const movedOnCall = madeRows.some((m) => m.rescheduled_from_id === appointmentId);
   if (diary.length === 0 && bookingAt && !movedOnCall) {
-    diary.push({ kind: "unchanged", when: bookingAt, stillBooked: ACTIVE.has(String(booking?.status)) });
+    const status = String(booking?.status);
+    diary.push({ kind: "unchanged", when: bookingAt, state: ACTIVE.has(status) ? "booked" : status === "cancelled" ? "cancelled" : "inactive" });
   }
 
   return {
@@ -189,6 +198,7 @@ export async function buildCallOutcome(
     customer: sanitizeCustomerText(booking?.attendee_name, NAME_MAX) ?? "Your customer",
     phone: sanitizeCustomerText(call.caller_phone, PHONE_MAX),
     bookingWhen: bookingAt,
+    previousWhen: movedFromId ? when(priorStart.get(movedFromId)) : null,
     result: callResultOf(call),
     diary,
     assistantOutcome: parseCallOutcome(notify.outcome),

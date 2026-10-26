@@ -63,7 +63,7 @@ describe("SCRUM-598: a change whose customer is being called", () => {
       items: [{ change: "cancelled", customer: "Michael Dunn", when: "Monday, October 26 at 12:30 PM", told: "calling" }],
     });
     const html = sent()[0].html;
-    expect(html).toContain("Your assistant is calling the customer — a separate email will say how it went.");
+    expect(html).toContain("Your assistant called (or is calling) the customer — see the separate email for how it went.");
     expect(html).not.toContain("Customer not told.");
   });
 });

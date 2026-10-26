@@ -77,11 +77,11 @@ describe("getContactOptions", () => {
   it("a call that can't be placed says why — unless calls aren't switched on at all", async () => {
     const blocked = (reason: string) => vi.fn(async () => ({ canCall: false as const, reason: reason as any }));
     expect(await getContactOptions(ORG, "+61414141883", "AU", { ...CAN, checkCall: blocked("outside_hours") }, CALL)).toEqual({
-      options: ["text", "none"], note: "I can't call them now: it's outside calling hours (8 am to 8 pm).",
+      options: ["text", "none"], note: "I can't call them now: it's outside calling hours (8 am to 8 pm), and I can't schedule calls for later yet — ask me again after 8 am.",
     });
     expect(await getContactOptions(ORG, "+61414141883", "AU", { ...CAN, checkCall: blocked("calls_disabled") }, CALL)).toEqual({ options: ["text", "none"] });
     expect(await getContactOptions(ORG, "+61414141883", "AU", { smsEnabled: false, checkCall: blocked("do_not_call") }, CALL)).toEqual({
-      options: ["none"], note: "Texting customers isn't available yet. I can't call them now: they've asked not to be called.",
+      options: ["none"], note: "Texting customers isn't available yet. I can't call them: they've asked not to be called.",
     });
   });
   it("without a call context it never asks about a call", async () => {
@@ -156,34 +156,36 @@ describe("contactCustomer", () => {
 
 describe("contactOutcomeSentence", () => {
   it("says exactly what happened — and never 'as you asked' (with nothing to choose, the owner wasn't asked)", () => {
-    expect(contactOutcomeSentence({ method: "text", status: "sent" }, "Jane Smith")).toBe(" I've texted Jane Smith to let them know.");
-    expect(contactOutcomeSentence({ method: "none", status: "not_requested" }, "Jane Smith")).toBe(" I haven't let Jane Smith know. I can read you their number if you want to tell them yourself.");
-    expect(contactOutcomeSentence({ method: "call", status: "not_placed", reason: "calls_disabled" }, "Jane Smith")).toBe(" I can't call customers yet, so I haven't let Jane Smith know. I can read you their number if you want to tell them yourself.");
+    expect(contactOutcomeSentence({ method: "text", status: "sent" }, "Jane Smith", "cancelled")).toBe(" I've texted Jane Smith to let them know.");
+    expect(contactOutcomeSentence({ method: "none", status: "not_requested" }, "Jane Smith", "cancelled")).toBe(" I haven't let Jane Smith know. I can read you their number if you want to tell them yourself.");
+    expect(contactOutcomeSentence({ method: "call", status: "not_placed", reason: "calls_disabled" }, "Jane Smith", "cancelled")).toBe(" I can't call customers yet, so I haven't let Jane Smith know. I can read you their number if you want to tell them yourself.");
   });
   it("SCRUM-598: a placed call says the owner gets an email; one not placed says why; an unsure one says so", () => {
-    expect(contactOutcomeSentence({ method: "call", status: "calling", callId: "c" }, "Jane Smith")).toBe(" I'm calling Jane Smith now to let them know. You'll get an email when the call's done.");
-    expect(contactOutcomeSentence({ method: "call", status: "not_placed", reason: "outside_hours" }, "Jane Smith")).toBe(" I couldn't call Jane Smith: it's outside calling hours (8 am to 8 pm). I can read you their number if you want to tell them yourself.");
-    const unsure = contactOutcomeSentence({ method: "call", status: "not_placed", reason: "place_unconfirmed" }, "Jane Smith");
+    // Clients lens M8: the owner hears what the call will do.
+    expect(contactOutcomeSentence({ method: "call", status: "calling", callId: "c" }, "Jane Smith", "cancelled")).toBe(" I'm calling Jane Smith now to let them know, and to offer them another time. You'll get an email when the call's done.");
+    expect(contactOutcomeSentence({ method: "call", status: "calling", callId: "c" }, "Jane Smith", "moved")).toBe(" I'm calling Jane Smith now to tell them the new time and check it suits. You'll get an email when the call's done.");
+    expect(contactOutcomeSentence({ method: "call", status: "not_placed", reason: "outside_hours" }, "Jane Smith", "cancelled")).toBe(" I couldn't call Jane Smith: it's outside calling hours (8 am to 8 pm), and I can't schedule calls for later yet — ask me again after 8 am. I can read you their number if you want to tell them yourself.");
+    const unsure = contactOutcomeSentence({ method: "call", status: "not_placed", reason: "place_unconfirmed" }, "Jane Smith", "cancelled");
     expect(unsure).toBe(" I'm not sure the call to Jane Smith went out — check Calls in the dashboard before you ring them yourself.");
     // A call that may be ringing is never reported as not placed.
     expect(unsure).not.toMatch(/couldn't call|haven't let/);
   });
   it("a text that didn't go out says why, and offers the number", () => {
-    const s = contactOutcomeSentence({ method: "text", status: "not_sent", reason: "landline" }, "Jane Smith");
+    const s = contactOutcomeSentence({ method: "text", status: "not_sent", reason: "landline" }, "Jane Smith", "cancelled");
     expect(s).toBe(" I couldn't text Jane Smith: their number is a landline. I can read you their number if you want to tell them yourself.");
-    expect(contactOutcomeSentence({ method: "text", status: "not_sent", reason: "texts_paused" }, "J")).toContain("texting customers isn't available yet");
-    expect(contactOutcomeSentence({ method: "text", status: "not_sent", reason: "sms_globally_paused" }, "J")).toContain("texting customers isn't available yet");
-    expect(contactOutcomeSentence({ method: "text", status: "not_sent", reason: "caller_opted_out" }, "J")).toContain("opted out");
-    expect(contactOutcomeSentence({ method: "text", status: "not_sent", reason: "something_new" }, "J")).toContain("the text didn't go through");
+    expect(contactOutcomeSentence({ method: "text", status: "not_sent", reason: "texts_paused" }, "J", "cancelled")).toContain("texting customers isn't available yet");
+    expect(contactOutcomeSentence({ method: "text", status: "not_sent", reason: "sms_globally_paused" }, "J", "cancelled")).toContain("texting customers isn't available yet");
+    expect(contactOutcomeSentence({ method: "text", status: "not_sent", reason: "caller_opted_out" }, "J", "cancelled")).toContain("opted out");
+    expect(contactOutcomeSentence({ method: "text", status: "not_sent", reason: "something_new" }, "J", "cancelled")).toContain("the text didn't go through");
   });
   it("a cap that couldn't be checked says so — never that a text went out moments ago", () => {
-    const s = contactOutcomeSentence({ method: "text", status: "not_sent", reason: "cap_check_failed" }, "J");
+    const s = contactOutcomeSentence({ method: "text", status: "not_sent", reason: "cap_check_failed" }, "J", "cancelled");
     expect(s).toContain("I couldn't check their recent texts, so I held it back");
     expect(s).not.toMatch(/moments ago/);
   });
 
   it("a held-back text never reads as if the customer already knows about THIS change", () => {
-    const s = contactOutcomeSentence({ method: "text", status: "not_sent", reason: "rate_limited" }, "J");
+    const s = contactOutcomeSentence({ method: "text", status: "not_sent", reason: "rate_limited" }, "J", "cancelled");
     expect(s).toContain("they've already had several texts from you this hour, so this one was held back");
     expect(s).not.toMatch(/already texted about this/i);
   });
@@ -194,7 +196,7 @@ describe("contactOutcomeSentence", () => {
       { method: "call", status: "calling", callId: "c" },
       { method: "none", status: "not_requested" },
     ] as const;
-    for (const r of notSent) expect(contactOutcomeSentence(r, "Jane")).not.toMatch(/I've texted/);
+    for (const r of notSent) expect(contactOutcomeSentence(r, "Jane", "cancelled")).not.toMatch(/I've texted/);
   });
 });
 

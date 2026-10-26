@@ -14,6 +14,7 @@ import { ssrfSafeFetch, escapeHtml } from "@/lib/security/validation";
 import type { OwnerRecapItem } from "@/lib/owner-assistant/recap";
 import type { CallOutcomeReport, CallResult, DiaryLine } from "@/lib/owner-assistant/call-outcome";
 import type { CallOutcome } from "@/lib/owner-assistant/customer-call";
+import { formatPhoneForCountry } from "@/lib/country-config";
 import { hasFeatureAccess } from "@/lib/stripe/billing-service";
 import * as Sentry from "@sentry/nextjs";
 import { Resend } from "resend";
@@ -946,7 +947,7 @@ function recapToldLine(item: OwnerRecapItem): string {
       return `Customer not texted (${escapeHtml(item.toldWhy)}).`;
     case "calling":
       // SCRUM-598: placed, not yet told — the call's own email says how it went.
-      return "Your assistant is calling the customer — a separate email will say how it went.";
+      return "Your assistant called (or is calling) the customer — see the separate email for how it went.";
     case "not_told":
       return "Customer not told.";
     default: {
@@ -1079,9 +1080,18 @@ function diaryLineHtml(line: DiaryLine): string {
     case "cancelled":
       return `Cancelled the booking on <strong>${escapeHtml(line.when)}</strong>`;
     case "unchanged":
-      return line.stillBooked
-        ? `No change — still booked for <strong>${escapeHtml(line.when)}</strong>`
-        : `No change to the booking on ${escapeHtml(line.when)} (it isn't active)`;
+      switch (line.state) {
+        case "booked":
+          return `Nothing changed on the call — still booked for <strong>${escapeHtml(line.when)}</strong>`;
+        case "cancelled":
+          return `Nothing changed on the call — the booking on ${escapeHtml(line.when)} is still cancelled`;
+        case "inactive":
+          return `Nothing changed on the call — the booking on ${escapeHtml(line.when)} is no longer active`;
+        default: {
+          const unhandled: never = line.state;
+          return unhandled;
+        }
+      }
     default: {
       const unhandled: never = line;
       return unhandled;
@@ -1089,18 +1099,67 @@ function diaryLineHtml(line: DiaryLine): string {
   }
 }
 
-/** Why the call was made, in the email's words. */
+/**
+ * "0412 345 678" as a tap-to-call link for an AU number held as +61… (the owner reads
+ * this on their phone — clients lens S4); anything else as written, escaped.
+ */
+function phoneHtml(phone: string): string {
+  const m = /^\+61([23478]\d{8})$/.exec(phone);
+  if (!m) return escapeHtml(phone);
+  return `<a href="tel:${phone}">${escapeHtml(formatPhoneForCountry(`0${m[1]}`, "AU"))}</a>`;
+}
+
+/**
+ * Clients lens M2: when the customer still doesn't know — or nothing was agreed —
+ * say so plainly; this email is the owner's only reminder. Null when there's nothing
+ * left to do. Told means an answered call where the assistant recorded how it went
+ * (and it wasn't someone else); an answered call with no outcome is "may not have".
+ */
+function nextStepLine(r: CallOutcomeReport): string | null {
+  const who = escapeHtml(r.customer);
+  const ring = r.phone ? ` — ring them on ${phoneHtml(r.phone)}` : "";
+  const kind = r.result.kind;
+  const told = kind === "answered" && r.assistantOutcome !== null && r.assistantOutcome !== "wrong_person";
+  const unsure = kind === "cut_off" || (kind === "answered" && r.assistantOutcome === null);
+  const leftMessage = kind === "voicemail";
+  switch (r.purpose) {
+    case "cancelled":
+    case "moved":
+      if (told || leftMessage) return null;
+      return unsure ? `${who} may not have heard about this change${ring}.` : `${who} hasn't been told about this change${ring}.`;
+    case "confirm":
+      if (told) return null;
+      return unsure
+        ? `${who} may not have confirmed their booking — check the summary${ring}.`
+        : `${who} hasn't confirmed their booking${leftMessage ? " (the assistant left a message)" : ""}${ring}.`;
+    case "find_new_time": {
+      const cancelledAt = new Set(r.diary.filter((d) => d.kind === "cancelled").map((d) => d.when));
+      const agreed = r.diary.some((d) => (d.kind === "moved" || d.kind === "booked") && !cancelledAt.has(d.when));
+      if (agreed) return null;
+      if (told || unsure) {
+        return `No new time was agreed, so ${who}'s booking${r.bookingWhen ? ` on ${escapeHtml(r.bookingWhen)}` : ""} still stands. It's back with you${ring}.`;
+      }
+      return `${who} doesn't know yet that their booking needs to move${leftMessage ? " (the assistant left a message asking them to call back)" : ""}${ring}.`;
+    }
+    default: {
+      const unhandled: never = r.purpose;
+      return unhandled;
+    }
+  }
+}
+
+/** Why the call was made, in the email's words. A move's booking is its NEW leg (clients lens M1). */
 function callPurposeLine(report: CallOutcomeReport): string {
-  const when = report.bookingWhen ? escapeHtml(report.bookingWhen) : "their booking";
+  const at = report.bookingWhen ? escapeHtml(report.bookingWhen) : null;
   switch (report.purpose) {
     case "cancelled":
-      return `to tell them their booking on ${when} was cancelled`;
+      return `to tell them their booking${at ? ` on ${at}` : ""} was cancelled`;
     case "moved":
-      return `to tell them their booking was moved (it was on ${when})`;
+      return `to tell them their booking was moved${at ? ` to ${at}` : ""}${report.previousWhen ? ` (from ${escapeHtml(report.previousWhen)})` : ""}`;
     case "confirm":
-      return `to check they're still OK for ${when}`;
+      return `to check they're still OK for ${at ?? "their booking"}`;
     case "find_new_time":
-      return `to find a new time for their booking on ${when}`;
+      return `to find a new time for their booking${at ? ` on ${at}` : ""}`;
     default: {
       const unhandled: never = report.purpose;
       return unhandled;
@@ -1766,7 +1825,10 @@ function generateEmailHtml(template: string, data: Record<string, any>): string 
       const r = d.report as CallOutcomeReport;
       const base = escapeHtml((process.env.NEXT_PUBLIC_APP_URL || "https://phondo.ai").replace(/\/$/, ""));
       const who = escapeHtml(r.customer);
-      const phone = r.phone ? ` (${escapeHtml(r.phone)})` : "";
+      const phone = r.phone ? ` (${phoneHtml(r.phone)})` : "";
+      const next = nextStepLine(r);
+      // Only a call that reached someone has anything to play (clients lens S4).
+      const heard = r.result.kind === "answered" || r.result.kind === "cut_off";
       const row = (label: string, value: string) =>
         `<tr><td style="padding: 8px; border-bottom: 1px solid #ddd; font-weight: bold; vertical-align: top;">${label}</td><td style="padding: 8px; border-bottom: 1px solid #ddd;">${value}</td></tr>`;
       const outcome = r.assistantOutcome ? escapeHtml(CALL_OUTCOME_WORDS[r.assistantOutcome]) : null;
@@ -1776,16 +1838,17 @@ function generateEmailHtml(template: string, data: Record<string, any>): string 
       return `
       <h2>Your assistant called ${who}</h2>
       <p>You asked it to call ${who}${phone} ${callPurposeLine(r)}. Here's how it went.</p>
+      ${next ? `<p><strong>Next step:</strong> ${next}</p>` : ""}
       <table style="width: 100%; border-collapse: collapse; margin: 16px 0;">
         ${row("Result", escapeHtml(callResultLine(r.result)))}
-        ${row("Your diary", r.diary.length ? r.diary.map(diaryLineHtml).join("<br/>") : "Nothing changed.")}
+        ${row("Your diary", r.diary.length ? r.diary.map(diaryLineHtml).join("<br/>") : "Nothing changed on the call.")}
         ${noted}
         ${r.summary ? row("Summary <span style=\"font-weight: normal; color: #6b7280;\">(AI-written)</span>", escapeHtml(r.summary)) : ""}
         ${r.voicemailText ? row("Message left", `&ldquo;${escapeHtml(r.voicemailText)}&rdquo;`) : ""}
       </table>
       ${d.timesInDefaultZone === true ? `<p style="color: #6b7280; font-size: 13px;">Times are shown in Sydney time — we couldn't read your business's timezone.</p>` : ""}
-      <p>The result and your diary come from our phone system and your bookings. The notes and summary are the AI's own words — <strong>if anything matters, listen to the call</strong>, and fix it in Appointments.</p>
-      <p><a href="${base}/calls/${escapeHtml(r.callId)}">Listen to the call</a> &nbsp;·&nbsp; <a href="${base}/appointments">Open Appointments</a></p>
+      <p>The result and your diary come from our phone system and your bookings.${heard ? ` The notes and summary are the AI's own words — <strong>if anything matters, listen to the call</strong>, and fix it in Appointments.` : ""}</p>
+      <p>${heard ? `<a href="${base}/calls/${escapeHtml(r.callId)}">Listen to the call</a> &nbsp;·&nbsp; ` : ""}<a href="${base}/appointments">Open Appointments</a></p>
     `;
     },
     "appointment-booked": (d) => `

@@ -212,7 +212,7 @@ export async function contactCustomer(req: ContactRequest, deps: ContactDeps = {
  * The sentence after a change, saying exactly what happened to the customer. The
  * model repeats it; it never claims a contact the result doesn't confirm.
  */
-export function contactOutcomeSentence(result: CustomerContactResult, customer: string): string {
+export function contactOutcomeSentence(result: CustomerContactResult, customer: string, kind: "cancelled" | "moved"): string {
   switch (result.status) {
     case "sent":
       return ` I've texted ${customer} to let them know.`;
@@ -221,7 +221,10 @@ export function contactOutcomeSentence(result: CustomerContactResult, customer: 
       return ` I couldn't text ${customer}: ${why}. I can read you their number if you want to tell them yourself.`;
     }
     case "calling":
-      return ` I'm calling ${customer} now to let them know. You'll get an email when the call's done.`;
+      // Clients lens M8: the owner hears what the call will do, not only that it's happening.
+      return kind === "cancelled"
+        ? ` I'm calling ${customer} now to let them know, and to offer them another time. You'll get an email when the call's done.`
+        : ` I'm calling ${customer} now to tell them the new time and check it suits. You'll get an email when the call's done.`;
     case "not_placed":
       if (result.reason === "calls_disabled") {
         return ` I can't call customers yet, so I haven't let ${customer} know. I can read you their number if you want to tell them yourself.`;

@@ -42,18 +42,51 @@ function oneLine(v, max) {
     .trim();
 }
 
+/** One word, letters only (accents and other scripts kept; apostrophes and hyphens too), at most 24. */
+function lettersOnly(/** @type {string} */ word) {
+  return Array.from(word.replace(/[^\p{L}\p{M}'’-]/gu, "")).slice(0, FIRST_NAME_MAX).join("");
+}
+
+/** A courtesy title is never someone's name (clients lens M3: "Mrs Johnson" is not "Mrs"). */
+const TITLES = new Set(["mr", "mrs", "ms", "miss", "mx", "dr", "prof"]);
+
 /**
- * The first word of the name on the booking, letters only (accents and other
- * scripts kept; apostrophes and hyphens too: O'Neil, Jean-Luc), at most 24 of them.
- * It is used inside instructions, so nothing else survives.
+ * What to call the customer, from the name on the booking: the first name, or the
+ * title and surname when the name starts with a title ("Mrs Johnson"). Each word is
+ * letters only (at most 24): it is used inside instructions, so nothing else survives.
  * @param {unknown} fullName
  * @returns {string|null}
  */
-function firstNameOf(fullName) {
+function addressNameOf(fullName) {
   const name = oneLine(fullName, NAME_MAX);
   if (!name) return null;
-  const first = Array.from(name.split(" ")[0].replace(/[^\p{L}\p{M}'’-]/gu, "")).slice(0, FIRST_NAME_MAX).join("");
-  return /\p{L}/u.test(first) ? first : null;
+  const words = name.split(" ").map(lettersOnly).filter((w) => /\p{L}/u.test(w));
+  if (words.length === 0) return null;
+  const first = words[0];
+  if (TITLES.has(first.toLowerCase())) {
+    if (words.length < 2) return null;
+    const title = first.charAt(0).toUpperCase() + first.slice(1).toLowerCase();
+    return `${title} ${words[words.length - 1]}`;
+  }
+  return first;
+}
+
+/**
+ * "02 5701 5064" / "0412 345 678": an AU number the way people say it, or null.
+ * @param {unknown} e164
+ * @returns {string|null}
+ */
+function spokenAuNumber(e164) {
+  const m = typeof e164 === "string" ? /^\+61([23478])(\d{8})$/.exec(e164) : null;
+  if (!m) return null;
+  const [, lead, rest] = m;
+  return lead === "4" ? `04${rest.slice(0, 2)} ${rest.slice(2, 5)} ${rest.slice(5)}` : `0${lead} ${rest.slice(0, 4)} ${rest.slice(4)}`;
+}
+
+/** "on 02 5701 5064", or "on this number" when there's no number to say. */
+function backOn(/** @type {unknown} */ callbackNumber) {
+  const spoken = spokenAuNumber(callbackNumber);
+  return spoken ? `on ${spoken}` : "on this number";
 }
 
 /**
@@ -99,24 +132,26 @@ function buildNotifyOpener({ businessName, firstName, disclosureText }) {
 
 /**
  * The message left on a voicemail: who's calling, the news and "call us back on
- * this number" (the caller ID is the business's Phondo line). The business name
- * and the time, never the service — whoever plays the message back hears it.
- * @param {{ businessName: string, firstName: string|null, purpose: import("./customer-call").NotifyPurpose, when: string|null }} o
+ * 02 5701 5064" (the business's Phondo line — the caller ID, said out loud so it
+ * works when the message is replayed or passed on). The business name and the
+ * time, never the service — whoever plays the message back hears it.
+ * @param {{ businessName: string, firstName: string|null, purpose: import("./customer-call").NotifyPurpose, when: string|null, callbackNumber?: string|null }} o
  */
-function buildVoicemailScript({ businessName, firstName, purpose, when }) {
+function buildVoicemailScript({ businessName, firstName, purpose, when, callbackNumber = null }) {
   const biz = oneLine(businessName, BUSINESS_MAX) || "the business";
   const intro = `${firstName ? `Hi ${firstName}` : "Hi"}, this is the AI assistant at ${biz}`;
+  const back = backOn(callbackNumber);
   switch (purpose) {
     case "cancelled":
-      return `${intro}. Your booking${onWhen(when)} has been cancelled. If you'd like another time, please call us back on this number. Thanks, bye.`;
+      return `${intro}. Your booking${onWhen(when)} has been cancelled. If you'd like another time, please call us back ${back}. Thanks, bye.`;
     case "moved":
       return when
-        ? `${intro}. Your booking has been moved to ${when}. If that time doesn't suit you, please call us back on this number. Thanks, bye.`
-        : `${intro}. Your booking has been moved. Please call us back on this number for the new time. Thanks, bye.`;
+        ? `${intro}. Your booking has been moved to ${when}. If that time doesn't suit you, please call us back ${back}. Thanks, bye.`
+        : `${intro}. Your booking has been moved. Please call us back ${back} for the new time. Thanks, bye.`;
     case "confirm":
-      return `${intro}, calling to check you're still OK for your booking${onWhen(when)}. If you need to change it, please call us back on this number. Thanks, bye.`;
+      return `${intro}, calling to check you're still OK for your booking${onWhen(when)}. If you need to change it, please call us back ${back}. Thanks, bye.`;
     case "find_new_time":
-      return `${intro}. We need to move your booking${onWhen(when)}. Please call us back on this number so we can find a time that suits you. Thanks, bye.`;
+      return `${intro}. We need to move your booking${onWhen(when)}. Please call us back ${back} so we can find a time that suits you. Thanks, bye.`;
     default: {
       /** @type {never} */
       const unhandled = purpose;
@@ -194,8 +229,9 @@ function purposeBlock({ purpose, biz, first, when, previousWhen, window }) {
       const span = windowWords(window);
       return (
         `PURPOSE: ${biz} needs to move ${first}'s booking${at} and asked you to find a new time with them. It stays booked as it is until they pick one.\n` +
-        `THEN: explain that briefly, find a time that suits them (check_availability) and move it with reschedule_appointment. If nothing suits, or they'd rather sort it out with ${biz} themselves, leave the booking as it is and tell them ${biz} will be in touch.` +
-        (span ? `\n${biz} would like the new time ${span}: offer times in that window first, and if none suit, ask what would.` : "")
+        `THEN: explain that briefly — never make up a reason: if they ask why, say ${biz} needs to move it — then find a time that suits them (check_availability) and move it with reschedule_appointment. If nothing suits, or they'd rather sort it out with ${biz} themselves, leave the booking as it is and tell them ${biz} will be in touch.` +
+        // Clients lens M9: the window is a limit ("next week mornings" means only then), not a preference.
+        (span ? `\n${biz} can only do the new time ${span}: offer and book only times that fit it. If none of those suit them, leave the booking as it is and tell them ${biz} will be in touch.` : "")
       );
     }
     default: {
@@ -208,13 +244,14 @@ function purposeBlock({ purpose, biz, first, when, previousWhen, window }) {
 
 /**
  * The OUTBOUND CALL section, appended last to the receptionist's Gemini prompt.
- * @param {{ businessName: string, customerName: string|null, purpose: string, when: string|null, previousWhen?: string|null, window?: import("./customer-call").TimeWindow|null, voicemailScript: string, canTransfer: boolean }} o
+ * @param {{ businessName: string, customerName: string|null, purpose: string, when: string|null, previousWhen?: string|null, window?: import("./customer-call").TimeWindow|null, voicemailScript: string, canTransfer: boolean, callbackNumber?: string|null }} o
  */
-function buildNotifyCallSection({ businessName, customerName, purpose, when, previousWhen = null, window = null, voicemailScript, canTransfer }) {
+function buildNotifyCallSection({ businessName, customerName, purpose, when, previousWhen = null, window = null, voicemailScript, canTransfer, callbackNumber = null }) {
   if (!isNotifyPurpose(purpose)) throw new Error(`unknown notify purpose ${purpose}`);
   const biz = oneLine(businessName, BUSINESS_MAX) || "the business";
   const fullName = oneLine(customerName, NAME_MAX);
-  const firstName = firstNameOf(customerName);
+  const firstName = addressNameOf(customerName);
+  const back = backOn(callbackNumber);
   const first = firstName || "the customer";
   const outcomes = CALL_OUTCOMES.map((o) => `"${o}"`).join(", ");
   const rule = "══════════════════════════════════════════════════════";
@@ -230,13 +267,13 @@ function buildNotifyCallSection({ businessName, customerName, purpose, when, pre
     `${purposeBlock({ purpose, biz, first, when, previousWhen, window })}\n\n` +
     `HOW THE CALL GOES:\n` +
     `1. Your first message says who you are, that you're an AI assistant, and asks whether you're speaking with ${first}. Wait for the answer.\n` +
-    `2. Make sure it's ${first} before you share ANY detail of the booking. If it's someone else, or ${first} isn't available: don't mention the booking at all; ask them to let ${first} know ${biz} called and to call back on this number, thank them, call record_call_outcome with "wrong_person", say goodbye and call end_call.\n` +
+    `2. Make sure it's ${first} before you share ANY detail of the booking. If it's someone else, or ${first} isn't available: don't mention the booking at all; ask them to let ${first} know ${biz} called and to call back ${back}, thank them, call record_call_outcome with "wrong_person", say goodbye and call end_call. If they tell you ${first} is unwell, in hospital or has passed away, be kind and brief: say you're sorry to hear it, that there's nothing they need to do and that you'll let ${biz} know; then call record_call_outcome with "other" and a short note, say goodbye and call end_call.\n` +
     `3. If you've reached a voicemail or answering machine instead of a person, say this once, then call record_call_outcome with "will_call_back" and end_call: "${voicemailScript}"\n` +
     `4. Once it's ${first}, give the news in one or two short sentences, then do what's under THEN or PURPOSE above.\n` +
     `5. Only ever talk about ${first}'s own bookings. Never mention other customers or other bookings.\n` +
     `6. You already have their name from the booking${fullName ? " (above)" : ""}. If you book or move anything, confirm it's still under that name instead of asking them to spell it again. The phone number is the one you called.\n` +
     `7. If they ask not to be called again: apologise, say you'll pass that on, call record_call_outcome with "do_not_call", say goodbye and call end_call.\n` +
-    `8. If they ask who's calling or why, you're ${biz}'s AI assistant calling about their booking. If they want to talk to a person, ${canTransfer ? "transfer them the usual way, or " : ""}take a message with schedule_callback.\n` +
+    `8. If they ask who's calling or why, you're ${biz}'s AI assistant calling about their booking. If they want to talk to a person, ${canTransfer ? "transfer them the usual way, or " : "you can't put them through on this call (whatever is written above about transfers): "}take a message with schedule_callback.\n` +
     `9. Keep it short and friendly: a courtesy call, not a sales call. Never offer anything ${biz} didn't ask you to.\n` +
     `10. Before you end the call, ALWAYS call record_call_outcome once with what happened (one of ${outcomes}): "confirmed" means they're happy with the booking as it stands, "rebooked" means you booked or moved a time for them, "declined" means they don't want another time, "will_call_back" means they'll call ${biz} themselves or you left a message. Add a short note in plain words. Then say goodbye and call end_call.\n` +
     rule
@@ -285,7 +322,8 @@ function parseCallOutcome(args) {
 
 module.exports = {
   formatWhen,
-  firstNameOf,
+  addressNameOf,
+  spokenAuNumber,
   buildNotifyOpener,
   buildVoicemailScript,
   buildVoicemailPrompt,

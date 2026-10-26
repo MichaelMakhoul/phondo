@@ -1361,6 +1361,10 @@ const NOTIFY_VOICEMAIL_MARK = "notify-voicemail-done";
 const NOTIFY_VOICEMAIL_PLAYBACK_MAX_MS = 25_000;
 /** A voicemail session that never speaks at all ends after this. */
 const NOTIFY_VOICEMAIL_MAX_MS = 45_000;
+/** A minute before Twilio's 5-minute TimeLimit (counted from the answer, before the stream starts) cuts a customer call. */
+const NOTIFY_WRAP_UP_AT_MS = 240_000;
+const NOTIFY_WRAP_UP_NOTICE =
+  "SYSTEM NOTICE (not the customer speaking): this call ends automatically in under a minute. Wrap up now: if a booking or a move isn't finished, take a message with schedule_callback; then call record_call_outcome, say goodbye and call end_call.";
 
 /**
  * End a customer call: the Gemini session, then the stream (which ends the
@@ -1815,8 +1819,9 @@ wss.on("connection", (twilioWs) => {
     // hallucinated claim is something the AI said, so a caller reciting a code or
     // narrating a past appointment must not trip it.
     // SCRUM-587: owner calls skip the claim scan — "cancelled Mrs Smith's job" is the owner's instruction, not a receptionist claim.
-    // SCRUM-598: nor on a voicemail-mode customer call (one fixed message, no tools).
-    const phantomActions = s.ownerMode || s.notify?.mode === "voicemail" ? [] : detectPostCallPhantoms(s.fullTranscriptMessages, s.toolCallAudit);
+    // SCRUM-598: nor on a customer call (code lens G1: its news reads as an unbacked
+    // claim; the owner's outcome email, built from the diary, is that call's check).
+    const phantomActions = s.ownerMode || s.notify ? [] : detectPostCallPhantoms(s.fullTranscriptMessages, s.toolCallAudit);
     if (phantomActions.length) {
       const { bugTag, reason } = summarizePhantoms(phantomActions);
       console.error(`[HallucinatedAction] callSid=${s.callSid} claimed [${phantomActions.join(", ")}] but no backing tool succeeded. toolCallAudit=${JSON.stringify(s.toolCallAudit || [])}`);
@@ -2338,6 +2343,14 @@ wss.on("connection", (twilioWs) => {
           // transfer fallback — gates whether transfer_call is offered when no
           // explicit transfer rules exist (see forwardingFallbackEligible).
           session.transferToForwardedNumber = context.assistant?.settings?.transferToForwardedNumber === true;
+          // SCRUM-598 (code lens G2): a call we placed never transfers — a transferred leg
+          // is finished by the transfer flow, which drops the call's type and its email.
+          // With no rules and no fallback, every prompt section takes its no-transfer
+          // wording (schedule_callback), and onToolCall refuses transfer_call outright.
+          if (session.notify) {
+            session.transferRules = [];
+            session.transferToForwardedNumber = false;
+          }
 
           // Start call recording if consent mode allows.
           // - Twilio: <Connect> record= doesn't work with <Stream>, so use REST API.
@@ -2419,7 +2432,12 @@ wss.on("connection", (twilioWs) => {
           }
 
           // After-hours detection
-          const { isAfterHours, afterHoursConfig, effectiveCalendarEnabled } = resolveAfterHoursState(context);
+          const afterHoursState = resolveAfterHoursState(context);
+          // SCRUM-598 (clients lens M4): a call we placed runs 8 am – 8 pm by its own rule; the
+          // receptionist's "the office is closed" script never applies to it.
+          const isAfterHours = session.notify ? false : afterHoursState.isAfterHours;
+          const afterHoursConfig = session.notify ? null : afterHoursState.afterHoursConfig;
+          const effectiveCalendarEnabled = afterHoursState.effectiveCalendarEnabled;
           session.calendarEnabled = effectiveCalendarEnabled;
           session.serviceTypes = context.serviceTypes || [];
 
@@ -2744,13 +2762,15 @@ wss.on("connection", (twilioWs) => {
             // is one fixed message and nothing else.
             const notifyBriefing = session.notify ? session.notifyBriefing : null;
             const notifyWhen = notifyBriefing ? notifyPrompt.formatWhen(notifyBriefing.startTime, context.organization.timezone) : null;
-            const notifyFirstName = notifyBriefing ? notifyPrompt.firstNameOf(notifyBriefing.customerName) : null;
+            const notifyFirstName = notifyBriefing ? notifyPrompt.addressNameOf(notifyBriefing.customerName) : null;
             const notifyVoicemailScript = session.notify
               ? notifyPrompt.buildVoicemailScript({
                   businessName: context.organization.name,
                   firstName: notifyFirstName,
                   purpose: session.notify.purpose,
                   when: notifyWhen,
+                  // The org's line, said out loud: "call us back on 02 5701 5064" (clients lens M6).
+                  callbackNumber: session.orgPhoneNumber,
                 })
               : null;
             if (session.notify && notifyVoicemail) {
@@ -2863,6 +2883,7 @@ wss.on("connection", (twilioWs) => {
                   window: notifyBriefing.window,
                   voicemailScript: notifyVoicemailScript || "",
                   canTransfer: false,
+                  callbackNumber: session.orgPhoneNumber,
                 });
               }
             } else if (session.ownerMode) {
@@ -3037,13 +3058,21 @@ wss.on("connection", (twilioWs) => {
                     return { message: "Noted. Now say goodbye and call end_call." };
                   }
 
+                  // SCRUM-598 (code lens G2): never a transfer on a call we placed, whatever the model emits.
+                  if (session.notify && toolCall.name === "transfer_call") {
+                    session.toolCallAudit.push({ name: "transfer_call_refused", successful: false, at: Date.now() });
+                    return { message: "Transfers aren't available on this call. Offer to take a message with schedule_callback instead." };
+                  }
+
                   // SCRUM-373: block end_call when a booking was started but never
                   // completed — LANGUAGE-AGNOSTIC. The old guard matched English
                   // transcript phrases only, so an Arabic "you're all set" + hangup
                   // with no real booking slipped through. Now keys off tool state +
                   // the end_call reason (see CallSession.hasUnfinishedBooking). Nudges
                   // ONCE so a caller who genuinely wants to leave isn't trapped.
-                  if (toolCall.name === "end_call" && session.hasUnfinishedBooking(toolCall.args?.reason)) {
+                  // SCRUM-598 (code lens N3): not on a customer call — its booking already exists, and
+                  // an unfinished move leaves it as it was ("NO appointment" would be false).
+                  if (toolCall.name === "end_call" && !session.notify && session.hasUnfinishedBooking(toolCall.args?.reason)) {
                     const alreadyNudged = (session.toolCallAudit || []).some((t) => t.name === "end_call_blocked");
                     if (!alreadyNudged) {
                       console.error(`[HallucinationGuard] Blocking end_call — booking started but no successful book_appointment. callSid=${session.callSid} reason="${toolCall.args?.reason || ""}"`);
@@ -3498,7 +3527,10 @@ wss.on("connection", (twilioWs) => {
                     // finally caught.
                     // SCRUM-587: off for owner calls — "cancelled Mrs Smith's job"
                     // there is the owner's instruction, not a receptionist claim.
-                    const phantom = session.ownerMode ? null : detectPhantomAction(aiTurnText, session.toolCallAudit);
+                    // SCRUM-598 (code lens G1): off on a customer call too — its news ("your booking
+                    // has been cancelled / moved / is confirmed") is the owner's change, not an
+                    // unbacked claim. The owner's outcome email, built from the diary, is that call's check.
+                    const phantom = session.ownerMode || session.notify ? null : detectPhantomAction(aiTurnText, session.toolCallAudit);
                     if (phantom) {
                       const { action, primaryTool, negated } = phantom;
                       const notDone =
@@ -3697,6 +3729,20 @@ wss.on("connection", (twilioWs) => {
                 },
               }
             );
+
+            // SCRUM-598 (clients lens S1): Twilio cuts a customer call at 5 minutes — warn the
+            // model before then, so it wraps up (or takes a message) instead of stopping mid-sentence.
+            if (session.notify?.mode === "conversation") {
+              const wrapSession = session;
+              setTimeout(() => {
+                if (twilioWs.readyState !== WebSocket.OPEN) return;
+                try {
+                  wrapSession.geminiSession?.sendText?.(NOTIFY_WRAP_UP_NOTICE);
+                } catch (err) {
+                  console.warn("[CustomerCall] wrap-up notice failed (non-fatal):", err && err.message);
+                }
+              }, NOTIFY_WRAP_UP_AT_MS).unref();
+            }
 
             // SCRUM-598: a voicemail that is never spoken (Gemini silent) still ends.
             if (session.notify?.mode === "voicemail") {

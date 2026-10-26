@@ -926,8 +926,19 @@ describe("SCRUM-598: 'call' on a change — offered only when the voice server s
     const r = await handleOwnerRescheduleAppointment(ORG, { appointment_id: APPT, new_datetime: NEW_TIME, confirmed: false }, ctx);
     expect(r.data).toMatchObject({ outcome: "needs_confirmation", contact_options: ["call", "none"] });
     expect(checkCustomerCall).toHaveBeenCalledWith({ organizationId: ORG, appointmentId: APPT, purpose: "moved", phone: "+61412345678", requestedByCallId: CALL });
-    expect(r.message).toContain("by call, or not tell them");
+    // Clients lens M8: the owner hears what a call does before choosing.
+    expect(r.message).toContain("by call (a call also checks the new time suits them), or not tell them");
     expect(placeCustomerCall).not.toHaveBeenCalled();
+  });
+
+  it("a cancel's read-back says its call also offers another time (clients lens M8); with no call there's no hint", async () => {
+    const r = await handleOwnerCancelAppointment(ORG, { appointment_id: APPT, confirmed: false }, ctx);
+    expect(r.message).toContain("by call (a call also offers them another time), or not tell them");
+    queueBefore(1);
+    db.queues.organizations = [AU_ORG];
+    vi.mocked(checkCustomerCall).mockResolvedValueOnce({ canCall: false, reason: "voice_unreachable" });
+    const none = await handleOwnerCancelAppointment(ORG, { appointment_id: APPT, confirmed: false }, ctx);
+    expect(none.message).not.toContain("a call also");
   });
 
   it("a confirmed move with 'call' places the call about the NEW leg, after the change", async () => {
@@ -936,7 +947,7 @@ describe("SCRUM-598: 'call' on a change — offered only when the voice server s
     expect(placeCustomerCall).toHaveBeenCalledWith({ organizationId: ORG, appointmentId: NEW_LEG, purpose: "moved", phone: "+61412345678", requestedByCallId: CALL });
     expect(vi.mocked(performRescheduleLeg).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(placeCustomerCall).mock.invocationCallOrder[0]);
     expect(r.data).toMatchObject({ outcome: "rescheduled", customer_contact: { method: "call", status: "calling", callId: "call-77" }, customer_notified: true });
-    expect(r.message).toContain("I'm calling Jane Smith now to let them know. You'll get an email when the call's done.");
+    expect(r.message).toContain("I'm calling Jane Smith now to tell them the new time and check it suits. You'll get an email when the call's done.");
   });
 
   it("a confirmed cancel with 'call' places the call about the cancelled booking", async () => {
@@ -944,6 +955,7 @@ describe("SCRUM-598: 'call' on a change — offered only when the voice server s
     const r = await handleOwnerCancelAppointment(ORG, { appointment_id: APPT, confirmed: true, notify_customer: "call" }, ctx);
     expect(placeCustomerCall).toHaveBeenCalledWith({ organizationId: ORG, appointmentId: APPT, purpose: "cancelled", phone: "+61412345678", requestedByCallId: CALL });
     expect(r.data).toMatchObject({ outcome: "cancelled", customer_contact: { method: "call", status: "calling" } });
+    expect(r.message).toContain("I'm calling Jane Smith now to let them know, and to offer them another time. You'll get an email when the call's done.");
   });
 
   it("a call that can't be placed at the moment of dialling: the change stands, the owner hears why", async () => {
@@ -951,13 +963,13 @@ describe("SCRUM-598: 'call' on a change — offered only when the voice server s
     const r = await handleOwnerRescheduleAppointment(ORG, { appointment_id: APPT, new_datetime: NEW_TIME, confirmed: true, notify_customer: "call" }, ctx);
     expect(r.success).toBe(true);
     expect(r.data).toMatchObject({ outcome: "rescheduled", customer_contact: { method: "call", status: "not_placed", reason: "outside_hours" }, customer_notified: false });
-    expect(r.message).toContain("I couldn't call Jane Smith: it's outside calling hours (8 am to 8 pm).");
+    expect(r.message).toContain("I couldn't call Jane Smith: it's outside calling hours (8 am to 8 pm), and I can't schedule calls for later yet — ask me again after 8 am.");
   });
 
   it("a call refused for a reason worth saying is noted in the read-back; a fault leaves it out quietly", async () => {
     vi.mocked(checkCustomerCall).mockResolvedValueOnce({ canCall: false, reason: "do_not_call" });
     const noted = await handleOwnerCancelAppointment(ORG, { appointment_id: APPT, confirmed: false }, ctx);
-    expect(noted.data).toMatchObject({ contact_options: ["none"], contact_note: "Texting customers isn't available yet. I can't call them now: they've asked not to be called." });
+    expect(noted.data).toMatchObject({ contact_options: ["none"], contact_note: "Texting customers isn't available yet. I can't call them: they've asked not to be called." });
     queueBefore(1);
     db.queues.organizations = [AU_ORG];
     vi.mocked(checkCustomerCall).mockResolvedValueOnce({ canCall: false, reason: "voice_unreachable" });
@@ -1050,7 +1062,8 @@ describe("SCRUM-598: owner_call_customer", () => {
     const r = await ask({});
     expect(r.data).toMatchObject({ outcome: "not_available", reason: "number_cap" });
     expect("customer_notified" in (r.data as object)).toBe(false);
-    expect(r.message).toBe("I couldn't call Jane Smith: they've already had two calls from you today. I can read you their number if you want to ring them yourself.");
+    // Clients lens S2: nothing was tried yet at the read-back — "can't", not "couldn't".
+    expect(r.message).toBe("I can't call Jane Smith: they've already had two calls from you today. I can read you their number if you want to ring them yourself.");
     queueBefore(1);
     db.queues.organizations = [AU_ORG];
     vi.mocked(placeCustomerCall).mockResolvedValueOnce({ placed: false, reason: "place_unconfirmed" });
@@ -1060,6 +1073,11 @@ describe("SCRUM-598: owner_call_customer", () => {
     db.queues.organizations = [AU_ORG];
     vi.mocked(checkCustomerCall).mockResolvedValueOnce({ canCall: false, reason: "calls_disabled" });
     expect((await ask({})).message).toBe("I can't call customers yet. I can read you their number if you want to ring them yourself.");
+    // Refused at the moment of dialling: it was tried — "couldn't".
+    queueBefore(1);
+    db.queues.organizations = [AU_ORG];
+    vi.mocked(placeCustomerCall).mockResolvedValueOnce({ placed: false, reason: "outside_hours" });
+    expect((await ask({ confirmed: true })).message).toBe("I couldn't call Jane Smith: it's outside calling hours (8 am to 8 pm), and I can't schedule calls for later yet — ask me again after 8 am. I can read you their number if you want to ring them yourself.");
   });
 
   it("no purpose (or an unknown one): asks which, places nothing", async () => {
