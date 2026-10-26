@@ -10,8 +10,7 @@ import {
   isNearBottom,
   readPanelState,
   shouldShowFloatingBubble,
-  writePanelState,
-} from "../bubble-state";
+  writePanelState, isSessionLive } from "../bubble-state";
 
 // SCRUM-597: the always-on bubble's pure logic. The components that use it can't
 // run in the repo's node vitest env (no DOM, JSX left as "preserve"); their wiring
@@ -248,5 +247,13 @@ describe("isNearBottom", () => {
   it("takes a custom threshold", () => {
     expect(isNearBottom({ scrollHeight: 500, scrollTop: 290, clientHeight: 200 }, 0)).toBe(false);
     expect(isNearBottom({ scrollHeight: 500, scrollTop: 290, clientHeight: 200 }, 10)).toBe(true);
+  });
+});
+
+describe("isSessionLive (SCRUM-597)", () => {
+  it("only connecting and active are live", () => {
+    expect(isSessionLive("connecting")).toBe(true);
+    expect(isSessionLive("active")).toBe(true);
+    for (const s of ["idle", "ended", "error", "", null, undefined, "ACTIVE"]) expect(isSessionLive(s as any)).toBe(false);
   });
 });

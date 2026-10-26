@@ -75,8 +75,8 @@ describe("dashboard layout (server)", () => {
     expect(assignments[0].index).toBeLessThan(gateEnd);
   });
 
-  it("renders exactly today's tree when there is no assistant id", () => {
-    const early = layoutCode.indexOf("if (!ownerAssistantId) return dashboard;");
+  it("renders exactly today's tree for anyone the gate didn't admit", () => {
+    const early = layoutCode.indexOf("if (!ownerAssistantEligible) return dashboard;");
     expect(early).toBeGreaterThan(gateEnd);
     expect(early).toBeLessThan(layoutCode.indexOf("<OwnerAssistantProvider"));
     // The page content (children) lives in `dashboard`, so both branches render it.
@@ -84,6 +84,18 @@ describe("dashboard layout (server)", () => {
     expect(dashboardStart).toBeGreaterThan(gateEnd);
     expect(layoutCode.indexOf("{children}")).toBeGreaterThan(dashboardStart);
     expect(layoutCode.indexOf("{children}")).toBeLessThan(early);
+  });
+
+  it("an admitted owner keeps the provider even when this render's read found nothing (router.refresh must not remount a live session)", () => {
+    expect(layoutCode).not.toContain("if (!ownerAssistantId) return dashboard;");
+    const decl = layoutCode.indexOf("let ownerAssistantEligible = false;");
+    expect(decl).toBeGreaterThan(-1);
+    expect(decl).toBeLessThan(gate);
+    const sets = [...layoutCode.matchAll(/\bownerAssistantEligible = /g)];
+    expect(sets).toHaveLength(2); // the declaration and the gate
+    expect(sets[1].index).toBeGreaterThan(gate);
+    expect(sets[1].index).toBeLessThan(layoutCode.indexOf('.from("assistants")'));
+    expect(gateBlock).toContain("ownerAssistantEligible = true;");
   });
 
   it("wraps the content in one provider keyed by org id, with the bubble inside it", () => {
@@ -109,7 +121,7 @@ describe("OwnerAssistantProvider (client)", () => {
   it("owns the one voice session, with the owner token URL and its own analytics source", () => {
     expect(providerCode.match(/useVoiceTest\(/g)).toHaveLength(1);
     expect(providerCode).toMatch(
-      /useVoiceTest\(\{ assistantId, tokenUrl: OWNER_ASSISTANT_TOKEN_URL, trackingSource: "owner_assistant" \}\)/,
+      /useVoiceTest\(\{ assistantId: assistantId \?\? "", tokenUrl: OWNER_ASSISTANT_TOKEN_URL, trackingSource: "owner_assistant" \}\)/,
     );
     expect(providerCode).toMatch(/import \{ OWNER_ASSISTANT_TOKEN_URL \} from "@\/lib\/owner-assistant\/web";/);
   });
@@ -188,7 +200,7 @@ describe("OwnerAssistantBubble (client)", () => {
 
   it("expanded: the short 'changes are real' line, then the shared controls, transcript and error", () => {
     expect(bubbleSource.replace(/\s+/g, " ")).toContain(
-      "Changes are real: it reads every change back and waits for your yes. Sessions last up to 8 minutes.",
+      "Changes are real: it reads every change back, asks whether to tell the customer, and waits for your yes. Sessions last up to 8 minutes.",
     );
     expect(bubbleCode).toMatch(/<OwnerAssistantControls session=\{session\} compact \/>/);
     expect(bubbleCode).toMatch(/<OwnerAssistantTranscript transcript=\{session\.transcript\}/);
@@ -262,5 +274,17 @@ describe("client files never read the server-only flag (it is always false in th
     expect(source).not.toContain("isOwnerAssistantUiEnabled");
     expect(source).not.toContain("OWNER_ASSISTANT_UI_ENABLED");
     expect(source).not.toContain("process.env");
+  });
+});
+
+describe("SCRUM-597: no assistant this render", () => {
+  it("the provider passes the assistant id through (null when the layout found none) and exposes it", () => {
+    expect(providerCode).toMatch(/assistantId: string \| null;/);
+    expect(providerCode).toMatch(/session: \{ status, isMuted, transcript, error, isAssistantSpeaking, start, stop, toggleMute, reset \},\s*assistantId,/);
+  });
+  it("the bubble hides without an assistant — unless a session is live, which is never cut off", () => {
+    const guard = bubbleCode.indexOf("if (!assistant.assistantId && !isSessionLive(assistant.session.status)) return null;");
+    expect(guard).toBeGreaterThan(bubbleCode.indexOf("if (!assistant || panelState === null || !shouldShowFloatingBubble(pathname)) return null;"));
+    expect(bubbleCode).toMatch(/import \{ describeBubbleState, isSessionLive, shouldShowFloatingBubble, type BubbleIndicator \} from "\.\/bubble-state";/);
   });
 });

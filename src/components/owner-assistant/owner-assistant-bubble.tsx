@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import { Bot, Loader2, Mic, MicOff, Minus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { describeBubbleState, shouldShowFloatingBubble, type BubbleIndicator } from "./bubble-state";
+import { describeBubbleState, isSessionLive, shouldShowFloatingBubble, type BubbleIndicator } from "./bubble-state";
 import { useOwnerAssistant } from "./owner-assistant-provider";
 import { OwnerAssistantControls, OwnerAssistantError, OwnerAssistantTranscript } from "./owner-assistant-session-ui";
 
@@ -49,6 +49,8 @@ export function OwnerAssistantBubble() {
   }, [panelState]);
 
   if (!assistant || panelState === null || !shouldShowFloatingBubble(pathname)) return null;
+  // No assistant to talk in the voice of (none active, or this render's read failed): nothing to start, but a live session stays.
+  if (!assistant.assistantId && !isSessionLive(assistant.session.status)) return null;
 
   const { session, openPanel, minimisePanel } = assistant;
   const { indicator, ariaLabel, announcement } = describeBubbleState(session);
@@ -125,7 +127,7 @@ export function OwnerAssistantBubble() {
           </div>
           <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
             <p className="text-xs text-muted-foreground">
-              Changes are real: it reads every change back and waits for your yes. Sessions last up to 8 minutes.
+              Changes are real: it reads every change back, asks whether to tell the customer, and waits for your yes. Sessions last up to 8 minutes.
             </p>
             <OwnerAssistantControls session={session} compact />
             <OwnerAssistantTranscript transcript={session.transcript} headingLevel="h3" listClassName="max-h-60" />

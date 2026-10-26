@@ -52,6 +52,11 @@ export function writePanelState(storage: Pick<Storage, "setItem"> | null, state:
 /** The page that renders the full panel inline, from the same session. */
 export const ASSISTANT_LINE_PATH = "/assistant-line";
 
+/** A session the owner is in right now (connecting or talking): never hidden or cut off. */
+export function isSessionLive(status: string | null | undefined): boolean {
+  return status === "connecting" || status === "active";
+}
+
 /** False on /assistant-line (it shows the same session inline, so a second UI would only confuse); true everywhere else. */
 export function shouldShowFloatingBubble(pathname: string | null): boolean {
   if (!pathname) return true;

@@ -7,6 +7,7 @@ import { Card } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { AlertCircle } from "lucide-react";
 import { useOwnerAssistant } from "@/components/owner-assistant/owner-assistant-provider";
+import { isSessionLive } from "@/components/owner-assistant/bubble-state";
 import {
   OwnerAssistantControls,
   OwnerAssistantError,
@@ -63,7 +64,8 @@ export function OwnerTalkPanel({ assistantId, loadFailed = false }: OwnerTalkPan
  */
 function OwnerTalk() {
   const assistant = useOwnerAssistant();
-  if (!assistant) return <LoadFailedAlert />;
+  // No provider, or the layout found no assistant this render: nothing can start — but a live session stays on screen.
+  if (!assistant || (!assistant.assistantId && !isSessionLive(assistant.session.status))) return <LoadFailedAlert />;
 
   const { session } = assistant;
   const { transcript, error } = session;
@@ -78,7 +80,7 @@ function OwnerTalk() {
           ))}
         </ul>
         <p className="mt-3 text-xs text-muted-foreground">
-          Changes are real: it reads every change back and waits for your yes. Customers aren&apos;t told automatically.
+          Changes are real: it reads every change back, asks whether to let the customer know, and waits for your yes.
           Each session lasts up to 8 minutes.
         </p>
       </div>

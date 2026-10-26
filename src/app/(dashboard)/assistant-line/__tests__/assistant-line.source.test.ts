@@ -54,7 +54,7 @@ describe("the talk panel (client)", () => {
     expect(panelSource.startsWith('"use client";')).toBe(true);
     expect(panelSource).toMatch(/const assistant = useOwnerAssistant\(\);/);
     expect(panelSource).not.toContain("useVoiceTest");
-    expect(providerSource).toMatch(/useVoiceTest\(\{ assistantId, tokenUrl: OWNER_ASSISTANT_TOKEN_URL, trackingSource: "owner_assistant" \}\)/);
+    expect(providerSource).toMatch(/useVoiceTest\(\{ assistantId: assistantId \?\? "", tokenUrl: OWNER_ASSISTANT_TOKEN_URL, trackingSource: "owner_assistant" \}\)/);
     expect(providerSource).toMatch(/from "@\/lib\/owner-assistant\/web"/);
   });
 
@@ -84,7 +84,8 @@ describe("the talk panel (client)", () => {
   });
 
   it("without the layout's provider, says it couldn't load instead of showing controls that can't work", () => {
-    expect(panelSource).toMatch(/if \(!assistant\) return <LoadFailedAlert \/>;/);
+    // SCRUM-597: or the layout found no assistant this render — unless a session is live (it stays on screen).
+    expect(panelSource).toMatch(/if \(!assistant \|\| \(!assistant\.assistantId && !isSessionLive\(assistant\.session\.status\)\)\) return <LoadFailedAlert \/>;/);
     const alert = panelSource.slice(panelSource.indexOf("function LoadFailedAlert()"));
     expect(alert).toMatch(/<Alert variant="destructive">/);
     expect(alert).toMatch(/Couldn&apos;t load your assistant\. Refresh the page to try again\./);
@@ -92,9 +93,9 @@ describe("the talk panel (client)", () => {
     expect(panelSource).toMatch(/if \(loadFailed\) \{\s*return \(\s*<PageShell>\s*<LoadFailedAlert \/>/);
   });
 
-  it("says plainly that changes are real, customers aren't told, and how long a session lasts", () => {
-    expect(panelSource).toMatch(/reads every change back and waits for your yes/);
-    expect(panelSource).toMatch(/Customers aren&apos;t told automatically/);
+  it("says plainly that changes are real, that it asks about telling the customer, and how long a session lasts", () => {
+    expect(panelSource).toMatch(/reads every change back, asks whether to let the customer know, and waits for your yes\./); // SCRUM-597
+    expect(panelSource).not.toMatch(/Customers aren&apos;t told automatically/);
     expect(panelSource).toMatch(/Each session lasts up to 8 minutes\./);
   });
 

@@ -10,6 +10,8 @@ export type OwnerAssistantSession = ReturnType<typeof useVoiceTest>;
 
 export interface OwnerAssistantContextValue {
   session: OwnerAssistantSession;
+  /** The assistant whose voice a new session uses; null when this render found none (a live session goes on). */
+  assistantId: string | null;
   /**
    * The floating panel, as this viewer last left it. Null until it has been read
    * after mount (localStorage doesn't exist on the server), so the server and the
@@ -23,8 +25,8 @@ export interface OwnerAssistantContextValue {
 const OwnerAssistantContext = createContext<OwnerAssistantContextValue | null>(null);
 
 interface OwnerAssistantProviderProps {
-  /** The org's first active assistant: the session talks in its voice. */
-  assistantId: string;
+  /** The org's first active assistant (its voice), or null when the layout's read found none or failed. */
+  assistantId: string | null;
   children: ReactNode;
 }
 
@@ -38,7 +40,7 @@ interface OwnerAssistantProviderProps {
  */
 export function OwnerAssistantProvider({ assistantId, children }: OwnerAssistantProviderProps) {
   const { status, isMuted, transcript, error, isAssistantSpeaking, start, stop, toggleMute, reset } =
-    useVoiceTest({ assistantId, tokenUrl: OWNER_ASSISTANT_TOKEN_URL, trackingSource: "owner_assistant" });
+    useVoiceTest({ assistantId: assistantId ?? "", tokenUrl: OWNER_ASSISTANT_TOKEN_URL, trackingSource: "owner_assistant" });
 
   const [panelState, setPanelState] = useState<PanelState | null>(null);
 
@@ -56,11 +58,12 @@ export function OwnerAssistantProvider({ assistantId, children }: OwnerAssistant
   const value = useMemo<OwnerAssistantContextValue>(
     () => ({
       session: { status, isMuted, transcript, error, isAssistantSpeaking, start, stop, toggleMute, reset },
+      assistantId,
       panelState,
       openPanel,
       minimisePanel,
     }),
-    [status, isMuted, transcript, error, isAssistantSpeaking, start, stop, toggleMute, reset, panelState, openPanel, minimisePanel],
+    [status, isMuted, transcript, error, isAssistantSpeaking, start, stop, toggleMute, reset, assistantId, panelState, openPanel, minimisePanel],
   );
 
   return <OwnerAssistantContext.Provider value={value}>{children}</OwnerAssistantContext.Provider>;

@@ -103,7 +103,9 @@ export default async function DashboardLayout({
   // assistant to talk in the voice of: the same pick as /assistant-line. Nobody
   // else costs a query. The token route checks all of it again.
   let ownerAssistantId: string | null = null;
+  let ownerAssistantEligible = false;
   if (isOwnerAssistantUiEnabled() && memberships[0].role === "owner" && currentOrg) {
+    ownerAssistantEligible = true;
     const { data: assistant, error: assistantError } = await (supabase as any)
       .from("assistants")
       .select("id")
@@ -167,8 +169,12 @@ export default async function DashboardLayout({
     </div>
   );
 
-  if (!ownerAssistantId) return dashboard;
+  if (!ownerAssistantEligible) return dashboard;
 
+  // An admitted owner keeps the provider even when this render's read found no
+  // assistant or failed: router.refresh() re-runs this layout, and swapping the root
+  // element would remount the dashboard and cut off a live session. The bubble hides
+  // itself without an assistant (unless a session is live).
   // Keyed by org: switching org ends the old org's session instead of carrying it over.
   return (
     <OwnerAssistantProvider assistantId={ownerAssistantId} key={currentOrg.id}>
