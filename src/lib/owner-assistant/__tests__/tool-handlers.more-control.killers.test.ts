@@ -290,9 +290,13 @@ describe("killers — over a PostgREST-like fake", () => {
   });
 
   it("K33 + K113: a confirmed mark-done updates ONLY that org's pending row, is reported done, and the read-back says when it came in", async () => {
+    // Test lens r2: rows the id, org and status filters must each keep out (the same id in
+    // another org, and done already) — not only another callback of this org's.
     tables.callback_requests = [
       { ...PENDING, organization_id: ORG, status: "pending" },
       { id: "cb-other", organization_id: ORG, status: "pending", caller_name: "Ann", reason: "Quote", created_at: "2026-10-14T23:00:00Z" },
+      { ...PENDING, organization_id: OTHER_ORG, status: "pending" },
+      { ...PENDING, organization_id: ORG, status: "completed" },
     ];
     const readBack = await handleOwnerMarkCallbackDone(ORG, { callback_id: CALLBACK }, ctx);
     expect(readBack.message).toContain("received Thursday, October 15 at 9:12 AM");
@@ -300,6 +304,8 @@ describe("killers — over a PostgREST-like fake", () => {
     expect(r).toMatchObject({ success: true, data: { outcome: "callback_done" } });
     expect(tables.callback_requests[0]).toMatchObject({ status: "completed", completed_by: OWNER_USER, completed_on_call_id: CALL });
     expect(tables.callback_requests[1].status).toBe("pending");
+    expect(tables.callback_requests[2]).toMatchObject({ organization_id: OTHER_ORG, status: "pending" });
+    expect(tables.callback_requests[2]).not.toHaveProperty("completed_on_call_id");
   });
 
   it("K114 / R09: the same booking asked for again on this call is found by its number and handed back — never booked twice", async () => {
@@ -337,6 +343,69 @@ describe("test lens G10 + G13", () => {
     db.queues.blocked_times = [{ data: [{ id: "block-1", title: "Quote visit" }], error: null }];
     const r = await handleOwnerBlockTime(ORG, { ...BLOCK, reason: "Something else", confirmed: true }, ctx);
     expect(r.data).toMatchObject({ outcome: "blocked", block_id: "block-1", title: "Quote visit" });
-    expect(filters(opsOn("blocked_times")[0], "select")).toEqual([["id, title"]]);
+  });
+});
+
+// ─── Test lens round 2 (9903416c): the two-week limit and the repeated block's title ───
+describe("test lens round 2 — the two-week limit on the org's own calendar", () => {
+  it("N04: exactly two weeks from a Friday AFTERNOON is allowed; a minute more is refused (the limit keeps the start's time of day)", async () => {
+    const ok = await handleOwnerBlockTime(ORG, { start: "2026-10-16T13:00", end: "2026-10-30T13:00" }, ctx);
+    expect(ok.data).toMatchObject({ outcome: "needs_confirmation" });
+    db.queues.organizations = [AU_ORG];
+    const over = await handleOwnerBlockTime(ORG, { start: "2026-10-16T13:00", end: "2026-10-30T13:01" }, ctx);
+    expect(over.data).toMatchObject({ outcome: "invalid_time" });
+  });
+
+  it("N10: exactly two weeks across the OCTOBER clock change (335 hours) is two weeks, and the extra hour a millisecond count would allow is refused", async () => {
+    const ok = await handleOwnerBlockTime(ORG, { start: "2027-09-30T00:00", end: "2027-10-14T00:00" }, ctx);
+    expect(ok.data).toMatchObject({ outcome: "needs_confirmation" });
+    db.queues.organizations = [AU_ORG];
+    // 336 hours exactly: 14 x 24 h of milliseconds, but an hour past two weeks on the calendar.
+    const over = await handleOwnerBlockTime(ORG, { start: "2027-09-30T00:00", end: "2027-10-14T01:00" }, ctx);
+    expect(over.data).toMatchObject({ outcome: "invalid_time" });
+  });
+
+  it("N09: an org outside Sydney is judged on ITS calendar — a whole day is an all-day row, and two weeks across its clock change is two weeks", async () => {
+    db.queues.organizations = [{ data: { timezone: "Australia/Brisbane", country: "AU" }, error: null }];
+    db.queues.blocked_times = [{ data: [], error: null }, { data: { id: "block-1" }, error: null }];
+    await handleOwnerBlockTime(ORG, { start: "2026-10-17T00:00", end: "2026-10-18T00:00", confirmed: true }, ctx);
+    expect(opsOn("blocked_times")[1].insert).toMatchObject({ all_day: true, start_time: "2026-10-16T14:00:00.000Z", end_time: "2026-10-17T14:00:00.000Z" });
+    db.queues.organizations = [{ data: { timezone: "America/New_York", country: "US" }, error: null }];
+    // New York leaves daylight time on Sunday 1 November 2026: this fortnight is 337 hours.
+    const fortnight = await handleOwnerBlockTime(ORG, { start: "2026-10-29T09:00", end: "2026-11-12T09:00" }, ctx);
+    expect(fortnight.data).toMatchObject({ outcome: "needs_confirmation" });
+  });
+});
+
+describe("test lens round 2 — a repeated block hands back the title it was STORED with", () => {
+  it("T04 + T05 + T07: the stored title comes back as one capped line, and a blank one as 'Time off' — never the new reason", async () => {
+    // A title typed in the dashboard can hold anything; it reaches the model in data.title.
+    db.queues.blocked_times = [{ data: [{ id: "block-1", title: "Quote\nvisit\u200b" + "x".repeat(200) }], error: null }];
+    const r = await handleOwnerBlockTime(ORG, { ...BLOCK, reason: "Something else", confirmed: true }, ctx);
+    const title = (r.data as { title: string }).title;
+    expect(title.startsWith("Quote visit")).toBe(true);
+    expect(title).not.toMatch(/[\n\u200b]/);
+    expect(Array.from(title).length).toBeLessThanOrEqual(80);
+    db.queues.organizations = [AU_ORG];
+    db.queues.blocked_times = [{ data: [{ id: "block-1", title: "   " }], error: null }];
+    const blank = await handleOwnerBlockTime(ORG, { ...BLOCK, reason: "Something else", confirmed: true }, ctx);
+    expect(blank.data).toMatchObject({ outcome: "blocked", block_id: "block-1", title: "Time off" });
+  });
+
+  describe("over the PostgREST-like fake (a column not selected never comes back)", () => {
+    beforeEach(() => {
+      nextId = 1;
+      tables = { organizations: [{ id: ORG, timezone: TZ, country: "AU" }] };
+      vi.mocked(createAdminClient).mockReturnValue(postgrestAdmin() as any);
+    });
+
+    it("T01 (G13 by behaviour, not by the select string): the repeat reports the title stored on this call's block — still one row", async () => {
+      tables.blocked_times = [
+        { id: "block-9", organization_id: ORG, created_on_call_id: CALL, start_time: "2026-10-16T02:00:00.000Z", end_time: "2026-10-16T06:00:00.000Z", title: "Quote visit" },
+      ];
+      const r = await handleOwnerBlockTime(ORG, { ...BLOCK, reason: "Something else", confirmed: true }, ctx);
+      expect(r.data).toMatchObject({ outcome: "blocked", block_id: "block-9", title: "Quote visit" });
+      expect(tables.blocked_times).toHaveLength(1);
+    });
   });
 });

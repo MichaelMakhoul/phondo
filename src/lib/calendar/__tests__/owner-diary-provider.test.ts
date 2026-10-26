@@ -61,3 +61,32 @@ describe("killers — ownerDiaryProvider reads only this org's ACTIVE service ty
     expect(await ownerDiaryProvider(ORG)).toBe("phondo");
   });
 });
+
+// ─── Test lens round 2: the fake above ignores the select list, so it can't see a lookup
+// that stops reading the key it checks (P04 survives every suite). This one projects. ───
+describe("test lens round 2 — the Cal.com lookup reads the key it checks", () => {
+  function projectingAdmin() {
+    return {
+      from: (table: string) => {
+        let cols: string[] = [];
+        const preds: Array<(r: Record<string, unknown>) => boolean> = [];
+        const b: any = {
+          select: (c: string) => { cols = c.split(",").map((s) => s.trim()).filter(Boolean); return b; },
+          eq: (k: string, v: unknown) => { preds.push((r) => r[k] === v); return b; },
+          limit: () => b,
+          then: (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) => {
+            const rows = (tables[table] ?? []).filter((r) => preds.every((p) => p(r))).map((r) => Object.fromEntries(cols.map((c) => [c, r[c]])));
+            return Promise.resolve({ data: rows, error: null }).then(resolve, reject);
+          },
+        };
+        return b;
+      },
+    };
+  }
+
+  it("P04: an org whose diary is a connected Cal.com account is on Cal.com when the read returns only the columns it asked for", async () => {
+    vi.mocked(createAdminClient).mockReturnValue(projectingAdmin() as never);
+    tables = { calendar_integrations: [{ id: "ci-1", ...CAL_COM }] };
+    expect(await ownerDiaryProvider(ORG)).toBe("Cal.com");
+  });
+});

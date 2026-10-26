@@ -20,7 +20,7 @@ function makeChain(table) {
   };
   const chain = {
     select: () => chain,
-    eq: () => chain,
+    eq: record("eq"),
     in: () => chain,
     gte: record("gte"),
     lte: record("lte"),
@@ -31,6 +31,7 @@ function makeChain(table) {
       if (table === "blocked_times") {
         blockFilters = filters;
         const pass = (row, [op, col, val]) => {
+          if (op === "eq") return row[col] === val;
           const a = new Date(row[col]).getTime();
           const b = new Date(val).getTime();
           return op === "gte" ? a >= b : op === "lte" ? a <= b : op === "lt" ? a < b : a > b;
@@ -68,14 +69,14 @@ const addDays = (date, n) => {
 };
 
 async function snapshotWithBlocks(rows) {
-  blockRows = rows;
+  blockRows = rows.map((row) => ({ organization_id: "org-1", ...row }));
   return loadScheduleSnapshot("org-1", ORG, []);
 }
 
 describe("loadScheduleSnapshot: blocks that overlap the window close the times inside it (SCRUM-599)", () => {
   it("asks for every block that overlaps the window — starts before its end, ends after its start", async () => {
     await snapshotWithBlocks([]);
-    assert.deepStrictEqual(blockFilters.map(([op, col]) => [op, col]), [["lt", "start_time"], ["gt", "end_time"]]);
+    assert.deepStrictEqual(blockFilters.map(([op, col]) => [op, col]), [["eq", "organization_id"], ["lt", "start_time"], ["gt", "end_time"]]);
   });
 
   it("a block already under way that runs past the window (two weeks off) closes every day in it", async () => {
@@ -108,5 +109,30 @@ describe("loadScheduleSnapshot: blocks that overlap the window close the times i
     const snap = await snapshotWithBlocks([later]);
     assert.deepStrictEqual(snap.blockedTimes, []);
     assert.deepStrictEqual(snap.slots, open.slots);
+  });
+});
+
+// Test lens round 2 (VS1 survives every suite without it): no test above keeps an
+// ordinary block — one wholly INSIDE the window, the everyday case.
+describe("test lens round 2: an ordinary block inside the window", () => {
+  it("VS1: one afternoon blocked two days out closes exactly that afternoon", async () => {
+    const open = await snapshotWithBlocks([]);
+    const day = Object.keys(open.slots)[2];
+    const block = { id: "b4", start_time: _test.localToUtcIso(`${day}T13:00:00`, TZ), end_time: _test.localToUtcIso(`${day}T17:00:00`, TZ), practitioner_id: null };
+    const closed = await snapshotWithBlocks([block]);
+    assert.deepStrictEqual(closed.blockedTimes.map((b) => b.id), ["b4"]);
+    assert.ok(open.slots[day].some((s) => s.slice(11, 16) >= "13:00"), "the afternoon had times to close");
+    assert.deepStrictEqual(closed.slots[day], open.slots[day].filter((s) => s.slice(11, 16) < "13:00"));
+  });
+});
+
+describe("test lens round 2: only this org's blocks", () => {
+  it("VS3: another org's block at the same time never closes this org's times", async () => {
+    const open = await snapshotWithBlocks([]);
+    const day = Object.keys(open.slots)[2];
+    const theirs = { id: "b5", organization_id: "org-2", start_time: _test.localToUtcIso(`${day}T00:00:00`, TZ), end_time: _test.localToUtcIso(`${day}T23:59:00`, TZ), practitioner_id: null };
+    const snap = await snapshotWithBlocks([theirs]);
+    assert.deepStrictEqual(snap.blockedTimes, []);
+    assert.deepStrictEqual(snap.slots[day], open.slots[day]);
   });
 });

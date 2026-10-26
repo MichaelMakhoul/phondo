@@ -9,7 +9,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: vi.fn() }));
 vi.mock("@/lib/security/rate-limiter", () => ({ rateLimitDistributed: vi.fn(async () => ({ allowed: true })) }));
-vi.mock("@/lib/utils/after-response", () => ({ runAfterResponse: vi.fn() }));
+// Test lens round 2 (P01): the booking path schedules BOTH automatic notices through
+// runAfterResponse, so a no-op mock made "no automatic notice" pass with the guard
+// removed. The work is kept and run before asserting what was sent.
+const after = vi.hoisted(() => ({ work: [] as Array<() => unknown> }));
+vi.mock("@/lib/utils/after-response", () => ({ runAfterResponse: vi.fn((fn: () => unknown) => { after.work.push(fn); }) }));
+async function flushAfterResponse() {
+  while (after.work.length) await after.work.shift()!();
+}
 vi.mock("@/lib/voice-cache/invalidate", () => ({ invalidateVoiceScheduleCache: vi.fn() }));
 vi.mock("@/lib/notifications/notification-service", () => ({ sendAppointmentNotification: vi.fn(), getOrganizationOwnerEmail: vi.fn(async () => null) }));
 vi.mock("@/lib/calendar/cliniko-booking", async (importOriginal) => ({
@@ -115,6 +122,7 @@ const ASK = { customer_name: "Jane Smith", customer_phone: "0412 345 678", start
 
 beforeEach(() => {
   nextId = 1;
+  after.work.length = 0;
   tables = {
     organizations: [{ id: ORG, timezone: TZ, country: "AU", business_hours: HOURS, default_appointment_duration: 60 }],
   };
@@ -143,6 +151,7 @@ afterEach(() => {
 describe("owner_book_appointment through the real booking path (test lens G2)", () => {
   it("one yes: ONE row on the owner's call (owner_voice, E.164), one audit row, the owner's text and no automatic notice", async () => {
     const r = await handleOwnerBookAppointment(ORG, ASK, { callId: CALL });
+    await flushAfterResponse();
     expect(r.data).toMatchObject({ outcome: "booked", customer_contact: { method: "text", status: "sent" } });
     expect(tables.appointments).toHaveLength(1);
     expect(tables.appointments[0]).toMatchObject({
@@ -162,6 +171,7 @@ describe("owner_book_appointment through the real booking path (test lens G2)", 
   it("the same yes again (its result never came back): handed back — still one row, one audit row, one text", async () => {
     await handleOwnerBookAppointment(ORG, ASK, { callId: CALL });
     const again = await handleOwnerBookAppointment(ORG, ASK, { callId: CALL });
+    await flushAfterResponse();
     expect(again.message).toBe("Jane Smith is already booked for Friday, October 16 at 10:00 AM — that's the booking from a moment ago. I've texted Jane Smith to let them know.");
     expect(again.data).toMatchObject({ outcome: "booked", appointment_id: tables.appointments[0].id, customer_contact: { method: "text", status: "sent" } });
     expect(tables.appointments).toHaveLength(1);
@@ -200,5 +210,8 @@ describe("owner_book_appointment through the real booking path (test lens G2)", 
     await handleOwnerBookAppointment(ORG, ASK, { callId: CALL });
     const other = await handleOwnerBookAppointment(ORG, { ...ASK, notify_customer: "none" }, { callId: "99999999-8888-4777-8666-555555555555" });
     expect(other.message).not.toContain("from a moment ago");
+    // Test lens r2: and it IS booked (this fake has no clash constraint) — not merely "not a repeat".
+    expect(other.data).toMatchObject({ outcome: "booked" });
+    expect(tables.appointments).toHaveLength(2);
   });
 });
