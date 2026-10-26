@@ -74,7 +74,8 @@ async function createCallRecord({ orgId, assistantId, phoneNumberId, callerPhone
  * @param {*} [fields.pipelineFailover] - SCRUM-535: {from, to, reason, model} when the fallback provider served the call
  * @param {string|null} [fields.pipeline] - SCRUM-594: the pipeline that served a demo-line call ("gemini-live"|"classic"|"classic-fast") → metadata.pipeline; null on every other call
  * @param {object|null} [fields.fastPath] - SCRUM-594: the fast path's latency summary (turns, eot-to-audio p50/p90, drafts, fallbacks) → metadata.fastPath; null on every other call
- * @param {"owner"|null} [fields.callType] - SCRUM-587: "owner" for an owner-assistant call → metadata.call_type
+ * @param {"owner"|"customer_notify"|null} [fields.callType] - SCRUM-587: "owner" for an owner-assistant call → metadata.call_type; SCRUM-598: "customer_notify" for a call the assistant placed to a customer
+ * @param {Record<string, unknown>|null} [fields.notify] - SCRUM-598: a customer call's metadata.notify (its purpose, booking, requester, how it was answered and how it went) — re-sent whole, since this write replaces metadata
  * @param {"web"|null} [fields.channel] - SCRUM-596: "web" for an owner session in the dashboard (no phone line) → metadata.channel
  * @param {string|null} [fields.ownerAuth] - SCRUM-587: "verified"|"locked"|"failed"|"error" → metadata.owner_auth (also on customer calls that failed the PIN gate)
  */
@@ -103,6 +104,7 @@ async function completeCallRecord(callId, {
   callType,
   ownerAuth,
   channel,
+  notify,
 }) {
   const supabase = getSupabase();
 
@@ -151,6 +153,8 @@ async function completeCallRecord(callId, {
     ...(ownerAuth && { owner_auth: ownerAuth }),
     // SCRUM-596: an owner session in the dashboard has no phone line; the call log says where it happened.
     ...(channel && { channel }),
+    // SCRUM-598: a customer call keeps its request and outcome (call-completed's outcome email reads them).
+    ...(notify && { notify }),
   };
 
   if (Object.keys(metadataExtras).length > 0) {

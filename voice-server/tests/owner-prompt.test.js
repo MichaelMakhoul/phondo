@@ -23,10 +23,22 @@ describe("buildOwnerPrompt", () => {
     assert.ok(p.includes("YYYY-MM-DDTHH:mm"), "PR B's new_datetime format must be declared");
     for (const o of ["needs_confirmation", "not_found", "slot_taken", "invalid_time", "rate_limited"]) assert.ok(p.includes(o), o);
   });
-  it("tells the customer only through notify_customer, and never promises a notification (SCRUM-597)", () => {
-    assert.ok(p.includes("TELLING THE CUSTOMER happens only through notify_customer on a change."));
-    assert.ok(p.includes('Say the customer was texted ONLY when data.customer_contact.status is "sent".'));
+  it("tells the customer only through notify_customer (or owner_call_customer), and never promises a notification (SCRUM-597/598)", () => {
+    assert.ok(p.includes("TELLING THE CUSTOMER happens only through notify_customer on a change, or owner_call_customer."));
+    assert.ok(p.includes('Say the customer was texted ONLY when data.customer_contact.status is "sent", and that you\'re calling them ONLY when it is "calling" (the owner gets an email when the call\'s done).'));
     assert.ok(p.includes("Never promise a text, call, email or any notification that a result has not confirmed."));
+  });
+  it("SCRUM-598: calling a customer takes the same read-back and yes as a change", () => {
+    assert.ok(p.includes("- owner_call_customer — have the assistant phone a customer about ONE booking WITHOUT changing it"));
+    assert.ok(p.includes('To tell a customer about a change you\'re making, use notify_customer "call" on that change instead.'));
+    const at = p.indexOf("CALLING A CUSTOMER (owner_call_customer) — the same strict order as a change:");
+    assert.ok(at > 0);
+    const section = p.slice(at, p.indexOf("TELLING THE CUSTOMER", at));
+    assert.ok(section.indexOf("WITHOUT confirmed. It places no call") < section.indexOf("wait for a clear yes"));
+    assert.ok(section.indexOf("wait for a clear yes") < section.indexOf("Only after a clear yes, call it again with confirmed=true"));
+    assert.ok(section.includes('Say you\'re calling ONLY when data.outcome is "calling"'));
+    assert.ok(section.includes('"not_available" with why a call can\'t be made now'));
+    assert.ok(section.includes("it says it's an AI, checks it has the right person, and can book or move a time for them — nothing else."));
   });
   it("lists exactly the owner tools and declines what phase 1 cannot do", () => {
     for (const t of ["owner_list_appointments", "owner_list_messages", "owner_reschedule_appointment", "owner_cancel_appointment", "check_availability", "get_current_datetime", "end_call"]) assert.ok(p.includes(t), t);
@@ -69,6 +81,10 @@ describe("buildOwnerGeminiSuffix", () => {
     assert.ok(/NO NEW BOOKINGS, NO TRANSFERS, NO BULK CHANGES/.test(s));
     assert.ok(/DON'T HANG UP ON "YES"/.test(s));
     assert.ok(!s.includes("book_appointment") && !s.includes("schedule_callback"));
+  });
+  it("SCRUM-598: says calling only on a 'calling' result, and gives owner_call_customer the same two calls", () => {
+    assert.ok(s.includes('and that you\'re calling them ONLY when it (or owner_call_customer\'s data.outcome) is "calling"'));
+    assert.ok(s.includes("owner_call_customer takes the same two calls: WITHOUT confirmed for the read-back, then confirmed=true only after a clear yes."));
   });
 });
 
@@ -218,7 +234,11 @@ describe("buildOwnerPrompt — the rest of the rules the model is held to", () =
   it("declines what phase 1 cannot do, briefly", () => {
     assert.ok(p.includes("NOT IN THIS VERSION: booking new jobs by phone"));
     assert.ok(p.includes('bulk changes such as "push today to tomorrow" (one job at a time)'));
-    assert.ok(p.includes("transfers, and calling or texting anyone other than letting a customer know about a change through notify_customer. Decline briefly and move on."));
+    assert.ok(p.includes('transfers, scheduling a call or text for later (outside calling hours, say to ask again after 8 a.m. — never promise to call "in the morning"), and calling or texting anyone except a customer about their own booking (notify_customer on a change, or owner_call_customer). Decline briefly and move on.'));
+  });
+  it("never teaches a guess at the customer's gender from the name (clients lens S6)", () => {
+    assert.ok(p.includes(`("Call Jane Smith now to check they're still OK for Wednesday the 28th at 2:30?")`));
+    assert.doesNotMatch(p, /check she's still OK/);
   });
   it("sets the voice style and never acts on a guess", () => {
     assert.ok(p.includes("STYLE: brief and plain, like a good office manager."));

@@ -36,9 +36,11 @@ import {
   todayISO,
   parseOwnerLocalDatetime,
   formatWhen,
+  isRealCalendarDate,
 } from "./time";
+import { addDaysISO } from "@/lib/calendar/tool-handlers";
 import { sanitizeCustomerText } from "./sanitize";
-import { isOwnerCallMetadata } from "./owner-call";
+import { isOwnerCallMetadata, isCustomerNotifyCallMetadata } from "./owner-call";
 import {
   contactCustomer,
   contactOutcomeSentence,
@@ -49,14 +51,9 @@ import {
   type ContactOptions,
   type CustomerContactResult,
 } from "./customer-contact";
+import { callWhy, checkCustomerCall, placeCustomerCall, TIMES_OF_DAY, type CallBlockReason, type TimeWindow } from "./customer-call";
 
-export const OWNER_TOOL_NAMES = [
-  "owner_list_appointments",
-  "owner_list_messages",
-  "owner_reschedule_appointment",
-  "owner_cancel_appointment",
-] as const;
-export type OwnerToolName = (typeof OWNER_TOOL_NAMES)[number];
+export { OWNER_TOOL_NAMES, type OwnerToolName } from "./tool-names";
 
 /** Set by the internal route from the request ENVELOPE (never from model arguments). */
 export interface OwnerCallContext {
@@ -310,10 +307,11 @@ export async function handleOwnerListMessages(organizationId: string, ctx?: Owne
   // The list is capped; the count is the real number waiting.
   const cbTotal = typeof cbCount === "number" ? cbCount : callbacks.length;
 
-  // The owner's own calls are not messages. Every other call today is: a missed or
-  // short call (or one whose post-call analysis failed, or one still under way) has no
-  // summary but is still a customer who rang, so it is listed and counted rather than dropped.
-  const customerRows = (calls ?? []).filter((c: any) => !isOwnerCallMetadata(c.metadata));
+  // The owner's own calls are not messages, nor are the calls the assistant placed to
+  // customers (SCRUM-598: each has its own email). Every other call today is: a missed
+  // or short call (or one whose post-call analysis failed, or one still under way) has
+  // no summary but is still a customer who rang, so it is listed and counted rather than dropped.
+  const customerRows = (calls ?? []).filter((c: any) => !isOwnerCallMetadata(c.metadata) && !isCustomerNotifyCallMetadata(c.metadata));
   const customerCalls: OwnerCallItem[] = customerRows.slice(0, MESSAGES_LIMIT).map((c: any) => ({
     call_id: c.id,
     at: formatWhen(new Date(c.created_at), tz),
@@ -398,6 +396,26 @@ export interface OwnerCancelData {
   customer_notified: boolean;
 }
 
+/**
+ * SCRUM-598: owner_call_customer — a call about one booking that changes nothing by
+ * itself (so, unlike the change tools, no customer_notified: the call's own email
+ * says how it went).
+ */
+export interface OwnerCallCustomerData {
+  outcome: "calling" | "needs_confirmation" | "not_available" | "not_found" | "external_calendar" | "rate_limited";
+  appointment_id?: string;
+  customer_name?: string;
+  /** Spoken form of the booking's time (formatWhen). */
+  when?: string;
+  purpose?: "confirm" | "find_new_time";
+  /** find_new_time: the window for the new time, as validated. */
+  window?: TimeWindow;
+  /** On not_available: why a call can't be placed. */
+  reason?: CallBlockReason;
+  /** On calling: the call's own id (its outcome email links to it). */
+  call_id?: string;
+}
+
 const NOT_FOUND_MSG = "I can't find that job. It may have already been moved or cancelled.";
 const RATE_LIMITED_MSG = "There have been several changes in a row just now — give it a minute and try again.";
 const SLOT_TAKEN_NO_ALTERNATIVES_MSG = "That time's taken — want to try another time?";
@@ -435,14 +453,20 @@ function contactWays(contact: ContactOptions): string {
  * is nothing to choose: the model says so and offers the number, and a bare yes
  * confirms (notify_customer "none" is assumed — see the handlers).
  */
-function readBackMessage(change: string, customer: string, contact: ContactOptions, tool: string): string {
+function readBackMessage(change: string, customer: string, contact: ContactOptions, tool: string, kind: "cancelled" | "moved"): string {
   const ways = contactWays(contact);
+  // Clients lens M8: a call does more than tell them — the owner hears that before choosing.
+  const callDoes = !contact.options.includes("call")
+    ? ""
+    : kind === "cancelled"
+      ? " (a call also offers them another time)"
+      : " (a call also checks the new time suits them)";
   if (!ways) {
     const why = contact.note ? ` (${contact.note.replace(/[.!?]+$/, "")})` : "";
     return `Read this back and get a clear yes before changing anything: ${change}. Telling ${customer} isn't possible from here${why}: say so in a few words (for example "I can't text them") and offer to read out their number after the change. If the owner confirms, call ${tool} again with confirmed=true and notify_customer "none".`;
   }
   const note = contact.note ? ` ${contact.note}` : "";
-  return `Read this back and get a clear yes before changing anything: ${change}. In the same question, ask whether to let ${customer} know: by ${ways}, or not tell them.${note} If the owner confirms, call ${tool} again with confirmed=true and notify_customer set to their answer: ${contact.options.map((m) => `"${m}"`).join(", ")}.`;
+  return `Read this back and get a clear yes before changing anything: ${change}. In the same question, ask whether to let ${customer} know: by ${ways}${callDoes}, or not tell them.${note} If the owner confirms, call ${tool} again with confirmed=true and notify_customer set to their answer: ${contact.options.map((m) => `"${m}"`).join(", ")}.`;
 }
 
 /**
@@ -497,6 +521,7 @@ const OWNER_BEFORE_COLS =
 // ToolResult.data is a plain record; these keep each tool's payload checked against its interface.
 const rescheduleData = (d: OwnerRescheduleData) => d as unknown as Record<string, unknown>;
 const cancelData = (d: OwnerCancelData) => d as unknown as Record<string, unknown>;
+const callData = (d: OwnerCallCustomerData) => d as unknown as Record<string, unknown>;
 
 /**
  * SCRUM-415 sibling of enforceApptMutationRateLimit, keyed on the ORG as the
@@ -594,7 +619,11 @@ export async function handleOwnerRescheduleAppointment(
   if (chosen) {
     method = chosen;
   } else {
-    const contact = await getContactOptions(organizationId, before.attendee_phone, org.country);
+    const contact = await getContactOptions(organizationId, before.attendee_phone, org.country, undefined, {
+      appointmentId: before.id,
+      purpose: "moved",
+      requestedByCallId: ctx.callId,
+    });
     if (args.confirmed === true && !contactWays(contact)) {
       method = "none";
     } else {
@@ -604,7 +633,7 @@ export async function handleOwnerRescheduleAppointment(
         message:
           args.confirmed === true
             ? askContactMessage(customer, contact, "owner_reschedule_appointment")
-            : readBackMessage(change, customer, contact, "owner_reschedule_appointment"),
+            : readBackMessage(change, customer, contact, "owner_reschedule_appointment", "moved"),
         data: rescheduleData({
           outcome: "needs_confirmation",
           appointment_id: before.id,
@@ -734,10 +763,11 @@ export async function handleOwnerRescheduleAppointment(
     phone: inserted.attendee_phone ?? before.attendee_phone,
     country: org.country,
     timezone: tz,
+    requestedByCallId: ctx.callId,
   });
   return {
     success: true,
-    message: `Moved ${customer} from ${from} to ${to}.${contactOutcomeSentence(contact, customer)}`,
+    message: `Moved ${customer} from ${from} to ${to}.${contactOutcomeSentence(contact, customer, "moved")}`,
     data: rescheduleData({
       outcome: "rescheduled",
       appointment_id: before.id,
@@ -786,7 +816,11 @@ export async function handleOwnerCancelAppointment(
   if (chosen) {
     method = chosen;
   } else {
-    const contact = await getContactOptions(organizationId, appt.attendee_phone, org.country);
+    const contact = await getContactOptions(organizationId, appt.attendee_phone, org.country, undefined, {
+      appointmentId: appt.id,
+      purpose: "cancelled",
+      requestedByCallId: ctx.callId,
+    });
     if (args.confirmed === true && !contactWays(contact)) {
       method = "none";
     } else {
@@ -796,7 +830,7 @@ export async function handleOwnerCancelAppointment(
         message:
           args.confirmed === true
             ? askContactMessage(customer, contact, "owner_cancel_appointment")
-            : readBackMessage(change, customer, contact, "owner_cancel_appointment"),
+            : readBackMessage(change, customer, contact, "owner_cancel_appointment", "cancelled"),
         data: cancelData({
           outcome: "needs_confirmation",
           appointment_id: appt.id,
@@ -862,10 +896,11 @@ export async function handleOwnerCancelAppointment(
     phone: appt.attendee_phone,
     country: org.country,
     timezone: tz,
+    requestedByCallId: ctx.callId,
   });
   return {
     success: true,
-    message: `Cancelled ${customer}'s job on ${when}.${contactOutcomeSentence(contact, customer)}`,
+    message: `Cancelled ${customer}'s job on ${when}.${contactOutcomeSentence(contact, customer, "cancelled")}`,
     data: cancelData({
       outcome: "cancelled",
       appointment_id: appt.id,
@@ -875,5 +910,170 @@ export async function handleOwnerCancelAppointment(
       customer_contact: contact,
       customer_notified: isCustomerNotified(contact),
     }),
+  };
+}
+
+/** What the call is for, in the read-back's words. */
+const CALL_PURPOSE_WORDS = {
+  confirm: "check they're still OK for",
+  find_new_time: "find a new time for",
+} as const;
+/** How far ahead find_new_time's window may reach. */
+const CALL_WINDOW_MAX_DAYS = 90;
+
+/**
+ * find_new_time's window from the model's flat arguments: real calendar days from
+ * today (org-local) up to 90 days ahead, earliest before latest, and a time of day
+ * from the list. Structured only — the call's prompt words it from these fields, so
+ * no owner-session text reaches the customer (security lens F2). null fields = no
+ * window; a malformed one is refused whole.
+ */
+function parseCallWindow(
+  args: { earliest_date?: string; latest_date?: string; time_of_day?: string },
+  tz: string
+): { ok: true; window: TimeWindow | null } | { ok: false } {
+  const today = todayISO(tz);
+  const last = addDaysISO(today, CALL_WINDOW_MAX_DAYS);
+  const day = (v: string | undefined): string | null | undefined => {
+    if (v === undefined || v === "") return null;
+    return isRealCalendarDate(v) && v >= today && v <= last ? v : undefined;
+  };
+  const earliest = day(args.earliest_date);
+  const latest = day(args.latest_date);
+  const timeOfDay =
+    args.time_of_day === undefined || args.time_of_day === ""
+      ? "any"
+      : (TIMES_OF_DAY as readonly string[]).includes(args.time_of_day)
+        ? (args.time_of_day as TimeWindow["timeOfDay"])
+        : undefined;
+  if (earliest === undefined || latest === undefined || timeOfDay === undefined) return { ok: false };
+  if (earliest && latest && earliest > latest) return { ok: false };
+  if (!earliest && !latest && timeOfDay === "any") return { ok: true, window: null };
+  return { ok: true, window: { earliest, latest, timeOfDay } };
+}
+
+/** A calendar day in words ("Monday, November 2") — the day itself, in any zone. */
+function dayInWords(iso: string): string {
+  return new Date(`${iso}T12:00:00Z`).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: "UTC" });
+}
+
+/** The window, read back: " — between Monday, November 2 and Friday, November 6, in the morning". */
+function windowPhrase(window: TimeWindow | null): string {
+  if (!window) return "";
+  const range = window.earliest && window.latest
+    ? `between ${dayInWords(window.earliest)} and ${dayInWords(window.latest)}`
+    : window.earliest
+      ? `from ${dayInWords(window.earliest)}`
+      : window.latest
+        ? `by ${dayInWords(window.latest)}`
+        : "";
+  const period = window.timeOfDay === "any" ? "" : `in the ${window.timeOfDay}`;
+  const words = [range, period].filter(Boolean).join(", ");
+  return words ? ` — ${words}` : "";
+}
+
+/**
+ * The owner's line when a call isn't placed (the customer's number is offered
+ * instead): "can't" at the read-back, before anything was tried; "couldn't" once
+ * the placement was refused (clients lens S2).
+ */
+function callNotPlacedMessage(customer: string, reason: CallBlockReason, tried: boolean): string {
+  if (reason === "calls_disabled") return "I can't call customers yet. I can read you their number if you want to ring them yourself.";
+  if (reason === "place_unconfirmed") return `I'm not sure the call to ${customer} went out — check Calls in the dashboard before you ring them yourself.`;
+  return `I ${tried ? "couldn't" : "can't"} call ${customer}: ${callWhy(reason)}. I can read you their number if you want to ring them yourself.`;
+}
+
+/**
+ * SCRUM-598: "call the client ... confirm the appointment", "call them and get another
+ * time". The assistant phones the customer about ONE booking without changing it:
+ * to check they're still OK for it, or to agree a new time and move it (on the
+ * call, with the receptionist's own tools). Same two calls as a change: without
+ * `confirmed` it places nothing and hands back the read-back (the voice server's
+ * confirmation gate arms on it); with confirmed=true after the owner's yes it asks
+ * the voice server to place the call, which re-checks everything first. Only
+ * Phondo's own bookings, like every owner write.
+ */
+export async function handleOwnerCallCustomer(
+  organizationId: string,
+  args: { appointment_id?: string; purpose?: string; earliest_date?: string; latest_date?: string; time_of_day?: string; confirmed?: unknown },
+  ctx: OwnerCallContext
+): Promise<ToolResult> {
+  const supabase = createAdminClient();
+  const org = await getOrgZoneAndCountry(supabase, organizationId);
+  if (!org) return errorResult(TROUBLE);
+
+  const appt = await loadOwnerAppointment(supabase, organizationId, args.appointment_id);
+  if (appt === undefined) return errorResult(TROUBLE);
+  if (appt === null) {
+    return { success: false, message: NOT_FOUND_MSG, data: callData({ outcome: "not_found" }) };
+  }
+  const external = externalDiaryRefusal(organizationId, appt);
+  if (external) {
+    return {
+      success: false,
+      message: external,
+      data: callData({ outcome: "external_calendar", appointment_id: appt.id }),
+    };
+  }
+
+  const customer = sanitizeCustomerText(appt.attendee_name, NAME_MAX) ?? "the customer";
+  const start = new Date(appt.start_time);
+  const when = formatWhen(start, org.tz);
+  const purpose: "confirm" | "find_new_time" | null =
+    args.purpose === "confirm" ? "confirm" : args.purpose === "find_new_time" ? "find_new_time" : null;
+  if (!purpose) {
+    return {
+      success: false,
+      message: `Ask the owner what the call is for: to check ${customer} is still OK for ${when}, or to find them a new time. Then call owner_call_customer with purpose "confirm" or "find_new_time".`,
+      data: callData({ outcome: "needs_confirmation", appointment_id: appt.id, customer_name: customer, when }),
+    };
+  }
+  const parsedWindow = purpose === "find_new_time" ? parseCallWindow(args, org.tz) : ({ ok: true, window: null } as const);
+  if (!parsedWindow.ok) {
+    return {
+      success: false,
+      message: `I need the days for the new time as dates like ${todayISO(org.tz)} (from today, up to ${CALL_WINDOW_MAX_DAYS} days ahead, the first before the last), and the time of day as morning, afternoon, evening or any. Ask the owner if you're not sure, then call owner_call_customer again.`,
+      data: callData({ outcome: "needs_confirmation", appointment_id: appt.id, customer_name: customer, when, purpose }),
+    };
+  }
+  const window = parsedWindow.window;
+  const base = { appointment_id: appt.id, customer_name: customer, when, purpose, ...(window ? { window } : {}) };
+  const notAvailable = (reason: CallBlockReason, message: string): ToolResult => ({
+    success: false,
+    message,
+    data: callData({ outcome: "not_available", ...base, reason }),
+  });
+  if (start.getTime() <= Date.now()) {
+    return notAvailable("wrong_state", `${customer}'s booking on ${when} has already started, so there's nothing to call about.`);
+  }
+
+  const request = {
+    organizationId,
+    appointmentId: appt.id,
+    purpose,
+    phone: appt.attendee_phone,
+    requestedByCallId: ctx.callId,
+    window,
+  };
+
+  if (args.confirmed !== true) {
+    const check = await checkCustomerCall(request);
+    if (!check.canCall) return notAvailable(check.reason, callNotPlacedMessage(customer, check.reason, false));
+    return {
+      success: false,
+      message: `Read this back and get a clear yes before calling: call ${customer} now to ${CALL_PURPOSE_WORDS[purpose]} their booking on ${when}${windowPhrase(window)}.${purpose === "find_new_time" ? ` Only those days and that time of day reach the call: if the owner asked for anything else (a day to skip, a time like "after 3", a particular person), say that can't be passed on before they confirm.` : ""} If the owner confirms, call owner_call_customer again with confirmed=true${window ? ", the same purpose, earliest_date, latest_date and time_of_day" : " and the same purpose"}.`,
+      data: callData({ outcome: "needs_confirmation", ...base }),
+    };
+  }
+
+  if (!(await ownerMutationAllowed(supabase, organizationId))) {
+    return { success: false, message: RATE_LIMITED_MSG, data: callData({ outcome: "rate_limited", ...base }) };
+  }
+  const placed = await placeCustomerCall(request);
+  if (!placed.placed) return notAvailable(placed.reason, callNotPlacedMessage(customer, placed.reason, true));
+  return {
+    success: true,
+    message: `Calling ${customer} now to ${CALL_PURPOSE_WORDS[purpose]} their booking on ${when}${windowPhrase(window)}. You'll get an email when the call's done.`,
+    data: callData({ outcome: "calling", ...base, call_id: placed.callId }),
   };
 }

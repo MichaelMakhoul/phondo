@@ -53,6 +53,21 @@ const ITEMS: OwnerRecapItem[] = [
   { change: "booked", customer: "Raj Patel", when: "Friday, October 30 at 11:00 AM", told: "text_failed" },
 ];
 
+describe("SCRUM-598: a change whose customer is being called", () => {
+  it("says the assistant is calling, and that a separate email follows — never 'told'", async () => {
+    vi.mocked(createAdminClient).mockReturnValue(fakeAdmin(OWNER_FOUND) as any);
+    await sendOwnerAssistantRecapNotification({
+      organizationId: ORG,
+      callId: CALL,
+      channel: "web",
+      items: [{ change: "cancelled", customer: "Michael Dunn", when: "Monday, October 26 at 12:30 PM", told: "calling" }],
+    });
+    const html = sent()[0].html;
+    expect(html).toContain("Your assistant called (or is calling) the customer — see the separate email for how it went.");
+    expect(html).not.toContain("Customer not told.");
+  });
+});
+
 beforeEach(() => {
   queried = [];
   resendSend.mockClear();

@@ -301,6 +301,13 @@ export const SENTRY_REASONS = {
    *  that change. Error level. The extras name the appointment and the call: tell
    *  the owner what changed by hand. */
   OWNER_CHANGE_NOT_AUDITED: "owner-change-not-audited",
+
+  /** SCRUM-598: a call the assistant placed to a customer ended, but its outcome
+   *  email (how it went, from the call row and the diary) could not be built or
+   *  sent — the owner doesn't know whether the customer was told or what they
+   *  agreed. Error level. Open the call in the dashboard (its id is in the extras)
+   *  and tell the owner by hand. */
+  CUSTOMER_CALL_OUTCOME_EMAIL_FAILED: "customer-call-outcome-email-failed",
 } as const;
 
 export type SentryReason = (typeof SENTRY_REASONS)[keyof typeof SENTRY_REASONS];

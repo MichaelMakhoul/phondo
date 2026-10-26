@@ -71,9 +71,13 @@ test("the owner tools are declared to Gemini with the types PR B's gate depends 
   ws.emit("open");
   const setup = ws.sent.find((m) => m.setup);
   const decls = Object.fromEntries(setup.setup.tools[0].functionDeclarations.map((d) => [d.name, d]));
-  assert.deepEqual(Object.keys(decls).sort(), ["check_availability", "end_call", "get_current_datetime", "owner_cancel_appointment", "owner_list_appointments", "owner_list_messages", "owner_reschedule_appointment"]);
+  assert.deepEqual(Object.keys(decls).sort(), ["check_availability", "end_call", "get_current_datetime", "owner_call_customer", "owner_cancel_appointment", "owner_list_appointments", "owner_list_messages", "owner_reschedule_appointment"]);
   assert.equal(decls.owner_cancel_appointment.parameters.properties.confirmed.type, "BOOLEAN");
   assert.equal(decls.owner_reschedule_appointment.parameters.properties.confirmed.type, "BOOLEAN");
+  // SCRUM-598: the call tool goes through the same gate — confirmed is a boolean, purpose an enum.
+  assert.equal(decls.owner_call_customer.parameters.properties.confirmed.type, "BOOLEAN");
+  assert.deepEqual(decls.owner_call_customer.parameters.properties.purpose.enum, ["confirm", "find_new_time"]);
+  assert.deepEqual(decls.owner_call_customer.parameters.required, ["appointment_id", "purpose"]);
   assert.deepEqual(decls.owner_list_appointments.parameters.properties.range.enum, ["today", "tomorrow", "this_week", "date"]);
   assert.deepEqual(decls.owner_reschedule_appointment.parameters.required, ["appointment_id", "new_datetime"]);
 });

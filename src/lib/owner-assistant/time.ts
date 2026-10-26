@@ -17,7 +17,7 @@ const DATETIME_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?(Z|[+-]\d{2}:\d{2})?
  * `toISOString()` throw), while "2026-02-30" parses fine and silently rolls over
  * to March 2 — neither may reach the owner's day range or a reschedule target.
  */
-function isRealCalendarDate(value: string): boolean {
+export function isRealCalendarDate(value: string): boolean {
   if (!DATE_RE.test(value)) return false;
   const d = new Date(`${value}T00:00:00Z`);
   return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === value;

@@ -2,9 +2,17 @@
 // SCRUM-597: "let them know?" on every owner cancel or move. The owner asked to be
 // asked, in case they forget, and to choose a text or a call; a customer who can't
 // take a text never gets one (sms-capability.ts). The text reuses the messages the
-// dashboard already sends. Calls arrive with SCRUM-598.
+// dashboard already sends. SCRUM-598: a call is the assistant phoning them
+// (customer-call.ts), offered only when the voice server says one can be placed now.
 import { sendAppointmentConfirmationSMS, sendCancellationSMS } from "@/lib/sms/caller-sms";
 import { getTextCapability, type TextBlockReason, type TextCapabilityDeps } from "@/lib/sms/sms-capability";
+import {
+  callNote,
+  callWhy,
+  checkCustomerCall,
+  placeCustomerCall,
+  type CallBlockReason,
+} from "./customer-call";
 
 export const CONTACT_METHODS = ["text", "call", "none"] as const;
 export type ContactMethod = (typeof CONTACT_METHODS)[number];
@@ -14,27 +22,29 @@ export function parseContactMethod(value: unknown): ContactMethod | null {
   return typeof value === "string" && (CONTACT_METHODS as readonly string[]).includes(value) ? (value as ContactMethod) : null;
 }
 
-/** What the read-back offers: always "none"; "text" only when it can go out now. */
+/** What the read-back offers: always "none"; "text" and "call" only when each can go out now. */
 export interface ContactOptions {
   options: ContactMethod[];
-  /** One short sentence saying why text isn't offered, when it isn't. */
+  /** Short sentences saying why text (or a call) isn't offered, when it isn't. */
   note?: string;
 }
 
 /**
  * What happened to the owner's choice. Each status belongs to one method, and a
- * text that didn't go out always says why (a TextBlockReason or sendCallerSMS's
- * own reason). SCRUM-598 adds { method: "call", status: "calling" }.
+ * contact that didn't happen always says why (a TextBlockReason or sendCallerSMS's
+ * own reason; a CallBlockReason). "calling" is a call placed: how it went reaches
+ * the owner in its own email.
  */
 export type CustomerContactResult =
   | { method: "none"; status: "not_requested" }
-  | { method: "call"; status: "not_available"; reason: "calls_unavailable" }
+  | { method: "call"; status: "calling"; callId: string }
+  | { method: "call"; status: "not_placed"; reason: CallBlockReason }
   | { method: "text"; status: "sent" }
   | { method: "text"; status: "not_sent"; reason: string };
 
-/** True only when the customer was actually told. */
+/** True when a text went out or a call was placed (the spec's customer_notified). */
 export function isCustomerNotified(result: CustomerContactResult | undefined): boolean {
-  return result?.status === "sent";
+  return result?.status === "sent" || result?.status === "calling";
 }
 
 const BLOCK_NOTES: Record<TextBlockReason, string> = {
@@ -75,33 +85,66 @@ const SEND_WHY: Record<string, string> = {
   db_error: "I couldn't check your text settings, so I held it back",
 };
 
+export interface ContactCapabilityDeps extends TextCapabilityDeps {
+  checkCall?: typeof checkCustomerCall;
+}
+
+/** What a call about this change would be: the booking, why, and the owner session asking. */
+export interface CallContext {
+  appointmentId: string;
+  purpose: "cancelled" | "moved";
+  requestedByCallId: string;
+}
+
+/**
+ * The ways this customer can be told right now. Text and call are checked side by
+ * side; a call only with a CallContext (the owner tools always pass one).
+ */
 export async function getContactOptions(
   orgId: string,
   phone: string | null | undefined,
   country: string | null | undefined,
-  deps?: TextCapabilityDeps
+  deps?: ContactCapabilityDeps,
+  call?: CallContext
 ): Promise<ContactOptions> {
-  const text = await getTextCapability(orgId, phone, country, deps);
-  if (text.canText) return { options: ["text", "none"] };
-  return { options: ["none"], note: BLOCK_NOTES[text.reason] };
+  const [text, calling] = await Promise.all([
+    getTextCapability(orgId, phone, country, deps),
+    call
+      ? (deps?.checkCall ?? checkCustomerCall)({ organizationId: orgId, appointmentId: call.appointmentId, purpose: call.purpose, phone, requestedByCallId: call.requestedByCallId })
+      : Promise.resolve(null),
+  ]);
+  const options: ContactMethod[] = [];
+  const notes: string[] = [];
+  if (text.canText) options.push("text");
+  else notes.push(BLOCK_NOTES[text.reason]);
+  if (calling?.canCall) options.push("call");
+  else if (calling && !calling.canCall) {
+    const n = callNote(calling.reason);
+    if (n) notes.push(n);
+  }
+  options.push("none");
+  return notes.length ? { options, note: notes.join(" ") } : { options };
 }
 
 export interface ContactRequest {
   orgId: string;
   method: ContactMethod;
   kind: "cancelled" | "moved";
-  /** The booking the text is about: the cancelled one, or the NEW leg of a move. */
+  /** The booking the contact is about: the cancelled one, or the NEW leg of a move. */
   appointmentId: string;
   /** Its start: the cancelled time, or the new time. */
   startTime: Date;
   phone: string | null | undefined;
   country: string | null | undefined;
   timezone: string;
+  /** The owner session asking (the envelope callId) — a call can only follow one. */
+  requestedByCallId: string;
 }
 
 export interface ContactDeps extends TextCapabilityDeps {
   sendCancellation?: typeof sendCancellationSMS;
   sendConfirmation?: typeof sendAppointmentConfirmationSMS;
+  placeCall?: typeof placeCustomerCall;
 }
 
 /**
@@ -119,7 +162,30 @@ const OWNER_REQUESTED = { ownerRequested: true } as const;
  */
 export async function contactCustomer(req: ContactRequest, deps: ContactDeps = {}): Promise<CustomerContactResult> {
   if (req.method === "none") return { method: "none", status: "not_requested" };
-  if (req.method === "call") return { method: "call", status: "not_available", reason: "calls_unavailable" };
+  if (req.method === "call") {
+    // The voice server re-checks everything at the moment of dialling (hours, caps,
+    // the booking's state and number) — the read-back was a separate request.
+    try {
+      const placed = await (deps.placeCall ?? placeCustomerCall)({
+        organizationId: req.orgId,
+        appointmentId: req.appointmentId,
+        purpose: req.kind,
+        phone: req.phone,
+        requestedByCallId: req.requestedByCallId,
+      });
+      return placed.placed
+        ? { method: "call", status: "calling", callId: placed.callId }
+        : { method: "call", status: "not_placed", reason: placed.reason };
+    } catch (err) {
+      // placeCustomerCall never throws; this is only a net. Unknown → maybe ringing.
+      console.error("[owner-assistant] customer call threw:", {
+        orgId: req.orgId,
+        appointmentId: req.appointmentId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return { method: "call", status: "not_placed", reason: "place_unconfirmed" };
+    }
+  }
 
   // Checked again at send time: the read-back was a separate request, and the
   // customer may have opted out (or texts been paused) since.
@@ -146,7 +212,7 @@ export async function contactCustomer(req: ContactRequest, deps: ContactDeps = {
  * The sentence after a change, saying exactly what happened to the customer. The
  * model repeats it; it never claims a contact the result doesn't confirm.
  */
-export function contactOutcomeSentence(result: CustomerContactResult, customer: string): string {
+export function contactOutcomeSentence(result: CustomerContactResult, customer: string, kind: "cancelled" | "moved"): string {
   switch (result.status) {
     case "sent":
       return ` I've texted ${customer} to let them know.`;
@@ -154,8 +220,19 @@ export function contactOutcomeSentence(result: CustomerContactResult, customer: 
       const why = (BLOCK_WHY as Record<string, string>)[result.reason] ?? SEND_WHY[result.reason] ?? "the text didn't go through";
       return ` I couldn't text ${customer}: ${why}. I can read you their number if you want to tell them yourself.`;
     }
-    case "not_available":
-      return ` I can't call customers yet, so I haven't let ${customer} know. I can read you their number if you want to tell them yourself.`;
+    case "calling":
+      // Clients lens M8: the owner hears what the call will do, not only that it's happening.
+      return kind === "cancelled"
+        ? ` I'm calling ${customer} now to let them know, and to offer them another time. You'll get an email when the call's done.`
+        : ` I'm calling ${customer} now to tell them the new time and check it suits. You'll get an email when the call's done.`;
+    case "not_placed":
+      if (result.reason === "calls_disabled") {
+        return ` I can't call customers yet, so I haven't let ${customer} know. I can read you their number if you want to tell them yourself.`;
+      }
+      if (result.reason === "place_unconfirmed") {
+        return ` I'm not sure the call to ${customer} went out — check Calls in the dashboard before you ring them yourself.`;
+      }
+      return ` I couldn't call ${customer}: ${callWhy(result.reason)}. I can read you their number if you want to tell them yourself.`;
     case "not_requested":
       // Not "as you asked": with nothing to choose, the owner may never have been asked.
       return ` I haven't let ${customer} know. I can read you their number if you want to tell them yourself.`;

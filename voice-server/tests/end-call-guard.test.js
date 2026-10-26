@@ -32,7 +32,7 @@ function session(audit = []) {
 const FUNNEL = { name: "check_availability", successful: true, at: 1 };
 /** The Gemini inline guard: server.js's end_call branch of onToolCall. */
 function geminiGuardSrc() {
-  const start = serverSrc.indexOf('if (toolCall.name === "end_call" && session.hasUnfinishedBooking(toolCall.args?.reason)) {');
+  const start = serverSrc.indexOf('if (toolCall.name === "end_call" && !session.notify && session.hasUnfinishedBooking(toolCall.args?.reason)) {');
   const end = serverSrc.indexOf("// SCRUM-372: cancel-confirmation gate", start);
   assert.ok(start > 0 && end > start, "the Gemini inline guard is still in server.js");
   return serverSrc.slice(start, end);

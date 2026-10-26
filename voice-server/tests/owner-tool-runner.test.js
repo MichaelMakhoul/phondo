@@ -1424,7 +1424,11 @@ describe("SCRUM-597: the customer-contact sentence, the stored summary and the i
     assert.equal(describeOwnerToolCall("owner_cancel_appointment", {}, msg, true, contact({ method: "text", status: "sent" })), "Cancelled Bob Lee's job on Friday, October 16 at 3:00 PM — customer texted");
     assert.equal(describeOwnerToolCall("owner_cancel_appointment", {}, msg, true, contact({ method: "text", status: "not_sent", reason: "texts_paused" })), "Cancelled Bob Lee's job on Friday, October 16 at 3:00 PM — customer not texted", "the prose says texted; the data wins");
     assert.equal(describeOwnerToolCall("owner_cancel_appointment", {}, msg, true, contact({ method: "none", status: "not_requested" })), "Cancelled Bob Lee's job on Friday, October 16 at 3:00 PM — customer not told");
-    assert.equal(describeOwnerToolCall("owner_reschedule_appointment", {}, "", true, { outcome: "rescheduled", customer_contact: { method: "call", status: "not_available" } }), "Moved a job — customer not told");
+    assert.equal(describeOwnerToolCall("owner_reschedule_appointment", {}, "", true, { outcome: "rescheduled", customer_contact: { method: "call", status: "not_placed", reason: "outside_hours" } }), "Moved a job — customer not called");
+    // SCRUM-598: a placed call isn't a told customer — the outcome email says how it went.
+    const calling = "Moved Bob Lee from Friday, October 16 at 3:00 PM to Monday, October 19 at 9:00 AM. I'm calling Bob Lee now to let them know. You'll get an email when the call's done.";
+    assert.equal(describeOwnerToolCall("owner_reschedule_appointment", {}, calling, true, { outcome: "rescheduled", customer_contact: { method: "call", status: "calling" } }), "Moved Bob Lee from Friday, October 16 at 3:00 PM to Monday, October 19 at 9:00 AM — calling the customer");
+    assert.equal(describeOwnerToolCall("owner_cancel_appointment", {}, "Cancelled Bob Lee's job on Friday. I couldn't call Bob Lee: it's after 8 pm.", true, { outcome: "cancelled", customer_contact: { method: "call", status: "not_placed", reason: "outside_hours" } }), "Cancelled Bob Lee's job on Friday — customer not called");
     assert.equal(describeOwnerToolCall("owner_cancel_appointment", {}, msg, true, { outcome: "cancelled" }), "Cancelled Bob Lee's job on Friday, October 16 at 3:00 PM.", "no customer_contact: as before");
     assert.equal(describeOwnerToolCall("owner_cancel_appointment", {}, msg, true, { outcome: "cancelled", customer_contact: "sent" }), "Cancelled Bob Lee's job on Friday, October 16 at 3:00 PM.", "a non-object customer_contact is ignored");
   });
@@ -1440,6 +1444,8 @@ describe("SCRUM-597: the customer-contact sentence, the stored summary and the i
       [{ method: "text", status: "sent" }, "the customer WAS texted"],
       [{ method: "text", status: "not_sent", reason: "landline" }, "the customer was NOT told"],
       [{ method: "none", status: "not_requested" }, "the customer was NOT told"],
+      [{ method: "call", status: "calling" }, "the customer IS being called"],
+      [{ method: "call", status: "not_placed", reason: "outside_hours" }, "the customer was NOT told"],
     ]) {
       const s = makeSession();
       armConfirmed(s, "owner_cancel_appointment|a1");
@@ -1485,5 +1491,103 @@ describe("SCRUM-597: a confirm PR B bounces back for notify_customer re-arms the
     assert.equal(d.calls.at(-1).args.notify_customer, "text");
     assert.equal(auditFor(s, "owner_cancel_appointment").at(-1).successful, true);
     assert.equal(auditFor(s, "owner_confirm_gate").length, 0, "never refused");
+  });
+});
+
+// SCRUM-598: owner_call_customer is a write the gate guards like a change — but it changes
+// no booking, so it never refreshes the schedule cache, and its summary says who was called.
+describe("SCRUM-598: owner_call_customer through the runner", () => {
+  const CALL_READ_BACK = { success: false, message: "Read this back and get a clear yes before calling: call Jane Smith now to check they're still OK for Wednesday, October 28 at 2:30 PM.", data: { outcome: "needs_confirmation", appointment_id: "a1", customer_name: "Jane Smith", when: "Wednesday, October 28 at 2:30 PM", purpose: "confirm" } };
+  const CALLING = { success: true, message: "Calling Jane Smith now to check they're still OK for Wednesday, October 28 at 2:30 PM. You'll get an email when the call's done.", data: { outcome: "calling", appointment_id: "a1", customer_name: "Jane Smith", when: "Wednesday, October 28 at 2:30 PM", purpose: "confirm", customer_notified: false } };
+  const prB = (name, args) => (args.confirmed === true ? CALLING : CALL_READ_BACK);
+
+  it("the read-back arms a key that includes the purpose: a yes to 'confirm' never places 'find a new time'", async () => {
+    const s = makeSession();
+    const d = makeDeps(prB);
+    await captureConsole(() => runOwnerToolCall(s, { name: "owner_call_customer", args: { appointment_id: "a1", purpose: "confirm" } }, d.deps));
+    assert.deepEqual([...s.ownerPendingConfirmations.keys()], ["owner_call_customer|a1|confirm|||"]);
+    assistantTurn(s);
+    ownerSpeaks(s);
+    await settled(() => captureConsole(() => runOwnerToolCall(s, { name: "owner_call_customer", args: { appointment_id: "a1", purpose: "find_new_time", confirmed: true } }, d.deps)));
+    assert.equal(d.calls.at(-1).args.confirmed, false, "another purpose's confirm goes on unconfirmed");
+  });
+
+  it("an answered read-back places the call: success, the cache untouched, the summary from the data", async () => {
+    const s = makeSession();
+    armConfirmed(s, "owner_call_customer|a1|confirm|||");
+    const d = makeDeps(prB);
+    let ret;
+    await settled(() => captureConsole(async () => { ret = await runOwnerToolCall(s, { name: "owner_call_customer", args: { appointment_id: "a1", purpose: "confirm", confirmed: true } }, d.deps); }));
+    assert.equal(d.calls.at(-1).args.confirmed, true);
+    assert.equal(ret.message, CALLING.message);
+    assert.equal(d.invalidations, 0, "a call changes no booking: no schedule-cache refresh");
+    const entry = auditFor(s, "owner_call_customer").at(-1);
+    assert.equal(entry.successful, true);
+    assert.equal(entry.ownerDetail, "Called Jane Smith to confirm Wednesday, October 28 at 2:30 PM");
+    assert.equal(buildOwnerCallSummary(s.toolCallAudit), "Owner call: Called Jane Smith to confirm Wednesday, October 28 at 2:30 PM.");
+  });
+
+  it("a yes to one window never places a call with another (security lens F2): every field is in the key", async () => {
+    const s = makeSession();
+    const d = makeDeps(prB);
+    const read = { appointment_id: "a1", purpose: "find_new_time", earliest_date: "2026-11-02", latest_date: "2026-11-06", time_of_day: "morning" };
+    await captureConsole(() => runOwnerToolCall(s, { name: "owner_call_customer", args: read }, d.deps));
+    assert.deepEqual([...s.ownerPendingConfirmations.keys()], ["owner_call_customer|a1|find_new_time|2026-11-02|2026-11-06|morning"]);
+    assistantTurn(s);
+    ownerSpeaks(s);
+    await settled(() => captureConsole(() => runOwnerToolCall(s, { name: "owner_call_customer", args: { ...read, time_of_day: "evening", confirmed: true } }, d.deps)));
+    assert.equal(d.calls.at(-1).args.confirmed, false, "a different window goes on unconfirmed");
+    const s2 = makeSession();
+    const d2 = makeDeps(prB);
+    await captureConsole(() => runOwnerToolCall(s2, { name: "owner_call_customer", args: read }, d2.deps));
+    assistantTurn(s2);
+    ownerSpeaks(s2);
+    await settled(() => captureConsole(() => runOwnerToolCall(s2, { name: "owner_call_customer", args: { ...read, confirmed: true } }, d2.deps)));
+    assert.equal(d2.calls.at(-1).args.confirmed, true, "the same window confirms");
+  });
+
+  it("a read-back without a time of day is confirmed by a yes that says 'any' (the same window — code lens R2-N2)", async () => {
+    const s = makeSession();
+    const d = makeDeps(prB);
+    const read = { appointment_id: "a1", purpose: "find_new_time", earliest_date: "2026-11-02" };
+    await captureConsole(() => runOwnerToolCall(s, { name: "owner_call_customer", args: read }, d.deps));
+    assert.deepEqual([...s.ownerPendingConfirmations.keys()], ["owner_call_customer|a1|find_new_time|2026-11-02||"]);
+    assistantTurn(s);
+    ownerSpeaks(s);
+    await settled(() => captureConsole(() => runOwnerToolCall(s, { name: "owner_call_customer", args: { ...read, time_of_day: "any", confirmed: true } }, d.deps)));
+    assert.equal(d.calls.at(-1).args.confirmed, true);
+  });
+
+  it("a confirm with no read-back is forwarded unconfirmed (PR B answers with the read-back)", async () => {
+    const s = makeSession();
+    const d = makeDeps(prB);
+    await settled(() => captureConsole(() => runOwnerToolCall(s, { name: "owner_call_customer", args: { appointment_id: "a1", purpose: "confirm", confirmed: true } }, d.deps)));
+    assert.equal(d.calls.at(-1).args.confirmed, false);
+    assert.ok(auditFor(s, "owner_confirm_gate").length === 1);
+  });
+
+  it("the stored line for finding a new time, and with data missing", () => {
+    assert.equal(describeOwnerToolCall("owner_call_customer", {}, "", true, { outcome: "calling", customer_name: "Jane Smith", when: "Friday", purpose: "find_new_time" }), "Called Jane Smith to find a new time for Friday");
+    assert.equal(describeOwnerToolCall("owner_call_customer", {}, "", true, { outcome: "calling" }), "Called a customer about their booking", "a purpose this side doesn't know is said plainly, never guessed");
+    assert.equal(describeOwnerToolCall("owner_call_customer", {}, "", true, { outcome: "calling", customer_name: "Jane Smith", when: "Friday", purpose: "confirm" }), "Called Jane Smith to confirm Friday");
+    assert.equal(describeOwnerToolCall("owner_call_customer", {}, "", false, CALLING.data), null, "an unplaced call is no line");
+  });
+
+  it("a call interrupted after it went out: the notice says the call IS being placed", async () => {
+    const s = makeSession();
+    armConfirmed(s, "owner_call_customer|a1|confirm|||");
+    const told = [];
+    let release;
+    const deps = { executeToolCall: () => new Promise((resolve) => { release = resolve; }), scheduleCache: { invalidate: () => {} }, sendText: (text) => told.push(text) };
+    await captureConsole(async () => {
+      const run = runOwnerToolCall(s, { id: "g-9", name: "owner_call_customer", args: { appointment_id: "a1", purpose: "confirm", confirmed: true } }, deps);
+      await flush();
+      noteCancelledOwnerToolCalls(s, ["g-9"]);
+      release(CALLING);
+      await run;
+    });
+    assert.equal(told.length, 1);
+    assert.match(told[0], /the call to the customer IS being placed/);
+    assert.ok(!told[0].includes("Jane Smith"), "never PR B's prose in a user-turn message");
   });
 });

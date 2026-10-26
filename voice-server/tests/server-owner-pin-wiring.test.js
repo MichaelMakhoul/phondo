@@ -219,7 +219,8 @@ function withClock(fn) {
 }
 
 const ownerExtra = () => ({ ownerMode: true, ownerAuth: "verified", ownerFirstName: "Dave" });
-const TOKEN_KEYS = ["calledNumber", "callerPhone", "reconnectCallSid", "phoneRecord", "ownerMode", "ownerAuth", "ownerFirstName"].sort();
+// SCRUM-598: plus a customer call's notify context (null on every other call).
+const TOKEN_KEYS = ["calledNumber", "callerPhone", "reconnectCallSid", "phoneRecord", "ownerMode", "ownerAuth", "ownerFirstName", "notify"].sort();
 
 describe("SCRUM-587: stream token — server.js issueStreamToken / consumeStreamToken, run for real", () => {
   it("two tokens issued in the same millisecond differ, and each resolves to its OWN entry", () => {
@@ -257,6 +258,21 @@ describe("SCRUM-587: stream token — server.js issueStreamToken / consumeStream
       assert.equal(data.reconnectCallSid, "CA-reconnect");
       assert.equal(data.phoneRecord, record, "a record with no owner_access is stored as-is (flag-off: unchanged)");
       assert.equal(tokens.consumeStreamToken(token), null, "a token is single-use");
+    });
+  });
+
+  it("SCRUM-598: a customer call's notify context rides only in the server-side entry — null otherwise, never with owner mode", () => {
+    const tokens = loadTokenSlice();
+    withClock(() => {
+      const notify = { callId: "c-1", organizationId: "org-1", appointmentId: "a-1", purpose: "confirm", requestedByCallId: "o-1", mode: "conversation", answeredBy: "human" };
+      const withNotify = tokens.consumeStreamToken(tokens.issueStreamToken(BUSINESS, CUSTOMER, undefined, null, { notify }));
+      assert.deepEqual(withNotify.notify, notify);
+      assert.equal(withNotify.ownerMode, false);
+      assert.equal(tokens.consumeStreamToken(tokens.issueStreamToken(BUSINESS, CUSTOMER, undefined, null)).notify, null);
+      assert.equal(tokens.consumeStreamToken(tokens.issueStreamToken(BUSINESS, CUSTOMER, undefined, null, { notify: "forged" })).notify, null);
+      const both = tokens.consumeStreamToken(tokens.issueStreamToken(BUSINESS, OWNER_MOBILE, undefined, null, { ...ownerExtra(), notify }));
+      assert.equal(both.ownerMode, true);
+      assert.equal(both.notify, null, "a customer call is never an owner session, and vice versa");
     });
   });
 

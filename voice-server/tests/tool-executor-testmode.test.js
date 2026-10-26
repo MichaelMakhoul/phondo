@@ -241,7 +241,7 @@ describe("structural — write-function set stays consistent", () => {
   it("every mutating calendar function is covered by the test-mode simulation suite above", () => {
     // If a future write tool is added to CALENDAR_WRITE_FUNCTIONS without a
     // matching zero-fetch test here, this pin fails so the gap is noticed.
-    const simulatedHere = ["book_appointment", "cancel_appointment", "reschedule_appointment", "update_appointment", "update_appointment_attendee", "owner_reschedule_appointment", "owner_cancel_appointment"];
+    const simulatedHere = ["book_appointment", "cancel_appointment", "reschedule_appointment", "update_appointment", "update_appointment_attendee", "owner_reschedule_appointment", "owner_cancel_appointment", "owner_call_customer"];
     assert.deepEqual(
       [...CALENDAR_WRITE_FUNCTIONS].sort(),
       [...simulatedHere].sort(),
@@ -276,6 +276,21 @@ describe("test mode — owner writes are simulated too (SCRUM-587)", () => {
       assert.equal(fetchCalls, 0);
       assert.equal(done.data.outcome, fn === "owner_cancel_appointment" ? "cancelled" : "rescheduled");
       assert.equal(done.data.customer_notified, false);
+    }
+  });
+
+  it("SCRUM-598: owner_call_customer never places a call (nor reaches the internal API) in test mode", async () => {
+    for (const context of [makeTestContext(), makeTestContext({ ownerMode: true, callId: "call-1" })]) {
+      const held = await executeToolCall("owner_call_customer", { appointment_id: "a1", purpose: "confirm" }, context);
+      assert.equal(held.data.outcome, "needs_confirmation");
+      assert.equal(held.success, false);
+      const stringYes = await executeToolCall("owner_call_customer", { appointment_id: "a1", purpose: "confirm", confirmed: "true" }, context);
+      assert.equal(stringYes.data.outcome, "needs_confirmation", "a string \"true\" is not a confirmation");
+      const done = await executeToolCall("owner_call_customer", { appointment_id: "a1", purpose: "confirm", confirmed: true }, context);
+      assert.equal(done.success, true);
+      assert.equal(done.data.outcome, "calling");
+      assert.match(done.message, /no call is placed/);
+      assert.equal(fetchCalls, 0);
     }
   });
 
