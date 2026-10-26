@@ -9,6 +9,7 @@ import {
   sendUnsuccessfulCallNotification,
   sendOwnerPinLockedNotification,
   sendOwnerAssistantRecapNotification,
+  sendCustomerCallOutcomeNotification,
 } from "@/lib/notifications/notification-service";
 import { classifyCallNotification } from "@/lib/notifications/classify-call";
 import { humanizeEndedReason } from "@/lib/notifications/humanize-ended-reason";
@@ -17,8 +18,9 @@ import { deliverWebhooks } from "@/lib/integrations/webhook-delivery";
 import { withRateLimit, rateLimitDistributed } from "@/lib/security/rate-limiter";
 import { maskPhoneForOwner } from "@/lib/owner-assistant/mask-phone";
 import { formatOwnerLockTime } from "@/lib/owner-assistant/lock-email-time";
-import { isOwnerCallMetadata } from "@/lib/owner-assistant/owner-call";
+import { isOwnerCallMetadata, isCustomerNotifyCallMetadata, CUSTOMER_NOTIFY_CALL_TYPE } from "@/lib/owner-assistant/owner-call";
 import { buildOwnerRecap } from "@/lib/owner-assistant/recap";
+import { buildCallOutcome } from "@/lib/owner-assistant/call-outcome";
 import { pageSentry } from "@/lib/observability/page-sentry";
 import { SENTRY_REASONS } from "@/lib/security/error-ids";
 
@@ -56,6 +58,9 @@ interface CallCompletedPayload {
   collectedData?: Record<string, unknown>;
   successEvaluation?: string;
   unansweredQuestions?: string[];
+  /** Informational: the voice server's own word on the call's type. The route reads
+   *  calls.metadata; only an unreadable row falls back to this (SCRUM-598). */
+  callType?: string;
 }
 
 /**
@@ -191,15 +196,21 @@ async function emailOwnerPinLockOnce(
 const RECAP_SINCE_MARGIN_MS = 10 * 60_000;
 
 /**
- * SCRUM-597: claim the call's recap email, once. The write is conditional — it
- * only lands while metadata.owner_recap_emailed_at is absent — so a retried
- * call-completed (the voice server retries a non-2xx or a timeout) can't send a
- * second copy. False when another delivery already claimed it. A claim that fails
- * to read or write still lets the email go: the owner asked for this safety net,
- * and a rare duplicate is the lesser harm.
+ * SCRUM-597: claim one of the call's owner emails, once. The write is conditional —
+ * it only lands while metadata[key] is absent — so a retried call-completed (the
+ * voice server retries a non-2xx or a timeout; SCRUM-598's status callback and a
+ * session can both finish a customer call) can't send a second copy. False when
+ * another delivery already claimed it. A claim that fails to read or write still
+ * lets the email go: the owner asked for this safety net, and a rare duplicate is
+ * the lesser harm.
  */
-async function claimOwnerRecap(supabase: ReturnType<typeof createAdminClient>, callId: string): Promise<boolean> {
-  const failed = "[Internal] Could not claim the owner recap email — sending anyway (a retried call could repeat it):";
+async function claimCallEmail(
+  supabase: ReturnType<typeof createAdminClient>,
+  callId: string,
+  key: "owner_recap_emailed_at" | "notify_outcome_emailed_at",
+  what: string
+): Promise<boolean> {
+  const failed = `[Internal] Could not claim the ${what} — sending anyway (a retried call could repeat it):`;
   try {
     const { data: fresh, error: readError } = await (supabase as any)
       .from("calls")
@@ -210,12 +221,12 @@ async function claimOwnerRecap(supabase: ReturnType<typeof createAdminClient>, c
       console.error(failed, { callId, stage: "re-read", error: readError });
       return true;
     }
-    if (fresh?.metadata?.owner_recap_emailed_at) return false;
+    if (fresh?.metadata?.[key]) return false;
     const { data: claimed, error: writeError } = await (supabase as any)
       .from("calls")
-      .update({ metadata: { ...(fresh?.metadata || {}), owner_recap_emailed_at: new Date().toISOString() } })
+      .update({ metadata: { ...(fresh?.metadata || {}), [key]: new Date().toISOString() } })
       .eq("id", callId)
-      .is("metadata->>owner_recap_emailed_at", null)
+      .is(`metadata->>${key}`, null)
       .select("id");
     if (writeError) {
       console.error(failed, { callId, stage: "write", error: writeError });
@@ -246,7 +257,7 @@ async function emailOwnerRecapOnce(
     const items = await buildOwnerRecap(supabase, { organizationId, callId, timezone, since });
     if (items === null) throw new Error("the call's changes could not be read");
     if (items.length === 0) return "no_changes";
-    if (!(await claimOwnerRecap(supabase, callId))) return "claimed_elsewhere";
+    if (!(await claimCallEmail(supabase, callId, "owner_recap_emailed_at", "owner recap email"))) return "claimed_elsewhere";
     return await sendOwnerAssistantRecapNotification({ organizationId, callId, channel, items, timesInDefaultZone: !orgTimezone });
   } catch (err) {
     pageSentry({
@@ -255,6 +266,38 @@ async function emailOwnerRecapOnce(
       level: "error",
       err,
       message: "owner assistant recap email failed — the owner has no record of what their assistant changed",
+      extras: { organizationId, callId },
+    });
+    return "failed";
+  }
+}
+
+/**
+ * SCRUM-598: email the owner how a call the assistant placed to a customer went —
+ * the phone system's result and the diary (buildCallOutcome), with the AI's own
+ * note and summary labelled as such. Every finished customer call gets one, a
+ * no-answer included (the owner then knows the customer wasn't told). A failure
+ * pages and never throws.
+ */
+async function emailCustomerCallOutcomeOnce(
+  supabase: ReturnType<typeof createAdminClient>,
+  call: { callId: string; organizationId: string }
+): Promise<"sent" | "skipped" | "claimed_elsewhere" | "failed"> {
+  const { callId, organizationId } = call;
+  try {
+    const orgTimezone = await readOrgTimezoneOnce(supabase, organizationId, "the customer-call outcome email");
+    const timezone = orgTimezone || "Australia/Sydney";
+    const report = await buildCallOutcome(supabase, { organizationId, callId, timezone });
+    if (report === null) throw new Error("the call's records could not be read");
+    if (!(await claimCallEmail(supabase, callId, "notify_outcome_emailed_at", "customer-call outcome email"))) return "claimed_elsewhere";
+    return await sendCustomerCallOutcomeNotification({ organizationId, report, timesInDefaultZone: !orgTimezone });
+  } catch (err) {
+    pageSentry({
+      service: "next-api",
+      reason: SENTRY_REASONS.CUSTOMER_CALL_OUTCOME_EMAIL_FAILED,
+      level: "error",
+      err,
+      message: "customer-call outcome email failed — the owner doesn't know how the assistant's call went",
       extras: { organizationId, callId },
     });
     return "failed";
@@ -352,6 +395,16 @@ export async function POST(request: Request) {
     }
   }
   const isOwnerCall = isOwnerCallMetadata(storedMetadata);
+  // SCRUM-598: a call the assistant placed to a customer for the owner. Not a customer
+  // calling in: no spam scoring, no missed/failed alert, no text-back (we called
+  // THEM — "sorry we missed your call" would be wrong), no integrations webhook, and
+  // not a plan call (the default until the owner decides). The owner gets the call's
+  // outcome email instead (step 4e). Read from the row like an owner call; only an
+  // unreadable row falls back to the voice server's own word in the payload.
+  const isCustomerNotifyCall = storedMetadata
+    ? isCustomerNotifyCallMetadata(storedMetadata)
+    : payload.callType === CUSTOMER_NOTIFY_CALL_TYPE;
+  const skipCustomerPipeline = isOwnerCall || isCustomerNotifyCall;
 
   // 1. Run spam analysis
   let spamAnalysis = null;
@@ -360,7 +413,7 @@ export async function POST(request: Request) {
   // lookup did not run or failed, or the column is empty) — hoisted so the PIN-lockout
   // email at step 4c can quote the owner's local time without a second query.
   let orgTimezone: string | undefined;
-  if (callerPhone && !isOwnerCall) {
+  if (callerPhone && !skipCustomerPipeline) {
     // The timing heuristic needs the ORG's timezone (scoring "unusual hours"
     // in server-UTC penalized every AU business-hours call — SCRUM-418), and
     // phone-format analysis needs the org's country (defaulting to US rules
@@ -474,8 +527,9 @@ export async function POST(request: Request) {
     }
   }
 
-  // 3. Increment billing (skip spam calls, matching Vapi flow)
-  const shouldTrackUsage = status === "completed" &&
+  // 3. Increment billing (skip spam calls, matching Vapi flow). SCRUM-598: a call the
+  // assistant placed to a customer is not a plan call (the default until the owner decides).
+  const shouldTrackUsage = status === "completed" && !isCustomerNotifyCall &&
     (!spamAnalysis?.isSpam || spamAnalysis?.recommendation !== "block");
 
   if (shouldTrackUsage) {
@@ -546,7 +600,7 @@ export async function POST(request: Request) {
   // one channel was attempted and succeeded, "skipped" when every channel was
   // disabled by preference (previously misreported here as "sent").
   let notificationStatus: "sent" | "skipped" | "failed" = "skipped";
-  if (!spamAnalysis?.isSpam && !isOwnerCall) {
+  if (!spamAnalysis?.isSpam && !skipCustomerPipeline) {
     try {
       if (notificationKind === "failed") {
         notificationStatus = await sendFailedCallNotification({
@@ -664,9 +718,21 @@ export async function POST(request: Request) {
     });
   }
 
+  // 4e. SCRUM-598: how a call the assistant placed to a customer went — the phone
+  // system's result and the diary, the AI's words labelled. Every finished customer
+  // call (a no-answer too), after the response, once per call (claimed on the row).
+  if (isCustomerNotifyCall && callId) {
+    const outcomeCall = { callId, organizationId };
+    runAfterResponse(async () => {
+      const outcome = await emailCustomerCallOutcomeOnce(supabase, outcomeCall);
+      console.log("[Internal] Customer-call outcome email:", { callId, organizationId, outcome });
+    });
+  }
+
   // 5. Deliver webhooks to user integrations
-  // SCRUM-586: an owner call is not a customer event for integrations.
-  if (!isOwnerCall) {
+  // SCRUM-586: an owner call is not a customer event for integrations — nor is a
+  // call the assistant placed to a customer (SCRUM-598).
+  if (!skipCustomerPipeline) {
     let assistantName: string | null = null;
     if (assistantId) {
       const { data: assistantRecord, error: assistantError } = await (supabase as any)
@@ -710,6 +776,7 @@ export async function POST(request: Request) {
     received: true,
     notificationStatus,
     ...(isOwnerCall && { ownerCall: true }),
+    ...(isCustomerNotifyCall && { customerNotifyCall: true }),
     ...(ownerLockEmail && { ownerLockEmail }),
   });
 }

@@ -26,6 +26,7 @@ import {
   handleOwnerListMessages,
   handleOwnerRescheduleAppointment,
   handleOwnerCancelAppointment,
+  handleOwnerCallCustomer,
   type OwnerCallContext,
   type OwnerToolName,
 } from "@/lib/owner-assistant/tool-handlers";
@@ -245,6 +246,14 @@ export async function POST(request: Request) {
             ownerResult = await handleOwnerCancelAppointment(
               organizationId,
               { appointment_id: str(raw.appointment_id), confirmed: raw.confirmed === true, reason: str(raw.reason), notify_customer: str(raw.notify_customer) },
+              ownerCtx
+            );
+            break;
+          case "owner_call_customer":
+            // SCRUM-598: the assistant phones a customer about one booking (no change by itself).
+            ownerResult = await handleOwnerCallCustomer(
+              organizationId,
+              { appointment_id: str(raw.appointment_id), purpose: str(raw.purpose), note: str(raw.note), confirmed: raw.confirmed === true },
               ownerCtx
             );
             break;

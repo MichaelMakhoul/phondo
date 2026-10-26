@@ -3,6 +3,8 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { CONTACT_METHODS, contactOutcomeSentence, type CustomerContactResult } from "../customer-contact";
+import { CALL_PURPOSES, VOICE_CALL_BLOCK_REASONS } from "../customer-call";
+import { OWNER_TOOL_NAMES } from "../tool-handlers";
 
 // SCRUM-597 (types lens F6): the "let them know?" contract lives on both sides — the
 // website's handlers write it, the voice server declares it to the model and reads it
@@ -11,7 +13,11 @@ import { CONTACT_METHODS, contactOutcomeSentence, type CustomerContactResult } f
 const require = createRequire(import.meta.url);
 const here = path.dirname(fileURLToPath(import.meta.url));
 const vs = (rel: string) => require(path.join(here, "../../../../voice-server/lib", rel));
-const ownerTools = vs("owner-tools.js") as { ownerToolDefinitions: Array<{ function: { name: string; parameters: { properties: Record<string, any> } } }> };
+const ownerTools = vs("owner-tools.js") as {
+  ownerToolDefinitions: Array<{ function: { name: string; parameters: { properties: Record<string, any>; required: string[] } } }>;
+  OWNER_TOOL_NAMES: readonly string[];
+};
+const customerCall = vs("customer-call.js") as { CALL_BLOCK_REASONS: readonly string[]; NOTIFY_PURPOSES: readonly string[] };
 const runner = vs("owner-tool-runner.js") as {
   describeOwnerToolCall: (name: string, args: object, message: string, successful: boolean, data?: unknown) => string | null;
 };
@@ -33,7 +39,12 @@ describe("website ↔ voice server: the customer-contact contract", () => {
       [{ method: "text", status: "not_sent", reason: "texts_paused" }, " — customer not texted"],
       [{ method: "text", status: "not_sent", reason: "rate_limited" }, " — customer not texted"],
     ],
-    not_available: [[{ method: "call", status: "not_available", reason: "calls_unavailable" }, " — customer not told"]],
+    calling: [[{ method: "call", status: "calling", callId: "c-1" }, " — calling the customer"]],
+    not_placed: [
+      [{ method: "call", status: "not_placed", reason: "calls_disabled" }, " — customer not called"],
+      [{ method: "call", status: "not_placed", reason: "outside_hours" }, " — customer not called"],
+      [{ method: "call", status: "not_placed", reason: "place_unconfirmed" }, " — customer not called"],
+    ],
     not_requested: [[{ method: "none", status: "not_requested" }, " — customer not told"]],
   };
 
@@ -47,5 +58,18 @@ describe("website ↔ voice server: the customer-contact contract", () => {
         change.replace(/\.$/, "") + tail
       );
     }
+  });
+
+  // SCRUM-598: the call's own contract — the voice server's refusals and purposes are
+  // the ones the website words, and owner_call_customer is declared with what the route plucks.
+  it("both sides know the same call refusals and purposes", () => {
+    expect([...VOICE_CALL_BLOCK_REASONS]).toEqual([...customerCall.CALL_BLOCK_REASONS]);
+    expect([...CALL_PURPOSES]).toEqual([...customerCall.NOTIFY_PURPOSES]);
+  });
+  it("the owner tool names match, and owner_call_customer declares exactly the arguments the route reads", () => {
+    expect([...OWNER_TOOL_NAMES]).toEqual([...ownerTools.OWNER_TOOL_NAMES]);
+    const call = writeTool("owner_call_customer");
+    expect(Object.keys(call.parameters.properties).sort()).toEqual(["appointment_id", "confirmed", "note", "purpose"]);
+    expect(call.parameters.properties.purpose.enum).toEqual(["confirm", "find_new_time"]);
   });
 });

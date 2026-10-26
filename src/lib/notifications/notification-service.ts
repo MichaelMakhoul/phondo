@@ -12,6 +12,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { DEMO_ORG_ID } from "@/lib/demo/config";
 import { ssrfSafeFetch, escapeHtml } from "@/lib/security/validation";
 import type { OwnerRecapItem } from "@/lib/owner-assistant/recap";
+import type { CallOutcomeReport, CallResult, DiaryLine } from "@/lib/owner-assistant/call-outcome";
 import { hasFeatureAccess } from "@/lib/stripe/billing-service";
 import * as Sentry from "@sentry/nextjs";
 import { Resend } from "resend";
@@ -942,6 +943,9 @@ function recapToldLine(item: OwnerRecapItem): string {
       return "The text to the customer failed — please let them know yourself.";
     case "not_texted":
       return `Customer not texted (${escapeHtml(item.toldWhy)}).`;
+    case "calling":
+      // SCRUM-598: placed, not yet told — the call's own email says how it went.
+      return "Your assistant is calling the customer — a separate email will say how it went.";
     case "not_told":
       return "Customer not told.";
     default: {
@@ -966,6 +970,143 @@ function recapChangeLine(item: OwnerRecapItem, who: string, when: string): strin
     }
   }
 }
+
+export interface CustomerCallOutcomeData {
+  organizationId: string;
+  /** From buildCallOutcome: the phone system's result and the diary, plus the AI's own words labelled. */
+  report: CallOutcomeReport;
+  /** The org's timezone couldn't be read, so the times are in Sydney time (said in the email). */
+  timesInDefaultZone?: boolean;
+}
+
+/**
+ * SCRUM-598: how a call the assistant placed to a customer went — the email the owner
+ * asked for "after the assistant has done that, in case the AI made a mistake or
+ * hallucinated". To the OWNER only (like the recap and the PIN alert), no preference
+ * gate, demo org skipped, honest settle (no owner email ⇒ throws).
+ */
+export async function sendCustomerCallOutcomeNotification(data: CustomerCallOutcomeData): Promise<NotificationSendResult> {
+  if (skipDemoOrg("customer-call-outcome", data.organizationId)) return "skipped";
+  const email = await getOrganizationOwnerEmail(data.organizationId);
+  const channels: Promise<void>[] = [];
+  const droppedChannels: string[] = [];
+  if (!email) {
+    droppedChannels.push("owner-email");
+  } else {
+    channels.push(sendEmail({
+      to: email,
+      subject: `Your assistant called ${data.report.customer} — ${callResultShort(data.report.result)}`,
+      template: "customer-call-outcome",
+      data: { report: data.report, timesInDefaultZone: data.timesInDefaultZone === true },
+    }));
+  }
+  return settleChannels("customer-call-outcome", data.organizationId, channels, droppedChannels);
+}
+
+/** The subject's few words for the result (exhaustive: a new result must be worded). */
+function callResultShort(result: CallResult): string {
+  switch (result.kind) {
+    case "answered":
+      return "they answered";
+    case "voicemail":
+      return "left a voicemail";
+    case "no_answer":
+      return "no answer";
+    case "busy":
+      return "their line was busy";
+    case "dropped":
+      return "they hung up straight away";
+    case "cut_off":
+      return "the call was cut off";
+    case "failed":
+      return "the call didn't go through";
+    default: {
+      const unhandled: never = result;
+      return unhandled;
+    }
+  }
+}
+
+/** "2 min 10 s" / "45 s". */
+function callLength(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return m > 0 ? `${m} min${s ? ` ${s} s` : ""}` : `${s} s`;
+}
+
+/** The result row, from the phone system (exhaustive). */
+function callResultLine(result: CallResult): string {
+  switch (result.kind) {
+    case "answered":
+      return `They answered — the call lasted ${callLength(result.seconds)}.${result.endedOnAFault ? " It ended on a fault on our side, so check the recording." : ""}`;
+    case "voicemail":
+      return "Their voicemail picked up and the assistant left a message.";
+    case "no_answer":
+      return "No answer, and no message left.";
+    case "busy":
+      return "Their line was busy. Nothing was said.";
+    case "dropped":
+      return "They picked up but the call ended before the assistant spoke.";
+    case "cut_off":
+      return `The call was cut off on our side after ${callLength(result.seconds)} — check the recording and give them a call if needed.`;
+    case "failed":
+      return "The call didn't go through. Nothing was said.";
+    default: {
+      const unhandled: never = result;
+      return unhandled;
+    }
+  }
+}
+
+/** One diary line (customer-derived values escaped here: nested data skips the top-level escaping). */
+function diaryLineHtml(line: DiaryLine): string {
+  switch (line.kind) {
+    case "booked":
+      return `Booked a new time: <strong>${escapeHtml(line.when)}</strong>`;
+    case "moved":
+      return `Moved${line.from ? ` from ${escapeHtml(line.from)}` : ""} to <strong>${escapeHtml(line.when)}</strong>`;
+    case "cancelled":
+      return `Cancelled the booking on <strong>${escapeHtml(line.when)}</strong>`;
+    case "unchanged":
+      return line.stillBooked
+        ? `No change — still booked for <strong>${escapeHtml(line.when)}</strong>`
+        : `No change to the booking on ${escapeHtml(line.when)} (it isn't active)`;
+    default: {
+      const unhandled: never = line;
+      return unhandled;
+    }
+  }
+}
+
+/** Why the call was made, in the email's words. */
+function callPurposeLine(report: CallOutcomeReport): string {
+  const when = report.bookingWhen ? escapeHtml(report.bookingWhen) : "their booking";
+  switch (report.purpose) {
+    case "cancelled":
+      return `to tell them their booking on ${when} was cancelled`;
+    case "moved":
+      return `to tell them their booking was moved (it was on ${when})`;
+    case "confirm":
+      return `to check they're still OK for ${when}`;
+    case "find_new_time":
+      return `to find a new time for their booking on ${when}`;
+    default: {
+      const unhandled: never = report.purpose;
+      return unhandled;
+    }
+  }
+}
+
+/** record_call_outcome, worded for the owner. */
+const CALL_OUTCOME_WORDS: Record<string, string> = {
+  confirmed: "they're happy with the booking as it is",
+  rebooked: "booked or moved a time for them",
+  declined: "they don't want another time",
+  will_call_back: "they'll call you, or a message was left",
+  wrong_person: "it wasn't them — the message was left with whoever answered",
+  do_not_call: "they asked not to be called again — your assistant won't call them again",
+  other: "something else (see the summary)",
+};
 
 /** One recap row (customer text escaped here: the array never passes the top-level escaping). */
 function recapRow(item: OwnerRecapItem): string {
@@ -1604,6 +1745,36 @@ function generateEmailHtml(template: string, data: Record<string, any>): string 
       ${d.timesInDefaultZone === true ? `<p style="color: #6b7280; font-size: 13px;">Times are shown in Sydney time — we couldn't read your business's timezone.</p>` : ""}
       <p><strong>If anything here isn't what you asked for</strong>, fix it in Appointments and let the customer know.</p>
       <p><a href="${base}/appointments">Open Appointments</a> &nbsp;·&nbsp; <a href="${base}/calls/${d.callId}">See the conversation</a></p>
+    `;
+    },
+    // SCRUM-598 — how a call to a customer went. `report` is nested, so the
+    // top-level escaping never reaches it: every value is escaped here. The phone
+    // system's result and the diary are facts; the assistant's note, the summary and
+    // the voicemail text are labelled as the AI's own words.
+    "customer-call-outcome": (d) => {
+      const r = d.report as CallOutcomeReport;
+      const base = escapeHtml((process.env.NEXT_PUBLIC_APP_URL || "https://phondo.ai").replace(/\/$/, ""));
+      const who = escapeHtml(r.customer);
+      const phone = r.phone ? ` (${escapeHtml(r.phone)})` : "";
+      const row = (label: string, value: string) =>
+        `<tr><td style="padding: 8px; border-bottom: 1px solid #ddd; font-weight: bold; vertical-align: top;">${label}</td><td style="padding: 8px; border-bottom: 1px solid #ddd;">${value}</td></tr>`;
+      const outcome = r.assistantOutcome && CALL_OUTCOME_WORDS[r.assistantOutcome] ? escapeHtml(CALL_OUTCOME_WORDS[r.assistantOutcome]) : null;
+      const noted = outcome || r.assistantNote
+        ? row("The assistant noted <span style=\"font-weight: normal; color: #6b7280;\">(AI-written)</span>", [outcome, r.assistantNote ? `&ldquo;${escapeHtml(r.assistantNote)}&rdquo;` : null].filter(Boolean).join(" — "))
+        : "";
+      return `
+      <h2>Your assistant called ${who}</h2>
+      <p>You asked it to call ${who}${phone} ${callPurposeLine(r)}. Here's how it went.</p>
+      <table style="width: 100%; border-collapse: collapse; margin: 16px 0;">
+        ${row("Result", escapeHtml(callResultLine(r.result)))}
+        ${row("Your diary", r.diary.length ? r.diary.map(diaryLineHtml).join("<br/>") : "Nothing changed.")}
+        ${noted}
+        ${r.summary ? row("Summary <span style=\"font-weight: normal; color: #6b7280;\">(AI-written)</span>", escapeHtml(r.summary)) : ""}
+        ${r.voicemailText ? row("Message left", `&ldquo;${escapeHtml(r.voicemailText)}&rdquo;`) : ""}
+      </table>
+      ${d.timesInDefaultZone === true ? `<p style="color: #6b7280; font-size: 13px;">Times are shown in Sydney time — we couldn't read your business's timezone.</p>` : ""}
+      <p>The result and your diary come from our phone system and your bookings. The notes and summary are the AI's own words — <strong>if anything matters, listen to the call</strong>, and fix it in Appointments.</p>
+      <p><a href="${base}/calls/${escapeHtml(r.callId)}">Listen to the call</a> &nbsp;·&nbsp; <a href="${base}/appointments">Open Appointments</a></p>
     `;
     },
     "appointment-booked": (d) => `

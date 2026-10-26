@@ -6,14 +6,19 @@
 import { formatWhen } from "./time";
 import { sanitizeCustomerText } from "./sanitize";
 import { parseConfirmationIdempotencyKey } from "@/lib/sms/caller-sms";
+import { CUSTOMER_NOTIFY_CALL_TYPE } from "./owner-call";
 
 export type RecapChange = "cancelled" | "moved" | "booked";
 
-/** What happened to the customer. Only "not_texted" carries a reason (SCRUM-598 adds call outcomes). */
+/**
+ * What happened to the customer. Only "not_texted" carries a reason. "calling" is a
+ * call placed about the change (SCRUM-598): how it went comes in its own email.
+ */
 export type RecapTold =
   | { told: "texted" }
   | { told: "text_failed" }
   | { told: "not_texted"; toldWhy: string }
+  | { told: "calling" }
   | { told: "not_told" };
 
 export type OwnerRecapItem = {
@@ -69,6 +74,8 @@ function toldFromStatus(status: unknown): RecapTold {
  * - Whether the customer was told comes from appointment_confirmations attempted
  *   since the session started: the cancellation text on a cancelled row, the
  *   confirmation text on a new leg or a booking (the intent is in idempotency_key).
+ *   SCRUM-598: or a call this session asked for about that booking (calls rows of
+ *   call_type customer_notify, requested_by_call_id = this call).
  */
 export async function buildOwnerRecap(
   supabase: any,
@@ -136,6 +143,23 @@ export async function buildOwnerRecap(
     console.error("[OwnerRecap] appointment_confirmations read failed:", { organizationId, callId, error: textsError });
     return null;
   }
+  const { data: placedCalls, error: callsError } = await supabase
+    .from("calls")
+    .select("id, metadata")
+    .eq("organization_id", organizationId)
+    .eq("metadata->>call_type", CUSTOMER_NOTIFY_CALL_TYPE)
+    .eq("metadata->notify->>requested_by_call_id", callId);
+  if (callsError) {
+    console.error("[OwnerRecap] customer calls read failed:", { organizationId, callId, error: callsError });
+    return null;
+  }
+  const callFor = (appointmentId: string, change: RecapChange) =>
+    (placedCalls ?? []).some(
+      (c: any) =>
+        c?.metadata?.notify?.appointment_id === appointmentId &&
+        c?.metadata?.notify?.purpose === (change === "cancelled" ? "cancelled" : "moved")
+    );
+
   // A change's own text is attempted right after it (the contact runs after the write
   // and its audit row): an attempt from before the change — an earlier cancellation of
   // a booking reinstated since — is never its text.
@@ -166,7 +190,11 @@ export async function buildOwnerRecap(
     const change = CHANGE_BY_EVENT[e.event_type];
     if (!change) continue; // the query only asks for these three
     const text = textFor(appt.id, change === "cancelled" ? "cancellation" : "confirmation", e.created_at);
-    const told: RecapTold = text ? toldFromStatus(text.status) : { told: "not_told" };
+    const told: RecapTold = text
+      ? toldFromStatus(text.status)
+      : change !== "booked" && callFor(appt.id, change)
+        ? { told: "calling" }
+        : { told: "not_told" };
     const prior = change === "moved" && appt.rescheduled_from_id ? priorById.get(appt.rescheduled_from_id) : undefined;
     items.push({
       change,

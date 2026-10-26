@@ -72,7 +72,7 @@ const CUSTOMER_FAILURE_LINE = /take your information|having a little trouble rig
  * precedes it. Cutting there, not at the first full stop, keeps "Dr. Jane Smith"
  * whole.
  */
-const CONTACT_SENTENCE = /\s+(?:The customer has NOT been notified\b|I've texted |I couldn't text |I can't call customers yet\b|I haven't let |I'm calling |I couldn't call )/i;
+const CONTACT_SENTENCE = /\s+(?:The customer has NOT been notified\b|I've texted |I couldn't text |I can't call customers yet\b|I haven't let |I'm calling |I couldn't call |I'm not sure the call )/i;
 
 /**
  * SCRUM-597: what happened to the customer, for the stored summary, from PR B's
