@@ -629,6 +629,7 @@ Every line starts `[CustomerCall]`:
 | `no call context` / `no briefing` / `the line now belongs to another org` | The session couldn't start | The row is stamped `setup_failed` (waiting at most 2 s), and the email says it failed on our side. |
 | `wasn't waiting for this stream` | A replayed or late stream for a call another flow already claimed | The session ends without touching the row. Nothing to do unless it repeats. |
 | `INTERNAL_API_URL/SECRET unset — no outcome email` | The voice server can't reach Next.js | Set the secrets. |
+| `sweep closed N customer-call row(s) no placement wrote (… with no real call sid, … unknown to Twilio; org=…)` | Rows a placement never writes were closed, with no email | "No real call sid": someone inserted junk rows in the named org(s). "Unknown to Twilio" can also mean the Twilio account or subaccount changed under a real call: check the credentials before closing it as junk. |
 
 On the web side, a failed outcome email pages with
 `reason=customer-call-outcome-email-failed`.

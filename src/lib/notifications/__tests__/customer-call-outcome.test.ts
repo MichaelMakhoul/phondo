@@ -142,6 +142,10 @@ describe("sendCustomerCallOutcomeNotification", () => {
     // Code lens R2-N4: beside what the call made, the old booking's line says where it stands.
     expect(html).toContain("Still booked for <strong>Wednesday, October 28 at 2:30 PM</strong>");
     expect(html).toContain("The booking on Sunday is no longer active");
+    resendSend.mockClear();
+    // Clients lens nit: only a cancel's own call says "still cancelled" — on any other, it was cancelled since.
+    await sendCustomerCallOutcomeNotification({ organizationId: ORG, report: { ...REPORT, purpose: "find_new_time", diary: [{ kind: "unchanged", when: "Wednesday, October 28 at 2:30 PM", state: "cancelled" }], assistantOutcome: "declined" } });
+    expect(sent()[0].html).toContain("Nothing changed on the call — the booking on Wednesday, October 28 at 2:30 PM is now cancelled");
     expect(html).not.toContain("Nothing changed on the call");
     expect(html).toContain("Booked a new time: <strong>Friday</strong>");
     expect(html).toContain("Cancelled the booking on <strong>Saturday</strong>");

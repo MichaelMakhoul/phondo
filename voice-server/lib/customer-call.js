@@ -1149,6 +1149,16 @@ async function sweepStuckCustomerCalls(deps) {
   let swept = 0;
   let checked = 0;
   let closed = 0;
+  /** @type {Set<string>} */
+  const closedOrgs = new Set();
+  const closedBy = { malformed: 0, unknownToTwilio: 0 };
+  /** @param {{ organization_id: string }} row @param {"malformed"|"unknownToTwilio"} why @param {boolean} done */
+  const noteClosed = (row, why, done) => {
+    if (!done) return;
+    closed += 1;
+    closedBy[why] += 1;
+    closedOrgs.add(String(row.organization_id));
+  };
   try {
     const { data: rows, error } = await deps.supabase
       .from("calls")
@@ -1171,7 +1181,7 @@ async function sweepStuckCustomerCalls(deps) {
       checked += 1;
       const placed = typeof row.vapi_call_id === "string" ? PLACED_SID_RE.exec(row.vapi_call_id) : null;
       if (!placed) {
-        if (await closeUnplacedRow(row, "no call sid a placement would write", deps)) closed += 1;
+        noteClosed(row, "malformed", await closeUnplacedRow(row, "no call sid a placement would write", deps));
         continue;
       }
       const sid = placed[1];
@@ -1188,7 +1198,7 @@ async function sweepStuckCustomerCalls(deps) {
         if (!unknownToTwilio) console.warn(`[CustomerCall] sweep: Twilio's record of ${sid} unreadable: ${twilioErrorSummary(err)}`);
       }
       if (unknownToTwilio) {
-        if (await closeUnplacedRow(row, "a call sid Twilio has no record of", deps)) closed += 1;
+        noteClosed(row, "unknownToTwilio", await closeUnplacedRow(row, "a call sid Twilio has no record of", deps));
         continue;
       }
       const status = twilio && typeof twilio.status === "string" ? twilio.status : null;
@@ -1211,6 +1221,16 @@ async function sweepStuckCustomerCalls(deps) {
     console.error("[ALERT:error] [CustomerCall] sweep threw:", err instanceof Error ? err.message : String(err));
   }
   if (swept) console.warn(`[CustomerCall] sweep finished ${swept} customer call(s) nobody had finished`);
+  // A placement never writes such a row: one line per sweep keeps them visible without
+  // a page per row (security lens: closing them quietly must not hide them). Unknown to
+  // Twilio can also mean the Twilio account changed under a real call (silent lens).
+  if (closed) {
+    console.error(
+      `[ALERT:error] [CustomerCall] sweep closed ${closed} customer-call row(s) no placement wrote ` +
+        `(${closedBy.malformed} with no real call sid, ${closedBy.unknownToTwilio} unknown to Twilio; org=${[...closedOrgs].join(",")}) — ` +
+        `junk calls rows, or the Twilio account changed`
+    );
+  }
   return { swept, checked, closed };
 }
 

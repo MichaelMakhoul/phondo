@@ -1121,6 +1121,21 @@ describe("sweepStuckCustomerCalls (silent lens N1 — a lost status callback)", 
     }
   });
 
+  it("closing rows no placement wrote raises ONE alert per sweep naming the orgs — visible, never a page per row", async () => {
+    const before = alerts().length;
+    const { deps } = sweepDeps(
+      [stuck({ id: "j1", vapi_call_id: "sh_bad1" }), stuck({ id: "j2", vapi_call_id: `sh_${SID}` }), stuck({ id: "j3", vapi_call_id: null, organization_id: "org-2" })],
+      { fetchTwilioCall: async () => { throw Object.assign(new Error("not found"), { status: 404 }); } }
+    );
+    assert.equal((await cc.sweepStuckCustomerCalls(deps)).closed, 3);
+    const raised = alerts().slice(before);
+    assert.equal(raised.length, 1);
+    assert.ok(raised[0].includes(`sweep closed 3 customer-call row(s) no placement wrote (2 with no real call sid, 1 unknown to Twilio; org=${ORG},org-2) — junk calls rows, or the Twilio account changed`), raised[0]);
+    const clean = alerts().length;
+    await cc.sweepStuckCustomerCalls(sweepDeps([stuck()]).deps);
+    assert.equal(alerts().length, clean, "a sweep that closes nothing raises nothing");
+  });
+
   it("an in-progress row with no live session is finished as cut off", async () => {
     const { deps, sb, notified } = sweepDeps([stuck({ status: "in-progress" })], { fetchTwilioCall: async () => ({ status: "completed", duration: "88" }) });
     await cc.sweepStuckCustomerCalls(deps);

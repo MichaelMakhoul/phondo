@@ -13,7 +13,7 @@ import { DEMO_ORG_ID } from "@/lib/demo/config";
 import { ssrfSafeFetch, escapeHtml } from "@/lib/security/validation";
 import type { OwnerRecapItem } from "@/lib/owner-assistant/recap";
 import type { CallOutcomeReport, CallResult, DiaryLine } from "@/lib/owner-assistant/call-outcome";
-import type { CallOutcome } from "@/lib/owner-assistant/customer-call";
+import type { CallOutcome, CallPurpose } from "@/lib/owner-assistant/customer-call";
 import { formatPhoneForCountry } from "@/lib/country-config";
 import { hasFeatureAccess } from "@/lib/stripe/billing-service";
 import * as Sentry from "@sentry/nextjs";
@@ -1077,8 +1077,9 @@ function callResultLine(result: CallResult): string {
 /**
  * One diary line (customer-derived values escaped here: nested data skips the
  * top-level escaping). `alone`: the only line — "nothing changed" is the whole story.
+ * `purpose`: only a cancel's own call is about a booking that was cancelled before it.
  */
-function diaryLineHtml(line: DiaryLine, alone: boolean): string {
+function diaryLineHtml(line: DiaryLine, alone: boolean, purpose: CallPurpose): string {
   switch (line.kind) {
     case "booked":
       return `Booked a new time: <strong>${escapeHtml(line.when)}</strong>`;
@@ -1094,7 +1095,7 @@ function diaryLineHtml(line: DiaryLine, alone: boolean): string {
           state = `still booked for <strong>${at}</strong>`;
           break;
         case "cancelled":
-          state = `the booking on ${at} is still cancelled`;
+          state = `the booking on ${at} is ${purpose === "cancelled" ? "still" : "now"} cancelled`;
           break;
         case "inactive":
           state = `the booking on ${at} is no longer active`;
@@ -1938,7 +1939,7 @@ function generateEmailHtml(template: string, data: Record<string, any>): string 
       ${next ? `<p><strong>Next step:</strong> ${next}</p>` : ""}
       <table style="width: 100%; border-collapse: collapse; margin: 16px 0;">
         ${row("Result", escapeHtml(callResultLine(r.result)))}
-        ${row("Your diary", r.diary.length ? r.diary.map((line) => diaryLineHtml(line, r.diary.length === 1)).join("<br/>") : "Nothing changed on the call.")}
+        ${row("Your diary", r.diary.length ? r.diary.map((line) => diaryLineHtml(line, r.diary.length === 1, r.purpose)).join("<br/>") : "Nothing changed on the call.")}
         ${noted}
         ${r.summary ? row("Summary <span style=\"font-weight: normal; color: #6b7280;\">(AI-written)</span>", escapeHtml(r.summary)) : ""}
         ${r.voicemailText ? row("Message left", `&ldquo;${escapeHtml(r.voicemailText)}&rdquo;`) : ""}
