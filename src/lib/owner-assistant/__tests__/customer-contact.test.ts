@@ -131,7 +131,7 @@ describe("contactOutcomeSentence", () => {
 
   it("a held-back text never reads as if the customer already knows about THIS change", () => {
     const s = contactOutcomeSentence({ method: "text", status: "not_sent", reason: "rate_limited" }, "J");
-    expect(s).toContain("another text went to them moments ago, so this one was held back");
+    expect(s).toContain("they've already had several texts from you this hour, so this one was held back");
     expect(s).not.toMatch(/already texted about this/i);
   });
   it("never claims a text that wasn't sent", () => {

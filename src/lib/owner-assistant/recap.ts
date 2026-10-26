@@ -53,7 +53,7 @@ function toldFromStatus(status: unknown): RecapTold {
       return { told: "not_texted", toldWhy: "we couldn't run a check, so the text was held back" };
     case "skipped_cap":
       // Never "already texted about this": the earlier text may have been about the old time.
-      return { told: "not_texted", toldWhy: "another text went to them moments before, so this one was held back" };
+      return { told: "not_texted", toldWhy: "they'd already had texts from you within the hour, so this one was held back" };
     default:
       return { told: "not_texted", toldWhy: "the text didn't go out" };
   }

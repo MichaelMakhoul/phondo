@@ -95,7 +95,7 @@ describe("buildOwnerRecap", () => {
       ["skipped_disabled", { told: "not_texted", toldWhy: "customer texts are switched off" }],
       ["skipped_no_contact", { told: "not_texted", toldWhy: "no mobile number to text" }],
       ["opted_out", { told: "not_texted", toldWhy: "they've opted out of texts" }],
-      ["skipped_cap", { told: "not_texted", toldWhy: "another text went to them moments before, so this one was held back" }],
+      ["skipped_cap", { told: "not_texted", toldWhy: "they'd already had texts from you within the hour, so this one was held back" }],
       ["skipped_db_error", { told: "not_texted", toldWhy: "we couldn't run a check, so the text was held back" }],
       // 'pending' is only the column default (caller-sms always records an outcome): never "texted".
       ["pending", { told: "not_texted", toldWhy: "we couldn't confirm the text went out" }],

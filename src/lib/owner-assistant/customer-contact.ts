@@ -67,7 +67,8 @@ const SEND_WHY: Record<string, string> = {
   org_disabled: "customer texts are turned off in your settings",
   feature_disabled: "customer texts are turned off in your settings",
   caller_opted_out: "they've opted out of texts",
-  rate_limited: "another text went to them moments ago, so this one was held back",
+  // Owner texts are held back at 3 an hour to one number (caller-sms ownerTextCapState).
+  rate_limited: "they've already had several texts from you this hour, so this one was held back",
   plan_not_eligible: "customer texts aren't included in your plan",
   no_org_phone_number: "there's no business number to text from",
   cap_check_failed: "I couldn't check their recent texts, so I held it back",
