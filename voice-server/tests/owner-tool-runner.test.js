@@ -1713,3 +1713,76 @@ describe("SCRUM-599 (clients lens T1): a whole admin call fits under the call ca
     assert.equal(s.ownerToolCalls, calls.length);
   });
 });
+
+describe("SCRUM-599 test lens: behaviour, not just the lists", () => {
+  const BOOK = { customer_name: "Jane Smith", customer_phone: "0412 345 678", start: "2026-10-29T14:00" };
+  /** Through the gate for real: the read-back arms it, a turn is heard, the owner answers. */
+  async function readBackThenYes(s, d, name, args) {
+    await captureConsole(() => runOwnerToolCall(s, { name, args }, d.deps));
+    assistantTurn(s);
+    ownerSpeaks(s);
+    return settled(() => captureConsole(() => runOwnerToolCall(s, { name, args: { ...args, confirmed: true } }, d.deps)));
+  }
+
+  it("G12: a booking refreshes the schedule cache, marking a callback done doesn't — and the call's summary names both", async () => {
+    const s = makeSession();
+    const d = makeDeps((name, args) => {
+      if (args.confirmed !== true) return { success: false, message: "Read this back…", data: { outcome: "needs_confirmation" } };
+      return name === "owner_book_appointment"
+        ? { success: true, message: "Booked Jane Smith for Thursday, October 29 at 2:00 PM. I haven't let Jane Smith know.", data: { outcome: "booked", customer_contact: { method: "none", status: "not_requested" } } }
+        : { success: true, message: "Marked Sue Brown's callback as done.", data: { outcome: "callback_done" } };
+    });
+    await readBackThenYes(s, d, "owner_book_appointment", BOOK);
+    assert.deepEqual(d.invalidated, ["org-1"], "a new booking takes a time out of the diary");
+    await readBackThenYes(s, d, "owner_mark_callback_done", { callback_id: "cb-1" });
+    assert.deepEqual(d.invalidated, ["org-1"], "a callback marked done changes nothing in the diary");
+    assert.equal(buildOwnerCallSummary(s.toolCallAudit), "Owner call: Booked Jane Smith for Thursday, October 29 at 2:00 PM — customer not told; Marked Sue Brown's callback as done.");
+  });
+
+  it("K81: a yes to a block read back with a reason holding '|' never confirms a block without it", async () => {
+    const block = { start: "2026-10-30T13:00", end: "2026-10-30T17:00" };
+    const s = makeSession();
+    const d = makeDeps((name, args) =>
+      args.confirmed === true ? { success: true, message: "Blocked.", data: { outcome: "blocked" } } : { success: false, message: "Read this back…", data: { outcome: "needs_confirmation" } });
+    await captureConsole(() => runOwnerToolCall(s, { name: "owner_block_time", args: { ...block, reason: "Gone fishing | back Monday" } }, d.deps));
+    assistantTurn(s);
+    ownerSpeaks(s);
+    await settled(() => captureConsole(() => runOwnerToolCall(s, { name: "owner_block_time", args: { ...block, confirmed: true } }, d.deps)));
+    assert.equal(d.calls.at(-1).args.confirmed, false);
+  });
+
+  /** An interrupted confirmed write (the owner talked over it) whose result then comes back. */
+  async function interrupted(name, key, args, result) {
+    const s = makeSession();
+    const told = [];
+    armConfirmed(s, key);
+    let release;
+    const deps = { executeToolCall: () => new Promise((resolve) => { release = resolve; }), scheduleCache: { invalidate: () => {} }, sendText: (text) => told.push(text) };
+    await captureConsole(async () => {
+      const pending = runOwnerToolCall(s, { id: "fc-9", name, args: { ...args, confirmed: true } }, deps);
+      await flush();
+      noteCancelledOwnerToolCalls(s, ["fc-9"]);
+      release(result);
+      await pending;
+    });
+    return told;
+  }
+
+  it("K84: an interrupted mark-done that went through says nothing about a customer", async () => {
+    const told = await interrupted("owner_mark_callback_done", 'owner_mark_callback_done|["cb-1",""]', { callback_id: "cb-1" }, { success: true, message: "Marked Sue Brown's callback as done.", data: { outcome: "callback_done" } });
+    assert.equal(told.length, 1);
+    assert.match(told[0], /data\.outcome is "callback_done", so the change HAS been made\. Tell the owner it went through\./);
+    assert.doesNotMatch(told[0], /customer/);
+  });
+
+  it("K85: an interrupted booking that went through says whether the customer was texted", async () => {
+    const told = await interrupted(
+      "owner_book_appointment",
+      'owner_book_appointment|["jane smith","0412345678","2026-10-29T14:00","",""]',
+      { ...BOOK, notify_customer: "text" },
+      { success: true, message: "Booked Jane Smith for Thursday, October 29 at 2:00 PM. I've texted Jane Smith to let them know.", data: { outcome: "booked", customer_contact: { method: "text", status: "sent" } } }
+    );
+    assert.equal(told.length, 1);
+    assert.match(told[0], /the change HAS been made, and the customer WAS texted/);
+  });
+});

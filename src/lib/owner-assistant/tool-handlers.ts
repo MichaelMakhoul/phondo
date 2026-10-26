@@ -1141,8 +1141,8 @@ const BOOKING_NOTES_MAX = 200;
 /** A block's title, from the owner's reason. */
 const BLOCK_TITLE_MAX = 80;
 const DEFAULT_BLOCK_TITLE = "Time off";
-/** Longer blocks (a holiday beyond a fortnight) are made in the dashboard. */
-const BLOCK_MAX_MS = 14 * 24 * 60 * 60_000;
+/** The longest block the assistant makes, in the org's own calendar days (the dashboard does longer). */
+const BLOCK_MAX_DAYS = 14;
 /** How many of the jobs a block covers the read-back names. */
 const BLOCK_JOBS_NAMED = 5;
 const CALLBACK_NOTE_MAX = 200;
@@ -1548,7 +1548,13 @@ export async function handleOwnerBlockTime(
   if (!start || !end) return invalidTime("I need the start and end as dates and times, like 2026-10-30T13:00 to 2026-10-30T17:00.");
   if (end.getTime() <= start.getTime()) return invalidTime("The end has to be after the start. What time should the block finish?");
   if (end.getTime() <= Date.now()) return invalidTime("That time has already passed. Which time should I block out?");
-  if (end.getTime() - start.getTime() > BLOCK_MAX_MS) return invalidTime("That's longer than two weeks — please block that out in the dashboard.");
+  // Two weeks on the org's own calendar, never in milliseconds: across a clock change
+  // exactly two weeks is 335 or 337 hours.
+  const startLocal = toLocalIsoMinute(start, tz);
+  const endLocal = toLocalIsoMinute(end, tz);
+  if (endLocal > `${addDaysISO(startLocal.slice(0, 10), BLOCK_MAX_DAYS)}T${startLocal.slice(11)}`) {
+    return invalidTime("That's longer than two weeks — please block that out in the dashboard.");
+  }
 
   const diary = await ownerDiaryProvider(organizationId);
   if (diary === "error") return errorResult(TROUBLE);
@@ -1597,7 +1603,7 @@ export async function handleOwnerBlockTime(
   // back — a second identical row would only clutter the diary.
   const { data: sameBlock, error: sameBlockError } = await supabase
     .from("blocked_times")
-    .select("id")
+    .select("id, title")
     .eq("organization_id", organizationId)
     .eq("created_on_call_id", ctx.callId)
     .eq("start_time", start.toISOString())
@@ -1611,15 +1617,19 @@ export async function handleOwnerBlockTime(
     return {
       success: true,
       message: `${when} is already blocked out${who} — that's the block from a moment ago.`,
-      data: blockData({ outcome: "blocked", ...base, jobs_in_the_way: inTheWay.length, block_id: sameBlock[0].id }),
+      data: blockData({
+        outcome: "blocked",
+        ...base,
+        title: sanitizeCustomerText(sameBlock[0].title, BLOCK_TITLE_MAX) ?? DEFAULT_BLOCK_TITLE,
+        jobs_in_the_way: inTheWay.length,
+        block_id: sameBlock[0].id,
+      }),
     };
   }
 
   if (!(await ownerMutationAllowed(supabase, organizationId))) {
     return { success: false, message: RATE_LIMITED_MSG, data: blockData({ outcome: "rate_limited", ...base }) };
   }
-  const startLocal = toLocalIsoMinute(start, tz);
-  const endLocal = toLocalIsoMinute(end, tz);
   // All-day is ONE whole day, as the dashboard makes them (it shows an all-day block as
   // a single date); longer blocks keep their start and end.
   const allDay = startLocal.slice(11) === "00:00" && endLocal.slice(11) === "00:00" && endLocal.slice(0, 10) === addDaysISO(startLocal.slice(0, 10), 1);

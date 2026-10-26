@@ -212,3 +212,16 @@ describe("SCRUM-599: blocks and callbacks in the recap", () => {
     expect(html.match(/&lt;img src=x onerror=&quot;alert\(1\)&quot;&gt;/g)?.length).toBe(5);
   });
 });
+
+describe("SCRUM-599 test lens: the closing line", () => {
+  it("K60: a call whose only change was a new booking says to fix it in Appointments and tell the customer", async () => {
+    vi.mocked(createAdminClient).mockReturnValue(fakeAdmin(OWNER_FOUND) as any);
+    await sendOwnerAssistantRecapNotification({
+      organizationId: ORG, callId: CALL, channel: "phone",
+      items: [{ change: "booked", customer: "Raj Patel", when: "Friday, October 30 at 11:00 AM", told: "not_told" }],
+    });
+    const html = sent()[0].html;
+    expect(html).toContain("fix it in Appointments and let the customer know.");
+    expect(html).not.toContain("fix it in your dashboard");
+  });
+});

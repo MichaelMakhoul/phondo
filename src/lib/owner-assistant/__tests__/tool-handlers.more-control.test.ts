@@ -93,7 +93,8 @@ const TROUBLE = "I'm having trouble reaching the calendar right now. Try again i
 beforeEach(() => {
   db.log = [];
   db.queues = { organizations: [AU_ORG] };
-  vi.clearAllMocks();
+  // Reset (not clear): a queued mockResolvedValueOnce never leaks into the next test.
+  vi.resetAllMocks();
   vi.mocked(createAdminClient).mockReturnValue(fakeAdmin() as any);
   vi.mocked(rateLimitDistributed).mockResolvedValue({ allowed: true } as any);
   vi.mocked(ownerDiaryProvider).mockResolvedValue("phondo");
@@ -515,7 +516,7 @@ describe("owner_block_time", () => {
 
   it("the same block asked for again on this call (its result never came back) is handed back — no second row, no rate limit", async () => {
     db.queues.appointments = [{ data: JOBS, error: null }];
-    db.queues.blocked_times = [{ data: [{ id: "block-1" }], error: null }];
+    db.queues.blocked_times = [{ data: [{ id: "block-1", title: "Quote visit" }], error: null }];
     const r = await handleOwnerBlockTime(ORG, { ...BLOCK, confirmed: true }, ctx);
     expect(r).toEqual({
       success: true,
