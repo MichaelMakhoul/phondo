@@ -106,7 +106,7 @@ Checked in this order, each fail-closed:
 1. `CALLER_SMS_ENABLED` is off: "texts to customers are switched off for now". This is today's production state.
 2. No phone on the booking, or it can't be normalised (`parsePhoneToE164`, in the org's country): "there's no mobile number on this booking".
 3. **Line type:**
-   - **AU:** `+614…` and `+615…` are mobiles. Landlines (`+612`, `+613`, `+617`, `+618`) and 13, 1300 and 1800 numbers can't take a text. The check is free and needs no I/O; AU mobile numbers can't be ported to a fixed line.
+   - **AU:** only `+614…` numbers are mobiles. Landlines (`+612`, `+613`, `+617`, `+618`) and 13, 1300 and 1800 numbers can't take a text. The check is free and needs no I/O; AU mobile numbers can't be ported to a fixed line.
    - **US:** Twilio Lookup Line Type Intelligence (US$0.008 a lookup, only on an owner read-back), where only `mobile` qualifies. A lookup error means no text.
    - **Other countries:** no text.
 4. The customer replied STOP (`caller_sms_optouts`): "they've opted out of texts".

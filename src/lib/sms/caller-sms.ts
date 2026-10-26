@@ -18,6 +18,7 @@ import { hasFeatureAccess } from "@/lib/stripe/billing-service";
 import { SENTRY_REASONS } from "@/lib/security/error-ids";
 import { setReasonTag } from "@/lib/observability/sentry-tags";
 import { OPT_OUT_MARKER_RE } from "./sms-sender";
+import { numberingPlanLineType } from "./sms-capability";
 
 type MessageType =
   | "missed_call_textback"
@@ -410,6 +411,7 @@ async function upsertAppointmentConfirmation(params: {
     | "failed"
     | "opted_out"
     | "skipped_cap"
+    | "skipped_no_contact"
     | "skipped_disabled"
     | "skipped_db_error";
   providerMessageId?: string | null;
@@ -502,6 +504,26 @@ async function sendCallerSMS(params: {
       });
     }
     return { sent: false, status: "skipped", reason: "sms_globally_paused" };
+  }
+
+  // SCRUM-597: never text a number that can't take one. The AU numbering plan says
+  // so for free: landlines (02/03/07/08) and 13/1300/1800 numbers are skipped and
+  // recorded as skipped_no_contact (there is no textable contact). NANP numbers
+  // can't be classified without a paid lookup, so they go on as before.
+  const planLine = numberingPlanLineType(callerPhone);
+  if (planLine !== null && planLine !== "mobile") {
+    if (appointment) {
+      await upsertAppointmentConfirmation({
+        orgId,
+        appointmentId: appointment.appointmentId,
+        appointmentStartTime: appointment.appointmentStartTime,
+        channel: "sms",
+        intent: appointment.intent,
+        recipient: callerPhone,
+        status: "skipped_no_contact",
+      });
+    }
+    return { sent: false, status: "skipped", reason: "not_mobile" };
   }
 
   // 0. Org-level opt-out (SCRUM-240 Phase 1) — applies to both confirmation and
