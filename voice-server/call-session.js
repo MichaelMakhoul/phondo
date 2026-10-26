@@ -240,6 +240,8 @@ class CallSession {
     this.ownerToolCalls = 0;       // per-call cap, lib/owner-tool-runner.js
     this.ownerTurnFailureStreak = 0; // SCRUM-596: browser owner turns that failed in a row (classic)
     this.ownerSessionEnded = false;  // SCRUM-596: a browser owner session is ending: no new turn starts
+    /** @type {{ send: (audio: Buffer) => void, close: () => void, readonly active: boolean } | null} */
+    this.ownerTranscriber = null;    // SCRUM-597: Deepgram writing a browser owner session's lines (lib/owner-transcript.js)
     // SCRUM-587: the owner confirmation gate's clock (lib/owner-tool-runner.js
     // readBackVerdict), moved ONLY by lib/owner-turn-stamps.js on owner
     // sessions. The turn count only ever goes up — never reset mid-call, or an

@@ -724,3 +724,144 @@ describe("/ws/test classic speech recognition on an owner session, run for real"
     assert.ok(t.lines.some((l) => l.startsWith("error|") && l.includes("Deepgram connection closed unexpectedly (code=1006)")));
   });
 });
+
+// ─── SCRUM-597: the owner's lines come from Deepgram ─────────────────────────
+
+describe("/ws/test Gemini: the owner's transcript from Deepgram, run for real", () => {
+  const { createOwnerTranscriber } = require("../lib/owner-transcript");
+  const SETUP = sliceInHandler("        // Transcript buffering for test calls", "        session.geminiSession = createGeminiSession(");
+
+  function fakeDeepgram() {
+    const dg = { opened: [], cb: null, ws: null };
+    dg.open = (apiKey, callbacks, options) => {
+      dg.opened.push({ apiKey, language: callbacks.language, options });
+      dg.cb = callbacks;
+      dg.ws = { readyState: 1, sent: [], closed: [], send(b) { this.sent.push(b); }, close(c) { this.closed.push(c); this.readyState = 3; } };
+      return dg.ws;
+    };
+    return dg;
+  }
+
+  function wire(session, opts = {}) {
+    const apiKey = "apiKey" in opts ? opts.apiKey : "dg-key"; // an explicit undefined means no key
+    const dg = fakeDeepgram();
+    const lines = [];
+    const ws = fakeWs();
+    const h = run(`${SETUP}\nreturn {\n  cbs: {\n${GEMINI_CALLBACKS}\n  },\n  pending: () => pendingUserTranscript,\n};`, {
+      session,
+      DEEPGRAM_API_KEY: apiKey,
+      createOwnerTranscriber,
+      openDeepgramStream: dg.open,
+      ws,
+      WebSocket: { OPEN: 1 },
+      noteAssistantSpeech,
+      noteAssistantTurnEnd,
+      noteOwnerSpeech,
+      noteCancelledOwnerToolCalls,
+      runOwnerToolCall: async () => ({ message: "ok" }),
+      executeToolCall: async () => ({ message: "ok" }),
+      scheduleCache: { invalidate: () => {} },
+      logToolCall: () => {},
+      cleaningUp: false,
+      OWNER_WEB_PROBLEM_MESSAGE: "<owner problem>",
+      setTimeout: () => {},
+      console: recordingConsole(lines),
+    });
+    return { ...h, dg, ws, lines };
+  }
+  const userLines = (ws) => ws.sent.filter((m) => m && m.type === "transcript" && m.role === "user").map((m) => m.content);
+
+  it("an owner session opens Deepgram (English, the org's industry) and its finals — not Gemini's garbled text — are the owner's lines", () => {
+    const s = ownerSession();
+    s.organization = { industry: "plumbing" };
+    const { cbs, dg, ws } = wire(s);
+    assert.deepEqual(dg.opened, [{ apiKey: "dg-key", language: "en", options: { industry: "plumbing" } }]);
+    assert.equal(s.ownerTranscriber.active, true);
+    cbs.onAudio("AAAA"); cbs.onTurnComplete({}); // the greeting
+    cbs.onTranscriptIn("강의도 그래.");
+    dg.cb.onTranscript({ transcript: "Can you cancel", isFinal: false });
+    dg.cb.onTranscript({ transcript: "Can you cancel it?", isFinal: true });
+    cbs.onTranscriptOut("Sure.");
+    cbs.onAudio("BBBB");
+    cbs.onTurnComplete({});
+    assert.deepEqual(userLines(ws), ["Can you cancel it?"]);
+    assert.deepEqual(s.getTranscript().split("\n").filter((l) => l.startsWith("User:")), ["User: Can you cancel it?"]);
+  });
+
+  it("Gemini's text still stamps the confirmation gate's clock (content-blind) while Deepgram writes the line", () => {
+    const s = ownerSession();
+    const { cbs } = wire(s);
+    cbs.onAudio("AAAA"); cbs.onTurnComplete({});
+    const before = s.lastOwnerSpeechAt;
+    cbs.onTranscriptIn("¿Qué pasa a menudo?");
+    assert.ok(s.lastOwnerSpeechAt > before || (before === undefined && typeof s.lastOwnerSpeechAt === "number"), "the owner's speech is stamped from Gemini's input transcription");
+  });
+
+  it("several Deepgram finals in one turn join with spaces, in order", () => {
+    const s = ownerSession();
+    const { cbs, dg, ws } = wire(s);
+    dg.cb.onTranscript({ transcript: "Move the 2pm", isFinal: true });
+    dg.cb.onTranscript({ transcript: "to Thursday.", isFinal: true });
+    cbs.onTranscriptOut("Okay."); cbs.onAudio("A"); cbs.onTurnComplete({});
+    assert.deepEqual(userLines(ws), ["Move the 2pm to Thursday."]);
+  });
+
+  it("Deepgram lost mid-session: a warning, and from then on the owner's lines are Gemini's text", () => {
+    const s = ownerSession();
+    const { cbs, dg, ws, lines } = wire(s);
+    dg.cb.onError(new Error("1011 internal"));
+    assert.equal(s.ownerTranscriber.active, false);
+    assert.ok(lines.some((l) => l.startsWith("warn|") && l.includes("[OwnerWeb] Deepgram transcript lost (error: 1011 internal)") && l.includes("callSid=web_owner_abc")), lines.join("\n"));
+    cbs.onTranscriptIn("Any messages?");
+    cbs.onTranscriptOut("None."); cbs.onAudio("A"); cbs.onTurnComplete({});
+    assert.deepEqual(userLines(ws), ["Any messages?"]);
+  });
+
+  it("no Deepgram key, or a customer's test call: no transcriber, Gemini's text as before", () => {
+    for (const [session, apiKey] of [[ownerSession(), undefined], [customerSession(), "dg-key"]]) {
+      const { cbs, dg, ws } = wire(session, { apiKey });
+      assert.deepEqual(dg.opened, []);
+      assert.equal(session.ownerTranscriber, null);
+      cbs.onTranscriptIn("What times are free?");
+      cbs.onTranscriptOut("Nine."); cbs.onAudio("A"); cbs.onTurnComplete({});
+      assert.deepEqual(userLines(ws), ["What times are free?"]);
+    }
+  });
+});
+
+describe("/ws/test: inbound audio and teardown feed and close the owner's transcriber, run for real", () => {
+  const MESSAGE = sliceInHandler('  ws.on("message", (data, isBinary) => {', '  ws.on("close", () => {');
+
+  it("each inbound frame goes to Gemini and to the owner's Deepgram stream", () => {
+    const s = ownerSession();
+    const gemini = [];
+    const dgFrames = [];
+    s.geminiSession = { sendAudio: (b64) => gemini.push(b64) };
+    s.ownerTranscriber = { send: (b) => dgFrames.push(b), close: () => {}, active: true };
+    const handlers = {};
+    const ws = { on: (ev, fn) => { handlers[ev] = fn; }, readyState: 1, send: () => {}, close: () => {} };
+    run(MESSAGE, { ws, session: s, WebSocket: { OPEN: 1 }, console: recordingConsole([]) });
+    const frame = Buffer.from([0x7f, 0xff, 0x00]);
+    handlers.message(frame, true);
+    assert.deepEqual(gemini, [frame.toString("base64")]);
+    assert.deepEqual(dgFrames, [frame]);
+  });
+
+  it("teardown closes the transcriber and forgets it", async () => {
+    const CLEANUP = sliceInHandler("  async function cleanupTestSession() {", "  // Auto-disconnect after max duration.");
+    const s = ownerSession();
+    const closed = [];
+    s.geminiSession = { close: () => {} };
+    s.ownerTranscriber = { send: () => {}, close: () => closed.push(true), active: true };
+    let seen;
+    const h = run(`${CLEANUP}\nreturn { cleanupTestSession };`, {
+      cleaningUp: false, session: s, ownerWebSlotOpen: false, autoEndTimer: null, organizationId: "org-1",
+      releaseTestSlot: () => {}, ownerWebSessions: { close: () => {} },
+      finishOwnerWebSession: async (ended) => { seen = ended.ownerTranscriber; },
+      ownerWebFinishDeps: () => ({}), clearTimeout, console: recordingConsole([]),
+    });
+    await h.cleanupTestSession();
+    assert.deepEqual(closed, [true]);
+    assert.equal(seen, null, "closed before the post-call takes the transcript");
+  });
+});
