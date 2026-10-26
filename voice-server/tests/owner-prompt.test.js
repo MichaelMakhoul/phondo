@@ -6,7 +6,7 @@ const ownerPromptModule = require("../lib/owner-prompt");
 const { buildOwnerPrompt, buildOwnerGreeting, buildOwnerGeminiSuffix } = ownerPromptModule;
 
 // SCRUM-587 — prompt pins (spec §2 + §10): confirm-before-change, "customer
-// NOT texted", no customer-prompt rules, no customer tools, safe interpolation.
+// told only through notify_customer" (SCRUM-597), no customer-prompt rules, no customer tools, safe interpolation.
 // Every assertion is on the BUILT strings (this repo's lesson: pin the assembled
 // prompt, never just the fragment that was meant to end up in it).
 const base = { orgName: "Copperline Plumbing", ownerFirstName: "Dave", timezone: "Australia/Sydney", todayStr: "2026-10-12", serviceTypes: [{ id: "s1", name: "Blocked drain", duration_minutes: 60 }], practitioners: [] };
@@ -23,9 +23,10 @@ describe("buildOwnerPrompt", () => {
     assert.ok(p.includes("YYYY-MM-DDTHH:mm"), "PR B's new_datetime format must be declared");
     for (const o of ["needs_confirmation", "not_found", "slot_taken", "invalid_time", "rate_limited"]) assert.ok(p.includes(o), o);
   });
-  it("says the customer has NOT been texted and never promises a notification", () => {
-    assert.ok(p.includes("HAS NOT BEEN TEXTED"));
-    assert.ok(/Never promise a text, SMS, email/i.test(p));
+  it("tells the customer only through notify_customer, and never promises a notification (SCRUM-597)", () => {
+    assert.ok(p.includes("TELLING THE CUSTOMER happens only through notify_customer on a change."));
+    assert.ok(p.includes('Say the customer was texted ONLY when data.customer_contact.status is "sent".'));
+    assert.ok(p.includes("Never promise a text, call, email or any notification that a result has not confirmed."));
   });
   it("lists exactly the owner tools and declines what phase 1 cannot do", () => {
     for (const t of ["owner_list_appointments", "owner_list_messages", "owner_reschedule_appointment", "owner_cancel_appointment", "check_availability", "get_current_datetime", "end_call"]) assert.ok(p.includes(t), t);
@@ -60,7 +61,10 @@ describe("buildOwnerGeminiSuffix", () => {
   const s = buildOwnerGeminiSuffix();
   it("is the owner variant of the FINAL CRITICAL RULE block", () => {
     assert.ok(s.includes("FINAL CRITICAL RULE — OWNER CALL"));
-    assert.ok(s.includes("confirmed=true") && s.includes("HAS NOT BEEN TEXTED"));
+    assert.ok(s.includes("confirmed=true") && s.includes("THE CUSTOMER IS TOLD ONLY THROUGH notify_customer"));
+    assert.ok(s.includes('say they were texted ONLY when data.customer_contact.status is "sent"'));
+    assert.ok(s.includes('CALL the same tool again with confirmed=true and notify_customer ("text" / "call" / "none")'));
+    assert.ok(s.includes("in the same question ask whether to let the customer know — offering only data.contact_options"));
     assert.ok(s.includes("data.outcome"), "the suffix must key success on data.outcome (PR B contract)");
     assert.ok(/NO NEW BOOKINGS, NO TRANSFERS, NO BULK CHANGES/.test(s));
     assert.ok(/DON'T HANG UP ON "YES"/.test(s));
@@ -142,8 +146,9 @@ describe("buildOwnerPrompt — the change tools' outcomes (PR B contract)", () =
     assert.ok(p.includes("say what the message says (the owner changes it there) and do not retry"));
   });
   it("confirms a success with the times the tool returned, and reads every time back with its weekday and date", () => {
-    assert.ok(p.includes("confirm it with the times in the result (data.from and data.to, or data.when for a cancel), said naturally."));
-    assert.ok(p.includes("giving the weekday and date with every time, then ask for a clear yes"));
+    assert.ok(p.includes("confirm it with the times in the result (data.from and data.to, or data.when for a cancel), said naturally — then say what the result's message says about the customer (texted, couldn't be texted and why, or not told)."));
+    assert.ok(p.includes("giving the weekday and date with every time, and IN THE SAME QUESTION ask whether to let the customer know"));
+    assert.ok(p.includes("Then wait for a clear yes."));
   });
   it("walks the non-success outcomes one by one under the success rule", () => {
     const at = (x) => p.indexOf(x);
@@ -169,7 +174,7 @@ describe("buildOwnerPrompt — the change tools' outcomes (PR B contract)", () =
   it("reads a taken slot's alternatives to the owner as a short list, never as the customer-facing sentence", () => {
     const line = '- After "slot_taken", data.alternatives (when present) is a free-times sentence written for a customer: read the owner the times in it as a short list and ask which they want; never read it out as written.';
     assert.ok(p.includes(line));
-    assert.ok(p.indexOf(line) > p.indexOf("FOR A RESCHEDULE:") && p.indexOf(line) < p.indexOf("THE CUSTOMER HAS NOT BEEN TEXTED"), "it sits under FOR A RESCHEDULE");
+    assert.ok(p.indexOf(line) > p.indexOf("FOR A RESCHEDULE:") && p.indexOf(line) < p.indexOf("TELLING THE CUSTOMER"), "it sits under FOR A RESCHEDULE");
   });
   it("tells the owner how many jobs there really are when fewer are listed", () => {
     assert.ok(p.includes("the real total, even if fewer than 20 are listed"));
@@ -199,9 +204,9 @@ describe("buildOwnerPrompt — the rest of the rules the model is held to", () =
     const at = (x) => p.indexOf(x);
     const order = [
       "1. Find the job with owner_list_appointments and take its appointment_id.",
-      "2. Call owner_reschedule_appointment or owner_cancel_appointment WITHOUT confirmed. That changes nothing: it answers \"needs_confirmation\" with the read-back — the job and its times (data.from and data.to, or data.when for a cancel).",
+      "2. Call owner_reschedule_appointment or owner_cancel_appointment WITHOUT confirmed. That changes nothing: it answers \"needs_confirmation\" with the read-back — the job and its times (data.from and data.to, or data.when for a cancel) — and data.contact_options",
       "3. Read back that EXACT job and the EXACT change",
-      "4. Only after a clear yes, call the same tool again with confirmed=true.",
+      "4. Only after a clear yes, call the same tool again with confirmed=true AND notify_customer set to the owner's answer",
       "5. Every reschedule or cancel result has a message and a data.outcome.",
     ];
     order.forEach((x, i) => { assert.ok(at(x) >= 0, x); if (i) assert.ok(at(x) > at(order[i - 1]), `${x} comes after ${order[i - 1]}`); });
@@ -213,7 +218,7 @@ describe("buildOwnerPrompt — the rest of the rules the model is held to", () =
   it("declines what phase 1 cannot do, briefly", () => {
     assert.ok(p.includes("NOT IN THIS VERSION: booking new jobs by phone"));
     assert.ok(p.includes('bulk changes such as "push today to tomorrow" (one job at a time)'));
-    assert.ok(p.includes("transfers, and calling or texting anyone. Decline briefly and move on."));
+    assert.ok(p.includes("transfers, and calling or texting anyone other than letting a customer know about a change through notify_customer. Decline briefly and move on."));
   });
   it("sets the voice style and never acts on a guess", () => {
     assert.ok(p.includes("STYLE: brief and plain, like a good office manager."));
@@ -226,16 +231,31 @@ describe("buildOwnerPrompt — the rest of the rules the model is held to", () =
 describe("buildOwnerPrompt — the customer is never promised a notification", () => {
   const p = buildOwnerPrompt(base);
   const s = buildOwnerGeminiSuffix();
-  it("says every change result carries customer_notified: false", () => {
-    assert.ok(p.includes("customer_notified: false"));
+  it("keys 'the customer was told' on data.customer_contact, never on the model's own say-so (SCRUM-597)", () => {
+    assert.ok(p.includes('data.customer_contact.status is "sent"'));
+    assert.ok(s.includes('data.customer_contact.status is "sent"'));
+    assert.ok(!p.includes("customer_notified: false"), "the old fixed 'never notified' claim is gone");
   });
-  it("offers the customer's number instead, in the prompt and the suffix", () => {
-    assert.ok(/offer to read out the customer's phone number/.test(p));
-    assert.ok(/Offer their phone number instead/.test(s));
+  it("offers the customer's number when they weren't told, in the prompt and the suffix", () => {
+    assert.ok(/offer to read out their phone number so the owner can ring them/.test(p));
+    assert.ok(/offer their phone number/.test(s));
+  });
+  it("asks the contact question in the read-back, offering only data.contact_options — 'not tell them', never the ambiguous 'leave it'", () => {
+    assert.ok(p.includes('IN THE SAME QUESTION ask whether to let the customer know — offering only the ways in data.contact_options ("by text", "by call", or "not tell them").'));
+    assert.ok(p.includes('If data.contact_options is only "none", there is nothing to choose: say in a few words why (data.contact_note) and that you can read out their number afterwards.'));
+    assert.ok(p.includes('("don\'t tell them" is "none")'));
+    // Clarified through a fresh read-back (a question of the model's own would be a second turn the gate refuses).
+    assert.ok(p.includes('A bare "leave it" or "no" could mean "don\'t make the change": never guess — call the same tool again WITHOUT confirmed and ask which they mean as that read-back'));
+    assert.ok(p.includes("so their answer can confirm."));
+    assert.ok(p.includes('- "needs_confirmation": nothing changed.'));
+  });
+  it("a yes without the answer on the customer goes through the tool (it hands back the question), never a question of its own — the gate counts one turn", () => {
+    assert.ok(p.includes("If they said yes but didn't say whether to tell the customer, call it with confirmed=true and WITHOUT notify_customer: that changes nothing and hands back the question to ask — ask it, then call again with confirmed=true and their answer."));
+    assert.ok(!p.includes("ask that before calling"), "a question of the model's own would be a second turn: the gate refuses the confirm after it");
   });
   it("never words a promise that the customer was or will be told", () => {
-    // The guard sentences ("NOT BEEN TEXTED", "Never promise ...") name the words on purpose, so they are dropped first.
-    const scan = (text) => text.split("\n").filter((l) => !/NOT BEEN TEXTED|Never promise|customer_notified/.test(l)).join("\n");
+    // The guard sentences ("Never promise ...", the customer_contact.status rule) name the words on purpose, so they are dropped first.
+    const scan = (text) => text.split("\n").filter((l) => !/NOT BEEN TEXTED|Never promise|customer_notified|customer_contact\.status/.test(l)).join("\n");
     for (const text of [scan(p), scan(s)]) {
       for (const re of [/you['’]ll receive/i, /(?:will|going to) (?:send|text|message|email|notify|tell|let)/i, /(?:has|have) been (?:texted|notified|told|emailed|informed)/i, /(?:was|were) (?:texted|notified|emailed|informed)/i]) {
         assert.ok(!re.test(text), `promise wording ${re}`);
@@ -384,13 +404,14 @@ describe("buildOwnerGeminiSuffix — the last-read rules", () => {
       "1. owner_list_appointments",
       "2. CALL owner_reschedule_appointment or owner_cancel_appointment WITHOUT confirmed — it changes nothing and hands back the read-back",
       "3. Read back that exact job and the exact change (data.from and data.to, or data.when for a cancel)",
-      '4. Get a clear "yes"',
+      '4. Get a clear "yes" and their answer on telling the customer',
       '5. Say a short filler ("one moment") and CALL the same tool again with confirmed=true',
       "6. WAIT for the result",
       "7. Read data.outcome",
     ];
     order.forEach((x, i) => { assert.ok(at(x) >= 0, x); if (i) assert.ok(at(x) > at(order[i - 1]), `${x} comes after ${order[i - 1]}`); });
-    assert.ok(s.includes('7. Read data.outcome — say "done" ONLY for "rescheduled" / "cancelled"; "needs_confirmation" means read the change back, get the yes, then call again with confirmed=true; for anything else relay the tool\'s message'));
+    assert.ok(s.includes('7. Read data.outcome — say "done" ONLY for "rescheduled" / "cancelled", then what the result says about the customer; "needs_confirmation" means nothing changed: ask what its message asks (the read-back, or whether to tell the customer), then call again with confirmed=true and notify_customer; for anything else relay the tool\'s message'));
+    assert.ok(s.includes("(a yes without that answer: CALL with confirmed=true and no notify_customer — it hands back the question)"));
     assert.ok(s.includes("(take its appointment_id — never speak it)"));
   });
   it("forbids a success claim before the result and says the change did not happen if it is made", () => {
@@ -417,10 +438,12 @@ describe("the assembled owner prompt (prompt + suffix, as server.js builds it)",
     assert.ok(!BARE_CUSTOMER_TOOL.test(full));
     for (const s of ["NAME COLLECTION", "BOOKING PATH", "TRANSFERS — MUST OBEY", "privacy", "patient"]) assert.ok(!full.includes(s), s);
   });
-  it("states the confirmation gate and the not-texted fact in both halves", () => {
+  it("states the confirmation gate and the notify_customer rule in both halves", () => {
     for (const part of [buildOwnerPrompt(base), buildOwnerGeminiSuffix()]) {
       assert.ok(part.includes("confirmed=true"));
-      assert.ok(part.includes("HAS NOT BEEN TEXTED"));
+      assert.ok(part.includes("notify_customer"));
+      assert.ok(part.includes('customer_contact.status is "sent"'));
+      assert.ok(part.includes("data.contact_options"));
       assert.ok(part.includes("data.outcome"));
     }
   });

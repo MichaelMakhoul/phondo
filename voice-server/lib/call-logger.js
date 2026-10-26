@@ -217,7 +217,8 @@ async function notifyCallCompleted(internalApiUrl, secret, payload) {
         await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
         continue;
       }
-      console.error("[CallLogger] Internal API error — post-call processing lost:", {
+      // SCRUM-597: alertable — billing, notifications and an owner's recap email are lost.
+      console.error("[ALERT:error] [CallLogger] Internal API error — post-call processing lost:", {
         status: res.status,
         body: text,
         callId: payload.callId,
@@ -230,7 +231,7 @@ async function notifyCallCompleted(internalApiUrl, secret, payload) {
         await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
         continue;
       }
-      console.error("[CallLogger] Failed to notify after retries — billing, notifications, and webhooks lost:", {
+      console.error("[ALERT:error] [CallLogger] Failed to notify after retries — billing, notifications, webhooks and any owner recap email lost:", {
         callId: payload.callId,
         organizationId: payload.organizationId,
         error: err.message,

@@ -13,6 +13,13 @@ const DIR = join(process.cwd(), "src/app/(dashboard)/assistant-line");
 const pageSource = readFileSync(join(DIR, "page.tsx"), "utf-8");
 const panelSource = readFileSync(join(DIR, "owner-talk-panel.tsx"), "utf-8");
 const cardSource = readFileSync(join(process.cwd(), "src/app/(dashboard)/settings/owner-line-card.tsx"), "utf-8");
+// SCRUM-597: the session moved into the dashboard layout's OwnerAssistantProvider, so this
+// page and the floating bubble share one, and the controls, transcript and error moved into
+// components both render. Those pins read the files the code now lives in; the bubble's own
+// wiring is pinned in src/components/owner-assistant/__tests__/owner-assistant.source.test.ts.
+const OWNER_ASSISTANT_DIR = join(process.cwd(), "src/components/owner-assistant");
+const providerSource = readFileSync(join(OWNER_ASSISTANT_DIR, "owner-assistant-provider.tsx"), "utf-8");
+const sessionUiSource = readFileSync(join(OWNER_ASSISTANT_DIR, "owner-assistant-session-ui.tsx"), "utf-8");
 
 describe("the token URL", () => {
   it("is the owner-assistant token route, which exists", () => {
@@ -43,35 +50,63 @@ describe("/assistant-line page (server)", () => {
 });
 
 describe("the talk panel (client)", () => {
-  it("is a client component using the voice-test hook with the owner token URL and its own analytics source", () => {
+  it("is a client component on the shared session, which uses the voice-test hook with the owner token URL and its own analytics source", () => {
     expect(panelSource.startsWith('"use client";')).toBe(true);
-    expect(panelSource).toMatch(/useVoiceTest\(\{ assistantId, tokenUrl: OWNER_ASSISTANT_TOKEN_URL, trackingSource: "owner_assistant" \}\)/);
-    expect(panelSource).toMatch(/from "@\/lib\/owner-assistant\/web"/);
+    expect(panelSource).toMatch(/const assistant = useOwnerAssistant\(\);/);
+    expect(panelSource).not.toContain("useVoiceTest");
+    expect(providerSource).toMatch(/useVoiceTest\(\{ assistantId: assistantId \?\? "", tokenUrl: OWNER_ASSISTANT_TOKEN_URL, trackingSource: "owner_assistant" \}\)/);
+    expect(providerSource).toMatch(/from "@\/lib\/owner-assistant\/web"/);
   });
 
-  it("calls the hook only once it has an assistant (hooks can't be conditional)", () => {
+  it("reads the shared session before any early return (hooks can't be conditional), and never opens its own", () => {
     const outer = panelSource.slice(panelSource.indexOf("export function OwnerTalkPanel"), panelSource.indexOf("function OwnerTalk("));
     expect(outer).not.toContain("useVoiceTest(");
+    const hook = outer.indexOf("const shared = useOwnerAssistant();");
+    expect(hook).toBeGreaterThan(-1);
+    expect(hook).toBeLessThan(outer.indexOf("if (loadFailed)"));
     expect(outer).toMatch(/if \(loadFailed\)/);
     expect(outer).toMatch(/if \(!assistantId\)/);
     expect(outer).toMatch(/href="\/assistants"/);
   });
 
-  it("shows every state: idle, connecting, active (mute + end), ended (talk again), the transcript and errors", () => {
-    for (const s of ['status === "idle"', 'status === "connecting"', 'status === "active"', 'status === "ended"']) {
-      expect(panelSource).toContain(s);
-    }
-    expect(panelSource).toMatch(/onClick=\{toggleMute\}/);
-    expect(panelSource).toMatch(/onClick=\{stop\}/);
-    expect(panelSource).toMatch(/onClick=\{handleTalkAgain\}/);
-    expect(panelSource).toMatch(/transcript\.map\(/);
-    expect(panelSource).toMatch(/<AlertDescription>\{error\}<\/AlertDescription>/);
-    expect(panelSource).toMatch(/aria-label=\{isMuted \? "Unmute microphone" : "Mute microphone"\}/);
+  it("SCRUM-597: a live session (started from the bubble, which hides here) always shows — before the page's own error or empty states", () => {
+    const outer = panelSource.slice(panelSource.indexOf("export function OwnerTalkPanel"), panelSource.indexOf("function OwnerTalk("));
+    const live = outer.indexOf("if (isSessionLive(shared?.session.status)) {");
+    expect(live).toBeGreaterThan(-1);
+    expect(live).toBeLessThan(outer.indexOf("if (loadFailed)"));
+    expect(outer.slice(live, outer.indexOf("if (loadFailed)"))).toContain("<OwnerTalk />");
   });
 
-  it("says plainly that changes are real, customers aren't told, and how long a session lasts", () => {
-    expect(panelSource).toMatch(/reads every change back and waits for your yes/);
-    expect(panelSource).toMatch(/Customers aren&apos;t told automatically/);
+  it("shows every state: idle, connecting, active (mute + end), ended (talk again), the transcript and errors", () => {
+    for (const s of ['status === "idle"', 'status === "connecting"', 'status === "active"', 'status === "ended"']) {
+      expect(sessionUiSource).toContain(s);
+    }
+    expect(sessionUiSource).toMatch(/onClick=\{toggleMute\}/);
+    expect(sessionUiSource).toMatch(/onClick=\{stop\}/);
+    expect(sessionUiSource).toMatch(/onClick=\{handleTalkAgain\}/);
+    expect(sessionUiSource).toMatch(/transcript\.map\(/);
+    expect(sessionUiSource).toMatch(/<AlertDescription>\{error\}<\/AlertDescription>/);
+    expect(sessionUiSource).toMatch(/aria-label=\{isMuted \? "Unmute microphone" : "Mute microphone"\}/);
+    // … and the page renders all of it, full size.
+    expect(panelSource).toMatch(/<OwnerAssistantControls session=\{session\} \/>/);
+    expect(panelSource).toMatch(/<OwnerAssistantTranscript transcript=\{transcript\}/);
+    expect(panelSource).toMatch(/<OwnerAssistantError error=\{error\} \/>/);
+  });
+
+  it("without the layout's provider, says it couldn't load instead of showing controls that can't work", () => {
+    // SCRUM-597: or the layout found no assistant this render — unless a session is live (it stays on screen).
+    expect(panelSource).toMatch(/if \(!assistant \|\| \(!assistant\.assistantId && !isSessionLive\(assistant\.session\.status\)\)\) return <LoadFailedAlert \/>;/);
+    const alert = panelSource.slice(panelSource.indexOf("function LoadFailedAlert()"));
+    expect(alert).toMatch(/<Alert variant="destructive">/);
+    expect(alert).toMatch(/Couldn&apos;t load your assistant\. Refresh the page to try again\./);
+    // The outer loadFailed state still shows the same alert.
+    expect(panelSource).toMatch(/if \(loadFailed\) \{\s*return \(\s*<PageShell>\s*<LoadFailedAlert \/>/);
+  });
+
+  it("says plainly that changes are real, that it says whether the customer was told, and how long a session lasts", () => {
+    // SCRUM-597: true with texts off too (it can only say it couldn't tell them then).
+    expect(panelSource).toMatch(/reads every change back and waits for your yes, then tells you whether the customer was told\./);
+    expect(panelSource).not.toMatch(/Customers aren&apos;t told automatically/);
     expect(panelSource).toMatch(/Each session lasts up to 8 minutes\./);
   });
 

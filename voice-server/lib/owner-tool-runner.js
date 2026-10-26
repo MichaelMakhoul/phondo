@@ -66,11 +66,27 @@ const CANCELLED_BEFORE_SENT_MESSAGE = "Not done: that call was cancelled before 
 const CUSTOMER_FAILURE_LINE = /take your information|having a little trouble right now/i;
 
 /**
- * PR B ends every successful write's message with this sentence (NOT_NOTIFIED
- * in src/lib/owner-assistant/tool-handlers.ts); the change is what precedes it.
- * Cutting there, not at the first full stop, keeps "Dr. Jane Smith" whole.
+ * PR B ends every successful write's message with a sentence about the customer
+ * (contactOutcomeSentence in src/lib/owner-assistant/customer-contact.ts; before
+ * SCRUM-597 the fixed "The customer has NOT been notified"); the change is what
+ * precedes it. Cutting there, not at the first full stop, keeps "Dr. Jane Smith"
+ * whole.
  */
-const NOT_NOTIFIED_SENTENCE = /\s+The customer has NOT been notified\b/i;
+const CONTACT_SENTENCE = /\s+(?:The customer has NOT been notified\b|I've texted |I couldn't text |I can't call customers yet\b|I haven't let )/i;
+
+/**
+ * SCRUM-597: what happened to the customer, for the stored summary, from PR B's
+ * data.customer_contact (never from its prose).
+ * @param {unknown} data
+ * @returns {string} "" when the result says nothing about the customer
+ */
+function contactSummary(data) {
+  const contact = data && typeof data === "object" ? /** @type {any} */ (data).customer_contact : undefined;
+  if (!contact || typeof contact !== "object") return "";
+  if (contact.status === "sent") return " — customer texted";
+  if (contact.method === "text" && contact.status === "not_sent") return " — customer not texted";
+  return " — customer not told";
+}
 /** Fits PR B's longest success line (an 80-character name and two spoken times). */
 const DETAIL_MAX = 200;
 
@@ -354,9 +370,22 @@ async function applyConfirmationGate(session, name, args, audit, now) {
  */
 function changeDetail(message) {
   const line = String(message || "").trim().split(/\r?\n/)[0].trim();
-  const cut = line.search(NOT_NOTIFIED_SENTENCE);
+  const cut = line.search(CONTACT_SENTENCE);
   const chars = Array.from(cut > 0 ? line.slice(0, cut) : line);
   return chars.length > DETAIL_MAX ? `${chars.slice(0, DETAIL_MAX - 1).join("")}…` : chars.join("");
+}
+
+/**
+ * A write's change, plus what happened to the customer when PR B's data says
+ * ("Cancelled Bob's job on Friday at 3 PM — customer not told").
+ * @param {unknown} message
+ * @param {string} fallback
+ * @param {unknown} data
+ */
+function writeDetail(message, fallback, data) {
+  const detail = changeDetail(message) || fallback;
+  const contact = contactSummary(data);
+  return contact ? `${detail.replace(/[.!?]+$/, "")}${contact}` : detail;
 }
 
 /**
@@ -365,9 +394,10 @@ function changeDetail(message) {
  * @param {Record<string, any>} args
  * @param {string} message - the tool's own message (PR B's, for a write)
  * @param {boolean} successful
+ * @param {unknown} [data] - the tool's data (PR B's, for a write: customer_contact)
  * @returns {string|null}
  */
-function describeOwnerToolCall(name, args, message, successful) {
+function describeOwnerToolCall(name, args, message, successful, data) {
   if (!successful) return null;
   const a = args && typeof args === "object" ? args : {};
   switch (name) {
@@ -381,9 +411,9 @@ function describeOwnerToolCall(name, args, message, successful) {
     case "owner_list_messages":
       return "Checked messages";
     case "owner_reschedule_appointment":
-      return changeDetail(message) || "Moved a job";
+      return writeDetail(message, "Moved a job", data);
     case "owner_cancel_appointment":
-      return changeDetail(message) || "Cancelled a job";
+      return writeDetail(message, "Cancelled a job", data);
     default:
       return null;
   }
@@ -569,7 +599,7 @@ async function runOneOwnerToolCall(session, toolCall, deps) {
   // instead of "no changes made". An unconfirmed one can't have changed anything.
   const outcomeUnknown = OWNER_WRITE_TOOL_NAMES.includes(name) && forwardArgs.confirmed === true && !successful
     && r.data === undefined && (failedInTransit(r) || r.message === WRITE_UNCONFIRMED_MESSAGE);
-  audit.push({ name, successful, at: now(), ownerDetail: describeOwnerToolCall(name, forwardArgs, r.message, successful), ...(outcomeUnknown && { outcomeUnknown: true }) });
+  audit.push({ name, successful, at: now(), ownerDetail: describeOwnerToolCall(name, forwardArgs, r.message, successful, r.data), ...(outcomeUnknown && { outcomeUnknown: true }) });
   if (session.ownerToolRunsSettled === true && OWNER_WRITE_TOOL_NAMES.includes(name) && forwardArgs.confirmed === true) {
     // The owner hung up and cleanup stopped waiting: the stored summary does not have this.
     console.error(`[ALERT:error] [OwnerTools] ${name} finished after the call record was completed — outcome=${outcomeUnknown ? "unknown" : outcomeLabel(outcomeOf(r))} is not in the stored summary (org=${session.organizationId}, callSid=${session.callSid})`);
@@ -582,7 +612,7 @@ async function runOneOwnerToolCall(session, toolCall, deps) {
   if (cancelledInFlight && forwardArgs.confirmed === true && (successful || outcomeUnknown)) {
     const outcome = outcomeUnknown ? "unknown" : outcomeLabel(outcomeOf(r));
     const notice = successful
-      ? `SYSTEM NOTICE (not the owner speaking): the ${name} call that was interrupted had already gone through — data.outcome is "${outcome}", so the change HAS been made, and the customer has NOT been notified. Tell the owner it went through.`
+      ? `SYSTEM NOTICE (not the owner speaking): the ${name} call that was interrupted had already gone through — data.outcome is "${outcome}", so the change HAS been made, and the customer ${/** @type {any} */ (r.data)?.customer_contact?.status === "sent" ? "WAS texted" : "was NOT told"}. Tell the owner it went through.`
       : `SYSTEM NOTICE (not the owner speaking): the ${name} call that was interrupted had already been sent and its result never came back, so it may have gone through. Tell the owner, and check with owner_list_appointments before changing anything else.`;
     try {
       if (typeof deps.sendText !== "function") throw new Error("no way to reach the model");

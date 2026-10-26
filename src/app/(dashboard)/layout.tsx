@@ -5,6 +5,9 @@ import { DashboardHeader } from "@/components/dashboard/header";
 import { MobileBottomNav } from "@/components/dashboard/mobile-nav";
 import { AnalyticsIdentifier } from "@/components/analytics/analytics-identifier";
 import { SubscriptionLapseBanner } from "@/components/dashboard/subscription-lapse-banner";
+import { OwnerAssistantProvider } from "@/components/owner-assistant/owner-assistant-provider";
+import { OwnerAssistantBubble } from "@/components/owner-assistant/owner-assistant-bubble";
+import { isOwnerAssistantUiEnabled } from "@/lib/feature-flags";
 import type { LapseSubscription } from "@/lib/subscriptions/lapse-state";
 
 interface Organization {
@@ -95,7 +98,33 @@ export default async function DashboardLayout({
     console.error("[Dashboard Layout] Failed to fetch subscription for analytics:", subError);
   }
 
-  return (
+  // SCRUM-597: the always-on owner assistant bubble. Only the org's owner gets
+  // it, only while OWNER_ASSISTANT_UI_ENABLED is on, and only with an active
+  // assistant to talk in the voice of: the same pick as /assistant-line. Nobody
+  // else costs a query. The token route checks all of it again.
+  let ownerAssistantId: string | null = null;
+  let ownerAssistantEligible = false;
+  if (isOwnerAssistantUiEnabled() && memberships[0].role === "owner" && currentOrg) {
+    ownerAssistantEligible = true;
+    const { data: assistant, error: assistantError } = await (supabase as any)
+      .from("assistants")
+      .select("id")
+      .eq("organization_id", currentOrg.id)
+      .eq("is_active", true)
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    if (assistantError) {
+      console.error("[Dashboard Layout] owner assistant read failed:", {
+        organizationId: currentOrg.id,
+        errorCode: assistantError.code,
+        errorMessage: assistantError.message,
+      });
+    }
+    ownerAssistantId = assistant?.id ?? null;
+  }
+
+  const dashboard = (
     <div className="flex h-screen">
       <DashboardSidebar
         organizations={memberships.map((m) => ({
@@ -115,7 +144,11 @@ export default async function DashboardLayout({
           organization={currentOrg}
         />
         <div className="h-[2px] bg-gradient-to-r from-primary/60 via-primary/20 to-transparent" />
-        <main id="main-content" className="flex-1 overflow-y-auto bg-muted/30 p-4 pb-24 md:p-6 md:pb-6">
+        {/* With the bubble, extra bottom room lets the end of every page scroll clear of it. */}
+        <main
+          id="main-content"
+          className={`flex-1 overflow-y-auto bg-muted/30 p-4 md:p-6 ${ownerAssistantId ? "pb-40 md:pb-24" : "pb-24 md:pb-6"}`}
+        >
           <SubscriptionLapseBanner
             subscription={(subscription as LapseSubscription | null) ?? null}
             now={Date.now()}
@@ -134,5 +167,19 @@ export default async function DashboardLayout({
         />
       )}
     </div>
+  );
+
+  if (!ownerAssistantEligible) return dashboard;
+
+  // An admitted owner keeps the provider even when this render's read found no
+  // assistant or failed: router.refresh() re-runs this layout, and swapping the root
+  // element would remount the dashboard and cut off a live session. The bubble hides
+  // itself without an assistant (unless a session is live).
+  // Keyed by org: switching org ends the old org's session instead of carrying it over.
+  return (
+    <OwnerAssistantProvider assistantId={ownerAssistantId} key={currentOrg.id}>
+      {dashboard}
+      <OwnerAssistantBubble />
+    </OwnerAssistantProvider>
   );
 }

@@ -177,7 +177,7 @@ afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
 describe("owner_reschedule_appointment through the real reschedule core", () => {
   it("frees the old row, inserts the new leg carrying EVERY field of the booking, and audits it on the call", async () => {
-    const r = await handleOwnerRescheduleAppointment(ORG, { appointment_id: APPT, new_datetime: "2026-10-17T09:00", confirmed: true }, ctx);
+    const r = await handleOwnerRescheduleAppointment(ORG, { appointment_id: APPT, new_datetime: "2026-10-17T09:00", confirmed: true, notify_customer: "none" }, ctx);
 
     expect(r.success).toBe(true);
     const oldRow = apptRows()[0];
@@ -211,7 +211,7 @@ describe("owner_reschedule_appointment through the real reschedule core", () => 
     h.state.tables.appointments[0] = seedAppointment({ status: "pending" });
     h.state.failNextInsert = { code: "23P01", message: "overlap" };
 
-    const r = await handleOwnerRescheduleAppointment(ORG, { appointment_id: APPT, new_datetime: "2026-10-17T09:00", confirmed: true }, ctx);
+    const r = await handleOwnerRescheduleAppointment(ORG, { appointment_id: APPT, new_datetime: "2026-10-17T09:00", confirmed: true, notify_customer: "none" }, ctx);
 
     expect((r.data as any).outcome).toBe("slot_taken");
     expect(apptRows()).toHaveLength(3); // no new leg
@@ -224,7 +224,7 @@ describe("owner_reschedule_appointment through the real reschedule core", () => 
     h.state.failNextInsert = { code: "XX000", message: "insert refused" };
     h.state.updateFaults = [null, { code: "08006", message: "conn reset" }]; // the free lands, the restore does not
 
-    const r = await handleOwnerRescheduleAppointment(ORG, { appointment_id: APPT, new_datetime: "2026-10-17T09:00", confirmed: true }, ctx);
+    const r = await handleOwnerRescheduleAppointment(ORG, { appointment_id: APPT, new_datetime: "2026-10-17T09:00", confirmed: true, notify_customer: "none" }, ctx);
 
     expect(r).toMatchObject({ success: false, error: true });
     expect(r.message).toContain("Jane Smith's Friday, October 16 at 10:00 AM job needs a manual check in the dashboard");
@@ -241,7 +241,7 @@ describe("owner_reschedule_appointment through the real reschedule core", () => 
 
   it("another org's id is 'can't find' and nothing is written", async () => {
     h.state.tables.appointments[0] = seedAppointment({ organization_id: OTHER_ORG });
-    const r = await handleOwnerRescheduleAppointment(ORG, { appointment_id: APPT, new_datetime: "2026-10-17T09:00", confirmed: true }, ctx);
+    const r = await handleOwnerRescheduleAppointment(ORG, { appointment_id: APPT, new_datetime: "2026-10-17T09:00", confirmed: true, notify_customer: "none" }, ctx);
     expect((r.data as any).outcome).toBe("not_found");
     expect(writes()).toEqual([]);
   });
@@ -249,7 +249,7 @@ describe("owner_reschedule_appointment through the real reschedule core", () => 
 
 describe("owner_cancel_appointment through the real cancelSingleAppointment", () => {
   it("cancels the looked-up job (org-scoped, active-only write), audits it, refreshes the voice cache and NEVER texts the customer", async () => {
-    const r = await handleOwnerCancelAppointment(ORG, { appointment_id: APPT, confirmed: true, reason: "rang to cancel" }, ctx);
+    const r = await handleOwnerCancelAppointment(ORG, { appointment_id: APPT, confirmed: true, notify_customer: "none", reason: "rang to cancel" }, ctx);
 
     expect(r.success).toBe(true);
     expect(apptRows()[0].status).toBe("cancelled");
@@ -275,7 +275,7 @@ describe("owner_cancel_appointment through the real cancelSingleAppointment", ()
       return { allowed: true } as Awaited<ReturnType<typeof rateLimitDistributed>>;
     });
 
-    const r = await handleOwnerCancelAppointment(ORG, { appointment_id: APPT, confirmed: true }, ctx);
+    const r = await handleOwnerCancelAppointment(ORG, { appointment_id: APPT, confirmed: true, notify_customer: "none" }, ctx);
 
     expect(r).toEqual({
       success: false,
@@ -298,7 +298,7 @@ describe("owner_cancel_appointment through the real cancelSingleAppointment", ()
 
   it("another org's id is 'can't find' and nothing is written", async () => {
     h.state.tables.appointments[0] = seedAppointment({ organization_id: OTHER_ORG });
-    const r = await handleOwnerCancelAppointment(ORG, { appointment_id: APPT, confirmed: true }, ctx);
+    const r = await handleOwnerCancelAppointment(ORG, { appointment_id: APPT, confirmed: true, notify_customer: "none" }, ctx);
     expect((r.data as any).outcome).toBe("not_found");
     expect(r.error).toBeUndefined();
     expect(writes()).toEqual([]);

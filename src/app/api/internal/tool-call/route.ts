@@ -237,14 +237,14 @@ export async function POST(request: Request) {
           case "owner_reschedule_appointment":
             ownerResult = await handleOwnerRescheduleAppointment(
               organizationId,
-              { appointment_id: str(raw.appointment_id), new_datetime: str(raw.new_datetime), confirmed: raw.confirmed === true },
+              { appointment_id: str(raw.appointment_id), new_datetime: str(raw.new_datetime), confirmed: raw.confirmed === true, notify_customer: str(raw.notify_customer) },
               ownerCtx
             );
             break;
           case "owner_cancel_appointment":
             ownerResult = await handleOwnerCancelAppointment(
               organizationId,
-              { appointment_id: str(raw.appointment_id), confirmed: raw.confirmed === true, reason: str(raw.reason) },
+              { appointment_id: str(raw.appointment_id), confirmed: raw.confirmed === true, reason: str(raw.reason), notify_customer: str(raw.notify_customer) },
               ownerCtx
             );
             break;

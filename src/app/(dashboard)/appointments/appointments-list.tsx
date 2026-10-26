@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { onBookingsChanged } from "@/lib/voice-test/events";
 import {
   Card, CardContent, CardHeader, CardTitle,
 } from "@/components/ui/card";
@@ -96,6 +97,8 @@ export function AppointmentsList({ serviceTypes, practitioners }: Props) {
   }, [page, search, statusFilter, toast]);
 
   useEffect(() => { fetchAppointments(); }, [fetchAppointments]);
+  // SCRUM-597: the owner's assistant moved or cancelled a booking — show it.
+  useEffect(() => onBookingsChanged(() => { void fetchAppointments(); }), [fetchAppointments]);
 
   // Debounce search
   const [searchDebounced, setSearchDebounced] = useState(search);

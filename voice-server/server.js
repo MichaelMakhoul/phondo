@@ -164,10 +164,11 @@ const { mintStreamToken, verifyStreamToken, withoutOwnerAccess } = require("./li
 // SCRUM-587: the owner session — its prompt and tools, the ONE tool path that
 // bypasses the customer guards, and the turn clock its confirmation gate reads.
 const { buildOwnerPrompt, buildOwnerGreeting, buildOwnerGeminiSuffix } = require("./lib/owner-prompt");
-const { buildOwnerTools } = require("./lib/owner-tools");
-const { runOwnerToolCall, buildOwnerCallSummary, settleOwnerToolRuns, noteCancelledOwnerToolCalls, ownerToolLoopReply, OWNER_MAX_TOOL_CALLS } = require("./lib/owner-tool-runner");
+const { buildOwnerTools, OWNER_WRITE_TOOL_NAMES } = require("./lib/owner-tools");
+const { runOwnerToolCall, buildOwnerCallSummary, settleOwnerToolRuns, noteCancelledOwnerToolCalls, ownerToolLoopReply, ownerResultSucceeded, OWNER_MAX_TOOL_CALLS } = require("./lib/owner-tool-runner");
 const { noteAssistantSpeech, noteAssistantTurnEnd, noteOwnerSpeech } = require("./lib/owner-turn-stamps");
 const { OWNER_WEB_MAX_SESSION_MS, OWNER_WEB_RECORD_METADATA, OWNER_WEB_PROBLEM_MESSAGE, isOwnerWebToken, ownerWebCallSid, buildOwnerWebPrompt, createOwnerTokenLedger, createOwnerWebSessions, finishOwnerWebSession } = require("./lib/owner-web-session"); // SCRUM-596: the owner assistant in the dashboard
+const { createOwnerTranscriber } = require("./lib/owner-transcript"); // SCRUM-597: the owner's lines in a browser session, from Deepgram
 
 // Mirror of API-layer E164_REGEX. Defense-in-depth at the dialer so a bad
 // value introduced via direct SQL or a future bug can't be sent to Twilio.
@@ -6798,6 +6799,19 @@ const testSessionCaps = createTestSessionCaps({
 const ownerWebSessions = createOwnerWebSessions();
 const ownerTokenLedger = createOwnerTokenLedger();
 
+/**
+ * SCRUM-597: a browser owner session just changed a booking (a successful owner
+ * write): tell the page, so the dashboard open behind the bubble refreshes its diary
+ * instead of showing the old time after the assistant says "done".
+ * @param {any} ws - the /ws/test socket
+ * @param {string} name
+ * @param {unknown} result - the owner runner's result
+ */
+function notifyBookingsChanged(ws, name, result) {
+  if (!OWNER_WRITE_TOOL_NAMES.includes(name) || !ownerResultSucceeded(name, result)) return;
+  if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "bookings_changed" }));
+}
+
 /** SCRUM-596: what an owner session in the browser needs to end like an owner phone call. */
 function ownerWebFinishDeps() {
   return {
@@ -6949,6 +6963,11 @@ testWss.on("connection", (ws, req) => {
           console.warn("[TestGeminiLive] Error closing Gemini session during cleanup:", err.message);
         }
         session.geminiSession = null;
+      }
+      // SCRUM-597: and the Deepgram stream writing the owner's lines.
+      if (session.ownerTranscriber) {
+        session.ownerTranscriber.close();
+        session.ownerTranscriber = null;
       }
       // SCRUM-596: an owner session ends like an owner phone call: its row
       // (call_type "owner", channel "web") and the call-completed webhook.
@@ -7211,6 +7230,24 @@ testWss.on("connection", (ws, req) => {
         // Transcript buffering for test calls
         let pendingUserTranscript = "";
         let pendingAiTranscript = "";
+        // SCRUM-597: on an owner session the owner's lines come from Deepgram on the
+        // same inbound audio (lib/owner-transcript.js) — Gemini's input transcription
+        // garbled them into other languages. Text only: Gemini still runs the
+        // conversation and stamps the confirmation gate's clock. If Deepgram is
+        // unavailable, the lines fall back to Gemini's text.
+        if (session.ownerMode && DEEPGRAM_API_KEY) {
+          session.ownerTranscriber = createOwnerTranscriber({
+            apiKey: DEEPGRAM_API_KEY,
+            openStream: openDeepgramStream,
+            industry: session.organization?.industry,
+            onFinal: (text) => {
+              pendingUserTranscript = pendingUserTranscript ? `${pendingUserTranscript} ${text}` : text;
+            },
+            onLost: (why) => {
+              console.warn(`[OwnerWeb] Deepgram transcript lost (${why}) — the owner's lines fall back to Gemini's transcription. callSid=${session?.callSid}`);
+            },
+          });
+        }
 
         session.geminiSession = createGeminiSession(
           {
@@ -7241,7 +7278,9 @@ testWss.on("connection", (ws, req) => {
               if (session.ownerMode) {
                 session._toolCallInFlight = true;
                 try {
-                  return await runOwnerToolCall(session, toolCall, { executeToolCall, scheduleCache, sendText: (text) => session?.geminiSession?.sendText(text) });
+                  const ownerResult = await runOwnerToolCall(session, toolCall, { executeToolCall, scheduleCache, sendText: (text) => session?.geminiSession?.sendText(text) });
+                  notifyBookingsChanged(ws, toolCall.name, ownerResult); // SCRUM-597
+                  return ownerResult;
                 } finally {
                   if (session) session._toolCallInFlight = false;
                 }
@@ -7270,7 +7309,8 @@ testWss.on("connection", (ws, req) => {
               return { message };
             },
             onTranscriptIn: (text) => {
-              pendingUserTranscript += text;
+              // SCRUM-597: while Deepgram writes the owner's lines, Gemini's text isn't used as text.
+              if (!session?.ownerTranscriber?.active) pendingUserTranscript += text;
               // SCRUM-596: the owner spoke (the confirmation gate's clock; once per utterance).
               if (session?.ownerMode) noteOwnerSpeech(session, text);
             },
@@ -7550,6 +7590,8 @@ testWss.on("connection", (ws, req) => {
         // Gemini Live pipeline — convert raw mulaw to base64 and send
         const base64Audio = data.toString("base64");
         session.geminiSession.sendAudio(base64Audio);
+        // SCRUM-597: the same frames feed the owner's Deepgram transcript.
+        if (session.ownerTranscriber) session.ownerTranscriber.send(data);
       } else if (session.deepgramWs && session.deepgramWs.readyState === WebSocket.OPEN) {
         // Classic pipeline — forward raw mulaw to Deepgram
         session.deepgramWs.send(data);
@@ -7679,6 +7721,7 @@ async function handleTestUserSpeech(session, ws, transcript) {
           // and data go back to the model, as in the phone line's classic loop.
           if (session.ownerMode) {
             const ownerRet = await runOwnerToolCall(session, { name: fnName, args: fnArgs }, { executeToolCall, scheduleCache });
+            notifyBookingsChanged(ws, fnName, ownerRet); // SCRUM-597
             lastOwnerTool = { name: fnName, ret: ownerRet };
             // The owner said goodbye: from here the session is ending, and words
             // heard while the goodbye plays start no new turn.

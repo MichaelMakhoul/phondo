@@ -42,6 +42,8 @@ vi.mock("@/lib/notifications/notification-service", () => ({
   sendOwnerPinLockedNotification: vi.fn(async () => "sent"),
 }));
 vi.mock("@/lib/sms/caller-sms", () => ({ sendMissedCallTextBack: vi.fn() }));
+// SCRUM-597 step 4d is pinned in owner-recap.test.ts; here it finds nothing to report.
+vi.mock("@/lib/owner-assistant/recap", () => ({ buildOwnerRecap: vi.fn(async () => []) }));
 vi.mock("@/lib/integrations/webhook-delivery", () => ({ deliverWebhooks: vi.fn() }));
 vi.mock("@/lib/security/rate-limiter", () => ({ withRateLimit: vi.fn(() => ({ allowed: true, headers: {} })), rateLimitDistributed: vi.fn() }));
 
