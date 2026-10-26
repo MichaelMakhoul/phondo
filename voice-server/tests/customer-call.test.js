@@ -989,9 +989,10 @@ describe("notifyMetadata", () => {
 
 describe("SCRUM-598 review fixes: the row stamps a session makes mid-call", () => {
   const notify = { callId: CALL_ID, organizationId: ORG, appointmentId: APPT, purpose: "confirm", requestedByCallId: OWNER_CALL, mode: "conversation", answeredBy: "human" };
-  const rowWith = (metadata) => (q) => {
+  const rowWith = (metadata, { open = true } = {}) => (q) => {
     if (q.op === "select") return { data: { id: CALL_ID, metadata }, error: null };
-    if (q.op === "update") return { data: null, error: null };
+    // The stamp's update only matches a row still open (silent lens R4).
+    if (q.op === "update") return { data: open ? [{ id: CALL_ID }] : [], error: null };
     return undefined;
   };
   it("do_not_call is merged into the row's notify at once, keeping everything else (silent lens N3)", async () => {
@@ -1000,6 +1001,13 @@ describe("SCRUM-598 review fixes: the row stamps a session makes mid-call", () =
     const read = sb.queries.find((q) => q.op === "select");
     assert.ok(has(read, "eq", "id", CALL_ID) && has(read, "eq", "organization_id", ORG));
     assert.deepEqual(sb.queries.find((q) => q.op === "update").payload, { metadata: { call_type: "customer_notify", notify: { purpose: "confirm", appointment_id: APPT, outcome: "do_not_call" } } });
+    assert.ok(has(sb.queries.find((q) => q.op === "update"), "in", "status", ["queued", "ringing", "in-progress"]), "only while the call is open");
+  });
+  it("a stamp on a call its finisher already finished is skipped, never a rewrite of the finished row (silent lens R4)", async () => {
+    const sb = fakeSupabase(rowWith({ call_type: "customer_notify", notify: { purpose: "confirm" } }, { open: false }));
+    assert.equal(await cc.markSetupFailed(sb, notify, "no-briefing"), false);
+    assert.ok(spies.warn.mock.calls.some((c) => String(c.arguments[0]).includes("was already finished — setup_failed not stamped")));
+    assert.equal(alerts().length, 0, "nothing failed: no page");
   });
   it("our own setup failure is said on the row (silent lens N4)", async () => {
     const sb = fakeSupabase(rowWith({ call_type: "customer_notify", notify: { purpose: "confirm" } }));
@@ -1041,7 +1049,9 @@ describe("SCRUM-598 review fixes: a failed check read is logged with its stage (
 
 describe("sweepStuckCustomerCalls (silent lens N1 — a lost status callback)", () => {
   const OLD = new Date(NOW - cc.STUCK_AFTER_MS - 60_000).toISOString();
-  const stuck = (over = {}) => ({ id: CALL_ID, organization_id: ORG, assistant_id: ASSISTANT, vapi_call_id: "sh_CA123", caller_phone: PHONE, status: "queued", created_at: OLD, metadata: { call_type: "customer_notify", notify: { purpose: "confirm" } }, ...over });
+  /** A real-shaped Twilio Call sid ("CA" + 32 hex), as a placement stores it. */
+  const SID = `CA${"0123456789abcdef".repeat(2)}`;
+  const stuck = (over = {}) => ({ id: CALL_ID, organization_id: ORG, assistant_id: ASSISTANT, vapi_call_id: `sh_${SID}`, caller_phone: PHONE, status: "queued", created_at: OLD, metadata: { call_type: "customer_notify", notify: { purpose: "confirm" } }, ...over });
   function sweepDeps(rows, over = {}) {
     const notified = [];
     const sb = fakeSupabase((q) => {
@@ -1054,12 +1064,12 @@ describe("sweepStuckCustomerCalls (silent lens N1 — a lost status callback)", 
 
   it("finishes an open call from Twilio's own record of it, once, and runs call-completed", async () => {
     const { deps, sb, notified } = sweepDeps([stuck()]);
-    assert.deepEqual(await cc.sweepStuckCustomerCalls(deps), { swept: 1, checked: 1 });
+    assert.deepEqual(await cc.sweepStuckCustomerCalls(deps), { swept: 1, checked: 1, closed: 0 });
     const q = sb.queries.find((x) => x.op === "select");
     assert.ok(has(q, "eq", "metadata->>call_type", "customer_notify"));
     // Security lens N1: only rows a placement wrote — never rows an org member inserted by hand.
     assert.ok(has(q, "eq", "direction", "outbound"));
-    assert.ok(has(q, "like", "vapi_call_id", "sh_%"));
+    assert.ok(has(q, "like", "vapi_call_id", "sh%"));
     assert.ok(q.filters.some((f) => f[0] === "in" && f[1] === "status"));
     assert.ok(has(q, "lt", "created_at", new Date(NOW - cc.STUCK_AFTER_MS).toISOString()), "only calls past any possible end");
     const upd = sb.queries.find((x) => x.op === "update");
@@ -1088,14 +1098,26 @@ describe("sweepStuckCustomerCalls (silent lens N1 — a lost status callback)", 
     assert.equal(notified[0].status, "failed");
   });
 
-  it("a sid Twilio has never heard of (404) is finished at once as failed — it never holds a slot for 2 hours (security lens N1)", async () => {
+  it("a sid Twilio has never heard of (404) is closed at once, quietly — it never holds a slot, emails or pages (security lens N1)", async () => {
     for (const err of [{ status: 404 }, { code: 20404 }]) {
       const { deps, sb, notified } = sweepDeps([stuck()], { fetchTwilioCall: async () => { throw Object.assign(new Error("not found"), err); } });
-      assert.equal((await cc.sweepStuckCustomerCalls(deps)).swept, 1, JSON.stringify(err));
+      assert.deepEqual(await cc.sweepStuckCustomerCalls(deps), { swept: 0, checked: 1, closed: 1 }, JSON.stringify(err));
       const upd = sb.queries.find((x) => x.op === "update");
       assert.equal(upd.payload.status, "failed");
-      assert.equal(upd.payload.metadata.notify.twilio_status, "not_found");
-      assert.equal(notified[0].status, "failed");
+      assert.equal(upd.payload.metadata.notify.not_placed, "a call sid Twilio has no record of");
+      assert.ok(has(upd, "eq", "status", "queued"), "conditional, like every finish");
+      assert.equal(notified.length, 0, "nobody was called: no call-completed, no email");
+    }
+  });
+
+  it("a row whose sid isn't one a placement writes is closed at once, quietly — LIKE's '_' wildcard can't sneak one past (commit review)", async () => {
+    for (const vapi of ["shX" + SID, "sh_CA123", "sh_" + SID + "x", "sh_ca" + "0".repeat(32) + "!", null]) {
+      const fetched = [];
+      const { deps, sb, notified } = sweepDeps([stuck({ vapi_call_id: vapi })], { fetchTwilioCall: async (sid) => { fetched.push(sid); return { status: "completed" }; } });
+      assert.deepEqual(await cc.sweepStuckCustomerCalls(deps), { swept: 0, checked: 1, closed: 1 }, String(vapi));
+      assert.equal(sb.queries.find((x) => x.op === "update").payload.metadata.notify.not_placed, "no call sid a placement would write");
+      assert.deepEqual(fetched, [], "Twilio is never asked about it");
+      assert.equal(notified.length, 0);
     }
   });
 
@@ -1110,7 +1132,7 @@ describe("sweepStuckCustomerCalls (silent lens N1 — a lost status callback)", 
 
   it("an unreadable list pages; it never throws", async () => {
     const sb = fakeSupabase(() => ({ data: null, error: { message: "x" } }));
-    assert.deepEqual(await cc.sweepStuckCustomerCalls({ supabase: sb, hasLiveSession: () => false, fetchTwilioCall: async () => null, notifyCallCompleted: async () => {} }), { swept: 0, checked: 0 });
+    assert.deepEqual(await cc.sweepStuckCustomerCalls({ supabase: sb, hasLiveSession: () => false, fetchTwilioCall: async () => null, notifyCallCompleted: async () => {} }), { swept: 0, checked: 0, closed: 0 });
     assert.ok(alerts().some((m) => m.includes("sweep")));
   });
 });

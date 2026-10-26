@@ -598,7 +598,10 @@ built and again at placement:
   busy, failed, or a fax.
 - **A sweeper** runs every 5 minutes while the flag is on. It finishes rows
   stuck for 15+ minutes from Twilio's own record of the call, and gives up
-  after 2 hours (finished as unknown).
+  after 2 hours (finished as unknown). A row no placement wrote (no real call
+  sid, or one Twilio has no record of) is closed quietly, with no email:
+  `sweep: closed row … no call to finish`. Many of those from one org means
+  someone is inserting junk rows.
 - **One machine.** Live customer calls are tracked in memory
   (`liveCustomerCalls`), so the status callback must reach the machine running
   the session. The app runs one machine today. **Before scaling to two, make

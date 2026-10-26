@@ -876,12 +876,20 @@ async function stampCustomerCall(supabase, notify, fields) {
       return false;
     }
     const metadata = row.metadata && typeof row.metadata === "object" ? row.metadata : {};
-    const { error: updErr } = await supabase
+    // Only while the call is open (silent lens R4): a late stamp — markSetupFailed stops
+    // waiting after 2 s — never rewrites a row its finisher has since finished (and emailed).
+    const { data: stamped, error: updErr } = await supabase
       .from("calls")
       .update({ metadata: { ...metadata, notify: { ...(metadata.notify || {}), ...fields } } })
-      .eq("id", row.id);
+      .eq("id", row.id)
+      .in("status", ["queued", "ringing", "in-progress"])
+      .select("id");
     if (updErr) {
       console.error(`[ALERT:error] [CustomerCall] could not stamp call ${notify.callId} with ${Object.keys(fields).join(", ")}:`, updErr.message);
+      return false;
+    }
+    if (!Array.isArray(stamped) || stamped.length === 0) {
+      console.warn(`[CustomerCall] call ${notify.callId} was already finished — ${Object.keys(fields).join(", ")} not stamped`);
       return false;
     }
     return true;
@@ -1095,51 +1103,95 @@ const SWEEP_LIMIT = 20;
  * @typedef {FinishDeps & { hasLiveSession: (callSid: string) => boolean, fetchTwilioCall: (sid: string) => Promise<{ status?: string, duration?: string|number|null, answeredBy?: string|null }|null> }} SweepDeps
  */
 
+/** The call sid exactly as a placement stores it: "sh_" + a Twilio Call sid ("CA" + 32 hex). */
+const PLACED_SID_RE = /^sh_(CA[0-9a-fA-F]{32})$/;
+
+/**
+ * A row no placement wrote (security lens N1, and the commit review: org members can
+ * insert their own calls rows): closed so it never holds a sweep slot — with no
+ * call-completed, since nobody was called, and an email or a page per junk row would
+ * be noise anyone could make.
+ * @param {{ id: string, organization_id: string, status: string, metadata?: any }} row
+ * @param {string} reason
+ * @param {FinishDeps} deps
+ * @returns {Promise<boolean>}
+ */
+async function closeUnplacedRow(row, reason, deps) {
+  const metadata = row.metadata && typeof row.metadata === "object" ? row.metadata : {};
+  const { data, error } = await deps.supabase
+    .from("calls")
+    .update({
+      status: "failed",
+      ended_at: new Date((deps.now || Date.now)()).toISOString(),
+      metadata: { ...metadata, notify: { ...(metadata.notify || {}), swept: true, not_placed: reason } },
+    })
+    .eq("id", row.id)
+    .eq("status", row.status)
+    .select("id");
+  if (error) {
+    console.error(`[CustomerCall] sweep: could not close row ${row.id} (org=${row.organization_id}): ${error.message}`);
+    return false;
+  }
+  console.warn(`[CustomerCall] sweep: closed row ${row.id} (org=${row.organization_id}) — ${reason}; no call to finish, no email`);
+  return Array.isArray(data) && data.length > 0;
+}
+
 /**
  * The backstop for a lost or failed status callback (silent lens N1): customer
  * calls still open long after they could have ended, with no live session here,
  * are finished from Twilio's own record of the call. Run every few minutes by
  * server.js. Never throws.
  * @param {SweepDeps} deps
- * @returns {Promise<{ swept: number, checked: number }>}
+ * @returns {Promise<{ swept: number, checked: number, closed: number }>}
  */
 async function sweepStuckCustomerCalls(deps) {
   const nowMs = (deps.now || Date.now)();
   let swept = 0;
   let checked = 0;
+  let closed = 0;
   try {
     const { data: rows, error } = await deps.supabase
       .from("calls")
       .select("id, organization_id, assistant_id, vapi_call_id, caller_phone, status, created_at, metadata")
       .eq("metadata->>call_type", CUSTOMER_NOTIFY_CALL_TYPE)
-      // Only rows a placement wrote (security lens N1): org members can insert their
-      // own calls rows, and rows nobody placed must never hold the sweep's slots.
+      // Only rows a placement wrote (security lens N1): org members can insert their own
+      // calls rows. A coarse prefix here (LIKE's "_" is a wildcard); the exact shape is
+      // checked below, and any row without it is closed, never skipped.
       .eq("direction", "outbound")
-      .like("vapi_call_id", "sh_%")
+      .like("vapi_call_id", "sh%")
       .in("status", ["queued", "ringing", "in-progress"])
       .lt("created_at", new Date(nowMs - STUCK_AFTER_MS).toISOString())
       .order("created_at", { ascending: true })
       .limit(SWEEP_LIMIT);
     if (error || !Array.isArray(rows)) {
       console.error("[ALERT:error] [CustomerCall] sweep: open customer calls unreadable:", error?.message || "no rows array");
-      return { swept, checked };
+      return { swept, checked, closed };
     }
     for (const row of rows) {
       checked += 1;
-      const sid = typeof row.vapi_call_id === "string" && row.vapi_call_id.startsWith("sh_") ? row.vapi_call_id.slice(3) : null;
-      if (!sid || deps.hasLiveSession(sid)) continue;
+      const placed = typeof row.vapi_call_id === "string" ? PLACED_SID_RE.exec(row.vapi_call_id) : null;
+      if (!placed) {
+        if (await closeUnplacedRow(row, "no call sid a placement would write", deps)) closed += 1;
+        continue;
+      }
+      const sid = placed[1];
+      if (deps.hasLiveSession(sid)) continue;
       let twilio = null;
       let unknownToTwilio = false;
       try {
         twilio = await deps.fetchTwilioCall(sid);
       } catch (err) {
         const e = err && typeof err === "object" ? /** @type {Record<string, unknown>} */ (err) : {};
-        // A sid Twilio has never heard of was never a call: finished at once, never retried
-        // for 2 hours while it holds a slot (security lens N1).
+        // A sid Twilio has never heard of was never a call we placed (a placement only writes
+        // its row once Twilio accepts): closed at once, never retried while it holds a slot.
         unknownToTwilio = e.status === 404 || e.code === 20404;
         if (!unknownToTwilio) console.warn(`[CustomerCall] sweep: Twilio's record of ${sid} unreadable: ${twilioErrorSummary(err)}`);
       }
-      const status = unknownToTwilio ? "failed" : twilio && typeof twilio.status === "string" ? twilio.status : null;
+      if (unknownToTwilio) {
+        if (await closeUnplacedRow(row, "a call sid Twilio has no record of", deps)) closed += 1;
+        continue;
+      }
+      const status = twilio && typeof twilio.status === "string" ? twilio.status : null;
       if (status && !TERMINAL_TWILIO_STATUSES.has(status)) continue; // Twilio says it's still going
       const old = nowMs - Date.parse(row.created_at) > GIVE_UP_AFTER_MS;
       if (!status && !old) continue; // try again next sweep
@@ -1149,7 +1201,7 @@ async function sweepStuckCustomerCalls(deps) {
           twilioStatus: status || "failed",
           durationSeconds: Math.max(0, Math.round(Number(twilio?.duration) || 0)),
           answeredBy: twilio?.answeredBy || row.metadata?.notify?.answered_by,
-          extra: { swept: true, ...(unknownToTwilio ? { twilio_status: "not_found" } : status ? {} : { twilio_status: "unknown" }) },
+          extra: { swept: true, ...(status ? {} : { twilio_status: "unknown" }) },
         },
         deps
       );
@@ -1159,7 +1211,7 @@ async function sweepStuckCustomerCalls(deps) {
     console.error("[ALERT:error] [CustomerCall] sweep threw:", err instanceof Error ? err.message : String(err));
   }
   if (swept) console.warn(`[CustomerCall] sweep finished ${swept} customer call(s) nobody had finished`);
-  return { swept, checked };
+  return { swept, checked, closed };
 }
 
 /**

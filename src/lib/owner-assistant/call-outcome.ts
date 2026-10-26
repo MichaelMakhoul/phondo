@@ -34,7 +34,10 @@ export type DiaryLine =
   | { kind: "booked"; when: string }
   | { kind: "moved"; from: string | null; when: string }
   | { kind: "cancelled"; when: string }
-  /** Nothing changed on the call; the booking it was about is still booked, still cancelled, or neither (moved on since, done). */
+  /**
+   * The booking the call was about, as it stands — when the call didn't move or cancel it.
+   * Always first; beside lines for what the call made, or alone (nothing changed on the call).
+   */
   | { kind: "unchanged"; when: string; state: "booked" | "cancelled" | "inactive" };
 
 export interface CallOutcomeReport {

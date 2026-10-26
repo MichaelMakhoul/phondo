@@ -1195,8 +1195,9 @@ function nextStepLine(r: CallOutcomeReport): string | null {
   if (r.assistantOutcome === "rebooked" && !newTime) {
     return `The assistant noted it booked or moved a time for ${who}, but your diary shows no new time. Check the call and Appointments${ring}.`;
   }
-  // A new booking where the call should have moved the old one: both are in the diary.
-  if ((r.purpose === "moved" || r.purpose === "find_new_time") && bookedNew && about?.state === "booked") {
+  // A new booking where the call should have moved the old one: both are in the diary
+  // (on a confirm call too — "can we do Thursday instead?" booked, not moved: silent lens R4).
+  if (r.purpose !== "cancelled" && bookedNew && about?.state === "booked") {
     return `A new time was booked for ${who}, but their booking on ${escapeHtml(about.when)} is still in your diary — cancel it if the new time replaces it.`;
   }
   const seeNote = r.assistantOutcome === "other" || noMoreCalls ? " (see the assistant's note)" : "";
@@ -1230,11 +1231,12 @@ function nextStepLine(r: CallOutcomeReport): string | null {
       if (newTime || cancelledOnTheCall) return null;
       if (leftMessage) return `${who} doesn't know yet that their booking needs to move (the assistant left a message asking them to call back)${ring}.`;
       if (reach === "missed") return `${who} doesn't know yet that their booking needs to move${ring}.`;
-      // Silent lens R3 (low): "still stands" only when the diary says so.
-      if (about && about.state !== "booked") {
+      // Silent lens R3/R4 (low): "still stands" only when the diary shows the booking still booked.
+      if (!about) return `No new time was agreed — check ${who}'s booking in Appointments${seeNote}${asked}${ring}.`;
+      if (about.state !== "booked") {
         return `No new time was agreed, and the booking on ${escapeHtml(about.when)} ${about.state === "cancelled" ? "is now cancelled" : "is no longer active"} — check Appointments${seeNote}${asked}.`;
       }
-      return `No new time was agreed, so ${who}'s booking${r.bookingWhen ? ` on ${escapeHtml(r.bookingWhen)}` : ""} still stands${seeNote}${asked}. It's back with you${ring}.`;
+      return `No new time was agreed, so ${who}'s booking on ${escapeHtml(about.when)} still stands${seeNote}${asked}. It's back with you${ring}.`;
     }
     default: {
       const unhandled: never = r.purpose;
