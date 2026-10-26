@@ -3,9 +3,9 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { CONTACT_METHODS, contactOutcomeSentence, type CustomerContactResult } from "../customer-contact";
-import { CALL_OUTCOMES, CALL_PURPOSES, TIMES_OF_DAY, VOICE_CALL_BLOCK_REASONS } from "../customer-call";
+import { CALL_OUTCOMES, CALL_PURPOSES, TIMES_OF_DAY, VOICE_CALL_BLOCK_REASONS, checkCustomerCall, type TimeWindow } from "../customer-call";
 import { CUSTOMER_NOTIFY_CALL_TYPE } from "../owner-call";
-import { MACHINE_ANSWERS } from "../call-outcome";
+import { MACHINE_ANSWERS, buildCallOutcome, callResultOf } from "../call-outcome";
 import { OWNER_TOOL_NAMES } from "../tool-handlers";
 
 // SCRUM-597 (types lens F6): the "let them know?" contract lives on both sides — the
@@ -28,6 +28,10 @@ const customerCall = vs("customer-call.js") as {
   AMD_CONVERSATION: ReadonlySet<string>;
   AMD_VOICEMAIL: ReadonlySet<string>;
   notifyMetadata: (notify: Record<string, unknown>, extra?: Record<string, unknown>) => Record<string, unknown>;
+  notifyCallEnd: (s: Record<string, unknown>, endedReason: string | null) => { notify: Record<string, unknown>; outcome: string };
+  markSetupFailed: (supabase: unknown, notify: Record<string, unknown>, reason: string) => Promise<boolean>;
+  finishCustomerCall: (row: Record<string, unknown>, what: Record<string, unknown>, deps: Record<string, unknown>) => Promise<{ finalized: boolean; reason: string }>;
+  parseTimeWindow: (v: unknown) => { window: unknown } | null;
 };
 const runner = vs("owner-tool-runner.js") as {
   describeOwnerToolCall: (name: string, args: object, message: string, successful: boolean, data?: unknown) => string | null;
@@ -94,15 +98,109 @@ describe("website ↔ voice server: the customer-contact contract", () => {
     }
   });
 
-  it("the metadata.notify keys the website reads are the ones the voice server writes", () => {
-    const written = customerCall.notifyMetadata(
-      { callId: "c", organizationId: "o", appointmentId: "a1", purpose: "confirm", requestedByCallId: "o1", mode: "conversation", answeredBy: "human" },
-      { outcome: "confirmed", note: "n", voicemail_text: "v", voicemail_played: true }
+  it("the window the website sends is the window the voice server reads (types lens N2)", async () => {
+    const window = { earliest: "2026-11-02", latest: "2026-11-06", timeOfDay: "morning" } satisfies TimeWindow;
+    let sent: any = null;
+    const fetch = (async (_url: string, init?: RequestInit) => {
+      sent = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({ canCall: true }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof globalThis.fetch;
+    await checkCustomerCall(
+      { organizationId: "o", appointmentId: "a1", purpose: "find_new_time", phone: "0412 345 678", requestedByCallId: "o1", window },
+      { voiceServerUrl: "https://voice.example", internalSecret: "s", fetch }
     );
-    // recap.ts, call-outcome.ts and the call-completed claim read these exact keys.
-    for (const key of ["appointment_id", "purpose", "requested_by_call_id", "answered_by", "mode", "outcome", "note", "voicemail_text", "voicemail_played"]) {
-      expect(Object.keys(written)).toContain(key);
-    }
+    // A renamed key would be read as "no limit" and the call would run without the window the owner approved.
+    expect(customerCall.parseTimeWindow(sent.window)).toEqual({ window });
+  });
+});
+
+// Types lens N3: the voice server's own writers, run for real, feed the website's own
+// readers — a key renamed on either side fails here, not in an owner's email.
+describe("website ↔ voice server: what a customer call's row says", () => {
+  const ORG = "11111111-2222-4333-a444-555555555555";
+  const CALL = "55555555-5555-4555-8555-555555555555";
+  const BOOKING = "aaaaaaaa-0000-4000-8000-000000000001";
+  const NOTIFY = { callId: CALL, organizationId: ORG, appointmentId: BOOKING, purpose: "confirm", requestedByCallId: "o1", mode: "conversation", answeredBy: "human" };
+  /** The voice server's writers' view of the DB: reads answer `row`, every update is kept. */
+  function writerDb(row: Record<string, unknown>) {
+    const writes: Array<Record<string, any>> = [];
+    const chain = (result: unknown) => {
+      const b: any = {};
+      for (const m of ["select", "eq", "in", "order"]) b[m] = () => b;
+      b.maybeSingle = async () => result;
+      b.then = (res: (v: unknown) => unknown, rej?: (e: unknown) => unknown) => Promise.resolve(result).then(res, rej);
+      return b;
+    };
+    return {
+      writes,
+      from: () => ({
+        select: () => chain({ data: row, error: null }),
+        update: (payload: Record<string, any>) => {
+          writes.push(payload);
+          return chain({ data: [{ id: row.id }], error: null });
+        },
+      }),
+    };
+  }
+  /** The website's reader's view: the call row, then the booking, then no other bookings. */
+  function readerDb(call: Record<string, unknown>) {
+    return {
+      from: (table: string) => {
+        const b: any = {};
+        for (const m of ["select", "eq", "in", "order"]) b[m] = () => b;
+        b.maybeSingle = async () => ({
+          data:
+            table === "calls"
+              ? { id: CALL, summary: null, caller_phone: "+61412345678", started_at: null, ended_at: null, created_at: "2026-10-27T03:00:00Z", ...call }
+              : { id: BOOKING, attendee_name: "Jane Smith", start_time: "2026-10-28T03:30:00Z", status: "confirmed", updated_at: "2026-10-20T00:00:00Z", rescheduled_from_id: null },
+          error: null,
+        });
+        b.then = (res: (v: unknown) => unknown, rej?: (e: unknown) => unknown) => Promise.resolve({ data: [], error: null }).then(res, rej);
+        return b;
+      },
+    };
+  }
+  const read = (call: Record<string, unknown>) => buildCallOutcome(readerDb(call), { organizationId: ORG, callId: CALL, timezone: "Australia/Sydney" });
+
+  it("a conversation's end-of-call fields (notifyCallEnd) read back: purpose, result, outcome and note", async () => {
+    const end = customerCall.notifyCallEnd({ notify: NOTIFY, notifyOutcome: { outcome: "declined", note: "Can't make it" } }, "end_call_tool");
+    const r = await read({ status: "completed", outcome: end.outcome, duration_seconds: 80, metadata: { call_type: CUSTOMER_NOTIFY_CALL_TYPE, notify: end.notify } });
+    expect(r?.purpose).toBe("confirm");
+    expect(r?.result).toEqual({ kind: "answered", seconds: 80, endedOnAFault: false, sureItWasAPerson: true });
+    expect(r?.assistantOutcome).toBe("declined");
+    expect(r?.assistantNote).toBe("Can't make it");
+  });
+
+  it("a voicemail spoken and played reads as left, with its message; one never spoken reads as not left", async () => {
+    const vm = { ...NOTIFY, mode: "voicemail", answeredBy: "machine_end_beep" };
+    const left = customerCall.notifyCallEnd({ notify: vm, notifyVoicemailDone: true, notifyVoicemailText: "Hi Jane, it's Bob's Plumbing.", notifyVoicemailPlayed: true }, "customer-call-voicemail-left");
+    const r = await read({ status: "completed", outcome: left.outcome, duration_seconds: 20, metadata: { notify: left.notify } });
+    expect(r?.result).toEqual({ kind: "voicemail", playedToEnd: true });
+    expect(r?.voicemailText).toBe("Hi Jane, it's Bob's Plumbing.");
+    const unspoken = customerCall.notifyCallEnd({ notify: vm, notifyVoicemailText: "Hi Jane" }, "customer-call-voicemail-not-spoken");
+    expect(callResultOf({ status: "failed", outcome: unspoken.outcome, metadata: { notify: unspoken.notify } })).toEqual({ kind: "voicemail_not_left" });
+  });
+
+  it("a setup failure stamped by markSetupFailed reads as our failure, never the customer hanging up", async () => {
+    const db = writerDb({ id: CALL, metadata: { call_type: CUSTOMER_NOTIFY_CALL_TYPE, notify: customerCall.notifyMetadata(NOTIFY) } });
+    expect(await customerCall.markSetupFailed(db, NOTIFY, "no-briefing")).toBe(true);
+    // Twilio's status callback then finishes the row as "completed".
+    expect(callResultOf({ status: "completed", outcome: null, metadata: db.writes[0].metadata })).toEqual({ kind: "failed_on_our_side" });
+  });
+
+  it("finishCustomerCall's cut off, fax and no answer read back as such", async () => {
+    const row = { id: CALL, organization_id: ORG, assistant_id: "asst-1", caller_phone: "+61412345678", metadata: { notify: customerCall.notifyMetadata(NOTIFY) } };
+    const finish = async (status: string, what: Record<string, unknown>) => {
+      const db = writerDb({ ...row, status });
+      const done = await customerCall.finishCustomerCall({ ...row, status }, what, { supabase: db, notifyCallCompleted: async () => {} });
+      expect(done.finalized).toBe(true);
+      const w = db.writes[0];
+      return callResultOf({ status: w.status, outcome: null, duration_seconds: w.duration_seconds, metadata: w.metadata });
+    };
+    expect(await finish("in-progress", { twilioStatus: "completed", durationSeconds: 95 })).toEqual({ kind: "cut_off", seconds: 95 });
+    expect(await finish("ringing", { twilioStatus: "completed", durationSeconds: 3, answeredBy: "fax" })).toEqual({ kind: "machine_answered" });
+    expect(await finish("queued", { twilioStatus: "no-answer", durationSeconds: 0 })).toEqual({ kind: "no_answer" });
+    expect(await finish("queued", { twilioStatus: "busy", durationSeconds: 0 })).toEqual({ kind: "busy" });
   });
   it("the owner tool names match, and owner_call_customer declares exactly the arguments the route reads", () => {
     expect([...OWNER_TOOL_NAMES]).toEqual([...ownerTools.OWNER_TOOL_NAMES]);

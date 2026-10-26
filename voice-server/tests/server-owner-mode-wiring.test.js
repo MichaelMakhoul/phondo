@@ -1594,3 +1594,10 @@ describe("SCRUM-587: customer paths through hunks the owner work edited, run for
     assert.deepEqual(pick(false), { _testPipeline: "openai-realtime", consulted: 1 });
   });
 });
+
+describe("SCRUM-598 (test lens): setup conditions a customer call depends on", () => {
+  it("a voicemail is never recorded, and a customer call never loads the returning-caller history", () => {
+    assert.ok(src.includes('if (recordingConsentMode !== "never" && callSid && session.notify?.mode !== "voicemail") {'));
+    assert.ok(src.includes('if (!session.notify && /^\\+?\\d{7,}$/.test(callerPhone)) {'));
+  });
+});

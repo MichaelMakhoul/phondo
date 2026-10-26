@@ -41,6 +41,10 @@ describe("owner tool declarations", () => {
     assert.deepEqual(t.parameters.properties.time_of_day.enum, ["morning", "afternoon", "evening", "any"]);
     assert.ok(t.parameters.properties.earliest_date.description.includes("YYYY-MM-DD"));
     assert.ok(!("note" in t.parameters.properties));
+    // Clients lens R2-2/R2-3: only days and a time of day reach the call, and a range has an end.
+    assert.ok(t.description.includes("only a date range and a time of day reach the call: anything else the owner asks for (a day to skip, \"after 3\", a particular person) can't be passed on — say so in the read-back"));
+    assert.ok(t.parameters.properties.latest_date.description.includes("Set it whenever the owner's words have an end (\"next week\" ends next Sunday"));
+    assert.ok(t.parameters.properties.latest_date.description.includes("without it the call may book any day from earliest_date on"));
     assert.ok(ot.OWNER_WRITE_TOOL_NAMES.includes("owner_call_customer"), "the confirmation gate guards it");
     assert.ok(!ot.OWNER_CHANGE_TOOL_NAMES.includes("owner_call_customer"), "it changes no booking");
     assert.deepEqual([...ot.OWNER_CHANGE_TOOL_NAMES], ["owner_reschedule_appointment", "owner_cancel_appointment"]);

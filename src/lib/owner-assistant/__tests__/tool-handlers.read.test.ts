@@ -1041,3 +1041,19 @@ describe("OWNER_TOOL_NAMES", () => {
     ]);
   });
 });
+
+describe("SCRUM-598 (test lens): owner_list_messages", () => {
+  it("the assistant's own calls to customers are not messages", async () => {
+    db.queues.callback_requests = [{ data: [], error: null }];
+    db.queues.calls = [{
+      data: [
+        { id: "c-notify", caller_name: null, caller_phone: "+61400000009", summary: "Called to confirm Thursday", created_at: "2026-10-15T02:30:00+00:00", metadata: { call_type: "customer_notify", notify: { purpose: "confirm" } } },
+        { id: "c-1", caller_name: "Sue", caller_phone: "+61400000003", summary: "Blocked drain, wants Thursday", created_at: "2026-10-15T01:30:00+00:00", metadata: null },
+      ],
+      error: null,
+    }];
+    const r = await handleOwnerListMessages(ORG);
+    expect((r.data as any).calls.map((c: any) => c.call_id)).toEqual(["c-1"]);
+    expect(r.message).not.toContain("Called to confirm Thursday");
+  });
+});

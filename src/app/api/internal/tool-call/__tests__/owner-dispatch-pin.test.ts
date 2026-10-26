@@ -18,12 +18,14 @@ vi.mock("@/lib/calendar/tool-handlers", () => ({
   // The SCRUM-509 helper, same shape as the real one: the owner dispatch builds its fault reply with it.
   errorResult: (message: string) => ({ success: false, error: true, message }),
 }));
-vi.mock("@/lib/owner-assistant/tool-handlers", () => ({
-  OWNER_TOOL_NAMES: ["owner_list_appointments", "owner_list_messages", "owner_reschedule_appointment", "owner_cancel_appointment"],
+vi.mock("@/lib/owner-assistant/tool-handlers", async () => ({
+  // The REAL list (test lens): a hard-coded copy hid owner_call_customer from these tests.
+  OWNER_TOOL_NAMES: (await import("@/lib/owner-assistant/tool-names")).OWNER_TOOL_NAMES,
   handleOwnerListAppointments: vi.fn(async () => ({ success: true, message: "jobs", data: { count: 1 } })),
   handleOwnerListMessages: vi.fn(async () => ({ success: true, message: "msgs", data: { callbacks: [], calls: [] } })),
   handleOwnerRescheduleAppointment: vi.fn(async () => ({ success: true, message: "moved", data: { outcome: "rescheduled", customer_notified: false } })),
   handleOwnerCancelAppointment: vi.fn(async () => ({ success: false, error: true, message: "trouble" })),
+  handleOwnerCallCustomer: vi.fn(async () => ({ success: true, message: "calling", data: { outcome: "calling" } })),
 }));
 vi.mock("@/lib/callbacks/tool-handler", () => ({ handleScheduleCallback: vi.fn(async () => ({ success: true, message: "cb" })) }));
 vi.mock("@/lib/service-types", () => ({ getActiveServiceTypes: vi.fn(async () => []) }));
@@ -38,6 +40,7 @@ import {
   handleOwnerListMessages,
   handleOwnerRescheduleAppointment,
   handleOwnerCancelAppointment,
+  handleOwnerCallCustomer,
 } from "@/lib/owner-assistant/tool-handlers";
 import { handleCancelAppointment } from "@/lib/calendar/tool-handlers";
 
@@ -197,5 +200,16 @@ describe("SCRUM-597: notify_customer reaches both owner write handlers", () => {
     await post({ ...base, ownerVerified: true, functionName: "owner_cancel_appointment", arguments: { appointment_id: APPT, confirmed: true, notify_customer: ["text"] } });
     expect(vi.mocked(handleOwnerRescheduleAppointment).mock.calls[0][1].notify_customer).toBe("text");
     expect(vi.mocked(handleOwnerCancelAppointment).mock.calls.map((c) => c[1].notify_customer)).toEqual(["none", undefined]);
+  });
+});
+
+describe("SCRUM-598 (test lens): owner_call_customer reaches its handler with what the route plucks", () => {
+  it("appointment_id, purpose and the window as strings, and a strict boolean confirmed", async () => {
+    await post({ ...base, ownerVerified: true, functionName: "owner_call_customer", arguments: { appointment_id: APPT, purpose: "find_new_time", earliest_date: "2026-11-02", latest_date: "2026-11-06", time_of_day: "morning", confirmed: true } });
+    await post({ ...base, ownerVerified: true, functionName: "owner_call_customer", arguments: { appointment_id: APPT, purpose: "confirm", confirmed: "true" } });
+    const calls = vi.mocked(handleOwnerCallCustomer).mock.calls;
+    expect(calls[0][1]).toEqual({ appointment_id: APPT, purpose: "find_new_time", earliest_date: "2026-11-02", latest_date: "2026-11-06", time_of_day: "morning", confirmed: true });
+    expect(calls[0][2]).toEqual({ callId: CALL_ID });
+    expect(calls[1][1].confirmed).toBe(false);
   });
 });

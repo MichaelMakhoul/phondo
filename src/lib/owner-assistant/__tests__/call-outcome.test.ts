@@ -155,6 +155,18 @@ describe("buildCallOutcome", () => {
     ]);
   });
 
+  it("an unreadable earlier leg only loses the 'moved from' times — the email still goes (silent lens R2-3)", async () => {
+    queues.calls = [callRow({}, { purpose: "find_new_time" })];
+    queues.appointments = [
+      booking({ status: "rescheduled" }),
+      { data: [{ id: NEW_LEG, start_time: "2026-10-29T04:00:00Z", status: "confirmed", rescheduled_from_id: BOOKING }], error: null },
+      { data: null, error: { message: "x" } },
+    ];
+    const r = await buildCallOutcome(fake(), { organizationId: ORG, callId: CALL, timezone: TZ });
+    expect(r?.diary).toEqual([{ kind: "moved", from: null, when: "Thursday, October 29 at 3:00 PM" }]);
+    expect(console.error).toHaveBeenCalledWith(expect.stringContaining("earlier legs unreadable"), expect.anything());
+  });
+
   it("a move's call knows where the booking moved from (clients lens M1)", async () => {
     queues.calls = [callRow({}, { purpose: "moved", appointment_id: NEW_LEG })];
     queues.appointments = [
@@ -210,7 +222,7 @@ describe("buildCallOutcome", () => {
     expect((r?.summary ?? "").length).toBeLessThanOrEqual(600);
   });
 
-  it("an unreadable call row, booking, made-bookings list or earlier leg is null — and so is a row with no purpose", async () => {
+  it("an unreadable call row, booking or made-bookings list is null — and so is a row with no purpose", async () => {
     const cases: Array<Record<string, Res[]>> = [
       { calls: [{ data: null, error: { message: "x" } }] },
       { calls: [{ data: null, error: null }] },
@@ -218,12 +230,22 @@ describe("buildCallOutcome", () => {
       { calls: [callRow({}, { appointment_id: null })] },
       { calls: [callRow()], appointments: [{ data: null, error: { message: "x" } }] },
       { calls: [callRow()], appointments: [booking(), { data: null, error: { message: "x" } }] },
-      { calls: [callRow()], appointments: [booking(), { data: [{ id: NEW_LEG, start_time: START, status: "confirmed", rescheduled_from_id: BOOKING }], error: null }, { data: null, error: { message: "x" } }] },
     ];
     for (const q of cases) {
       queues = q;
       expect(await buildCallOutcome(fake(), { organizationId: ORG, callId: CALL, timezone: TZ })).toBeNull();
     }
     expect(console.error).toHaveBeenCalled();
+  });
+});
+
+describe("SCRUM-598 (test lens): the cancel-on-the-call window", () => {
+  it("a booking cancelled well after the call ended wasn't cancelled on the call", async () => {
+    queues.calls = [callRow()];
+    // The call ended at 03:02:10Z and the window allows 2 minutes: 03:30Z is a later, separate cancel.
+    queues.appointments = [booking({ status: "cancelled", updated_at: "2026-10-27T03:30:00Z" }), { data: [], error: null }];
+    expect((await buildCallOutcome(fake(), { organizationId: ORG, callId: CALL, timezone: TZ }))?.diary).toEqual([
+      { kind: "unchanged", when: "Wednesday, October 28 at 2:30 PM", state: "cancelled" },
+    ]);
   });
 });

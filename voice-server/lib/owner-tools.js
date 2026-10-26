@@ -117,7 +117,7 @@ const ownerToolDefinitions = [
     function: {
       name: "owner_call_customer",
       description:
-        "Have the assistant phone a customer about ONE of their bookings WITHOUT changing it: purpose \"confirm\" checks they're still OK for it; purpose \"find_new_time\" agrees a new time with them and moves it (it stays as it is until they pick one). To tell a customer about a cancel or a move, use notify_customer \"call\" on that change instead. In two calls. First call WITHOUT confirmed: nothing happens, and data.outcome is needs_confirmation with the read-back (data.customer_name, data.when), or not_available with the reason in the message. Read it back to the owner and get a clear yes, THEN call again with confirmed=true. The result's data.outcome is calling | needs_confirmation | not_available | not_found | external_calendar — only 'calling' means the call is being placed; the owner gets an email when it ends.",
+        "Have the assistant phone a customer about ONE of their bookings WITHOUT changing it: purpose \"confirm\" checks they're still OK for it; purpose \"find_new_time\" agrees a new time with them and moves it (it stays as it is until they pick one). To tell a customer about a cancel or a move, use notify_customer \"call\" on that change instead. In two calls. First call WITHOUT confirmed: nothing happens, and data.outcome is needs_confirmation with the read-back (data.customer_name, data.when), or not_available with the reason in the message. Read it back to the owner and get a clear yes, THEN call again with confirmed=true. The result's data.outcome is calling | needs_confirmation | not_available | not_found | external_calendar — only 'calling' means the call is being placed; the owner gets an email when it ends. For find_new_time, only a date range and a time of day reach the call: anything else the owner asks for (a day to skip, \"after 3\", a particular person) can't be passed on — say so in the read-back.",
       parameters: {
         type: "object",
         properties: {
@@ -129,11 +129,11 @@ const ownerToolDefinitions = [
           },
           earliest_date: {
             type: "string",
-            description: "find_new_time only, optional: the first day the new time may be on, as YYYY-MM-DD in the business's timezone (\"next week\" is next Monday).",
+            description: "find_new_time only, optional: the first day the new time may be on, as YYYY-MM-DD in the business's timezone (\"next week\" starts next Monday).",
           },
           latest_date: {
             type: "string",
-            description: "find_new_time only, optional: the last day the new time may be on, as YYYY-MM-DD.",
+            description: "find_new_time only, optional: the last day the new time may be on, as YYYY-MM-DD. Set it whenever the owner's words have an end (\"next week\" ends next Sunday; \"before Friday\" is Thursday): without it the call may book any day from earliest_date on.",
           },
           time_of_day: {
             type: "string",

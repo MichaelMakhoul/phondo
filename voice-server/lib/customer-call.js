@@ -1137,6 +1137,31 @@ async function sweepStuckCustomerCalls(deps) {
   return { swept, checked };
 }
 
+/**
+ * A customer call's end-of-call fields, from its session: metadata.notify (the request
+ * again — the write replaces metadata — plus how it went) and the row's outcome. The
+ * website reads these exact keys (call-outcome.ts); its parity test drives this
+ * builder, never a copy (types lens N3).
+ * @param {{ notify: NotifyContext, notifyStartedAt?: string|null, notifyOutcome?: { outcome: string, note: string|null }|null, notifyVoicemailDone?: boolean, notifyVoicemailText?: string|null, notifyVoicemailPlayed?: boolean }} s
+ * @param {string|null|undefined} endedReason
+ * @returns {{ notify: Record<string, unknown>, outcome: "voicemail"|"failed"|"answered" }}
+ */
+function notifyCallEnd(s, endedReason) {
+  return {
+    notify: notifyMetadata(s.notify, {
+      ...(s.notifyStartedAt ? { stream_started_at: s.notifyStartedAt } : {}),
+      ...(s.notifyOutcome ? { outcome: s.notifyOutcome.outcome, note: s.notifyOutcome.note } : {}),
+      // Silent lens G1: the message counts as left only once it was spoken,
+      // and the email says whether Twilio confirmed it played to the end.
+      ...(s.notifyVoicemailDone && s.notifyVoicemailText
+        ? { voicemail_text: s.notifyVoicemailText, voicemail_played: s.notifyVoicemailPlayed === true }
+        : {}),
+      ended_reason: endedReason,
+    }),
+    outcome: s.notify.mode === "voicemail" ? (s.notifyVoicemailDone ? "voicemail" : "failed") : "answered",
+  };
+}
+
 module.exports = {
   AMD_CONVERSATION,
   AMD_VOICEMAIL,
@@ -1177,6 +1202,7 @@ module.exports = {
   STUCK_AFTER_MS,
   GIVE_UP_AFTER_MS,
   notifyMetadata,
+  notifyCallEnd,
   finalStatusFor,
   handleCustomerCallStatus,
 };

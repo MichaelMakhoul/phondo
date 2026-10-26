@@ -941,6 +941,12 @@ describe("SCRUM-598: 'call' on a change — offered only when the voice server s
     expect(none.message).not.toContain("a call also");
   });
 
+  it("(test lens) a cancel's read-back checks the call for the cancel itself (purpose 'cancelled')", async () => {
+    const r = await handleOwnerCancelAppointment(ORG, { appointment_id: APPT, confirmed: false }, ctx);
+    expect(r.data).toMatchObject({ outcome: "needs_confirmation", contact_options: ["call", "none"] });
+    expect(checkCustomerCall).toHaveBeenCalledWith({ organizationId: ORG, appointmentId: APPT, purpose: "cancelled", phone: "+61412345678", requestedByCallId: CALL });
+  });
+
   it("a confirmed move with 'call' places the call about the NEW leg, after the change", async () => {
     const r = await handleOwnerRescheduleAppointment(ORG, { appointment_id: APPT, new_datetime: NEW_TIME, confirmed: true, notify_customer: "call" }, ctx);
     expect(performRescheduleLeg).toHaveBeenCalledTimes(1);
@@ -1023,6 +1029,8 @@ describe("SCRUM-598: owner_call_customer", () => {
     const r = await ask({ purpose: "find_new_time", earliest_date: "2026-10-19", latest_date: "2026-10-23", time_of_day: "morning" });
     expect(r.message).toContain("call Jane Smith now to find a new time for their booking on Friday, October 16 at 10:00 AM — between Monday, October 19 and Friday, October 23, in the morning.");
     expect(r.message).toContain("the same purpose, earliest_date, latest_date and time_of_day");
+    // Clients lens R2-2: only the days and the time of day reach the call — the owner hears that before saying yes.
+    expect(r.message).toContain('Only those days and that time of day reach the call: if the owner asked for anything else (a day to skip, a time like "after 3", a particular person), say that can\'t be passed on before they confirm.');
     const window = { earliest: "2026-10-19", latest: "2026-10-23", timeOfDay: "morning" };
     expect(checkCustomerCall).toHaveBeenCalledWith(expect.objectContaining({ purpose: "find_new_time", window }));
     expect(r.data).toMatchObject({ outcome: "needs_confirmation", window });

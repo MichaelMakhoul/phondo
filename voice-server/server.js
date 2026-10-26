@@ -1342,18 +1342,33 @@ app.post("/internal/retranscribe", async (req, res) => {
 
 /** CallSids whose notify session is running in this process (the status callback leaves those to it). */
 const liveCustomerCalls = new Set();
+/** Customer-call finishes running outside a session (status callbacks, sweeps): the shutdown drain waits for them. */
+const customerCallWork = new Set();
+/**
+ * @template T
+ * @param {Promise<T>} work
+ * @returns {Promise<T>}
+ */
+function trackCustomerCallWork(work) {
+  customerCallWork.add(work);
+  work.then(
+    () => customerCallWork.delete(work),
+    () => customerCallWork.delete(work)
+  );
+  return work;
+}
 /** How often the sweeper looks for customer calls nobody finished (silent lens N1). */
 const CUSTOMER_CALL_SWEEP_MS = 5 * 60 * 1000;
 setInterval(() => {
   if (!customerCall.isCustomerCallsEnabled(process.env) || !INTERNAL_API_URL || !INTERNAL_API_SECRET) return;
-  customerCall
-    .sweepStuckCustomerCalls({
+  trackCustomerCallWork(
+    customerCall.sweepStuckCustomerCalls({
       supabase: getSupabase(),
       hasLiveSession: (sid) => liveCustomerCalls.has(sid),
       fetchTwilioCall: (sid) => getTwilioRestClient().calls(sid).fetch(),
       notifyCallCompleted: (payload) => notifyCallCompleted(INTERNAL_API_URL, INTERNAL_API_SECRET, payload),
     })
-    .catch((err) => console.error("[CustomerCall] sweep threw:", err && err.message));
+  ).catch((err) => console.error("[CustomerCall] sweep threw:", err && err.message));
 }, CUSTOMER_CALL_SWEEP_MS).unref();
 /** The Twilio mark sent after a voicemail's last audio: its echo means the message has played. */
 const NOTIFY_VOICEMAIL_MARK = "notify-voicemail-done";
@@ -1462,8 +1477,8 @@ app.post("/twiml/customer-call-status/:token", (req, res) => {
   // Answer Twilio at once; finishing the call (and the call-completed POST, with its
   // retries) runs after. The handler never throws.
   res.sendStatus(204);
-  customerCall
-    .handleCustomerCallStatus(req, {
+  trackCustomerCallWork(
+    customerCall.handleCustomerCallStatus(req, {
       supabase: getSupabase(),
       secret: INTERNAL_API_SECRET,
       hasLiveSession: (sid) => liveCustomerCalls.has(sid),
@@ -1472,6 +1487,7 @@ app.post("/twiml/customer-call-status/:token", (req, res) => {
           ? notifyCallCompleted(INTERNAL_API_URL, INTERNAL_API_SECRET, payload)
           : Promise.resolve(console.error("[ALERT:error] [CustomerCall] INTERNAL_API_URL/SECRET unset — no outcome email")),
     })
+  )
     .then((r) => console.log(`[CustomerCall] status ${req.body?.CallStatus}: ${r.finalized ? "finished" : "left"} (${r.reason})`))
     .catch((err) => console.error("[CustomerCall] status handler threw:", err && err.message));
 });
@@ -2005,21 +2021,7 @@ wss.on("connection", (twilioWs) => {
             ownerAuth: s.ownerAuth || null,
             // SCRUM-598: a customer call re-sends its request (this write replaces metadata)
             // plus how it went; outcome: a person picked up, or the voicemail was left.
-            ...(s.notify
-              ? {
-                  notify: customerCall.notifyMetadata(s.notify, {
-                    ...(s.notifyStartedAt ? { stream_started_at: s.notifyStartedAt } : {}),
-                    ...(s.notifyOutcome ? { outcome: s.notifyOutcome.outcome, note: s.notifyOutcome.note } : {}),
-                    // Silent lens G1: the message counts as left only once it was spoken,
-                    // and the email says whether Twilio confirmed it played to the end.
-                    ...(s.notifyVoicemailDone && s.notifyVoicemailText
-                      ? { voicemail_text: s.notifyVoicemailText, voicemail_played: s.notifyVoicemailPlayed === true }
-                      : {}),
-                    ended_reason: endedReason,
-                  }),
-                  outcome: s.notify.mode === "voicemail" ? (s.notifyVoicemailDone ? "voicemail" : "failed") : "answered",
-                }
-              : {}),
+            ...(s.notify ? customerCall.notifyCallEnd(s, endedReason) : {}),
           });
           recordWritten = true;
         } catch (err) {
@@ -2053,7 +2055,7 @@ wss.on("connection", (twilioWs) => {
       // released, Twilio's status callback (or the sweeper) finishes it as cut off.
       console.error(`[ALERT:error] [CustomerCall] call ${s.notify.callId}'s record was not written after its conversation — it will be finished as cut off`);
     } else if (INTERNAL_API_URL && INTERNAL_API_SECRET && s.organizationId) {
-      notifyCallCompleted(INTERNAL_API_URL, INTERNAL_API_SECRET, {
+      const completed = notifyCallCompleted(INTERNAL_API_URL, INTERNAL_API_SECRET, {
         callId: s.callRecordId,
         organizationId: s.organizationId,
         assistantId: s.assistantId,
@@ -2074,6 +2076,9 @@ wss.on("connection", (twilioWs) => {
       }).catch((err) =>
         console.error("[Cleanup] Failed to notify call completed:", err)
       );
+      // SCRUM-598 (silent lens R2-2): a customer call's outcome email rides on this POST —
+      // the call stays live, and the shutdown drain waits, until it has gone out.
+      if (s.notify) await completed;
     }
 
     // SCRUM-598: finished — from here Twilio's status callback may finish the row itself.
@@ -8406,9 +8411,10 @@ async function gracefulShutdown(signal) {
 
   // Poll until no active sessions remain, then flush Sentry and exit clean
   const pollInterval = setInterval(async () => {
-    // SCRUM-598 (silent lens N1): a customer call leaves `sessions` when its cleanup
-    // STARTS; liveCustomerCalls empties only once its record and call-completed are done.
-    if (sessions.size === 0 && liveCustomerCalls.size === 0) {
+    // SCRUM-598 (silent lens N1, R2-2): a customer call leaves `sessions` when its cleanup
+    // STARTS; liveCustomerCalls empties only once its record and call-completed are done,
+    // and customerCallWork once the status callbacks and sweeps in flight have finished.
+    if (sessions.size === 0 && liveCustomerCalls.size === 0 && customerCallWork.size === 0) {
       clearInterval(pollInterval);
       clearTimeout(hardCutoff);
       console.log("[Shutdown] All sessions drained — exiting cleanly");

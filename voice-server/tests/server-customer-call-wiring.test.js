@@ -527,7 +527,7 @@ function makeCleanup(session, o = {}) {
       if ((o.failWrites || 0) >= calls.filter((c) => c[0] === "completeCallRecord").length) throw new Error("db write failed");
     },
     setTimeout: (fn) => fn(),
-    notifyCallCompleted: async (url, secret, payload) => { calls.push(["notifyCallCompleted", payload]); },
+    notifyCallCompleted: async (url, secret, payload) => { calls.push(["notifyCallCompleted", payload]); if (o.posted) await o.posted; },
     INTERNAL_API_URL: "http://next.internal",
     INTERNAL_API_SECRET: "secret",
     maskPhone,
@@ -582,6 +582,21 @@ describe("SCRUM-598: post-call for a customer call, run for real", () => {
     assert.equal(webhook.callId, NOTIFY.callId);
     assert.equal(webhook.callType, "customer_notify");
     assert.ok(calls.findIndex((c) => c[0] === "completeCallRecord") < calls.findIndex((c) => c[0] === "notifyCallCompleted"), "the row is written before call-completed reads it");
+    assert.equal(live.has(s.callSid), false);
+  });
+
+  it("silent lens R2-2: a customer call stays live — the drain waits — until its call-completed POST (the email) has gone out", async () => {
+    const s = ended(makeSession());
+    s.notifyOutcome = { outcome: "confirmed", note: null };
+    let release;
+    const posted = new Promise((r) => { release = r; });
+    const { cleanupSession, calls, live } = makeCleanup(s, { posted });
+    const done = cleanupSession();
+    await sleep(20);
+    assert.ok(calls.some((c) => c[0] === "notifyCallCompleted"), "the POST is out");
+    assert.equal(live.has(s.callSid), true, "still live while it's in flight");
+    release();
+    await done;
     assert.equal(live.has(s.callSid), false);
   });
 
@@ -940,6 +955,85 @@ describe("SCRUM-598: the voicemail's hang-up triggers, run for real", () => {
 describe("SCRUM-598: the shutdown drain waits for customer calls to finish (silent lens N1)", () => {
   it("exits only once no session is left AND no customer call is still finishing", () => {
     const shutdown = sliceOf("async function gracefulShutdown(signal) {", 'process.on("SIGTERM"');
-    assert.match(shutdown, /if \(sessions\.size === 0 && liveCustomerCalls\.size === 0\) \{/);
+    assert.match(shutdown, /if \(sessions\.size === 0 && liveCustomerCalls\.size === 0 && customerCallWork\.size === 0\) \{/);
+  });
+
+  it("silent lens R2-2: status callbacks and sweeps in flight are tracked until they settle, and both are wrapped", async () => {
+    const { customerCallWork, trackCustomerCallWork } = runSlice({
+      from: "const customerCallWork = new Set();",
+      to: "/** How often the sweeper looks for customer calls nobody finished (silent lens N1). */",
+      scope: {},
+      names: ["customerCallWork", "trackCustomerCallWork"],
+    });
+    let finish;
+    const work = new Promise((r) => { finish = r; });
+    assert.equal(trackCustomerCallWork(work), work, "the same promise comes back");
+    assert.equal(customerCallWork.size, 1);
+    finish("done");
+    await work;
+    await sleep(0);
+    assert.equal(customerCallWork.size, 0);
+    let fail;
+    const failing = new Promise((_r, rej) => { fail = rej; });
+    trackCustomerCallWork(failing).catch(() => {});
+    fail(new Error("boom"));
+    await sleep(0);
+    assert.equal(customerCallWork.size, 0, "a failed finish is released too");
+    const status = sliceOf('app.post("/twiml/customer-call-status/:token"', 'app.post("/preview"');
+    assert.match(status, /trackCustomerCallWork\(\n\s+customerCall\.handleCustomerCallStatus\(req,/);
+    const sweep = sliceOf("const CUSTOMER_CALL_SWEEP_MS", "const NOTIFY_VOICEMAIL_MARK");
+    assert.match(sweep, /trackCustomerCallWork\(\n\s+customerCall\.sweepStuckCustomerCalls\(\{/);
+  });
+});
+
+describe("SCRUM-598 (test lens): the stream start registers the call and checks its line, run for real", () => {
+  const NOTIFY = { callId: "55555555-5555-4555-8555-555555555555", organizationId: "org-1", appointmentId: "a-1", purpose: "confirm", requestedByCallId: "o-1", mode: "conversation", answeredBy: "human" };
+  async function start({ notify = NOTIFY, context = { organizationId: "org-1", assistantId: "asst-1", phoneNumberId: "pn-1" } } = {}) {
+    const live = new Set();
+    const said = [];
+    const failed = [];
+    const sessions = new Map();
+    const ws = { closed: 0, close() { this.closed += 1; } };
+    const r = await runSlice({
+      isAsync: true,
+      from: "          session = new CallSession(callSid);\n          session.streamSid = streamSid;",
+      to: "          // Store context on session",
+      scope: {
+        session: null, CallSession, callSid: "CA-1", streamSid: "MZ-1", callerPhone: "+61412345678", calledNumber: "+61257015064", phoneRecord: null,
+        tokenData: { ownerMode: false, notify }, liveCustomerCalls: live, sessions, maskPhone, twilioWs: ws,
+        loadCallContext: async () => context,
+        sendTTS: async (_s, _ws, text) => { said.push(text); },
+        getErrorMsg: (_lang, key) => `<${key}>`,
+        getSupabase: () => ({}),
+        customerCall: { markSetupFailed: async (_sb, n, reason) => { failed.push([n.callId, reason]); return true; } },
+        console: recordingConsole([]),
+      },
+      wrap: (code) => `${code}\nreturn { session };`,
+    });
+    return { r, live, ws, said, failed, session: sessions.get("MZ-1") };
+  }
+  it("a customer call is registered as live, so the status callback leaves it to the session", async () => {
+    const { r, live, ws, failed } = await start();
+    assert.ok(r && r.session.notify, "the session takes the notify context");
+    assert.equal(live.has("CA-1"), true);
+    assert.equal(ws.closed, 0);
+    assert.deepEqual(failed, []);
+  });
+  it("a line that now belongs to another org: nothing is said, the call ends as our failure and is released", async () => {
+    const { r, live, ws, said, failed, session } = await start({ context: { organizationId: "org-2", assistantId: "x", phoneNumberId: "y" } });
+    assert.equal(r, undefined, "setup stops here");
+    assert.deepEqual(failed, [[NOTIFY.callId, "org-mismatch"]]);
+    assert.equal(session.callFailed, true);
+    assert.equal(live.has("CA-1"), false);
+    assert.equal(ws.closed, 1);
+    assert.deepEqual(said, []);
+  });
+  it("no context: the customer never hears 'not configured'; the call ends as our failure and is released", async () => {
+    const { r, live, ws, said, failed } = await start({ context: null });
+    assert.equal(r, undefined);
+    assert.deepEqual(said, []);
+    assert.deepEqual(failed, [[NOTIFY.callId, "no-call-context"]]);
+    assert.equal(ws.closed, 1);
+    assert.equal(live.has("CA-1"), false);
   });
 });

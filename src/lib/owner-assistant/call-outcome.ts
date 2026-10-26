@@ -164,10 +164,8 @@ export async function buildCallOutcome(
       .select("id, start_time")
       .eq("organization_id", organizationId)
       .in("id", priorIds);
-    if (priorsError) {
-      console.error("[CallOutcome] earlier legs unreadable:", { organizationId, callId, error: priorsError });
-      return null;
-    }
+    // Silent lens R2-3: they only supply the "moved from" times — never worth the whole email.
+    if (priorsError) console.error("[CallOutcome] earlier legs unreadable — sending without their times:", { organizationId, callId, error: priorsError });
     for (const p of priors ?? []) priorStart.set(p.id, p.start_time);
   }
 

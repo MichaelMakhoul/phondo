@@ -164,10 +164,11 @@ describe("sendCustomerCallOutcomeNotification", () => {
     expect(sent()[0].html).toContain("to tell them their booking was cancelled. Here's how it went.");
   });
 
-  it("says plainly when the customer still doesn't know, or nothing was agreed (clients lens M2)", async () => {
+  it("says plainly when the customer still doesn't know, didn't confirm, or nothing was agreed (clients lens M2, R2-1; silent lens R2-1; types lens N1)", async () => {
     vi.mocked(createAdminClient).mockReturnValue(fakeAdmin(OWNER_FOUND) as any);
     const RING = ' — ring them on <a href="tel:+61412345678">0412 345 678</a>.';
-    const unchanged = [{ kind: "unchanged" as const, when: "Wednesday, October 28 at 2:30 PM", state: "booked" as const }];
+    const ON = "Wednesday, October 28 at 2:30 PM";
+    const unchanged = [{ kind: "unchanged" as const, when: ON, state: "booked" as const }];
     const nextOf = async (over: Partial<CallOutcomeReport>) => {
       resendSend.mockClear();
       await sendCustomerCallOutcomeNotification({ organizationId: ORG, report: { ...REPORT, diary: unchanged, ...over } });
@@ -175,32 +176,59 @@ describe("sendCustomerCallOutcomeNotification", () => {
       return m ? m[1] : null;
     };
     const answered = { kind: "answered" as const, seconds: 60, endedOnAFault: false, sureItWasAPerson: true };
-    // A change the customer wasn't told about.
-    expect(await nextOf({ purpose: "cancelled", result: { kind: "no_answer" }, assistantOutcome: null })).toBe(`Jane Smith hasn't been told about this change${RING}`);
-    expect(await nextOf({ purpose: "moved", result: answered, assistantOutcome: "wrong_person" })).toBe(`Jane Smith hasn't been told about this change${RING}`);
+    const played = { kind: "voicemail" as const, playedToEnd: true };
+    const unplayed = { kind: "voicemail" as const, playedToEnd: false };
+    type Case = [string, Partial<CallOutcomeReport>, string | null];
+    const cases: Case[] = [
+      // A change: told only when they reacted to it, or the message played to the end.
+      ["cancel, no answer", { purpose: "cancelled", result: { kind: "no_answer" }, assistantOutcome: null }, `Jane Smith hasn't been told about this change${RING}`],
+      ["move, wrong person", { purpose: "moved", result: answered, assistantOutcome: "wrong_person" }, `Jane Smith hasn't been told about this change${RING}`],
+      ["cancel, answered, no outcome", { purpose: "cancelled", result: answered, assistantOutcome: null }, `Jane Smith may not have heard about this change${RING}`],
+      ["move, cut off", { purpose: "moved", result: { kind: "cut_off", seconds: 40 }, assistantOutcome: null }, `Jane Smith may not have heard about this change${RING}`],
+      ["cancel, kind path ('other')", { purpose: "cancelled", result: answered, assistantOutcome: "other" }, `Jane Smith may not have heard about this change (see the assistant's note)${RING}`],
+      ["cancel, do not call", { purpose: "cancelled", result: answered, assistantOutcome: "do_not_call" }, "Jane Smith may not have heard about this change (see the assistant's note), and they asked not to be called again."],
+      ["move, message not confirmed played", { purpose: "moved", result: unplayed, assistantOutcome: null }, `Jane Smith may not have heard about this change (we couldn't confirm the message played to the end)${RING}`],
+      ["cancel, declined another time", { purpose: "cancelled", result: answered, assistantOutcome: "declined" }, null],
+      ["cancel, will call back", { purpose: "cancelled", result: answered, assistantOutcome: "will_call_back" }, null],
+      ["move, confirmed", { purpose: "moved", result: answered, assistantOutcome: "confirmed" }, null],
+      ["move, message played", { purpose: "moved", result: played, assistantOutcome: null }, null],
+      // A confirmation: done only when they confirmed, or the diary changed on the call.
+      ["confirm, busy", { purpose: "confirm", result: { kind: "busy" }, assistantOutcome: null }, `Jane Smith hasn't confirmed their booking${RING}`],
+      ["confirm, message", { purpose: "confirm", result: played, assistantOutcome: null }, `Jane Smith hasn't confirmed their booking (the assistant left a message)${RING}`],
+      ["confirm, answered, no outcome", { purpose: "confirm", result: answered, assistantOutcome: null }, `Jane Smith may not have confirmed their booking (check the summary)${RING}`],
+      ["confirm, declined", { purpose: "confirm", result: answered, assistantOutcome: "declined" }, `Jane Smith didn't confirm their booking (see the assistant's note)${RING}`],
+      ["confirm, will call back", { purpose: "confirm", result: answered, assistantOutcome: "will_call_back" }, `Jane Smith didn't confirm their booking (see the assistant's note)${RING}`],
+      ["confirm, other", { purpose: "confirm", result: answered, assistantOutcome: "other" }, `Jane Smith may not have confirmed their booking (see the assistant's note)${RING}`],
+      ["confirm, do not call", { purpose: "confirm", result: answered, assistantOutcome: "do_not_call" }, "Jane Smith may not have confirmed their booking (see the assistant's note), and they asked not to be called again."],
+      ["confirm, confirmed", { purpose: "confirm", result: answered, assistantOutcome: "confirmed" }, null],
+      ["confirm, moved on the call", { purpose: "confirm", result: answered, assistantOutcome: "rebooked", diary: [{ kind: "moved", from: ON, when: "Thu" }] }, null],
+      ["confirm, cancelled on the call", { purpose: "confirm", result: answered, assistantOutcome: "declined", diary: [{ kind: "cancelled", when: ON }] }, null],
+      // Finding a new time: nothing agreed is back with the owner.
+      ["find, declined", { purpose: "find_new_time", result: answered, assistantOutcome: "declined" }, `No new time was agreed, so Jane Smith's booking on ${ON} still stands. It's back with you${RING}`],
+      ["find, other", { purpose: "find_new_time", result: answered, assistantOutcome: "other" }, `No new time was agreed, so Jane Smith's booking on ${ON} still stands (see the assistant's note). It's back with you${RING}`],
+      ["find, do not call", { purpose: "find_new_time", result: answered, assistantOutcome: "do_not_call" }, `No new time was agreed, so Jane Smith's booking on ${ON} still stands (see the assistant's note), and they asked not to be called again. It's back with you.`],
+      ["find, no answer", { purpose: "find_new_time", result: { kind: "no_answer" }, assistantOutcome: null }, `Jane Smith doesn't know yet that their booking needs to move${RING}`],
+      ["find, message", { purpose: "find_new_time", result: played, assistantOutcome: null }, `Jane Smith doesn't know yet that their booking needs to move (the assistant left a message asking them to call back)${RING}`],
+      ["find, moved", { purpose: "find_new_time", result: answered, assistantOutcome: "rebooked", diary: [{ kind: "moved", from: "Wed", when: "Thu" }] }, null],
+      // Silent lens R2-1(c): cancelled on the call is never "still stands".
+      ["find, cancelled on the call", { purpose: "find_new_time", result: answered, assistantOutcome: "declined", diary: [{ kind: "cancelled", when: ON }] }, null],
+      // Code lens G4: a time booked then cancelled on the call isn't agreed.
+      ["find, booked then cancelled", { purpose: "find_new_time", result: answered, assistantOutcome: "declined", diary: [{ kind: "booked", when: "Thu" }, { kind: "cancelled", when: "Thu" }] }, `No new time was agreed, so Jane Smith's booking on ${ON} still stands. It's back with you${RING}`],
+      // Silent lens R2-1(d): a "rebooked" the diary doesn't show is flagged, whatever the purpose.
+      ["find, rebooked but nothing in the diary", { purpose: "find_new_time", result: answered, assistantOutcome: "rebooked" }, `The assistant noted it booked or moved a time for Jane Smith, but your diary shows no new time. Check the call and Appointments${RING}`],
+      ["cancel, rebooked but only a cancelled time", { purpose: "cancelled", result: answered, assistantOutcome: "rebooked", diary: [{ kind: "booked", when: "Thu" }, { kind: "cancelled", when: "Thu" }] }, `The assistant noted it booked or moved a time for Jane Smith, but your diary shows no new time. Check the call and Appointments${RING}`],
+      // No number: no "ring them"; a number we can't format is shown as written, never as a link.
+      ["no number", { purpose: "cancelled", result: { kind: "no_answer" }, assistantOutcome: null, phone: null }, "Jane Smith hasn't been told about this change."],
+      ["overseas number", { purpose: "cancelled", result: { kind: "no_answer" }, assistantOutcome: null, phone: "+15551234567" }, "Jane Smith hasn't been told about this change — ring them on +15551234567."],
+    ];
+    for (const [label, over, want] of cases) {
+      const got = await nextOf(over);
+      expect(got === null ? null : got.replace(/&#39;/g, "'"), label).toBe(want);
+    }
+    // Every result kind finds a home (a fax or our own failure is "hasn't been told").
     for (const result of [{ kind: "busy" }, { kind: "dropped" }, { kind: "failed" }, { kind: "failed_on_our_side" }, { kind: "voicemail_not_left" }, { kind: "machine_answered" }] as const) {
       expect(await nextOf({ purpose: "cancelled", result, assistantOutcome: null }), result.kind).toBe(`Jane Smith hasn't been told about this change${RING}`);
     }
-    expect(await nextOf({ purpose: "cancelled", result: answered, assistantOutcome: null })).toBe(`Jane Smith may not have heard about this change${RING}`);
-    expect(await nextOf({ purpose: "moved", result: { kind: "cut_off", seconds: 40 }, assistantOutcome: "confirmed" })).toBe(`Jane Smith may not have heard about this change${RING}`);
-    // Told, by the call or the message left: nothing to do.
-    expect(await nextOf({ purpose: "cancelled", result: answered, assistantOutcome: "declined" })).toBeNull();
-    expect(await nextOf({ purpose: "moved", result: { kind: "voicemail", playedToEnd: true }, assistantOutcome: null })).toBeNull();
-    // A confirmation not had.
-    expect(await nextOf({ purpose: "confirm", result: { kind: "busy" }, assistantOutcome: null })).toBe(`Jane Smith hasn't confirmed their booking${RING}`);
-    expect(await nextOf({ purpose: "confirm", result: { kind: "voicemail", playedToEnd: true }, assistantOutcome: null })).toBe(`Jane Smith hasn't confirmed their booking (the assistant left a message)${RING}`);
-    expect(await nextOf({ purpose: "confirm", result: answered, assistantOutcome: null })).toBe(`Jane Smith may not have confirmed their booking — check the summary${RING}`);
-    expect(await nextOf({ purpose: "confirm", result: answered, assistantOutcome: "confirmed" })).toBeNull();
-    // Finding a new time: nothing agreed is back with the owner.
-    expect(await nextOf({ purpose: "find_new_time", result: answered, assistantOutcome: "declined" })).toBe(`No new time was agreed, so Jane Smith's booking on Wednesday, October 28 at 2:30 PM still stands. It's back with you${RING}`);
-    expect(await nextOf({ purpose: "find_new_time", result: { kind: "no_answer" }, assistantOutcome: null })).toBe(`Jane Smith doesn't know yet that their booking needs to move${RING}`);
-    expect(await nextOf({ purpose: "find_new_time", result: { kind: "voicemail", playedToEnd: true }, assistantOutcome: null })).toBe(`Jane Smith doesn't know yet that their booking needs to move (the assistant left a message asking them to call back)${RING}`);
-    expect(await nextOf({ purpose: "find_new_time", result: answered, diary: [{ kind: "moved", from: "Wed", when: "Thu" }] })).toBeNull();
-    // A time booked and then cancelled on the call isn't agreed (code lens G4).
-    expect(await nextOf({ purpose: "find_new_time", result: answered, diary: [{ kind: "booked", when: "Thu" }, { kind: "cancelled", when: "Thu" }] })).toMatch(/^No new time was agreed/);
-    // No number: no "ring them"; a number we can't format is shown as written, never as a link.
-    expect(await nextOf({ purpose: "cancelled", result: { kind: "no_answer" }, phone: null })).toBe("Jane Smith hasn't been told about this change.");
-    expect(await nextOf({ purpose: "cancelled", result: { kind: "no_answer" }, phone: "+15551234567" })).toBe("Jane Smith hasn't been told about this change — ring them on +15551234567.");
   });
 
   it("'Listen to the call' only when the call reached someone (clients lens S4)", async () => {
@@ -246,5 +274,14 @@ describe("sendCustomerCallOutcomeNotification", () => {
     vi.mocked(createAdminClient).mockReturnValue(fakeAdmin(OWNER_FOUND) as any);
     await sendCustomerCallOutcomeNotification({ organizationId: ORG, report: REPORT, timesInDefaultZone: true });
     expect(sent()[0].html).toContain("Times are shown in Sydney time");
+  });
+});
+
+describe("SCRUM-598 (test lens): every AI-written row is labelled", () => {
+  it("the summary row says it's AI-written, right next to the summary", async () => {
+    vi.mocked(createAdminClient).mockReturnValue(fakeAdmin(OWNER_FOUND) as any);
+    await sendCustomerCallOutcomeNotification({ organizationId: ORG, report: REPORT });
+    const [mail] = sent();
+    expect(mail.html).toContain('Summary <span style="font-weight: normal; color: #6b7280;">(AI-written)</span></td><td style="padding: 8px; border-bottom: 1px solid #ddd;">Jane said Thursday suits her better.');
   });
 });

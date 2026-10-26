@@ -47,6 +47,14 @@ function lettersOnly(/** @type {string} */ word) {
   return Array.from(word.replace(/[^\p{L}\p{M}'’-]/gu, "")).slice(0, FIRST_NAME_MAX).join("");
 }
 
+/** Where a note starts in a name field: "Mrs Johnson (leaking tap)", "Bob - kitchen", "Ann, unit 4". */
+const NAME_NOTE_START = /\s[-–—]\s|[([,/|:;]/;
+
+/** "JOHNSON" → "Johnson": an all-capitals name is said as a name, never spelt out. */
+function tidyCase(/** @type {string} */ word) {
+  return word.length > 1 && word === word.toUpperCase() && word !== word.toLowerCase() ? word.charAt(0) + word.slice(1).toLowerCase() : word;
+}
+
 /** A courtesy title is never someone's name (clients lens M3: "Mrs Johnson" is not "Mrs"). */
 const TITLES = new Set(["mr", "mrs", "ms", "miss", "mx", "dr", "prof"]);
 
@@ -60,7 +68,7 @@ const TITLES = new Set(["mr", "mrs", "ms", "miss", "mx", "dr", "prof"]);
 function addressNameOf(fullName) {
   const name = oneLine(fullName, NAME_MAX);
   if (!name) return null;
-  const words = name.split(" ").map(lettersOnly).filter((w) => /\p{L}/u.test(w));
+  const words = name.split(NAME_NOTE_START)[0].split(" ").map(lettersOnly).filter((w) => /\p{L}/u.test(w)).map(tidyCase);
   if (words.length === 0) return null;
   const first = words[0];
   if (TITLES.has(first.toLowerCase())) {

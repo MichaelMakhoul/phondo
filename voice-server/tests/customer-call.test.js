@@ -1083,3 +1083,14 @@ describe("sweepStuckCustomerCalls (silent lens N1 — a lost status callback)", 
     assert.ok(alerts().some((m) => m.includes("sweep")));
   });
 });
+
+describe("SCRUM-598 (test lens): edges the suite didn't reach", () => {
+  it("the booking's number must agree on all 9 national digits, the first one included", () => {
+    assert.equal(cc.matchesBookingPhone(PHONE, "0312 345 678"), false, "a landline sharing the last 8 digits is another number");
+  });
+  it("calls that rang out or were busy count toward the 2-per-number cap (no endless redials)", async () => {
+    const rangOut = (status) => ({ id: "c", caller_phone: PHONE, status, outcome: null, metadata: { notify: { appointment_id: "other", purpose: "confirm" } } });
+    const sb = fakeSupabase(responder(world({ recent: [rangOut("no-answer"), rangOut("busy")] })));
+    assert.deepEqual(await cc.checkCustomerCall(req(), "check", checkDeps(sb)), { ok: false, reason: "number_cap" });
+  });
+});

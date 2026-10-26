@@ -1114,36 +1114,88 @@ function phoneHtml(phone: string): string {
 }
 
 /**
- * Clients lens M2: when the customer still doesn't know — or nothing was agreed —
- * say so plainly; this email is the owner's only reminder. Null when there's nothing
- * left to do. Told means an answered call where the assistant recorded how it went
- * (and it wasn't someone else); an answered call with no outcome is "may not have".
+ * How far the call's news got (exhaustive over the result — types lens N1):
+ * - heard: they answered and reacted to it (confirmed, rebooked, declined, will call back);
+ * - message: a voicemail Twilio confirmed played to the end;
+ * - unsure: cut off, a message not confirmed as played, no outcome recorded, or
+ *   "other" / "do_not_call" — neither means the news landed ("other" is what the
+ *   kind path records when the customer is unwell or has died);
+ * - missed: nobody heard it.
+ */
+type NewsReach = "heard" | "message" | "unsure" | "missed";
+
+/** Outcomes that mean the customer heard the news and reacted to it (clients and silent lenses R2-1). */
+const HEARD_OUTCOMES: ReadonlySet<CallOutcome> = new Set<CallOutcome>(["confirmed", "rebooked", "declined", "will_call_back"]);
+
+function newsReach(r: CallOutcomeReport): NewsReach {
+  const result = r.result;
+  switch (result.kind) {
+    case "answered":
+      if (r.assistantOutcome === "wrong_person") return "missed";
+      return r.assistantOutcome !== null && HEARD_OUTCOMES.has(r.assistantOutcome) ? "heard" : "unsure";
+    case "voicemail":
+      return result.playedToEnd ? "message" : "unsure";
+    case "cut_off":
+      return "unsure";
+    case "voicemail_not_left":
+    case "no_answer":
+    case "busy":
+    case "dropped":
+    case "failed_on_our_side":
+    case "machine_answered":
+    case "failed":
+      return "missed";
+    default: {
+      const unhandled: never = result;
+      return unhandled;
+    }
+  }
+}
+
+/** A time booked or moved to on the call that still stands (one also cancelled on the call doesn't count). */
+function standingNewTime(diary: DiaryLine[]): boolean {
+  const cancelledAt = new Set(diary.filter((d) => d.kind === "cancelled").map((d) => d.when));
+  return diary.some((d) => (d.kind === "moved" || d.kind === "booked") && !cancelledAt.has(d.when));
+}
+
+/**
+ * Clients lens M2: when the customer still doesn't know, didn't confirm, or nothing
+ * was agreed — say so plainly; this email is the owner's only reminder. Null when
+ * there's nothing left to do. With the made-up-action checks off on these calls,
+ * the diary is the check: a "rebooked" it doesn't show is flagged (silent lens R2-1).
  */
 function nextStepLine(r: CallOutcomeReport): string | null {
   const who = escapeHtml(r.customer);
-  const ring = r.phone ? ` — ring them on ${phoneHtml(r.phone)}` : "";
-  const kind = r.result.kind;
-  const told = kind === "answered" && r.assistantOutcome !== null && r.assistantOutcome !== "wrong_person";
-  const unsure = kind === "cut_off" || (kind === "answered" && r.assistantOutcome === null);
-  const leftMessage = kind === "voicemail";
+  const noMoreCalls = r.assistantOutcome === "do_not_call";
+  // "Ring them" never follows someone who asked not to be called again.
+  const ring = r.phone && !noMoreCalls ? ` — ring them on ${phoneHtml(r.phone)}` : "";
+  const reach = newsReach(r);
+  const newTime = standingNewTime(r.diary);
+  const cancelledOnTheCall = r.bookingWhen !== null && r.diary.some((d) => d.kind === "cancelled" && d.when === r.bookingWhen);
+  if (r.assistantOutcome === "rebooked" && !newTime) {
+    return `The assistant noted it booked or moved a time for ${who}, but your diary shows no new time. Check the call and Appointments${ring}.`;
+  }
+  const seeNote = r.assistantOutcome === "other" || noMoreCalls ? " (see the assistant's note)" : "";
+  const asked = noMoreCalls ? ", and they asked not to be called again" : "";
+  const leftMessage = r.result.kind === "voicemail";
   switch (r.purpose) {
     case "cancelled":
     case "moved":
-      if (told || leftMessage) return null;
-      return unsure ? `${who} may not have heard about this change${ring}.` : `${who} hasn't been told about this change${ring}.`;
+      if (reach === "heard" || reach === "message") return null;
+      if (leftMessage) return `${who} may not have heard about this change (we couldn't confirm the message played to the end)${ring}.`;
+      if (reach === "unsure") return `${who} may not have heard about this change${seeNote}${asked}${ring}.`;
+      return `${who} hasn't been told about this change${ring}.`;
     case "confirm":
-      if (told) return null;
-      return unsure
-        ? `${who} may not have confirmed their booking — check the summary${ring}.`
-        : `${who} hasn't confirmed their booking${leftMessage ? " (the assistant left a message)" : ""}${ring}.`;
+      if (newTime || cancelledOnTheCall || (reach === "heard" && r.assistantOutcome === "confirmed")) return null;
+      if (leftMessage) return `${who} hasn't confirmed their booking (the assistant left a message)${ring}.`;
+      if (reach === "heard") return `${who} didn't confirm their booking (see the assistant's note)${ring}.`;
+      if (reach === "unsure") return `${who} may not have confirmed their booking${seeNote || " (check the summary)"}${asked}${ring}.`;
+      return `${who} hasn't confirmed their booking${ring}.`;
     case "find_new_time": {
-      const cancelledAt = new Set(r.diary.filter((d) => d.kind === "cancelled").map((d) => d.when));
-      const agreed = r.diary.some((d) => (d.kind === "moved" || d.kind === "booked") && !cancelledAt.has(d.when));
-      if (agreed) return null;
-      if (told || unsure) {
-        return `No new time was agreed, so ${who}'s booking${r.bookingWhen ? ` on ${escapeHtml(r.bookingWhen)}` : ""} still stands. It's back with you${ring}.`;
-      }
-      return `${who} doesn't know yet that their booking needs to move${leftMessage ? " (the assistant left a message asking them to call back)" : ""}${ring}.`;
+      if (newTime || cancelledOnTheCall) return null;
+      if (leftMessage) return `${who} doesn't know yet that their booking needs to move (the assistant left a message asking them to call back)${ring}.`;
+      if (reach === "missed") return `${who} doesn't know yet that their booking needs to move${ring}.`;
+      return `No new time was agreed, so ${who}'s booking${r.bookingWhen ? ` on ${escapeHtml(r.bookingWhen)}` : ""} still stands${seeNote}${asked}. It's back with you${ring}.`;
     }
     default: {
       const unhandled: never = r.purpose;

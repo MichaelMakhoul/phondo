@@ -208,3 +208,19 @@ describe("the calls query stays what the figures depend on (SCRUM-586)", () => {
     expect(q.filters.some((f) => f.name === "lt" && f.args[0] === "created_at")).toBe(true);
   });
 });
+
+describe("daily-summary excludes the assistant's own calls to customers (SCRUM-598, test lens)", () => {
+  const NOTIFY_CALL = { id: "c-notify", status: "no-answer", is_spam: false, duration_seconds: 0, action_taken: null, metadata: { call_type: "customer_notify", notify: { purpose: "confirm" } } };
+  it("an org-day with ONLY the assistant's calls to customers sends no summary", async () => {
+    db.handlers["calls.select"] = () => ({ data: [NOTIFY_CALL], error: null });
+    const res = await GET(new NextRequest("http://localhost/api/cron/daily-summary"));
+    expect(await res.json()).toEqual({ sent: 0, recovered: 0, skipped: 3, deduped: 0, failed: 0 });
+    expect(sendDailySummaryNotification).not.toHaveBeenCalled();
+  });
+  it("they're left out of every count", async () => {
+    db.handlers["calls.select"] = () => ({ data: [NOTIFY_CALL, CUSTOMER_CALL], error: null });
+    const res = await GET(new NextRequest("http://localhost/api/cron/daily-summary"));
+    expect((await res.json()).sent).toBe(1);
+    expect(sendDailySummaryNotification).toHaveBeenCalledWith(expect.objectContaining({ totalCalls: 1, missedCalls: 0 }));
+  });
+});

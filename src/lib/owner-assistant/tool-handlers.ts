@@ -53,14 +53,7 @@ import {
 } from "./customer-contact";
 import { callWhy, checkCustomerCall, placeCustomerCall, TIMES_OF_DAY, type CallBlockReason, type TimeWindow } from "./customer-call";
 
-export const OWNER_TOOL_NAMES = [
-  "owner_list_appointments",
-  "owner_list_messages",
-  "owner_reschedule_appointment",
-  "owner_cancel_appointment",
-  "owner_call_customer",
-] as const;
-export type OwnerToolName = (typeof OWNER_TOOL_NAMES)[number];
+export { OWNER_TOOL_NAMES, type OwnerToolName } from "./tool-names";
 
 /** Set by the internal route from the request ENVELOPE (never from model arguments). */
 export interface OwnerCallContext {
@@ -1068,7 +1061,7 @@ export async function handleOwnerCallCustomer(
     if (!check.canCall) return notAvailable(check.reason, callNotPlacedMessage(customer, check.reason, false));
     return {
       success: false,
-      message: `Read this back and get a clear yes before calling: call ${customer} now to ${CALL_PURPOSE_WORDS[purpose]} their booking on ${when}${windowPhrase(window)}. If the owner confirms, call owner_call_customer again with confirmed=true${window ? ", the same purpose, earliest_date, latest_date and time_of_day" : " and the same purpose"}.`,
+      message: `Read this back and get a clear yes before calling: call ${customer} now to ${CALL_PURPOSE_WORDS[purpose]} their booking on ${when}${windowPhrase(window)}.${purpose === "find_new_time" ? ` Only those days and that time of day reach the call: if the owner asked for anything else (a day to skip, a time like "after 3", a particular person), say that can't be passed on before they confirm.` : ""} If the owner confirms, call owner_call_customer again with confirmed=true${window ? ", the same purpose, earliest_date, latest_date and time_of_day" : " and the same purpose"}.`,
       data: callData({ outcome: "needs_confirmation", ...base }),
     };
   }
